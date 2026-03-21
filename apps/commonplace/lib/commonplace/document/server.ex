@@ -9,9 +9,10 @@ defmodule Commonplace.Document.Server do
   use GenServer
 
   alias Commonplace.Store.CommitStore
+  alias Commonplace.Document.ContentType
   alias Commonplace.Dataflow.PubSub, as: CPPubSub
 
-  defstruct [:uuid, :doc, :parent_commit]
+  defstruct [:uuid, :doc, :parent_commit, :commit_store]
 
   def start_link(opts) do
     uuid = Keyword.fetch!(opts, :uuid)
@@ -27,13 +28,32 @@ defmodule Commonplace.Document.Server do
 
   def commit(pid), do: GenServer.call(pid, :commit)
 
+  @doc "Initialize the document envelope with a content type and name."
+  def create(pid, type, name), do: GenServer.call(pid, {:create, type, name})
+
+  @doc "Insert text at an index (for text documents)."
+  def insert_text(pid, index, text), do: GenServer.call(pid, {:insert_text, index, text})
+
+  @doc "Set a key in the content map (for map documents)."
+  def set_key(pid, key, value), do: GenServer.call(pid, {:set_key, key, value})
+
+  @doc "Get the current content value."
+  def get_content(pid), do: GenServer.call(pid, :get_content)
+
+  @doc "Get the content type atom (:text, :map, :array, :xml)."
+  def get_content_type(pid), do: GenServer.call(pid, :get_content_type)
+
+  @doc "Get a metadata value from the envelope."
+  def get_meta(pid, key), do: GenServer.call(pid, {:get_meta, key})
+
   @impl true
   def init(opts) do
     uuid = Keyword.fetch!(opts, :uuid)
     client_id = Keyword.get(opts, :client_id, :rand.uniform(1_000_000_000))
+    commit_store = Keyword.get(opts, :commit_store, CommitStore)
 
     {doc, parent_commit} =
-      case CommitStore.latest_commit(uuid) do
+      case CommitStore.latest_commit(commit_store, uuid) do
         {:ok, commit} ->
           doc = Yelixer.Doc.new(client_id: client_id)
           {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
@@ -43,7 +63,8 @@ defmodule Commonplace.Document.Server do
           {Yelixer.Doc.new(client_id: client_id), nil}
       end
 
-    {:ok, %__MODULE__{uuid: uuid, doc: doc, parent_commit: parent_commit}}
+    {:ok,
+     %__MODULE__{uuid: uuid, doc: doc, parent_commit: parent_commit, commit_store: commit_store}}
   end
 
   @impl true
@@ -61,7 +82,43 @@ defmodule Commonplace.Document.Server do
   @impl true
   def handle_call(:commit, _from, state) do
     update = Yelixer.Encoding.encode_update(state.doc)
-    commit = CommitStore.create_commit(state.uuid, update, state.parent_commit)
+
+    commit =
+      CommitStore.create_commit(state.commit_store, state.uuid, update, state.parent_commit)
+
     {:reply, {:ok, commit}, %{state | parent_commit: commit.id}}
+  end
+
+  @impl true
+  def handle_call({:create, type, name}, _from, state) do
+    doc = ContentType.create(state.doc, type, name)
+    {:reply, :ok, %{state | doc: doc}}
+  end
+
+  @impl true
+  def handle_call({:insert_text, index, text}, _from, state) do
+    doc = ContentType.insert_text(state.doc, index, text)
+    {:reply, :ok, %{state | doc: doc}}
+  end
+
+  @impl true
+  def handle_call({:set_key, key, value}, _from, state) do
+    doc = ContentType.set_key(state.doc, key, value)
+    {:reply, :ok, %{state | doc: doc}}
+  end
+
+  @impl true
+  def handle_call(:get_content, _from, state) do
+    {:reply, ContentType.get_content(state.doc), state}
+  end
+
+  @impl true
+  def handle_call(:get_content_type, _from, state) do
+    {:reply, ContentType.get_type(state.doc), state}
+  end
+
+  @impl true
+  def handle_call({:get_meta, key}, _from, state) do
+    {:reply, ContentType.get_meta(state.doc, key), state}
   end
 end
