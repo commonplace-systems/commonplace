@@ -53,14 +53,9 @@ defmodule Commonplace.Document.Server do
 
   @impl true
   def handle_call({:apply_update, update}, _from, state) do
-    case Yelixer.Encoding.apply_update(state.doc, update) do
-      {:ok, doc} ->
-        CPPubSub.broadcast_blue(state.uuid, update)
-        {:reply, :ok, %{state | doc: doc}}
-
-      {:error, reason} ->
-        {:reply, {:error, reason}, state}
-    end
+    {:ok, doc} = Yelixer.Encoding.apply_update(state.doc, update)
+    CPPubSub.broadcast_blue(state.uuid, update)
+    {:reply, :ok, %{state | doc: doc}}
   end
 
   @impl true

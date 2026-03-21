@@ -8,26 +8,27 @@ defmodule Commonplace.Store.CommitStore do
   alias Commonplace.Store.Commit
 
   def start_link(opts) do
-    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+    name = Keyword.get(opts, :name, __MODULE__)
+    GenServer.start_link(__MODULE__, opts, name: name)
   end
 
-  def create_commit(doc_uuid, update, parent_id) do
-    GenServer.call(__MODULE__, {:create_commit, doc_uuid, update, parent_id})
+  def create_commit(server \\ __MODULE__, doc_uuid, update, parent_id) do
+    GenServer.call(server, {:create_commit, doc_uuid, update, parent_id})
   end
 
-  def get_commit(commit_id) do
-    GenServer.call(__MODULE__, {:get_commit, commit_id})
+  def get_commit(server \\ __MODULE__, commit_id) do
+    GenServer.call(server, {:get_commit, commit_id})
   end
 
-  def latest_commit(doc_uuid) do
-    GenServer.call(__MODULE__, {:latest_commit, doc_uuid})
+  def latest_commit(server \\ __MODULE__, doc_uuid) do
+    GenServer.call(server, {:latest_commit, doc_uuid})
   end
 
   @impl true
   def init(opts) do
     data_dir = Keyword.fetch!(opts, :data_dir)
     path = Path.join(data_dir, "commits")
-    File.mkdir_p!(Path.dirname(path))
+    File.mkdir_p!(path)
     {:ok, db} = CubDB.start_link(data_dir: path)
     {:ok, %{db: db}}
   end
