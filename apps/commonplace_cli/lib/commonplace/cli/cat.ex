@@ -6,7 +6,7 @@ defmodule Commonplace.CLI.Cat do
   alias Commonplace.Document.ContentType
   alias Commonplace.Store.CommitStore
 
-  def run(data_dir, args) do
+  def run(data_dir, relative_path, args) do
     CLI.ensure_started(data_dir)
     root = CLI.root_uuid(data_dir)
 
@@ -20,7 +20,8 @@ defmodule Commonplace.CLI.Cat do
         IO.puts(:stderr, "Usage: commonplace cat <path>")
         System.halt(1)
 
-      [path | _] ->
+      [arg_path | _] ->
+        path = join_paths(relative_path, arg_path)
         loader = &CLI.load_schema/1
 
         case Walk.resolve_path(root, path, loader) do
@@ -38,16 +39,18 @@ defmodule Commonplace.CLI.Cat do
     end
   end
 
+  defp join_paths("", path), do: path
+  defp join_paths(base, ""), do: base
+  defp join_paths(base, path), do: Path.join(base, path)
+
   defp print_content(uuid) do
     case CommitStore.latest_commit(uuid) do
       {:ok, commit} ->
         doc = Yelixer.Doc.new()
         {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
 
-        # Try to read as envelope first
         case ContentType.get_type(doc) do
           nil ->
-            # Raw doc — try to read as text
             if Yelixer.Doc.has_type?(doc, "text") do
               IO.write(Yelixer.Types.Text.to_string(doc, "text"))
             else

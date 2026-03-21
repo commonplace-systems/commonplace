@@ -4,7 +4,7 @@ defmodule Commonplace.CLI.Ls do
   alias Commonplace.CLI
   alias Commonplace.Tree.Walk
 
-  def run(data_dir, args) do
+  def run(data_dir, relative_path, args) do
     CLI.ensure_started(data_dir)
     root = CLI.root_uuid(data_dir)
 
@@ -13,7 +13,9 @@ defmodule Commonplace.CLI.Ls do
       System.halt(1)
     end
 
-    path = List.first(args) || ""
+    # Combine workspace-relative path with explicit arg
+    arg_path = List.first(args) || ""
+    path = join_paths(relative_path, arg_path)
     loader = &CLI.load_schema/1
 
     case Walk.list_path(root, path, loader) do
@@ -32,4 +34,8 @@ defmodule Commonplace.CLI.Ls do
         System.halt(1)
     end
   end
+
+  defp join_paths("", path), do: path
+  defp join_paths(base, ""), do: base
+  defp join_paths(base, path), do: Path.join(base, path)
 end

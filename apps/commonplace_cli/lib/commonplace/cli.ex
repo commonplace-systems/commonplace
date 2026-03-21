@@ -11,6 +11,8 @@ defmodule Commonplace.CLI do
     import <dir>   Import files from disk into the document tree
   """
 
+  @workspace_dir ".commonplace"
+
   def main(args) do
     {opts, args, _} =
       OptionParser.parse(args,
@@ -23,36 +25,84 @@ defmodule Commonplace.CLI do
       System.halt(0)
     end
 
-    data_dir = opts[:data_dir] || default_data_dir()
-
     case args do
       ["init" | rest] ->
+        # init creates .commonplace in cwd (or -d override)
+        data_dir = opts[:data_dir] || Path.join(File.cwd!(), @workspace_dir)
         Commonplace.CLI.Init.run(data_dir, rest)
-
-      ["ls" | rest] ->
-        Commonplace.CLI.Ls.run(data_dir, rest)
-
-      ["cat" | rest] ->
-        Commonplace.CLI.Cat.run(data_dir, rest)
-
-      ["import" | rest] ->
-        Commonplace.CLI.Import.run(data_dir, rest)
 
       [] ->
         IO.puts(@moduledoc)
 
-      [cmd | _] ->
+      [cmd | rest] ->
+        # All other commands discover the workspace by walking up
+        case opts[:data_dir] || discover_workspace() do
+          nil ->
+            IO.puts(:stderr, "Not in a commonplace workspace. Run 'commonplace init' first.")
+            System.halt(1)
+
+          {data_dir, relative_path} ->
+            run_command(cmd, data_dir, relative_path, rest)
+
+          data_dir when is_binary(data_dir) ->
+            # -d override: no relative path context
+            run_command(cmd, data_dir, "", rest)
+        end
+    end
+  end
+
+  defp run_command(cmd, data_dir, relative_path, rest) do
+    case cmd do
+      "ls" -> Commonplace.CLI.Ls.run(data_dir, relative_path, rest)
+      "cat" -> Commonplace.CLI.Cat.run(data_dir, relative_path, rest)
+      "import" -> Commonplace.CLI.Import.run(data_dir, rest)
+      _ ->
         IO.puts(:stderr, "Unknown command: #{cmd}")
         IO.puts(:stderr, "Run 'commonplace --help' for usage.")
         System.halt(1)
     end
   end
 
+  @doc """
+  Discover the workspace by walking up from cwd.
+
+  Returns `{data_dir, relative_path}` where relative_path is the
+  path from the workspace root to cwd (for context-aware commands).
+  Returns nil if no workspace found.
+  """
+  def discover_workspace do
+    discover_workspace(File.cwd!())
+  end
+
+  def discover_workspace(start_dir) do
+    do_discover(start_dir, start_dir)
+  end
+
+  defp do_discover(current_dir, original_dir) do
+    candidate = Path.join(current_dir, @workspace_dir)
+
+    cond do
+      File.dir?(candidate) ->
+        relative =
+          if original_dir == current_dir do
+            ""
+          else
+            Path.relative_to(original_dir, current_dir)
+          end
+
+        {candidate, relative}
+
+      current_dir == "/" ->
+        nil
+
+      true ->
+        do_discover(Path.dirname(current_dir), original_dir)
+    end
+  end
+
   @doc "Start the application services needed for CLI commands."
   def ensure_started(data_dir) do
     File.mkdir_p!(data_dir)
-
-    # Ensure the commonplace application is started
     Application.put_env(:commonplace, :data_dir, data_dir)
     {:ok, _} = Application.ensure_all_started(:commonplace)
     :ok
@@ -87,9 +137,5 @@ defmodule Commonplace.CLI do
   @doc "Set the root UUID for this workspace."
   def set_root_uuid(data_dir, uuid) do
     File.write!(Path.join(data_dir, "root"), uuid)
-  end
-
-  defp default_data_dir do
-    Path.join(File.cwd!(), ".commonplace")
   end
 end
