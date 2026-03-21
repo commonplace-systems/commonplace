@@ -20,3 +20,5 @@ Thumbs.db
 # Session state
 .claude/last-session-id
 .letta/
+data/
+tmp/
