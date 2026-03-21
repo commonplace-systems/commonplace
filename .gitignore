@@ -1,0 +1,22 @@
+# Dependencies and build
+/deps
+/_build
+/.fetch
+erl_crash.dump
+*.ez
+*.beam
+
+# Generated on crash
+crash.dump
+
+# IDE
+.elixir_ls/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Session state
+.claude/last-session-id
+.letta/
