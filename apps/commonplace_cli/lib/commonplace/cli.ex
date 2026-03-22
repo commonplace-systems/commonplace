@@ -14,6 +14,8 @@ defmodule Commonplace.CLI do
     branch [list|activate|deactivate] [name]  Manage branches
     who [--type exe|usr|bot|who] [--all]  List actors
     ln <source> <target>          Link target to same doc as source
+    log <path> [--limit N]        Show commit history for a document
+    replay <path> [--list|--at ID] View document content at any commit
     serve                         Start the workspace daemon
     ps                            List managed processes
     signal <topic> <type> [json]  Send a magenta message
@@ -23,7 +25,7 @@ defmodule Commonplace.CLI do
 
   def main(args) do
     {opts, args, _} =
-      OptionParser.parse(args,
+      OptionParser.parse_head(args,
         strict: [data_dir: :string, help: :boolean],
         aliases: [d: :data_dir, h: :help]
       )
@@ -70,6 +72,8 @@ defmodule Commonplace.CLI do
       "checkout" -> Commonplace.CLI.Checkout.run(data_dir, relative_path, rest)
       "who" -> Commonplace.CLI.Who.run(data_dir, relative_path, rest)
       "ln" -> Commonplace.CLI.Ln.run(data_dir, relative_path, rest)
+      "log" -> Commonplace.CLI.Log.run(data_dir, relative_path, rest)
+      "replay" -> Commonplace.CLI.Replay.run(data_dir, relative_path, rest)
       "serve" -> Commonplace.CLI.Serve.run(data_dir, relative_path, rest)
       "ps" -> Commonplace.CLI.Ps.run(data_dir, relative_path, rest)
       "signal" -> Commonplace.CLI.Signal.run(data_dir, relative_path, rest)

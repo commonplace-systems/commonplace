@@ -24,6 +24,11 @@ defmodule Commonplace.Store.CommitStore do
     GenServer.call(server, {:latest_commit, doc_uuid})
   end
 
+  @doc "Walk the commit chain for a doc, returning commits newest-first."
+  def commit_log(server \\ __MODULE__, doc_uuid, opts \\ []) do
+    GenServer.call(server, {:commit_log, doc_uuid, opts})
+  end
+
   @doc "Check if `ancestor_id` is an ancestor of `descendant_id` in the commit DAG."
   def is_ancestor?(server \\ __MODULE__, ancestor_id, descendant_id) do
     GenServer.call(server, {:is_ancestor, ancestor_id, descendant_id})
@@ -67,6 +72,20 @@ defmodule Commonplace.Store.CommitStore do
   end
 
   @impl true
+  def handle_call({:commit_log, doc_uuid, opts}, _from, state) do
+    limit = Keyword.get(opts, :limit, 100)
+
+    case CubDB.get(state.db, {:latest, doc_uuid}) do
+      nil ->
+        {:reply, [], state}
+
+      commit_id ->
+        log = collect_log(state.db, commit_id, limit, [])
+        {:reply, log, state}
+    end
+  end
+
+  @impl true
   def handle_call({:is_ancestor, nil, _descendant_id}, _from, state) do
     {:reply, false, state}
   end
@@ -75,6 +94,16 @@ defmodule Commonplace.Store.CommitStore do
   def handle_call({:is_ancestor, ancestor_id, descendant_id}, _from, state) do
     result = walk_ancestors(state.db, ancestor_id, descendant_id)
     {:reply, result, state}
+  end
+
+  defp collect_log(_db, nil, _limit, acc), do: Enum.reverse(acc)
+  defp collect_log(_db, _id, 0, acc), do: Enum.reverse(acc)
+
+  defp collect_log(db, commit_id, limit, acc) do
+    case CubDB.get(db, {:commit, commit_id}) do
+      nil -> Enum.reverse(acc)
+      commit -> collect_log(db, commit.parent_id, limit - 1, [commit | acc])
+    end
   end
 
   defp walk_ancestors(_db, _ancestor_id, nil), do: false
