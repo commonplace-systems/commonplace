@@ -33,11 +33,16 @@ defmodule Commonplace.Sync.Watcher do
     schema_doc = load_schema(root_uuid, store)
     schema_entries = Schema.entries(schema_doc)
 
-    # Get files/dirs on disk
+    # Get files/dirs on disk (exclude system dirs)
     disk_entries =
       case File.ls(dir) do
-        {:ok, names} -> MapSet.new(names)
-        {:error, _} -> MapSet.new()
+        {:ok, names} ->
+          names
+          |> Enum.reject(&String.starts_with?(&1, ".commonplace"))
+          |> MapSet.new()
+
+        {:error, _} ->
+          MapSet.new()
       end
 
     schema_names = MapSet.new(Map.keys(schema_entries))

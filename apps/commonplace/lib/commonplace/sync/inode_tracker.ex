@@ -59,11 +59,62 @@ defmodule Commonplace.Sync.InodeTracker do
     current != nil and current != original_fingerprint
   end
 
-  defp file_fingerprint(path) do
+  @doc "Compute a fingerprint (size + md5) for a file."
+  def file_fingerprint(path) do
     case File.read(path) do
       {:ok, content} -> {byte_size(content), :erlang.md5(content)}
       {:error, _} -> nil
     end
+  end
+
+  @doc """
+  Atomic write with shadow tracking.
+
+  Before replacing the file at `path`:
+  1. If the old inode is tracked, create a shadow hardlink
+  2. Write new content atomically (temp+fsync+rename)
+  3. Track the new inode with the new commit_id
+  """
+  def atomic_write_with_shadow(path, content, shadow_dir, registry, new_commit_id, doc_uuid) do
+    alias Commonplace.Sync.InodeTracker.Registry
+
+    # If file exists and is tracked, shadow the old inode before replacing
+    if File.exists?(path) do
+      old_inode_key = inode_key(path)
+
+      case Registry.lookup(registry, old_inode_key) do
+        {:ok, _mapping} ->
+          # Create shadow hardlink to preserve old inode
+          case create_shadow(path, shadow_dir) do
+            {:ok, shadow_path} ->
+              fingerprint = file_fingerprint(shadow_path)
+              Registry.shadow(registry, old_inode_key, shadow_path, fingerprint)
+
+            {:error, _} ->
+              :ok
+          end
+
+        :error ->
+          :ok
+      end
+    end
+
+    # Atomic write (temp + fsync + rename)
+    Commonplace.Sync.Export.atomic_write(path, content)
+
+    # Track the new inode
+    if File.exists?(path) do
+      new_inode_key = inode_key(path)
+      Registry.track(registry, new_inode_key, new_commit_id, doc_uuid, path)
+    end
+
+    :ok
+  end
+
+  @doc "Get the inode key (device, inode) for a file."
+  def inode_key(path) do
+    stat = File.stat!(path)
+    {stat.major_device, stat.inode}
   end
 
   @doc "Remove a single shadow file."

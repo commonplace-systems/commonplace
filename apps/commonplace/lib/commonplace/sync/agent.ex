@@ -15,7 +15,7 @@ defmodule Commonplace.Sync.Agent do
 
   use GenServer
 
-  alias Commonplace.Sync.{Watcher, Export}
+  alias Commonplace.Sync.{Watcher, Export, InodeTracker}
   alias Commonplace.Store.CommitStore
   alias Commonplace.Tree.Schema
 
@@ -27,7 +27,9 @@ defmodule Commonplace.Sync.Agent do
     :known_paths,
     :known_hashes,
     # %{doc_uuid => commit_id} — the commit whose content is currently on disk
-    :written_commits
+    :written_commits,
+    # InodeTracker.Registry pid (nil if shadow tracking disabled)
+    :inode_registry
   ]
 
   def start_link(opts) do
@@ -41,6 +43,14 @@ defmodule Commonplace.Sync.Agent do
 
   @impl true
   def init(opts) do
+    inode_registry =
+      if Keyword.get(opts, :shadow_tracking, false) do
+        {:ok, pid} = InodeTracker.Registry.start_link([])
+        pid
+      else
+        nil
+      end
+
     state = %__MODULE__{
       root_uuid: Keyword.fetch!(opts, :root_uuid),
       sync_dir: Keyword.fetch!(opts, :sync_dir),
@@ -48,7 +58,8 @@ defmodule Commonplace.Sync.Agent do
       lock: Keyword.get(opts, :lock, Commonplace.Sync.FileLock),
       known_paths: MapSet.new(),
       known_hashes: %{},
-      written_commits: %{}
+      written_commits: %{},
+      inode_registry: inode_registry
     }
 
     {:ok, state}
@@ -61,11 +72,16 @@ defmodule Commonplace.Sync.Agent do
   end
 
   defp do_sync(state) do
+    # Phase 0: Check shadows for stale writes
+    if state.inode_registry do
+      check_shadows(state)
+    end
+
     # Phase 1: Outbound — disk → CRDT
     sync_outbound_recursive(state.root_uuid, state.sync_dir, state.store, state.known_paths, state.known_hashes)
 
     # Phase 2: Inbound — CRDT → disk, using commit ancestry
-    written = export_with_ancestry(state.root_uuid, state.sync_dir, state.store, state.written_commits)
+    written = export_with_ancestry(state.root_uuid, state.sync_dir, state.store, state.written_commits, state.inode_registry)
 
     # Phase 3: Update known state from current disk
     {known, hashes} = scan_disk_state(state.sync_dir, "")
@@ -75,8 +91,10 @@ defmodule Commonplace.Sync.Agent do
   @doc false
   # Export CRDT to disk, tracking which commit IDs we write.
   # Only writes when the latest commit differs from what we last wrote.
-  defp export_with_ancestry(root_uuid, dir, store, written_commits) do
+  # When registry is provided, creates shadow hardlinks before atomic writes.
+  defp export_with_ancestry(root_uuid, dir, store, written_commits, registry) do
     File.mkdir_p!(dir)
+    shadow_dir = Path.join(dir, ".commonplace-shadow")
     schema_doc = load_schema(root_uuid, store)
 
     Schema.list_entries(schema_doc)
@@ -87,15 +105,15 @@ defmodule Commonplace.Sync.Agent do
         :dir ->
           File.mkdir_p!(path)
           sub_schema = load_schema(entry.node_id, store)
-          export_entries_with_ancestry(sub_schema, path, store, written)
+          export_entries_with_ancestry(sub_schema, path, store, written, registry)
 
         :doc ->
-          maybe_write_doc(entry, path, store, written)
+          maybe_write_doc(entry, path, store, written, registry, shadow_dir)
       end
     end)
   end
 
-  defp export_entries_with_ancestry(schema_doc, dir, store, written_commits) do
+  defp export_entries_with_ancestry(schema_doc, dir, store, written_commits, registry) do
     Schema.list_entries(schema_doc)
     |> Enum.reduce(written_commits, fn entry, written ->
       path = Path.join(dir, entry.name)
@@ -104,15 +122,15 @@ defmodule Commonplace.Sync.Agent do
         :dir ->
           File.mkdir_p!(path)
           sub_schema = load_schema(entry.node_id, store)
-          export_entries_with_ancestry(sub_schema, path, store, written)
+          export_entries_with_ancestry(sub_schema, path, store, written, registry)
 
         :doc ->
-          maybe_write_doc(entry, path, store, written)
+          maybe_write_doc(entry, path, store, written, registry, Path.join(dir, ".commonplace-shadow"))
       end
     end)
   end
 
-  defp maybe_write_doc(entry, path, store, written) do
+  defp maybe_write_doc(entry, path, store, written, registry, shadow_dir) do
     case CommitStore.latest_commit(store, entry.node_id) do
       {:ok, commit} ->
         last_written = Map.get(written, entry.node_id)
@@ -122,18 +140,48 @@ defmodule Commonplace.Sync.Agent do
           last_written == commit.id ->
             written
 
-          # New commit is descendant of what we wrote — safe to update
-          # Or we haven't written this file yet (last_written == nil)
-          # Or commits diverged — CRDT merge is safe, write anyway
+          # New or updated — write to disk
           true ->
             content = extract_content(commit)
-            Export.atomic_write(path, content)
+
+            if registry do
+              InodeTracker.atomic_write_with_shadow(path, content, shadow_dir, registry, commit.id, entry.node_id)
+            else
+              Export.atomic_write(path, content)
+            end
+
             Map.put(written, entry.node_id, commit.id)
         end
 
       :none ->
         written
     end
+  end
+
+  # Check shadow hardlinks for stale writes and merge them back into CRDT
+  defp check_shadows(state) do
+    shadows = InodeTracker.Registry.list_shadows(state.inode_registry)
+
+    Enum.each(shadows, fn shadow ->
+      fingerprint = shadow.fingerprint
+      current_fingerprint = InodeTracker.file_fingerprint(shadow.shadow_path)
+
+      if current_fingerprint != nil and current_fingerprint != fingerprint do
+        # Stale write detected — read content and create a commit
+        stale_content = File.read!(shadow.shadow_path)
+
+        doc = Yelixer.Doc.new()
+        doc = Commonplace.Document.ContentType.create(doc, :text, Path.basename(shadow.path))
+        doc = Commonplace.Document.ContentType.insert_text(doc, 0, stale_content)
+        update = Yelixer.Encoding.encode_update(doc)
+
+        # Create commit with the shadow's commit_id as parent
+        CommitStore.create_commit(state.store, shadow.doc_uuid, update, shadow.commit_id)
+
+        # Clean up the shadow
+        InodeTracker.cleanup_shadow(shadow.shadow_path)
+      end
+    end)
   end
 
   defp extract_content(commit) do
