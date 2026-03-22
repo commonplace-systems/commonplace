@@ -30,7 +30,7 @@ defmodule Commonplace.Tree.SchemaTest do
       doc = Schema.add_file(doc, "notes.txt", "uuid-1")
 
       entries = Schema.entries(doc)
-      assert entries == %{"notes.txt" => %{"type" => "doc", "node_id" => "uuid-1"}}
+      assert entries == %{"notes.txt" => %{"type" => "doc", "node_id" => "uuid-1", "sync" => true}}
     end
 
     test "add a directory entry" do
@@ -38,7 +38,7 @@ defmodule Commonplace.Tree.SchemaTest do
       doc = Schema.add_directory(doc, "subdir", "uuid-2")
 
       entries = Schema.entries(doc)
-      assert entries == %{"subdir" => %{"type" => "dir", "node_id" => "uuid-2"}}
+      assert entries == %{"subdir" => %{"type" => "dir", "node_id" => "uuid-2", "sync" => true}}
     end
 
     test "add multiple entries" do

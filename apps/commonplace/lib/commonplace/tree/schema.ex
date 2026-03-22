@@ -22,12 +22,13 @@ defmodule Commonplace.Tree.Schema do
 
   defmodule Entry do
     @moduledoc "A single entry in a schema document."
-    defstruct [:name, :type, :node_id]
+    defstruct [:name, :type, :node_id, sync: true]
 
     @type t :: %__MODULE__{
             name: String.t(),
             type: :doc | :dir,
-            node_id: String.t()
+            node_id: String.t(),
+            sync: boolean()
           }
   end
 
@@ -75,8 +76,8 @@ defmodule Commonplace.Tree.Schema do
     Map.new(raw, fn {name, value} ->
       case value do
         v when is_binary(v) ->
-          {type, node_id} = decode_entry(v)
-          {name, %{"type" => type, "node_id" => node_id}}
+          {type, node_id, sync} = decode_entry(v)
+          {name, %{"type" => type, "node_id" => node_id, "sync" => sync}}
 
         _ ->
           {name, %{}}
@@ -97,7 +98,8 @@ defmodule Commonplace.Tree.Schema do
          %Entry{
            name: name,
            type: parse_type(entry_map["type"]),
-           node_id: entry_map["node_id"]
+           node_id: entry_map["node_id"],
+           sync: Map.get(entry_map, "sync", true)
          }}
     end
   end
@@ -109,10 +111,33 @@ defmodule Commonplace.Tree.Schema do
       %Entry{
         name: name,
         type: parse_type(entry_map["type"]),
-        node_id: entry_map["node_id"]
+        node_id: entry_map["node_id"],
+        sync: Map.get(entry_map, "sync", true)
       }
     end)
   end
+
+  @doc "Set the sync flag on an entry (activate/deactivate)."
+  def set_sync(doc, name, sync) when is_binary(name) and is_boolean(sync) do
+    doc = ensure_types(doc)
+    all = entries(doc)
+
+    case Map.get(all, name) do
+      nil ->
+        doc
+
+      entry_map ->
+        type = entry_map["type"]
+        node_id = entry_map["node_id"]
+        YMap.set(doc, @entries_type, name, encode_entry(type, node_id, sync))
+    end
+  end
+
+  @doc "Activate a branch (set sync:true)."
+  def activate(doc, name), do: set_sync(doc, name, true)
+
+  @doc "Deactivate a branch (set sync:false)."
+  def deactivate(doc, name), do: set_sync(doc, name, false)
 
   @doc "Resolve a name to its node_id."
   def resolve_name(doc, name) when is_binary(name) do
@@ -126,20 +151,18 @@ defmodule Commonplace.Tree.Schema do
 
   defp add_entry(doc, name, type, node_id) do
     doc = ensure_types(doc)
-    # Store as a simple string encoding since we can't nest YMaps easily
-    # Use a JSON-like encoding: "type:node_id"
-    doc = YMap.set(doc, @entries_type, name, encode_entry(type, node_id))
+    doc = YMap.set(doc, @entries_type, name, encode_entry(type, node_id, true))
     doc
   end
 
-  defp encode_entry(type, node_id) do
-    "#{type}:#{node_id}"
-  end
+  defp encode_entry(type, node_id, true), do: "#{type}:#{node_id}"
+  defp encode_entry(type, node_id, false), do: "#{type}:#{node_id}:nosync"
 
   defp decode_entry(encoded) when is_binary(encoded) do
-    case String.split(encoded, ":", parts: 2) do
-      [type, node_id] -> {type, node_id}
-      _ -> {"doc", encoded}
+    case String.split(encoded, ":") do
+      [type, node_id, "nosync"] -> {type, node_id, false}
+      [type, node_id] -> {type, node_id, true}
+      _ -> {"doc", encoded, true}
     end
   end
 
