@@ -5,10 +5,11 @@ defmodule Commonplace.CLI do
   Usage: commonplace <command> [args]
 
   Commands:
-    init           Initialize a new commonplace workspace
-    ls [path]      List directory contents
-    cat <path>     Show document content
-    import <dir>   Import files from disk into the document tree
+    init                          Initialize a new commonplace workspace
+    ls [path]                     List directory contents
+    cat <path>                    Show document content
+    import <dir>                  Import files from disk into the document tree
+    signal <topic> <type> [json]  Send a magenta message
   """
 
   @workspace_dir ".commonplace"
@@ -56,6 +57,7 @@ defmodule Commonplace.CLI do
       "ls" -> Commonplace.CLI.Ls.run(data_dir, relative_path, rest)
       "cat" -> Commonplace.CLI.Cat.run(data_dir, relative_path, rest)
       "import" -> Commonplace.CLI.Import.run(data_dir, rest)
+      "signal" -> Commonplace.CLI.Signal.run(data_dir, relative_path, rest)
       _ ->
         IO.puts(:stderr, "Unknown command: #{cmd}")
         IO.puts(:stderr, "Run 'commonplace --help' for usage.")
