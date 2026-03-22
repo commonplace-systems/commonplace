@@ -28,7 +28,8 @@ defmodule Commonplace.MixProject do
       {:phoenix_pubsub, "~> 2.1"},
       {:cubdb, "~> 2.0"},
       {:uuid, "~> 1.1"},
-      {:file_system, "~> 1.0"}
+      {:file_system, "~> 1.0"},
+      {:jason, "~> 1.4"}
     ]
   end
 end
