@@ -63,6 +63,7 @@ defmodule Commonplace.CLI do
       "export" -> Commonplace.CLI.Export.run(data_dir, relative_path, rest)
       "sync" -> Commonplace.CLI.Sync.run(data_dir, relative_path, rest)
       "branch" -> Commonplace.CLI.Branch.run(data_dir, relative_path, rest)
+      "checkout" -> Commonplace.CLI.Checkout.run(data_dir, relative_path, rest)
       "signal" -> Commonplace.CLI.Signal.run(data_dir, relative_path, rest)
       _ ->
         IO.puts(:stderr, "Unknown command: #{cmd}")
