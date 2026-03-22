@@ -93,6 +93,30 @@ defmodule Commonplace.Sync.Watcher do
   end
 
   @doc """
+  Recursively detect and apply changes for a directory tree.
+
+  Syncs the root directory, then recurses into subdirectories.
+  """
+  def sync_recursive(root_uuid, dir, store \\ CommitStore) do
+    changes = detect_changes(root_uuid, dir, store)
+    apply_changes(changes, root_uuid, dir, store)
+
+    # Recurse into subdirectories
+    schema_doc = load_schema(root_uuid, store)
+
+    Schema.list_entries(schema_doc)
+    |> Enum.each(fn entry ->
+      if entry.type == :dir do
+        sub_dir = Path.join(dir, entry.name)
+
+        if File.dir?(sub_dir) do
+          sync_recursive(entry.node_id, sub_dir, store)
+        end
+      end
+    end)
+  end
+
+  @doc """
   Apply detected changes to the CRDT document tree.
 
   Creates/updates documents and updates the schema for each change.
