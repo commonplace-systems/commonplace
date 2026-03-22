@@ -24,6 +24,9 @@ defmodule Commonplace.Presence do
     who: "who"
   }
 
+  @doc "Returns the type-to-extension map."
+  def type_to_ext, do: @type_to_ext
+
   @doc "Parse a filename into {name, type}."
   def parse_honorific(filename) do
     case Path.extname(filename) do

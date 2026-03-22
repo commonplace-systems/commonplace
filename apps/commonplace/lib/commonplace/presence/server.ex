@@ -3,20 +3,23 @@ defmodule Commonplace.Presence.Server do
   GenServer managing a single actor's presence.
 
   Creates the presence document on start, runs a heartbeat loop,
-  and cleans up on shutdown.
+  and cleans up on shutdown. Registers a cold identity that persists
+  across restarts.
   """
 
   use GenServer
 
   alias Commonplace.Presence
+  alias Commonplace.Presence.Identity
 
-  defstruct [:name, :type, :dir_uuid, :store, :uuid, :heartbeat_interval]
+  defstruct [:name, :type, :dir_uuid, :store, :uuid, :identity_uuid, :heartbeat_interval]
 
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts)
   end
 
   def uuid(pid), do: GenServer.call(pid, :uuid)
+  def identity_uuid(pid), do: GenServer.call(pid, :identity_uuid)
 
   @impl true
   def init(opts) do
@@ -31,12 +34,16 @@ defmodule Commonplace.Presence.Server do
     {:ok, uuid} = Presence.create(name, type, dir_uuid, store)
     Presence.update_status(uuid, "running", store)
 
+    # Register cold identity
+    {:ok, identity_uuid} = Identity.register(name, type, dir_uuid, store)
+
     state = %__MODULE__{
       name: name,
       type: type,
       dir_uuid: dir_uuid,
       store: store,
       uuid: uuid,
+      identity_uuid: identity_uuid,
       heartbeat_interval: interval
     }
 
@@ -50,6 +57,11 @@ defmodule Commonplace.Presence.Server do
   end
 
   @impl true
+  def handle_call(:identity_uuid, _from, state) do
+    {:reply, state.identity_uuid, state}
+  end
+
+  @impl true
   def handle_info(:heartbeat, state) do
     Presence.heartbeat(state.uuid, state.store)
     schedule_heartbeat(state)
@@ -60,6 +72,9 @@ defmodule Commonplace.Presence.Server do
   def terminate(_reason, state) do
     fname = Presence.filename(state.name, state.type)
     Presence.remove(fname, state.dir_uuid, state.store)
+
+    # Update cold identity last_seen on shutdown
+    Identity.touch_last_seen(state.identity_uuid, state.store)
     :ok
   end
 
