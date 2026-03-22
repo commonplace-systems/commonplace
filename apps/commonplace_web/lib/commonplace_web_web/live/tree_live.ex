@@ -11,11 +11,30 @@ defmodule CommonplaceWebWeb.TreeLive do
   alias Commonplace.Tree.Schema
   alias Commonplace.Store.CommitStore
   alias Commonplace.Dataflow.PubSub, as: CPPubSub
+  alias Commonplace.Presence
 
   @impl true
   def mount(_params, _session, socket) do
     data_dir = Application.get_env(:commonplace, :data_dir, "data")
     root = read_root_uuid(data_dir)
+
+    # Start presence for this browser session
+    presence_pid =
+      if connected?(socket) and root do
+        session_id = socket.id |> String.slice(0, 6)
+        {:ok, pid} =
+          Presence.Server.start_link(
+            name: "browser-#{session_id}",
+            type: :usr,
+            dir_uuid: root,
+            store: CommitStore,
+            heartbeat_interval: 15_000
+          )
+
+        pid
+      else
+        nil
+      end
 
     socket =
       socket
@@ -24,8 +43,18 @@ defmodule CommonplaceWebWeb.TreeLive do
       |> assign(:entries, list_entries(root))
       |> assign(:selected_name, nil)
       |> assign(:selected_uuid, nil)
+      |> assign(:presence_pid, presence_pid)
 
     {:ok, socket}
+  end
+
+  @impl true
+  def terminate(_reason, socket) do
+    if socket.assigns[:presence_pid] && Process.alive?(socket.assigns.presence_pid) do
+      GenServer.stop(socket.assigns.presence_pid)
+    end
+
+    :ok
   end
 
   @impl true
