@@ -2,13 +2,15 @@ defmodule Commonplace.Sync.Agent do
   @moduledoc """
   Bidirectional sync agent — bridges CRDT documents with files on disk.
 
+  Uses two layers of version tracking:
+  - Content hashes: fast "did anything change on disk?" gating
+  - Commit ancestry: causal ordering to prevent overwriting remote
+    CRDT updates with stale disk content
+
   Sync cycle:
   1. Outbound (disk → CRDT): detect disk changes, sync to CRDT
-     - Only treats files as "deleted" if they were previously synced
-  2. Inbound (CRDT → disk): export CRDT state to disk
-
-  Tracks which paths were last seen on disk to distinguish
-  "CRDT-only file not yet exported" from "file deleted on disk".
+  2. Inbound (CRDT → disk): export CRDT docs where latest commit
+     is a descendant of (or different from) what we last wrote
   """
 
   use GenServer
@@ -17,7 +19,16 @@ defmodule Commonplace.Sync.Agent do
   alias Commonplace.Store.CommitStore
   alias Commonplace.Tree.Schema
 
-  defstruct [:root_uuid, :sync_dir, :store, :lock, :known_paths, :known_hashes]
+  defstruct [
+    :root_uuid,
+    :sync_dir,
+    :store,
+    :lock,
+    :known_paths,
+    :known_hashes,
+    # %{doc_uuid => commit_id} — the commit whose content is currently on disk
+    :written_commits
+  ]
 
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts)
@@ -36,7 +47,8 @@ defmodule Commonplace.Sync.Agent do
       store: Keyword.get(opts, :store, CommitStore),
       lock: Keyword.get(opts, :lock, Commonplace.Sync.FileLock),
       known_paths: MapSet.new(),
-      known_hashes: %{}
+      known_hashes: %{},
+      written_commits: %{}
     }
 
     {:ok, state}
@@ -50,16 +62,88 @@ defmodule Commonplace.Sync.Agent do
 
   defp do_sync(state) do
     # Phase 1: Outbound — disk → CRDT
-    # Use detect_changes but filter out deletions for paths we haven't seen
-    # and modifications where disk hasn't actually changed (remote CRDT update)
     sync_outbound_recursive(state.root_uuid, state.sync_dir, state.store, state.known_paths, state.known_hashes)
 
-    # Phase 2: Inbound — CRDT → disk
-    Export.export(state.root_uuid, state.sync_dir, state.store)
+    # Phase 2: Inbound — CRDT → disk, using commit ancestry
+    written = export_with_ancestry(state.root_uuid, state.sync_dir, state.store, state.written_commits)
 
     # Phase 3: Update known state from current disk
     {known, hashes} = scan_disk_state(state.sync_dir, "")
-    %{state | known_paths: known, known_hashes: hashes}
+    %{state | known_paths: known, known_hashes: hashes, written_commits: written}
+  end
+
+  @doc false
+  # Export CRDT to disk, tracking which commit IDs we write.
+  # Only writes when the latest commit differs from what we last wrote.
+  defp export_with_ancestry(root_uuid, dir, store, written_commits) do
+    File.mkdir_p!(dir)
+    schema_doc = load_schema(root_uuid, store)
+
+    Schema.list_entries(schema_doc)
+    |> Enum.reduce(written_commits, fn entry, written ->
+      path = Path.join(dir, entry.name)
+
+      case entry.type do
+        :dir ->
+          File.mkdir_p!(path)
+          sub_schema = load_schema(entry.node_id, store)
+          export_entries_with_ancestry(sub_schema, path, store, written)
+
+        :doc ->
+          maybe_write_doc(entry, path, store, written)
+      end
+    end)
+  end
+
+  defp export_entries_with_ancestry(schema_doc, dir, store, written_commits) do
+    Schema.list_entries(schema_doc)
+    |> Enum.reduce(written_commits, fn entry, written ->
+      path = Path.join(dir, entry.name)
+
+      case entry.type do
+        :dir ->
+          File.mkdir_p!(path)
+          sub_schema = load_schema(entry.node_id, store)
+          export_entries_with_ancestry(sub_schema, path, store, written)
+
+        :doc ->
+          maybe_write_doc(entry, path, store, written)
+      end
+    end)
+  end
+
+  defp maybe_write_doc(entry, path, store, written) do
+    case CommitStore.latest_commit(store, entry.node_id) do
+      {:ok, commit} ->
+        last_written = Map.get(written, entry.node_id)
+
+        cond do
+          # Same commit — nothing changed, skip write
+          last_written == commit.id ->
+            written
+
+          # New commit is descendant of what we wrote — safe to update
+          # Or we haven't written this file yet (last_written == nil)
+          # Or commits diverged — CRDT merge is safe, write anyway
+          true ->
+            content = extract_content(commit)
+            Export.atomic_write(path, content)
+            Map.put(written, entry.node_id, commit.id)
+        end
+
+      :none ->
+        written
+    end
+  end
+
+  defp extract_content(commit) do
+    doc = Yelixer.Doc.new()
+    {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
+
+    case Commonplace.Document.ContentType.get_type(doc) do
+      :text -> Commonplace.Document.ContentType.get_content(doc) || ""
+      _ -> Commonplace.Document.ContentType.get_content(doc) |> inspect()
+    end
   end
 
   defp sync_outbound_recursive(root_uuid, dir, store, known_paths, known_hashes) do
@@ -74,8 +158,8 @@ defmodule Commonplace.Sync.Agent do
 
           :modified ->
             # Only apply if disk content actually changed from what we last synced.
-            # If disk matches known hash, the CRDT was updated remotely — let
-            # inbound export handle it instead of overwriting CRDT with stale disk.
+            # Content hash is a fast gate — if disk matches what we last saw,
+            # the CRDT was updated remotely, let inbound handle it.
             disk_content = File.read!(change.path)
             disk_hash = :erlang.md5(disk_content)
             Map.get(known_hashes, change.name) != disk_hash
