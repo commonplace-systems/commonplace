@@ -17,7 +17,7 @@ defmodule Commonplace.Process.SandboxExecRunner do
   @stderr_prefix "__CP_STDERR__"
   @max_line_length 8192
 
-  defstruct [:sandbox_pid, :command, :args, :name, :port, :event_log, :event_log_uuid, :store]
+  defstruct [:sandbox_pid, :command, :args, :name, :port, :event_log, :event_log_uuid, :store, :env]
 
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts)
@@ -35,6 +35,7 @@ defmodule Commonplace.Process.SandboxExecRunner do
     command = Keyword.fetch!(opts, :command)
     args = Keyword.get(opts, :args, [])
     name = Keyword.get(opts, :name, "sandbox")
+    env = Keyword.get(opts, :env, %{})
     sync_interval = Keyword.get(opts, :sync_interval, 50)
     log_uuid = Keyword.get(opts, :event_log_uuid, UUID.uuid4())
 
@@ -55,6 +56,7 @@ defmodule Commonplace.Process.SandboxExecRunner do
       command: command,
       args: args,
       name: name,
+      env: env,
       event_log: event_log,
       event_log_uuid: log_uuid,
       store: store
@@ -84,10 +86,13 @@ defmodule Commonplace.Process.SandboxExecRunner do
     user_cmd = build_shell_command(state.command, state.args)
     wrapper = "{ #{user_cmd} 2>&1 1>&3 | while IFS= read -r line; do echo '#{@stderr_prefix}'\"$line\"; done; } 3>&1"
 
+    # Convert env map to charlists for Port.open
+    env_list = Enum.map(state.env, fn {k, v} -> {String.to_charlist(k), String.to_charlist(v)} end)
+
     port = Port.open(
       {:spawn_executable, "/bin/bash"},
       [:binary, {:line, @max_line_length}, {:cd, sandbox_dir}, :exit_status,
-       {:args, ["-c", wrapper]}]
+       {:env, env_list}, {:args, ["-c", wrapper]}]
     )
 
     {:noreply, %{state | port: port}}

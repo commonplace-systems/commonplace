@@ -6,7 +6,7 @@ defmodule Commonplace.Process.Config do
   and optional ownership of output documents.
   """
 
-  defstruct [:name, :mode, :source, :command, :args, :owns, restart: :permanent, depends_on: []]
+  defstruct [:name, :mode, :source, :command, :args, :owns, restart: :permanent, depends_on: [], env: %{}]
 
   @type t :: %__MODULE__{
           name: String.t(),
@@ -16,7 +16,8 @@ defmodule Commonplace.Process.Config do
           args: [String.t()],
           restart: :permanent | :transient | :temporary,
           owns: String.t() | nil,
-          depends_on: [String.t()]
+          depends_on: [String.t()],
+          env: %{String.t() => String.t()}
         }
 
   @doc "Parse a __processes.json map into a list of Config entries."
@@ -30,7 +31,8 @@ defmodule Commonplace.Process.Config do
         args: config["args"] || [],
         restart: parse_restart(config["restart"]),
         owns: config["owns"],
-        depends_on: config["depends_on"] || []
+        depends_on: config["depends_on"] || [],
+        env: config["env"] || %{}
       }
     end)
   end

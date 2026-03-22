@@ -221,6 +221,7 @@ defmodule Commonplace.Process.Orchestrator do
         command: config.command,
         args: config.args,
         name: config.name,
+        env: config.env,
         sync_interval: 50
       )
 

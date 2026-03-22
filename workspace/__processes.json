@@ -1,0 +1,23 @@
+{
+  "bartleby": {
+    "mode": "sandbox-exec",
+    "command": "/home/jes/.local/bin/uv",
+    "args": ["run", "--project", "/home/jes/bartleby", "python", "/home/jes/bartleby/bartleby.py"],
+    "env": {
+      "BARTLEBY_WORKING_DIR": "."
+    },
+    "restart": "permanent"
+  },
+  "text-to-telegram": {
+    "mode": "sandbox-exec",
+    "command": "/home/jes/.local/bin/uv",
+    "args": ["run", "--project", "/home/jes/text-to-telegram", "text-to-telegram", "--config", "/home/jes/text-to-telegram/config.json"],
+    "restart": "permanent"
+  },
+  "file-tmux-file": {
+    "mode": "sandbox-exec",
+    "command": "/home/jes/.local/bin/uv",
+    "args": ["run", "--project", "/home/jes/file-tmux-file", "file-tmux-file", "--dir", "tmux"],
+    "restart": "permanent"
+  }
+}
