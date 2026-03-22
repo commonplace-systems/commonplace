@@ -55,7 +55,7 @@ defmodule Commonplace.CLI.LnTest do
     end
 
     test "returns error when source doesn't exist", %{store: store, root: root} do
-      assert {:error, :not_found} = Commonplace.CLI.Ln.link("ghost.txt", "alias.txt", root, store)
+      assert {:error, :source_not_found} = Commonplace.CLI.Ln.link("ghost.txt", "alias.txt", root, store)
     end
 
     test "writing to linked doc is visible from both paths", %{store: store, root: root} do

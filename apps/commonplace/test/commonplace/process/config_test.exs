@@ -69,6 +69,21 @@ defmodule Commonplace.Process.ConfigTest do
     test "returns empty list for empty config" do
       assert Config.parse(%{}) == []
     end
+
+    test "assigns scope_uuid when provided" do
+      json = %{"worker" => %{"mode" => "elixir", "source" => "w.exs"}}
+      scope = "some-uuid-for-subdir"
+
+      [entry] = Config.parse(json, scope)
+      assert entry.scope_uuid == scope
+    end
+
+    test "scope_uuid is nil by default" do
+      json = %{"worker" => %{"mode" => "elixir", "source" => "w.exs"}}
+
+      [entry] = Config.parse(json)
+      assert entry.scope_uuid == nil
+    end
   end
 
   describe "diff" do

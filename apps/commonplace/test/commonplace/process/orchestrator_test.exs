@@ -168,6 +168,58 @@ defmodule Commonplace.Process.OrchestratorTest do
     end
   end
 
+  describe "recursive __processes.json discovery" do
+    test "discovers processes in subdirectory __processes.json", %{store: store, root: root} do
+      # Create a subdirectory "sub" with its own __processes.json
+      sub_uuid = UUID.uuid4()
+      sub_doc = Schema.new_schema()
+      update = Yelixer.Encoding.encode_update(sub_doc)
+      CommitStore.create_commit(store, sub_uuid, update, nil)
+
+      # Add sub as a directory entry in root
+      root_doc = load_schema(root, store)
+      root_doc = Schema.add_directory(root_doc, "sub", sub_uuid)
+      update = Yelixer.Encoding.encode_update(root_doc)
+      CommitStore.create_commit(store, root, update, nil)
+
+      # Create a source doc in root (so elixir process can find it)
+      create_source_doc(store, root, "root_worker.exs", """
+      defmodule Commonplace.UserProcess.RootWorker do
+        use GenServer
+        def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
+        def scope(pid), do: GenServer.call(pid, :scope)
+        def init(opts), do: {:ok, opts}
+        def handle_call(:scope, _from, state), do: {:reply, "root", state}
+      end
+      """)
+
+      # Create __processes.json at root
+      create_processes_doc(store, root, %{
+        "root_worker" => %{"mode" => "elixir", "source" => "root_worker.exs"}
+      })
+
+      # Create __processes.json in sub
+      create_processes_doc_in(store, sub_uuid, %{
+        "sub_worker" => %{
+          "mode" => "sandbox-exec",
+          "command" => "/bin/echo",
+          "args" => ["hello"]
+        }
+      })
+
+      {:ok, orch} = Orchestrator.start_link(root_uuid: root, store: store, interval: 100)
+      Process.sleep(500)
+
+      pids = Orchestrator.running_processes(orch)
+      # Both processes should be discovered
+      assert Map.has_key?(pids, "root_worker")
+      assert Map.has_key?(pids, "sub_worker")
+
+      Process.unlink(orch)
+      GenServer.stop(orch)
+    end
+  end
+
   # Helpers
 
   defp create_source_doc(store, root, filename, source_code) do
@@ -215,6 +267,34 @@ defmodule Commonplace.Process.OrchestratorTest do
         root_doc = Schema.add_file(root_doc, "__processes.json", uuid)
         update = Yelixer.Encoding.encode_update(root_doc)
         CommitStore.create_commit(store, root, update, nil)
+    end
+  end
+
+  defp create_processes_doc_in(store, dir_uuid, config) do
+    json = Jason.encode!(config)
+
+    dir_doc = load_schema(dir_uuid, store)
+
+    case Schema.get_entry(dir_doc, "__processes.json") do
+      {:ok, entry} ->
+        doc = Yelixer.Doc.new()
+        doc = ContentType.create(doc, :text, "__processes.json")
+        doc = ContentType.insert_text(doc, 0, json)
+        update = Yelixer.Encoding.encode_update(doc)
+        CommitStore.create_commit(store, entry.node_id, update, nil)
+
+      :error ->
+        uuid = UUID.uuid4()
+        doc = Yelixer.Doc.new()
+        doc = ContentType.create(doc, :text, "__processes.json")
+        doc = ContentType.insert_text(doc, 0, json)
+        update = Yelixer.Encoding.encode_update(doc)
+        CommitStore.create_commit(store, uuid, update, nil)
+
+        dir_doc = load_schema(dir_uuid, store)
+        dir_doc = Schema.add_file(dir_doc, "__processes.json", uuid)
+        update = Yelixer.Encoding.encode_update(dir_doc)
+        CommitStore.create_commit(store, dir_uuid, update, nil)
     end
   end
 

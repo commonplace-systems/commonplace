@@ -5,10 +5,12 @@ defmodule Commonplace.CLI.Ln do
   Like unix hardlinks: no "original" vs "link", both are equal
   references. The document exists as long as any schema entry
   references its UUID.
+
+  Supports nested paths like "text-to-telegram/content.txt".
   """
 
   alias Commonplace.CLI
-  alias Commonplace.Tree.Schema
+  alias Commonplace.Tree.{Schema, Walk}
   alias Commonplace.Store.CommitStore
 
   def run(data_dir, _relative_path, args) do
@@ -26,8 +28,12 @@ defmodule Commonplace.CLI.Ln do
           :ok ->
             IO.puts("#{source} -> #{target}")
 
-          {:error, :not_found} ->
+          {:error, :source_not_found} ->
             IO.puts(:stderr, "Source not found: #{source}")
+            System.halt(1)
+
+          {:error, :target_dir_not_found} ->
+            IO.puts(:stderr, "Target directory not found: #{Path.dirname(target)}")
             System.halt(1)
         end
 
@@ -39,19 +45,38 @@ defmodule Commonplace.CLI.Ln do
 
   @doc "Create a CRDT hardlink: target gets the same UUID as source."
   def link(source, target, root_uuid, store \\ CommitStore) do
-    root_doc = load_schema(root_uuid, store)
+    loader = &load_schema(&1, store)
 
-    case Schema.get_entry(root_doc, source) do
-      {:ok, entry} ->
-        # Add target with the same UUID
-        root_doc = load_schema(root_uuid, store)
-        root_doc = Schema.add_file(root_doc, target, entry.node_id)
-        update = Yelixer.Encoding.encode_update(root_doc)
-        CommitStore.create_commit(store, root_uuid, update, nil)
-        :ok
+    # Resolve source to its UUID
+    case Walk.resolve_path(root_uuid, source, loader) do
+      {:ok, source_uuid} ->
+        # Find the target's parent directory and filename
+        target_dir = Path.dirname(target)
+        target_name = Path.basename(target)
 
-      :error ->
-        {:error, :not_found}
+        # Resolve the parent directory UUID
+        parent_uuid = if target_dir == "." do
+          root_uuid
+        else
+          case Walk.resolve_path(root_uuid, target_dir, loader) do
+            {:ok, uuid} -> uuid
+            {:error, _} -> nil
+          end
+        end
+
+        if parent_uuid do
+          # Add target with the same UUID as source
+          parent_doc = load_schema(parent_uuid, store)
+          parent_doc = Schema.add_file(parent_doc, target_name, source_uuid)
+          update = Yelixer.Encoding.encode_update(parent_doc)
+          CommitStore.create_commit(store, parent_uuid, update, nil)
+          :ok
+        else
+          {:error, :target_dir_not_found}
+        end
+
+      {:error, _} ->
+        {:error, :source_not_found}
     end
   end
 

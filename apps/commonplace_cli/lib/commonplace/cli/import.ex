@@ -69,7 +69,9 @@ defmodule Commonplace.CLI.Import do
 
     doc = Yelixer.Doc.new()
     doc = ContentType.create(doc, :text, Path.basename(file_path))
-    doc = ContentType.insert_text(doc, 0, content)
+
+    # Skip insert for empty files (Text.insert doesn't accept empty strings)
+    doc = if content != "", do: ContentType.insert_text(doc, 0, content), else: doc
 
     update = Yelixer.Encoding.encode_update(doc)
     CommitStore.create_commit(uuid, update, nil)

@@ -215,8 +215,11 @@ defmodule Commonplace.Process.Orchestrator do
 
   defp start_process(%Config{mode: :sandbox_exec} = config, state) do
     try do
+      # Use scope_uuid if set (subdirectory sandbox), otherwise full tree
+      sandbox_uuid = config.scope_uuid || state.root_uuid
+
       {:ok, pid} = Commonplace.Process.SandboxExecRunner.start_link(
-        root_uuid: state.root_uuid,
+        root_uuid: sandbox_uuid,
         store: state.store,
         command: config.command,
         args: config.args,
@@ -272,26 +275,50 @@ defmodule Commonplace.Process.Orchestrator do
   end
 
   defp read_processes_config(state) do
-    root_doc = load_schema(state.root_uuid, state.store)
+    collect_processes_recursive(state.root_uuid, state.root_uuid, state.store)
+  end
 
-    case Schema.get_entry(root_doc, "__processes.json") do
-      {:ok, entry} ->
-        case CommitStore.latest_commit(state.store, entry.node_id) do
-          {:ok, commit} ->
-            doc = Yelixer.Doc.new()
-            {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
-            content = ContentType.get_content(doc) || "{}"
+  # Walk the tree recursively, collecting __processes.json from each directory.
+  # Processes found at root get scope_uuid=nil (full tree).
+  # Processes found in subdirectories get scope_uuid=that directory's UUID.
+  defp collect_processes_recursive(dir_uuid, root_uuid, store) do
+    dir_doc = load_schema(dir_uuid, store)
+    entries = Schema.list_entries(dir_doc)
 
-            case Jason.decode(content) do
-              {:ok, json} -> Config.parse(json)
-              {:error, _} -> []
-            end
+    # Check for __processes.json in this directory
+    local_configs = case Schema.get_entry(dir_doc, "__processes.json") do
+      {:ok, entry} -> parse_processes_doc(entry.node_id, dir_uuid, root_uuid, store)
+      :error -> []
+    end
 
-          :none ->
-            []
+    # Recurse into subdirectories
+    sub_configs = Enum.flat_map(entries, fn entry ->
+      if entry.type == :dir do
+        collect_processes_recursive(entry.node_id, root_uuid, store)
+      else
+        []
+      end
+    end)
+
+    local_configs ++ sub_configs
+  end
+
+  defp parse_processes_doc(doc_uuid, dir_uuid, root_uuid, store) do
+    case CommitStore.latest_commit(store, doc_uuid) do
+      {:ok, commit} ->
+        doc = Yelixer.Doc.new()
+        {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
+        content = ContentType.get_content(doc) || "{}"
+
+        # scope_uuid is nil for root (full tree), or the dir UUID for subdirectories
+        scope = if dir_uuid == root_uuid, do: nil, else: dir_uuid
+
+        case Jason.decode(content) do
+          {:ok, json} -> Config.parse(json, scope)
+          {:error, _} -> []
         end
 
-      :error ->
+      :none ->
         []
     end
   end
