@@ -79,10 +79,20 @@ defmodule Commonplace.Process.Orchestrator do
     diff = Config.diff(state.current_config, new_config)
 
     source_changes = detect_source_changes(state, new_config)
-    all_changed = Enum.uniq(diff.changed ++ source_changes)
 
-    state = stop_processes(state, diff.removed ++ all_changed)
-    state = start_processes(state, diff.added ++ all_changed, new_config)
+    # Source-only changes (no config change) get hot reload;
+    # config changes still need cold restart.
+    hot_reload_candidates = source_changes -- diff.changed
+
+    config_map = Map.new(new_config, &{&1.name, &1})
+
+    {state, failed_hot} = hot_reload_processes(state, hot_reload_candidates, config_map)
+
+    # Config changes + failed hot reloads get cold restart
+    all_cold = Enum.uniq(diff.changed ++ failed_hot)
+
+    state = stop_processes(state, diff.removed ++ all_cold)
+    state = start_processes(state, diff.added ++ all_cold, new_config)
 
     %{state | current_config: new_config}
   end
@@ -121,6 +131,52 @@ defmodule Commonplace.Process.Orchestrator do
           end
       end
     end)
+  end
+
+  defp hot_reload_processes(state, names, config_map) do
+    Enum.reduce(names, {state, []}, fn name, {acc, failed} ->
+      config = Map.get(config_map, name)
+      pid = Map.get(acc.processes, name)
+
+      if config && config.mode == :elixir && pid && Process.alive?(pid) do
+        case hot_reload_module(config, acc) do
+          {:ok, source_hash} ->
+            {%{acc | source_hashes: Map.put(acc.source_hashes, name, source_hash)}, failed}
+
+          {:error, _reason} ->
+            {acc, [name | failed]}
+        end
+      else
+        # Not eligible for hot reload — fall back to cold restart
+        {acc, [name | failed]}
+      end
+    end)
+  end
+
+  defp hot_reload_module(config, state) do
+    case read_source(config.source, state) do
+      {:ok, source_code, source_hash} ->
+        module_name = module_for(config.name)
+
+        try do
+          # Purge any lingering old version so BEAM can accept a new one.
+          # :code.purge/1 removes the "old" version of a module; it's safe
+          # here because our running process is on the "current" version.
+          :code.purge(module_name)
+
+          # compile_string loads the new version — the current version
+          # becomes "old", and the running GenServer will pick up the new
+          # callbacks on its next fully-qualified call (which GenServer
+          # does for every handle_call/handle_info/etc.).
+          Code.compile_string(source_code)
+          {:ok, source_hash}
+        rescue
+          e -> {:error, e}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   defp start_process(%Config{mode: :elixir} = config, state) do

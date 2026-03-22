@@ -91,7 +91,7 @@ defmodule Commonplace.Process.OrchestratorTest do
       GenServer.stop(orch)
     end
 
-    test "restarts process when source changes", %{store: store, root: root} do
+    test "hot-reloads process when source changes (pid preserved)", %{store: store, root: root} do
       create_source_doc(store, root, "evolving.exs", """
       defmodule Commonplace.UserProcess.Evolving do
         use GenServer
@@ -113,7 +113,7 @@ defmodule Commonplace.Process.OrchestratorTest do
       old_pid = pids["evolving"]
       assert Commonplace.UserProcess.Evolving.version(old_pid) == 1
 
-      # Update source
+      # Update source — hot reload keeps the same pid
       create_source_doc(store, root, "evolving.exs", """
       defmodule Commonplace.UserProcess.Evolving do
         use GenServer
@@ -124,17 +124,12 @@ defmodule Commonplace.Process.OrchestratorTest do
       end
       """)
 
-      # Update config to trigger change detection
-      create_processes_doc(store, root, %{
-        "evolving" => %{"mode" => "elixir", "source" => "evolving.exs", "_version" => "2"}
-      })
-
       Process.sleep(300)
 
       pids = Orchestrator.running_processes(orch)
       new_pid = pids["evolving"]
-      assert new_pid != old_pid
-      assert Commonplace.UserProcess.Evolving.version(new_pid) == 2
+      assert new_pid == old_pid
+      assert Commonplace.UserProcess.Evolving.version(old_pid) == 2
 
       Process.unlink(orch)
       GenServer.stop(orch)
