@@ -404,15 +404,9 @@ defmodule Commonplace.Process.Orchestrator do
 
   defp get_os_pid(_), do: nil
 
-  defp pid_file_path(state) do
+  defp pid_file_path(_state) do
     data_dir = Application.get_env(:commonplace, :data_dir, "data")
     Path.join(data_dir, "orchestrator.pid")
-  end
-
-  defp write_pid_file(state) do
-    pid_file = pid_file_path(state)
-    content = "#{System.pid()}\n"
-    File.write(pid_file, content)
   end
 
   defp schedule_reconcile(state) do
