@@ -82,9 +82,13 @@ defmodule Commonplace.Sync.Export do
     try do
       File.write!(tmp_path, content)
       # fsync the file
-      {:ok, fd} = :file.open(String.to_charlist(tmp_path), [:read])
-      :file.datasync(fd)
-      :file.close(fd)
+      case :file.open(String.to_charlist(tmp_path), [:read]) do
+        {:ok, fd} ->
+          :file.datasync(fd)
+          :file.close(fd)
+        {:error, _} ->
+          :ok
+      end
       # Atomic rename
       File.rename!(tmp_path, path)
     rescue

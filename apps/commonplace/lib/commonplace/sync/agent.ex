@@ -263,9 +263,14 @@ defmodule Commonplace.Sync.Agent do
             {sub_paths, sub_hashes} = scan_disk_state(full, rel)
             {MapSet.union(paths, sub_paths), Map.merge(hashes, sub_hashes)}
           else
-            content = File.read!(full)
-            hash = :erlang.md5(content)
-            {paths, Map.put(hashes, rel, hash)}
+            case File.read(full) do
+              {:ok, content} ->
+                hash = :erlang.md5(content)
+                {paths, Map.put(hashes, rel, hash)}
+              {:error, _} ->
+                # File disappeared or is unreadable — skip
+                {paths, hashes}
+            end
           end
         end)
 
