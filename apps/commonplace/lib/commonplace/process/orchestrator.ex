@@ -157,6 +157,24 @@ defmodule Commonplace.Process.Orchestrator do
     end
   end
 
+  defp start_process(%Config{mode: :sandbox_exec} = config, state) do
+    try do
+      {:ok, pid} = Commonplace.Process.SandboxExecRunner.start_link(
+        root_uuid: state.root_uuid,
+        store: state.store,
+        command: config.command,
+        args: config.args,
+        name: config.name,
+        sync_interval: 50
+      )
+
+      Process.unlink(pid)
+      {:ok, pid, nil}
+    rescue
+      e -> {:error, e}
+    end
+  end
+
   defp detect_source_changes(state, new_config) do
     Enum.flat_map(new_config, fn config ->
       if Map.has_key?(state.processes, config.name) do

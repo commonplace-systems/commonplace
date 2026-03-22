@@ -6,12 +6,14 @@ defmodule Commonplace.Process.Config do
   and optional ownership of output documents.
   """
 
-  defstruct [:name, :mode, :source, :owns, restart: :permanent, depends_on: []]
+  defstruct [:name, :mode, :source, :command, :args, :owns, restart: :permanent, depends_on: []]
 
   @type t :: %__MODULE__{
           name: String.t(),
-          mode: :elixir | :command,
-          source: String.t(),
+          mode: :elixir | :sandbox_exec | :command,
+          source: String.t() | nil,
+          command: String.t() | nil,
+          args: [String.t()],
           restart: :permanent | :transient | :temporary,
           owns: String.t() | nil,
           depends_on: [String.t()]
@@ -24,6 +26,8 @@ defmodule Commonplace.Process.Config do
         name: name,
         mode: parse_mode(config["mode"]),
         source: config["source"],
+        command: config["command"],
+        args: config["args"] || [],
         restart: parse_restart(config["restart"]),
         owns: config["owns"],
         depends_on: config["depends_on"] || []
@@ -50,6 +54,7 @@ defmodule Commonplace.Process.Config do
   end
 
   defp parse_mode("elixir"), do: :elixir
+  defp parse_mode("sandbox-exec"), do: :sandbox_exec
   defp parse_mode("command"), do: :command
   defp parse_mode(_), do: :elixir
 
