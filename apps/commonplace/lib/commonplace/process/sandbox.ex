@@ -10,7 +10,6 @@ defmodule Commonplace.Process.Sandbox do
   use GenServer
 
   alias Commonplace.Sync.SyncLoop
-  alias Commonplace.Sync.Agent, as: SyncAgent
 
   defstruct [:root_uuid, :store, :sandbox_dir, :sync_pid, :sync_interval]
 
