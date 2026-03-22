@@ -16,6 +16,8 @@ defmodule Commonplace.Dataflow.PubSub do
   def subscribe_magenta(path), do: subscribe("magenta:#{path}")
   def subscribe_green(uuid), do: subscribe("green:#{uuid}")
 
+  def unsubscribe_blue(uuid), do: unsubscribe("blue:#{uuid}")
+
   def broadcast_blue(uuid, message), do: broadcast("blue:#{uuid}", message)
   def broadcast_cyan(uuid, message), do: broadcast("cyan:#{uuid}", message)
   def broadcast_red(uuid, message), do: broadcast("red:#{uuid}", message)
@@ -24,6 +26,10 @@ defmodule Commonplace.Dataflow.PubSub do
 
   defp subscribe(topic) do
     Phoenix.PubSub.subscribe(Commonplace.PubSub, topic)
+  end
+
+  defp unsubscribe(topic) do
+    Phoenix.PubSub.unsubscribe(Commonplace.PubSub, topic)
   end
 
   defp broadcast(topic, message) do
