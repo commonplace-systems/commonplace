@@ -44,6 +44,13 @@ defmodule Commonplace.Dataflow.RedLog do
     %{log | doc: doc}
   end
 
+  @doc "Append a raw event map to the log (JSON-encoded)."
+  def append_raw(%__MODULE__{} = log, %{} = event_map) do
+    event = Jason.encode!(event_map)
+    doc = Yelixer.Types.Array.push(log.doc, @log_type, [event])
+    %{log | doc: doc}
+  end
+
   @doc "Read all events from the log."
   def read(%__MODULE__{} = log) do
     log.doc

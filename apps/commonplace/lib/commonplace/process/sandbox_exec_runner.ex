@@ -4,17 +4,28 @@ defmodule Commonplace.Process.SandboxExecRunner do
 
   Creates a Sandbox, waits for initial sync, runs the command,
   and keeps the sandbox alive for file sync to complete.
-  Captures stdout/stderr for the red event log.
+  Captures stdout/stderr line-by-line via Port.open and appends
+  each line as a red event to the process's event log.
   """
 
   use GenServer
 
   alias Commonplace.Process.Sandbox
+  alias Commonplace.Dataflow.RedLog
 
-  defstruct [:sandbox_pid, :command, :args, :name, :port, :output_lines]
+  # Prefix used to tag stderr lines coming through the port
+  @stderr_prefix "__CP_STDERR__"
+  @max_line_length 8192
+
+  defstruct [:sandbox_pid, :command, :args, :name, :port, :event_log, :event_log_uuid, :store]
 
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts)
+  end
+
+  @doc "Get the event log UUID for this runner."
+  def event_log_uuid(pid) do
+    GenServer.call(pid, :event_log_uuid)
   end
 
   @impl true
@@ -25,6 +36,7 @@ defmodule Commonplace.Process.SandboxExecRunner do
     args = Keyword.get(opts, :args, [])
     name = Keyword.get(opts, :name, "sandbox")
     sync_interval = Keyword.get(opts, :sync_interval, 50)
+    log_uuid = Keyword.get(opts, :event_log_uuid, UUID.uuid4())
 
     # Create sandbox
     {:ok, sandbox_pid} = Sandbox.start_link(
@@ -35,12 +47,17 @@ defmodule Commonplace.Process.SandboxExecRunner do
 
     Process.unlink(sandbox_pid)
 
+    # Create the event log
+    event_log = RedLog.new(log_uuid, store)
+
     state = %__MODULE__{
       sandbox_pid: sandbox_pid,
       command: command,
       args: args,
       name: name,
-      output_lines: []
+      event_log: event_log,
+      event_log_uuid: log_uuid,
+      store: store
     }
 
     # Wait for initial sync then run command
@@ -50,26 +67,53 @@ defmodule Commonplace.Process.SandboxExecRunner do
   end
 
   @impl true
+  def handle_call(:event_log_uuid, _from, state) do
+    {:reply, state.event_log_uuid, state}
+  end
+
+  @impl true
   def handle_info(:run_command, state) do
     # Small delay for initial sync to materialize files
     Process.sleep(200)
 
     sandbox_dir = Sandbox.dir(state.sandbox_pid)
 
-    # Run the command
-    try do
-      System.cmd(state.command, state.args,
-        cd: sandbox_dir,
-        stderr_to_stdout: true
-      )
-    rescue
-      _ -> :ok
-    end
+    # Build a shell command that tags stderr lines with a prefix
+    # so we can distinguish them from stdout in the port output.
+    # Uses bash explicitly since dash doesn't support the fd3 redirect pattern.
+    user_cmd = build_shell_command(state.command, state.args)
+    wrapper = "{ #{user_cmd} 2>&1 1>&3 | while IFS= read -r line; do echo '#{@stderr_prefix}'\"$line\"; done; } 3>&1"
 
-    # Keep alive briefly for sync to pick up written files
+    port = Port.open(
+      {:spawn_executable, "/bin/bash"},
+      [:binary, {:line, @max_line_length}, {:cd, sandbox_dir}, :exit_status,
+       {:args, ["-c", wrapper]}]
+    )
+
+    {:noreply, %{state | port: port}}
+  end
+
+  @impl true
+  def handle_info({port, {:data, {:eol, line}}}, %{port: port} = state) do
+    {type, content} = parse_line(line)
+    event_log = append_event(state.event_log, type, content)
+    {:noreply, %{state | event_log: event_log}}
+  end
+
+  @impl true
+  def handle_info({port, {:data, {:noeol, line}}}, %{port: port} = state) do
+    # Partial line (exceeded max_line_length) — treat as a complete line
+    {type, content} = parse_line(line)
+    event_log = append_event(state.event_log, type, content)
+    {:noreply, %{state | event_log: event_log}}
+  end
+
+  @impl true
+  def handle_info({port, {:exit_status, _status}}, %{port: port} = state) do
+    # Command finished — commit the event log and schedule done check
+    event_log = RedLog.commit(state.event_log)
     Process.send_after(self(), :check_done, 200)
-
-    {:noreply, state}
+    {:noreply, %{state | event_log: event_log, port: nil}}
   end
 
   @impl true
@@ -81,10 +125,54 @@ defmodule Commonplace.Process.SandboxExecRunner do
 
   @impl true
   def terminate(_reason, state) do
+    # Close port if still open
+    if state.port != nil do
+      try do
+        Port.close(state.port)
+      catch
+        _, _ -> :ok
+      end
+    end
+
+    # Commit any remaining events
+    if state.event_log != nil do
+      RedLog.commit(state.event_log)
+    end
+
     if state.sandbox_pid && Process.alive?(state.sandbox_pid) do
       Sandbox.stop(state.sandbox_pid)
     end
 
     :ok
+  end
+
+  # --- Private ---
+
+  defp parse_line(line) do
+    if String.starts_with?(line, @stderr_prefix) do
+      {"stderr", String.trim_leading(line, @stderr_prefix)}
+    else
+      {"stdout", line}
+    end
+  end
+
+  defp append_event(event_log, type, content) do
+    event = %{
+      "type" => type,
+      "line" => content,
+      "timestamp" => DateTime.utc_now() |> DateTime.to_iso8601()
+    }
+
+    RedLog.append_raw(event_log, event)
+  end
+
+  defp build_shell_command(command, args) do
+    ([command | args])
+    |> Enum.map(&shell_escape/1)
+    |> Enum.join(" ")
+  end
+
+  defp shell_escape(arg) do
+    "'" <> String.replace(arg, "'", "'\\''") <> "'"
   end
 end
