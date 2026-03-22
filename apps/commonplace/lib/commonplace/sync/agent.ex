@@ -17,7 +17,7 @@ defmodule Commonplace.Sync.Agent do
   alias Commonplace.Store.CommitStore
   alias Commonplace.Tree.Schema
 
-  defstruct [:root_uuid, :sync_dir, :store, :lock, :known_paths]
+  defstruct [:root_uuid, :sync_dir, :store, :lock, :known_paths, :known_hashes]
 
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts)
@@ -35,7 +35,8 @@ defmodule Commonplace.Sync.Agent do
       sync_dir: Keyword.fetch!(opts, :sync_dir),
       store: Keyword.get(opts, :store, CommitStore),
       lock: Keyword.get(opts, :lock, Commonplace.Sync.FileLock),
-      known_paths: MapSet.new()
+      known_paths: MapSet.new(),
+      known_hashes: %{}
     }
 
     {:ok, state}
@@ -50,26 +51,34 @@ defmodule Commonplace.Sync.Agent do
   defp do_sync(state) do
     # Phase 1: Outbound — disk → CRDT
     # Use detect_changes but filter out deletions for paths we haven't seen
-    sync_outbound_recursive(state.root_uuid, state.sync_dir, state.store, state.known_paths)
+    # and modifications where disk hasn't actually changed (remote CRDT update)
+    sync_outbound_recursive(state.root_uuid, state.sync_dir, state.store, state.known_paths, state.known_hashes)
 
     # Phase 2: Inbound — CRDT → disk
     Export.export(state.root_uuid, state.sync_dir, state.store)
 
-    # Phase 3: Update known paths from current disk state
-    known = scan_disk_paths(state.sync_dir, "")
-    %{state | known_paths: known}
+    # Phase 3: Update known state from current disk
+    {known, hashes} = scan_disk_state(state.sync_dir, "")
+    %{state | known_paths: known, known_hashes: hashes}
   end
 
-  defp sync_outbound_recursive(root_uuid, dir, store, known_paths) do
+  defp sync_outbound_recursive(root_uuid, dir, store, known_paths, known_hashes) do
     changes = Watcher.detect_changes(root_uuid, dir, store)
 
-    # Filter deletions: only delete if the path was previously known on disk
     changes =
       Enum.filter(changes, fn change ->
         case change.type do
           :deleted ->
-            relative = change.name
-            MapSet.member?(known_paths, relative)
+            # Only delete if the path was previously known on disk
+            MapSet.member?(known_paths, change.name)
+
+          :modified ->
+            # Only apply if disk content actually changed from what we last synced.
+            # If disk matches known hash, the CRDT was updated remotely — let
+            # inbound export handle it instead of overwriting CRDT with stale disk.
+            disk_content = File.read!(change.path)
+            disk_hash = :erlang.md5(disk_content)
+            Map.get(known_hashes, change.name) != disk_hash
 
           _ ->
             true
@@ -89,36 +98,47 @@ defmodule Commonplace.Sync.Agent do
         sub_dir = Path.join(dir, entry.name)
 
         if File.dir?(sub_dir) do
+          prefix = entry.name <> "/"
+
           sub_known =
             known_paths
-            |> Enum.filter(&String.starts_with?(&1, entry.name <> "/"))
-            |> Enum.map(&String.replace_leading(&1, entry.name <> "/", ""))
+            |> Enum.filter(&String.starts_with?(&1, prefix))
+            |> Enum.map(&String.replace_leading(&1, prefix, ""))
             |> MapSet.new()
 
-          sync_outbound_recursive(entry.node_id, sub_dir, store, sub_known)
+          sub_hashes =
+            known_hashes
+            |> Enum.filter(fn {k, _} -> String.starts_with?(k, prefix) end)
+            |> Enum.map(fn {k, v} -> {String.replace_leading(k, prefix, ""), v} end)
+            |> Map.new()
+
+          sync_outbound_recursive(entry.node_id, sub_dir, store, sub_known, sub_hashes)
         end
       end
     end)
   end
 
-  defp scan_disk_paths(dir, prefix) do
+  defp scan_disk_state(dir, prefix) do
     case File.ls(dir) do
       {:ok, names} ->
-        Enum.reduce(names, MapSet.new(), fn name, acc ->
-          path = if prefix == "", do: name, else: "#{prefix}/#{name}"
+        Enum.reduce(names, {MapSet.new(), %{}}, fn name, {paths, hashes} ->
+          rel = if prefix == "", do: name, else: "#{prefix}/#{name}"
           full = Path.join(dir, name)
 
-          acc = MapSet.put(acc, path)
+          paths = MapSet.put(paths, rel)
 
           if File.dir?(full) do
-            MapSet.union(acc, scan_disk_paths(full, path))
+            {sub_paths, sub_hashes} = scan_disk_state(full, rel)
+            {MapSet.union(paths, sub_paths), Map.merge(hashes, sub_hashes)}
           else
-            acc
+            content = File.read!(full)
+            hash = :erlang.md5(content)
+            {paths, Map.put(hashes, rel, hash)}
           end
         end)
 
       {:error, _} ->
-        MapSet.new()
+        {MapSet.new(), %{}}
     end
   end
 
