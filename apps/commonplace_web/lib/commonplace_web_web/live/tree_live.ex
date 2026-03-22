@@ -10,7 +10,6 @@ defmodule CommonplaceWebWeb.TreeLive do
 
   alias Commonplace.Tree.Schema
   alias Commonplace.Store.CommitStore
-  alias Commonplace.Document.ContentType
   alias Commonplace.Dataflow.PubSub, as: CPPubSub
 
   @impl true
@@ -24,7 +23,6 @@ defmodule CommonplaceWebWeb.TreeLive do
       |> assign(:current_path, "")
       |> assign(:entries, list_entries(root))
       |> assign(:selected_name, nil)
-      |> assign(:selected_content, nil)
       |> assign(:selected_uuid, nil)
 
     {:ok, socket}
@@ -49,7 +47,6 @@ defmodule CommonplaceWebWeb.TreeLive do
       |> assign(:current_path, path)
       |> assign(:entries, entries)
       |> assign(:selected_name, nil)
-      |> assign(:selected_content, nil)
       |> assign(:selected_uuid, nil)
 
     {:noreply, socket}
@@ -73,13 +70,12 @@ defmodule CommonplaceWebWeb.TreeLive do
         # Subscribe to new doc for live updates
         CPPubSub.subscribe_blue(entry.node_id)
 
-        content = load_content(entry.node_id)
-
+        # Push Yjs binary state to browser
         socket =
           socket
           |> assign(:selected_name, name)
-          |> assign(:selected_content, content)
           |> assign(:selected_uuid, entry.node_id)
+          |> push_yjs_init(entry.node_id)
 
         {:noreply, socket}
 
@@ -117,11 +113,10 @@ defmodule CommonplaceWebWeb.TreeLive do
   end
 
   @impl true
-  def handle_info({:blue, _uuid, _update}, socket) do
-    # Blue channel update — refresh content
+  def handle_info({_topic, _update}, socket) do
+    # Blue channel update — push new Yjs state to browser
     if socket.assigns.selected_uuid do
-      content = load_content(socket.assigns.selected_uuid)
-      {:noreply, assign(socket, :selected_content, content)}
+      {:noreply, push_yjs_init(socket, socket.assigns.selected_uuid)}
     else
       {:noreply, socket}
     end
@@ -174,7 +169,9 @@ defmodule CommonplaceWebWeb.TreeLive do
       <div class="flex-1 p-6 overflow-y-auto">
         <%= if @selected_name do %>
           <h1 class="text-2xl font-bold mb-4"><%= @selected_name %></h1>
-          <pre class="bg-gray-100 p-4 rounded font-mono text-sm whitespace-pre-wrap"><%= @selected_content %></pre>
+          <div id="yjs-content" phx-hook="YjsHook" phx-update="ignore">
+            <p class="text-gray-400">Loading document...</p>
+          </div>
         <% else %>
           <p class="text-gray-400 text-lg">Select a document to view</p>
         <% end %>
@@ -184,6 +181,18 @@ defmodule CommonplaceWebWeb.TreeLive do
   end
 
   # Private helpers
+
+  defp push_yjs_init(socket, doc_uuid) do
+    case CommitStore.latest_commit(doc_uuid) do
+      {:ok, commit} ->
+        # Send the raw Yjs update binary as base64
+        encoded = Base.encode64(commit.update)
+        push_event(socket, "yjs_init", %{update: encoded})
+
+      :none ->
+        socket
+    end
+  end
 
   defp current_dir_uuid(socket) do
     if socket.assigns.current_path == "" do
@@ -215,23 +224,6 @@ defmodule CommonplaceWebWeb.TreeLive do
     Schema.list_entries(schema)
     |> Enum.reject(&String.starts_with?(&1.name, "__"))
     |> Enum.sort_by(fn e -> {if(e.type == :dir, do: 0, else: 1), e.name} end)
-  end
-
-  defp load_content(uuid) do
-    case CommitStore.latest_commit(uuid) do
-      {:ok, commit} ->
-        doc = Yelixer.Doc.new()
-        {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
-
-        case ContentType.get_type(doc) do
-          :text -> ContentType.get_content(doc) || ""
-          :map -> ContentType.get_content(doc) |> inspect(pretty: true)
-          _ -> ContentType.get_content(doc) |> inspect()
-        end
-
-      :none ->
-        "(empty)"
-    end
   end
 
   defp load_schema(uuid) do
