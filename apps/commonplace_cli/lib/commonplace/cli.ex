@@ -12,6 +12,7 @@ defmodule Commonplace.CLI do
     export <dir>                  Export document tree to disk
     sync [dir]                    Sync disk changes to/from CRDT
     branch [list|activate|deactivate] [name]  Manage branches
+    who [--type exe|usr|bot|who] [--all]  List actors
     signal <topic> <type> [json]  Send a magenta message
   """
 
@@ -64,6 +65,7 @@ defmodule Commonplace.CLI do
       "sync" -> Commonplace.CLI.Sync.run(data_dir, relative_path, rest)
       "branch" -> Commonplace.CLI.Branch.run(data_dir, relative_path, rest)
       "checkout" -> Commonplace.CLI.Checkout.run(data_dir, relative_path, rest)
+      "who" -> Commonplace.CLI.Who.run(data_dir, relative_path, rest)
       "signal" -> Commonplace.CLI.Signal.run(data_dir, relative_path, rest)
       _ ->
         IO.puts(:stderr, "Unknown command: #{cmd}")
