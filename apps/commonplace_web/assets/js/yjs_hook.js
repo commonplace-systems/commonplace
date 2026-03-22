@@ -1,104 +1,150 @@
 import * as Y from "yjs"
+import { EditorView, basicSetup } from "codemirror"
+import { EditorState } from "@codemirror/state"
+import { yCollab } from "y-codemirror.next"
 
 /**
- * LiveView hook for Yjs document rendering.
+ * LiveView hook for Yjs document editing via CodeMirror.
  *
  * Receives Yjs binary updates from the server via push_event,
- * maintains a local Y.Doc, and renders content into the hook element.
+ * maintains a local Y.Doc bound to a CodeMirror editor.
+ * Edits flow back to the server via pushEvent.
  *
  * Events from server:
- *   yjs_init  - {update: base64-encoded Yjs state}
+ *   yjs_init   - {update: base64-encoded Yjs state}
  *   yjs_update - {update: base64-encoded Yjs update}
  *
- * The document content is read from the "content" key in the
- * root YMap (following the commonplace document envelope).
+ * Events to server:
+ *   yjs_edit   - {update: base64-encoded Yjs update}
  */
 const YjsHook = {
   mounted() {
     this.ydoc = null
+    this.editor = null
+    this.suppressOutbound = false
 
     this.handleEvent("yjs_init", ({update}) => {
-      // Create fresh doc and apply initial state
-      this.ydoc = new Y.Doc()
-      const binary = Uint8Array.from(atob(update), c => c.charCodeAt(0))
-      Y.applyUpdate(this.ydoc, binary)
-      this.render()
-
-      // Observe future changes
-      this.ydoc.on("update", () => {
-        this.render()
-      })
+      this.initDoc(update)
     })
 
     this.handleEvent("yjs_update", ({update}) => {
       if (!this.ydoc) return
-      const binary = Uint8Array.from(atob(update), c => c.charCodeAt(0))
+      this.suppressOutbound = true
+      const binary = this.decode(update)
       Y.applyUpdate(this.ydoc, binary)
-      // render triggered by the update observer above
+      this.suppressOutbound = false
     })
   },
 
-  render() {
-    if (!this.ydoc) {
-      this.el.innerHTML = "<p class='text-gray-400'>No document loaded</p>"
-      return
+  initDoc(update) {
+    // Clean up previous
+    if (this.editor) {
+      this.editor.destroy()
+      this.editor = null
+    }
+    if (this.ydoc) {
+      this.ydoc.destroy()
+      this.ydoc = null
     }
 
-    // Read content from the commonplace document envelope
-    // The envelope has a "content" YMap/YText at the root level
-    const content = this.getContent()
-    const docType = this.getDocType()
+    // Create Y.Doc and apply initial state
+    this.ydoc = new Y.Doc()
+    const binary = this.decode(update)
+    Y.applyUpdate(this.ydoc, binary)
 
-    if (docType === "text") {
-      // Plain text — render in a pre tag
-      this.el.innerHTML = `<pre class="font-mono text-sm whitespace-pre-wrap">${this.escapeHtml(content)}</pre>`
-    } else if (content && (content.includes("<") || docType === "html" || docType === "xml")) {
-      // HTML/XML content — render as live DOM
-      // Wrap in a container for safety
-      this.el.innerHTML = `<div class="yjs-content">${content}</div>`
-    } else if (typeof content === "object") {
-      // Map content — render as formatted JSON
-      this.el.innerHTML = `<pre class="font-mono text-sm whitespace-pre-wrap">${this.escapeHtml(JSON.stringify(content, null, 2))}</pre>`
+    // Find the text content in the document envelope
+    const ytext = this.findTextContent()
+
+    if (ytext) {
+      this.initEditor(ytext)
     } else {
-      this.el.innerHTML = `<pre class="font-mono text-sm whitespace-pre-wrap">${this.escapeHtml(String(content || ""))}</pre>`
+      // Fallback: render as read-only content display
+      this.renderReadOnly()
+    }
+
+    // Listen for local changes to send back to server
+    this.ydoc.on("update", (update, origin) => {
+      if (this.suppressOutbound) return
+      if (origin === "codemirror") return // avoid echo
+      const encoded = this.encode(update)
+      this.pushEvent("yjs_edit", {update: encoded})
+    })
+  },
+
+  initEditor(ytext) {
+    this.el.innerHTML = ""
+
+    const state = EditorState.create({
+      doc: ytext.toString(),
+      extensions: [
+        basicSetup,
+        yCollab(ytext),
+        EditorView.theme({
+          "&": { height: "100%", fontSize: "14px" },
+          ".cm-scroller": { overflow: "auto" },
+          ".cm-content": { fontFamily: "monospace" }
+        }),
+        // Capture changes and send to server
+        EditorView.updateListener.of((viewUpdate) => {
+          if (viewUpdate.docChanged && !this.suppressOutbound) {
+            // y-codemirror handles syncing edits into the Y.Text
+            // We just need to send the Yjs update to the server
+            const update = Y.encodeStateAsUpdate(this.ydoc)
+            const encoded = this.encode(update)
+            this.pushEvent("yjs_edit", {update: encoded})
+          }
+        })
+      ]
+    })
+
+    this.editor = new EditorView({
+      state,
+      parent: this.el
+    })
+  },
+
+  renderReadOnly() {
+    // Non-text content: render as formatted display
+    const content = this.extractContent()
+
+    if (typeof content === "object") {
+      this.el.innerHTML = `<pre class="font-mono text-sm p-4 bg-gray-100 rounded whitespace-pre-wrap">${this.escapeHtml(JSON.stringify(content, null, 2))}</pre>`
+    } else {
+      this.el.innerHTML = `<pre class="font-mono text-sm p-4 bg-gray-100 rounded whitespace-pre-wrap">${this.escapeHtml(String(content || "(empty)"))}</pre>`
     }
   },
 
-  getContent() {
-    // Try reading from the commonplace envelope structure
-    // Root has "content" type which holds the actual data
-    const rootKeys = Array.from(this.ydoc.share.keys())
-
-    // Check for "content" YText (text documents)
+  findTextContent() {
+    // Look for "content" YText in the document envelope
     if (this.ydoc.share.has("content")) {
-      const contentType = this.ydoc.share.get("content")
-      if (contentType instanceof Y.Text) {
-        return contentType.toString()
-      } else if (contentType instanceof Y.Map) {
-        return contentType.toJSON()
-      }
+      const content = this.ydoc.share.get("content")
+      if (content instanceof Y.Text) return content
     }
 
-    // Fallback: try reading from the first YText we find
+    // Fallback: find any YText that isn't metadata
     for (const [key, type] of this.ydoc.share) {
-      if (key === "_type" || key === "_name") continue
+      if (key.startsWith("_")) continue
+      if (type instanceof Y.Text) return type
+    }
+
+    return null
+  },
+
+  extractContent() {
+    for (const [key, type] of this.ydoc.share) {
+      if (key.startsWith("_")) continue
       if (type instanceof Y.Text) return type.toString()
       if (type instanceof Y.Map) return type.toJSON()
     }
-
-    return "(empty document)"
+    return null
   },
 
-  getDocType() {
-    if (this.ydoc.share.has("_type")) {
-      const typeField = this.ydoc.share.get("_type")
-      if (typeField instanceof Y.Text) return typeField.toString()
-      if (typeField instanceof Y.Map) {
-        const val = typeField.get("value")
-        return val || "unknown"
-      }
-    }
-    return "unknown"
+  decode(base64) {
+    return Uint8Array.from(atob(base64), c => c.charCodeAt(0))
+  },
+
+  encode(uint8array) {
+    return btoa(String.fromCharCode(...uint8array))
   },
 
   escapeHtml(str) {
@@ -108,6 +154,10 @@ const YjsHook = {
   },
 
   destroyed() {
+    if (this.editor) {
+      this.editor.destroy()
+      this.editor = null
+    }
     if (this.ydoc) {
       this.ydoc.destroy()
       this.ydoc = null

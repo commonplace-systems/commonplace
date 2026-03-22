@@ -113,6 +113,22 @@ defmodule CommonplaceWebWeb.TreeLive do
   end
 
   @impl true
+  def handle_event("yjs_edit", %{"update" => encoded}, socket) do
+    if socket.assigns.selected_uuid do
+      # Decode the Yjs update from the browser
+      update = Base.decode64!(encoded)
+
+      # Commit to the store
+      CommitStore.create_commit(socket.assigns.selected_uuid, update, nil)
+
+      # Broadcast on blue channel so other viewers get it
+      CPPubSub.broadcast_blue(socket.assigns.selected_uuid, update)
+    end
+
+    {:noreply, socket}
+  end
+
+  @impl true
   def handle_info({_topic, _update}, socket) do
     # Blue channel update — push new Yjs state to browser
     if socket.assigns.selected_uuid do
