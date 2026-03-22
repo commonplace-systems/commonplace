@@ -9,6 +9,7 @@ defmodule Commonplace.CLI do
     ls [path]                     List directory contents
     cat <path>                    Show document content
     import <dir>                  Import files from disk into the document tree
+    export <dir>                  Export document tree to disk
     signal <topic> <type> [json]  Send a magenta message
   """
 
@@ -57,6 +58,7 @@ defmodule Commonplace.CLI do
       "ls" -> Commonplace.CLI.Ls.run(data_dir, relative_path, rest)
       "cat" -> Commonplace.CLI.Cat.run(data_dir, relative_path, rest)
       "import" -> Commonplace.CLI.Import.run(data_dir, rest)
+      "export" -> Commonplace.CLI.Export.run(data_dir, relative_path, rest)
       "signal" -> Commonplace.CLI.Signal.run(data_dir, relative_path, rest)
       _ ->
         IO.puts(:stderr, "Unknown command: #{cmd}")
