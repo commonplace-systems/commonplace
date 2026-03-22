@@ -27,7 +27,8 @@ defmodule Commonplace.MixProject do
       {:yelixer, in_umbrella: true},
       {:phoenix_pubsub, "~> 2.1"},
       {:cubdb, "~> 2.0"},
-      {:uuid, "~> 1.1"}
+      {:uuid, "~> 1.1"},
+      {:file_system, "~> 1.0"}
     ]
   end
 end
