@@ -29,9 +29,16 @@ defmodule Commonplace.CLI.Serve do
       ensure_processes_json(root, proc_file)
     end
 
+    # Kill any orphan processes from a previous serve
+    kill_orphans(data_dir)
+
     IO.puts("Starting commonplace workspace daemon...")
     IO.puts("  Root UUID: #{root}")
     IO.puts("  Data dir: #{data_dir}")
+
+    # Write PID file
+    pid_file = Path.join(data_dir, "orchestrator.pid")
+    File.write!(pid_file, "#{System.pid()}\n")
 
     # Start the orchestrator
     {:ok, orch} = Orchestrator.start_link(
@@ -64,6 +71,48 @@ defmodule Commonplace.CLI.Serve do
     receive do
       {:DOWN, ^ref, :process, ^orch, reason} ->
         IO.puts("\nOrchestrator stopped: #{inspect(reason)}")
+        File.rm(pid_file)
+    end
+  end
+
+  defp kill_orphans(data_dir) do
+    pid_file = Path.join(data_dir, "orchestrator.pid")
+
+    case File.read(pid_file) do
+      {:ok, content} ->
+        os_pid = String.trim(content)
+
+        # Check if the old process is still running
+        case System.cmd("kill", ["-0", os_pid], stderr_to_stdout: true) do
+          {_, 0} ->
+            IO.puts("Killing previous orchestrator (PID #{os_pid})...")
+            # Kill the process group to catch children
+            System.cmd("kill", ["-TERM", "--", "-#{os_pid}"], stderr_to_stdout: true)
+            Process.sleep(2000)
+            # Force kill if still alive
+            System.cmd("kill", ["-9", "--", "-#{os_pid}"], stderr_to_stdout: true)
+            Process.sleep(500)
+
+          _ ->
+            :ok
+        end
+
+        File.rm(pid_file)
+
+      {:error, _} ->
+        :ok
+    end
+
+    # Also clean up stale sandbox directories
+    case File.ls("/tmp") do
+      {:ok, entries} ->
+        entries
+        |> Enum.filter(&String.starts_with?(&1, "cp_sandbox_"))
+        |> Enum.each(fn dir ->
+          path = Path.join("/tmp", dir)
+          File.rm_rf(path)
+        end)
+      _ -> :ok
     end
   end
 

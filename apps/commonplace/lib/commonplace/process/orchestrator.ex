@@ -17,7 +17,12 @@ defmodule Commonplace.Process.Orchestrator do
   alias Commonplace.Tree.Schema
   alias Commonplace.Document.ContentType
 
-  defstruct [:root_uuid, :store, :interval, :processes, :current_config, :source_hashes]
+  defstruct [:root_uuid, :store, :interval, :processes, :current_config, :source_hashes, :started_at]
+
+  defmodule ProcessInfo do
+    @moduledoc "Info about a managed process."
+    defstruct [:pid, :mode, :sandbox_dir, :os_pid, :started_at, :scope_uuid]
+  end
 
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts)
@@ -28,6 +33,11 @@ defmodule Commonplace.Process.Orchestrator do
     GenServer.call(pid, :running_processes)
   end
 
+  @doc "Get detailed info about all running processes."
+  def process_info(pid) do
+    GenServer.call(pid, :process_info)
+  end
+
   @impl true
   def init(opts) do
     state = %__MODULE__{
@@ -36,7 +46,8 @@ defmodule Commonplace.Process.Orchestrator do
       interval: Keyword.get(opts, :interval, 5000),
       processes: %{},
       current_config: [],
-      source_hashes: %{}
+      source_hashes: %{},
+      started_at: DateTime.utc_now()
     }
 
     schedule_reconcile(state)
@@ -45,7 +56,24 @@ defmodule Commonplace.Process.Orchestrator do
 
   @impl true
   def handle_call(:running_processes, _from, state) do
-    {:reply, state.processes, state}
+    pids = Map.new(state.processes, fn {name, info} -> {name, info.pid} end)
+    {:reply, pids, state}
+  end
+
+  @impl true
+  def handle_call(:process_info, _from, state) do
+    info = Map.new(state.processes, fn {name, proc} ->
+      {name, %{
+        pid: proc.pid,
+        mode: proc.mode,
+        sandbox_dir: proc.sandbox_dir,
+        os_pid: get_os_pid(proc),
+        started_at: proc.started_at,
+        alive: Process.alive?(proc.pid)
+      }}
+    end)
+
+    {:reply, info, state}
   end
 
   @impl true
@@ -63,13 +91,21 @@ defmodule Commonplace.Process.Orchestrator do
 
   @impl true
   def terminate(_reason, state) do
-    Enum.each(state.processes, fn {_name, pid} ->
+    Enum.each(state.processes, fn {_name, info} ->
       try do
-        if Process.alive?(pid), do: GenServer.stop(pid, :shutdown, 1000)
+        # Kill OS process tree first (prevents orphans)
+        os_pid = get_os_pid(info)
+        if os_pid, do: System.cmd("kill", ["-TERM", "--", "-#{os_pid}"], stderr_to_stdout: true)
+
+        if Process.alive?(info.pid), do: GenServer.stop(info.pid, :shutdown, 2000)
       catch
         :exit, _ -> :ok
       end
     end)
+
+    # Clean up PID file
+    pid_file = pid_file_path(state)
+    File.rm(pid_file)
 
     :ok
   end
@@ -103,7 +139,7 @@ defmodule Commonplace.Process.Orchestrator do
         nil ->
           acc
 
-        pid ->
+        %ProcessInfo{pid: pid} ->
           if Process.alive?(pid), do: GenServer.stop(pid, :shutdown, 5000)
           %{acc | processes: Map.delete(acc.processes, name)}
       end
@@ -121,8 +157,16 @@ defmodule Commonplace.Process.Orchestrator do
         config ->
           case start_process(config, acc) do
             {:ok, pid, source_hash} ->
+              info = %ProcessInfo{
+                pid: pid,
+                mode: config.mode,
+                sandbox_dir: get_sandbox_dir(pid, config.mode),
+                started_at: DateTime.utc_now(),
+                scope_uuid: config.scope_uuid
+              }
+
               %{acc |
-                processes: Map.put(acc.processes, name, pid),
+                processes: Map.put(acc.processes, name, info),
                 source_hashes: Map.put(acc.source_hashes, name, source_hash)
               }
 
@@ -136,9 +180,9 @@ defmodule Commonplace.Process.Orchestrator do
   defp hot_reload_processes(state, names, config_map) do
     Enum.reduce(names, {state, []}, fn name, {acc, failed} ->
       config = Map.get(config_map, name)
-      pid = Map.get(acc.processes, name)
+      proc = Map.get(acc.processes, name)
 
-      if config && config.mode == :elixir && pid && Process.alive?(pid) do
+      if config && config.mode == :elixir && proc && Process.alive?(proc.pid) do
         case hot_reload_module(config, acc) do
           {:ok, source_hash} ->
             {%{acc | source_hashes: Map.put(acc.source_hashes, name, source_hash)}, failed}
@@ -237,7 +281,7 @@ defmodule Commonplace.Process.Orchestrator do
 
   defp detect_source_changes(state, new_config) do
     Enum.flat_map(new_config, fn config ->
-      if Map.has_key?(state.processes, config.name) do
+      if Map.has_key?(state.processes, config.name) && Map.get(state.processes, config.name) do
         case read_source(config.source, state) do
           {:ok, _code, hash} ->
             old_hash = Map.get(state.source_hashes, config.name)
@@ -338,6 +382,37 @@ defmodule Commonplace.Process.Orchestrator do
       :none ->
         Schema.new_schema()
     end
+  end
+
+  defp get_sandbox_dir(pid, :sandbox_exec) do
+    try do
+      Commonplace.Process.SandboxExecRunner.sandbox_dir(pid)
+    catch
+      _, _ -> nil
+    end
+  end
+
+  defp get_sandbox_dir(_pid, _mode), do: nil
+
+  defp get_os_pid(%ProcessInfo{pid: pid, mode: :sandbox_exec}) do
+    try do
+      Commonplace.Process.SandboxExecRunner.os_pid(pid)
+    catch
+      _, _ -> nil
+    end
+  end
+
+  defp get_os_pid(_), do: nil
+
+  defp pid_file_path(state) do
+    data_dir = Application.get_env(:commonplace, :data_dir, "data")
+    Path.join(data_dir, "orchestrator.pid")
+  end
+
+  defp write_pid_file(state) do
+    pid_file = pid_file_path(state)
+    content = "#{System.pid()}\n"
+    File.write(pid_file, content)
   end
 
   defp schedule_reconcile(state) do

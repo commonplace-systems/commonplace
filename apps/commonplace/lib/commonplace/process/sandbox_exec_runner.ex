@@ -28,6 +28,16 @@ defmodule Commonplace.Process.SandboxExecRunner do
     GenServer.call(pid, :event_log_uuid)
   end
 
+  @doc "Get the sandbox directory path."
+  def sandbox_dir(pid) do
+    GenServer.call(pid, :sandbox_dir)
+  end
+
+  @doc "Get the OS PID of the running port process."
+  def os_pid(pid) do
+    GenServer.call(pid, :os_pid)
+  end
+
   @impl true
   def init(opts) do
     root_uuid = Keyword.fetch!(opts, :root_uuid)
@@ -71,6 +81,25 @@ defmodule Commonplace.Process.SandboxExecRunner do
   @impl true
   def handle_call(:event_log_uuid, _from, state) do
     {:reply, state.event_log_uuid, state}
+  end
+
+  @impl true
+  def handle_call(:sandbox_dir, _from, state) do
+    dir = if state.sandbox_pid && Process.alive?(state.sandbox_pid) do
+      Sandbox.dir(state.sandbox_pid)
+    end
+    {:reply, dir, state}
+  end
+
+  @impl true
+  def handle_call(:os_pid, _from, state) do
+    os_pid = if state.port do
+      case Port.info(state.port, :os_pid) do
+        {:os_pid, pid} -> pid
+        _ -> nil
+      end
+    end
+    {:reply, os_pid, state}
   end
 
   @impl true
