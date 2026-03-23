@@ -225,16 +225,27 @@ defmodule Commonplace.Tree.Merge do
 
                 if mp_entry != nil do
                   # Was in merge-point schema, now gone from source → source deleted after prior merge.
-                  # But check: did target independently modify this entry since the merge?
+                  # Verify lineage: target entry must share DAG ancestry with merge-point entry.
+                  # If target independently created a same-named doc, don't delete it.
                   target_nid = target_entry["node_id"]
                   mp_nid = mp_entry["node_id"]
 
-                  if modified_since_merge_point?(store, target_nid, mp_nid) do
-                    conflict = {:delete_vs_modify, name, target_nid}
-                    {schema, %{rep | conflicts: [conflict | rep.conflicts]}}
-                  else
-                    schema = Schema.remove_entry(schema, name)
-                    {schema, %{rep | deleted_docs: [target_nid | rep.deleted_docs]}}
+                  has_lineage =
+                    case CommitStore.find_common_ancestor(store, target_nid, mp_nid) do
+                      {:ok, _} -> true
+                      :none -> false
+                    end
+
+                  cond do
+                    not has_lineage ->
+                      # No shared history — target created this independently, keep it
+                      {schema, rep}
+                    modified_since_merge_point?(store, target_nid, mp_nid) ->
+                      conflict = {:delete_vs_modify, name, target_nid}
+                      {schema, %{rep | conflicts: [conflict | rep.conflicts]}}
+                    true ->
+                      schema = Schema.remove_entry(schema, name)
+                      {schema, %{rep | deleted_docs: [target_nid | rep.deleted_docs]}}
                   end
                 else
                   # Truly a target-only addition, keep
@@ -329,17 +340,20 @@ defmodule Commonplace.Tree.Merge do
     target_modified_by_user?(store, target_nid)
   end
 
-  # Core check: was this target doc modified by the user (not just by merges)?
+  # Core check: was this target doc modified by the user (not just by merges/forks)?
   defp target_modified_by_user?(store, target_uuid) do
     {:ok, latest} = CommitStore.latest_commit(store, target_uuid)
 
     case CommitStore.get_latest_merge_head(store, target_uuid) do
       nil ->
-        # No merges ever happened to this doc. Check commit count:
-        # Fork branch-points have exactly 1 commit. Original docs before any fork
-        # have 1+ commits. If only 1 commit → not modified. If more → user edited.
-        log = CommitStore.commit_log(store, target_uuid)
-        length(log) > 1
+        # No merges ever happened to this doc. For docs created by fork_into_target
+        # (branch-point docs), they have exactly 1 commit. For pre-fork original docs,
+        # they may have many commits from before the fork — those don't count as
+        # "modified since fork." Without a merge head marker, we can't distinguish
+        # pre-fork edits from post-fork edits, so default to "not modified."
+        # This is the safe default: worst case, a delete propagates when it shouldn't,
+        # but the CRDT content is preserved in the commit chain.
+        false
 
       merge_head_id ->
         # Merge has happened. If target's latest is the merge commit → no user edits.
