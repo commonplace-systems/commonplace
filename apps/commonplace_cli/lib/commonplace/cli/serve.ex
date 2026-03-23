@@ -92,7 +92,7 @@ defmodule Commonplace.CLI.Serve do
     case File.read(pid_file) do
       {:ok, content} ->
         os_pid = String.trim(content)
-        kill_process_group(os_pid)
+        kill_process_tree(os_pid)
         File.rm(pid_file)
 
       {:error, _} ->
@@ -114,7 +114,7 @@ defmodule Commonplace.CLI.Serve do
 
                 if os_pid do
                   IO.puts("Killing orphaned process: #{name} (PGID #{os_pid})")
-                  kill_process_group("#{os_pid}")
+                  kill_process_tree("#{os_pid}")
                 end
 
                 # Collect sandbox dirs for cleanup
@@ -137,19 +137,26 @@ defmodule Commonplace.CLI.Serve do
     end
   end
 
-  defp kill_process_group(pid_str) do
-    # Check if any process in the group is alive
-    case System.cmd("kill", ["-0", "--", "-#{pid_str}"], stderr_to_stdout: true) do
-      {_, 0} ->
-        # SIGTERM the process group
-        System.cmd("kill", ["-TERM", "--", "-#{pid_str}"], stderr_to_stdout: true)
-        Process.sleep(@shutdown_grace_ms)
-        # SIGKILL survivors
-        System.cmd("kill", ["-9", "--", "-#{pid_str}"], stderr_to_stdout: true)
-        Process.sleep(500)
+  defp kill_process_tree(pid_str) do
+    # Try process group kill, individual PID kill, and child process kill.
+    # When spawned from an escript or Port.open, PGID often differs from PID,
+    # so process group kill alone misses the target.
+    group_alive = match?({_, 0}, System.cmd("kill", ["-0", "--", "-#{pid_str}"], stderr_to_stdout: true))
+    pid_alive = match?({_, 0}, System.cmd("kill", ["-0", pid_str], stderr_to_stdout: true))
 
-      _ ->
-        :ok
+    if group_alive or pid_alive do
+      # SIGTERM phase — hit the process group, the PID itself, and its children
+      if group_alive, do: System.cmd("kill", ["-TERM", "--", "-#{pid_str}"], stderr_to_stdout: true)
+      if pid_alive do
+        System.cmd("pkill", ["-TERM", "-P", pid_str], stderr_to_stdout: true)
+        System.cmd("kill", ["-TERM", pid_str], stderr_to_stdout: true)
+      end
+      Process.sleep(@shutdown_grace_ms)
+      # SIGKILL phase
+      if group_alive, do: System.cmd("kill", ["-9", "--", "-#{pid_str}"], stderr_to_stdout: true)
+      System.cmd("pkill", ["-9", "-P", pid_str], stderr_to_stdout: true)
+      System.cmd("kill", ["-9", pid_str], stderr_to_stdout: true)
+      Process.sleep(500)
     end
   end
 

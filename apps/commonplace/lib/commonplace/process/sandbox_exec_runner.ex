@@ -162,9 +162,12 @@ defmodule Commonplace.Process.SandboxExecRunner do
 
   @impl true
   def terminate(_reason, state) do
-    # Kill the OS process tree first, before closing port or deleting sandbox
+    # Kill the OS process tree first, before closing port or deleting sandbox.
+    # Try process group, child processes, and individual PID for robustness.
     if state.os_pid do
       System.cmd("kill", ["-TERM", "--", "-#{state.os_pid}"], stderr_to_stdout: true)
+      System.cmd("pkill", ["-TERM", "-P", "#{state.os_pid}"], stderr_to_stdout: true)
+      System.cmd("kill", ["-TERM", "#{state.os_pid}"], stderr_to_stdout: true)
     end
 
     # Close port if still open
@@ -207,8 +210,10 @@ defmodule Commonplace.Process.SandboxExecRunner do
   end
 
   defp wait_for_exit(os_pid, _timeout) do
-    # Timed out — force kill
+    # Timed out — force kill process group, children, and PID
     System.cmd("kill", ["-9", "--", "-#{os_pid}"], stderr_to_stdout: true)
+    System.cmd("pkill", ["-9", "-P", "#{os_pid}"], stderr_to_stdout: true)
+    System.cmd("kill", ["-9", "#{os_pid}"], stderr_to_stdout: true)
     Process.sleep(200)
   end
 
