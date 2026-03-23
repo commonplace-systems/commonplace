@@ -85,6 +85,7 @@ defmodule Commonplace.Process.Orchestrator do
         _ -> state
       end
 
+    write_status_file(state)
     schedule_reconcile(state)
     {:noreply, state}
   end
@@ -103,9 +104,10 @@ defmodule Commonplace.Process.Orchestrator do
       end
     end)
 
-    # Clean up PID file
+    # Clean up PID and status files
     pid_file = pid_file_path(state)
     File.rm(pid_file)
+    remove_status_file()
 
     :ok
   end
@@ -407,6 +409,37 @@ defmodule Commonplace.Process.Orchestrator do
   defp pid_file_path(_state) do
     data_dir = Application.get_env(:commonplace, :data_dir, "data")
     Path.join(data_dir, "orchestrator.pid")
+  end
+
+  defp write_status_file(state) do
+    data_dir = Application.get_env(:commonplace, :data_dir, "data")
+    status_file = Path.join(data_dir, "orchestrator_status.json")
+    tmp_file = status_file <> ".tmp"
+
+    status = %{
+      "pid" => System.pid(),
+      "started_at" => DateTime.to_iso8601(state.started_at),
+      "updated_at" => DateTime.to_iso8601(DateTime.utc_now()),
+      "processes" => Map.new(state.processes, fn {name, proc} ->
+        {name, %{
+          "mode" => to_string(proc.mode),
+          "sandbox_dir" => proc.sandbox_dir,
+          "os_pid" => get_os_pid(proc),
+          "started_at" => DateTime.to_iso8601(proc.started_at),
+          "alive" => Process.alive?(proc.pid)
+        }}
+      end)
+    }
+
+    File.write!(tmp_file, Jason.encode!(status, pretty: true))
+    File.rename!(tmp_file, status_file)
+  rescue
+    _ -> :ok
+  end
+
+  defp remove_status_file do
+    data_dir = Application.get_env(:commonplace, :data_dir, "data")
+    File.rm(Path.join(data_dir, "orchestrator_status.json"))
   end
 
   defp schedule_reconcile(state) do
