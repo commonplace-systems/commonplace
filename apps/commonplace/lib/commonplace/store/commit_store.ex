@@ -29,6 +29,11 @@ defmodule Commonplace.Store.CommitStore do
     GenServer.call(server, {:commit_log, doc_uuid, opts})
   end
 
+  @doc "Return a MapSet of all document UUIDs that have a `:latest` entry."
+  def all_doc_uuids(server \\ __MODULE__) do
+    GenServer.call(server, :all_doc_uuids)
+  end
+
   @doc "Check if `ancestor_id` is an ancestor of `descendant_id` in the commit DAG."
   def is_ancestor?(server \\ __MODULE__, ancestor_id, descendant_id) do
     GenServer.call(server, {:is_ancestor, ancestor_id, descendant_id})
@@ -146,6 +151,18 @@ defmodule Commonplace.Store.CommitStore do
         log = collect_log(state.db, commit_id, limit, [])
         {:reply, log, state}
     end
+  end
+
+  @impl true
+  def handle_call(:all_doc_uuids, _from, state) do
+    uuids =
+      CubDB.select(state.db,
+        min_key: {:latest, ""},
+        max_key: {:latest, <<255>>}
+      )
+      |> Enum.map(fn {{:latest, uuid}, _commit_id} -> uuid end)
+
+    {:reply, MapSet.new(uuids), state}
   end
 
   @impl true
