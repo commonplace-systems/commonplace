@@ -1,5 +1,8 @@
 # Branch Merge Design
 
+> **SUPERSEDED** by `docs/superpowers/specs/2026-03-23-fork-as-dag-branch-design.md` (CX-9zu).
+> This design used ForkManifest-based provenance. The new design uses shared commit DAG branches.
+
 > Design for CX-v4q: Merge across branches.
 > Discussed 2026-03-23 in #loom between commonplace and commonplace-plan.
 > Reviewed by Codex — 6 findings incorporated (see Revision Notes at end).

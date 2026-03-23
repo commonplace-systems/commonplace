@@ -26,11 +26,8 @@ defmodule Commonplace.CLI.Fork do
         case Walk.resolve_path(root, path, loader) do
           {:ok, source_uuid} ->
             IO.puts("Forking #{path} (#{source_uuid})...")
-            {new_uuid, manifest} = Fork.fork_directory(source_uuid, CommitStore)
+            new_uuid = Fork.fork_directory(source_uuid, CommitStore)
             IO.puts("Created fork: #{new_uuid}")
-            IO.puts("Manifest: #{manifest.id}")
-            IO.puts("  Source: #{manifest.forked_from}")
-            IO.puts("  Documents forked: #{map_size(manifest.document_map)}")
 
           {:error, {:not_found, name}} ->
             IO.puts(:stderr, "Not found: #{name}")
