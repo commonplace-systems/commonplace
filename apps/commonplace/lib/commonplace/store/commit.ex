@@ -6,7 +6,13 @@ defmodule Commonplace.Store.Commit do
   forming a tamper-evident history chain.
   """
 
-  defstruct [:id, :doc_uuid, :parent_id, :update, :timestamp]
+  defstruct [
+    :id,
+    :doc_uuid,    # Historical: which UUID originally created this commit (debugging only)
+    :parent_id,
+    :update,
+    :timestamp
+  ]
 
   @type t :: %__MODULE__{
           id: binary(),

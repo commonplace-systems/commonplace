@@ -39,6 +39,16 @@ defmodule Commonplace.Store.CommitStore do
     GenServer.call(server, {:is_ancestor, ancestor_id, descendant_id})
   end
 
+  @doc "Point a UUID at an existing commit without creating a new one."
+  def set_latest(server \\ __MODULE__, doc_uuid, commit_id) do
+    GenServer.call(server, {:set_latest, doc_uuid, commit_id})
+  end
+
+  @doc "Find the most recent common ancestor between two UUID chains."
+  def find_common_ancestor(server \\ __MODULE__, uuid_a, uuid_b) do
+    GenServer.call(server, {:find_common_ancestor, uuid_a, uuid_b})
+  end
+
   @impl true
   def init(opts) do
     data_dir = Keyword.fetch!(opts, :data_dir)
@@ -180,6 +190,57 @@ defmodule Commonplace.Store.CommitStore do
   def handle_call({:is_ancestor, ancestor_id, descendant_id}, _from, state) do
     result = walk_ancestors(state.db, ancestor_id, descendant_id)
     {:reply, result, state}
+  end
+
+  @impl true
+  def handle_call({:set_latest, doc_uuid, commit_id}, _from, state) do
+    CubDB.put(state.db, {:latest, doc_uuid}, commit_id)
+    {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_call({:find_common_ancestor, uuid_a, uuid_b}, _from, state) do
+    ids_a = collect_commit_ids(state.db, uuid_a)
+    result = walk_to_ancestor(state.db, uuid_b, ids_a)
+    {:reply, result, state}
+  end
+
+  defp collect_commit_ids(db, doc_uuid) do
+    case CubDB.get(db, {:latest, doc_uuid}) do
+      nil -> MapSet.new()
+      commit_id -> collect_ids(db, commit_id, MapSet.new())
+    end
+  end
+
+  defp collect_ids(_db, nil, acc), do: acc
+
+  defp collect_ids(db, commit_id, acc) do
+    acc = MapSet.put(acc, commit_id)
+
+    case CubDB.get(db, {:commit, commit_id}) do
+      nil -> acc
+      commit -> collect_ids(db, commit.parent_id, acc)
+    end
+  end
+
+  defp walk_to_ancestor(db, doc_uuid, ancestor_ids) do
+    case CubDB.get(db, {:latest, doc_uuid}) do
+      nil -> :none
+      commit_id -> find_in_chain(db, commit_id, ancestor_ids)
+    end
+  end
+
+  defp find_in_chain(_db, nil, _ids), do: :none
+
+  defp find_in_chain(db, commit_id, ancestor_ids) do
+    if MapSet.member?(ancestor_ids, commit_id) do
+      {:ok, CubDB.get(db, {:commit, commit_id})}
+    else
+      case CubDB.get(db, {:commit, commit_id}) do
+        nil -> :none
+        commit -> find_in_chain(db, commit.parent_id, ancestor_ids)
+      end
+    end
   end
 
   defp collect_log(_db, nil, _limit, acc), do: Enum.reverse(acc)
