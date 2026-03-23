@@ -237,16 +237,10 @@ defmodule Commonplace.Tree.Merge do
             pre_merge_target_commits: pre_merge_target_commits
           )
 
-        # Step 5: Filter __processes.json only if source added/changed it
-        processes_changed =
-          Map.has_key?(diff.added, "__processes.json") or
-            Map.has_key?(diff.removed, "__processes.json") or
-            Enum.any?(diff.renamed, fn {old, new, _} -> old == "__processes.json" or new == "__processes.json" end)
-
-        updated_target_schema =
-          if processes_changed,
-            do: maybe_filter_processes(store, updated_target_schema),
-            else: updated_target_schema
+        # Step 5: Always filter __processes.json if present.
+        # Content merge in step 1 can introduce unsafe entries even without
+        # schema-level changes to __processes.json.
+        updated_target_schema = maybe_filter_processes(store, updated_target_schema)
 
         # Commit updated target schema
         {:ok, target_latest} = CommitStore.latest_commit(store, target_uuid)
