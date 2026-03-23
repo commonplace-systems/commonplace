@@ -66,7 +66,7 @@ defmodule Commonplace.Dataflow.RedLog do
   @doc "Commit the current log state to the store."
   def commit(%__MODULE__{} = log) do
     update = Yelixer.Encoding.encode_update(log.doc)
-    CommitStore.create_commit(log.store, log.uuid, update, nil)
+    CommitStore.create_chained_commit(log.store, log.uuid, update)
     log
   end
 

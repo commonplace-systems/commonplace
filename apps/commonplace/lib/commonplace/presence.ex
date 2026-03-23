@@ -73,7 +73,7 @@ defmodule Commonplace.Presence do
     dir_doc = load_schema(dir_uuid, store)
     dir_doc = Schema.add_file(dir_doc, fname, uuid)
     update = Yelixer.Encoding.encode_update(dir_doc)
-    CommitStore.create_commit(store, dir_uuid, update, nil)
+    CommitStore.create_chained_commit(store, dir_uuid, update)
 
     {:ok, uuid}
   end
@@ -96,7 +96,7 @@ defmodule Commonplace.Presence do
     doc = load_doc(uuid, store)
     doc = ContentType.set_key(doc, "status", status)
     update = Yelixer.Encoding.encode_update(doc)
-    CommitStore.create_commit(store, uuid, update, nil)
+    CommitStore.create_chained_commit(store, uuid, update)
   end
 
   @doc "Update the heartbeat timestamp."
@@ -105,7 +105,7 @@ defmodule Commonplace.Presence do
     now = DateTime.utc_now() |> DateTime.to_iso8601()
     doc = ContentType.set_key(doc, "heartbeat", now)
     update = Yelixer.Encoding.encode_update(doc)
-    CommitStore.create_commit(store, uuid, update, nil)
+    CommitStore.create_chained_commit(store, uuid, update)
   end
 
   @doc "Discover actors by type in a schema document."
@@ -127,7 +127,7 @@ defmodule Commonplace.Presence do
     dir_doc = load_schema(dir_uuid, store)
     dir_doc = Schema.remove_entry(dir_doc, fname)
     update = Yelixer.Encoding.encode_update(dir_doc)
-    CommitStore.create_commit(store, dir_uuid, update, nil)
+    CommitStore.create_chained_commit(store, dir_uuid, update)
   end
 
   defp resolve_collision(dir_doc, fname, name, type) do

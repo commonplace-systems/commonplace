@@ -176,7 +176,7 @@ defmodule Commonplace.Sync.Watcher do
     root_doc = load_schema(root_uuid, store)
     root_doc = Schema.add_directory(root_doc, change.name, sub_uuid)
     update = Yelixer.Encoding.encode_update(root_doc)
-    CommitStore.create_commit(store, root_uuid, update, nil)
+    CommitStore.create_chained_commit(store, root_uuid, update)
   end
 
   defp apply_create(%Change{is_dir: false} = change, root_uuid, store) do
@@ -201,7 +201,7 @@ defmodule Commonplace.Sync.Watcher do
     root_doc = load_schema(root_uuid, store)
     root_doc = Schema.add_file(root_doc, change.name, file_uuid)
     update = Yelixer.Encoding.encode_update(root_doc)
-    CommitStore.create_commit(store, root_uuid, update, nil)
+    CommitStore.create_chained_commit(store, root_uuid, update)
   end
 
   defp apply_modify(change, root_uuid, store) do
@@ -223,7 +223,7 @@ defmodule Commonplace.Sync.Watcher do
           end
 
         update = Yelixer.Encoding.encode_update(doc)
-        CommitStore.create_commit(store, entry.node_id, update, nil)
+        CommitStore.create_chained_commit(store, entry.node_id, update)
 
       :error ->
         :ok
@@ -234,7 +234,7 @@ defmodule Commonplace.Sync.Watcher do
     root_doc = load_schema(root_uuid, store)
     root_doc = Schema.remove_entry(root_doc, change.name)
     update = Yelixer.Encoding.encode_update(root_doc)
-    CommitStore.create_commit(store, root_uuid, update, nil)
+    CommitStore.create_chained_commit(store, root_uuid, update)
   end
 
   defp detect_renames(created, deleted, schema_entries, dir, store, inode_registry) do
@@ -365,7 +365,7 @@ defmodule Commonplace.Sync.Watcher do
     root_doc = Schema.remove_entry(root_doc, change.old_name)
     root_doc = Schema.add_file(root_doc, change.name, change.node_id)
     update = Yelixer.Encoding.encode_update(root_doc)
-    CommitStore.create_commit(store, root_uuid, update, nil)
+    CommitStore.create_chained_commit(store, root_uuid, update)
   end
 
   defp load_schema(uuid, store) do

@@ -16,6 +16,15 @@ defmodule Commonplace.Store.CommitStore do
     GenServer.call(server, {:create_commit, doc_uuid, update, parent_id})
   end
 
+  @doc "Create a commit that automatically chains to the latest commit on this UUID."
+  def create_chained_commit(server \\ __MODULE__, doc_uuid, update) do
+    parent_id = case latest_commit(server, doc_uuid) do
+      {:ok, commit} -> commit.id
+      :none -> nil
+    end
+    create_commit(server, doc_uuid, update, parent_id)
+  end
+
   def get_commit(server \\ __MODULE__, commit_id) do
     GenServer.call(server, {:get_commit, commit_id})
   end

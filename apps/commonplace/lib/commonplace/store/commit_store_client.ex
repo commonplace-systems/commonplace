@@ -27,6 +27,20 @@ defmodule Commonplace.Store.CommitStoreClient do
     end
   end
 
+  def create_chained_commit(server \\ CommitStore, doc_uuid, update) do
+    case remote_node() do
+      {:ok, node} ->
+        parent_id = case GenServer.call({CommitStore, node}, {:latest_commit, doc_uuid}) do
+          {:ok, commit} -> commit.id
+          :none -> nil
+        end
+        GenServer.call({CommitStore, node}, {:create_commit, doc_uuid, update, parent_id})
+
+      :local ->
+        CommitStore.create_chained_commit(normalize_server(server), doc_uuid, update)
+    end
+  end
+
   def get_commit(server \\ CommitStore, commit_id) do
     case remote_node() do
       {:ok, node} ->

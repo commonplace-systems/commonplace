@@ -150,7 +150,7 @@ defmodule Commonplace.Process.Cell do
             doc = Commonplace.Document.ContentType.create(doc, :text, state.output)
             doc = Commonplace.Document.ContentType.insert_text(doc, 0, content)
             update = Yelixer.Encoding.encode_update(doc)
-            Commonplace.Store.CommitStore.create_commit(state.store, entry.node_id, update, nil)
+            Commonplace.Store.CommitStore.create_chained_commit(state.store, entry.node_id, update)
 
           :error ->
             # Create output doc
@@ -165,7 +165,7 @@ defmodule Commonplace.Process.Cell do
             root_doc = load_schema(state.root_uuid, state.store)
             root_doc = Commonplace.Tree.Schema.add_file(root_doc, state.output, uuid)
             update = Yelixer.Encoding.encode_update(root_doc)
-            Commonplace.Store.CommitStore.create_commit(state.store, state.root_uuid, update, nil)
+            Commonplace.Store.CommitStore.create_chained_commit(state.store, state.root_uuid, update)
         end
       end
 

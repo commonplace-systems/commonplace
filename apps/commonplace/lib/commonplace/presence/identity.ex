@@ -33,7 +33,7 @@ defmodule Commonplace.Presence.Identity do
         root_doc = load_schema(root_uuid, store)
         root_doc = Schema.add_directory(root_doc, @identities_dir, dir_uuid)
         update = Yelixer.Encoding.encode_update(root_doc)
-        CommitStore.create_commit(store, root_uuid, update, nil)
+        CommitStore.create_chained_commit(store, root_uuid, update)
 
         {:ok, dir_uuid}
     end
@@ -71,7 +71,7 @@ defmodule Commonplace.Presence.Identity do
         id_doc = load_schema(id_dir_uuid, store)
         id_doc = Schema.add_file(id_doc, fname, uuid)
         update = Yelixer.Encoding.encode_update(id_doc)
-        CommitStore.create_commit(store, id_dir_uuid, update, nil)
+        CommitStore.create_chained_commit(store, id_dir_uuid, update)
 
         {:ok, uuid}
     end
@@ -132,7 +132,7 @@ defmodule Commonplace.Presence.Identity do
         now = DateTime.utc_now() |> DateTime.to_iso8601()
         doc = ContentType.set_key(doc, "last_seen", now)
         update = Yelixer.Encoding.encode_update(doc)
-        CommitStore.create_commit(store, uuid, update, nil)
+        CommitStore.create_chained_commit(store, uuid, update)
 
       :none ->
         :ok
