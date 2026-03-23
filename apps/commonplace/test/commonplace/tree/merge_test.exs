@@ -345,6 +345,84 @@ defmodule Commonplace.Tree.MergeTest do
     end
   end
 
+  describe "merge/4" do
+    test "full merge: edits, adds, and deletes", %{store: store} do
+      # Build target tree: root with file1.txt, file2.txt
+      file1_uuid = create_text_doc(store, "file1.txt", "original one")
+      file2_uuid = create_text_doc(store, "file2.txt", "original two")
+
+      root_uuid = UUID.uuid4()
+      root_doc = Schema.new_schema()
+      root_doc = Schema.add_file(root_doc, "file1.txt", file1_uuid)
+      root_doc = Schema.add_file(root_doc, "file2.txt", file2_uuid)
+      CommitStore.create_commit(store, root_uuid, Yelixer.Encoding.encode_update(root_doc), nil)
+
+      # Fork
+      {fork_root, manifest} = Fork.fork_directory(root_uuid, store)
+
+      # Load forked schema to find forked UUIDs
+      {:ok, fork_commit} = CommitStore.latest_commit(store, fork_root)
+      fork_schema = Schema.new_schema()
+      {:ok, fork_schema} = Yelixer.Encoding.apply_update(fork_schema, fork_commit.update)
+      {:ok, f1_entry} = Schema.get_entry(fork_schema, "file1.txt")
+
+      # Edit file1 on fork
+      {:ok, f1_doc} = Merge.reconstruct_doc(store, f1_entry.node_id)
+      f1_doc = ContentType.insert_text(f1_doc, 12, " EDITED")
+      {:ok, f1_prev} = CommitStore.latest_commit(store, f1_entry.node_id)
+      CommitStore.create_commit(store, f1_entry.node_id, Yelixer.Encoding.encode_update(f1_doc), f1_prev.id)
+
+      # Delete file2 on fork (remove from schema)
+      fork_schema = Schema.remove_entry(fork_schema, "file2.txt")
+
+      # Add file3 on fork
+      file3_uuid = create_text_doc(store, "file3.txt", "brand new")
+      fork_schema = Schema.add_file(fork_schema, "file3.txt", file3_uuid)
+
+      # Commit updated fork schema
+      CommitStore.create_commit(store, fork_root, Yelixer.Encoding.encode_update(fork_schema), fork_commit.id)
+
+      # Merge!
+      {:ok, updated_manifest, report} = Merge.merge(fork_root, root_uuid, manifest, store)
+
+      # file1 content merged
+      {:ok, merged_f1} = Merge.reconstruct_doc(store, file1_uuid)
+      assert ContentType.get_content(merged_f1) =~ "EDITED"
+
+      # file2 deleted (target was unmodified)
+      {:ok, target_commit} = CommitStore.latest_commit(store, root_uuid)
+      target_schema = Schema.new_schema()
+      {:ok, target_schema} = Yelixer.Encoding.apply_update(target_schema, target_commit.update)
+      assert :error = Schema.get_entry(target_schema, "file2.txt")
+
+      # file3 added with new UUID
+      assert {:ok, f3} = Schema.get_entry(target_schema, "file3.txt")
+      assert f3.node_id != file3_uuid
+
+      # Report looks right
+      assert length(report.new_docs) >= 1
+      assert length(report.deleted_docs) >= 1
+      assert report.conflicts == []
+    end
+
+    test "empty merge is a no-op", %{store: store} do
+      file_uuid = create_text_doc(store, "file.txt", "unchanged")
+
+      root_uuid = UUID.uuid4()
+      root_doc = Schema.new_schema()
+      root_doc = Schema.add_file(root_doc, "file.txt", file_uuid)
+      CommitStore.create_commit(store, root_uuid, Yelixer.Encoding.encode_update(root_doc), nil)
+
+      {fork_root, manifest} = Fork.fork_directory(root_uuid, store)
+
+      {:ok, _manifest, report} = Merge.merge(fork_root, root_uuid, manifest, store)
+      assert report.merged_docs == []
+      assert report.new_docs == []
+      assert report.deleted_docs == []
+      assert report.conflicts == []
+    end
+  end
+
   defp create_text_doc(store, name, content) do
     uuid = UUID.uuid4()
     doc = Yelixer.Doc.new()

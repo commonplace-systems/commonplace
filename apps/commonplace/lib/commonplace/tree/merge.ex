@@ -134,6 +134,92 @@ defmodule Commonplace.Tree.Merge do
   end
 
   @doc """
+  Merge changes from source branch into target branch.
+
+  Returns {:ok, updated_manifest, merge_report} or {:error, reason}.
+  """
+  def merge(source_uuid, target_uuid, %ForkManifest{} = manifest, store) do
+    report = %MergeReport{}
+
+    # Step 1: Merge content for all known documents in manifest
+    # Skip the root schema entries — those are handled via structural diff
+    content_entries =
+      Enum.reject(manifest.document_map, fn {source_doc_uuid, _entry} ->
+        source_doc_uuid == source_uuid
+      end)
+
+    report =
+      Enum.reduce(content_entries, report, fn {source_doc_uuid, entry}, rep ->
+        target_doc_uuid = entry.original_uuid
+        fork_point = entry.fork_point_commit
+
+        case merge_content_doc(store, source_doc_uuid, target_doc_uuid, fork_point) do
+          {:ok, _commit} ->
+            %{rep | merged_docs: [{source_doc_uuid, target_doc_uuid} | rep.merged_docs]}
+
+          :noop ->
+            rep
+
+          {:error, reason} ->
+            %{rep | errors: [{:content_merge_failed, source_doc_uuid, reason} | rep.errors]}
+        end
+      end)
+
+    # Step 2: Schema diff + application (only if root is in manifest)
+    case Map.get(manifest.document_map, source_uuid) do
+      %{fork_point_commit: root_fork_point} ->
+        # Load the schema states we need
+        {:ok, cur_source_schema} = reconstruct_doc(store, source_uuid)
+        {:ok, cur_target_schema} = reconstruct_doc(store, target_uuid)
+
+        # For the schema diff, we need the source's initial state (at fork time).
+        # The source's oldest commit IS the fork-point state (with forked node_ids).
+        source_commits = CommitStore.commit_log(store, source_uuid)
+        source_first_commit = List.last(source_commits)
+        {:ok, source_fork_point_schema} = reconstruct_doc_at(store, source_uuid, source_first_commit.id)
+
+        # For collision detection, we need the target's state at fork time
+        {:ok, target_fork_point_schema} = reconstruct_doc_at(store, target_uuid, root_fork_point)
+
+        source_fp_entries = Schema.entries(source_fork_point_schema)
+        cur_source_entries = Schema.entries(cur_source_schema)
+        cur_target_entries = Schema.entries(cur_target_schema)
+
+        # Fork-point target entries for collision detection
+        fp_target_entries = Schema.entries(target_fork_point_schema)
+
+        # Step 3: Diff source schemas (fork-point vs current source = what changed on source)
+        diff = diff_schemas(source_fp_entries, cur_source_entries)
+
+        # Step 4: Apply schema changes to target
+        {updated_target_schema, manifest, report} =
+          apply_schema_changes(
+            store, cur_target_schema, diff, manifest, cur_target_entries, report,
+            fork_point_target_entries: fp_target_entries
+          )
+
+        # Step 5: Filter __processes.json if it was added/merged
+        updated_target_schema = maybe_filter_processes(store, updated_target_schema)
+
+        # Commit updated target schema
+        {:ok, target_latest} = CommitStore.latest_commit(store, target_uuid)
+        schema_update = Encoding.encode_update(updated_target_schema)
+        CommitStore.create_commit(store, target_uuid, schema_update, target_latest.id)
+
+        # Step 6: Update manifest fork points (last — crash safety)
+        all_source_uuids = Map.keys(manifest.document_map)
+        manifest = update_manifest_fork_points(store, manifest, all_source_uuids)
+
+        {:ok, manifest, report}
+
+      nil ->
+        # Source root not in manifest — content-only merge
+        manifest = update_manifest_fork_points(store, manifest, Map.keys(manifest.document_map))
+        {:ok, manifest, report}
+    end
+  end
+
+  @doc """
   Diff two schema entry maps (fork-point vs current source).
   Both args are `%{name => %{"type" => ..., "node_id" => ...}}` from Schema.entries/1.
   Returns %SchemaDiff{added, removed, renamed}.
@@ -333,6 +419,42 @@ defmodule Commonplace.Tree.Merge do
           man
       end
     end)
+  end
+
+  # If the schema has a __processes.json entry, filter its content
+  defp maybe_filter_processes(store, schema_doc) do
+    case Schema.get_entry(schema_doc, "__processes.json") do
+      {:ok, entry} ->
+        case reconstruct_doc(store, entry.node_id) do
+          {:ok, proc_doc} ->
+            content = ContentType.get_content(proc_doc) || "{}"
+
+            case Jason.decode(content) do
+              {:ok, proc_json} ->
+                filtered = filter_processes_for_merge(proc_json)
+
+                if filtered != proc_json do
+                  new_doc = Doc.new()
+                  new_doc = ContentType.create(new_doc, :text, "__processes.json")
+                  new_doc = ContentType.insert_text(new_doc, 0, Jason.encode!(filtered))
+                  update = Encoding.encode_update(new_doc)
+                  {:ok, latest} = CommitStore.latest_commit(store, entry.node_id)
+                  CommitStore.create_commit(store, entry.node_id, update, latest.id)
+                end
+
+                schema_doc
+
+              _ ->
+                schema_doc
+            end
+
+          _ ->
+            schema_doc
+        end
+
+      :error ->
+        schema_doc
+    end
   end
 
   # Check if a Yjs update is empty (no items, no deletes).
