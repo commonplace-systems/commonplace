@@ -158,8 +158,15 @@ defmodule Commonplace.Process.SandboxExecRunner do
     {:noreply, state}
   end
 
+  @shutdown_grace_ms 5000
+
   @impl true
   def terminate(_reason, state) do
+    # Kill the OS process tree first, before closing port or deleting sandbox
+    if state.os_pid do
+      System.cmd("kill", ["-TERM", "--", "-#{state.os_pid}"], stderr_to_stdout: true)
+    end
+
     # Close port if still open
     if state.port != nil do
       try do
@@ -167,6 +174,11 @@ defmodule Commonplace.Process.SandboxExecRunner do
       catch
         _, _ -> :ok
       end
+    end
+
+    # Wait for the OS process to exit before cleaning up sandbox
+    if state.os_pid do
+      wait_for_exit(state.os_pid, @shutdown_grace_ms)
     end
 
     # Commit any remaining events
@@ -179,6 +191,25 @@ defmodule Commonplace.Process.SandboxExecRunner do
     end
 
     :ok
+  end
+
+  defp wait_for_exit(os_pid, timeout) when timeout > 0 do
+    case System.cmd("kill", ["-0", "#{os_pid}"], stderr_to_stdout: true) do
+      {_, 0} ->
+        # Still alive — wait and retry
+        Process.sleep(200)
+        wait_for_exit(os_pid, timeout - 200)
+
+      _ ->
+        # Dead
+        :ok
+    end
+  end
+
+  defp wait_for_exit(os_pid, _timeout) do
+    # Timed out — force kill
+    System.cmd("kill", ["-9", "--", "-#{os_pid}"], stderr_to_stdout: true)
+    Process.sleep(200)
   end
 
   # --- Private ---

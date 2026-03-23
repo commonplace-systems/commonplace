@@ -82,8 +82,8 @@ defmodule Commonplace.CLI.Serve do
   @doc "Kill orphaned processes from a previous serve instance."
   def kill_orphans(data_dir) do
     kill_orchestrator_orphan(data_dir)
-    kill_managed_orphans(data_dir)
-    cleanup_sandbox_dirs()
+    sandbox_dirs = kill_managed_orphans(data_dir)
+    cleanup_sandbox_dirs(sandbox_dirs)
   end
 
   defp kill_orchestrator_orphan(data_dir) do
@@ -107,23 +107,33 @@ defmodule Commonplace.CLI.Serve do
       {:ok, content} ->
         case Jason.decode(content) do
           {:ok, %{"processes" => processes}} when is_map(processes) ->
-            processes
-            |> Enum.each(fn {name, info} ->
-              os_pid = info["os_pid"]
-              if os_pid do
-                IO.puts("Killing orphaned process: #{name} (PGID #{os_pid})")
-                kill_process_group("#{os_pid}")
-              end
-            end)
+            sandbox_dirs =
+              processes
+              |> Enum.flat_map(fn {name, info} ->
+                os_pid = info["os_pid"]
+
+                if os_pid do
+                  IO.puts("Killing orphaned process: #{name} (PGID #{os_pid})")
+                  kill_process_group("#{os_pid}")
+                end
+
+                # Collect sandbox dirs for cleanup
+                case info["sandbox_dir"] do
+                  dir when is_binary(dir) -> [dir]
+                  _ -> []
+                end
+              end)
+
+            File.rm(status_file)
+            sandbox_dirs
 
           _ ->
-            :ok
+            File.rm(status_file)
+            []
         end
 
-        File.rm(status_file)
-
       {:error, _} ->
-        :ok
+        []
     end
   end
 
@@ -143,17 +153,16 @@ defmodule Commonplace.CLI.Serve do
     end
   end
 
-  defp cleanup_sandbox_dirs do
-    case File.ls("/tmp") do
-      {:ok, entries} ->
-        entries
-        |> Enum.filter(&String.starts_with?(&1, "cp_sandbox_"))
-        |> Enum.each(fn dir ->
-          path = Path.join("/tmp", dir)
-          File.rm_rf(path)
-        end)
-      _ -> :ok
-    end
+  # Only clean up sandbox dirs that were tracked in the old status file.
+  # Previously this deleted ALL /tmp/cp_sandbox_* which could destroy
+  # sandboxes belonging to other workspaces or still-running processes.
+  defp cleanup_sandbox_dirs(sandbox_dirs) do
+    Enum.each(sandbox_dirs, fn dir ->
+      if File.dir?(dir) do
+        IO.puts("Cleaning up sandbox: #{dir}")
+        File.rm_rf(dir)
+      end
+    end)
   end
 
   defp ensure_processes_json(root, proc_file) do
