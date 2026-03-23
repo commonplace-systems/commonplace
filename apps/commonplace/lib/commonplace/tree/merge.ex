@@ -38,7 +38,7 @@ defmodule Commonplace.Tree.Merge do
         end
 
       :none ->
-        {:ok, report}
+        {:ok, %{report | errors: [{:no_common_ancestor, source_uuid, target_uuid} | report.errors]}}
     end
   end
 
@@ -124,6 +124,10 @@ defmodule Commonplace.Tree.Merge do
         source_entries = Schema.entries(source_schema)
         target_entries = Schema.entries(target_schema)
 
+        # Get merge-point entries if a prior merge has been recorded (for P1-2: detecting
+        # source deletions that occurred after a prior merge round)
+        merge_point_entries = get_merge_point_entries(store, target_uuid, source_uuid)
+
         all_names =
           MapSet.union(
             MapSet.new(Map.keys(source_entries)),
@@ -167,15 +171,26 @@ defmodule Commonplace.Tree.Merge do
                 {schema, %{rep | new_docs: [{source_nid, new_uuid} | rep.new_docs]}}
 
               source_entry == nil and target_entry != nil and ancestor_entry == nil ->
-                # Only in target, not in source, not in ancestor → target-only addition, keep
-                {schema, rep}
+                # Only in target, not in source, not in ancestor.
+                # Check merge-point schema: if it was present there, source deleted it after a prior merge.
+                mp_entry = if merge_point_entries, do: Map.get(merge_point_entries, name)
+
+                if mp_entry != nil do
+                  # Was in merge-point schema, now gone from source → source deleted after prior merge
+                  target_nid = target_entry["node_id"]
+                  schema = Schema.remove_entry(schema, name)
+                  {schema, %{rep | deleted_docs: [target_nid | rep.deleted_docs]}}
+                else
+                  # Truly a target-only addition, keep
+                  {schema, rep}
+                end
 
               source_entry == nil and target_entry != nil and ancestor_entry != nil ->
                 # Removed on source, still present on target
                 target_nid = target_entry["node_id"]
                 ancestor_nid = ancestor_entry["node_id"]
 
-                if not modified_since_ancestor?(store, target_nid, ancestor_nid) do
+                if not modified_since_ancestor?(store, target_nid, ancestor_nid, ancestor) do
                   schema = Schema.remove_entry(schema, name)
                   {schema, %{rep | deleted_docs: [target_nid | rep.deleted_docs]}}
                 else
@@ -196,6 +211,10 @@ defmodule Commonplace.Tree.Merge do
         {:ok, target_latest} = CommitStore.latest_commit(store, target_uuid)
         CommitStore.create_commit(store, target_uuid, schema_update, target_latest.id)
 
+        # Record source's current head as the merge point for the next merge round
+        {:ok, source_latest} = CommitStore.latest_commit(store, source_uuid)
+        CommitStore.set_merge_point(store, target_uuid, source_uuid, source_latest.id)
+
         maybe_filter_processes(store, target_uuid)
 
         {:ok, report}
@@ -210,14 +229,38 @@ defmodule Commonplace.Tree.Merge do
     Fork.fork_directory(source_uuid, store)
   end
 
-  defp modified_since_ancestor?(store, target_uuid, ancestor_uuid) do
-    case CommitStore.find_common_ancestor(store, target_uuid, ancestor_uuid) do
-      {:ok, ancestor} ->
-        {:ok, latest} = CommitStore.latest_commit(store, target_uuid)
-        latest.id != ancestor.id
+  # Returns the schema entries map at the stored merge point for (target, source), or nil
+  # if no merge point has been recorded yet.
+  defp get_merge_point_entries(store, target_uuid, source_uuid) do
+    case CommitStore.get_merge_point(store, target_uuid, source_uuid) do
+      nil ->
+        nil
 
-      :none ->
-        true
+      commit_id ->
+        case reconstruct_doc_at(store, source_uuid, commit_id) do
+          {:ok, doc} -> Schema.entries(doc)
+          :none -> nil
+        end
+    end
+  end
+
+  defp modified_since_ancestor?(store, target_nid, ancestor_nid, root_ancestor) do
+    if target_nid == ancestor_nid do
+      # Target kept the original UUID after fork. The DAG ancestry check cannot distinguish
+      # "no changes" from "has changes" in this case, so compare timestamps: if the target has
+      # commits newer than the root ancestor commit, it was modified since the fork point.
+      {:ok, latest} = CommitStore.latest_commit(store, target_nid)
+      DateTime.compare(latest.timestamp, root_ancestor.timestamp) == :gt
+    else
+      # Different UUIDs — use DAG ancestry
+      case CommitStore.find_common_ancestor(store, target_nid, ancestor_nid) do
+        {:ok, ancestor} ->
+          {:ok, latest} = CommitStore.latest_commit(store, target_nid)
+          latest.id != ancestor.id
+
+        :none ->
+          true
+      end
     end
   end
 
