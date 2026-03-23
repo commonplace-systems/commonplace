@@ -59,14 +59,14 @@ defmodule Commonplace.Store.CommitStore do
     GenServer.call(server, {:get_merge_point, target_uuid, source_uuid})
   end
 
-  @doc "Record the commit ID of the last merge-created commit on a target UUID from a source."
+  @doc "Record the target's head commit after any merge (keyed by target+source and target-only)."
   def set_last_merge_commit(server \\ __MODULE__, target_uuid, source_uuid, commit_id) do
     GenServer.call(server, {:set_last_merge_commit, target_uuid, source_uuid, commit_id})
   end
 
-  @doc "Get the commit ID of the last merge-created commit on a target UUID from a source."
-  def get_last_merge_commit(server \\ __MODULE__, target_uuid, source_uuid) do
-    GenServer.call(server, {:get_last_merge_commit, target_uuid, source_uuid})
+  @doc "Get the target's head commit after the most recent merge from any source."
+  def get_latest_merge_head(server \\ __MODULE__, target_uuid) do
+    GenServer.call(server, {:get_latest_merge_head, target_uuid})
   end
 
   @impl true
@@ -240,12 +240,14 @@ defmodule Commonplace.Store.CommitStore do
   @impl true
   def handle_call({:set_last_merge_commit, target_uuid, source_uuid, commit_id}, _from, state) do
     CubDB.put(state.db, {:last_merge_commit, target_uuid, source_uuid}, commit_id)
+    # Also store a target-only key so we can check "was this target merged from any source?"
+    CubDB.put(state.db, {:latest_merge_head, target_uuid}, commit_id)
     {:reply, :ok, state}
   end
 
   @impl true
-  def handle_call({:get_last_merge_commit, target_uuid, source_uuid}, _from, state) do
-    result = CubDB.get(state.db, {:last_merge_commit, target_uuid, source_uuid})
+  def handle_call({:get_latest_merge_head, target_uuid}, _from, state) do
+    result = CubDB.get(state.db, {:latest_merge_head, target_uuid})
     {:reply, result, state}
   end
 

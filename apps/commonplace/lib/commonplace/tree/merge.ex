@@ -300,38 +300,22 @@ defmodule Commonplace.Tree.Merge do
     end
   end
 
+  # Check if a target doc was independently modified (by the user, not just by merges).
+  # Uses the latest_merge_head tracker: if target's current head matches the last
+  # merge-created commit, only merges happened — no user edits.
   defp modified_since_ancestor?(store, target_nid, ancestor_nid, _root_ancestor) do
     if target_nid == ancestor_nid do
-      # Target kept the original UUID after fork. Check if user made independent edits.
-      # We walk the commit chain and compare its length to what it had at the ancestor time.
-      # Fork does NOT create commits on target_nid (only on new UUIDs).
-      # Merges DO create commits on target_nid.
-      # Use last_merge_commit (keyed by target+source) to check if the latest commit
-      # is from a merge or from a user edit.
-      {:ok, latest} = CommitStore.latest_commit(store, target_nid)
-      log = CommitStore.commit_log(store, target_nid)
-
-      cond do
-        # Single commit = original creation, never modified
-        length(log) <= 1 -> false
-        # Check if latest commit came from a merge (search all merge commit markers)
-        # Since we can't enumerate all source UUIDs, check if the latest commit's id
-        # matches any recorded merge commit. Use a conservative heuristic:
-        # if the doc had only 1 commit at creation and now has more,
-        # check if the most recent commits were from merges.
-        true ->
-          # Conservative: flag as potentially modified if chain has grown.
-          # The merge_leaf records last_merge_commit per (target, source) pair.
-          # Since we don't know the source here, we can't look it up.
-          # Default to "modified" which is safe (may cause false conflicts but no data loss).
-          true
-      end
+      target_modified_by_user?(store, target_nid)
     else
-      # Different UUIDs — use DAG ancestry
       case CommitStore.find_common_ancestor(store, target_nid, ancestor_nid) do
         {:ok, ancestor} ->
           {:ok, latest} = CommitStore.latest_commit(store, target_nid)
-          latest.id != ancestor.id
+          if latest.id == ancestor.id do
+            false
+          else
+            # Chain has diverged — but was it a merge or user edit?
+            target_modified_by_user?(store, target_nid)
+          end
 
         :none ->
           true
@@ -341,17 +325,25 @@ defmodule Commonplace.Tree.Merge do
 
   # Check if a target doc was independently modified since a merge point.
   # Used when source deletes an entry that was merged in a prior round.
-  # mp_nid is from the merge-point SOURCE schema. target_nid was created by
-  # fork_into_target(mp_nid, ...) during the prior merge, so they share DAG ancestry.
-  defp modified_since_merge_point?(store, target_nid, mp_nid) do
-    case CommitStore.find_common_ancestor(store, target_nid, mp_nid) do
-      {:ok, ancestor} ->
-        {:ok, latest} = CommitStore.latest_commit(store, target_nid)
-        latest.id != ancestor.id
+  defp modified_since_merge_point?(store, target_nid, _mp_nid) do
+    target_modified_by_user?(store, target_nid)
+  end
 
-      :none ->
-        # No shared history — conservative: assume modified
-        true
+  # Core check: was this target doc modified by the user (not just by merges)?
+  defp target_modified_by_user?(store, target_uuid) do
+    {:ok, latest} = CommitStore.latest_commit(store, target_uuid)
+
+    case CommitStore.get_latest_merge_head(store, target_uuid) do
+      nil ->
+        # No merges ever happened to this doc. Check commit count:
+        # Fork branch-points have exactly 1 commit. Original docs before any fork
+        # have 1+ commits. If only 1 commit → not modified. If more → user edited.
+        log = CommitStore.commit_log(store, target_uuid)
+        length(log) > 1
+
+      merge_head_id ->
+        # Merge has happened. If target's latest is the merge commit → no user edits.
+        latest.id != merge_head_id
     end
   end
 
