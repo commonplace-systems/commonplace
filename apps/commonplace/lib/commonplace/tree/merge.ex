@@ -8,8 +8,6 @@ defmodule Commonplace.Tree.Merge do
 
   alias Commonplace.Store.CommitStore
   alias Commonplace.Tree.{ForkManifest, Schema, Fork}
-  alias Commonplace.Document.ContentType
-  alias Commonplace.Process.Config
   alias Yelixer.{Doc, Encoding, BlockStore}
 
   defmodule MergeReport do
@@ -169,6 +167,141 @@ defmodule Commonplace.Tree.Merge do
     removed = Map.take(fork_point_entries, MapSet.to_list(removed_names))
 
     %SchemaDiff{added: added, removed: removed, renamed: renames}
+  end
+
+  @doc """
+  Apply schema diff to the target schema doc.
+
+  Options:
+  - fork_point_target_entries: target schema at fork-point (for collision detection)
+
+  Returns {updated_doc, updated_manifest, updated_report}.
+  """
+  def apply_schema_changes(store, target_doc, %SchemaDiff{} = diff, manifest, target_entries, report, opts \\ []) do
+    fp_target_entries = Keyword.get(opts, :fork_point_target_entries, target_entries)
+
+    {target_doc, manifest, report} =
+      apply_additions(store, target_doc, diff.added, manifest, target_entries, fp_target_entries, report)
+
+    {target_doc, report} =
+      apply_removals(store, target_doc, diff.removed, manifest, report)
+
+    {target_doc, report} =
+      apply_renames(target_doc, diff.renamed, manifest, target_entries, report)
+
+    {target_doc, manifest, report}
+  end
+
+  defp apply_additions(store, target_doc, added, manifest, target_entries, fp_target_entries, report) do
+    target_adds_since_fork =
+      Map.keys(target_entries)
+      |> Enum.reject(fn name -> Map.has_key?(fp_target_entries, name) end)
+      |> MapSet.new()
+
+    Enum.reduce(added, {target_doc, manifest, report}, fn {name, entry_map}, {doc, man, rep} ->
+      source_node_id = entry_map["node_id"]
+      type = entry_map["type"]
+
+      if MapSet.member?(target_adds_since_fork, name) do
+        {:ok, existing} = Schema.get_entry(doc, name)
+        conflict = {:name_collision, name, source_node_id, existing.node_id}
+        {doc, man, %{rep | conflicts: [conflict | rep.conflicts]}}
+      else
+        case type do
+          "dir" ->
+            {new_uuid, sub_manifest} = Fork.fork_directory(source_node_id, store)
+            doc = Schema.add_directory(doc, name, new_uuid)
+            {:ok, source_commit} = CommitStore.latest_commit(store, source_node_id)
+            man = ForkManifest.add_entry(man, new_uuid, source_node_id, source_commit.id)
+            man = merge_sub_manifest(man, sub_manifest)
+            {doc, man, %{rep | new_docs: [{source_node_id, new_uuid} | rep.new_docs]}}
+
+          "doc" ->
+            new_uuid = UUID.uuid4()
+            {:ok, source_doc} = reconstruct_doc(store, source_node_id)
+            update = Encoding.encode_update(source_doc)
+            CommitStore.create_commit(store, new_uuid, update, nil)
+            doc = Schema.add_file(doc, name, new_uuid)
+            {:ok, source_commit} = CommitStore.latest_commit(store, source_node_id)
+            man = ForkManifest.add_entry(man, new_uuid, source_node_id, source_commit.id)
+            {doc, man, %{rep | new_docs: [{source_node_id, new_uuid} | rep.new_docs]}}
+        end
+      end
+    end)
+  end
+
+  defp apply_removals(store, target_doc, removed, manifest, report) do
+    Enum.reduce(removed, {target_doc, report}, fn {name, entry_map}, {doc, rep} ->
+      source_node_id = entry_map["node_id"]
+
+      case Map.get(manifest.document_map, source_node_id) do
+        %{original_uuid: target_uuid, fork_point_commit: fork_point_commit} ->
+          if target_modified_since?(store, target_uuid, fork_point_commit) do
+            conflict = {:delete_vs_modify, name, target_uuid}
+            {doc, %{rep | conflicts: [conflict | rep.conflicts]}}
+          else
+            doc = Schema.remove_entry(doc, name)
+            {doc, %{rep | deleted_docs: [target_uuid | rep.deleted_docs]}}
+          end
+
+        nil ->
+          {doc, rep}
+      end
+    end)
+  end
+
+  defp apply_renames(target_doc, renames, manifest, target_entries, report) do
+    Enum.reduce(renames, {target_doc, report}, fn {old_name, new_name, source_node_id}, {doc, rep} ->
+      case Map.get(manifest.document_map, source_node_id) do
+        %{original_uuid: target_uuid} ->
+          type = get_entry_type(target_entries, old_name)
+          doc = Schema.remove_entry(doc, old_name)
+
+          doc =
+            case type do
+              :dir -> Schema.add_directory(doc, new_name, target_uuid)
+              _ -> Schema.add_file(doc, new_name, target_uuid)
+            end
+
+          {doc, rep}
+
+        nil ->
+          case Map.get(target_entries, old_name) do
+            %{"node_id" => node_id, "type" => type_str} ->
+              doc = Schema.remove_entry(doc, old_name)
+
+              doc =
+                case type_str do
+                  "dir" -> Schema.add_directory(doc, new_name, node_id)
+                  _ -> Schema.add_file(doc, new_name, node_id)
+                end
+
+              {doc, rep}
+
+            nil ->
+              {doc, rep}
+          end
+      end
+    end)
+  end
+
+  defp get_entry_type(entries, name) do
+    case Map.get(entries, name) do
+      %{"type" => "dir"} -> :dir
+      _ -> :doc
+    end
+  end
+
+  defp merge_sub_manifest(parent, sub_manifest) do
+    merged_map = Map.merge(parent.document_map, sub_manifest.document_map)
+    %{parent | document_map: merged_map}
+  end
+
+  defp target_modified_since?(store, target_uuid, fork_point_commit_id) do
+    case CommitStore.latest_commit(store, target_uuid) do
+      {:ok, latest} -> latest.id != fork_point_commit_id
+      :none -> false
+    end
   end
 
   # Check if a Yjs update is empty (no items, no deletes).

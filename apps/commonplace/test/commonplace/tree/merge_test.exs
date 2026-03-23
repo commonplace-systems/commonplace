@@ -156,6 +156,167 @@ defmodule Commonplace.Tree.MergeTest do
     end
   end
 
+  describe "apply_schema_changes/7" do
+    test "copies added file entries to target with new UUIDs", %{store: store} do
+      target_root = UUID.uuid4()
+      target_doc = Schema.new_schema()
+      target_doc = Schema.add_file(target_doc, "existing.txt", UUID.uuid4())
+      CommitStore.create_commit(store, target_root, Yelixer.Encoding.encode_update(target_doc), nil)
+
+      new_source_uuid = create_text_doc(store, "added.txt", "new content")
+
+      diff = %Merge.SchemaDiff{
+        added: %{"added.txt" => %{"type" => "doc", "node_id" => new_source_uuid}},
+        removed: %{},
+        renamed: []
+      }
+
+      manifest = ForkManifest.new(target_root)
+      target_entries = Schema.entries(target_doc)
+
+      {updated_doc, updated_manifest, report} =
+        Merge.apply_schema_changes(store, target_doc, diff, manifest, target_entries, %Merge.MergeReport{})
+
+      {:ok, entry} = Schema.get_entry(updated_doc, "added.txt")
+      assert entry.node_id != new_source_uuid
+      assert length(report.new_docs) == 1
+      assert map_size(updated_manifest.document_map) > map_size(manifest.document_map)
+    end
+
+    test "copies added directory entries via Fork.fork_directory", %{store: store} do
+      inner_uuid = create_text_doc(store, "inner.txt", "nested content")
+      subdir_uuid = UUID.uuid4()
+      subdir_doc = Schema.new_schema()
+      subdir_doc = Schema.add_file(subdir_doc, "inner.txt", inner_uuid)
+      CommitStore.create_commit(store, subdir_uuid, Yelixer.Encoding.encode_update(subdir_doc), nil)
+
+      target_doc = Schema.new_schema()
+      manifest = ForkManifest.new(UUID.uuid4())
+
+      diff = %Merge.SchemaDiff{
+        added: %{"subdir" => %{"type" => "dir", "node_id" => subdir_uuid}},
+        removed: %{},
+        renamed: []
+      }
+
+      target_entries = Schema.entries(target_doc)
+
+      {updated_doc, _manifest, report} =
+        Merge.apply_schema_changes(store, target_doc, diff, manifest, target_entries, %Merge.MergeReport{})
+
+      {:ok, entry} = Schema.get_entry(updated_doc, "subdir")
+      assert entry.type == :dir
+      assert entry.node_id != subdir_uuid
+      assert length(report.new_docs) == 1
+    end
+
+    test "detects delete-vs-modify conflict", %{store: store} do
+      target_file_uuid = create_text_doc(store, "contested.txt", "original")
+      {:ok, fork_commit} = CommitStore.latest_commit(store, target_file_uuid)
+
+      {:ok, target_file_doc} = Merge.reconstruct_doc(store, target_file_uuid)
+      target_file_doc = ContentType.insert_text(target_file_doc, 8, " edited")
+      update = Yelixer.Encoding.encode_update(target_file_doc)
+      CommitStore.create_commit(store, target_file_uuid, update, fork_commit.id)
+
+      source_uuid = UUID.uuid4()
+      diff = %Merge.SchemaDiff{
+        added: %{},
+        removed: %{"contested.txt" => %{"type" => "doc", "node_id" => source_uuid}},
+        renamed: []
+      }
+
+      target_doc = Schema.new_schema()
+      target_doc = Schema.add_file(target_doc, "contested.txt", target_file_uuid)
+
+      manifest = ForkManifest.new("root")
+      manifest = ForkManifest.add_entry(manifest, source_uuid, target_file_uuid, fork_commit.id)
+      target_entries = Schema.entries(target_doc)
+
+      {updated_doc, _manifest, report} =
+        Merge.apply_schema_changes(store, target_doc, diff, manifest, target_entries, %Merge.MergeReport{})
+
+      assert {:ok, _} = Schema.get_entry(updated_doc, "contested.txt")
+      assert [{:delete_vs_modify, "contested.txt", ^target_file_uuid}] = report.conflicts
+    end
+
+    test "safely removes unmodified deleted entries", %{store: store} do
+      target_file_uuid = create_text_doc(store, "deletable.txt", "original")
+      {:ok, fork_commit} = CommitStore.latest_commit(store, target_file_uuid)
+
+      source_uuid = UUID.uuid4()
+      diff = %Merge.SchemaDiff{
+        added: %{},
+        removed: %{"deletable.txt" => %{"type" => "doc", "node_id" => source_uuid}},
+        renamed: []
+      }
+
+      target_doc = Schema.new_schema()
+      target_doc = Schema.add_file(target_doc, "deletable.txt", target_file_uuid)
+
+      manifest = ForkManifest.new("root")
+      manifest = ForkManifest.add_entry(manifest, source_uuid, target_file_uuid, fork_commit.id)
+      target_entries = Schema.entries(target_doc)
+
+      {updated_doc, _manifest, report} =
+        Merge.apply_schema_changes(store, target_doc, diff, manifest, target_entries, %Merge.MergeReport{})
+
+      assert :error = Schema.get_entry(updated_doc, "deletable.txt")
+      assert [^target_file_uuid] = report.deleted_docs
+      assert report.conflicts == []
+    end
+
+    test "detects name collision", %{store: store} do
+      source_uuid = create_text_doc(store, "same.txt", "source version")
+      target_uuid = create_text_doc(store, "same.txt", "target version")
+
+      diff = %Merge.SchemaDiff{
+        added: %{"same.txt" => %{"type" => "doc", "node_id" => source_uuid}},
+        removed: %{},
+        renamed: []
+      }
+
+      target_doc = Schema.new_schema()
+      target_doc = Schema.add_file(target_doc, "same.txt", target_uuid)
+
+      manifest = ForkManifest.new("root")
+      target_entries = Schema.entries(target_doc)
+
+      {_doc, _manifest, report} =
+        Merge.apply_schema_changes(store, target_doc, diff, manifest, target_entries, %Merge.MergeReport{},
+          fork_point_target_entries: %{}
+        )
+
+      assert [{:name_collision, "same.txt", ^source_uuid, ^target_uuid}] = report.conflicts
+    end
+
+    test "applies renames preserving entry type", %{store: store} do
+      target_file_uuid = create_text_doc(store, "old.txt", "content")
+
+      target_doc = Schema.new_schema()
+      target_doc = Schema.add_file(target_doc, "old.txt", target_file_uuid)
+
+      source_node_id = UUID.uuid4()
+      diff = %Merge.SchemaDiff{
+        added: %{},
+        removed: %{},
+        renamed: [{"old.txt", "new.txt", source_node_id}]
+      }
+
+      manifest = ForkManifest.new("root")
+      manifest = ForkManifest.add_entry(manifest, source_node_id, target_file_uuid, <<0::256>>)
+      target_entries = Schema.entries(target_doc)
+
+      {updated_doc, _manifest, _report} =
+        Merge.apply_schema_changes(store, target_doc, diff, manifest, target_entries, %Merge.MergeReport{})
+
+      assert :error = Schema.get_entry(updated_doc, "old.txt")
+      assert {:ok, entry} = Schema.get_entry(updated_doc, "new.txt")
+      assert entry.node_id == target_file_uuid
+      assert entry.type == :doc
+    end
+  end
+
   defp create_text_doc(store, name, content) do
     uuid = UUID.uuid4()
     doc = Yelixer.Doc.new()
