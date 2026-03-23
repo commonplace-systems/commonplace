@@ -9,7 +9,7 @@ defmodule Commonplace.CLI.Branch do
 
   alias Commonplace.CLI
   alias Commonplace.Tree.{Schema, Walk}
-  alias Commonplace.Store.CommitStore
+  alias Commonplace.Store.CommitStoreClient, as: CommitStore
 
   def run(data_dir, relative_path, args) do
     CLI.ensure_started(data_dir)

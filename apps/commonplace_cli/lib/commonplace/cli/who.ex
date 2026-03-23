@@ -77,7 +77,7 @@ defmodule Commonplace.CLI.Who do
   end
 
   defp load_schema(uuid, store) do
-    alias Commonplace.Store.CommitStore
+    alias Commonplace.Store.CommitStoreClient, as: CommitStore
 
     case CommitStore.latest_commit(store, uuid) do
       {:ok, commit} ->

@@ -4,7 +4,7 @@ defmodule Commonplace.CLI.Cat do
   alias Commonplace.CLI
   alias Commonplace.Tree.Walk
   alias Commonplace.Document.ContentType
-  alias Commonplace.Store.CommitStore
+  alias Commonplace.Store.CommitStoreClient, as: CommitStore
 
   def run(data_dir, relative_path, args) do
     CLI.ensure_started(data_dir)

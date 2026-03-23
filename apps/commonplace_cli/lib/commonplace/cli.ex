@@ -226,7 +226,7 @@ defmodule Commonplace.CLI do
 
   @doc "Load a schema doc from the commit store."
   def load_schema(uuid) do
-    alias Commonplace.Store.CommitStore
+    alias Commonplace.Store.CommitStoreClient, as: CommitStore
     alias Commonplace.Tree.Schema
 
     case CommitStore.latest_commit(uuid) do

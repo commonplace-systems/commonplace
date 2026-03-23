@@ -3,7 +3,7 @@ defmodule Commonplace.CLI.Init do
 
   alias Commonplace.CLI
   alias Commonplace.Tree.Schema
-  alias Commonplace.Store.CommitStore
+  alias Commonplace.Store.CommitStoreClient, as: CommitStore
 
   def run(data_dir, _args) do
     if CLI.root_uuid(data_dir) do

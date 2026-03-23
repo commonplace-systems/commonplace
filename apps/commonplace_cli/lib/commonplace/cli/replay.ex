@@ -12,7 +12,7 @@ defmodule Commonplace.CLI.Replay do
 
   alias Commonplace.CLI
   alias Commonplace.Tree.Walk
-  alias Commonplace.Store.CommitStore
+  alias Commonplace.Store.CommitStoreClient, as: CommitStore
   alias Commonplace.Document.ContentType
 
   def run(data_dir, _relative_path, args) do

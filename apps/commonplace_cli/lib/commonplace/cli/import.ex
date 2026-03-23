@@ -4,7 +4,7 @@ defmodule Commonplace.CLI.Import do
   alias Commonplace.CLI
   alias Commonplace.Tree.Schema
   alias Commonplace.Document.ContentType
-  alias Commonplace.Store.CommitStore
+  alias Commonplace.Store.CommitStoreClient, as: CommitStore
 
   def run(data_dir, args) do
     CLI.ensure_started(data_dir)
