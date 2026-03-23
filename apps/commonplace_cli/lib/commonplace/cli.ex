@@ -16,6 +16,9 @@ defmodule Commonplace.CLI do
     ln <source> <target>          Link target to same doc as source
     log <path> [--limit N]        Show commit history for a document
     replay <path> [--list|--at ID] View document content at any commit
+    uuid [path]                     Show document UUID for a path
+    inspect <path|uuid>             Inspect raw CRDT document state
+    event [uuid] [--last N] [--json] Read event logs
     serve                         Start the workspace daemon
     ps                            List managed processes
     signal <topic> <type> [json]  Send a magenta message
@@ -76,6 +79,9 @@ defmodule Commonplace.CLI do
       "replay" -> Commonplace.CLI.Replay.run(data_dir, relative_path, rest)
       "serve" -> Commonplace.CLI.Serve.run(data_dir, relative_path, rest)
       "ps" -> Commonplace.CLI.Ps.run(data_dir, relative_path, rest)
+      "uuid" -> Commonplace.CLI.Uuid.run(data_dir, relative_path, rest)
+      "inspect" -> Commonplace.CLI.InspectCmd.run(data_dir, relative_path, rest)
+      "event" -> Commonplace.CLI.Event.run(data_dir, relative_path, rest)
       "signal" -> Commonplace.CLI.Signal.run(data_dir, relative_path, rest)
       _ ->
         IO.puts(:stderr, "Unknown command: #{cmd}")
