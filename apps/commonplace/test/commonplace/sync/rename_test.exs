@@ -152,6 +152,83 @@ defmodule Commonplace.Sync.RenameTest do
     end
   end
 
+  describe "inode-based rename detection" do
+    test "detects rename via inode registry", %{store: store, sync_dir: dir, root_uuid: root} do
+      alias Commonplace.Sync.InodeTracker
+
+      {:ok, registry} = InodeTracker.Registry.start_link([])
+
+      file_uuid = UUID.uuid4()
+      doc = Yelixer.Doc.new()
+      doc = ContentType.create(doc, :text, "tracked.txt")
+      doc = ContentType.insert_text(doc, 0, "inode content")
+      update = Yelixer.Encoding.encode_update(doc)
+      commit = CommitStore.create_commit(store, file_uuid, update, nil)
+
+      root_doc = load_schema(root, store)
+      root_doc = Schema.add_file(root_doc, "tracked.txt", file_uuid)
+      update = Yelixer.Encoding.encode_update(root_doc)
+      CommitStore.create_commit(store, root, update, nil)
+
+      # Write the file and track its inode
+      original_path = Path.join(dir, "tracked.txt")
+      File.write!(original_path, "inode content")
+      inode_key = InodeTracker.inode_key(original_path)
+      InodeTracker.Registry.track(registry, inode_key, commit.id, file_uuid, original_path)
+
+      # Rename on disk (mv preserves inode)
+      renamed_path = Path.join(dir, "moved.txt")
+      File.rename!(original_path, renamed_path)
+
+      # Detect with inode registry
+      changes = Watcher.detect_changes(root, dir, store, inode_registry: registry)
+      rename = Enum.find(changes, &(&1.type == :renamed))
+
+      assert rename != nil
+      assert rename.name == "moved.txt"
+      assert rename.old_name == "tracked.txt"
+      assert rename.node_id == file_uuid
+
+      GenServer.stop(registry)
+    end
+
+    test "inode rename works even for empty files", %{store: store, sync_dir: dir, root_uuid: root} do
+      alias Commonplace.Sync.InodeTracker
+
+      {:ok, registry} = InodeTracker.Registry.start_link([])
+
+      file_uuid = UUID.uuid4()
+      doc = Yelixer.Doc.new()
+      doc = ContentType.create(doc, :text, "empty.txt")
+      update = Yelixer.Encoding.encode_update(doc)
+      commit = CommitStore.create_commit(store, file_uuid, update, nil)
+
+      root_doc = load_schema(root, store)
+      root_doc = Schema.add_file(root_doc, "empty.txt", file_uuid)
+      update = Yelixer.Encoding.encode_update(root_doc)
+      CommitStore.create_commit(store, root, update, nil)
+
+      # Write empty file and track
+      original_path = Path.join(dir, "empty.txt")
+      File.write!(original_path, "")
+      inode_key = InodeTracker.inode_key(original_path)
+      InodeTracker.Registry.track(registry, inode_key, commit.id, file_uuid, original_path)
+
+      # Rename
+      File.rename!(original_path, Path.join(dir, "still-empty.txt"))
+
+      changes = Watcher.detect_changes(root, dir, store, inode_registry: registry)
+      rename = Enum.find(changes, &(&1.type == :renamed))
+
+      # Inode-based detection catches empty file renames (content-based would not)
+      assert rename != nil
+      assert rename.name == "still-empty.txt"
+      assert rename.old_name == "empty.txt"
+
+      GenServer.stop(registry)
+    end
+  end
+
   defp load_schema(uuid, store) do
     case CommitStore.latest_commit(store, uuid) do
       {:ok, commit} ->

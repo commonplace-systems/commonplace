@@ -78,7 +78,7 @@ defmodule Commonplace.Sync.Agent do
     end
 
     # Phase 1: Outbound — disk → CRDT
-    sync_outbound_recursive(state.root_uuid, state.sync_dir, state.store, state.known_paths, state.known_hashes)
+    sync_outbound_recursive(state.root_uuid, state.sync_dir, state.store, state.known_paths, state.known_hashes, state.inode_registry)
 
     # Phase 2: Inbound — CRDT → disk, using commit ancestry
     written = export_with_ancestry(state.root_uuid, state.sync_dir, state.store, state.written_commits, state.inode_registry)
@@ -194,8 +194,8 @@ defmodule Commonplace.Sync.Agent do
     end
   end
 
-  defp sync_outbound_recursive(root_uuid, dir, store, known_paths, known_hashes) do
-    changes = Watcher.detect_changes(root_uuid, dir, store)
+  defp sync_outbound_recursive(root_uuid, dir, store, known_paths, known_hashes, inode_registry) do
+    changes = Watcher.detect_changes(root_uuid, dir, store, inode_registry: inode_registry)
 
     changes =
       Enum.filter(changes, fn change ->
@@ -244,7 +244,7 @@ defmodule Commonplace.Sync.Agent do
             |> Enum.map(fn {k, v} -> {String.replace_leading(k, prefix, ""), v} end)
             |> Map.new()
 
-          sync_outbound_recursive(entry.node_id, sub_dir, store, sub_known, sub_hashes)
+          sync_outbound_recursive(entry.node_id, sub_dir, store, sub_known, sub_hashes, inode_registry)
         end
       end
     end)

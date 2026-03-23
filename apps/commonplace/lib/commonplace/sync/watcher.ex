@@ -31,9 +31,10 @@ defmodule Commonplace.Sync.Watcher do
   Compares files on disk at `dir` with the schema at `root_uuid`.
   Returns a list of `Change` structs.
   """
-  def detect_changes(root_uuid, dir, store \\ CommitStore) do
+  def detect_changes(root_uuid, dir, store \\ CommitStore, opts \\ []) do
     schema_doc = load_schema(root_uuid, store)
     schema_entries = Schema.entries(schema_doc)
+    inode_registry = Keyword.get(opts, :inode_registry)
 
     # Get files/dirs on disk (exclude system dirs)
     disk_entries =
@@ -96,9 +97,9 @@ defmodule Commonplace.Sync.Watcher do
         end
       end)
 
-    # Detect renames: deleted file whose content matches a created file
+    # Detect renames: match by inode (if registry available) then by content
     {renames, remaining_created, remaining_deleted} =
-      detect_renames(created, deleted, schema_entries, store)
+      detect_renames(created, deleted, schema_entries, dir, store, inode_registry)
 
     remaining_created ++ remaining_deleted ++ modified ++ renames
   end
@@ -236,14 +237,88 @@ defmodule Commonplace.Sync.Watcher do
     CommitStore.create_commit(store, root_uuid, update, nil)
   end
 
-  defp detect_renames(created, deleted, schema_entries, store) do
+  defp detect_renames(created, deleted, schema_entries, dir, store, inode_registry) do
     # Only consider non-directory files for rename detection
     created_files = Enum.reject(created, & &1.is_dir)
     deleted_files = Enum.reject(deleted, & &1.is_dir)
     created_dirs = Enum.filter(created, & &1.is_dir)
     deleted_dirs = Enum.filter(deleted, & &1.is_dir)
 
-    # Build content map for deleted files
+    # Phase 1: Try inode-based matching (fast, works for empty files and rename+edit)
+    {inode_renames, remaining_created_1, used_deleted_1} =
+      if inode_registry do
+        match_by_inode(created_files, deleted_files, schema_entries, dir, inode_registry)
+      else
+        {[], created_files, MapSet.new()}
+      end
+
+    remaining_deleted_1 = Enum.reject(deleted_files, fn change ->
+      MapSet.member?(used_deleted_1, change.name)
+    end)
+
+    # Phase 2: Content-based matching on remaining unmatched pairs
+    {content_renames, remaining_created_2, used_deleted_2} =
+      match_by_content(remaining_created_1, remaining_deleted_1, schema_entries, store)
+
+    remaining_deleted_2 = Enum.reject(remaining_deleted_1, fn change ->
+      MapSet.member?(used_deleted_2, change.name)
+    end)
+
+    all_renames = inode_renames ++ content_renames
+
+    {all_renames, remaining_created_2 ++ created_dirs,
+     remaining_deleted_2 ++ deleted_dirs}
+  end
+
+  # Match renames by inode: a created file whose inode is tracked in the registry
+  # as belonging to a deleted entry's doc_uuid.
+  defp match_by_inode(created_files, deleted_files, schema_entries, _dir, registry) do
+    alias Commonplace.Sync.InodeTracker
+
+    # Build lookup: doc_uuid → deleted change name
+    deleted_by_uuid = Map.new(deleted_files, fn change ->
+      entry = schema_entries[change.name]
+      uuid = if entry, do: entry["node_id"]
+      {uuid, change}
+    end)
+
+    {renames, unmatched, used} =
+      Enum.reduce(created_files, {[], [], MapSet.new()}, fn created_change,
+                                                            {renames_acc, unmatched_acc, used_acc} ->
+        inode_match = try do
+          inode_key = InodeTracker.inode_key(created_change.path)
+          case InodeTracker.Registry.lookup(registry, inode_key) do
+            {:ok, mapping} -> mapping
+            :error -> nil
+          end
+        rescue
+          _ -> nil
+        end
+
+        del_change = if inode_match, do: Map.get(deleted_by_uuid, inode_match.doc_uuid)
+
+        if del_change && not MapSet.member?(used_acc, del_change.name) do
+          entry = schema_entries[del_change.name]
+          rename = %Change{
+            type: :renamed,
+            name: created_change.name,
+            path: created_change.path,
+            is_dir: false,
+            old_name: del_change.name,
+            node_id: entry["node_id"]
+          }
+          {[rename | renames_acc], unmatched_acc, MapSet.put(used_acc, del_change.name)}
+        else
+          {renames_acc, [created_change | unmatched_acc], used_acc}
+        end
+      end)
+
+    {Enum.reverse(renames), Enum.reverse(unmatched), used}
+  end
+
+  # Match renames by content: a created file whose disk content matches
+  # a deleted entry's CRDT content (skips empty files).
+  defp match_by_content(created_files, deleted_files, schema_entries, store) do
     deleted_with_content =
       Enum.map(deleted_files, fn change ->
         entry = schema_entries[change.name]
@@ -251,13 +326,11 @@ defmodule Commonplace.Sync.Watcher do
         {change, content, entry}
       end)
 
-    # Match created files against deleted file contents
     {renames, unmatched_created, used_deleted} =
       Enum.reduce(created_files, {[], [], MapSet.new()}, fn created_change,
                                                             {renames_acc, unmatched_acc, used_acc} ->
         disk_content = File.read!(created_change.path)
 
-        # Find a matching deleted file (same content, not yet matched)
         match =
           Enum.find(deleted_with_content, fn {del_change, del_content, _entry} ->
             del_content == disk_content and
@@ -283,14 +356,7 @@ defmodule Commonplace.Sync.Watcher do
         end
       end)
 
-    # Remaining deleted files that weren't matched to renames
-    remaining_deleted =
-      Enum.reject(deleted_files, fn change ->
-        MapSet.member?(used_deleted, change.name)
-      end)
-
-    {Enum.reverse(renames), Enum.reverse(unmatched_created) ++ created_dirs,
-     remaining_deleted ++ deleted_dirs}
+    {Enum.reverse(renames), Enum.reverse(unmatched_created), used_deleted}
   end
 
   defp apply_rename(change, root_uuid, store) do
