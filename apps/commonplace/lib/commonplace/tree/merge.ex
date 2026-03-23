@@ -92,4 +92,45 @@ defmodule Commonplace.Tree.Merge do
         end
     end
   end
+
+  @doc """
+  Merge a single content doc from source into target using CRDT diff.
+
+  The fork_point_commit_id belongs to the TARGET doc's commit chain —
+  it's the target's state when the fork was created.
+
+  Returns {:ok, commit}, :noop, or {:error, reason}.
+  """
+  def merge_content_doc(store, source_uuid, target_uuid, fork_point_commit_id) do
+    # 1. Reconstruct fork-point state from the TARGET doc
+    #    (fork_point_commit is on the target's chain, not source's)
+    with {:ok, fork_point_doc} <- reconstruct_doc_at(store, target_uuid, fork_point_commit_id),
+         {:ok, source_doc} <- reconstruct_doc(store, source_uuid) do
+      fork_point_sv = BlockStore.state_vector(fork_point_doc.store)
+
+      # 2. Compute diff: what changed on source since fork-point
+      diff = Encoding.encode_diff(source_doc, fork_point_sv)
+
+      # 3. Check if diff has any actual content
+      if empty_update?(diff) do
+        :noop
+      else
+        # 4. Apply diff to target
+        {:ok, target_doc} = reconstruct_doc(store, target_uuid)
+        {:ok, merged_doc} = Encoding.apply_update(target_doc, diff)
+
+        # 5. Commit merged state
+        merged_update = Encoding.encode_update(merged_doc)
+        {:ok, latest} = CommitStore.latest_commit(store, target_uuid)
+        commit = CommitStore.create_commit(store, target_uuid, merged_update, latest.id)
+        {:ok, commit}
+      end
+    end
+  end
+
+  # Check if a Yjs update is empty (no items, no deletes).
+  # An empty V1 update encodes as: 0 (clients) + 0 (delete set clients) = 2 bytes.
+  defp empty_update?(update) do
+    byte_size(update) <= 2
+  end
 end

@@ -60,6 +60,47 @@ defmodule Commonplace.Tree.MergeTest do
     end
   end
 
+  describe "merge_content_doc/4" do
+    test "merges source changes into target", %{store: store} do
+      # Create target doc
+      target_uuid = create_text_doc(store, "test.txt", "hello")
+      {:ok, target_commit} = CommitStore.latest_commit(store, target_uuid)
+
+      # Create source as a copy (simulating fork)
+      source_uuid = UUID.uuid4()
+      {:ok, target_doc} = Merge.reconstruct_doc(store, target_uuid)
+      fork_update = Yelixer.Encoding.encode_update(target_doc)
+      CommitStore.create_commit(store, source_uuid, fork_update, nil)
+
+      # Edit source: append " world"
+      {:ok, source_doc} = Merge.reconstruct_doc(store, source_uuid)
+      source_doc = ContentType.insert_text(source_doc, 5, " world")
+      source_update = Yelixer.Encoding.encode_update(source_doc)
+      {:ok, source_prev} = CommitStore.latest_commit(store, source_uuid)
+      CommitStore.create_commit(store, source_uuid, source_update, source_prev.id)
+
+      # Merge: fork_point_commit is the TARGET commit at fork time
+      {:ok, _commit} =
+        Merge.merge_content_doc(store, source_uuid, target_uuid, target_commit.id)
+
+      {:ok, result_doc} = Merge.reconstruct_doc(store, target_uuid)
+      assert ContentType.get_content(result_doc) =~ "hello"
+      assert ContentType.get_content(result_doc) =~ "world"
+    end
+
+    test "no-op when source unchanged since fork", %{store: store} do
+      target_uuid = create_text_doc(store, "test.txt", "unchanged")
+      {:ok, target_commit} = CommitStore.latest_commit(store, target_uuid)
+
+      source_uuid = UUID.uuid4()
+      {:ok, target_doc} = Merge.reconstruct_doc(store, target_uuid)
+      CommitStore.create_commit(store, source_uuid, Yelixer.Encoding.encode_update(target_doc), nil)
+
+      # No edits on source
+      assert :noop = Merge.merge_content_doc(store, source_uuid, target_uuid, target_commit.id)
+    end
+  end
+
   defp create_text_doc(store, name, content) do
     uuid = UUID.uuid4()
     doc = Yelixer.Doc.new()
