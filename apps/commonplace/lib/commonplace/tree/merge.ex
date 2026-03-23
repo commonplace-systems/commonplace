@@ -158,7 +158,8 @@ defmodule Commonplace.Tree.Merge do
     # Step 1: Merge content for leaf documents only.
     # Skip root schema AND all directory schema docs — those are handled
     # via structural diff, not raw CRDT merge (node_ids are branch-specific).
-    dir_uuids = collect_directory_uuids(store, source_uuid)
+    # Walk BOTH current and fork-point source trees to catch deleted dirs too.
+    dir_uuids = collect_all_directory_uuids(store, source_uuid, manifest)
 
     content_entries =
       Enum.reject(manifest.document_map, fn {source_doc_uuid, _entry} ->
@@ -176,6 +177,9 @@ defmodule Commonplace.Tree.Merge do
 
           :noop ->
             rep
+
+          :none ->
+            %{rep | errors: [{:content_merge_failed, source_doc_uuid, :fork_point_not_found} | rep.errors]}
 
           {:error, reason} ->
             %{rep | errors: [{:content_merge_failed, source_doc_uuid, reason} | rep.errors]}
@@ -206,9 +210,16 @@ defmodule Commonplace.Tree.Merge do
           end
 
         # For collision detection, we need the target's state at fork time.
-        # Walk target chain to find the fork-point target state.
-        {:ok, target_fork_point_schema} =
-          reconstruct_doc_at(store, target_uuid, pre_merge_target_commits[target_uuid] || root_fork_point)
+        # Use the original fork-point from the manifest (on target chain),
+        # not pre-merge state which would match current and disable collision detection.
+        target_fork_point_schema =
+          case reconstruct_doc_at(store, target_uuid, root_fork_point) do
+            {:ok, doc} -> doc
+            :none ->
+              # First merge: root_fork_point is on target chain but may be the initial commit
+              {:ok, doc} = reconstruct_doc(store, target_uuid)
+              doc
+          end
 
         source_fp_entries = Schema.entries(source_baseline_schema)
         cur_source_entries = Schema.entries(cur_source_schema)
@@ -226,8 +237,16 @@ defmodule Commonplace.Tree.Merge do
             pre_merge_target_commits: pre_merge_target_commits
           )
 
-        # Step 5: Filter __processes.json if it was added/merged
-        updated_target_schema = maybe_filter_processes(store, updated_target_schema)
+        # Step 5: Filter __processes.json only if source added/changed it
+        processes_changed =
+          Map.has_key?(diff.added, "__processes.json") or
+            Map.has_key?(diff.removed, "__processes.json") or
+            Enum.any?(diff.renamed, fn {old, new, _} -> old == "__processes.json" or new == "__processes.json" end)
+
+        updated_target_schema =
+          if processes_changed,
+            do: maybe_filter_processes(store, updated_target_schema),
+            else: updated_target_schema
 
         # Commit updated target schema
         {:ok, target_latest} = CommitStore.latest_commit(store, target_uuid)
@@ -517,6 +536,36 @@ defmodule Commonplace.Tree.Merge do
       :error ->
         schema_doc
     end
+  end
+
+  # Collect directory UUIDs from BOTH current and fork-point source trees.
+  # Deleted directories still have manifest entries and must be excluded from content merge.
+  defp collect_all_directory_uuids(store, source_uuid, manifest) do
+    current_dirs = collect_directory_uuids(store, source_uuid)
+
+    # Also check fork-point source if available
+    fork_point_dirs =
+      case Map.get(manifest.document_map, source_uuid) do
+        %{fork_point_commit: fp_commit} ->
+          case reconstruct_doc_at(store, source_uuid, fp_commit) do
+            {:ok, fp_schema} ->
+              entries = Schema.entries(fp_schema)
+
+              entries
+              |> Enum.filter(fn {_name, e} -> e["type"] == "dir" end)
+              |> Enum.reduce(MapSet.new(), fn {_name, e}, acc ->
+                MapSet.put(acc, e["node_id"])
+              end)
+
+            :none ->
+              MapSet.new()
+          end
+
+        nil ->
+          MapSet.new()
+      end
+
+    MapSet.union(current_dirs, fork_point_dirs)
   end
 
   # Collect all directory UUIDs from a schema doc (recursively).
