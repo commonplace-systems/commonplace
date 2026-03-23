@@ -345,6 +345,82 @@ defmodule Commonplace.Tree.MergeTest do
     end
   end
 
+  describe "edge cases" do
+    test "concurrent edits on both branches merge via CRDT", %{store: store} do
+      file_uuid = create_text_doc(store, "shared.txt", "base")
+      root_uuid = UUID.uuid4()
+      root_doc = Schema.new_schema()
+      root_doc = Schema.add_file(root_doc, "shared.txt", file_uuid)
+      CommitStore.create_commit(store, root_uuid, Yelixer.Encoding.encode_update(root_doc), nil)
+
+      {fork_root, manifest} = Fork.fork_directory(root_uuid, store)
+
+      {:ok, fc} = CommitStore.latest_commit(store, fork_root)
+      fs = Schema.new_schema()
+      {:ok, fs} = Yelixer.Encoding.apply_update(fs, fc.update)
+      {:ok, fe} = Schema.get_entry(fs, "shared.txt")
+
+      # Edit on BOTH branches concurrently
+      {:ok, source_doc} = Merge.reconstruct_doc(store, fe.node_id)
+      source_doc = ContentType.insert_text(source_doc, 4, " SOURCE")
+      {:ok, sp} = CommitStore.latest_commit(store, fe.node_id)
+      CommitStore.create_commit(store, fe.node_id, Yelixer.Encoding.encode_update(source_doc), sp.id)
+
+      {:ok, target_doc} = Merge.reconstruct_doc(store, file_uuid)
+      target_doc = ContentType.insert_text(target_doc, 4, " TARGET")
+      {:ok, tp} = CommitStore.latest_commit(store, file_uuid)
+      CommitStore.create_commit(store, file_uuid, Yelixer.Encoding.encode_update(target_doc), tp.id)
+
+      # Merge should succeed — CRDT handles concurrent edits
+      {:ok, _manifest, report} = Merge.merge(fork_root, root_uuid, manifest, store)
+      assert report.conflicts == []
+
+      {:ok, result} = Merge.reconstruct_doc(store, file_uuid)
+      content = ContentType.get_content(result)
+      assert content =~ "SOURCE"
+      assert content =~ "TARGET"
+    end
+
+    test "repeated merge only applies new changes (incremental)", %{store: store} do
+      file_uuid = create_text_doc(store, "file.txt", "v1")
+      root_uuid = UUID.uuid4()
+      root_doc = Schema.new_schema()
+      root_doc = Schema.add_file(root_doc, "file.txt", file_uuid)
+      CommitStore.create_commit(store, root_uuid, Yelixer.Encoding.encode_update(root_doc), nil)
+
+      {fork_root, manifest} = Fork.fork_directory(root_uuid, store)
+
+      {:ok, fc} = CommitStore.latest_commit(store, fork_root)
+      fs = Schema.new_schema()
+      {:ok, fs} = Yelixer.Encoding.apply_update(fs, fc.update)
+      {:ok, fe} = Schema.get_entry(fs, "file.txt")
+
+      # First edit + merge
+      {:ok, d1} = Merge.reconstruct_doc(store, fe.node_id)
+      d1 = ContentType.insert_text(d1, 2, " edit1")
+      {:ok, p1} = CommitStore.latest_commit(store, fe.node_id)
+      CommitStore.create_commit(store, fe.node_id, Yelixer.Encoding.encode_update(d1), p1.id)
+
+      {:ok, manifest, _report1} = Merge.merge(fork_root, root_uuid, manifest, store)
+
+      {:ok, after_first} = Merge.reconstruct_doc(store, file_uuid)
+      assert ContentType.get_content(after_first) =~ "edit1"
+
+      # Second edit + merge (should only apply NEW changes)
+      {:ok, d2} = Merge.reconstruct_doc(store, fe.node_id)
+      d2 = ContentType.insert_text(d2, 0, "NEW ")
+      {:ok, p2} = CommitStore.latest_commit(store, fe.node_id)
+      CommitStore.create_commit(store, fe.node_id, Yelixer.Encoding.encode_update(d2), p2.id)
+
+      {:ok, _manifest, _report2} = Merge.merge(fork_root, root_uuid, manifest, store)
+
+      {:ok, result} = Merge.reconstruct_doc(store, file_uuid)
+      content = ContentType.get_content(result)
+      assert content =~ "NEW"
+      assert content =~ "edit1"
+    end
+  end
+
   describe "merge/4" do
     test "full merge: edits, adds, and deletes", %{store: store} do
       # Build target tree: root with file1.txt, file2.txt
