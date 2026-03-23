@@ -97,7 +97,7 @@ defmodule Commonplace.CLI.Replay do
     IO.puts("No commits for #{path}")
   end
 
-  defp replay_all(path, _doc_uuid, log) do
+  defp replay_all(_path, _doc_uuid, log) do
     Enum.with_index(log, 1)
     |> Enum.each(fn {commit, i} ->
       commits_so_far = Enum.slice(log, 0, i)
