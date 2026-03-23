@@ -45,7 +45,7 @@ For each document that existed at fork time (entries in the manifest):
 
 1. Load the source doc's full Yjs state (replay all commits since fork_point)
 2. Reconstruct the fork-point state vector from the fork_point_commit's Yjs update
-3. Compute the diff: `Encoding.encode_state_as_update(source_doc, fork_point_state_vector)`
+3. Compute the diff: `Encoding.encode_diff(source_doc, fork_point_state_vector)`
    - This gives "all Yjs updates in the source that happened after the fork"
 4. Apply that update to the target doc: `Encoding.apply_update(target_doc, diff)`
    - CRDT merge handles conflicts automatically — concurrent edits to the same text are resolved deterministically by client ID ordering
