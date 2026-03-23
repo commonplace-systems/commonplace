@@ -2,6 +2,7 @@
 
 > Design for CX-v4q: Merge across branches.
 > Discussed 2026-03-23 in #loom between commonplace and commonplace-plan.
+> Reviewed by Codex — 6 findings incorporated (see Revision Notes at end).
 
 ## Overview
 
@@ -13,7 +14,13 @@ The ForkManifest (CX-89r) provides the provenance map: for every document in the
 
 - **ForkManifest** (CX-89r, done): tracks `new_uuid → {original_uuid, fork_point_commit}`
 - **CommitStore**: stores commits with Yjs updates and parent chains
-- **Yelixer state vectors**: `encode_state_as_update(doc, state_vector)` gives updates the other side hasn't seen
+- **Yelixer state vectors**: `BlockStore.state_vector/1` and `Encoding.encode_state_as_update/2` for computing diffs
+
+## Key Constraint: Schema Docs Cannot Be CRDT-Merged Directly
+
+Schema docs embed `node_id` UUIDs that are branch-specific. A source schema entry `"file.txt" → source-uuid-123` must not be applied verbatim to the target tree — that would make the target point at a source-branch document, breaking branch isolation.
+
+**Schema merge must happen at the application level**, not via raw CRDT update application. We diff the schema entries structurally, then apply changes with UUID translation.
 
 ## Merge Algorithm
 
@@ -30,65 +37,113 @@ manifest.document_map = %{
 }
 ```
 
-### Step 2: For Each Document in the Manifest
+Build a reverse map for lookups: `source_uuid → {target_uuid, fork_point_commit}`.
 
-For documents that existed at fork time:
+### Step 2: Merge Known Documents (Content)
 
-1. Load the source doc's current Yjs state
-2. Reconstruct the fork-point state vector (from the fork_point_commit's Yjs update)
-3. Compute the diff: `encode_state_as_update(source_doc, fork_point_state_vector)`
+For each document that existed at fork time (entries in the manifest):
+
+1. Load the source doc's full Yjs state (replay all commits since fork_point)
+2. Reconstruct the fork-point state vector from the fork_point_commit's Yjs update
+3. Compute the diff: `Encoding.encode_state_as_update(source_doc, fork_point_state_vector)`
    - This gives "all Yjs updates in the source that happened after the fork"
-4. Apply that update to the target doc: `apply_update(target_doc, diff)`
-   - CRDT merge handles conflicts automatically — concurrent edits to the same text are resolved by client ID ordering
+4. Apply that update to the target doc: `Encoding.apply_update(target_doc, diff)`
+   - CRDT merge handles conflicts automatically — concurrent edits to the same text are resolved deterministically by client ID ordering
+5. Commit the updated target doc to the CommitStore
 
-### Step 3: Handle New Documents (Post-Fork)
+### Step 3: Compute Schema Diff
 
-Documents created on the source branch after the fork have no counterpart in the target. These appear as new entries in the source's schema doc that weren't present at fork time.
+Compare the source schema at three points:
+- **Fork-point schema**: load using the fork_point_commit for the source root
+- **Current source schema**: load latest
+- **Current target schema**: load latest
 
-**Action:** Copy the new document to the target (create new UUID, copy current content). This is a mini-fork of a single document.
+Diff the fork-point schema against the current source schema to find:
+- **Added entries**: in current source but not at fork-point
+- **Removed entries**: at fork-point but not in current source
+- **Renamed entries**: same node_id under a different name (detected via node_id matching)
 
-### Step 4: Handle Deleted Documents
+### Step 4: Apply Schema Changes to Target
 
-Documents deleted from the source branch (removed from schema) should be unlinked from the target schema too.
+#### Added entries (new docs/dirs created on source after fork)
 
-**Action:** Remove the entry from the target's schema doc. Do NOT delete the target's content doc — it may have its own edits that the user wants to keep. The GC reachability walk (CX-6rf) will eventually identify truly orphaned docs.
+1. Copy the source document content to a new target UUID (mini-fork)
+2. Add the new UUID to the target schema under the same name
+3. **Add provenance to ForkManifest**: `{new_target_uuid → {source_uuid, current_source_commit}}`
+   - This ensures future incremental merges can track changes to these documents
 
-### Step 5: Schema Tree Merge
+For new directories: recurse — fork the entire subtree with new UUIDs (reuse `Fork.fork_directory`).
 
-Schema docs are themselves CRDT documents (YMaps). Changes to the schema — new entries, removed entries, renames — can be merged the same way as content documents:
+#### Removed entries (docs/dirs deleted on source after fork)
 
-1. Reconstruct fork-point schema state vector
-2. Compute schema diff (new entries since fork)
-3. Apply to target schema
+**Do not blindly unlink.** Check for delete-vs-modify conflict:
 
-This handles directory structure changes (new subdirectories, moved files) automatically via CRDT merge.
+1. Look up the target doc's UUID via the manifest
+2. Load the target doc's current commit
+3. Compare the target doc's state with its fork-point state
+   - If target is **unchanged** since fork → safe to unlink from target schema
+   - If target has **modifications** since fork → **conflict**: source deleted, target modified
+4. For conflicts: record in a merge report, do NOT unlink. The user decides.
 
-### Step 6: Update Fork Point
+#### Same-name collisions
 
-After merge, update the ForkManifest's `fork_point_commit` for each document to the current source commit. This way, future merges only bring changes made since the last merge (incremental merge).
+If both source and target independently added an entry with the same name but different UUIDs:
 
-## __processes.json Handling
+- YMap is last-writer-wins — raw CRDT merge would silently drop one version
+- **Detect before applying**: compare source additions against target additions (entries present in current target but not at fork-point)
+- If collision detected: **conflict**. Record both UUIDs in the merge report. Do not overwrite.
 
-Same fork-safety filtering as fork (CX-89r):
+#### Renames
 
-- Entries with `"fork": "skip"` (or defaulting to skip) are **not merged** — they're branch-specific processes
-- Entries with `"fork": "copy"` can be merged
-- In practice, most process entries are branch-specific, so merge skips them
-- Users manually configure processes on the target branch if needed
+If a source entry was renamed (same node_id, different name):
+1. Find the corresponding target entry via manifest UUID mapping
+2. Remove the old name from target schema
+3. Add the new name pointing to the same target UUID
 
-## Edge Cases
+### Step 5: Apply __processes.json Fork-Safety
 
-### Conflicting Schema Changes
+When merging schema changes that include `__processes.json`:
 
-If both source and target modified the same schema (e.g., both added a file with the same name but different UUIDs), CRDT merge resolves by keeping both entries. The YMap will have the last-writer-wins entry. This may need manual intervention — flag as a conflict for the user.
+- Use `Config.fork_behavior/1` — the same function used by fork (CX-89r)
+- This respects explicit `"fork": "copy"/"skip"` annotations and mode-based defaults
+  (elixir → copy, sandbox-exec/command → skip)
+- Only entries with `:copy` behavior are merged into the target
+- Do NOT restate defaults in the merge doc — reference `Config.fork_behavior/1` as the single source of truth
 
-### Document Modified on Both Branches
+### Step 6: Update Fork Point (Atomically)
 
-CRDT handles this automatically. Both sets of edits are preserved. For text documents, concurrent insertions at the same position are ordered by client ID. No data is lost, though the result may need human review.
+After all content and schema changes are applied:
 
-### Circular or Repeated Merges
+1. Update each manifest entry's `fork_point_commit` to the current source commit
+2. Add new manifest entries for post-fork documents (Step 4)
+3. Persist the updated ForkManifest
 
-The fork_point update (Step 6) prevents re-applying already-merged changes. Each merge advances the fork point, so the next merge only sees new changes.
+**Ordering for crash safety**: Apply all target commits first, then update the manifest last. If a crash occurs between content application and manifest update:
+- Next merge re-computes diffs from the old fork_point
+- CRDT `apply_update` is **idempotent** — re-applying the same Yjs updates has no effect
+- This makes the non-atomic case safe: worst case is redundant (but harmless) re-application
+
+The manifest update is the "commit point" of the merge operation.
+
+## Merge Report
+
+Every merge produces a report:
+
+```elixir
+%MergeReport{
+  merged_docs: [{source_uuid, target_uuid}],     # successfully merged
+  new_docs: [{source_uuid, new_target_uuid}],     # copied to target
+  deleted_docs: [target_uuid],                     # unlinked from target
+  conflicts: [
+    {:delete_vs_modify, name, target_uuid},        # source deleted, target modified
+    {:name_collision, name, source_uuid, target_uuid},  # both added same name
+  ]
+}
+```
+
+The merge function returns `{:ok, updated_manifest, report}` or `{:error, reason}`.
+
+Conflicts do NOT block the merge — non-conflicting changes are applied, and conflicts are reported for manual resolution.
 
 ## API
 
@@ -96,7 +151,7 @@ The fork_point update (Step 6) prevents re-applying already-merged changes. Each
 
 ```elixir
 Commonplace.Tree.Merge.merge(source_uuid, target_uuid, manifest, store)
-# Returns {:ok, updated_manifest} or {:error, reason}
+# Returns {:ok, updated_manifest, merge_report} or {:error, reason}
 ```
 
 ### CLI
@@ -105,11 +160,46 @@ Commonplace.Tree.Merge.merge(source_uuid, target_uuid, manifest, store)
 commonplace merge <source-path> <target-path>
 ```
 
-Looks up the ForkManifest to find the provenance mapping, performs the merge, and reports what changed.
+Looks up the ForkManifest to find the provenance mapping, performs the merge, prints the report. Conflicts are listed with instructions for resolution.
+
+## Edge Cases
+
+### Document Modified on Both Branches
+
+CRDT handles this automatically in Step 2. Both sets of edits are preserved. For text documents, concurrent insertions at the same position are ordered deterministically by client ID. No data is lost, though the result may need human review.
+
+### Circular or Repeated Merges
+
+The fork_point update (Step 6) prevents re-applying already-merged changes. Each merge advances the fork point, so the next merge only sees new changes. CRDT idempotency provides a safety net if the fork_point update fails.
+
+### Nested Directory Changes
+
+If a subdirectory was added on the source branch, the entire subtree is forked into the target (reusing `Fork.fork_directory`). The subdirectory's ForkManifest entries are merged into the parent manifest so future merges track the full tree.
+
+### Empty Merge
+
+If no changes occurred on the source since the last merge (or fork), the merge is a no-op. The fork_point is not advanced (nothing to advance to).
 
 ## Future Considerations
 
 - **Merge commits**: Record a commit on the target with metadata pointing to both pre-merge target commit and source commit as parents (DAG branching)
-- **Conflict markers**: For schema conflicts (same name, different UUIDs), surface to the user
+- **Conflict resolution CLI**: `commonplace resolve <conflict-id>` to choose source or target version
 - **Three-way merge visualization**: Show fork-point state, source state, and target state side by side
 - **Cherry-pick (CX-b70)**: Merge a single document's changes instead of the whole branch
+- **Bidirectional merge**: Merge target changes back into source (requires reverse manifest)
+
+## Revision Notes
+
+Incorporated feedback from Codex review (2026-03-23):
+
+1. **Schema node_id remapping** (P1): Schema docs cannot be CRDT-merged directly because node_ids are branch-specific. Schema merge now happens at the application level with explicit UUID translation via manifest mappings.
+
+2. **Post-fork document provenance** (P1): New documents copied during merge (Step 4) now get ForkManifest entries, enabling future incremental merges to track them.
+
+3. **Delete-vs-modify detection** (P1): Deleted entries are no longer blindly unlinked. Target-side modifications since fork are detected and flagged as conflicts rather than silently orphaned.
+
+4. **__processes.json policy alignment** (P2): Merge references `Config.fork_behavior/1` directly rather than restating defaults, ensuring consistency with fork logic.
+
+5. **Same-name collision handling** (P2): YMap last-writer-wins behavior is acknowledged as data-loss-prone. Same-name additions on both branches are detected pre-merge and flagged as conflicts.
+
+6. **Atomic manifest advancement** (P2): Manifest update is ordered last (after all target commits). CRDT idempotency makes the non-atomic case safe — re-applying updates is a no-op.
