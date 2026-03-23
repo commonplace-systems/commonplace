@@ -43,14 +43,26 @@ defmodule Commonplace.Tree.Merge do
   end
 
   defp merge_leaf(source_uuid, target_uuid, ancestor, store, report) do
-    case reconstruct_doc_at(store, source_uuid, ancestor.id) do
-      {:ok, ancestor_doc} ->
-        ancestor_sv = BlockStore.state_vector(ancestor_doc.store)
+    # Use a stored merge point as the diff baseline if one exists (incremental merging),
+    # otherwise fall back to the common ancestor.
+    baseline_commit_id =
+      case CommitStore.get_merge_point(store, target_uuid, source_uuid) do
+        nil -> ancestor.id
+        stored_id -> stored_id
+      end
+
+    case reconstruct_doc_at(store, source_uuid, baseline_commit_id) do
+      {:ok, baseline_doc} ->
+        baseline_sv = BlockStore.state_vector(baseline_doc.store)
 
         {:ok, source_doc} = reconstruct_doc(store, source_uuid)
-        diff = Encoding.encode_diff(source_doc, ancestor_sv)
+        diff = Encoding.encode_diff(source_doc, baseline_sv)
+
+        {:ok, source_latest} = CommitStore.latest_commit(store, source_uuid)
 
         if byte_size(diff) <= 2 do
+          # No new changes since last merge — update the merge point to current source head
+          CommitStore.set_merge_point(store, target_uuid, source_uuid, source_latest.id)
           {:ok, report}
         else
           {:ok, target_doc} = reconstruct_doc(store, target_uuid)
@@ -60,12 +72,42 @@ defmodule Commonplace.Tree.Merge do
           {:ok, latest} = CommitStore.latest_commit(store, target_uuid)
           CommitStore.create_commit(store, target_uuid, merged_update, latest.id)
 
+          # Record the source's current head as the merge point for next time
+          CommitStore.set_merge_point(store, target_uuid, source_uuid, source_latest.id)
+
           {:ok, %{report | merged_docs: [{source_uuid, target_uuid} | report.merged_docs]}}
         end
 
       :none ->
-        # Common ancestor commit not found in source chain — fall back to no-op
-        {:ok, report}
+        # Baseline commit not found in source chain — fall back to common ancestor
+        case reconstruct_doc_at(store, source_uuid, ancestor.id) do
+          {:ok, ancestor_doc} ->
+            ancestor_sv = BlockStore.state_vector(ancestor_doc.store)
+
+            {:ok, source_doc} = reconstruct_doc(store, source_uuid)
+            diff = Encoding.encode_diff(source_doc, ancestor_sv)
+
+            {:ok, source_latest} = CommitStore.latest_commit(store, source_uuid)
+
+            if byte_size(diff) <= 2 do
+              {:ok, report}
+            else
+              {:ok, target_doc} = reconstruct_doc(store, target_uuid)
+              {:ok, merged_doc} = Encoding.apply_update(target_doc, diff)
+
+              merged_update = Encoding.encode_update(merged_doc)
+              {:ok, latest} = CommitStore.latest_commit(store, target_uuid)
+              CommitStore.create_commit(store, target_uuid, merged_update, latest.id)
+
+              CommitStore.set_merge_point(store, target_uuid, source_uuid, source_latest.id)
+
+              {:ok, %{report | merged_docs: [{source_uuid, target_uuid} | report.merged_docs]}}
+            end
+
+          :none ->
+            # Common ancestor commit not found in source chain — fall back to no-op
+            {:ok, report}
+        end
     end
   end
 

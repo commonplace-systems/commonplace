@@ -49,6 +49,16 @@ defmodule Commonplace.Store.CommitStore do
     GenServer.call(server, {:find_common_ancestor, uuid_a, uuid_b})
   end
 
+  @doc "Store the commit ID of the source at the time of a merge, for incremental merging."
+  def set_merge_point(server \\ __MODULE__, target_uuid, source_uuid, commit_id) do
+    GenServer.call(server, {:set_merge_point, target_uuid, source_uuid, commit_id})
+  end
+
+  @doc "Retrieve the stored merge point commit ID for a (target, source) pair."
+  def get_merge_point(server \\ __MODULE__, target_uuid, source_uuid) do
+    GenServer.call(server, {:get_merge_point, target_uuid, source_uuid})
+  end
+
   @impl true
   def init(opts) do
     data_dir = Keyword.fetch!(opts, :data_dir)
@@ -202,6 +212,18 @@ defmodule Commonplace.Store.CommitStore do
   def handle_call({:find_common_ancestor, uuid_a, uuid_b}, _from, state) do
     ids_a = collect_commit_ids(state.db, uuid_a)
     result = walk_to_ancestor(state.db, uuid_b, ids_a)
+    {:reply, result, state}
+  end
+
+  @impl true
+  def handle_call({:set_merge_point, target_uuid, source_uuid, commit_id}, _from, state) do
+    CubDB.put(state.db, {:merge_point, target_uuid, source_uuid}, commit_id)
+    {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_call({:get_merge_point, target_uuid, source_uuid}, _from, state) do
+    result = CubDB.get(state.db, {:merge_point, target_uuid, source_uuid})
     {:reply, result, state}
   end
 

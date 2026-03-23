@@ -83,6 +83,30 @@ defmodule Commonplace.Tree.MergeTest do
       assert report.conflicts == []
     end
 
+    test "repeated merge only applies new changes", %{store: store} do
+      file_uuid = create_text_doc(store, "file.txt", "v1")
+      root_uuid = create_schema(store, %{"file.txt" => {:doc, file_uuid}})
+
+      fork_root = Fork.fork_directory(root_uuid, store)
+      {fork_file, _} = get_child(store, fork_root, "file.txt")
+
+      # First edit + merge
+      edit_doc(store, fork_file, " edit1", 2)
+      {:ok, _} = Merge.merge(fork_root, root_uuid, store)
+
+      {:ok, doc1} = reconstruct_doc(store, file_uuid)
+      assert ContentType.get_content(doc1) =~ "edit1"
+
+      # Second edit + merge (should only apply new changes)
+      edit_doc(store, fork_file, "NEW ", 0)
+      {:ok, _} = Merge.merge(fork_root, root_uuid, store)
+
+      {:ok, doc2} = reconstruct_doc(store, file_uuid)
+      content = ContentType.get_content(doc2)
+      assert content =~ "NEW"
+      assert content =~ "edit1"
+    end
+
     test "concurrent edits merge via CRDT", %{store: store} do
       file_uuid = create_text_doc(store, "shared.txt", "base")
       root_uuid = create_schema(store, %{"shared.txt" => {:doc, file_uuid}})
