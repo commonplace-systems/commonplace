@@ -46,4 +46,58 @@ defmodule Commonplace.Process.OrchestratorCleanupTest do
       GenServer.stop(orch)
     end
   end
+
+  describe "terminate/2 escalation" do
+    test "sends SIGTERM then SIGKILL to managed process groups", %{store: store, root: root} do
+      # Create a __processes.json with a long-running sleep command
+      proc_uuid = UUID.uuid4()
+      doc = Yelixer.Doc.new()
+      doc = Commonplace.Document.ContentType.create(doc, :text, "__processes.json")
+      content = Jason.encode!(%{
+        "sleeper" => %{
+          "mode" => "sandbox-exec",
+          "command" => "sleep",
+          "args" => ["3600"]
+        }
+      })
+      doc = Commonplace.Document.ContentType.insert_text(doc, 0, content)
+      update = Yelixer.Encoding.encode_update(doc)
+      CommitStore.create_commit(store, proc_uuid, update, nil)
+
+      root_doc = Schema.new_schema()
+      root_doc = Schema.add_file(root_doc, "__processes.json", proc_uuid)
+      update = Yelixer.Encoding.encode_update(root_doc)
+      CommitStore.create_commit(store, root, update, nil)
+
+      {:ok, orch} = Orchestrator.start_link(root_uuid: root, store: store, interval: 100_000)
+      send(orch, :reconcile)
+
+      # Poll for os_pid to be available (port starts async with 200ms delay)
+      os_pid = poll_for_os_pid(orch, "sleeper", 10)
+      assert os_pid != nil, "sleeper process should have an os_pid"
+
+      # Verify sleep is running
+      {_, 0} = System.cmd("kill", ["-0", "#{os_pid}"], stderr_to_stdout: true)
+
+      # Stop orchestrator — should kill the sleep process
+      GenServer.stop(orch, :shutdown, 10_000)
+      Process.sleep(500)
+
+      # Sleep process should be dead
+      {_, exit_code} = System.cmd("kill", ["-0", "#{os_pid}"], stderr_to_stdout: true)
+      assert exit_code != 0
+    end
+  end
+
+  defp poll_for_os_pid(orch, name, retries) when retries > 0 do
+    info = Orchestrator.process_info(orch)
+    case info do
+      %{^name => %{os_pid: pid}} when not is_nil(pid) -> pid
+      _ ->
+        Process.sleep(200)
+        poll_for_os_pid(orch, name, retries - 1)
+    end
+  end
+
+  defp poll_for_os_pid(_, _, 0), do: nil
 end

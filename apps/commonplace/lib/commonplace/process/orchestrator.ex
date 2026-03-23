@@ -12,6 +12,8 @@ defmodule Commonplace.Process.Orchestrator do
 
   use GenServer
 
+  @shutdown_grace_ms 5000
+
   alias Commonplace.Process.Config
   alias Commonplace.Store.CommitStore
   alias Commonplace.Tree.Schema
@@ -92,12 +94,28 @@ defmodule Commonplace.Process.Orchestrator do
 
   @impl true
   def terminate(_reason, state) do
+    # Collect os_pids first, then kill all process groups
+    os_pids =
+      state.processes
+      |> Enum.map(fn {_name, info} -> get_os_pid(info) end)
+      |> Enum.reject(&is_nil/1)
+
+    # SIGTERM all process groups
+    Enum.each(os_pids, fn pid ->
+      System.cmd("kill", ["-TERM", "--", "-#{pid}"], stderr_to_stdout: true)
+    end)
+
+    # Wait for graceful shutdown
+    Process.sleep(@shutdown_grace_ms)
+
+    # SIGKILL any survivors
+    Enum.each(os_pids, fn pid ->
+      System.cmd("kill", ["-9", "--", "-#{pid}"], stderr_to_stdout: true)
+    end)
+
+    # Stop BEAM wrappers
     Enum.each(state.processes, fn {_name, info} ->
       try do
-        # Kill OS process tree first (prevents orphans)
-        os_pid = get_os_pid(info)
-        if os_pid, do: System.cmd("kill", ["-TERM", "--", "-#{os_pid}"], stderr_to_stdout: true)
-
         if Process.alive?(info.pid), do: GenServer.stop(info.pid, :shutdown, 2000)
       catch
         :exit, _ -> :ok
