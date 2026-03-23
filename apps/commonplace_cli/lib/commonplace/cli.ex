@@ -121,12 +121,107 @@ defmodule Commonplace.CLI do
     end
   end
 
-  @doc "Start the application services needed for CLI commands."
+  @doc """
+  Start the application services needed for CLI commands.
+
+  Tries to connect to a running `commonplace serve` node first. If connected,
+  routes CommitStore calls remotely (no local CubDB). If not, acquires a file
+  lock and starts CubDB locally.
+  """
   def ensure_started(data_dir) do
     File.mkdir_p!(data_dir)
-    Application.put_env(:commonplace, :data_dir, data_dir)
-    {:ok, _} = Application.ensure_all_started(:commonplace)
-    :ok
+
+    case try_connect_to_serve(data_dir) do
+      {:ok, node} ->
+        # Connected to serve — use remote CommitStore, don't start local app
+        Commonplace.Store.CommitStoreClient.set_remote_node(node)
+        :ok
+
+      :not_running ->
+        # No serve running — acquire lock and start locally
+        case acquire_db_lock(data_dir) do
+          {:ok, _fd} ->
+            Application.put_env(:commonplace, :data_dir, data_dir)
+            {:ok, _} = Application.ensure_all_started(:commonplace)
+            :ok
+
+          {:error, :locked} ->
+            IO.puts(:stderr,
+              "Cannot access database — another process holds the lock.\n" <>
+                "If commonplace serve is running, distributed Erlang connection failed.\n" <>
+                "Stop the other process first."
+            )
+
+            System.halt(1)
+        end
+    end
+  end
+
+  defp try_connect_to_serve(data_dir) do
+    node_name_file = Path.join(data_dir, "node_name")
+
+    case File.read(node_name_file) do
+      {:ok, content} ->
+        serve_node = content |> String.trim() |> String.to_atom()
+
+        # Start a temporary CLI node so we can connect
+        cli_name = :"commonplace_cli_#{:rand.uniform(999_999)}"
+
+        case Node.start(cli_name, :shortnames) do
+          {:ok, _} ->
+            if Node.connect(serve_node) do
+              {:ok, serve_node}
+            else
+              Node.stop()
+              :not_running
+            end
+
+          {:error, _} ->
+            :not_running
+        end
+
+      {:error, _} ->
+        :not_running
+    end
+  end
+
+  defp acquire_db_lock(data_dir) do
+    lock_path = Path.join(data_dir, "commits.lock")
+    my_pid = System.pid()
+
+    case File.read(lock_path) do
+      {:ok, content} ->
+        pid_str = String.trim(content)
+
+        cond do
+          # Same process already holds the lock — re-entrant
+          pid_str == my_pid ->
+            {:ok, lock_path}
+
+          # Check if the locking process is still alive
+          process_alive?(pid_str) ->
+            {:error, :locked}
+
+          # Stale lock file — process is dead, take over
+          true ->
+            write_lock(lock_path, my_pid)
+        end
+
+      {:error, _} ->
+        write_lock(lock_path, my_pid)
+    end
+  end
+
+  defp process_alive?(pid_str) do
+    case System.cmd("kill", ["-0", pid_str], stderr_to_stdout: true) do
+      {_, 0} -> true
+      _ -> false
+    end
+  end
+
+  defp write_lock(lock_path, pid) do
+    File.write!(lock_path, pid)
+    {:ok, lock_path}
   end
 
   @doc "Load a schema doc from the commit store."

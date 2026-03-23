@@ -13,6 +13,7 @@ defmodule Commonplace.CLI.Serve do
   alias Commonplace.Process.Orchestrator
 
   def run(data_dir, _relative_path, _args) do
+    start_named_node(data_dir)
     CLI.ensure_started(data_dir)
     root = CLI.root_uuid(data_dir)
 
@@ -72,6 +73,7 @@ defmodule Commonplace.CLI.Serve do
       {:DOWN, ^ref, :process, ^orch, reason} ->
         IO.puts("\nOrchestrator stopped: #{inspect(reason)}")
         File.rm(pid_file)
+        cleanup_node_name(data_dir)
     end
   end
 
@@ -193,5 +195,36 @@ defmodule Commonplace.CLI.Serve do
       :none ->
         Schema.new_schema()
     end
+  end
+
+  # Start the BEAM as a named node for distributed Erlang CLI access.
+  defp start_named_node(data_dir) do
+    node_name = workspace_node_name(data_dir)
+
+    case Node.start(node_name, :shortnames) do
+      {:ok, _} ->
+        # Write node name file so CLI can discover us
+        node_name_file = Path.join(data_dir, "node_name")
+        File.write!(node_name_file, "#{Node.self()}")
+        IO.puts("  Node: #{Node.self()}")
+
+      {:error, reason} ->
+        IO.puts(:stderr, "Warning: could not start named node: #{inspect(reason)}")
+        IO.puts(:stderr, "  CLI commands will use direct CubDB access (file-locked).")
+    end
+  end
+
+  defp cleanup_node_name(data_dir) do
+    node_name_file = Path.join(data_dir, "node_name")
+    File.rm(node_name_file)
+  end
+
+  defp workspace_node_name(data_dir) do
+    hash =
+      :crypto.hash(:sha256, data_dir)
+      |> Base.encode16(case: :lower)
+      |> binary_part(0, 6)
+
+    :"commonplace_#{hash}"
   end
 end

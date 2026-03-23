@@ -39,15 +39,48 @@ defmodule Commonplace.Store.CommitStore do
     data_dir = Keyword.fetch!(opts, :data_dir)
     path = Path.join(data_dir, "commits")
     File.mkdir_p!(path)
-    {:ok, db} = CubDB.start_link(data_dir: path)
-    {:ok, %{db: db}}
+
+    {:ok, db} =
+      CubDB.start_link(
+        data_dir: path,
+        auto_file_sync: true,
+        auto_compact: true
+      )
+
+    case probe_integrity(db) do
+      :ok ->
+        {:ok, %{db: db}}
+
+      {:error, reason} ->
+        require Logger
+
+        Logger.warning(
+          "CubDB corrupt (#{inspect(reason)}). Archiving and starting fresh."
+        )
+
+        CubDB.stop(db)
+        archive_corrupt_db(path)
+
+        {:ok, db2} =
+          CubDB.start_link(
+            data_dir: path,
+            auto_file_sync: true,
+            auto_compact: true
+          )
+
+        {:ok, %{db: db2}}
+    end
   end
 
   @impl true
   def handle_call({:create_commit, doc_uuid, update, parent_id}, _from, state) do
     commit = Commit.new(doc_uuid, update, parent_id)
-    CubDB.put(state.db, {:commit, commit.id}, commit)
-    CubDB.put(state.db, {:latest, doc_uuid}, commit.id)
+
+    CubDB.put_multi(state.db, [
+      {{:commit, commit.id}, commit},
+      {{:latest, doc_uuid}, commit.id}
+    ])
+
     {:reply, commit, state}
   end
 
@@ -120,5 +153,24 @@ defmodule Commonplace.Store.CommitStore do
           true -> walk_ancestors(db, ancestor_id, commit.parent_id)
         end
     end
+  end
+
+  defp probe_integrity(db) do
+    try do
+      # Read a small slice — forces CubDB to touch the data file
+      CubDB.select(db, min_key: :_, max_key: :_, pipe: [take: 1])
+      :ok
+    rescue
+      e -> {:error, e}
+    catch
+      kind, reason -> {:error, {kind, reason}}
+    end
+  end
+
+  defp archive_corrupt_db(path) do
+    timestamp = DateTime.utc_now() |> DateTime.to_unix()
+    archive_path = "#{path}.corrupt.#{timestamp}"
+    File.rename!(path, archive_path)
+    File.mkdir_p!(path)
   end
 end

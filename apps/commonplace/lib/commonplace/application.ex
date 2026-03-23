@@ -10,7 +10,21 @@ defmodule Commonplace.Application do
     children = [
       {Registry, keys: :unique, name: Commonplace.Document.Registry},
       {Phoenix.PubSub, name: Commonplace.PubSub},
-      {Commonplace.Store.CommitStore, data_dir: data_dir},
+      %{
+        id: Commonplace.Store.CommitStoreSupervisor,
+        type: :supervisor,
+        start:
+          {Supervisor, :start_link,
+           [
+             [{Commonplace.Store.CommitStore, data_dir: data_dir}],
+             [
+               strategy: :one_for_one,
+               max_restarts: 2,
+               max_seconds: 10,
+               name: Commonplace.Store.CommitStoreSupervisor
+             ]
+           ]}
+      },
       {DynamicSupervisor, name: Commonplace.Document.Supervisor, strategy: :one_for_one}
     ]
 
