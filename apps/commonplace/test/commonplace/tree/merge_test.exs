@@ -331,17 +331,17 @@ defmodule Commonplace.Tree.MergeTest do
   end
 
   describe "update_manifest_fork_points/3" do
-    test "advances fork points to current source commits", %{store: store} do
+    test "advances fork points to target doc's latest commit", %{store: store} do
       source_uuid = create_text_doc(store, "s.txt", "content")
-      {:ok, source_commit} = CommitStore.latest_commit(store, source_uuid)
-      target_uuid = UUID.uuid4()
+      target_uuid = create_text_doc(store, "t.txt", "target content")
+      {:ok, target_commit} = CommitStore.latest_commit(store, target_uuid)
 
       manifest = ForkManifest.new("root")
       manifest = ForkManifest.add_entry(manifest, source_uuid, target_uuid, <<0::256>>)
 
       updated = Merge.update_manifest_fork_points(store, manifest, [source_uuid])
       entry = updated.document_map[source_uuid]
-      assert entry.fork_point_commit == source_commit.id
+      assert entry.fork_point_commit == target_commit.id
     end
   end
 

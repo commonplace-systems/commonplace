@@ -44,7 +44,7 @@ defmodule Commonplace.Tree.Merge do
   Returns {:ok, doc} or :none if no commits exist.
   """
   def reconstruct_doc(store, doc_uuid) do
-    case CommitStore.commit_log(store, doc_uuid) do
+    case CommitStore.commit_log(store, doc_uuid, limit: 10_000) do
       [] ->
         :none
 
@@ -67,7 +67,7 @@ defmodule Commonplace.Tree.Merge do
   then apply commits until we reach target_commit_id.
   """
   def reconstruct_doc_at(store, doc_uuid, target_commit_id) do
-    case CommitStore.commit_log(store, doc_uuid) do
+    case CommitStore.commit_log(store, doc_uuid, limit: 10_000) do
       [] ->
         :none
 
@@ -141,11 +141,14 @@ defmodule Commonplace.Tree.Merge do
   def merge(source_uuid, target_uuid, %ForkManifest{} = manifest, store) do
     report = %MergeReport{}
 
-    # Step 1: Merge content for all known documents in manifest
-    # Skip the root schema entries — those are handled via structural diff
+    # Step 1: Merge content for leaf documents only.
+    # Skip root schema AND all directory schema docs — those are handled
+    # via structural diff, not raw CRDT merge (node_ids are branch-specific).
+    dir_uuids = collect_directory_uuids(store, source_uuid)
+
     content_entries =
       Enum.reject(manifest.document_map, fn {source_doc_uuid, _entry} ->
-        source_doc_uuid == source_uuid
+        source_doc_uuid == source_uuid or MapSet.member?(dir_uuids, source_doc_uuid)
       end)
 
     report =
@@ -300,7 +303,8 @@ defmodule Commonplace.Tree.Merge do
             {new_uuid, sub_manifest} = Fork.fork_directory(source_node_id, store)
             doc = Schema.add_directory(doc, name, new_uuid)
             {:ok, source_commit} = CommitStore.latest_commit(store, source_node_id)
-            man = ForkManifest.add_entry(man, new_uuid, source_node_id, source_commit.id)
+            # Key by source UUID so future merges can look up source→target
+            man = ForkManifest.add_entry(man, source_node_id, new_uuid, source_commit.id)
             man = merge_sub_manifest(man, sub_manifest)
             {doc, man, %{rep | new_docs: [{source_node_id, new_uuid} | rep.new_docs]}}
 
@@ -311,7 +315,8 @@ defmodule Commonplace.Tree.Merge do
             CommitStore.create_commit(store, new_uuid, update, nil)
             doc = Schema.add_file(doc, name, new_uuid)
             {:ok, source_commit} = CommitStore.latest_commit(store, source_node_id)
-            man = ForkManifest.add_entry(man, new_uuid, source_node_id, source_commit.id)
+            # Key by source UUID so future merges can look up source→target
+            man = ForkManifest.add_entry(man, source_node_id, new_uuid, source_commit.id)
             {doc, man, %{rep | new_docs: [{source_node_id, new_uuid} | rep.new_docs]}}
         end
       end
@@ -340,35 +345,42 @@ defmodule Commonplace.Tree.Merge do
 
   defp apply_renames(target_doc, renames, manifest, target_entries, report) do
     Enum.reduce(renames, {target_doc, report}, fn {old_name, new_name, source_node_id}, {doc, rep} ->
-      case Map.get(manifest.document_map, source_node_id) do
-        %{original_uuid: target_uuid} ->
-          type = get_entry_type(target_entries, old_name)
-          doc = Schema.remove_entry(doc, old_name)
+      # Check for rename collision: target independently has an entry at new_name
+      if Map.has_key?(target_entries, new_name) and old_name != new_name do
+        {:ok, existing} = Schema.get_entry(doc, new_name)
+        conflict = {:name_collision, new_name, source_node_id, existing.node_id}
+        {doc, %{rep | conflicts: [conflict | rep.conflicts]}}
+      else
+        case Map.get(manifest.document_map, source_node_id) do
+          %{original_uuid: target_uuid} ->
+            type = get_entry_type(target_entries, old_name)
+            doc = Schema.remove_entry(doc, old_name)
 
-          doc =
-            case type do
-              :dir -> Schema.add_directory(doc, new_name, target_uuid)
-              _ -> Schema.add_file(doc, new_name, target_uuid)
+            doc =
+              case type do
+                :dir -> Schema.add_directory(doc, new_name, target_uuid)
+                _ -> Schema.add_file(doc, new_name, target_uuid)
+              end
+
+            {doc, rep}
+
+          nil ->
+            case Map.get(target_entries, old_name) do
+              %{"node_id" => node_id, "type" => type_str} ->
+                doc = Schema.remove_entry(doc, old_name)
+
+                doc =
+                  case type_str do
+                    "dir" -> Schema.add_directory(doc, new_name, node_id)
+                    _ -> Schema.add_file(doc, new_name, node_id)
+                  end
+
+                {doc, rep}
+
+              nil ->
+                {doc, rep}
             end
-
-          {doc, rep}
-
-        nil ->
-          case Map.get(target_entries, old_name) do
-            %{"node_id" => node_id, "type" => type_str} ->
-              doc = Schema.remove_entry(doc, old_name)
-
-              doc =
-                case type_str do
-                  "dir" -> Schema.add_directory(doc, new_name, node_id)
-                  _ -> Schema.add_file(doc, new_name, node_id)
-                end
-
-              {doc, rep}
-
-            nil ->
-              {doc, rep}
-          end
+        end
       end
     end)
   end
@@ -401,22 +413,27 @@ defmodule Commonplace.Tree.Merge do
   end
 
   @doc """
-  Advance fork_point_commit for each source UUID to its current latest commit.
+  Advance fork_point_commit to the TARGET doc's current latest commit.
+  merge_content_doc/4 reconstructs fork-point from the target chain,
+  so fork_point_commit must be a commit on that chain.
   Called last for crash safety — manifest update is the merge "commit point".
   """
   def update_manifest_fork_points(store, manifest, source_uuids) do
     Enum.reduce(source_uuids, manifest, fn source_uuid, man ->
-      case CommitStore.latest_commit(store, source_uuid) do
-        {:ok, commit} ->
-          case Map.get(man.document_map, source_uuid) do
-            nil -> man
-            entry ->
+      case Map.get(man.document_map, source_uuid) do
+        nil ->
+          man
+
+        entry ->
+          # Use the TARGET doc's latest commit (entry.original_uuid is the target)
+          case CommitStore.latest_commit(store, entry.original_uuid) do
+            {:ok, commit} ->
               updated_entry = %{entry | fork_point_commit: commit.id}
               %{man | document_map: Map.put(man.document_map, source_uuid, updated_entry)}
-          end
 
-        :none ->
-          man
+            :none ->
+              man
+          end
       end
     end)
   end
@@ -454,6 +471,27 @@ defmodule Commonplace.Tree.Merge do
 
       :error ->
         schema_doc
+    end
+  end
+
+  # Collect all directory UUIDs from a schema doc (recursively).
+  # These should be excluded from content merge since they need structural diff.
+  defp collect_directory_uuids(store, schema_uuid) do
+    case reconstruct_doc(store, schema_uuid) do
+      {:ok, schema_doc} ->
+        entries = Schema.entries(schema_doc)
+
+        entries
+        |> Enum.filter(fn {_name, e} -> e["type"] == "dir" end)
+        |> Enum.reduce(MapSet.new(), fn {_name, e}, acc ->
+          dir_uuid = e["node_id"]
+          acc = MapSet.put(acc, dir_uuid)
+          # Recurse into subdirectories
+          MapSet.union(acc, collect_directory_uuids(store, dir_uuid))
+        end)
+
+      _ ->
+        MapSet.new()
     end
   end
 
