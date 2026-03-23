@@ -29,7 +29,8 @@ defmodule Commonplace.MixProject do
       {:cubdb, "~> 2.0"},
       {:uuid, "~> 1.1"},
       {:file_system, "~> 1.0"},
-      {:jason, "~> 1.4"}
+      {:jason, "~> 1.4"},
+      {:telemetry, "~> 1.0"}
     ]
   end
 end

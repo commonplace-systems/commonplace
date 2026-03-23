@@ -13,13 +13,15 @@ defmodule Commonplace.Sync.Watcher do
 
   defmodule Change do
     @moduledoc "A detected filesystem change."
-    defstruct [:type, :name, :path, :is_dir]
+    defstruct [:type, :name, :path, :is_dir, :old_name, :node_id]
 
     @type t :: %__MODULE__{
-            type: :created | :modified | :deleted,
+            type: :created | :modified | :deleted | :renamed,
             name: String.t(),
             path: String.t(),
-            is_dir: boolean()
+            is_dir: boolean(),
+            old_name: String.t() | nil,
+            node_id: String.t() | nil
           }
   end
 
@@ -94,7 +96,11 @@ defmodule Commonplace.Sync.Watcher do
         end
       end)
 
-    created ++ deleted ++ modified
+    # Detect renames: deleted file whose content matches a created file
+    {renames, remaining_created, remaining_deleted} =
+      detect_renames(created, deleted, schema_entries, store)
+
+    remaining_created ++ remaining_deleted ++ modified ++ renames
   end
 
   @doc """
@@ -103,8 +109,22 @@ defmodule Commonplace.Sync.Watcher do
   Syncs the root directory, then recurses into subdirectories.
   """
   def sync_recursive(root_uuid, dir, store \\ CommitStore) do
+    start_time = System.monotonic_time()
+
+    :telemetry.execute(
+      [:commonplace, :sync, :start],
+      %{system_time: System.system_time()},
+      %{root_uuid: root_uuid, dir: dir}
+    )
+
     changes = detect_changes(root_uuid, dir, store)
     apply_changes(changes, root_uuid, dir, store)
+
+    :telemetry.execute(
+      [:commonplace, :sync, :stop],
+      %{duration: System.monotonic_time() - start_time, changes: length(changes)},
+      %{root_uuid: root_uuid, dir: dir}
+    )
 
     # Recurse into subdirectories
     schema_doc = load_schema(root_uuid, store)
@@ -137,6 +157,9 @@ defmodule Commonplace.Sync.Watcher do
 
         :deleted ->
           apply_delete(change, root_uuid, store)
+
+        :renamed ->
+          apply_rename(change, root_uuid, store)
       end
     end)
   end
@@ -209,6 +232,72 @@ defmodule Commonplace.Sync.Watcher do
   defp apply_delete(change, root_uuid, store) do
     root_doc = load_schema(root_uuid, store)
     root_doc = Schema.remove_entry(root_doc, change.name)
+    update = Yelixer.Encoding.encode_update(root_doc)
+    CommitStore.create_commit(store, root_uuid, update, nil)
+  end
+
+  defp detect_renames(created, deleted, schema_entries, store) do
+    # Only consider non-directory files for rename detection
+    created_files = Enum.reject(created, & &1.is_dir)
+    deleted_files = Enum.reject(deleted, & &1.is_dir)
+    created_dirs = Enum.filter(created, & &1.is_dir)
+    deleted_dirs = Enum.filter(deleted, & &1.is_dir)
+
+    # Build content map for deleted files
+    deleted_with_content =
+      Enum.map(deleted_files, fn change ->
+        entry = schema_entries[change.name]
+        content = if entry, do: load_content(entry["node_id"], store), else: ""
+        {change, content, entry}
+      end)
+
+    # Match created files against deleted file contents
+    {renames, unmatched_created, used_deleted} =
+      Enum.reduce(created_files, {[], [], MapSet.new()}, fn created_change,
+                                                            {renames_acc, unmatched_acc, used_acc} ->
+        disk_content = File.read!(created_change.path)
+
+        # Find a matching deleted file (same content, not yet matched)
+        match =
+          Enum.find(deleted_with_content, fn {del_change, del_content, _entry} ->
+            del_content == disk_content and
+              disk_content != "" and
+              not MapSet.member?(used_acc, del_change.name)
+          end)
+
+        case match do
+          {del_change, _content, entry} ->
+            rename = %Change{
+              type: :renamed,
+              name: created_change.name,
+              path: created_change.path,
+              is_dir: false,
+              old_name: del_change.name,
+              node_id: entry["node_id"]
+            }
+
+            {[rename | renames_acc], unmatched_acc, MapSet.put(used_acc, del_change.name)}
+
+          nil ->
+            {renames_acc, [created_change | unmatched_acc], used_acc}
+        end
+      end)
+
+    # Remaining deleted files that weren't matched to renames
+    remaining_deleted =
+      Enum.reject(deleted_files, fn change ->
+        MapSet.member?(used_deleted, change.name)
+      end)
+
+    {Enum.reverse(renames), Enum.reverse(unmatched_created) ++ created_dirs,
+     remaining_deleted ++ deleted_dirs}
+  end
+
+  defp apply_rename(change, root_uuid, store) do
+    # Remove old entry, add new entry pointing to the same document UUID
+    root_doc = load_schema(root_uuid, store)
+    root_doc = Schema.remove_entry(root_doc, change.old_name)
+    root_doc = Schema.add_file(root_doc, change.name, change.node_id)
     update = Yelixer.Encoding.encode_update(root_doc)
     CommitStore.create_commit(store, root_uuid, update, nil)
   end
