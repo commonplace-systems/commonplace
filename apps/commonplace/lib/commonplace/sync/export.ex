@@ -8,15 +8,18 @@ defmodule Commonplace.Sync.Export do
 
   alias Commonplace.Tree.Schema
   alias Commonplace.Document.ContentType
-  alias Commonplace.Store.CommitStore
+  alias Commonplace.Store.CommitStoreClient
 
   @doc """
   Export a document tree to a directory on disk.
 
   Walks the schema tree starting at `root_uuid`, loading documents
   from `store` and writing their content to `output_dir`.
+
+  Routes through CommitStoreClient so exports work both locally
+  and when connected to a remote serve node.
   """
-  def export(root_uuid, output_dir, store \\ CommitStore) do
+  def export(root_uuid, output_dir, store \\ CommitStoreClient) do
     File.mkdir_p!(output_dir)
     schema_doc = load_schema(root_uuid, store)
     export_entries(schema_doc, output_dir, store)
@@ -41,7 +44,7 @@ defmodule Commonplace.Sync.Export do
   end
 
   defp load_schema(uuid, store) do
-    case CommitStore.latest_commit(store, uuid) do
+    case CommitStoreClient.latest_commit(store, uuid) do
       {:ok, commit} ->
         doc = Schema.new_schema()
         {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
@@ -53,7 +56,7 @@ defmodule Commonplace.Sync.Export do
   end
 
   defp load_content(uuid, store) do
-    case CommitStore.latest_commit(store, uuid) do
+    case CommitStoreClient.latest_commit(store, uuid) do
       {:ok, commit} ->
         doc = Yelixer.Doc.new()
         {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
