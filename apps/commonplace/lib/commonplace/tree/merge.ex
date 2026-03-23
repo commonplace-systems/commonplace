@@ -33,6 +33,11 @@ defmodule Commonplace.Tree.Merge do
           }
   end
 
+  defmodule SchemaDiff do
+    @moduledoc false
+    defstruct added: %{}, removed: %{}, renamed: []
+  end
+
   @doc """
   Reconstruct a Yelixer Doc by replaying all commits for the given UUID.
   commit_log/2 returns newest-first; we reverse to apply oldest-first.
@@ -126,6 +131,44 @@ defmodule Commonplace.Tree.Merge do
         {:ok, commit}
       end
     end
+  end
+
+  @doc """
+  Diff two schema entry maps (fork-point vs current source).
+  Both args are `%{name => %{"type" => ..., "node_id" => ...}}` from Schema.entries/1.
+  Returns %SchemaDiff{added, removed, renamed}.
+
+  Renames detected by node_id: same node_id under different name = rename (not add+remove).
+  """
+  def diff_schemas(fork_point_entries, current_entries) do
+    fp_names = Map.keys(fork_point_entries) |> MapSet.new()
+    cur_names = Map.keys(current_entries) |> MapSet.new()
+
+    # Build node_id -> name indexes for rename detection
+    fp_by_node = Map.new(fork_point_entries, fn {name, e} -> {e["node_id"], name} end)
+    cur_by_node = Map.new(current_entries, fn {name, e} -> {e["node_id"], name} end)
+
+    # Renames: same node_id, different name
+    renames =
+      for {node_id, fp_name} <- fp_by_node,
+          cur_name = Map.get(cur_by_node, node_id),
+          cur_name != nil,
+          cur_name != fp_name do
+        {fp_name, cur_name, node_id}
+      end
+
+    renamed_fp_names = MapSet.new(renames, fn {old, _, _} -> old end)
+    renamed_cur_names = MapSet.new(renames, fn {_, new, _} -> new end)
+
+    # Added: in current but not in fork-point, excluding renames
+    added_names = MapSet.difference(cur_names, fp_names) |> MapSet.difference(renamed_cur_names)
+    added = Map.take(current_entries, MapSet.to_list(added_names))
+
+    # Removed: in fork-point but not in current, excluding renames
+    removed_names = MapSet.difference(fp_names, cur_names) |> MapSet.difference(renamed_fp_names)
+    removed = Map.take(fork_point_entries, MapSet.to_list(removed_names))
+
+    %SchemaDiff{added: added, removed: removed, renamed: renames}
   end
 
   # Check if a Yjs update is empty (no items, no deletes).

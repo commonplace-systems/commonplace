@@ -101,6 +101,61 @@ defmodule Commonplace.Tree.MergeTest do
     end
   end
 
+  describe "diff_schemas/2" do
+    test "detects added entries" do
+      fork_point = %{"file1.txt" => %{"type" => "doc", "node_id" => "aaa"}}
+      current = %{
+        "file1.txt" => %{"type" => "doc", "node_id" => "aaa"},
+        "file2.txt" => %{"type" => "doc", "node_id" => "bbb"}
+      }
+
+      diff = Merge.diff_schemas(fork_point, current)
+      assert diff.added == %{"file2.txt" => %{"type" => "doc", "node_id" => "bbb"}}
+      assert diff.removed == %{}
+      assert diff.renamed == []
+    end
+
+    test "detects removed entries" do
+      fork_point = %{
+        "file1.txt" => %{"type" => "doc", "node_id" => "aaa"},
+        "file2.txt" => %{"type" => "doc", "node_id" => "bbb"}
+      }
+      current = %{"file1.txt" => %{"type" => "doc", "node_id" => "aaa"}}
+
+      diff = Merge.diff_schemas(fork_point, current)
+      assert diff.removed == %{"file2.txt" => %{"type" => "doc", "node_id" => "bbb"}}
+      assert diff.added == %{}
+    end
+
+    test "detects renames via node_id match" do
+      fork_point = %{"old.txt" => %{"type" => "doc", "node_id" => "aaa"}}
+      current = %{"new.txt" => %{"type" => "doc", "node_id" => "aaa"}}
+
+      diff = Merge.diff_schemas(fork_point, current)
+      assert diff.renamed == [{"old.txt", "new.txt", "aaa"}]
+      assert diff.added == %{}
+      assert diff.removed == %{}
+    end
+
+    test "handles mixed adds, removes, and renames" do
+      fork_point = %{
+        "keep.txt" => %{"type" => "doc", "node_id" => "aaa"},
+        "rename_me.txt" => %{"type" => "doc", "node_id" => "bbb"},
+        "delete_me.txt" => %{"type" => "doc", "node_id" => "ccc"}
+      }
+      current = %{
+        "keep.txt" => %{"type" => "doc", "node_id" => "aaa"},
+        "renamed.txt" => %{"type" => "doc", "node_id" => "bbb"},
+        "new.txt" => %{"type" => "doc", "node_id" => "ddd"}
+      }
+
+      diff = Merge.diff_schemas(fork_point, current)
+      assert diff.added == %{"new.txt" => %{"type" => "doc", "node_id" => "ddd"}}
+      assert diff.removed == %{"delete_me.txt" => %{"type" => "doc", "node_id" => "ccc"}}
+      assert diff.renamed == [{"rename_me.txt", "renamed.txt", "bbb"}]
+    end
+  end
+
   defp create_text_doc(store, name, content) do
     uuid = UUID.uuid4()
     doc = Yelixer.Doc.new()
