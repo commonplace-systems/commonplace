@@ -52,11 +52,8 @@ defmodule Commonplace.Tree.Merge do
         doc = Doc.new()
         oldest_first = Enum.reverse(commits)
 
-        Enum.reduce_while(oldest_first, {:ok, doc}, fn commit, {:ok, acc} ->
-          case Encoding.apply_update(acc, commit.update) do
-            {:ok, updated} -> {:cont, {:ok, updated}}
-            {:error, reason} -> {:halt, {:error, reason}}
-          end
+        Enum.reduce(oldest_first, {:ok, doc}, fn commit, {:ok, acc} ->
+          Encoding.apply_update(acc, commit.update)
         end)
     end
   end
@@ -88,11 +85,8 @@ defmodule Commonplace.Tree.Merge do
           {:found, commits_to_apply} ->
             doc = Doc.new()
 
-            Enum.reduce_while(commits_to_apply, {:ok, doc}, fn commit, {:ok, acc} ->
-              case Encoding.apply_update(acc, commit.update) do
-                {:ok, updated} -> {:cont, {:ok, updated}}
-                {:error, reason} -> {:halt, {:error, reason}}
-              end
+            Enum.reduce(commits_to_apply, {:ok, doc}, fn commit, {:ok, acc} ->
+              Encoding.apply_update(acc, commit.update)
             end)
 
           {:not_found, _} ->
