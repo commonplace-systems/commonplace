@@ -20,6 +20,7 @@ defmodule Commonplace.CLI do
     inspect <path|uuid>             Inspect raw CRDT document state
     event [uuid] [--last N] [--json] Read event logs
     gc                              Find orphaned documents
+    fork <path>                     Fork a directory subtree
     serve                         Start the workspace daemon
     ps                            List managed processes
     signal <topic> <type> [json]  Send a magenta message
@@ -84,6 +85,7 @@ defmodule Commonplace.CLI do
       "inspect" -> Commonplace.CLI.InspectCmd.run(data_dir, relative_path, rest)
       "event" -> Commonplace.CLI.Event.run(data_dir, relative_path, rest)
       "gc" -> Commonplace.CLI.GC.run(data_dir, relative_path, rest)
+      "fork" -> Commonplace.CLI.Fork.run(data_dir, relative_path, rest)
       "signal" -> Commonplace.CLI.Signal.run(data_dir, relative_path, rest)
       _ ->
         IO.puts(:stderr, "Unknown command: #{cmd}")

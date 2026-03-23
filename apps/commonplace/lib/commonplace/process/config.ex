@@ -6,7 +6,7 @@ defmodule Commonplace.Process.Config do
   and optional ownership of output documents.
   """
 
-  defstruct [:name, :mode, :source, :command, :args, :owns, :scope_uuid,
+  defstruct [:name, :mode, :source, :command, :args, :owns, :scope_uuid, :fork,
              restart: :permanent, depends_on: [], env: %{}]
 
   @type t :: %__MODULE__{
@@ -19,7 +19,8 @@ defmodule Commonplace.Process.Config do
           owns: String.t() | nil,
           depends_on: [String.t()],
           env: %{String.t() => String.t()},
-          scope_uuid: String.t() | nil
+          scope_uuid: String.t() | nil,
+          fork: :copy | :skip | nil
         }
 
   @doc "Parse a __processes.json map into a list of Config entries."
@@ -37,7 +38,8 @@ defmodule Commonplace.Process.Config do
         owns: config["owns"],
         depends_on: config["depends_on"] || [],
         env: config["env"] || %{},
-        scope_uuid: scope_uuid
+        scope_uuid: scope_uuid,
+        fork: parse_fork(config["fork"])
       }
     end)
   end
@@ -59,6 +61,35 @@ defmodule Commonplace.Process.Config do
 
     %{added: added, removed: removed, changed: changed}
   end
+
+  @doc "Returns the effective fork behavior for a process config."
+  def fork_behavior(%__MODULE__{fork: :copy}), do: :copy
+  def fork_behavior(%__MODULE__{fork: :skip}), do: :skip
+  def fork_behavior(%__MODULE__{mode: :sandbox_exec}), do: :copy
+  def fork_behavior(%__MODULE__{mode: :elixir}), do: :copy
+  def fork_behavior(%__MODULE__{}), do: :skip
+
+  @doc """
+  Filter process configs for fork safety.
+  Returns only entries with :copy fork behavior.
+  """
+  def filter_for_fork(configs) when is_list(configs) do
+    Enum.filter(configs, &(fork_behavior(&1) == :copy))
+  end
+
+  @doc """
+  Filter a raw __processes.json map, removing skip-marked entries.
+  Returns a new map with only fork-safe entries.
+  """
+  def filter_json_for_fork(json) when is_map(json) do
+    configs = parse(json)
+    safe_names = configs |> filter_for_fork() |> Enum.map(& &1.name) |> MapSet.new()
+    Map.filter(json, fn {name, _} -> MapSet.member?(safe_names, name) end)
+  end
+
+  defp parse_fork("copy"), do: :copy
+  defp parse_fork("skip"), do: :skip
+  defp parse_fork(_), do: nil
 
   defp parse_mode("elixir"), do: :elixir
   defp parse_mode("sandbox-exec"), do: :sandbox_exec
