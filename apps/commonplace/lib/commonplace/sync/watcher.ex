@@ -103,8 +103,22 @@ defmodule Commonplace.Sync.Watcher do
   Syncs the root directory, then recurses into subdirectories.
   """
   def sync_recursive(root_uuid, dir, store \\ CommitStore) do
+    start_time = System.monotonic_time()
+
+    :telemetry.execute(
+      [:commonplace, :sync, :start],
+      %{system_time: System.system_time()},
+      %{root_uuid: root_uuid, dir: dir}
+    )
+
     changes = detect_changes(root_uuid, dir, store)
     apply_changes(changes, root_uuid, dir, store)
+
+    :telemetry.execute(
+      [:commonplace, :sync, :stop],
+      %{duration: System.monotonic_time() - start_time, changes: length(changes)},
+      %{root_uuid: root_uuid, dir: dir}
+    )
 
     # Recurse into subdirectories
     schema_doc = load_schema(root_uuid, store)

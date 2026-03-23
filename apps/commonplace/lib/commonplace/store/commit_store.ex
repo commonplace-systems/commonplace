@@ -116,6 +116,12 @@ defmodule Commonplace.Store.CommitStore do
       {{:latest, doc_uuid}, commit.id}
     ])
 
+    :telemetry.execute(
+      [:commonplace, :commit, :create],
+      %{system_time: System.system_time()},
+      %{doc_uuid: doc_uuid}
+    )
+
     {:reply, commit, state}
   end
 

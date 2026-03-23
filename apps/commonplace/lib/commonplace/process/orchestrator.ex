@@ -137,6 +137,8 @@ defmodule Commonplace.Process.Orchestrator do
   end
 
   defp reconcile(state) do
+    start_time = System.monotonic_time()
+
     new_config = read_processes_config(state)
     diff = Config.diff(state.current_config, new_config)
 
@@ -156,6 +158,17 @@ defmodule Commonplace.Process.Orchestrator do
     state = stop_processes(state, diff.removed ++ all_cold)
     state = start_processes(state, diff.added ++ all_cold, new_config)
 
+    :telemetry.execute(
+      [:commonplace, :orchestrator, :reconcile],
+      %{duration: System.monotonic_time() - start_time},
+      %{
+        added: length(diff.added),
+        removed: length(diff.removed),
+        changed: length(all_cold),
+        total: map_size(state.processes)
+      }
+    )
+
     %{state | current_config: new_config}
   end
 
@@ -167,6 +180,13 @@ defmodule Commonplace.Process.Orchestrator do
 
         %ProcessInfo{pid: pid} ->
           if Process.alive?(pid), do: GenServer.stop(pid, :shutdown, 5000)
+
+          :telemetry.execute(
+            [:commonplace, :process, :stop],
+            %{system_time: System.system_time()},
+            %{name: name}
+          )
+
           %{acc | processes: Map.delete(acc.processes, name)}
       end
     end)
@@ -190,6 +210,12 @@ defmodule Commonplace.Process.Orchestrator do
                 started_at: DateTime.utc_now(),
                 scope_uuid: config.scope_uuid
               }
+
+              :telemetry.execute(
+                [:commonplace, :process, :start],
+                %{system_time: System.system_time()},
+                %{name: name, mode: config.mode}
+              )
 
               %{acc |
                 processes: Map.put(acc.processes, name, info),
