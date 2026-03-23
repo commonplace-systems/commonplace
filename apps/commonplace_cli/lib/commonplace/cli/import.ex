@@ -27,7 +27,16 @@ defmodule Commonplace.CLI.Import do
         end
 
         root_doc = CLI.load_schema(root)
-        root_doc = import_directory(source_dir, root_doc)
+        dir_name = Path.basename(source_dir)
+
+        # Create a subdirectory entry in the root schema
+        sub_uuid = UUID.uuid4()
+        sub_schema = Schema.new_schema()
+        sub_schema = import_directory(source_dir, sub_schema)
+        update = Yelixer.Encoding.encode_update(sub_schema)
+        CommitStore.create_commit(sub_uuid, update, nil)
+
+        root_doc = Schema.add_directory(root_doc, dir_name, sub_uuid)
         update = Yelixer.Encoding.encode_update(root_doc)
         CommitStore.create_commit(root, update, nil)
 

@@ -141,6 +141,11 @@ defmodule Commonplace.CLI do
         # No serve running — acquire lock and start locally
         case acquire_db_lock(data_dir) do
           {:ok, _fd} ->
+            # Stop if already running with wrong data_dir (escript auto-start)
+            if Application.get_env(:commonplace, :data_dir) != data_dir do
+              Application.stop(:commonplace)
+            end
+
             Application.put_env(:commonplace, :data_dir, data_dir)
             {:ok, _} = Application.ensure_all_started(:commonplace)
             :ok
