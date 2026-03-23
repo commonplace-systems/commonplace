@@ -102,31 +102,43 @@ defmodule Commonplace.Tree.ForkTest do
 
   test "filter_for_fork removes skip-marked processes" do
     json = %{
-      "safe" => %{"mode" => "sandbox-exec", "command" => "echo", "args" => ["hi"]},
+      "elixir_safe" => %{"mode" => "elixir", "source" => "worker.exs"},
+      "sandbox_default" => %{"mode" => "sandbox-exec", "command" => "echo"},
       "dangerous" => %{"mode" => "command", "command" => "rm", "args" => ["-rf"]},
-      "explicit_skip" => %{"mode" => "sandbox-exec", "command" => "x", "fork" => "skip"},
+      "explicit_skip" => %{"mode" => "elixir", "source" => "x.exs", "fork" => "skip"},
       "explicit_copy" => %{"mode" => "command", "command" => "y", "fork" => "copy"}
     }
 
     filtered = Config.filter_json_for_fork(json)
-    assert Map.has_key?(filtered, "safe")
+    # elixir defaults to copy
+    assert Map.has_key?(filtered, "elixir_safe")
+    # explicit copy overrides default skip
     assert Map.has_key?(filtered, "explicit_copy")
+    # sandbox-exec now defaults to skip (may hold external locks)
+    refute Map.has_key?(filtered, "sandbox_default")
+    # command defaults to skip
     refute Map.has_key?(filtered, "dangerous")
+    # explicit skip overrides default copy
     refute Map.has_key?(filtered, "explicit_skip")
   end
 
   test "fork_behavior defaults" do
-    assert Config.fork_behavior(%Config{mode: :sandbox_exec}) == :copy
+    # sandbox-exec defaults to skip (may hold external locks)
+    assert Config.fork_behavior(%Config{mode: :sandbox_exec}) == :skip
+    # elixir defaults to copy (stateless in-BEAM)
     assert Config.fork_behavior(%Config{mode: :elixir}) == :copy
     assert Config.fork_behavior(%Config{mode: :command}) == :skip
+    # explicit override takes precedence
     assert Config.fork_behavior(%Config{mode: :command, fork: :copy}) == :copy
-    assert Config.fork_behavior(%Config{mode: :sandbox_exec, fork: :skip}) == :skip
+    assert Config.fork_behavior(%Config{mode: :sandbox_exec, fork: :copy}) == :copy
+    assert Config.fork_behavior(%Config{mode: :elixir, fork: :skip}) == :skip
   end
 
   test "filters __processes.json during fork", %{store: store} do
     proc_content =
       Jason.encode!(%{
-        "worker" => %{"mode" => "sandbox-exec", "command" => "work"},
+        "safe_elixir" => %{"mode" => "elixir", "source" => "worker.exs"},
+        "copyable" => %{"mode" => "sandbox-exec", "command" => "work", "fork" => "copy"},
         "singleton" => %{"mode" => "command", "command" => "run"}
       })
 
@@ -153,7 +165,11 @@ defmodule Commonplace.Tree.ForkTest do
     content = ContentType.get_content(proc_doc)
     parsed = Jason.decode!(content)
 
-    assert Map.has_key?(parsed, "worker")
+    # elixir (copy default) present
+    assert Map.has_key?(parsed, "safe_elixir")
+    # explicit fork: copy present
+    assert Map.has_key?(parsed, "copyable")
+    # command (skip) removed
     refute Map.has_key?(parsed, "singleton")
   end
 

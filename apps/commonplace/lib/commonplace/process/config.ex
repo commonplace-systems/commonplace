@@ -62,10 +62,15 @@ defmodule Commonplace.Process.Config do
     %{added: added, removed: removed, changed: changed}
   end
 
-  @doc "Returns the effective fork behavior for a process config."
+  @doc """
+  Returns the effective fork behavior for a process config.
+
+  Explicit fork field takes precedence. Default is :skip for all modes
+  except :elixir (stateless in-BEAM modules are safe to copy).
+  Use explicit `"fork": "copy"` in __processes.json to opt in.
+  """
   def fork_behavior(%__MODULE__{fork: :copy}), do: :copy
   def fork_behavior(%__MODULE__{fork: :skip}), do: :skip
-  def fork_behavior(%__MODULE__{mode: :sandbox_exec}), do: :copy
   def fork_behavior(%__MODULE__{mode: :elixir}), do: :copy
   def fork_behavior(%__MODULE__{}), do: :skip
 
