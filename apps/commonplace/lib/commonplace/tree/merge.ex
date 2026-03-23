@@ -38,7 +38,20 @@ defmodule Commonplace.Tree.Merge do
         end
 
       :none ->
-        {:ok, %{report | errors: [{:no_common_ancestor, source_uuid, target_uuid} | report.errors]}}
+        # No common ancestor in DAG — chain may be broken (parent_id = nil edits).
+        # Fall back to merge-point strategy for leaf docs if a prior merge was recorded.
+        case CommitStore.get_merge_point(store, target_uuid, source_uuid) do
+          nil ->
+            {:ok, %{report | errors: [{:no_common_ancestor, source_uuid, target_uuid} | report.errors]}}
+
+          merge_point_id ->
+            if not is_schema?(store, source_uuid) do
+              # Use merge point as baseline for leaf merge
+              merge_leaf_from_merge_point(source_uuid, target_uuid, merge_point_id, store, report)
+            else
+              {:ok, %{report | errors: [{:no_common_ancestor, source_uuid, target_uuid} | report.errors]}}
+            end
+        end
     end
   end
 
@@ -70,10 +83,11 @@ defmodule Commonplace.Tree.Merge do
 
           merged_update = Encoding.encode_update(merged_doc)
           {:ok, latest} = CommitStore.latest_commit(store, target_uuid)
-          CommitStore.create_commit(store, target_uuid, merged_update, latest.id)
+          merge_commit = CommitStore.create_commit(store, target_uuid, merged_update, latest.id)
 
-          # Record the source's current head as the merge point for next time
+          # Record merge metadata for incremental merging and delete-vs-modify detection
           CommitStore.set_merge_point(store, target_uuid, source_uuid, source_latest.id)
+          CommitStore.set_last_merge_commit(store, target_uuid, merge_commit.id)
 
           {:ok, %{report | merged_docs: [{source_uuid, target_uuid} | report.merged_docs]}}
         end
@@ -97,9 +111,10 @@ defmodule Commonplace.Tree.Merge do
 
               merged_update = Encoding.encode_update(merged_doc)
               {:ok, latest} = CommitStore.latest_commit(store, target_uuid)
-              CommitStore.create_commit(store, target_uuid, merged_update, latest.id)
+              merge_commit = CommitStore.create_commit(store, target_uuid, merged_update, latest.id)
 
               CommitStore.set_merge_point(store, target_uuid, source_uuid, source_latest.id)
+              CommitStore.set_last_merge_commit(store, target_uuid, merge_commit.id)
 
               {:ok, %{report | merged_docs: [{source_uuid, target_uuid} | report.merged_docs]}}
             end
@@ -108,6 +123,39 @@ defmodule Commonplace.Tree.Merge do
             # Common ancestor commit not found in source chain — fall back to no-op
             {:ok, report}
         end
+    end
+  end
+
+  # Merge a leaf doc using a stored merge point as baseline (for detached chains).
+  defp merge_leaf_from_merge_point(source_uuid, target_uuid, merge_point_id, store, report) do
+    case reconstruct_doc_at(store, source_uuid, merge_point_id) do
+      {:ok, baseline_doc} ->
+        baseline_sv = BlockStore.state_vector(baseline_doc.store)
+
+        {:ok, source_doc} = reconstruct_doc(store, source_uuid)
+        diff = Encoding.encode_diff(source_doc, baseline_sv)
+
+        {:ok, source_latest} = CommitStore.latest_commit(store, source_uuid)
+
+        if byte_size(diff) <= 2 do
+          CommitStore.set_merge_point(store, target_uuid, source_uuid, source_latest.id)
+          {:ok, report}
+        else
+          {:ok, target_doc} = reconstruct_doc(store, target_uuid)
+          {:ok, merged_doc} = Encoding.apply_update(target_doc, diff)
+
+          merged_update = Encoding.encode_update(merged_doc)
+          {:ok, latest} = CommitStore.latest_commit(store, target_uuid)
+          merge_commit = CommitStore.create_commit(store, target_uuid, merged_update, latest.id)
+
+          CommitStore.set_merge_point(store, target_uuid, source_uuid, source_latest.id)
+          CommitStore.set_last_merge_commit(store, target_uuid, merge_commit.id)
+
+          {:ok, %{report | merged_docs: [{source_uuid, target_uuid} | report.merged_docs]}}
+        end
+
+      :none ->
+        {:ok, %{report | errors: [{:no_common_ancestor, source_uuid, target_uuid} | report.errors]}}
     end
   end
 
@@ -244,13 +292,29 @@ defmodule Commonplace.Tree.Merge do
     end
   end
 
-  defp modified_since_ancestor?(store, target_nid, ancestor_nid, root_ancestor) do
+  defp modified_since_ancestor?(store, target_nid, ancestor_nid, _root_ancestor) do
     if target_nid == ancestor_nid do
-      # Target kept the original UUID after fork. The DAG ancestry check cannot distinguish
-      # "no changes" from "has changes" in this case, so compare timestamps: if the target has
-      # commits newer than the root ancestor commit, it was modified since the fork point.
+      # Target kept the original UUID after fork. Check if user made independent edits
+      # by comparing against the last merge-created commit on this doc.
       {:ok, latest} = CommitStore.latest_commit(store, target_nid)
-      DateTime.compare(latest.timestamp, root_ancestor.timestamp) == :gt
+
+      case CommitStore.get_last_merge_commit(store, target_nid) do
+        nil ->
+          # No merges ever happened to this doc. If it has a commit chain length > 1
+          # relative to the ancestor, user edited it. Use commit log to check.
+          log = CommitStore.commit_log(store, target_nid)
+          # At fork time, this doc had exactly the commits in its chain.
+          # Fork doesn't add commits to target_nid. So any new commits = user edits.
+          # We can't easily determine the fork-time count, so be conservative:
+          # if the log has only 1 commit (the original creation), not modified.
+          # Otherwise, we can't tell — flag as conflict.
+          length(log) > 1
+
+        last_merge_id ->
+          # A merge has happened. If target's latest is the merge commit, no user edits.
+          # If latest differs, user edited after the merge.
+          latest.id != last_merge_id
+      end
     else
       # Different UUIDs — use DAG ancestry
       case CommitStore.find_common_ancestor(store, target_nid, ancestor_nid) do

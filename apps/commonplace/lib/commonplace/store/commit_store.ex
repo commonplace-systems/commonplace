@@ -59,6 +59,16 @@ defmodule Commonplace.Store.CommitStore do
     GenServer.call(server, {:get_merge_point, target_uuid, source_uuid})
   end
 
+  @doc "Record the commit ID of the last merge-created commit on a target UUID."
+  def set_last_merge_commit(server \\ __MODULE__, target_uuid, commit_id) do
+    GenServer.call(server, {:set_last_merge_commit, target_uuid, commit_id})
+  end
+
+  @doc "Get the commit ID of the last merge-created commit on a target UUID."
+  def get_last_merge_commit(server \\ __MODULE__, target_uuid) do
+    GenServer.call(server, {:get_last_merge_commit, target_uuid})
+  end
+
   @impl true
   def init(opts) do
     data_dir = Keyword.fetch!(opts, :data_dir)
@@ -224,6 +234,18 @@ defmodule Commonplace.Store.CommitStore do
   @impl true
   def handle_call({:get_merge_point, target_uuid, source_uuid}, _from, state) do
     result = CubDB.get(state.db, {:merge_point, target_uuid, source_uuid})
+    {:reply, result, state}
+  end
+
+  @impl true
+  def handle_call({:set_last_merge_commit, target_uuid, commit_id}, _from, state) do
+    CubDB.put(state.db, {:last_merge_commit, target_uuid}, commit_id)
+    {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_call({:get_last_merge_commit, target_uuid}, _from, state) do
+    result = CubDB.get(state.db, {:last_merge_commit, target_uuid})
     {:reply, result, state}
   end
 
