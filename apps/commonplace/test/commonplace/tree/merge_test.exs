@@ -317,6 +317,34 @@ defmodule Commonplace.Tree.MergeTest do
     end
   end
 
+  describe "filter_processes_for_merge/1" do
+    test "delegates to Config.filter_json_for_fork/1" do
+      proc_json = %{
+        "safe" => %{"mode" => "elixir", "source" => "w.exs"},
+        "dangerous" => %{"mode" => "command", "command" => "rm"}
+      }
+
+      filtered = Merge.filter_processes_for_merge(proc_json)
+      assert Map.has_key?(filtered, "safe")
+      refute Map.has_key?(filtered, "dangerous")
+    end
+  end
+
+  describe "update_manifest_fork_points/3" do
+    test "advances fork points to current source commits", %{store: store} do
+      source_uuid = create_text_doc(store, "s.txt", "content")
+      {:ok, source_commit} = CommitStore.latest_commit(store, source_uuid)
+      target_uuid = UUID.uuid4()
+
+      manifest = ForkManifest.new("root")
+      manifest = ForkManifest.add_entry(manifest, source_uuid, target_uuid, <<0::256>>)
+
+      updated = Merge.update_manifest_fork_points(store, manifest, [source_uuid])
+      entry = updated.document_map[source_uuid]
+      assert entry.fork_point_commit == source_commit.id
+    end
+  end
+
   defp create_text_doc(store, name, content) do
     uuid = UUID.uuid4()
     doc = Yelixer.Doc.new()

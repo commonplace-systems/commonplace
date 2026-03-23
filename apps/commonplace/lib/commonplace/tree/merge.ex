@@ -8,6 +8,8 @@ defmodule Commonplace.Tree.Merge do
 
   alias Commonplace.Store.CommitStore
   alias Commonplace.Tree.{ForkManifest, Schema, Fork}
+  alias Commonplace.Document.ContentType
+  alias Commonplace.Process.Config
   alias Yelixer.{Doc, Encoding, BlockStore}
 
   defmodule MergeReport do
@@ -302,6 +304,35 @@ defmodule Commonplace.Tree.Merge do
       {:ok, latest} -> latest.id != fork_point_commit_id
       :none -> false
     end
+  end
+
+  @doc """
+  Filter __processes.json entries using Config.fork_behavior/1.
+  Delegates to Config.filter_json_for_fork/1 — same rules as fork.
+  """
+  def filter_processes_for_merge(proc_json) do
+    Config.filter_json_for_fork(proc_json)
+  end
+
+  @doc """
+  Advance fork_point_commit for each source UUID to its current latest commit.
+  Called last for crash safety — manifest update is the merge "commit point".
+  """
+  def update_manifest_fork_points(store, manifest, source_uuids) do
+    Enum.reduce(source_uuids, manifest, fn source_uuid, man ->
+      case CommitStore.latest_commit(store, source_uuid) do
+        {:ok, commit} ->
+          case Map.get(man.document_map, source_uuid) do
+            nil -> man
+            entry ->
+              updated_entry = %{entry | fork_point_commit: commit.id}
+              %{man | document_map: Map.put(man.document_map, source_uuid, updated_entry)}
+          end
+
+        :none ->
+          man
+      end
+    end)
   end
 
   # Check if a Yjs update is empty (no items, no deletes).
