@@ -74,26 +74,29 @@ defmodule Commonplace.Tree.Merge do
       commits ->
         oldest_first = Enum.reverse(commits)
 
-        commits_to_apply =
-          Enum.reduce_while(oldest_first, [], fn commit, acc ->
+        # Use {:found, list} | {:not_found, list} to distinguish target hit vs miss
+        result =
+          Enum.reduce_while(oldest_first, {:not_found, []}, fn commit, {_status, acc} ->
             if commit.id == target_commit_id do
-              {:halt, Enum.reverse([commit | acc])}
+              {:halt, {:found, Enum.reverse([commit | acc])}}
             else
-              {:cont, [commit | acc]}
+              {:cont, {:not_found, [commit | acc]}}
             end
           end)
 
-        if commits_to_apply == [] do
-          :none
-        else
-          doc = Doc.new()
+        case result do
+          {:found, commits_to_apply} ->
+            doc = Doc.new()
 
-          Enum.reduce_while(commits_to_apply, {:ok, doc}, fn commit, {:ok, acc} ->
-            case Encoding.apply_update(acc, commit.update) do
-              {:ok, updated} -> {:cont, {:ok, updated}}
-              {:error, reason} -> {:halt, {:error, reason}}
-            end
-          end)
+            Enum.reduce_while(commits_to_apply, {:ok, doc}, fn commit, {:ok, acc} ->
+              case Encoding.apply_update(acc, commit.update) do
+                {:ok, updated} -> {:cont, {:ok, updated}}
+                {:error, reason} -> {:halt, {:error, reason}}
+              end
+            end)
+
+          {:not_found, _} ->
+            :none
         end
     end
   end
@@ -141,6 +144,17 @@ defmodule Commonplace.Tree.Merge do
   def merge(source_uuid, target_uuid, %ForkManifest{} = manifest, store) do
     report = %MergeReport{}
 
+    # Capture pre-merge target commit state for conflict detection (P1-C fix:
+    # content merge in step 1 creates new target commits; conflict detection
+    # must compare against state BEFORE those merges to avoid false positives)
+    pre_merge_target_commits =
+      Map.new(manifest.document_map, fn {_source_uuid, entry} ->
+        case CommitStore.latest_commit(store, entry.original_uuid) do
+          {:ok, commit} -> {entry.original_uuid, commit.id}
+          :none -> {entry.original_uuid, nil}
+        end
+      end)
+
     # Step 1: Merge content for leaf documents only.
     # Skip root schema AND all directory schema docs — those are handled
     # via structural diff, not raw CRDT merge (node_ids are branch-specific).
@@ -171,34 +185,45 @@ defmodule Commonplace.Tree.Merge do
     # Step 2: Schema diff + application (only if root is in manifest)
     case Map.get(manifest.document_map, source_uuid) do
       %{fork_point_commit: root_fork_point} ->
-        # Load the schema states we need
         {:ok, cur_source_schema} = reconstruct_doc(store, source_uuid)
         {:ok, cur_target_schema} = reconstruct_doc(store, target_uuid)
 
-        # For the schema diff, we need the source's initial state (at fork time).
-        # The source's oldest commit IS the fork-point state (with forked node_ids).
-        source_commits = CommitStore.commit_log(store, source_uuid)
-        source_first_commit = List.last(source_commits)
-        {:ok, source_fork_point_schema} = reconstruct_doc_at(store, source_uuid, source_first_commit.id)
+        # Schema diff baseline: try root_fork_point on the source chain.
+        # After the first merge, this is a SOURCE commit (set by update_manifest_fork_points).
+        # On the very first merge, fork_point_commit is on the TARGET chain (set by Fork),
+        # so it won't be found on the source — fall back to source's first commit.
+        source_baseline_schema =
+          case reconstruct_doc_at(store, source_uuid, root_fork_point) do
+            {:ok, doc} ->
+              doc
 
-        # For collision detection, we need the target's state at fork time
-        {:ok, target_fork_point_schema} = reconstruct_doc_at(store, target_uuid, root_fork_point)
+            :none ->
+              # First merge: fork_point is on target chain, use source's first commit
+              source_commits = CommitStore.commit_log(store, source_uuid, limit: 10_000)
+              source_first = List.last(source_commits)
+              {:ok, doc} = reconstruct_doc_at(store, source_uuid, source_first.id)
+              doc
+          end
 
-        source_fp_entries = Schema.entries(source_fork_point_schema)
+        # For collision detection, we need the target's state at fork time.
+        # Walk target chain to find the fork-point target state.
+        {:ok, target_fork_point_schema} =
+          reconstruct_doc_at(store, target_uuid, pre_merge_target_commits[target_uuid] || root_fork_point)
+
+        source_fp_entries = Schema.entries(source_baseline_schema)
         cur_source_entries = Schema.entries(cur_source_schema)
         cur_target_entries = Schema.entries(cur_target_schema)
-
-        # Fork-point target entries for collision detection
         fp_target_entries = Schema.entries(target_fork_point_schema)
 
-        # Step 3: Diff source schemas (fork-point vs current source = what changed on source)
+        # Step 3: Diff source schemas (baseline vs current = what changed since last merge)
         diff = diff_schemas(source_fp_entries, cur_source_entries)
 
-        # Step 4: Apply schema changes to target
+        # Step 4: Apply schema changes to target, passing pre-merge state for conflict detection
         {updated_target_schema, manifest, report} =
           apply_schema_changes(
             store, cur_target_schema, diff, manifest, cur_target_entries, report,
-            fork_point_target_entries: fp_target_entries
+            fork_point_target_entries: fp_target_entries,
+            pre_merge_target_commits: pre_merge_target_commits
           )
 
         # Step 5: Filter __processes.json if it was added/merged
@@ -210,14 +235,14 @@ defmodule Commonplace.Tree.Merge do
         CommitStore.create_commit(store, target_uuid, schema_update, target_latest.id)
 
         # Step 6: Update manifest fork points (last — crash safety)
-        all_source_uuids = Map.keys(manifest.document_map)
-        manifest = update_manifest_fork_points(store, manifest, all_source_uuids)
+        # Root entry: store SOURCE's latest commit (for incremental schema diff)
+        # Leaf entries: store TARGET's latest commit (for merge_content_doc)
+        manifest = update_manifest_fork_points(store, manifest, Map.keys(manifest.document_map), source_uuid)
 
         {:ok, manifest, report}
 
       nil ->
-        # Source root not in manifest — content-only merge
-        manifest = update_manifest_fork_points(store, manifest, Map.keys(manifest.document_map))
+        manifest = update_manifest_fork_points(store, manifest, Map.keys(manifest.document_map), nil)
         {:ok, manifest, report}
     end
   end
@@ -270,12 +295,13 @@ defmodule Commonplace.Tree.Merge do
   """
   def apply_schema_changes(store, target_doc, %SchemaDiff{} = diff, manifest, target_entries, report, opts \\ []) do
     fp_target_entries = Keyword.get(opts, :fork_point_target_entries, target_entries)
+    pre_merge_commits = Keyword.get(opts, :pre_merge_target_commits, %{})
 
     {target_doc, manifest, report} =
       apply_additions(store, target_doc, diff.added, manifest, target_entries, fp_target_entries, report)
 
     {target_doc, report} =
-      apply_removals(store, target_doc, diff.removed, manifest, report)
+      apply_removals(store, target_doc, diff.removed, manifest, pre_merge_commits, report)
 
     {target_doc, report} =
       apply_renames(target_doc, diff.renamed, manifest, target_entries, report)
@@ -323,13 +349,17 @@ defmodule Commonplace.Tree.Merge do
     end)
   end
 
-  defp apply_removals(store, target_doc, removed, manifest, report) do
+  defp apply_removals(store, target_doc, removed, manifest, pre_merge_commits, report) do
     Enum.reduce(removed, {target_doc, report}, fn {name, entry_map}, {doc, rep} ->
       source_node_id = entry_map["node_id"]
 
       case Map.get(manifest.document_map, source_node_id) do
         %{original_uuid: target_uuid, fork_point_commit: fork_point_commit} ->
-          if target_modified_since?(store, target_uuid, fork_point_commit) do
+          # Use pre-merge target state to detect conflict (not current state,
+          # which may have been updated by content merge in step 1)
+          pre_merge_commit = Map.get(pre_merge_commits, target_uuid)
+
+          if target_modified_since_pre_merge?(pre_merge_commit, fork_point_commit) do
             conflict = {:delete_vs_modify, name, target_uuid}
             {doc, %{rep | conflicts: [conflict | rep.conflicts]}}
           else
@@ -392,16 +422,23 @@ defmodule Commonplace.Tree.Merge do
     end
   end
 
+  # Merge sub-manifest entries into parent, inverting the key direction.
+  # Fork.fork_directory returns manifest keyed as new_uuid → {original_uuid, ...}
+  # (new = target copy, original = source). But merge needs source → target
+  # keying. Invert: original_uuid becomes the key, new_uuid becomes original_uuid.
   defp merge_sub_manifest(parent, sub_manifest) do
-    merged_map = Map.merge(parent.document_map, sub_manifest.document_map)
-    %{parent | document_map: merged_map}
+    inverted =
+      Map.new(sub_manifest.document_map, fn {new_uuid, entry} ->
+        {entry.original_uuid, %{entry | original_uuid: new_uuid}}
+      end)
+
+    %{parent | document_map: Map.merge(parent.document_map, inverted)}
   end
 
-  defp target_modified_since?(store, target_uuid, fork_point_commit_id) do
-    case CommitStore.latest_commit(store, target_uuid) do
-      {:ok, latest} -> latest.id != fork_point_commit_id
-      :none -> false
-    end
+  # Check if target was modified since fork using pre-merge commit state.
+  # This avoids false positives from content merges in step 1.
+  defp target_modified_since_pre_merge?(pre_merge_commit_id, fork_point_commit_id) do
+    pre_merge_commit_id != nil and pre_merge_commit_id != fork_point_commit_id
   end
 
   @doc """
@@ -413,20 +450,28 @@ defmodule Commonplace.Tree.Merge do
   end
 
   @doc """
-  Advance fork_point_commit to the TARGET doc's current latest commit.
-  merge_content_doc/4 reconstructs fork-point from the target chain,
-  so fork_point_commit must be a commit on that chain.
+  Advance fork_point_commit for each manifest entry.
+
+  - Root schema entry (source_uuid == root_source_uuid): store SOURCE's latest
+    commit, used as baseline for incremental schema diffing.
+  - Leaf doc entries: store TARGET's latest commit, used by merge_content_doc/4
+    to reconstruct fork-point from the target chain.
+
   Called last for crash safety — manifest update is the merge "commit point".
   """
-  def update_manifest_fork_points(store, manifest, source_uuids) do
+  def update_manifest_fork_points(store, manifest, source_uuids, root_source_uuid) do
     Enum.reduce(source_uuids, manifest, fn source_uuid, man ->
       case Map.get(man.document_map, source_uuid) do
         nil ->
           man
 
         entry ->
-          # Use the TARGET doc's latest commit (entry.original_uuid is the target)
-          case CommitStore.latest_commit(store, entry.original_uuid) do
+          # Root: use source commit (for schema diff baseline)
+          # Leaf: use target commit (for merge_content_doc reconstruction)
+          lookup_uuid =
+            if source_uuid == root_source_uuid, do: source_uuid, else: entry.original_uuid
+
+          case CommitStore.latest_commit(store, lookup_uuid) do
             {:ok, commit} ->
               updated_entry = %{entry | fork_point_commit: commit.id}
               %{man | document_map: Map.put(man.document_map, source_uuid, updated_entry)}

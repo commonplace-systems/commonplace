@@ -217,7 +217,7 @@ defmodule Commonplace.Tree.MergeTest do
       {:ok, target_file_doc} = Merge.reconstruct_doc(store, target_file_uuid)
       target_file_doc = ContentType.insert_text(target_file_doc, 8, " edited")
       update = Yelixer.Encoding.encode_update(target_file_doc)
-      CommitStore.create_commit(store, target_file_uuid, update, fork_commit.id)
+      edit_commit = CommitStore.create_commit(store, target_file_uuid, update, fork_commit.id)
 
       source_uuid = UUID.uuid4()
       diff = %Merge.SchemaDiff{
@@ -233,8 +233,13 @@ defmodule Commonplace.Tree.MergeTest do
       manifest = ForkManifest.add_entry(manifest, source_uuid, target_file_uuid, fork_commit.id)
       target_entries = Schema.entries(target_doc)
 
+      # Pass pre-merge target commits (target was modified after fork)
+      pre_merge = %{target_file_uuid => edit_commit.id}
+
       {updated_doc, _manifest, report} =
-        Merge.apply_schema_changes(store, target_doc, diff, manifest, target_entries, %Merge.MergeReport{})
+        Merge.apply_schema_changes(store, target_doc, diff, manifest, target_entries, %Merge.MergeReport{},
+          pre_merge_target_commits: pre_merge
+        )
 
       assert {:ok, _} = Schema.get_entry(updated_doc, "contested.txt")
       assert [{:delete_vs_modify, "contested.txt", ^target_file_uuid}] = report.conflicts
@@ -330,8 +335,8 @@ defmodule Commonplace.Tree.MergeTest do
     end
   end
 
-  describe "update_manifest_fork_points/3" do
-    test "advances fork points to target doc's latest commit", %{store: store} do
+  describe "update_manifest_fork_points/4" do
+    test "advances leaf fork points to target doc's latest commit", %{store: store} do
       source_uuid = create_text_doc(store, "s.txt", "content")
       target_uuid = create_text_doc(store, "t.txt", "target content")
       {:ok, target_commit} = CommitStore.latest_commit(store, target_uuid)
@@ -339,9 +344,24 @@ defmodule Commonplace.Tree.MergeTest do
       manifest = ForkManifest.new("root")
       manifest = ForkManifest.add_entry(manifest, source_uuid, target_uuid, <<0::256>>)
 
-      updated = Merge.update_manifest_fork_points(store, manifest, [source_uuid])
+      # nil root means all entries are leaf entries → use target commit
+      updated = Merge.update_manifest_fork_points(store, manifest, [source_uuid], nil)
       entry = updated.document_map[source_uuid]
       assert entry.fork_point_commit == target_commit.id
+    end
+
+    test "advances root fork point to source doc's latest commit", %{store: store} do
+      root_source = create_text_doc(store, "schema", "schema content")
+      root_target = create_text_doc(store, "target_schema", "target schema")
+      {:ok, source_commit} = CommitStore.latest_commit(store, root_source)
+
+      manifest = ForkManifest.new("root")
+      manifest = ForkManifest.add_entry(manifest, root_source, root_target, <<0::256>>)
+
+      # root_source is the root → use source commit for schema diff baseline
+      updated = Merge.update_manifest_fork_points(store, manifest, [root_source], root_source)
+      entry = updated.document_map[root_source]
+      assert entry.fork_point_commit == source_commit.id
     end
   end
 
