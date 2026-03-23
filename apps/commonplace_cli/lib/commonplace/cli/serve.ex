@@ -75,35 +75,73 @@ defmodule Commonplace.CLI.Serve do
     end
   end
 
-  defp kill_orphans(data_dir) do
+  @shutdown_grace_ms 5000
+
+  @doc "Kill orphaned processes from a previous serve instance."
+  def kill_orphans(data_dir) do
+    kill_orchestrator_orphan(data_dir)
+    kill_managed_orphans(data_dir)
+    cleanup_sandbox_dirs()
+  end
+
+  defp kill_orchestrator_orphan(data_dir) do
     pid_file = Path.join(data_dir, "orchestrator.pid")
 
     case File.read(pid_file) do
       {:ok, content} ->
         os_pid = String.trim(content)
-
-        # Check if the old process is still running
-        case System.cmd("kill", ["-0", os_pid], stderr_to_stdout: true) do
-          {_, 0} ->
-            IO.puts("Killing previous orchestrator (PID #{os_pid})...")
-            # Kill the process group to catch children
-            System.cmd("kill", ["-TERM", "--", "-#{os_pid}"], stderr_to_stdout: true)
-            Process.sleep(2000)
-            # Force kill if still alive
-            System.cmd("kill", ["-9", "--", "-#{os_pid}"], stderr_to_stdout: true)
-            Process.sleep(500)
-
-          _ ->
-            :ok
-        end
-
+        kill_process_group(os_pid)
         File.rm(pid_file)
 
       {:error, _} ->
         :ok
     end
+  end
 
-    # Also clean up stale sandbox directories
+  defp kill_managed_orphans(data_dir) do
+    status_file = Path.join(data_dir, "orchestrator_status.json")
+
+    case File.read(status_file) do
+      {:ok, content} ->
+        case Jason.decode(content) do
+          {:ok, %{"processes" => processes}} when is_map(processes) ->
+            processes
+            |> Enum.each(fn {name, info} ->
+              os_pid = info["os_pid"]
+              if os_pid do
+                IO.puts("Killing orphaned process: #{name} (PGID #{os_pid})")
+                kill_process_group("#{os_pid}")
+              end
+            end)
+
+          _ ->
+            :ok
+        end
+
+        File.rm(status_file)
+
+      {:error, _} ->
+        :ok
+    end
+  end
+
+  defp kill_process_group(pid_str) do
+    # Check if any process in the group is alive
+    case System.cmd("kill", ["-0", "--", "-#{pid_str}"], stderr_to_stdout: true) do
+      {_, 0} ->
+        # SIGTERM the process group
+        System.cmd("kill", ["-TERM", "--", "-#{pid_str}"], stderr_to_stdout: true)
+        Process.sleep(@shutdown_grace_ms)
+        # SIGKILL survivors
+        System.cmd("kill", ["-9", "--", "-#{pid_str}"], stderr_to_stdout: true)
+        Process.sleep(500)
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp cleanup_sandbox_dirs do
     case File.ls("/tmp") do
       {:ok, entries} ->
         entries
