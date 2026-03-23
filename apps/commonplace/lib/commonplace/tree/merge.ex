@@ -314,9 +314,9 @@ defmodule Commonplace.Tree.Merge do
   # Check if a target doc was independently modified (by the user, not just by merges).
   # Uses the latest_merge_head tracker: if target's current head matches the last
   # merge-created commit, only merges happened — no user edits.
-  defp modified_since_ancestor?(store, target_nid, ancestor_nid, _root_ancestor) do
+  defp modified_since_ancestor?(store, target_nid, ancestor_nid, root_ancestor) do
     if target_nid == ancestor_nid do
-      target_modified_by_user?(store, target_nid)
+      target_modified_by_user?(store, target_nid, root_ancestor)
     else
       case CommitStore.find_common_ancestor(store, target_nid, ancestor_nid) do
         {:ok, ancestor} ->
@@ -325,7 +325,7 @@ defmodule Commonplace.Tree.Merge do
             false
           else
             # Chain has diverged — but was it a merge or user edit?
-            target_modified_by_user?(store, target_nid)
+            target_modified_by_user?(store, target_nid, root_ancestor)
           end
 
         :none ->
@@ -337,23 +337,27 @@ defmodule Commonplace.Tree.Merge do
   # Check if a target doc was independently modified since a merge point.
   # Used when source deletes an entry that was merged in a prior round.
   defp modified_since_merge_point?(store, target_nid, _mp_nid) do
-    target_modified_by_user?(store, target_nid)
+    target_modified_by_user?(store, target_nid, nil)
   end
 
   # Core check: was this target doc modified by the user (not just by merges/forks)?
-  defp target_modified_by_user?(store, target_uuid) do
+  # root_ancestor is the fork-point commit (used as timestamp baseline for first-merge case).
+  defp target_modified_by_user?(store, target_uuid, root_ancestor) do
     {:ok, latest} = CommitStore.latest_commit(store, target_uuid)
 
     case CommitStore.get_latest_merge_head(store, target_uuid) do
       nil ->
-        # No merges ever happened to this doc. For docs created by fork_into_target
-        # (branch-point docs), they have exactly 1 commit. For pre-fork original docs,
-        # they may have many commits from before the fork — those don't count as
-        # "modified since fork." Without a merge head marker, we can't distinguish
-        # pre-fork edits from post-fork edits, so default to "not modified."
-        # This is the safe default: worst case, a delete propagates when it shouldn't,
-        # but the CRDT content is preserved in the commit chain.
-        false
+        # No merges ever happened to this doc. Use the root ancestor timestamp
+        # to check for post-fork edits. If the target's latest commit is newer
+        # than the fork point, it was edited after the fork.
+        if root_ancestor do
+          DateTime.compare(latest.timestamp, root_ancestor.timestamp) == :gt
+        else
+          # No root ancestor available (merge-point path) — default to not modified.
+          # Branch-point docs have 1 commit; if this doc has user edits after fork_into_target
+          # created it, the merge head would have been set. Without it, assume no user edits.
+          false
+        end
 
       merge_head_id ->
         # Merge has happened. If target's latest is the merge commit → no user edits.
