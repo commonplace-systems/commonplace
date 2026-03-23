@@ -17,7 +17,7 @@ defmodule Commonplace.Process.SandboxExecRunner do
   @stderr_prefix "__CP_STDERR__"
   @max_line_length 8192
 
-  defstruct [:sandbox_pid, :command, :args, :name, :port, :event_log, :event_log_uuid, :store, :env]
+  defstruct [:sandbox_pid, :command, :args, :name, :port, :os_pid, :event_log, :event_log_uuid, :store, :env]
 
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts)
@@ -93,13 +93,7 @@ defmodule Commonplace.Process.SandboxExecRunner do
 
   @impl true
   def handle_call(:os_pid, _from, state) do
-    os_pid = if state.port do
-      case Port.info(state.port, :os_pid) do
-        {:os_pid, pid} -> pid
-        _ -> nil
-      end
-    end
-    {:reply, os_pid, state}
+    {:reply, state.os_pid, state}
   end
 
   @impl true
@@ -124,7 +118,14 @@ defmodule Commonplace.Process.SandboxExecRunner do
        {:env, env_list}, {:args, ["-c", wrapper]}]
     )
 
-    {:noreply, %{state | port: port}}
+    # Save OS PID persistently — needed for orphan cleanup after crashes
+    saved_os_pid =
+      case Port.info(port, :os_pid) do
+        {:os_pid, pid} -> pid
+        _ -> nil
+      end
+
+    {:noreply, %{state | port: port, os_pid: saved_os_pid}}
   end
 
   @impl true

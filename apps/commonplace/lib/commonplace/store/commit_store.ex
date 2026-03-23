@@ -40,6 +40,58 @@ defmodule Commonplace.Store.CommitStore do
     path = Path.join(data_dir, "commits")
     File.mkdir_p!(path)
 
+    case open_cubdb(path) do
+      {:ok, db} ->
+        case probe_integrity(db) do
+          :ok ->
+            {:ok, %{db: db}}
+
+          {:error, reason} ->
+            require Logger
+            Logger.warning("CubDB corrupt on probe (#{inspect(reason)}). Archiving and starting fresh.")
+            CubDB.stop(db)
+            recover_cubdb(path)
+        end
+
+      {:error, reason} ->
+        require Logger
+        Logger.warning("CubDB failed to open (#{inspect(reason)}). Archiving and starting fresh.")
+        recover_cubdb(path)
+    end
+  end
+
+  defp open_cubdb(path) do
+    # Trap exits so CubDB init crashes don't kill us
+    old_trap = Process.flag(:trap_exit, true)
+
+    result =
+      try do
+        CubDB.start_link(
+          data_dir: path,
+          auto_file_sync: true,
+          auto_compact: true
+        )
+      rescue
+        e -> {:error, e}
+      catch
+        :exit, reason -> {:error, reason}
+        kind, reason -> {:error, {kind, reason}}
+      end
+
+    # Drain any EXIT message from the failed CubDB process
+    receive do
+      {:EXIT, _pid, _reason} -> :ok
+    after
+      0 -> :ok
+    end
+
+    Process.flag(:trap_exit, old_trap)
+    result
+  end
+
+  defp recover_cubdb(path) do
+    archive_corrupt_db(path)
+
     {:ok, db} =
       CubDB.start_link(
         data_dir: path,
@@ -47,29 +99,7 @@ defmodule Commonplace.Store.CommitStore do
         auto_compact: true
       )
 
-    case probe_integrity(db) do
-      :ok ->
-        {:ok, %{db: db}}
-
-      {:error, reason} ->
-        require Logger
-
-        Logger.warning(
-          "CubDB corrupt (#{inspect(reason)}). Archiving and starting fresh."
-        )
-
-        CubDB.stop(db)
-        archive_corrupt_db(path)
-
-        {:ok, db2} =
-          CubDB.start_link(
-            data_dir: path,
-            auto_file_sync: true,
-            auto_compact: true
-          )
-
-        {:ok, %{db: db2}}
-    end
+    {:ok, %{db: db}}
   end
 
   @impl true

@@ -199,6 +199,9 @@ defmodule Commonplace.CLI.Serve do
 
   # Start the BEAM as a named node for distributed Erlang CLI access.
   defp start_named_node(data_dir) do
+    # Ensure epmd is running — escripts don't start it automatically
+    ensure_epmd()
+
     node_name = workspace_node_name(data_dir)
 
     case Node.start(node_name, :shortnames) do
@@ -211,6 +214,17 @@ defmodule Commonplace.CLI.Serve do
       {:error, reason} ->
         IO.puts(:stderr, "Warning: could not start named node: #{inspect(reason)}")
         IO.puts(:stderr, "  CLI commands will use direct CubDB access (file-locked).")
+    end
+  end
+
+  defp ensure_epmd do
+    case System.cmd("epmd", ["-names"], stderr_to_stdout: true) do
+      {_, 0} -> :ok
+      _ ->
+        # Start epmd as a daemon
+        System.cmd("epmd", ["-daemon"], stderr_to_stdout: true)
+        # Give it a moment to start
+        Process.sleep(500)
     end
   end
 
