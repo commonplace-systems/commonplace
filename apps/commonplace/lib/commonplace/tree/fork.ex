@@ -1,144 +1,137 @@
 defmodule Commonplace.Tree.Fork do
   @moduledoc """
-  Deep-copy a directory subtree with new UUIDs.
+  Fork a directory subtree using DAG branches.
 
-  Walks the schema tree recursively, creating new UUIDs for every
-  document and directory. Tracks the mapping via ForkManifest.
-  Filters __processes.json entries for fork safety.
+  Creates new UUIDs that branch off existing commit chains.
+  Schema edit commits remap child node_ids to the new UUIDs.
+  Leaf docs get branch-point commits (same content, new UUID).
+  No ForkManifest — provenance is in the shared commit DAG.
   """
 
-  alias Commonplace.Tree.{Schema, ForkManifest}
+  alias Commonplace.Tree.Schema
   alias Commonplace.Store.CommitStore
   alias Commonplace.Process.Config
   alias Commonplace.Document.ContentType
+  alias Yelixer.{Doc, Encoding}
 
   @doc """
-  Fork a directory subtree, creating new UUIDs for all documents.
-
-  Returns `{new_root_uuid, manifest}`.
+  Fork a directory subtree using DAG branches.
+  Returns the new root UUID.
   """
   def fork_directory(source_uuid, store \\ CommitStore) do
-    manifest = ForkManifest.new(source_uuid)
-    {new_uuid, manifest} = fork_node(source_uuid, store, manifest)
-    {new_uuid, manifest}
+    {new_uuid, _uuid_map} = fork_node(source_uuid, store, %{})
+    new_uuid
   end
 
-  # Fork a single node (directory or document).
-  # For directories: create new schema with forked children.
-  # For documents: create new UUID pointing to the same commit.
-  defp fork_node(source_uuid, store, manifest) do
+  # Fork a node, returning {new_uuid, uuid_map} where uuid_map tracks
+  # source_uuid => new_uuid for all forked docs (used for schema remapping).
+  defp fork_node(source_uuid, store, uuid_map) do
     case CommitStore.latest_commit(store, source_uuid) do
       {:ok, commit} ->
-        # Check if this is a schema (directory) by trying to parse entries
         schema_doc = Schema.new_schema()
 
-        case Yelixer.Encoding.apply_update(schema_doc, commit.update) do
+        case Encoding.apply_update(schema_doc, commit.update) do
           {:ok, schema_doc} ->
             entries = Schema.list_entries(schema_doc)
 
             if length(entries) > 0 do
-              # It's a directory — fork all children and rebuild schema
-              fork_directory_node(source_uuid, entries, store, manifest, commit)
+              fork_directory_node(source_uuid, entries, store, uuid_map, commit)
             else
-              # Leaf document — create new UUID with same content
-              fork_leaf_node(source_uuid, store, manifest, commit)
+              fork_leaf_node(source_uuid, store, uuid_map, commit)
             end
 
           _ ->
-            # Can't parse as schema — treat as leaf
-            fork_leaf_node(source_uuid, store, manifest, commit)
+            fork_leaf_node(source_uuid, store, uuid_map, commit)
         end
 
       :none ->
-        # No commits — create empty
         new_uuid = UUID.uuid4()
-        {new_uuid, manifest}
+        {new_uuid, Map.put(uuid_map, source_uuid, new_uuid)}
     end
   end
 
-  # Fork a directory node: create new UUIDs for all children, rebuild schema.
-  defp fork_directory_node(source_uuid, entries, store, manifest, commit) do
+  defp fork_directory_node(source_uuid, entries, store, uuid_map, commit) do
     new_uuid = UUID.uuid4()
-    manifest = ForkManifest.add_entry(manifest, new_uuid, source_uuid, commit.id)
+    uuid_map = Map.put(uuid_map, source_uuid, new_uuid)
 
-    # Fork all children and build new schema
-    {new_schema, manifest} =
-      Enum.reduce(entries, {Schema.new_schema(), manifest}, fn entry, {doc, man} ->
-        {new_child_uuid, man} = fork_node(entry.node_id, store, man)
+    # Fork all children first to build the uuid_map
+    {uuid_map, _} =
+      Enum.reduce(entries, {uuid_map, []}, fn entry, {map, _} ->
+        {_child_uuid, map} = fork_node(entry.node_id, store, map)
+        {map, []}
+      end)
 
-        doc =
-          case entry.type do
-            :dir -> Schema.add_directory(doc, entry.name, new_child_uuid)
-            :doc -> Schema.add_file(doc, entry.name, new_child_uuid)
-            _ -> Schema.add_file(doc, entry.name, new_child_uuid)
-          end
+    # Reconstruct source schema and remap node_ids
+    {:ok, source_doc} = reconstruct_doc(store, source_uuid)
 
-        {doc, man}
+    edited_doc =
+      Enum.reduce(entries, source_doc, fn entry, doc ->
+        new_child_uuid = Map.fetch!(uuid_map, entry.node_id)
+        doc = Schema.remove_entry(doc, entry.name)
+
+        case entry.type do
+          :dir -> Schema.add_directory(doc, entry.name, new_child_uuid)
+          _ -> Schema.add_file(doc, entry.name, new_child_uuid)
+        end
       end)
 
     # Filter __processes.json if present
-    new_schema = maybe_filter_processes(new_schema, entries, store)
+    edited_doc = maybe_filter_processes(edited_doc, entries, store, uuid_map)
 
-    # Write the new schema
-    update = Yelixer.Encoding.encode_update(new_schema)
-    CommitStore.create_commit(store, new_uuid, update, nil)
+    # Create the schema edit commit branching off the source's chain
+    update = Encoding.encode_update(edited_doc)
+    CommitStore.create_commit(store, new_uuid, update, commit.id)
 
-    {new_uuid, manifest}
+    {new_uuid, uuid_map}
   end
 
-  # Fork a leaf document: create new UUID pointing to same content.
-  defp fork_leaf_node(source_uuid, store, manifest, commit) do
+  defp fork_leaf_node(source_uuid, store, uuid_map, commit) do
     new_uuid = UUID.uuid4()
-    CommitStore.create_commit(store, new_uuid, commit.update, nil)
-    manifest = ForkManifest.add_entry(manifest, new_uuid, source_uuid, commit.id)
-    {new_uuid, manifest}
+    uuid_map = Map.put(uuid_map, source_uuid, new_uuid)
+
+    # Branch-point commit: same content under new UUID, parent = source's commit
+    {:ok, doc} = reconstruct_doc(store, source_uuid)
+    update = Encoding.encode_update(doc)
+    CommitStore.create_commit(store, new_uuid, update, commit.id)
+
+    {new_uuid, uuid_map}
   end
 
-  # If the schema contains a __processes.json, filter it for fork safety.
-  defp maybe_filter_processes(schema_doc, entries, store) do
+  defp reconstruct_doc(store, doc_uuid) do
+    commits = CommitStore.commit_log(store, doc_uuid, limit: 10_000) |> Enum.reverse()
+    doc = Doc.new()
+
+    Enum.reduce(commits, {:ok, doc}, fn commit, {:ok, acc} ->
+      Encoding.apply_update(acc, commit.update)
+    end)
+  end
+
+  defp maybe_filter_processes(schema_doc, entries, store, uuid_map) do
     proc_entry = Enum.find(entries, &(&1.name == "__processes.json"))
 
     if proc_entry do
-      case CommitStore.latest_commit(store, proc_entry.node_id) do
-        {:ok, commit} ->
-          doc = Yelixer.Doc.new()
+      new_proc_uuid = Map.get(uuid_map, proc_entry.node_id)
 
-          case Yelixer.Encoding.apply_update(doc, commit.update) do
-            {:ok, doc} ->
-              content = ContentType.get_content(doc) || "{}"
+      case reconstruct_doc(store, proc_entry.node_id) do
+        {:ok, proc_doc} ->
+          content = ContentType.get_content(proc_doc) || "{}"
 
-              case Jason.decode(content) do
-                {:ok, json} when is_map(json) ->
-                  filtered = Config.filter_json_for_fork(json)
+          case Jason.decode(content) do
+            {:ok, json} when is_map(json) ->
+              filtered = Config.filter_json_for_fork(json)
 
-                  if map_size(filtered) < map_size(json) do
-                    case Schema.get_entry(schema_doc, "__processes.json") do
-                      {:ok, new_proc_entry} ->
-                        new_doc = Yelixer.Doc.new()
-                        new_doc = ContentType.create(new_doc, :text, "__processes.json")
-                        filtered_json = Jason.encode!(filtered)
-
-                        new_doc =
-                          if filtered_json != "" do
-                            ContentType.insert_text(new_doc, 0, filtered_json)
-                          else
-                            new_doc
-                          end
-
-                        update = Yelixer.Encoding.encode_update(new_doc)
-                        CommitStore.create_commit(store, new_proc_entry.node_id, update, nil)
-                        schema_doc
-
-                      _ ->
-                        schema_doc
-                    end
-                  else
-                    schema_doc
-                  end
-
-                _ ->
-                  schema_doc
+              if map_size(filtered) < map_size(json) and new_proc_uuid do
+                new_doc = Doc.new()
+                new_doc = ContentType.create(new_doc, :text, "__processes.json")
+                filtered_json = Jason.encode!(filtered)
+                new_doc = if filtered_json != "", do: ContentType.insert_text(new_doc, 0, filtered_json), else: new_doc
+                update = Encoding.encode_update(new_doc)
+                # Overwrite the branch-point commit with filtered content
+                {:ok, branch_commit} = CommitStore.latest_commit(store, new_proc_uuid)
+                CommitStore.create_commit(store, new_proc_uuid, update, branch_commit.parent_id)
               end
+
+              schema_doc
 
             _ ->
               schema_doc
