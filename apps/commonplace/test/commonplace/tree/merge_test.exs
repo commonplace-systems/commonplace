@@ -58,18 +58,65 @@ defmodule Commonplace.Tree.MergeTest do
 
       fork_root = Fork.fork_directory(root_uuid, store)
 
-      # Both branches add "conflict.txt" independently
-      source_file = create_text_doc(store, "conflict.txt", "source version")
-      add_to_schema(store, fork_root, "conflict.txt", :doc, source_file)
+      # Both branches add "notes.txt" independently
+      source_file = create_text_doc(store, "notes.txt", "source version")
+      add_to_schema(store, fork_root, "notes.txt", :doc, source_file)
 
-      target_file = create_text_doc(store, "conflict.txt", "target version")
-      add_to_schema(store, root_uuid, "conflict.txt", :doc, target_file)
+      target_file = create_text_doc(store, "notes.txt", "target version")
+      add_to_schema(store, root_uuid, "notes.txt", :doc, target_file)
 
       {:ok, report} = Merge.merge(fork_root, root_uuid, store)
 
-      # No conflicts — collision was auto-resolved via rename
+      # No conflicts — collision was auto-resolved
       assert report.conflicts == []
-      assert length(report.auto_renamed) >= 1
+
+      # Should report the rename
+      assert length(report.auto_renamed) == 1
+      [{:auto_renamed, "notes.txt", "notes.txt.merge-conflict", _source_nid, _new_uuid}] =
+        report.auto_renamed
+
+      # Target schema should have both entries
+      {:ok, target_schema} = reconstruct_schema(store, root_uuid)
+      assert {:ok, _} = Schema.get_entry(target_schema, "notes.txt")
+      assert {:ok, _} = Schema.get_entry(target_schema, "notes.txt.merge-conflict")
+
+      # Original target entry is untouched
+      {:ok, original} = Schema.get_entry(target_schema, "notes.txt")
+      assert original.node_id == target_file
+
+      # Renamed entry is a fork of the source
+      {:ok, renamed} = Schema.get_entry(target_schema, "notes.txt.merge-conflict")
+      assert renamed.node_id != source_file  # forked, so new uuid
+      assert renamed.node_id != target_file
+    end
+
+    test "auto-rename with number suffix when .merge-conflict already exists", %{store: store} do
+      root_uuid = create_schema(store, %{})
+
+      fork_root = Fork.fork_directory(root_uuid, store)
+
+      # Target has both "data.txt" and "data.txt.merge-conflict" already
+      target_file = create_text_doc(store, "data.txt", "target version")
+      add_to_schema(store, root_uuid, "data.txt", :doc, target_file)
+
+      existing_mc = create_text_doc(store, "data.txt.merge-conflict", "prior conflict")
+      add_to_schema(store, root_uuid, "data.txt.merge-conflict", :doc, existing_mc)
+
+      # Source adds "data.txt" independently
+      source_file = create_text_doc(store, "data.txt", "source version")
+      add_to_schema(store, fork_root, "data.txt", :doc, source_file)
+
+      {:ok, report} = Merge.merge(fork_root, root_uuid, store)
+
+      assert report.conflicts == []
+      assert length(report.auto_renamed) == 1
+      [{:auto_renamed, "data.txt", "data.txt.merge-conflict-2", _source_nid, _new_uuid}] =
+        report.auto_renamed
+
+      {:ok, target_schema} = reconstruct_schema(store, root_uuid)
+      assert {:ok, _} = Schema.get_entry(target_schema, "data.txt")
+      assert {:ok, _} = Schema.get_entry(target_schema, "data.txt.merge-conflict")
+      assert {:ok, _} = Schema.get_entry(target_schema, "data.txt.merge-conflict-2")
     end
 
     test "empty merge is a no-op", %{store: store} do
