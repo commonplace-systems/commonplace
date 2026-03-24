@@ -15,7 +15,8 @@ defmodule Commonplace.Tree.Merge do
 
   defmodule MergeReport do
     @moduledoc "Result of a merge operation."
-    defstruct merged_docs: [], new_docs: [], deleted_docs: [], conflicts: [], errors: []
+    defstruct merged_docs: [], new_docs: [], deleted_docs: [], conflicts: [], errors: [],
+              auto_renamed: []
   end
 
   @doc """
@@ -199,8 +200,27 @@ defmodule Commonplace.Tree.Merge do
                     {schema, rep}
 
                   :none ->
-                    conflict = {:name_collision, name, source_nid, target_nid}
-                    {schema, %{rep | conflicts: [conflict | rep.conflicts]}}
+                    # Auto-rename: both branches independently added an entry with the
+                    # same name. Rename the incoming (source) entry to avoid collision.
+                    type = source_entry["type"]
+                    renamed = unique_rename(name, schema)
+                    new_uuid = fork_into_target(source_nid, type, store)
+
+                    schema =
+                      case type do
+                        "dir" -> Schema.add_directory(schema, renamed, new_uuid)
+                        _ -> Schema.add_file(schema, renamed, new_uuid)
+                      end
+
+                    rename_entry = {:auto_renamed, name, renamed, source_nid, new_uuid}
+
+                    rep = %{
+                      rep
+                      | auto_renamed: [rename_entry | rep.auto_renamed],
+                        new_docs: [{source_nid, new_uuid} | rep.new_docs]
+                    }
+
+                    {schema, rep}
                 end
 
               source_entry != nil and target_entry == nil and ancestor_entry == nil ->
@@ -294,6 +314,29 @@ defmodule Commonplace.Tree.Merge do
 
   defp fork_into_target(source_uuid, _type, store) do
     Fork.fork_directory(source_uuid, store)
+  end
+
+  # Generate a unique renamed name for a collision: "name.merge-conflict",
+  # then "name.merge-conflict-2", "name.merge-conflict-3", etc.
+  defp unique_rename(name, schema) do
+    candidate = name <> ".merge-conflict"
+    existing = Schema.entries(schema)
+
+    if not Map.has_key?(existing, candidate) do
+      candidate
+    else
+      find_unique_rename(name, existing, 2)
+    end
+  end
+
+  defp find_unique_rename(name, existing, n) do
+    candidate = name <> ".merge-conflict-#{n}"
+
+    if not Map.has_key?(existing, candidate) do
+      candidate
+    else
+      find_unique_rename(name, existing, n + 1)
+    end
   end
 
   # Returns the schema entries map at the stored merge point for (target, source), or nil
