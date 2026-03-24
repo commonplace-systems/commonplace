@@ -364,11 +364,12 @@ defmodule Yelixer.Encoding do
 
   # lib0 Any encoding: type byte + value
   # 116 = buffer, 117 = array, 118 = object, 119 = string,
-  # 120 = false, 121 = true, 122 = bigint, 123 = float64,
+  # 120 = true, 121 = false (lib0 convention: data ? 120 : 121),
+  # 122 = bigint, 123 = float64,
   # 124 = float32, 125 = integer (zigzag), 126 = null, 127 = undefined
   defp encode_any(nil), do: <<126>>
-  defp encode_any(true), do: <<121>>
-  defp encode_any(false), do: <<120>>
+  defp encode_any(true), do: <<120>>
+  defp encode_any(false), do: <<121>>
 
   defp encode_any(n) when is_integer(n) do
     <<125, encode_sint(n)::binary>>
@@ -396,13 +397,16 @@ defmodule Yelixer.Encoding do
     <<118, encode_uint(map_size(map))::binary, body::binary>>
   end
 
+  @doc "Encode a single lib0 Any value to binary."
+  def encode_any_value(value), do: encode_any(value)
+
   @doc "Decode a lib0 Any value from binary. Returns {value, rest}."
   def decode_any_value(binary), do: decode_any(binary)
 
   defp decode_any(<<127, rest::binary>>), do: {nil, rest}
   defp decode_any(<<126, rest::binary>>), do: {nil, rest}
-  defp decode_any(<<121, rest::binary>>), do: {true, rest}
-  defp decode_any(<<120, rest::binary>>), do: {false, rest}
+  defp decode_any(<<120, rest::binary>>), do: {true, rest}
+  defp decode_any(<<121, rest::binary>>), do: {false, rest}
   defp decode_any(<<123, f::float-64, rest::binary>>), do: {round_if_integer(f), rest}
 
   defp decode_any(<<124, f::float-32, rest::binary>>), do: {round_if_integer(f), rest}
