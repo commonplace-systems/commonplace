@@ -17,27 +17,27 @@ defmodule Commonplace.Store.CommitStoreClient do
   defp normalize_server(__MODULE__), do: CommitStore
   defp normalize_server(server), do: server
 
-  def create_commit(server \\ CommitStore, doc_uuid, update, parent_id) do
+  def create_commit(server \\ CommitStore, doc_uuid, update, parent_id, metadata \\ %{}) do
     case remote_node() do
       {:ok, node} ->
-        GenServer.call({CommitStore, node}, {:create_commit, doc_uuid, update, parent_id})
+        GenServer.call({CommitStore, node}, {:create_commit, doc_uuid, update, parent_id, metadata})
 
       :local ->
-        CommitStore.create_commit(normalize_server(server), doc_uuid, update, parent_id)
+        CommitStore.create_commit(normalize_server(server), doc_uuid, update, parent_id, metadata)
     end
   end
 
-  def create_chained_commit(server \\ CommitStore, doc_uuid, update) do
+  def create_chained_commit(server \\ CommitStore, doc_uuid, update, metadata \\ %{}) do
     case remote_node() do
       {:ok, node} ->
         parent_id = case GenServer.call({CommitStore, node}, {:latest_commit, doc_uuid}) do
           {:ok, commit} -> commit.id
           :none -> nil
         end
-        GenServer.call({CommitStore, node}, {:create_commit, doc_uuid, update, parent_id})
+        GenServer.call({CommitStore, node}, {:create_commit, doc_uuid, update, parent_id, metadata})
 
       :local ->
-        CommitStore.create_chained_commit(normalize_server(server), doc_uuid, update)
+        CommitStore.create_chained_commit(normalize_server(server), doc_uuid, update, metadata)
     end
   end
 

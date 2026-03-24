@@ -12,17 +12,17 @@ defmodule Commonplace.Store.CommitStore do
     GenServer.start_link(__MODULE__, opts, name: name)
   end
 
-  def create_commit(server \\ __MODULE__, doc_uuid, update, parent_id) do
-    GenServer.call(server, {:create_commit, doc_uuid, update, parent_id})
+  def create_commit(server \\ __MODULE__, doc_uuid, update, parent_id, metadata \\ %{}) do
+    GenServer.call(server, {:create_commit, doc_uuid, update, parent_id, metadata})
   end
 
   @doc "Create a commit that automatically chains to the latest commit on this UUID."
-  def create_chained_commit(server \\ __MODULE__, doc_uuid, update) do
+  def create_chained_commit(server \\ __MODULE__, doc_uuid, update, metadata \\ %{}) do
     parent_id = case latest_commit(server, doc_uuid) do
       {:ok, commit} -> commit.id
       :none -> nil
     end
-    create_commit(server, doc_uuid, update, parent_id)
+    create_commit(server, doc_uuid, update, parent_id, metadata)
   end
 
   def get_commit(server \\ __MODULE__, commit_id) do
@@ -147,7 +147,7 @@ defmodule Commonplace.Store.CommitStore do
   end
 
   @impl true
-  def handle_call({:create_commit, doc_uuid, update, parent_id}, _from, state) do
+  def handle_call({:create_commit, doc_uuid, update, parent_id, metadata}, _from, state) do
     commit = Commit.new(doc_uuid, update, parent_id)
 
     CubDB.put_multi(state.db, [
@@ -161,7 +161,7 @@ defmodule Commonplace.Store.CommitStore do
       %{doc_uuid: doc_uuid}
     )
 
-    Phoenix.PubSub.broadcast(Commonplace.PubSub, "commits:#{doc_uuid}", {:commit, doc_uuid, commit.id})
+    Phoenix.PubSub.broadcast(Commonplace.PubSub, "commits:#{doc_uuid}", {:commit, doc_uuid, commit.id, metadata})
 
     {:reply, commit, state}
   end

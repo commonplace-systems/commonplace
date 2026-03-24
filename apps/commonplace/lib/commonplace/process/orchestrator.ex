@@ -18,12 +18,18 @@ defmodule Commonplace.Process.Orchestrator do
   alias Commonplace.Store.CommitStore
   alias Commonplace.Tree.Schema
   alias Commonplace.Document.ContentType
+  alias Commonplace.Dataflow.Wiring
+  alias Commonplace.Dataflow.GraphRegistry
+
+  require Logger
+
+  @max_propagation_depth 8
 
   defstruct [:root_uuid, :store, :interval, :processes, :current_config, :source_hashes, :started_at]
 
   defmodule ProcessInfo do
     @moduledoc "Info about a managed process."
-    defstruct [:pid, :mode, :sandbox_dir, :os_pid, :started_at, :scope_uuid]
+    defstruct [:pid, :mode, :sandbox_dir, :os_pid, :started_at, :scope_uuid, :wiring_info, :resolved_ports]
   end
 
   def start_link(opts) do
@@ -89,6 +95,17 @@ defmodule Commonplace.Process.Orchestrator do
 
     write_status_file(state)
     schedule_reconcile(state)
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:commit, uuid, commit_id, meta}, state) do
+    depth = Map.get(meta, :depth, 0)
+
+    if depth <= @max_propagation_depth do
+      dispatch_to_processes(uuid, commit_id, meta, state)
+    end
+
     {:noreply, state}
   end
 
@@ -178,7 +195,11 @@ defmodule Commonplace.Process.Orchestrator do
         nil ->
           acc
 
-        %ProcessInfo{pid: pid} ->
+        %ProcessInfo{pid: pid, wiring_info: wiring_info} ->
+          # Unwire PubSub subscriptions and remove graph edges before stopping
+          if wiring_info, do: Wiring.unwire(wiring_info)
+          GraphRegistry.remove_edges(name)
+
           if Process.alive?(pid), do: GenServer.stop(pid, :shutdown, 5000)
 
           :telemetry.execute(
@@ -203,12 +224,16 @@ defmodule Commonplace.Process.Orchestrator do
         config ->
           case start_process(config, acc) do
             {:ok, pid, source_hash} ->
+              {wiring_info, resolved_ports} = wire_ports(name, config, acc)
+
               info = %ProcessInfo{
                 pid: pid,
                 mode: config.mode,
                 sandbox_dir: get_sandbox_dir(pid, config.mode),
                 started_at: DateTime.utc_now(),
-                scope_uuid: config.scope_uuid
+                scope_uuid: config.scope_uuid,
+                wiring_info: wiring_info,
+                resolved_ports: resolved_ports
               }
 
               :telemetry.execute(
@@ -490,6 +515,74 @@ defmodule Commonplace.Process.Orchestrator do
   defp remove_status_file do
     data_dir = Application.get_env(:commonplace, :data_dir, "data")
     File.rm(Path.join(data_dir, "orchestrator_status.json"))
+  end
+
+  # --- Port Wiring ---
+
+  defp wire_ports(name, config, state) do
+    module_name = module_for(name)
+
+    if config.mode == :elixir and
+         Code.ensure_loaded?(module_name) and
+         function_exported?(module_name, :__ports__, 0) do
+      ports = module_name.__ports__()
+      scope_uuid = config.scope_uuid || state.root_uuid
+
+      context = [
+        root_uuid: scope_uuid,
+        repo_root_uuid: state.root_uuid,
+        tree_root_uuid: state.root_uuid,
+        loader: &load_schema(&1, state.store)
+      ]
+
+      resolved = Wiring.resolve_ports(ports, context)
+      wiring_info = Wiring.wire(ports, resolved)
+      edges = Wiring.build_edges(name, ports, resolved)
+      GraphRegistry.add_edges(name, edges)
+
+      {wiring_info, resolved}
+    else
+      {nil, %{}}
+    end
+  end
+
+  defp dispatch_to_processes(uuid, commit_id, _meta, state) do
+    Enum.each(state.processes, fn {name, %ProcessInfo{pid: pid, resolved_ports: resolved_ports, wiring_info: wiring_info}} ->
+      if Process.alive?(pid) && resolved_ports && wiring_info do
+        # Check if this uuid matches any blue input (including cyan-implied blue)
+        blue_uuids = Map.get(wiring_info, :blue_uuids, MapSet.new())
+
+        if MapSet.member?(blue_uuids, uuid) do
+          # Find which docref(s) map to this uuid
+          refs =
+            Enum.flat_map(resolved_ports, fn {ref, resolved_uuid} ->
+              if resolved_uuid == uuid, do: [ref], else: []
+            end)
+
+          Enum.each(refs, fn ref ->
+            try do
+              # Reconstruct the doc from the latest commit
+              case CommitStore.get_commit(state.store, commit_id) do
+                {:ok, commit} ->
+                  doc = Yelixer.Doc.new()
+                  {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
+                  module_name = module_for(name)
+
+                  if function_exported?(module_name, :handle_blue, 2) do
+                    module_name.handle_blue(ref, doc)
+                  end
+
+                _ ->
+                  :ok
+              end
+            rescue
+              e ->
+                Logger.warning("Error dispatching commit to #{name}/#{ref}: #{inspect(e)}")
+            end
+          end)
+        end
+      end
+    end)
   end
 
   defp schedule_reconcile(state) do
