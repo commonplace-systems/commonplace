@@ -84,10 +84,14 @@ defmodule Commonplace.Sync.DirAgent do
 
   @impl true
   def handle_call(:sync_once, _from, state) do
+    # Load schema once to avoid race between disk scan and CRDT reconciliation.
+    # A remote mutation arriving between two separate loads could be missed.
+    schema_doc = load_schema_doc(state)
+
     state =
       state
-      |> sync_disk()
-      |> sync_crdt()
+      |> sync_disk(schema_doc)
+      |> sync_crdt(schema_doc)
       |> sync_children()
 
     {:reply, :ok, state}
@@ -129,11 +133,10 @@ defmodule Commonplace.Sync.DirAgent do
 
   # --- Sync: disk scan ---
 
-  defp sync_disk(state) do
+  defp sync_disk(state, schema_doc) do
     disk_entries = scan_directory(state.dir_path)
 
-    # Reload schema to get current entries
-    schema_entries = load_schema_entries(state)
+    schema_entries = schema_entries_from_doc(schema_doc)
     schema_names = MapSet.new(Map.keys(schema_entries))
 
     # New files on disk not in schema
@@ -262,8 +265,8 @@ defmodule Commonplace.Sync.DirAgent do
 
   # --- Sync: CRDT reconciliation ---
 
-  defp sync_crdt(state) do
-    schema_entries = load_schema_entries_as_structs(state)
+  defp sync_crdt(state, schema_doc) do
+    schema_entries = schema_structs_from_doc(schema_doc)
     schema_names = MapSet.new(Enum.map(schema_entries, & &1.name))
     child_names = MapSet.new(Map.keys(state.children))
 
@@ -356,17 +359,16 @@ defmodule Commonplace.Sync.DirAgent do
 
   # --- Schema helpers ---
 
-  defp load_schema_entries(state) do
+  defp load_schema_doc(state) do
     case DocBuilder.reconstruct_doc(state.store, state.schema_uuid) do
-      {:ok, doc} -> Schema.entries(doc)
-      :none -> %{}
+      {:ok, doc} -> doc
+      :none -> nil
     end
   end
 
-  defp load_schema_entries_as_structs(state) do
-    case DocBuilder.reconstruct_doc(state.store, state.schema_uuid) do
-      {:ok, doc} -> Schema.list_entries(doc)
-      :none -> []
-    end
-  end
+  defp schema_entries_from_doc(nil), do: %{}
+  defp schema_entries_from_doc(doc), do: Schema.entries(doc)
+
+  defp schema_structs_from_doc(nil), do: []
+  defp schema_structs_from_doc(doc), do: Schema.list_entries(doc)
 end
