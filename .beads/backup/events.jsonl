@@ -199,3 +199,5 @@
 {"actor":"Jes Wolfe!","comment":null,"created_at":"2026-03-24T01:45:47Z","event_type":"created","id":199,"issue_id":"CX-stz","new_value":"","old_value":""}
 {"actor":"Jes Wolfe!","comment":null,"created_at":"2026-03-24T01:45:47Z","event_type":"created","id":200,"issue_id":"CX-ubm","new_value":"","old_value":""}
 {"actor":"Jes Wolfe!","comment":null,"created_at":"2026-03-24T02:17:59Z","event_type":"closed","id":201,"issue_id":"CX-stz","new_value":"Fixed: boolean tags swapped to match lib0 (120=true, 121=false). 6 new tests. Commit 0be4f41.","old_value":""}
+{"actor":"Jes Wolfe!","comment":null,"created_at":"2026-03-24T02:18:00Z","event_type":"closed","id":202,"issue_id":"CX-ubm","new_value":"Fixed: integer Any encoding now uses lib0 writeVarInt (sign-bit-in-6th-bit) instead of zigzag. Oracle integer test passes. Commit 8f457d3.","old_value":""}
+{"actor":"Jes Wolfe!","comment":null,"created_at":"2026-03-24T02:35:19Z","event_type":"closed","id":203,"issue_id":"CX-hco","new_value":"All 9 child issues closed. Full Yjs v14 wire compatibility achieved: 224 tests, 0 failures, 0 skipped.","old_value":""}
