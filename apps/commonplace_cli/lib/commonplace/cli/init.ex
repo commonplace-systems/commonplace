@@ -4,6 +4,7 @@ defmodule Commonplace.CLI.Init do
   alias Commonplace.CLI
   alias Commonplace.Tree.Schema
   alias Commonplace.Store.CommitStoreClient, as: CommitStore
+  alias Commonplace.Sync.CheckoutRegistry
 
   def run(data_dir, _args) do
     if CLI.root_uuid(data_dir) do
@@ -20,6 +21,18 @@ defmodule Commonplace.CLI.Init do
     CommitStore.create_commit(root_uuid, update, nil)
 
     CLI.set_root_uuid(data_dir, root_uuid)
+
+    # Register the workspace directory as the first checkout
+    workspace_dir = Path.dirname(data_dir)
+    config_path = Path.join(data_dir, "checkouts.json")
+
+    {:ok, registry} =
+      CheckoutRegistry.start_link(
+        config_path: config_path,
+        store: Commonplace.Store.CommitStore
+      )
+
+    CheckoutRegistry.register(registry, workspace_dir, root_uuid, :dir)
 
     IO.puts("Initialized commonplace workspace at #{data_dir}")
     IO.puts("Root: #{root_uuid}")

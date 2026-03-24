@@ -12,6 +12,9 @@ defmodule Commonplace.CLI do
     export <dir>                  Export document tree to disk
     sync [dir]                    Sync disk changes to/from CRDT
     branch [list|activate|deactivate] [name]  Manage branches
+    checkout [path docref] [--file|--remove]  Manage checkouts
+    checkouts                     List active checkouts
+    reroot <path> <docref>        Change what a checkout points at
     who [--type exe|usr|bot|who] [--all]  List actors
     ln <source> <target>          Link target to same doc as source
     log <path> [--limit N]        Show commit history for a document
@@ -75,6 +78,8 @@ defmodule Commonplace.CLI do
       "sync" -> Commonplace.CLI.Sync.run(data_dir, relative_path, rest)
       "branch" -> Commonplace.CLI.Branch.run(data_dir, relative_path, rest)
       "checkout" -> Commonplace.CLI.Checkout.run(data_dir, relative_path, rest)
+      "checkouts" -> Commonplace.CLI.Checkouts.run(data_dir, relative_path, rest)
+      "reroot" -> Commonplace.CLI.Reroot.run(data_dir, relative_path, rest)
       "who" -> Commonplace.CLI.Who.run(data_dir, relative_path, rest)
       "ln" -> Commonplace.CLI.Ln.run(data_dir, relative_path, rest)
       "log" -> Commonplace.CLI.Log.run(data_dir, relative_path, rest)

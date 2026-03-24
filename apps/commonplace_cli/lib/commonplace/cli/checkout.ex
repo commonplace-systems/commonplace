@@ -1,14 +1,17 @@
 defmodule Commonplace.CLI.Checkout do
   @moduledoc """
-  Re-root the workspace to a different document UUID.
+  Manage workspace checkouts.
 
-  Resolves a target (path or UUID) and changes what the workspace
-  is syncing. The sync directory is then re-exported from the new root.
+  Subcommands:
+  - `commonplace checkout` — show current root
+  - `commonplace checkout /path/to/dir docref` — register directory checkout
+  - `commonplace checkout /path/to/file docref --file` — register file checkout
+  - `commonplace checkout --remove /path` — unregister a checkout
   """
 
   alias Commonplace.CLI
-  alias Commonplace.Tree.Walk
-  alias Commonplace.Sync.Export
+  alias Commonplace.Tree.{Docref, Walk}
+  alias Commonplace.Sync.{CheckoutRegistry, Export}
 
   def run(data_dir, _relative_path, args) do
     CLI.ensure_started(data_dir)
@@ -19,25 +22,93 @@ defmodule Commonplace.CLI.Checkout do
       System.halt(1)
     end
 
-    case args do
-      [] ->
+    {opts, positional, _} =
+      OptionParser.parse(args,
+        strict: [file: :boolean, remove: :boolean],
+        aliases: [f: :file, r: :remove]
+      )
+
+    cond do
+      opts[:remove] ->
+        handle_remove(data_dir, positional)
+
+      positional == [] ->
         IO.puts("Current root: #{root}")
 
-      [target | _] ->
-        case resolve_target(root, target) do
-          {:ok, uuid} ->
-            CLI.set_root_uuid(data_dir, uuid)
-            IO.puts("Re-rooted: #{root} → #{uuid}")
+      length(positional) >= 2 ->
+        [path, docref | _] = positional
+        type = if opts[:file], do: :file, else: :dir
+        handle_register(data_dir, root, path, docref, type)
 
-            workspace_dir = Path.dirname(data_dir)
-            IO.puts("Exporting from new root...")
-            Export.export(uuid, workspace_dir)
-            IO.puts("Done.")
+      length(positional) == 1 ->
+        # Legacy behavior: single arg re-roots the workspace
+        [target] = positional
+        handle_reroot_workspace(data_dir, root, target)
+    end
+  end
+
+  defp handle_register(data_dir, root, path, docref, type) do
+    sync_dir = Path.expand(path)
+    loader = &CLI.load_schema/1
+
+    case Docref.resolve(docref, root_uuid: root, loader: loader) do
+      {:ok, uuid} ->
+        registry = start_registry(data_dir)
+
+        case CheckoutRegistry.register(registry, sync_dir, uuid, type) do
+          {:ok, _checkout} ->
+            IO.puts("Registered #{type} checkout: #{sync_dir} → #{uuid}")
+
+          {:error, :already_registered} ->
+            IO.puts(:stderr, "Already registered: #{sync_dir}")
+            System.halt(1)
 
           {:error, reason} ->
-            IO.puts(:stderr, "Could not resolve: #{inspect(reason)}")
+            IO.puts(:stderr, "Failed to register: #{inspect(reason)}")
             System.halt(1)
         end
+
+      {:error, reason} ->
+        IO.puts(:stderr, "Could not resolve docref '#{docref}': #{inspect(reason)}")
+        System.halt(1)
+    end
+  end
+
+  defp handle_remove(data_dir, positional) do
+    case positional do
+      [path | _] ->
+        sync_dir = Path.expand(path)
+        registry = start_registry(data_dir)
+
+        case CheckoutRegistry.unregister(registry, sync_dir) do
+          :ok ->
+            IO.puts("Removed checkout: #{sync_dir}")
+
+          {:error, :not_found} ->
+            IO.puts(:stderr, "No checkout found for: #{sync_dir}")
+            System.halt(1)
+        end
+
+      [] ->
+        IO.puts(:stderr, "Usage: commonplace checkout --remove /path")
+        System.halt(1)
+    end
+  end
+
+  defp handle_reroot_workspace(data_dir, root, target) do
+    case resolve_target(root, target) do
+      {:ok, uuid} ->
+        CLI.set_root_uuid(data_dir, uuid)
+        IO.puts("Re-rooted: #{root} → #{uuid}")
+
+        workspace_dir = Path.dirname(data_dir)
+        IO.puts("Exporting from new root...")
+        Export.export(uuid, workspace_dir)
+        IO.puts("Done.")
+
+      {:error, reason} ->
+        IO.puts(:stderr, "Could not resolve: #{inspect(reason)}")
+        System.halt(1)
     end
   end
 
@@ -45,7 +116,6 @@ defmodule Commonplace.CLI.Checkout do
     if uuid?(target) do
       {:ok, target}
     else
-      # Resolve as a path from current root
       loader = &CLI.load_schema/1
       Walk.resolve_path(root, target, loader)
     end
@@ -53,5 +123,17 @@ defmodule Commonplace.CLI.Checkout do
 
   defp uuid?(str) do
     Regex.match?(~r/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, str)
+  end
+
+  defp start_registry(data_dir) do
+    config_path = Path.join(data_dir, "checkouts.json")
+
+    {:ok, pid} =
+      CheckoutRegistry.start_link(
+        config_path: config_path,
+        store: Commonplace.Store.CommitStore
+      )
+
+    pid
   end
 end
