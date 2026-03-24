@@ -39,7 +39,7 @@ CommonplaceSupervisor
 
 GenServer that persists checkout definitions and manages their lifecycles.
 
-- Stores checkout list in `.commonplace/checkouts.json`
+- Stores checkout list in `.commonplace/checkouts.json` (written atomically via temp+rename to prevent corruption on crash)
 - On init, reads the file and spawns a CheckoutSupervisor per entry under a DynamicSupervisor
 - API: `register/2`, `unregister/1`, `reroot/2`, `list/0`
 
@@ -71,7 +71,7 @@ One per file. Responsibilities:
 
 ### FileAgent
 
-Standalone file checkout — an EntryAgent without a parent DirAgent. Used when a checkout targets a single file rather than a directory. Manages its own shadow hardlink.
+An EntryAgent configured with `standalone: true` — no parent DirAgent. Used when a checkout targets a single file rather than a directory. Manages its own shadow directory and hardlinks. Same module as EntryAgent, different init options.
 
 ## 2. Docref Resolution
 
@@ -84,7 +84,7 @@ A docref is a flexible pointer to a node in the tree. New module: `Commonplace.T
 | Raw UUID | `abc123-def-456` | Used directly |
 | Name | `main` | Looked up in root schema |
 | Path | `main/docs/plans` | Walked through nested schemas |
-| Path@commit | `main/docs@cid-xyz` | Path resolved, then forked at that commit |
+| Path@commit | `main/docs@cid-xyz` | Path resolved, then forked at that commit (deferred — see below) |
 
 ### Resolution
 
@@ -102,6 +102,8 @@ Docref.resolve(store, "main/docs@cid-xyz")
 ```
 
 The `@commit` form automatically forks, creating a live writable checkout. No special read-only mode — every checkout is always live.
+
+**Deferred: `@commit` syntax.** Forking at an arbitrary commit requires reconstructing the schema at that historical point and recursively forking the subtree as it existed then. This needs `DocBuilder.reconstruct_doc_at/3` plus point-in-time schema walking, which is additional complexity. The initial implementation supports UUID, name, and path docrefs. `@commit` is a follow-up.
 
 Resolution happens at checkout creation and at reroot time. The resolved UUID is stored in the checkout registration. The checkout does not follow renames — if the name-to-UUID mapping changes, the checkout keeps pointing at the same UUID.
 
@@ -128,7 +130,11 @@ Resolution happens at checkout creation and at reroot time. The resolved UUID is
 
 ### Out-of-Tree Checkouts
 
-For checkouts outside the `.commonplace/` tree (e.g., `/tmp/scratch`), a `.commonplace-ref` breadcrumb file is dropped in the checkout directory containing the absolute path to the database dir. This allows the CLI's tree-climbing logic to find the database from any checkout location.
+For checkouts outside the `.commonplace/` tree (e.g., `/tmp/scratch`), a `.commonplace-ref` breadcrumb file is dropped in the checkout directory. It contains the absolute path to the `.commonplace/` database directory. Created by `register/2`, removed by `unregister/1`. This allows the CLI's tree-climbing logic to find the database from any checkout location.
+
+### CommitStore Access
+
+DirAgent and EntryAgent access the CommitStore through `CommitStoreClient` (not `CommitStore` directly), preserving the ability to sync against a remote serve node in the future.
 
 ## 4. DirAgent Sync Behavior
 
@@ -140,13 +146,18 @@ For checkouts outside the `.commonplace/` tree (e.g., `/tmp/scratch`), a `.commo
    - **Known inode + different name** → rename detected. Update schema entry name, update EntryAgent's path
    - **Known inode + same name** → no structural change. EntryAgent handles content sync
    - **Missing inode** → file deleted on disk. Remove from schema, stop EntryAgent
-3. DirAgent also watches for CRDT-side schema changes (new entries added by other nodes):
+3. DirAgent subscribes to CRDT-side schema changes via `Phoenix.PubSub` (broadcasting on `{:commit, schema_uuid}`). When a new commit arrives for this DirAgent's schema:
    - New entry in schema not on disk → spawn EntryAgent, which writes file on first inbound sync
    - Entry removed from schema → stop EntryAgent, delete file from disk
+   - EntryAgents similarly subscribe to `{:commit, doc_uuid}` for immediate inbound sync rather than polling
 
 ### Subdirectory Handling
 
 When a schema entry has type "dir", DirAgent spawns a child DirAgent instead of an EntryAgent. The child DirAgent reads that subdirectory's schema and manages its own children recursively.
+
+### Schema `sync` Field
+
+The existing `Schema.Entry` has a `sync` boolean field with `activate/deactivate` functions. DirAgent respects this: entries with `sync: false` do not get agents spawned. Note that this flag lives in the shared CRDT schema and affects all nodes — it is not the per-checkout mechanism (which is the CheckoutRegistry). The `sync` field is useful for marking branches that no node should sync (e.g., archived branches).
 
 ## 5. EntryAgent Sync Behavior
 
@@ -174,9 +185,9 @@ Before each atomic write:
 2. Record the shadow's fingerprint (size + MD5)
 3. Perform atomic write (write temp → fsync → rename)
 4. On next sync cycle: compare shadow fingerprint to detect stale writes
-5. If stale write detected: read shadow content, create CRDT commit with old commit as parent (merge)
+5. If stale write detected: load the doc at the shadow's parent commit, diff the stale content against it, and produce an incremental CRDT update (not a full-state replacement). This preserves character-level merge semantics
 
-DirAgent runs periodic GC: remove shadow hardlinks that have been idle for >1 hour and lived for >5 minutes (matching Rust implementation's constants).
+Each DirAgent creates and GCs a `.commonplace-shadow/` in its own directory. EntryAgents write shadow hardlinks into their parent DirAgent's shadow directory. DirAgent runs periodic GC: remove shadow hardlinks that have been idle for >1 hour and lived for >5 minutes (matching Rust implementation's constants).
 
 ## 6. CLI Commands
 
@@ -210,6 +221,8 @@ Docrefs accept any format: raw UUID, name, path, or path@commit.
 ### Overlapping Checkouts
 
 Fully supported. Two checkouts of the same subtree (or overlapping subtrees) sync through the CRDT. Edit in one place, it appears in the other. This is fundamental to the design.
+
+**Schema write coordination**: Overlapping directory checkouts share a schema UUID. When two DirAgents both detect new files simultaneously, their schema mutations must be serialized to avoid CRDT state corruption. Each schema UUID has a coordinating process (registered via `Registry`) that serializes schema mutations. DirAgents send schema edits through this coordinator rather than writing directly. This ensures incremental CRDT updates are applied sequentially against the correct parent state. For leaf document content, no coordination is needed — Y.js CRDTs merge automatically.
 
 ### Reroot with Write Preservation
 
