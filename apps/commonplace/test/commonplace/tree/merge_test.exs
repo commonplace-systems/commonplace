@@ -53,7 +53,7 @@ defmodule Commonplace.Tree.MergeTest do
       assert length(report.new_docs) >= 1
     end
 
-    test "auto-renames on name collision — no common ancestor", %{store: store} do
+    test "auto-renames on name collision — both branches add same name", %{store: store} do
       root_uuid = create_schema(store, %{})
 
       fork_root = Fork.fork_directory(root_uuid, store)
@@ -67,7 +67,8 @@ defmodule Commonplace.Tree.MergeTest do
 
       {:ok, report} = Merge.merge(fork_root, root_uuid, store)
 
-      # Should auto-rename the incoming entry to avoid collision
+      # No conflicts — collision was auto-resolved via rename
+      assert report.conflicts == []
       assert length(report.auto_renamed) >= 1
     end
 
