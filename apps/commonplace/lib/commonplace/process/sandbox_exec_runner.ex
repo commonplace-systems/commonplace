@@ -162,12 +162,12 @@ defmodule Commonplace.Process.SandboxExecRunner do
 
   @impl true
   def terminate(_reason, state) do
-    # Kill the OS process tree first, before closing port or deleting sandbox.
-    # Try process group, child processes, and individual PID for robustness.
+    # Kill the OS process and its children first, before closing port or deleting sandbox.
+    # Avoids process-group kills (kill -- -PID) which could affect the BEAM or
+    # unrelated processes sharing the same group.
     if state.os_pid do
-      System.cmd("kill", ["-TERM", "--", "-#{state.os_pid}"], stderr_to_stdout: true)
-      System.cmd("pkill", ["-TERM", "-P", "#{state.os_pid}"], stderr_to_stdout: true)
       System.cmd("kill", ["-TERM", "#{state.os_pid}"], stderr_to_stdout: true)
+      System.cmd("pkill", ["-TERM", "-P", "#{state.os_pid}"], stderr_to_stdout: true)
     end
 
     # Close port if still open
@@ -210,10 +210,9 @@ defmodule Commonplace.Process.SandboxExecRunner do
   end
 
   defp wait_for_exit(os_pid, _timeout) do
-    # Timed out — force kill process group, children, and PID
-    System.cmd("kill", ["-9", "--", "-#{os_pid}"], stderr_to_stdout: true)
-    System.cmd("pkill", ["-9", "-P", "#{os_pid}"], stderr_to_stdout: true)
+    # Timed out — force kill individual process and its children
     System.cmd("kill", ["-9", "#{os_pid}"], stderr_to_stdout: true)
+    System.cmd("pkill", ["-9", "-P", "#{os_pid}"], stderr_to_stdout: true)
     Process.sleep(200)
   end
 
