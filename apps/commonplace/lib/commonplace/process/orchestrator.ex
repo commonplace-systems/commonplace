@@ -111,19 +111,18 @@ defmodule Commonplace.Process.Orchestrator do
 
   @impl true
   def terminate(_reason, state) do
-    # Collect os_pids first, then kill all process groups
+    # Collect os_pids first, then kill all managed processes
     os_pids =
       state.processes
       |> Enum.map(fn {_name, info} -> get_os_pid(info) end)
       |> Enum.reject(&is_nil/1)
 
-    # SIGTERM process groups, child processes, and individual PIDs.
-    # All three are needed because PGID may differ from PID when
-    # spawned via Port.open (inherits BEAM's process group).
+    # SIGTERM the individual process and its children.
+    # Avoids process-group kills (kill -- -PID) which could affect
+    # the BEAM or unrelated processes sharing the same group.
     Enum.each(os_pids, fn pid ->
-      System.cmd("kill", ["-TERM", "--", "-#{pid}"], stderr_to_stdout: true)
-      System.cmd("pkill", ["-TERM", "-P", "#{pid}"], stderr_to_stdout: true)
       System.cmd("kill", ["-TERM", "#{pid}"], stderr_to_stdout: true)
+      System.cmd("pkill", ["-TERM", "-P", "#{pid}"], stderr_to_stdout: true)
     end)
 
     # Wait for graceful shutdown
@@ -131,9 +130,8 @@ defmodule Commonplace.Process.Orchestrator do
 
     # SIGKILL any survivors
     Enum.each(os_pids, fn pid ->
-      System.cmd("kill", ["-9", "--", "-#{pid}"], stderr_to_stdout: true)
-      System.cmd("pkill", ["-9", "-P", "#{pid}"], stderr_to_stdout: true)
       System.cmd("kill", ["-9", "#{pid}"], stderr_to_stdout: true)
+      System.cmd("pkill", ["-9", "-P", "#{pid}"], stderr_to_stdout: true)
     end)
 
     # Stop BEAM wrappers
