@@ -56,7 +56,12 @@ defmodule Commonplace.Sync.DirAgent do
     store = Keyword.get(opts, :store, CommitStore)
 
     # Ensure directory exists
-    File.mkdir_p!(dir_path)
+    case File.mkdir_p(dir_path) do
+      :ok -> :ok
+      {:error, reason} ->
+        require Logger
+        Logger.warning("DirAgent: failed to create #{dir_path}: #{inspect(reason)}")
+    end
 
     # Start a DynamicSupervisor for child processes
     {:ok, supervisor} = DynamicSupervisor.start_link(strategy: :one_for_one)
@@ -178,7 +183,11 @@ defmodule Commonplace.Sync.DirAgent do
   end
 
   defp add_file_to_schema(state, name, path) do
-    content = File.read!(path)
+    content =
+      case File.read(path) do
+        {:ok, data} -> data
+        {:error, _} -> ""
+      end
     file_uuid = UUID.uuid4()
 
     # Create the CRDT document
