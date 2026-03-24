@@ -62,4 +62,67 @@ defmodule Commonplace.SmartDoc do
       defoverridable handle_blue: 2, handle_red: 2
     end
   end
+
+  # --- Runtime Helpers ---
+
+  alias Commonplace.Store.CommitStore
+  alias Commonplace.Dataflow.Magenta
+
+  @doc """
+  Push a cyan (CRDT write) to a resolved port.
+
+  The `state` map must contain:
+  - `:resolved_ports` — the ref-to-UUID map from Orchestrator wiring
+  - `:store` — the CommitStore server name
+
+  Increments the depth counter from `state.current_depth` (default 0) so that
+  downstream subscribers can detect and halt propagation loops.
+
+  Returns `:ok` or `:error` if the docref is unresolved.
+  """
+  def push_cyan(state, docref, content) do
+    uuid = Map.get(state.resolved_ports || %{}, docref)
+
+    if uuid do
+      doc = Yelixer.Doc.new()
+      {doc, _} = Yelixer.Doc.get_or_create_type(doc, "content", :text)
+      doc = Yelixer.Types.Text.insert(doc, "content", 0, content)
+      update = Yelixer.Encoding.encode_update(doc)
+      depth = Map.get(state, :current_depth, 0)
+      store = Map.get(state, :store, CommitStore)
+      CommitStore.create_chained_commit(store, uuid, update, %{depth: depth + 1})
+      :ok
+    else
+      :error
+    end
+  end
+
+  @doc """
+  Push a magenta (ephemeral event) to a resolved port.
+
+  The `state` map must contain:
+  - `:resolved_ports` — the ref-to-UUID map from Orchestrator wiring
+
+  The `event` should be a `Commonplace.Dataflow.Magenta` struct or a map
+  with `:type`, `:source`, and `:payload` keys.
+
+  Returns `:ok` or `:error` if the docref is unresolved.
+  """
+  def push_magenta(state, docref, event) do
+    uuid = Map.get(state.resolved_ports || %{}, docref)
+
+    if uuid do
+      msg =
+        case event do
+          %Magenta{} -> event
+          %{type: type, source: source} -> Magenta.message(type, source, Map.get(event, :payload, %{}))
+          %{} -> Magenta.message("event", docref, event)
+        end
+
+      Magenta.send(uuid, msg)
+      :ok
+    else
+      :error
+    end
+  end
 end
