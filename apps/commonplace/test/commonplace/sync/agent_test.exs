@@ -21,9 +21,7 @@ defmodule Commonplace.Sync.AgentTest do
     File.mkdir_p!(sync_dir)
 
     store_name = :"commit_store_#{:rand.uniform(1_000_000)}"
-    lock_name = :"lock_#{:rand.uniform(1_000_000)}"
     start_supervised!({CommitStore, data_dir: store_dir, name: store_name})
-    start_supervised!({Commonplace.Sync.FileLock, name: lock_name})
 
     on_exit(fn ->
       File.rm_rf!(store_dir)
@@ -37,7 +35,6 @@ defmodule Commonplace.Sync.AgentTest do
 
     %{
       store: store_name,
-      lock: lock_name,
       sync_dir: sync_dir,
       root: root_uuid
     }
@@ -64,14 +61,13 @@ defmodule Commonplace.Sync.AgentTest do
   end
 
   describe "outbound sync (disk → CRDT)" do
-    test "new file on disk is synced to CRDT", %{store: store, sync_dir: dir, root: root, lock: lock} do
+    test "new file on disk is synced to CRDT", %{store: store, sync_dir: dir, root: root} do
       File.write!(Path.join(dir, "new.txt"), "new content")
 
       {:ok, pid} = Agent.start_link(
         root_uuid: root,
         sync_dir: dir,
-        store: store,
-        lock: lock
+        store: store
       )
 
       Agent.sync_once(pid)
@@ -81,15 +77,14 @@ defmodule Commonplace.Sync.AgentTest do
       assert read_content(uuid, store) == "new content"
     end
 
-    test "modified file on disk is synced to CRDT", %{store: store, sync_dir: dir, root: root, lock: lock} do
+    test "modified file on disk is synced to CRDT", %{store: store, sync_dir: dir, root: root} do
       # Setup: create file and sync it
       File.write!(Path.join(dir, "file.txt"), "original")
 
       {:ok, pid} = Agent.start_link(
         root_uuid: root,
         sync_dir: dir,
-        store: store,
-        lock: lock
+        store: store
       )
 
       Agent.sync_once(pid)
@@ -105,14 +100,13 @@ defmodule Commonplace.Sync.AgentTest do
       assert read_content(uuid, store) == "updated"
     end
 
-    test "deleted file on disk is removed from schema", %{store: store, sync_dir: dir, root: root, lock: lock} do
+    test "deleted file on disk is removed from schema", %{store: store, sync_dir: dir, root: root} do
       File.write!(Path.join(dir, "temp.txt"), "temporary")
 
       {:ok, pid} = Agent.start_link(
         root_uuid: root,
         sync_dir: dir,
-        store: store,
-        lock: lock
+        store: store
       )
 
       Agent.sync_once(pid)
@@ -128,7 +122,7 @@ defmodule Commonplace.Sync.AgentTest do
   end
 
   describe "inbound sync (CRDT → disk)" do
-    test "CRDT document change is written to disk", %{store: store, sync_dir: dir, root: root, lock: lock} do
+    test "CRDT document change is written to disk", %{store: store, sync_dir: dir, root: root} do
       # Create a document in CRDT directly
       file_uuid = UUID.uuid4()
       doc = Yelixer.Doc.new()
@@ -146,8 +140,7 @@ defmodule Commonplace.Sync.AgentTest do
       {:ok, pid} = Agent.start_link(
         root_uuid: root,
         sync_dir: dir,
-        store: store,
-        lock: lock
+        store: store
       )
 
       # Export phase of sync should write to disk
@@ -158,15 +151,14 @@ defmodule Commonplace.Sync.AgentTest do
   end
 
   describe "bidirectional" do
-    test "edits on disk and CRDT both appear after sync", %{store: store, sync_dir: dir, root: root, lock: lock} do
+    test "edits on disk and CRDT both appear after sync", %{store: store, sync_dir: dir, root: root} do
       # Start with two files
       File.write!(Path.join(dir, "disk_file.txt"), "from disk")
 
       {:ok, pid} = Agent.start_link(
         root_uuid: root,
         sync_dir: dir,
-        store: store,
-        lock: lock
+        store: store
       )
 
       Agent.sync_once(pid)
@@ -196,14 +188,13 @@ defmodule Commonplace.Sync.AgentTest do
       assert File.read!(Path.join(dir, "crdt_file.txt")) == "from crdt"
     end
 
-    test "sync is idempotent", %{store: store, sync_dir: dir, root: root, lock: lock} do
+    test "sync is idempotent", %{store: store, sync_dir: dir, root: root} do
       File.write!(Path.join(dir, "stable.txt"), "stable")
 
       {:ok, pid} = Agent.start_link(
         root_uuid: root,
         sync_dir: dir,
-        store: store,
-        lock: lock
+        store: store
       )
 
       Agent.sync_once(pid)

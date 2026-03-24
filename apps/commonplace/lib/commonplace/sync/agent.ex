@@ -23,7 +23,6 @@ defmodule Commonplace.Sync.Agent do
     :root_uuid,
     :sync_dir,
     :store,
-    :lock,
     :known_paths,
     :known_hashes,
     # %{doc_uuid => commit_id} — the commit whose content is currently on disk
@@ -55,7 +54,6 @@ defmodule Commonplace.Sync.Agent do
       root_uuid: Keyword.fetch!(opts, :root_uuid),
       sync_dir: Keyword.fetch!(opts, :sync_dir),
       store: Keyword.get(opts, :store, CommitStore),
-      lock: Keyword.get(opts, :lock, Commonplace.Sync.FileLock),
       known_paths: MapSet.new(),
       known_hashes: %{},
       written_commits: %{},
@@ -208,8 +206,10 @@ defmodule Commonplace.Sync.Agent do
             # Only apply if disk content actually changed from what we last synced.
             # Content hash is a fast gate — if disk matches what we last saw,
             # the CRDT was updated remotely, let inbound handle it.
-            disk_content = File.read!(change.path)
-            disk_hash = :erlang.md5(disk_content)
+            content = Commonplace.Sync.Flock.with_shared_lock(change.path, 30_000, fn ->
+              File.read!(change.path)
+            end)
+            disk_hash = :erlang.md5(content)
             Map.get(known_hashes, change.name) != disk_hash
 
           _ ->

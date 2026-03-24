@@ -78,7 +78,9 @@ defmodule Commonplace.Sync.EntryAgent do
   # --- Outbound sync (disk → CRDT) ---
 
   defp sync_outbound(state) do
-    case File.read(state.file_path) do
+    case Commonplace.Sync.Flock.with_shared_lock(state.file_path, 30_000, fn ->
+      File.read(state.file_path)
+    end) do
       {:ok, content} ->
         disk_hash = :erlang.md5(content)
 
