@@ -159,7 +159,9 @@ defmodule Commonplace.Sync.CheckoutRegistry do
                   {:ok, pid} ->
                     %Checkout{sync_dir: sync_dir, uuid: uuid, type: type, pid: pid}
 
-                  {:error, _reason} ->
+                  {:error, reason} ->
+                    require Logger
+                    Logger.warning("CheckoutRegistry: failed to spawn agent for #{sync_dir} (#{uuid}): #{inspect(reason)}")
                     nil
                 end
               end)
