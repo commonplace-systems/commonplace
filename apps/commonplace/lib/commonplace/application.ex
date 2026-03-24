@@ -9,6 +9,7 @@ defmodule Commonplace.Application do
 
     children = [
       {Registry, keys: :unique, name: Commonplace.Document.Registry},
+      {Registry, keys: :unique, name: Commonplace.SchemaCoordinator.Registry},
       {Phoenix.PubSub, name: Commonplace.PubSub},
       %{
         id: Commonplace.Store.CommitStoreSupervisor,
@@ -25,7 +26,9 @@ defmodule Commonplace.Application do
              ]
            ]}
       },
-      {DynamicSupervisor, name: Commonplace.Document.Supervisor, strategy: :one_for_one}
+      {DynamicSupervisor, name: Commonplace.SchemaCoordinator.Supervisor, strategy: :one_for_one},
+      {DynamicSupervisor, name: Commonplace.Document.Supervisor, strategy: :one_for_one},
+      {DynamicSupervisor, name: Commonplace.Checkout.Supervisor, strategy: :one_for_one}
     ]
 
     opts = [strategy: :one_for_one, name: Commonplace.Supervisor]

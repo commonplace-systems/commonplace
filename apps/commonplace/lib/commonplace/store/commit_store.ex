@@ -161,6 +161,8 @@ defmodule Commonplace.Store.CommitStore do
       %{doc_uuid: doc_uuid}
     )
 
+    Phoenix.PubSub.broadcast(Commonplace.PubSub, "commits:#{doc_uuid}", {:commit, doc_uuid, commit.id})
+
     {:reply, commit, state}
   end
 

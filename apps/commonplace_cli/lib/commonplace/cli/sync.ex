@@ -5,10 +5,13 @@ defmodule Commonplace.CLI.Sync do
   Detects changes on disk (new/modified/deleted files) and syncs
   them into the document tree. Then exports the current tree back
   to disk so any CRDT-side changes are reflected.
+
+  Supports backward compatibility: if `checkouts.json` doesn't exist
+  but `.commonplace/root` does, auto-migrates to the checkout registry.
   """
 
   alias Commonplace.CLI
-  alias Commonplace.Sync.{Watcher, Export}
+  alias Commonplace.Sync.{Watcher, Export, CheckoutRegistry}
   alias Commonplace.Tree.Walk
 
   def run(data_dir, relative_path, args) do
@@ -19,6 +22,9 @@ defmodule Commonplace.CLI.Sync do
       IO.puts(:stderr, "Not a commonplace workspace. Run 'commonplace init' first.")
       System.halt(1)
     end
+
+    # Ensure checkout registry is up-to-date (migrate if needed)
+    maybe_migrate(data_dir, root)
 
     # Determine the sync directory — either explicit arg or workspace root
     {sync_dir, sync_uuid} = resolve_sync_target(root, relative_path, args, data_dir)
@@ -37,6 +43,33 @@ defmodule Commonplace.CLI.Sync do
     IO.puts("Exporting CRDT → disk...")
     Export.export(sync_uuid, sync_dir)
     IO.puts("Done.")
+  end
+
+  defp maybe_migrate(data_dir, root_uuid) do
+    checkouts_json = Path.join(data_dir, "checkouts.json")
+    root_file = Path.join(data_dir, "root")
+
+    if File.exists?(root_file) and not File.exists?(checkouts_json) do
+      workspace_dir = Path.dirname(data_dir)
+      config_path = checkouts_json
+
+      {:ok, registry} =
+        CheckoutRegistry.start_link(
+          config_path: config_path,
+          store: Commonplace.Store.CommitStore
+        )
+
+      case CheckoutRegistry.register(registry, workspace_dir, root_uuid, :dir) do
+        {:ok, _} ->
+          IO.puts("Migrated workspace to checkout registry.")
+
+        {:error, :already_registered} ->
+          :ok
+
+        {:error, reason} ->
+          IO.puts(:stderr, "Warning: migration failed: #{inspect(reason)}")
+      end
+    end
   end
 
   defp resolve_sync_target(root, relative_path, args, data_dir) do
