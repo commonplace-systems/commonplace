@@ -187,7 +187,7 @@ end
 ## 9. Not In Scope
 
 - **Green channel** (exclusive locks) — separate feature (CX-6gv)
-- **Multi-repo resolution** — `!` syntax supports it syntactically but resolution stops at current tree root
+- ~~Multi-repo~~ — not a separate concept. `!` resolves from the tree root, which naturally crosses "repo" boundaries since repos are just top-level directories
 - **Visual graph rendering** — GraphRegistry provides data, UI is separate
 - **Hot-reload port diffing** — initial implementation restarts process on port change
 - **Process-to-process direct messaging** — all communication goes through documents
