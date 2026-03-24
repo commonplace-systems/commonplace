@@ -20,7 +20,7 @@ defmodule Commonplace.Store.CommitPubsubTest do
     update = Yelixer.Encoding.encode_update(doc)
     commit = CommitStore.create_commit(store, uuid, update, nil)
 
-    assert_receive {:commit, ^uuid, commit_id}, 1000
+    assert_receive {:commit, ^uuid, commit_id, %{}}, 1000
     assert commit_id == commit.id
   end
 
@@ -35,7 +35,7 @@ defmodule Commonplace.Store.CommitPubsubTest do
 
     second = CommitStore.create_chained_commit(store, uuid, update)
 
-    assert_receive {:commit, ^uuid, commit_id}, 1000
+    assert_receive {:commit, ^uuid, commit_id, %{}}, 1000
     assert commit_id == second.id
   end
 
@@ -47,8 +47,9 @@ defmodule Commonplace.Store.CommitPubsubTest do
     update = Yelixer.Encoding.encode_update(doc)
     commit = CommitStore.create_commit(store, uuid, update, nil)
 
-    assert_receive {:commit, received_uuid, received_commit_id}, 1000
+    assert_receive {:commit, received_uuid, received_commit_id, received_meta}, 1000
     assert received_uuid == uuid
     assert received_commit_id == commit.id
+    assert received_meta == %{}
   end
 end
