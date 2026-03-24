@@ -15,13 +15,13 @@ defmodule Commonplace.Tree.Merge do
 
   defmodule MergeReport do
     @moduledoc "Result of a merge operation."
-    defstruct merged_docs: [], new_docs: [], deleted_docs: [], conflicts: [], errors: [],
+    defstruct merged_docs: [], new_docs: [], deleted_docs: [], conflicts: [],
               auto_renamed: []
   end
 
   @doc """
   Merge changes from source branch into target branch.
-  Returns {:ok, merge_report} or {:error, reason}.
+  Returns {:ok, merge_report}.
   """
   def merge(source_uuid, target_uuid, store) do
     report = %MergeReport{}
@@ -43,14 +43,14 @@ defmodule Commonplace.Tree.Merge do
         # Fall back to merge-point strategy for leaf docs if a prior merge was recorded.
         case CommitStore.get_merge_point(store, target_uuid, source_uuid) do
           nil ->
-            {:ok, %{report | errors: [{:no_common_ancestor, source_uuid, target_uuid} | report.errors]}}
+            {:ok, report}
 
           merge_point_id ->
             if not is_schema?(store, source_uuid) do
               # Use merge point as baseline for leaf merge
               merge_leaf_from_merge_point(source_uuid, target_uuid, merge_point_id, store, report)
             else
-              {:ok, %{report | errors: [{:no_common_ancestor, source_uuid, target_uuid} | report.errors]}}
+              {:ok, report}
             end
         end
     end
@@ -156,7 +156,7 @@ defmodule Commonplace.Tree.Merge do
         end
 
       :none ->
-        {:ok, %{report | errors: [{:no_common_ancestor, source_uuid, target_uuid} | report.errors]}}
+        {:ok, report}
     end
   end
 

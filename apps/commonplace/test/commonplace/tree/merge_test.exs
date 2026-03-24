@@ -53,7 +53,7 @@ defmodule Commonplace.Tree.MergeTest do
       assert length(report.new_docs) >= 1
     end
 
-    test "detects name collision — no common ancestor", %{store: store} do
+    test "auto-renames on name collision — no common ancestor", %{store: store} do
       root_uuid = create_schema(store, %{})
 
       fork_root = Fork.fork_directory(root_uuid, store)
@@ -67,8 +67,8 @@ defmodule Commonplace.Tree.MergeTest do
 
       {:ok, report} = Merge.merge(fork_root, root_uuid, store)
 
-      # Should detect name collision (no common ancestor)
-      assert length(report.conflicts) >= 1
+      # Should auto-rename the incoming entry to avoid collision
+      assert length(report.auto_renamed) >= 1
     end
 
     test "empty merge is a no-op", %{store: store} do
@@ -261,7 +261,7 @@ defmodule Commonplace.Tree.MergeTest do
       assert :error = Schema.get_entry(target_schema_after_second, "forked.txt")
     end
 
-    test "no common ancestor: merge reports :no_common_ancestor error", %{store: store} do
+    test "no common ancestor: merge is a no-op", %{store: store} do
       # Create two completely independent documents (no shared DAG ancestry)
       file_a = create_text_doc(store, "a.txt", "from A")
       root_a = create_schema(store, %{"a.txt" => {:doc, file_a}})
@@ -269,13 +269,12 @@ defmodule Commonplace.Tree.MergeTest do
       file_b = create_text_doc(store, "b.txt", "from B")
       root_b = create_schema(store, %{"b.txt" => {:doc, file_b}})
 
-      # Trying to merge two unrelated roots should produce an error
+      # Trying to merge two unrelated roots is silently skipped
       {:ok, report} = Merge.merge(root_a, root_b, store)
 
-      assert Enum.any?(report.errors, fn
-        {:no_common_ancestor, _, _} -> true
-        _ -> false
-      end)
+      assert report.merged_docs == []
+      assert report.new_docs == []
+      assert report.conflicts == []
     end
   end
 
