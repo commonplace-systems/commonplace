@@ -8,7 +8,7 @@ defmodule Commonplace.Tree.Fork do
   No ForkManifest — provenance is in the shared commit DAG.
   """
 
-  alias Commonplace.Tree.Schema
+  alias Commonplace.Tree.{Schema, DocBuilder}
   alias Commonplace.Store.CommitStore
   alias Commonplace.Process.Config
   alias Commonplace.Document.ContentType
@@ -98,12 +98,7 @@ defmodule Commonplace.Tree.Fork do
   end
 
   defp reconstruct_doc(store, doc_uuid) do
-    commits = CommitStore.commit_log(store, doc_uuid, limit: 10_000) |> Enum.reverse()
-    doc = Doc.new()
-
-    Enum.reduce(commits, {:ok, doc}, fn commit, {:ok, acc} ->
-      Encoding.apply_update(acc, commit.update)
-    end)
+    DocBuilder.reconstruct_doc(store, doc_uuid)
   end
 
   defp maybe_filter_processes(schema_doc, entries, store, uuid_map) do

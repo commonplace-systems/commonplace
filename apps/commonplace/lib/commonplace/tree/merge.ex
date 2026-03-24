@@ -8,14 +8,15 @@ defmodule Commonplace.Tree.Merge do
   """
 
   alias Commonplace.Store.CommitStore
-  alias Commonplace.Tree.{Schema, Fork}
+  alias Commonplace.Tree.{Schema, Fork, DocBuilder}
   alias Commonplace.Document.ContentType
   alias Commonplace.Process.Config
   alias Yelixer.{Doc, Encoding, BlockStore}
 
   defmodule MergeReport do
     @moduledoc "Result of a merge operation."
-    defstruct merged_docs: [], new_docs: [], deleted_docs: [], conflicts: [], errors: []
+    defstruct merged_docs: [], new_docs: [], deleted_docs: [], conflicts: [], errors: [],
+              auto_renamed: []
   end
 
   @doc """
@@ -199,8 +200,63 @@ defmodule Commonplace.Tree.Merge do
                     {schema, rep}
 
                   :none ->
-                    conflict = {:name_collision, name, source_nid, target_nid}
-                    {schema, %{rep | conflicts: [conflict | rep.conflicts]}}
+                    # No shared DAG ancestry between source and target node_ids.
+                    # Check if this is a node_id replacement: source deleted the old
+                    # entry and recreated it with a new node_id under the same name.
+                    # If the ancestor had this name with the same node_id as target,
+                    # source replaced it — treat as delete old + add new (CX-5gr).
+                    ancestor_nid = if ancestor_entry, do: ancestor_entry["node_id"]
+
+                    if ancestor_nid != nil and ancestor_nid == target_nid do
+                      # Source replaced the entry. Check if target modified the old doc
+                      # since the ancestor — if so, it's a delete-vs-modify conflict.
+                      if modified_since_ancestor?(store, target_nid, ancestor_nid, ancestor) do
+                        conflict = {:delete_vs_modify, name, target_nid}
+                        {schema, %{rep | conflicts: [conflict | rep.conflicts]}}
+                      else
+                        # Safe replacement: remove old entry, fork new source doc into target
+                        source_type = source_entry["type"]
+                        new_uuid = fork_into_target(source_nid, source_type, store)
+
+                        schema = Schema.remove_entry(schema, name)
+
+                        schema =
+                          case source_type do
+                            "dir" -> Schema.add_directory(schema, name, new_uuid)
+                            _ -> Schema.add_file(schema, name, new_uuid)
+                          end
+
+                        rep = %{
+                          rep
+                          | deleted_docs: [target_nid | rep.deleted_docs],
+                            new_docs: [{source_nid, new_uuid} | rep.new_docs]
+                        }
+
+                        {schema, rep}
+                      end
+                    else
+                      # True collision: both branches independently added an entry with the
+                      # same name. Auto-rename the incoming (source) entry to avoid collision.
+                      type = source_entry["type"]
+                      renamed = unique_rename(name, schema)
+                      new_uuid = fork_into_target(source_nid, type, store)
+
+                      schema =
+                        case type do
+                          "dir" -> Schema.add_directory(schema, renamed, new_uuid)
+                          _ -> Schema.add_file(schema, renamed, new_uuid)
+                        end
+
+                      rename_entry = {:auto_renamed, name, renamed, source_nid, new_uuid}
+
+                      rep = %{
+                        rep
+                        | auto_renamed: [rename_entry | rep.auto_renamed],
+                          new_docs: [{source_nid, new_uuid} | rep.new_docs]
+                      }
+
+                      {schema, rep}
+                    end
                 end
 
               source_entry != nil and target_entry == nil and ancestor_entry == nil ->
@@ -296,6 +352,29 @@ defmodule Commonplace.Tree.Merge do
     Fork.fork_directory(source_uuid, store)
   end
 
+  # Generate a unique renamed name for a collision: "name.merge-conflict",
+  # then "name.merge-conflict-2", "name.merge-conflict-3", etc.
+  defp unique_rename(name, schema) do
+    candidate = name <> ".merge-conflict"
+    existing = Schema.entries(schema)
+
+    if not Map.has_key?(existing, candidate) do
+      candidate
+    else
+      find_unique_rename(name, existing, 2)
+    end
+  end
+
+  defp find_unique_rename(name, existing, n) do
+    candidate = name <> ".merge-conflict-#{n}"
+
+    if not Map.has_key?(existing, candidate) do
+      candidate
+    else
+      find_unique_rename(name, existing, n + 1)
+    end
+  end
+
   # Returns the schema entries map at the stored merge point for (target, source), or nil
   # if no merge point has been recorded yet.
   defp get_merge_point_entries(store, target_uuid, source_uuid) do
@@ -373,56 +452,12 @@ defmodule Commonplace.Tree.Merge do
     end
   end
 
-  # Reconstruct a doc by replaying its full commit chain (oldest → newest).
-  # Use for content docs where edits are stored incrementally.
-  defp reconstruct_doc(store, uuid) do
-    commits = CommitStore.commit_log(store, uuid, limit: 10_000) |> Enum.reverse()
+  defp reconstruct_doc(store, uuid), do: DocBuilder.reconstruct_doc(store, uuid)
 
-    case commits do
-      [] ->
-        :none
+  defp reconstruct_snapshot(store, uuid), do: DocBuilder.reconstruct_snapshot(store, uuid)
 
-      _ ->
-        doc = Doc.new()
-        Enum.reduce(commits, {:ok, doc}, fn c, {:ok, d} -> Encoding.apply_update(d, c.update) end)
-    end
-  end
-
-  # Reconstruct a doc by applying only the latest commit to a fresh doc.
-  # Use for schema docs where fork always stores full snapshots.
-  # This avoids CRDT inconsistency from applying full snapshots on top of each other.
-  defp reconstruct_snapshot(store, uuid) do
-    case CommitStore.latest_commit(store, uuid) do
-      {:ok, commit} ->
-        doc = Doc.new()
-        Encoding.apply_update(doc, commit.update)
-
-      :none ->
-        :none
-    end
-  end
-
-  defp reconstruct_doc_at(store, uuid, target_commit_id) do
-    commits = CommitStore.commit_log(store, uuid, limit: 10_000) |> Enum.reverse()
-
-    result =
-      Enum.reduce_while(commits, {:not_found, []}, fn commit, {_status, acc} ->
-        if commit.id == target_commit_id do
-          {:halt, {:found, Enum.reverse([commit | acc])}}
-        else
-          {:cont, {:not_found, [commit | acc]}}
-        end
-      end)
-
-    case result do
-      {:found, to_apply} ->
-        doc = Doc.new()
-        Enum.reduce(to_apply, {:ok, doc}, fn c, {:ok, d} -> Encoding.apply_update(d, c.update) end)
-
-      {:not_found, _} ->
-        :none
-    end
-  end
+  defp reconstruct_doc_at(store, uuid, target_commit_id),
+    do: DocBuilder.reconstruct_doc_at(store, uuid, target_commit_id)
 
   defp maybe_filter_processes(store, schema_uuid) do
     {:ok, schema} = reconstruct_snapshot(store, schema_uuid)
