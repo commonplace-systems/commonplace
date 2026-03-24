@@ -50,6 +50,12 @@ defmodule CommonplaceWebWeb.TreeLive do
 
   @impl true
   def terminate(_reason, socket) do
+    # Unsubscribe from blue channel if watching a doc
+    if socket.assigns[:selected_uuid] do
+      CPPubSub.unsubscribe_blue(socket.assigns.selected_uuid)
+    end
+
+    # Stop presence process
     if socket.assigns[:presence_pid] && Process.alive?(socket.assigns.presence_pid) do
       GenServer.stop(socket.assigns.presence_pid)
     end
