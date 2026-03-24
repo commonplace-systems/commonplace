@@ -261,6 +261,78 @@ defmodule Commonplace.Tree.MergeTest do
       assert :error = Schema.get_entry(target_schema_after_second, "forked.txt")
     end
 
+    test "node_id replacement: source deletes and recreates file with same name", %{store: store} do
+      # Create a file on the main branch
+      original_file = create_text_doc(store, "config.txt", "original config")
+      root_uuid = create_schema(store, %{"config.txt" => {:doc, original_file}})
+
+      # Fork — target gets a copy of config.txt with the same node_id lineage
+      fork_root = Fork.fork_directory(root_uuid, store)
+      {fork_config_uuid, _} = get_child(store, fork_root, "config.txt")
+
+      # On the fork (source), delete config.txt and recreate it with new content
+      # This simulates "delete file, create new file with same name" which produces a new node_id
+      remove_from_schema(store, fork_root, "config.txt")
+      replacement_file = create_text_doc(store, "config.txt", "completely new config")
+      add_to_schema(store, fork_root, "config.txt", :doc, replacement_file)
+
+      # Verify the source now has a different node_id for config.txt
+      {source_config_nid, _} = get_child(store, fork_root, "config.txt")
+      assert source_config_nid == replacement_file
+      assert source_config_nid != fork_config_uuid
+
+      # Merge: should detect the node_id replacement and copy the new doc
+      {:ok, report} = Merge.merge(fork_root, root_uuid, store)
+
+      # No conflicts — target didn't modify the original file
+      assert report.conflicts == []
+
+      # The old node_id should be in deleted_docs
+      {:ok, target_schema} = reconstruct_schema(store, root_uuid)
+      {:ok, entry} = Schema.get_entry(target_schema, "config.txt")
+
+      # The target's node_id should now be a fork of the replacement (not the original)
+      assert entry.node_id != original_file
+      # It should be reported as both a deletion and an addition
+      assert length(report.deleted_docs) >= 1
+      assert length(report.new_docs) >= 1
+
+      # The new doc content should be the replacement content
+      {:ok, new_doc} = reconstruct_doc(store, entry.node_id)
+      content = ContentType.get_content(new_doc)
+      assert content =~ "completely new config"
+    end
+
+    test "node_id replacement with target modification raises conflict", %{store: store} do
+      # Create a file on the main branch
+      original_file = create_text_doc(store, "shared.txt", "original content")
+      root_uuid = create_schema(store, %{"shared.txt" => {:doc, original_file}})
+
+      # Fork
+      fork_root = Fork.fork_directory(root_uuid, store)
+
+      # Target modifies the file after forking
+      edit_doc(store, original_file, " target edit", 16)
+
+      # Source deletes and recreates the file with a new node_id
+      remove_from_schema(store, fork_root, "shared.txt")
+      replacement_file = create_text_doc(store, "shared.txt", "replacement content")
+      add_to_schema(store, fork_root, "shared.txt", :doc, replacement_file)
+
+      # Merge: should detect conflict because target modified the file that source replaced
+      {:ok, report} = Merge.merge(fork_root, root_uuid, store)
+
+      assert Enum.any?(report.conflicts, fn
+        {:delete_vs_modify, "shared.txt", _} -> true
+        _ -> false
+      end)
+
+      # Original entry should still be in target schema (not replaced)
+      {:ok, target_schema} = reconstruct_schema(store, root_uuid)
+      {:ok, entry} = Schema.get_entry(target_schema, "shared.txt")
+      assert entry.node_id == original_file
+    end
+
     test "no common ancestor: merge is a no-op", %{store: store} do
       # Create two completely independent documents (no shared DAG ancestry)
       file_a = create_text_doc(store, "a.txt", "from A")
