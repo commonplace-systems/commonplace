@@ -78,6 +78,12 @@ defmodule Commonplace.Sync.Export do
   Readers see either the old content or the new content, never partial.
   """
   def atomic_write(path, content) do
+    Commonplace.Sync.Flock.with_exclusive_lock(path, 30_000, fn ->
+      do_atomic_write(path, content)
+    end)
+  end
+
+  defp do_atomic_write(path, content) do
     dir = Path.dirname(path)
     File.mkdir_p!(dir)
     tmp_path = Path.join(dir, ".#{Path.basename(path)}.tmp.#{System.pid()}")
