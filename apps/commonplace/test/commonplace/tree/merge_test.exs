@@ -126,6 +126,157 @@ defmodule Commonplace.Tree.MergeTest do
       assert content =~ "SOURCE"
       assert content =~ "TARGET"
     end
+
+    test "delete-vs-modify: source deletes an entry target has modified", %{store: store} do
+      file_uuid = create_text_doc(store, "important.txt", "original content")
+      root_uuid = create_schema(store, %{"important.txt" => {:doc, file_uuid}})
+
+      fork_root = Fork.fork_directory(root_uuid, store)
+
+      # Edit the file on target after forking
+      edit_doc(store, file_uuid, " target edit", 16)
+
+      # Delete the file from source's schema
+      remove_from_schema(store, fork_root, "important.txt")
+
+      {:ok, report} = Merge.merge(fork_root, root_uuid, store)
+
+      # Should detect a conflict: source deleted it, target modified it
+      assert Enum.any?(report.conflicts, fn
+        {:delete_vs_modify, "important.txt", _} -> true
+        _ -> false
+      end)
+
+      # The entry should still be in target schema (not deleted)
+      {:ok, target_schema} = reconstruct_schema(store, root_uuid)
+      assert {:ok, _} = Schema.get_entry(target_schema, "important.txt")
+    end
+
+    test "safe deletion: source deletes an unmodified entry", %{store: store} do
+      file_uuid = create_text_doc(store, "removeme.txt", "expendable")
+      root_uuid = create_schema(store, %{"removeme.txt" => {:doc, file_uuid}})
+
+      fork_root = Fork.fork_directory(root_uuid, store)
+
+      # Delete the file from source's schema — but don't edit it on target
+      remove_from_schema(store, fork_root, "removeme.txt")
+
+      {:ok, report} = Merge.merge(fork_root, root_uuid, store)
+
+      assert report.conflicts == []
+
+      # The entry should have been deleted from target schema
+      {:ok, target_schema} = reconstruct_schema(store, root_uuid)
+      assert :error = Schema.get_entry(target_schema, "removeme.txt")
+
+      assert length(report.deleted_docs) >= 1
+    end
+
+    test "nested directory merge: edits in subdirectory are propagated", %{store: store} do
+      # Build: root -> subdir -> nested_file.txt
+      nested_file_uuid = create_text_doc(store, "nested.txt", "original")
+      subdir_uuid = create_schema(store, %{"nested.txt" => {:doc, nested_file_uuid}})
+      root_uuid = create_schema(store, %{"subdir" => {:dir, subdir_uuid}})
+
+      fork_root = Fork.fork_directory(root_uuid, store)
+
+      # Navigate into the fork's subdirectory and its nested file
+      {fork_subdir_uuid, _} = get_child(store, fork_root, "subdir")
+      {fork_nested_uuid, _} = get_child(store, fork_subdir_uuid, "nested.txt")
+
+      # Edit the nested file on the fork
+      edit_doc(store, fork_nested_uuid, " edited", 8)
+
+      {:ok, report} = Merge.merge(fork_root, root_uuid, store)
+
+      assert report.conflicts == []
+
+      # The original nested_file on target should have the edit merged in
+      {:ok, doc} = reconstruct_doc(store, nested_file_uuid)
+      content = ContentType.get_content(doc)
+      assert content =~ "original"
+      assert content =~ "edited"
+    end
+
+    test "__processes.json filtering: non-forkable processes are removed after merge", %{store: store} do
+      # Start with an empty target (no __processes.json on target initially)
+      root_uuid = create_schema(store, %{})
+
+      fork_root = Fork.fork_directory(root_uuid, store)
+
+      # Add __processes.json with both forkable and non-forkable processes on the fork
+      proc_json = Jason.encode!(%{
+        "safe_proc" => %{"mode" => "elixir", "source" => "SomeModule"},
+        "unsafe_proc" => %{"mode" => "command", "command" => "bash", "fork" => "skip"}
+      })
+      proc_uuid = create_text_doc(store, "__processes.json", proc_json)
+      add_to_schema(store, fork_root, "__processes.json", :doc, proc_uuid)
+
+      # Merge the fork (which has __processes.json) into the target (which doesn't)
+      # merge_directory uses fork_into_target to copy the entry, then calls
+      # maybe_filter_processes which strips the non-forkable process from target's copy.
+      {:ok, _report} = Merge.merge(fork_root, root_uuid, store)
+
+      # After merge, target should have __processes.json with only the safe proc
+      {:ok, target_schema} = reconstruct_schema(store, root_uuid)
+      {:ok, proc_entry} = Schema.get_entry(target_schema, "__processes.json")
+
+      # The target's __processes.json is a forked copy — use snapshot reconstruction
+      # because fork_into_target stores a full snapshot and maybe_filter_processes
+      # may also store a snapshot commit.
+      {:ok, proc_doc} = reconstruct_snapshot(store, proc_entry.node_id)
+      content = ContentType.get_content(proc_doc)
+      {:ok, decoded} = Jason.decode(content)
+
+      assert Map.has_key?(decoded, "safe_proc")
+      refute Map.has_key?(decoded, "unsafe_proc")
+    end
+
+    test "merge-point deletion: entry added by prior merge is removed when source deletes it", %{store: store} do
+      root_uuid = create_schema(store, %{})
+      fork_root = Fork.fork_directory(root_uuid, store)
+
+      # Add a new file on the fork
+      new_file = create_text_doc(store, "forked.txt", "forked content")
+      add_to_schema(store, fork_root, "forked.txt", :doc, new_file)
+
+      # First merge: propagates forked.txt to target
+      {:ok, report1} = Merge.merge(fork_root, root_uuid, store)
+      assert length(report1.new_docs) >= 1
+
+      {:ok, target_schema_after_first} = reconstruct_schema(store, root_uuid)
+      assert {:ok, _} = Schema.get_entry(target_schema_after_first, "forked.txt")
+
+      # Now delete forked.txt from source
+      remove_from_schema(store, fork_root, "forked.txt")
+
+      # Second merge: since target entry was added via prior merge (not independently),
+      # it should be removed from target
+      {:ok, report2} = Merge.merge(fork_root, root_uuid, store)
+
+      assert report2.conflicts == []
+      assert length(report2.deleted_docs) >= 1
+
+      {:ok, target_schema_after_second} = reconstruct_schema(store, root_uuid)
+      assert :error = Schema.get_entry(target_schema_after_second, "forked.txt")
+    end
+
+    test "no common ancestor: merge reports :no_common_ancestor error", %{store: store} do
+      # Create two completely independent documents (no shared DAG ancestry)
+      file_a = create_text_doc(store, "a.txt", "from A")
+      root_a = create_schema(store, %{"a.txt" => {:doc, file_a}})
+
+      file_b = create_text_doc(store, "b.txt", "from B")
+      root_b = create_schema(store, %{"b.txt" => {:doc, file_b}})
+
+      # Trying to merge two unrelated roots should produce an error
+      {:ok, report} = Merge.merge(root_a, root_b, store)
+
+      assert Enum.any?(report.errors, fn
+        {:no_common_ancestor, _, _} -> true
+        _ -> false
+      end)
+    end
   end
 
   # --- Helpers ---
@@ -194,5 +345,21 @@ defmodule Commonplace.Tree.MergeTest do
     {:ok, commit} = CommitStore.latest_commit(store, uuid)
     schema = Schema.new_schema()
     Yelixer.Encoding.apply_update(schema, commit.update)
+  end
+
+  # Apply only the latest commit to a fresh doc — use for docs that store full snapshots
+  # (e.g. __processes.json after maybe_filter_processes writes a new snapshot commit).
+  defp reconstruct_snapshot(store, uuid) do
+    {:ok, commit} = CommitStore.latest_commit(store, uuid)
+    doc = Yelixer.Doc.new()
+    Yelixer.Encoding.apply_update(doc, commit.update)
+  end
+
+  defp remove_from_schema(store, schema_uuid, name) do
+    {:ok, doc} = reconstruct_schema(store, schema_uuid)
+    doc = Schema.remove_entry(doc, name)
+    update = Yelixer.Encoding.encode_update(doc)
+    {:ok, latest} = CommitStore.latest_commit(store, schema_uuid)
+    CommitStore.create_commit(store, schema_uuid, update, latest.id)
   end
 end
