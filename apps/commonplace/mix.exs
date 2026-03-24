@@ -11,6 +11,8 @@ defmodule Commonplace.MixProject do
       lockfile: "../../mix.lock",
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
+      compilers: [:elixir_make] ++ Mix.compilers(),
+      make_clean: ["clean"],
       deps: deps()
     ]
   end
@@ -30,7 +32,8 @@ defmodule Commonplace.MixProject do
       {:uuid, "~> 1.1"},
       {:file_system, "~> 1.0"},
       {:jason, "~> 1.4"},
-      {:telemetry, "~> 1.0"}
+      {:telemetry, "~> 1.0"},
+      {:elixir_make, "~> 0.9", runtime: false}
     ]
   end
 end
