@@ -37,4 +37,4 @@ jobs:
         run: mix compile --warnings-as-errors
 
       - name: Run tests
-        run: mix test apps/commonplace/test/
+        run: mix test
