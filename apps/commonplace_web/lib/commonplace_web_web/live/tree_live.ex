@@ -67,24 +67,29 @@ defmodule CommonplaceWebWeb.TreeLive do
   def handle_params(%{"path" => path}, _uri, socket) do
     path = Enum.join(path, "/")
 
-    # Resolve the path to find the directory UUID
-    dir_uuid =
-      if path == "" do
-        socket.assigns.root_uuid
-      else
-        resolve_dir(socket.assigns.root_uuid, path)
-      end
+    # Reject path traversal attempts
+    if String.contains?(path, "..") do
+      {:noreply, push_navigate(socket, to: ~p"/tree")}
+    else
+      # Resolve the path to find the directory UUID
+      dir_uuid =
+        if path == "" do
+          socket.assigns.root_uuid
+        else
+          resolve_dir(socket.assigns.root_uuid, path)
+        end
 
-    entries = if dir_uuid, do: list_entries(dir_uuid), else: []
+      entries = if dir_uuid, do: list_entries(dir_uuid), else: []
 
-    socket =
-      socket
-      |> assign(:current_path, path)
-      |> assign(:entries, entries)
-      |> assign(:selected_name, nil)
-      |> assign(:selected_uuid, nil)
+      socket =
+        socket
+        |> assign(:current_path, path)
+        |> assign(:entries, entries)
+        |> assign(:selected_name, nil)
+        |> assign(:selected_uuid, nil)
 
-    {:noreply, socket}
+      {:noreply, socket}
+    end
   end
 
   def handle_params(_params, _uri, socket) do
@@ -151,24 +156,34 @@ defmodule CommonplaceWebWeb.TreeLive do
   def handle_event("yjs_edit", %{"update" => encoded}, socket) do
     with uuid when not is_nil(uuid) <- socket.assigns.selected_uuid,
          {:ok, update} <- Base.decode64(encoded) do
-      # Commit to the store
-      CommitStore.create_commit(uuid, update, nil)
+      case CommitStore.create_commit(uuid, update, nil) do
+        %{id: _} = _commit ->
+          CPPubSub.broadcast_blue(uuid, update)
+          {:noreply, socket}
 
-      # Broadcast on blue channel so other viewers get it
-      CPPubSub.broadcast_blue(uuid, update)
+        error ->
+          {:noreply, put_flash(socket, :error, "Failed to save: #{inspect(error)}")}
+      end
+    else
+      _ ->
+        {:noreply, put_flash(socket, :error, "Invalid edit data")}
     end
-
-    {:noreply, socket}
   end
 
+  # Blue channel PubSub messages have the format {:commit, uuid, commit_id, meta}
   @impl true
-  def handle_info({_topic, _update}, socket) do
-    # Blue channel update — push new Yjs state to browser
+  def handle_info({:commit, _uuid, _commit_id, _meta}, socket) do
     if socket.assigns.selected_uuid do
       {:noreply, push_yjs_init(socket, socket.assigns.selected_uuid)}
     else
       {:noreply, socket}
     end
+  end
+
+  # Catch-all: ignore unexpected messages instead of crashing
+  @impl true
+  def handle_info(_msg, socket) do
+    {:noreply, socket}
   end
 
   @impl true

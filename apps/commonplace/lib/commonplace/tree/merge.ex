@@ -68,60 +68,16 @@ defmodule Commonplace.Tree.Merge do
     case reconstruct_doc_at(store, source_uuid, baseline_commit_id) do
       {:ok, baseline_doc} ->
         baseline_sv = BlockStore.state_vector(baseline_doc.store)
-
-        {:ok, source_doc} = reconstruct_doc(store, source_uuid)
-        diff = Encoding.encode_diff(source_doc, baseline_sv)
-
-        {:ok, source_latest} = CommitStore.latest_commit(store, source_uuid)
-
-        if byte_size(diff) <= 2 do
-          # No new changes since last merge — update the merge point to current source head
-          CommitStore.set_merge_point(store, target_uuid, source_uuid, source_latest.id)
-          {:ok, report}
-        else
-          {:ok, target_doc} = reconstruct_doc(store, target_uuid)
-          {:ok, merged_doc} = Encoding.apply_update(target_doc, diff)
-
-          merged_update = Encoding.encode_update(merged_doc)
-          {:ok, latest} = CommitStore.latest_commit(store, target_uuid)
-          merge_commit = CommitStore.create_commit(store, target_uuid, merged_update, latest.id)
-
-          # Record merge metadata for incremental merging and delete-vs-modify detection
-          CommitStore.set_merge_point(store, target_uuid, source_uuid, source_latest.id)
-          CommitStore.set_last_merge_commit(store, target_uuid, source_uuid, merge_commit.id)
-
-          {:ok, %{report | merged_docs: [{source_uuid, target_uuid} | report.merged_docs]}}
-        end
+        diff_and_apply(store, source_uuid, target_uuid, baseline_sv, report)
 
       :none ->
         # Baseline commit not found in source chain — fall back to common ancestor
         case reconstruct_doc_at(store, source_uuid, ancestor.id) do
           {:ok, ancestor_doc} ->
             ancestor_sv = BlockStore.state_vector(ancestor_doc.store)
-
-            {:ok, source_doc} = reconstruct_doc(store, source_uuid)
-            diff = Encoding.encode_diff(source_doc, ancestor_sv)
-
-            {:ok, source_latest} = CommitStore.latest_commit(store, source_uuid)
-
-            if byte_size(diff) <= 2 do
-              {:ok, report}
-            else
-              {:ok, target_doc} = reconstruct_doc(store, target_uuid)
-              {:ok, merged_doc} = Encoding.apply_update(target_doc, diff)
-
-              merged_update = Encoding.encode_update(merged_doc)
-              {:ok, latest} = CommitStore.latest_commit(store, target_uuid)
-              merge_commit = CommitStore.create_commit(store, target_uuid, merged_update, latest.id)
-
-              CommitStore.set_merge_point(store, target_uuid, source_uuid, source_latest.id)
-              CommitStore.set_last_merge_commit(store, target_uuid, source_uuid, merge_commit.id)
-
-              {:ok, %{report | merged_docs: [{source_uuid, target_uuid} | report.merged_docs]}}
-            end
+            diff_and_apply(store, source_uuid, target_uuid, ancestor_sv, report)
 
           :none ->
-            # Common ancestor commit not found in source chain — fall back to no-op
             {:ok, report}
         end
     end
@@ -132,31 +88,40 @@ defmodule Commonplace.Tree.Merge do
     case reconstruct_doc_at(store, source_uuid, merge_point_id) do
       {:ok, baseline_doc} ->
         baseline_sv = BlockStore.state_vector(baseline_doc.store)
+        diff_and_apply(store, source_uuid, target_uuid, baseline_sv, report)
 
-        {:ok, source_doc} = reconstruct_doc(store, source_uuid)
-        diff = Encoding.encode_diff(source_doc, baseline_sv)
+      :none ->
+        {:ok, report}
+    end
+  end
 
-        {:ok, source_latest} = CommitStore.latest_commit(store, source_uuid)
+  # Shared helper: compute diff from source since baseline_sv, apply to target.
+  # Returns {:ok, report} on success or if diff is empty, skips on any error.
+  defp diff_and_apply(store, source_uuid, target_uuid, baseline_sv, report) do
+    with {:ok, source_doc} <- reconstruct_doc(store, source_uuid),
+         {:ok, source_latest} <- CommitStore.latest_commit(store, source_uuid) do
+      diff = Encoding.encode_diff(source_doc, baseline_sv)
 
-        if byte_size(diff) <= 2 do
-          CommitStore.set_merge_point(store, target_uuid, source_uuid, source_latest.id)
-          {:ok, report}
-        else
-          {:ok, target_doc} = reconstruct_doc(store, target_uuid)
-          {:ok, merged_doc} = Encoding.apply_update(target_doc, diff)
-
+      if byte_size(diff) <= 2 do
+        CommitStore.set_merge_point(store, target_uuid, source_uuid, source_latest.id)
+        {:ok, report}
+      else
+        with {:ok, target_doc} <- reconstruct_doc(store, target_uuid),
+             {:ok, merged_doc} <- Encoding.apply_update(target_doc, diff),
+             {:ok, latest} <- CommitStore.latest_commit(store, target_uuid) do
           merged_update = Encoding.encode_update(merged_doc)
-          {:ok, latest} = CommitStore.latest_commit(store, target_uuid)
           merge_commit = CommitStore.create_commit(store, target_uuid, merged_update, latest.id)
 
           CommitStore.set_merge_point(store, target_uuid, source_uuid, source_latest.id)
           CommitStore.set_last_merge_commit(store, target_uuid, source_uuid, merge_commit.id)
 
           {:ok, %{report | merged_docs: [{source_uuid, target_uuid} | report.merged_docs]}}
+        else
+          _ -> {:ok, report}
         end
-
-      :none ->
-        {:ok, report}
+      end
+    else
+      _ -> {:ok, report}
     end
   end
 
@@ -166,9 +131,26 @@ defmodule Commonplace.Tree.Merge do
         # Use snapshot reconstruction for schema docs — fork always stores full snapshots,
         # so the latest commit is the complete current state. Full chain replay gives
         # inconsistent CRDT results when applying full snapshots on top of each other.
-        {:ok, source_schema} = reconstruct_snapshot(store, source_uuid)
-        {:ok, target_schema} = reconstruct_snapshot(store, target_uuid)
+        with {:ok, source_schema} <- reconstruct_snapshot(store, source_uuid),
+             {:ok, target_schema} <- reconstruct_snapshot(store, target_uuid) do
+          merge_directory_entries(
+            source_uuid, target_uuid, ancestor, ancestor_schema,
+            source_schema, target_schema, store, report
+          )
+        else
+          _ -> {:ok, report}
+        end
 
+      :none ->
+        # Common ancestor commit not found in source chain — skip directory merge
+        {:ok, report}
+    end
+  end
+
+  defp merge_directory_entries(
+    source_uuid, target_uuid, ancestor, ancestor_schema,
+    source_schema, target_schema, store, report
+  ) do
         ancestor_entries = Schema.entries(ancestor_schema)
         source_entries = Schema.entries(source_schema)
         target_entries = Schema.entries(target_schema)
@@ -196,8 +178,10 @@ defmodule Commonplace.Tree.Merge do
 
                 case CommitStore.find_common_ancestor(store, source_nid, target_nid) do
                   {:ok, _} ->
-                    {:ok, rep} = merge_tree(source_nid, target_nid, store, rep)
-                    {schema, rep}
+                    case merge_tree(source_nid, target_nid, store, rep) do
+                      {:ok, rep} -> {schema, rep}
+                      _ -> {schema, rep}
+                    end
 
                   :none ->
                     # No shared DAG ancestry between source and target node_ids.
@@ -331,21 +315,16 @@ defmodule Commonplace.Tree.Merge do
           end)
 
         schema_update = Encoding.encode_update(updated_target_schema)
-        {:ok, target_latest} = CommitStore.latest_commit(store, target_uuid)
-        CommitStore.create_commit(store, target_uuid, schema_update, target_latest.id)
 
-        # Record source's current head as the merge point for the next merge round
-        {:ok, source_latest} = CommitStore.latest_commit(store, source_uuid)
-        CommitStore.set_merge_point(store, target_uuid, source_uuid, source_latest.id)
+        with {:ok, target_latest} <- CommitStore.latest_commit(store, target_uuid),
+             {:ok, source_latest} <- CommitStore.latest_commit(store, source_uuid) do
+          CommitStore.create_commit(store, target_uuid, schema_update, target_latest.id)
+          CommitStore.set_merge_point(store, target_uuid, source_uuid, source_latest.id)
+        end
 
         maybe_filter_processes(store, target_uuid)
 
         {:ok, report}
-
-      :none ->
-        # Common ancestor commit not found in source chain — skip directory merge
-        {:ok, report}
-    end
   end
 
   defp fork_into_target(source_uuid, _type, store) do
@@ -399,12 +378,17 @@ defmodule Commonplace.Tree.Merge do
     else
       case CommitStore.find_common_ancestor(store, target_nid, ancestor_nid) do
         {:ok, ancestor} ->
-          {:ok, latest} = CommitStore.latest_commit(store, target_nid)
-          if latest.id == ancestor.id do
-            false
-          else
-            # Chain has diverged — but was it a merge or user edit?
-            target_modified_by_user?(store, target_nid, root_ancestor)
+          case CommitStore.latest_commit(store, target_nid) do
+            {:ok, latest} ->
+              if latest.id == ancestor.id do
+                false
+              else
+                target_modified_by_user?(store, target_nid, root_ancestor)
+              end
+
+            :none ->
+              # Can't determine — assume modified to be safe
+              true
           end
 
         :none ->
@@ -422,25 +406,23 @@ defmodule Commonplace.Tree.Merge do
   # Core check: was this target doc modified by the user (not just by merges/forks)?
   # root_ancestor is the fork-point commit (used as timestamp baseline for first-merge case).
   defp target_modified_by_user?(store, target_uuid, root_ancestor) do
-    {:ok, latest} = CommitStore.latest_commit(store, target_uuid)
+    case CommitStore.latest_commit(store, target_uuid) do
+      {:ok, latest} ->
+        case CommitStore.get_latest_merge_head(store, target_uuid) do
+          nil ->
+            if root_ancestor do
+              DateTime.compare(latest.timestamp, root_ancestor.timestamp) == :gt
+            else
+              false
+            end
 
-    case CommitStore.get_latest_merge_head(store, target_uuid) do
-      nil ->
-        # No merges ever happened to this doc. Use the root ancestor timestamp
-        # to check for post-fork edits. If the target's latest commit is newer
-        # than the fork point, it was edited after the fork.
-        if root_ancestor do
-          DateTime.compare(latest.timestamp, root_ancestor.timestamp) == :gt
-        else
-          # No root ancestor available (merge-point path) — default to not modified.
-          # Branch-point docs have 1 commit; if this doc has user edits after fork_into_target
-          # created it, the merge head would have been set. Without it, assume no user edits.
-          false
+          merge_head_id ->
+            latest.id != merge_head_id
         end
 
-      merge_head_id ->
-        # Merge has happened. If target's latest is the merge commit → no user edits.
-        latest.id != merge_head_id
+      :none ->
+        # No commits — can't have been modified
+        false
     end
   end
 
@@ -460,34 +442,24 @@ defmodule Commonplace.Tree.Merge do
     do: DocBuilder.reconstruct_doc_at(store, uuid, target_commit_id)
 
   defp maybe_filter_processes(store, schema_uuid) do
-    {:ok, schema} = reconstruct_snapshot(store, schema_uuid)
+    with {:ok, schema} <- reconstruct_snapshot(store, schema_uuid),
+         {:ok, entry} <- Schema.get_entry(schema, "__processes.json"),
+         {:ok, proc_doc} <- reconstruct_doc(store, entry.node_id),
+         content = ContentType.get_content(proc_doc) || "{}",
+         {:ok, proc_json} <- Jason.decode(content) do
+      filtered = Config.filter_json_for_fork(proc_json)
 
-    case Schema.get_entry(schema, "__processes.json") do
-      {:ok, entry} ->
-        case reconstruct_doc(store, entry.node_id) do
-          {:ok, proc_doc} ->
-            content = ContentType.get_content(proc_doc) || "{}"
-
-            case Jason.decode(content) do
-              {:ok, proc_json} ->
-                filtered = Config.filter_json_for_fork(proc_json)
-
-                if filtered != proc_json do
-                  new_doc = Doc.new()
-                  new_doc = ContentType.create(new_doc, :text, "__processes.json")
-                  new_doc = ContentType.insert_text(new_doc, 0, Jason.encode!(filtered))
-                  update = Encoding.encode_update(new_doc)
-                  {:ok, latest} = CommitStore.latest_commit(store, entry.node_id)
-                  CommitStore.create_commit(store, entry.node_id, update, latest.id)
-                end
-
-              _ -> :ok
-            end
-
-          _ -> :ok
+      if filtered != proc_json do
+        with {:ok, latest} <- CommitStore.latest_commit(store, entry.node_id) do
+          new_doc = Doc.new()
+          new_doc = ContentType.create(new_doc, :text, "__processes.json")
+          new_doc = ContentType.insert_text(new_doc, 0, Jason.encode!(filtered))
+          update = Encoding.encode_update(new_doc)
+          CommitStore.create_commit(store, entry.node_id, update, latest.id)
         end
-
-      :error -> :ok
+      end
     end
+
+    :ok
   end
 end

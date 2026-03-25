@@ -18,10 +18,11 @@ defmodule Commonplace.Dataflow.NodeGraphIntegrationTest do
     start_supervised!({CommitStore, data_dir: dir, name: store_name})
     on_exit(fn -> File.rm_rf!(dir) end)
 
-    # Clean GraphRegistry edges from prior tests
-    for edge <- GraphRegistry.get_graph() do
-      GraphRegistry.remove_edges(edge.process)
-    end
+    # Clean GraphRegistry edges from prior tests — collect unique process names first
+    GraphRegistry.get_graph()
+    |> Enum.map(& &1.process)
+    |> Enum.uniq()
+    |> Enum.each(&GraphRegistry.remove_edges/1)
 
     # Create root schema
     root_uuid = UUID.uuid4()
@@ -33,6 +34,25 @@ defmodule Commonplace.Dataflow.NodeGraphIntegrationTest do
     Process.flag(:trap_exit, true)
 
     %{store: store_name, root: root_uuid, dir: dir}
+  end
+
+  # Poll until condition is true, with timeout
+  defp wait_until(fun, timeout_ms \\ 3000) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    do_wait_until(fun, deadline)
+  end
+
+  defp do_wait_until(fun, deadline) do
+    if fun.() do
+      :ok
+    else
+      if System.monotonic_time(:millisecond) >= deadline do
+        :timeout
+      else
+        Process.sleep(50)
+        do_wait_until(fun, deadline)
+      end
+    end
   end
 
   describe "SmartDoc reacts to blue input" do
@@ -73,11 +93,11 @@ defmodule Commonplace.Dataflow.NodeGraphIntegrationTest do
 
       # Start the Orchestrator
       {:ok, orch} = Orchestrator.start_link(root_uuid: root, store: store, interval: 100)
-      Process.sleep(300)
 
-      # Verify the process is running
-      pids = Orchestrator.running_processes(orch)
-      assert Map.has_key?(pids, "watcher")
+      # Wait until the watcher process is running
+      assert :ok = wait_until(fn ->
+        Map.has_key?(Orchestrator.running_processes(orch), "watcher")
+      end)
 
       # Now create a new commit on data.txt to trigger the watcher
       new_doc = Yelixer.Doc.new()
@@ -86,13 +106,11 @@ defmodule Commonplace.Dataflow.NodeGraphIntegrationTest do
       new_update = Yelixer.Encoding.encode_update(new_doc)
       CommitStore.create_chained_commit(store, data_uuid, new_update)
 
-      # Give the Orchestrator time to dispatch
-      Process.sleep(300)
-
-      # Verify the watcher was triggered
-      content = Agent.get(agent, & &1)
-      assert content != nil
-      assert content =~ "updated content"
+      # Wait until the watcher callback fires
+      assert :ok = wait_until(fn ->
+        content = Agent.get(agent, & &1)
+        content != nil and String.contains?(content, "updated content")
+      end)
 
       GenServer.stop(orch)
     end
@@ -121,17 +139,15 @@ defmodule Commonplace.Dataflow.NodeGraphIntegrationTest do
       })
 
       {:ok, orch} = Orchestrator.start_link(root_uuid: root, store: store, interval: 100)
-      Process.sleep(300)
 
-      # Query the graph
-      graph = GraphRegistry.get_graph()
-
-      # There should be a blue edge from data_uuid to the "observer" process
-      blue_edges = Enum.filter(graph, fn e ->
-        e.color == :blue and e.from == data_uuid and e.to == "observer"
+      # Wait until blue edges appear in GraphRegistry
+      assert :ok = wait_until(fn ->
+        graph = GraphRegistry.get_graph()
+        blue_edges = Enum.filter(graph, fn e ->
+          e.color == :blue and e.from == data_uuid and e.to == "observer"
+        end)
+        length(blue_edges) == 1
       end)
-
-      assert length(blue_edges) == 1
 
       # dependents(data_uuid) should include the observer
       deps = GraphRegistry.dependents(data_uuid)
@@ -186,15 +202,20 @@ defmodule Commonplace.Dataflow.NodeGraphIntegrationTest do
       })
 
       {:ok, orch} = Orchestrator.start_link(root_uuid: root, store: store, interval: 100)
-      Process.sleep(300)
 
-      # Verify both processes are running
-      pids = Orchestrator.running_processes(orch)
-      assert Map.has_key?(pids, "proc_a")
-      assert Map.has_key?(pids, "proc_b")
+      # Wait until both processes are running
+      assert :ok = wait_until(fn ->
+        pids = Orchestrator.running_processes(orch)
+        Map.has_key?(pids, "proc_a") and Map.has_key?(pids, "proc_b")
+      end)
 
-      # Verify the graph has the expected cross-color feedback loop:
-      # b_uuid --blue--> proc_a --cyan--> a_uuid --blue--> proc_b --cyan--> b_uuid
+      # Wait until the graph has the expected cross-color feedback loop
+      assert :ok = wait_until(fn ->
+        graph = GraphRegistry.get_graph()
+        Enum.any?(graph, fn e -> e.color == :blue and e.from == b_uuid and e.to == "proc_a" end) and
+        Enum.any?(graph, fn e -> e.color == :cyan and e.from == "proc_a" and e.to == a_uuid end)
+      end)
+
       graph = GraphRegistry.get_graph()
 
       assert Enum.any?(graph, fn e -> e.color == :blue and e.from == b_uuid and e.to == "proc_a" end)
@@ -239,7 +260,11 @@ defmodule Commonplace.Dataflow.NodeGraphIntegrationTest do
       })
 
       {:ok, orch} = Orchestrator.start_link(root_uuid: root, store: store, interval: 100)
-      Process.sleep(300)
+
+      # Wait until depth_watcher process is running and wired
+      assert :ok = wait_until(fn ->
+        Map.has_key?(Orchestrator.running_processes(orch), "depth_watcher")
+      end)
 
       # Send a commit with depth=0 — should be dispatched
       new_doc = Yelixer.Doc.new()
@@ -248,8 +273,8 @@ defmodule Commonplace.Dataflow.NodeGraphIntegrationTest do
       update = Yelixer.Encoding.encode_update(new_doc)
       CommitStore.create_chained_commit(store, data_uuid, update, %{depth: 0})
 
-      Process.sleep(200)
-      assert Agent.get(counter, & &1) == 1
+      # Wait until the counter increments
+      assert :ok = wait_until(fn -> Agent.get(counter, & &1) == 1 end)
 
       # Send a commit with depth > max (8) — should NOT be dispatched
       new_doc2 = Yelixer.Doc.new()
@@ -258,8 +283,8 @@ defmodule Commonplace.Dataflow.NodeGraphIntegrationTest do
       update2 = Yelixer.Encoding.encode_update(new_doc2)
       CommitStore.create_chained_commit(store, data_uuid, update2, %{depth: 9})
 
-      Process.sleep(200)
-      # Count should still be 1 — the deep commit was ignored
+      # Give time for potential (unwanted) dispatch, then verify count unchanged
+      Process.sleep(300)
       assert Agent.get(counter, & &1) == 1
 
       GenServer.stop(orch)

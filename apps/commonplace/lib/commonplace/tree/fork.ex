@@ -62,25 +62,31 @@ defmodule Commonplace.Tree.Fork do
       end)
 
     # Reconstruct source schema and remap node_ids
-    {:ok, source_doc} = reconstruct_doc(store, source_uuid)
+    case reconstruct_doc(store, source_uuid) do
+      {:ok, source_doc} ->
+        edited_doc =
+          Enum.reduce(entries, source_doc, fn entry, doc ->
+            new_child_uuid = Map.fetch!(uuid_map, entry.node_id)
+            doc = Schema.remove_entry(doc, entry.name)
 
-    edited_doc =
-      Enum.reduce(entries, source_doc, fn entry, doc ->
-        new_child_uuid = Map.fetch!(uuid_map, entry.node_id)
-        doc = Schema.remove_entry(doc, entry.name)
+            case entry.type do
+              :dir -> Schema.add_directory(doc, entry.name, new_child_uuid)
+              _ -> Schema.add_file(doc, entry.name, new_child_uuid)
+            end
+          end)
 
-        case entry.type do
-          :dir -> Schema.add_directory(doc, entry.name, new_child_uuid)
-          _ -> Schema.add_file(doc, entry.name, new_child_uuid)
-        end
-      end)
+        # Filter __processes.json if present
+        edited_doc = maybe_filter_processes(edited_doc, entries, store, uuid_map)
 
-    # Filter __processes.json if present
-    edited_doc = maybe_filter_processes(edited_doc, entries, store, uuid_map)
+        # Create the schema edit commit branching off the source's chain
+        update = Encoding.encode_update(edited_doc)
+        CommitStoreClient.create_commit(store, new_uuid, update, commit.id)
 
-    # Create the schema edit commit branching off the source's chain
-    update = Encoding.encode_update(edited_doc)
-    CommitStoreClient.create_commit(store, new_uuid, update, commit.id)
+      :none ->
+        # Source doc missing — create empty schema commit as branch point
+        update = Encoding.encode_update(Schema.new_schema())
+        CommitStoreClient.create_commit(store, new_uuid, update, commit.id)
+    end
 
     {new_uuid, uuid_map}
   end
@@ -90,9 +96,16 @@ defmodule Commonplace.Tree.Fork do
     uuid_map = Map.put(uuid_map, source_uuid, new_uuid)
 
     # Branch-point commit: same content under new UUID, parent = source's commit
-    {:ok, doc} = reconstruct_doc(store, source_uuid)
-    update = Encoding.encode_update(doc)
-    CommitStoreClient.create_commit(store, new_uuid, update, commit.id)
+    case reconstruct_doc(store, source_uuid) do
+      {:ok, doc} ->
+        update = Encoding.encode_update(doc)
+        CommitStoreClient.create_commit(store, new_uuid, update, commit.id)
+
+      :none ->
+        # Source doc missing — create minimal branch-point commit
+        update = Encoding.encode_update(Doc.new())
+        CommitStoreClient.create_commit(store, new_uuid, update, commit.id)
+    end
 
     {new_uuid, uuid_map}
   end
@@ -116,14 +129,18 @@ defmodule Commonplace.Tree.Fork do
               filtered = Config.filter_json_for_fork(json)
 
               if map_size(filtered) < map_size(json) and new_proc_uuid do
-                new_doc = Doc.new()
-                new_doc = ContentType.create(new_doc, :text, "__processes.json")
-                filtered_json = Jason.encode!(filtered)
-                new_doc = if filtered_json != "", do: ContentType.insert_text(new_doc, 0, filtered_json), else: new_doc
-                update = Encoding.encode_update(new_doc)
-                # Overwrite the branch-point commit with filtered content
-                {:ok, branch_commit} = CommitStoreClient.latest_commit(store, new_proc_uuid)
-                CommitStoreClient.create_commit(store, new_proc_uuid, update, branch_commit.parent_id)
+                case CommitStoreClient.latest_commit(store, new_proc_uuid) do
+                  {:ok, branch_commit} ->
+                    new_doc = Doc.new()
+                    new_doc = ContentType.create(new_doc, :text, "__processes.json")
+                    filtered_json = Jason.encode!(filtered)
+                    new_doc = if filtered_json != "", do: ContentType.insert_text(new_doc, 0, filtered_json), else: new_doc
+                    update = Encoding.encode_update(new_doc)
+                    CommitStoreClient.create_commit(store, new_proc_uuid, update, branch_commit.parent_id)
+
+                  :none ->
+                    :ok
+                end
               end
 
               schema_doc

@@ -127,8 +127,10 @@ defmodule Commonplace.Process.Orchestrator do
       System.cmd("pkill", ["-TERM", "-P", "#{pid}"], stderr_to_stdout: true)
     end)
 
-    # Wait for graceful shutdown
-    Process.sleep(@shutdown_grace_ms)
+    # Wait for graceful shutdown only when there are OS processes to kill
+    if os_pids != [] do
+      Process.sleep(@shutdown_grace_ms)
+    end
 
     # SIGKILL any survivors
     Enum.each(os_pids, fn pid ->
