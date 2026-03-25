@@ -6,6 +6,8 @@ defmodule Commonplace.CLI.Cat do
   alias Commonplace.Document.ContentType
   alias Commonplace.Store.CommitStoreClient, as: CommitStore
 
+  import Commonplace.CLI.Helpers, only: [join_paths: 2]
+
   def run(data_dir, relative_path, args) do
     CLI.ensure_started(data_dir)
     root = CLI.root_uuid(data_dir)
@@ -38,10 +40,6 @@ defmodule Commonplace.CLI.Cat do
         end
     end
   end
-
-  defp join_paths("", path), do: path
-  defp join_paths(base, ""), do: base
-  defp join_paths(base, path), do: Path.join(base, path)
 
   defp print_content(uuid) do
     case CommitStore.latest_commit(uuid) do

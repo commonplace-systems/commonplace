@@ -4,6 +4,8 @@ defmodule Commonplace.CLI.Uuid do
   alias Commonplace.CLI
   alias Commonplace.Tree.Walk
 
+  import Commonplace.CLI.Helpers, only: [join_paths: 2]
+
   def run(data_dir, relative_path, args) do
     CLI.ensure_started(data_dir)
     root = CLI.root_uuid(data_dir)
@@ -37,7 +39,4 @@ defmodule Commonplace.CLI.Uuid do
     end
   end
 
-  defp join_paths("", path), do: path
-  defp join_paths(base, ""), do: base
-  defp join_paths(base, path), do: Path.join(base, path)
 end

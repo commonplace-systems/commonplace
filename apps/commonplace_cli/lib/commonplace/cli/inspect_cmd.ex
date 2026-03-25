@@ -6,6 +6,8 @@ defmodule Commonplace.CLI.InspectCmd do
   alias Commonplace.Document.ContentType
   alias Commonplace.Store.CommitStoreClient, as: CommitStore
 
+  import Commonplace.CLI.Helpers, only: [join_paths: 2, uuid?: 1]
+
   def run(data_dir, relative_path, args) do
     CLI.ensure_started(data_dir)
     root = CLI.root_uuid(data_dir)
@@ -70,8 +72,12 @@ defmodule Commonplace.CLI.InspectCmd do
     end
 
     case Walk.resolve_path(root, path, loader) do
-      {:ok, uuid} -> uuid
-      {:error, reason} -> raise "resolve failed: #{inspect(reason)}"
+      {:ok, uuid} ->
+        uuid
+
+      {:error, reason} ->
+        IO.puts(:stderr, "Resolve failed: #{inspect(reason)}")
+        System.halt(1)
     end
   end
 
@@ -185,11 +191,4 @@ defmodule Commonplace.CLI.InspectCmd do
 
   defp preview_content(_, content), do: inspect(content, limit: 5)
 
-  defp uuid?(str) do
-    Regex.match?(~r/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, str)
-  end
-
-  defp join_paths("", path), do: path
-  defp join_paths(base, ""), do: base
-  defp join_paths(base, path), do: Path.join(base, path)
 end

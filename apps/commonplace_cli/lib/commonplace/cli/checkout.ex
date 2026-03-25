@@ -13,6 +13,8 @@ defmodule Commonplace.CLI.Checkout do
   alias Commonplace.Tree.{Docref, Walk}
   alias Commonplace.Sync.{CheckoutRegistry, Export}
 
+  import Commonplace.CLI.Helpers, only: [uuid?: 1]
+
   def run(data_dir, _relative_path, args) do
     CLI.ensure_started(data_dir)
     root = CLI.root_uuid(data_dir)
@@ -119,10 +121,6 @@ defmodule Commonplace.CLI.Checkout do
       loader = &CLI.load_schema/1
       Walk.resolve_path(root, target, loader)
     end
-  end
-
-  defp uuid?(str) do
-    Regex.match?(~r/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, str)
   end
 
   defp start_registry(data_dir) do
