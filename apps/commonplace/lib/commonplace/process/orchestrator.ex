@@ -90,7 +90,9 @@ defmodule Commonplace.Process.Orchestrator do
       try do
         reconcile(state)
       rescue
-        _ -> state
+        e ->
+          Logger.error("Orchestrator reconcile failed: #{Exception.message(e)}")
+          state
       end
 
     write_status_file(state)
