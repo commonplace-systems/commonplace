@@ -16,7 +16,7 @@ defmodule Commonplace.Sync.Agent do
   use GenServer
 
   alias Commonplace.Sync.{Watcher, Export, InodeTracker}
-  alias Commonplace.Store.CommitStore
+  alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.Schema
 
   defstruct [
@@ -53,7 +53,7 @@ defmodule Commonplace.Sync.Agent do
     state = %__MODULE__{
       root_uuid: Keyword.fetch!(opts, :root_uuid),
       sync_dir: Keyword.fetch!(opts, :sync_dir),
-      store: Keyword.get(opts, :store, CommitStore),
+      store: Keyword.get(opts, :store, CommitStoreClient),
       known_paths: MapSet.new(),
       known_hashes: %{},
       written_commits: %{},
@@ -129,7 +129,7 @@ defmodule Commonplace.Sync.Agent do
   end
 
   defp maybe_write_doc(entry, path, store, written, registry, shadow_dir) do
-    case CommitStore.latest_commit(store, entry.node_id) do
+    case CommitStoreClient.latest_commit(store, entry.node_id) do
       {:ok, commit} ->
         last_written = Map.get(written, entry.node_id)
 
@@ -174,7 +174,7 @@ defmodule Commonplace.Sync.Agent do
         update = Yelixer.Encoding.encode_update(doc)
 
         # Create commit with the shadow's commit_id as parent
-        CommitStore.create_commit(state.store, shadow.doc_uuid, update, shadow.commit_id)
+        CommitStoreClient.create_commit(state.store, shadow.doc_uuid, update, shadow.commit_id)
 
         # Clean up the shadow
         InodeTracker.cleanup_shadow(shadow.shadow_path)
@@ -280,7 +280,7 @@ defmodule Commonplace.Sync.Agent do
   end
 
   defp load_schema(uuid, store) do
-    case CommitStore.latest_commit(store, uuid) do
+    case CommitStoreClient.latest_commit(store, uuid) do
       {:ok, commit} ->
         doc = Schema.new_schema()
         {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)

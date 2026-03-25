@@ -19,7 +19,7 @@ defmodule Commonplace.Sync.DirAgent do
   alias Commonplace.Sync.{EntryAgent, SchemaCoordinator}
   alias Commonplace.Tree.{Schema, DocBuilder}
   alias Commonplace.Document.ContentType
-  alias Commonplace.Store.CommitStore
+  alias Commonplace.Store.CommitStoreClient
 
   @ignored_prefixes [".commonplace"]
 
@@ -53,7 +53,7 @@ defmodule Commonplace.Sync.DirAgent do
   def init(opts) do
     schema_uuid = Keyword.fetch!(opts, :schema_uuid)
     dir_path = Keyword.fetch!(opts, :dir_path)
-    store = Keyword.get(opts, :store, CommitStore)
+    store = Keyword.get(opts, :store, CommitStoreClient)
 
     # Ensure directory exists
     case File.mkdir_p(dir_path) do
@@ -205,7 +205,7 @@ defmodule Commonplace.Sync.DirAgent do
       end
 
     update = Yelixer.Encoding.encode_update(doc)
-    CommitStore.create_commit(state.store, file_uuid, update, nil)
+    CommitStoreClient.create_commit(state.store, file_uuid, update, nil)
 
     # Add to schema via coordinator
     SchemaCoordinator.mutate(state.schema_uuid, state.store, fn schema_doc ->
@@ -231,7 +231,7 @@ defmodule Commonplace.Sync.DirAgent do
     # Create empty schema doc for the subdirectory
     sub_doc = Schema.new_schema()
     update = Yelixer.Encoding.encode_update(sub_doc)
-    CommitStore.create_commit(state.store, sub_uuid, update, nil)
+    CommitStoreClient.create_commit(state.store, sub_uuid, update, nil)
 
     # Add to parent schema via coordinator
     SchemaCoordinator.mutate(state.schema_uuid, state.store, fn schema_doc ->

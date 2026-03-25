@@ -26,7 +26,7 @@ defmodule Commonplace.Presence.Server do
     name = Keyword.fetch!(opts, :name)
     type = Keyword.fetch!(opts, :type)
     dir_uuid = Keyword.fetch!(opts, :dir_uuid)
-    store = Keyword.get(opts, :store, Commonplace.Store.CommitStore)
+    store = Keyword.get(opts, :store, Commonplace.Store.CommitStoreClient)
     interval = Keyword.get(opts, :heartbeat_interval, 10_000)
 
     Process.flag(:trap_exit, true)

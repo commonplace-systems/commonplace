@@ -9,7 +9,7 @@ defmodule Commonplace.Sync.Watcher do
 
   alias Commonplace.Tree.Schema
   alias Commonplace.Document.ContentType
-  alias Commonplace.Store.CommitStore
+  alias Commonplace.Store.CommitStoreClient
 
   defmodule Change do
     @moduledoc "A detected filesystem change."
@@ -31,7 +31,7 @@ defmodule Commonplace.Sync.Watcher do
   Compares files on disk at `dir` with the schema at `root_uuid`.
   Returns a list of `Change` structs.
   """
-  def detect_changes(root_uuid, dir, store \\ CommitStore, opts \\ []) do
+  def detect_changes(root_uuid, dir, store \\ CommitStoreClient, opts \\ []) do
     schema_doc = load_schema(root_uuid, store)
     schema_entries = Schema.entries(schema_doc)
     inode_registry = Keyword.get(opts, :inode_registry)
@@ -109,7 +109,7 @@ defmodule Commonplace.Sync.Watcher do
 
   Syncs the root directory, then recurses into subdirectories.
   """
-  def sync_recursive(root_uuid, dir, store \\ CommitStore) do
+  def sync_recursive(root_uuid, dir, store \\ CommitStoreClient) do
     start_time = System.monotonic_time()
 
     :telemetry.execute(
@@ -147,7 +147,7 @@ defmodule Commonplace.Sync.Watcher do
 
   Creates/updates documents and updates the schema for each change.
   """
-  def apply_changes(changes, root_uuid, _dir, store \\ CommitStore) do
+  def apply_changes(changes, root_uuid, _dir, store \\ CommitStoreClient) do
     Enum.each(changes, fn change ->
       case change.type do
         :created ->
@@ -170,13 +170,13 @@ defmodule Commonplace.Sync.Watcher do
     sub_uuid = UUID.uuid4()
     sub_doc = Schema.new_schema()
     update = Yelixer.Encoding.encode_update(sub_doc)
-    CommitStore.create_commit(store, sub_uuid, update, nil)
+    CommitStoreClient.create_commit(store, sub_uuid, update, nil)
 
     # Add to parent schema
     root_doc = load_schema(root_uuid, store)
     root_doc = Schema.add_directory(root_doc, change.name, sub_uuid)
     update = Yelixer.Encoding.encode_update(root_doc)
-    CommitStore.create_chained_commit(store, root_uuid, update)
+    CommitStoreClient.create_chained_commit(store, root_uuid, update)
   end
 
   defp apply_create(%Change{is_dir: false} = change, root_uuid, store) do
@@ -195,13 +195,13 @@ defmodule Commonplace.Sync.Watcher do
       end
 
     update = Yelixer.Encoding.encode_update(doc)
-    CommitStore.create_commit(store, file_uuid, update, nil)
+    CommitStoreClient.create_commit(store, file_uuid, update, nil)
 
     # Add to parent schema
     root_doc = load_schema(root_uuid, store)
     root_doc = Schema.add_file(root_doc, change.name, file_uuid)
     update = Yelixer.Encoding.encode_update(root_doc)
-    CommitStore.create_chained_commit(store, root_uuid, update)
+    CommitStoreClient.create_chained_commit(store, root_uuid, update)
   end
 
   defp apply_modify(change, root_uuid, store) do
@@ -223,7 +223,7 @@ defmodule Commonplace.Sync.Watcher do
           end
 
         update = Yelixer.Encoding.encode_update(doc)
-        CommitStore.create_chained_commit(store, entry.node_id, update)
+        CommitStoreClient.create_chained_commit(store, entry.node_id, update)
 
       :error ->
         :ok
@@ -234,7 +234,7 @@ defmodule Commonplace.Sync.Watcher do
     root_doc = load_schema(root_uuid, store)
     root_doc = Schema.remove_entry(root_doc, change.name)
     update = Yelixer.Encoding.encode_update(root_doc)
-    CommitStore.create_chained_commit(store, root_uuid, update)
+    CommitStoreClient.create_chained_commit(store, root_uuid, update)
   end
 
   defp detect_renames(created, deleted, schema_entries, dir, store, inode_registry) do
@@ -365,11 +365,11 @@ defmodule Commonplace.Sync.Watcher do
     root_doc = Schema.remove_entry(root_doc, change.old_name)
     root_doc = Schema.add_file(root_doc, change.name, change.node_id)
     update = Yelixer.Encoding.encode_update(root_doc)
-    CommitStore.create_chained_commit(store, root_uuid, update)
+    CommitStoreClient.create_chained_commit(store, root_uuid, update)
   end
 
   defp load_schema(uuid, store) do
-    case CommitStore.latest_commit(store, uuid) do
+    case CommitStoreClient.latest_commit(store, uuid) do
       {:ok, commit} ->
         doc = Schema.new_schema()
         {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
@@ -381,7 +381,7 @@ defmodule Commonplace.Sync.Watcher do
   end
 
   defp load_content(uuid, store) do
-    case CommitStore.latest_commit(store, uuid) do
+    case CommitStoreClient.latest_commit(store, uuid) do
       {:ok, commit} ->
         doc = Yelixer.Doc.new()
         {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)

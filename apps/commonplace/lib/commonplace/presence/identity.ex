@@ -9,13 +9,13 @@ defmodule Commonplace.Presence.Identity do
 
   alias Commonplace.Tree.Schema
   alias Commonplace.Document.ContentType
-  alias Commonplace.Store.CommitStore
+  alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Presence
 
   @identities_dir "__identities__"
 
   @doc "Ensure the __identities__ system directory exists in the root schema."
-  def ensure_identities_dir(root_uuid, store \\ CommitStore) do
+  def ensure_identities_dir(root_uuid, store \\ CommitStoreClient) do
     root_doc = load_schema(root_uuid, store)
 
     case Schema.get_entry(root_doc, @identities_dir) do
@@ -27,20 +27,20 @@ defmodule Commonplace.Presence.Identity do
         dir_uuid = UUID.uuid4()
         dir_doc = Schema.new_schema()
         update = Yelixer.Encoding.encode_update(dir_doc)
-        CommitStore.create_commit(store, dir_uuid, update, nil)
+        CommitStoreClient.create_commit(store, dir_uuid, update, nil)
 
         # Add to root schema
         root_doc = load_schema(root_uuid, store)
         root_doc = Schema.add_directory(root_doc, @identities_dir, dir_uuid)
         update = Yelixer.Encoding.encode_update(root_doc)
-        CommitStore.create_chained_commit(store, root_uuid, update)
+        CommitStoreClient.create_chained_commit(store, root_uuid, update)
 
         {:ok, dir_uuid}
     end
   end
 
   @doc "Register a cold identity. Creates if new, updates last_seen if existing."
-  def register(name, type, root_uuid, store \\ CommitStore) do
+  def register(name, type, root_uuid, store \\ CommitStoreClient) do
     {:ok, id_dir_uuid} = ensure_identities_dir(root_uuid, store)
     fname = Presence.filename(name, type)
 
@@ -65,21 +65,21 @@ defmodule Commonplace.Presence.Identity do
         doc = ContentType.set_key(doc, "last_seen", now)
 
         update = Yelixer.Encoding.encode_update(doc)
-        CommitStore.create_commit(store, uuid, update, nil)
+        CommitStoreClient.create_commit(store, uuid, update, nil)
 
         # Add to identities schema
         id_doc = load_schema(id_dir_uuid, store)
         id_doc = Schema.add_file(id_doc, fname, uuid)
         update = Yelixer.Encoding.encode_update(id_doc)
-        CommitStore.create_chained_commit(store, id_dir_uuid, update)
+        CommitStoreClient.create_chained_commit(store, id_dir_uuid, update)
 
         {:ok, uuid}
     end
   end
 
   @doc "Read a cold identity document."
-  def read(uuid, store \\ CommitStore) do
-    case CommitStore.latest_commit(store, uuid) do
+  def read(uuid, store \\ CommitStoreClient) do
+    case CommitStoreClient.latest_commit(store, uuid) do
       {:ok, commit} ->
         doc = Yelixer.Doc.new()
         {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
@@ -91,7 +91,7 @@ defmodule Commonplace.Presence.Identity do
   end
 
   @doc "Look up a cold identity by name and type."
-  def lookup(name, type, root_uuid, store \\ CommitStore) do
+  def lookup(name, type, root_uuid, store \\ CommitStoreClient) do
     root_doc = load_schema(root_uuid, store)
 
     case Schema.get_entry(root_doc, @identities_dir) do
@@ -110,7 +110,7 @@ defmodule Commonplace.Presence.Identity do
   end
 
   @doc "List all cold identities."
-  def list(root_uuid, store \\ CommitStore) do
+  def list(root_uuid, store \\ CommitStoreClient) do
     root_doc = load_schema(root_uuid, store)
 
     case Schema.get_entry(root_doc, @identities_dir) do
@@ -124,15 +124,15 @@ defmodule Commonplace.Presence.Identity do
   end
 
   @doc "Update last_seen timestamp on a cold identity."
-  def touch_last_seen(uuid, store \\ CommitStore) do
-    case CommitStore.latest_commit(store, uuid) do
+  def touch_last_seen(uuid, store \\ CommitStoreClient) do
+    case CommitStoreClient.latest_commit(store, uuid) do
       {:ok, commit} ->
         doc = Yelixer.Doc.new()
         {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
         now = DateTime.utc_now() |> DateTime.to_iso8601()
         doc = ContentType.set_key(doc, "last_seen", now)
         update = Yelixer.Encoding.encode_update(doc)
-        CommitStore.create_chained_commit(store, uuid, update)
+        CommitStoreClient.create_chained_commit(store, uuid, update)
 
       :none ->
         :ok
@@ -140,7 +140,7 @@ defmodule Commonplace.Presence.Identity do
   end
 
   defp load_schema(uuid, store) do
-    case CommitStore.latest_commit(store, uuid) do
+    case CommitStoreClient.latest_commit(store, uuid) do
       {:ok, commit} ->
         doc = Schema.new_schema()
         {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)

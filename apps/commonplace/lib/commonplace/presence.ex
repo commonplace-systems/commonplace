@@ -8,7 +8,7 @@ defmodule Commonplace.Presence do
 
   alias Commonplace.Tree.Schema
   alias Commonplace.Document.ContentType
-  alias Commonplace.Store.CommitStore
+  alias Commonplace.Store.CommitStoreClient
 
   @honorifics %{
     "exe" => :exe,
@@ -47,7 +47,7 @@ defmodule Commonplace.Presence do
   end
 
   @doc "Create a presence document and add it to the parent schema."
-  def create(name, type, dir_uuid, store \\ CommitStore) do
+  def create(name, type, dir_uuid, store \\ CommitStoreClient) do
     fname = filename(name, type)
 
     # Check for collision
@@ -67,20 +67,20 @@ defmodule Commonplace.Presence do
     doc = ContentType.set_key(doc, "heartbeat", now)
 
     update = Yelixer.Encoding.encode_update(doc)
-    CommitStore.create_commit(store, uuid, update, nil)
+    CommitStoreClient.create_commit(store, uuid, update, nil)
 
     # Add to parent schema
     dir_doc = load_schema(dir_uuid, store)
     dir_doc = Schema.add_file(dir_doc, fname, uuid)
     update = Yelixer.Encoding.encode_update(dir_doc)
-    CommitStore.create_chained_commit(store, dir_uuid, update)
+    CommitStoreClient.create_chained_commit(store, dir_uuid, update)
 
     {:ok, uuid}
   end
 
   @doc "Read the presence document contents."
-  def read(uuid, store \\ CommitStore) do
-    case CommitStore.latest_commit(store, uuid) do
+  def read(uuid, store \\ CommitStoreClient) do
+    case CommitStoreClient.latest_commit(store, uuid) do
       {:ok, commit} ->
         doc = Yelixer.Doc.new()
         {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
@@ -92,20 +92,20 @@ defmodule Commonplace.Presence do
   end
 
   @doc "Update the status field of a presence document."
-  def update_status(uuid, status, store \\ CommitStore) do
+  def update_status(uuid, status, store \\ CommitStoreClient) do
     doc = load_doc(uuid, store)
     doc = ContentType.set_key(doc, "status", status)
     update = Yelixer.Encoding.encode_update(doc)
-    CommitStore.create_chained_commit(store, uuid, update)
+    CommitStoreClient.create_chained_commit(store, uuid, update)
   end
 
   @doc "Update the heartbeat timestamp."
-  def heartbeat(uuid, store \\ CommitStore) do
+  def heartbeat(uuid, store \\ CommitStoreClient) do
     doc = load_doc(uuid, store)
     now = DateTime.utc_now() |> DateTime.to_iso8601()
     doc = ContentType.set_key(doc, "heartbeat", now)
     update = Yelixer.Encoding.encode_update(doc)
-    CommitStore.create_chained_commit(store, uuid, update)
+    CommitStoreClient.create_chained_commit(store, uuid, update)
   end
 
   @doc "Discover actors by type in a schema document."
@@ -123,11 +123,11 @@ defmodule Commonplace.Presence do
   end
 
   @doc "Remove a presence entry from the parent schema."
-  def remove(fname, dir_uuid, store \\ CommitStore) do
+  def remove(fname, dir_uuid, store \\ CommitStoreClient) do
     dir_doc = load_schema(dir_uuid, store)
     dir_doc = Schema.remove_entry(dir_doc, fname)
     update = Yelixer.Encoding.encode_update(dir_doc)
-    CommitStore.create_chained_commit(store, dir_uuid, update)
+    CommitStoreClient.create_chained_commit(store, dir_uuid, update)
   end
 
   defp resolve_collision(dir_doc, fname, name, type) do
@@ -144,7 +144,7 @@ defmodule Commonplace.Presence do
   end
 
   defp load_schema(uuid, store) do
-    case CommitStore.latest_commit(store, uuid) do
+    case CommitStoreClient.latest_commit(store, uuid) do
       {:ok, commit} ->
         doc = Schema.new_schema()
         {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
@@ -156,7 +156,7 @@ defmodule Commonplace.Presence do
   end
 
   defp load_doc(uuid, store) do
-    case CommitStore.latest_commit(store, uuid) do
+    case CommitStoreClient.latest_commit(store, uuid) do
       {:ok, commit} ->
         doc = Yelixer.Doc.new()
         {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)

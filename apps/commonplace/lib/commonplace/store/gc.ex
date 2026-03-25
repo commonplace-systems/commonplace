@@ -8,7 +8,7 @@ defmodule Commonplace.Store.GC do
 
   alias Commonplace.Tree.Walk
   alias Commonplace.Tree.Schema
-  alias Commonplace.Store.CommitStore
+  alias Commonplace.Store.CommitStoreClient
 
   @doc """
   Find orphaned document UUIDs — documents in the store that are not
@@ -16,9 +16,9 @@ defmodule Commonplace.Store.GC do
 
   Returns `{reachable, orphaned}` where both are MapSets.
   """
-  def find_orphans(root_uuid, store \\ CommitStore) do
+  def find_orphans(root_uuid, store \\ CommitStoreClient) do
     loader = fn uuid ->
-      case CommitStore.latest_commit(store, uuid) do
+      case CommitStoreClient.latest_commit(store, uuid) do
         {:ok, commit} ->
           doc = Schema.new_schema()
           {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
@@ -30,7 +30,7 @@ defmodule Commonplace.Store.GC do
     end
 
     reachable = Walk.reachable_uuids(root_uuid, loader)
-    all_uuids = CommitStore.all_doc_uuids(store)
+    all_uuids = CommitStoreClient.all_doc_uuids(store)
     orphaned = MapSet.difference(all_uuids, reachable)
 
     {reachable, orphaned}
@@ -40,7 +40,7 @@ defmodule Commonplace.Store.GC do
   Report orphaned documents without deleting anything.
   Returns a map with stats and the orphan UUIDs.
   """
-  def report(root_uuid, store \\ CommitStore) do
+  def report(root_uuid, store \\ CommitStoreClient) do
     {reachable, orphaned} = find_orphans(root_uuid, store)
 
     %{

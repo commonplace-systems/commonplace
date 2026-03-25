@@ -33,7 +33,7 @@ defmodule Commonplace.Process.Sandbox do
   @impl true
   def init(opts) do
     root_uuid = Keyword.fetch!(opts, :root_uuid)
-    store = Keyword.get(opts, :store, Commonplace.Store.CommitStore)
+    store = Keyword.get(opts, :store, Commonplace.Store.CommitStoreClient)
     sync_interval = Keyword.get(opts, :sync_interval, 1000)
 
     # Create temp directory

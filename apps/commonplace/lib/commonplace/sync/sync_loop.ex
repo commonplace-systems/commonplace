@@ -25,7 +25,7 @@ defmodule Commonplace.Sync.SyncLoop do
     {:ok, agent_pid} = SyncAgent.start_link(
       root_uuid: Keyword.fetch!(opts, :root_uuid),
       sync_dir: Keyword.fetch!(opts, :dir),
-      store: Keyword.get(opts, :store, Commonplace.Store.CommitStore),
+      store: Keyword.get(opts, :store, Commonplace.Store.CommitStoreClient),
       shadow_tracking: Keyword.get(opts, :shadow_tracking, false)
     )
 

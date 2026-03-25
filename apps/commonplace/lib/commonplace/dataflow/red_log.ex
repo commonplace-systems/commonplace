@@ -10,22 +10,22 @@ defmodule Commonplace.Dataflow.RedLog do
   use GenServer
 
   alias Commonplace.Dataflow.Magenta
-  alias Commonplace.Store.CommitStore
+  alias Commonplace.Store.CommitStoreClient
 
   defstruct [:uuid, :doc, :store]
 
   @log_type "events"
 
   @doc "Create a new empty red log."
-  def new(uuid, store \\ CommitStore) do
+  def new(uuid, store \\ CommitStoreClient) do
     doc = Yelixer.Doc.new()
     {doc, _} = Yelixer.Doc.get_or_create_type(doc, @log_type, :array)
     %__MODULE__{uuid: uuid, doc: doc, store: store}
   end
 
   @doc "Load an existing red log from the commit store."
-  def load(uuid, store \\ CommitStore) do
-    case CommitStore.latest_commit(store, uuid) do
+  def load(uuid, store \\ CommitStoreClient) do
+    case CommitStoreClient.latest_commit(store, uuid) do
       {:ok, commit} ->
         doc = Yelixer.Doc.new()
         {doc, _} = Yelixer.Doc.get_or_create_type(doc, @log_type, :array)
@@ -66,14 +66,14 @@ defmodule Commonplace.Dataflow.RedLog do
   @doc "Commit the current log state to the store."
   def commit(%__MODULE__{} = log) do
     update = Yelixer.Encoding.encode_update(log.doc)
-    CommitStore.create_chained_commit(log.store, log.uuid, update)
+    CommitStoreClient.create_chained_commit(log.store, log.uuid, update)
     log
   end
 
   # --- Onramp GenServer ---
 
   @doc "Start a magenta→red onramp process that subscribes and persists."
-  def start_onramp(log_uuid, magenta_topic, store \\ CommitStore) do
+  def start_onramp(log_uuid, magenta_topic, store \\ CommitStoreClient) do
     GenServer.start_link(__MODULE__, %{
       uuid: log_uuid,
       topic: magenta_topic,

@@ -9,7 +9,7 @@ defmodule Commonplace.Tree.Fork do
   """
 
   alias Commonplace.Tree.{Schema, DocBuilder}
-  alias Commonplace.Store.CommitStore
+  alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Process.Config
   alias Commonplace.Document.ContentType
   alias Yelixer.{Doc, Encoding}
@@ -18,7 +18,7 @@ defmodule Commonplace.Tree.Fork do
   Fork a directory subtree using DAG branches.
   Returns the new root UUID.
   """
-  def fork_directory(source_uuid, store \\ CommitStore) do
+  def fork_directory(source_uuid, store \\ CommitStoreClient) do
     {new_uuid, _uuid_map} = fork_node(source_uuid, store, %{})
     new_uuid
   end
@@ -26,7 +26,7 @@ defmodule Commonplace.Tree.Fork do
   # Fork a node, returning {new_uuid, uuid_map} where uuid_map tracks
   # source_uuid => new_uuid for all forked docs (used for schema remapping).
   defp fork_node(source_uuid, store, uuid_map) do
-    case CommitStore.latest_commit(store, source_uuid) do
+    case CommitStoreClient.latest_commit(store, source_uuid) do
       {:ok, commit} ->
         schema_doc = Schema.new_schema()
 
@@ -80,7 +80,7 @@ defmodule Commonplace.Tree.Fork do
 
     # Create the schema edit commit branching off the source's chain
     update = Encoding.encode_update(edited_doc)
-    CommitStore.create_commit(store, new_uuid, update, commit.id)
+    CommitStoreClient.create_commit(store, new_uuid, update, commit.id)
 
     {new_uuid, uuid_map}
   end
@@ -92,7 +92,7 @@ defmodule Commonplace.Tree.Fork do
     # Branch-point commit: same content under new UUID, parent = source's commit
     {:ok, doc} = reconstruct_doc(store, source_uuid)
     update = Encoding.encode_update(doc)
-    CommitStore.create_commit(store, new_uuid, update, commit.id)
+    CommitStoreClient.create_commit(store, new_uuid, update, commit.id)
 
     {new_uuid, uuid_map}
   end
@@ -122,8 +122,8 @@ defmodule Commonplace.Tree.Fork do
                 new_doc = if filtered_json != "", do: ContentType.insert_text(new_doc, 0, filtered_json), else: new_doc
                 update = Encoding.encode_update(new_doc)
                 # Overwrite the branch-point commit with filtered content
-                {:ok, branch_commit} = CommitStore.latest_commit(store, new_proc_uuid)
-                CommitStore.create_commit(store, new_proc_uuid, update, branch_commit.parent_id)
+                {:ok, branch_commit} = CommitStoreClient.latest_commit(store, new_proc_uuid)
+                CommitStoreClient.create_commit(store, new_proc_uuid, update, branch_commit.parent_id)
               end
 
               schema_doc

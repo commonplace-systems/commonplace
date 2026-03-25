@@ -5,7 +5,7 @@ defmodule Commonplace.Tree.DocBuilder do
   Used by Fork and Merge to replay commits and build documents.
   """
 
-  alias Commonplace.Store.CommitStore
+  alias Commonplace.Store.CommitStoreClient
   alias Yelixer.{Doc, Encoding}
 
   @doc """
@@ -15,7 +15,7 @@ defmodule Commonplace.Tree.DocBuilder do
   Returns `{:ok, doc}` or `:none` if no commits exist.
   """
   def reconstruct_doc(store, uuid) do
-    commits = CommitStore.commit_log(store, uuid, limit: 10_000) |> Enum.reverse()
+    commits = CommitStoreClient.commit_log(store, uuid, limit: 10_000) |> Enum.reverse()
 
     case commits do
       [] ->
@@ -35,7 +35,7 @@ defmodule Commonplace.Tree.DocBuilder do
   Returns `{:ok, doc}` or `:none` if no commits exist.
   """
   def reconstruct_snapshot(store, uuid) do
-    case CommitStore.latest_commit(store, uuid) do
+    case CommitStoreClient.latest_commit(store, uuid) do
       {:ok, commit} ->
         doc = Doc.new()
         Encoding.apply_update(doc, commit.update)
@@ -51,7 +51,7 @@ defmodule Commonplace.Tree.DocBuilder do
   Returns `{:ok, doc}` or `:none` if the target commit is not found in the chain.
   """
   def reconstruct_doc_at(store, uuid, target_commit_id) do
-    commits = CommitStore.commit_log(store, uuid, limit: 10_000) |> Enum.reverse()
+    commits = CommitStoreClient.commit_log(store, uuid, limit: 10_000) |> Enum.reverse()
 
     result =
       Enum.reduce_while(commits, {:not_found, []}, fn commit, {_status, acc} ->

@@ -65,7 +65,7 @@ defmodule Commonplace.SmartDoc do
 
   # --- Runtime Helpers ---
 
-  alias Commonplace.Store.CommitStore
+  alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Dataflow.Magenta
 
   @doc """
@@ -89,8 +89,8 @@ defmodule Commonplace.SmartDoc do
       doc = Yelixer.Types.Text.insert(doc, "content", 0, content)
       update = Yelixer.Encoding.encode_update(doc)
       depth = Map.get(state, :current_depth, 0)
-      store = Map.get(state, :store, CommitStore)
-      CommitStore.create_chained_commit(store, uuid, update, %{depth: depth + 1})
+      store = Map.get(state, :store, CommitStoreClient)
+      CommitStoreClient.create_chained_commit(store, uuid, update, %{depth: depth + 1})
       :ok
     else
       :error

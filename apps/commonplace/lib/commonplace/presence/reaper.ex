@@ -10,7 +10,7 @@ defmodule Commonplace.Presence.Reaper do
 
   alias Commonplace.Presence
   alias Commonplace.Tree.Schema
-  alias Commonplace.Store.CommitStore
+  alias Commonplace.Store.CommitStoreClient
 
   @default_interval 15_000
   @default_stale_threshold 30_000
@@ -22,7 +22,7 @@ defmodule Commonplace.Presence.Reaper do
   end
 
   @doc "Get the list of stale presence entries without removing them."
-  def find_stale(root_uuid, store \\ CommitStore, stale_threshold \\ @default_stale_threshold) do
+  def find_stale(root_uuid, store \\ CommitStoreClient, stale_threshold \\ @default_stale_threshold) do
     root_doc = load_schema(root_uuid, store)
     presence_entries = Presence.discover(root_doc, :all)
     now = DateTime.utc_now()
@@ -46,7 +46,7 @@ defmodule Commonplace.Presence.Reaper do
   end
 
   @doc "Reap stale presence entries. Returns list of removed entry names."
-  def reap(root_uuid, store \\ CommitStore, stale_threshold \\ @default_stale_threshold) do
+  def reap(root_uuid, store \\ CommitStoreClient, stale_threshold \\ @default_stale_threshold) do
     stale = find_stale(root_uuid, store, stale_threshold)
 
     Enum.map(stale, fn entry ->
@@ -58,7 +58,7 @@ defmodule Commonplace.Presence.Reaper do
   @impl true
   def init(opts) do
     root_uuid = Keyword.fetch!(opts, :root_uuid)
-    store = Keyword.get(opts, :store, CommitStore)
+    store = Keyword.get(opts, :store, CommitStoreClient)
     interval = Keyword.get(opts, :interval, @default_interval)
     stale_threshold = Keyword.get(opts, :stale_threshold, @default_stale_threshold)
 
@@ -91,7 +91,7 @@ defmodule Commonplace.Presence.Reaper do
   end
 
   defp load_schema(uuid, store) do
-    case CommitStore.latest_commit(store, uuid) do
+    case CommitStoreClient.latest_commit(store, uuid) do
       {:ok, commit} ->
         doc = Schema.new_schema()
         {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)

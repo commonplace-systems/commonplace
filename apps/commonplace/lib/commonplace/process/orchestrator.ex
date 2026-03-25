@@ -15,7 +15,7 @@ defmodule Commonplace.Process.Orchestrator do
   @shutdown_grace_ms 5000
 
   alias Commonplace.Process.Config
-  alias Commonplace.Store.CommitStore
+  alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.Schema
   alias Commonplace.Document.ContentType
   alias Commonplace.Dataflow.Wiring
@@ -50,7 +50,7 @@ defmodule Commonplace.Process.Orchestrator do
   def init(opts) do
     state = %__MODULE__{
       root_uuid: Keyword.fetch!(opts, :root_uuid),
-      store: Keyword.get(opts, :store, CommitStore),
+      store: Keyword.get(opts, :store, CommitStoreClient),
       interval: Keyword.get(opts, :interval, 5000),
       processes: %{},
       current_config: [],
@@ -378,7 +378,7 @@ defmodule Commonplace.Process.Orchestrator do
 
     case Schema.get_entry(root_doc, filename) do
       {:ok, entry} ->
-        case CommitStore.latest_commit(state.store, entry.node_id) do
+        case CommitStoreClient.latest_commit(state.store, entry.node_id) do
           {:ok, commit} ->
             doc = Yelixer.Doc.new()
             {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
@@ -425,7 +425,7 @@ defmodule Commonplace.Process.Orchestrator do
   end
 
   defp parse_processes_doc(doc_uuid, dir_uuid, root_uuid, store) do
-    case CommitStore.latest_commit(store, doc_uuid) do
+    case CommitStoreClient.latest_commit(store, doc_uuid) do
       {:ok, commit} ->
         doc = Yelixer.Doc.new()
         {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
@@ -450,7 +450,7 @@ defmodule Commonplace.Process.Orchestrator do
   end
 
   defp load_schema(uuid, store) do
-    case CommitStore.latest_commit(store, uuid) do
+    case CommitStoreClient.latest_commit(store, uuid) do
       {:ok, commit} ->
         doc = Schema.new_schema()
         {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
@@ -562,7 +562,7 @@ defmodule Commonplace.Process.Orchestrator do
           Enum.each(refs, fn ref ->
             try do
               # Reconstruct the doc from the latest commit
-              case CommitStore.get_commit(state.store, commit_id) do
+              case CommitStoreClient.get_commit(state.store, commit_id) do
                 {:ok, commit} ->
                   doc = Yelixer.Doc.new()
                   {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)

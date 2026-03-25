@@ -18,7 +18,7 @@ defmodule Commonplace.Sync.EntryAgent do
 
   use GenServer
 
-  alias Commonplace.Store.CommitStore
+  alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Document.ContentType
   alias Commonplace.Sync.Export
 
@@ -55,7 +55,7 @@ defmodule Commonplace.Sync.EntryAgent do
     state = %__MODULE__{
       doc_uuid: Keyword.fetch!(opts, :doc_uuid),
       file_path: Keyword.fetch!(opts, :file_path),
-      store: Keyword.get(opts, :store, CommitStore),
+      store: Keyword.get(opts, :store, CommitStoreClient),
       last_written_commit_id: nil,
       known_hash: nil,
       shadow_dir: Keyword.get(opts, :shadow_dir),
@@ -94,7 +94,7 @@ defmodule Commonplace.Sync.EntryAgent do
           doc = ContentType.insert_text(doc, 0, content)
           update = Yelixer.Encoding.encode_update(doc)
 
-          commit = CommitStore.create_chained_commit(state.store, state.doc_uuid, update)
+          commit = CommitStoreClient.create_chained_commit(state.store, state.doc_uuid, update)
 
           %{state | last_written_commit_id: commit.id, known_hash: disk_hash}
         end
@@ -108,7 +108,7 @@ defmodule Commonplace.Sync.EntryAgent do
   # --- Inbound sync (CRDT → disk) ---
 
   defp sync_inbound(state) do
-    case CommitStore.latest_commit(state.store, state.doc_uuid) do
+    case CommitStoreClient.latest_commit(state.store, state.doc_uuid) do
       {:ok, commit} ->
         if commit.id == state.last_written_commit_id do
           # No new commits — skip

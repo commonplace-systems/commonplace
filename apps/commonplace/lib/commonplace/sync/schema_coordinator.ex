@@ -24,7 +24,7 @@ defmodule Commonplace.Sync.SchemaCoordinator do
   use GenServer
 
   alias Commonplace.Tree.DocBuilder
-  alias Commonplace.Store.CommitStore
+  alias Commonplace.Store.CommitStoreClient
 
   # --- Public API ---
 
@@ -83,7 +83,7 @@ defmodule Commonplace.Sync.SchemaCoordinator do
       {:ok, doc} ->
         {modified_doc, result} = mutation_fn.(doc)
         update = Yelixer.Encoding.encode_update(modified_doc)
-        CommitStore.create_chained_commit(store, schema_uuid, update)
+        CommitStoreClient.create_chained_commit(store, schema_uuid, update)
         {:ok, result}
 
       :none ->

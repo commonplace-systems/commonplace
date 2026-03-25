@@ -3,12 +3,12 @@ defmodule Commonplace.Document.Server do
   GenServer managing a single CRDT document.
 
   Wraps a Yelixer.Doc, handles edits, publishes changes
-  to PubSub, and commits state to the CommitStore.
+  to PubSub, and commits state to the CommitStoreClient.
   """
 
   use GenServer
 
-  alias Commonplace.Store.CommitStore
+  alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Document.ContentType
   alias Commonplace.Dataflow.PubSub, as: CPPubSub
 
@@ -50,10 +50,10 @@ defmodule Commonplace.Document.Server do
   def init(opts) do
     uuid = Keyword.fetch!(opts, :uuid)
     client_id = Keyword.get(opts, :client_id, :rand.uniform(1_000_000_000))
-    commit_store = Keyword.get(opts, :commit_store, CommitStore)
+    commit_store = Keyword.get(opts, :commit_store, CommitStoreClient)
 
     {doc, parent_commit} =
-      case CommitStore.latest_commit(commit_store, uuid) do
+      case CommitStoreClient.latest_commit(commit_store, uuid) do
         {:ok, commit} ->
           doc = Yelixer.Doc.new(client_id: client_id)
           {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
@@ -84,7 +84,7 @@ defmodule Commonplace.Document.Server do
     update = Yelixer.Encoding.encode_update(state.doc)
 
     commit =
-      CommitStore.create_commit(state.commit_store, state.uuid, update, state.parent_commit)
+      CommitStoreClient.create_commit(state.commit_store, state.uuid, update, state.parent_commit)
 
     {:reply, {:ok, commit}, %{state | parent_commit: commit.id}}
   end
