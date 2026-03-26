@@ -18,6 +18,11 @@ defmodule CommonplaceWebWeb.Router do
     pipe_through :browser
 
     get "/", PageController, :home
+
+    live_session :wiki, layout: {CommonplaceWebWeb.Layouts, :bare} do
+      live "/wiki", WikiLive
+      live "/wiki/*path", WikiLive
+    end
     live "/tree", TreeLive
     live "/tree/*path", TreeLive
   end

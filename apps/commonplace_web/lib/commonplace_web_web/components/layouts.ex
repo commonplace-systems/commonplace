@@ -73,6 +73,18 @@ defmodule CommonplaceWebWeb.Layouts do
   end
 
   @doc """
+  Bare layout — no navbar, just content. Used by WikiLive.
+  """
+  slot :inner_block, required: true
+  attr :flash, :map, required: true
+
+  def bare(assigns) do
+    ~H"""
+    {render_slot(@inner_block)}
+    """
+  end
+
+  @doc """
   Shows the flash group with standard titles and content.
 
   ## Examples
