@@ -70,10 +70,18 @@ defmodule CommonplaceWebWeb.WikiLive do
   @impl true
   def handle_event("edit", _params, socket) do
     if socket.assigns.page_uuid do
-      {:noreply, assign(socket, :mode, :edit) |> push_yjs_state()}
+      # Don't push yjs_init here — the YjsHook div hasn't been rendered yet.
+      # Instead, the hook will request data via "yjs_request_init" when mounted.
+      {:noreply, assign(socket, :mode, :edit)}
     else
       {:noreply, socket}
     end
+  end
+
+  @impl true
+  def handle_event("yjs_request_init", _params, socket) do
+    # Hook has mounted and is ready for data
+    {:noreply, push_yjs_state(socket)}
   end
 
   @impl true

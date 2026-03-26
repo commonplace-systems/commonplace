@@ -34,6 +34,9 @@ const YjsHook = {
       Y.applyUpdate(this.ydoc, binary)
       this.suppressOutbound = false
     })
+
+    // Request initial data from server — ensures hook is ready before data arrives
+    this.pushEvent("yjs_request_init", {})
   },
 
   initDoc(update) {
