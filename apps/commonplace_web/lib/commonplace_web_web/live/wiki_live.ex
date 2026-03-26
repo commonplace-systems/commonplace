@@ -667,9 +667,10 @@ defmodule CommonplaceWebWeb.WikiLive do
   defp load_special_page(socket, _), do: socket
 
   defp push_yjs_state(socket) do
-    case CommitStoreClient.latest_commit(socket.assigns.page_uuid) do
-      {:ok, commit} ->
-        encoded = Base.encode64(commit.update)
+    case DocBuilder.reconstruct_doc(CommitStoreClient, socket.assigns.page_uuid) do
+      {:ok, doc} ->
+        update = Yelixer.Encoding.encode_update(doc)
+        encoded = Base.encode64(update)
         push_event(socket, "yjs_init", %{update: encoded})
 
       :none ->
