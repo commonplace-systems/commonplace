@@ -1,0 +1,376 @@
+defmodule Commonplace.Green.Bursar do
+  @moduledoc """
+  Green Token bursar — exclusive lock manager for commonplace documents.
+
+  Manages named tokens (path-based, same namespace as documents) with
+  deny-on-contention semantics: if a token is held, new requests are rejected.
+
+  ## State Storage
+
+  - `__bursar.json` — YMap (blue state): current token holders
+  - `__bursar.log` — JSONL (red events): audit log of all acquire/release/deny events
+
+  The bursar is the only writer to `__bursar.json`. Everyone else reads.
+
+  ## API Layers
+
+  - **GenServer.call** — same-node callers (Orchestrator, sync agents)
+  - **Magenta PubSub** — graph-internal processes send commands via magenta topics
+  - **CommitStoreClient** — remote callers via distributed Erlang
+
+  ## Token Format
+
+  Tokens are named by path (e.g., "readme.txt", "docs/guide.md").
+  Holders are identified by a string (process name, session ID, etc.).
+  """
+
+  use GenServer
+  require Logger
+
+  alias Commonplace.Store.CommitStoreClient
+  alias Commonplace.Tree.{Schema, DocBuilder}
+  alias Commonplace.Document.ContentType
+  alias Commonplace.Dataflow.{Magenta, RedLog}
+
+  @state_doc "__bursar.json"
+  @log_doc "__bursar.log"
+  @magenta_topic "__bursar"
+
+  defstruct [
+    :root_uuid,
+    :store,
+    :state_uuid,
+    :log_uuid,
+    :log,
+    tokens: %{}  # %{path => %{holder: string, acquired_at: DateTime}}
+  ]
+
+  # --- Client API ---
+
+  @doc "Start the bursar GenServer."
+  def start_link(opts) do
+    name = Keyword.get(opts, :name, __MODULE__)
+    GenServer.start_link(__MODULE__, opts, name: name)
+  end
+
+  @doc """
+  Acquire an exclusive token for a path.
+  Returns {:ok, token_info} or {:denied, holder_info}.
+  """
+  def acquire(server \\ __MODULE__, path, holder) do
+    GenServer.call(server, {:acquire, path, holder})
+  end
+
+  @doc """
+  Release a held token. Only the current holder can release.
+  Returns :ok or {:error, reason}.
+  """
+  def release(server \\ __MODULE__, path, holder) do
+    GenServer.call(server, {:release, path, holder})
+  end
+
+  @doc """
+  Query token status for a path.
+  Returns {:held, holder_info} or :available.
+  """
+  def query(server \\ __MODULE__, path) do
+    GenServer.call(server, {:query, path})
+  end
+
+  @doc "List all currently held tokens."
+  def list_tokens(server \\ __MODULE__) do
+    GenServer.call(server, :list_tokens)
+  end
+
+  @doc "Force-release a token (admin operation)."
+  def force_release(server \\ __MODULE__, path) do
+    GenServer.call(server, {:force_release, path})
+  end
+
+  # --- GenServer Callbacks ---
+
+  @impl true
+  def init(opts) do
+    root_uuid = Keyword.fetch!(opts, :root_uuid)
+    store = Keyword.get(opts, :store, CommitStoreClient)
+
+    # Subscribe to magenta commands
+    Magenta.subscribe(@magenta_topic)
+
+    # Load or create state
+    state = %__MODULE__{root_uuid: root_uuid, store: store}
+    state = load_state(state)
+
+    Logger.info("Bursar started for #{root_uuid}, #{map_size(state.tokens)} active tokens")
+    {:ok, state}
+  end
+
+  @impl true
+  def handle_call({:acquire, path, holder}, _from, state) do
+    case Map.get(state.tokens, path) do
+      nil ->
+        # Token available — grant it
+        token_info = %{holder: holder, acquired_at: DateTime.utc_now()}
+        tokens = Map.put(state.tokens, path, token_info)
+        state = %{state | tokens: tokens}
+        state = persist_state(state)
+        state = log_event(state, "acquire", path, holder)
+
+        broadcast_green_event("acquired", path, holder)
+        {:reply, {:ok, token_info}, state}
+
+      %{holder: ^holder} = existing ->
+        # Same holder already has it — idempotent success
+        {:reply, {:ok, existing}, state}
+
+      %{holder: current_holder} ->
+        # Held by someone else — deny
+        state = log_event(state, "denied", path, holder, %{current_holder: current_holder})
+        {:reply, {:denied, %{holder: current_holder}}, state}
+    end
+  end
+
+  @impl true
+  def handle_call({:release, path, holder}, _from, state) do
+    case Map.get(state.tokens, path) do
+      %{holder: ^holder} ->
+        tokens = Map.delete(state.tokens, path)
+        state = %{state | tokens: tokens}
+        state = persist_state(state)
+        state = log_event(state, "release", path, holder)
+
+        broadcast_green_event("released", path, holder)
+        {:reply, :ok, state}
+
+      %{holder: other} ->
+        {:reply, {:error, {:not_holder, other}}, state}
+
+      nil ->
+        {:reply, {:error, :not_held}, state}
+    end
+  end
+
+  @impl true
+  def handle_call({:query, path}, _from, state) do
+    case Map.get(state.tokens, path) do
+      nil -> {:reply, :available, state}
+      info -> {:reply, {:held, info}, state}
+    end
+  end
+
+  @impl true
+  def handle_call(:list_tokens, _from, state) do
+    {:reply, state.tokens, state}
+  end
+
+  @impl true
+  def handle_call({:force_release, path}, _from, state) do
+    case Map.get(state.tokens, path) do
+      %{holder: old_holder} ->
+        tokens = Map.delete(state.tokens, path)
+        state = %{state | tokens: tokens}
+        state = persist_state(state)
+        state = log_event(state, "force_release", path, "admin", %{previous_holder: old_holder})
+
+        broadcast_green_event("released", path, old_holder)
+        {:reply, :ok, state}
+
+      nil ->
+        {:reply, {:error, :not_held}, state}
+    end
+  end
+
+  # --- Magenta Command Handler ---
+
+  @impl true
+  def handle_info({:magenta, _topic, %Magenta{type: "green:acquire"} = msg}, state) do
+    path = msg.payload["path"]
+    holder = msg.payload["holder"] || msg.source
+
+    if path do
+      case Map.get(state.tokens, path) do
+        nil ->
+          token_info = %{holder: holder, acquired_at: DateTime.utc_now()}
+          tokens = Map.put(state.tokens, path, token_info)
+          state = %{state | tokens: tokens}
+          state = persist_state(state)
+          state = log_event(state, "acquire", path, holder, %{via: "magenta"})
+          broadcast_green_event("acquired", path, holder)
+          {:noreply, state}
+
+        %{holder: ^holder} ->
+          # Already held by requester — no-op
+          {:noreply, state}
+
+        %{holder: current_holder} ->
+          state = log_event(state, "denied", path, holder, %{current_holder: current_holder, via: "magenta"})
+          broadcast_green_event("denied", path, holder, %{current_holder: current_holder})
+          {:noreply, state}
+      end
+    else
+      {:noreply, state}
+    end
+  end
+
+  @impl true
+  def handle_info({:magenta, _topic, %Magenta{type: "green:release"} = msg}, state) do
+    path = msg.payload["path"]
+    holder = msg.payload["holder"] || msg.source
+
+    if path do
+      case Map.get(state.tokens, path) do
+        %{holder: ^holder} ->
+          tokens = Map.delete(state.tokens, path)
+          state = %{state | tokens: tokens}
+          state = persist_state(state)
+          state = log_event(state, "release", path, holder, %{via: "magenta"})
+          broadcast_green_event("released", path, holder)
+          {:noreply, state}
+
+        _ ->
+          {:noreply, state}
+      end
+    else
+      {:noreply, state}
+    end
+  end
+
+  @impl true
+  def handle_info({:magenta, _topic, %Magenta{type: "green:query"} = msg}, state) do
+    path = msg.payload["path"]
+    reply_to = msg.source
+
+    if path do
+      status = case Map.get(state.tokens, path) do
+        nil -> %{status: "available", path: path}
+        %{holder: h, acquired_at: at} -> %{status: "held", path: path, holder: h, acquired_at: DateTime.to_iso8601(at)}
+      end
+
+      Magenta.send(@magenta_topic, Magenta.message("green:status", "bursar", Map.put(status, "reply_to", reply_to)))
+    end
+
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info(_msg, state) do
+    {:noreply, state}
+  end
+
+  # --- State Persistence ---
+
+  defp load_state(state) do
+    schema = load_root_schema(state)
+
+    # Load or create state document
+    {state_uuid, tokens} =
+      case Schema.get_entry(schema, @state_doc) do
+        {:ok, entry} ->
+          case DocBuilder.reconstruct_snapshot(state.store, entry.node_id) do
+            {:ok, doc} ->
+              json_str = ContentType.get_content(doc) || "{}"
+              case Jason.decode(json_str) do
+                {:ok, map} when is_map(map) ->
+                  tokens = Map.new(map, fn {path, info} ->
+                    acquired_at = case DateTime.from_iso8601(info["acquired_at"] || "") do
+                      {:ok, dt, _} -> dt
+                      _ -> DateTime.utc_now()
+                    end
+                    {path, %{holder: info["holder"], acquired_at: acquired_at}}
+                  end)
+                  {entry.node_id, tokens}
+                _ ->
+                  {entry.node_id, %{}}
+              end
+            :none ->
+              {entry.node_id, %{}}
+          end
+        :error ->
+          uuid = create_state_doc(state, schema)
+          {uuid, %{}}
+      end
+
+    # Load or create log document
+    log_uuid =
+      case Schema.get_entry(schema, @log_doc) do
+        {:ok, entry} -> entry.node_id
+        :error -> create_log_doc(state, schema)
+      end
+
+    log = RedLog.load(log_uuid, state.store)
+
+    %{state | state_uuid: state_uuid, log_uuid: log_uuid, log: log, tokens: tokens}
+  end
+
+  defp persist_state(state) do
+    # Serialize tokens to JSON
+    json = Map.new(state.tokens, fn {path, %{holder: holder, acquired_at: at}} ->
+      {path, %{"holder" => holder, "acquired_at" => DateTime.to_iso8601(at)}}
+    end)
+
+    doc = Yelixer.Doc.new()
+    doc = ContentType.create(doc, :text, @state_doc)
+    doc = ContentType.insert_text(doc, 0, Jason.encode!(json, pretty: true))
+    update = Yelixer.Encoding.encode_update(doc)
+    CommitStoreClient.create_chained_commit(state.store, state.state_uuid, update)
+
+    state
+  end
+
+  defp log_event(state, event_type, path, holder, extra \\ %{}) do
+    event = Map.merge(extra, %{
+      "event" => event_type,
+      "path" => path,
+      "holder" => holder,
+      "timestamp" => DateTime.to_iso8601(DateTime.utc_now())
+    })
+
+    log = RedLog.append_raw(state.log, event)
+    log = RedLog.commit(log)
+    %{state | log: log}
+  end
+
+  defp broadcast_green_event(event_type, path, holder, extra \\ %{}) do
+    payload = Map.merge(extra, %{"path" => path, "holder" => holder})
+    Magenta.send(@magenta_topic, Magenta.message("green:#{event_type}", "bursar", payload))
+  end
+
+  # --- Schema Helpers ---
+
+  defp load_root_schema(state) do
+    case DocBuilder.reconstruct_snapshot(state.store, state.root_uuid) do
+      {:ok, doc} -> doc
+      :none -> Schema.new_schema()
+    end
+  end
+
+  defp create_state_doc(state, schema) do
+    uuid = UUID.uuid4()
+    doc = Yelixer.Doc.new()
+    doc = ContentType.create(doc, :text, @state_doc)
+    doc = ContentType.insert_text(doc, 0, "{}")
+    update = Yelixer.Encoding.encode_update(doc)
+    CommitStoreClient.create_commit(state.store, uuid, update, nil)
+
+    # Add to schema
+    schema = Schema.add_file(schema, @state_doc, uuid)
+    schema_update = Yelixer.Encoding.encode_update(schema)
+    CommitStoreClient.create_chained_commit(state.store, state.root_uuid, schema_update)
+
+    uuid
+  end
+
+  defp create_log_doc(state, _schema) do
+    uuid = UUID.uuid4()
+    log = RedLog.new(uuid, state.store)
+    RedLog.commit(log)
+
+    # Reload schema (may have been updated by create_state_doc)
+    schema = load_root_schema(state)
+    schema = Schema.add_file(schema, @log_doc, uuid)
+    schema_update = Yelixer.Encoding.encode_update(schema)
+    CommitStoreClient.create_chained_commit(state.store, state.root_uuid, schema_update)
+
+    uuid
+  end
+end
