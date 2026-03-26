@@ -8,8 +8,6 @@ defmodule CommonplaceWebWeb.WikiLive do
 
   use CommonplaceWebWeb, :live_view
 
-  import CommonplaceWebWeb.Layouts, only: [flash_group: 1]
-
   alias Commonplace.Tree.Schema
   alias Commonplace.Store.CommitStore
   alias Commonplace.Document.ContentType
@@ -415,7 +413,6 @@ defmodule CommonplaceWebWeb.WikiLive do
       <% end %>
     </div>
 
-    <.flash_group flash={@flash} />
     """
   end
 
