@@ -8,8 +8,8 @@ defmodule CommonplaceWebWeb.WikiLive do
 
   use CommonplaceWebWeb, :live_view
 
-  alias Commonplace.Tree.Schema
-  alias Commonplace.Store.CommitStore
+  alias Commonplace.Tree.{Schema, Walk, DocBuilder}
+  alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Document.ContentType
   alias Commonplace.Dataflow.PubSub, as: CPPubSub
 
@@ -135,19 +135,12 @@ defmodule CommonplaceWebWeb.WikiLive do
           doc = ContentType.create(doc, :text, filename)
           doc = ContentType.insert_text(doc, 0, "# #{name}\n\nWrite your content here.\n")
           update = Yelixer.Encoding.encode_update(doc)
-          CommitStore.create_commit(uuid, update, nil)
+          CommitStoreClient.create_commit(uuid, update, nil)
 
-          # Add to schema
+          # Add to schema via chained commit
           schema = Schema.add_file(schema, filename, uuid)
           schema_update = Yelixer.Encoding.encode_update(schema)
-
-          case CommitStore.latest_commit(dir_uuid) do
-            {:ok, latest} ->
-              CommitStore.create_commit(dir_uuid, schema_update, latest.id)
-
-            :none ->
-              CommitStore.create_commit(dir_uuid, schema_update, nil)
-          end
+          CommitStoreClient.create_chained_commit(dir_uuid, schema_update)
 
           target =
             if socket.assigns.current_path == "" do
@@ -172,7 +165,7 @@ defmodule CommonplaceWebWeb.WikiLive do
     else
       history =
         if socket.assigns.page_uuid do
-          CommitStore.commit_log(socket.assigns.page_uuid, limit: 20)
+          CommitStoreClient.commit_log(socket.assigns.page_uuid, limit: 20)
         else
           []
         end
@@ -185,7 +178,9 @@ defmodule CommonplaceWebWeb.WikiLive do
   def handle_event("yjs_edit", %{"update" => encoded}, socket) do
     with uuid when not is_nil(uuid) <- socket.assigns.page_uuid,
          {:ok, update} <- Base.decode64(encoded) do
-      case CommitStore.create_commit(uuid, update, nil) do
+      commit = CommitStoreClient.create_chained_commit(uuid, update)
+
+      case commit do
         %{id: _} ->
           CPPubSub.broadcast_blue(uuid, update)
           {:noreply, socket}
@@ -664,7 +659,7 @@ defmodule CommonplaceWebWeb.WikiLive do
   defp load_special_page(socket, _), do: socket
 
   defp push_yjs_state(socket) do
-    case CommitStore.latest_commit(socket.assigns.page_uuid) do
+    case CommitStoreClient.latest_commit(socket.assigns.page_uuid) do
       {:ok, commit} ->
         encoded = Base.encode64(commit.update)
         push_event(socket, "yjs_init", %{update: encoded})
@@ -675,17 +670,9 @@ defmodule CommonplaceWebWeb.WikiLive do
   end
 
   defp read_doc_content(uuid) do
-    case CommitStore.latest_commit(uuid) do
-      {:ok, commit} ->
-        doc = Yelixer.Doc.new()
-
-        case Yelixer.Encoding.apply_update(doc, commit.update) do
-          {:ok, doc} -> ContentType.get_content(doc)
-          _ -> nil
-        end
-
-      :none ->
-        nil
+    case DocBuilder.reconstruct_snapshot(CommitStoreClient, uuid) do
+      {:ok, doc} -> ContentType.get_content(doc)
+      :none -> nil
     end
   end
 
@@ -700,7 +687,7 @@ defmodule CommonplaceWebWeb.WikiLive do
         if entry.type == :dir do
           collect_recent_changes(entry.node_id, full_path, limit)
         else
-          case CommitStore.latest_commit(entry.node_id) do
+          case CommitStoreClient.latest_commit(entry.node_id) do
             {:ok, commit} ->
               [%{path: full_path, name: entry.name, commit: commit, uuid: entry.node_id}]
 
@@ -730,16 +717,12 @@ defmodule CommonplaceWebWeb.WikiLive do
   end
 
   defp resolve_dir(root_uuid, path) do
-    segments = String.split(path, "/")
+    loader = &load_schema/1
 
-    Enum.reduce_while(segments, root_uuid, fn segment, current_uuid ->
-      schema = load_schema(current_uuid)
-
-      case Schema.get_entry(schema, segment) do
-        {:ok, %{type: :dir, node_id: uuid}} -> {:cont, uuid}
-        _ -> {:halt, nil}
-      end
-    end)
+    case Walk.resolve_path(root_uuid, path, loader) do
+      {:ok, uuid} -> uuid
+      {:error, _} -> nil
+    end
   end
 
   defp current_dir_uuid(socket) do
@@ -763,17 +746,9 @@ defmodule CommonplaceWebWeb.WikiLive do
   end
 
   defp load_schema(uuid) do
-    case CommitStore.latest_commit(uuid) do
-      {:ok, commit} ->
-        doc = Schema.new_schema()
-
-        case Yelixer.Encoding.apply_update(doc, commit.update) do
-          {:ok, doc} -> doc
-          _ -> Schema.new_schema()
-        end
-
-      :none ->
-        Schema.new_schema()
+    case DocBuilder.reconstruct_snapshot(CommitStoreClient, uuid) do
+      {:ok, doc} -> doc
+      :none -> Schema.new_schema()
     end
   end
 
