@@ -7,7 +7,7 @@ defmodule Commonplace.Tree.Merge do
   No ForkManifest — provenance is in the DAG itself.
   """
 
-  alias Commonplace.Store.CommitStore
+  alias Commonplace.Store.CommitStoreClient, as: CommitStore
   alias Commonplace.Tree.{Schema, Fork, DocBuilder}
   alias Commonplace.Document.ContentType
   alias Commonplace.Process.Config

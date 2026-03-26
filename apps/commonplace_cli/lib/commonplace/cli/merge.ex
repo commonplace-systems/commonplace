@@ -3,7 +3,7 @@ defmodule Commonplace.CLI.Merge do
 
   alias Commonplace.CLI
   alias Commonplace.Tree.{Walk, Merge}
-  alias Commonplace.Store.CommitStore
+  alias Commonplace.Store.CommitStoreClient, as: CommitStore
 
   import Commonplace.CLI.Helpers, only: [join_paths: 2]
 
