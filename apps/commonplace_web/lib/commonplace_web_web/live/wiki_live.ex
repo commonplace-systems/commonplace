@@ -391,8 +391,9 @@ defmodule CommonplaceWebWeb.WikiLive do
 
       <!-- Create page modal -->
       <%= if @show_create do %>
-        <div class="fixed inset-0 bg-black/50 z-50 flex items-center justify-center" phx-click="cancel_create">
-          <div class="bg-base-100 rounded-lg shadow-xl p-6 w-96" phx-click-away="cancel_create">
+        <div class="fixed inset-0 z-50 flex items-center justify-center">
+          <div class="absolute inset-0 bg-black/50" phx-click="cancel_create"></div>
+          <div class="relative bg-base-100 rounded-lg shadow-xl p-6 w-96 mx-4">
             <h2 class="text-lg font-bold mb-4">Create New Page</h2>
             <form phx-submit="create_page">
               <input
