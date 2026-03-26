@@ -81,6 +81,8 @@ defmodule CommonplaceWebWeb.WikiLive do
   @impl true
   def handle_event("yjs_request_init", _params, socket) do
     # Hook has mounted and is ready for data
+    require Logger
+    Logger.debug("yjs_request_init: page_uuid=#{inspect(socket.assigns.page_uuid)}")
     {:noreply, push_yjs_state(socket)}
   end
 
@@ -667,13 +669,19 @@ defmodule CommonplaceWebWeb.WikiLive do
   defp load_special_page(socket, _), do: socket
 
   defp push_yjs_state(socket) do
-    case DocBuilder.reconstruct_doc(CommitStoreClient, socket.assigns.page_uuid) do
+    require Logger
+    uuid = socket.assigns.page_uuid
+    Logger.debug("push_yjs_state: uuid=#{inspect(uuid)}")
+
+    case DocBuilder.reconstruct_doc(CommitStoreClient, uuid) do
       {:ok, doc} ->
         update = Yelixer.Encoding.encode_update(doc)
+        Logger.debug("push_yjs_state: update size=#{byte_size(update)}")
         encoded = Base.encode64(update)
         push_event(socket, "yjs_init", %{update: encoded})
 
       :none ->
+        Logger.debug("push_yjs_state: no commits found for #{inspect(uuid)}")
         socket
     end
   end

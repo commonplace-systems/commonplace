@@ -24,6 +24,7 @@ const YjsHook = {
     this.suppressOutbound = false
 
     this.handleEvent("yjs_init", ({update}) => {
+      console.log("[YjsHook] yjs_init received, update length:", update ? update.length : "null/undefined")
       this.initDoc(update)
     })
 
@@ -36,6 +37,7 @@ const YjsHook = {
     })
 
     // Request initial data from server — ensures hook is ready before data arrives
+    console.log("[YjsHook] mounted, requesting init data")
     this.pushEvent("yjs_request_init", {})
   },
 
@@ -53,10 +55,18 @@ const YjsHook = {
     // Create Y.Doc and apply initial state
     this.ydoc = new Y.Doc()
     const binary = this.decode(update)
+    console.log("[YjsHook] decoded binary length:", binary.length)
     Y.applyUpdate(this.ydoc, binary)
+
+    // Log all shared types in the doc
+    console.log("[YjsHook] doc shared types:", [...this.ydoc.share.keys()])
+    for (const [key, type] of this.ydoc.share) {
+      console.log(`[YjsHook]   ${key}: ${type.constructor.name}, content: ${type instanceof Y.Text ? JSON.stringify(type.toString().substring(0, 100)) : "(not text)"}`)
+    }
 
     // Find the text content in the document envelope
     const ytext = this.findTextContent()
+    console.log("[YjsHook] findTextContent result:", ytext ? `YText(${ytext.toString().substring(0, 50)})` : "null")
 
     if (ytext) {
       this.initEditor(ytext)
@@ -119,15 +129,27 @@ const YjsHook = {
 
   findTextContent() {
     // Look for "content" YText in the document envelope
+    // Use getText() to ensure proper Y.Text typing (share.get may return AbstractType)
     if (this.ydoc.share.has("content")) {
-      const content = this.ydoc.share.get("content")
-      if (content instanceof Y.Text) return content
+      try {
+        const content = this.ydoc.getText("content")
+        if (content && content.toString() !== "") return content
+        // Even empty text is valid — return it if the type exists
+        if (content) return content
+      } catch(e) {
+        console.log("[YjsHook] content exists but is not YText:", e.message)
+      }
     }
 
-    // Fallback: find any YText that isn't metadata
+    // Fallback: find any shared type that contains text data
     for (const [key, type] of this.ydoc.share) {
       if (key.startsWith("_")) continue
       if (type instanceof Y.Text) return type
+      // Try getting as text
+      try {
+        const t = this.ydoc.getText(key)
+        if (t && t.length > 0) return t
+      } catch(e) { /* not a text type */ }
     }
 
     return null
