@@ -91,6 +91,66 @@ defmodule Commonplace.Store.CommitStoreClient do
     end
   end
 
+  def set_latest(server \\ CommitStore, doc_uuid, commit_id) do
+    case remote_node() do
+      {:ok, node} ->
+        GenServer.call({CommitStore, node}, {:set_latest, doc_uuid, commit_id})
+
+      :local ->
+        CommitStore.set_latest(normalize_server(server), doc_uuid, commit_id)
+    end
+  end
+
+  def find_common_ancestor(server \\ CommitStore, uuid_a, uuid_b) do
+    case remote_node() do
+      {:ok, node} ->
+        GenServer.call({CommitStore, node}, {:find_common_ancestor, uuid_a, uuid_b})
+
+      :local ->
+        CommitStore.find_common_ancestor(normalize_server(server), uuid_a, uuid_b)
+    end
+  end
+
+  def set_merge_point(server \\ CommitStore, target_uuid, source_uuid, commit_id) do
+    case remote_node() do
+      {:ok, node} ->
+        GenServer.call({CommitStore, node}, {:set_merge_point, target_uuid, source_uuid, commit_id})
+
+      :local ->
+        CommitStore.set_merge_point(normalize_server(server), target_uuid, source_uuid, commit_id)
+    end
+  end
+
+  def get_merge_point(server \\ CommitStore, target_uuid, source_uuid) do
+    case remote_node() do
+      {:ok, node} ->
+        GenServer.call({CommitStore, node}, {:get_merge_point, target_uuid, source_uuid})
+
+      :local ->
+        CommitStore.get_merge_point(normalize_server(server), target_uuid, source_uuid)
+    end
+  end
+
+  def set_last_merge_commit(server \\ CommitStore, target_uuid, source_uuid, commit_id) do
+    case remote_node() do
+      {:ok, node} ->
+        GenServer.call({CommitStore, node}, {:set_last_merge_commit, target_uuid, source_uuid, commit_id})
+
+      :local ->
+        CommitStore.set_last_merge_commit(normalize_server(server), target_uuid, source_uuid, commit_id)
+    end
+  end
+
+  def get_latest_merge_head(server \\ CommitStore, target_uuid) do
+    case remote_node() do
+      {:ok, node} ->
+        GenServer.call({CommitStore, node}, {:get_latest_merge_head, target_uuid})
+
+      :local ->
+        CommitStore.get_latest_merge_head(normalize_server(server), target_uuid)
+    end
+  end
+
   @doc """
   Check if we're connected to a remote serve node.
   Returns `{:ok, node}` if connected, `:local` otherwise.

@@ -118,6 +118,59 @@ defmodule Commonplace.Store.CommitStoreClientTest do
     end
   end
 
+  describe "set_latest/3 (local mode)" do
+    test "overrides the latest commit pointer", %{store: store} do
+      c1 = CommitStoreClient.create_commit(store, "doc-1", <<1>>, nil)
+      c2 = CommitStoreClient.create_chained_commit(store, "doc-1", <<2>>)
+      assert {:ok, latest} = CommitStoreClient.latest_commit(store, "doc-1")
+      assert latest.id == c2.id
+
+      # Set latest back to c1
+      CommitStoreClient.set_latest(store, "doc-1", c1.id)
+      assert {:ok, latest} = CommitStoreClient.latest_commit(store, "doc-1")
+      assert latest.id == c1.id
+    end
+  end
+
+  describe "find_common_ancestor/3 (local mode)" do
+    test "finds common ancestor for forked commits", %{store: store} do
+      c1 = CommitStoreClient.create_commit(store, "doc-a", <<1>>, nil)
+      # Create two branches from the same parent
+      _c2 = CommitStoreClient.create_commit(store, "doc-a", <<2>>, c1.id)
+      _c3 = CommitStoreClient.create_commit(store, "doc-b", <<3>>, c1.id)
+
+      assert {:ok, ancestor} = CommitStoreClient.find_common_ancestor(store, "doc-a", "doc-b")
+      assert ancestor.id == c1.id
+    end
+
+    test "returns :none for unrelated docs", %{store: store} do
+      CommitStoreClient.create_commit(store, "doc-x", <<1>>, nil)
+      CommitStoreClient.create_commit(store, "doc-y", <<2>>, nil)
+
+      assert :none = CommitStoreClient.find_common_ancestor(store, "doc-x", "doc-y")
+    end
+  end
+
+  describe "merge point functions (local mode)" do
+    test "set and get merge point", %{store: store} do
+      c1 = CommitStoreClient.create_commit(store, "target", <<1>>, nil)
+
+      assert nil == CommitStoreClient.get_merge_point(store, "target", "source")
+
+      CommitStoreClient.set_merge_point(store, "target", "source", c1.id)
+      assert c1.id == CommitStoreClient.get_merge_point(store, "target", "source")
+    end
+
+    test "set_last_merge_commit and get_latest_merge_head", %{store: store} do
+      c1 = CommitStoreClient.create_commit(store, "target", <<1>>, nil)
+
+      assert nil == CommitStoreClient.get_latest_merge_head(store, "target")
+
+      CommitStoreClient.set_last_merge_commit(store, "target", "source", c1.id)
+      assert c1.id == CommitStoreClient.get_latest_merge_head(store, "target")
+    end
+  end
+
   describe "server normalization" do
     test "CommitStoreClient module is normalized to CommitStore", %{store: store} do
       # When CLI passes CommitStoreClient as server, it should be mapped to CommitStore
