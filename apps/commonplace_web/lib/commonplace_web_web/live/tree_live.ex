@@ -8,8 +8,8 @@ defmodule CommonplaceWebWeb.TreeLive do
 
   use CommonplaceWebWeb, :live_view
 
-  alias Commonplace.Tree.Schema
-  alias Commonplace.Store.CommitStore
+  alias Commonplace.Tree.{Schema, Walk, DocBuilder}
+  alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Dataflow.PubSub, as: CPPubSub
   alias Commonplace.Presence
 
@@ -27,7 +27,7 @@ defmodule CommonplaceWebWeb.TreeLive do
             name: "browser-#{session_id}",
             type: :usr,
             dir_uuid: root,
-            store: CommitStore,
+            store: CommitStoreClient,
             heartbeat_interval: 15_000
           )
 
@@ -50,12 +50,10 @@ defmodule CommonplaceWebWeb.TreeLive do
 
   @impl true
   def terminate(_reason, socket) do
-    # Unsubscribe from blue channel if watching a doc
     if socket.assigns[:selected_uuid] do
       CPPubSub.unsubscribe_blue(socket.assigns.selected_uuid)
     end
 
-    # Stop presence process
     if socket.assigns[:presence_pid] && Process.alive?(socket.assigns.presence_pid) do
       GenServer.stop(socket.assigns.presence_pid)
     end
@@ -67,11 +65,9 @@ defmodule CommonplaceWebWeb.TreeLive do
   def handle_params(%{"path" => path}, _uri, socket) do
     path = Enum.join(path, "/")
 
-    # Reject path traversal attempts
     if String.contains?(path, "..") do
       {:noreply, push_navigate(socket, to: ~p"/tree")}
     else
-      # Resolve the path to find the directory UUID
       dir_uuid =
         if path == "" do
           socket.assigns.root_uuid
@@ -102,15 +98,12 @@ defmodule CommonplaceWebWeb.TreeLive do
 
     case Schema.get_entry(root_doc, name) do
       {:ok, entry} when entry.type == :doc ->
-        # Unsubscribe from old doc
         if socket.assigns.selected_uuid do
           CPPubSub.unsubscribe_blue(socket.assigns.selected_uuid)
         end
 
-        # Subscribe to new doc for live updates
         CPPubSub.subscribe_blue(entry.node_id)
 
-        # Push Yjs binary state to browser
         socket =
           socket
           |> assign(:selected_name, name)
@@ -120,7 +113,6 @@ defmodule CommonplaceWebWeb.TreeLive do
         {:noreply, socket}
 
       {:ok, entry} when entry.type == :dir ->
-        # Navigate into directory
         new_path =
           if socket.assigns.current_path == "" do
             name
@@ -156,13 +148,15 @@ defmodule CommonplaceWebWeb.TreeLive do
   def handle_event("yjs_edit", %{"update" => encoded}, socket) do
     with uuid when not is_nil(uuid) <- socket.assigns.selected_uuid,
          {:ok, update} <- Base.decode64(encoded) do
-      case CommitStore.create_commit(uuid, update, nil) do
-        %{id: _} = _commit ->
+      commit = CommitStoreClient.create_chained_commit(uuid, update)
+
+      case commit do
+        %{id: _} ->
           CPPubSub.broadcast_blue(uuid, update)
           {:noreply, socket}
 
-        error ->
-          {:noreply, put_flash(socket, :error, "Failed to save: #{inspect(error)}")}
+        _ ->
+          {:noreply, put_flash(socket, :error, "Failed to save")}
       end
     else
       _ ->
@@ -170,7 +164,11 @@ defmodule CommonplaceWebWeb.TreeLive do
     end
   end
 
-  # Blue channel PubSub messages have the format {:commit, uuid, commit_id, meta}
+  @impl true
+  def handle_event("yjs_request_init", _params, socket) do
+    {:noreply, push_yjs_init(socket, socket.assigns.selected_uuid)}
+  end
+
   @impl true
   def handle_info({:commit, _uuid, _commit_id, _meta}, socket) do
     if socket.assigns.selected_uuid do
@@ -180,7 +178,6 @@ defmodule CommonplaceWebWeb.TreeLive do
     end
   end
 
-  # Catch-all: ignore unexpected messages instead of crashing
   @impl true
   def handle_info(_msg, socket) do
     {:noreply, socket}
@@ -246,11 +243,13 @@ defmodule CommonplaceWebWeb.TreeLive do
 
   # Private helpers
 
+  defp push_yjs_init(socket, nil), do: socket
+
   defp push_yjs_init(socket, doc_uuid) do
-    case CommitStore.latest_commit(doc_uuid) do
-      {:ok, commit} ->
-        # Send the raw Yjs update binary as base64
-        encoded = Base.encode64(commit.update)
+    case DocBuilder.reconstruct_doc(CommitStoreClient, doc_uuid) do
+      {:ok, doc} ->
+        update = Yelixer.Encoding.encode_update(doc)
+        encoded = Base.encode64(update)
         push_event(socket, "yjs_init", %{update: encoded})
 
       :none ->
@@ -268,16 +267,12 @@ defmodule CommonplaceWebWeb.TreeLive do
   end
 
   defp resolve_dir(root_uuid, path) do
-    segments = String.split(path, "/")
+    loader = &load_schema/1
 
-    Enum.reduce_while(segments, root_uuid, fn segment, current_uuid ->
-      schema = load_schema(current_uuid)
-
-      case Schema.get_entry(schema, segment) do
-        {:ok, %{type: :dir, node_id: uuid}} -> {:cont, uuid}
-        _ -> {:halt, nil}
-      end
-    end)
+    case Walk.resolve_path(root_uuid, path, loader) do
+      {:ok, uuid} -> uuid
+      {:error, _} -> nil
+    end
   end
 
   defp list_entries(nil), do: []
@@ -291,14 +286,9 @@ defmodule CommonplaceWebWeb.TreeLive do
   end
 
   defp load_schema(uuid) do
-    case CommitStore.latest_commit(uuid) do
-      {:ok, commit} ->
-        doc = Schema.new_schema()
-        {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
-        doc
-
-      :none ->
-        Schema.new_schema()
+    case DocBuilder.reconstruct_snapshot(CommitStoreClient, uuid) do
+      {:ok, doc} -> doc
+      :none -> Schema.new_schema()
     end
   end
 

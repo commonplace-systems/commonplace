@@ -42,10 +42,8 @@ defmodule Commonplace.CLI.Cat do
   end
 
   defp print_content(uuid) do
-    case CommitStore.latest_commit(uuid) do
-      {:ok, commit} ->
-        doc = Yelixer.Doc.new()
-        {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
+    case Commonplace.Tree.DocBuilder.reconstruct_doc(CommitStore, uuid) do
+      {:ok, doc} ->
 
         case ContentType.get_type(doc) do
           nil ->

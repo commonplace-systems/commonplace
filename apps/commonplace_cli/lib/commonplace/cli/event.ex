@@ -69,16 +69,7 @@ defmodule Commonplace.CLI.Event do
 
   # Load a RedLog via CommitStoreClient so it works with remote nodes.
   defp load_red_log(uuid) do
-    case CommitStore.latest_commit(uuid) do
-      {:ok, commit} ->
-        doc = Yelixer.Doc.new()
-        {doc, _} = Yelixer.Doc.get_or_create_type(doc, "events", :array)
-        {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
-        %RedLog{uuid: uuid, doc: doc, store: CommitStore}
-
-      :none ->
-        RedLog.new(uuid)
-    end
+    RedLog.load(uuid, CommitStore)
   end
 
   defp format_event(%{"type" => type, "line" => line, "timestamp" => ts}) do

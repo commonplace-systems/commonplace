@@ -248,17 +248,12 @@ defmodule Commonplace.CLI do
 
   @doc "Load a schema doc from the commit store."
   def load_schema(uuid) do
-    alias Commonplace.Store.CommitStoreClient, as: CommitStore
-    alias Commonplace.Tree.Schema
+    alias Commonplace.Tree.{Schema, DocBuilder}
+    alias Commonplace.Store.CommitStoreClient
 
-    case CommitStore.latest_commit(uuid) do
-      {:ok, commit} ->
-        doc = Schema.new_schema()
-        {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
-        doc
-
-      :none ->
-        Schema.new_schema()
+    case DocBuilder.reconstruct_snapshot(CommitStoreClient, uuid) do
+      {:ok, doc} -> doc
+      :none -> Schema.new_schema()
     end
   end
 

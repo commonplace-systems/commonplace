@@ -81,14 +81,9 @@ defmodule Commonplace.CLI.Ln do
   end
 
   defp load_schema(uuid, store) do
-    case CommitStore.latest_commit(store, uuid) do
-      {:ok, commit} ->
-        doc = Schema.new_schema()
-        {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
-        doc
-
-      :none ->
-        Schema.new_schema()
+    case Commonplace.Tree.DocBuilder.reconstruct_snapshot(store, uuid) do
+      {:ok, doc} -> doc
+      :none -> Schema.new_schema()
     end
   end
 end
