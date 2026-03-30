@@ -7,8 +7,8 @@ defmodule Commonplace.CLI.Serve do
   """
 
   alias Commonplace.CLI
-  alias Commonplace.Store.CommitStore
-  alias Commonplace.Tree.Schema
+  alias Commonplace.Store.CommitStoreClient, as: CommitStore
+  alias Commonplace.Tree.{Schema, DocBuilder}
   alias Commonplace.Document.ContentType
   alias Commonplace.Process.Orchestrator
 
@@ -183,7 +183,7 @@ defmodule Commonplace.CLI.Serve do
         doc = ContentType.create(doc, :text, "__processes.json")
         doc = ContentType.insert_text(doc, 0, content)
         update = Yelixer.Encoding.encode_update(doc)
-        CommitStore.create_commit(entry.node_id, update, nil)
+        CommitStore.create_chained_commit(entry.node_id, update)
 
       :error ->
         # Create new
@@ -192,24 +192,19 @@ defmodule Commonplace.CLI.Serve do
         doc = ContentType.create(doc, :text, "__processes.json")
         doc = ContentType.insert_text(doc, 0, content)
         update = Yelixer.Encoding.encode_update(doc)
-        CommitStore.create_commit(uuid, update, nil)
+        CommitStore.create_chained_commit(uuid, update)
 
         root_doc = load_schema(root)
         root_doc = Schema.add_file(root_doc, "__processes.json", uuid)
         update = Yelixer.Encoding.encode_update(root_doc)
-        CommitStore.create_commit(root, update, nil)
+        CommitStore.create_chained_commit(root, update)
     end
   end
 
   defp load_schema(uuid) do
-    case CommitStore.latest_commit(uuid) do
-      {:ok, commit} ->
-        doc = Schema.new_schema()
-        {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
-        doc
-
-      :none ->
-        Schema.new_schema()
+    case DocBuilder.reconstruct_snapshot(CommitStore, uuid) do
+      {:ok, doc} -> doc
+      :none -> Schema.new_schema()
     end
   end
 
