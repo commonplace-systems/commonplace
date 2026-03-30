@@ -34,11 +34,11 @@ defmodule Commonplace.CLI.Import do
         sub_schema = Schema.new_schema()
         sub_schema = import_directory(source_dir, sub_schema)
         update = Yelixer.Encoding.encode_update(sub_schema)
-        CommitStore.create_commit(sub_uuid, update, nil)
+        CommitStore.create_chained_commit(sub_uuid, update)
 
         root_doc = Schema.add_directory(root_doc, dir_name, sub_uuid)
         update = Yelixer.Encoding.encode_update(root_doc)
-        CommitStore.create_commit(root, update, nil)
+        CommitStore.create_chained_commit(root, update)
 
         IO.puts("Imported #{source_dir} into workspace")
     end
@@ -57,7 +57,7 @@ defmodule Commonplace.CLI.Import do
           sub_schema = Schema.new_schema()
           sub_schema = import_directory(full_path, sub_schema)
           update = Yelixer.Encoding.encode_update(sub_schema)
-          CommitStore.create_commit(sub_uuid, update, nil)
+          CommitStore.create_chained_commit(sub_uuid, update)
 
           Schema.add_directory(schema, name, sub_uuid)
 
@@ -83,7 +83,7 @@ defmodule Commonplace.CLI.Import do
     doc = if content != "", do: ContentType.insert_text(doc, 0, content), else: doc
 
     update = Yelixer.Encoding.encode_update(doc)
-    CommitStore.create_commit(uuid, update, nil)
+    CommitStore.create_chained_commit(uuid, update)
 
     IO.puts("  + #{file_path} (#{uuid})")
   end

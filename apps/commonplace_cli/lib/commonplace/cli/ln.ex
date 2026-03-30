@@ -69,7 +69,7 @@ defmodule Commonplace.CLI.Ln do
           parent_doc = load_schema(parent_uuid, store)
           parent_doc = Schema.add_file(parent_doc, target_name, source_uuid)
           update = Yelixer.Encoding.encode_update(parent_doc)
-          CommitStore.create_commit(store, parent_uuid, update, nil)
+          CommitStore.create_chained_commit(store, parent_uuid, update)
           :ok
         else
           {:error, :target_dir_not_found}

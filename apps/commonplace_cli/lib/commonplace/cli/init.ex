@@ -18,7 +18,7 @@ defmodule Commonplace.CLI.Init do
     root_uuid = UUID.uuid4()
     root_doc = Schema.new_schema()
     update = Yelixer.Encoding.encode_update(root_doc)
-    CommitStore.create_commit(root_uuid, update, nil)
+    CommitStore.create_chained_commit(root_uuid, update)
 
     CLI.set_root_uuid(data_dir, root_uuid)
 

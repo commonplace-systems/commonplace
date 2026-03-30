@@ -68,7 +68,7 @@ defmodule Commonplace.CLI.Branch do
       {:ok, _entry} ->
         doc = Schema.set_sync(doc, name, sync)
         update = Yelixer.Encoding.encode_update(doc)
-        CommitStore.create_commit(uuid, update, nil)
+        CommitStore.create_chained_commit(uuid, update)
 
         action = if sync, do: "Activated", else: "Deactivated"
         IO.puts("#{action} branch: #{name}")
