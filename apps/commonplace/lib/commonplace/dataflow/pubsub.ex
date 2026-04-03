@@ -16,13 +16,35 @@ defmodule Commonplace.Dataflow.PubSub do
   def subscribe_magenta(path), do: subscribe("magenta:#{path}")
   def subscribe_green(uuid), do: subscribe("green:#{uuid}")
 
+  @doc "Subscribe to sync channel for distributed commit replication."
+  def subscribe_sync(doc_uuid) do
+    Phoenix.PubSub.subscribe(Commonplace.PubSub, "sync:#{doc_uuid}")
+  end
+
   def unsubscribe_blue(uuid), do: unsubscribe("blue:#{uuid}")
+
+  @doc "Unsubscribe from sync channel."
+  def unsubscribe_sync(doc_uuid) do
+    Phoenix.PubSub.unsubscribe(Commonplace.PubSub, "sync:#{doc_uuid}")
+  end
 
   def broadcast_blue(uuid, message), do: broadcast("blue:#{uuid}", message)
   def broadcast_cyan(uuid, message), do: broadcast("cyan:#{uuid}", message)
   def broadcast_red(uuid, message), do: broadcast("red:#{uuid}", message)
   def broadcast_magenta(path, message), do: broadcast("magenta:#{path}", message)
   def broadcast_green(uuid, message), do: broadcast("green:#{uuid}", message)
+
+  @doc """
+  Broadcast a full commit on the sync channel for distributed replication.
+  Message format: {:remote_commit, commit, source_node}
+  """
+  def broadcast_commit(doc_uuid, commit) do
+    Phoenix.PubSub.broadcast(
+      Commonplace.PubSub,
+      "sync:#{doc_uuid}",
+      {:remote_commit, commit, Node.self()}
+    )
+  end
 
   defp subscribe(topic) do
     Phoenix.PubSub.subscribe(Commonplace.PubSub, topic)

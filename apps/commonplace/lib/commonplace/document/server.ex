@@ -63,6 +63,8 @@ defmodule Commonplace.Document.Server do
           {Yelixer.Doc.new(client_id: client_id), nil}
       end
 
+    CPPubSub.subscribe_sync(uuid)
+
     {:ok,
      %__MODULE__{uuid: uuid, doc: doc, parent_commit: parent_commit, commit_store: commit_store}}
   end
@@ -120,5 +122,22 @@ defmodule Commonplace.Document.Server do
   @impl true
   def handle_call({:get_meta, key}, _from, state) do
     {:reply, ContentType.get_meta(state.doc, key), state}
+  end
+
+  @impl true
+  def handle_info({:remote_commit, commit, source_node}, state) do
+    if source_node != Node.self() do
+      CommitStoreClient.import_commit(state.commit_store, commit)
+
+      case Yelixer.Encoding.apply_update(state.doc, commit.update) do
+        {:ok, doc} ->
+          {:noreply, %{state | doc: doc}}
+
+        {:error, _} ->
+          {:noreply, state}
+      end
+    else
+      {:noreply, state}
+    end
   end
 end

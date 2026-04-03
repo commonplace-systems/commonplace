@@ -101,6 +101,26 @@ defmodule Commonplace.Store.CommitStoreClient do
     end
   end
 
+  def commit_ids_for_doc(server \\ CommitStore, doc_uuid) do
+    case remote_node() do
+      {:ok, node} ->
+        GenServer.call({CommitStore, node}, {:commit_ids_for_doc, doc_uuid})
+
+      :local ->
+        CommitStore.commit_ids_for_doc(normalize_server(server), doc_uuid)
+    end
+  end
+
+  def import_commit(server \\ CommitStore, commit) do
+    case remote_node() do
+      {:ok, node} ->
+        GenServer.call({CommitStore, node}, {:import_commit, commit})
+
+      :local ->
+        CommitStore.import_commit(normalize_server(server), commit)
+    end
+  end
+
   def find_common_ancestor(server \\ CommitStore, uuid_a, uuid_b) do
     case remote_node() do
       {:ok, node} ->

@@ -53,6 +53,16 @@ defmodule Commonplace.Store.CommitStore do
     GenServer.call(server, {:set_latest, doc_uuid, commit_id})
   end
 
+  @doc "Return a MapSet of all commit IDs for a document (walks the chain)."
+  def commit_ids_for_doc(server \\ __MODULE__, doc_uuid) do
+    GenServer.call(server, {:commit_ids_for_doc, doc_uuid})
+  end
+
+  @doc "Store a commit without updating :latest. Used for catch-up sync."
+  def import_commit(server \\ __MODULE__, commit) do
+    GenServer.call(server, {:import_commit, commit})
+  end
+
   @doc "Find the most recent common ancestor between two UUID chains."
   def find_common_ancestor(server \\ __MODULE__, uuid_a, uuid_b) do
     GenServer.call(server, {:find_common_ancestor, uuid_a, uuid_b})
@@ -227,6 +237,24 @@ defmodule Commonplace.Store.CommitStore do
   def handle_call({:set_latest, doc_uuid, commit_id}, _from, state) do
     CubDB.put(state.db, {:latest, doc_uuid}, commit_id)
     {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_call({:commit_ids_for_doc, doc_uuid}, _from, state) do
+    ids = collect_commit_ids(state.db, doc_uuid)
+    {:reply, ids, state}
+  end
+
+  @impl true
+  def handle_call({:import_commit, commit}, _from, state) do
+    case CubDB.get(state.db, {:commit, commit.id}) do
+      nil ->
+        CubDB.put(state.db, {:commit, commit.id}, commit)
+        {:reply, :ok, state}
+
+      _existing ->
+        {:reply, :already_exists, state}
+    end
   end
 
   @impl true

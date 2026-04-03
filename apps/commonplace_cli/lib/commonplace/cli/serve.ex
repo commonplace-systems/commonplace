@@ -14,6 +14,15 @@ defmodule Commonplace.CLI.Serve do
 
   def run(data_dir, _relative_path, _args) do
     start_named_node(data_dir)
+
+    topology = Commonplace.Cluster.topology()
+
+    if topology != [] do
+      IO.puts("  Cluster peers: #{inspect(topology)}")
+    else
+      IO.puts("  Cluster: standalone (set COMMONPLACE_NODES to enable clustering)")
+    end
+
     CLI.ensure_started(data_dir)
     root = CLI.root_uuid(data_dir)
 

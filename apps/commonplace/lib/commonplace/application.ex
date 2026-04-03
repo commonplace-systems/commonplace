@@ -11,6 +11,9 @@ defmodule Commonplace.Application do
       {Registry, keys: :unique, name: Commonplace.Document.Registry},
       {Registry, keys: :unique, name: Commonplace.SchemaCoordinator.Registry},
       {Phoenix.PubSub, name: Commonplace.PubSub},
+      {Cluster.Supervisor,
+       [Commonplace.Cluster.topology(), [name: Commonplace.ClusterSupervisor]]},
+      Commonplace.Cluster.EventHandler,
       %{
         id: Commonplace.Store.CommitStoreSupervisor,
         type: :supervisor,

@@ -42,6 +42,7 @@ CI uses `--warnings-as-errors` — fix all compiler warnings before pushing.
 ## Key patterns
 
 - **CommitStore access**: Use `CommitStoreClient` (not `CommitStore` directly) to preserve remote-serve capability.
+- **BEAM distribution**: Set `COMMONPLACE_NODES=node1@host,node2@host` for clustering. Phoenix PubSub distributes automatically via `pg`. Catch-up sync uses CID set diff on node join. Use `import_commit` (not `create_commit`) when storing remote commits to avoid clobbering `:latest` pointer.
 - **Schema mutations**: Use `Schema.add_file/3`, `Schema.add_directory/3`, `Schema.remove_entry/2`. Schema is a Yelixer.Doc with "entries" YMap.
 - **Commits**: Use `CommitStore.create_chained_commit/3` for existing docs (chains to latest). Never create commits with `parent_id: nil` for existing documents.
 - **Doc reconstruction**: Use `DocBuilder.reconstruct_doc/2` (full chain), `reconstruct_snapshot/2` (latest commit only), or `reconstruct_doc_at/3` (up to specific commit).
