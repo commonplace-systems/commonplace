@@ -29,6 +29,7 @@ defmodule Commonplace.Application do
              ]
            ]}
       },
+      {Commonplace.Store.SecretStore, data_dir: data_dir},
       {DynamicSupervisor, name: Commonplace.SchemaCoordinator.Supervisor, strategy: :one_for_one},
       {DynamicSupervisor, name: Commonplace.Document.Supervisor, strategy: :one_for_one},
       {DynamicSupervisor, name: Commonplace.Checkout.Supervisor, strategy: :one_for_one},

@@ -28,6 +28,7 @@ defmodule Commonplace.CLI do
     serve                         Start the workspace daemon
     ps                            List managed processes
     signal <topic> <type> [json]  Send a magenta message
+    secret <command>              Manage local secrets (set/get/list/delete)
   """
 
   @workspace_dir ".commonplace"
@@ -94,6 +95,7 @@ defmodule Commonplace.CLI do
       "fork" -> Commonplace.CLI.Fork.run(data_dir, relative_path, rest)
       "merge" -> Commonplace.CLI.Merge.run(data_dir, relative_path, rest)
       "signal" -> Commonplace.CLI.Signal.run(data_dir, relative_path, rest)
+      "secret" -> Commonplace.CLI.Secret.run(data_dir, relative_path, rest)
       _ ->
         IO.puts(:stderr, "Unknown command: #{cmd}")
         IO.puts(:stderr, "Run 'commonplace --help' for usage.")

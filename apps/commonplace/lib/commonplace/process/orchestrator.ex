@@ -341,13 +341,21 @@ defmodule Commonplace.Process.Orchestrator do
       # Use scope_uuid if set (subdirectory sandbox), otherwise full tree
       sandbox_uuid = config.scope_uuid || state.root_uuid
 
+      # Resolve $secret:KEY references in env before passing to runner
+      resolved_env = case Commonplace.Store.SecretStore.resolve_env(config.env) do
+        {:ok, env} -> env
+        {:error, {:missing_secrets, names}} ->
+          Logger.warning("Process #{config.name}: missing secrets: #{inspect(names)}")
+          config.env
+      end
+
       {:ok, pid} = Commonplace.Process.SandboxExecRunner.start_link(
         root_uuid: sandbox_uuid,
         store: state.store,
         command: config.command,
         args: config.args,
         name: config.name,
-        env: config.env,
+        env: resolved_env,
         sync_interval: 50
       )
 
