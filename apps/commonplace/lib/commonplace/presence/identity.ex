@@ -139,6 +139,62 @@ defmodule Commonplace.Presence.Identity do
     end
   end
 
+  @doc "Add a public key to an identity document."
+  def add_public_key(identity_uuid, public_key_b64, store \\ CommitStoreClient) do
+    case CommitStoreClient.latest_commit(store, identity_uuid) do
+      {:ok, commit} ->
+        doc = Yelixer.Doc.new()
+        {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
+
+        # Get existing keys or start empty
+        content = ContentType.get_content(doc)
+
+        keys =
+          case content do
+            %{"public_keys" => keys_json} when is_binary(keys_json) ->
+              case Jason.decode(keys_json) do
+                {:ok, list} when is_list(list) -> list
+                _ -> []
+              end
+
+            _ ->
+              []
+          end
+
+        unless public_key_b64 in keys do
+          keys = keys ++ [public_key_b64]
+          doc = ContentType.set_key(doc, "public_keys", Jason.encode!(keys))
+          update = Yelixer.Encoding.encode_update(doc)
+          CommitStoreClient.create_chained_commit(store, identity_uuid, update)
+        end
+
+        :ok
+
+      :none ->
+        {:error, :identity_not_found}
+    end
+  end
+
+  @doc "Get public keys from an identity document."
+  def get_public_keys(identity_uuid, store \\ CommitStoreClient) do
+    case read(identity_uuid, store) do
+      nil ->
+        []
+
+      content ->
+        case content["public_keys"] do
+          nil ->
+            []
+
+          keys_json ->
+            case Jason.decode(keys_json) do
+              {:ok, list} when is_list(list) -> list
+              _ -> []
+            end
+        end
+    end
+  end
+
   defp load_schema(uuid, store) do
     case CommitStoreClient.latest_commit(store, uuid) do
       {:ok, commit} ->

@@ -57,6 +57,26 @@ defmodule Commonplace.Crypto.SigningTest do
     assert {:error, :invalid_encoding} = Signing.decode_key("not!valid!base64!!!")
   end
 
+  test "fingerprint returns 8 hex chars", %{pub: pub} do
+    fp = Signing.fingerprint(pub)
+    assert String.length(fp) == 8
+    assert String.match?(fp, ~r/^[0-9a-f]{8}$/)
+  end
+
+  test "signer_id combines uuid and fingerprint", %{pub: pub} do
+    id = Signing.signer_id("test-uuid-123", pub)
+    assert String.starts_with?(id, "test-uuid-123@")
+    assert String.length(id) == String.length("test-uuid-123@") + 8
+  end
+
+  test "parse_signer_id extracts uuid and fingerprint" do
+    assert {:ok, "uuid-123", "abcd1234"} = Signing.parse_signer_id("uuid-123@abcd1234")
+  end
+
+  test "parse_signer_id returns error for invalid format" do
+    assert {:error, :invalid_signer_id} = Signing.parse_signer_id("no-at-sign")
+  end
+
   test "different commits get different signatures", %{priv: priv} do
     c1 = Commit.new("uuid1", "data1", nil)
     c2 = Commit.new("uuid2", "data2", nil)

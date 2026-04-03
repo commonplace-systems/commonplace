@@ -43,7 +43,12 @@ defmodule Commonplace.Crypto.SigningIntegrationTest do
 
     commit = CommitStore.create_commit(store, UUID.uuid4(), "test data", nil)
     assert commit.signature != nil
-    assert commit.signer_id == "default"
+
+    # signer_id should be "anonymous@<fingerprint>" since no signing_identity is set
+    assert String.starts_with?(commit.signer_id, "anonymous@")
+    {:ok, "anonymous", fp} = Signing.parse_signer_id(commit.signer_id)
+    assert String.length(fp) == 8
+    assert fp == Signing.fingerprint(pub)
 
     # Verify the signature
     assert :ok = Signing.verify_commit(commit, pub)
@@ -51,6 +56,27 @@ defmodule Commonplace.Crypto.SigningIntegrationTest do
     # Clean up
     SecretStore.delete("signing_key:default")
     SecretStore.delete("signing_pub:default")
+  end
+
+  test "commits use identity UUID in signer_id when signing_identity is set", %{store: store} do
+    {pub, priv} = Signing.generate_keypair()
+    SecretStore.set("signing_key:default", Base.encode64(priv))
+    SecretStore.set("signing_pub:default", Base.encode64(pub))
+    SecretStore.set("signing_identity", "my-identity-uuid-1234")
+
+    commit = CommitStore.create_commit(store, UUID.uuid4(), "test data", nil)
+    assert commit.signature != nil
+    assert String.starts_with?(commit.signer_id, "my-identity-uuid-1234@")
+    {:ok, "my-identity-uuid-1234", fp} = Signing.parse_signer_id(commit.signer_id)
+    assert fp == Signing.fingerprint(pub)
+
+    # Verify the signature
+    assert :ok = Signing.verify_commit(commit, pub)
+
+    # Clean up
+    SecretStore.delete("signing_key:default")
+    SecretStore.delete("signing_pub:default")
+    SecretStore.delete("signing_identity")
   end
 
   test "chained commits are also signed when key exists", %{store: store} do
@@ -64,6 +90,8 @@ defmodule Commonplace.Crypto.SigningIntegrationTest do
 
     assert c1.signature != nil
     assert c2.signature != nil
+    assert String.starts_with?(c1.signer_id, "anonymous@")
+    assert String.starts_with?(c2.signer_id, "anonymous@")
     assert :ok = Signing.verify_commit(c1, pub)
     assert :ok = Signing.verify_commit(c2, pub)
 

@@ -391,18 +391,21 @@ defmodule Commonplace.Store.CommitStore do
         commit
 
       _pid ->
-        case Commonplace.Store.SecretStore.get("signing_key:default") do
-          {:ok, encoded_key} ->
-            case Base.decode64(encoded_key) do
-              {:ok, private_key} ->
-                Commonplace.Crypto.Signing.sign_commit(commit, private_key, "default")
-
-              _ ->
-                commit
+        with {:ok, encoded_key} <- Commonplace.Store.SecretStore.get("signing_key:default"),
+             {:ok, private_key} <- Base.decode64(encoded_key),
+             {:ok, encoded_pub} <- Commonplace.Store.SecretStore.get("signing_pub:default"),
+             {:ok, public_key} <- Base.decode64(encoded_pub) do
+          # Get identity UUID if configured
+          identity_uuid =
+            case Commonplace.Store.SecretStore.get("signing_identity") do
+              {:ok, uuid} -> uuid
+              :not_found -> "anonymous"
             end
 
-          :not_found ->
-            commit
+          signer_id = Commonplace.Crypto.Signing.signer_id(identity_uuid, public_key)
+          Commonplace.Crypto.Signing.sign_commit(commit, private_key, signer_id)
+        else
+          _ -> commit
         end
     end
   end

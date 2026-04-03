@@ -48,10 +48,11 @@ defmodule Commonplace.CLI.Keygen do
 
         IO.puts("Generated Ed25519 signing keypair: #{name}")
         IO.puts("Public key: #{Base.encode64(pub)}")
+        IO.puts("Fingerprint: #{Signing.fingerprint(pub)}")
         IO.puts("Private key stored in SecretStore as: #{secret_name}")
         IO.puts("")
-        IO.puts("To enable commit signing:")
-        IO.puts("  commonplace secret set SIGNING_KEY=#{secret_name}")
+        IO.puts("To associate with your identity:")
+        IO.puts("  commonplace secret set signing_identity=<your-identity-uuid>")
     end
   end
 end

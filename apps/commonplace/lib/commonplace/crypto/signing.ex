@@ -38,6 +38,26 @@ defmodule Commonplace.Crypto.Signing do
     end
   end
 
+  @doc "Compute a short fingerprint of a public key (first 8 hex chars of SHA256)."
+  def fingerprint(public_key) when is_binary(public_key) do
+    :crypto.hash(:sha256, public_key)
+    |> Base.encode16(case: :lower)
+    |> binary_part(0, 8)
+  end
+
+  @doc "Build a signer_id from identity UUID and public key."
+  def signer_id(identity_uuid, public_key) do
+    "#{identity_uuid}@#{fingerprint(public_key)}"
+  end
+
+  @doc "Parse a signer_id into {identity_uuid, fingerprint}."
+  def parse_signer_id(signer_id) when is_binary(signer_id) do
+    case String.split(signer_id, "@", parts: 2) do
+      [uuid, fp] -> {:ok, uuid, fp}
+      _ -> {:error, :invalid_signer_id}
+    end
+  end
+
   @doc "Check if a commit is signed."
   def signed?(%Commit{signature: sig}) when not is_nil(sig), do: true
   def signed?(%Commit{}), do: false
