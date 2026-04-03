@@ -249,7 +249,19 @@ defmodule Commonplace.Store.CommitStore do
   def handle_call({:import_commit, commit}, _from, state) do
     case CubDB.get(state.db, {:commit, commit.id}) do
       nil ->
-        CubDB.put(state.db, {:commit, commit.id}, commit)
+        # Store the commit. If no :latest exists for this doc, set it —
+        # otherwise leave :latest alone (avoids clobbering a newer local head).
+        case CubDB.get(state.db, {:latest, commit.doc_uuid}) do
+          nil ->
+            CubDB.put_multi(state.db, [
+              {{:commit, commit.id}, commit},
+              {{:latest, commit.doc_uuid}, commit.id}
+            ])
+
+          _existing_latest ->
+            CubDB.put(state.db, {:commit, commit.id}, commit)
+        end
+
         {:reply, :ok, state}
 
       _existing ->
