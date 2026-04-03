@@ -11,7 +11,9 @@ defmodule Commonplace.Store.Commit do
     :doc_uuid,    # Historical: which UUID originally created this commit (debugging only)
     :parent_id,
     :update,
-    :timestamp
+    :timestamp,
+    :signature,   # Ed25519 signature of commit.id, or nil if unsigned
+    :signer_id    # identifier of the signing key, or nil if unsigned
   ]
 
   @type t :: %__MODULE__{
@@ -19,7 +21,9 @@ defmodule Commonplace.Store.Commit do
           doc_uuid: String.t(),
           parent_id: binary() | nil,
           update: binary(),
-          timestamp: DateTime.t()
+          timestamp: DateTime.t(),
+          signature: binary() | nil,
+          signer_id: String.t() | nil
         }
 
   def new(doc_uuid, update, parent_id \\ nil) do

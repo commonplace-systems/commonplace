@@ -29,6 +29,7 @@ defmodule Commonplace.CLI do
     ps                            List managed processes
     signal <topic> <type> [json]  Send a magenta message
     secret <command>              Manage local secrets (set/get/list/delete)
+    keygen [name]                 Generate Ed25519 signing keypair
   """
 
   @workspace_dir ".commonplace"
@@ -96,6 +97,7 @@ defmodule Commonplace.CLI do
       "merge" -> Commonplace.CLI.Merge.run(data_dir, relative_path, rest)
       "signal" -> Commonplace.CLI.Signal.run(data_dir, relative_path, rest)
       "secret" -> Commonplace.CLI.Secret.run(data_dir, relative_path, rest)
+      "keygen" -> Commonplace.CLI.Keygen.run(data_dir, relative_path, rest)
       _ ->
         IO.puts(:stderr, "Unknown command: #{cmd}")
         IO.puts(:stderr, "Run 'commonplace --help' for usage.")

@@ -158,7 +158,7 @@ defmodule Commonplace.Store.CommitStore do
 
   @impl true
   def handle_call({:create_commit, doc_uuid, update, parent_id, metadata}, _from, state) do
-    commit = Commit.new(doc_uuid, update, parent_id)
+    commit = Commit.new(doc_uuid, update, parent_id) |> maybe_sign_commit()
 
     CubDB.put_multi(state.db, [
       {{:commit, commit.id}, commit},
@@ -383,5 +383,27 @@ defmodule Commonplace.Store.CommitStore do
     archive_path = "#{path}.corrupt.#{timestamp}"
     File.rename!(path, archive_path)
     File.mkdir_p!(path)
+  end
+
+  defp maybe_sign_commit(commit) do
+    case Process.whereis(Commonplace.Store.SecretStore) do
+      nil ->
+        commit
+
+      _pid ->
+        case Commonplace.Store.SecretStore.get("signing_key:default") do
+          {:ok, encoded_key} ->
+            case Base.decode64(encoded_key) do
+              {:ok, private_key} ->
+                Commonplace.Crypto.Signing.sign_commit(commit, private_key, "default")
+
+              _ ->
+                commit
+            end
+
+          :not_found ->
+            commit
+        end
+    end
   end
 end
