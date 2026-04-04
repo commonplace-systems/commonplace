@@ -302,6 +302,40 @@ defmodule Commonplace.Store.CommitStore do
     {:reply, result, state}
   end
 
+  @impl true
+  def handle_call({:store_attestation, doc_uuid, attestation}, _from, state) do
+    CubDB.put_multi(state.db, [
+      {{:attestation, attestation.id}, attestation},
+      {{:latest_attestation, doc_uuid}, attestation.id}
+    ])
+
+    {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_call({:latest_attestation, doc_uuid}, _from, state) do
+    case CubDB.get(state.db, {:latest_attestation, doc_uuid}) do
+      nil ->
+        {:reply, :none, state}
+
+      att_id ->
+        case CubDB.get(state.db, {:attestation, att_id}) do
+          nil -> {:reply, :none, state}
+          att -> {:reply, {:ok, att}, state}
+        end
+    end
+  end
+
+  @impl true
+  def handle_call({:attestation_chain, doc_uuid, limit}, _from, state) do
+    case CubDB.get(state.db, {:latest_attestation, doc_uuid}) do
+      nil -> {:reply, [], state}
+      att_id ->
+        chain = collect_attestation_chain(state.db, att_id, limit, [])
+        {:reply, chain, state}
+    end
+  end
+
   defp collect_commit_ids(db, doc_uuid) do
     case CubDB.get(db, {:latest, doc_uuid}) do
       nil -> MapSet.new()
@@ -337,6 +371,16 @@ defmodule Commonplace.Store.CommitStore do
         nil -> :none
         commit -> find_in_chain(db, commit.parent_id, ancestor_ids)
       end
+    end
+  end
+
+  defp collect_attestation_chain(_db, nil, _limit, acc), do: Enum.reverse(acc)
+  defp collect_attestation_chain(_db, _id, 0, acc), do: Enum.reverse(acc)
+
+  defp collect_attestation_chain(db, att_id, limit, acc) do
+    case CubDB.get(db, {:attestation, att_id}) do
+      nil -> Enum.reverse(acc)
+      att -> collect_attestation_chain(db, att.prev_attestation_id, limit - 1, [att | acc])
     end
   end
 
