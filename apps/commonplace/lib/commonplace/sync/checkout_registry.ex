@@ -125,6 +125,21 @@ defmodule Commonplace.Sync.CheckoutRegistry do
 
             state = %{state | checkouts: replace_checkout(state, sync_dir, new_checkout)}
             persist(state)
+
+            # Log reroot event on red channel
+            reroot_event = %{
+              "type" => "reroot",
+              "from_root" => checkout.uuid,
+              "to_root" => new_uuid,
+              "checkout_path" => sync_dir,
+              "timestamp" => DateTime.utc_now() |> DateTime.to_iso8601()
+            }
+
+            Commonplace.Dataflow.PubSub.broadcast_red(
+              "checkout:reroot",
+              Jason.encode!(reroot_event)
+            )
+
             {:reply, {:ok, checkout_to_map(new_checkout)}, state}
 
           {:error, reason} ->

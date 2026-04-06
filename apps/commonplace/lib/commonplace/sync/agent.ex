@@ -66,6 +66,13 @@ defmodule Commonplace.Sync.Agent do
   @impl true
   def handle_call(:sync_once, _from, state) do
     state = do_sync(state)
+
+    # After sync completes, trigger reflog checkpoint
+    # Use Task.start to avoid blocking the sync cycle
+    Task.start(fn ->
+      Commonplace.Reflog.Snapshot.checkpoint(state.root_uuid, state.store, "server")
+    end)
+
     {:reply, :ok, state}
   end
 
