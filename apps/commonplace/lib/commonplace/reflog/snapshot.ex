@@ -46,6 +46,7 @@ defmodule Commonplace.Reflog.Snapshot do
     # Load the data directory's schema
     data_schema = load_schema(data_dir_uuid, store)
     entries = Schema.list_entries(data_schema)
+              |> Enum.reject(&String.starts_with?(&1.name, "__"))
 
     # Get the data dir's own schema commit_id
     schema_cid =
