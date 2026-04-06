@@ -42,7 +42,8 @@ defmodule Commonplace.Green.Bursar do
     :state_uuid,
     :log_uuid,
     :log,
-    tokens: %{}  # %{path => %{holder: string, acquired_at: DateTime}}
+    tokens: %{},  # %{path => %{holder: string, acquired_at: DateTime, ttl_ms: integer | nil}}
+    sweep_interval: 10_000  # ms between TTL sweep checks
   ]
 
   # --- Client API ---
@@ -55,10 +56,12 @@ defmodule Commonplace.Green.Bursar do
 
   @doc """
   Acquire an exclusive token for a path.
+  Options: [ttl: milliseconds] — auto-expires after TTL. Default: no expiry.
   Returns {:ok, token_info} or {:denied, holder_info}.
   """
-  def acquire(server \\ __MODULE__, path, holder) do
-    GenServer.call(server, {:acquire, path, holder})
+  def acquire(server \\ __MODULE__, path, holder, opts \\ []) do
+    ttl_ms = Keyword.get(opts, :ttl, nil)
+    GenServer.call(server, {:acquire, path, holder, ttl_ms})
   end
 
   @doc """
@@ -101,20 +104,27 @@ defmodule Commonplace.Green.Bursar do
     state = %__MODULE__{root_uuid: root_uuid, store: store}
     state = load_state(state)
 
+    sweep_interval = Keyword.get(opts, :sweep_interval, 10_000)
+    state = %{state | sweep_interval: sweep_interval}
+
+    # Start TTL sweep timer
+    Process.send_after(self(), :sweep_ttl, sweep_interval)
+
     Logger.info("Bursar started for #{root_uuid}, #{map_size(state.tokens)} active tokens")
     {:ok, state}
   end
 
   @impl true
-  def handle_call({:acquire, path, holder}, _from, state) do
+  def handle_call({:acquire, path, holder, ttl_ms}, _from, state) do
     case Map.get(state.tokens, path) do
       nil ->
         # Token available — grant it
-        token_info = %{holder: holder, acquired_at: DateTime.utc_now()}
+        token_info = %{holder: holder, acquired_at: DateTime.utc_now(), ttl_ms: ttl_ms}
         tokens = Map.put(state.tokens, path, token_info)
         state = %{state | tokens: tokens}
         state = persist_state(state)
-        state = log_event(state, "acquire", path, holder)
+        ttl_extra = if ttl_ms, do: %{ttl_ms: ttl_ms}, else: %{}
+        state = log_event(state, "acquire", path, holder, ttl_extra)
 
         broadcast_green_event("acquired", path, holder)
         {:reply, {:ok, token_info}, state}
@@ -128,6 +138,12 @@ defmodule Commonplace.Green.Bursar do
         state = log_event(state, "denied", path, holder, %{current_holder: current_holder})
         {:reply, {:denied, %{holder: current_holder}}, state}
     end
+  end
+
+  # Legacy arity-3 acquire (without TTL) — dispatch to arity-4
+  @impl true
+  def handle_call({:acquire, path, holder}, from, state) do
+    handle_call({:acquire, path, holder, nil}, from, state)
   end
 
   @impl true
@@ -186,15 +202,17 @@ defmodule Commonplace.Green.Bursar do
   def handle_info({:magenta, _topic, %Magenta{type: "green:acquire"} = msg}, state) do
     path = msg.payload["path"]
     holder = msg.payload["holder"] || msg.source
+    ttl_ms = msg.payload["ttl_ms"]
 
     if path do
       case Map.get(state.tokens, path) do
         nil ->
-          token_info = %{holder: holder, acquired_at: DateTime.utc_now()}
+          token_info = %{holder: holder, acquired_at: DateTime.utc_now(), ttl_ms: ttl_ms}
           tokens = Map.put(state.tokens, path, token_info)
           state = %{state | tokens: tokens}
           state = persist_state(state)
-          state = log_event(state, "acquire", path, holder, %{via: "magenta"})
+          ttl_extra = if ttl_ms, do: %{ttl_ms: ttl_ms}, else: %{}
+          state = log_event(state, "acquire", path, holder, Map.merge(%{via: "magenta"}, ttl_extra))
           broadcast_green_event("acquired", path, holder)
           {:noreply, state}
 
@@ -253,6 +271,37 @@ defmodule Commonplace.Green.Bursar do
   end
 
   @impl true
+  def handle_info(:sweep_ttl, state) do
+    now = DateTime.utc_now()
+
+    expired =
+      Enum.filter(state.tokens, fn {_path, info} ->
+        case info.ttl_ms do
+          nil -> false
+          ttl ->
+            elapsed = DateTime.diff(now, info.acquired_at, :millisecond)
+            elapsed >= ttl
+        end
+      end)
+
+    state =
+      Enum.reduce(expired, state, fn {path, info}, acc ->
+        tokens = Map.delete(acc.tokens, path)
+        acc = %{acc | tokens: tokens}
+        acc = persist_state(acc)
+        acc = log_event(acc, "expired", path, info.holder, %{ttl_ms: info.ttl_ms})
+        broadcast_green_event("released", path, info.holder, %{reason: "expired"})
+        Logger.info("Bursar: token expired — #{path} (held by #{info.holder})")
+        acc
+      end)
+
+    # Schedule next sweep
+    Process.send_after(self(), :sweep_ttl, state.sweep_interval)
+
+    {:noreply, state}
+  end
+
+  @impl true
   def handle_info(_msg, state) do
     {:noreply, state}
   end
@@ -276,7 +325,8 @@ defmodule Commonplace.Green.Bursar do
                       {:ok, dt, _} -> dt
                       _ -> DateTime.utc_now()
                     end
-                    {path, %{holder: info["holder"], acquired_at: acquired_at}}
+                    ttl_ms = info["ttl_ms"]
+                    {path, %{holder: info["holder"], acquired_at: acquired_at, ttl_ms: ttl_ms}}
                   end)
                   {entry.node_id, tokens}
                 _ ->
@@ -304,8 +354,10 @@ defmodule Commonplace.Green.Bursar do
 
   defp persist_state(state) do
     # Serialize tokens to JSON
-    json = Map.new(state.tokens, fn {path, %{holder: holder, acquired_at: at}} ->
-      {path, %{"holder" => holder, "acquired_at" => DateTime.to_iso8601(at)}}
+    json = Map.new(state.tokens, fn {path, %{holder: holder, acquired_at: at} = info} ->
+      entry = %{"holder" => holder, "acquired_at" => DateTime.to_iso8601(at)}
+      entry = if info[:ttl_ms], do: Map.put(entry, "ttl_ms", info.ttl_ms), else: entry
+      {path, entry}
     end)
 
     doc = Yelixer.Doc.new()

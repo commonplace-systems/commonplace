@@ -4,6 +4,8 @@ defmodule Commonplace.Green.BursarTest do
   alias Commonplace.Store.CommitStore
   alias Commonplace.Green.Bursar
   alias Commonplace.Tree.Schema
+  alias Commonplace.Tree.DocBuilder
+  alias Commonplace.Dataflow.RedLog
 
   setup do
     dir = Path.join(System.tmp_dir!(), "cp_bursar_test_#{:rand.uniform(1_000_000)}")
@@ -21,12 +23,12 @@ defmodule Commonplace.Green.BursarTest do
     %{store: store_name, root: root_uuid, dir: dir}
   end
 
-  defp start_bursar(ctx, name \\ nil) do
+  defp start_bursar(ctx, name \\ nil, opts \\ []) do
     name = name || :"bursar_#{:rand.uniform(1_000_000)}"
     {:ok, pid} = Bursar.start_link(
-      root_uuid: ctx.root,
-      store: ctx.store,
-      name: name
+      [root_uuid: ctx.root,
+       store: ctx.store,
+       name: name] ++ opts
     )
     on_exit(fn ->
       if Process.alive?(pid), do: GenServer.stop(pid)
@@ -163,6 +165,69 @@ defmodule Commonplace.Green.BursarTest do
       assert {:ok, _} = Bursar.acquire(name, "b.txt", "bob")
       assert {:denied, _} = Bursar.acquire(name, "a.txt", "bob")
       assert {:ok, _} = Bursar.acquire(name, "c.txt", "bob")
+    end
+  end
+
+  describe "TTL expiry" do
+    test "acquire with TTL stores ttl_ms", ctx do
+      {_pid, name} = start_bursar(ctx, nil, sweep_interval: 60_000)
+
+      assert {:ok, info} = Bursar.acquire(name, "readme.txt", "alice", ttl: 5000)
+      assert info.ttl_ms == 5000
+    end
+
+    test "acquire without TTL has nil ttl_ms", ctx do
+      {_pid, name} = start_bursar(ctx, nil, sweep_interval: 60_000)
+
+      assert {:ok, info} = Bursar.acquire(name, "readme.txt", "alice")
+      assert info.ttl_ms == nil
+    end
+
+    test "expired token is released by sweep", ctx do
+      {pid, name} = start_bursar(ctx, nil, sweep_interval: 60_000)
+
+      assert {:ok, _} = Bursar.acquire(name, "readme.txt", "alice", ttl: 100)
+      Process.sleep(200)
+      send(pid, :sweep_ttl)
+      # Give the GenServer time to process the sweep message
+      Process.sleep(50)
+
+      assert :available = Bursar.query(name, "readme.txt")
+    end
+
+    test "non-expired token survives sweep", ctx do
+      {pid, name} = start_bursar(ctx, nil, sweep_interval: 60_000)
+
+      assert {:ok, _} = Bursar.acquire(name, "readme.txt", "alice", ttl: 10_000)
+      send(pid, :sweep_ttl)
+      # Give the GenServer time to process the sweep message
+      Process.sleep(50)
+
+      assert {:held, %{holder: "alice"}} = Bursar.query(name, "readme.txt")
+    end
+
+    test "expired token logs an event", ctx do
+      {pid, name} = start_bursar(ctx, nil, sweep_interval: 60_000)
+
+      assert {:ok, _} = Bursar.acquire(name, "readme.txt", "alice", ttl: 100)
+      Process.sleep(200)
+      send(pid, :sweep_ttl)
+      # Give the GenServer time to process the sweep message
+      Process.sleep(50)
+
+      # Read the red log by finding the __bursar.log UUID from the root schema
+      {:ok, schema} = DocBuilder.reconstruct_snapshot(ctx.store, ctx.root)
+      {:ok, log_entry} = Schema.get_entry(schema, "__bursar.log")
+      log = RedLog.load(log_entry.node_id, ctx.store)
+      events = RedLog.read(log)
+
+      expired_events = Enum.filter(events, fn e -> e["event"] == "expired" end)
+      assert length(expired_events) >= 1
+
+      expired_event = List.last(expired_events)
+      assert expired_event["path"] == "readme.txt"
+      assert expired_event["holder"] == "alice"
+      assert expired_event["ttl_ms"] == 100
     end
   end
 end
