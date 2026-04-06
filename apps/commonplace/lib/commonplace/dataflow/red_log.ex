@@ -63,11 +63,22 @@ defmodule Commonplace.Dataflow.RedLog do
     end)
   end
 
-  @doc "Commit the current log state to the store."
+  @doc "Commit the current log state to the store, with optional gold attestation."
   def commit(%__MODULE__{} = log) do
     update = Yelixer.Encoding.encode_update(log.doc)
     CommitStoreClient.create_chained_commit(log.store, log.uuid, update)
+
+    # Gold attestation: create tamper-evident chain entry
+    maybe_attest(log.uuid, log.store)
+
     log
+  end
+
+  defp maybe_attest(uuid, store) do
+    case Commonplace.Gold.Chain.attest(uuid, store) do
+      {:ok, _att} -> :ok
+      {:error, _} -> :ok
+    end
   end
 
   # --- Onramp GenServer ---
