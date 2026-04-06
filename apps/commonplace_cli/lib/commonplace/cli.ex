@@ -31,6 +31,7 @@ defmodule Commonplace.CLI do
     secret <command>              Manage local secrets (set/get/list/delete)
     keygen [name]                 Generate Ed25519 signing keypair
     attest [path]                 Sign the head of a document (gold chain)
+    checkpoint [--owner name]     Create a reflog checkpoint
   """
 
   @workspace_dir ".commonplace"
@@ -100,6 +101,7 @@ defmodule Commonplace.CLI do
       "secret" -> Commonplace.CLI.Secret.run(data_dir, relative_path, rest)
       "keygen" -> Commonplace.CLI.Keygen.run(data_dir, relative_path, rest)
       "attest" -> Commonplace.CLI.Attest.run(data_dir, relative_path, rest)
+      "checkpoint" -> Commonplace.CLI.Checkpoint.run(data_dir, relative_path, rest)
       _ ->
         IO.puts(:stderr, "Unknown command: #{cmd}")
         IO.puts(:stderr, "Run 'commonplace --help' for usage.")
