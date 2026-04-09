@@ -18,7 +18,7 @@ defmodule Commonplace.MCP.Server do
                                           reply, just an updated state
   """
 
-  alias Commonplace.MCP.Tools
+  alias Commonplace.MCP.{Resources, Tools}
 
   @protocol_version "2025-06-18"
   @server_name "commonplace-mcp"
@@ -103,7 +103,7 @@ defmodule Commonplace.MCP.Server do
       "serverInfo" => server_info,
       "capabilities" => %{
         "tools" => %{},
-        "resources" => %{}
+        "resources" => %{"subscribe" => false, "listChanged" => false}
       }
     }
 
@@ -119,6 +119,33 @@ defmodule Commonplace.MCP.Server do
   def handle(%__MODULE__{} = s, {:request, _id, "tools/list", _params}) do
     result = %{"tools" => Tools.list()}
     {:ok, result, s}
+  end
+
+  # --- resources/list ---
+  def handle(%__MODULE__{} = s, {:request, _id, "resources/list", _params}) do
+    result = %{
+      "resources" => Resources.list(),
+      "resourceTemplates" => Resources.templates()
+    }
+
+    {:ok, result, s}
+  end
+
+  # --- resources/read ---
+  def handle(%__MODULE__{} = s, {:request, _id, "resources/read", params}) do
+    params = params || %{}
+    uri = Map.get(params, "uri", "")
+
+    case Resources.read(uri) do
+      {:ok, contents} ->
+        {:ok, %{"contents" => contents}, s}
+
+      {:error, :not_found} ->
+        {:error, :invalid_params, "resource not found: #{uri}", s}
+
+      {:error, reason} ->
+        {:error, :internal_error, stringify(reason), s}
+    end
   end
 
   # --- tools/call ---

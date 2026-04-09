@@ -94,6 +94,21 @@ defmodule Commonplace.MCP.ServerTest do
     end
   end
 
+  describe "resources/list" do
+    test "returns the tree:// template", %{server: s} do
+      s = initialize(s)
+
+      request = {:request, 5, "resources/list", %{}}
+
+      assert {:ok, result, _s2} = Server.handle(s, request)
+      assert is_list(result["resourceTemplates"])
+
+      tree = Enum.find(result["resourceTemplates"], &(&1["name"] == "tree"))
+      assert tree
+      assert tree["uriTemplate"] =~ "tree://"
+    end
+  end
+
   describe "tools/list" do
     test "returns the registered tool list after initialize", %{server: s} do
       s = initialize(s)
