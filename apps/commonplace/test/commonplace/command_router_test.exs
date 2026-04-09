@@ -135,6 +135,52 @@ defmodule Commonplace.CommandRouterTest do
       assert done["result"]["old_bytes"] == 5
       assert done["result"]["new_bytes"] == 11
     end
+
+    # CX-2sv regression: the MCP write path hit a bug where rehydrating a
+    # text doc from CubDB and then applying a diff produced an encoded
+    # commit whose content was lost on re-decode. Only triggered when the
+    # doc has a ContentType envelope (the sync agent's normal pattern) and
+    # the doc has been through at least one save→reload cycle before the
+    # write. The earlier single-write test above doesn't hit this because
+    # it never rehydrates before the write.
+    test "write survives rehydrate→write→reread on a sync-agent-style doc", ctx do
+      {_pid, name} = start_router(ctx)
+      uuid = UUID.uuid4()
+
+      # Simulate how the sync agent creates a text doc on initial disk-read:
+      # fresh Yelixer.Doc, ContentType.create, insert full file contents,
+      # encode as a single commit.
+      d1 = Yelixer.Doc.new()
+      d1 = Commonplace.Document.ContentType.create(d1, :text, "test.txt")
+      d1 = Commonplace.Document.ContentType.insert_text(d1, 0, "second version content")
+      update1 = Yelixer.Encoding.encode_update(d1)
+      CommitStore.create_commit(ctx.store, uuid, update1, nil)
+
+      # Sanity check: reconstruct_snapshot (the path write takes) can read
+      # the full content back.
+      {:ok, read1} = Commonplace.Tree.DocBuilder.reconstruct_snapshot(ctx.store, uuid)
+      assert Commonplace.Document.ContentType.get_content(read1) == "second version content"
+
+      # Now the MCP write path: CommandRouter.write rehydrates via
+      # reconstruct_snapshot, Diff.apply_diff onto the rehydrated doc,
+      # encode_update, create_chained_commit. The new commit should
+      # decode back to the new content.
+      assert {:ok, info} = CommandRouter.write(name, uuid, "replaced text")
+      assert info["old_bytes"] == 22
+      assert info["new_bytes"] == 13
+
+      {:ok, read2} = Commonplace.Tree.DocBuilder.reconstruct_snapshot(ctx.store, uuid)
+      assert Commonplace.Document.ContentType.get_content(read2) == "replaced text"
+
+      # A SECOND write must see the correct old_bytes, not 0, confirming
+      # the commit really does persist the updated content.
+      assert {:ok, info2} = CommandRouter.write(name, uuid, "third version")
+      assert info2["old_bytes"] == 13
+      assert info2["new_bytes"] == 13
+
+      {:ok, read3} = Commonplace.Tree.DocBuilder.reconstruct_snapshot(ctx.store, uuid)
+      assert Commonplace.Document.ContentType.get_content(read3) == "third version"
+    end
   end
 
   describe "branch_activate / branch_deactivate" do
