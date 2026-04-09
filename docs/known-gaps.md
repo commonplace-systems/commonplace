@@ -1,0 +1,527 @@
+# Known Gaps
+
+This document tracks architectural, feature, and quality gaps in commonplace
+that are **known** but **deferred**. Anything listed here is known-broken or
+known-incomplete. The absence of a gap in the main codebase does NOT imply
+it's working — only that nobody has filed it yet.
+
+**Last updated:** 2026-04-09 (post Views Phase 2).
+
+## How to use this doc
+
+- **Before working around a gap:** skim this file, add a cross-reference from
+  your beads issue, and (if relevant) update the gap entry with what you
+  learned.
+- **When closing a gap:** move the entry to the "Closed" section at the bottom
+  with the commit/PR that fixed it and a one-line summary.
+- **When discovering a new gap:** add it here *before* shipping the workaround,
+  not after. The purpose of this doc is to surface known weaknesses so
+  future work knows where the landmines are; an undocumented gap is a
+  landmine waiting for the next person.
+- **Cross-link from beads:** every gap here should have a beads ticket. If it
+  doesn't, file one and add the ID below.
+
+## Index
+
+1. [Architectural gaps](#architectural-gaps)
+2. [Deferred phase 2+ view features](#deferred-phase-2-view-features)
+3. [Schema / data gaps](#schema--data-gaps)
+4. [Test / quality gaps](#test--quality-gaps)
+5. [Infrastructure / workflow gaps](#infrastructure--workflow-gaps)
+6. [Closed gaps (changelog)](#closed-gaps-changelog)
+
+---
+
+## Architectural gaps
+
+### A1. SmartDoc / Orchestrator / push_cyan is half-built
+
+**Status:** load-bearing gap — discovered during Views Pass B (2026-04-09)
+**Beads:** CX-18s (architectural reconciliation, low urgency)
+**Workaround shipped:** `Commonplace.ViewCompute` (commit a8addbc)
+
+**What's broken:**
+
+- `Commonplace.SmartDoc.handle_blue/2` is called by the Orchestrator's
+  dispatch loop as a **stateless module function** — not a `GenServer.call`
+  on the SmartDoc's own process. It has no access to the SmartDoc's state
+  or to resolved cyan ports.
+- `Commonplace.SmartDoc.push_cyan/3` has **zero callers**. It was rewritten
+  in Pass B to delegate to `Commonplace.CommandRouter.write/3` as a
+  hygiene measure (so if anyone ever calls it, the write is CRDT-safe),
+  but no call site exists today.
+- `Commonplace.Process.Orchestrator` is **not in the application supervision
+  tree** (`apps/commonplace/lib/commonplace/application.ex`). It only runs
+  when started explicitly — e.g. by `commonplace serve` or a test. In the
+  Phoenix-as-serve dev setup nothing starts it, so the whole SmartDoc path
+  is dormant in the running wiki demo.
+
+**What this means:**
+
+The dataflow abstraction implied by `SmartDoc` + `Orchestrator` — "declare
+blue inputs and cyan outputs, write `handle_blue`, the system wires
+everything up" — is not actually a working end-to-end path. It's a sketch
+that was never finished. Anyone who reads the smart_doc.ex + orchestrator.ex
+modules and assumes they can write a SmartDoc that reacts to commits and
+writes to output docs will hit this wall.
+
+**Why we sidestepped it:**
+
+Views Pass B needed a working reactive computed-view demo. Fixing the
+Orchestrator path would have been a multi-day architectural refactor with
+unknown risk. Instead, `Commonplace.ViewCompute` ships as a dedicated
+GenServer per source-target pair, subscribes to the source's
+`blue:UUID` PubSub topic directly, and writes to the target via
+`Commonplace.CommandRouter.write/3`. It does not use `SmartDoc` or
+`Orchestrator` at all. See `apps/commonplace/lib/commonplace/view_compute.ex`
+for the moduledoc's full rationale.
+
+**What the fix looks like:**
+
+When the Orchestrator path does get fixed, the choice is between:
+
+1. **Generalize ViewCompute** into a more general reactive-compute primitive
+   that replaces the SmartDoc/Orchestrator abstraction entirely. The vote
+   from commonplace-plan (message 1380 on clod-squad, 2026-04-09) is that
+   this might be the correct move — the original general abstraction may
+   never have been load-bearing for any concrete use case.
+2. **Fix the Orchestrator gaps**: add Orchestrator to the supervision tree,
+   change the dispatch model so `handle_blue` is a `GenServer.call` on the
+   SmartDoc's own process (so it has access to state and resolved ports),
+   wire `push_cyan` to the live dispatch path, migrate ViewCompute onto
+   this new substrate.
+
+This is **"architectural reconciliation"** work, not tech debt. The
+ViewCompute path is not wrong — it's a principled narrowing of the general
+dataflow abstraction to the specific "compute a view from inputs" use case.
+Deciding between (1) and (2) depends on whether there are other use cases
+that need the generality.
+
+---
+
+### A2. Signed-identity propagation is a placeholder
+
+**Status:** intentional punt — ships with placeholder identity strings
+**Beads:** CX-hoj (per-call signing context for CommitStore) is the
+  architectural fix; the placeholders are the interim.
+
+**What's broken:**
+
+Commits produced by the wiki LiveView and by MCP tool invocations all carry
+placeholder identity strings:
+
+- Wiki LiveView: `signer_id: "wiki-user@local"`
+- MCP InvokeViewAction: `signer_id: "mcp-agent@local"`
+- MCP write / cat / other tools: currently unsigned (per CX-rmk MVP scoping)
+
+These placeholders are threaded through the audit trail (magenta events on
+`view_actions` topic include them) and preserve the PAYLOAD shape for future
+use, but they don't represent real cryptographically-attested identities.
+An observer reading the audit stream cannot distinguish "alice clicked edit"
+from "bob clicked edit" because both show up as `wiki-user@local`.
+
+**Why this persists:**
+
+1. There's no real session identity in the wiki LiveView — no login, no
+   user accounts, no cookie-based auth. Implementing that is a separate
+   concern.
+2. MCP session identity (the agent's ephemeral keypair) can't be used for
+   commit signing without CX-hoj, because the CommitStore signing path
+   reads from a global SecretStore slot. Loading an agent's keypair into
+   that slot would contaminate concurrent human commits with the agent's
+   signature (see CX-hoj description).
+
+**What the fix looks like:**
+
+CX-hoj: thread a `signing_context` (identity UUID + keypair ref) through
+`CommitStore.create_commit` / `create_chained_commit` / `CommandRouter`, so
+every writer has a well-defined identity that doesn't leak through global
+slots. Once that lands, the MCP meta-tool and wiki LiveView handle_event
+can populate real signer_ids from their session context instead of the
+placeholder strings.
+
+---
+
+### A3. CX-hoj: per-call signing context for CommitStore
+
+**Status:** open — see `bd show CX-hoj` for the full design
+**Beads:** CX-hoj
+**Workaround shipped:** MCP agents commit unsigned; wiki commits use the
+  default signing slot (which is nobody in particular in the dev setup)
+
+**Summary:** `CommitStore.maybe_sign_commit/1` reads signing credentials
+from a global SecretStore slot. Any concurrent writer (CLI, MCP, wiki
+LiveView) using the same process would sign with whatever's currently in
+that slot — no per-call isolation, so loading an agent's session keypair
+into the slot would cause concurrent human commits to be signed with the
+agent's key (worse than unsigned, because the audit trail would
+misattribute them).
+
+**Fix:** extend `CommitStore.create_commit` and `create_chained_commit`
+with an optional `signing_opts` keyword; `maybe_sign_commit` inspects
+those opts first and falls back to the global SecretStore slots only
+if nothing's passed. CommandRouter threads its configured context into
+every commit call.
+
+Not blocking the Views work but is a prerequisite for meaningful per-user
+audit trails.
+
+---
+
+## Deferred phase 2+ view features
+
+### V1. Forked views not attached to tree paths
+
+**Status:** intentional — shipped as Pass A fork button (CX-vaw)
+**Beads:** TBD
+
+**What's incomplete:**
+
+`Commonplace.CommandRouter.fork/2` returns a new UUID for the DAG-branched
+subtree, and both the LiveView fork button and the MCP `invoke_view_action`
+fork handler surface that UUID in their responses. But the new UUID is
+**not added to any schema entry**. Nothing navigates to the forked view —
+the fork is addressable via its UUID but orphaned from the tree.
+
+**What the fix looks like:**
+
+A follow-up pass needs to either:
+
+1. Prompt the user for a destination path and `Schema.add_file` the forked
+   UUID there, or
+2. Auto-generate a `.fork-N` suffix and attach it to the current directory
+   automatically, or
+3. Surface the forked UUID through a dedicated "orphan forks" UI so users
+   can move them into place later.
+
+The right answer depends on product intent. For MVP, "orphan forks with a
+visible UUID" is acceptable.
+
+### V2. JSON-schema args validation on complex view actions
+
+**Status:** explicit punt from Pass A (CX-vaw) + Pass C (CX-c1i) scoping
+**Beads:** TBD
+
+**What's incomplete:**
+
+The `<action>` vocabulary supports a hybrid args format per views.md: a
+simple colon form (`args="text:string"`) for the 80% case and a JSON-schema
+form for complex actions:
+
+```xml
+<action name="edit_cell">
+  <args format="json-schema">
+    {"type":"object","properties":{"cell_id":{"type":"string"}, ...}}
+  </args>
+</action>
+```
+
+Neither format is currently parsed or validated by the ViewRenderer or the
+MCP meta-tool. The simple form renders as a literal `args: text:string` hint
+beside the button. The JSON-schema form would currently be rendered as a
+`<args>` child element with tag `:unknown` (since `args` is not in the
+10-element vocabulary — wait, it IS one of the ones ViewXml parses, let me
+double-check).
+
+The downstream validation story — "arg inputs come from a form, are parsed
+against the schema, and only valid calls dispatch" — is not built.
+
+**Why deferred:** commonplace-plan's explicit guidance during Pass A
+scoping: start with no-args actions (edit, history, fork), defer form
+rendering and JSON-schema validation to a later pass.
+
+### V3. Per-view-focus MCP tool registration (commonplace-plan's pattern 3)
+
+**Status:** explicit future item in views.md; ships as meta-tool in Pass C
+**Beads:** TBD
+
+**What's incomplete:**
+
+The MCP meta-tool `invoke_view_action` is a single tool registered at
+MCP initialize time. It takes `view_uuid` + `action` and dispatches
+generically. This works because Claude Code's MCP client does NOT support
+dynamic tool registration post-initialize — you can't add a new tool per
+view when the session is running.
+
+A nicer UX would be **per-view-focus tool registration**: the MCP server
+picks one "current view" (perhaps based on which view the agent last
+cat'd, or a presence-based "where is the agent" signal), walks its
+`<action>` declarations, and synthesizes one MCP tool per action with
+the correct name, description, and args schema. When the agent switches
+focus, the MCP session restarts with the new tool set.
+
+This requires session-restart UX we don't have. Punt until the meta-tool
+pattern has proven it's worth the extra complexity.
+
+### V4. Staleness UI (parsed but not surfaced)
+
+**Status:** vocabulary exists, renderer doesn't honor it
+**Beads:** TBD
+
+**What's incomplete:**
+
+The views.md vocabulary includes `stale` and `stale-relative-to` attributes
+on `<view>`:
+
+- `stale="true"` — set by a SmartDoc when it starts recomputing the view
+- `stale-relative-to="<commit-id>"` — which input commit triggered the
+  staleness
+
+The `ViewRenderer.render_node/2` clause for `:view` calls `stale_indicator/1`
+when `stale="true"`, which currently emits a small info banner. But:
+
+1. No SmartDoc currently sets these attributes — `LiveNotesCompute.compute/1`
+   emits the view XML without them.
+2. The rendering is minimal (a one-line info block). Needs design work to
+   fit the wiki UI's style.
+3. There's no "clear the stale flag when recompute finishes" path.
+
+### V5. Fork-safety lint for computed views
+
+**Status:** blocked on Orchestrator gap (A1)
+**Beads:** TBD
+
+**What's incomplete:**
+
+commonplace-plan and I agreed on a pattern (see clod-squad messages 1345
+and 1349) where the Orchestrator walks `__processes.json`, computes each
+SmartDoc's fork boundary as its containing directory, verifies that output
+docrefs resolve within that boundary, and surfaces `fork-safe="false"` +
+`fork-boundary="..."` attributes on the produced view when a violation is
+detected.
+
+This is achievable from the existing Orchestrator code path but it depends
+on the SmartDoc/Orchestrator path being active (see A1), which it
+currently isn't. ViewCompute sidesteps the whole path and therefore has no
+fork-safety story.
+
+### V6. Transclusion resolver for `<include>`
+
+**Status:** renderer handles inlined content only
+**Beads:** TBD
+
+**What's incomplete:**
+
+The `<include>` element in a view is defined as "transclusion with inlined
+content + origin marker" — the upstream SmartDoc, at compute time, is
+supposed to read the referenced doc, inline its content as children of
+`<include>`, and record the source via `from` + `commit` attributes.
+
+The ViewRenderer correctly renders `<include>` elements that already have
+inlined content — it wraps them in a bordered "transcluded from X @ Y"
+block. But there's **no resolver** that walks the tree, finds `<include>`
+elements with empty children, reads the referenced doc, and inlines its
+content. If a compute function produces an `<include from="..."/>` with
+no children, the renderer shows an empty transclusion block.
+
+Deferred because the wiki-home example doesn't need transclusion yet.
+
+---
+
+## Schema / data gaps
+
+### S1. Beads credential key leaked to git history
+
+**Status:** accepted by jes (2026-04-09, message 1361 on clod-squad)
+**Commit:** bf6eab5 (the leak) + 1e9d1a4 (gitignore fix)
+**Beads:** TBD
+
+**What happened:**
+
+During Views Pass A commit staging I ran `git add .beads/` which scooped
+up `.beads/.beads-credential-key` (a 32-byte local encryption key for the
+embedded Dolt database). The `.beads/.gitignore` did not cover it. The
+file was pushed to `origin/main` in commit bf6eab5.
+
+After discovering the leak I added the file + related paths to
+`.beads/.gitignore` and removed them via `git rm --cached` in commit
+1e9d1a4. The credential is still in git history at bf6eab5.
+
+**Decision:** jes chose to accept the leak rather than force-push to
+rewrite history. The going-forward discipline is to use targeted file
+paths when staging beads updates (never `git add .beads/`). That's
+captured in a persistent feedback memory for future sessions.
+
+**What's fragile:**
+
+The broader pattern is that beads writes several files into `.beads/` that
+are machine-local and should never be committed, but the upstream
+`.beads/.gitignore` doesn't cover all of them. Any future `git add .beads/`
+would re-leak similar files if the ignore list is still incomplete.
+
+### S2. Beads backup schema drift migration was manual
+
+**Status:** resolved but undocumented as a recovery procedure
+**Commit:** 882200c (2026-04-06 manual restore)
+
+**What happened:**
+
+The beads DB schema drifted between April sessions and the backup/restore
+flow required manual intervention to bring 102 issues back. The specific
+commit message ("bd: restore 102 issues from Apr 6 backup after schema
+drift") indicates this was handled at the time but the steps weren't
+captured in a runbook.
+
+**What's fragile:**
+
+If the schema drifts again, whoever picks up the problem will have to
+re-derive the recovery steps from scratch. Worth writing up as a short
+runbook under `docs/runbooks/` when someone hits the next drift.
+
+---
+
+## Test / quality gaps
+
+### T1. LiveView integration test coverage is thin
+
+**Status:** 168 view-related tests pass but cover unit-level behavior
+**Beads:** TBD
+
+**What's covered:**
+
+- `Commonplace.Document.ViewDetect` — 11 tests on content inspection
+- `Commonplace.Document.ViewXml` — 23 tests on XML parsing, Unicode,
+  vocabulary coverage
+- `CommonplaceWebWeb.ViewRenderer` — 20 tests on element-to-HTML mapping
+- `Commonplace.ViewCompute` — 3 tests on reactive compute loop
+- `Commonplace.ViewActionDispatch` — 9 tests on dispatch + audit
+- `CommonplaceWebWeb.ViewActions` — 8 tests on LiveView adapter
+- `Commonplace.MCP.Tools.InvokeViewAction` — 11 tests on meta-tool
+  parsing + dispatch
+
+**What's NOT covered:**
+
+- **End-to-end LiveView click tests** using
+  `Phoenix.LiveViewTest` / `live/3` — the existing tests exercise
+  `ViewActions.dispatch/3` with a fake `Phoenix.LiveView.Socket` struct
+  but don't actually render the LiveView, simulate a phx-click, and
+  verify the DOM updates. A real LiveView test would catch template/event
+  wiring regressions that the unit tests can't.
+- **Multi-process concurrency tests** for `ViewCompute` — what happens
+  when two sources change within milliseconds of each other? When a
+  compute function raises? When the target is forked mid-compute?
+- **MCP session integration tests** — the existing InvokeViewAction tests
+  use `run_with_content/4` to bypass the store; there's no test that
+  drives a real MCP stdio session end-to-end from `initialize` through
+  `tools/call`.
+- **Cross-layer audit tests** — no test asserts that a wiki LiveView
+  click and an MCP tool call with the same action name both produce
+  the same audit event shape (modulo the `source` field).
+
+These gaps aren't blockers for shipping but they're where regressions will
+hide. Worth adding incrementally as the surface expands.
+
+### T2. String.length vs graphemes bug in Commonplace.Document.Diff
+
+**Status:** known correctness bug, not yet biting production
+**Beads:** CX-r1f (file failing tests, don't fix yet)
+
+**What's broken:**
+
+`Commonplace.Document.Diff.patches_to_edits/1` tracks cursor position in
+grapheme units for the input lists (`length(chars)`) but uses
+`String.length(text)` for the insert-cursor advance step. `String.length/1`
+counts codepoints, not graphemes. For any input containing combining marks
+(é as e+́), ZWJ sequences (👨‍👩‍👧), or regional indicators (flag emoji),
+the cursor will end up at the wrong offset, causing subsequent edit ops
+to be misaligned.
+
+The diff output itself is still correct for ASCII + BMP text because
+codepoints and graphemes coincide in that range.
+
+**Fix:**
+
+Replace `String.length(text)` with `String.graphemes(text) |> length()`
+in the `:ins` branch of `patches_to_edits/1`. File a failing test
+exercising the combining-mark case and ship it with `@tag :skip` or
+equivalent until the fix lands.
+
+commonplace-plan confirmed the fix approach in message 1380 on clod-squad
+(2026-04-09) and is updating the Diff contract section of views.md to say
+"codepoint-unit offsets, approximately grapheme-accurate for common text"
+with a reference to the tracking ticket.
+
+---
+
+## Infrastructure / workflow gaps
+
+### I1. MCP escript must be rebuilt after tool changes
+
+**Status:** inherent to the escript architecture
+**Beads:** N/A (workflow documentation only)
+
+**Summary:**
+
+`apps/commonplace_mcp/commonplace_mcp` is a precompiled escript. Hot-loading
+modules into the running Phoenix beam does NOT update the escript — it
+runs as a separate OS process with its own compiled code path. After
+changing anything under `apps/commonplace_mcp/lib/`, run
+`cd apps/commonplace_mcp && mix escript.build` to rebuild before testing
+via stdio.
+
+I hit this during Views Pass C: the hot-loaded `Commonplace.MCP.Tools`
+module in the running beam had `invoke_view_action` registered, but piping
+JSON-RPC through the stale escript showed the old tools list. Rebuild
+fixed it.
+
+**Mitigation:** none needed beyond documentation. It's a natural property
+of the escript model. Just remember to rebuild.
+
+### I2. xmerl code path handling for in-place dev
+
+**Status:** mitigated in `Commonplace.Application.start/2`
+**Beads:** N/A
+
+**Summary:**
+
+The Phoenix beam was running before Views Pass 1 added `:xmerl` to
+`extra_applications`. On dev-mode startup, the beam's code path is
+configured from the `.app` file at boot time; adding `extra_applications`
+to mix.exs doesn't retroactively affect a running beam.
+
+During Pass 1 I had to manually `:code.add_patha('/path/to/xmerl/ebin')`
++ `:code.load_file(:xmerl_scan)` via RPC to get the running beam to see
+the xmerl modules. Future boots are covered by the `Application.start/2`
+callback which now runs `Application.ensure_all_started(:xmerl)`, so this
+should not recur — but if someone adds another OTP stdlib dep (`:public_key`,
+`:ssh`, etc.) in the future, they'll need to do the same belt-and-braces
+ensure-started treatment OR accept that the running beam must be
+cold-restarted to pick up the new dep.
+
+### I3. Distributed Erlang cookie management is ambient
+
+**Status:** works today by accident
+**Beads:** N/A
+
+**Summary:**
+
+RPC-based hot-loading (the pattern used throughout Views Phase 2) relies
+on `~/.erlang.cookie` being present and readable by both the running
+Phoenix beam and the ephemeral `elixir --sname ...` clients spawned to
+run `:rpc.call/4`. If the cookie file is rotated, or if the Phoenix beam
+is started with an explicit `-setcookie` flag that doesn't match, RPC
+connection will fail silently (`Node.connect/1` returns `false` with no
+error).
+
+Nothing fragile here yet, but if future devs start explicitly managing
+cookies for security reasons, the hot-reload workflow documented in the
+gap entries above will break and need rework.
+
+---
+
+## Closed gaps (changelog)
+
+*(None yet — this is a new doc.)*
+
+---
+
+## Maintenance
+
+This doc is meant to be **edited in place** as gaps open and close. Treat
+it like a living README for the project's known weaknesses. If it goes
+stale, the next person to discover a gap won't trust it and will build
+their own mental model from scratch, which defeats the purpose.
+
+When adding a new gap, follow the existing structure: status line, beads
+reference, workaround (if any), and enough detail that someone unfamiliar
+with the context can understand what's broken and why.
