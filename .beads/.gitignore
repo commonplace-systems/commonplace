@@ -2,6 +2,11 @@
 dolt/
 dolt-access.lock
 
+# Embedded Dolt + local credential key (local-only, must not be shared)
+.beads-credential-key
+embeddeddolt/
+backup/LOCK
+
 # Runtime files
 bd.sock
 bd.sock.startlock
