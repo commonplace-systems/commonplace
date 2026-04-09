@@ -121,29 +121,7 @@ defmodule Commonplace.CLI do
   end
 
   def discover_workspace(start_dir) do
-    do_discover(start_dir, start_dir)
-  end
-
-  defp do_discover(current_dir, original_dir) do
-    candidate = Path.join(current_dir, @workspace_dir)
-
-    cond do
-      File.dir?(candidate) ->
-        relative =
-          if original_dir == current_dir do
-            ""
-          else
-            Path.relative_to(original_dir, current_dir)
-          end
-
-        {candidate, relative}
-
-      current_dir == "/" ->
-        nil
-
-      true ->
-        do_discover(Path.dirname(current_dir), original_dir)
-    end
+    Commonplace.Workspace.discover(start_dir)
   end
 
   @doc """
