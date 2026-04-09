@@ -2,21 +2,36 @@
 # Launch a Claude Code session with commonplace MCP + clod-squad + claude-chat.
 #
 # Prerequisites:
-#   1. commonplace serve running on the target workspace
+#   1. commonplace serve (or equivalent named beam) running on the target
+#      workspace — the .commonplace/node_name file must exist and point at
+#      a reachable beam.
 #   2. Built escripts: mix do --app commonplace_mcp escript.build
 #
 # Usage:
 #   bin/commonplaceclaude [workspace_dir] [extra claude args...]
 #
-# If workspace_dir is omitted, defaults to ./workspace/
-# The claude session runs inside the workspace dir so file edits auto-sync.
+# If the first argument starts with a dash, it is treated as a claude flag
+# and the workspace defaults to ${PROJECT_DIR}/workspace. Otherwise the
+# first positional is taken as the workspace directory and shifted off.
+# This lets you do e.g.:
+#   bin/commonplaceclaude --resume <session-id>
+#   bin/commonplaceclaude ./other-checkout --resume <session-id>
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
-WORKSPACE="${1:-${PROJECT_DIR}/workspace}"
-shift 2>/dev/null || true
+# Treat the first arg as a workspace dir only if it is a non-empty, non-flag
+# value. Otherwise leave all args intact for claude.
+case "${1:-}" in
+  -*|"")
+    WORKSPACE="${PROJECT_DIR}/workspace"
+    ;;
+  *)
+    WORKSPACE="$1"
+    shift
+    ;;
+esac
 
 if [ ! -d "${WORKSPACE}/.commonplace" ]; then
   echo "error: no .commonplace/ found at ${WORKSPACE}" >&2
