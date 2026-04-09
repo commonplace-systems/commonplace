@@ -212,7 +212,9 @@ defmodule CommonplaceWebWeb.WikiLive do
 
   @impl true
   def handle_info({:commit, _uuid, _commit_id, _meta}, socket) do
-    if socket.assigns.page_uuid and socket.assigns.mode == :view do
+    # Use && (truthy) not `and` (strict boolean) — page_uuid is a UUID
+    # string, which would crash `and` with BadBooleanError.
+    if socket.assigns.page_uuid && socket.assigns.mode == :view do
       content = read_doc_content(socket.assigns.page_uuid)
       {:noreply, assign(socket, :page_content, content)}
     else
