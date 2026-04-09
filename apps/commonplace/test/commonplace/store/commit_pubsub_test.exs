@@ -52,4 +52,36 @@ defmodule Commonplace.Store.CommitPubsubTest do
     assert received_commit_id == commit.id
     assert received_meta == %{}
   end
+
+  # CX-4im regression: CommitStore must also broadcast on the blue:UUID topic
+  # so that WikiLive / TreeLive (which subscribe via CPPubSub.subscribe_blue)
+  # see live updates from CommandRouter-initiated writes. Without this, the
+  # UI only reacts to edits that flow through Document.Server and misses
+  # MCP/CLI writes entirely.
+  test "create_commit also broadcasts on blue:UUID topic", %{store: store} do
+    uuid = "test-uuid-#{:rand.uniform(1_000_000)}"
+    Phoenix.PubSub.subscribe(Commonplace.PubSub, "blue:#{uuid}")
+
+    doc = Yelixer.Doc.new()
+    update = Yelixer.Encoding.encode_update(doc)
+    commit = CommitStore.create_commit(store, uuid, update, nil)
+
+    assert_receive {:commit, ^uuid, commit_id, %{}}, 1000
+    assert commit_id == commit.id
+  end
+
+  test "create_chained_commit also broadcasts on blue:UUID topic", %{store: store} do
+    uuid = "test-uuid-#{:rand.uniform(1_000_000)}"
+
+    doc = Yelixer.Doc.new()
+    update = Yelixer.Encoding.encode_update(doc)
+    _first = CommitStore.create_commit(store, uuid, update, nil)
+
+    Phoenix.PubSub.subscribe(Commonplace.PubSub, "blue:#{uuid}")
+
+    second = CommitStore.create_chained_commit(store, uuid, update)
+
+    assert_receive {:commit, ^uuid, commit_id, %{}}, 1000
+    assert commit_id == second.id
+  end
 end

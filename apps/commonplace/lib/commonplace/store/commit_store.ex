@@ -173,6 +173,13 @@ defmodule Commonplace.Store.CommitStore do
 
     Phoenix.PubSub.broadcast(Commonplace.PubSub, "commits:#{doc_uuid}", {:commit, doc_uuid, commit.id, metadata})
 
+    # Also broadcast on the blue:UUID topic so UI subscribers (WikiLive,
+    # TreeLive) see live updates from CommandRouter-initiated writes (MCP,
+    # CLI) — not just edits that already flow through Document.Server.
+    # CX-4im. Eventually the blue/commits topic duality should be unified;
+    # see the CX-4im notes for the refactor plan.
+    Phoenix.PubSub.broadcast(Commonplace.PubSub, "blue:#{doc_uuid}", {:commit, doc_uuid, commit.id, metadata})
+
     {:reply, commit, state}
   end
 
