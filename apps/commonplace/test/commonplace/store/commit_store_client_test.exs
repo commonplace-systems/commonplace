@@ -181,6 +181,11 @@ defmodule Commonplace.Store.CommitStoreClientTest do
   end
 
   describe "remote_node/0 and set_remote_node/1" do
+    setup do
+      on_exit(fn -> CommitStoreClient.clear_remote_node() end)
+      :ok
+    end
+
     test "defaults to :local" do
       assert CommitStoreClient.remote_node() == :local
     end
@@ -189,9 +194,24 @@ defmodule Commonplace.Store.CommitStoreClientTest do
       CommitStoreClient.set_remote_node(:test_node@localhost)
       assert CommitStoreClient.remote_node() == {:ok, :test_node@localhost}
 
-      # Clean up process dictionary
-      Process.delete(:commonplace_remote_node)
+      CommitStoreClient.clear_remote_node()
       assert CommitStoreClient.remote_node() == :local
+    end
+
+    test "set_remote_node is visible from a spawned process" do
+      # The whole point of using :persistent_term: a child process must
+      # see the routing configured by its parent. The previous Process.put
+      # implementation broke this and silently routed Presence.Server
+      # writes to a phantom local store.
+      CommitStoreClient.set_remote_node(:test_node@localhost)
+
+      parent = self()
+
+      spawn_link(fn ->
+        send(parent, {:child_view, CommitStoreClient.remote_node()})
+      end)
+
+      assert_receive {:child_view, {:ok, :test_node@localhost}}, 1_000
     end
   end
 end

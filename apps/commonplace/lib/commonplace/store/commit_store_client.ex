@@ -174,19 +174,35 @@ defmodule Commonplace.Store.CommitStoreClient do
   @doc """
   Check if we're connected to a remote serve node.
   Returns `{:ok, node}` if connected, `:local` otherwise.
+
+  Routing is stored in `:persistent_term` so it is visible from every
+  process on the BEAM (not just the one that called `set_remote_node/1`).
+  This matters for the MCP server, which spawns helper GenServers
+  (e.g. `Presence.Server`) that need to see the same routing the
+  escript main process configured.
   """
   def remote_node do
-    case Process.get(:commonplace_remote_node) do
+    case :persistent_term.get(:commonplace_remote_node, nil) do
       nil -> :local
       node -> {:ok, node}
     end
   end
 
   @doc """
-  Set the remote node for the current process.
-  Called by CLI.ensure_started when it connects to a running serve.
+  Set the remote node node-wide. Called by CLI.ensure_started and the
+  MCP escript bootstrap when they connect to a running serve.
   """
   def set_remote_node(node) do
-    Process.put(:commonplace_remote_node, node)
+    :persistent_term.put(:commonplace_remote_node, node)
+  end
+
+  @doc """
+  Clear the remote node setting node-wide. Primarily for tests; in
+  production the escript exits and persistent_term goes away with the
+  BEAM.
+  """
+  def clear_remote_node do
+    _ = :persistent_term.erase(:commonplace_remote_node)
+    :ok
   end
 end
