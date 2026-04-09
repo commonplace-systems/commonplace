@@ -65,14 +65,27 @@ defmodule CommonplaceWebWeb.ViewRendererTest do
       assert html =~ "b"
     end
 
-    test "renders action as an inert button" do
+    test "renders action as a clickable phx-click button with action name" do
       html =
         render(~s(<view><action name="edit" label="Edit page" description="Open editor"/></view>))
 
       assert html =~ "<button"
-      assert html =~ "btn-disabled"
+      assert html =~ ~s(phx-click="view_action")
+      assert html =~ ~s(phx-value-action="edit")
       assert html =~ "Edit page"
       assert html =~ "Open editor"
+      # No longer disabled — Pass A (CX-vaw) wires dispatch.
+      refute html =~ "btn-disabled"
+    end
+
+    test "renders action with target attribute as phx-value-target" do
+      html =
+        render(
+          ~s(<view><action name="edit" label="Edit" target="section-1"/></view>)
+        )
+
+      assert html =~ ~s(phx-value-action="edit")
+      assert html =~ ~s(phx-value-target="section-1")
     end
 
     test "renders include as a bordered transclusion block" do

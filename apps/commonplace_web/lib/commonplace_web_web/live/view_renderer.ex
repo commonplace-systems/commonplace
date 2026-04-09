@@ -10,8 +10,12 @@ defmodule CommonplaceWebWeb.ViewRenderer do
   `<view>`, `<entity>`, `<body>`, `<text>`, `<field>`, `<list>`,
   `<action>`, `<include>`, `<provenance>`, `<raw>`.
 
-  First-pass limits (CX-817):
-  - Actions render as inert buttons (dispatch is phase 2).
+  Pass A (CX-vaw) additions:
+  - Actions render as clickable `phx-click="view_action"` buttons.
+    The wiki LiveView catches the event and forwards through
+    `CommonplaceWebWeb.ViewActions.dispatch/3`.
+
+  Remaining first-pass limits:
   - Transclusion (`<include>`) renders whatever content is inlined in
     the element — no upstream resolver.
   - `<raw>` elements display a warning badge + their literal content
@@ -172,11 +176,29 @@ defmodule CommonplaceWebWeb.ViewRenderer do
     label = n.attrs["label"] || name
     description = n.attrs["description"]
     args = n.attrs["args"]
+    target = n.attrs["target"]
+
+    # Pass A (CX-vaw): emit phx-click so the wiki LiveView's
+    # handle_event("view_action", ...) catches the click and routes
+    # through CommonplaceWebWeb.ViewActions. phx-value-action carries
+    # the action name; phx-value-target carries the optional target
+    # entity id when present.
+    target_attr =
+      if target, do: [~s( phx-value-target="), escape(target), ~s(")], else: ""
+
+    title_attr =
+      if description, do: [~s( title="), escape(description), ~s(")], else: ""
 
     [
       ~s(<div class="cp-action inline-flex flex-col gap-1 mr-2">),
-      # Inert button — dispatch wiring is phase 2.
-      ~s(<button type="button" class="btn btn-sm btn-outline btn-disabled" title="View actions are not yet wired up — phase 2">),
+      ~s(<button type="button" class="btn btn-sm btn-primary"),
+      ~s( phx-click="view_action"),
+      ~s( phx-value-action="),
+      escape(name),
+      ~s("),
+      target_attr,
+      title_attr,
+      ">",
       escape(label),
       "</button>",
       if(description,
@@ -184,7 +206,11 @@ defmodule CommonplaceWebWeb.ViewRenderer do
         else: ""
       ),
       if(args,
-        do: [~s(<span class="text-xs font-mono text-base-content/40">args: ), escape(args), "</span>"],
+        do: [
+          ~s(<span class="text-xs font-mono text-base-content/40">args: ),
+          escape(args),
+          "</span>"
+        ],
         else: ""
       ),
       "</div>"

@@ -12,7 +12,7 @@ defmodule CommonplaceWebWeb.WikiLive do
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Document.{ContentType, ViewDetect}
   alias Commonplace.Dataflow.PubSub, as: CPPubSub
-  alias CommonplaceWebWeb.ViewRenderer
+  alias CommonplaceWebWeb.{ViewRenderer, ViewActions}
 
   @impl true
   def mount(_params, _session, socket) do
@@ -207,6 +207,40 @@ defmodule CommonplaceWebWeb.WikiLive do
   @impl true
   def handle_event("recent_changes", _params, socket) do
     {:noreply, push_navigate(socket, to: ~p"/wiki/special/recent-changes")}
+  end
+
+  @impl true
+  def handle_event("view_action", params, socket) do
+    # Views Pass A (CX-vaw): view <action> buttons phx-click into this
+    # handler. We build a context map and delegate to ViewActions.dispatch.
+    # Identity is a placeholder ("wiki-user@local") until real session
+    # identity propagation lands alongside signed-commit wiring.
+    action_name = params["action"] || ""
+    target = params["target"]
+    extra_args = Map.drop(params, ["action", "target"])
+
+    view_path =
+      case {socket.assigns.current_path, socket.assigns.page_name} do
+        {"", name} when is_binary(name) -> name
+        {path, name} when is_binary(name) -> path <> "/" <> name
+        _ -> ""
+      end
+
+    context = %{
+      view_path: view_path,
+      view_uuid: socket.assigns.page_uuid,
+      target: target,
+      args: extra_args,
+      signer_id: "wiki-user@local"
+    }
+
+    case ViewActions.dispatch(action_name, context, socket) do
+      {:ok, updated_socket} ->
+        {:noreply, updated_socket}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, reason)}
+    end
   end
 
   # --- PubSub ---
