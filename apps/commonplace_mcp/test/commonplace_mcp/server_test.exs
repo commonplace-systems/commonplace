@@ -13,6 +13,17 @@ defmodule Commonplace.MCP.ServerTest do
     {:ok, server: Server.new()}
   end
 
+  defp stub_presence_starter do
+    # Returns a function compatible with Server's :presence_starter hook.
+    # Records every call so tests can verify what the server asked for.
+    test_pid = self()
+
+    fn name, type ->
+      send(test_pid, {:presence_started, name, type})
+      {:ok, %{pid: self(), name: name, type: type, uuid: "uuid-" <> name}}
+    end
+  end
+
   describe "initialize" do
     test "responds with server info and capabilities", %{server: s} do
       request = {:request, 1, "initialize",
@@ -35,6 +46,43 @@ defmodule Commonplace.MCP.ServerTest do
 
       assert {:ok, _result, s2} = Server.handle(s, request)
       assert Server.client_name(s2) == "claude-code"
+    end
+
+    test "with a presence_starter, spawns a .bot presence and records its uuid" do
+      s = Server.new(presence_starter: stub_presence_starter())
+
+      request = {:request, 1, "initialize",
+                 %{"protocolVersion" => "2025-06-18",
+                   "clientInfo" => %{"name" => "claude-code", "version" => "1.0"}}}
+
+      assert {:ok, result, s2} = Server.handle(s, request)
+
+      # Presence starter was called with the client name and :bot type
+      assert_received {:presence_started, "claude-code", :bot}
+
+      # The presence uuid is exposed in the initialize response and state
+      assert result["serverInfo"]["presenceUuid"] == "uuid-claude-code"
+      assert Server.presence_uuid(s2) == "uuid-claude-code"
+    end
+
+    test "with a presence_starter but no clientInfo name, uses 'mcp-agent' as default" do
+      s = Server.new(presence_starter: stub_presence_starter())
+
+      request = {:request, 1, "initialize",
+                 %{"protocolVersion" => "2025-06-18"}}
+
+      assert {:ok, _result, _s2} = Server.handle(s, request)
+      assert_received {:presence_started, "mcp-agent", :bot}
+    end
+
+    test "without a presence_starter, skips bootstrap (pure-mode default)", %{server: s} do
+      request = {:request, 1, "initialize",
+                 %{"protocolVersion" => "2025-06-18",
+                   "clientInfo" => %{"name" => "bare", "version" => "1"}}}
+
+      assert {:ok, result, s2} = Server.handle(s, request)
+      refute Map.has_key?(result["serverInfo"], "presenceUuid")
+      assert Server.presence_uuid(s2) == nil
     end
   end
 

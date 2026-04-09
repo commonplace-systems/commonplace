@@ -21,12 +21,14 @@ defmodule Commonplace.MCP do
      dispatched, and the reply written to stdout.
   """
 
-  alias Commonplace.MCP.Stdio
+  alias Commonplace.MCP.{Server, Stdio}
+  alias Commonplace.Presence.Server, as: PresenceServer
 
   def main(_argv \\ []) do
     case attach_to_serve() do
-      :ok ->
-        Stdio.run_stdio()
+      {:ok, root_uuid} ->
+        server = Server.new(presence_starter: presence_starter(root_uuid))
+        Stdio.run_stdio(server)
         :ok
 
       {:error, :not_running} ->
@@ -54,6 +56,16 @@ defmodule Commonplace.MCP do
         """)
 
         System.halt(1)
+
+      {:error, :no_root} ->
+        IO.puts(:stderr, """
+        commonplace_mcp: workspace found but no root UUID set.
+
+        This workspace is half-initialized. Run `commonplace init` or
+        restore from backup.
+        """)
+
+        System.halt(1)
     end
   end
 
@@ -67,11 +79,23 @@ defmodule Commonplace.MCP do
       {data_dir, _relative} ->
         serve_node = read_node_name(data_dir)
 
-        if serve_node == nil do
-          {:error, :not_running}
-        else
-          connect(serve_node)
+        cond do
+          serve_node == nil ->
+            {:error, :not_running}
+
+          true ->
+            with :ok <- connect(serve_node),
+                 {:ok, root_uuid} <- read_root_uuid(data_dir) do
+              {:ok, root_uuid}
+            end
         end
+    end
+  end
+
+  defp read_root_uuid(data_dir) do
+    case File.read(Path.join(data_dir, "root")) do
+      {:ok, content} -> {:ok, String.trim(content)}
+      {:error, _} -> {:error, :no_root}
     end
   end
 
@@ -100,6 +124,39 @@ defmodule Commonplace.MCP do
 
       {:error, _} ->
         {:error, :not_running}
+    end
+  end
+
+  # Build a presence_starter function compatible with Server.new.
+  # Spawns a Presence.Server rooted at `root_uuid`, and broadcasts a
+  # presence.enter event on the containing dir's magenta topic.
+  defp presence_starter(root_uuid) do
+    fn name, type ->
+      case PresenceServer.start_link(
+             name: name,
+             type: type,
+             dir_uuid: root_uuid,
+             store: Commonplace.Store.CommitStoreClient
+           ) do
+        {:ok, pid} ->
+          uuid = PresenceServer.uuid(pid)
+
+          # Fire presence.enter on the containing dir's magenta topic
+          # (additive hook per commonplace-plan's presence design).
+          Commonplace.Dataflow.Magenta.send(
+            root_uuid,
+            Commonplace.Dataflow.Magenta.message("presence.enter", name, %{
+              "name" => name,
+              "type" => Atom.to_string(type),
+              "uuid" => uuid
+            })
+          )
+
+          {:ok, %{pid: pid, uuid: uuid, name: name, type: type}}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
     end
   end
 end

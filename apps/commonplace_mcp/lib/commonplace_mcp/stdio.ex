@@ -22,12 +22,18 @@ defmodule Commonplace.MCP.Stdio do
 
   @spec run(reader(), emitter()) :: Server.t()
   def run(reader, emitter) when is_function(reader, 0) and is_function(emitter, 1) do
-    loop(Server.new(), reader, emitter)
+    run(Server.new(), reader, emitter)
+  end
+
+  @spec run(Server.t(), reader(), emitter()) :: Server.t()
+  def run(%Server{} = server, reader, emitter)
+      when is_function(reader, 0) and is_function(emitter, 1) do
+    loop(server, reader, emitter)
   end
 
   @doc "Production entrypoint — reads from stdin, writes to stdout."
-  @spec run_stdio() :: Server.t()
-  def run_stdio do
+  @spec run_stdio(Server.t()) :: Server.t()
+  def run_stdio(server \\ Server.new()) do
     reader = fn ->
       case IO.gets(:stdio, "") do
         :eof -> :eof
@@ -38,7 +44,7 @@ defmodule Commonplace.MCP.Stdio do
 
     emitter = fn line -> IO.puts(line) end
 
-    run(reader, emitter)
+    run(server, reader, emitter)
   end
 
   defp loop(server, reader, emitter) do
