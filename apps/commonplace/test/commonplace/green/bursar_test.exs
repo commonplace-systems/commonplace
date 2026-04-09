@@ -230,4 +230,179 @@ defmodule Commonplace.Green.BursarTest do
       assert expired_event["ttl_ms"] == 100
     end
   end
+
+  describe "transfer" do
+    test "transfer hands off to new holder", ctx do
+      {_pid, name} = start_bursar(ctx)
+
+      assert {:ok, _} = Bursar.acquire(name, "readme.txt", "alice")
+      assert {:ok, info} = Bursar.transfer(name, "readme.txt", "alice", "bob")
+      assert info.holder == "bob"
+      assert {:held, %{holder: "bob"}} = Bursar.query(name, "readme.txt")
+    end
+
+    test "transfer by non-holder is rejected", ctx do
+      {_pid, name} = start_bursar(ctx)
+
+      assert {:ok, _} = Bursar.acquire(name, "readme.txt", "alice")
+      assert {:error, {:not_holder, "alice"}} =
+               Bursar.transfer(name, "readme.txt", "bob", "carol")
+      assert {:held, %{holder: "alice"}} = Bursar.query(name, "readme.txt")
+    end
+
+    test "transfer on unheld token fails", ctx do
+      {_pid, name} = start_bursar(ctx)
+
+      assert {:error, :not_held} = Bursar.transfer(name, "readme.txt", "alice", "bob")
+    end
+
+    test "transfer preserves acquired_at and ttl_ms", ctx do
+      {_pid, name} = start_bursar(ctx, nil, sweep_interval: 60_000)
+
+      assert {:ok, original} = Bursar.acquire(name, "readme.txt", "alice", ttl: 10_000)
+      Process.sleep(20)
+      assert {:ok, after_transfer} = Bursar.transfer(name, "readme.txt", "alice", "bob")
+      assert after_transfer.acquired_at == original.acquired_at
+      assert after_transfer.ttl_ms == 10_000
+    end
+
+    test "transfer logs an event with from/to", ctx do
+      {_pid, name} = start_bursar(ctx)
+
+      Bursar.acquire(name, "readme.txt", "alice")
+      assert {:ok, _} = Bursar.transfer(name, "readme.txt", "alice", "bob")
+
+      {:ok, schema} = DocBuilder.reconstruct_snapshot(ctx.store, ctx.root)
+      {:ok, log_entry} = Schema.get_entry(schema, "__bursar.log")
+      log = RedLog.load(log_entry.node_id, ctx.store)
+      events = RedLog.read(log)
+
+      transfer_events = Enum.filter(events, fn e -> e["event"] == "transfer" end)
+      assert length(transfer_events) == 1
+      [e] = transfer_events
+      assert e["path"] == "readme.txt"
+      assert e["from"] == "alice"
+      assert e["to"] == "bob"
+    end
+
+    test "transferred token survives restart with new holder", ctx do
+      {pid, _name} = start_bursar(ctx, :xfer_persist)
+
+      Bursar.acquire(:xfer_persist, "readme.txt", "alice")
+      Bursar.transfer(:xfer_persist, "readme.txt", "alice", "bob")
+      GenServer.stop(pid)
+
+      {:ok, _pid2} = Bursar.start_link(
+        root_uuid: ctx.root,
+        store: ctx.store,
+        name: :xfer_persist2
+      )
+
+      assert {:held, %{holder: "bob"}} = Bursar.query(:xfer_persist2, "readme.txt")
+      GenServer.stop(:xfer_persist2)
+    end
+
+    test "transfer via magenta", ctx do
+      {_pid, name} = start_bursar(ctx)
+
+      Bursar.acquire(name, "readme.txt", "alice")
+
+      Commonplace.Dataflow.Magenta.send(
+        "__bursar",
+        Commonplace.Dataflow.Magenta.message(
+          "green:transfer",
+          "alice",
+          %{"path" => "readme.txt", "from" => "alice", "to" => "bob"}
+        )
+      )
+
+      Process.sleep(50)
+      assert {:held, %{holder: "bob"}} = Bursar.query(name, "readme.txt")
+    end
+  end
+
+  describe "renew" do
+    test "renew by holder resets the TTL clock", ctx do
+      {pid, name} = start_bursar(ctx, nil, sweep_interval: 60_000)
+
+      assert {:ok, _} = Bursar.acquire(name, "readme.txt", "alice", ttl: 300)
+      Process.sleep(200)
+      assert {:ok, info} = Bursar.renew(name, "readme.txt", "alice")
+      assert info.ttl_ms == 300
+
+      # Sweep at this point — should NOT expire because renew reset acquired_at
+      send(pid, :sweep_ttl)
+      Process.sleep(50)
+      assert {:held, %{holder: "alice"}} = Bursar.query(name, "readme.txt")
+    end
+
+    test "renew can change the TTL value", ctx do
+      {_pid, name} = start_bursar(ctx, nil, sweep_interval: 60_000)
+
+      assert {:ok, _} = Bursar.acquire(name, "readme.txt", "alice", ttl: 1000)
+      assert {:ok, info} = Bursar.renew(name, "readme.txt", "alice", ttl: 5000)
+      assert info.ttl_ms == 5000
+    end
+
+    test "renew on token with no TTL sets one", ctx do
+      {_pid, name} = start_bursar(ctx, nil, sweep_interval: 60_000)
+
+      assert {:ok, _} = Bursar.acquire(name, "readme.txt", "alice")
+      assert {:ok, info} = Bursar.renew(name, "readme.txt", "alice", ttl: 2000)
+      assert info.ttl_ms == 2000
+    end
+
+    test "renew by non-holder is rejected", ctx do
+      {_pid, name} = start_bursar(ctx)
+
+      Bursar.acquire(name, "readme.txt", "alice", ttl: 5000)
+      assert {:error, {:not_holder, "alice"}} = Bursar.renew(name, "readme.txt", "bob")
+    end
+
+    test "renew on unheld token fails", ctx do
+      {_pid, name} = start_bursar(ctx)
+
+      assert {:error, :not_held} = Bursar.renew(name, "readme.txt", "alice")
+    end
+
+    test "renew logs an event", ctx do
+      {_pid, name} = start_bursar(ctx, nil, sweep_interval: 60_000)
+
+      Bursar.acquire(name, "readme.txt", "alice", ttl: 1000)
+      assert {:ok, _} = Bursar.renew(name, "readme.txt", "alice", ttl: 5000)
+
+      {:ok, schema} = DocBuilder.reconstruct_snapshot(ctx.store, ctx.root)
+      {:ok, log_entry} = Schema.get_entry(schema, "__bursar.log")
+      log = RedLog.load(log_entry.node_id, ctx.store)
+      events = RedLog.read(log)
+
+      renew_events = Enum.filter(events, fn e -> e["event"] == "renew" end)
+      assert length(renew_events) == 1
+      [e] = renew_events
+      assert e["path"] == "readme.txt"
+      assert e["holder"] == "alice"
+      assert e["ttl_ms"] == 5000
+    end
+
+    test "renew via magenta", ctx do
+      {pid, name} = start_bursar(ctx, nil, sweep_interval: 60_000)
+
+      Bursar.acquire(name, "readme.txt", "alice", ttl: 300)
+      Process.sleep(200)
+
+      Commonplace.Dataflow.Magenta.send(
+        "__bursar",
+        Commonplace.Dataflow.Magenta.message(
+          "green:renew",
+          "alice",
+          %{"path" => "readme.txt", "holder" => "alice", "ttl_ms" => 10_000}
+        )
+      )
+
+      Process.sleep(50)
+      send(pid, :sweep_ttl)
+      Process.sleep(50)
+      assert {:held, %{holder: "alice", ttl_ms: 10_000}} = Bursar.query(name, "readme.txt")
+    end
+  end
 end

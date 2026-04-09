@@ -90,6 +90,32 @@ defmodule Commonplace.Green.Bursar do
     GenServer.call(server, {:force_release, path})
   end
 
+  @doc """
+  Transfer an exclusive token from `from_holder` to `to_holder`.
+  Only the current holder can transfer. `acquired_at` and `ttl_ms` are preserved
+  (i.e. the new holder inherits the remaining time on the clock).
+  Returns {:ok, token_info} or {:error, reason}.
+  """
+  def transfer(server \\ __MODULE__, path, from_holder, to_holder) do
+    GenServer.call(server, {:transfer, path, from_holder, to_holder})
+  end
+
+  @doc """
+  Renew (keep-alive) a held token. Resets `acquired_at` to now, re-clocking the
+  TTL sweep. Options: [ttl: milliseconds] — if provided, updates the TTL value;
+  otherwise keeps the existing TTL.
+  Returns {:ok, token_info} or {:error, reason}.
+  """
+  def renew(server \\ __MODULE__, path, holder, opts \\ []) do
+    new_ttl_ms =
+      case Keyword.fetch(opts, :ttl) do
+        {:ok, v} -> {:set, v}
+        :error -> :keep
+      end
+
+    GenServer.call(server, {:renew, path, holder, new_ttl_ms})
+  end
+
   # --- GenServer Callbacks ---
 
   @impl true
@@ -180,6 +206,55 @@ defmodule Commonplace.Green.Bursar do
   end
 
   @impl true
+  def handle_call({:transfer, path, from_holder, to_holder}, _from, state) do
+    case Map.get(state.tokens, path) do
+      nil ->
+        {:reply, {:error, :not_held}, state}
+
+      %{holder: ^from_holder} = info ->
+        new_info = %{info | holder: to_holder}
+        tokens = Map.put(state.tokens, path, new_info)
+        state = %{state | tokens: tokens}
+        state = persist_state(state)
+        state = log_event(state, "transfer", path, to_holder, %{"from" => from_holder, "to" => to_holder})
+
+        broadcast_green_event("transferred", path, to_holder, %{"from" => from_holder})
+        {:reply, {:ok, new_info}, state}
+
+      %{holder: current_holder} ->
+        {:reply, {:error, {:not_holder, current_holder}}, state}
+    end
+  end
+
+  @impl true
+  def handle_call({:renew, path, holder, new_ttl}, _from, state) do
+    case Map.get(state.tokens, path) do
+      nil ->
+        {:reply, {:error, :not_held}, state}
+
+      %{holder: ^holder} = info ->
+        ttl_ms =
+          case new_ttl do
+            {:set, v} -> v
+            :keep -> info.ttl_ms
+          end
+
+        new_info = %{info | acquired_at: DateTime.utc_now(), ttl_ms: ttl_ms}
+        tokens = Map.put(state.tokens, path, new_info)
+        state = %{state | tokens: tokens}
+        state = persist_state(state)
+        extra = if ttl_ms, do: %{"ttl_ms" => ttl_ms}, else: %{}
+        state = log_event(state, "renew", path, holder, extra)
+
+        broadcast_green_event("renewed", path, holder, extra)
+        {:reply, {:ok, new_info}, state}
+
+      %{holder: current_holder} ->
+        {:reply, {:error, {:not_holder, current_holder}}, state}
+    end
+  end
+
+  @impl true
   def handle_call({:force_release, path}, _from, state) do
     case Map.get(state.tokens, path) do
       %{holder: old_holder} ->
@@ -246,6 +321,83 @@ defmodule Commonplace.Green.Bursar do
           {:noreply, state}
 
         _ ->
+          {:noreply, state}
+      end
+    else
+      {:noreply, state}
+    end
+  end
+
+  @impl true
+  def handle_info({:magenta, _topic, %Magenta{type: "green:transfer"} = msg}, state) do
+    path = msg.payload["path"]
+    from_holder = msg.payload["from"] || msg.source
+    to_holder = msg.payload["to"]
+
+    cond do
+      is_nil(path) or is_nil(to_holder) ->
+        {:noreply, state}
+
+      true ->
+        case Map.get(state.tokens, path) do
+          nil ->
+            {:noreply, state}
+
+          %{holder: ^from_holder} = info ->
+            new_info = %{info | holder: to_holder}
+            tokens = Map.put(state.tokens, path, new_info)
+            state = %{state | tokens: tokens}
+            state = persist_state(state)
+            state =
+              log_event(state, "transfer", path, to_holder, %{
+                "from" => from_holder,
+                "to" => to_holder,
+                "via" => "magenta"
+              })
+            broadcast_green_event("transferred", path, to_holder, %{"from" => from_holder})
+            {:noreply, state}
+
+          %{holder: current_holder} ->
+            state =
+              log_event(state, "denied", path, from_holder, %{
+                current_holder: current_holder,
+                via: "magenta",
+                op: "transfer"
+              })
+            {:noreply, state}
+        end
+    end
+  end
+
+  @impl true
+  def handle_info({:magenta, _topic, %Magenta{type: "green:renew"} = msg}, state) do
+    path = msg.payload["path"]
+    holder = msg.payload["holder"] || msg.source
+    new_ttl_ms = msg.payload["ttl_ms"]
+
+    if path do
+      case Map.get(state.tokens, path) do
+        nil ->
+          {:noreply, state}
+
+        %{holder: ^holder} = info ->
+          ttl_ms = new_ttl_ms || info.ttl_ms
+          new_info = %{info | acquired_at: DateTime.utc_now(), ttl_ms: ttl_ms}
+          tokens = Map.put(state.tokens, path, new_info)
+          state = %{state | tokens: tokens}
+          state = persist_state(state)
+          extra = if ttl_ms, do: %{"ttl_ms" => ttl_ms, "via" => "magenta"}, else: %{"via" => "magenta"}
+          state = log_event(state, "renew", path, holder, extra)
+          broadcast_green_event("renewed", path, holder, %{"ttl_ms" => ttl_ms})
+          {:noreply, state}
+
+        %{holder: current_holder} ->
+          state =
+            log_event(state, "denied", path, holder, %{
+              current_holder: current_holder,
+              via: "magenta",
+              op: "renew"
+            })
           {:noreply, state}
       end
     else
