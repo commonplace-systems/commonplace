@@ -34,6 +34,7 @@ it's working — only that nobody has filed it yet.
 
 ## Architectural gaps
 
+<a id="a1"></a>
 ### A1. SmartDoc / Orchestrator / push_cyan is half-built
 
 **Status:** load-bearing gap — discovered during Views Pass B (2026-04-09)
@@ -99,6 +100,7 @@ that need the generality.
 
 ---
 
+<a id="a2"></a>
 ### A2. Signed-identity propagation is a placeholder
 
 **Status:** intentional punt — ships with placeholder identity strings
@@ -142,6 +144,7 @@ placeholder strings.
 
 ---
 
+<a id="a3"></a>
 ### A3. CX-hoj: per-call signing context for CommitStore
 
 **Status:** open — see `bd show CX-hoj` for the full design
@@ -170,6 +173,7 @@ audit trails.
 
 ## Deferred phase 2+ view features
 
+<a id="v1"></a>
 ### V1. Forked views not attached to tree paths
 
 **Status:** intentional — shipped as Pass A fork button (CX-vaw)
@@ -197,6 +201,7 @@ A follow-up pass needs to either:
 The right answer depends on product intent. For MVP, "orphan forks with a
 visible UUID" is acceptable.
 
+<a id="v2"></a>
 ### V2. JSON-schema args validation on complex view actions
 
 **Status:** explicit punt from Pass A (CX-vaw) + Pass C (CX-c1i) scoping
@@ -230,6 +235,7 @@ against the schema, and only valid calls dispatch" — is not built.
 scoping: start with no-args actions (edit, history, fork), defer form
 rendering and JSON-schema validation to a later pass.
 
+<a id="v3"></a>
 ### V3. Per-view-focus MCP tool registration (commonplace-plan's pattern 3)
 
 **Status:** explicit future item in views.md; ships as meta-tool in Pass C
@@ -253,6 +259,7 @@ focus, the MCP session restarts with the new tool set.
 This requires session-restart UX we don't have. Punt until the meta-tool
 pattern has proven it's worth the extra complexity.
 
+<a id="v4"></a>
 ### V4. Staleness UI (parsed but not surfaced)
 
 **Status:** vocabulary exists, renderer doesn't honor it
@@ -276,6 +283,7 @@ when `stale="true"`, which currently emits a small info banner. But:
    fit the wiki UI's style.
 3. There's no "clear the stale flag when recompute finishes" path.
 
+<a id="v5"></a>
 ### V5. Fork-safety lint for computed views
 
 **Status:** blocked on Orchestrator gap (A1)
@@ -295,6 +303,7 @@ on the SmartDoc/Orchestrator path being active (see A1), which it
 currently isn't. ViewCompute sidesteps the whole path and therefore has no
 fork-safety story.
 
+<a id="v6"></a>
 ### V6. Transclusion resolver for `<include>`
 
 **Status:** renderer handles inlined content only
@@ -320,6 +329,7 @@ Deferred because the wiki-home example doesn't need transclusion yet.
 
 ## Schema / data gaps
 
+<a id="s1"></a>
 ### S1. Beads credential key leaked to git history
 
 **Status:** accepted by jes (2026-04-09, message 1361 on clod-squad)
@@ -349,6 +359,7 @@ are machine-local and should never be committed, but the upstream
 `.beads/.gitignore` doesn't cover all of them. Any future `git add .beads/`
 would re-leak similar files if the ignore list is still incomplete.
 
+<a id="s2"></a>
 ### S2. Beads backup schema drift migration was manual
 
 **Status:** resolved but undocumented as a recovery procedure
@@ -372,6 +383,7 @@ runbook under `docs/runbooks/` when someone hits the next drift.
 
 ## Test / quality gaps
 
+<a id="t1"></a>
 ### T1. LiveView integration test coverage is thin
 
 **Status:** 168 view-related tests pass but cover unit-level behavior
@@ -411,6 +423,7 @@ runbook under `docs/runbooks/` when someone hits the next drift.
 These gaps aren't blockers for shipping but they're where regressions will
 hide. Worth adding incrementally as the surface expands.
 
+<a id="t2"></a>
 ### T2. String.length vs graphemes bug in Commonplace.Document.Diff
 
 **Status:** known correctness bug, not yet biting production
@@ -445,6 +458,7 @@ with a reference to the tracking ticket.
 
 ## Infrastructure / workflow gaps
 
+<a id="i1"></a>
 ### I1. MCP escript must be rebuilt after tool changes
 
 **Status:** inherent to the escript architecture
@@ -467,6 +481,7 @@ fixed it.
 **Mitigation:** none needed beyond documentation. It's a natural property
 of the escript model. Just remember to rebuild.
 
+<a id="i2"></a>
 ### I2. xmerl code path handling for in-place dev
 
 **Status:** mitigated in `Commonplace.Application.start/2`
@@ -488,6 +503,7 @@ should not recur — but if someone adds another OTP stdlib dep (`:public_key`,
 ensure-started treatment OR accept that the running beam must be
 cold-restarted to pick up the new dep.
 
+<a id="i3"></a>
 ### I3. Distributed Erlang cookie management is ambient
 
 **Status:** works today by accident
