@@ -5,6 +5,12 @@ defmodule Commonplace.Application do
 
   @impl true
   def start(_type, _args) do
+    # :xmerl is used by Commonplace.Document.ViewXml for parsing view XML
+    # documents. Ensure it's loaded at app start so `mix phx.server` and
+    # other dev-mode entry points don't require a cold restart after the
+    # dep is first added.
+    _ = Application.ensure_all_started(:xmerl)
+
     data_dir = Application.get_env(:commonplace, :data_dir, "data")
 
     children = [

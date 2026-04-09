@@ -10,8 +10,9 @@ defmodule CommonplaceWebWeb.WikiLive do
 
   alias Commonplace.Tree.{Schema, Walk, DocBuilder}
   alias Commonplace.Store.CommitStoreClient
-  alias Commonplace.Document.ContentType
+  alias Commonplace.Document.{ContentType, ViewDetect}
   alias Commonplace.Dataflow.PubSub, as: CPPubSub
+  alias CommonplaceWebWeb.ViewRenderer
 
   @impl true
   def mount(_params, _session, socket) do
@@ -353,9 +354,15 @@ defmodule CommonplaceWebWeb.WikiLive do
                   <.recent_changes_page changes={elem(@page_content, 2)} />
                 <% else %>
                   <%= if @page_content do %>
-                    <article class="prose prose-lg max-w-none">
-                      <%= render_wiki_content(@page_content, @current_path) %>
-                    </article>
+                    <%= if ViewDetect.is_view?(@page_content) do %>
+                      <article class="max-w-none">
+                        <%= ViewRenderer.render_view(@page_content, @current_path) %>
+                      </article>
+                    <% else %>
+                      <article class="prose prose-lg max-w-none">
+                        <%= render_wiki_content(@page_content, @current_path) %>
+                      </article>
+                    <% end %>
                   <% else %>
                     <%= if @page_name do %>
                       <p class="text-base-content/40">This page is empty.</p>

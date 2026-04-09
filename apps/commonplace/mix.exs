@@ -19,7 +19,7 @@ defmodule Commonplace.MixProject do
 
   def application do
     [
-      extra_applications: [:logger],
+      extra_applications: [:logger, :xmerl],
       mod: {Commonplace.Application, []}
     ]
   end
