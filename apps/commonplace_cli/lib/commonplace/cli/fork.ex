@@ -2,8 +2,8 @@ defmodule Commonplace.CLI.Fork do
   @moduledoc "Fork a directory subtree with new UUIDs."
 
   alias Commonplace.CLI
-  alias Commonplace.Tree.{Walk, Fork}
-  alias Commonplace.Store.CommitStoreClient, as: CommitStore
+  alias Commonplace.CommandRouter
+  alias Commonplace.Tree.Walk
 
   import Commonplace.CLI.Helpers, only: [join_paths: 2]
 
@@ -28,8 +28,15 @@ defmodule Commonplace.CLI.Fork do
         case Walk.resolve_path(root, path, loader) do
           {:ok, source_uuid} ->
             IO.puts("Forking #{path} (#{source_uuid})...")
-            new_uuid = Fork.fork_directory(source_uuid, CommitStore)
-            IO.puts("Created fork: #{new_uuid}")
+
+            case CommandRouter.fork(source_uuid) do
+              {:ok, new_uuid} ->
+                IO.puts("Created fork: #{new_uuid}")
+
+              {:error, reason} ->
+                IO.puts(:stderr, "Fork failed: #{inspect(reason)}")
+                System.halt(1)
+            end
 
           {:error, {:not_found, name}} ->
             IO.puts(:stderr, "Not found: #{name}")
@@ -41,5 +48,4 @@ defmodule Commonplace.CLI.Fork do
         end
     end
   end
-
 end

@@ -33,7 +33,8 @@ defmodule Commonplace.Application do
       {DynamicSupervisor, name: Commonplace.SchemaCoordinator.Supervisor, strategy: :one_for_one},
       {DynamicSupervisor, name: Commonplace.Document.Supervisor, strategy: :one_for_one},
       {DynamicSupervisor, name: Commonplace.Checkout.Supervisor, strategy: :one_for_one},
-      {Commonplace.Dataflow.GraphRegistry, []}
+      {Commonplace.Dataflow.GraphRegistry, []},
+      Commonplace.CommandRouter
     ]
 
     opts = [strategy: :one_for_one, name: Commonplace.Supervisor]

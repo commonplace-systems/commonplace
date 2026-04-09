@@ -2,8 +2,7 @@ defmodule Commonplace.CLI.GC do
   @moduledoc "Find orphaned documents not reachable from root."
 
   alias Commonplace.CLI
-  alias Commonplace.Store.GC
-  alias Commonplace.Store.CommitStoreClient, as: CommitStore
+  alias Commonplace.CommandRouter
 
   def run(data_dir, _relative_path, _args) do
     CLI.ensure_started(data_dir)
@@ -15,18 +14,24 @@ defmodule Commonplace.CLI.GC do
     end
 
     IO.puts("Walking document tree from root...")
-    report = GC.report(root, CommitStore)
 
-    IO.puts("Reachable: #{report.reachable_count} documents")
-    IO.puts("Orphaned:  #{report.orphaned_count} documents")
+    case CommandRouter.gc(root) do
+      {:ok, report} ->
+        IO.puts("Reachable: #{report["reachable_count"]} documents")
+        IO.puts("Orphaned:  #{report["orphaned_count"]} documents")
 
-    if report.orphaned_count > 0 do
-      IO.puts("")
-      IO.puts("Orphaned UUIDs:")
+        if report["orphaned_count"] > 0 do
+          IO.puts("")
+          IO.puts("Orphaned UUIDs:")
 
-      Enum.each(report.orphaned_uuids, fn uuid ->
-        IO.puts("  #{uuid}")
-      end)
+          Enum.each(report["orphaned_uuids"], fn uuid ->
+            IO.puts("  #{uuid}")
+          end)
+        end
+
+      {:error, reason} ->
+        IO.puts(:stderr, "GC failed: #{inspect(reason)}")
+        System.halt(1)
     end
   end
 end

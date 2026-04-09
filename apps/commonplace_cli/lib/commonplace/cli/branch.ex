@@ -8,8 +8,8 @@ defmodule Commonplace.CLI.Branch do
   """
 
   alias Commonplace.CLI
+  alias Commonplace.CommandRouter
   alias Commonplace.Tree.{Schema, Walk}
-  alias Commonplace.Store.CommitStoreClient, as: CommitStore
 
   def run(data_dir, relative_path, args) do
     CLI.ensure_started(data_dir)
@@ -62,19 +62,25 @@ defmodule Commonplace.CLI.Branch do
   defp set_branch_sync(root, relative_path, name, sync) do
     loader = &CLI.load_schema/1
     {uuid, _} = resolve_current(root, relative_path, loader)
-    doc = loader.(uuid)
 
-    case Schema.get_entry(doc, name) do
-      {:ok, _entry} ->
-        doc = Schema.set_sync(doc, name, sync)
-        update = Yelixer.Encoding.encode_update(doc)
-        CommitStore.create_chained_commit(uuid, update)
+    result =
+      if sync do
+        CommandRouter.branch_activate(uuid, name)
+      else
+        CommandRouter.branch_deactivate(uuid, name)
+      end
 
+    case result do
+      {:ok, _} ->
         action = if sync, do: "Activated", else: "Deactivated"
         IO.puts("#{action} branch: #{name}")
 
-      :error ->
+      {:error, :not_found} ->
         IO.puts(:stderr, "Branch not found: #{name}")
+        System.halt(1)
+
+      {:error, reason} ->
+        IO.puts(:stderr, "Branch #{if sync, do: "activate", else: "deactivate"} failed: #{inspect(reason)}")
         System.halt(1)
     end
   end
