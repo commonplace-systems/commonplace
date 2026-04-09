@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Wrapper for the commonplace_mcp escript.
+#
+# The escript discovers its workspace via cwd (walks up looking for
+# .commonplace/). Claude Code launches MCP servers from the project
+# root, which may not be the workspace, so this wrapper cd's first.
+#
+# Usage:
+#   COMMONPLACE_WORKSPACE=/path/to/workspace bin/commonplace-mcp
+#
+# If COMMONPLACE_WORKSPACE is unset, falls back to cwd.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ESCRIPT="${SCRIPT_DIR}/../apps/commonplace_mcp/commonplace_mcp"
+
+cd "${COMMONPLACE_WORKSPACE:-.}"
+exec "$ESCRIPT" "$@"

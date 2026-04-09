@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Launch a Claude Code session with commonplace MCP + clod-squad + claude-chat.
+#
+# Prerequisites:
+#   1. commonplace serve running on the target workspace
+#   2. Built escripts: mix do --app commonplace_mcp escript.build
+#
+# Usage:
+#   bin/commonplaceclaude [workspace_dir] [extra claude args...]
+#
+# If workspace_dir is omitted, defaults to ./workspace/
+# The claude session runs inside the workspace dir so file edits auto-sync.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+
+WORKSPACE="${1:-${PROJECT_DIR}/workspace}"
+shift 2>/dev/null || true
+
+if [ ! -d "${WORKSPACE}/.commonplace" ]; then
+  echo "error: no .commonplace/ found at ${WORKSPACE}" >&2
+  echo "hint: run 'commonplace init' there first, then 'commonplace serve'" >&2
+  exit 1
+fi
+
+if [ ! -f "${WORKSPACE}/.commonplace/node_name" ]; then
+  echo "error: no running 'commonplace serve' found at ${WORKSPACE}" >&2
+  echo "hint: start serve first: cd ${WORKSPACE} && commonplace_cli serve &" >&2
+  exit 1
+fi
+
+name="$(basename "${WORKSPACE}")"
+config="${HOME}/.claude/channels/clod-squad/mcp-config-cp-${name}.json"
+
+cat > "$config" <<MCPEOF
+{
+  "mcpServers": {
+    "clod-squad": {
+      "command": "bun",
+      "args": ["run", "--cwd", "${HOME}/boss-clod/clod-squad", "--shell=bun", "--silent", "start"],
+      "env": { "CLAUDE_PROJECT_DIR": "${WORKSPACE}" }
+    },
+    "claude-chat": {
+      "command": "bun",
+      "args": ["run", "--cwd", "${HOME}/claude-chat/irc-channel", "--shell=bun", "--silent", "start"],
+      "env": { "CLAUDE_PROJECT_DIR": "${WORKSPACE}" }
+    },
+    "commonplace-mcp": {
+      "command": "${PROJECT_DIR}/bin/commonplace-mcp",
+      "env": { "COMMONPLACE_WORKSPACE": "${WORKSPACE}" }
+    }
+  }
+}
+MCPEOF
+
+echo "MCP config: ${config}"
+echo "Workspace:  ${WORKSPACE}"
+echo "Serve node: $(cat "${WORKSPACE}/.commonplace/node_name")"
+echo ""
+
+cd "${WORKSPACE}"
+exec claude --dangerously-skip-permissions \
+     --mcp-config "$config" \
+     --dangerously-load-development-channels server:clod-squad server:claude-chat \
+     "$@"
