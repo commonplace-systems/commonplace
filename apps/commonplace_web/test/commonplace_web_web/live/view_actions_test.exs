@@ -22,7 +22,8 @@ defmodule CommonplaceWebWeb.ViewActionsTest do
         view_uuid: "uuid-1",
         target: nil,
         args: %{},
-        signer_id: "wiki-user@local"
+        signer_id: "wiki-user@local",
+        source: "wiki_live"
       }
 
       _ = ViewActions.dispatch("edit", context, socket())
@@ -42,7 +43,8 @@ defmodule CommonplaceWebWeb.ViewActionsTest do
         view_uuid: "uuid-2",
         target: "section-1",
         args: %{"foo" => "bar"},
-        signer_id: "alice@abc"
+        signer_id: "alice@abc",
+        source: "wiki_live"
       }
 
       _ = ViewActions.dispatch("edit", context, socket())
@@ -66,8 +68,14 @@ defmodule CommonplaceWebWeb.ViewActionsTest do
     end
 
     test "edit errors when no page is loaded" do
+      # When there's no page loaded, the real wiki LiveView builds a
+      # context with view_uuid=nil (it reads from socket.assigns.page_uuid).
+      # The refactored dispatcher rejects edit in that case. Simulate
+      # that here by passing a context with view_uuid: nil.
+      no_page_context = %{context() | view_uuid: nil}
+
       assert {:error, reason} =
-               ViewActions.dispatch("edit", context(), socket(%{page_uuid: nil}))
+               ViewActions.dispatch("edit", no_page_context, socket(%{page_uuid: nil}))
 
       assert reason =~ "no page loaded"
     end

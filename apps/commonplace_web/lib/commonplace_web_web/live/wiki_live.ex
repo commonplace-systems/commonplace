@@ -231,7 +231,8 @@ defmodule CommonplaceWebWeb.WikiLive do
       view_uuid: socket.assigns.page_uuid,
       target: target,
       args: extra_args,
-      signer_id: "wiki-user@local"
+      signer_id: "wiki-user@local",
+      source: "wiki_live"
     }
 
     case ViewActions.dispatch(action_name, context, socket) do

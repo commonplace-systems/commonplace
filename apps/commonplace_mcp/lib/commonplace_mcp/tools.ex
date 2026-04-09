@@ -20,13 +20,15 @@ defmodule Commonplace.MCP.Tools do
   alias Commonplace.MCP.Tools.TailRed, as: TailRedTool
   alias Commonplace.MCP.Tools.Cat, as: CatTool
   alias Commonplace.MCP.Tools.Write, as: WriteTool
+  alias Commonplace.MCP.Tools.InvokeViewAction, as: InvokeViewActionTool
 
   @registry %{
     "fork" => ForkTool,
     "send_magenta" => SendMagentaTool,
     "tail_red" => TailRedTool,
     "cat" => CatTool,
-    "write" => WriteTool
+    "write" => WriteTool,
+    "invoke_view_action" => InvokeViewActionTool
   }
 
   @doc "Return the tool catalog (list of %{name, description, inputSchema})."
