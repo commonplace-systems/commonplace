@@ -28,7 +28,11 @@ defmodule Commonplace.MCP.Stdio do
   @spec run(Server.t(), reader(), emitter()) :: Server.t()
   def run(%Server{} = server, reader, emitter)
       when is_function(reader, 0) and is_function(emitter, 1) do
-    loop(server, reader, emitter)
+    result = loop(server, reader, emitter)
+    # Orderly teardown: let the server broadcast presence.leave and stop
+    # any processes it spawned during initialize.
+    Server.shutdown(result)
+    result
   end
 
   @doc "Production entrypoint — reads from stdin, writes to stdout."

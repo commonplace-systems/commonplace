@@ -24,6 +24,11 @@ defmodule Commonplace.MCP.ServerTest do
     end
   end
 
+  defp stub_presence_stopper do
+    test_pid = self()
+    fn info -> send(test_pid, {:presence_stopped, info}) end
+  end
+
   describe "initialize" do
     test "responds with server info and capabilities", %{server: s} do
       request = {:request, 1, "initialize",
@@ -83,6 +88,32 @@ defmodule Commonplace.MCP.ServerTest do
       assert {:ok, result, s2} = Server.handle(s, request)
       refute Map.has_key?(result["serverInfo"], "presenceUuid")
       assert Server.presence_uuid(s2) == nil
+    end
+  end
+
+  describe "shutdown/1" do
+    test "calls presence_stopper with the presence info from bootstrap" do
+      s =
+        Server.new(
+          presence_starter: stub_presence_starter(),
+          presence_stopper: stub_presence_stopper()
+        )
+
+      request = {:request, 1, "initialize",
+                 %{"protocolVersion" => "2025-06-18",
+                   "clientInfo" => %{"name" => "claude", "version" => "1"}}}
+
+      assert {:ok, _result, s2} = Server.handle(s, request)
+      assert_received {:presence_started, "claude", :bot}
+
+      Server.shutdown(s2)
+
+      assert_received {:presence_stopped, %{uuid: "uuid-claude", name: "claude", type: :bot}}
+    end
+
+    test "with no presence bootstrap, shutdown is a no-op", %{server: s} do
+      assert :ok = Server.shutdown(s)
+      refute_received {:presence_stopped, _}
     end
   end
 

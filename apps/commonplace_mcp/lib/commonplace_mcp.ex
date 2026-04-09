@@ -27,7 +27,12 @@ defmodule Commonplace.MCP do
   def main(_argv \\ []) do
     case attach_to_serve() do
       {:ok, root_uuid} ->
-        server = Server.new(presence_starter: presence_starter(root_uuid))
+        server =
+          Server.new(
+            presence_starter: presence_starter(root_uuid),
+            presence_stopper: presence_stopper(root_uuid)
+          )
+
         Stdio.run_stdio(server)
         :ok
 
@@ -140,23 +145,47 @@ defmodule Commonplace.MCP do
            ) do
         {:ok, pid} ->
           uuid = PresenceServer.uuid(pid)
-
-          # Fire presence.enter on the containing dir's magenta topic
-          # (additive hook per commonplace-plan's presence design).
-          Commonplace.Dataflow.Magenta.send(
-            root_uuid,
-            Commonplace.Dataflow.Magenta.message("presence.enter", name, %{
-              "name" => name,
-              "type" => Atom.to_string(type),
-              "uuid" => uuid
-            })
-          )
-
-          {:ok, %{pid: pid, uuid: uuid, name: name, type: type}}
+          broadcast_presence(root_uuid, "presence.enter", name, type, uuid)
+          {:ok, %{pid: pid, uuid: uuid, name: name, type: type, dir_uuid: root_uuid}}
 
         {:error, reason} ->
           {:error, reason}
       end
     end
+  end
+
+  # Build a presence_stopper function compatible with Server.shutdown.
+  # Broadcasts presence.leave on the dir and stops the Presence.Server
+  # (its terminate/2 callback removes the .bot file from the schema).
+  defp presence_stopper(root_uuid) do
+    fn info ->
+      %{pid: pid, uuid: uuid, name: name, type: type} = info
+
+      broadcast_presence(root_uuid, "presence.leave", name, type, uuid)
+
+      if is_pid(pid) and Process.alive?(pid) do
+        # Use sync stop so terminate/2 runs (removing the .bot file) before
+        # the escript exits. Short timeout — if it hangs, we exit anyway.
+        try do
+          GenServer.stop(pid, :normal, 5_000)
+        catch
+          :exit, _ -> :ok
+        end
+      end
+
+      :ok
+    end
+  end
+
+  defp broadcast_presence(dir_uuid, event_type, name, type, uuid) do
+    Commonplace.Dataflow.Magenta.send(
+      dir_uuid,
+      Commonplace.Dataflow.Magenta.message(event_type, name, %{
+        "name" => name,
+        "type" => Atom.to_string(type),
+        "uuid" => uuid,
+        "dir_uuid" => dir_uuid
+      })
+    )
   end
 end

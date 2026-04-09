@@ -30,13 +30,14 @@ defmodule Commonplace.MCP.Server do
             client_version: nil,
             protocol_version: nil,
             presence_starter: nil,
-            presence_uuid: nil,
-            presence_pid: nil
+            presence_stopper: nil,
+            presence_info: nil
 
   @type presence_result :: %{required(:uuid) => String.t(), optional(any) => any}
   @type presence_starter ::
           (String.t(), atom() ->
              {:ok, presence_result()} | {:error, any()})
+  @type presence_stopper :: (presence_result() -> any())
 
   @type t :: %__MODULE__{
           initialized?: boolean(),
@@ -44,8 +45,8 @@ defmodule Commonplace.MCP.Server do
           client_version: String.t() | nil,
           protocol_version: String.t() | nil,
           presence_starter: presence_starter() | nil,
-          presence_uuid: String.t() | nil,
-          presence_pid: pid() | nil
+          presence_stopper: presence_stopper() | nil,
+          presence_info: presence_result() | nil
         }
 
   @spec new() :: t()
@@ -54,7 +55,8 @@ defmodule Commonplace.MCP.Server do
   @spec new(keyword()) :: t()
   def new(opts) do
     %__MODULE__{
-      presence_starter: Keyword.get(opts, :presence_starter)
+      presence_starter: Keyword.get(opts, :presence_starter),
+      presence_stopper: Keyword.get(opts, :presence_stopper)
     }
   end
 
@@ -65,7 +67,23 @@ defmodule Commonplace.MCP.Server do
   def client_name(%__MODULE__{client_name: name}), do: name
 
   @spec presence_uuid(t()) :: String.t() | nil
-  def presence_uuid(%__MODULE__{presence_uuid: uuid}), do: uuid
+  def presence_uuid(%__MODULE__{presence_info: nil}), do: nil
+  def presence_uuid(%__MODULE__{presence_info: %{uuid: uuid}}), do: uuid
+
+  @doc """
+  Orderly teardown. Calls the configured presence_stopper with the
+  presence_info captured at initialize (if any). Safe to call when no
+  presence was started.
+  """
+  @spec shutdown(t()) :: :ok
+  def shutdown(%__MODULE__{presence_stopper: nil}), do: :ok
+  def shutdown(%__MODULE__{presence_info: nil}), do: :ok
+
+  def shutdown(%__MODULE__{presence_stopper: stopper, presence_info: info})
+      when is_function(stopper, 1) do
+    _ = stopper.(info)
+    :ok
+  end
 
   @type request :: {:request, term(), String.t(), map() | nil}
   @type notification :: {:notification, String.t(), map() | nil}
@@ -82,7 +100,7 @@ defmodule Commonplace.MCP.Server do
     client = Map.get(params, "clientInfo", %{})
     client_name = Map.get(client, "name") || @default_client_name
 
-    {presence_uuid, presence_pid} = maybe_start_presence(s.presence_starter, client_name)
+    presence_info = maybe_start_presence(s.presence_starter, client_name)
 
     new_state = %{
       s
@@ -90,13 +108,12 @@ defmodule Commonplace.MCP.Server do
         client_name: client_name,
         client_version: Map.get(client, "version"),
         protocol_version: Map.get(params, "protocolVersion", @protocol_version),
-        presence_uuid: presence_uuid,
-        presence_pid: presence_pid
+        presence_info: presence_info
     }
 
     server_info =
       %{"name" => @server_name, "version" => @server_version}
-      |> maybe_put("presenceUuid", presence_uuid)
+      |> maybe_put("presenceUuid", presence_uuid_of(presence_info))
 
     result = %{
       "protocolVersion" => @protocol_version,
@@ -187,17 +204,17 @@ defmodule Commonplace.MCP.Server do
   defp stringify(reason) when is_binary(reason), do: reason
   defp stringify(reason), do: inspect(reason)
 
-  defp maybe_start_presence(nil, _name), do: {nil, nil}
+  defp maybe_start_presence(nil, _name), do: nil
 
   defp maybe_start_presence(starter, name) when is_function(starter, 2) do
     case starter.(name, :bot) do
-      {:ok, %{uuid: uuid} = info} ->
-        {uuid, Map.get(info, :pid)}
-
-      {:error, _reason} ->
-        {nil, nil}
+      {:ok, %{uuid: _} = info} -> info
+      {:error, _reason} -> nil
     end
   end
+
+  defp presence_uuid_of(nil), do: nil
+  defp presence_uuid_of(%{uuid: uuid}), do: uuid
 
   defp maybe_put(map, _k, nil), do: map
   defp maybe_put(map, k, v), do: Map.put(map, k, v)
