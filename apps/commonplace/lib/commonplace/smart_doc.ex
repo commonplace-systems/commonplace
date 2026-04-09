@@ -65,7 +65,7 @@ defmodule Commonplace.SmartDoc do
 
   # --- Runtime Helpers ---
 
-  alias Commonplace.Store.CommitStoreClient
+  alias Commonplace.CommandRouter
   alias Commonplace.Dataflow.Magenta
 
   @doc """
@@ -73,25 +73,26 @@ defmodule Commonplace.SmartDoc do
 
   The `state` map must contain:
   - `:resolved_ports` — the ref-to-UUID map from Orchestrator wiring
-  - `:store` — the CommitStore server name
 
-  Increments the depth counter from `state.current_depth` (default 0) so that
-  downstream subscribers can detect and halt propagation loops.
+  Delegates to `Commonplace.CommandRouter.write/3`, which uses
+  `Commonplace.Document.Diff.apply_diff/3` (Myers-diff on graphemes) to
+  produce minimal insert/delete ops against the current doc state.
+  This preserves concurrent edits and is the same call site MCP `write`
+  uses, so both authored and computed edits share the same CRDT-correctness
+  guarantees (see docs/views.md "View computation" and
+  Commonplace.Document.Diff contract).
 
-  Returns `:ok` or `:error` if the docref is unresolved.
+  Returns `:ok` or `:error` if the docref is unresolved or the write
+  fails.
   """
   def push_cyan(state, docref, content) do
     uuid = Map.get(state.resolved_ports || %{}, docref)
 
     if uuid do
-      doc = Yelixer.Doc.new()
-      {doc, _} = Yelixer.Doc.get_or_create_type(doc, "content", :text)
-      doc = Yelixer.Types.Text.insert(doc, "content", 0, content)
-      update = Yelixer.Encoding.encode_update(doc)
-      depth = Map.get(state, :current_depth, 0)
-      store = Map.get(state, :store, CommitStoreClient)
-      CommitStoreClient.create_chained_commit(store, uuid, update, %{depth: depth + 1})
-      :ok
+      case CommandRouter.write(uuid, content) do
+        {:ok, _info} -> :ok
+        {:error, _reason} -> :error
+      end
     else
       :error
     end
