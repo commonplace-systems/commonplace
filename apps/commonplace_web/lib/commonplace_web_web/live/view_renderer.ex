@@ -16,8 +16,12 @@ defmodule CommonplaceWebWeb.ViewRenderer do
     `CommonplaceWebWeb.ViewActions.dispatch/3`.
 
   Remaining first-pass limits:
-  - Transclusion (`<include>`) renders whatever content is inlined in
-    the element — no upstream resolver.
+  - Transclusion (`<include>`) is expanded once at the top of
+    `render_view/2` via `Commonplace.Document.ViewTransclusion.expand/2`,
+    which resolves the `from` docref against the workspace root schema
+    and splices the target's content in as children. See that module's
+    moduledoc for scope (one level of recursion at a time, depth-limited,
+    cycle-detected).
   - `<raw>` elements display a warning badge + their literal content
     escaped. Honoring raw content is explicitly deferred until a trust
     mechanism exists.
@@ -45,6 +49,7 @@ defmodule CommonplaceWebWeb.ViewRenderer do
   def render_view(content, current_path) when is_binary(content) do
     case ViewXml.parse(content) do
       {:ok, %Node{tag: :view} = view} ->
+        view = Commonplace.Document.ViewTransclusion.expand(view)
         raw(render_node(view, current_path))
 
       {:ok, %Node{tag: other}} ->
@@ -218,6 +223,11 @@ defmodule CommonplaceWebWeb.ViewRenderer do
   end
 
   defp render_node(%Node{tag: :include} = n, path) do
+    # Content has already been expanded by
+    # `Commonplace.Document.ViewTransclusion.expand/2` at the top of
+    # `render_view/2` before this clause runs — any empty includes
+    # either have their resolved children, an error-child explanation,
+    # or a cycle/depth-limit marker child.
     from = n.attrs["from"] || "?"
     commit = n.attrs["commit"]
 
