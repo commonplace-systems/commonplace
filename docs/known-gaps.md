@@ -5,7 +5,8 @@ that are **known** but **deferred**. Anything listed here is known-broken or
 known-incomplete. The absence of a gap in the main codebase does NOT imply
 it's working — only that nobody has filed it yet.
 
-**Last updated:** 2026-04-09 (post Views Phase 2).
+**Last updated:** 2026-04-10 (post architecture pass — see "Closed" section
+for items fixed in that pass).
 
 ## How to use this doc
 
@@ -174,32 +175,11 @@ audit trails.
 ## Deferred phase 2+ view features
 
 <a id="v1"></a>
-### V1. Forked views not attached to tree paths
+### V1. Forked views not attached to tree paths — CLOSED 2026-04-10
 
-**Status:** intentional — shipped as Pass A fork button (CX-vaw)
-**Beads:** TBD
-
-**What's incomplete:**
-
-`Commonplace.CommandRouter.fork/2` returns a new UUID for the DAG-branched
-subtree, and both the LiveView fork button and the MCP `invoke_view_action`
-fork handler surface that UUID in their responses. But the new UUID is
-**not added to any schema entry**. Nothing navigates to the forked view —
-the fork is addressable via its UUID but orphaned from the tree.
-
-**What the fix looks like:**
-
-A follow-up pass needs to either:
-
-1. Prompt the user for a destination path and `Schema.add_file` the forked
-   UUID there, or
-2. Auto-generate a `.fork-N` suffix and attach it to the current directory
-   automatically, or
-3. Surface the forked UUID through a dedicated "orphan forks" UI so users
-   can move them into place later.
-
-The right answer depends on product intent. For MVP, "orphan forks with a
-visible UUID" is acceptable.
+**Status:** CLOSED — fixed in the architecture pass (2026-04-10).
+**Commit:** b3ebf6f
+**See:** Closed section below for the full resolution.
 
 <a id="v2"></a>
 ### V2. JSON-schema args validation on complex view actions
@@ -304,26 +284,11 @@ currently isn't. ViewCompute sidesteps the whole path and therefore has no
 fork-safety story.
 
 <a id="v6"></a>
-### V6. Transclusion resolver for `<include>`
+### V6. Transclusion resolver for `<include>` — CLOSED 2026-04-10
 
-**Status:** renderer handles inlined content only
-**Beads:** TBD
-
-**What's incomplete:**
-
-The `<include>` element in a view is defined as "transclusion with inlined
-content + origin marker" — the upstream SmartDoc, at compute time, is
-supposed to read the referenced doc, inline its content as children of
-`<include>`, and record the source via `from` + `commit` attributes.
-
-The ViewRenderer correctly renders `<include>` elements that already have
-inlined content — it wraps them in a bordered "transcluded from X @ Y"
-block. But there's **no resolver** that walks the tree, finds `<include>`
-elements with empty children, reads the referenced doc, and inlines its
-content. If a compute function produces an `<include from="..."/>` with
-no children, the renderer shows an empty transclusion block.
-
-Deferred because the wiki-home example doesn't need transclusion yet.
+**Status:** CLOSED — implemented in the architecture pass (2026-04-10).
+**Commit:** 6698b3d
+**See:** Closed section below for the full resolution.
 
 ---
 
@@ -424,62 +389,26 @@ These gaps aren't blockers for shipping but they're where regressions will
 hide. Worth adding incrementally as the surface expands.
 
 <a id="t2"></a>
-### T2. String.length vs graphemes bug in Commonplace.Document.Diff
+### T2. String.length vs graphemes in Commonplace.Document.Diff — RECLASSIFIED 2026-04-10
 
-**Status:** known correctness bug, not yet biting production
-**Beads:** CX-r1f (file failing tests, don't fix yet)
-
-**What's broken:**
-
-`Commonplace.Document.Diff.patches_to_edits/1` tracks cursor position in
-grapheme units for the input lists (`length(chars)`) but uses
-`String.length(text)` for the insert-cursor advance step. `String.length/1`
-counts codepoints, not graphemes. For any input containing combining marks
-(é as e+́), ZWJ sequences (👨‍👩‍👧), or regional indicators (flag emoji),
-the cursor will end up at the wrong offset, causing subsequent edit ops
-to be misaligned.
-
-The diff output itself is still correct for ASCII + BMP text because
-codepoints and graphemes coincide in that range.
-
-**Fix:**
-
-Replace `String.length(text)` with `String.graphemes(text) |> length()`
-in the `:ins` branch of `patches_to_edits/1`. File a failing test
-exercising the combining-mark case and ship it with `@tag :skip` or
-equivalent until the fix lands.
-
-commonplace-plan confirmed the fix approach in message 1380 on clod-squad
-(2026-04-09) and is updating the Diff contract section of views.md to say
-"codepoint-unit offsets, approximately grapheme-accurate for common text"
-with a reference to the tracking ticket.
+**Status:** RECLASSIFIED — the original bug report was incorrect. `String.length/1`
+is grapheme-aware in Elixir 1.18.4 (verified directly: it returns 1 for a
+ZWJ family emoji, 1 for a flag emoji, 4 for both precomposed and decomposed
+"café"). The pre-fix code was already grapheme-correct in practice.
+**Commit:** 97cc81f (consistency refactor, not a correctness fix)
+**Beads:** CX-r1f (closed with the reclassification noted)
+**See:** Closed section below for the correct story.
 
 ---
 
 ## Infrastructure / workflow gaps
 
 <a id="i1"></a>
-### I1. MCP escript must be rebuilt after tool changes
+### I1. MCP escript rebuild workflow — MITIGATED 2026-04-10
 
-**Status:** inherent to the escript architecture
-**Beads:** N/A (workflow documentation only)
-
-**Summary:**
-
-`apps/commonplace_mcp/commonplace_mcp` is a precompiled escript. Hot-loading
-modules into the running Phoenix beam does NOT update the escript — it
-runs as a separate OS process with its own compiled code path. After
-changing anything under `apps/commonplace_mcp/lib/`, run
-`cd apps/commonplace_mcp && mix escript.build` to rebuild before testing
-via stdio.
-
-I hit this during Views Pass C: the hot-loaded `Commonplace.MCP.Tools`
-module in the running beam had `invoke_view_action` registered, but piping
-JSON-RPC through the stale escript showed the old tools list. Rebuild
-fixed it.
-
-**Mitigation:** none needed beyond documentation. It's a natural property
-of the escript model. Just remember to rebuild.
+**Status:** MITIGATED via convenience script (2026-04-10).
+**Commit:** 2f989e8 — `bin/rebuild-mcp`
+**See:** Closed section below for the full resolution.
 
 <a id="i2"></a>
 ### I2. xmerl code path handling for in-place dev
@@ -527,7 +456,134 @@ gap entries above will break and need rework.
 
 ## Closed gaps (changelog)
 
-*(None yet — this is a new doc.)*
+### 2026-04-10 architecture pass
+
+Dispatched via subagents per boss-clod's "fix the obvious ones" direction
+(clod-squad msg #1387). Four closures + one reclassification.
+
+#### I1 — MCP escript rebuild convenience (commit 2f989e8)
+
+Shipped `bin/rebuild-mcp`, a bash wrapper that resolves the project root
+from its own location, cds into `apps/commonplace_mcp` (necessary because
+`mix escript.build` from the umbrella root fails with "not an umbrella
+project"), and runs the build. Works from any cwd. The underlying
+constraint (escript is precompiled, doesn't share code path with the
+running beam, must be rebuilt after any `apps/commonplace_mcp/lib/` change)
+still exists — this just removes the friction.
+
+Usage: `bin/rebuild-mcp` from anywhere.
+
+#### CX-r1f (T2) — Diff cursor-advance (commit 97cc81f) — RECLASSIFIED
+
+**Finding: the original bug report was wrong.** `String.length/1` in
+Elixir 1.18.4 IS grapheme-aware. Direct verification:
+
+```
+cafe_precomposed length=4 bytes=5
+cafe_decomposed  length=4 bytes=6   # combining mark handled correctly
+family length=1 bytes=18            # ZWJ emoji, 5 codepoints, 1 grapheme
+flag length=1 bytes=8               # regional indicators, 2 codepoints, 1 grapheme
+```
+
+The original known-gaps.md T2 entry (and my message to commonplace-plan)
+incorrectly claimed `String.length/1` counts codepoints rather than
+graphemes. That was misinformation. The pre-fix code was already
+grapheme-correct in practice for all inputs exercised by the test suite
+AND by the production call sites (MCP write, ViewCompute).
+
+The change that landed in commit 97cc81f is a **consistency improvement**,
+not a correctness fix:
+
+- The `:del` and `:eq` branches of `patches_to_edits/1` use `length(chars)`
+  directly on the grapheme list from `List.myers_difference/2`.
+- The `:ins` branch previously went `chars → Enum.join → String.length`,
+  re-deriving the grapheme count by walking the concatenated string.
+- `length(chars)` directly on the already-split grapheme list is
+  byte-for-byte equivalent today and avoids the second walk.
+
+Four regression tests for combining marks, ZWJ family emoji, regional
+indicators, and no-op idempotence are kept as coverage — they pass
+against BOTH the pre-change and post-change code.
+
+**commonplace-plan should revert the softening of the Diff contract section**
+in views.md. I prompted them (msg #1377 on clod-squad, 2026-04-09) to
+soften the grapheme invariant to "codepoint-unit, approximately
+grapheme-accurate" based on the incorrect bug claim. The correct statement
+is the stronger one: "grapheme-unit offsets, preserved through the
+insert/delete ops." I'll notify them separately.
+
+Beads CX-r1f closed with the reclassification reason in its close note.
+
+#### V1 — Forked views attach to tree (commit b3ebf6f)
+
+When a view's `fork` action succeeds via `Commonplace.CommandRouter.fork/2`,
+the new UUID is now attached to the workspace root schema under a unique
+name `fork-<first 8 chars of the new UUID>`. Jes can navigate to the
+forked view in his browser immediately — no more orphan UUIDs.
+
+Shape:
+
+- New `Commonplace.Workspace.root_uuid/0` helper reads the workspace root
+  from `<data_dir>/root`. Sibling to the existing `discover/1`.
+- `Commonplace.ViewActionDispatch.handle_fork` calls `Workspace.root_uuid/0`
+  + `DocBuilder.reconstruct_snapshot` + `Schema.add_file` + a chained
+  commit. On any attach failure, returns `{:ok, :tree_mutation, %{...,
+  attached: false, attach_error: reason}}` — the fork itself still succeeded
+  and the new UUID is surfaced.
+- MCP escript bootstrap now propagates the discovered data_dir into its
+  own `Application.put_env(:commonplace, :data_dir, ...)` so
+  `Workspace.root_uuid/0` called from the escript's process resolves to
+  the workspace path rather than the default `"data"` fallback.
+
+Live-verified via stdio JSON-RPC: forking `/wiki/about-views` from an MCP
+client produced new UUID `39146da1-b82e-4cab-8566-97cd60f64d74`, attached
+as `fork-39146da1` in the root schema. Immediately navigable at
+`/wiki/fork-39146da1`.
+
+#### V6 — Transclusion resolver (commit 6698b3d)
+
+New `Commonplace.Document.ViewTransclusion.expand/2` walks a parsed view
+tree, finds `<include>` elements with empty/whitespace-only children,
+resolves the `from` attribute by walking the root schema, reads the
+target doc's content, and splices it in as children of the include.
+
+Features:
+
+- Cycle detection via a visited-set threaded through recursion
+- Depth limit (default 4) to bound recursion
+- Graceful error handling: resolution failures produce an error-child
+  explanation, never raise
+- Workspace-relative docref parser: bare filenames, slash-separated
+  paths walked entry-by-entry through nested schema docs, leading `/`
+  and `wiki/` prefixes stripped
+- Plain-text wrap: non-view content becomes `<text format="plain">`
+- Idempotent: multiple expansions on the same tree converge because
+  includes with substantive children are preserved
+
+Wired into `CommonplaceWebWeb.ViewRenderer.render_view/2` between parse
+and `render_node` — hand-authored static views get transclusion for free.
+
+Out of scope (phase 3+ if needed): commit-pinning via the `commit`
+attribute, `../` navigation, `!`/`~` docref prefixes, DocRef
+`path:uuid@cid` format, format conversion between view XML and other
+text types.
+
+8 new tests cover the resolver; all 124 commonplace document tests
+green; all 20 view renderer tests green.
+
+### Changelog template
+
+When closing future gaps, use this format:
+
+```
+#### <GAP-ID> — <short title> (commit <SHA>)
+
+<one-paragraph description of what was fixed and why the fix was obvious
+(or why the original framing was wrong, in the case of reclassification)>
+
+<bullets on scope + verification>
+```
+
 
 ---
 
