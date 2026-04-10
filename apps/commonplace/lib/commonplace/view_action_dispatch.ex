@@ -46,6 +46,10 @@ defmodule Commonplace.ViewActionDispatch do
 
   alias Commonplace.CommandRouter
   alias Commonplace.Dataflow.Magenta
+  alias Commonplace.Store.CommitStoreClient
+  alias Commonplace.Tree.{DocBuilder, Schema}
+  alias Commonplace.Workspace
+  alias Yelixer.Encoding
 
   @type dispatch_ok ::
           {:ok, :ui_transition, map()}
@@ -120,13 +124,26 @@ defmodule Commonplace.ViewActionDispatch do
   defp do_dispatch("fork", %{view_uuid: uuid}) when is_binary(uuid) do
     case CommandRouter.fork(uuid) do
       {:ok, new_uuid} when is_binary(new_uuid) ->
-        {:ok, :tree_mutation,
-         %{
-           action: "fork",
-           new_uuid: new_uuid,
-           short_uuid: String.slice(new_uuid, 0, 8),
-           source_uuid: uuid
-         }}
+        short_uuid = String.slice(new_uuid, 0, 8)
+        attach_name = "fork-" <> short_uuid
+
+        base = %{
+          action: "fork",
+          new_uuid: new_uuid,
+          short_uuid: short_uuid,
+          source_uuid: uuid
+        }
+
+        details =
+          case attach_to_root_schema(new_uuid, attach_name) do
+            :ok ->
+              Map.merge(base, %{attached: true, attached_as: attach_name})
+
+            {:error, reason} ->
+              Map.merge(base, %{attached: false, attach_error: inspect(reason)})
+          end
+
+        {:ok, :tree_mutation, details}
 
       {:error, reason} ->
         {:error, "fork failed: #{inspect(reason)}"}
@@ -139,5 +156,35 @@ defmodule Commonplace.ViewActionDispatch do
 
   defp do_dispatch(other, _context) do
     {:error, "unknown view action: #{other}"}
+  end
+
+  # Attach a freshly-forked doc to the workspace root schema under
+  # `attach_name`. Returns `:ok` on success or `{:error, reason}` on
+  # any failure along the way. The fork itself already landed before
+  # this is called, so callers treat an error here as "forked but not
+  # attached" rather than a hard failure.
+  defp attach_to_root_schema(new_uuid, attach_name) do
+    with {:ok, root_uuid} <- Workspace.root_uuid(),
+         {:ok, root_doc} <- load_root_schema(root_uuid) do
+      updated = Schema.add_file(root_doc, attach_name, new_uuid)
+      update_binary = Encoding.encode_update(updated)
+
+      try do
+        _ = CommitStoreClient.create_chained_commit(root_uuid, update_binary)
+        :ok
+      rescue
+        e -> {:error, Exception.message(e)}
+      catch
+        :exit, reason -> {:error, {:exit, reason}}
+      end
+    end
+  end
+
+  defp load_root_schema(root_uuid) do
+    case DocBuilder.reconstruct_snapshot(CommitStoreClient, root_uuid) do
+      {:ok, doc} -> {:ok, doc}
+      :none -> {:error, :no_root_schema}
+      {:error, reason} -> {:error, reason}
+    end
   end
 end

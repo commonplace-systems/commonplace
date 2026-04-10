@@ -91,6 +91,13 @@ defmodule Commonplace.MCP do
           true ->
             with :ok <- connect(serve_node),
                  {:ok, root_uuid} <- read_root_uuid(data_dir) do
+              # Propagate the discovered data_dir into the escript's
+              # Application env so helpers that default to it
+              # (e.g. Commonplace.Workspace.root_uuid/0) see the
+              # workspace path rather than the "data" fallback. Needed
+              # for any ViewActionDispatch path that runs in the
+              # escript's process and touches workspace-scoped state.
+              Application.put_env(:commonplace, :data_dir, data_dir)
               {:ok, root_uuid}
             end
         end

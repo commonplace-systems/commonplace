@@ -46,4 +46,24 @@ defmodule Commonplace.Workspace do
         do_discover(Path.dirname(current_dir), original_dir)
     end
   end
+
+  @doc """
+  Returns the workspace's root schema UUID by reading `<data_dir>/root`.
+
+  `data_dir` is taken from `Application.get_env(:commonplace, :data_dir, "data")`.
+  Returns `{:ok, uuid_string}` or `{:error, reason}`.
+
+  Matches the pattern used by the wiki/tree LiveViews' private
+  `read_root_uuid/1` helpers — this is the shared version for code that
+  lives in the core `commonplace` app (e.g. `ViewActionDispatch`).
+  """
+  @spec root_uuid() :: {:ok, String.t()} | {:error, term()}
+  def root_uuid do
+    data_dir = Application.get_env(:commonplace, :data_dir, "data")
+
+    case File.read(Path.join(data_dir, "root")) do
+      {:ok, content} -> {:ok, String.trim(content)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
 end
