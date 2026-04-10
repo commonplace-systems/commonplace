@@ -150,4 +150,61 @@ defmodule Commonplace.Document.DiffTest do
       assert ContentType.get_content(doc) == new
     end
   end
+
+  describe "grapheme-accurate cursor advance (CX-r1f)" do
+    defp make_text_doc_for_grapheme_test(content) do
+      doc = Yelixer.Doc.new(client_id: 1)
+      doc = ContentType.create(doc, :text, "test.txt")
+
+      if content != "" do
+        ContentType.insert_text(doc, 0, content)
+      else
+        doc
+      end
+    end
+
+    @tag :grapheme_bug
+    test "combining mark: e + U+0301 inserted from empty" do
+      doc = make_text_doc_for_grapheme_test("")
+
+      target = "caf" <> <<"e"::utf8, 0x0301::utf8>>
+      doc = Diff.apply_diff(doc, "", target)
+
+      assert ContentType.get_content(doc) == target
+    end
+
+    @tag :grapheme_bug
+    test "ZWJ family emoji: insert then append exclamation" do
+      initial = "before "
+      doc = make_text_doc_for_grapheme_test(initial)
+
+      step1 = "before \u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467} after"
+      doc = Diff.apply_diff(doc, initial, step1)
+      assert ContentType.get_content(doc) == step1
+
+      step2 = step1 <> "!"
+      doc = Diff.apply_diff(doc, step1, step2)
+      assert ContentType.get_content(doc) == step2
+    end
+
+    @tag :grapheme_bug
+    test "regional indicators: two flag emoji in sequence" do
+      initial = "visited "
+      doc = make_text_doc_for_grapheme_test(initial)
+
+      step1 = "visited \u{1F1FA}\u{1F1F8}"
+      doc = Diff.apply_diff(doc, initial, step1)
+      assert ContentType.get_content(doc) == step1
+
+      step2 = "visited \u{1F1FA}\u{1F1F8} and \u{1F1EF}\u{1F1F5}"
+      doc = Diff.apply_diff(doc, step1, step2)
+      assert ContentType.get_content(doc) == step2
+    end
+
+    @tag :grapheme_bug
+    test "no-op fast path still returns [] for combining-mark string" do
+      s = "caf" <> <<"e"::utf8, 0x0301::utf8>>
+      assert Diff.diff(s, s) == []
+    end
+  end
 end

@@ -1,10 +1,15 @@
 defmodule Commonplace.Document.Diff do
   @moduledoc """
-  Character-level diffing for text documents.
+  Grapheme-level diffing for text documents.
 
   Computes minimal edit operations to transform one string into another,
   suitable for applying to Yjs text documents via insert/delete operations.
   Uses Elixir's built-in Myers diff algorithm on grapheme clusters.
+
+  All indices and lengths emitted by `diff/2` are measured in graphemes,
+  matching Yelixer's text indexing semantics. Combining marks, ZWJ
+  sequences, and regional-indicator flag emoji are each treated as a
+  single unit for cursor-advance purposes.
   """
 
   alias Commonplace.Document.ContentType
@@ -70,7 +75,7 @@ defmodule Commonplace.Document.Diff do
 
         {:ins, chars}, {acc, cursor} ->
           text = Enum.join(chars)
-          {acc ++ [{:insert, cursor, text}], cursor + String.length(text)}
+          {acc ++ [{:insert, cursor, text}], cursor + length(chars)}
       end)
 
     edits
