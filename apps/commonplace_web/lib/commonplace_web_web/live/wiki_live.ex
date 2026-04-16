@@ -12,7 +12,10 @@ defmodule CommonplaceWebWeb.WikiLive do
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Document.{ContentType, ViewDetect}
   alias Commonplace.Dataflow.PubSub, as: CPPubSub
+  alias Commonplace.Presence
+  alias Commonplace.Presence.Identity
   alias CommonplaceWebWeb.{ViewRenderer, ViewActions}
+  import CommonplaceWebWeb.PresenceCard, only: [presence_card: 1]
 
   @impl true
   def mount(_params, _session, socket) do
@@ -389,14 +392,24 @@ defmodule CommonplaceWebWeb.WikiLive do
                   <.recent_changes_page changes={elem(@page_content, 2)} />
                 <% else %>
                   <%= if @page_content do %>
-                    <%= if ViewDetect.is_view?(@page_content) do %>
-                      <article class="max-w-none">
-                        <%= ViewRenderer.render_view(@page_content, @current_path) %>
-                      </article>
-                    <% else %>
-                      <article class="prose prose-lg max-w-none">
-                        <%= render_wiki_content(@page_content, @current_path) %>
-                      </article>
+                    <%= cond do %>
+                      <% presence_render?(@page_name, @page_content) -> %>
+                        <article class="max-w-4xl">
+                          <.presence_card
+                            presence={@page_content}
+                            name={presence_display_name(@page_name)}
+                            honorific={presence_honorific(@page_name)}
+                            identity={@page_content[:__identity__]}
+                          />
+                        </article>
+                      <% ViewDetect.is_view?(@page_content) -> %>
+                        <article class="max-w-none">
+                          <%= ViewRenderer.render_view(@page_content, @current_path) %>
+                        </article>
+                      <% true -> %>
+                        <article class="prose prose-lg max-w-none">
+                          <%= render_wiki_content(@page_content, @current_path) %>
+                        </article>
                     <% end %>
                   <% else %>
                     <%= if @page_name do %>
@@ -641,6 +654,7 @@ defmodule CommonplaceWebWeb.WikiLive do
           {:ok, entry} ->
             # It's a document — show it
             content = read_doc_content(entry.node_id)
+            content = maybe_enrich_presence(page_name, content, root)
 
             if connected?(socket) do
               CPPubSub.subscribe_blue(entry.node_id)
@@ -851,6 +865,55 @@ defmodule CommonplaceWebWeb.WikiLive do
       parts -> parts |> Enum.drop(-1) |> Enum.join("/")
     end
   end
+
+  # Returns true when the page is a presence file (.bot/.usr/.exe/.who) and
+  # the loaded content is the YMap (a plain Elixir map, not a binary).
+  defp presence_render?(page_name, %{} = content) when is_binary(page_name) do
+    not Map.has_key?(content, :__struct__) and
+      match?({:ok, _, _}, Presence.parse_honorific(page_name))
+  end
+
+  defp presence_render?(_, _), do: false
+
+  defp presence_honorific(page_name) when is_binary(page_name) do
+    case Presence.parse_honorific(page_name) do
+      {:ok, _, type} -> type
+      _ -> nil
+    end
+  end
+
+  defp presence_honorific(_), do: nil
+
+  defp presence_display_name(page_name) when is_binary(page_name) do
+    case Presence.parse_honorific(page_name) do
+      {:ok, name, _} -> name
+      _ -> page_name
+    end
+  end
+
+  defp presence_display_name(_), do: nil
+
+  # If page is a presence doc, look up the cold identity (from __identities__)
+  # and attach it to the content map under :__identity__ so the renderer can
+  # display first_seen/last_seen/public_keys without a second round-trip.
+  defp maybe_enrich_presence(page_name, %{} = content, root_uuid)
+       when is_binary(page_name) and not is_nil(root_uuid) do
+    case Presence.parse_honorific(page_name) do
+      {:ok, name, type} ->
+        identity =
+          case Identity.lookup(name, type, root_uuid) do
+            {:ok, identity_uuid} -> Identity.read(identity_uuid)
+            _ -> nil
+          end
+
+        Map.put(content, :__identity__, identity)
+
+      _ ->
+        content
+    end
+  end
+
+  defp maybe_enrich_presence(_page_name, content, _root), do: content
 
   defp format_timestamp(%DateTime{} = dt) do
     Calendar.strftime(dt, "%Y-%m-%d %H:%M")
