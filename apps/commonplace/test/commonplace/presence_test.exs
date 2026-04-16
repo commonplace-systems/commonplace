@@ -146,6 +146,75 @@ defmodule Commonplace.PresenceTest do
     end
   end
 
+  describe "set_activity/3" do
+    test "writes the activity field and read returns it", %{store: store, root: root} do
+      {:ok, uuid} = Presence.create("doer", :bot, root, store)
+
+      Presence.set_activity(uuid, "writing tests", store)
+
+      content = Presence.read(uuid, store)
+      assert content["activity"] == "writing tests"
+    end
+
+    test "overwrites previous activity on subsequent calls", %{store: store, root: root} do
+      {:ok, uuid} = Presence.create("doer", :bot, root, store)
+      Presence.set_activity(uuid, "first task", store)
+      Presence.set_activity(uuid, "second task", store)
+
+      assert Presence.read(uuid, store)["activity"] == "second task"
+    end
+
+    test "stores empty string for nil activity", %{store: store, root: root} do
+      {:ok, uuid} = Presence.create("doer", :bot, root, store)
+      Presence.set_activity(uuid, nil, store)
+      assert Presence.read(uuid, store)["activity"] == ""
+    end
+  end
+
+  describe "set_attributes/3" do
+    test "writes owner, cwd, and capabilities", %{store: store, root: root} do
+      {:ok, uuid} = Presence.create("agent", :bot, root, store)
+
+      Presence.set_attributes(
+        uuid,
+        %{owner: "jes", cwd: "/tmp/proj", capabilities: ["fs", "irc"]},
+        store
+      )
+
+      content = Presence.read(uuid, store)
+      assert content["owner"] == "jes"
+      assert content["cwd"] == "/tmp/proj"
+      # capabilities stored as JSON-encoded string
+      assert {:ok, ["fs", "irc"]} = Jason.decode(content["capabilities"])
+    end
+
+    test "accepts a partial attribute map without clobbering others",
+         %{store: store, root: root} do
+      {:ok, uuid} = Presence.create("partial", :exe, root, store)
+      Presence.set_attributes(uuid, %{owner: "alice"}, store)
+      Presence.set_attributes(uuid, %{cwd: "/srv/x"}, store)
+
+      content = Presence.read(uuid, store)
+      assert content["owner"] == "alice"
+      assert content["cwd"] == "/srv/x"
+    end
+
+    test "ignores unknown keys without crashing", %{store: store, root: root} do
+      {:ok, uuid} = Presence.create("ignore", :exe, root, store)
+      # should not raise
+      Presence.set_attributes(uuid, %{owner: "bob", bogus: "ignored"}, store)
+      assert Presence.read(uuid, store)["owner"] == "bob"
+    end
+
+    test "accepts a keyword list", %{store: store, root: root} do
+      {:ok, uuid} = Presence.create("kw", :usr, root, store)
+      Presence.set_attributes(uuid, [owner: "carol", cwd: "/home/carol"], store)
+      content = Presence.read(uuid, store)
+      assert content["owner"] == "carol"
+      assert content["cwd"] == "/home/carol"
+    end
+  end
+
   describe "presence GenServer" do
     test "starts and creates presence doc", %{store: store, root: root} do
       {:ok, pid} =

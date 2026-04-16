@@ -167,4 +167,69 @@ defmodule Commonplace.Presence do
         ContentType.create(doc, :map, "presence")
     end
   end
+
+  @doc """
+  Set the `activity` field on a presence YMap.
+
+  Actor harnesses (commonplaceclaude, MCP server, etc.) call this to push
+  a free-form "current task" string that the wiki presence card surfaces.
+
+  Writes a single chained commit on the presence document. Pass `nil` or
+  the empty string to clear the field — both are stored as-is so callers
+  can distinguish "no activity" from "never set".
+  """
+  def set_activity(uuid, activity, store \\ CommitStoreClient)
+      when is_binary(uuid) do
+    doc = load_doc(uuid, store)
+    value = if is_nil(activity), do: "", else: to_string(activity)
+    doc = ContentType.set_key(doc, "activity", value)
+    update = Yelixer.Encoding.encode_update(doc)
+    CommitStoreClient.create_chained_commit(store, uuid, update)
+  end
+
+  @doc """
+  Write a batch of optional presence attributes in a single chained commit.
+
+  Accepts a map (or keyword list) with any of the following keys (all
+  optional — unsupplied keys are not written):
+
+    * `:owner` — string, who launched this actor (user/process name).
+    * `:cwd` — string, working directory / project root at start time.
+    * `:capabilities` — list of strings, tool/MCP/skill names. Stored as
+      a JSON-encoded string so it survives YMap's scalar-value constraint
+      and round-trips through `read/2` cleanly.
+
+  Unknown keys are ignored (logged at debug). Returns the commit struct
+  from `CommitStoreClient.create_chained_commit/3`.
+
+  This function is split out from `create/2` deliberately — it lets
+  callers populate owner/cwd/capabilities at start-up time without
+  expanding the `create/2` signature, keeping the write surface
+  composable for tests and CLI harnesses.
+  """
+  def set_attributes(uuid, attrs, store \\ CommitStoreClient) when is_binary(uuid) do
+    attrs = if is_list(attrs), do: Enum.into(attrs, %{}), else: attrs
+    doc = load_doc(uuid, store)
+
+    doc =
+      Enum.reduce(attrs, doc, fn
+        {:owner, owner}, acc when is_binary(owner) ->
+          ContentType.set_key(acc, "owner", owner)
+
+        {:cwd, cwd}, acc when is_binary(cwd) ->
+          ContentType.set_key(acc, "cwd", cwd)
+
+        {:capabilities, caps}, acc when is_list(caps) ->
+          encoded = Jason.encode!(Enum.map(caps, &to_string/1))
+          ContentType.set_key(acc, "capabilities", encoded)
+
+        {key, _value}, acc ->
+          require Logger
+          Logger.debug("Presence.set_attributes: ignoring unknown key #{inspect(key)}")
+          acc
+      end)
+
+    update = Yelixer.Encoding.encode_update(doc)
+    CommitStoreClient.create_chained_commit(store, uuid, update)
+  end
 end
