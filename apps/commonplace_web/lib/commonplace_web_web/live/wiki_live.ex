@@ -8,7 +8,7 @@ defmodule CommonplaceWebWeb.WikiLive do
 
   use CommonplaceWebWeb, :live_view
 
-  alias Commonplace.Tree.{Schema, Walk, DocBuilder}
+  alias Commonplace.Tree.{Schema, Walk, DocBuilder, DocCache}
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Document.{ContentType, ViewDetect}
   alias Commonplace.Dataflow.PubSub, as: CPPubSub
@@ -731,7 +731,7 @@ defmodule CommonplaceWebWeb.WikiLive do
   end
 
   defp read_doc_content(uuid) do
-    case DocBuilder.reconstruct_snapshot(CommitStoreClient, uuid) do
+    case DocCache.get_snapshot(CommitStoreClient, uuid) do
       {:ok, doc} -> ContentType.get_content(doc)
       :none -> nil
     end
@@ -807,7 +807,7 @@ defmodule CommonplaceWebWeb.WikiLive do
   end
 
   defp load_schema(uuid) do
-    case DocBuilder.reconstruct_snapshot(CommitStoreClient, uuid) do
+    case DocCache.get_snapshot(CommitStoreClient, uuid) do
       {:ok, doc} -> doc
       :none -> Schema.new_schema()
     end
