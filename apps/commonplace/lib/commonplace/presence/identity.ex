@@ -57,7 +57,7 @@ defmodule Commonplace.Presence.Identity do
         uuid = UUID.uuid4()
         now = DateTime.utc_now() |> DateTime.to_iso8601()
 
-        doc = Yelixer.Doc.new()
+        doc = Yelixer.Doc.new(client_id: stable_client_id(uuid))
         doc = ContentType.create(doc, :map, fname)
         doc = ContentType.set_key(doc, "name", name)
         doc = ContentType.set_key(doc, "type", Map.fetch!(Presence.type_to_ext(), type))
@@ -127,7 +127,7 @@ defmodule Commonplace.Presence.Identity do
   def touch_last_seen(uuid, store \\ CommitStoreClient) do
     case CommitStoreClient.latest_commit(store, uuid) do
       {:ok, commit} ->
-        doc = Yelixer.Doc.new()
+        doc = Yelixer.Doc.new(client_id: stable_client_id(uuid))
         {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
         now = DateTime.utc_now() |> DateTime.to_iso8601()
         doc = ContentType.set_key(doc, "last_seen", now)
@@ -143,7 +143,7 @@ defmodule Commonplace.Presence.Identity do
   def add_public_key(identity_uuid, public_key_b64, store \\ CommitStoreClient) do
     case CommitStoreClient.latest_commit(store, identity_uuid) do
       {:ok, commit} ->
-        doc = Yelixer.Doc.new()
+        doc = Yelixer.Doc.new(client_id: stable_client_id(identity_uuid))
         {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
 
         # Get existing keys or start empty
@@ -206,4 +206,10 @@ defmodule Commonplace.Presence.Identity do
         Schema.new_schema()
     end
   end
+
+  # Derive a stable Yjs client_id from the identity UUID. Same rationale as
+  # Commonplace.Presence.stable_client_id/1 — without this, repeated
+  # write-then-encode passes against the same doc grow the state vector
+  # unboundedly (see CX-3ty / CX-6g6).
+  defp stable_client_id(uuid), do: :erlang.phash2(uuid, 0xFFFF_FFFF)
 end

@@ -58,7 +58,7 @@ defmodule Commonplace.Presence do
     uuid = UUID.uuid4()
     now = DateTime.utc_now() |> DateTime.to_iso8601()
 
-    doc = Yelixer.Doc.new()
+    doc = Yelixer.Doc.new(client_id: stable_client_id(uuid))
     doc = ContentType.create(doc, :map, fname)
     doc = ContentType.set_key(doc, "name", name)
     doc = ContentType.set_key(doc, "type", Map.fetch!(@type_to_ext, type))
@@ -158,13 +158,20 @@ defmodule Commonplace.Presence do
   defp load_doc(uuid, store) do
     case CommitStoreClient.latest_commit(store, uuid) do
       {:ok, commit} ->
-        doc = Yelixer.Doc.new()
+        doc = Yelixer.Doc.new(client_id: stable_client_id(uuid))
         {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
         doc
 
       :none ->
-        doc = Yelixer.Doc.new()
+        doc = Yelixer.Doc.new(client_id: stable_client_id(uuid))
         ContentType.create(doc, :map, "presence")
     end
   end
+
+  # Derive a stable client_id from the presence UUID so all writers (heartbeat,
+  # status updates, restarts, different actors) reuse the same Yjs client_id.
+  # Without this, each Yelixer.Doc.new() call mints a fresh random client_id
+  # which gets persisted into the state vector on encode_update, causing
+  # unbounded O(N) state-vector growth (see CX-3ty / CX-6g6).
+  defp stable_client_id(uuid), do: :erlang.phash2(uuid, 0xFFFF_FFFF)
 end

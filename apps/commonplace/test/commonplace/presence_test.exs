@@ -208,6 +208,67 @@ defmodule Commonplace.PresenceTest do
     end
   end
 
+  describe "stable client_id (CX-6g6)" do
+    test "100 heartbeats produce a state vector with exactly 1 client_id",
+         %{store: store, root: root} do
+      {:ok, uuid} = Presence.create("steady", :exe, root, store)
+
+      for _ <- 1..100 do
+        Presence.heartbeat(uuid, store)
+      end
+
+      {:ok, commit} = CommitStore.latest_commit(store, uuid)
+      doc = Yelixer.Doc.new()
+      {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
+
+      sv = Yelixer.BlockStore.state_vector(doc.store)
+      assert map_size(sv.clocks) == 1,
+             "expected single stable client_id in state vector, got #{map_size(sv.clocks)} entries: #{inspect(Map.keys(sv.clocks))}"
+
+      # The stable client_id must match phash2(uuid)
+      expected_client_id = :erlang.phash2(uuid, 0xFFFF_FFFF)
+      assert Map.has_key?(sv.clocks, expected_client_id),
+             "state vector should contain phash2-derived client_id #{expected_client_id}"
+
+      # Most recent heartbeat content survives
+      content = Commonplace.Document.ContentType.get_content(doc)
+      assert is_binary(content["heartbeat"])
+      assert content["status"] == "starting"
+      assert content["name"] == "steady"
+    end
+
+    test "heartbeat content reflects the latest write", %{store: store, root: root} do
+      {:ok, uuid} = Presence.create("freshness", :exe, root, store)
+
+      Presence.heartbeat(uuid, store)
+      first_hb = Presence.read(uuid, store)["heartbeat"]
+
+      Process.sleep(10)
+      Presence.heartbeat(uuid, store)
+      second_hb = Presence.read(uuid, store)["heartbeat"]
+
+      assert first_hb != second_hb
+      assert second_hb > first_hb
+    end
+
+    test "update_status and heartbeat share the same stable client_id",
+         %{store: store, root: root} do
+      {:ok, uuid} = Presence.create("mixed", :exe, root, store)
+
+      Presence.update_status(uuid, "running", store)
+      Presence.heartbeat(uuid, store)
+      Presence.update_status(uuid, "idle", store)
+      Presence.heartbeat(uuid, store)
+
+      {:ok, commit} = CommitStore.latest_commit(store, uuid)
+      doc = Yelixer.Doc.new()
+      {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
+
+      sv = Yelixer.BlockStore.state_vector(doc.store)
+      assert map_size(sv.clocks) == 1
+    end
+  end
+
   defp load_schema(uuid, store) do
     case CommitStore.latest_commit(store, uuid) do
       {:ok, commit} ->
