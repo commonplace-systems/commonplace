@@ -115,21 +115,26 @@ defmodule Commonplace.Presence.IdentityTest do
     end
   end
 
-  describe "concurrent writer CRDT correctness (CX-6g6 codex P1)" do
-    # Identity docs live in __identities__ and are SHARED: any node running a
-    # given actor can concurrently update the same identity doc. The client_id
-    # used for writes MUST differ across writers — otherwise YMap.set/4 assigns
-    # identical (client_id, clock) pairs and Encoding.apply_update/2 silently
-    # drops one side of the merge as "already known".
+  describe "in-memory Yjs merge with distinct client_ids (CX-6g6 codex P1 round 1)" do
+    # SCOPE: these tests exercise ONLY the in-memory Yjs merge path —
+    # Yelixer.Encoding.apply_update/2 on two concurrent updates from writers
+    # with distinct client_ids. They do NOT exercise the CommitStore write
+    # path (`latest_commit -> mutate -> create_chained_commit`), where two
+    # nodes racing on the same identity UUID still produce sibling commits
+    # and only one becomes `:latest`. Full multi-writer correctness through
+    # the commit-chain layer (sibling-commit merge / :latest reconciliation)
+    # is tracked as a separate P1 follow-up bead; see the docstring on
+    # `stable_client_id/1` in identity.ex for the detailed scope note.
     #
-    # This test simulates two distinct BEAM writers (different client_ids)
-    # editing the same identity doc from the same base state, merges the
-    # updates, and asserts that BOTH writes survive.
-    #
-    # A previous (broken) implementation that hashed the identity UUID alone
-    # gave both writers the SAME client_id; under that implementation one of
-    # the concurrent key sets disappears and this test fails.
-    test "concurrent writes from two writers on same identity doc both survive",
+    # What this describe block verifies is the *prerequisite* for that
+    # follow-up: if identity writes from different nodes ever reach the
+    # same in-memory Yelixer.Doc — whether via a future sibling-commit
+    # merge, a catch-up sync, or a snapshot rebuild — their updates carry
+    # distinct (client_id, clock) pairs and both survive. A previous
+    # implementation hashed the identity UUID alone, giving every node the
+    # same client_id and silently collapsing concurrent writes even at
+    # this in-memory layer.
+    test "in-memory apply_update with distinct client_ids merges both writers",
          %{store: store, root: root} do
       alias Commonplace.Document.ContentType
       alias Commonplace.Store.CommitStoreClient

@@ -223,13 +223,34 @@ defmodule Commonplace.Presence.Identity do
   #     across heartbeats / restarts (fixes the original CX-3ty / CX-6g6
   #     state-vector-bloat regression).
   #
-  #   * Across distinct nodes, client_ids differ — so concurrent updates
-  #     from different nodes carry distinct (client_id, clock) pairs and
-  #     Encoding.apply_update/2 merges them instead of silently dropping
-  #     one side as "already known" (fixes the P1 concurrent-writer bug
-  #     codex flagged on presence.ex:171-176).
+  #   * Across distinct nodes, client_ids differ — so if two concurrent
+  #     updates from different nodes are ever merged in memory via
+  #     Encoding.apply_update/2, they carry distinct (client_id, clock)
+  #     pairs and both survive instead of one being silently dropped as
+  #     "already known".
   #
-  # Hashing {node(), uuid} preserves single-writer-per-node stability while
-  # keeping multi-writer-across-nodes correctness.
+  # SCOPE — PREREQUISITE, NOT FULL MULTI-WRITER SAFETY.
+  # Distinct client_ids are a *necessary precondition* for multi-writer CRDT
+  # merge on identity docs, but they are NOT by themselves sufficient for
+  # end-to-end multi-writer correctness through the CommitStore layer. The
+  # write path here still follows:
+  #
+  #     latest_commit  ->  mutate in memory  ->  create_chained_commit
+  #
+  # and `Identity.read/2` reconstructs state from `latest_commit` only.
+  # Under concurrent writes from two nodes racing on the same identity
+  # UUID, both can observe the same parent commit, each produces a full
+  # snapshot update, and both `create_chained_commit` calls succeed —
+  # yielding two SIBLING commits chained to the same parent. Whichever
+  # `:latest` pointer write lands second becomes the entire visible state,
+  # so the earlier node's concurrent write is lost at the commit-chain
+  # layer even though the in-memory CRDT merge would have preserved it.
+  #
+  # Closing that gap — detecting sibling commits and merging them so both
+  # writes flow into `:latest` — is a separate architectural change that
+  # applies to any doc using `create_chained_commit` + latest-commit reads
+  # (identity, schema, etc.) and is tracked in its own follow-up bead.
+  # Hashing {node(), uuid} is the prerequisite that makes that later fix
+  # able to actually merge both sides instead of collapsing them.
   defp stable_client_id(uuid), do: :erlang.phash2({node(), uuid}, 0xFFFF_FFFF)
 end
