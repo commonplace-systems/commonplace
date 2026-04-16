@@ -298,6 +298,134 @@ defmodule Commonplace.Document.ServerSyncTest do
     assert Commonplace.Document.Server.get_content(pid) == "zzz"
   end
 
+  test "apply_with_base advances parent_commit to the applied commit id (CX-u7p r3 P1)",
+       %{store: store} do
+    # Focused unit test for the round-3 P1 fix: apply_with_base/3 must
+    # update state.parent_commit = commit.id whenever it advances
+    # state.doc, so that a subsequent snapshot_is_noop?/2 check compares
+    # against the actual head that has been incorporated (not the last
+    # locally-committed head). Pre-fix, state.parent_commit stayed
+    # pinned to the last local commit even as state.doc advanced.
+    uuid = "sync-parent-track-#{:rand.uniform(1_000_000)}"
+
+    # Seed committed state A.
+    initial_doc = Yelixer.Doc.new(client_id: 10)
+    initial_doc = Commonplace.Document.ContentType.create(initial_doc, :text, "TrackDoc")
+    initial_doc = Commonplace.Document.ContentType.insert_text(initial_doc, 0, "hello")
+    initial_update = Yelixer.Encoding.encode_update(initial_doc)
+    commit_a = CommitStore.create_commit(store, uuid, initial_update, nil)
+
+    pid =
+      start_supervised!(
+        {Commonplace.Document.Server, uuid: uuid, commit_store: store, client_id: 20},
+        id: uuid
+      )
+
+    assert Commonplace.Document.Server.get_content(pid) == "hello"
+    assert :sys.get_state(pid).parent_commit == commit_a.id
+
+    # Remote delta B: incremental diff appending " world".
+    remote_doc = Yelixer.Doc.new(client_id: 99)
+    {:ok, remote_doc} = Yelixer.Encoding.apply_update(remote_doc, initial_update)
+    remote_doc = Commonplace.Document.ContentType.insert_text(remote_doc, 5, " world")
+    sv = Yelixer.BlockStore.state_vector(initial_doc.store)
+    diff = Yelixer.Encoding.encode_diff(remote_doc, sv)
+
+    commit_b = %Commonplace.Store.Commit{
+      id: :crypto.hash(:sha256, diff),
+      doc_uuid: uuid,
+      parent_id: commit_a.id,
+      update: diff,
+      timestamp: DateTime.utc_now(),
+      metadata: %{}
+    }
+
+    send(pid, {:remote_commit, commit_b, :fake_remote_node})
+    _ = Commonplace.Document.Server.get_doc(pid)
+
+    # state.doc advanced...
+    assert Commonplace.Document.Server.get_content(pid) == "hello world"
+    # ...AND state.parent_commit advanced to B (the P1 fix).
+    assert :sys.get_state(pid).parent_commit == commit_b.id
+  end
+
+  test "remote delta then compaction snapshot preserves dirty local edits (CX-u7p r3)",
+       %{store: store} do
+    # End-to-end scenario from the round-3 finding:
+    #   server at A → remote delta B → dirty local edit → snapshot(B)
+    # Assertion: the dirty local edit must survive.
+    #
+    # Pre-fix, state.parent_commit stayed pinned at A even after B was
+    # applied, so when the snapshot(parent=B) arrived snapshot_is_noop?
+    # compared B ≠ A and classified it as divergent, triggering the
+    # reset path and silently dropping the dirty edit.
+    uuid = "sync-delta-then-snap-#{:rand.uniform(1_000_000)}"
+
+    # Seed committed state A = "hello".
+    initial_doc = Yelixer.Doc.new(client_id: 10)
+    initial_doc = Commonplace.Document.ContentType.create(initial_doc, :text, "DeltaDoc")
+    initial_doc = Commonplace.Document.ContentType.insert_text(initial_doc, 0, "hello")
+    initial_update = Yelixer.Encoding.encode_update(initial_doc)
+    _commit_a = CommitStore.create_commit(store, uuid, initial_update, nil)
+
+    # Start the server at A. state.doc = "hello", state.parent_commit = A.
+    pid =
+      start_supervised!(
+        {Commonplace.Document.Server, uuid: uuid, commit_store: store, client_id: 20},
+        id: uuid
+      )
+
+    assert Commonplace.Document.Server.get_content(pid) == "hello"
+
+    # Remote delta B = A + " world", durably stored (chained on A, :latest
+    # advances to B) so reconstruct_doc_at/3 can later find B in the chain.
+    # This mirrors the post-sync durable-store state for this scenario.
+    remote_doc = Yelixer.Doc.new(client_id: 99)
+    {:ok, remote_doc} = Yelixer.Encoding.apply_update(remote_doc, initial_update)
+    remote_doc = Commonplace.Document.ContentType.insert_text(remote_doc, 5, " world")
+    sv = Yelixer.BlockStore.state_vector(initial_doc.store)
+    diff = Yelixer.Encoding.encode_diff(remote_doc, sv)
+    commit_b = CommitStore.create_chained_commit(store, uuid, diff)
+
+    # Deliver B to the server via the remote-commit path. import_commit
+    # sees B already exists (no-op), but apply_with_base still applies
+    # the diff onto state.doc and — per the P1 fix — advances
+    # state.parent_commit from A to B.
+    send(pid, {:remote_commit, commit_b, :fake_remote_node})
+    _ = Commonplace.Document.Server.get_doc(pid)
+
+    assert Commonplace.Document.Server.get_content(pid) == "hello world"
+    assert :sys.get_state(pid).parent_commit == commit_b.id
+
+    # Dirty local edit (not committed).
+    :ok = Commonplace.Document.Server.insert_text(pid, 11, "!")
+    assert Commonplace.Document.Server.get_content(pid) == "hello world!"
+
+    # Remote peer sends a compaction snapshot of B (same materialized
+    # content, fresh encoding), chained on B. Because commit.parent_id
+    # matches state.parent_commit AND reconstruct_doc_at(B) == snap
+    # content, snapshot_is_noop?/2 returns true and the dirty "!" is
+    # preserved.
+    peer_doc = Yelixer.Doc.new(client_id: 77)
+    {:ok, peer_doc} = Yelixer.Encoding.apply_update(peer_doc, initial_update)
+    {:ok, peer_doc} = Yelixer.Encoding.apply_update(peer_doc, diff)
+    snap_update = Yelixer.Doc.snapshot_update(peer_doc)
+
+    snap_commit = CommitStore.create_snapshot_commit(store, uuid, snap_update)
+    assert snap_commit.parent_id == commit_b.id
+    {:ok, fetched_snap} = CommitStore.get_commit(store, snap_commit.id)
+    assert fetched_snap.metadata.kind == :snapshot
+
+    send(pid, {:remote_commit, fetched_snap, :fake_remote_node})
+    _ = Commonplace.Document.Server.get_doc(pid)
+
+    # The dirty "!" must survive...
+    assert Commonplace.Document.Server.get_content(pid) == "hello world!"
+    # ...and parent_commit stays at B (no-op branch doesn't touch it,
+    # and without the P1 fix it would never have been B to begin with).
+    assert :sys.get_state(pid).parent_commit == commit_b.id
+  end
+
   test "remote_commit with invalid update does not crash the server", %{store: store} do
     uuid = "sync-bad-#{:rand.uniform(1_000_000)}"
 

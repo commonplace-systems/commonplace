@@ -160,10 +160,21 @@ defmodule Commonplace.Document.Server do
     end
   end
 
+  # Apply `commit` on top of `base_doc` and advance the tracked head.
+  #
+  # CX-u7p round 3 P1: `state.parent_commit` must reflect what has
+  # actually been incorporated into `state.doc`, regardless of whether
+  # the commit originated locally or remotely. Without this, the
+  # `snapshot_is_noop?/2` check (which compares `commit.parent_id`
+  # against `state.parent_commit`) would misclassify a compaction
+  # snapshot as divergent after any remote delta had advanced
+  # `state.doc` but left `state.parent_commit` pointing at the
+  # previous (local) head — causing the reset path to silently drop
+  # dirty in-memory edits.
   defp apply_with_base(commit, base_doc, state) do
     case Yelixer.Encoding.apply_update(base_doc, commit.update) do
       {:ok, doc} ->
-        {:noreply, %{state | doc: doc}}
+        {:noreply, %{state | doc: doc, parent_commit: commit.id}}
 
       {:error, _} ->
         {:noreply, state}
