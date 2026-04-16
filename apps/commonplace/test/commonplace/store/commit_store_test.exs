@@ -75,4 +75,53 @@ defmodule Commonplace.Store.CommitStoreTest do
       assert fetched_1.parent_id == nil
     end
   end
+
+  describe "create_snapshot_commit/4 (CX-u7p)" do
+    test "tags the commit metadata with kind: :snapshot", %{store: store} do
+      _c1 = CommitStore.create_commit(store, "doc-1", <<1>>, nil)
+      snap = CommitStore.create_snapshot_commit(store, "doc-1", <<99>>)
+
+      {:ok, fetched} = CommitStore.get_commit(store, snap.id)
+      assert fetched.metadata.kind == :snapshot
+    end
+
+    test "chains to the latest commit (normal parent_id)", %{store: store} do
+      c1 = CommitStore.create_commit(store, "doc-1", <<1>>, nil)
+      snap = CommitStore.create_snapshot_commit(store, "doc-1", <<99>>)
+
+      assert snap.parent_id == c1.id
+      {:ok, latest} = CommitStore.latest_commit(store, "doc-1")
+      assert latest.id == snap.id
+    end
+
+    test "snapshot becomes :latest, replication-walkable to root", %{store: store} do
+      c1 = CommitStore.create_commit(store, "doc-1", <<1>>, nil)
+      c2 = CommitStore.create_commit(store, "doc-1", <<2>>, c1.id)
+      snap = CommitStore.create_snapshot_commit(store, "doc-1", <<99>>)
+
+      # Walking back from snap reaches the original root
+      {:ok, fetched_snap} = CommitStore.get_commit(store, snap.id)
+      assert fetched_snap.parent_id == c2.id
+      {:ok, fetched_c2} = CommitStore.get_commit(store, fetched_snap.parent_id)
+      assert fetched_c2.parent_id == c1.id
+    end
+
+    test "merges caller-supplied metadata with kind: :snapshot", %{store: store} do
+      _c1 = CommitStore.create_commit(store, "doc-1", <<1>>, nil)
+
+      snap = CommitStore.create_snapshot_commit(store, "doc-1", <<99>>, %{note: "test"})
+
+      {:ok, fetched} = CommitStore.get_commit(store, snap.id)
+      assert fetched.metadata.kind == :snapshot
+      assert fetched.metadata.note == "test"
+    end
+
+    test "works on a doc with no prior commits (parent_id nil)", %{store: store} do
+      snap = CommitStore.create_snapshot_commit(store, "fresh-doc", <<42>>)
+
+      assert snap.parent_id == nil
+      {:ok, fetched} = CommitStore.get_commit(store, snap.id)
+      assert fetched.metadata.kind == :snapshot
+    end
+  end
 end

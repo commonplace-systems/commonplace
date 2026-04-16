@@ -4,6 +4,13 @@ defmodule Commonplace.Store.Commit do
 
   Each commit stores a Yjs update delta and references its parent,
   forming a tamper-evident history chain.
+
+  The `metadata` field is a map of free-form annotations (e.g.
+  `%{kind: :snapshot}` for compaction snapshots). Metadata is NOT
+  factored into `id` so backward-compatible readers and the same commit
+  payload (parent + update) round-trip to the same content address. New
+  metadata kinds added later cannot retroactively change historical
+  commit IDs.
   """
 
   defstruct [
@@ -13,7 +20,8 @@ defmodule Commonplace.Store.Commit do
     :update,
     :timestamp,
     :signature,   # Ed25519 signature of commit.id, or nil if unsigned
-    :signer_id    # identifier of the signing key, or nil if unsigned
+    :signer_id,   # identifier of the signing key, or nil if unsigned
+    metadata: %{} # free-form annotations (e.g. %{kind: :snapshot}); not in content address
   ]
 
   @type t :: %__MODULE__{
@@ -23,10 +31,11 @@ defmodule Commonplace.Store.Commit do
           update: binary(),
           timestamp: DateTime.t(),
           signature: binary() | nil,
-          signer_id: String.t() | nil
+          signer_id: String.t() | nil,
+          metadata: map()
         }
 
-  def new(doc_uuid, update, parent_id \\ nil) do
+  def new(doc_uuid, update, parent_id \\ nil, metadata \\ %{}) do
     timestamp = DateTime.utc_now()
     id = content_address(update, parent_id)
 
@@ -35,7 +44,8 @@ defmodule Commonplace.Store.Commit do
       doc_uuid: doc_uuid,
       parent_id: parent_id,
       update: update,
-      timestamp: timestamp
+      timestamp: timestamp,
+      metadata: metadata
     }
   end
 
