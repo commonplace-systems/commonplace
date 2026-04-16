@@ -11,6 +11,7 @@ defmodule Commonplace.Document.Server do
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Document.ContentType
   alias Commonplace.Dataflow.PubSub, as: CPPubSub
+  alias Commonplace.Tree.DocBuilder
 
   defstruct [:uuid, :doc, :parent_commit, :commit_store]
 
@@ -129,30 +130,77 @@ defmodule Commonplace.Document.Server do
     if source_node != Node.self() do
       CommitStoreClient.import_commit(state.commit_store, commit)
 
-      # CX-u7p: snapshot commits are self-contained re-encodings of the
-      # full visible doc state under fresh item IDs. Applying them on top
-      # of an already-populated in-memory doc would duplicate content and
-      # resurrect tombstoned items. Reset to a fresh Doc.new() before
-      # applying a snapshot's update; normal commits still apply
-      # incrementally as before.
-      base_doc =
-        if snapshot_commit?(commit) do
-          Yelixer.Doc.new(client_id: state.doc.client_id)
-        else
-          state.doc
-        end
-
-      case Yelixer.Encoding.apply_update(base_doc, commit.update) do
-        {:ok, doc} ->
-          {:noreply, %{state | doc: doc}}
-
-        {:error, _} ->
+      cond do
+        # CX-u7p r2: If a remote snapshot arrives that is chained directly
+        # on top of the commit we already consider canonical
+        # (`state.parent_commit`), the snapshot is by construction a
+        # compaction of state we already have. In that case `state.doc`
+        # already reflects the snapshot's logical content (possibly plus
+        # uncommitted local edits), so neither reset nor apply is needed —
+        # resetting here would drop the local edits that the user is
+        # actively making. Import the commit into the store and leave
+        # `state.doc` untouched.
+        snapshot_commit?(commit) and snapshot_is_noop?(commit, state) ->
           {:noreply, state}
+
+        # CX-u7p: snapshot commits are self-contained re-encodings of the
+        # full visible doc state under fresh item IDs. Applying them on top
+        # of an already-populated in-memory doc would duplicate content and
+        # resurrect tombstoned items. Reset to a fresh Doc.new() before
+        # applying a snapshot's update; normal commits still apply
+        # incrementally as before.
+        snapshot_commit?(commit) ->
+          apply_with_base(commit, Yelixer.Doc.new(client_id: state.doc.client_id), state)
+
+        true ->
+          apply_with_base(commit, state.doc, state)
       end
     else
       {:noreply, state}
     end
   end
+
+  defp apply_with_base(commit, base_doc, state) do
+    case Yelixer.Encoding.apply_update(base_doc, commit.update) do
+      {:ok, doc} ->
+        {:noreply, %{state | doc: doc}}
+
+      {:error, _} ->
+        {:noreply, state}
+    end
+  end
+
+  # A snapshot is a "no-op" from the perspective of this server when:
+  #
+  #   1. It is chained directly on top of `state.parent_commit` (the
+  #      commit we already treat as our canonical head), AND
+  #   2. Its materialized content equals the rebuild of the committed
+  #      chain up to `parent_commit` — i.e. it is an honest compaction of
+  #      the same state we already know, not a divergent rewrite.
+  #
+  # In that case `state.doc` already materializes the snapshot's logical
+  # content (possibly plus uncommitted local edits), so resetting would
+  # drop those local edits for no benefit. Preserving `state.doc` keeps
+  # user-in-progress edits alive when a remote compaction snapshot
+  # arrives (CX-u7p round-2 P1). A snapshot with novel or divergent
+  # content still triggers the reset path below.
+  defp snapshot_is_noop?(commit, %__MODULE__{parent_commit: parent_commit} = state)
+       when not is_nil(parent_commit) do
+    if commit.parent_id == parent_commit do
+      with {:ok, committed} <-
+             DocBuilder.reconstruct_doc_at(state.commit_store, state.uuid, parent_commit),
+           {:ok, snap_doc} <-
+             Yelixer.Encoding.apply_update(Yelixer.Doc.new(), commit.update) do
+        ContentType.get_content(committed) == ContentType.get_content(snap_doc)
+      else
+        _ -> false
+      end
+    else
+      false
+    end
+  end
+
+  defp snapshot_is_noop?(_commit, _state), do: false
 
   defp snapshot_commit?(commit) do
     case Map.get(commit, :metadata) do

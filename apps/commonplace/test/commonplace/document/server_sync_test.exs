@@ -211,6 +211,93 @@ defmodule Commonplace.Document.ServerSyncTest do
     assert Commonplace.Document.Server.get_content(pid) == "aaabbb"
   end
 
+  test "remote snapshot that compacts our known head preserves uncommitted local edits (CX-u7p r2)",
+       %{store: store} do
+    uuid = "sync-snap-preserve-#{:rand.uniform(1_000_000)}"
+
+    # Seed a committed state containing "hello".
+    initial_doc = Yelixer.Doc.new(client_id: 10)
+    initial_doc = Commonplace.Document.ContentType.create(initial_doc, :text, "DirtyDoc")
+    initial_doc = Commonplace.Document.ContentType.insert_text(initial_doc, 0, "hello")
+    initial_update = Yelixer.Encoding.encode_update(initial_doc)
+    initial_commit = CommitStore.create_commit(store, uuid, initial_update, nil)
+
+    # Start the server. Its `state.parent_commit` = initial_commit.id, and
+    # state.doc materializes "hello".
+    pid =
+      start_supervised!(
+        {Commonplace.Document.Server, uuid: uuid, commit_store: store, client_id: 20},
+        id: uuid
+      )
+
+    assert Commonplace.Document.Server.get_content(pid) == "hello"
+
+    # Simulate a pending local edit — applied to state.doc but NOT yet committed.
+    :ok = Commonplace.Document.Server.insert_text(pid, 5, " local")
+    assert Commonplace.Document.Server.get_content(pid) == "hello local"
+
+    # A remote peer produces a compaction snapshot of the committed chain
+    # — i.e. a snapshot whose materialized content matches the committed
+    # state ("hello"), chained to initial_commit.
+    peer_doc = Yelixer.Doc.new(client_id: 77)
+    {:ok, peer_doc} = Yelixer.Encoding.apply_update(peer_doc, initial_update)
+    snap_update = Yelixer.Doc.snapshot_update(peer_doc)
+
+    snap_commit = CommitStore.create_snapshot_commit(store, uuid, snap_update)
+    assert snap_commit.parent_id == initial_commit.id
+
+    {:ok, fetched_snap} = CommitStore.get_commit(store, snap_commit.id)
+    assert fetched_snap.metadata.kind == :snapshot
+
+    # Deliver via the remote-commit path.
+    send(pid, {:remote_commit, fetched_snap, :fake_remote_node})
+    _ = Commonplace.Document.Server.get_doc(pid)
+
+    # The pending local edit must survive — the snapshot is a logical
+    # no-op relative to the committed head, and the reset path would have
+    # silently dropped " local".
+    assert Commonplace.Document.Server.get_content(pid) == "hello local"
+  end
+
+  test "remote snapshot with divergent content still triggers reset (CX-u7p r2)",
+       %{store: store} do
+    uuid = "sync-snap-divergent-#{:rand.uniform(1_000_000)}"
+
+    # Seed a committed state containing "aaa".
+    initial_doc = Yelixer.Doc.new(client_id: 10)
+    initial_doc = Commonplace.Document.ContentType.create(initial_doc, :text, "DivergentDoc")
+    initial_doc = Commonplace.Document.ContentType.insert_text(initial_doc, 0, "aaa")
+    initial_update = Yelixer.Encoding.encode_update(initial_doc)
+    _initial_commit = CommitStore.create_commit(store, uuid, initial_update, nil)
+
+    pid =
+      start_supervised!(
+        {Commonplace.Document.Server, uuid: uuid, commit_store: store, client_id: 30},
+        id: uuid
+      )
+
+    assert Commonplace.Document.Server.get_content(pid) == "aaa"
+
+    # A remote peer produces a snapshot whose content DIFFERS from our
+    # committed state (e.g., a compaction of a divergent branch rebased
+    # onto our head). snapshot_is_noop? must return false here, and the
+    # reset path must run so the server converges on the snapshot.
+    snap_source = Yelixer.Doc.new(client_id: 77)
+    snap_source = Commonplace.Document.ContentType.create(snap_source, :text, "DivergentDoc")
+    snap_source = Commonplace.Document.ContentType.insert_text(snap_source, 0, "zzz")
+    snap_update = Yelixer.Doc.snapshot_update(snap_source)
+
+    snap_commit = CommitStore.create_snapshot_commit(store, uuid, snap_update)
+    {:ok, fetched_snap} = CommitStore.get_commit(store, snap_commit.id)
+
+    send(pid, {:remote_commit, fetched_snap, :fake_remote_node})
+    _ = Commonplace.Document.Server.get_doc(pid)
+
+    # The server should now reflect the snapshot's content, not the
+    # committed "aaa" — confirming the reset path ran.
+    assert Commonplace.Document.Server.get_content(pid) == "zzz"
+  end
+
   test "remote_commit with invalid update does not crash the server", %{store: store} do
     uuid = "sync-bad-#{:rand.uniform(1_000_000)}"
 

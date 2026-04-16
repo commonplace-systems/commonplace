@@ -54,5 +54,39 @@ defmodule Commonplace.Store.CommitTest do
       assert DateTime.compare(commit.timestamp, before) in [:gt, :eq]
       assert DateTime.compare(commit.timestamp, after_ts) in [:lt, :eq]
     end
+
+    test "empty metadata preserves legacy content-address formula (CX-u7p r2)" do
+      # Historical commits were hashed as sha256(parent_id || <<>> <> update).
+      # Default metadata %{} must hash the same so existing commits round-trip.
+      c = Commit.new("doc-a", <<1, 2, 3>>, nil)
+      legacy = :crypto.hash(:sha256, <<1, 2, 3>>)
+      assert c.id == legacy
+
+      c2 = Commit.new("doc-a", <<4, 5, 6>>, c.id)
+      legacy2 = :crypto.hash(:sha256, c.id <> <<4, 5, 6>>)
+      assert c2.id == legacy2
+    end
+
+    test "non-empty metadata changes the content address (CX-u7p r2)" do
+      c_plain = Commit.new("doc-a", <<1, 2, 3>>, nil)
+      c_snap = Commit.new("doc-a", <<1, 2, 3>>, nil, %{kind: :snapshot})
+
+      assert c_plain.id != c_snap.id,
+             "snapshot metadata must bind into commit id — otherwise a peer could retag a commit as a snapshot without changing its id"
+    end
+
+    test "metadata is deterministic: same map hashes the same" do
+      c1 = Commit.new("doc-a", <<1>>, nil, %{kind: :snapshot, note: "n"})
+      c2 = Commit.new("doc-a", <<1>>, nil, %{note: "n", kind: :snapshot})
+
+      assert c1.id == c2.id
+    end
+
+    test "different metadata values produce different ids" do
+      c1 = Commit.new("doc-a", <<1>>, nil, %{kind: :snapshot})
+      c2 = Commit.new("doc-a", <<1>>, nil, %{kind: :checkpoint})
+
+      assert c1.id != c2.id
+    end
   end
 end
