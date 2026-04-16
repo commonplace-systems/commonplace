@@ -129,7 +129,20 @@ defmodule Commonplace.Document.Server do
     if source_node != Node.self() do
       CommitStoreClient.import_commit(state.commit_store, commit)
 
-      case Yelixer.Encoding.apply_update(state.doc, commit.update) do
+      # CX-u7p: snapshot commits are self-contained re-encodings of the
+      # full visible doc state under fresh item IDs. Applying them on top
+      # of an already-populated in-memory doc would duplicate content and
+      # resurrect tombstoned items. Reset to a fresh Doc.new() before
+      # applying a snapshot's update; normal commits still apply
+      # incrementally as before.
+      base_doc =
+        if snapshot_commit?(commit) do
+          Yelixer.Doc.new(client_id: state.doc.client_id)
+        else
+          state.doc
+        end
+
+      case Yelixer.Encoding.apply_update(base_doc, commit.update) do
         {:ok, doc} ->
           {:noreply, %{state | doc: doc}}
 
@@ -138,6 +151,13 @@ defmodule Commonplace.Document.Server do
       end
     else
       {:noreply, state}
+    end
+  end
+
+  defp snapshot_commit?(commit) do
+    case Map.get(commit, :metadata) do
+      %{kind: :snapshot} -> true
+      _ -> false
     end
   end
 end

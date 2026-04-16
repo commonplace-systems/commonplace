@@ -232,4 +232,74 @@ defmodule Commonplace.Tree.DocBuilderTest do
       assert ContentType.get_content(at_c2) == "ab"
     end
   end
+
+  describe "reconstruct_doc_at/3 with snapshot commits (CX-u7p)" do
+    test "target AT a snapshot returns the snapshot's content only", %{store: store} do
+      # Build a chain with garbage pre-snapshot commits. If
+      # reconstruct_doc_at did NOT short-circuit on snapshots, replaying
+      # the garbage would fail to decode.
+      CommitStore.create_commit(store, "doc-1", <<255, 254, 253>>, nil)
+      CommitStore.create_chained_commit(store, "doc-1", <<252, 251, 250>>)
+
+      # Lay down a real snapshot
+      doc = Doc.new()
+      doc = ContentType.create(doc, :text, "test.txt")
+      doc = ContentType.insert_text(doc, 0, "snap content")
+      snap_update = Encoding.encode_update(doc)
+      snap = CommitStore.create_snapshot_commit(store, "doc-1", snap_update)
+
+      # Target is exactly the snapshot commit. Replay should start there
+      # and ignore the pre-snapshot garbage.
+      assert {:ok, rebuilt} = DocBuilder.reconstruct_doc_at(store, "doc-1", snap.id)
+      assert ContentType.get_content(rebuilt) == "snap content"
+    end
+
+    test "target AFTER a snapshot applies snapshot + post-snapshot commits",
+         %{store: store} do
+      # Pre-snapshot garbage — must be skipped.
+      CommitStore.create_commit(store, "doc-1", <<1, 2, 3>>, nil)
+
+      # Snapshot establishes the "hello" baseline.
+      doc = Doc.new(client_id: 1)
+      doc = ContentType.create(doc, :text, "test.txt")
+      doc = ContentType.insert_text(doc, 0, "hello")
+      snap_update = Encoding.encode_update(doc)
+      _snap = CommitStore.create_snapshot_commit(store, "doc-1", snap_update)
+
+      # Append an incremental commit adding " world".
+      {:ok, doc2} = Encoding.apply_update(Doc.new(), snap_update)
+      doc2 = ContentType.insert_text(doc2, 5, " world")
+      sv = Yelixer.BlockStore.state_vector(doc.store)
+      diff = Encoding.encode_diff(doc2, sv)
+      post_commit = CommitStore.create_chained_commit(store, "doc-1", diff)
+
+      # Target is the post-snapshot commit. Replay should start at the
+      # snapshot and include the post-snapshot diff.
+      assert {:ok, rebuilt} = DocBuilder.reconstruct_doc_at(store, "doc-1", post_commit.id)
+      assert ContentType.get_content(rebuilt) == "hello world"
+    end
+
+    test "target BEFORE a snapshot replays the pre-snapshot chain as usual",
+         %{store: store} do
+      # Two normal commits, then a snapshot on top. Targeting the first
+      # commit should NOT consult the later snapshot — we want the doc
+      # at the point before the snapshot existed.
+      doc1 = Doc.new(client_id: 1)
+      doc1 = ContentType.create(doc1, :text, "test.txt")
+      doc1 = ContentType.insert_text(doc1, 0, "a")
+      update1 = Encoding.encode_update(doc1)
+      c1 = CommitStore.create_commit(store, "doc-1", update1, nil)
+
+      # Later snapshot. We don't target it.
+      doc_snap = Doc.new(client_id: 2)
+      doc_snap = ContentType.create(doc_snap, :text, "test.txt")
+      doc_snap = ContentType.insert_text(doc_snap, 0, "ZZZ")
+      CommitStore.create_snapshot_commit(store, "doc-1", Encoding.encode_update(doc_snap))
+
+      # Replay at c1 — should be the original "a", not influenced by the
+      # future snapshot.
+      assert {:ok, rebuilt} = DocBuilder.reconstruct_doc_at(store, "doc-1", c1.id)
+      assert ContentType.get_content(rebuilt) == "a"
+    end
+  end
 end

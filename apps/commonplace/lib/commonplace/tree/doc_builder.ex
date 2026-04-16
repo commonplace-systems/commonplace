@@ -82,6 +82,14 @@ defmodule Commonplace.Tree.DocBuilder do
   Reconstruct a doc by replaying commits up to (and including) a specific commit.
 
   Returns `{:ok, doc}` or `:none` if the target commit is not found in the chain.
+
+  CX-u7p: like `reconstruct_doc/2`, this short-circuits on snapshot
+  commits (metadata.kind == :snapshot). If a snapshot commit exists on
+  the path from root to `target_commit_id`, the replay starts at the
+  most recent snapshot at or before the target and applies only that
+  snapshot plus any commits chained on top, up to and including the
+  target. Without this, merges of compacted branches would start from a
+  wrong baseline (`Tree.Merge.merge_leaf/5` uses this function).
   """
   def reconstruct_doc_at(store, uuid, target_commit_id) do
     commits = CommitStoreClient.commit_log(store, uuid, limit: 10_000) |> Enum.reverse()
@@ -97,8 +105,12 @@ defmodule Commonplace.Tree.DocBuilder do
 
     case result do
       {:found, to_apply} ->
+        commits_to_apply = trim_to_latest_snapshot(to_apply)
         doc = Doc.new()
-        Enum.reduce(to_apply, {:ok, doc}, fn c, {:ok, d} -> Encoding.apply_update(d, c.update) end)
+
+        Enum.reduce(commits_to_apply, {:ok, doc}, fn c, {:ok, d} ->
+          Encoding.apply_update(d, c.update)
+        end)
 
       {:not_found, _} ->
         :none
