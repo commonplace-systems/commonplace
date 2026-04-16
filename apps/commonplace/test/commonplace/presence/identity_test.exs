@@ -115,6 +115,100 @@ defmodule Commonplace.Presence.IdentityTest do
     end
   end
 
+  describe "in-memory Yjs merge with distinct client_ids (CX-6g6 codex P1 round 1)" do
+    # SCOPE: these tests exercise ONLY the in-memory Yjs merge path —
+    # Yelixer.Encoding.apply_update/2 on two concurrent updates from writers
+    # with distinct client_ids. They do NOT exercise the CommitStore write
+    # path (`latest_commit -> mutate -> create_chained_commit`), where two
+    # nodes racing on the same identity UUID still produce sibling commits
+    # and only one becomes `:latest`. Full multi-writer correctness through
+    # the commit-chain layer (sibling-commit merge / :latest reconciliation)
+    # is tracked as a separate P1 follow-up bead; see the docstring on
+    # `stable_client_id/1` in identity.ex for the detailed scope note.
+    #
+    # What this describe block verifies is the *prerequisite* for that
+    # follow-up: if identity writes from different nodes ever reach the
+    # same in-memory Yelixer.Doc — whether via a future sibling-commit
+    # merge, a catch-up sync, or a snapshot rebuild — their updates carry
+    # distinct (client_id, clock) pairs and both survive. A previous
+    # implementation hashed the identity UUID alone, giving every node the
+    # same client_id and silently collapsing concurrent writes even at
+    # this in-memory layer.
+    test "in-memory apply_update with distinct client_ids merges both writers",
+         %{store: store, root: root} do
+      alias Commonplace.Document.ContentType
+      alias Commonplace.Store.CommitStoreClient
+
+      # Register a shared identity doc and fetch its base state.
+      {:ok, identity_uuid} = Identity.register("shared", :exe, root, store)
+      {:ok, base_commit} = CommitStoreClient.latest_commit(store, identity_uuid)
+
+      # Simulate writer A (e.g. node alpha) — distinct explicit client_id.
+      doc_a = Yelixer.Doc.new(client_id: 100_001)
+      {:ok, doc_a} = Yelixer.Encoding.apply_update(doc_a, base_commit.update)
+      doc_a = ContentType.set_key(doc_a, "written_by_a", "alpha_value")
+      update_a = Yelixer.Encoding.encode_update(doc_a)
+
+      # Simulate writer B (e.g. node beta) — different explicit client_id,
+      # same base state, concurrent write to a different key.
+      doc_b = Yelixer.Doc.new(client_id: 100_002)
+      {:ok, doc_b} = Yelixer.Encoding.apply_update(doc_b, base_commit.update)
+      doc_b = ContentType.set_key(doc_b, "written_by_b", "beta_value")
+      update_b = Yelixer.Encoding.encode_update(doc_b)
+
+      # Merge both updates into a fresh observer doc. With the fix, both
+      # concurrent writes retain distinct (client_id, clock) pairs and both
+      # survive. With the old phash2(uuid)-only derivation, writers A and B
+      # would share a client_id, reuse the same clock, and one set would be
+      # silently dropped here.
+      observer = Yelixer.Doc.new()
+      {:ok, observer} = Yelixer.Encoding.apply_update(observer, update_a)
+      {:ok, observer} = Yelixer.Encoding.apply_update(observer, update_b)
+
+      content = ContentType.get_content(observer)
+      assert content["written_by_a"] == "alpha_value",
+             "writer A's concurrent change was dropped — client_id collision regression"
+      assert content["written_by_b"] == "beta_value",
+             "writer B's concurrent change was dropped — client_id collision regression"
+
+      # Ordering of apply should not matter: reverse the merge and verify.
+      observer2 = Yelixer.Doc.new()
+      {:ok, observer2} = Yelixer.Encoding.apply_update(observer2, update_b)
+      {:ok, observer2} = Yelixer.Encoding.apply_update(observer2, update_a)
+
+      content2 = ContentType.get_content(observer2)
+      assert content2["written_by_a"] == "alpha_value"
+      assert content2["written_by_b"] == "beta_value"
+    end
+
+    # The previous implementation derived the write client_id from
+    # `:erlang.phash2(uuid, ...)` alone. That meant every BEAM node writing
+    # to the same identity doc derived the SAME client_id — exactly the
+    # collision scenario exercised above — so concurrent writes from
+    # different nodes would silently drop one side.
+    #
+    # The fix derives client_id from `{node(), uuid}`, so different nodes
+    # get different client_ids. We can't easily change node() in a test,
+    # but we CAN observe the client_id an Identity write actually persists
+    # and confirm it matches the node-scoped derivation.
+    test "Identity writes derive client_id from {node(), uuid}, not uuid alone",
+         %{store: store, root: root} do
+      alias Commonplace.Store.CommitStoreClient
+
+      {:ok, identity_uuid} = Identity.register("nodescoped", :exe, root, store)
+
+      {:ok, commit} = CommitStoreClient.latest_commit(store, identity_uuid)
+      doc = Yelixer.Doc.new()
+      {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
+      sv = Yelixer.BlockStore.state_vector(doc.store)
+
+      post_fix_client_id = :erlang.phash2({node(), identity_uuid}, 0xFFFF_FFFF)
+
+      assert Map.has_key?(sv.clocks, post_fix_client_id),
+             "state vector missing node-scoped client_id #{post_fix_client_id}: #{inspect(Map.keys(sv.clocks))}"
+    end
+  end
+
   describe "GenServer integration" do
     test "Presence.Server registers cold identity on start", %{store: store, root: root} do
       {:ok, pid} =

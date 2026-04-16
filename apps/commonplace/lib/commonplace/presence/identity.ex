@@ -57,7 +57,7 @@ defmodule Commonplace.Presence.Identity do
         uuid = UUID.uuid4()
         now = DateTime.utc_now() |> DateTime.to_iso8601()
 
-        doc = Yelixer.Doc.new()
+        doc = Yelixer.Doc.new(client_id: stable_client_id(uuid))
         doc = ContentType.create(doc, :map, fname)
         doc = ContentType.set_key(doc, "name", name)
         doc = ContentType.set_key(doc, "type", Map.fetch!(Presence.type_to_ext(), type))
@@ -127,7 +127,7 @@ defmodule Commonplace.Presence.Identity do
   def touch_last_seen(uuid, store \\ CommitStoreClient) do
     case CommitStoreClient.latest_commit(store, uuid) do
       {:ok, commit} ->
-        doc = Yelixer.Doc.new()
+        doc = Yelixer.Doc.new(client_id: stable_client_id(uuid))
         {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
         now = DateTime.utc_now() |> DateTime.to_iso8601()
         doc = ContentType.set_key(doc, "last_seen", now)
@@ -143,7 +143,7 @@ defmodule Commonplace.Presence.Identity do
   def add_public_key(identity_uuid, public_key_b64, store \\ CommitStoreClient) do
     case CommitStoreClient.latest_commit(store, identity_uuid) do
       {:ok, commit} ->
-        doc = Yelixer.Doc.new()
+        doc = Yelixer.Doc.new(client_id: stable_client_id(identity_uuid))
         {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
 
         # Get existing keys or start empty
@@ -206,4 +206,51 @@ defmodule Commonplace.Presence.Identity do
         Schema.new_schema()
     end
   end
+
+  # Derive a stable Yjs client_id for writes to a (shared) identity document.
+  #
+  # Identity docs live in __identities__ and are SHARED across all BEAM nodes
+  # in a cluster: any node running a given actor (e.g. "sync.exe") can
+  # concurrently register / touch_last_seen / add_public_key on the same
+  # identity doc. That makes them a MULTI-WRITER document, unlike presence
+  # docs.
+  #
+  # We therefore derive the client_id from BOTH the current BEAM node and
+  # the identity UUID:
+  #
+  #   * Within a single node, writes to the same identity doc reuse the
+  #     same client_id — so the state vector does NOT grow unboundedly
+  #     across heartbeats / restarts (fixes the original CX-3ty / CX-6g6
+  #     state-vector-bloat regression).
+  #
+  #   * Across distinct nodes, client_ids differ — so if two concurrent
+  #     updates from different nodes are ever merged in memory via
+  #     Encoding.apply_update/2, they carry distinct (client_id, clock)
+  #     pairs and both survive instead of one being silently dropped as
+  #     "already known".
+  #
+  # SCOPE — PREREQUISITE, NOT FULL MULTI-WRITER SAFETY.
+  # Distinct client_ids are a *necessary precondition* for multi-writer CRDT
+  # merge on identity docs, but they are NOT by themselves sufficient for
+  # end-to-end multi-writer correctness through the CommitStore layer. The
+  # write path here still follows:
+  #
+  #     latest_commit  ->  mutate in memory  ->  create_chained_commit
+  #
+  # and `Identity.read/2` reconstructs state from `latest_commit` only.
+  # Under concurrent writes from two nodes racing on the same identity
+  # UUID, both can observe the same parent commit, each produces a full
+  # snapshot update, and both `create_chained_commit` calls succeed —
+  # yielding two SIBLING commits chained to the same parent. Whichever
+  # `:latest` pointer write lands second becomes the entire visible state,
+  # so the earlier node's concurrent write is lost at the commit-chain
+  # layer even though the in-memory CRDT merge would have preserved it.
+  #
+  # Closing that gap — detecting sibling commits and merging them so both
+  # writes flow into `:latest` — is a separate architectural change that
+  # applies to any doc using `create_chained_commit` + latest-commit reads
+  # (identity, schema, etc.) and is tracked in its own follow-up bead.
+  # Hashing {node(), uuid} is the prerequisite that makes that later fix
+  # able to actually merge both sides instead of collapsing them.
+  defp stable_client_id(uuid), do: :erlang.phash2({node(), uuid}, 0xFFFF_FFFF)
 end

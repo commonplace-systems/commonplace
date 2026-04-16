@@ -58,7 +58,7 @@ defmodule Commonplace.Presence do
     uuid = UUID.uuid4()
     now = DateTime.utc_now() |> DateTime.to_iso8601()
 
-    doc = Yelixer.Doc.new()
+    doc = Yelixer.Doc.new(client_id: stable_client_id(uuid))
     doc = ContentType.create(doc, :map, fname)
     doc = ContentType.set_key(doc, "name", name)
     doc = ContentType.set_key(doc, "type", Map.fetch!(@type_to_ext, type))
@@ -158,15 +158,32 @@ defmodule Commonplace.Presence do
   defp load_doc(uuid, store) do
     case CommitStoreClient.latest_commit(store, uuid) do
       {:ok, commit} ->
-        doc = Yelixer.Doc.new()
+        doc = Yelixer.Doc.new(client_id: stable_client_id(uuid))
         {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
         doc
 
       :none ->
-        doc = Yelixer.Doc.new()
+        doc = Yelixer.Doc.new(client_id: stable_client_id(uuid))
         ContentType.create(doc, :map, "presence")
     end
   end
+
+  # Derive a stable client_id from the presence UUID so all writers (heartbeat,
+  # status updates, restarts) on a SINGLE presence doc reuse the same Yjs
+  # client_id. Without this, each Yelixer.Doc.new() call mints a fresh random
+  # client_id which gets persisted into the state vector on encode_update,
+  # causing unbounded O(N) state-vector growth (see CX-3ty / CX-6g6).
+  #
+  # SINGLE-WRITER INVARIANT: this is safe ONLY because presence docs are
+  # semantically single-writer. An actor owns its own .bot/.usr/.exe/.who
+  # file; no one else writes to it. If two distinct writers shared a
+  # client_id on the same doc from the same base state, YMap.set/4 would
+  # assign identical (client_id, clock) pairs and Encoding.apply_update/2
+  # would silently drop one side of concurrent updates as "already known".
+  #
+  # For SHARED docs (e.g. identity docs in Commonplace.Presence.Identity),
+  # this invariant does NOT hold — see that module for its own scheme.
+  defp stable_client_id(uuid), do: :erlang.phash2(uuid, 0xFFFF_FFFF)
 
   @doc """
   Set the `activity` field on a presence YMap.
