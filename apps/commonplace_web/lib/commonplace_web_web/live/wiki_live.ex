@@ -95,7 +95,7 @@ defmodule CommonplaceWebWeb.WikiLive do
     # Refresh content from store before switching to view
     socket =
       if socket.assigns.page_uuid do
-        content = read_doc_content(socket.assigns.page_uuid)
+        content = read_and_enrich(socket.assigns.page_uuid, socket)
         assign(socket, mode: :view, page_content: content)
       else
         assign(socket, :mode, :view)
@@ -254,7 +254,7 @@ defmodule CommonplaceWebWeb.WikiLive do
     # Use && (truthy) not `and` (strict boolean) — page_uuid is a UUID
     # string, which would crash `and` with BadBooleanError.
     if socket.assigns.page_uuid && socket.assigns.mode == :view do
-      content = read_doc_content(socket.assigns.page_uuid)
+      content = read_and_enrich(socket.assigns.page_uuid, socket)
       {:noreply, assign(socket, :page_content, content)}
     else
       {:noreply, socket}
@@ -652,9 +652,10 @@ defmodule CommonplaceWebWeb.WikiLive do
             )
 
           {:ok, entry} ->
-            # It's a document — show it
-            content = read_doc_content(entry.node_id)
-            content = maybe_enrich_presence(page_name, content, root)
+            # It's a document — show it. Centralized enrichment ensures the
+            # presence identity panel survives live refreshes (see
+            # handle_info({:commit,...}) and the "view" toggle handler).
+            content = read_and_enrich(entry.node_id, page_name, root)
 
             if connected?(socket) do
               CPPubSub.subscribe_blue(entry.node_id)
@@ -749,6 +750,22 @@ defmodule CommonplaceWebWeb.WikiLive do
       {:ok, doc} -> ContentType.get_content(doc)
       :none -> nil
     end
+  end
+
+  # Read the document content and (when the page is a presence doc) attach
+  # the cold identity record under `:__identity__`. All sites that refresh
+  # `page_content` for a loaded page must go through this helper so the
+  # identity panel doesn't vanish on the next heartbeat/status/activity
+  # commit or when the user toggles Edit -> View.
+  defp read_and_enrich(uuid, page_name, root_uuid) do
+    content = read_doc_content(uuid)
+    maybe_enrich_presence(page_name, content, root_uuid)
+  end
+
+  # Convenience for handlers that only have the socket — pulls page_name
+  # and root_uuid out of assigns.
+  defp read_and_enrich(uuid, socket) do
+    read_and_enrich(uuid, socket.assigns.page_name, socket.assigns.root_uuid)
   end
 
   defp collect_recent_changes(root_uuid, path, limit) do
