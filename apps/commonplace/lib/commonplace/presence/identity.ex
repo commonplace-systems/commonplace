@@ -207,9 +207,29 @@ defmodule Commonplace.Presence.Identity do
     end
   end
 
-  # Derive a stable Yjs client_id from the identity UUID. Same rationale as
-  # Commonplace.Presence.stable_client_id/1 — without this, repeated
-  # write-then-encode passes against the same doc grow the state vector
-  # unboundedly (see CX-3ty / CX-6g6).
-  defp stable_client_id(uuid), do: :erlang.phash2(uuid, 0xFFFF_FFFF)
+  # Derive a stable Yjs client_id for writes to a (shared) identity document.
+  #
+  # Identity docs live in __identities__ and are SHARED across all BEAM nodes
+  # in a cluster: any node running a given actor (e.g. "sync.exe") can
+  # concurrently register / touch_last_seen / add_public_key on the same
+  # identity doc. That makes them a MULTI-WRITER document, unlike presence
+  # docs.
+  #
+  # We therefore derive the client_id from BOTH the current BEAM node and
+  # the identity UUID:
+  #
+  #   * Within a single node, writes to the same identity doc reuse the
+  #     same client_id — so the state vector does NOT grow unboundedly
+  #     across heartbeats / restarts (fixes the original CX-3ty / CX-6g6
+  #     state-vector-bloat regression).
+  #
+  #   * Across distinct nodes, client_ids differ — so concurrent updates
+  #     from different nodes carry distinct (client_id, clock) pairs and
+  #     Encoding.apply_update/2 merges them instead of silently dropping
+  #     one side as "already known" (fixes the P1 concurrent-writer bug
+  #     codex flagged on presence.ex:171-176).
+  #
+  # Hashing {node(), uuid} preserves single-writer-per-node stability while
+  # keeping multi-writer-across-nodes correctness.
+  defp stable_client_id(uuid), do: :erlang.phash2({node(), uuid}, 0xFFFF_FFFF)
 end
