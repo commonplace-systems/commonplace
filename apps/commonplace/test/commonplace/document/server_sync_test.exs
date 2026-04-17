@@ -117,6 +117,100 @@ defmodule Commonplace.Document.ServerSyncTest do
     assert Server.get_content(pid) == "original"
   end
 
+  test "remote_commit with snapshot kind resets in-memory doc before apply (CX-u7p)",
+       %{store: store} do
+    uuid = "sync-snapshot-#{:rand.uniform(1_000_000)}"
+
+    # Seed an initial commit so Document.Server starts with content.
+    initial_doc = Yelixer.Doc.new(client_id: 10)
+    initial_doc = Commonplace.Document.ContentType.create(initial_doc, :text, "SnapDoc")
+    initial_doc = Commonplace.Document.ContentType.insert_text(initial_doc, 0, "hello")
+    initial_update = Yelixer.Encoding.encode_update(initial_doc)
+    _initial_commit = CommitStore.create_commit(store, uuid, initial_update, nil)
+
+    # Start Document.Server — loads initial state into in-memory doc.
+    pid =
+      start_supervised!(
+        {Commonplace.Document.Server, uuid: uuid, commit_store: store, client_id: 20},
+        id: uuid
+      )
+
+    assert Commonplace.Document.Server.get_content(pid) == "hello"
+
+    # Build a snapshot under a different client_id containing ONLY the
+    # post-deletion observable state. If the server applied this on top
+    # of its populated in-memory doc (without reset), content would
+    # duplicate/resurrect. With the reset fix the server's doc matches
+    # exactly what `DocBuilder.reconstruct_doc/2` produces.
+    snap_source = Yelixer.Doc.new(client_id: 77)
+    snap_source = Commonplace.Document.ContentType.create(snap_source, :text, "SnapDoc")
+    snap_source = Commonplace.Document.ContentType.insert_text(snap_source, 0, "world")
+    snap_update = Yelixer.Doc.snapshot_update(snap_source)
+
+    snap_commit =
+      CommitStore.create_snapshot_commit(store, uuid, snap_update)
+
+    # Deliver the snapshot commit via the sync handle_info path. Mark
+    # metadata.kind :snapshot (it already is — create_snapshot_commit
+    # sets it; the commit fetched from the store carries it).
+    {:ok, fetched_snap} = CommitStore.get_commit(store, snap_commit.id)
+    assert fetched_snap.metadata.kind == :snapshot
+
+    send(pid, {:remote_commit, fetched_snap, :fake_remote_node})
+
+    # Synchronize via a call.
+    _ = Commonplace.Document.Server.get_doc(pid)
+
+    # The server's in-memory doc should match the full chain rebuild,
+    # i.e. just the snapshot's content, not hello+world concatenated.
+    {:ok, expected} = Commonplace.Tree.DocBuilder.reconstruct_doc(store, uuid)
+    expected_content = Commonplace.Document.ContentType.get_content(expected)
+
+    assert Commonplace.Document.Server.get_content(pid) == expected_content
+    assert Commonplace.Document.Server.get_content(pid) == "world"
+  end
+
+  test "non-snapshot remote commits still apply incrementally (regression guard)",
+       %{store: store} do
+    uuid = "sync-incremental-#{:rand.uniform(1_000_000)}"
+
+    # Seed initial state
+    initial_doc = Yelixer.Doc.new(client_id: 10)
+    initial_doc = Commonplace.Document.ContentType.create(initial_doc, :text, "IncDoc")
+    initial_doc = Commonplace.Document.ContentType.insert_text(initial_doc, 0, "aaa")
+    initial_update = Yelixer.Encoding.encode_update(initial_doc)
+    initial_commit = CommitStore.create_commit(store, uuid, initial_update, nil)
+
+    pid =
+      start_supervised!(
+        {Commonplace.Document.Server, uuid: uuid, commit_store: store, client_id: 21},
+        id: uuid
+      )
+
+    assert Commonplace.Document.Server.get_content(pid) == "aaa"
+
+    # Build an incremental diff appending "bbb" (simulates a remote edit)
+    remote_doc = Yelixer.Doc.new(client_id: 99)
+    {:ok, remote_doc} = Yelixer.Encoding.apply_update(remote_doc, initial_update)
+    remote_doc = Commonplace.Document.ContentType.insert_text(remote_doc, 3, "bbb")
+    sv = Yelixer.BlockStore.state_vector(initial_doc.store)
+    diff = Yelixer.Encoding.encode_diff(remote_doc, sv)
+
+    inc_commit = %Commonplace.Store.Commit{
+      id: :crypto.hash(:sha256, diff),
+      doc_uuid: uuid,
+      parent_id: initial_commit.id,
+      update: diff,
+      timestamp: DateTime.utc_now(),
+      metadata: %{}
+    }
+
+    send(pid, {:remote_commit, inc_commit, :fake_remote_node})
+    _ = Commonplace.Document.Server.get_doc(pid)
+
+    assert Commonplace.Document.Server.get_content(pid) == "aaabbb"
+  end
+
   test "remote_commit with invalid update does not crash the server", %{store: store} do
     uuid = "sync-bad-#{:rand.uniform(1_000_000)}"
 

@@ -25,6 +25,31 @@ defmodule Commonplace.Store.CommitStore do
     create_commit(server, doc_uuid, update, parent_id, metadata)
   end
 
+  @doc """
+  Create a snapshot commit (CX-u7p compaction primitive).
+
+  Chains normally to the latest commit so replication walks back through
+  history as usual, but tags the commit metadata with `kind: :snapshot`.
+  Readers that know about snapshots (see `DocBuilder.reconstruct_doc/2`)
+  short-circuit the backward walk on hitting one and apply only the
+  snapshot plus any newer commits chained on top.
+
+  The snapshot's `update` payload should be a self-contained Yjs update
+  encoding the full materialized observable state under a single
+  client_id (see `Yelixer.Doc.snapshot_update/1`). Applied to a fresh
+  `Doc.new()`, it must reproduce the source doc's observable content.
+  """
+  def create_snapshot_commit(server \\ __MODULE__, doc_uuid, update, metadata \\ %{}) do
+    metadata = Map.put(metadata, :kind, :snapshot)
+
+    parent_id = case latest_commit(server, doc_uuid) do
+      {:ok, commit} -> commit.id
+      :none -> nil
+    end
+
+    create_commit(server, doc_uuid, update, parent_id, metadata)
+  end
+
   def get_commit(server \\ __MODULE__, commit_id) do
     GenServer.call(server, {:get_commit, commit_id})
   end
@@ -158,7 +183,7 @@ defmodule Commonplace.Store.CommitStore do
 
   @impl true
   def handle_call({:create_commit, doc_uuid, update, parent_id, metadata}, _from, state) do
-    commit = Commit.new(doc_uuid, update, parent_id) |> maybe_sign_commit()
+    commit = Commit.new(doc_uuid, update, parent_id, metadata) |> maybe_sign_commit()
 
     CubDB.put_multi(state.db, [
       {{:commit, commit.id}, commit},

@@ -41,6 +41,31 @@ defmodule Commonplace.Store.CommitStoreClient do
     end
   end
 
+  @doc """
+  Pass-through for `CommitStore.create_snapshot_commit/4` (CX-u7p).
+  Mirrors the local/remote dispatch pattern used for every other write.
+  """
+  def create_snapshot_commit(server \\ CommitStore, doc_uuid, update, metadata \\ %{}) do
+    metadata = Map.put(metadata, :kind, :snapshot)
+
+    case remote_node() do
+      {:ok, node} ->
+        parent_id =
+          case GenServer.call({CommitStore, node}, {:latest_commit, doc_uuid}) do
+            {:ok, commit} -> commit.id
+            :none -> nil
+          end
+
+        GenServer.call(
+          {CommitStore, node},
+          {:create_commit, doc_uuid, update, parent_id, metadata}
+        )
+
+      :local ->
+        CommitStore.create_snapshot_commit(normalize_server(server), doc_uuid, update, metadata)
+    end
+  end
+
   def get_commit(server \\ CommitStore, commit_id) do
     case remote_node() do
       {:ok, node} ->
