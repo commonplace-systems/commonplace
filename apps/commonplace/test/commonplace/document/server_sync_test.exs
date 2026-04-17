@@ -437,6 +437,71 @@ defmodule Commonplace.Document.ServerSyncTest do
     assert local_commit.parent_id == snap_commit.id
   end
 
+  test "repeated no-op snapshots advance :latest so subsequent snapshot_is_noop? checks find the head (CX-u7p r5)",
+       %{store: store} do
+    uuid = "sync-repeat-snap-#{:rand.uniform(1_000_000)}"
+
+    initial_doc = Yelixer.Doc.new(client_id: 10)
+    initial_doc = Commonplace.Document.ContentType.create(initial_doc, :text, "Doc")
+    initial_doc = Commonplace.Document.ContentType.insert_text(initial_doc, 0, "hello")
+    initial_update = Yelixer.Encoding.encode_update(initial_doc)
+    commit_a = CommitStore.create_commit(store, uuid, initial_update, nil)
+
+    pid =
+      start_supervised!(
+        {Commonplace.Document.Server, uuid: uuid, commit_store: store, client_id: 20},
+        id: uuid
+      )
+
+    assert :sys.get_state(pid).parent_commit == commit_a.id
+
+    # Dirty local edit (uncommitted).
+    :ok = Commonplace.Document.Server.insert_text(pid, 5, "!")
+    assert Commonplace.Document.Server.get_content(pid) == "hello!"
+
+    # Peer snapshot 1 of the committed state A (chained on A). It is a
+    # no-op relative to state.doc-excluding-dirty, so dirty "!" survives.
+    peer_doc1 = Yelixer.Doc.new(client_id: 77)
+    {:ok, peer_doc1} = Yelixer.Encoding.apply_update(peer_doc1, initial_update)
+    snap1_update = Yelixer.Doc.snapshot_update(peer_doc1)
+    snap1 = CommitStore.create_snapshot_commit(store, uuid, snap1_update)
+    {:ok, fetched1} = CommitStore.get_commit(store, snap1.id)
+    send(pid, {:remote_commit, fetched1, :fake_remote_node})
+    _ = Commonplace.Document.Server.get_doc(pid)
+
+    assert Commonplace.Document.Server.get_content(pid) == "hello!"
+    assert :sys.get_state(pid).parent_commit == snap1.id
+    # :latest must advance too — otherwise commit_log walks back from A
+    # and a second snapshot check can't find snap1 in the chain.
+    {:ok, latest_after_snap1} = CommitStore.latest_commit(store, uuid)
+    assert latest_after_snap1.id == snap1.id
+
+    # Peer snapshot 2, chained on snap1. Must also be recognized as a
+    # no-op (same materialized content), which requires reconstruct_doc_at
+    # to reach snap1 from :latest.
+    #
+    # snap1 is already a self-contained update encoding the full "hello"
+    # state, so a fresh peer replica only needs to apply snap1 (applying
+    # initial_update on top would duplicate the content to "hellohello"
+    # because snapshot IDs are fresh and Yjs sees them as new items).
+    peer_doc2 = Yelixer.Doc.new(client_id: 88)
+    {:ok, peer_doc2} = Yelixer.Encoding.apply_update(peer_doc2, snap1_update)
+    snap2_update = Yelixer.Doc.snapshot_update(peer_doc2)
+
+    snap2 = CommitStore.create_snapshot_commit(store, uuid, snap2_update)
+    assert snap2.parent_id == snap1.id
+    {:ok, fetched2} = CommitStore.get_commit(store, snap2.id)
+    send(pid, {:remote_commit, fetched2, :fake_remote_node})
+    _ = Commonplace.Document.Server.get_doc(pid)
+
+    # Dirty "!" must still survive the second snapshot — this is what
+    # fails if :latest didn't advance after snap1 (codex-r5 P1).
+    assert Commonplace.Document.Server.get_content(pid) == "hello!"
+    assert :sys.get_state(pid).parent_commit == snap2.id
+    {:ok, latest_after_snap2} = CommitStore.latest_commit(store, uuid)
+    assert latest_after_snap2.id == snap2.id
+  end
+
   test "remote_commit with invalid update does not crash the server", %{store: store} do
     uuid = "sync-bad-#{:rand.uniform(1_000_000)}"
 

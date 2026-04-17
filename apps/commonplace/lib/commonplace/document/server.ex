@@ -138,11 +138,16 @@ defmodule Commonplace.Document.Server do
         # already reflects the snapshot's logical content (possibly plus
         # uncommitted local edits), so neither reset nor apply is needed —
         # resetting here would drop the local edits that the user is
-        # actively making. Import the commit and advance `parent_commit`
-        # to the snapshot so subsequent local commits chain onto it;
-        # otherwise the snapshot becomes a sibling and falls off the
-        # active history (CX-u7p r4).
+        # actively making. Import the commit and advance both
+        # `parent_commit` (r4) and the store's `:latest` (r5) to the
+        # snapshot so subsequent local commits chain onto it and the
+        # `commit_log` walk (which starts from `:latest`) reaches the
+        # snapshot — without advancing `:latest`, a later
+        # `snapshot_is_noop?` call would run `reconstruct_doc_at` against
+        # a chain that can no longer reach the new head, fall back to the
+        # reset path, and drop dirty local edits.
         snapshot_commit?(commit) and snapshot_is_noop?(commit, state) ->
+          CommitStoreClient.set_latest(state.commit_store, state.uuid, commit.id)
           {:noreply, %{state | parent_commit: commit.id}}
 
         # CX-u7p: snapshot commits are self-contained re-encodings of the
