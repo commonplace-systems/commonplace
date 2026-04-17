@@ -363,6 +363,53 @@ defmodule Commonplace.Document.ServerSyncTest do
              %{"a" => "one", "c" => "3", "d" => "4"}
   end
 
+  test "snapshot arrival preserves local dirty YArray edits via positional rebase (CX-1cc)",
+       %{store: store} do
+    uuid = "sync-yarray-#{:rand.uniform(1_000_000)}"
+
+    # Seed initial committed array: [1, 2, 3]
+    initial_doc = Yelixer.Doc.new(client_id: 10)
+    initial_doc = Commonplace.Document.ContentType.create(initial_doc, :array, "ArrayDoc")
+    initial_doc = Commonplace.Document.ContentType.push_items(initial_doc, [1, 2, 3])
+    initial_update = Yelixer.Encoding.encode_update(initial_doc)
+    _initial_commit = CommitStore.create_commit(store, uuid, initial_update, nil)
+
+    pid =
+      start_supervised!(
+        {Commonplace.Document.Server, uuid: uuid, commit_store: store, client_id: 61},
+        id: uuid
+      )
+
+    assert Commonplace.Document.Server.get_content(pid) == [1, 2, 3]
+
+    # Local dirty edits: insert 9 between 2 and 3, then append 4.
+    # Intended result: [1, 2, 9, 3, 4] (uncommitted).
+    :ok = Commonplace.Document.Server.insert_items(pid, 2, [9])
+    :ok = Commonplace.Document.Server.push_items(pid, [4])
+
+    assert Commonplace.Document.Server.get_content(pid) == [1, 2, 9, 3, 4]
+
+    # Remote snapshot with [1, 2, 3, 99] (concurrent append).
+    snap_source = Yelixer.Doc.new(client_id: 77)
+    snap_source = Commonplace.Document.ContentType.create(snap_source, :array, "ArrayDoc")
+    snap_source = Commonplace.Document.ContentType.push_items(snap_source, [1, 2, 3, 99])
+    snap_update = Yelixer.Doc.snapshot_update(snap_source)
+    snap_commit = CommitStore.create_snapshot_commit(store, uuid, snap_update)
+    {:ok, fetched} = CommitStore.get_commit(store, snap_commit.id)
+
+    send(pid, {:remote_commit, fetched, :fake_remote_node})
+    _ = Commonplace.Document.Server.get_doc(pid)
+
+    # Rebase replays (insert 9 at 2, append 4) onto new_doc [1, 2, 3, 99]:
+    #   diff(pre=[1,2,3], dirty=[1,2,9,3,4]) = eq[1,2] ins[9] eq[3] ins[4]
+    #   applied to [1,2,3,99]:
+    #     ins 9 at pos 2 → [1,2,9,3,99]
+    #     ins 4 at pos 4 → [1,2,9,3,4,99]  ← positional: dirty's "append" lands
+    #                                        before the remote's concurrent append.
+    #   This is the documented positional-rebase tradeoff (RFC §Explicit Tradeoffs).
+    assert Commonplace.Document.Server.get_content(pid) == [1, 2, 9, 3, 4, 99]
+  end
+
   test "snapshot arrival aborts when dirty-edit rebase is out-of-range (all-or-nothing)",
        %{store: store} do
     uuid = "sync-rebase-abort-#{:rand.uniform(1_000_000)}"

@@ -42,6 +42,17 @@ defmodule Commonplace.Document.Server do
   @doc "Delete a key from the content map (for map documents)."
   def delete_key(pid, key), do: GenServer.call(pid, {:delete_key, key})
 
+  @doc "Push items to the end of the content array (for array documents)."
+  def push_items(pid, values), do: GenServer.call(pid, {:push_items, values})
+
+  @doc "Insert items at an index in the content array (for array documents)."
+  def insert_items(pid, index, values),
+    do: GenServer.call(pid, {:insert_items, index, values})
+
+  @doc "Delete items from the content array (for array documents)."
+  def delete_items(pid, index, length),
+    do: GenServer.call(pid, {:delete_items, index, length})
+
   @doc "Get the current content value."
   def get_content(pid), do: GenServer.call(pid, :get_content)
 
@@ -117,6 +128,24 @@ defmodule Commonplace.Document.Server do
   @impl true
   def handle_call({:delete_key, key}, _from, state) do
     doc = ContentType.delete_key(state.doc, key)
+    {:reply, :ok, %{state | doc: doc}}
+  end
+
+  @impl true
+  def handle_call({:push_items, values}, _from, state) do
+    doc = ContentType.push_items(state.doc, values)
+    {:reply, :ok, %{state | doc: doc}}
+  end
+
+  @impl true
+  def handle_call({:insert_items, index, values}, _from, state) do
+    doc = ContentType.insert_items(state.doc, index, values)
+    {:reply, :ok, %{state | doc: doc}}
+  end
+
+  @impl true
+  def handle_call({:delete_items, index, length}, _from, state) do
+    doc = ContentType.delete_items(state.doc, index, length)
     {:reply, :ok, %{state | doc: doc}}
   end
 
