@@ -121,15 +121,93 @@ defmodule Commonplace.Document.ContentTypeTest do
     end
   end
 
-  describe "create/3 — xml stub" do
-    test "xml type returns :xml but is not implemented for content" do
+  describe "create/3 — xml documents" do
+    alias Yelixer.Types.{XMLElement, XMLFragment, XMLText}
+
+    test "creates an xml document with envelope structure" do
       doc = Yelixer.Doc.new(client_id: 1)
       doc = ContentType.create(doc, :xml, "Page")
 
       assert ContentType.get_type(doc) == :xml
       assert ContentType.get_meta(doc, "_name") == "Page"
-      assert ContentType.get_content(doc) == nil
+      assert ContentType.get_meta(doc, "_type") == "xml"
     end
+
+    test "fresh xml content materializes to empty child list" do
+      doc = Yelixer.Doc.new(client_id: 1)
+      doc = ContentType.create(doc, :xml, "Empty")
+
+      assert ContentType.get_content(doc) == []
+    end
+
+    test "materializes a single element child" do
+      doc = Yelixer.Doc.new(client_id: 1)
+      doc = ContentType.create(doc, :xml, "Page")
+      doc = XMLFragment.insert_child(doc, "content", 0, {:element, "p"})
+
+      assert ContentType.get_content(doc) == [{:element, "p", %{}, []}]
+    end
+
+    test "materializes element with attributes" do
+      doc = Yelixer.Doc.new(client_id: 1)
+      doc = ContentType.create(doc, :xml, "Page")
+      doc = XMLFragment.insert_child(doc, "content", 0, {:element, "p"})
+
+      [{:element, _, child_name}] = XMLFragment.to_list(doc, "content")
+      doc = XMLElement.set_attribute(doc, child_name, "class", "note")
+      doc = XMLElement.set_attribute(doc, child_name, "id", "p1")
+
+      assert ContentType.get_content(doc) ==
+               [{:element, "p", %{"class" => "note", "id" => "p1"}, []}]
+    end
+
+    test "materializes nested element with text leaf" do
+      doc = Yelixer.Doc.new(client_id: 1)
+      doc = ContentType.create(doc, :xml, "Page")
+      doc = XMLFragment.insert_child(doc, "content", 0, {:element, "p"})
+
+      [{:element, _, p_name}] = XMLFragment.to_list(doc, "content")
+      doc = XMLElement.insert_child(doc, p_name, 0, :text)
+
+      [{:text, t_name}] = XMLElement.children(doc, p_name)
+      doc = XMLText.insert(doc, t_name, 0, "hello")
+
+      assert ContentType.get_content(doc) ==
+               [{:element, "p", %{}, [{:text, "hello"}]}]
+    end
+
+    test "materializes multiple siblings in document order" do
+      doc = Yelixer.Doc.new(client_id: 1)
+      doc = ContentType.create(doc, :xml, "Page")
+      doc = XMLFragment.insert_child(doc, "content", 0, {:element, "h1"})
+      doc = XMLFragment.insert_child(doc, "content", 1, {:element, "p"})
+      doc = XMLFragment.insert_child(doc, "content", 2, {:element, "p"})
+
+      assert ContentType.get_content(doc) == [
+               {:element, "h1", %{}, []},
+               {:element, "p", %{}, []},
+               {:element, "p", %{}, []}
+             ]
+    end
+
+    test "materializes deeply nested element tree" do
+      doc = Yelixer.Doc.new(client_id: 1)
+      doc = ContentType.create(doc, :xml, "Page")
+      doc = XMLFragment.insert_child(doc, "content", 0, {:element, "div"})
+
+      [{:element, _, div_name}] = XMLFragment.to_list(doc, "content")
+      doc = XMLElement.insert_child(doc, div_name, 0, {:element, "p"})
+
+      [{:element, _, p_name}] = XMLElement.children(doc, div_name)
+      doc = XMLElement.insert_child(doc, p_name, 0, :text)
+
+      [{:text, t_name}] = XMLElement.children(doc, p_name)
+      doc = XMLText.insert(doc, t_name, 0, "nested")
+
+      assert ContentType.get_content(doc) ==
+               [{:element, "div", %{}, [{:element, "p", %{}, [{:text, "nested"}]}]}]
+    end
+
   end
 
   describe "metadata" do

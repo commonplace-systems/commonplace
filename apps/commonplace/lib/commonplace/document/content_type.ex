@@ -14,7 +14,7 @@ defmodule Commonplace.Document.ContentType do
   """
 
   alias Yelixer.Doc
-  alias Yelixer.Types.{YMap, Text, Array}
+  alias Yelixer.Types.{YMap, Text, Array, XMLFragment, XMLElement, XMLText}
 
   @root_type "root"
   @content_type "content"
@@ -65,7 +65,8 @@ defmodule Commonplace.Document.ContentType do
   - :text -> String
   - :map -> Map
   - :array -> List
-  - :xml -> nil (stub)
+  - :xml -> list of child trees (root fragment's children)
+  - nil -> nil
   """
   def get_content(%Doc{} = doc) do
     type = get_type(doc)
@@ -75,9 +76,37 @@ defmodule Commonplace.Document.ContentType do
       :text -> Text.to_string(doc, @content_type)
       :map -> YMap.to_map(doc, @content_type)
       :array -> Array.to_list(doc, @content_type)
-      :xml -> nil
+      :xml -> materialize_xml_fragment(doc, @content_type)
       nil -> nil
     end
+  end
+
+  defp materialize_xml_fragment(%Doc{} = doc, type_name) do
+    XMLFragment.to_list(doc, type_name)
+    |> Enum.map(&materialize_xml_child(doc, &1))
+  end
+
+  defp materialize_xml_element(%Doc{} = doc, type_name) do
+    tag = XMLElement.tag_name(doc, type_name)
+    attrs = XMLElement.get_attributes(doc, type_name)
+
+    children =
+      XMLElement.children(doc, type_name)
+      |> Enum.map(&materialize_xml_child(doc, &1))
+
+    {:element, tag, attrs, children}
+  end
+
+  defp materialize_xml_child(%Doc{} = doc, {:element, _tag, child_name}) do
+    materialize_xml_element(doc, child_name)
+  end
+
+  defp materialize_xml_child(%Doc{} = doc, {:text, child_name}) do
+    {:text, XMLText.to_string(doc, child_name)}
+  end
+
+  defp materialize_xml_child(%Doc{} = doc, {:fragment, child_name}) do
+    {:fragment, materialize_xml_fragment(doc, child_name)}
   end
 
   @doc "Get a metadata value from the root envelope."
@@ -160,6 +189,6 @@ defmodule Commonplace.Document.ContentType do
   defp content_type_ref(:text), do: :text
   defp content_type_ref(:map), do: :map
   defp content_type_ref(:array), do: :array
-  defp content_type_ref(:xml), do: :xml
+  defp content_type_ref(:xml), do: :xml_fragment
   defp content_type_ref(_), do: :map
 end
