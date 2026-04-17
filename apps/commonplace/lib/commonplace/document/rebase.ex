@@ -8,10 +8,10 @@ defmodule Commonplace.Document.Rebase do
   snapshot), re-author the dirty edits as positional ops on `new_doc`.
 
   Only the envelope's `content` type is rebased; the envelope root YMap
-  (`_type`, `_name`) is treated as non-edit-tracked (Phase 3 / YMap
-  rebase will handle metadata if needed). Non-`:text` content types
-  return `{:error, {:unsupported_type, kind}}` — all-or-nothing
-  semantics with no silent fallback.
+  (`_type`, `_name`) is treated as non-edit-tracked. `:text` and `:map`
+  content are rebased via their per-type primitives; `:array` and
+  `:xml` return `{:error, {:unsupported_type, kind}}` (all-or-nothing
+  semantics with no silent fallback).
 
   The rebase baseline `pre` is reconstructed from `parent_commit`.
   `Commonplace.Document.Server` advances `parent_commit` whenever a
@@ -24,11 +24,11 @@ defmodule Commonplace.Document.Rebase do
   """
 
   alias Commonplace.Document.ContentType
-  alias Commonplace.Document.Rebase.YText
+  alias Commonplace.Document.Rebase.{YText, YMap}
   alias Yelixer.Doc
 
   @type error ::
-          {:unsupported_type, :map | :array | :xml | nil}
+          {:unsupported_type, :array | :xml | nil}
           | YText.error()
 
   @spec rebase(Doc.t(), Doc.t(), Doc.t()) :: {:ok, Doc.t()} | {:error, error()}
@@ -42,6 +42,7 @@ defmodule Commonplace.Document.Rebase do
     else
       case ContentType.get_type(dirty_doc) do
         :text -> YText.rebase(pre || "", dirty || "", new_doc, "content")
+        :map -> YMap.rebase(pre || %{}, dirty || %{}, new_doc, "content")
         other -> {:error, {:unsupported_type, other}}
       end
     end

@@ -39,6 +39,9 @@ defmodule Commonplace.Document.Server do
   @doc "Set a key in the content map (for map documents)."
   def set_key(pid, key, value), do: GenServer.call(pid, {:set_key, key, value})
 
+  @doc "Delete a key from the content map (for map documents)."
+  def delete_key(pid, key), do: GenServer.call(pid, {:delete_key, key})
+
   @doc "Get the current content value."
   def get_content(pid), do: GenServer.call(pid, :get_content)
 
@@ -108,6 +111,12 @@ defmodule Commonplace.Document.Server do
   @impl true
   def handle_call({:set_key, key, value}, _from, state) do
     doc = ContentType.set_key(state.doc, key, value)
+    {:reply, :ok, %{state | doc: doc}}
+  end
+
+  @impl true
+  def handle_call({:delete_key, key}, _from, state) do
+    doc = ContentType.delete_key(state.doc, key)
     {:reply, :ok, %{state | doc: doc}}
   end
 

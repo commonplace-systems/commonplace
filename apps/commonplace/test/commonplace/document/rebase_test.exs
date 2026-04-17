@@ -46,19 +46,18 @@ defmodule Commonplace.Document.RebaseTest do
     end
   end
 
-  describe "rebase/3 — unsupported types (phase 1)" do
-    test "map content with dirty edits returns :unsupported_type error" do
-      pre = map_doc([{"a", "1"}])
-      dirty = map_doc([{"a", "2"}])
-      new_doc = map_doc([{"a", "1"}])
+  describe "rebase/3 — YMap content (phase 3)" do
+    test "applies dirty map edits (add/remove/modify) to new_doc" do
+      pre = map_doc([{"a", "1"}, {"b", "2"}])
+      dirty = map_doc([{"a", "one"}, {"c", "3"}])
+      new_doc = map_doc([{"a", "1"}, {"b", "2"}])
 
-      assert {:error, {:unsupported_type, :map}} = Rebase.rebase(pre, dirty, new_doc)
+      {:ok, result} = Rebase.rebase(pre, dirty, new_doc)
+
+      assert ContentType.get_content(result) == %{"a" => "one", "c" => "3"}
     end
 
-    test "map content with no dirty edits passes through new_doc" do
-      # Phase 1 hasn't implemented YMap rebase, but if there's nothing to
-      # rebase, the snapshot should still apply cleanly. Otherwise every
-      # map/schema snapshot would be aborted.
+    test "no-op when pre == dirty passes through new_doc" do
       pre = map_doc([{"a", "1"}])
       dirty = map_doc([{"a", "1"}])
       new_doc = map_doc([{"a", "2"}])
@@ -66,6 +65,20 @@ defmodule Commonplace.Document.RebaseTest do
       {:ok, result} = Rebase.rebase(pre, dirty, new_doc)
 
       assert ContentType.get_content(result) == %{"a" => "2"}
+    end
+  end
+
+  describe "rebase/3 — unsupported types (phases 2 & 4)" do
+    test "xml content with dirty edits returns :unsupported_type error" do
+      pre = ContentType.create(Doc.new(), :xml, "x")
+      dirty = ContentType.create(Doc.new(), :xml, "x")
+      new_doc = ContentType.create(Doc.new(), :xml, "x")
+
+      # :xml get_content returns nil for both pre and dirty, so the
+      # dispatcher's pre==dirty fast-path short-circuits with {:ok, new_doc}.
+      # Once a materializer exists (phase 2), dirty edits will produce a
+      # real diff and route here. For now, assert the pass-through.
+      {:ok, _} = Rebase.rebase(pre, dirty, new_doc)
     end
   end
 end

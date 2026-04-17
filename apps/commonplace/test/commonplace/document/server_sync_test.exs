@@ -313,6 +313,56 @@ defmodule Commonplace.Document.ServerSyncTest do
     assert Commonplace.Document.Server.get_content(pid) == "hello world!"
   end
 
+  test "snapshot arrival preserves local dirty YMap edits via positional rebase (CX-8nu)",
+       %{store: store} do
+    uuid = "sync-ymap-#{:rand.uniform(1_000_000)}"
+
+    # Seed initial committed map: %{"a" => "1", "b" => "2"}
+    initial_doc = Yelixer.Doc.new(client_id: 10)
+    initial_doc = Commonplace.Document.ContentType.create(initial_doc, :map, "MapDoc")
+    initial_doc = Commonplace.Document.ContentType.set_key(initial_doc, "a", "1")
+    initial_doc = Commonplace.Document.ContentType.set_key(initial_doc, "b", "2")
+    initial_update = Yelixer.Encoding.encode_update(initial_doc)
+    _initial_commit = CommitStore.create_commit(store, uuid, initial_update, nil)
+
+    pid =
+      start_supervised!(
+        {Commonplace.Document.Server, uuid: uuid, commit_store: store, client_id: 60},
+        id: uuid
+      )
+
+    assert Commonplace.Document.Server.get_content(pid) == %{"a" => "1", "b" => "2"}
+
+    # Local dirty edits: add "c", remove "b", modify "a" (uncommitted).
+    :ok = Commonplace.Document.Server.set_key(pid, "c", "3")
+    :ok = Commonplace.Document.Server.set_key(pid, "a", "one")
+    :ok = Commonplace.Document.Server.delete_key(pid, "b")
+
+    assert Commonplace.Document.Server.get_content(pid) == %{"a" => "one", "c" => "3"}
+
+    # Remote snapshot with %{"a" => "1", "b" => "2", "d" => "4"} (concurrent add).
+    snap_source = Yelixer.Doc.new(client_id: 77)
+    snap_source = Commonplace.Document.ContentType.create(snap_source, :map, "MapDoc")
+    snap_source = Commonplace.Document.ContentType.set_key(snap_source, "a", "1")
+    snap_source = Commonplace.Document.ContentType.set_key(snap_source, "b", "2")
+    snap_source = Commonplace.Document.ContentType.set_key(snap_source, "d", "4")
+    snap_update = Yelixer.Doc.snapshot_update(snap_source)
+    snap_commit = CommitStore.create_snapshot_commit(store, uuid, snap_update)
+    {:ok, fetched} = CommitStore.get_commit(store, snap_commit.id)
+
+    send(pid, {:remote_commit, fetched, :fake_remote_node})
+    _ = Commonplace.Document.Server.get_doc(pid)
+
+    # Rebase replays (add "c", remove "b", modify "a" to "one") onto
+    # new_doc %{"a" => "1", "b" => "2", "d" => "4"}:
+    #   a modified: "1" → "one"
+    #   b removed
+    #   c added: "3"
+    #   d (remote-only) preserved
+    assert Commonplace.Document.Server.get_content(pid) ==
+             %{"a" => "one", "c" => "3", "d" => "4"}
+  end
+
   test "snapshot arrival aborts when dirty-edit rebase is out-of-range (all-or-nothing)",
        %{store: store} do
     uuid = "sync-rebase-abort-#{:rand.uniform(1_000_000)}"
