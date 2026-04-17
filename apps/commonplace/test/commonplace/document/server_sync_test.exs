@@ -421,9 +421,20 @@ defmodule Commonplace.Document.ServerSyncTest do
 
     # The dirty "!" must survive...
     assert Commonplace.Document.Server.get_content(pid) == "hello world!"
-    # ...and parent_commit stays at B (no-op branch doesn't touch it,
-    # and without the P1 fix it would never have been B to begin with).
-    assert :sys.get_state(pid).parent_commit == commit_b.id
+    # ...and parent_commit advances to the snapshot (CX-u7p r4: keep the
+    # snapshot on the active chain so subsequent local commits chain onto
+    # it, not onto B — otherwise the snapshot becomes a sibling of the
+    # next local commit and falls off the history the reconstruct walk
+    # follows).
+    assert :sys.get_state(pid).parent_commit == snap_commit.id
+
+    # Regression: commit the dirty edit and verify it chains onto the
+    # snapshot (not onto B). This is the outcome codex-r4 flagged: without
+    # advancing parent_commit in the no-op branch, the local commit would
+    # be a child of B, making the snapshot a sibling and orphaning it
+    # from the reconstruct walk.
+    {:ok, local_commit} = Commonplace.Document.Server.commit(pid)
+    assert local_commit.parent_id == snap_commit.id
   end
 
   test "remote_commit with invalid update does not crash the server", %{store: store} do

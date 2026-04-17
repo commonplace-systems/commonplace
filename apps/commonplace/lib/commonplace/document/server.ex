@@ -138,10 +138,12 @@ defmodule Commonplace.Document.Server do
         # already reflects the snapshot's logical content (possibly plus
         # uncommitted local edits), so neither reset nor apply is needed —
         # resetting here would drop the local edits that the user is
-        # actively making. Import the commit into the store and leave
-        # `state.doc` untouched.
+        # actively making. Import the commit and advance `parent_commit`
+        # to the snapshot so subsequent local commits chain onto it;
+        # otherwise the snapshot becomes a sibling and falls off the
+        # active history (CX-u7p r4).
         snapshot_commit?(commit) and snapshot_is_noop?(commit, state) ->
-          {:noreply, state}
+          {:noreply, %{state | parent_commit: commit.id}}
 
         # CX-u7p: snapshot commits are self-contained re-encodings of the
         # full visible doc state under fresh item IDs. Applying them on top
