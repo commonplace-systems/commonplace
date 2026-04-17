@@ -134,9 +134,19 @@ defmodule Commonplace.Document.Server do
       if snapshot_commit?(commit) do
         handle_snapshot_commit(commit, state)
       else
+        # CX-bgq: on successful remote-incremental apply, advance both
+        # state.parent_commit (so rebase reconstructs the baseline at the
+        # right point) and the store's :latest (so reconstruct_doc_at's
+        # commit_log walk can reach it). Otherwise a subsequent snapshot
+        # rebase diffs from a stale baseline and double-applies content
+        # that the snapshot already contains.
         case Yelixer.Encoding.apply_update(state.doc, commit.update) do
-          {:ok, doc} -> {:noreply, %{state | doc: doc}}
-          {:error, _} -> {:noreply, state}
+          {:ok, doc} ->
+            CommitStoreClient.set_latest(state.commit_store, state.uuid, commit.id)
+            {:noreply, %{state | doc: doc, parent_commit: commit.id}}
+
+          {:error, _} ->
+            {:noreply, state}
         end
       end
     else

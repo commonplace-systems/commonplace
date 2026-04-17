@@ -250,6 +250,69 @@ defmodule Commonplace.Document.ServerSyncTest do
     assert Commonplace.Document.Server.get_content(pid) == "hello world!"
   end
 
+  test "snapshot arrival after remote incremental does not double-apply (CX-bgq)",
+       %{store: store} do
+    uuid = "sync-bgq-#{:rand.uniform(1_000_000)}"
+
+    initial_doc = Yelixer.Doc.new(client_id: 10)
+    initial_doc = Commonplace.Document.ContentType.create(initial_doc, :text, "BgqDoc")
+    initial_doc = Commonplace.Document.ContentType.insert_text(initial_doc, 0, "hello")
+    initial_update = Yelixer.Encoding.encode_update(initial_doc)
+    initial_commit = CommitStore.create_commit(store, uuid, initial_update, nil)
+
+    pid =
+      start_supervised!(
+        {Commonplace.Document.Server, uuid: uuid, commit_store: store, client_id: 50},
+        id: uuid
+      )
+
+    assert Commonplace.Document.Server.get_content(pid) == "hello"
+
+    # Remote incremental commit adds " world" at pos 5 (chains off C1).
+    remote_doc = Yelixer.Doc.new(client_id: 99)
+    {:ok, remote_doc} = Yelixer.Encoding.apply_update(remote_doc, initial_update)
+    remote_doc = Commonplace.Document.ContentType.insert_text(remote_doc, 5, " world")
+    sv = Yelixer.BlockStore.state_vector(initial_doc.store)
+    diff = Yelixer.Encoding.encode_diff(remote_doc, sv)
+
+    inc_commit = %Commonplace.Store.Commit{
+      id: :crypto.hash(:sha256, diff),
+      doc_uuid: uuid,
+      parent_id: initial_commit.id,
+      update: diff,
+      timestamp: DateTime.utc_now(),
+      metadata: %{}
+    }
+
+    send(pid, {:remote_commit, inc_commit, :fake_remote_node})
+    _ = Commonplace.Document.Server.get_doc(pid)
+
+    assert Commonplace.Document.Server.get_content(pid) == "hello world"
+
+    # Local dirty edit: append "!" (uncommitted).
+    :ok = Commonplace.Document.Server.insert_text(pid, 11, "!")
+    assert Commonplace.Document.Server.get_content(pid) == "hello world!"
+
+    # Remote snapshot arrives whose observable content is "hello world"
+    # (the already-incorporated compacted state from C1+C2).
+    snap_source = Yelixer.Doc.new(client_id: 77)
+    snap_source = Commonplace.Document.ContentType.create(snap_source, :text, "BgqDoc")
+    snap_source = Commonplace.Document.ContentType.insert_text(snap_source, 0, "hello world")
+    snap_update = Yelixer.Doc.snapshot_update(snap_source)
+    snap_commit = CommitStore.create_snapshot_commit(store, uuid, snap_update)
+    {:ok, fetched} = CommitStore.get_commit(store, snap_commit.id)
+
+    send(pid, {:remote_commit, fetched, :fake_remote_node})
+    _ = Commonplace.Document.Server.get_doc(pid)
+
+    # Pre-fix: parent_commit stayed at C1 across the incremental apply, so
+    # reconstruct_at(C1)="hello"; diff("hello","hello world!") = insert
+    # " world!" at 5; replayed on new_doc "hello world" → "hello world world!".
+    # Post-fix: parent_commit advances to inc_commit.id, so reconstruct yields
+    # "hello world"; diff = insert "!" at 11 → "hello world!".
+    assert Commonplace.Document.Server.get_content(pid) == "hello world!"
+  end
+
   test "snapshot arrival aborts when dirty-edit rebase is out-of-range (all-or-nothing)",
        %{store: store} do
     uuid = "sync-rebase-abort-#{:rand.uniform(1_000_000)}"

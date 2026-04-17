@@ -13,13 +13,11 @@ defmodule Commonplace.Document.Rebase do
   return `{:error, {:unsupported_type, kind}}` — all-or-nothing
   semantics with no silent fallback.
 
-  Known limitation (documented, deferred): the 2-way diff `(pre, dirty)`
-  treats any remote incremental commits applied to `dirty_doc` between
-  `parent_commit` and the snapshot as if they were local dirty edits.
-  If the incoming snapshot already contains those same incrementals,
-  replaying the diff on `new_doc` will double-apply them. Phase 1
-  accepts this edge case; a follow-on bead will advance `parent_commit`
-  on remote-incremental apply to bound `pre` tightly.
+  The rebase baseline `pre` is reconstructed from `parent_commit`.
+  `Commonplace.Document.Server` advances `parent_commit` whenever a
+  remote-incremental commit is applied (CX-bgq), so `pre` always
+  reflects the most recent incorporated committed state and the 2-way
+  diff `(pre, dirty)` captures only local dirty edits.
 
   See `docs/positional-rebase.md` (commonplace-plan repo) for the full
   RFC and vocabulary.
