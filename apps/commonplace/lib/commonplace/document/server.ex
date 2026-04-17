@@ -11,7 +11,6 @@ defmodule Commonplace.Document.Server do
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Document.ContentType
   alias Commonplace.Dataflow.PubSub, as: CPPubSub
-  alias Commonplace.Tree.DocBuilder
 
   defstruct [:uuid, :doc, :parent_commit, :commit_store]
 
@@ -130,106 +129,30 @@ defmodule Commonplace.Document.Server do
     if source_node != Node.self() do
       CommitStoreClient.import_commit(state.commit_store, commit)
 
-      cond do
-        # CX-u7p r2: If a remote snapshot arrives that is chained directly
-        # on top of the commit we already consider canonical
-        # (`state.parent_commit`), the snapshot is by construction a
-        # compaction of state we already have. In that case `state.doc`
-        # already reflects the snapshot's logical content (possibly plus
-        # uncommitted local edits), so neither reset nor apply is needed —
-        # resetting here would drop the local edits that the user is
-        # actively making. `advance_head/2` advances both
-        # `state.parent_commit` and the store's `:latest` so subsequent
-        # local commits chain onto the snapshot and the `commit_log` walk
-        # (which starts from `:latest`) reaches it.
-        snapshot_commit?(commit) and snapshot_is_noop?(commit, state) ->
-          {:noreply, advance_head(state, commit.id)}
+      # CX-u7p: snapshot commits are self-contained re-encodings of the
+      # full visible doc state under fresh item IDs. Applying them on top
+      # of an already-populated in-memory doc would duplicate content and
+      # resurrect tombstoned items. Reset to a fresh Doc.new() before
+      # applying a snapshot's update; normal commits still apply
+      # incrementally as before.
+      base_doc =
+        if snapshot_commit?(commit) do
+          Yelixer.Doc.new(client_id: state.doc.client_id)
+        else
+          state.doc
+        end
 
-        # CX-u7p: snapshot commits are self-contained re-encodings of the
-        # full visible doc state under fresh item IDs. Applying them on top
-        # of an already-populated in-memory doc would duplicate content and
-        # resurrect tombstoned items. Reset to a fresh Doc.new() before
-        # applying a snapshot's update; normal commits still apply
-        # incrementally as before.
-        snapshot_commit?(commit) ->
-          apply_with_base(commit, Yelixer.Doc.new(client_id: state.doc.client_id), state)
+      case Yelixer.Encoding.apply_update(base_doc, commit.update) do
+        {:ok, doc} ->
+          {:noreply, %{state | doc: doc}}
 
-        true ->
-          apply_with_base(commit, state.doc, state)
+        {:error, _} ->
+          {:noreply, state}
       end
     else
       {:noreply, state}
     end
   end
-
-  # Apply `commit` on top of `base_doc` and advance the tracked head.
-  #
-  # CX-u7p round 3 P1: `state.parent_commit` must reflect what has
-  # actually been incorporated into `state.doc`, regardless of whether
-  # the commit originated locally or remotely. Without this, the
-  # `snapshot_is_noop?/2` check (which compares `commit.parent_id`
-  # against `state.parent_commit`) would misclassify a compaction
-  # snapshot as divergent after any remote delta had advanced
-  # `state.doc` but left `state.parent_commit` pointing at the
-  # previous (local) head — causing the reset path to silently drop
-  # dirty in-memory edits.
-  #
-  # CX-u7p round 6 P1: also advance the store's `:latest` pointer via
-  # `advance_head/2` — `import_commit/2` intentionally does not clobber
-  # `:latest` (to avoid races on catch-up), so without this step a
-  # subsequent `snapshot_is_noop?/2` call would run `reconstruct_doc_at`
-  # against a chain that can't reach the imported delta, return `:none`,
-  # and fall back to the reset path that drops dirty local edits.
-  defp apply_with_base(commit, base_doc, state) do
-    case Yelixer.Encoding.apply_update(base_doc, commit.update) do
-      {:ok, doc} ->
-        {:noreply, advance_head(%{state | doc: doc}, commit.id)}
-
-      {:error, _} ->
-        {:noreply, state}
-    end
-  end
-
-  # Advance both the in-memory `parent_commit` tracker and the store's
-  # `:latest` pointer to `commit_id`. Kept in one place so every path
-  # that incorporates a commit into `state.doc` keeps the two in sync
-  # (CX-u7p r6).
-  defp advance_head(state, commit_id) do
-    CommitStoreClient.set_latest(state.commit_store, state.uuid, commit_id)
-    %{state | parent_commit: commit_id}
-  end
-
-  # A snapshot is a "no-op" from the perspective of this server when:
-  #
-  #   1. It is chained directly on top of `state.parent_commit` (the
-  #      commit we already treat as our canonical head), AND
-  #   2. Its materialized content equals the rebuild of the committed
-  #      chain up to `parent_commit` — i.e. it is an honest compaction of
-  #      the same state we already know, not a divergent rewrite.
-  #
-  # In that case `state.doc` already materializes the snapshot's logical
-  # content (possibly plus uncommitted local edits), so resetting would
-  # drop those local edits for no benefit. Preserving `state.doc` keeps
-  # user-in-progress edits alive when a remote compaction snapshot
-  # arrives (CX-u7p round-2 P1). A snapshot with novel or divergent
-  # content still triggers the reset path below.
-  defp snapshot_is_noop?(commit, %__MODULE__{parent_commit: parent_commit} = state)
-       when not is_nil(parent_commit) do
-    if commit.parent_id == parent_commit do
-      with {:ok, committed} <-
-             DocBuilder.reconstruct_doc_at(state.commit_store, state.uuid, parent_commit),
-           {:ok, snap_doc} <-
-             Yelixer.Encoding.apply_update(Yelixer.Doc.new(), commit.update) do
-        ContentType.get_content(committed) == ContentType.get_content(snap_doc)
-      else
-        _ -> false
-      end
-    else
-      false
-    end
-  end
-
-  defp snapshot_is_noop?(_commit, _state), do: false
 
   defp snapshot_commit?(commit) do
     case Map.get(commit, :metadata) do
