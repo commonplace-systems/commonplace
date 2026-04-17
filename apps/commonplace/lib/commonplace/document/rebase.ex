@@ -9,9 +9,9 @@ defmodule Commonplace.Document.Rebase do
 
   Only the envelope's `content` type is rebased; the envelope root YMap
   (`_type`, `_name`) is treated as non-edit-tracked. `:text`, `:map`,
-  and `:array` content are rebased via their per-type primitives;
-  `:xml` returns `{:error, {:unsupported_type, kind}}` (all-or-nothing
-  semantics with no silent fallback).
+  `:array`, and `:xml` content are all rebased via their per-type
+  primitives. Any other content type returns `{:error, {:unsupported_type,
+  kind}}` (all-or-nothing semantics with no silent fallback).
 
   The rebase baseline `pre` is reconstructed from `parent_commit`.
   `Commonplace.Document.Server` advances `parent_commit` whenever a
@@ -24,13 +24,14 @@ defmodule Commonplace.Document.Rebase do
   """
 
   alias Commonplace.Document.ContentType
-  alias Commonplace.Document.Rebase.{YText, YMap, YArray}
+  alias Commonplace.Document.Rebase.{YText, YMap, YArray, YXml}
   alias Yelixer.Doc
 
   @type error ::
-          {:unsupported_type, :xml | nil}
+          {:unsupported_type, nil | atom()}
           | YText.error()
           | YArray.error()
+          | YXml.error()
 
   @spec rebase(Doc.t(), Doc.t(), Doc.t()) :: {:ok, Doc.t()} | {:error, error()}
   def rebase(%Doc{} = old_doc, %Doc{} = dirty_doc, %Doc{} = new_doc) do
@@ -45,6 +46,7 @@ defmodule Commonplace.Document.Rebase do
         :text -> YText.rebase(pre || "", dirty || "", new_doc, "content")
         :map -> YMap.rebase(pre || %{}, dirty || %{}, new_doc, "content")
         :array -> YArray.rebase(pre || [], dirty || [], new_doc, "content")
+        :xml -> YXml.rebase(pre || [], dirty || [], new_doc, "content")
         other -> {:error, {:unsupported_type, other}}
       end
     end

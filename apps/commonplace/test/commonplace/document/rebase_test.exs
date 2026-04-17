@@ -103,17 +103,39 @@ defmodule Commonplace.Document.RebaseTest do
     end
   end
 
-  describe "rebase/3 — unsupported types (phase 2)" do
-    test "xml content with dirty edits returns :unsupported_type error" do
+  describe "rebase/3 — YXml content (phase 2)" do
+    alias Yelixer.Types.{XMLFragment, XMLElement}
+
+    test "applies dirty xml structural insert to new_doc" do
+      pre = ContentType.create(Doc.new(), :xml, "x")
+      dirty = pre |> XMLFragment.insert_child("content", 0, {:element, "p"})
+      new_doc = ContentType.create(Doc.new(), :xml, "x")
+
+      {:ok, result} = Rebase.rebase(pre, dirty, new_doc)
+      assert ContentType.get_content(result) == [{:element, "p", %{}, []}]
+    end
+
+    test "applies dirty attribute change to matched element in new_doc" do
+      pre = ContentType.create(Doc.new(), :xml, "x")
+      pre = XMLFragment.insert_child(pre, "content", 0, {:element, "p"})
+      [{:element, _, p_pre}] = XMLFragment.to_list(pre, "content")
+
+      dirty = XMLElement.set_attribute(pre, p_pre, "class", "note")
+
+      new_doc = ContentType.create(Doc.new(), :xml, "x")
+      new_doc = XMLFragment.insert_child(new_doc, "content", 0, {:element, "p"})
+
+      {:ok, result} = Rebase.rebase(pre, dirty, new_doc)
+      assert ContentType.get_content(result) == [{:element, "p", %{"class" => "note"}, []}]
+    end
+
+    test "empty pre == empty dirty short-circuits to new_doc" do
       pre = ContentType.create(Doc.new(), :xml, "x")
       dirty = ContentType.create(Doc.new(), :xml, "x")
       new_doc = ContentType.create(Doc.new(), :xml, "x")
 
-      # :xml get_content returns nil for both pre and dirty, so the
-      # dispatcher's pre==dirty fast-path short-circuits with {:ok, new_doc}.
-      # Once a materializer exists (phase 2), dirty edits will produce a
-      # real diff and route here. For now, assert the pass-through.
-      {:ok, _} = Rebase.rebase(pre, dirty, new_doc)
+      {:ok, result} = Rebase.rebase(pre, dirty, new_doc)
+      assert ContentType.get_content(result) == []
     end
   end
 end

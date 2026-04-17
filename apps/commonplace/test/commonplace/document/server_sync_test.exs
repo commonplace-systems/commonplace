@@ -410,6 +410,55 @@ defmodule Commonplace.Document.ServerSyncTest do
     assert Commonplace.Document.Server.get_content(pid) == [1, 2, 9, 3, 4, 99]
   end
 
+  test "snapshot arrival preserves local dirty YXml edits via positional rebase (CX-9fy)",
+       %{store: store} do
+    alias Yelixer.Types.{XMLFragment, XMLElement}
+
+    uuid = "sync-yxml-#{:rand.uniform(1_000_000)}"
+
+    # Seed initial committed XML: <p>  (one element, no attrs, no children)
+    initial_doc = Yelixer.Doc.new(client_id: 10)
+    initial_doc = Commonplace.Document.ContentType.create(initial_doc, :xml, "XmlDoc")
+    initial_doc = XMLFragment.insert_child(initial_doc, "content", 0, {:element, "p"})
+    initial_update = Yelixer.Encoding.encode_update(initial_doc)
+    _initial_commit = CommitStore.create_commit(store, uuid, initial_update, nil)
+
+    pid =
+      start_supervised!(
+        {Commonplace.Document.Server, uuid: uuid, commit_store: store, client_id: 62},
+        id: uuid
+      )
+
+    # Local dirty edits: set an attribute on the p element.
+    doc_before = Commonplace.Document.Server.get_doc(pid)
+    [{:element, _, p_name}] = XMLFragment.to_list(doc_before, "content")
+    dirty_doc = XMLElement.set_attribute(doc_before, p_name, "class", "dirty")
+    dirty_update = Yelixer.Encoding.encode_update(dirty_doc)
+    :ok = Commonplace.Document.Server.apply_update(pid, dirty_update)
+
+    assert Commonplace.Document.Server.get_content(pid) ==
+             [{:element, "p", %{"class" => "dirty"}, []}]
+
+    # Remote snapshot adds a sibling <q> element (concurrent structural change).
+    snap_source = Yelixer.Doc.new(client_id: 77)
+    snap_source = Commonplace.Document.ContentType.create(snap_source, :xml, "XmlDoc")
+    snap_source = XMLFragment.insert_child(snap_source, "content", 0, {:element, "p"})
+    snap_source = XMLFragment.insert_child(snap_source, "content", 1, {:element, "q"})
+    snap_update = Yelixer.Doc.snapshot_update(snap_source)
+    snap_commit = CommitStore.create_snapshot_commit(store, uuid, snap_update)
+    {:ok, fetched} = CommitStore.get_commit(store, snap_commit.id)
+
+    send(pid, {:remote_commit, fetched, :fake_remote_node})
+    _ = Commonplace.Document.Server.get_doc(pid)
+
+    # Rebase applies the dirty attribute set onto the matched <p> in new_doc [p, q].
+    assert Commonplace.Document.Server.get_content(pid) ==
+             [
+               {:element, "p", %{"class" => "dirty"}, []},
+               {:element, "q", %{}, []}
+             ]
+  end
+
   test "snapshot arrival aborts when dirty-edit rebase is out-of-range (all-or-nothing)",
        %{store: store} do
     uuid = "sync-rebase-abort-#{:rand.uniform(1_000_000)}"
