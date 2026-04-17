@@ -138,17 +138,12 @@ defmodule Commonplace.Document.Server do
         # already reflects the snapshot's logical content (possibly plus
         # uncommitted local edits), so neither reset nor apply is needed —
         # resetting here would drop the local edits that the user is
-        # actively making. Import the commit and advance both
-        # `parent_commit` (r4) and the store's `:latest` (r5) to the
-        # snapshot so subsequent local commits chain onto it and the
-        # `commit_log` walk (which starts from `:latest`) reaches the
-        # snapshot — without advancing `:latest`, a later
-        # `snapshot_is_noop?` call would run `reconstruct_doc_at` against
-        # a chain that can no longer reach the new head, fall back to the
-        # reset path, and drop dirty local edits.
+        # actively making. `advance_head/2` advances both
+        # `state.parent_commit` and the store's `:latest` so subsequent
+        # local commits chain onto the snapshot and the `commit_log` walk
+        # (which starts from `:latest`) reaches it.
         snapshot_commit?(commit) and snapshot_is_noop?(commit, state) ->
-          CommitStoreClient.set_latest(state.commit_store, state.uuid, commit.id)
-          {:noreply, %{state | parent_commit: commit.id}}
+          {:noreply, advance_head(state, commit.id)}
 
         # CX-u7p: snapshot commits are self-contained re-encodings of the
         # full visible doc state under fresh item IDs. Applying them on top
@@ -178,14 +173,30 @@ defmodule Commonplace.Document.Server do
   # `state.doc` but left `state.parent_commit` pointing at the
   # previous (local) head — causing the reset path to silently drop
   # dirty in-memory edits.
+  #
+  # CX-u7p round 6 P1: also advance the store's `:latest` pointer via
+  # `advance_head/2` — `import_commit/2` intentionally does not clobber
+  # `:latest` (to avoid races on catch-up), so without this step a
+  # subsequent `snapshot_is_noop?/2` call would run `reconstruct_doc_at`
+  # against a chain that can't reach the imported delta, return `:none`,
+  # and fall back to the reset path that drops dirty local edits.
   defp apply_with_base(commit, base_doc, state) do
     case Yelixer.Encoding.apply_update(base_doc, commit.update) do
       {:ok, doc} ->
-        {:noreply, %{state | doc: doc, parent_commit: commit.id}}
+        {:noreply, advance_head(%{state | doc: doc}, commit.id)}
 
       {:error, _} ->
         {:noreply, state}
     end
+  end
+
+  # Advance both the in-memory `parent_commit` tracker and the store's
+  # `:latest` pointer to `commit_id`. Kept in one place so every path
+  # that incorporates a commit into `state.doc` keeps the two in sync
+  # (CX-u7p r6).
+  defp advance_head(state, commit_id) do
+    CommitStoreClient.set_latest(state.commit_store, state.uuid, commit_id)
+    %{state | parent_commit: commit_id}
   end
 
   # A snapshot is a "no-op" from the perspective of this server when:

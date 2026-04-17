@@ -437,6 +437,72 @@ defmodule Commonplace.Document.ServerSyncTest do
     assert local_commit.parent_id == snap_commit.id
   end
 
+  test "snapshot chained on a delta that arrived only via broadcast preserves dirty edits (CX-u7p r6)",
+       %{store: store} do
+    # Mirror the real wire path: a remote peer broadcasts a delta. Our
+    # server's import_commit/2 stores it but does NOT advance :latest
+    # (to avoid clobbering local heads during catch-up). Without the r6
+    # fix (advance :latest in apply_with_base/3), a later snapshot whose
+    # parent is that imported delta would fail the snapshot_is_noop?
+    # check — reconstruct_doc_at walks from :latest, can't reach the
+    # imported delta, returns :none, and the reset path drops dirty
+    # local edits.
+    uuid = "sync-broadcast-snap-#{:rand.uniform(1_000_000)}"
+
+    initial_doc = Yelixer.Doc.new(client_id: 10)
+    initial_doc = Commonplace.Document.ContentType.create(initial_doc, :text, "BcastDoc")
+    initial_doc = Commonplace.Document.ContentType.insert_text(initial_doc, 0, "hello")
+    initial_update = Yelixer.Encoding.encode_update(initial_doc)
+    commit_a = CommitStore.create_commit(store, uuid, initial_update, nil)
+
+    pid =
+      start_supervised!(
+        {Commonplace.Document.Server, uuid: uuid, commit_store: store, client_id: 20},
+        id: uuid
+      )
+
+    assert :sys.get_state(pid).parent_commit == commit_a.id
+
+    # Remote peer builds delta B = A + " world" and broadcasts it. Build
+    # the Commit without touching the store via create_chained_commit/3
+    # so :latest stays at A — this is what the real broadcast path looks
+    # like from this node's perspective.
+    remote_doc = Yelixer.Doc.new(client_id: 99)
+    {:ok, remote_doc} = Yelixer.Encoding.apply_update(remote_doc, initial_update)
+    remote_doc = Commonplace.Document.ContentType.insert_text(remote_doc, 5, " world")
+    sv = Yelixer.BlockStore.state_vector(initial_doc.store)
+    diff = Yelixer.Encoding.encode_diff(remote_doc, sv)
+    commit_b = Commonplace.Store.Commit.new(uuid, diff, commit_a.id, %{})
+
+    send(pid, {:remote_commit, commit_b, :fake_remote_node})
+    _ = Commonplace.Document.Server.get_doc(pid)
+
+    assert Commonplace.Document.Server.get_content(pid) == "hello world"
+    # r6: apply_with_base must advance :latest so the next snapshot check
+    # can walk the chain and find B.
+    {:ok, latest_after_b} = CommitStore.latest_commit(store, uuid)
+    assert latest_after_b.id == commit_b.id
+
+    # Dirty local edit (uncommitted).
+    :ok = Commonplace.Document.Server.insert_text(pid, 11, "!")
+    assert Commonplace.Document.Server.get_content(pid) == "hello world!"
+
+    # Peer sends a compaction snapshot of B, also only via broadcast.
+    peer_doc = Yelixer.Doc.new(client_id: 77)
+    {:ok, peer_doc} = Yelixer.Encoding.apply_update(peer_doc, initial_update)
+    {:ok, peer_doc} = Yelixer.Encoding.apply_update(peer_doc, diff)
+    snap_update = Yelixer.Doc.snapshot_update(peer_doc)
+    snap_commit = Commonplace.Store.Commit.new(uuid, snap_update, commit_b.id, %{kind: :snapshot})
+
+    send(pid, {:remote_commit, snap_commit, :fake_remote_node})
+    _ = Commonplace.Document.Server.get_doc(pid)
+
+    # Dirty "!" survives the snapshot because snapshot_is_noop? was able
+    # to reach B through the store chain.
+    assert Commonplace.Document.Server.get_content(pid) == "hello world!"
+    assert :sys.get_state(pid).parent_commit == snap_commit.id
+  end
+
   test "repeated no-op snapshots advance :latest so subsequent snapshot_is_noop? checks find the head (CX-u7p r5)",
        %{store: store} do
     uuid = "sync-repeat-snap-#{:rand.uniform(1_000_000)}"
