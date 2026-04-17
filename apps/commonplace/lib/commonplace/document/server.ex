@@ -10,6 +10,8 @@ defmodule Commonplace.Document.Server do
 
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Document.ContentType
+  alias Commonplace.Document.Rebase
+  alias Commonplace.Tree.DocBuilder
   alias Commonplace.Dataflow.PubSub, as: CPPubSub
 
   defstruct [:uuid, :doc, :parent_commit, :commit_store]
@@ -129,28 +131,71 @@ defmodule Commonplace.Document.Server do
     if source_node != Node.self() do
       CommitStoreClient.import_commit(state.commit_store, commit)
 
-      # CX-u7p: snapshot commits are self-contained re-encodings of the
-      # full visible doc state under fresh item IDs. Applying them on top
-      # of an already-populated in-memory doc would duplicate content and
-      # resurrect tombstoned items. Reset to a fresh Doc.new() before
-      # applying a snapshot's update; normal commits still apply
-      # incrementally as before.
-      base_doc =
-        if snapshot_commit?(commit) do
-          Yelixer.Doc.new(client_id: state.doc.client_id)
-        else
-          state.doc
+      if snapshot_commit?(commit) do
+        handle_snapshot_commit(commit, state)
+      else
+        case Yelixer.Encoding.apply_update(state.doc, commit.update) do
+          {:ok, doc} -> {:noreply, %{state | doc: doc}}
+          {:error, _} -> {:noreply, state}
         end
-
-      case Yelixer.Encoding.apply_update(base_doc, commit.update) do
-        {:ok, doc} ->
-          {:noreply, %{state | doc: doc}}
-
-        {:error, _} ->
-          {:noreply, state}
       end
     else
       {:noreply, state}
+    end
+  end
+
+  # CX-u7p + CX-dqn: snapshot commits re-encode the full visible doc under
+  # fresh item IDs. Apply to a fresh Doc (avoid duplication/tombstone
+  # resurrection), then positionally rebase any local dirty edits onto the
+  # fresh doc (CX-dqn phase 1 — YText only). All-or-nothing: on rebase
+  # error, abort the snapshot application entirely and leave state
+  # untouched. The commit is still in the CommitStore for later.
+  defp handle_snapshot_commit(commit, state) do
+    fresh = Yelixer.Doc.new(client_id: state.doc.client_id)
+
+    with {:ok, new_doc} <- Yelixer.Encoding.apply_update(fresh, commit.update),
+         {:ok, final_doc} <- rebase_onto_snapshot(state, new_doc) do
+      {:noreply, %{state | doc: final_doc}}
+    else
+      {:error, {:rebase, reason}} ->
+        :telemetry.execute(
+          [:commonplace, :document, :snapshot_rebase_aborted],
+          %{count: 1},
+          %{uuid: state.uuid, reason: reason}
+        )
+
+        {:noreply, state}
+
+      {:error, _} ->
+        {:noreply, state}
+    end
+  end
+
+  defp rebase_onto_snapshot(%__MODULE__{parent_commit: nil}, new_doc), do: {:ok, new_doc}
+
+  defp rebase_onto_snapshot(
+         %__MODULE__{parent_commit: parent_id, commit_store: store, uuid: uuid, doc: dirty_doc} =
+           state,
+         new_doc
+       ) do
+    case DocBuilder.reconstruct_doc_at(store, uuid, parent_id) do
+      {:ok, old_doc} ->
+        case Rebase.rebase(old_doc, dirty_doc, new_doc) do
+          {:ok, rebased} ->
+            :telemetry.execute(
+              [:commonplace, :document, :snapshot_rebased],
+              %{count: 1},
+              %{uuid: state.uuid}
+            )
+
+            {:ok, rebased}
+
+          {:error, reason} ->
+            {:error, {:rebase, reason}}
+        end
+
+      :none ->
+        {:ok, new_doc}
     end
   end
 
