@@ -119,6 +119,42 @@ defmodule Commonplace.Store.CommitStore do
     )
   end
 
+  @doc """
+  Atomically persist a pre-built commit and advance `:latest` iff the
+  current `:latest` for the commit's doc still matches `commit.parent_id`
+  (CX-4qn1).
+
+  Unlike `write_snapshot_cas/5`, the commit struct is already fully
+  assembled by the caller — the caller is expected to have derived it
+  from `Merger.merge/4` (or another byte-deterministic builder) so its
+  content-addressed id is already bound to its parent. Two callers that
+  observed the same `:latest` and merged against the same counterpart
+  will produce the same commit id; the CAS makes the second writer a
+  no-op. Callers whose `:latest` observation is stale get
+  `{:error, :parent_moved}`.
+
+  Idempotent for same-id re-writes: CubDB's `put_multi` collapses
+  duplicates, and `:latest` is re-pointed to the same id.
+  """
+  @spec write_prebuilt_commit_cas(GenServer.server(), Commit.t()) ::
+          {:ok, Commit.t()} | {:error, :parent_moved}
+  def write_prebuilt_commit_cas(server \\ __MODULE__, %Commit{} = commit) do
+    GenServer.call(server, {:write_prebuilt_commit_cas, commit})
+  end
+
+  @doc """
+  Return a MapSet of every commit id persisted for `doc_uuid`, including
+  commits that are NOT reachable from `:latest` (i.e. siblings imported
+  via `import_commit/2` that have no descendant on the local head's
+  chain). Unlike `commit_ids_for_doc/2`, this scans the commit index
+  rather than walking backward from `:latest`, so it finds siblings
+  that were imported but never merged in.
+  """
+  @spec all_commit_ids_for_doc(GenServer.server(), String.t()) :: MapSet.t()
+  def all_commit_ids_for_doc(server \\ __MODULE__, doc_uuid) do
+    GenServer.call(server, {:all_commit_ids_for_doc, doc_uuid})
+  end
+
   def get_commit(server \\ __MODULE__, commit_id) do
     GenServer.call(server, {:get_commit, commit_id})
   end
@@ -333,6 +369,55 @@ defmodule Commonplace.Store.CommitStore do
       _other ->
         {:reply, {:error, :parent_moved}, state}
     end
+  end
+
+  @impl true
+  def handle_call({:write_prebuilt_commit_cas, %Commit{} = commit}, _from, state) do
+    case CubDB.get(state.db, {:latest, commit.doc_uuid}) do
+      latest_id when latest_id == commit.parent_id ->
+        CubDB.put_multi(state.db, [
+          {{:commit, commit.id}, commit},
+          {{:latest, commit.doc_uuid}, commit.id}
+        ])
+
+        :telemetry.execute(
+          [:commonplace, :commit, :create],
+          %{system_time: System.system_time()},
+          %{doc_uuid: commit.doc_uuid}
+        )
+
+        Phoenix.PubSub.broadcast(
+          Commonplace.PubSub,
+          "commits:#{commit.doc_uuid}",
+          {:commit, commit.doc_uuid, commit.id, commit.metadata}
+        )
+
+        Phoenix.PubSub.broadcast(
+          Commonplace.PubSub,
+          "blue:#{commit.doc_uuid}",
+          {:commit, commit.doc_uuid, commit.id, commit.metadata}
+        )
+
+        {:reply, {:ok, commit}, state}
+
+      _other ->
+        {:reply, {:error, :parent_moved}, state}
+    end
+  end
+
+  @impl true
+  def handle_call({:all_commit_ids_for_doc, doc_uuid}, _from, state) do
+    ids =
+      CubDB.select(state.db,
+        min_key: {:commit, ""},
+        max_key: {:commit, <<255>>}
+      )
+      |> Enum.reduce(MapSet.new(), fn
+        {{:commit, id}, %{doc_uuid: ^doc_uuid}}, acc -> MapSet.put(acc, id)
+        _, acc -> acc
+      end)
+
+    {:reply, ids, state}
   end
 
   @impl true
