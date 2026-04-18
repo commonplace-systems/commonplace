@@ -25,6 +25,7 @@ defmodule Commonplace.Store.TranslatorTest do
   """
   use ExUnit.Case, async: false
 
+  alias Commonplace.Document.ContentType
   alias Commonplace.Store.{Commit, CommitStore, Translator}
   alias Yelixer.{BlockStore, Doc, Encoding}
   alias Yelixer.Types.Text
@@ -146,6 +147,44 @@ defmodule Commonplace.Store.TranslatorTest do
       # reconstruct-from-snapshot would leave it dangling.
       {:ok, doc_s} = Encoding.apply_update(Doc.new(), snapshot.update)
       assert {:ok, _doc_applied} = Encoding.apply_update(doc_s, translated.update)
+    end
+
+    # CX-hzdc: envelope-structure docs (root YMap + named "content"
+    # YText/YMap/YArray — what every real commonplace tree doc uses)
+    # must round-trip the primary translator path. Previously failed
+    # with spurious :case_b because the snapshotter's position-based
+    # pair_ids mispaired entries when snapshot_update iterated
+    # source.types in map-key order instead of source-clock order.
+    test "primary path succeeds on envelope-structure text doc (CX-hzdc)",
+         %{store: store} do
+      uuid = "s-envelope"
+      {:ok, _genesis} = CommitStore.ensure_genesis(store, uuid)
+
+      doc_p =
+        Doc.new(client_id: 1)
+        |> ContentType.create(:text, "n")
+        |> ContentType.insert_text(0, "abc")
+
+      e_p = Encoding.encode_update(doc_p)
+      base_sv = BlockStore.state_vector(doc_p.store)
+
+      _reg = CommitStore.create_chained_commit(store, uuid, e_p, %{kind: :regular})
+      {:ok, snapshot} = CommitStore.snapshot(store, uuid)
+      p_namespace = snapshot.metadata[:snapshot_parents] |> hd()
+
+      doc_b = Doc.new(client_id: 2)
+      {:ok, doc_b} = Encoding.apply_update(doc_b, e_p)
+      doc_b = ContentType.insert_text(doc_b, 3, "de")
+      edit_update = Encoding.encode_diff(doc_b, base_sv)
+      edit = Commit.new(uuid, edit_update, nil, %{kind: :regular, snapshot_parent: p_namespace})
+
+      assert {:ok, translated} = Translator.translate_edit(store, edit, snapshot.id)
+
+      # Apply the translated commit on top of S and verify the final
+      # content is "abcde" — proves refs resolved to the right items.
+      {:ok, doc_s} = Encoding.apply_update(Doc.new(), snapshot.update)
+      {:ok, doc_final} = Encoding.apply_update(doc_s, translated.update)
+      assert ContentType.get_content(doc_final) == "abcde"
     end
   end
 

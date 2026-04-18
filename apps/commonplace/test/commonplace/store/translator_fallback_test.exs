@@ -37,9 +37,13 @@ defmodule Commonplace.Store.TranslatorFallbackTest do
 
   # Envelope-structure text doc. Client 1 writes "abc" into
   # `ContentType`'s "content" YText. Client 2 builds a late edit that
-  # appends "de". Returns {snapshot, edit, pre_doc, p_namespace}.
+  # appends "de". Returns {snapshot, edit, pre_doc, broken_snapshot}.
   # `pre_doc` is a fresh reconstruction of P's envelope state — what
   # the fallback hands to `Rebase.rebase/3` as its `old_doc`.
+  # `broken_snapshot` has its derivation map cleared to force a
+  # pre-flight failure (the primary path works end-to-end on envelope
+  # docs after CX-hzdc, so tests that want to exercise the fallback
+  # must manufacture a failure).
   defp envelope_scenario(store, uuid) do
     {:ok, _genesis} = CommitStore.ensure_genesis(store, uuid)
 
@@ -65,7 +69,9 @@ defmodule Commonplace.Store.TranslatorFallbackTest do
     pre_doc = Doc.new()
     {:ok, pre_doc} = Encoding.apply_update(pre_doc, e_p)
 
-    {snapshot, edit, pre_doc, p_namespace}
+    broken_snapshot = put_in(snapshot.metadata[:derivation_map], %{p_namespace => %{}})
+
+    {snapshot, edit, pre_doc, broken_snapshot}
   end
 
   # -------------------- Bare-text scenario (primary-path succeeds) -----------
@@ -123,10 +129,10 @@ defmodule Commonplace.Store.TranslatorFallbackTest do
   describe "translate_edit_with_snapshot/3 — flag unset (default)" do
     test "pre-flight failure returns {:error, {:untranslatable, ...}} without dispatching fallback",
          %{store: store} do
-      {snapshot, edit, _pre_doc, _p_namespace} = envelope_scenario(store, "fb-flag-unset")
+      {_snapshot, edit, _pre_doc, broken_snapshot} = envelope_scenario(store, "fb-flag-unset")
 
       assert {:error, {:untranslatable, _reason, _ref_id}} =
-               Translator.translate_edit_with_snapshot(edit, snapshot)
+               Translator.translate_edit_with_snapshot(edit, broken_snapshot)
     end
   end
 
@@ -135,25 +141,25 @@ defmodule Commonplace.Store.TranslatorFallbackTest do
   describe "translate_edit_with_snapshot/3 — fallback_to_positional: true" do
     test "pre-flight failure routes to Rebase and produces a valid commit with dirty effect preserved",
          %{store: store} do
-      {snapshot, edit, pre_doc, _p_namespace} = envelope_scenario(store, "fb-ok")
+      {_snapshot, edit, pre_doc, broken_snapshot} = envelope_scenario(store, "fb-ok")
 
       assert {:ok, translated} =
                Translator.translate_edit_with_snapshot(
                  edit,
-                 snapshot,
+                 broken_snapshot,
                  fallback_to_positional: true,
                  pre_doc: pre_doc
                )
 
       assert %Commit{} = translated
-      assert translated.parent_id == snapshot.id
+      assert translated.parent_id == broken_snapshot.id
       assert translated.metadata[:kind] == :regular
-      assert translated.metadata[:snapshot_parent] == snapshot.id
+      assert translated.metadata[:snapshot_parent] == broken_snapshot.id
       assert is_binary(translated.update)
 
       # Dirty effect preserved: applying translated update on top of
       # the snapshot doc yields content == "abcde".
-      {:ok, doc_s} = Encoding.apply_update(Doc.new(), snapshot.update)
+      {:ok, doc_s} = Encoding.apply_update(Doc.new(), broken_snapshot.update)
       {:ok, doc_final} = Encoding.apply_update(doc_s, translated.update)
       assert ContentType.get_content(doc_final) == "abcde"
     end
@@ -162,19 +168,19 @@ defmodule Commonplace.Store.TranslatorFallbackTest do
          %{store: store} do
       capture_telemetry([:commonplace, :late_edit, :fallback])
 
-      {snapshot, edit, pre_doc, _p_namespace} = envelope_scenario(store, "fb-telem")
+      {_snapshot, edit, pre_doc, broken_snapshot} = envelope_scenario(store, "fb-telem")
 
       {:ok, translated} =
         Translator.translate_edit_with_snapshot(
           edit,
-          snapshot,
+          broken_snapshot,
           fallback_to_positional: true,
           pre_doc: pre_doc
         )
 
       assert_receive {:telemetry, [:commonplace, :late_edit, :fallback], _meas, metadata}, 500
       assert metadata.edit_hash == edit.id
-      assert metadata.target_snapshot == snapshot.id
+      assert metadata.target_snapshot == broken_snapshot.id
       assert metadata.commit_id == translated.id
       assert metadata.reason in [:case_a, :case_b]
       assert is_tuple(metadata.ref_id)
