@@ -9,8 +9,9 @@ defmodule Commonplace.MergeCommand.HandlerTest do
 
   - Topic: `magenta:commands/{path}/merge`
   - Incoming type: `"merge"` (request)
-  - Payload: `%{"l_id" => <hex>, "other_ref" => <hex>, "strategy" => "translate"|"merge_snapshot"}`
-  - Dispatches to `MergePolicy.merge/4`
+  - Payload: `%{"other_ref" => <lowercase-hex>, "strategy" => "translate"|"merge_snapshot"}`
+  - Dispatches to `MergePolicy.merge/4` after canonicalizing
+    `(latest, other_ref)` by CID (CX-1mml)
   - Publishes literal `"merge_completed"` or `"merge_failed"` magenta
     messages back on the same per-path topic so subscribers (callers,
     red-log onramps) see the outcome anchored at the path that was
@@ -202,7 +203,7 @@ defmodule Commonplace.MergeCommand.HandlerTest do
 
       request =
         Magenta.message("merge", "test", %{
-          "other_ref" => r.id,
+          "other_ref" => Base.encode16(r.id, case: :lower),
           "strategy" => "translate"
         })
 
@@ -225,7 +226,7 @@ defmodule Commonplace.MergeCommand.HandlerTest do
 
       request =
         Magenta.message("merge", "test", %{
-          "other_ref" => r.id,
+          "other_ref" => Base.encode16(r.id, case: :lower),
           "strategy" => "translate"
         })
 
@@ -274,7 +275,7 @@ defmodule Commonplace.MergeCommand.HandlerTest do
 
       request =
         Magenta.message("merge", "test", %{
-          "other_ref" => r.id,
+          "other_ref" => Base.encode16(r.id, case: :lower),
           "strategy" => "translate"
         })
 
@@ -290,6 +291,131 @@ defmodule Commonplace.MergeCommand.HandlerTest do
     end
   end
 
+  describe "cross-peer determinism (CX-1mml)" do
+    test "two handlers with swapped {latest, other_ref} produce byte-identical merge commits",
+         %{store: store_a, root: root_a} do
+      # Peer A: chained L is :latest, sibling R imported.
+      uuid = "mcmd-determ-a"
+      {l, r} = build_l_r(store_a, uuid)
+      path = register_in_root(store_a, root_a, "determ_doc", uuid)
+      topic = "commands/#{path}/merge"
+
+      Magenta.subscribe(topic)
+
+      # First request runs through this test's handler (the one started
+      # in setup) — its :latest = L, so it merges (L, R).
+      Magenta.send(
+        topic,
+        Magenta.message("merge", "test", %{
+          "other_ref" => Base.encode16(r.id, case: :lower),
+          "strategy" => "translate"
+        })
+      )
+
+      assert_receive {:magenta, ^topic, %Magenta{type: "merge_completed"} = reply_a}, 2000
+      commit_a_id = Base.decode16!(reply_a.payload["commit_id"], case: :lower)
+
+      # Now stand up an independent peer-B store/handler whose :latest
+      # for the same uuid is R (the swap of A's local view). The merge
+      # command on B uses other_ref = L. With CX-1mml canonicalization,
+      # the resulting commit must match A's byte-for-byte.
+      dir_b = Path.join(System.tmp_dir!(), "mcmd_peer_b_#{:rand.uniform(1_000_000)}")
+      File.mkdir_p!(dir_b)
+      store_b = :"mcmd_b_store_#{:rand.uniform(1_000_000)}"
+      {:ok, pid_b} = CommitStore.start_link(data_dir: dir_b, name: store_b)
+      on_exit(fn ->
+        if Process.alive?(pid_b), do: GenServer.stop(pid_b)
+        File.rm_rf!(dir_b)
+      end)
+
+      seed_peer_b_with_r_as_latest(store_b, uuid, l, r)
+
+      root_b = "mcmd-root-b-#{:rand.uniform(1_000_000)}"
+      root_schema_b = Schema.new_schema()
+      CommitStore.create_commit(store_b, root_b, Encoding.encode_update(root_schema_b), nil)
+      register_in_root(store_b, root_b, "determ_doc", uuid)
+
+      handler_b = :"mcmd_handler_b_#{:rand.uniform(1_000_000)}"
+
+      {:ok, handler_b_pid} =
+        Commonplace.MergeCommand.Handler.start_link(
+          store: store_b,
+          name: handler_b,
+          root_uuid: root_b
+        )
+
+      on_exit(fn ->
+        if Process.alive?(handler_b_pid), do: GenServer.stop(handler_b_pid)
+      end)
+
+      topic_b = "commands/determ_doc/merge"
+      Magenta.subscribe(topic_b)
+
+      # Drain the first peer's reply that already landed on the same
+      # topic name (subscribers see it before peer B publishes its own).
+      :ok =
+        receive do
+          {:magenta, ^topic_b, %Magenta{type: "merge_completed"}} -> :ok
+        after
+          0 -> :ok
+        end
+
+      Magenta.send(
+        topic_b,
+        Magenta.message("merge", "test", %{
+          "other_ref" => Base.encode16(l.id, case: :lower),
+          "strategy" => "translate"
+        })
+      )
+
+      assert_receive {:magenta, ^topic_b, %Magenta{type: "merge_completed"} = reply_b}, 2000
+      commit_b_id = Base.decode16!(reply_b.payload["commit_id"], case: :lower)
+
+      # Byte-identical commit ids = byte-identical commit content (the
+      # id IS the content hash). Persistence on peer B is a separate
+      # concern: write_prebuilt_commit_cas requires commit.parent_id ==
+      # :latest. When canonicalization picks the OTHER peer's :latest as
+      # the parent, the local CAS write returns :parent_moved (a no-op
+      # by current handler convention). That's the autonomous-convergence
+      # gap tracked in CX-8k1v — orthogonal to CX-1mml's determinism
+      # invariant.
+      assert commit_a_id == commit_b_id,
+             "expected byte-identical commit ids across peers (A=#{Base.encode16(commit_a_id, case: :lower)}, B=#{Base.encode16(commit_b_id, case: :lower)})"
+    end
+  end
+
+  # Build the same {L, R} sibling shape on a fresh peer-B store, but
+  # arrange so that R is on :latest (B's local-chain side) and L is
+  # the imported sibling. This is the swap of `build_l_r`'s shape.
+  defp seed_peer_b_with_r_as_latest(store, uuid, l, r) do
+    {:ok, _genesis} = CommitStore.ensure_genesis(store, uuid)
+
+    # Replicate the C-snapshot stage so both peers share the same
+    # snapshot_parent for the sibling commits.
+    doc_c = Doc.new(client_id: 1)
+    {doc_c, _} = Doc.get_or_create_type(doc_c, "t", :text)
+    doc_c = Text.insert(doc_c, "t", 0, "abc")
+
+    _reg =
+      CommitStore.create_chained_commit(
+        store,
+        uuid,
+        Encoding.encode_update(doc_c),
+        %{kind: :regular}
+      )
+
+    {:ok, _c_snap} = CommitStore.snapshot(store, uuid)
+
+    # Import R directly as a chained regular commit so it becomes :latest.
+    :ok = CommitStore.import_commit(store, r, validator: fn _ -> :ok end)
+    :ok = CommitStore.set_latest(store, uuid, r.id)
+
+    # Import L as the off-chain sibling.
+    :ok = CommitStore.import_commit(store, l, validator: fn _ -> :ok end)
+
+    :ok
+  end
+
   describe "merge log onramp (CX-3hvu)" do
     test "merge_completed event is persisted in __merge.log under the target schema",
          %{store: store, root: root, handler: handler} do
@@ -303,7 +429,7 @@ defmodule Commonplace.MergeCommand.HandlerTest do
 
       request =
         Magenta.message("merge", "test", %{
-          "other_ref" => r.id,
+          "other_ref" => Base.encode16(r.id, case: :lower),
           "strategy" => "translate"
         })
 
@@ -342,7 +468,7 @@ defmodule Commonplace.MergeCommand.HandlerTest do
 
       request =
         Magenta.message("merge", "test", %{
-          "other_ref" => r.id,
+          "other_ref" => Base.encode16(r.id, case: :lower),
           "strategy" => "translate"
         })
 
@@ -377,13 +503,13 @@ defmodule Commonplace.MergeCommand.HandlerTest do
 
       req_a =
         Magenta.message("merge", "test", %{
-          "other_ref" => r_a.id,
+          "other_ref" => Base.encode16(r_a.id, case: :lower),
           "strategy" => "translate"
         })
 
       req_b =
         Magenta.message("merge", "test", %{
-          "other_ref" => r_b.id,
+          "other_ref" => Base.encode16(r_b.id, case: :lower),
           "strategy" => "translate"
         })
 

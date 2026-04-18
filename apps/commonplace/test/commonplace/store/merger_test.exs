@@ -128,6 +128,51 @@ defmodule Commonplace.Store.MergerTest do
 
   # -------------------- strategy: :merge_snapshot --------------------
 
+  describe "canonical_pair/2 (CX-1mml)" do
+    test "returns a sorted pair regardless of input order" do
+      a = <<0x01>>
+      b = <<0x02>>
+      assert Merger.canonical_pair(a, b) == {a, b}
+      assert Merger.canonical_pair(b, a) == {a, b}
+    end
+
+    test "canonical-pair arg order makes merge(L,R) byte-identical to merge(R,L) — :translate",
+         %{store: store} do
+      uuid = "mrg-canon-trans"
+      {_c, l, r} = build_l_r_off_c(store, uuid)
+
+      {c_l, c_r} = Merger.canonical_pair(l.id, r.id)
+      {c_l_rev, c_r_rev} = Merger.canonical_pair(r.id, l.id)
+
+      assert {:ok, forward} = Merger.merge(store, c_l, c_r, strategy: :translate)
+      assert {:ok, reverse} = Merger.merge(store, c_l_rev, c_r_rev, strategy: :translate)
+
+      assert forward.id == reverse.id
+      assert forward.update == reverse.update
+      assert forward.parent_id == reverse.parent_id
+      assert forward.merge_parents == reverse.merge_parents
+      assert forward.metadata == reverse.metadata
+    end
+
+    test "canonical-pair arg order makes merge(L,R) byte-identical to merge(R,L) — :merge_snapshot",
+         %{store: store} do
+      uuid = "mrg-canon-snap"
+      {_c, l, r} = build_l_r_off_c(store, uuid)
+
+      {c_l, c_r} = Merger.canonical_pair(l.id, r.id)
+      {c_l_rev, c_r_rev} = Merger.canonical_pair(r.id, l.id)
+
+      assert {:ok, forward} = Merger.merge(store, c_l, c_r, strategy: :merge_snapshot)
+      assert {:ok, reverse} = Merger.merge(store, c_l_rev, c_r_rev, strategy: :merge_snapshot)
+
+      assert forward.id == reverse.id
+      assert forward.update == reverse.update
+      assert forward.parent_id == reverse.parent_id
+      assert forward.merge_parents == reverse.merge_parents
+      assert forward.metadata == reverse.metadata
+    end
+  end
+
   describe "merge/4 — strategy: :merge_snapshot" do
     test "produces a :snapshot commit with snapshot_parents=[L_ns, R_ns]",
          %{store: store} do

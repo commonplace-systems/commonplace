@@ -12,7 +12,12 @@ defmodule Commonplace.MergeCommand.Handler do
 
   Incoming request shape (CX-3hvu):
   - type: `"merge"`
-  - payload: `%{"other_ref" => <hex>, "strategy" => "translate" | "merge_snapshot"}`
+  - payload: `%{"other_ref" => <lowercase-hex>, "strategy" => "translate" | "merge_snapshot"}`
+
+  `other_ref` is hex-encoded so the request payload round-trips through
+  JSON — the lazy red-log onramp persists every magenta message it
+  hears (including requests), and `Jason.encode!` rejects raw non-UTF8
+  binaries.
 
   `l_id` is resolved from `{path}`'s current HEAD by walking the
   workspace root schema — the topic name is the authoritative address
@@ -47,7 +52,7 @@ defmodule Commonplace.MergeCommand.Handler do
   use GenServer
 
   alias Commonplace.Dataflow.{Magenta, RedLog}
-  alias Commonplace.Store.{CommitStore, CommitStoreClient, MergePolicy}
+  alias Commonplace.Store.{CommitStore, CommitStoreClient, Merger, MergePolicy}
   alias Commonplace.Tree.{Schema, Walk}
   alias Yelixer.Encoding
 
@@ -111,9 +116,13 @@ defmodule Commonplace.MergeCommand.Handler do
   defp handle_merge(path, payload, state) do
     with {:ok, target_uuid} <- resolve_path_to_doc(path, state),
          {:ok, latest} <- fetch_latest(state.store, target_uuid),
-         {:ok, other_ref} <- fetch_ref(payload, "other_ref"),
+         {:ok, other_ref} <- fetch_hex_ref(payload, "other_ref"),
          strategy <- parse_strategy(payload["strategy"]),
-         {:ok, commit} <- MergePolicy.merge(state.store, latest.id, other_ref, strategy: strategy),
+         # CX-1mml: canonicalize the pair by CID so two peers invoking
+         # merge on the same sibling set (but with swapped {latest,
+         # other_ref} locally) produce byte-identical commits.
+         {l, r} <- Merger.canonical_pair(latest.id, other_ref),
+         {:ok, commit} <- MergePolicy.merge(state.store, l, r, strategy: strategy),
          {:ok, persisted} <- persist_commit(state.store, commit) do
       reply =
         Magenta.message("merge_completed", @source, %{
@@ -239,10 +248,16 @@ defmodule Commonplace.MergeCommand.Handler do
     end
   end
 
-  defp fetch_ref(payload, key) do
+  defp fetch_hex_ref(payload, key) do
     case Map.get(payload, key) do
-      ref when is_binary(ref) and byte_size(ref) > 0 -> {:ok, ref}
-      _ -> {:error, {:missing_ref, key}}
+      ref when is_binary(ref) and byte_size(ref) > 0 ->
+        case Base.decode16(ref, case: :lower) do
+          {:ok, bytes} -> {:ok, bytes}
+          :error -> {:error, {:invalid_hex_ref, key}}
+        end
+
+      _ ->
+        {:error, {:missing_ref, key}}
     end
   end
 

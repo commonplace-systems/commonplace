@@ -73,6 +73,24 @@ defmodule Commonplace.Store.Merger do
     end
   end
 
+  @doc """
+  Canonicalize a merge arg pair by CID ordering (CX-1mml).
+
+  Returns `{min_cid, max_cid}` — the smaller CID as the first element,
+  regardless of input order. Callers that want byte-deterministic merge
+  commits across peers pipe their `(l_id, r_id)` pair through this
+  before calling `merge/4`.
+
+  Merger.merge/4 itself does NOT auto-canonicalize because its existing
+  callers (notably `SiblingMerger`) rely on a semantic `parent = :latest`
+  invariant for their CAS gate — flipping parent/merge_parent would
+  break that. Callers with cross-peer determinism requirements opt in
+  explicitly.
+  """
+  @spec canonical_pair(binary(), binary()) :: {binary(), binary()}
+  def canonical_pair(a, b) when is_binary(a) and is_binary(b) and a <= b, do: {a, b}
+  def canonical_pair(a, b) when is_binary(a) and is_binary(b), do: {b, a}
+
   defp dispatch(strategy, l_id, r_id, fun) do
     case fun.() do
       {:ok, commit} ->
