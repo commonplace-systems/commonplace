@@ -16,13 +16,19 @@ defmodule Commonplace.Store.CommitStore do
     GenServer.call(server, {:create_commit, doc_uuid, update, parent_id, metadata})
   end
 
-  @doc "Create a commit that automatically chains to the latest commit on this UUID."
+  @doc """
+  Create a commit that automatically chains to the latest commit on
+  this UUID.
+
+  CX-l7j: the read-latest + write-commit pair is atomicized inside a
+  single `handle_call` so the GenServer mailbox serializes concurrent
+  writers per-UUID. A prior split across two GenServer calls let two
+  callers read the same `:latest`, both write chained to the same
+  parent, and produce siblings — the second write's `:latest` bump won
+  and the first was silently orphaned from linear walks.
+  """
   def create_chained_commit(server \\ __MODULE__, doc_uuid, update, metadata \\ %{}) do
-    parent_id = case latest_commit(server, doc_uuid) do
-      {:ok, commit} -> commit.id
-      :none -> nil
-    end
-    create_commit(server, doc_uuid, update, parent_id, metadata)
+    GenServer.call(server, {:create_chained_commit, doc_uuid, update, metadata})
   end
 
   @doc """
@@ -280,30 +286,19 @@ defmodule Commonplace.Store.CommitStore do
 
   @impl true
   def handle_call({:create_commit, doc_uuid, update, parent_id, metadata}, _from, state) do
-    parent_id = maybe_stamp_genesis(state.db, doc_uuid, parent_id)
-    metadata = maybe_stamp_snapshot_parent(state.db, parent_id, metadata)
-    commit = Commit.new(doc_uuid, update, parent_id, metadata) |> maybe_sign_commit()
+    commit = do_write_commit(state, doc_uuid, update, parent_id, metadata)
+    {:reply, commit, state}
+  end
 
-    CubDB.put_multi(state.db, [
-      {{:commit, commit.id}, commit},
-      {{:latest, doc_uuid}, commit.id}
-    ])
+  @impl true
+  def handle_call({:create_chained_commit, doc_uuid, update, metadata}, _from, state) do
+    parent_id =
+      case CubDB.get(state.db, {:latest, doc_uuid}) do
+        nil -> nil
+        commit_id -> commit_id
+      end
 
-    :telemetry.execute(
-      [:commonplace, :commit, :create],
-      %{system_time: System.system_time()},
-      %{doc_uuid: doc_uuid}
-    )
-
-    Phoenix.PubSub.broadcast(Commonplace.PubSub, "commits:#{doc_uuid}", {:commit, doc_uuid, commit.id, metadata})
-
-    # Also broadcast on the blue:UUID topic so UI subscribers (WikiLive,
-    # TreeLive) see live updates from CommandRouter-initiated writes (MCP,
-    # CLI) — not just edits that already flow through Document.Server.
-    # CX-4im. Eventually the blue/commits topic duality should be unified;
-    # see the CX-4im notes for the refactor plan.
-    Phoenix.PubSub.broadcast(Commonplace.PubSub, "blue:#{doc_uuid}", {:commit, doc_uuid, commit.id, metadata})
-
+    commit = do_write_commit(state, doc_uuid, update, parent_id, metadata)
     {:reply, commit, state}
   end
 
@@ -540,6 +535,42 @@ defmodule Commonplace.Store.CommitStore do
 
         {:reply, {:error, {:namespace_rejected, reason}}, state}
     end
+  end
+
+  defp do_write_commit(state, doc_uuid, update, parent_id, metadata) do
+    parent_id = maybe_stamp_genesis(state.db, doc_uuid, parent_id)
+    metadata = maybe_stamp_snapshot_parent(state.db, parent_id, metadata)
+    commit = Commit.new(doc_uuid, update, parent_id, metadata) |> maybe_sign_commit()
+
+    CubDB.put_multi(state.db, [
+      {{:commit, commit.id}, commit},
+      {{:latest, doc_uuid}, commit.id}
+    ])
+
+    :telemetry.execute(
+      [:commonplace, :commit, :create],
+      %{system_time: System.system_time()},
+      %{doc_uuid: doc_uuid}
+    )
+
+    Phoenix.PubSub.broadcast(
+      Commonplace.PubSub,
+      "commits:#{doc_uuid}",
+      {:commit, doc_uuid, commit.id, metadata}
+    )
+
+    # Also broadcast on the blue:UUID topic so UI subscribers (WikiLive,
+    # TreeLive) see live updates from CommandRouter-initiated writes (MCP,
+    # CLI) — not just edits that already flow through Document.Server.
+    # CX-4im. Eventually the blue/commits topic duality should be unified;
+    # see the CX-4im notes for the refactor plan.
+    Phoenix.PubSub.broadcast(
+      Commonplace.PubSub,
+      "blue:#{doc_uuid}",
+      {:commit, doc_uuid, commit.id, metadata}
+    )
+
+    commit
   end
 
   defp collect_commit_ids(db, doc_uuid) do
