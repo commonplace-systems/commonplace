@@ -271,8 +271,10 @@ defmodule Commonplace.Sync.TwoNodeSyncTest do
     # have set :latest to whichever commit was imported first.
     {:ok, latest_b} = CommitStore.latest_commit(store_b, uuid)
     # The latest might not be c5 (depends on import order from MapSet).
-    # But it should be one of our commits.
-    assert latest_b.id in Enum.map(commits, & &1.id)
+    # But it should be one of our commits OR the auto-stamped genesis
+    # that's now part of the chain (CX-m3x).
+    genesis_id = Commonplace.Store.Commit.genesis(uuid).id
+    assert latest_b.id in [genesis_id | Enum.map(commits, & &1.id)]
   end
 
   test "import_commit idempotency: second import returns :already_exists", %{

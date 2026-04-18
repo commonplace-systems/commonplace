@@ -1,0 +1,175 @@
+defmodule Commonplace.Store.Namespace do
+  @moduledoc """
+  Namespace-membership walker for the Merkle-tracked Yjs umbrella.
+
+  A "namespace" is the set of clientIDs observed in the commit chain
+  rooted at a given snapshot_parent. Walking from a regular commit's
+  `snapshot_parent` back to the namespace root (a `:genesis` or
+  `:snapshot`) and aggregating clientIDs tells us which Yjs participants
+  the trust root has already witnessed.
+
+  The validator uses this set to reject regular commits whose update
+  ops reference clientIDs outside the namespace — the mechanism that
+  stops a peer from reusing someone else's snapshot as a signing
+  shortcut (see docs/namespace-model.md in commonplace-plan).
+
+  ## Walk rules
+
+  - `:genesis` — the walk terminates; no clientIDs contributed.
+  - `:snapshot` — the walk terminates here, and the snapshot's own
+    update contributes its full state-vector clientIDs (snapshots are
+    trust roots that carry complete namespace membership).
+  - `:regular` — contributes its update's clientIDs and continues to
+    its `parent_id`.
+  - `:merge` — contributes clientIDs and continues (a merge commit
+    carries deltas, not a trust boundary).
+  - legacy (`metadata == %{}`) — contributes clientIDs and continues.
+
+  ## Bootstrap
+
+  A regular commit whose `snapshot_parent` is a fresh genesis sees an
+  empty namespace. The validator accepts such commits unconditionally —
+  this is how the first real edit after doc creation binds the first
+  clientID into the namespace.
+  """
+
+  alias Commonplace.Store.CommitStore
+
+  @doc """
+  Aggregate clientIDs in the namespace rooted at `commit_id`.
+
+  `store` may be a running `CommitStore` server name/pid — commits are
+  fetched via the public `get_commit/2` API.
+  """
+  @spec namespace_client_ids(GenServer.server(), binary()) :: {:ok, MapSet.t()}
+  def namespace_client_ids(store, commit_id) do
+    walk(fetcher_for(store), commit_id, MapSet.new())
+  end
+
+  @doc """
+  Aggregate clientIDs using a raw CubDB handle. Used from inside
+  CommitStore's own `handle_call` where a GenServer callback can't
+  call back into itself.
+  """
+  @spec namespace_client_ids_from_db(pid(), binary()) :: {:ok, MapSet.t()}
+  def namespace_client_ids_from_db(db, commit_id) do
+    walk(fetcher_for_db(db), commit_id, MapSet.new())
+  end
+
+  @doc """
+  Is `client_id` a member of the namespace rooted at `commit_id`?
+  """
+  @spec clientID_in_namespace?(GenServer.server(), binary(), non_neg_integer()) :: boolean()
+  def clientID_in_namespace?(store, commit_id, client_id) do
+    {:ok, set} = namespace_client_ids(store, commit_id)
+    MapSet.member?(set, client_id)
+  end
+
+  @doc """
+  Validate a commit against its declared namespace.
+
+  Returns `:ok` if the commit is acceptable, `{:error, reason}` if its
+  update references clientIDs outside the namespace rooted at
+  `snapshot_parent`. See the module doc for rule details.
+  """
+  @spec validate_commit(GenServer.server(), map()) :: :ok | {:error, term()}
+  def validate_commit(store, commit) do
+    do_validate(fetcher_for(store), commit)
+  end
+
+  @doc """
+  Validate a commit using a raw CubDB handle. Used from the CommitStore
+  GenServer. See `validate_commit/2`.
+  """
+  @spec validate_commit_from_db(pid(), map()) :: :ok | {:error, term()}
+  def validate_commit_from_db(db, commit) do
+    do_validate(fetcher_for_db(db), commit)
+  end
+
+  defp do_validate(fetcher, %{metadata: m} = commit) do
+    cond do
+      m == %{} -> :ok
+      Map.get(m, :kind) == :genesis -> :ok
+      Map.get(m, :kind) == :snapshot -> :ok
+      Map.get(m, :kind) == :merge -> :ok
+      Map.get(m, :kind) == :regular -> validate_regular(fetcher, commit, m)
+      true -> :ok
+    end
+  end
+
+  defp validate_regular(fetcher, commit, %{snapshot_parent: sp_id}) when is_binary(sp_id) do
+    # The commit declares it descends from `snapshot_parent` (its trust
+    # root). The namespace is the set of clientIDs observed in the chain
+    # from the commit's direct `parent_id` back to that trust root,
+    # inclusive of the trust root's own state vector (for snapshots).
+    #
+    # Walking from `parent_id` (not `sp_id`) is what makes the
+    # accumulation meaningful — regular commits between the trust root
+    # and this new commit extend the namespace, and the validator must
+    # see them.
+    {:ok, namespace} = walk(fetcher, commit.parent_id, MapSet.new())
+
+    case Yelixer.Encoding.update_client_ids(commit.update) do
+      {:ok, update_ids} ->
+        cond do
+          MapSet.size(namespace) == 0 -> :ok
+          MapSet.subset?(update_ids, namespace) -> :ok
+          true ->
+            outside = MapSet.difference(update_ids, namespace) |> MapSet.to_list()
+            {:error, {:client_ids_outside_namespace, outside}}
+        end
+
+      {:error, reason} ->
+        {:error, {:malformed_update, reason}}
+    end
+  end
+
+  defp validate_regular(_fetcher, _commit, _meta), do: :ok
+
+  defp fetcher_for(store) do
+    fn id ->
+      case CommitStore.get_commit(store, id) do
+        {:ok, c} -> c
+        _ -> nil
+      end
+    end
+  end
+
+  defp fetcher_for_db(db) do
+    fn id -> CubDB.get(db, {:commit, id}) end
+  end
+
+  defp walk(_fetcher, nil, acc), do: {:ok, acc}
+
+  defp walk(fetcher, commit_id, acc) do
+    case fetcher.(commit_id) do
+      nil ->
+        {:ok, acc}
+
+      %{metadata: %{kind: :genesis}} ->
+        {:ok, acc}
+
+      %{metadata: %{kind: :snapshot}} = commit ->
+        {:ok, accumulate(acc, commit.update)}
+
+      %{metadata: %{kind: :regular}} = commit ->
+        walk(fetcher, commit.parent_id, accumulate(acc, commit.update))
+
+      %{metadata: %{kind: :merge}} = commit ->
+        walk(fetcher, commit.parent_id, accumulate(acc, commit.update))
+
+      %{metadata: m} = commit when m == %{} ->
+        walk(fetcher, commit.parent_id, accumulate(acc, commit.update))
+
+      _ ->
+        {:ok, acc}
+    end
+  end
+
+  defp accumulate(acc, update) do
+    case Yelixer.Encoding.update_client_ids(update) do
+      {:ok, ids} -> MapSet.union(acc, ids)
+      {:error, _} -> acc
+    end
+  end
+end

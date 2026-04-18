@@ -112,7 +112,16 @@ defmodule Commonplace.Store.CommitStore do
     GenServer.call(server, {:import_commit, commit, opts})
   end
 
-  @doc false
+  @doc """
+  Legacy pass-through — retained for back-compat.
+
+  Prior to CX-ch5 this was the default validator; the real default is
+  now `Commonplace.Store.Namespace.validate_commit_from_db/2`, invoked
+  directly from `handle_call({:import_commit, ...})` with the state's
+  CubDB handle. Callers that still pass this function explicitly via
+  `validator:` get stub pass-through behavior, matching the pre-swap
+  contract.
+  """
   def default_namespace_validator(_commit), do: :ok
 
   @doc "Find the most recent common ancestor between two UUID chains."
@@ -319,7 +328,9 @@ defmodule Commonplace.Store.CommitStore do
 
   @impl true
   def handle_call({:import_commit, commit, opts}, _from, state) do
-    validator = Keyword.get(opts, :validator, &__MODULE__.default_namespace_validator/1)
+    validator =
+      Keyword.get(opts, :validator) ||
+        fn c -> Commonplace.Store.Namespace.validate_commit_from_db(state.db, c) end
 
     case validator.(commit) do
       :ok ->
@@ -345,6 +356,16 @@ defmodule Commonplace.Store.CommitStore do
         end
 
       {:error, reason} ->
+        :telemetry.execute(
+          [:commonplace, :commit, :rejected, :namespace_mismatch],
+          %{system_time: System.system_time()},
+          %{
+            commit_id: commit.id,
+            doc_uuid: commit.doc_uuid,
+            reason: reason
+          }
+        )
+
         {:reply, {:error, {:namespace_rejected, reason}}, state}
     end
   end
