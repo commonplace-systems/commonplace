@@ -50,6 +50,67 @@ defmodule Commonplace.Store.CommitStore do
     create_commit(server, doc_uuid, update, parent_id, metadata)
   end
 
+  @doc """
+  Create an umbrella-shaped snapshot commit for `doc_uuid` (CX-6sc /
+  CX-bgy build 5).
+
+  Reconstructs the doc from its current `:latest`, emits a deterministic
+  snapshot via `Yelixer.Doc.snapshot_update/1`, and tags the commit
+  with the full umbrella metadata:
+
+      %{kind: :snapshot,
+        snapshot_parents: [namespace(parent)],
+        derivation_map: %{source_snapshot_hash => %{new_id => old_id}},
+        snapshotter_version: N}
+
+  `namespace(parent)` is `Namespace.current_namespace(parent_commit)`
+  — for a `:regular` parent this is the inherited `snapshot_parent`;
+  for a `:genesis` or `:snapshot` parent it's the parent's own id.
+
+  The MVP triggers on explicit caller invocation only — there is no
+  automatic cadence. Two independent nodes snapshotting the same
+  parent produce the same `update` bytes and the same `derivation_map`
+  contents (deterministic-anyone property — see tests).
+
+  Returns `{:ok, snapshot_commit}` or `{:error, :not_found}` if the
+  doc has no `:latest` commit.
+  """
+  def snapshot(server \\ __MODULE__, doc_uuid) do
+    case latest_commit(server, doc_uuid) do
+      :none ->
+        {:error, :not_found}
+
+      {:ok, parent} ->
+        source_doc = reconstruct_source(server, doc_uuid, parent)
+        {update_bytes, dm_inner} = Commonplace.Store.Snapshotter.build(source_doc)
+
+        parent_namespace =
+          Commonplace.Store.Namespace.current_namespace(parent) || parent.id
+
+        metadata = %{
+          snapshot_parents: [parent_namespace],
+          derivation_map: %{parent_namespace => dm_inner},
+          snapshotter_version: Commonplace.Store.Snapshotter.snapshotter_version()
+        }
+
+        commit = create_snapshot_commit(server, doc_uuid, update_bytes, metadata)
+        {:ok, commit}
+    end
+  end
+
+  defp reconstruct_source(server, uuid, %{metadata: %{kind: :genesis}}) do
+    _ = server
+    _ = uuid
+    Yelixer.Doc.new()
+  end
+
+  defp reconstruct_source(server, uuid, _parent) do
+    case Commonplace.Tree.DocBuilder.reconstruct_doc(server, uuid) do
+      {:ok, doc} -> doc
+      :none -> Yelixer.Doc.new()
+    end
+  end
+
   def get_commit(server \\ __MODULE__, commit_id) do
     GenServer.call(server, {:get_commit, commit_id})
   end
