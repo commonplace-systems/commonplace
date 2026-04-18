@@ -13,9 +13,9 @@ defmodule Commonplace.Store.CrossEpochMergeTest do
   `[:commonplace, :late_edit, :untranslatable]` with `phase: :r_to_c`
   or `phase: :c_to_l` in metadata.
 
-  Scope per commonplace-plan msg 2218:
+  Scope per commonplace-plan msg 2218 + 2236:
   - SHIP in-memory byte-determinism tests on the merge commit struct.
-  - CID-dedup-via-import deferred on CX-fbs6.
+  - CID-dedup-via-import covered under CX-fbs6 role-split validator.
   - Include an intermediate-state test that verifies R→C pass output
     has every non-own ref landing in C's namespace before pass 2 runs.
   """
@@ -328,6 +328,83 @@ defmodule Commonplace.Store.CrossEpochMergeTest do
                      500
 
       assert meta.phase == :r_to_c
+    end
+  end
+
+  # -------------------- CID dedup via import_commit (CX-fbs6) --------
+  #
+  # Per commonplace-plan msg 2236: the role-split validator must admit
+  # cross-epoch merge commits into L's namespace, and re-importing the
+  # same merge commit must dedup to a single entry (byte-determinism at
+  # the storage layer).
+
+  describe "merge/3 — CID dedup via import_commit" do
+    test "merge commit imports cleanly into L's namespace (CX-fbs6)",
+         %{store: store} do
+      {uuid, c_snapshot, _} = seed_and_snapshot(store, "cem-import")
+      {:ok, c_doc} = Encoding.apply_update(Doc.new(), c_snapshot.update)
+      c_update = Encoding.encode_update(c_doc)
+
+      l_commit =
+        author_regular(store, uuid, c_update, 2, fn d ->
+          Text.insert(d, "t", 0, "X")
+        end)
+
+      doc_r = Doc.new(client_id: 3)
+      {doc_r, _} = Doc.get_or_create_type(doc_r, "t", :text)
+      {:ok, doc_r} = Encoding.apply_update(doc_r, c_update)
+      doc_r = Text.insert(doc_r, "t", 3, "Y")
+      r_update = Encoding.encode_update(doc_r)
+
+      r_commit =
+        Commit.new(uuid, r_update, c_snapshot.id, %{
+          kind: :regular,
+          snapshot_parent: c_snapshot.id
+        })
+
+      :ok = CommitStore.import_commit(store, r_commit, validator: fn _ -> :ok end)
+
+      {:ok, merge} = CrossEpochMerge.merge(store, l_commit.id, r_commit.id)
+
+      # :merge commits bypass validate_regular wholesale — role-split
+      # validator should still accept without any override.
+      assert :ok = CommitStore.import_commit(store, merge)
+      assert {:ok, stored} = CommitStore.get_commit(store, merge.id)
+      assert stored.id == merge.id
+    end
+
+    test "re-importing the same merge commit deduplicates to one entry",
+         %{store: store} do
+      {uuid, c_snapshot, _} = seed_and_snapshot(store, "cem-dedup")
+      {:ok, c_doc} = Encoding.apply_update(Doc.new(), c_snapshot.update)
+      c_update = Encoding.encode_update(c_doc)
+
+      l_commit =
+        author_regular(store, uuid, c_update, 2, fn d ->
+          Text.insert(d, "t", 0, "X")
+        end)
+
+      doc_r = Doc.new(client_id: 3)
+      {doc_r, _} = Doc.get_or_create_type(doc_r, "t", :text)
+      {:ok, doc_r} = Encoding.apply_update(doc_r, c_update)
+      doc_r = Text.insert(doc_r, "t", 3, "Y")
+      r_update = Encoding.encode_update(doc_r)
+
+      r_commit =
+        Commit.new(uuid, r_update, c_snapshot.id, %{
+          kind: :regular,
+          snapshot_parent: c_snapshot.id
+        })
+
+      :ok = CommitStore.import_commit(store, r_commit, validator: fn _ -> :ok end)
+
+      {:ok, merge} = CrossEpochMerge.merge(store, l_commit.id, r_commit.id)
+
+      assert :ok = CommitStore.import_commit(store, merge)
+      # Second import must be a no-op dedup — same CID, same bytes.
+      assert :already_exists = CommitStore.import_commit(store, merge)
+      assert {:ok, stored} = CommitStore.get_commit(store, merge.id)
+      assert stored.update == merge.update
     end
   end
 end

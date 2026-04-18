@@ -296,14 +296,40 @@ defmodule Commonplace.Store.TranslatorTest do
     end
   end
 
-  # CID dedup (two translated commits imported into the store collapsing
-  # to one entry) would also be a nice property to verify here, but the
-  # current namespace validator (CX-ch5) rejects regular commits that
-  # introduce a new item-authorship client outside the target snapshot's
-  # namespace. Late-edit translation inherently introduces the editing
-  # peer's client id; threading that through the validator cleanly is a
-  # separate concern from 6.5's composition bead. Byte-determinism
-  # (above) already proves two peers produce identical commit bytes —
-  # the content-addressed store collapses them once the validator gap
-  # is closed.
+  # -------------------- CID dedup via import (CX-fbs6) --------------------
+
+  describe "translate_edit/4 — CID dedup via import_commit" do
+    test "translated commit imports cleanly despite new authorship client (CX-fbs6)",
+         %{store: store} do
+      {uuid, p_id, snapshot, base_sv} = seed_and_snapshot(store, "s-dedup-import")
+      edit = late_edit_commit(uuid, p_id, base_sv, "de")
+
+      {:ok, translated} = Translator.translate_edit(store, edit, snapshot.id)
+
+      # Client 2 (the editing peer) is NEW to the target snapshot's
+      # namespace. Under CX-ch5 the validator rejected this; under
+      # CX-fbs6 the role-split accepts because client 2 is authorship
+      # only, not a reference — it EXTENDS the namespace.
+      assert :ok = CommitStore.import_commit(store, translated)
+    end
+
+    test "re-importing the same translated commit deduplicates to one entry",
+         %{store: store} do
+      {uuid, p_id, snapshot, base_sv} = seed_and_snapshot(store, "s-dedup-twice")
+      edit = late_edit_commit(uuid, p_id, base_sv, "de")
+
+      {:ok, c1} = Translator.translate_edit(store, edit, snapshot.id)
+      {:ok, c2} = Translator.translate_edit(store, edit, snapshot.id)
+
+      # Two peers, same inputs → byte-identical commits (already
+      # asserted in byte-determinism). Now verify that storing one
+      # and re-importing the other collapses to a single entry.
+      assert :ok = CommitStore.import_commit(store, c1)
+      assert :already_exists = CommitStore.import_commit(store, c2)
+
+      assert {:ok, stored} = CommitStore.get_commit(store, c1.id)
+      assert stored.id == c2.id
+      assert stored.update == c2.update
+    end
+  end
 end

@@ -225,14 +225,21 @@ defmodule Commonplace.Store.Namespace do
     # see them.
     {:ok, namespace} = walk(fetcher, commit.parent_id, MapSet.new())
 
-    case Yelixer.Encoding.update_client_ids(commit.update) do
-      {:ok, update_ids} ->
+    # CX-fbs6: role-split. Only reference clientIDs (origin, right_origin,
+    # {:id, _} parent, delete_set targets) must resolve in the current
+    # namespace. Authorship clientIDs (owners of NEW items inserted by
+    # this commit) extend the namespace when the commit lands — they
+    # are not subject to the subset check. This lets translated cross-
+    # epoch commits (CX-fefz / CX-fdjh / CX-dx22) import cleanly while
+    # still rejecting commits whose refs would dangle.
+    case Yelixer.Encoding.update_client_ids_by_role(commit.update) do
+      {:ok, %{reference: reference_ids}} ->
         cond do
           MapSet.size(namespace) == 0 -> :ok
-          MapSet.subset?(update_ids, namespace) -> :ok
+          MapSet.subset?(reference_ids, namespace) -> :ok
           true ->
-            outside = MapSet.difference(update_ids, namespace) |> MapSet.to_list()
-            {:error, {:client_ids_outside_namespace, outside}}
+            outside = MapSet.difference(reference_ids, namespace) |> MapSet.to_list()
+            {:error, {:unknown_reference, outside}}
         end
 
       {:error, reason} ->

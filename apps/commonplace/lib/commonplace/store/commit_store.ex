@@ -418,6 +418,26 @@ defmodule Commonplace.Store.CommitStore do
         end
 
       {:error, reason} ->
+        # CX-fbs6: emit a distinct telemetry event for reference-axis
+        # rejections so handlers can tell which check caught the commit.
+        # The legacy :namespace_mismatch event still fires as a
+        # catch-all so existing subscribers keep working.
+        case reason do
+          {:unknown_reference, outside} ->
+            :telemetry.execute(
+              [:commonplace, :commit, :rejected, :unknown_reference],
+              %{system_time: System.system_time()},
+              %{
+                commit_id: commit.id,
+                doc_uuid: commit.doc_uuid,
+                outside: outside
+              }
+            )
+
+          _ ->
+            :ok
+        end
+
         :telemetry.execute(
           [:commonplace, :commit, :rejected, :namespace_mismatch],
           %{system_time: System.system_time()},

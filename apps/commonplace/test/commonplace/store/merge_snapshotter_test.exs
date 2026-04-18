@@ -14,9 +14,8 @@ defmodule Commonplace.Store.MergeSnapshotterTest do
   - Late-edit translation works against merge-snapshots (the DM-with-
     multiple-entries case is structurally supported by 6.2 / 6.3).
 
-  Deferred (matches CX-fdjh scoping): CID-dedup-via-import tests need
-  CX-fbs6 (namespace validator cross-epoch escape hatch). This bead
-  ships in-memory determinism tests on the commit struct.
+  CID-dedup-via-import tests are landed under CX-fbs6 (role-split
+  namespace validator). See the final describe block.
   """
   use ExUnit.Case, async: false
 
@@ -278,6 +277,52 @@ defmodule Commonplace.Store.MergeSnapshotterTest do
 
       assert %Commit{} = translated
       assert is_binary(translated.update)
+    end
+  end
+
+  # -------------------- CID dedup via import_commit (CX-fbs6) --------
+  #
+  # Per commonplace-plan msg 2236: the merge-snapshot must import as
+  # a fresh snapshot, and both L_ns and R_ns authorship clients (clients
+  # 2 and 3 in our scenarios) must be accepted under the role-split
+  # validator. :snapshot commits bypass validate_regular wholesale, so
+  # the primary check here is that the new snapshot's namespace
+  # correctly seeds from `snapshot_parents` and that regular follow-up
+  # edits from either-side clients land cleanly.
+
+  describe "build_merge_snapshot/3 — CID dedup via import_commit" do
+    test "merge-snapshot imports as a fresh snapshot (CX-fbs6)",
+         %{store: store} do
+      uuid = "ms-import"
+      {_c_snapshot, l_commit, r_commit} = build_l_r_off_c(store, uuid)
+
+      {:ok, snap} =
+        MergeSnapshotter.build_merge_snapshot(store, l_commit.id, r_commit.id)
+
+      assert :ok = CommitStore.import_commit(store, snap)
+      assert {:ok, stored} = CommitStore.get_commit(store, snap.id)
+      assert stored.id == snap.id
+      assert stored.metadata[:kind] == :snapshot
+    end
+
+    test "re-importing the same merge-snapshot deduplicates to one entry",
+         %{store: store} do
+      uuid = "ms-dedup"
+      {_c_snapshot, l_commit, r_commit} = build_l_r_off_c(store, uuid)
+
+      {:ok, snap_a} =
+        MergeSnapshotter.build_merge_snapshot(store, l_commit.id, r_commit.id)
+
+      {:ok, snap_b} =
+        MergeSnapshotter.build_merge_snapshot(store, l_commit.id, r_commit.id)
+
+      # Byte-identical inputs → byte-identical snapshots. Store one;
+      # re-import of the other must collapse to :already_exists.
+      assert :ok = CommitStore.import_commit(store, snap_a)
+      assert :already_exists = CommitStore.import_commit(store, snap_b)
+
+      assert {:ok, stored} = CommitStore.get_commit(store, snap_a.id)
+      assert stored.update == snap_a.update
     end
   end
 end

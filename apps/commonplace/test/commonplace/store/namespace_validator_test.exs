@@ -30,6 +30,24 @@ defmodule Commonplace.Store.NamespaceValidatorTest do
     Yelixer.Encoding.encode_update(doc)
   end
 
+  # CX-fbs6: build an update whose authorship is `author_client` but
+  # whose REFERENCE clientID is `ref_client` — used to construct
+  # commits that the role-split validator must still reject.
+  defp update_referencing(author_client, ref_client) do
+    doc_ref = Yelixer.Doc.new(client_id: ref_client)
+    {doc_ref, _} = Yelixer.Doc.get_or_create_type(doc_ref, "t", :text)
+    doc_ref = Yelixer.Types.Text.insert(doc_ref, "t", 0, "ref")
+    base = Yelixer.Encoding.encode_update(doc_ref)
+
+    doc_auth = Yelixer.Doc.new(client_id: author_client)
+    {doc_auth, _} = Yelixer.Doc.get_or_create_type(doc_auth, "t", :text)
+    {:ok, doc_auth} = Yelixer.Encoding.apply_update(doc_auth, base)
+    doc_auth = Yelixer.Types.Text.insert(doc_auth, "t", 3, "X")
+
+    base_sv = Yelixer.BlockStore.state_vector(doc_ref.store)
+    Yelixer.Encoding.encode_diff(doc_auth, base_sv)
+  end
+
   describe "default validator is the namespace check (CX-ch5 swap)" do
     test "accepts a regular commit whose clientID is already in the namespace", %{store: store} do
       uuid = "happy"
@@ -64,7 +82,11 @@ defmodule Commonplace.Store.NamespaceValidatorTest do
       assert :ok = CommitStore.import_commit(store, commit)
     end
 
-    test "rejects a regular commit whose clientID is outside the namespace", %{store: store} do
+    test "rejects a regular commit whose reference clientID is outside the namespace",
+         %{store: store} do
+      # CX-fbs6: authorship-only commits from new clients JOIN the
+      # namespace. The subset check now applies only to REFERENCE
+      # clientIDs (origin, right_origin, {:id, _} parent, delete_set).
       uuid = "mismatch"
       {:ok, genesis} = CommitStore.ensure_genesis(store, uuid)
 
@@ -74,13 +96,15 @@ defmodule Commonplace.Store.NamespaceValidatorTest do
         snapshot_parent: genesis.id
       })
 
-      # Try to import a commit from clientID 999 extending the chain — must reject.
-      bad = Commit.new(uuid, update_from(999, "evil"), c1.id, %{
+      # Client 42 authors "X" referencing client 999's item. Commit's
+      # reference set is {999} ⊄ namespace {1} → must reject with
+      # :unknown_reference.
+      bad = Commit.new(uuid, update_referencing(42, 999), c1.id, %{
         kind: :regular,
         snapshot_parent: genesis.id
       })
 
-      assert {:error, {:namespace_rejected, {:client_ids_outside_namespace, ids}}} =
+      assert {:error, {:namespace_rejected, {:unknown_reference, ids}}} =
                CommitStore.import_commit(store, bad)
 
       assert 999 in ids
@@ -95,7 +119,7 @@ defmodule Commonplace.Store.NamespaceValidatorTest do
         snapshot_parent: genesis.id
       })
 
-      bad = Commit.new(uuid, update_from(999, "evil"), c1.id, %{
+      bad = Commit.new(uuid, update_referencing(42, 999), c1.id, %{
         kind: :regular,
         snapshot_parent: genesis.id
       })
@@ -163,7 +187,7 @@ defmodule Commonplace.Store.NamespaceValidatorTest do
         snapshot_parent: genesis.id
       })
 
-      bad = Commit.new(uuid, update_from(42, "evil"), c1.id, %{
+      bad = Commit.new(uuid, update_referencing(42, 999), c1.id, %{
         kind: :regular,
         snapshot_parent: genesis.id
       })
@@ -203,7 +227,11 @@ defmodule Commonplace.Store.NamespaceValidatorTest do
   end
 
   describe "namespace walk integration" do
-    test "namespace grows across multiple regular commits", %{store: store} do
+    test "namespace grows as new authorship clients join", %{store: store} do
+      # CX-fbs6: clientID 2 authoring a fresh item (authorship-only,
+      # no refs) JOINS the namespace rather than being rejected.
+      # After that, clientID 3 can reference client 2's content
+      # (and client 1's content) because both are in namespace.
       uuid = "multi-client"
       {:ok, genesis} = CommitStore.ensure_genesis(store, uuid)
 
@@ -213,16 +241,15 @@ defmodule Commonplace.Store.NamespaceValidatorTest do
         snapshot_parent: genesis.id
       })
 
-      # A subsequent commit from clientID 2 attempts to join — should be
-      # rejected because clientID 2 is not in the namespace (which is {1}).
+      # clientID 2 joins via authorship-only insert — accepted.
       c2 = Commit.new(uuid, update_from(2, "b"), c1.id, %{
         kind: :regular,
         snapshot_parent: genesis.id
       })
 
-      assert {:error, {:namespace_rejected, _}} = CommitStore.import_commit(store, c2)
+      assert :ok = CommitStore.import_commit(store, c2)
 
-      # But a commit from clientID 1 continuing the chain is fine.
+      # A commit from clientID 1 continuing the chain is still fine.
       c2b = Commit.new(uuid, update_from(1, "b"), c1.id, %{
         kind: :regular,
         snapshot_parent: genesis.id
