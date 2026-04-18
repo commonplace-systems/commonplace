@@ -138,7 +138,7 @@ defmodule Commonplace.Store.MergeSnapshotter do
   defp fetch_commit(store, id) do
     case CommitStore.get_commit(store, id) do
       {:ok, c} -> {:ok, c}
-      :not_found -> {:error, {:unknown_commit, id}}
+      :none -> {:error, {:unknown_commit, id}}
     end
   end
 
