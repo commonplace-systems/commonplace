@@ -20,6 +20,49 @@ defmodule Commonplace.Store.Snapshotter do
   def snapshotter_version, do: @snapshotter_version
 
   @doc """
+  Build a complete snapshot payload (update bytes + umbrella metadata)
+  for `doc_uuid` with `parent_commit` as the snapshot's source state.
+
+  Reconstructs the doc from history, runs it through the deterministic
+  snapshotter, wraps the derivation map under the parent's
+  `current_namespace` key, and stamps the current snapshotter version.
+  Callers combine the returned `{update_bytes, metadata}` with a
+  content-addressed write (signed commit / CAS write / etc.).
+
+  Both `CommitStore.snapshot/2` and `Commonplace.SnapshotTrigger`
+  route through this so they agree on payload bytes (load-bearing for
+  deterministic-anyone — CX-umz).
+  """
+  @spec build_snapshot(GenServer.server(), String.t(), Commonplace.Store.Commit.t()) ::
+          {binary(), map()}
+  def build_snapshot(server, doc_uuid, parent_commit) do
+    source_doc = reconstruct_source(server, doc_uuid, parent_commit)
+    {update_bytes, dm_inner} = build(source_doc)
+
+    parent_namespace =
+      Commonplace.Store.Namespace.current_namespace(parent_commit) || parent_commit.id
+
+    metadata = %{
+      snapshot_parents: [parent_namespace],
+      derivation_map: %{parent_namespace => dm_inner},
+      snapshotter_version: snapshotter_version()
+    }
+
+    {update_bytes, metadata}
+  end
+
+  defp reconstruct_source(_server, _uuid, %{metadata: %{kind: :genesis}}) do
+    Yelixer.Doc.new()
+  end
+
+  defp reconstruct_source(server, uuid, _parent) do
+    case Commonplace.Tree.DocBuilder.reconstruct_doc(server, uuid) do
+      {:ok, doc} -> doc
+      :none -> Yelixer.Doc.new()
+    end
+  end
+
+  @doc """
   Build a snapshot payload from a source Yelixer doc.
 
   Returns `{update_bytes, derivation_map_inner}`. The caller is

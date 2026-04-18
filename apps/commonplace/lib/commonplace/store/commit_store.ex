@@ -87,34 +87,36 @@ defmodule Commonplace.Store.CommitStore do
         {:error, :not_found}
 
       {:ok, parent} ->
-        source_doc = reconstruct_source(server, doc_uuid, parent)
-        {update_bytes, dm_inner} = Commonplace.Store.Snapshotter.build(source_doc)
-
-        parent_namespace =
-          Commonplace.Store.Namespace.current_namespace(parent) || parent.id
-
-        metadata = %{
-          snapshot_parents: [parent_namespace],
-          derivation_map: %{parent_namespace => dm_inner},
-          snapshotter_version: Commonplace.Store.Snapshotter.snapshotter_version()
-        }
+        {update_bytes, metadata} =
+          Commonplace.Store.Snapshotter.build_snapshot(server, doc_uuid, parent)
 
         commit = create_snapshot_commit(server, doc_uuid, update_bytes, metadata)
         {:ok, commit}
     end
   end
 
-  defp reconstruct_source(server, uuid, %{metadata: %{kind: :genesis}}) do
-    _ = server
-    _ = uuid
-    Yelixer.Doc.new()
-  end
+  @doc """
+  Atomically write a snapshot commit to `doc_uuid` iff the current
+  `:latest` equals `expected_parent_id` (CX-4e2g).
 
-  defp reconstruct_source(server, uuid, _parent) do
-    case Commonplace.Tree.DocBuilder.reconstruct_doc(server, uuid) do
-      {:ok, doc} -> doc
-      :none -> Yelixer.Doc.new()
-    end
+  The compare-and-swap is performed inside the GenServer handle_call,
+  so concurrent callers that observed the same parent produce the
+  same commit id (deterministic-anyone, CX-umz) and collapse to a
+  single write; callers whose observed parent has since been
+  superseded receive `{:error, :parent_moved}` and can treat the
+  operation as a no-op.
+
+  The caller is responsible for computing `update` + `metadata` (via
+  `Snapshotter.build_snapshot/3`). The `:kind => :snapshot` tag is
+  stamped here so callers cannot forget it.
+  """
+  @spec write_snapshot_cas(GenServer.server(), String.t(), binary(), map(), binary()) ::
+          {:ok, Commit.t()} | {:error, :parent_moved}
+  def write_snapshot_cas(server \\ __MODULE__, doc_uuid, update, metadata, expected_parent_id) do
+    GenServer.call(
+      server,
+      {:write_snapshot_cas, doc_uuid, update, metadata, expected_parent_id}
+    )
   end
 
   def get_commit(server \\ __MODULE__, commit_id) do
@@ -288,6 +290,49 @@ defmodule Commonplace.Store.CommitStore do
   def handle_call({:create_commit, doc_uuid, update, parent_id, metadata}, _from, state) do
     commit = do_write_commit(state, doc_uuid, update, parent_id, metadata)
     {:reply, commit, state}
+  end
+
+  @impl true
+  def handle_call(
+        {:write_snapshot_cas, doc_uuid, update, metadata, expected_parent_id},
+        _from,
+        state
+      ) do
+    case CubDB.get(state.db, {:latest, doc_uuid}) do
+      ^expected_parent_id ->
+        metadata = Map.put(metadata, :kind, :snapshot)
+
+        commit =
+          Commit.new(doc_uuid, update, expected_parent_id, metadata) |> maybe_sign_commit()
+
+        CubDB.put_multi(state.db, [
+          {{:commit, commit.id}, commit},
+          {{:latest, doc_uuid}, commit.id}
+        ])
+
+        :telemetry.execute(
+          [:commonplace, :commit, :create],
+          %{system_time: System.system_time()},
+          %{doc_uuid: doc_uuid}
+        )
+
+        Phoenix.PubSub.broadcast(
+          Commonplace.PubSub,
+          "commits:#{doc_uuid}",
+          {:commit, doc_uuid, commit.id, metadata}
+        )
+
+        Phoenix.PubSub.broadcast(
+          Commonplace.PubSub,
+          "blue:#{doc_uuid}",
+          {:commit, doc_uuid, commit.id, metadata}
+        )
+
+        {:reply, {:ok, commit}, state}
+
+      _other ->
+        {:reply, {:error, :parent_moved}, state}
+    end
   end
 
   @impl true
