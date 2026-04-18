@@ -208,11 +208,26 @@ defmodule Commonplace.Store.Translator do
   end
 
   defp expand_inner(inner, lengths) do
+    # Explicit DM entries override length-based sub-clock expansion.
+    # Merge-snapshots (CX-dx22) emit pre-expanded per-clock entries for
+    # items that coalesce under the deterministic client_id; the length
+    # on the rebuilt item would otherwise over-extrapolate and clobber
+    # those explicit entries. Single-namespace snapshots remain
+    # backwards-compatible — they emit one entry per item and rely on
+    # length-based expansion for sub-clocks.
+    explicit = MapSet.new(Map.keys(inner))
+
     Enum.reduce(inner, %{}, fn {{nc, nk}, {oc, ok}}, acc ->
       length = Map.get(lengths, {nc, nk}, 1)
 
       Enum.reduce(0..(max(length, 1) - 1), acc, fn offset, acc2 ->
-        Map.put(acc2, {nc, nk + offset}, {oc, ok + offset})
+        k = {nc, nk + offset}
+
+        if offset == 0 or not MapSet.member?(explicit, k) do
+          Map.put(acc2, k, {oc, ok + offset})
+        else
+          acc2
+        end
       end)
     end)
   end
