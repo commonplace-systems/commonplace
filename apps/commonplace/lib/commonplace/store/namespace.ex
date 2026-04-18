@@ -117,6 +117,71 @@ defmodule Commonplace.Store.Namespace do
   end
 
   @doc """
+  Compose a chain of derivation maps (CX-i6xt / Build 7.2).
+
+  Given `[DM1, DM2, ..., DMn]` where `DMi` maps items in snapshot `Si`
+  back to items in `Si-1`, produce a single composed map that maps
+  items in `Sn` directly back to items in `S0` — the chained lookup
+
+      composed[hash(S0)][new_in_Sn]
+        = DM1[hash(S0)][DM2[hash(S1)][...DMn[hash(Sn-1)][new_in_Sn]]]
+
+  Entries whose mid-chain lookup misses (the intermediate id is not
+  a key in the next DM's inner map) are dropped from `composed` — the
+  composed DM only claims to know ids that trace all the way back.
+
+  This is load-bearing for Build 7.3 (translate-into-primary merge) and
+  Build 7.4 (merge-snapshot construction): both need to translate a
+  ref across an arbitrary number of snapshot epochs without touching
+  snapshot contents — just DM bytes.
+
+  Base cases:
+  - `compose_dms([])` returns `%{}` (identity; nothing to translate).
+  - `compose_dms([dm])` returns `dm` unchanged.
+
+  ## Examples
+
+      iex> Commonplace.Store.Namespace.compose_dms([])
+      %{}
+
+      iex> dm = %{<<0>> => %{{2, 0} => {1, 0}}}
+      iex> Commonplace.Store.Namespace.compose_dms([dm]) == dm
+      true
+  """
+  @spec compose_dms([%{optional(binary()) => %{optional(tuple()) => tuple()}}]) ::
+          %{optional(binary()) => %{optional(tuple()) => tuple()}}
+  def compose_dms([]), do: %{}
+  def compose_dms([dm]) when is_map(dm), do: dm
+
+  def compose_dms([first | rest]) when is_map(first) do
+    Enum.reduce(rest, first, &compose_pair(&2, &1))
+  end
+
+  # compose_pair(earlier, later): combine two DMs where `earlier` is
+  # closer to S0 in the chain and `later` is closer to Sn. For each
+  # entry `{new_in_Sc, mid_in_Sb}` in `later`, find `mid_in_Sb` as a
+  # KEY in some inner map of `earlier`. If found, that earlier inner
+  # map's value `old_in_Sa` becomes the composed entry under the same
+  # earlier outer hash.
+  defp compose_pair(earlier, later) do
+    Enum.reduce(later, %{}, fn {_later_hash, later_inner}, acc ->
+      Enum.reduce(later_inner, acc, fn {new_in_Sc, mid_in_Sb}, acc2 ->
+        Enum.reduce(earlier, acc2, fn {earlier_hash, earlier_inner}, acc3 ->
+          case Map.get(earlier_inner, mid_in_Sb) do
+            nil ->
+              acc3
+
+            old_in_Sa ->
+              Map.update(acc3, earlier_hash, %{new_in_Sc => old_in_Sa}, fn existing ->
+                Map.put(existing, new_in_Sc, old_in_Sa)
+              end)
+          end
+        end)
+      end)
+    end)
+  end
+
+  @doc """
   Validate a commit against its declared namespace.
 
   Returns `:ok` if the commit is acceptable, `{:error, reason}` if its
