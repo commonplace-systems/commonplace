@@ -43,13 +43,26 @@ defmodule Commonplace.Store.Translator do
     :case_a | :case_b, ref_id}`. `ref_id` is the specific
     `{client_id, clock}` that failed lookup — the actionable detail
     for audit/debug.
+  - `[:commonplace, :late_edit, :fallback]` when Build 6.6's
+    opt-in positional-rebase fallback resolves an otherwise
+    untranslatable edit, with metadata `%{edit_hash, target_snapshot,
+    reason, ref_id, commit_id}`.
 
-  Does NOT dispatch to positional-rebase fallback — that's scoped to
-  Build 6.6 (`fallback_to_positional: true` via `opts`).
+  ## Positional-rebase fallback (CX-7sln / Build 6.6)
+
+  Callers may pass `fallback_to_positional: true` along with
+  `pre_doc: %Yelixer.Doc{}` (a reconstruction of the edit's source
+  namespace state). When set, pre-flight failures dispatch to
+  `Commonplace.Document.Rebase.rebase/3` (CX-6a7) to re-author the
+  dirty edit as native-coordinate ops on the target snapshot. The
+  result is a valid commit under the local peer's client id — at the
+  cost of byte-determinism across peers. The default is `false`,
+  matching 6.5's fail-loud behavior.
   """
 
+  alias Commonplace.Document.Rebase
   alias Commonplace.Store.{Commit, CommitStore, LateEditPreflight, Namespace}
-  alias Yelixer.Encoding
+  alias Yelixer.{BlockStore, Doc, Encoding}
 
   @type edit :: Commit.t()
   @type translated :: Commit.t()
@@ -80,7 +93,7 @@ defmodule Commonplace.Store.Translator do
   """
   @spec translate_edit_with_snapshot(edit(), Commit.t(), keyword()) ::
           {:ok, translated()} | {:error, term()}
-  def translate_edit_with_snapshot(%Commit{} = edit, %Commit{} = snapshot, _opts \\ []) do
+  def translate_edit_with_snapshot(%Commit{} = edit, %Commit{} = snapshot, opts \\ []) do
     inverse_dm = build_inverse_dm(snapshot)
 
     case LateEditPreflight.translate_and_validate(edit.update, inverse_dm) do
@@ -97,11 +110,57 @@ defmodule Commonplace.Store.Translator do
         {:ok, translated}
 
       {:error, {:untranslatable, reason, ref_id}} = err ->
-        emit_untranslatable(edit, snapshot, reason, ref_id)
-        err
+        if Keyword.get(opts, :fallback_to_positional, false) do
+          positional_fallback(edit, snapshot, reason, ref_id, opts)
+        else
+          emit_untranslatable(edit, snapshot, reason, ref_id)
+          err
+        end
 
       {:error, _other} = err ->
         err
+    end
+  end
+
+  # --- Positional-rebase fallback (CX-7sln / Build 6.6) ---
+
+  # Opt-in path: when pre-flight fails with :case_a or :case_b and
+  # `fallback_to_positional: true` is set, re-author the dirty edit as
+  # native-coordinate ops on the target snapshot via `Rebase.rebase/3`
+  # (CX-6a7). Requires the caller to supply `pre_doc:` — a fresh
+  # reconstruction of the edit's P-namespace state (what the edit was
+  # diffed against) — because reconstructing it from the store needs
+  # history the translator doesn't own.
+  #
+  # Tradeoff (documented, opt-in): positional rebase re-authors under
+  # the local peer's client id, losing the byte-determinism the
+  # primary DM path provides. Two peers taking the fallback produce
+  # different commits; the store won't collapse them.
+  defp positional_fallback(edit, snapshot, reason, ref_id, opts) do
+    with {:ok, pre_doc} <- fetch_pre_doc(opts),
+         {:ok, dirty_doc} <- Encoding.apply_update(pre_doc, edit.update),
+         {:ok, new_doc} <- Encoding.apply_update(Doc.new(), snapshot.update),
+         {:ok, rebased} <- Rebase.rebase(pre_doc, dirty_doc, new_doc) do
+      new_sv = BlockStore.state_vector(new_doc.store)
+      translated_update = Encoding.encode_diff(rebased, new_sv)
+
+      translated =
+        Commit.new(
+          edit.doc_uuid,
+          translated_update,
+          snapshot.id,
+          %{kind: :regular, snapshot_parent: snapshot.id}
+        )
+
+      emit_fallback(edit, snapshot, reason, ref_id, translated)
+      {:ok, translated}
+    end
+  end
+
+  defp fetch_pre_doc(opts) do
+    case Keyword.fetch(opts, :pre_doc) do
+      {:ok, %Doc{} = pre_doc} -> {:ok, pre_doc}
+      :error -> {:error, {:fallback_requires_pre_doc, :missing_opt}}
     end
   end
 
@@ -179,6 +238,20 @@ defmodule Commonplace.Store.Translator do
         target_snapshot: snapshot.id,
         reason: reason,
         ref_id: ref_id
+      }
+    )
+  end
+
+  defp emit_fallback(edit, snapshot, reason, ref_id, translated) do
+    :telemetry.execute(
+      [:commonplace, :late_edit, :fallback],
+      %{system_time: System.system_time()},
+      %{
+        edit_hash: edit.id,
+        target_snapshot: snapshot.id,
+        reason: reason,
+        ref_id: ref_id,
+        commit_id: translated.id
       }
     )
   end
