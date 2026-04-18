@@ -85,6 +85,38 @@ defmodule Commonplace.Store.Namespace do
   def current_namespace(_commit), do: nil
 
   @doc """
+  Invert a derivation map (CX-2rd / Build 6.2).
+
+  A derivation map has shape `%{source_snapshot_hash => %{new_id => old_id}}`
+  where ids are `{client_id, clock}` tuples. The inverse flips every inner
+  `{new_id => old_id}` to `{old_id => new_id}`, leaving the outer
+  keyed-by-source_snapshot_hash structure untouched. Used by the late-edit
+  translator (Build 6.3) to rewrite op references from a post-snapshot
+  namespace back to the source namespace, and by cross-epoch merge
+  (Build 7.3) to commute edits through common ancestors.
+
+  ## Examples
+
+      iex> Commonplace.Store.Namespace.inverse_derivation_map(%{})
+      %{}
+
+      iex> Commonplace.Store.Namespace.inverse_derivation_map(%{<<1>> => %{}})
+      %{<<1>> => %{}}
+
+      iex> Commonplace.Store.Namespace.inverse_derivation_map(
+      ...>   %{<<1>> => %{{1, 0} => {100, 0}, {1, 1} => {100, 1}}}
+      ...> )
+      %{<<1>> => %{{100, 0} => {1, 0}, {100, 1} => {1, 1}}}
+  """
+  @spec inverse_derivation_map(%{optional(binary()) => %{optional(tuple()) => tuple()}}) ::
+          %{optional(binary()) => %{optional(tuple()) => tuple()}}
+  def inverse_derivation_map(dm) when is_map(dm) do
+    Map.new(dm, fn {src, inner} ->
+      {src, Map.new(inner, fn {new_id, old_id} -> {old_id, new_id} end)}
+    end)
+  end
+
+  @doc """
   Validate a commit against its declared namespace.
 
   Returns `:ok` if the commit is acceptable, `{:error, reason}` if its
