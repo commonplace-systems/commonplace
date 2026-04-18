@@ -78,6 +78,33 @@ defmodule Commonplace.Store.Commit do
     }
   end
 
+  @doc """
+  Build the deterministic genesis commit for `doc_uuid` (CX-fzi).
+
+  Genesis is the synthetic first commit of every post-umbrella doc. It
+  establishes the namespace root from which regular commits and
+  snapshots descend. The hash is a pure function of `doc_uuid`, so two
+  independent creations of a doc with the same uuid converge on the
+  same genesis id — the property that lets "the first real user edit
+  is a regular commit with `snapshot_parent = genesis.id`" hold
+  robustly across re-creation. See docs/namespace-model.md § Genesis
+  (commonplace-plan).
+  """
+  def genesis(doc_uuid) do
+    metadata = %{kind: :genesis, doc_uuid: doc_uuid}
+    id = content_address(<<>>, nil, metadata, [])
+
+    %__MODULE__{
+      id: id,
+      doc_uuid: doc_uuid,
+      parent_id: nil,
+      update: <<>>,
+      timestamp: DateTime.utc_now(),
+      metadata: metadata,
+      merge_parents: []
+    }
+  end
+
   # Content-address formula (CX-u7p r2, extended CX-bv3):
   #   sha256((parent_id || <<>>) <> update <> canonical_metadata(metadata) <> canonical_merge_parents(merge_parents))
   #

@@ -125,6 +125,43 @@ defmodule Commonplace.Store.CommitStoreTest do
     end
   end
 
+  describe "ensure_genesis/2 — deterministic genesis stamping (CX-fzi)" do
+    test "returns the deterministic genesis commit for a doc_uuid", %{store: store} do
+      assert {:ok, genesis} = CommitStore.ensure_genesis(store, "doc-new")
+      assert genesis.metadata == %{kind: :genesis, doc_uuid: "doc-new"}
+      assert genesis.parent_id == nil
+      assert genesis.update == <<>>
+      assert genesis.merge_parents == []
+    end
+
+    test "stores genesis so get_commit/2 can retrieve it", %{store: store} do
+      {:ok, genesis} = CommitStore.ensure_genesis(store, "doc-new")
+      assert {:ok, fetched} = CommitStore.get_commit(store, genesis.id)
+      assert fetched.id == genesis.id
+      assert fetched.metadata.kind == :genesis
+    end
+
+    test "is idempotent — second call returns the same genesis", %{store: store} do
+      {:ok, g1} = CommitStore.ensure_genesis(store, "doc-new")
+      {:ok, g2} = CommitStore.ensure_genesis(store, "doc-new")
+      assert g1.id == g2.id
+    end
+
+    test "does NOT update :latest (Option A scope — no auto-wiring)", %{store: store} do
+      # If ensure_genesis flipped :latest, every caller of latest_commit
+      # would observe a phantom head that the user never wrote. Callers
+      # opt in to wiring genesis as the parent of the first real commit.
+      {:ok, _genesis} = CommitStore.ensure_genesis(store, "doc-new")
+      assert :none = CommitStore.latest_commit(store, "doc-new")
+    end
+
+    test "distinct doc_uuids produce distinct geneses", %{store: store} do
+      {:ok, g_a} = CommitStore.ensure_genesis(store, "doc-a")
+      {:ok, g_b} = CommitStore.ensure_genesis(store, "doc-b")
+      assert g_a.id != g_b.id
+    end
+  end
+
   describe "import_commit/3 — namespace validation hook (CX-bv3)" do
     test "accepts commits by default (no validator configured)", %{store: store} do
       commit = Commit.new("doc-incoming", <<1, 2, 3>>, nil)

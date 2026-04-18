@@ -161,4 +161,66 @@ defmodule Commonplace.Store.CommitTest do
       end
     end
   end
+
+  describe "genesis/1 — deterministic genesis (CX-fzi)" do
+    test "two geneses for the same doc_uuid produce identical hashes" do
+      g1 = Commit.genesis("doc-abc")
+      g2 = Commit.genesis("doc-abc")
+
+      assert g1.id == g2.id,
+             "genesis must be deterministic per doc_uuid — the property that lets re-creations of the same doc converge on the same namespace"
+    end
+
+    test "two geneses for different doc_uuids produce different hashes" do
+      g_a = Commit.genesis("doc-a")
+      g_b = Commit.genesis("doc-b")
+
+      assert g_a.id != g_b.id
+    end
+
+    test "genesis has no parent" do
+      g = Commit.genesis("doc-a")
+      assert g.parent_id == nil
+    end
+
+    test "genesis has no merge parents" do
+      g = Commit.genesis("doc-a")
+      assert g.merge_parents == []
+    end
+
+    test "genesis has empty update payload" do
+      g = Commit.genesis("doc-a")
+      assert g.update == <<>>
+    end
+
+    test "genesis metadata is %{kind: :genesis, doc_uuid: <uuid>}" do
+      g = Commit.genesis("doc-a")
+      assert g.metadata == %{kind: :genesis, doc_uuid: "doc-a"}
+    end
+
+    test "genesis records its own doc_uuid on the struct" do
+      g = Commit.genesis("doc-a")
+      assert g.doc_uuid == "doc-a"
+    end
+
+    test "genesis hash matches the spec formula" do
+      uuid = "doc-a"
+      expected =
+        :crypto.hash(
+          :sha256,
+          <<>> <> <<>> <> :erlang.term_to_binary(%{kind: :genesis, doc_uuid: uuid}, [:deterministic])
+        )
+
+      assert Commit.genesis(uuid).id == expected
+    end
+
+    test "genesis id is distinct from an empty-metadata legacy commit on the same uuid" do
+      g = Commit.genesis("doc-a")
+      # Legacy empty-metadata commit with no parent and no update would hash
+      # sha256(<<>>); genesis hashes sha256(<<>> ∥ <<>> ∥ canonical_metadata(...))
+      # — the :kind binding makes them cryptographically distinguishable.
+      legacy = Commit.new("doc-a", <<>>, nil)
+      assert g.id != legacy.id
+    end
+  end
 end

@@ -84,6 +84,21 @@ defmodule Commonplace.Store.CommitStore do
   end
 
   @doc """
+  Idempotently stamp the deterministic genesis commit for `doc_uuid`
+  (CX-fzi). Returns `{:ok, genesis}`.
+
+  Genesis is a pure function of `doc_uuid` (see `Commit.genesis/1`), so
+  two calls for the same uuid return the same commit and store to the
+  same id. `:latest` is NOT touched — callers wire genesis in as the
+  parent of the first real commit themselves (deferred to the bead that
+  flips on namespace validation). This is the primitive; auto-wiring
+  into `create_commit` is explicitly out of scope for CX-fzi.
+  """
+  def ensure_genesis(server \\ __MODULE__, doc_uuid) do
+    GenServer.call(server, {:ensure_genesis, doc_uuid})
+  end
+
+  @doc """
   Store a commit without updating :latest. Used for catch-up sync.
 
   Accepts an optional `:validator` keyword function of arity 1 that
@@ -287,6 +302,13 @@ defmodule Commonplace.Store.CommitStore do
   def handle_call({:commit_ids_for_doc, doc_uuid}, _from, state) do
     ids = collect_commit_ids(state.db, doc_uuid)
     {:reply, ids, state}
+  end
+
+  @impl true
+  def handle_call({:ensure_genesis, doc_uuid}, _from, state) do
+    genesis = Commit.genesis(doc_uuid)
+    CubDB.put(state.db, {:commit, genesis.id}, genesis)
+    {:reply, {:ok, genesis}, state}
   end
 
   @impl true
