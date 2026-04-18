@@ -4,8 +4,27 @@ defmodule Commonplace.Sync.NodeSync do
 
   Handles CID set diffing and commit exchange for catch-up sync.
   Steady-state sync is handled by Phoenix PubSub broadcasts.
+
+  ## Late-edit auto-translation (CX-7cm1)
+
+  Incoming commits are funneled through `import_with_translation/3`,
+  which invokes `Commonplace.LateEditAutoTranslator.maybe_auto_translate/3`
+  (the CX-atk3 primitive) before calling `CommitStoreClient.import_commit/2`.
+  Branch matrix (per commonplace-plan msg 2282):
+
+  - `:no_translation_needed` → import original as-is.
+  - `:translated` / `:fallback` → import the translated replacement;
+    the stale cross-epoch original is dropped.
+  - `:skipped` → import original AND emit
+    `[:commonplace, :late_edit, :auto_skip_stored]` so the divergence
+    is observable rather than silent.
+
+  Default `fallback: true` per design — cross-epoch peers should
+  auto-recover; the caller can disable with `fallback: false`.
   """
 
+  alias Commonplace.LateEditAutoTranslator
+  alias Commonplace.Store.Commit
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Store.CommitStore
 
@@ -49,9 +68,11 @@ defmodule Commonplace.Sync.NodeSync do
       |> Enum.filter(&match?({:ok, _}, &1))
       |> Enum.map(fn {:ok, commit} -> commit end)
 
-    # Store fetched commits locally (import_commit avoids clobbering :latest)
+    # Store fetched commits locally (import_commit avoids clobbering :latest).
+    # Route through import_with_translation so cross-epoch peers auto-recover
+    # instead of silently dropping edits written against stale snapshots.
     Enum.each(fetched, fn commit ->
-      CommitStoreClient.import_commit(local_store, commit)
+      import_with_translation(local_store, commit)
     end)
 
     # Send commits the remote is missing
@@ -72,5 +93,45 @@ defmodule Commonplace.Sync.NodeSync do
     )
 
     {:ok, %{fetched: length(fetched), sent: length(missing_commits)}}
+  end
+
+  @doc """
+  Import a commit, auto-translating if it was written against a stale
+  snapshot parent (CX-7cm1).
+
+  Dispatches to `LateEditAutoTranslator.maybe_auto_translate/3` and
+  then imports whichever commit best matches local state:
+
+  - `{:ok, :no_translation_needed}` → import `commit` unchanged.
+  - `{:ok, :translated, c}` / `{:ok, :fallback, c}` → import `c`
+    instead of `commit` (the cross-epoch original is dropped).
+  - `{:ok, :skipped, reason}` → import `commit` AND emit
+    `[:commonplace, :late_edit, :auto_skip_stored]` so the divergence
+    is observable. Preserves existing pre-primitive behavior (commit
+    is still visible downstream) while naming the failure mode.
+
+  Returns the `CommitStoreClient.import_commit/2` result.
+  """
+  @spec import_with_translation(GenServer.server(), Commit.t(), keyword()) :: term()
+  def import_with_translation(store \\ CommitStore, commit, opts \\ []) do
+    case LateEditAutoTranslator.maybe_auto_translate(store, commit, opts) do
+      {:ok, :no_translation_needed} ->
+        CommitStoreClient.import_commit(store, commit)
+
+      {:ok, kind, translated} when kind in [:translated, :fallback] ->
+        CommitStoreClient.import_commit(store, translated)
+
+      {:ok, :skipped, reason} ->
+        emit_auto_skip_stored(commit, reason)
+        CommitStoreClient.import_commit(store, commit)
+    end
+  end
+
+  defp emit_auto_skip_stored(commit, reason) do
+    :telemetry.execute(
+      [:commonplace, :late_edit, :auto_skip_stored],
+      %{system_time: System.system_time()},
+      %{edit_hash: commit.id, reason: reason}
+    )
   end
 end
