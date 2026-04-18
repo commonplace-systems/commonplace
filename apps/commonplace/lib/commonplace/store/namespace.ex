@@ -66,6 +66,25 @@ defmodule Commonplace.Store.Namespace do
   end
 
   @doc """
+  Compute the trust-root id a new commit chained on top of `commit`
+  should carry as its `snapshot_parent` (CX-a04).
+
+  - `:snapshot` → `commit.id` (the snapshot itself is the new trust root).
+  - `:genesis` → `commit.id` (genesis is the trust root for a fresh doc).
+  - `:regular` / `:merge` → inherit `commit.metadata.snapshot_parent`.
+  - legacy (`metadata == %{}`) → `nil`. Pre-umbrella commits don't carry
+    a trust root; callers chaining off legacy state should not be
+    auto-stamped.
+  """
+  @spec current_namespace(map()) :: binary() | nil
+  def current_namespace(%{metadata: %{kind: :snapshot}} = commit), do: commit.id
+  def current_namespace(%{metadata: %{kind: :genesis}} = commit), do: commit.id
+  def current_namespace(%{metadata: %{kind: :regular, snapshot_parent: sp}}), do: sp
+  def current_namespace(%{metadata: %{kind: :merge, snapshot_parent: sp}}), do: sp
+  def current_namespace(%{metadata: m}) when m == %{}, do: nil
+  def current_namespace(_commit), do: nil
+
+  @doc """
   Validate a commit against its declared namespace.
 
   Returns `:ok` if the commit is acceptable, `{:error, reason}` if its
@@ -124,7 +143,12 @@ defmodule Commonplace.Store.Namespace do
     end
   end
 
-  defp validate_regular(_fetcher, _commit, _meta), do: :ok
+  # CX-a04: post-umbrella, every :regular commit MUST carry
+  # snapshot_parent. Auto-stamp (in CommitStore.create_commit) guarantees
+  # this for locally-produced commits; this clause rejects malformed
+  # incoming imports. Legacy `%{}` metadata keeps the read-side hatch
+  # and is handled earlier in `do_validate/2`.
+  defp validate_regular(_fetcher, _commit, _meta), do: {:error, :missing_snapshot_parent}
 
   defp fetcher_for(store) do
     fn id ->

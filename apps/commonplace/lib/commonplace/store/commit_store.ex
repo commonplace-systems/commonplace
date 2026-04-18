@@ -220,6 +220,7 @@ defmodule Commonplace.Store.CommitStore do
   @impl true
   def handle_call({:create_commit, doc_uuid, update, parent_id, metadata}, _from, state) do
     parent_id = maybe_stamp_genesis(state.db, doc_uuid, parent_id)
+    metadata = maybe_stamp_snapshot_parent(state.db, parent_id, metadata)
     commit = Commit.new(doc_uuid, update, parent_id, metadata) |> maybe_sign_commit()
 
     CubDB.put_multi(state.db, [
@@ -547,6 +548,33 @@ defmodule Commonplace.Store.CommitStore do
 
       _existing ->
         nil
+    end
+  end
+
+  # CX-a04: when the caller produces a `:regular` commit without an
+  # explicit `:snapshot_parent`, stamp it from the parent's
+  # `current_namespace` (snapshot.id / genesis.id / inherited). Callers
+  # that set their own snapshot_parent keep it. Non-`:regular` and
+  # legacy `%{}` metadata are untouched.
+  defp maybe_stamp_snapshot_parent(db, parent_id, %{kind: :regular} = metadata) do
+    if Map.has_key?(metadata, :snapshot_parent) do
+      metadata
+    else
+      case stamp_target(db, parent_id) do
+        nil -> metadata
+        sp_id -> Map.put(metadata, :snapshot_parent, sp_id)
+      end
+    end
+  end
+
+  defp maybe_stamp_snapshot_parent(_db, _parent_id, metadata), do: metadata
+
+  defp stamp_target(_db, nil), do: nil
+
+  defp stamp_target(db, parent_id) do
+    case CubDB.get(db, {:commit, parent_id}) do
+      nil -> nil
+      parent -> Commonplace.Store.Namespace.current_namespace(parent)
     end
   end
 
