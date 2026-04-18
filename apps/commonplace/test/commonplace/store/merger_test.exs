@@ -212,4 +212,37 @@ defmodule Commonplace.Store.MergerTest do
       assert meta.r == bogus_id
     end
   end
+
+  # -------------------- Build 7 (CX-cy7) acceptance --------------------
+  #
+  # Both strategies on the same scenario: two branches diverge after C,
+  # each adding text edits, and both merge strategies produce a commit
+  # whose content reflects both sides' effects (plus C's baseline).
+
+  describe "Build 7 integration — both strategies preserve both sides" do
+    test "same L/R: :translate and :merge_snapshot both yield abc + X + Y",
+         %{store: store} do
+      uuid = "mrg-integration"
+      {_c, l, r} = build_l_r_off_c(store, uuid)
+
+      {:ok, translate_commit} = Merger.merge(store, l.id, r.id, strategy: :translate)
+      {:ok, snapshot_commit} = Merger.merge(store, l.id, r.id, strategy: :merge_snapshot)
+
+      # :translate applies to L's state — reconstruct D_L and apply.
+      {:ok, d_l} = Encoding.apply_update(Doc.new(), l.update)
+      {:ok, d_translate} = Encoding.apply_update(d_l, translate_commit.update)
+      translate_text = Text.to_string(d_translate, "t")
+      assert String.contains?(translate_text, "abc")
+      assert String.contains?(translate_text, "X")
+      assert String.contains?(translate_text, "Y")
+
+      # :merge_snapshot is a self-contained namespace bootstrap — applies
+      # to Doc.new() directly.
+      {:ok, d_snap} = Encoding.apply_update(Doc.new(), snapshot_commit.update)
+      snap_text = Text.to_string(d_snap, "t")
+      assert String.contains?(snap_text, "abc")
+      assert String.contains?(snap_text, "X")
+      assert String.contains?(snap_text, "Y")
+    end
+  end
 end
