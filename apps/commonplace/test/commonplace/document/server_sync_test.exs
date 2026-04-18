@@ -45,13 +45,7 @@ defmodule Commonplace.Document.ServerSyncTest do
     remote_doc = Commonplace.Document.ContentType.insert_text(remote_doc, 5, " world")
     remote_update = Yelixer.Encoding.encode_update(remote_doc)
 
-    remote_commit = %Commonplace.Store.Commit{
-      id: :crypto.hash(:sha256, remote_update),
-      doc_uuid: uuid,
-      parent_id: nil,
-      update: remote_update,
-      timestamp: DateTime.utc_now()
-    }
+    remote_commit = Commonplace.Store.Commit.new(uuid, remote_update, nil)
 
     # Send the remote commit message directly to the Document.Server
     send(pid, {:remote_commit, remote_commit, :fake_remote_node})
@@ -96,13 +90,7 @@ defmodule Commonplace.Document.ServerSyncTest do
     modified_doc = Commonplace.Document.ContentType.insert_text(modified_doc, 8, " modified")
     modified_update = Yelixer.Encoding.encode_update(modified_doc)
 
-    self_commit = %Commonplace.Store.Commit{
-      id: :crypto.hash(:sha256, modified_update),
-      doc_uuid: uuid,
-      parent_id: nil,
-      update: modified_update,
-      timestamp: DateTime.utc_now()
-    }
+    self_commit = Commonplace.Store.Commit.new(uuid, modified_update, nil)
 
     # Send with Node.self() as source — should be ignored
     send(pid, {:remote_commit, self_commit, Node.self()})
@@ -196,14 +184,7 @@ defmodule Commonplace.Document.ServerSyncTest do
     sv = Yelixer.BlockStore.state_vector(initial_doc.store)
     diff = Yelixer.Encoding.encode_diff(remote_doc, sv)
 
-    inc_commit = %Commonplace.Store.Commit{
-      id: :crypto.hash(:sha256, diff),
-      doc_uuid: uuid,
-      parent_id: initial_commit.id,
-      update: diff,
-      timestamp: DateTime.utc_now(),
-      metadata: %{}
-    }
+    inc_commit = Commonplace.Store.Commit.new(uuid, diff, initial_commit.id)
 
     send(pid, {:remote_commit, inc_commit, :fake_remote_node})
     _ = Commonplace.Document.Server.get_doc(pid)
@@ -275,14 +256,7 @@ defmodule Commonplace.Document.ServerSyncTest do
     sv = Yelixer.BlockStore.state_vector(initial_doc.store)
     diff = Yelixer.Encoding.encode_diff(remote_doc, sv)
 
-    inc_commit = %Commonplace.Store.Commit{
-      id: :crypto.hash(:sha256, diff),
-      doc_uuid: uuid,
-      parent_id: initial_commit.id,
-      update: diff,
-      timestamp: DateTime.utc_now(),
-      metadata: %{}
-    }
+    inc_commit = Commonplace.Store.Commit.new(uuid, diff, initial_commit.id)
 
     send(pid, {:remote_commit, inc_commit, :fake_remote_node})
     _ = Commonplace.Document.Server.get_doc(pid)
@@ -513,14 +487,10 @@ defmodule Commonplace.Document.ServerSyncTest do
 
     assert Server.get_content(pid) == "stable"
 
-    # Send a commit with garbage update data
-    bad_commit = %Commonplace.Store.Commit{
-      id: :crypto.hash(:sha256, "garbage"),
-      doc_uuid: uuid,
-      parent_id: nil,
-      update: <<0xFF, 0xFE, 0xFD, 0xFC>>,
-      timestamp: DateTime.utc_now()
-    }
+    # Send a commit with garbage update data (properly content-addressed
+    # so the CX-gwz id-verification gate passes and the commit reaches
+    # the apply_update path where the garbage bytes fail).
+    bad_commit = Commonplace.Store.Commit.new(uuid, <<0xFF, 0xFE, 0xFD, 0xFC>>, nil)
 
     send(pid, {:remote_commit, bad_commit, :fake_remote_node})
 

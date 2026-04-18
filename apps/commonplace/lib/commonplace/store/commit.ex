@@ -105,6 +105,37 @@ defmodule Commonplace.Store.Commit do
     }
   end
 
+  @doc """
+  Recompute a commit's content address and compare to its claimed `id`.
+
+  Returns `:ok` when they match, `{:error, {:id_mismatch, computed,
+  claimed}}` otherwise.
+
+  `import_commit` uses this as a gate BEFORE the namespace validator:
+  nothing about the commit's fields (including those the validator
+  reads) is trustworthy until the id matches the content hash. Without
+  this gate a hostile peer can retag an ordinary delta as
+  `%{kind: :snapshot}` and drive `DocBuilder.reconstruct_doc/2` to
+  skip earlier history, or flip `parent_id`/`update`/`merge_parents`
+  to forge the DAG. See CX-gwz.
+  """
+  @spec verify_id(t()) :: :ok | {:error, {:id_mismatch, binary(), binary()}}
+  def verify_id(%__MODULE__{} = commit) do
+    computed =
+      content_address(
+        commit.update,
+        commit.parent_id,
+        commit.metadata,
+        commit.merge_parents
+      )
+
+    if computed == commit.id do
+      :ok
+    else
+      {:error, {:id_mismatch, computed, commit.id}}
+    end
+  end
+
   # Content-address formula (CX-u7p r2, extended CX-bv3):
   #   sha256((parent_id || <<>>) <> update <> canonical_metadata(metadata) <> canonical_merge_parents(merge_parents))
   #

@@ -390,65 +390,25 @@ defmodule Commonplace.Store.CommitStore do
 
   @impl true
   def handle_call({:import_commit, commit, opts}, _from, state) do
-    validator =
-      Keyword.get(opts, :validator) ||
-        fn c -> Commonplace.Store.Namespace.validate_commit_from_db(state.db, c) end
-
-    case validator.(commit) do
+    # CX-gwz: verify the claimed content address BEFORE trusting any
+    # metadata on the commit — a hostile peer could retag a delta as
+    # `%{kind: :snapshot}` and drive reconstruction to skip history.
+    case Commonplace.Store.Commit.verify_id(commit) do
       :ok ->
-        case CubDB.get(state.db, {:commit, commit.id}) do
-          nil ->
-            # Store the commit. If no :latest exists for this doc, set it —
-            # otherwise leave :latest alone (avoids clobbering a newer local head).
-            case CubDB.get(state.db, {:latest, commit.doc_uuid}) do
-              nil ->
-                CubDB.put_multi(state.db, [
-                  {{:commit, commit.id}, commit},
-                  {{:latest, commit.doc_uuid}, commit.id}
-                ])
+        handle_validated_import(commit, opts, state)
 
-              _existing_latest ->
-                CubDB.put(state.db, {:commit, commit.id}, commit)
-            end
-
-            {:reply, :ok, state}
-
-          _existing ->
-            {:reply, :already_exists, state}
-        end
-
-      {:error, reason} ->
-        # CX-fbs6: emit a distinct telemetry event for reference-axis
-        # rejections so handlers can tell which check caught the commit.
-        # The legacy :namespace_mismatch event still fires as a
-        # catch-all so existing subscribers keep working.
-        case reason do
-          {:unknown_reference, outside} ->
-            :telemetry.execute(
-              [:commonplace, :commit, :rejected, :unknown_reference],
-              %{system_time: System.system_time()},
-              %{
-                commit_id: commit.id,
-                doc_uuid: commit.doc_uuid,
-                outside: outside
-              }
-            )
-
-          _ ->
-            :ok
-        end
-
+      {:error, {:id_mismatch, computed, claimed}} ->
         :telemetry.execute(
-          [:commonplace, :commit, :rejected, :namespace_mismatch],
+          [:commonplace, :commit, :rejected, :id_mismatch],
           %{system_time: System.system_time()},
           %{
-            commit_id: commit.id,
-            doc_uuid: commit.doc_uuid,
-            reason: reason
+            claimed_id: claimed,
+            computed_id: computed,
+            doc_uuid: commit.doc_uuid
           }
         )
 
-        {:reply, {:error, {:namespace_rejected, reason}}, state}
+        {:reply, {:error, {:id_mismatch, computed, claimed}}, state}
     end
   end
 
@@ -516,6 +476,69 @@ defmodule Commonplace.Store.CommitStore do
       att_id ->
         chain = collect_attestation_chain(state.db, att_id, limit, [])
         {:reply, chain, state}
+    end
+  end
+
+  defp handle_validated_import(commit, opts, state) do
+    validator =
+      Keyword.get(opts, :validator) ||
+        fn c -> Commonplace.Store.Namespace.validate_commit_from_db(state.db, c) end
+
+    case validator.(commit) do
+      :ok ->
+        case CubDB.get(state.db, {:commit, commit.id}) do
+          nil ->
+            # Store the commit. If no :latest exists for this doc, set it —
+            # otherwise leave :latest alone (avoids clobbering a newer local head).
+            case CubDB.get(state.db, {:latest, commit.doc_uuid}) do
+              nil ->
+                CubDB.put_multi(state.db, [
+                  {{:commit, commit.id}, commit},
+                  {{:latest, commit.doc_uuid}, commit.id}
+                ])
+
+              _existing_latest ->
+                CubDB.put(state.db, {:commit, commit.id}, commit)
+            end
+
+            {:reply, :ok, state}
+
+          _existing ->
+            {:reply, :already_exists, state}
+        end
+
+      {:error, reason} ->
+        # CX-fbs6: emit a distinct telemetry event for reference-axis
+        # rejections so handlers can tell which check caught the commit.
+        # The legacy :namespace_mismatch event still fires as a
+        # catch-all so existing subscribers keep working.
+        case reason do
+          {:unknown_reference, outside} ->
+            :telemetry.execute(
+              [:commonplace, :commit, :rejected, :unknown_reference],
+              %{system_time: System.system_time()},
+              %{
+                commit_id: commit.id,
+                doc_uuid: commit.doc_uuid,
+                outside: outside
+              }
+            )
+
+          _ ->
+            :ok
+        end
+
+        :telemetry.execute(
+          [:commonplace, :commit, :rejected, :namespace_mismatch],
+          %{system_time: System.system_time()},
+          %{
+            commit_id: commit.id,
+            doc_uuid: commit.doc_uuid,
+            reason: reason
+          }
+        )
+
+        {:reply, {:error, {:namespace_rejected, reason}}, state}
     end
   end
 
