@@ -89,4 +89,76 @@ defmodule Commonplace.Store.CommitTest do
       assert c1.id != c2.id
     end
   end
+
+  describe "new/5 — merge_parents (CX-bv3)" do
+    test "merge_parents defaults to empty list" do
+      c = Commit.new("doc-a", <<1>>, nil)
+      assert c.merge_parents == []
+    end
+
+    test "merge_parents is stored on the struct" do
+      p1 = Commit.new("doc-a", <<1>>, nil)
+      p2 = Commit.new("doc-a", <<2>>, nil)
+      c = Commit.new("doc-a", <<9>>, p1.id, %{kind: :merge}, [p2.id])
+      assert c.merge_parents == [p2.id]
+    end
+
+    test "empty merge_parents preserves the legacy content address" do
+      # CX-u7p r2 backward-compat invariant must hold: a commit with
+      # no merge_parents and no metadata hashes exactly as before.
+      c = Commit.new("doc-a", <<1, 2, 3>>, nil)
+      legacy = :crypto.hash(:sha256, <<1, 2, 3>>)
+      assert c.id == legacy
+
+      c2 = Commit.new("doc-a", <<4, 5, 6>>, c.id, %{}, [])
+      legacy2 = :crypto.hash(:sha256, c.id <> <<4, 5, 6>>)
+      assert c2.id == legacy2
+    end
+
+    test "non-empty merge_parents changes the content address" do
+      p1 = Commit.new("doc-a", <<1>>, nil)
+      p2 = Commit.new("doc-a", <<2>>, nil)
+      plain = Commit.new("doc-a", <<9>>, p1.id, %{kind: :merge})
+      merge = Commit.new("doc-a", <<9>>, p1.id, %{kind: :merge}, [p2.id])
+
+      assert plain.id != merge.id,
+             "merge_parents must bind into commit id — otherwise a merge's second parent could be silently forged"
+    end
+
+    test "merge_parents order matters" do
+      a = :crypto.hash(:sha256, <<"a">>)
+      b = :crypto.hash(:sha256, <<"b">>)
+      c_ab = Commit.new("doc-a", <<9>>, nil, %{kind: :merge}, [a, b])
+      c_ba = Commit.new("doc-a", <<9>>, nil, %{kind: :merge}, [b, a])
+
+      assert c_ab.id != c_ba.id
+    end
+
+    test "same merge_parents produce the same id (deterministic)" do
+      a = :crypto.hash(:sha256, <<"a">>)
+      b = :crypto.hash(:sha256, <<"b">>)
+      c1 = Commit.new("doc-a", <<9>>, nil, %{kind: :merge}, [a, b])
+      c2 = Commit.new("doc-a", <<9>>, nil, %{kind: :merge}, [a, b])
+
+      assert c1.id == c2.id
+    end
+  end
+
+  describe "new/5 — :kind enforcement on non-empty metadata (CX-bv3)" do
+    test "empty metadata map is still allowed (legacy hatch)" do
+      c = Commit.new("doc-a", <<1>>, nil, %{})
+      assert c.metadata == %{}
+    end
+
+    test "metadata with :kind is accepted" do
+      c = Commit.new("doc-a", <<1>>, nil, %{kind: :snapshot})
+      assert c.metadata == %{kind: :snapshot}
+    end
+
+    test "non-empty metadata without :kind is rejected" do
+      assert_raise ArgumentError, ~r/:kind/, fn ->
+        Commit.new("doc-a", <<1>>, nil, %{note: "no kind here"})
+      end
+    end
+  end
 end

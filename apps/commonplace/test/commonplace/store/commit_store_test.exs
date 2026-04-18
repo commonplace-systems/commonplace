@@ -124,4 +124,47 @@ defmodule Commonplace.Store.CommitStoreTest do
       assert fetched.metadata.kind == :snapshot
     end
   end
+
+  describe "import_commit/3 — namespace validation hook (CX-bv3)" do
+    test "accepts commits by default (no validator configured)", %{store: store} do
+      commit = Commit.new("doc-incoming", <<1, 2, 3>>, nil)
+
+      assert :ok = CommitStore.import_commit(store, commit)
+      assert {:ok, fetched} = CommitStore.get_commit(store, commit.id)
+      assert fetched.id == commit.id
+    end
+
+    test "injected validator is invoked on every import", %{store: store} do
+      parent = self()
+      validator = fn commit ->
+        send(parent, {:validator_called, commit.id})
+        :ok
+      end
+
+      commit = Commit.new("doc-incoming", <<1, 2, 3>>, nil)
+
+      assert :ok = CommitStore.import_commit(store, commit, validator: validator)
+
+      assert_receive {:validator_called, id} when id == commit.id
+    end
+
+    test "import rejects when validator returns {:error, reason}", %{store: store} do
+      validator = fn _commit -> {:error, :namespace_mismatch} end
+      commit = Commit.new("doc-incoming", <<1, 2, 3>>, nil)
+
+      assert {:error, {:namespace_rejected, :namespace_mismatch}} =
+               CommitStore.import_commit(store, commit, validator: validator)
+
+      # Rejected commit must NOT be persisted.
+      assert :none = CommitStore.get_commit(store, commit.id)
+    end
+
+    test "rejected import does not update :latest", %{store: store} do
+      validator = fn _commit -> {:error, :namespace_mismatch} end
+      commit = Commit.new("doc-incoming", <<1, 2, 3>>, nil)
+
+      assert {:error, _} = CommitStore.import_commit(store, commit, validator: validator)
+      assert :none = CommitStore.latest_commit(store, "doc-incoming")
+    end
+  end
 end

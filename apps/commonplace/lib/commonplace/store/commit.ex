@@ -21,6 +21,21 @@ defmodule Commonplace.Store.Commit do
   non-empty metadata maps are folded into the hash. New metadata kinds
   added later therefore bind into the id for new writes without
   retroactively changing the ids of historical metadata-free commits.
+
+  The `merge_parents` field lists additional parent commit ids for
+  merge commits (CX-bv3). Like metadata, merge_parents CHANGES the
+  commit's position in the DAG and so MUST bind into the content
+  address. Empty-list (`[]`, the default) preserves the legacy hash;
+  non-empty merge_parents serialize deterministically and bind into
+  the id. Order matters — `[a, b]` and `[b, a]` hash differently.
+
+  When `metadata` is non-empty it MUST include a `:kind` key. The
+  `:kind` tag declares the commit's replay semantics (`:snapshot`,
+  `:merge`, future kinds). Non-empty metadata without a kind is
+  rejected at create time so that every semantically-distinct commit
+  self-describes via a known tag. The empty-metadata legacy hatch
+  remains available for pre-CX-bv3 delta commits that were hashed
+  without any metadata at all.
   """
 
   defstruct [
@@ -31,7 +46,8 @@ defmodule Commonplace.Store.Commit do
     :timestamp,
     :signature,   # Ed25519 signature of commit.id, or nil if unsigned
     :signer_id,   # identifier of the signing key, or nil if unsigned
-    metadata: %{} # free-form annotations (e.g. %{kind: :snapshot}); bound into content address when non-empty (CX-u7p r2)
+    metadata: %{},      # free-form annotations (e.g. %{kind: :snapshot}); non-empty requires :kind and binds into id (CX-u7p r2, CX-bv3)
+    merge_parents: []   # additional parent commit ids for merge commits; binds into id when non-empty (CX-bv3)
   ]
 
   @type t :: %__MODULE__{
@@ -42,12 +58,14 @@ defmodule Commonplace.Store.Commit do
           timestamp: DateTime.t(),
           signature: binary() | nil,
           signer_id: String.t() | nil,
-          metadata: map()
+          metadata: map(),
+          merge_parents: [binary()]
         }
 
-  def new(doc_uuid, update, parent_id \\ nil, metadata \\ %{}) do
+  def new(doc_uuid, update, parent_id \\ nil, metadata \\ %{}, merge_parents \\ []) do
+    validate_metadata_kind!(metadata)
     timestamp = DateTime.utc_now()
-    id = content_address(update, parent_id, metadata)
+    id = content_address(update, parent_id, metadata, merge_parents)
 
     %__MODULE__{
       id: id,
@@ -55,21 +73,26 @@ defmodule Commonplace.Store.Commit do
       parent_id: parent_id,
       update: update,
       timestamp: timestamp,
-      metadata: metadata
+      metadata: metadata,
+      merge_parents: merge_parents
     }
   end
 
-  # Content-address formula (CX-u7p r2):
-  #   sha256((parent_id || <<>>) <> update <> canonical_metadata(metadata))
+  # Content-address formula (CX-u7p r2, extended CX-bv3):
+  #   sha256((parent_id || <<>>) <> update <> canonical_metadata(metadata) <> canonical_merge_parents(merge_parents))
   #
-  # `canonical_metadata(%{})` is the empty binary so historical commits
-  # that were written with no metadata keep their original id (preserves
-  # existing test fixtures, CubDB contents, and signed commits). Non-
-  # empty metadata is serialized deterministically via
-  # `:erlang.term_to_binary/2` with `:deterministic` so the same map
-  # always hashes to the same bytes across BEAM runs and nodes.
-  defp content_address(update, parent_id, metadata) do
-    data = (parent_id || <<>>) <> update <> canonical_metadata(metadata)
+  # `canonical_metadata(%{})` and `canonical_merge_parents([])` are
+  # both the empty binary so historical commits that were written
+  # without either keep their original id. Non-empty values are
+  # serialized deterministically via `:erlang.term_to_binary/2` with
+  # `:deterministic`.
+  defp content_address(update, parent_id, metadata, merge_parents) do
+    data =
+      (parent_id || <<>>) <>
+        update <>
+        canonical_metadata(metadata) <>
+        canonical_merge_parents(merge_parents)
+
     :crypto.hash(:sha256, data)
   end
 
@@ -77,5 +100,22 @@ defmodule Commonplace.Store.Commit do
 
   defp canonical_metadata(metadata) when is_map(metadata) do
     :erlang.term_to_binary(metadata, [:deterministic])
+  end
+
+  defp canonical_merge_parents([]), do: <<>>
+
+  defp canonical_merge_parents(merge_parents) when is_list(merge_parents) do
+    :erlang.term_to_binary(merge_parents, [:deterministic])
+  end
+
+  defp validate_metadata_kind!(metadata) when metadata == %{}, do: :ok
+
+  defp validate_metadata_kind!(metadata) when is_map(metadata) do
+    if Map.has_key?(metadata, :kind) do
+      :ok
+    else
+      raise ArgumentError,
+            "commit metadata must include a :kind tag when non-empty (got #{inspect(metadata)})"
+    end
   end
 end

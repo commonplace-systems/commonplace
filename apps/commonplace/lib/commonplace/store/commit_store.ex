@@ -83,10 +83,22 @@ defmodule Commonplace.Store.CommitStore do
     GenServer.call(server, {:commit_ids_for_doc, doc_uuid})
   end
 
-  @doc "Store a commit without updating :latest. Used for catch-up sync."
-  def import_commit(server \\ __MODULE__, commit) do
-    GenServer.call(server, {:import_commit, commit})
+  @doc """
+  Store a commit without updating :latest. Used for catch-up sync.
+
+  Accepts an optional `:validator` keyword function of arity 1 that
+  receives the incoming commit and returns `:ok | {:error, reason}`.
+  When rejected, the commit is NOT persisted and `:latest` is NOT
+  modified (CX-bv3). The default validator is a no-op stub that
+  accepts every commit; CX-ch5 replaces the default with the real
+  Yelixer namespace-membership check once the primitive lands.
+  """
+  def import_commit(server \\ __MODULE__, commit, opts \\ []) do
+    GenServer.call(server, {:import_commit, commit, opts})
   end
+
+  @doc false
+  def default_namespace_validator(_commit), do: :ok
 
   @doc "Find the most recent common ancestor between two UUID chains."
   def find_common_ancestor(server \\ __MODULE__, uuid_a, uuid_b) do
@@ -278,26 +290,39 @@ defmodule Commonplace.Store.CommitStore do
   end
 
   @impl true
-  def handle_call({:import_commit, commit}, _from, state) do
-    case CubDB.get(state.db, {:commit, commit.id}) do
-      nil ->
-        # Store the commit. If no :latest exists for this doc, set it —
-        # otherwise leave :latest alone (avoids clobbering a newer local head).
-        case CubDB.get(state.db, {:latest, commit.doc_uuid}) do
-          nil ->
-            CubDB.put_multi(state.db, [
-              {{:commit, commit.id}, commit},
-              {{:latest, commit.doc_uuid}, commit.id}
-            ])
+  def handle_call({:import_commit, commit}, from, state) do
+    handle_call({:import_commit, commit, []}, from, state)
+  end
 
-          _existing_latest ->
-            CubDB.put(state.db, {:commit, commit.id}, commit)
+  @impl true
+  def handle_call({:import_commit, commit, opts}, _from, state) do
+    validator = Keyword.get(opts, :validator, &__MODULE__.default_namespace_validator/1)
+
+    case validator.(commit) do
+      :ok ->
+        case CubDB.get(state.db, {:commit, commit.id}) do
+          nil ->
+            # Store the commit. If no :latest exists for this doc, set it —
+            # otherwise leave :latest alone (avoids clobbering a newer local head).
+            case CubDB.get(state.db, {:latest, commit.doc_uuid}) do
+              nil ->
+                CubDB.put_multi(state.db, [
+                  {{:commit, commit.id}, commit},
+                  {{:latest, commit.doc_uuid}, commit.id}
+                ])
+
+              _existing_latest ->
+                CubDB.put(state.db, {:commit, commit.id}, commit)
+            end
+
+            {:reply, :ok, state}
+
+          _existing ->
+            {:reply, :already_exists, state}
         end
 
-        {:reply, :ok, state}
-
-      _existing ->
-        {:reply, :already_exists, state}
+      {:error, reason} ->
+        {:reply, {:error, {:namespace_rejected, reason}}, state}
     end
   end
 

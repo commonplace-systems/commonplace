@@ -271,7 +271,7 @@ defmodule Commonplace.Dataflow.NodeGraphIntegrationTest do
       new_doc = ContentType.create(new_doc, :text, "watched.txt")
       new_doc = ContentType.insert_text(new_doc, 0, "depth zero")
       update = Yelixer.Encoding.encode_update(new_doc)
-      CommitStore.create_chained_commit(store, data_uuid, update, %{depth: 0})
+      CommitStore.create_chained_commit(store, data_uuid, update, %{kind: :regular, depth: 0})
 
       # Wait until the counter increments
       assert :ok = wait_until(fn -> Agent.get(counter, & &1) == 1 end)
@@ -281,7 +281,7 @@ defmodule Commonplace.Dataflow.NodeGraphIntegrationTest do
       new_doc2 = ContentType.create(new_doc2, :text, "watched.txt")
       new_doc2 = ContentType.insert_text(new_doc2, 0, "depth exceeded")
       update2 = Yelixer.Encoding.encode_update(new_doc2)
-      CommitStore.create_chained_commit(store, data_uuid, update2, %{depth: 9})
+      CommitStore.create_chained_commit(store, data_uuid, update2, %{kind: :regular, depth: 9})
 
       # Give time for potential (unwanted) dispatch, then verify count unchanged
       Process.sleep(300)
