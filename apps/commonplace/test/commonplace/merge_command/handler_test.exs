@@ -26,8 +26,9 @@ defmodule Commonplace.MergeCommand.HandlerTest do
   """
   use ExUnit.Case, async: false
 
-  alias Commonplace.Dataflow.Magenta
+  alias Commonplace.Dataflow.{Magenta, RedLog}
   alias Commonplace.Store.{Commit, CommitStore}
+  alias Commonplace.Tree.Schema
   alias Yelixer.{Doc, Encoding}
   alias Yelixer.Types.Text
 
@@ -38,13 +39,103 @@ defmodule Commonplace.MergeCommand.HandlerTest do
     start_supervised!({CommitStore, data_dir: dir, name: name})
     on_exit(fn -> File.rm_rf!(dir) end)
 
+    # Every handler test has a workspace root schema so CX-3hvu path
+    # resolution can walk "commands/{path}/merge" → doc UUID.
+    root_uuid = "mcmd-root-#{:rand.uniform(1_000_000)}"
+    root_schema = Schema.new_schema()
+    root_update = Encoding.encode_update(root_schema)
+    CommitStore.create_commit(name, root_uuid, root_update, nil)
+
     handler_name = :"mcmd_handler_#{:rand.uniform(1_000_000)}"
 
     start_supervised!(
-      {Commonplace.MergeCommand.Handler, store: name, name: handler_name}
+      {Commonplace.MergeCommand.Handler,
+       store: name, name: handler_name, root_uuid: root_uuid}
     )
 
-    %{store: name, handler: handler_name}
+    %{store: name, handler: handler_name, root: root_uuid}
+  end
+
+  # Like build_l_r but the merge target is a schema doc — L adds an
+  # "l_entry" file, R adds an "r_entry" file as a sibling. CX-3hvu
+  # requires a schema-typed target so __merge.log can attach.
+  defp build_schema_l_r(store, uuid) do
+    {:ok, _genesis} = CommitStore.ensure_genesis(store, uuid)
+
+    doc_c = build_schema_doc(1)
+
+    _reg =
+      CommitStore.create_chained_commit(
+        store,
+        uuid,
+        Encoding.encode_update(doc_c),
+        %{kind: :regular}
+      )
+
+    {:ok, c_snap} = CommitStore.snapshot(store, uuid)
+
+    doc_l = build_schema_doc(2)
+    {:ok, doc_l} = Encoding.apply_update(doc_l, c_snap.update)
+    doc_l = Schema.add_file(doc_l, "l_entry", "uuid-l-entry-placeholder")
+
+    l_commit =
+      CommitStore.create_chained_commit(
+        store,
+        uuid,
+        Encoding.encode_update(doc_l),
+        %{kind: :regular}
+      )
+
+    doc_r = build_schema_doc(3)
+    {:ok, doc_r} = Encoding.apply_update(doc_r, c_snap.update)
+    doc_r = Schema.add_file(doc_r, "r_entry", "uuid-r-entry-placeholder")
+
+    r_commit =
+      Commit.new(uuid, Encoding.encode_update(doc_r), c_snap.id, %{
+        kind: :regular,
+        snapshot_parent: c_snap.id
+      })
+
+    :ok = CommitStore.import_commit(store, r_commit, validator: fn _ -> :ok end)
+
+    {l_commit, r_commit}
+  end
+
+  defp build_schema_doc(client_id) do
+    doc = Doc.new(client_id: client_id)
+    {doc, _} = Doc.get_or_create_type(doc, "__schema", :map)
+    {doc, _} = Doc.get_or_create_type(doc, "entries", :map)
+    Yelixer.Types.YMap.set(doc, "__schema", "version", "1")
+  end
+
+  defp load_schema(store, uuid) do
+    case CommitStore.latest_commit(store, uuid) do
+      {:ok, commit} ->
+        doc = Schema.new_schema()
+        {:ok, doc} = Encoding.apply_update(doc, commit.update)
+        doc
+
+      :none ->
+        Schema.new_schema()
+    end
+  end
+
+  # Register `name` in the workspace root schema as a file entry pointing
+  # at `uuid`. Used so the handler can resolve {path} → doc UUID via
+  # Tree.Walk. Returns the path to use in the magenta topic.
+  defp register_in_root(store, root_uuid, name, uuid) do
+    {:ok, root_commit} = CommitStore.latest_commit(store, root_uuid)
+    schema = Schema.new_schema()
+    {:ok, schema} = Encoding.apply_update(schema, root_commit.update)
+    schema = Schema.add_file(schema, name, uuid)
+
+    CommitStore.create_chained_commit(
+      store,
+      root_uuid,
+      Encoding.encode_update(schema)
+    )
+
+    name
   end
 
   # Reuse MergePolicyTest fixture shape: snapshot C → L chained regular
@@ -100,18 +191,17 @@ defmodule Commonplace.MergeCommand.HandlerTest do
 
   describe "merge command → merge_completed" do
     test "publishes merge_completed on the same path topic after successful merge",
-         %{store: store} do
+         %{store: store, root: root} do
       uuid = "mcmd-happy"
-      {l, r} = build_l_r(store, uuid)
+      {_l, r} = build_l_r(store, uuid)
 
-      path = "docs/#{uuid}"
+      path = register_in_root(store, root, "happy_doc", uuid)
       topic = "commands/#{path}/merge"
 
       Magenta.subscribe(topic)
 
       request =
         Magenta.message("merge", "test", %{
-          "l_id" => l.id,
           "other_ref" => r.id,
           "strategy" => "translate"
         })
@@ -124,18 +214,17 @@ defmodule Commonplace.MergeCommand.HandlerTest do
     end
 
     test "merge_completed payload contains the new commit id that is findable in the store",
-         %{store: store} do
+         %{store: store, root: root} do
       uuid = "mcmd-commit-id"
-      {l, r} = build_l_r(store, uuid)
+      {_l, r} = build_l_r(store, uuid)
 
-      path = "a/#{uuid}"
+      path = register_in_root(store, root, "commit_id_doc", uuid)
       topic = "commands/#{path}/merge"
 
       Magenta.subscribe(topic)
 
       request =
         Magenta.message("merge", "test", %{
-          "l_id" => l.id,
           "other_ref" => r.id,
           "strategy" => "translate"
         })
@@ -144,22 +233,22 @@ defmodule Commonplace.MergeCommand.HandlerTest do
 
       assert_receive {:magenta, ^topic, %Magenta{type: "merge_completed"} = reply}, 2000
 
-      commit_id = reply.payload["commit_id"]
+      commit_id = Base.decode16!(reply.payload["commit_id"], case: :lower)
       assert {:ok, stored} = CommitStore.get_commit(store, commit_id)
       assert stored.metadata[:kind] == :merge
     end
   end
 
   describe "merge command → merge_failed" do
-    test "publishes merge_failed when l_id doesn't resolve to a commit", %{store: _store} do
-      path = "bad/l"
+    test "publishes merge_failed when path doesn't resolve to a registered doc",
+         %{store: _store} do
+      path = "bad/path"
       topic = "commands/#{path}/merge"
 
       Magenta.subscribe(topic)
 
       request =
         Magenta.message("merge", "test", %{
-          "l_id" => String.duplicate("0", 64),
           "other_ref" => String.duplicate("f", 64),
           "strategy" => "translate"
         })
@@ -168,34 +257,132 @@ defmodule Commonplace.MergeCommand.HandlerTest do
 
       assert_receive {:magenta, ^topic, %Magenta{type: "merge_failed"} = reply}, 2000
       assert reply.payload["path"] == path
-      assert is_binary(reply.payload["reason"])
+      assert reply.payload["reason"] =~ "path_unresolved"
+    end
+  end
+
+  describe "path-resolved l_id (CX-3hvu)" do
+    test "merge command with no l_id in payload resolves l from path's HEAD",
+         %{store: store, root: root} do
+      uuid = "mcmd-pathres"
+      {_l, r} = build_l_r(store, uuid)
+
+      path = register_in_root(store, root, "pathres_doc", uuid)
+      topic = "commands/#{path}/merge"
+
+      Magenta.subscribe(topic)
+
+      request =
+        Magenta.message("merge", "test", %{
+          "other_ref" => r.id,
+          "strategy" => "translate"
+        })
+
+      Magenta.send(topic, request)
+
+      assert_receive {:magenta, ^topic, %Magenta{type: "merge_completed"} = reply}, 2000
+      assert is_binary(reply.payload["commit_id"])
+      assert reply.payload["path"] == path
+
+      commit_id = Base.decode16!(reply.payload["commit_id"], case: :lower)
+      {:ok, stored} = CommitStore.get_commit(store, commit_id)
+      assert stored.metadata[:kind] == :merge
+    end
+  end
+
+  describe "merge log onramp (CX-3hvu)" do
+    test "merge_completed event is persisted in __merge.log under the target schema",
+         %{store: store, root: root, handler: handler} do
+      target_uuid = "mcmd-mergelog-target"
+      {_l, r} = build_schema_l_r(store, target_uuid)
+
+      path = register_in_root(store, root, "mergelog_doc", target_uuid)
+      topic = "commands/#{path}/merge"
+
+      Magenta.subscribe(topic)
+
+      request =
+        Magenta.message("merge", "test", %{
+          "other_ref" => r.id,
+          "strategy" => "translate"
+        })
+
+      Magenta.send(topic, request)
+
+      assert_receive {:magenta, ^topic, %Magenta{type: "merge_completed"}}, 2000
+
+      # Flush the onramp so its in-memory log state is committed to the
+      # store before we read it.
+      {:ok, onramp} = GenServer.call(handler, {:get_onramp, path})
+      RedLog.commit_onramp(onramp)
+
+      # __merge.log should now be a schema entry under the target doc.
+      target_schema = load_schema(store, target_uuid)
+      assert {:ok, log_entry} = Schema.get_entry(target_schema, "__merge.log")
+      assert log_entry.type == :doc
+
+      log = RedLog.load(log_entry.node_id, store)
+      events = RedLog.read(log)
+
+      assert Enum.any?(events, fn e ->
+               e["type"] == "merge_completed" and e["payload"]["path"] == path
+             end),
+             "expected merge_completed event in __merge.log, got: #{inspect(events)}"
+    end
+
+    test "second merge on same path reuses the onramp (no duplicate process)",
+         %{store: store, root: root, handler: handler} do
+      target_uuid = "mcmd-reuse-target"
+      {_l, r} = build_schema_l_r(store, target_uuid)
+
+      path = register_in_root(store, root, "reuse_doc", target_uuid)
+      topic = "commands/#{path}/merge"
+
+      Magenta.subscribe(topic)
+
+      request =
+        Magenta.message("merge", "test", %{
+          "other_ref" => r.id,
+          "strategy" => "translate"
+        })
+
+      Magenta.send(topic, request)
+      assert_receive {:magenta, ^topic, %Magenta{}}, 2000
+      {:ok, onramp_first} = GenServer.call(handler, {:get_onramp, path})
+
+      Magenta.send(topic, request)
+      assert_receive {:magenta, ^topic, %Magenta{}}, 2000
+      {:ok, onramp_second} = GenServer.call(handler, {:get_onramp, path})
+
+      assert onramp_first == onramp_second
+      assert Process.alive?(onramp_first)
     end
   end
 
   describe "sentinel verb dispatch (β topology)" do
     test "handler receives commands on multiple per-path topics ending in /merge",
-         %{store: store} do
+         %{store: store, root: root} do
       uuid_a = "mcmd-multi-a"
       uuid_b = "mcmd-multi-b"
-      {l_a, r_a} = build_l_r(store, uuid_a)
-      {l_b, r_b} = build_l_r(store, uuid_b)
+      {_l_a, r_a} = build_l_r(store, uuid_a)
+      {_l_b, r_b} = build_l_r(store, uuid_b)
 
-      topic_a = "commands/path-a/#{uuid_a}/merge"
-      topic_b = "commands/other/path-b/#{uuid_b}/merge"
+      path_a = register_in_root(store, root, "multi_a_doc", uuid_a)
+      path_b = register_in_root(store, root, "multi_b_doc", uuid_b)
+      topic_a = "commands/#{path_a}/merge"
+      topic_b = "commands/#{path_b}/merge"
 
       Magenta.subscribe(topic_a)
       Magenta.subscribe(topic_b)
 
       req_a =
         Magenta.message("merge", "test", %{
-          "l_id" => l_a.id,
           "other_ref" => r_a.id,
           "strategy" => "translate"
         })
 
       req_b =
         Magenta.message("merge", "test", %{
-          "l_id" => l_b.id,
           "other_ref" => r_b.id,
           "strategy" => "translate"
         })
