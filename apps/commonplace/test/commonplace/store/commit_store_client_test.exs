@@ -21,7 +21,8 @@ defmodule Commonplace.Store.CommitStoreClientTest do
       commit = CommitStoreClient.create_commit(store, "doc-1", <<1, 2, 3>>, nil)
       assert commit.doc_uuid == "doc-1"
       assert commit.update == <<1, 2, 3>>
-      assert commit.parent_id == nil
+      # Post-CX-m3x: fresh-doc commits parent to the deterministic genesis.
+      assert commit.parent_id == Commonplace.Store.Commit.genesis("doc-1").id
     end
 
     test "creates a commit with parent", %{store: store} do
@@ -40,7 +41,8 @@ defmodule Commonplace.Store.CommitStoreClientTest do
 
     test "creates root commit when no prior commits exist", %{store: store} do
       c1 = CommitStoreClient.create_chained_commit(store, "new-doc", <<1>>)
-      assert c1.parent_id == nil
+      # Post-CX-m3x: the root commit parents to the deterministic genesis.
+      assert c1.parent_id == Commonplace.Store.Commit.genesis("new-doc").id
     end
   end
 
@@ -78,7 +80,9 @@ defmodule Commonplace.Store.CommitStoreClientTest do
 
       log = CommitStoreClient.commit_log(store, "doc-1")
       ids = Enum.map(log, & &1.id)
-      assert ids == [c3.id, c2.id, c1.id]
+      # Post-CX-m3x: the log also includes the deterministic genesis at the root.
+      genesis_id = Commonplace.Store.Commit.genesis("doc-1").id
+      assert ids == [c3.id, c2.id, c1.id, genesis_id]
     end
 
     test "respects limit option", %{store: store} do

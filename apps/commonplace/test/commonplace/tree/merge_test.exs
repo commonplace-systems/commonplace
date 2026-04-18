@@ -455,7 +455,11 @@ defmodule Commonplace.Tree.MergeTest do
   end
 
   defp reconstruct_doc(store, uuid) do
-    commits = CommitStore.commit_log(store, uuid, limit: 10_000) |> Enum.reverse()
+    commits =
+      CommitStore.commit_log(store, uuid, limit: 10_000)
+      |> Enum.reverse()
+      |> Enum.reject(&match?(%{metadata: %{kind: :genesis}}, &1))
+
     doc = Yelixer.Doc.new()
     Enum.reduce(commits, {:ok, doc}, fn c, {:ok, d} -> Yelixer.Encoding.apply_update(d, c.update) end)
   end

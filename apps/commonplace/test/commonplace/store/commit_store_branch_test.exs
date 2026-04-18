@@ -29,7 +29,9 @@ defmodule Commonplace.Store.CommitStoreBranchTest do
       {:ok, latest_b} = CommitStore.latest_commit(store, "uuid-b")
       assert latest_b.id == commit_b1.id
       log = CommitStore.commit_log(store, "uuid-b")
-      assert length(log) == 2
+      # Post-CX-m3x: the log walks through uuid-a's deterministic genesis
+      # (commit_a1 → genesis_a) plus commit_b1, for three total.
+      assert length(log) == 3
     end
   end
 

@@ -29,7 +29,7 @@ defmodule Commonplace.Tree.DocBuilder do
         :none
 
       _ ->
-        commits_to_apply = trim_to_latest_snapshot(commits)
+        commits_to_apply = commits |> trim_to_latest_snapshot() |> Enum.reject(&genesis?/1)
         doc = Doc.new()
 
         Enum.reduce(commits_to_apply, {:ok, doc}, fn c, {:ok, d} ->
@@ -56,6 +56,17 @@ defmodule Commonplace.Tree.DocBuilder do
   defp snapshot?(commit) do
     case Map.get(commit, :metadata) do
       %{kind: :snapshot} -> true
+      _ -> false
+    end
+  end
+
+  # CX-m3x: genesis commits are synthetic DAG roots with an empty
+  # `update` payload. They exist to establish a deterministic namespace
+  # root, not to carry any Yjs state, so the reducer must skip them —
+  # `Encoding.apply_update` on <<>> would crash the replay.
+  defp genesis?(commit) do
+    case Map.get(commit, :metadata) do
+      %{kind: :genesis} -> true
       _ -> false
     end
   end
@@ -105,7 +116,7 @@ defmodule Commonplace.Tree.DocBuilder do
 
     case result do
       {:found, to_apply} ->
-        commits_to_apply = trim_to_latest_snapshot(to_apply)
+        commits_to_apply = to_apply |> trim_to_latest_snapshot() |> Enum.reject(&genesis?/1)
         doc = Doc.new()
 
         Enum.reduce(commits_to_apply, {:ok, doc}, fn c, {:ok, d} ->

@@ -170,7 +170,9 @@ defmodule Commonplace.Reflog.SnapshotTest do
       {:ok, snap_entry} = Schema.get_entry(owner_schema, "__snapshot")
 
       log = CommitStore.commit_log(store, snap_entry.node_id)
-      assert length(log) == 2
+      # Post-CX-m3x: fresh docs get a deterministic genesis as their first
+      # commit, so the snapshot's commit chain is genesis + two checkpoints.
+      assert length(log) == 3
     end
   end
 

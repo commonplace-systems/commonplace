@@ -184,7 +184,8 @@ defmodule Commonplace.Tree.DocBuilderTest do
       assert fetched_snap.metadata.kind == :snapshot
 
       {:ok, fetched_c1} = CommitStore.get_commit(store, c1.id)
-      assert fetched_c1.parent_id == nil
+      # Post-CX-m3x: the root commit parents to the deterministic genesis.
+      assert fetched_c1.parent_id == Commonplace.Store.Commit.genesis("doc-1").id
     end
   end
 

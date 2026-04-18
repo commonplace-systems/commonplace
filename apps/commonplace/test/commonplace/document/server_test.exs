@@ -109,7 +109,8 @@ defmodule Commonplace.Document.ServerTest do
       {:ok, commit2} = Server.commit(pid)
 
       assert commit2.parent_id == commit1.id
-      assert commit1.parent_id == nil
+      # Post-CX-m3x: the root commit parents to the deterministic genesis.
+      assert commit1.parent_id == Commonplace.Store.Commit.genesis(uuid).id
 
       # Latest commit should be commit2
       {:ok, latest} = CommitStore.latest_commit(store, uuid)

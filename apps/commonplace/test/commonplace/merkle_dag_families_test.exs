@@ -298,7 +298,10 @@ defmodule Commonplace.MerkleDagFamiliesTest do
         end)
         |> Enum.count()
 
-      assert chain_length == 10
+      # Post-CX-m3x: the chain includes the deterministic genesis root
+      # that auto-stamped on the very first commit, so 10 user commits +
+      # 1 genesis = 11.
+      assert chain_length == 11
     end
   end
 

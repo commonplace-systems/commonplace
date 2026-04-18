@@ -93,14 +93,20 @@ defmodule Commonplace.MerkleYjsTest do
   end
 
   describe "content addressing" do
-    test "same update bytes produce same commit ID", %{store: store} do
+    test "same update + same parent produces same commit ID", %{store: store} do
+      # Post-CX-m3x: fresh-doc first commits bind the namespace (via their
+      # deterministic genesis parent) into the hash, so identical update
+      # bytes under DIFFERENT doc_uuids produce DIFFERENT ids — exactly
+      # what namespace separation requires. Content addressing still holds
+      # within a namespace: identical bytes + identical parent = identical id.
       doc = Yelixer.Doc.new(client_id: 1)
       {doc, _} = Yelixer.Doc.get_or_create_type(doc, "text", :text)
       doc = Yelixer.Types.Text.insert(doc, "text", 0, "deterministic")
 
       update = Yelixer.Encoding.encode_update(doc)
-      c1 = CommitStore.create_commit(store, "doc-a", update, nil)
-      c2 = CommitStore.create_commit(store, "doc-b", update, nil)
+      parent = CommitStore.create_commit(store, "doc-a", <<0>>, nil)
+      c1 = CommitStore.create_commit(store, "doc-a", update, parent.id)
+      c2 = CommitStore.create_commit(store, "doc-a", update, parent.id)
 
       assert c1.id == c2.id
     end
@@ -125,11 +131,14 @@ defmodule Commonplace.MerkleYjsTest do
       update = Yelixer.Encoding.encode_update(doc)
       commit = CommitStore.create_commit(store, "doc-1", update, nil)
 
-      expected_id = :crypto.hash(:sha256, commit.update)
+      # Post-CX-m3x: a fresh-doc first commit now parents to the deterministic
+      # genesis, so the hash is sha256(genesis.id <> update). Tampering still
+      # breaks the address — the property that matters here.
+      expected_id = :crypto.hash(:sha256, commit.parent_id <> commit.update)
       assert commit.id == expected_id
 
       tampered_update = <<0>> <> commit.update
-      tampered_id = :crypto.hash(:sha256, tampered_update)
+      tampered_id = :crypto.hash(:sha256, commit.parent_id <> tampered_update)
       assert tampered_id != commit.id
     end
   end

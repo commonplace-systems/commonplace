@@ -210,6 +210,7 @@ defmodule Commonplace.Store.CommitStore do
 
   @impl true
   def handle_call({:create_commit, doc_uuid, update, parent_id, metadata}, _from, state) do
+    parent_id = maybe_stamp_genesis(state.db, doc_uuid, parent_id)
     commit = Commit.new(doc_uuid, update, parent_id, metadata) |> maybe_sign_commit()
 
     CubDB.put_multi(state.db, [
@@ -506,6 +507,26 @@ defmodule Commonplace.Store.CommitStore do
     archive_path = "#{path}.corrupt.#{timestamp}"
     File.rename!(path, archive_path)
     File.mkdir_p!(path)
+  end
+
+  # CX-m3x: if a caller hands us `parent_id=nil` for a doc_uuid that
+  # has never been written before, stamp the deterministic genesis and
+  # use its id as the parent. Pre-umbrella docs with an existing :latest
+  # retain legacy behavior (parent_id stays nil) — the write-side rule
+  # so the read-side legacy hatch (empty metadata, no :kind) keeps
+  # working without retroactive genesis insertions.
+  defp maybe_stamp_genesis(_db, _doc_uuid, parent_id) when parent_id != nil, do: parent_id
+
+  defp maybe_stamp_genesis(db, doc_uuid, nil) do
+    case CubDB.get(db, {:latest, doc_uuid}) do
+      nil ->
+        genesis = Commit.genesis(doc_uuid)
+        CubDB.put(db, {:commit, genesis.id}, genesis)
+        genesis.id
+
+      _existing ->
+        nil
+    end
   end
 
   defp maybe_sign_commit(commit) do

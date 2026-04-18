@@ -72,7 +72,8 @@ defmodule Commonplace.Store.CommitStoreTest do
       assert fetched_2.parent_id == c1.id
 
       {:ok, fetched_1} = CommitStore.get_commit(store, fetched_2.parent_id)
-      assert fetched_1.parent_id == nil
+      # Post-CX-m3x: first commit on a fresh doc parents to deterministic genesis.
+      assert fetched_1.parent_id == Commit.genesis("doc-1").id
     end
   end
 
@@ -116,12 +117,73 @@ defmodule Commonplace.Store.CommitStoreTest do
       assert fetched.metadata.note == "test"
     end
 
-    test "works on a doc with no prior commits (parent_id nil)", %{store: store} do
+    test "works on a doc with no prior commits (parents to genesis)", %{store: store} do
       snap = CommitStore.create_snapshot_commit(store, "fresh-doc", <<42>>)
 
-      assert snap.parent_id == nil
+      # Post-CX-m3x: a snapshot on a fresh doc parents to the deterministic
+      # genesis rather than nil, so the snapshot sits in a proper namespace
+      # root.
+      assert snap.parent_id == Commit.genesis("fresh-doc").id
       {:ok, fetched} = CommitStore.get_commit(store, snap.id)
       assert fetched.metadata.kind == :snapshot
+    end
+  end
+
+  describe "create_commit/5 — auto-wire genesis on fresh doc (CX-m3x)" do
+    test "first commit on a fresh uuid parents to deterministic genesis", %{store: store} do
+      commit = CommitStore.create_commit(store, "doc-fresh", <<1, 2, 3>>, nil)
+
+      expected_genesis_id = Commit.genesis("doc-fresh").id
+      assert commit.parent_id == expected_genesis_id,
+             "a fresh-doc commit must descend from the deterministic genesis, not nil"
+    end
+
+    test "genesis is stored and retrievable after first create_commit", %{store: store} do
+      _commit = CommitStore.create_commit(store, "doc-fresh", <<1, 2, 3>>, nil)
+
+      genesis_id = Commit.genesis("doc-fresh").id
+      assert {:ok, g} = CommitStore.get_commit(store, genesis_id)
+      assert g.metadata == %{kind: :genesis, doc_uuid: "doc-fresh"}
+    end
+
+    test "genesis is stamped only once — second user commit parents to the first user commit", %{store: store} do
+      c1 = CommitStore.create_commit(store, "doc-fresh", <<1>>, nil)
+      c2 = CommitStore.create_chained_commit(store, "doc-fresh", <<2>>)
+
+      assert c2.parent_id == c1.id
+    end
+
+    test "explicit parent_id skips auto-genesis", %{store: store} do
+      # Simulate a pre-existing commit chain (e.g., imported from a peer).
+      existing = CommitStore.create_commit(store, "doc-other", <<9>>, nil)
+
+      # Now create a commit on a different uuid, chaining to `existing.id`.
+      # Since parent_id is explicit, no genesis should be auto-inserted
+      # for this uuid.
+      commit = CommitStore.create_commit(store, "doc-chain", <<1>>, existing.id)
+
+      assert commit.parent_id == existing.id
+
+      # No genesis for "doc-chain" should exist.
+      chain_genesis_id = Commit.genesis("doc-chain").id
+      assert :none = CommitStore.get_commit(store, chain_genesis_id)
+    end
+
+    test "pre-umbrella doc with existing :latest retains legacy behavior (parent_id stays nil)", %{store: store} do
+      # Simulate a pre-umbrella doc by importing a commit that predates
+      # the wiring. It has metadata=%{} and parent_id=nil (legacy hatch).
+      legacy = Commit.new("doc-legacy", <<7>>, nil, %{})
+      :ok = CommitStore.import_commit(store, legacy)
+      :ok = CommitStore.set_latest(store, "doc-legacy", legacy.id)
+
+      # A subsequent create_commit with parent_id=nil on this pre-umbrella
+      # doc must NOT insert a retroactive genesis — write-side only per
+      # the spec's pre-umbrella rule.
+      new_commit = CommitStore.create_commit(store, "doc-legacy", <<8>>, nil)
+      assert new_commit.parent_id == nil
+
+      legacy_genesis_id = Commit.genesis("doc-legacy").id
+      assert :none = CommitStore.get_commit(store, legacy_genesis_id)
     end
   end
 

@@ -38,7 +38,9 @@ defmodule Commonplace.Sync.TwoNodeSyncTest do
     ids_b = CommitStore.commit_ids_for_doc(store_b, uuid)
     {missing_b, missing_a} = NodeSync.diff_commit_ids(ids_b, ids_a)
 
-    assert MapSet.size(missing_b) == 2
+    # Post-CX-m3x: store_a also has the deterministic genesis stamped
+    # on the fresh-doc chain, so 2 user commits + 1 genesis = 3.
+    assert MapSet.size(missing_b) == 3
     assert MapSet.size(missing_a) == 0
 
     # Manually transfer missing commits (simulating catch_up without remote nodes)
@@ -157,9 +159,13 @@ defmodule Commonplace.Sync.TwoNodeSyncTest do
 
     # The latest should be whichever commit was imported first (when no prior
     # :latest exists, import_commit sets it). Since import order isn't guaranteed
-    # from MapSet iteration, just verify a latest exists and is one of the commits.
-    assert latest_x_on_b.id in [cx1.id, cx2.id]
-    assert latest_y_on_a.id in [cy1.id, cy2.id]
+    # from MapSet iteration, just verify a latest exists and is one of the commits
+    # imported from the source chain (including the deterministic genesis
+    # that CX-m3x auto-stamps for every fresh doc).
+    genesis_x_id = Commonplace.Store.Commit.genesis(uuid_x).id
+    genesis_y_id = Commonplace.Store.Commit.genesis(uuid_y).id
+    assert latest_x_on_b.id in [cx1.id, cx2.id, genesis_x_id]
+    assert latest_y_on_a.id in [cy1.id, cy2.id, genesis_y_id]
   end
 
   test "concurrent edits to same doc: bidirectional import gets all commits", %{
@@ -184,8 +190,10 @@ defmodule Commonplace.Sync.TwoNodeSyncTest do
     ids_a = CommitStore.commit_ids_for_doc(store_a, uuid)
     ids_b = CommitStore.commit_ids_for_doc(store_b, uuid)
 
-    assert MapSet.size(ids_a) == 3  # base, a1, a2
-    assert MapSet.size(ids_b) == 3  # base, b1, b2
+    # Post-CX-m3x: the chains also include the deterministic genesis
+    # stamped on the fresh doc — 3 user commits + 1 genesis = 4.
+    assert MapSet.size(ids_a) == 4  # genesis, base, a1, a2
+    assert MapSet.size(ids_b) == 4  # genesis, base, b1, b2
 
     {missing_a, missing_b} = NodeSync.diff_commit_ids(ids_a, ids_b)
 
@@ -233,15 +241,17 @@ defmodule Commonplace.Sync.TwoNodeSyncTest do
     [c1, c2, c3, c4, c5] = commits
 
     # Verify chain structure
-    assert c1.parent_id == nil
+    # Post-CX-m3x: the root commit parents to the deterministic genesis.
+    assert c1.parent_id == Commonplace.Store.Commit.genesis(uuid).id
     assert c2.parent_id == c1.id
     assert c3.parent_id == c2.id
     assert c4.parent_id == c3.id
     assert c5.parent_id == c4.id
 
-    # Verify store A has all 5
+    # Verify store A has all 5 + the deterministic genesis auto-stamped
+    # on the fresh-doc chain (CX-m3x).
     ids_a = CommitStore.commit_ids_for_doc(store_a, uuid)
-    assert MapSet.size(ids_a) == 5
+    assert MapSet.size(ids_a) == 6
 
     # Sync all to store B
     Enum.each(ids_a, fn id ->
@@ -331,11 +341,14 @@ defmodule Commonplace.Sync.TwoNodeSyncTest do
     assert fetched_c2.update == "a_second"
     assert fetched_c3.update == "a_third"
 
-    # commit_ids_for_doc walks from :latest (b2), so it only sees b1, b2
+    # commit_ids_for_doc walks from :latest (b2) through parents to root.
+    # Post-CX-m3x: that walk now includes the deterministic genesis stamped
+    # on b1's creation, so b1, b2, and genesis are all in the set.
     ids = CommitStore.commit_ids_for_doc(store_b, uuid)
-    assert MapSet.size(ids) == 2
+    assert MapSet.size(ids) == 3
     assert MapSet.member?(ids, b1.id)
     assert MapSet.member?(ids, b2.id)
+    assert MapSet.member?(ids, Commonplace.Store.Commit.genesis(uuid).id)
     refute MapSet.member?(ids, c1.id)
     refute MapSet.member?(ids, c2.id)
     refute MapSet.member?(ids, c3.id)
