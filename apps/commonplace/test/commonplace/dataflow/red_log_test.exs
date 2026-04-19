@@ -69,6 +69,37 @@ defmodule Commonplace.Dataflow.RedLogTest do
     end
   end
 
+  describe "stable client_id (CX-pyi)" do
+    test "100 load → append → commit cycles produce a state vector with one client_id",
+         %{store: store} do
+      log_uuid = "log-#{UUID.uuid4()}"
+      log = RedLog.new(log_uuid, store)
+      RedLog.commit(log)
+
+      for n <- 1..100 do
+        log = RedLog.load(log_uuid, store)
+        log = RedLog.append(log, Magenta.message("e#{n}", "src", %{i: n}))
+        RedLog.commit(log)
+      end
+
+      {:ok, commit} = CommitStore.latest_commit(store, log_uuid)
+      doc = Yelixer.Doc.new()
+      {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
+
+      sv = Yelixer.BlockStore.state_vector(doc.store)
+      assert map_size(sv.clocks) == 1,
+             "expected single stable client_id in state vector after 100 cycles, got #{map_size(sv.clocks)}: #{inspect(Map.keys(sv.clocks))}"
+
+      expected_client_id = :erlang.phash2(log_uuid, 0xFFFF_FFFF)
+      assert Map.has_key?(sv.clocks, expected_client_id),
+             "state vector should contain phash2-derived client_id #{expected_client_id}"
+
+      log = RedLog.load(log_uuid, store)
+      events = RedLog.read(log)
+      assert length(events) == 100
+    end
+  end
+
   describe "magenta→red onramp" do
     test "subscribes to magenta topic and persists messages", %{store: store} do
       log_uuid = "log-#{UUID.uuid4()}"

@@ -18,7 +18,7 @@ defmodule Commonplace.Dataflow.RedLog do
 
   @doc "Create a new empty red log."
   def new(uuid, store \\ CommitStoreClient) do
-    doc = Yelixer.Doc.new()
+    doc = Yelixer.Doc.new(client_id: stable_client_id(uuid))
     {doc, _} = Yelixer.Doc.get_or_create_type(doc, @log_type, :array)
     %__MODULE__{uuid: uuid, doc: doc, store: store}
   end
@@ -27,7 +27,7 @@ defmodule Commonplace.Dataflow.RedLog do
   def load(uuid, store \\ CommitStoreClient) do
     case CommitStoreClient.latest_commit(store, uuid) do
       {:ok, commit} ->
-        doc = Yelixer.Doc.new()
+        doc = Yelixer.Doc.new(client_id: stable_client_id(uuid))
         {doc, _} = Yelixer.Doc.get_or_create_type(doc, @log_type, :array)
         {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
         %__MODULE__{uuid: uuid, doc: doc, store: store}
@@ -35,6 +35,15 @@ defmodule Commonplace.Dataflow.RedLog do
       :none ->
         new(uuid, store)
     end
+  end
+
+  # CX-pyi: derive a stable client_id from the log uuid so repeated
+  # load → append → commit cycles share one slot in the state vector.
+  # Same pattern CX-6g6 used for Presence/Identity. Without this, every
+  # cycle minted a fresh random client_id and persisted it via
+  # encode_update, accumulating one entry per write.
+  defp stable_client_id(uuid) when is_binary(uuid) do
+    :erlang.phash2(uuid, 0xFFFF_FFFF)
   end
 
   @doc "Append a magenta message to the log."
