@@ -27,6 +27,7 @@ defmodule Commonplace.Sync.TwoPeerMergeE2ETest do
   """
   use ExUnit.Case, async: false
 
+  alias Commonplace.Document.ContentType
   alias Commonplace.SiblingMerger
   alias Commonplace.Store.{Commit, CommitStore, MergePolicy}
   alias Commonplace.Sync.NodeSync
@@ -241,6 +242,95 @@ defmodule Commonplace.Sync.TwoPeerMergeE2ETest do
         assert String.contains?(text, "abc"), "missing baseline: #{inspect(text)}"
         assert String.contains?(text, "X"), "missing X: #{inspect(text)}"
         assert String.contains?(text, "Y"), "missing Y: #{inspect(text)}"
+      end
+    end
+  end
+
+  # CX-hmkz cross-epoch scenario fixture using the production
+  # ContentType envelope (raw Text "t" bypasses ContentType and hits
+  # the CX-k250 fixture artifact). Peer A takes a POST-divergence
+  # snapshot so peer A and peer B end up in different namespaces.
+  defp seed_diverged_content_cross_epoch(store_a, store_b, uuid) do
+    {:ok, _} = CommitStore.ensure_genesis(store_a, uuid)
+    {:ok, _} = CommitStore.ensure_genesis(store_b, uuid)
+
+    base_doc = Doc.new(client_id: 1)
+    base_doc = ContentType.create(base_doc, :text, "greet.txt")
+    base_doc = ContentType.insert_text(base_doc, 0, "abc")
+    base_update = Encoding.encode_update(base_doc)
+
+    CommitStore.create_chained_commit(store_a, uuid, base_update, %{kind: :regular})
+    CommitStore.create_chained_commit(store_b, uuid, base_update, %{kind: :regular})
+
+    {:ok, snap_a} = CommitStore.snapshot(store_a, uuid)
+    {:ok, snap_b} = CommitStore.snapshot(store_b, uuid)
+    assert snap_a.id == snap_b.id
+
+    {:ok, base} = Encoding.apply_update(Doc.new(), snap_a.update)
+    base_post_snap = Encoding.encode_update(base)
+
+    # Peer A: insert X, then take a SECOND snapshot (new epoch)
+    doc_l = Doc.new(client_id: 100)
+    {:ok, doc_l} = Encoding.apply_update(doc_l, base_post_snap)
+    doc_l = ContentType.insert_text(doc_l, 0, "X")
+
+    _l_commit =
+      CommitStore.create_chained_commit(
+        store_a,
+        uuid,
+        Encoding.encode_update(doc_l),
+        %{kind: :regular}
+      )
+
+    {:ok, snap_l} = CommitStore.snapshot(store_a, uuid)
+
+    # Peer B: insert Y at 3 (after "abc") — still in C's namespace
+    doc_r = Doc.new(client_id: 200)
+    {:ok, doc_r} = Encoding.apply_update(doc_r, base_post_snap)
+    doc_r = ContentType.insert_text(doc_r, 3, "Y")
+
+    r_commit =
+      CommitStore.create_chained_commit(
+        store_b,
+        uuid,
+        Encoding.encode_update(doc_r),
+        %{kind: :regular}
+      )
+
+    {snap_a, snap_l, r_commit}
+  end
+
+  defp reconstruct_content(store, uuid) do
+    {:ok, doc} = DocBuilder.reconstruct_doc(store, uuid)
+    ContentType.get_content(doc)
+  end
+
+  describe "cross-epoch two-peer merge (CX-hmkz)" do
+    test "peer A post-divergence snapshot + bilateral sibling-merger — no duplication",
+         %{store_a: store_a, store_b: store_b} do
+      uuid = "e2e-hmkz-cross-epoch"
+      {_snap_a, _snap_l, _r_commit} = seed_diverged_content_cross_epoch(store_a, store_b, uuid)
+
+      :ok = sibling_exchange(store_a, store_b, uuid)
+
+      {:ok, :merged, _} = SiblingMerger.maybe_merge_siblings(store_a, uuid, strategy: :translate)
+      {:ok, :merged, _} = SiblingMerger.maybe_merge_siblings(store_b, uuid, strategy: :translate)
+
+      content_a = reconstruct_content(store_a, uuid)
+      content_b = reconstruct_content(store_b, uuid)
+
+      for {content, peer} <- [{content_a, :a}, {content_b, :b}] do
+        assert String.contains?(content, "abc"),
+               "peer #{peer} missing baseline: #{inspect(content)}"
+
+        assert String.contains?(content, "X"),
+               "peer #{peer} missing X: #{inspect(content)}"
+
+        assert String.contains?(content, "Y"),
+               "peer #{peer} missing Y: #{inspect(content)}"
+
+        refute String.length(content) > 5,
+               "peer #{peer} duplication: #{inspect(content)}"
       end
     end
   end

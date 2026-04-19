@@ -51,6 +51,24 @@ defmodule Commonplace.LateEditAutoTranslator do
   def maybe_auto_translate(store, %Commit{} = edit, opts \\ []) do
     fallback? = Keyword.get(opts, :fallback, true)
 
+    # CX-hmkz: only :regular commits carry cross-epoch edits that benefit
+    # from late-edit translation. Snapshots, merges, and genesis commits
+    # are self-contained in the DAG (snapshots re-author whole state, merges
+    # synthesize from DAG ancestors, genesis is empty). Running them
+    # through the late-edit-translator silently rewrites them into
+    # `:regular` commits under the target's namespace, which is a
+    # different semantic — the original snapshot is replaced by a regular
+    # that claims the snapshot's content, corrupting the sibling-merge
+    # path (SiblingMerger then treats the translated regular as a
+    # cross-epoch sibling edit and produces a wrong merge).
+    if Map.get(edit.metadata, :kind) != :regular do
+      {:ok, :no_translation_needed}
+    else
+      do_maybe_auto_translate(store, edit, fallback?)
+    end
+  end
+
+  defp do_maybe_auto_translate(store, edit, fallback?) do
     case CommitStore.latest_commit(store, edit.doc_uuid) do
       :none ->
         {:ok, :no_translation_needed}
