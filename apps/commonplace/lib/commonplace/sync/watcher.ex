@@ -8,7 +8,7 @@ defmodule Commonplace.Sync.Watcher do
   """
 
   alias Commonplace.Tree.Schema
-  alias Commonplace.Document.ContentType
+  alias Commonplace.Document.{ContentType, Diff}
   alias Commonplace.Store.CommitStoreClient
 
   defmodule Change do
@@ -182,9 +182,12 @@ defmodule Commonplace.Sync.Watcher do
   defp apply_create(%Change{is_dir: false} = change, root_uuid, store) do
     content = File.read!(change.path)
 
-    # Create document with envelope
+    # Create document with envelope.
+    # CX-pyi: stable client_id so subsequent apply_modify writes (which
+    # also use this id) share one slot in the state vector instead of
+    # minting a fresh client per write.
     file_uuid = UUID.uuid4()
-    doc = Yelixer.Doc.new()
+    doc = Yelixer.Doc.new(client_id: stable_client_id(file_uuid))
     doc = ContentType.create(doc, :text, change.name)
 
     doc =
@@ -211,16 +214,29 @@ defmodule Commonplace.Sync.Watcher do
       {:ok, entry} ->
         new_content = File.read!(change.path)
 
-        # Replace the document content entirely
-        doc = Yelixer.Doc.new()
-        doc = ContentType.create(doc, :text, change.name)
-
+        # CX-pyi: load + mutate pattern. Reconstruct the existing doc
+        # under a stable client_id, compute the text diff between the
+        # previous content and the disk content, and apply it as
+        # incremental Yjs ops. This keeps the state vector at one slot
+        # per file regardless of how many edits land — the older
+        # "fresh Doc.new() + ContentType.create + insert" pattern
+        # both bloated the SV (one client_id per write) and would
+        # silently drop new content if naively switched to a stable id
+        # (Yjs identity collision at (cid, clock=0..N)).
         doc =
-          if new_content != "" do
-            ContentType.insert_text(doc, 0, new_content)
-          else
-            doc
+          case CommitStoreClient.latest_commit(store, entry.node_id) do
+            {:ok, commit} ->
+              d = Yelixer.Doc.new(client_id: stable_client_id(entry.node_id))
+              {:ok, d} = Yelixer.Encoding.apply_update(d, commit.update)
+              d
+
+            :none ->
+              d = Yelixer.Doc.new(client_id: stable_client_id(entry.node_id))
+              ContentType.create(d, :text, change.name)
           end
+
+        old_content = ContentType.get_content(doc) || ""
+        doc = Diff.apply_diff(doc, old_content, new_content)
 
         update = Yelixer.Encoding.encode_update(doc)
         CommitStoreClient.create_chained_commit(store, entry.node_id, update)
@@ -394,5 +410,12 @@ defmodule Commonplace.Sync.Watcher do
       :none ->
         ""
     end
+  end
+
+  # CX-pyi: stable client_id for writers — repeated load+mutate cycles
+  # share one slot in the state vector. Reading paths use plain
+  # Doc.new() because they never re-encode (no bloat possible).
+  defp stable_client_id(uuid) when is_binary(uuid) do
+    :erlang.phash2(uuid, 0xFFFF_FFFF)
   end
 end

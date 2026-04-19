@@ -193,8 +193,11 @@ defmodule Commonplace.Sync.DirAgent do
       end
     file_uuid = UUID.uuid4()
 
-    # Create the CRDT document
-    doc = Yelixer.Doc.new()
+    # Create the CRDT document.
+    # CX-pyi: stable client_id so subsequent writers (Watcher /
+    # EntryAgent / etc.) of this same file_uuid reuse the same SV slot
+    # instead of each minting a fresh random client.
+    doc = Yelixer.Doc.new(client_id: stable_client_id(file_uuid))
     doc = ContentType.create(doc, :text, name)
 
     doc =
@@ -371,4 +374,10 @@ defmodule Commonplace.Sync.DirAgent do
 
   defp schema_structs_from_doc(nil), do: []
   defp schema_structs_from_doc(doc), do: Schema.list_entries(doc)
+
+  # CX-pyi: stable client_id keeps the SV at one slot per file_uuid
+  # across writers of the same logical doc.
+  defp stable_client_id(uuid) when is_binary(uuid) do
+    :erlang.phash2(uuid, 0xFFFF_FFFF)
+  end
 end

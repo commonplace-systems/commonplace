@@ -172,12 +172,33 @@ defmodule Commonplace.Sync.Agent do
       current_fingerprint = InodeTracker.file_fingerprint(shadow.shadow_path)
 
       if current_fingerprint != nil and current_fingerprint != fingerprint do
-        # Stale write detected — read content and create a commit
+        # Stale write detected — read content and create a commit.
+        # CX-pyi: load + mutate against the shadow's commit, applying
+        # the disk-content diff under a stable client_id so repeated
+        # stale-write recoveries don't bloat the SV.
         stale_content = File.read!(shadow.shadow_path)
 
-        doc = Yelixer.Doc.new()
-        doc = Commonplace.Document.ContentType.create(doc, :text, Path.basename(shadow.path))
-        doc = Commonplace.Document.ContentType.insert_text(doc, 0, stale_content)
+        doc =
+          case CommitStoreClient.get_commit(state.store, shadow.commit_id) do
+            {:ok, commit} ->
+              d =
+                Yelixer.Doc.new(client_id: stable_client_id(shadow.doc_uuid))
+
+              {:ok, d} = Yelixer.Encoding.apply_update(d, commit.update)
+              d
+
+            _ ->
+              d =
+                Yelixer.Doc.new(client_id: stable_client_id(shadow.doc_uuid))
+
+              Commonplace.Document.ContentType.create(d, :text, Path.basename(shadow.path))
+          end
+
+        old_content = Commonplace.Document.ContentType.get_content(doc) || ""
+
+        doc =
+          Commonplace.Document.Diff.apply_diff(doc, old_content, stale_content)
+
         update = Yelixer.Encoding.encode_update(doc)
 
         # Create commit with the shadow's commit_id as parent
@@ -187,6 +208,13 @@ defmodule Commonplace.Sync.Agent do
         InodeTracker.cleanup_shadow(shadow.shadow_path)
       end
     end)
+  end
+
+  # CX-pyi: stable client_id keeps the SV at one slot per doc across
+  # writes from this agent's sync paths. Reading paths use plain
+  # Doc.new() because they never re-encode (no bloat possible).
+  defp stable_client_id(uuid) when is_binary(uuid) do
+    :erlang.phash2(uuid, 0xFFFF_FFFF)
   end
 
   defp extract_content(commit) do

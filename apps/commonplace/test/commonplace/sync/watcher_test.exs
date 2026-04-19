@@ -174,6 +174,39 @@ defmodule Commonplace.Sync.WatcherTest do
     end
   end
 
+  describe "stable client_id (CX-pyi)" do
+    test "100 file modifications keep state vector at one client and preserve latest content",
+         %{store: store, watch_dir: dir, root_uuid: root} do
+      File.write!(Path.join(dir, "churn.txt"), "v0")
+      changes = Watcher.detect_changes(root, dir, store)
+      Watcher.apply_changes(changes, root, dir, store)
+
+      root_doc = load_schema(root, store)
+      {:ok, entry} = Schema.get_entry(root_doc, "churn.txt")
+      file_uuid = entry.node_id
+
+      for n <- 1..100 do
+        File.write!(Path.join(dir, "churn.txt"), "v#{n}")
+        changes = Watcher.detect_changes(root, dir, store)
+        Watcher.apply_changes(changes, root, dir, store)
+      end
+
+      {:ok, doc} = Commonplace.Tree.DocBuilder.reconstruct_doc(store, file_uuid)
+      sv = Yelixer.BlockStore.state_vector(doc.store)
+
+      assert map_size(sv.clocks) == 1,
+             "after 100 modifies the state vector should have a single stable client_id, got #{map_size(sv.clocks)}: #{inspect(Map.keys(sv.clocks))}"
+
+      expected_client_id = :erlang.phash2(file_uuid, 0xFFFF_FFFF)
+
+      assert Map.has_key?(sv.clocks, expected_client_id),
+             "state vector missing phash2-derived client_id #{expected_client_id}"
+
+      # Latest content survives load+mutate diff application.
+      assert ContentType.get_content(doc) == "v100"
+    end
+  end
+
   defp load_schema(uuid, store) do
     case CommitStore.latest_commit(store, uuid) do
       {:ok, commit} ->

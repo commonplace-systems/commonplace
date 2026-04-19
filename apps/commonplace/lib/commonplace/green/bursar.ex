@@ -29,7 +29,7 @@ defmodule Commonplace.Green.Bursar do
 
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.{Schema, DocBuilder}
-  alias Commonplace.Document.ContentType
+  alias Commonplace.Document.{ContentType, Diff}
   alias Commonplace.Dataflow.{Magenta, RedLog}
 
   @state_doc "__bursar.json"
@@ -512,9 +512,26 @@ defmodule Commonplace.Green.Bursar do
       {path, entry}
     end)
 
-    doc = Yelixer.Doc.new()
-    doc = ContentType.create(doc, :text, @state_doc)
-    doc = ContentType.insert_text(doc, 0, Jason.encode!(json, pretty: true))
+    new_content = Jason.encode!(json, pretty: true)
+
+    # CX-pyi: load + mutate. Reconstruct existing state under a stable
+    # client_id and apply the JSON-content diff incrementally so the
+    # SV stays at one slot across many persist_state calls.
+    doc =
+      case CommitStoreClient.latest_commit(state.store, state.state_uuid) do
+        {:ok, commit} ->
+          d = Yelixer.Doc.new(client_id: stable_client_id(state.state_uuid))
+          {:ok, d} = Yelixer.Encoding.apply_update(d, commit.update)
+          d
+
+        :none ->
+          d = Yelixer.Doc.new(client_id: stable_client_id(state.state_uuid))
+          ContentType.create(d, :text, @state_doc)
+      end
+
+    old_content = ContentType.get_content(doc) || ""
+    doc = Diff.apply_diff(doc, old_content, new_content)
+
     update = Yelixer.Encoding.encode_update(doc)
     CommitStoreClient.create_chained_commit(state.store, state.state_uuid, update)
 
@@ -550,7 +567,9 @@ defmodule Commonplace.Green.Bursar do
 
   defp create_state_doc(state, schema) do
     uuid = UUID.uuid4()
-    doc = Yelixer.Doc.new()
+    # CX-pyi: stable client_id so subsequent persist_state writes share
+    # this SV slot (without it, even the first persist would diverge).
+    doc = Yelixer.Doc.new(client_id: stable_client_id(uuid))
     doc = ContentType.create(doc, :text, @state_doc)
     doc = ContentType.insert_text(doc, 0, "{}")
     update = Yelixer.Encoding.encode_update(doc)
@@ -576,5 +595,11 @@ defmodule Commonplace.Green.Bursar do
     CommitStoreClient.create_chained_commit(state.store, state.root_uuid, schema_update)
 
     uuid
+  end
+
+  # CX-pyi: stable client_id keeps the SV at one slot per state doc
+  # across many persist_state calls.
+  defp stable_client_id(uuid) when is_binary(uuid) do
+    :erlang.phash2(uuid, 0xFFFF_FFFF)
   end
 end

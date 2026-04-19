@@ -20,7 +20,7 @@ defmodule Commonplace.Sync.EntryAgent do
 
   alias Commonplace.SnapshotTrigger
   alias Commonplace.Store.CommitStoreClient
-  alias Commonplace.Document.ContentType
+  alias Commonplace.Document.{ContentType, Diff}
   alias Commonplace.Sync.Export
 
   defstruct [
@@ -91,10 +91,24 @@ defmodule Commonplace.Sync.EntryAgent do
           # No disk changes — skip
           state
         else
-          # Disk content changed — create a new CRDT doc and commit
-          doc = Yelixer.Doc.new()
-          doc = ContentType.create(doc, :text, Path.basename(state.file_path))
-          doc = ContentType.insert_text(doc, 0, content)
+          # CX-pyi: load + mutate. Reconstruct the existing CRDT under
+          # a stable client_id, compute the text diff against the disk
+          # content, apply incremental Yjs ops. Avoids state-vector
+          # bloat and preserves Yjs item identity.
+          doc =
+            case CommitStoreClient.latest_commit(state.store, state.doc_uuid) do
+              {:ok, commit} ->
+                d = Yelixer.Doc.new(client_id: stable_client_id(state.doc_uuid))
+                {:ok, d} = Yelixer.Encoding.apply_update(d, commit.update)
+                d
+
+              :none ->
+                d = Yelixer.Doc.new(client_id: stable_client_id(state.doc_uuid))
+                ContentType.create(d, :text, Path.basename(state.file_path))
+            end
+
+          old_content = ContentType.get_content(doc) || ""
+          doc = Diff.apply_diff(doc, old_content, content)
           update = Yelixer.Encoding.encode_update(doc)
 
           commit = CommitStoreClient.create_chained_commit(state.store, state.doc_uuid, update)
@@ -175,5 +189,12 @@ defmodule Commonplace.Sync.EntryAgent do
       :text -> ContentType.get_content(doc) || ""
       _ -> ContentType.get_content(doc) |> inspect()
     end
+  end
+
+  # CX-pyi: stable client_id keeps the SV at one slot per doc across
+  # outbound writes. Reading paths use plain Doc.new() because they
+  # never re-encode (no bloat possible).
+  defp stable_client_id(uuid) when is_binary(uuid) do
+    :erlang.phash2(uuid, 0xFFFF_FFFF)
   end
 end
