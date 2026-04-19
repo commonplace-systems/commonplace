@@ -213,6 +213,22 @@ defmodule Commonplace.PresenceTest do
       assert content["owner"] == "carol"
       assert content["cwd"] == "/home/carol"
     end
+
+    test "accepts string-keyed attrs (CX-rlv: from JSON / RPC boundaries)",
+         %{store: store, root: root} do
+      {:ok, uuid} = Presence.create("strkeys", :exe, root, store)
+
+      Presence.set_attributes(
+        uuid,
+        %{"owner" => "dana", "cwd" => "/srv/d", "capabilities" => ["fs", "git"]},
+        store
+      )
+
+      content = Presence.read(uuid, store)
+      assert content["owner"] == "dana"
+      assert content["cwd"] == "/srv/d"
+      assert {:ok, ["fs", "git"]} = Jason.decode(content["capabilities"])
+    end
   end
 
   describe "presence GenServer" do

@@ -229,24 +229,35 @@ defmodule Commonplace.Presence do
     doc = load_doc(uuid, store)
 
     doc =
-      Enum.reduce(attrs, doc, fn
-        {:owner, owner}, acc when is_binary(owner) ->
-          ContentType.set_key(acc, "owner", owner)
+      Enum.reduce(attrs, doc, fn {key, value}, acc ->
+        # CX-rlv: normalize keys so the same clauses match regardless of
+        # whether attrs arrived as atom-keyed (Elixir-internal) or
+        # string-keyed (parsed JSON / RPC params).
+        case normalize_key(key) do
+          :owner when is_binary(value) ->
+            ContentType.set_key(acc, "owner", value)
 
-        {:cwd, cwd}, acc when is_binary(cwd) ->
-          ContentType.set_key(acc, "cwd", cwd)
+          :cwd when is_binary(value) ->
+            ContentType.set_key(acc, "cwd", value)
 
-        {:capabilities, caps}, acc when is_list(caps) ->
-          encoded = Jason.encode!(Enum.map(caps, &to_string/1))
-          ContentType.set_key(acc, "capabilities", encoded)
+          :capabilities when is_list(value) ->
+            encoded = Jason.encode!(Enum.map(value, &to_string/1))
+            ContentType.set_key(acc, "capabilities", encoded)
 
-        {key, _value}, acc ->
-          require Logger
-          Logger.debug("Presence.set_attributes: ignoring unknown key #{inspect(key)}")
-          acc
+          _ ->
+            require Logger
+            Logger.debug("Presence.set_attributes: ignoring unknown/typed key #{inspect(key)}=#{inspect(value)}")
+            acc
+        end
       end)
 
     update = Yelixer.Encoding.encode_update(doc)
     CommitStoreClient.create_chained_commit(store, uuid, update)
   end
+
+  defp normalize_key(key) when is_atom(key), do: key
+  defp normalize_key("owner"), do: :owner
+  defp normalize_key("cwd"), do: :cwd
+  defp normalize_key("capabilities"), do: :capabilities
+  defp normalize_key(other), do: other
 end
