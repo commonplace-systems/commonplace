@@ -253,4 +253,5 @@ defmodule Commonplace.Sync.TwoPeerMergeE2ETest do
       other -> other
     end
   end
+
 end

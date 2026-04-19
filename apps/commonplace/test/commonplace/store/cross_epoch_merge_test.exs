@@ -21,6 +21,8 @@ defmodule Commonplace.Store.CrossEpochMergeTest do
   """
   use ExUnit.Case, async: false
 
+  alias Commonplace.Document.ContentType
+  alias Commonplace.LateEditAutoTranslator
   alias Commonplace.Store.{Commit, CommitStore, CrossEpochMerge}
   alias Yelixer.{BlockStore, Doc, Encoding}
   alias Yelixer.Types.Text
@@ -405,6 +407,84 @@ defmodule Commonplace.Store.CrossEpochMergeTest do
       assert :already_exists = CommitStore.import_commit(store, merge)
       assert {:ok, stored} = CommitStore.get_commit(store, merge.id)
       assert stored.update == merge.update
+    end
+  end
+
+  # -------------------- CX-k250: fallback-translated sibling --------
+
+  describe "merge/3 — fallback-translated sibling (CX-k250)" do
+    test "real positional-fallback path (ContentType envelope): merge preserves sibling's edit",
+         %{store: store} do
+      # CX-k250 / CX-t47h scenario using the production ContentType
+      # envelope that filesystem sync actually uses. Positional rebase
+      # reads `ContentType.get_content` which pulls the Yjs type named
+      # "content" — fixtures that use raw `Text` on a custom type name
+      # "t" bypass ContentType entirely and rebase sees pre == dirty ==
+      # nil, returning new_doc unchanged (emitting an empty translated
+      # update). That bypass turned out to be the real source of my
+      # earlier diagnostic's empty-merge; this test verifies the
+      # production path round-trips.
+      uuid = "k250-content"
+      {:ok, _genesis} = CommitStore.ensure_genesis(store, uuid)
+
+      # Shared base with ContentType envelope.
+      doc_p = Doc.new(client_id: 1)
+      doc_p = ContentType.create(doc_p, :text, "greet.txt")
+      doc_p = ContentType.insert_text(doc_p, 0, "abc")
+      e_p = Encoding.encode_update(doc_p)
+      _reg = CommitStore.create_chained_commit(store, uuid, e_p, %{kind: :regular})
+      {:ok, c_snapshot} = CommitStore.snapshot(store, uuid)
+      base_sv = BlockStore.state_vector(doc_p.store)
+
+      # L chains on snap_a, adding "X" at the start.
+      {:ok, c_doc} = Encoding.apply_update(Doc.new(), c_snapshot.update)
+      c_update = Encoding.encode_update(c_doc)
+
+      doc_l = Doc.new(client_id: 2)
+      {:ok, doc_l} = Encoding.apply_update(doc_l, c_update)
+      doc_l = ContentType.insert_text(doc_l, 0, "X")
+      _l_commit =
+        CommitStore.create_chained_commit(
+          store,
+          uuid,
+          Encoding.encode_update(doc_l),
+          %{kind: :regular}
+        )
+
+      {:ok, snap_l} = CommitStore.snapshot(store, uuid)
+
+      # Cross-epoch R edit authored against the OLD snap_a namespace.
+      doc_r = Doc.new(client_id: 3)
+      doc_r = ContentType.create(doc_r, :text, "greet.txt")
+      doc_r = ContentType.insert_text(doc_r, 0, "abc")
+      {:ok, doc_r} = Encoding.apply_update(doc_r, c_update)
+      doc_r = ContentType.insert_text(doc_r, 3, "Y")
+      r_edit_update = Encoding.encode_diff(doc_r, base_sv)
+
+      r_edit =
+        Commit.new(uuid, r_edit_update, nil, %{
+          kind: :regular,
+          snapshot_parent: c_snapshot.id
+        })
+
+      {:ok, tag, translated} =
+        LateEditAutoTranslator.maybe_auto_translate(store, r_edit, fallback: true)
+
+      assert tag in [:translated, :fallback],
+             "translator should succeed on this shape; got #{inspect(tag)}"
+
+      :ok =
+        CommitStore.import_commit(store, translated, validator: fn _ -> :ok end)
+
+      assert {:ok, merge} = CrossEpochMerge.merge(store, snap_l.id, translated.id)
+
+      {:ok, d_l} = Encoding.apply_update(Doc.new(), snap_l.update)
+      {:ok, d_merged} = Encoding.apply_update(d_l, merge.update)
+
+      content = ContentType.get_content(d_merged)
+
+      assert String.contains?(content, "Y"),
+             "missing sibling's edit — merge update size=#{byte_size(merge.update)}, content=#{inspect(content)}"
     end
   end
 end
