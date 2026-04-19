@@ -248,6 +248,49 @@ defmodule Commonplace.Sync.EntryAgentTest do
     end
   end
 
+  describe "producer-side snapshot hook (CX-tvyb)" do
+    test "writer-local snapshot fires after threshold regular commits",
+         %{store: store, sync_dir: dir} do
+      doc_uuid = UUID.uuid4()
+      file_path = Path.join(dir, "producer_snap.txt")
+
+      {:ok, agent} =
+        EntryAgent.start_link(
+          doc_uuid: doc_uuid,
+          file_path: file_path,
+          store: store,
+          snapshot_chain_threshold: 3
+        )
+
+      # Four disk writes across four sync cycles. Chain length after
+      # each regular commit: 1, 2, 3, 4. At length 3, the producer hook
+      # cuts a snapshot (chain_length resets to 0), and the fourth
+      # write chains a single regular commit on top of the snapshot.
+      for content <- ["a", "ab", "abc", "abcd"] do
+        File.write!(file_path, content)
+        EntryAgent.sync_once(agent)
+      end
+
+      snapshot_commits =
+        store
+        |> CommitStore.all_commit_ids_for_doc(doc_uuid)
+        |> MapSet.to_list()
+        |> Enum.map(fn id ->
+          {:ok, commit} = CommitStore.get_commit(store, id)
+          commit
+        end)
+        |> Enum.filter(fn c -> c.metadata[:kind] == :snapshot end)
+        # Genesis for fresh docs is stamped kind :genesis not :snapshot,
+        # so anything that clears this filter is a producer-cut snapshot.
+        |> Enum.reject(fn c -> c.metadata[:kind] == :genesis end)
+
+      refute Enum.empty?(snapshot_commits),
+             "expected a producer-side snapshot after crossing threshold=3"
+
+      EntryAgent.stop(agent)
+    end
+  end
+
   describe "lifecycle" do
     test "stop/1 shuts down gracefully", %{store: store, sync_dir: dir} do
       doc_uuid = UUID.uuid4()

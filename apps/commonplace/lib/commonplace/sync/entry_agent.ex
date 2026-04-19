@@ -18,6 +18,7 @@ defmodule Commonplace.Sync.EntryAgent do
 
   use GenServer
 
+  alias Commonplace.SnapshotTrigger
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Document.ContentType
   alias Commonplace.Sync.Export
@@ -29,7 +30,8 @@ defmodule Commonplace.Sync.EntryAgent do
     :last_written_commit_id,
     :known_hash,
     :shadow_dir,
-    :standalone
+    :standalone,
+    :snapshot_chain_threshold
   ]
 
   # --- Public API ---
@@ -59,7 +61,8 @@ defmodule Commonplace.Sync.EntryAgent do
       last_written_commit_id: nil,
       known_hash: nil,
       shadow_dir: Keyword.get(opts, :shadow_dir),
-      standalone: Keyword.get(opts, :standalone, false)
+      standalone: Keyword.get(opts, :standalone, false),
+      snapshot_chain_threshold: Keyword.get(opts, :snapshot_chain_threshold)
     }
 
     {:ok, state}
@@ -96,6 +99,14 @@ defmodule Commonplace.Sync.EntryAgent do
 
           commit = CommitStoreClient.create_chained_commit(state.store, state.doc_uuid, update)
 
+          # CX-tvyb: producer-side snapshot hook. After persisting the
+          # writer's edit, check the chain-length threshold and cut a
+          # snapshot if crossed. Safe to call concurrently with other
+          # peers' triggers — CAS dedup in `write_snapshot_cas` lets the
+          # first deterministic-anyone caller win and turns the rest into
+          # a no-op (CX-umz parallel).
+          maybe_trigger_snapshot(state)
+
           %{state | last_written_commit_id: commit.id, known_hash: disk_hash}
         end
 
@@ -103,6 +114,19 @@ defmodule Commonplace.Sync.EntryAgent do
         # File doesn't exist — skip outbound
         state
     end
+  end
+
+  # CX-tvyb: dispatch maybe_snapshot with the per-agent threshold (when
+  # configured) — otherwise fall through to the primitive's default
+  # (Application env / @default_chain_length_threshold).
+  defp maybe_trigger_snapshot(state) do
+    opts =
+      case state.snapshot_chain_threshold do
+        nil -> []
+        n when is_integer(n) -> [chain_length_threshold: n]
+      end
+
+    SnapshotTrigger.maybe_snapshot(state.store, state.doc_uuid, opts)
   end
 
   # --- Inbound sync (CRDT → disk) ---
