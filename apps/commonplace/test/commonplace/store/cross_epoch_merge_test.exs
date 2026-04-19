@@ -453,10 +453,12 @@ defmodule Commonplace.Store.CrossEpochMergeTest do
 
       {:ok, snap_l} = CommitStore.snapshot(store, uuid)
 
-      # Cross-epoch R edit authored against the OLD snap_a namespace.
+      # Cross-epoch R edit authored against the OLD c_snap namespace.
+      # Build doc_r the way production does: start fresh, apply c_snap,
+      # then insert. Pre-creating an envelope under client=3 BEFORE
+      # applying c_snap would author duplicate _type / _name / "abc"
+      # items in the client=3 namespace (CX-sqcg).
       doc_r = Doc.new(client_id: 3)
-      doc_r = ContentType.create(doc_r, :text, "greet.txt")
-      doc_r = ContentType.insert_text(doc_r, 0, "abc")
       {:ok, doc_r} = Encoding.apply_update(doc_r, c_update)
       doc_r = ContentType.insert_text(doc_r, 3, "Y")
       r_edit_update = Encoding.encode_diff(doc_r, base_sv)
@@ -485,6 +487,14 @@ defmodule Commonplace.Store.CrossEpochMergeTest do
 
       assert String.contains?(content, "Y"),
              "missing sibling's edit — merge update size=#{byte_size(merge.update)}, content=#{inspect(content)}"
+
+      # CX-sqcg: stronger acceptance — the merge must add the sibling's
+      # edit WITHOUT duplicating the baseline. snap_l carries "Xabc" (4)
+      # + sibling adds "Y" (1) = 5 chars total. Anything longer means
+      # CrossEpochMerge.merge emitted bytes that re-insert content
+      # already present in D_L.
+      refute String.length(content) > 5,
+             "merge.update duplicated baseline (length #{String.length(content)}): #{inspect(content)}"
     end
   end
 end
