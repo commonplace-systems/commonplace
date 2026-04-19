@@ -57,7 +57,12 @@ defmodule Commonplace.Application do
   # `<data_dir>/root` file and we skip starting the reaper entirely.
   def presence_reaper_children do
     case Commonplace.Workspace.root_uuid() do
-      {:ok, root_uuid} ->
+      {:ok, _root_uuid} ->
+        # CX-4wl: omit a static :root_uuid so the reaper resolves the
+        # workspace root each scan tick. Booting only when a root file
+        # exists keeps the no-workspace cases (test runs, fresh installs)
+        # from launching a useless reaper, but in the long-running case
+        # we want it to follow `cp checkout` rerooting without a restart.
         [
           %{
             id: Commonplace.Presence.ReaperSupervisor,
@@ -65,7 +70,7 @@ defmodule Commonplace.Application do
             start:
               {Supervisor, :start_link,
                [
-                 [{Commonplace.Presence.Reaper, [root_uuid: root_uuid]}],
+                 [{Commonplace.Presence.Reaper, []}],
                  [
                    strategy: :one_for_one,
                    name: Commonplace.Presence.ReaperSupervisor

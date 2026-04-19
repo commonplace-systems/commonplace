@@ -11,10 +11,16 @@ defmodule Commonplace.Presence.Reaper do
   alias Commonplace.Presence
   alias Commonplace.Tree.Schema
   alias Commonplace.Store.CommitStoreClient
+  alias Commonplace.Workspace
 
   @default_interval 15_000
   @default_stale_threshold 30_000
 
+  # CX-4wl: `root_uuid` is the *static-override* fallback used by tests
+  # that want to pin the reaper to a specific root regardless of
+  # `<data_dir>/root`. Production omits this and the reaper re-resolves
+  # the workspace root on every scan tick (so `cp checkout` rerooting a
+  # long-running node is followed automatically).
   defstruct [:root_uuid, :store, :interval, :stale_threshold]
 
   def start_link(opts) do
@@ -57,7 +63,7 @@ defmodule Commonplace.Presence.Reaper do
 
   @impl true
   def init(opts) do
-    root_uuid = Keyword.fetch!(opts, :root_uuid)
+    root_uuid = Keyword.get(opts, :root_uuid)
     store = Keyword.get(opts, :store, CommitStoreClient)
     interval = Keyword.get(opts, :interval, @default_interval)
     stale_threshold = Keyword.get(opts, :stale_threshold, @default_stale_threshold)
@@ -75,16 +81,36 @@ defmodule Commonplace.Presence.Reaper do
 
   @impl true
   def handle_info(:scan, state) do
-    reaped = reap(state.root_uuid, state.store, state.stale_threshold)
+    case current_root_uuid(state) do
+      {:ok, root_uuid} ->
+        reaped = reap(root_uuid, state.store, state.stale_threshold)
 
-    if length(reaped) > 0 do
-      require Logger
-      Logger.info("Presence reaper removed #{length(reaped)} stale entries: #{Enum.join(reaped, ", ")}")
+        if length(reaped) > 0 do
+          require Logger
+
+          Logger.info(
+            "Presence reaper removed #{length(reaped)} stale entries: #{Enum.join(reaped, ", ")}"
+          )
+        end
+
+      {:error, _reason} ->
+        # No workspace root configured this tick — skip silently and try
+        # again next interval. CX-4wl: we don't crash because the root
+        # may legitimately be absent during reroot windows.
+        :ok
     end
 
     schedule_scan(state)
     {:noreply, state}
   end
+
+  # CX-4wl: prefer the static override if one was passed at init time
+  # (test ergonomics, plus a way to pin the reaper for environments
+  # where the workspace root file isn't authoritative). Otherwise read
+  # the live workspace root each tick so a CLI-driven reroot is
+  # picked up without a restart.
+  defp current_root_uuid(%{root_uuid: uuid}) when is_binary(uuid), do: {:ok, uuid}
+  defp current_root_uuid(_state), do: Workspace.root_uuid()
 
   defp schedule_scan(state) do
     Process.send_after(self(), :scan, state.interval)
