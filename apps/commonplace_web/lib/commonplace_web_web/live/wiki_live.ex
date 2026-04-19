@@ -913,12 +913,24 @@ defmodule CommonplaceWebWeb.WikiLive do
   # If page is a presence doc, look up the cold identity (from __identities__)
   # and attach it to the content map under :__identity__ so the renderer can
   # display first_seen/last_seen/public_keys without a second round-trip.
+  #
+  # CX-5gp: the page filename can be collision-renamed (e.g. claude-code-abc.bot
+  # for the second presence file with actor name "claude-code"). The stored
+  # content carries the original actor name under "name", so prefer that for
+  # the Identity.lookup. Fall back to the parsed filename only if the stored
+  # name is missing (legacy / pre-CX-4ba presence docs).
   defp maybe_enrich_presence(page_name, %{} = content, root_uuid)
        when is_binary(page_name) and not is_nil(root_uuid) do
     case Presence.parse_honorific(page_name) do
-      {:ok, name, type} ->
+      {:ok, parsed_name, type} ->
+        actor_name =
+          case Map.get(content, "name") do
+            stored when is_binary(stored) and stored != "" -> stored
+            _ -> parsed_name
+          end
+
         identity =
-          case Identity.lookup(name, type, root_uuid) do
+          case Identity.lookup(actor_name, type, root_uuid) do
             {:ok, identity_uuid} -> Identity.read(identity_uuid)
             _ -> nil
           end

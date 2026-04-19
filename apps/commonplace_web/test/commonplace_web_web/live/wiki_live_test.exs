@@ -76,6 +76,46 @@ defmodule CommonplaceWebWeb.WikiLiveTest do
   end
 
   describe "presence identity enrichment" do
+    test "collision-renamed presence file still resolves cold identity (CX-5gp)",
+         %{conn: conn, root: root_uuid} do
+      # Register one cold identity. There's only ONE Identity per actor
+      # name+type, regardless of how many presence files end up renamed.
+      {:ok, _identity_uuid} = Identity.register("claude-code", :bot, root_uuid)
+
+      # Two presence files for the same actor — second one collision-
+      # renames to "claude-code-<suffix>.bot", but the doc's `name` field
+      # still stores the original "claude-code".
+      {:ok, _first_uuid} = Presence.create("claude-code", :bot, root_uuid)
+      {:ok, second_uuid} = Presence.create("claude-code", :bot, root_uuid)
+
+      # Find the suffixed filename so we can navigate to it.
+      schema_doc = read_root_schema(root_uuid)
+      suffixed_name =
+        schema_doc
+        |> Schema.list_entries()
+        |> Enum.find(fn entry ->
+          entry.node_id == second_uuid and entry.name != "claude-code.bot"
+        end)
+        |> Map.fetch!(:name)
+
+      assert suffixed_name != "claude-code.bot",
+             "test fixture invariant: second create must collision-rename"
+
+      {:ok, _view, html} = live(conn, "/wiki/#{suffixed_name}")
+
+      assert html =~ ~s(data-testid="presence-card"),
+             "presence card should render for collision-renamed file"
+
+      assert html =~ "cp-presence-identity",
+             "identity panel missing on collision-renamed presence file"
+
+      assert html =~ "first seen:",
+             "Identity.lookup should find the cold identity via stored content[name], not the parsed filename"
+
+      refute html =~ "no cold identity record",
+             "wiki_live used the parsed filename for Identity.lookup and missed the cold identity"
+    end
+
     test "renders identity panel on initial load and preserves it across live refreshes",
          %{conn: conn, root: root_uuid} do
       # Register a cold identity (creates __identities__/bartleby.bot with
@@ -109,5 +149,12 @@ defmodule CommonplaceWebWeb.WikiLiveTest do
       assert refreshed =~ "first seen:"
       refute refreshed =~ "no cold identity record"
     end
+  end
+
+  defp read_root_schema(root_uuid) do
+    {:ok, commit} = CommitStore.latest_commit(Commonplace.Store.CommitStore, root_uuid)
+    doc = Schema.new_schema()
+    {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
+    doc
   end
 end
