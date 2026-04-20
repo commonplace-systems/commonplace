@@ -113,7 +113,8 @@ defmodule Commonplace.Workspace do
     fresh = UUID.uuid4()
     tmp = Path.join(data_dir, ".node_id.tmp")
 
-    with :ok <- File.write(tmp, fresh, [:write]),
+    with :ok <- File.mkdir_p(data_dir),
+         :ok <- File.write(tmp, fresh, [:write]),
          :ok <- File.chmod(tmp, 0o600),
          :ok <- File.rename(tmp, path),
          {:ok, content} <- File.read(path) do

@@ -693,7 +693,7 @@ defmodule Commonplace.Store.CommitStore do
     end
   end
 
-  defp do_write_commit(state, doc_uuid, update, parent_id, metadata, opts \\ []) do
+  defp do_write_commit(state, doc_uuid, update, parent_id, metadata, opts) do
     parent_id = maybe_stamp_genesis(state.db, doc_uuid, parent_id)
     metadata = maybe_stamp_snapshot_parent(state.db, parent_id, metadata)
 
