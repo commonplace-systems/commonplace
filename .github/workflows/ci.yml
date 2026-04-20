@@ -37,4 +37,7 @@ jobs:
         run: mix compile --warnings-as-errors
 
       - name: Run tests
-        run: mix test
+        # diff_yjs is a developer-only differential test against the JS
+        # reference implementation living at a hardcoded local path; it
+        # cannot run on a clean CI runner.
+        run: mix test --exclude diff_yjs
