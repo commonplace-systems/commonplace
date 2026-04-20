@@ -12,8 +12,11 @@ defmodule Commonplace.Store.CommitStore do
     GenServer.start_link(__MODULE__, opts, name: name)
   end
 
-  def create_commit(server \\ __MODULE__, doc_uuid, update, parent_id, metadata \\ %{}) do
-    GenServer.call(server, {:create_commit, doc_uuid, update, parent_id, metadata})
+  def create_commit(server \\ __MODULE__, doc_uuid, update, parent_id, metadata \\ %{}, opts \\ []) do
+    GenServer.call(
+      server,
+      {:create_commit, doc_uuid, update, parent_id, metadata, opts}
+    )
   end
 
   @doc """
@@ -27,8 +30,8 @@ defmodule Commonplace.Store.CommitStore do
   parent, and produce siblings — the second write's `:latest` bump won
   and the first was silently orphaned from linear walks.
   """
-  def create_chained_commit(server \\ __MODULE__, doc_uuid, update, metadata \\ %{}) do
-    GenServer.call(server, {:create_chained_commit, doc_uuid, update, metadata})
+  def create_chained_commit(server \\ __MODULE__, doc_uuid, update, metadata \\ %{}, opts \\ []) do
+    GenServer.call(server, {:create_chained_commit, doc_uuid, update, metadata, opts})
   end
 
   @doc """
@@ -324,7 +327,17 @@ defmodule Commonplace.Store.CommitStore do
 
   @impl true
   def handle_call({:create_commit, doc_uuid, update, parent_id, metadata}, _from, state) do
-    commit = do_write_commit(state, doc_uuid, update, parent_id, metadata)
+    commit = do_write_commit(state, doc_uuid, update, parent_id, metadata, [])
+    {:reply, commit, state}
+  end
+
+  @impl true
+  def handle_call(
+        {:create_commit, doc_uuid, update, parent_id, metadata, opts},
+        _from,
+        state
+      ) do
+    commit = do_write_commit(state, doc_uuid, update, parent_id, metadata, opts)
     {:reply, commit, state}
   end
 
@@ -421,14 +434,27 @@ defmodule Commonplace.Store.CommitStore do
   end
 
   @impl true
-  def handle_call({:create_chained_commit, doc_uuid, update, metadata}, _from, state) do
+  def handle_call({:create_chained_commit, doc_uuid, update, metadata}, from, state) do
+    handle_call(
+      {:create_chained_commit, doc_uuid, update, metadata, []},
+      from,
+      state
+    )
+  end
+
+  @impl true
+  def handle_call(
+        {:create_chained_commit, doc_uuid, update, metadata, opts},
+        _from,
+        state
+      ) do
     parent_id =
       case CubDB.get(state.db, {:latest, doc_uuid}) do
         nil -> nil
         commit_id -> commit_id
       end
 
-    commit = do_write_commit(state, doc_uuid, update, parent_id, metadata)
+    commit = do_write_commit(state, doc_uuid, update, parent_id, metadata, opts)
     {:reply, commit, state}
   end
 
@@ -667,10 +693,13 @@ defmodule Commonplace.Store.CommitStore do
     end
   end
 
-  defp do_write_commit(state, doc_uuid, update, parent_id, metadata) do
+  defp do_write_commit(state, doc_uuid, update, parent_id, metadata, opts \\ []) do
     parent_id = maybe_stamp_genesis(state.db, doc_uuid, parent_id)
     metadata = maybe_stamp_snapshot_parent(state.db, parent_id, metadata)
-    commit = Commit.new(doc_uuid, update, parent_id, metadata) |> maybe_sign_commit()
+
+    commit =
+      Commit.new(doc_uuid, update, parent_id, metadata)
+      |> maybe_sign_commit(Keyword.get(opts, :signing_context))
 
     CubDB.put_multi(state.db, [
       {{:commit, commit.id}, commit},
@@ -843,7 +872,22 @@ defmodule Commonplace.Store.CommitStore do
     end
   end
 
-  defp maybe_sign_commit(commit) do
+  # CX-hoj: prefer the per-call signing context when one is supplied.
+  # Pass `signing_context: :unsigned` to deliberately skip signing even
+  # when the global SecretStore has a key configured (used by MCP-MVP
+  # agent commits that should not inherit the human's identity).
+  # Default (nil context) falls back to the global SecretStore — the
+  # legacy behavior, preserved for callers that haven't been updated.
+  defp maybe_sign_commit(commit, signing_context \\ nil)
+
+  defp maybe_sign_commit(commit, :unsigned), do: commit
+
+  defp maybe_sign_commit(commit, %Commonplace.Crypto.SigningContext{} = ctx) do
+    signer_id = Commonplace.Crypto.Signing.signer_id(ctx.identity_uuid, ctx.public_key)
+    Commonplace.Crypto.Signing.sign_commit(commit, ctx.private_key, signer_id)
+  end
+
+  defp maybe_sign_commit(commit, nil) do
     case Process.whereis(Commonplace.Store.SecretStore) do
       nil ->
         commit
@@ -853,7 +897,6 @@ defmodule Commonplace.Store.CommitStore do
              {:ok, private_key} <- Base.decode64(encoded_key),
              {:ok, encoded_pub} <- Commonplace.Store.SecretStore.get("signing_pub:default"),
              {:ok, public_key} <- Base.decode64(encoded_pub) do
-          # Get identity UUID if configured
           identity_uuid =
             case Commonplace.Store.SecretStore.get("signing_identity") do
               {:ok, uuid} -> uuid

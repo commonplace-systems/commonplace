@@ -99,4 +99,88 @@ defmodule Commonplace.Crypto.SigningIntegrationTest do
     SecretStore.delete("signing_key:default")
     SecretStore.delete("signing_pub:default")
   end
+
+  describe "per-call signing context (CX-hoj)" do
+    test "explicit signing_context overrides global SecretStore", %{store: store} do
+      # Global slot: the human user.
+      {human_pub, human_priv} = Signing.generate_keypair()
+      SecretStore.set("signing_key:default", Base.encode64(human_priv))
+      SecretStore.set("signing_pub:default", Base.encode64(human_pub))
+      SecretStore.set("signing_identity", "human-user")
+
+      # Per-call: the agent (different identity).
+      {agent_pub, agent_priv} = Signing.generate_keypair()
+
+      agent_ctx = %Commonplace.Crypto.SigningContext{
+        identity_uuid: "agent-mcp-1234",
+        private_key: agent_priv,
+        public_key: agent_pub
+      }
+
+      # Agent commit — should be signed with the agent's keypair.
+      agent_commit =
+        CommitStore.create_commit(store, UUID.uuid4(), "agent data", nil, %{},
+          signing_context: agent_ctx
+        )
+
+      assert agent_commit.signature != nil
+      assert String.starts_with?(agent_commit.signer_id, "agent-mcp-1234@")
+      assert :ok = Signing.verify_commit(agent_commit, agent_pub)
+
+      # Concurrent human commit (no per-call context) — should still
+      # use the global slot (human_priv), NOT the agent's key.
+      human_commit = CommitStore.create_commit(store, UUID.uuid4(), "human data", nil)
+
+      assert human_commit.signature != nil
+      assert String.starts_with?(human_commit.signer_id, "human-user@")
+      assert :ok = Signing.verify_commit(human_commit, human_pub)
+
+      # Cross-check: agent's commit must NOT verify under human's key,
+      # and vice versa.
+      assert {:error, _} = Signing.verify_commit(agent_commit, human_pub)
+      assert {:error, _} = Signing.verify_commit(human_commit, agent_pub)
+
+      SecretStore.delete("signing_key:default")
+      SecretStore.delete("signing_pub:default")
+      SecretStore.delete("signing_identity")
+    end
+
+    test "signing_context: :unsigned skips signing even when global slot is set",
+         %{store: store} do
+      {pub, priv} = Signing.generate_keypair()
+      SecretStore.set("signing_key:default", Base.encode64(priv))
+      SecretStore.set("signing_pub:default", Base.encode64(pub))
+
+      commit =
+        CommitStore.create_commit(store, UUID.uuid4(), "unsigned", nil, %{},
+          signing_context: :unsigned
+        )
+
+      assert commit.signature == nil
+      assert commit.signer_id == nil
+
+      SecretStore.delete("signing_key:default")
+      SecretStore.delete("signing_pub:default")
+    end
+
+    test "signing_context flows through create_chained_commit too", %{store: store} do
+      {agent_pub, agent_priv} = Signing.generate_keypair()
+
+      ctx = %Commonplace.Crypto.SigningContext{
+        identity_uuid: "agent-2",
+        private_key: agent_priv,
+        public_key: agent_pub
+      }
+
+      uuid = UUID.uuid4()
+      first = CommitStore.create_commit(store, uuid, "v1", nil, %{}, signing_context: ctx)
+      assert String.starts_with?(first.signer_id, "agent-2@")
+
+      second =
+        CommitStore.create_chained_commit(store, uuid, "v2", %{}, signing_context: ctx)
+
+      assert String.starts_with?(second.signer_id, "agent-2@")
+      assert :ok = Signing.verify_commit(second, agent_pub)
+    end
+  end
 end
