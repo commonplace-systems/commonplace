@@ -1,5 +1,7 @@
 defmodule Commonplace.SmartDocTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
+
+  alias Commonplace.SmartDoc
 
   describe "__ports__/0" do
     test "returns all declared ports" do
@@ -91,6 +93,45 @@ defmodule Commonplace.SmartDocTest do
 
       assert DefaultCallbacks.handle_blue("any", %{}) == :ok
       assert DefaultCallbacks.handle_red("any", :event) == :ok
+    end
+  end
+
+  describe "push_cyan/3 (CX-023)" do
+    # Uses the application-default CommitStore + CommandRouter (started
+    # by the test env's commonplace app). push_cyan/3 dispatches to the
+    # default-name CommandRouter, so we exercise the same path the
+    # production smart-doc emit goes through.
+    test "applies a CRDT-aware diff (preserves unchanged regions)" do
+      store = Commonplace.Store.CommitStore
+      uuid = UUID.uuid4()
+
+      doc = Yelixer.Doc.new()
+      doc = Commonplace.Document.ContentType.create(doc, :text, "doc.txt")
+      doc = Commonplace.Document.ContentType.insert_text(doc, 0, "the quick brown fox")
+      update = Yelixer.Encoding.encode_update(doc)
+      Commonplace.Store.CommitStore.create_commit(store, uuid, update, nil)
+
+      state = %{resolved_ports: %{"out" => uuid}}
+
+      assert :ok = SmartDoc.push_cyan(state, "out", "the slow brown fox")
+
+      {:ok, result} = Commonplace.Tree.DocBuilder.reconstruct_snapshot(store, uuid)
+      content = Commonplace.Document.ContentType.get_content(result)
+
+      assert content == "the slow brown fox",
+             "push_cyan should produce a clean diffed result, got #{inspect(content)}"
+
+      # Diff path means only the changed region churns — applying the
+      # exact same text twice should yield no functional change.
+      assert :ok = SmartDoc.push_cyan(state, "out", "the slow brown fox")
+
+      {:ok, result2} = Commonplace.Tree.DocBuilder.reconstruct_snapshot(store, uuid)
+      assert Commonplace.Document.ContentType.get_content(result2) == "the slow brown fox"
+    end
+
+    test "returns :error when docref is not in resolved_ports" do
+      state = %{resolved_ports: %{"known" => UUID.uuid4()}}
+      assert :error = SmartDoc.push_cyan(state, "unknown", "any content")
     end
   end
 end
