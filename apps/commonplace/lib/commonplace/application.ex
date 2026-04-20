@@ -42,7 +42,12 @@ defmodule Commonplace.Application do
         {DynamicSupervisor, name: Commonplace.Document.Supervisor, strategy: :one_for_one},
         {DynamicSupervisor, name: Commonplace.Checkout.Supervisor, strategy: :one_for_one},
         {Commonplace.Dataflow.GraphRegistry, []},
-        Commonplace.CommandRouter
+        Commonplace.CommandRouter,
+        # CX-fab5: periodic snapshot sweep over every doc in the local
+        # CommitStore. Composes safely with the producer-side hook
+        # (CX-tvyb) and the explicit CLI command (CX-2ok0) — concurrent
+        # snapshot attempts at the same parent dedup via CX-umz.
+        {Commonplace.SnapshotSweeper, []}
       ] ++ presence_reaper_children()
 
     opts = [strategy: :one_for_one, name: Commonplace.Supervisor]
