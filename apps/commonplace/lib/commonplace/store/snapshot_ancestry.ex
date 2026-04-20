@@ -35,6 +35,46 @@ defmodule Commonplace.Store.SnapshotAncestry do
   end
 
   @doc """
+  Return the ordered snapshot chain of `commit_id`'s namespace (CX-e31).
+
+  The chain is `[genesis_id, s1, s2, ..., current_namespace]` — i.e.
+  every snapshot (and the terminal genesis) reachable by following
+  `metadata.snapshot_parents` back from the input's namespace. This
+  exposes the snapshot-DAG as a first-class read API: callers can
+  traverse history at snapshot granularity instead of scanning every
+  regular commit, implement branch/merge UX over the snapshot tree, or
+  detect concurrent snapshots that share a parent.
+
+  MVP limitation (inherited from `common_ancestor/3`): on encountering
+  a merge-snapshot with `snapshot_parents` ≥ 2, the walker takes the
+  first parent. Full-DAG traversal lands as a follow-up when cross-
+  merge-snapshot history becomes load-bearing.
+  """
+  @spec snapshot_chain(GenServer.server(), binary()) ::
+          {:ok, chain()} | {:error, :unknown_commit}
+  def snapshot_chain(store, commit_id) do
+    snapshot_chain_with_fetcher(fetcher_for(store), commit_id)
+  end
+
+  @doc """
+  `snapshot_chain/2` core — takes a fetcher closure `id -> commit | nil`.
+  Exposed for testing against synthetic DAGs and for callers that
+  already hold a CubDB handle.
+  """
+  @spec snapshot_chain_with_fetcher((binary() -> map() | nil), binary()) ::
+          {:ok, chain()} | {:error, :unknown_commit}
+  def snapshot_chain_with_fetcher(fetcher, commit_id) do
+    case fetcher.(commit_id) do
+      nil ->
+        {:error, :unknown_commit}
+
+      commit ->
+        ns = Namespace.current_namespace(commit)
+        {:ok, Enum.reverse(walk_down(fetcher, ns, []))}
+    end
+  end
+
+  @doc """
   Walker core — takes a fetcher closure `id -> commit | nil`. Exposed for
   testing against synthetic DAGs and for callers that already hold a
   CubDB handle (see `Namespace.validate_commit_from_db/2` for the same
