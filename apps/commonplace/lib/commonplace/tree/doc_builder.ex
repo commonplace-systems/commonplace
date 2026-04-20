@@ -32,10 +32,45 @@ defmodule Commonplace.Tree.DocBuilder do
         commits_to_apply = commits |> trim_to_latest_snapshot() |> Enum.reject(&genesis?/1)
         doc = Doc.new()
 
-        Enum.reduce(commits_to_apply, {:ok, doc}, fn c, {:ok, d} ->
-          Encoding.apply_update(d, c.update)
-        end)
+        result =
+          Enum.reduce(commits_to_apply, {:ok, doc}, fn c, {:ok, d} ->
+            Encoding.apply_update(d, c.update)
+          end)
+
+        # CX-fkvc: opportunistically trigger a snapshot when the post-trim
+        # chain is long enough to be worth compacting. The trigger primitive
+        # is itself idempotent / CAS-safe, so racing the producer-side hook
+        # (CX-tvyb), the periodic sweeper (CX-fab5), or the explicit CLI
+        # command (CX-2ok0) collapses to a single snapshot via CX-umz.
+        # Fired in a Task so the read isn't blocked on the snapshot build.
+        maybe_lazy_snapshot(store, uuid, length(commits_to_apply))
+
+        result
     end
+  end
+
+  defp maybe_lazy_snapshot(store, uuid, chain_length) do
+    if lazy_snapshot_enabled?() and chain_length >= lazy_snapshot_threshold() do
+      Task.start(fn -> Commonplace.SnapshotTrigger.maybe_snapshot(store, uuid) end)
+    end
+
+    :ok
+  end
+
+  # CX-fkvc: default-on in dev/prod, default-off in test (see
+  # config/test.exs) so background snapshot writes don't race with
+  # test isolation. Tests that exercise the lazy path flip this in
+  # their setup.
+  defp lazy_snapshot_enabled? do
+    Application.get_env(:commonplace, :reader_lazy_snapshot_enabled, true)
+  end
+
+  defp lazy_snapshot_threshold do
+    Application.get_env(
+      :commonplace,
+      :reader_lazy_snapshot_threshold,
+      100
+    )
   end
 
   # Given commits in chronological order (oldest -> newest), return the

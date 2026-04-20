@@ -16,7 +16,7 @@ defmodule Commonplace.CLI.SnapshotTest do
     # Reuse the running app's CommitStore + its configured data_dir.
     # Each test gets its own root_uuid so they don't interact via the
     # shared store's name index.
-    data_dir = Application.get_env(:commonplace, :data_dir)
+    data_dir = Application.get_env(:commonplace, :data_dir) || "tmp/test_data"
     File.mkdir_p!(data_dir)
 
     root_uuid = UUID.uuid4()

@@ -42,16 +42,26 @@ defmodule Commonplace.Application do
         {DynamicSupervisor, name: Commonplace.Document.Supervisor, strategy: :one_for_one},
         {DynamicSupervisor, name: Commonplace.Checkout.Supervisor, strategy: :one_for_one},
         {Commonplace.Dataflow.GraphRegistry, []},
-        Commonplace.CommandRouter,
-        # CX-fab5: periodic snapshot sweep over every doc in the local
-        # CommitStore. Composes safely with the producer-side hook
-        # (CX-tvyb) and the explicit CLI command (CX-2ok0) — concurrent
-        # snapshot attempts at the same parent dedup via CX-umz.
-        {Commonplace.SnapshotSweeper, []}
-      ] ++ presence_reaper_children()
+        Commonplace.CommandRouter
+      ] ++ snapshot_sweeper_children() ++ presence_reaper_children()
 
     opts = [strategy: :one_for_one, name: Commonplace.Supervisor]
     Supervisor.start_link(children, opts)
+  end
+
+  @doc false
+  # CX-fab5: periodic snapshot sweep over every doc in the local
+  # CommitStore. Composes safely with the producer-side hook (CX-tvyb)
+  # and the explicit CLI command (CX-2ok0) — concurrent snapshot
+  # attempts at the same parent dedup via CX-umz. Default-on in dev/prod;
+  # default-off in test (see config/test.exs) so async snapshot writes
+  # don't race with test isolation.
+  def snapshot_sweeper_children do
+    if Application.get_env(:commonplace, :snapshot_sweeper_enabled, true) do
+      [{Commonplace.SnapshotSweeper, []}]
+    else
+      []
+    end
   end
 
   @doc false

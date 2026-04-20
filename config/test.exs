@@ -22,4 +22,9 @@ config :phoenix,
   sort_verified_routes_query_params: true
 
 config :commonplace,
-  data_dir: "tmp/test_data"
+  data_dir: "tmp/test_data",
+  # CX-fab5 / CX-fkvc: keep background snapshot services off by default
+  # in tests so async writes don't race with test isolation. Tests that
+  # need the sweeper or the lazy trigger flip these flags in their setup.
+  snapshot_sweeper_enabled: false,
+  reader_lazy_snapshot_enabled: false
