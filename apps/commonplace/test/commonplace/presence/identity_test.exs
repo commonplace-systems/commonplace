@@ -181,17 +181,14 @@ defmodule Commonplace.Presence.IdentityTest do
       assert content2["written_by_b"] == "beta_value"
     end
 
-    # The previous implementation derived the write client_id from
-    # `:erlang.phash2(uuid, ...)` alone. That meant every BEAM node writing
-    # to the same identity doc derived the SAME client_id — exactly the
-    # collision scenario exercised above — so concurrent writes from
-    # different nodes would silently drop one side.
-    #
-    # The fix derives client_id from `{node(), uuid}`, so different nodes
-    # get different client_ids. We can't easily change node() in a test,
-    # but we CAN observe the client_id an Identity write actually persists
-    # and confirm it matches the node-scoped derivation.
-    test "Identity writes derive client_id from {node(), uuid}, not uuid alone",
+    # CX-6g6 fix derived client_id from {node(), uuid} so distinct nodes
+    # got distinct client_ids and concurrent in-memory merges preserved
+    # both writes. CX-njf replaced node() with the workspace-scoped
+    # persistent node-id (`Workspace.node_id/0`) because node() can
+    # change across sname renames / IP reassignments and reintroduce
+    # state-vector bloat at restart boundaries. Verify the published
+    # client_id matches the new derivation.
+    test "Identity writes derive client_id from {Workspace.node_id, uuid} (CX-njf)",
          %{store: store, root: root} do
       alias Commonplace.Store.CommitStoreClient
 
@@ -202,10 +199,11 @@ defmodule Commonplace.Presence.IdentityTest do
       {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
       sv = Yelixer.BlockStore.state_vector(doc.store)
 
-      post_fix_client_id = :erlang.phash2({node(), identity_uuid}, 0xFFFF_FFFF)
+      {:ok, node_id} = Commonplace.Workspace.node_id()
+      post_fix_client_id = :erlang.phash2({node_id, identity_uuid}, 0xFFFF_FFFF)
 
       assert Map.has_key?(sv.clocks, post_fix_client_id),
-             "state vector missing node-scoped client_id #{post_fix_client_id}: #{inspect(Map.keys(sv.clocks))}"
+             "state vector missing workspace-node-id-scoped client_id #{post_fix_client_id}: #{inspect(Map.keys(sv.clocks))}"
     end
   end
 

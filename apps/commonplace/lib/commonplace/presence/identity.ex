@@ -215,16 +215,19 @@ defmodule Commonplace.Presence.Identity do
   # identity doc. That makes them a MULTI-WRITER document, unlike presence
   # docs.
   #
-  # We therefore derive the client_id from BOTH the current BEAM node and
-  # the identity UUID:
+  # We therefore derive the client_id from BOTH the workspace's persistent
+  # node-id and the identity UUID:
   #
-  #   * Within a single node, writes to the same identity doc reuse the
-  #     same client_id — so the state vector does NOT grow unboundedly
-  #     across heartbeats / restarts (fixes the original CX-3ty / CX-6g6
-  #     state-vector-bloat regression).
+  #   * Within a single workspace, writes to the same identity doc reuse
+  #     the same client_id across BEAM restarts — so the state vector
+  #     does NOT grow unboundedly across heartbeats / restarts (fixes the
+  #     original CX-3ty / CX-6g6 state-vector-bloat regression). The
+  #     persistent node-id (CX-njf, `Workspace.node_id/0`) replaces the
+  #     prior `node()` atom, which changed across sname renames and IP
+  #     reassignments and reintroduced the bloat at restart boundaries.
   #
-  #   * Across distinct nodes, client_ids differ — so if two concurrent
-  #     updates from different nodes are ever merged in memory via
+  #   * Across distinct workspaces, node-ids differ — so if two concurrent
+  #     updates from different installs are ever merged in memory via
   #     Encoding.apply_update/2, they carry distinct (client_id, clock)
   #     pairs and both survive instead of one being silently dropped as
   #     "already known".
@@ -241,16 +244,18 @@ defmodule Commonplace.Presence.Identity do
   # Under concurrent writes from two nodes racing on the same identity
   # UUID, both can observe the same parent commit, each produces a full
   # snapshot update, and both `create_chained_commit` calls succeed —
-  # yielding two SIBLING commits chained to the same parent. Whichever
-  # `:latest` pointer write lands second becomes the entire visible state,
-  # so the earlier node's concurrent write is lost at the commit-chain
-  # layer even though the in-memory CRDT merge would have preserved it.
-  #
-  # Closing that gap — detecting sibling commits and merging them so both
-  # writes flow into `:latest` — is a separate architectural change that
-  # applies to any doc using `create_chained_commit` + latest-commit reads
-  # (identity, schema, etc.) and is tracked in its own follow-up bead.
-  # Hashing {node(), uuid} is the prerequisite that makes that later fix
-  # able to actually merge both sides instead of collapsing them.
-  defp stable_client_id(uuid), do: :erlang.phash2({node(), uuid}, 0xFFFF_FFFF)
+  # yielding two SIBLING commits chained to the same parent. The general
+  # sibling-commit reconciliation lives in `Commonplace.SiblingMerger`
+  # (CX-4qn1) for content docs; identity docs do not yet flow through
+  # that primitive, but the present derivation is set up to compose with
+  # it cleanly when they do.
+  defp stable_client_id(uuid) do
+    node_id =
+      case Commonplace.Workspace.node_id() do
+        {:ok, id} -> id
+        {:error, _} -> "default"
+      end
+
+    :erlang.phash2({node_id, uuid}, 0xFFFF_FFFF)
+  end
 end

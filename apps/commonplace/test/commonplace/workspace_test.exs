@@ -41,4 +41,63 @@ defmodule Commonplace.WorkspaceTest do
       assert reason == :enoent
     end
   end
+
+  describe "node_id/0 (CX-njf)" do
+    setup do
+      dir = Path.join(System.tmp_dir!(), "cp_workspace_node_id_#{:rand.uniform(1_000_000)}")
+      File.mkdir_p!(dir)
+      prior = Application.get_env(:commonplace, :data_dir)
+      Application.put_env(:commonplace, :data_dir, dir)
+
+      on_exit(fn ->
+        case prior do
+          nil -> Application.delete_env(:commonplace, :data_dir)
+          val -> Application.put_env(:commonplace, :data_dir, val)
+        end
+
+        File.rm_rf!(dir)
+      end)
+
+      %{dir: dir}
+    end
+
+    test "auto-generates and persists a node-id on first call", %{dir: dir} do
+      refute File.exists?(Path.join(dir, "node_id"))
+
+      assert {:ok, id} = Workspace.node_id()
+      assert is_binary(id)
+      assert byte_size(id) > 0
+
+      # The file is now present and matches the returned id.
+      assert {:ok, contents} = File.read(Path.join(dir, "node_id"))
+      assert String.trim(contents) == id
+    end
+
+    test "returns the same id on subsequent calls (stable across restarts)",
+         %{dir: _dir} do
+      assert {:ok, first} = Workspace.node_id()
+      assert {:ok, second} = Workspace.node_id()
+      assert first == second
+    end
+
+    test "reads an existing node-id file without rewriting it", %{dir: dir} do
+      preset = "preset-node-id-12345"
+      File.write!(Path.join(dir, "node_id"), preset <> "\n")
+
+      assert {:ok, ^preset} = Workspace.node_id()
+
+      # File contents unchanged (we did not auto-rewrite).
+      assert {:ok, contents} = File.read(Path.join(dir, "node_id"))
+      assert String.trim(contents) == preset
+    end
+
+    test "node-id is install-private (mode 0o600)", %{dir: dir} do
+      {:ok, _id} = Workspace.node_id()
+
+      stat = File.stat!(Path.join(dir, "node_id"))
+      perms = Bitwise.band(stat.mode, 0o777)
+      assert perms == 0o600,
+             "expected node_id to be 0o600, got #{Integer.to_string(perms, 8)}"
+    end
+  end
 end

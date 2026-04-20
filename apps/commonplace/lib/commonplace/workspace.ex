@@ -66,4 +66,61 @@ defmodule Commonplace.Workspace do
       {:error, reason} -> {:error, reason}
     end
   end
+
+  @doc """
+  Read (or auto-generate) the persistent per-workspace node-id (CX-njf).
+
+  Returns `{:ok, id}` where `id` is a stable string scoped to the
+  current `data_dir`. On first call for a workspace, generates a fresh
+  UUID, writes it atomically (temp + rename) at `<data_dir>/node_id`
+  with mode 0o600, and returns it. Subsequent calls re-read the same
+  value.
+
+  This is the prerequisite for derivations like
+  `Identity.stable_client_id/1` that previously hashed `{node(), uuid}`
+  — `node()` changes across sname renames / IP changes, producing a
+  different client_id every restart and reintroducing the state-vector
+  bloat CX-6g6 fixed for Presence. A workspace-scoped id is stable
+  across BEAM restarts on the same workspace, while still differing
+  between separate installs (so two nodes writing to the same logical
+  identity get distinct client_ids and Yjs in-memory merge preserves
+  both writes).
+
+  Returns `{:error, reason}` only on filesystem errors that prevent
+  both reading and creating the file (e.g. data_dir doesn't exist
+  yet). Callers that need the id at any cost should fall back to a
+  constant when this errors so the system stays writable in degraded
+  environments (the bloat is back, but writes don't crash).
+  """
+  @spec node_id() :: {:ok, String.t()} | {:error, term()}
+  def node_id do
+    data_dir = Application.get_env(:commonplace, :data_dir, "data")
+    path = Path.join(data_dir, "node_id")
+
+    case File.read(path) do
+      {:ok, content} ->
+        {:ok, String.trim(content)}
+
+      {:error, :enoent} ->
+        write_fresh_node_id(data_dir, path)
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  defp write_fresh_node_id(data_dir, path) do
+    fresh = UUID.uuid4()
+    tmp = Path.join(data_dir, ".node_id.tmp")
+
+    with :ok <- File.write(tmp, fresh, [:write]),
+         :ok <- File.chmod(tmp, 0o600),
+         :ok <- File.rename(tmp, path),
+         {:ok, content} <- File.read(path) do
+      # Re-read after rename so concurrent first-boot races settle on
+      # whichever rename landed second (both callers see the same final
+      # value).
+      {:ok, String.trim(content)}
+    end
+  end
 end
