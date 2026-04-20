@@ -79,53 +79,12 @@ defmodule Commonplace.Store.Snapshotter do
     # snapshot bytes — so overwrite `source.client_id` with a
     # deterministic function of the source's observable state before
     # running the replay.
+    #
+    # CX-umz: `snapshot_update/1` now folds the derivation-map build
+    # into the same deterministic pass, returning `{bytes, dm_inner}`.
+    # Callers wrap the inner map under the source snapshot hash key.
     deterministic = %{source | client_id: deterministic_client_id(source)}
-    update_bytes = Yelixer.Doc.snapshot_update(deterministic)
-
-    # Decode the snapshot bytes back into a doc. Its items are the
-    # canonical "new" ids the derivation map keys on. Decoding (rather
-    # than reusing the intermediate rebuilt doc from inside
-    # `snapshot_update/1`) gives us exactly the state a peer will see
-    # after applying this snapshot, so coverage is guaranteed.
-    {:ok, new_doc} = Yelixer.Encoding.apply_update(Yelixer.Doc.new(), update_bytes)
-
-    source_ids = collect_item_ids(source)
-    new_ids = collect_item_ids(new_doc)
-    {update_bytes, pair_ids(new_ids, source_ids)}
-  end
-
-  # Flatten item ids across the doc in a deterministic order:
-  #   clients sorted by id descending, items per client by clock ascending.
-  # Matches `Yelixer.Encoding.encode_update/1`'s iteration order so the
-  # derivation map is stable across runs and instances.
-  defp collect_item_ids(%Yelixer.Doc{store: store}) do
-    store.clients
-    |> Enum.sort_by(fn {client, _} -> client end, :desc)
-    |> Enum.flat_map(fn {_client, items} ->
-      items
-      |> Enum.sort_by(fn item -> item.id.clock end)
-      |> Enum.map(fn item -> {item.id.client, item.id.clock} end)
-    end)
-  end
-
-  # Pair each new id with a source id at the same position. If new has
-  # more items than source (extremely rare — snapshots consolidate, not
-  # split), tail new ids reuse the last source id. If source is empty,
-  # so must new be, yielding an empty map.
-  defp pair_ids([], _source_ids), do: %{}
-  defp pair_ids(_new_ids, []), do: %{}
-
-  defp pair_ids(new_ids, source_ids) do
-    last = List.last(source_ids)
-    source_tuple = List.to_tuple(source_ids)
-    source_len = tuple_size(source_tuple)
-
-    new_ids
-    |> Enum.with_index()
-    |> Map.new(fn {new_id, idx} ->
-      src = if idx < source_len, do: elem(source_tuple, idx), else: last
-      {new_id, src}
-    end)
+    Yelixer.Doc.snapshot_update(deterministic)
   end
 
   # Deterministic client_id for the snapshot doc: the smallest

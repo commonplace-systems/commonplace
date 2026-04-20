@@ -248,7 +248,11 @@ defmodule Commonplace.Store.MergeSnapshotter do
   # `{src_client, src_clock}` tuples, one per character.
   defp build_with_char_pairs(%Doc{} = source) do
     deterministic = %{source | client_id: deterministic_client_id(source)}
-    update_bytes = Doc.snapshot_update(deterministic)
+    # CX-umz: Doc.snapshot_update now returns {bytes, dm}; this path
+    # builds its own char-granularity pair map so the inner dm is
+    # discarded — the item-level pairing Doc emits doesn't fit merge-
+    # snapshot's multi-source coalescence needs.
+    {update_bytes, _item_dm} = Doc.snapshot_update(deterministic)
     {:ok, new_doc} = Encoding.apply_update(Doc.new(), update_bytes)
 
     pairs =

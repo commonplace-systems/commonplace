@@ -53,7 +53,10 @@ defmodule Commonplace.Presence.Compactor do
         {:error, :no_doc}
 
       {:ok, doc} ->
-        snapshot = Doc.snapshot_update(doc)
+        # CX-umz: snapshot_update now returns {bytes, dm}. Presence
+        # compaction doesn't need the DM (presence docs don't flow
+        # through the late-edit translator), so we discard it here.
+        {snapshot, _dm} = Doc.snapshot_update(doc)
         commit = CommitStoreClient.create_snapshot_commit(store, uuid, snapshot)
         {:ok, commit}
     end

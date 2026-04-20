@@ -133,7 +133,7 @@ defmodule Commonplace.Document.ServerSyncTest do
     snap_source = Yelixer.Doc.new(client_id: 77)
     snap_source = Commonplace.Document.ContentType.create(snap_source, :text, "SnapDoc")
     snap_source = Commonplace.Document.ContentType.insert_text(snap_source, 0, "world")
-    snap_update = Yelixer.Doc.snapshot_update(snap_source)
+    {snap_update, _dm} = Yelixer.Doc.snapshot_update(snap_source)
 
     snap_commit =
       CommitStore.create_snapshot_commit(store, uuid, snap_update)
@@ -219,7 +219,7 @@ defmodule Commonplace.Document.ServerSyncTest do
     snap_source = Yelixer.Doc.new(client_id: 77)
     snap_source = Commonplace.Document.ContentType.create(snap_source, :text, "RebaseDoc")
     snap_source = Commonplace.Document.ContentType.insert_text(snap_source, 0, "hello!")
-    snap_update = Yelixer.Doc.snapshot_update(snap_source)
+    {snap_update, _dm} = Yelixer.Doc.snapshot_update(snap_source)
     snap_commit = CommitStore.create_snapshot_commit(store, uuid, snap_update)
     {:ok, fetched} = CommitStore.get_commit(store, snap_commit.id)
 
@@ -272,7 +272,7 @@ defmodule Commonplace.Document.ServerSyncTest do
     snap_source = Yelixer.Doc.new(client_id: 77)
     snap_source = Commonplace.Document.ContentType.create(snap_source, :text, "BgqDoc")
     snap_source = Commonplace.Document.ContentType.insert_text(snap_source, 0, "hello world")
-    snap_update = Yelixer.Doc.snapshot_update(snap_source)
+    {snap_update, _dm} = Yelixer.Doc.snapshot_update(snap_source)
     snap_commit = CommitStore.create_snapshot_commit(store, uuid, snap_update)
     {:ok, fetched} = CommitStore.get_commit(store, snap_commit.id)
 
@@ -320,7 +320,7 @@ defmodule Commonplace.Document.ServerSyncTest do
     snap_source = Commonplace.Document.ContentType.set_key(snap_source, "a", "1")
     snap_source = Commonplace.Document.ContentType.set_key(snap_source, "b", "2")
     snap_source = Commonplace.Document.ContentType.set_key(snap_source, "d", "4")
-    snap_update = Yelixer.Doc.snapshot_update(snap_source)
+    {snap_update, _dm} = Yelixer.Doc.snapshot_update(snap_source)
     snap_commit = CommitStore.create_snapshot_commit(store, uuid, snap_update)
     {:ok, fetched} = CommitStore.get_commit(store, snap_commit.id)
 
@@ -367,7 +367,7 @@ defmodule Commonplace.Document.ServerSyncTest do
     snap_source = Yelixer.Doc.new(client_id: 77)
     snap_source = Commonplace.Document.ContentType.create(snap_source, :array, "ArrayDoc")
     snap_source = Commonplace.Document.ContentType.push_items(snap_source, [1, 2, 3, 99])
-    snap_update = Yelixer.Doc.snapshot_update(snap_source)
+    {snap_update, _dm} = Yelixer.Doc.snapshot_update(snap_source)
     snap_commit = CommitStore.create_snapshot_commit(store, uuid, snap_update)
     {:ok, fetched} = CommitStore.get_commit(store, snap_commit.id)
 
@@ -418,7 +418,7 @@ defmodule Commonplace.Document.ServerSyncTest do
     snap_source = Commonplace.Document.ContentType.create(snap_source, :xml, "XmlDoc")
     snap_source = XMLFragment.insert_child(snap_source, "content", 0, {:element, "p"})
     snap_source = XMLFragment.insert_child(snap_source, "content", 1, {:element, "q"})
-    snap_update = Yelixer.Doc.snapshot_update(snap_source)
+    {snap_update, _dm} = Yelixer.Doc.snapshot_update(snap_source)
     snap_commit = CommitStore.create_snapshot_commit(store, uuid, snap_update)
     {:ok, fetched} = CommitStore.get_commit(store, snap_commit.id)
 
@@ -457,7 +457,7 @@ defmodule Commonplace.Document.ServerSyncTest do
     snap_source = Yelixer.Doc.new(client_id: 77)
     snap_source = Commonplace.Document.ContentType.create(snap_source, :text, "RebaseAbort")
     snap_source = Commonplace.Document.ContentType.insert_text(snap_source, 0, "hi")
-    snap_update = Yelixer.Doc.snapshot_update(snap_source)
+    {snap_update, _dm} = Yelixer.Doc.snapshot_update(snap_source)
     snap_commit = CommitStore.create_snapshot_commit(store, uuid, snap_update)
     {:ok, fetched} = CommitStore.get_commit(store, snap_commit.id)
 
