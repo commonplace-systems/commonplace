@@ -32,6 +32,7 @@ defmodule Commonplace.CLI do
     keygen [name]                 Generate Ed25519 signing keypair
     attest [path]                 Sign the head of a document (gold chain)
     checkpoint [--owner name]     Create a reflog checkpoint
+    snapshot [path]               Force a snapshot commit for the doc at path (or workspace root)
   """
 
   @workspace_dir ".commonplace"
@@ -102,6 +103,7 @@ defmodule Commonplace.CLI do
       "keygen" -> Commonplace.CLI.Keygen.run(data_dir, relative_path, rest)
       "attest" -> Commonplace.CLI.Attest.run(data_dir, relative_path, rest)
       "checkpoint" -> Commonplace.CLI.Checkpoint.run(data_dir, relative_path, rest)
+      "snapshot" -> Commonplace.CLI.Snapshot.run(data_dir, relative_path, rest)
       _ ->
         IO.puts(:stderr, "Unknown command: #{cmd}")
         IO.puts(:stderr, "Run 'commonplace --help' for usage.")

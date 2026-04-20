@@ -42,6 +42,20 @@ defmodule Commonplace.Store.CommitStoreClient do
   end
 
   @doc """
+  Pass-through for `CommitStore.snapshot/2` (CX-u7p / CX-2ok0).
+
+  Forces an umbrella-shaped snapshot commit for `doc_uuid` regardless
+  of the chain-length / size threshold. Routed via the local CommitStore
+  GenServer; remote-serve dispatch is not yet wired (snapshot construction
+  requires a multi-step build that's awkward to round-trip through a
+  single GenServer call), so callers in remote mode currently need to
+  invoke `CommitStore.snapshot/2` directly on the serve node.
+  """
+  def snapshot(server \\ CommitStore, doc_uuid) do
+    CommitStore.snapshot(normalize_server(server), doc_uuid)
+  end
+
+  @doc """
   Pass-through for `CommitStore.create_snapshot_commit/4` (CX-u7p).
   Mirrors the local/remote dispatch pattern used for every other write.
   """
