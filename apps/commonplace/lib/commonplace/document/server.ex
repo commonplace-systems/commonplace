@@ -9,12 +9,19 @@ defmodule Commonplace.Document.Server do
   use GenServer
 
   alias Commonplace.Store.CommitStoreClient
+  alias Commonplace.Store.Namespace
   alias Commonplace.Document.ContentType
   alias Commonplace.Document.Rebase
   alias Commonplace.Tree.DocBuilder
   alias Commonplace.Dataflow.PubSub, as: CPPubSub
 
-  defstruct [:uuid, :doc, :parent_commit, :commit_store]
+  # CX-ch5: :current_namespace tracks the snapshot_parent hash of the
+  # namespace this server is currently bound to. Advances on snapshot
+  # arrival (new trust root) and on epoch-join (a remote commit declaring
+  # a different snapshot_parent). Derived from the loaded latest commit
+  # at init; `nil` for pre-umbrella docs whose latest commit has legacy
+  # `metadata = %{}`.
+  defstruct [:uuid, :doc, :parent_commit, :commit_store, :current_namespace]
 
   def start_link(opts) do
     uuid = Keyword.fetch!(opts, :uuid)
@@ -25,6 +32,15 @@ defmodule Commonplace.Document.Server do
   end
 
   def get_doc(pid), do: GenServer.call(pid, :get_doc)
+
+  @doc """
+  Current namespace (snapshot_parent hash) this server is bound to.
+
+  Returns a binary hash or `nil` (for pre-umbrella docs whose latest
+  commit carries legacy `metadata = %{}`). Advances on snapshot arrival
+  and epoch-join — see `handle_info(:remote_commit, ...)`.
+  """
+  def current_namespace(pid), do: GenServer.call(pid, :current_namespace)
 
   def apply_update(pid, update), do: GenServer.call(pid, {:apply_update, update})
 
@@ -68,26 +84,37 @@ defmodule Commonplace.Document.Server do
     client_id = Keyword.get(opts, :client_id, :rand.uniform(1_000_000_000))
     commit_store = Keyword.get(opts, :commit_store, CommitStoreClient)
 
-    {doc, parent_commit} =
+    {doc, parent_commit, current_namespace} =
       case CommitStoreClient.latest_commit(commit_store, uuid) do
         {:ok, commit} ->
           doc = Yelixer.Doc.new(client_id: client_id)
           {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
-          {doc, commit.id}
+          {doc, commit.id, Namespace.current_namespace(commit)}
 
         :none ->
-          {Yelixer.Doc.new(client_id: client_id), nil}
+          {Yelixer.Doc.new(client_id: client_id), nil, nil}
       end
 
     CPPubSub.subscribe_sync(uuid)
 
     {:ok,
-     %__MODULE__{uuid: uuid, doc: doc, parent_commit: parent_commit, commit_store: commit_store}}
+     %__MODULE__{
+       uuid: uuid,
+       doc: doc,
+       parent_commit: parent_commit,
+       commit_store: commit_store,
+       current_namespace: current_namespace
+     }}
   end
 
   @impl true
   def handle_call(:get_doc, _from, state) do
     {:reply, state.doc, state}
+  end
+
+  @impl true
+  def handle_call(:current_namespace, _from, state) do
+    {:reply, state.current_namespace, state}
   end
 
   @impl true
@@ -101,10 +128,25 @@ defmodule Commonplace.Document.Server do
   def handle_call(:commit, _from, state) do
     update = Yelixer.Encoding.encode_update(state.doc)
 
+    # CX-ch5: tag as :regular so CommitStore auto-stamps
+    # `metadata.snapshot_parent` from the parent's namespace. Without the
+    # `:kind` tag, the store treats the write as pre-umbrella legacy and
+    # leaves metadata empty, defeating namespace tracking.
     commit =
-      CommitStoreClient.create_commit(state.commit_store, state.uuid, update, state.parent_commit)
+      CommitStoreClient.create_commit(
+        state.commit_store,
+        state.uuid,
+        update,
+        state.parent_commit,
+        %{kind: :regular}
+      )
 
-    {:reply, {:ok, commit}, %{state | parent_commit: commit.id}}
+    {:reply, {:ok, commit},
+     %{
+       state
+       | parent_commit: commit.id,
+         current_namespace: advance_namespace(state.current_namespace, commit)
+     }}
   end
 
   @impl true
@@ -181,7 +223,14 @@ defmodule Commonplace.Document.Server do
         case Yelixer.Encoding.apply_update(state.doc, commit.update) do
           {:ok, doc} ->
             CommitStoreClient.set_latest(state.commit_store, state.uuid, commit.id)
-            {:noreply, %{state | doc: doc, parent_commit: commit.id}}
+
+            {:noreply,
+             %{
+               state
+               | doc: doc,
+                 parent_commit: commit.id,
+                 current_namespace: advance_namespace(state.current_namespace, commit)
+             }}
 
           {:error, _} ->
             {:noreply, state}
@@ -203,7 +252,9 @@ defmodule Commonplace.Document.Server do
 
     with {:ok, new_doc} <- Yelixer.Encoding.apply_update(fresh, commit.update),
          {:ok, final_doc} <- rebase_onto_snapshot(state, new_doc) do
-      {:noreply, %{state | doc: final_doc}}
+      # CX-ch5: a snapshot is its own namespace root — advance the
+      # tracker to the snapshot's id.
+      {:noreply, %{state | doc: final_doc, current_namespace: commit.id}}
     else
       {:error, {:rebase, reason}} ->
         :telemetry.execute(
@@ -251,6 +302,17 @@ defmodule Commonplace.Document.Server do
     case Map.get(commit, :metadata) do
       %{kind: :snapshot} -> true
       _ -> false
+    end
+  end
+
+  # CX-ch5: derive the new tracker value. Snapshot and genesis kinds are
+  # their own namespace root; regular/merge kinds inherit their declared
+  # `snapshot_parent`. Legacy `%{}` metadata returns nil — preserve the
+  # existing tracker in that case to avoid regressing pre-umbrella state.
+  defp advance_namespace(current, commit) do
+    case Namespace.current_namespace(commit) do
+      nil -> current
+      ns -> ns
     end
   end
 end
