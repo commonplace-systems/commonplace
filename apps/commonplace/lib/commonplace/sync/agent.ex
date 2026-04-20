@@ -67,11 +67,21 @@ defmodule Commonplace.Sync.Agent do
   def handle_call(:sync_once, _from, state) do
     state = do_sync(state)
 
-    # After sync completes, trigger reflog checkpoint
-    # Use Task.start to avoid blocking the sync cycle
-    Task.start(fn ->
-      Commonplace.Reflog.Snapshot.checkpoint(state.root_uuid, state.store, "server")
-    end)
+    # CX-86t2: run the reflog checkpoint synchronously. The prior
+    # implementation used `Task.start` to avoid blocking the sync
+    # cycle, but the async checkpoint's load+mutate+create_chained_commit
+    # pattern for adding the `__reflog` entry to root races with any
+    # concurrent writer to root_uuid (test code, remote peer, MCP
+    # command, etc.). Each writer encodes their own stale view of root
+    # state and writes it as the chained commit's update; because
+    # `reconstruct_snapshot/2` applies only the latest commit, the
+    # last-writer-wins drops the earlier writer's mutation. A flaky
+    # test (agent_test.exs:154) surfaced this when the test wrote to
+    # root between sync_once returning and the next sync_once's export
+    # phase: crdt_file.txt was silently lost from root's schema. Sync
+    # checkpointing here restores the invariant that sync_once returns
+    # only once all writes triggered by this cycle are fully durable.
+    Commonplace.Reflog.Snapshot.checkpoint(state.root_uuid, state.store, "server")
 
     {:reply, :ok, state}
   end

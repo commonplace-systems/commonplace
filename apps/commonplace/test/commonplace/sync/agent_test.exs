@@ -174,7 +174,16 @@ defmodule Commonplace.Sync.AgentTest do
       root_doc = loader(store).(root)
       root_doc = Schema.add_file(root_doc, "crdt_file.txt", crdt_uuid)
       update = Yelixer.Encoding.encode_update(root_doc)
-      CommitStore.create_commit(store, root, update, nil)
+      # CX-86t2: MUST use create_chained_commit (not create_commit with
+      # parent_id=nil) so this write chains onto the current :latest
+      # rather than creating an unchained branch. Unchained writes race
+      # with the background reflog checkpoint (Task.start from the prior
+      # sync_once): the checkpoint's load+mutate+create_chained_commit
+      # sequence is TOCTOU-unsafe, and if the checkpoint chains a commit
+      # whose update bytes were encoded from a pre-test state, the
+      # test's crdt_file.txt entry gets silently dropped from :latest.
+      # See CX-86t2 for the broader checkpoint-race fix.
+      CommitStore.create_chained_commit(store, root, update)
 
       # Also edit disk_file.txt on disk
       File.write!(Path.join(dir, "disk_file.txt"), "from disk (edited)")
