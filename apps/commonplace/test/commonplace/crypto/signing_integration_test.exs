@@ -101,6 +101,22 @@ defmodule Commonplace.Crypto.SigningIntegrationTest do
   end
 
   describe "per-call signing context (CX-hoj)" do
+    setup do
+      # Always tear down the global signing slots after each test in
+      # this describe block — assertions that fail mid-test would
+      # otherwise leak signing_key:default / signing_identity into the
+      # subsequent tests' SecretStore reads, which corrupts both this
+      # file's earlier tests AND any other test that depends on the
+      # global SecretStore being clean.
+      on_exit(fn ->
+        SecretStore.delete("signing_key:default")
+        SecretStore.delete("signing_pub:default")
+        SecretStore.delete("signing_identity")
+      end)
+
+      :ok
+    end
+
     test "explicit signing_context overrides global SecretStore", %{store: store} do
       # Global slot: the human user.
       {human_pub, human_priv} = Signing.generate_keypair()
@@ -139,10 +155,6 @@ defmodule Commonplace.Crypto.SigningIntegrationTest do
       # and vice versa.
       assert {:error, _} = Signing.verify_commit(agent_commit, human_pub)
       assert {:error, _} = Signing.verify_commit(human_commit, agent_pub)
-
-      SecretStore.delete("signing_key:default")
-      SecretStore.delete("signing_pub:default")
-      SecretStore.delete("signing_identity")
     end
 
     test "signing_context: :unsigned skips signing even when global slot is set",
@@ -158,9 +170,6 @@ defmodule Commonplace.Crypto.SigningIntegrationTest do
 
       assert commit.signature == nil
       assert commit.signer_id == nil
-
-      SecretStore.delete("signing_key:default")
-      SecretStore.delete("signing_pub:default")
     end
 
     test "signing_context flows through create_chained_commit too", %{store: store} do
