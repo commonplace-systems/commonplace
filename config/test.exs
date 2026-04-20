@@ -27,4 +27,10 @@ config :commonplace,
   # in tests so async writes don't race with test isolation. Tests that
   # need the sweeper or the lazy trigger flip these flags in their setup.
   snapshot_sweeper_enabled: false,
-  reader_lazy_snapshot_enabled: false
+  reader_lazy_snapshot_enabled: false,
+  # CI: CubDB 2.0.2's auto-compact races with the parallel test
+  # suite's SecretStore writes and crashes the SecretStore process
+  # (`MatchError {:error, :enoent}` at `cubdb.ex:1499 trigger_compaction`).
+  # Disable auto_compact in tests — the SecretStore is small and
+  # compaction is unnecessary for test workloads.
+  secret_store_auto_compact: false

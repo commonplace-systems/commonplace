@@ -52,7 +52,15 @@ defmodule Commonplace.Store.SecretStore do
     path = Path.join(data_dir, "secrets")
     File.mkdir_p!(path)
 
-    {:ok, db} = CubDB.start_link(data_dir: path, auto_compact: true)
+    # CubDB 2.0.2's auto-compact races with concurrent put/delete and
+    # crashes on `:enoent` while compacting the temp file (observed
+    # consistently on CI with the test suite's parallel SecretStore
+    # writes). Allow callers to disable auto_compact via opts; default
+    # follows the application config (off in test, on otherwise).
+    auto_compact =
+      Keyword.get(opts, :auto_compact, Application.get_env(:commonplace, :secret_store_auto_compact, true))
+
+    {:ok, db} = CubDB.start_link(data_dir: path, auto_compact: auto_compact)
     {:ok, %{db: db}}
   end
 
