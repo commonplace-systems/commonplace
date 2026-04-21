@@ -23,6 +23,125 @@ defmodule Commonplace.Tree.Fork do
     new_uuid
   end
 
+  @doc """
+  Time-travel fork (CX-65n): reconstruct the tree at a specific
+  historical commit of `source_uuid` and deep-copy with new UUIDs.
+
+  `target_commit_id` identifies the root commit to fork from. That
+  commit's timestamp defines the reference time; each descendant
+  document is forked using its last commit with `timestamp <=
+  reference_time`, giving a snapshot-consistent view across
+  independently-chained sub-documents.
+
+  Returns `{:ok, new_uuid}` or `{:error, reason}` when the target
+  commit is not in the source's chain.
+  """
+  @spec fork_directory_at(String.t(), binary(), GenServer.server()) ::
+          {:ok, String.t()} | {:error, term()}
+  def fork_directory_at(source_uuid, target_commit_id, store \\ CommitStoreClient) do
+    with {:ok, target_commit} <- fetch_target_commit(store, source_uuid, target_commit_id) do
+      reference_time = target_commit.timestamp
+
+      {new_uuid, _uuid_map} =
+        fork_node_at(source_uuid, target_commit_id, reference_time, store, %{})
+
+      {:ok, new_uuid}
+    end
+  end
+
+  defp fetch_target_commit(store, source_uuid, target_commit_id) do
+    case DocBuilder.reconstruct_doc_at(store, source_uuid, target_commit_id) do
+      {:ok, _doc} ->
+        # reconstruct_doc_at succeeded — target_commit_id is in the chain.
+        # Now fetch the commit struct for its timestamp.
+        case CommitStoreClient.get_commit(store, target_commit_id) do
+          {:ok, commit} -> {:ok, commit}
+          _ -> {:error, :target_commit_not_found}
+        end
+
+      :none ->
+        {:error, :target_commit_not_in_chain}
+    end
+  end
+
+  defp fork_node_at(source_uuid, target_commit_id, reference_time, store, uuid_map) do
+    case DocBuilder.reconstruct_doc_at(store, source_uuid, target_commit_id) do
+      {:ok, source_doc} ->
+        # source_doc might not decode as a schema cleanly for leaf nodes;
+        # list_entries will return [] if not a schema, which is fine.
+        entries = Schema.list_entries(source_doc)
+
+        if length(entries) > 0 do
+          fork_directory_node_at(source_uuid, source_doc, entries, reference_time, store, uuid_map, target_commit_id)
+        else
+          fork_leaf_node_at(source_uuid, source_doc, target_commit_id, store, uuid_map)
+        end
+
+      :none ->
+        # Fallback: no historical state reachable — mint empty.
+        new_uuid = UUID.uuid4()
+        {new_uuid, Map.put(uuid_map, source_uuid, new_uuid)}
+    end
+  end
+
+  defp fork_directory_node_at(source_uuid, source_doc, entries, reference_time, store, uuid_map, target_commit_id) do
+    new_uuid = UUID.uuid4()
+    uuid_map = Map.put(uuid_map, source_uuid, new_uuid)
+
+    {uuid_map, _} =
+      Enum.reduce(entries, {uuid_map, []}, fn entry, {map, _} ->
+        child_target = commit_at_or_before(store, entry.node_id, reference_time)
+        {_child_new_uuid, map} = fork_node_at(entry.node_id, child_target, reference_time, store, map)
+        {map, []}
+      end)
+
+    # Remap child node_ids in the new schema.
+    edited_doc =
+      Enum.reduce(entries, source_doc, fn entry, doc ->
+        new_child_uuid = Map.fetch!(uuid_map, entry.node_id)
+        doc = Schema.remove_entry(doc, entry.name)
+
+        case entry.type do
+          :dir -> Schema.add_directory(doc, entry.name, new_child_uuid)
+          _ -> Schema.add_file(doc, entry.name, new_child_uuid)
+        end
+      end)
+
+    update = Encoding.encode_update(edited_doc)
+    CommitStoreClient.create_commit(store, new_uuid, update, target_commit_id)
+
+    {new_uuid, uuid_map}
+  end
+
+  defp fork_leaf_node_at(source_uuid, source_doc, target_commit_id, store, uuid_map) do
+    new_uuid = UUID.uuid4()
+    uuid_map = Map.put(uuid_map, source_uuid, new_uuid)
+
+    update = Encoding.encode_update(source_doc)
+    CommitStoreClient.create_commit(store, new_uuid, update, target_commit_id)
+
+    {new_uuid, uuid_map}
+  end
+
+  # Pick the child's commit whose timestamp is the latest one <=
+  # reference_time. Falls back to the child's earliest commit if none
+  # precede the reference time (shouldn't happen in well-ordered trees
+  # but defends against clock skew).
+  defp commit_at_or_before(store, uuid, reference_time) do
+    chain = CommitStoreClient.commit_log(store, uuid, limit: 10_000)
+
+    case Enum.find(chain, fn c -> DateTime.compare(c.timestamp, reference_time) != :gt end) do
+      nil ->
+        case List.last(chain) do
+          nil -> nil
+          last -> last.id
+        end
+
+      commit ->
+        commit.id
+    end
+  end
+
   # Fork a node, returning {new_uuid, uuid_map} where uuid_map tracks
   # source_uuid => new_uuid for all forked docs (used for schema remapping).
   defp fork_node(source_uuid, store, uuid_map) do
