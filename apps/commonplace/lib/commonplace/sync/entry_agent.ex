@@ -31,7 +31,12 @@ defmodule Commonplace.Sync.EntryAgent do
     :known_hash,
     :shadow_dir,
     :standalone,
-    :snapshot_chain_threshold
+    :snapshot_chain_threshold,
+    # CX-592q: heuristic lull-aware layer — opts pair that gates a
+    # snapshot on "enough edits + quiet period." Both must be set to
+    # enable; either missing falls back to the pure mandatory threshold.
+    :soft_snapshot_chain_threshold,
+    :snapshot_lull_window_ms
   ]
 
   # --- Public API ---
@@ -62,7 +67,9 @@ defmodule Commonplace.Sync.EntryAgent do
       known_hash: nil,
       shadow_dir: Keyword.get(opts, :shadow_dir),
       standalone: Keyword.get(opts, :standalone, false),
-      snapshot_chain_threshold: Keyword.get(opts, :snapshot_chain_threshold)
+      snapshot_chain_threshold: Keyword.get(opts, :snapshot_chain_threshold),
+      soft_snapshot_chain_threshold: Keyword.get(opts, :soft_snapshot_chain_threshold),
+      snapshot_lull_window_ms: Keyword.get(opts, :snapshot_lull_window_ms)
     }
 
     {:ok, state}
@@ -133,15 +140,23 @@ defmodule Commonplace.Sync.EntryAgent do
   # CX-tvyb: dispatch maybe_snapshot with the per-agent threshold (when
   # configured) — otherwise fall through to the primitive's default
   # (Application env / @default_chain_length_threshold).
+  #
+  # CX-592q: also threads the optional heuristic opts pair
+  # (soft_snapshot_chain_threshold + snapshot_lull_window_ms). Both
+  # must be set to enable lull-aware firing; either missing keeps the
+  # hook on pure-mandatory behavior.
   defp maybe_trigger_snapshot(state) do
     opts =
-      case state.snapshot_chain_threshold do
-        nil -> []
-        n when is_integer(n) -> [chain_length_threshold: n]
-      end
+      []
+      |> maybe_put(:chain_length_threshold, state.snapshot_chain_threshold)
+      |> maybe_put(:soft_chain_length_threshold, state.soft_snapshot_chain_threshold)
+      |> maybe_put(:lull_window_ms, state.snapshot_lull_window_ms)
 
     SnapshotTrigger.maybe_snapshot(state.store, state.doc_uuid, opts)
   end
+
+  defp maybe_put(opts, _key, nil), do: opts
+  defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)
 
   # --- Inbound sync (CRDT → disk) ---
 

@@ -296,4 +296,152 @@ defmodule Commonplace.SnapshotTriggerTest do
       end
     end
   end
+
+  describe "heuristic lull-aware threshold (CX-592q)" do
+    # Layered on top of the mandatory threshold: when `soft_chain_length_threshold`
+    # and `lull_window_ms` are set together, the primitive fires a snapshot
+    # when the post-snapshot chain is past the SOFT threshold AND the most
+    # recent commit is older than `lull_window_ms`. The mandatory threshold
+    # still wins — "hard" firing never gets gated by lull. If either
+    # heuristic opt is omitted, behavior falls back to pure mandatory.
+    #
+    # Tests inject `now:` (millisecond timestamp) for deterministic time,
+    # since commit timestamps are set via DateTime.utc_now() at write.
+
+    defp latest_ts_ms(store, uuid) do
+      {:ok, latest} = CommitStore.latest_commit(store, uuid)
+      DateTime.to_unix(latest.timestamp, :millisecond)
+    end
+
+    test "sustained load: no lull → only mandatory fires, not heuristic",
+         %{store: store} do
+      uuid = "lull-sustained"
+      seed_regular(store, uuid, 7)
+      before = count_snapshots(store, uuid)
+      now = latest_ts_ms(store, uuid) + 100
+
+      assert {:ok, :below_threshold, {:chain_length, 7, 100}} =
+               SnapshotTrigger.maybe_snapshot(store, uuid,
+                 chain_length_threshold: 100,
+                 soft_chain_length_threshold: 5,
+                 lull_window_ms: 5_000,
+                 now: now
+               )
+
+      assert count_snapshots(store, uuid) == before
+    end
+
+    test "bursty load with lull: fires during first post-interesting lull",
+         %{store: store} do
+      uuid = "lull-bursty"
+      seed_regular(store, uuid, 7)
+      before = count_snapshots(store, uuid)
+      now = latest_ts_ms(store, uuid) + 10_000
+
+      assert {:ok, :snapshotted, commit} =
+               SnapshotTrigger.maybe_snapshot(store, uuid,
+                 chain_length_threshold: 100,
+                 soft_chain_length_threshold: 5,
+                 lull_window_ms: 5_000,
+                 now: now
+               )
+
+      assert commit.metadata[:kind] == :snapshot
+      assert count_snapshots(store, uuid) == before + 1
+    end
+
+    test "below soft threshold: no-op even in lull",
+         %{store: store} do
+      uuid = "lull-below-soft"
+      seed_regular(store, uuid, 3)
+      now = latest_ts_ms(store, uuid) + 10_000
+
+      assert {:ok, :below_threshold, {:chain_length, 3, 100}} =
+               SnapshotTrigger.maybe_snapshot(store, uuid,
+                 chain_length_threshold: 100,
+                 soft_chain_length_threshold: 5,
+                 lull_window_ms: 5_000,
+                 now: now
+               )
+    end
+
+    test "at soft threshold + lull boundary: lull defined as >= window_ms",
+         %{store: store} do
+      uuid = "lull-boundary"
+      seed_regular(store, uuid, 5)
+
+      latest_ms = latest_ts_ms(store, uuid)
+
+      # Exactly at the window → in lull.
+      assert {:ok, :snapshotted, _commit} =
+               SnapshotTrigger.maybe_snapshot(store, uuid,
+                 chain_length_threshold: 100,
+                 soft_chain_length_threshold: 5,
+                 lull_window_ms: 5_000,
+                 now: latest_ms + 5_000
+               )
+    end
+
+    test "mandatory threshold still wins regardless of lull state",
+         %{store: store} do
+      uuid = "lull-mandatory-wins"
+      seed_regular(store, uuid, 6)
+      now = latest_ts_ms(store, uuid) + 100
+
+      # Even with no lull, mandatory threshold fires.
+      assert {:ok, :snapshotted, _commit} =
+               SnapshotTrigger.maybe_snapshot(store, uuid,
+                 chain_length_threshold: 5,
+                 soft_chain_length_threshold: 3,
+                 lull_window_ms: 5_000,
+                 now: now
+               )
+    end
+
+    test "heuristic opts omitted: behavior unchanged from CX-4e2g mandatory-only",
+         %{store: store} do
+      uuid = "lull-nil-opts"
+      seed_regular(store, uuid, 3)
+
+      # No soft_chain_length_threshold, no lull_window_ms → pure mandatory.
+      assert {:ok, :below_threshold, {:chain_length, 3, 100}} =
+               SnapshotTrigger.maybe_snapshot(store, uuid,
+                 chain_length_threshold: 100
+               )
+    end
+
+    test "soft threshold set but no lull_window_ms: ignored (both required together)",
+         %{store: store} do
+      uuid = "lull-soft-only"
+      seed_regular(store, uuid, 7)
+      before = count_snapshots(store, uuid)
+
+      # Without lull_window_ms the heuristic layer is inert.
+      assert {:ok, :below_threshold, {:chain_length, 7, 100}} =
+               SnapshotTrigger.maybe_snapshot(store, uuid,
+                 chain_length_threshold: 100,
+                 soft_chain_length_threshold: 5
+               )
+
+      assert count_snapshots(store, uuid) == before
+    end
+
+    test "now defaults to System.system_time when omitted",
+         %{store: store} do
+      uuid = "lull-default-now"
+      seed_regular(store, uuid, 7)
+      before = count_snapshots(store, uuid)
+
+      # With a very short window the default `now` (real wall clock) is
+      # essentially guaranteed to be past the commit timestamp → fires.
+      assert {:ok, :snapshotted, _commit} =
+               SnapshotTrigger.maybe_snapshot(store, uuid,
+                 chain_length_threshold: 100,
+                 soft_chain_length_threshold: 5,
+                 lull_window_ms: 0
+               )
+
+      assert count_snapshots(store, uuid) == before + 1
+    end
+  end
 end

@@ -52,13 +52,26 @@ defmodule Commonplace.SnapshotTrigger do
   Opts:
     - `:chain_length_threshold` — positive integer. When the number of
       regular commits stacked on top of the most recent snapshot
-      reaches or exceeds this value, a snapshot is cut.
+      reaches or exceeds this value, a snapshot is cut (mandatory).
+    - `:soft_chain_length_threshold` (CX-592q) — positive integer, must
+      be less than `:chain_length_threshold`. Heuristic layer: when
+      chain length is at or above the soft threshold AND the most
+      recent commit is older than `:lull_window_ms`, cut a snapshot.
+      Inert unless `:lull_window_ms` is also set.
+    - `:lull_window_ms` (CX-592q) — non-negative integer. Gates the
+      soft-threshold firing. Inert unless `:soft_chain_length_threshold`
+      is also set.
+    - `:now` (CX-592q) — override for the current millisecond timestamp
+      compared against the latest commit's timestamp. Defaults to
+      `System.system_time(:millisecond)`. Tests inject a fixed value
+      for determinism.
 
   Returns:
     - `{:ok, :snapshotted, commit}` when a new snapshot was written.
     - `{:ok, :below_threshold, {:chain_length, current, threshold}}`
-      when no snapshot was cut (either below the threshold or a
-      concurrent caller already landed one).
+      when no snapshot was cut (either below the threshold, still in a
+      burst for the heuristic path, or a concurrent caller already
+      landed one).
   """
   @spec maybe_snapshot(GenServer.server(), String.t(), keyword()) :: maybe_snapshot_result()
   def maybe_snapshot(store \\ CommitStore, doc_uuid, opts \\ []) do
@@ -72,12 +85,37 @@ defmodule Commonplace.SnapshotTrigger do
         chain_length = chain_length_since_snapshot(store, latest, 0)
 
         cond do
-          chain_length == 0 or chain_length < threshold ->
+          chain_length == 0 ->
             {:ok, :below_threshold, {:chain_length, chain_length, threshold}}
 
-          true ->
+          chain_length >= threshold ->
             attempt_snapshot(store, doc_uuid, latest, threshold)
+
+          heuristic_should_fire?(latest, chain_length, opts) ->
+            attempt_snapshot(store, doc_uuid, latest, threshold)
+
+          true ->
+            {:ok, :below_threshold, {:chain_length, chain_length, threshold}}
         end
+    end
+  end
+
+  # CX-592q: lull-aware heuristic. Both `:soft_chain_length_threshold`
+  # and `:lull_window_ms` must be set; either missing disables the
+  # layer entirely. A "lull" is defined as the wall-clock gap between
+  # `:now` and the latest commit's timestamp being >= `:lull_window_ms`.
+  defp heuristic_should_fire?(latest, chain_length, opts) do
+    soft = Keyword.get(opts, :soft_chain_length_threshold)
+    window = Keyword.get(opts, :lull_window_ms)
+
+    case {soft, window} do
+      {soft, window} when is_integer(soft) and is_integer(window) ->
+        now = Keyword.get(opts, :now, System.system_time(:millisecond))
+        latest_ms = DateTime.to_unix(latest.timestamp, :millisecond)
+        chain_length >= soft and now - latest_ms >= window
+
+      _ ->
+        false
     end
   end
 
