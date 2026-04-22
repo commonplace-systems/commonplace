@@ -58,6 +58,16 @@ defmodule Commonplace.CLI.LnTest do
       assert {:error, :source_not_found} = Commonplace.CLI.Ln.link("ghost.txt", "alias.txt", root, store)
     end
 
+    test "refuses to link to a reserved honorific extension (CX-edy)",
+         %{store: store, root: root} do
+      create_doc(store, root, "ok.txt", "payload")
+
+      for target <- ["shadow.bot", "shadow.exe", "shadow.usr", "shadow.who"] do
+        assert {:error, :forbidden_extension} =
+                 Commonplace.CLI.Ln.link("ok.txt", target, root, store)
+      end
+    end
+
     test "writing to linked doc is visible from both paths", %{store: store, root: root} do
       uuid = create_doc(store, root, "shared.txt", "v1")
       :ok = Commonplace.CLI.Ln.link("shared.txt", "mirror.txt", root, store)

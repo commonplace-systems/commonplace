@@ -52,6 +52,44 @@ defmodule Commonplace.Tree.Schema do
     end
   end
 
+  @honorific_extensions ~w(.bot .exe .usr .who)
+
+  @doc """
+  Return true iff `name` ends in one of the reserved honorific
+  extensions: `.bot`, `.exe`, `.usr`, `.who` (CX-edy). The comparison
+  is case-insensitive.
+
+  Honorific extensions are reserved for presence documents — files
+  that advertise an actor's live existence. The
+  `Commonplace.Presence` module is the only trusted path for creating
+  them; any user-facing write path must refuse to place new entries
+  with these extensions, or an attacker could double-publish presence
+  and break the single-presence-location invariant.
+  """
+  @spec honorific_extension?(String.t()) :: boolean()
+  def honorific_extension?(name) when is_binary(name) do
+    lower = String.downcase(name)
+    Enum.any?(@honorific_extensions, &String.ends_with?(lower, &1))
+  end
+
+  @doc """
+  Raise `ArgumentError` when `name` ends in a reserved honorific
+  extension (CX-edy). Call this at untrusted write entrypoints (CLI
+  ln, CLI import, future presence.move MCP tool) before adding
+  user-provided names to the schema.
+  """
+  @spec forbid_honorific!(String.t()) :: :ok
+  def forbid_honorific!(name) when is_binary(name) do
+    if honorific_extension?(name) do
+      raise ArgumentError,
+            "reserved honorific extension in #{inspect(name)}: " <>
+              ".bot / .exe / .usr / .who are reserved for presence documents " <>
+              "(see Commonplace.Presence)"
+    else
+      :ok
+    end
+  end
+
   @doc "Add a file entry to the schema."
   def add_file(doc, name, node_id) when is_binary(name) and is_binary(node_id) do
     add_entry(doc, name, "doc", node_id)

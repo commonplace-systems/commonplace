@@ -35,6 +35,14 @@ defmodule Commonplace.CLI.Ln do
           {:error, :target_dir_not_found} ->
             IO.puts(:stderr, "Target directory not found: #{Path.dirname(target)}")
             System.halt(1)
+
+          {:error, :forbidden_extension} ->
+            IO.puts(
+              :stderr,
+              "Cannot link to reserved honorific extension (.bot/.exe/.usr/.who): #{target}"
+            )
+
+            System.halt(1)
         end
 
       _ ->
@@ -43,7 +51,13 @@ defmodule Commonplace.CLI.Ln do
     end
   end
 
-  @doc "Create a CRDT hardlink: target gets the same UUID as source."
+  @doc """
+  Create a CRDT hardlink: target gets the same UUID as source.
+
+  Returns `{:error, :forbidden_extension}` if the target's basename
+  ends in a reserved honorific extension (`.bot/.exe/.usr/.who`).
+  Honorifics are reserved for presence documents — see CX-edy.
+  """
   def link(source, target, root_uuid, store \\ CommitStore) do
     loader = &load_schema(&1, store)
 
@@ -54,29 +68,36 @@ defmodule Commonplace.CLI.Ln do
         target_dir = Path.dirname(target)
         target_name = Path.basename(target)
 
-        # Resolve the parent directory UUID
-        parent_uuid = if target_dir == "." do
-          root_uuid
+        if Schema.honorific_extension?(target_name) do
+          {:error, :forbidden_extension}
         else
-          case Walk.resolve_path(root_uuid, target_dir, loader) do
-            {:ok, uuid} -> uuid
-            {:error, _} -> nil
-          end
-        end
-
-        if parent_uuid do
-          # Add target with the same UUID as source
-          parent_doc = load_schema(parent_uuid, store)
-          parent_doc = Schema.add_file(parent_doc, target_name, source_uuid)
-          update = Yelixer.Encoding.encode_update(parent_doc)
-          CommitStore.create_chained_commit(store, parent_uuid, update)
-          :ok
-        else
-          {:error, :target_dir_not_found}
+          do_link(source_uuid, target_dir, target_name, root_uuid, store, loader)
         end
 
       {:error, _} ->
         {:error, :source_not_found}
+    end
+  end
+
+  defp do_link(source_uuid, target_dir, target_name, root_uuid, store, loader) do
+    parent_uuid =
+      if target_dir == "." do
+        root_uuid
+      else
+        case Walk.resolve_path(root_uuid, target_dir, loader) do
+          {:ok, uuid} -> uuid
+          {:error, _} -> nil
+        end
+      end
+
+    if parent_uuid do
+      parent_doc = load_schema(parent_uuid, store)
+      parent_doc = Schema.add_file(parent_doc, target_name, source_uuid)
+      update = Yelixer.Encoding.encode_update(parent_doc)
+      CommitStore.create_chained_commit(store, parent_uuid, update)
+      :ok
+    else
+      {:error, :target_dir_not_found}
     end
   end
 

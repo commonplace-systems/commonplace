@@ -61,6 +61,14 @@ defmodule Commonplace.CLI.Import do
 
           Schema.add_directory(schema, name, sub_uuid)
 
+        File.regular?(full_path) and Schema.honorific_extension?(name) ->
+          # CX-edy: .bot/.exe/.usr/.who are reserved for presence
+          # documents. Import is an untrusted user-input path, so we
+          # refuse to place new entries under those names — otherwise
+          # an agent could smuggle in a shadow presence file.
+          IO.puts(:stderr, "  ! skipping reserved honorific extension: #{full_path}")
+          schema
+
         File.regular?(full_path) ->
           file_uuid = UUID.uuid4()
           import_file(full_path, file_uuid)
