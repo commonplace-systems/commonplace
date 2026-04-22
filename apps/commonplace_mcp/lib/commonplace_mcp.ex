@@ -23,14 +23,22 @@ defmodule Commonplace.MCP do
 
   alias Commonplace.MCP.{Server, Stdio}
   alias Commonplace.Presence.Server, as: PresenceServer
+  alias Commonplace.Sync.CheckoutRegistry
 
   def main(_argv \\ []) do
     case attach_to_serve() do
-      {:ok, root_uuid} ->
+      {:ok, root_uuid, data_dir} ->
+        # CX-voi: presence lands in the sandbox checkout the agent was
+        # launched from, not always at workspace root. Resolve cwd →
+        # nearest CheckoutRegistry entry. Fallback to root_uuid when
+        # cwd is outside every registered checkout (e.g. agent launched
+        # from the workspace root itself).
+        presence_uuid = resolve_presence_uuid(data_dir, root_uuid)
+
         server =
           Server.new(
-            presence_starter: presence_starter(root_uuid),
-            presence_stopper: presence_stopper(root_uuid)
+            presence_starter: presence_starter(presence_uuid),
+            presence_stopper: presence_stopper(presence_uuid)
           )
 
         Stdio.run_stdio(server)
@@ -98,9 +106,21 @@ defmodule Commonplace.MCP do
               # for any ViewActionDispatch path that runs in the
               # escript's process and touches workspace-scoped state.
               Application.put_env(:commonplace, :data_dir, data_dir)
-              {:ok, root_uuid}
+              {:ok, root_uuid, data_dir}
             end
         end
+    end
+  end
+
+  # CX-voi: pick the presence dir_uuid — nearest enclosing checkout
+  # for the escript's cwd, falling back to workspace root_uuid when
+  # cwd is outside every registered checkout.
+  defp resolve_presence_uuid(data_dir, root_uuid) do
+    config_path = Path.join(data_dir, "checkouts.json")
+
+    case CheckoutRegistry.find_for_cwd(config_path, File.cwd!()) do
+      {:ok, %{uuid: uuid}} -> uuid
+      :none -> root_uuid
     end
   end
 

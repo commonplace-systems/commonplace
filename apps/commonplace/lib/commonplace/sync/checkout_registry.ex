@@ -52,6 +52,52 @@ defmodule Commonplace.Sync.CheckoutRegistry do
     GenServer.call(pid, :list)
   end
 
+  @doc """
+  Find the checkout whose `sync_dir` most tightly encloses `cwd`
+  (CX-voi).
+
+  Reads the persisted `checkouts.json` directly — no running
+  registry process required. Used by the MCP presence bootstrap to
+  place the agent's .bot file in the sandbox checkout it was launched
+  from, rather than always at the workspace root.
+
+  Returns `{:ok, %{uuid, sync_dir, type}}` for the longest matching
+  prefix, or `:none` when the config is missing / cwd is outside
+  every checkout. "Inside" means `cwd == sync_dir` or `cwd` lives at
+  or below `sync_dir/` — a sync_dir that's merely a string prefix of
+  cwd (e.g. `/ws/repo` vs `/ws/repo-backup`) is NOT a match.
+  """
+  @spec find_for_cwd(String.t(), String.t()) ::
+          {:ok, %{uuid: String.t(), sync_dir: String.t(), type: atom()}} | :none
+  def find_for_cwd(config_path, cwd) when is_binary(config_path) and is_binary(cwd) do
+    with {:ok, contents} <- File.read(config_path),
+         {:ok, entries} when is_list(entries) <- Jason.decode(contents) do
+      entries
+      |> Enum.filter(&cwd_in_checkout?(cwd, &1["sync_dir"]))
+      |> Enum.max_by(fn entry -> String.length(entry["sync_dir"] || "") end, fn -> nil end)
+      |> case do
+        nil -> :none
+        entry -> {:ok, entry_to_map(entry)}
+      end
+    else
+      _ -> :none
+    end
+  end
+
+  defp cwd_in_checkout?(_cwd, nil), do: false
+
+  defp cwd_in_checkout?(cwd, sync_dir) do
+    cwd == sync_dir or String.starts_with?(cwd, sync_dir <> "/")
+  end
+
+  defp entry_to_map(entry) do
+    %{
+      uuid: entry["uuid"],
+      sync_dir: entry["sync_dir"],
+      type: parse_type(entry["type"])
+    }
+  end
+
   # --- GenServer callbacks ---
 
   @impl true
