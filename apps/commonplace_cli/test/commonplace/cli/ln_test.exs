@@ -4,8 +4,6 @@ defmodule Commonplace.CLI.LnTest do
   """
   use ExUnit.Case
 
-  import ExUnit.CaptureIO
-
   alias Commonplace.Tree.Schema
   alias Commonplace.Store.CommitStore
   alias Commonplace.Document.ContentType

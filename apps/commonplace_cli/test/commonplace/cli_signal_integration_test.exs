@@ -8,7 +8,6 @@ defmodule Commonplace.CLI.SignalIntegrationTest do
   """
   use ExUnit.Case
 
-  alias Commonplace.CLI
   alias Commonplace.Dataflow.{Magenta, RedLog}
   alias Commonplace.Store.CommitStore
 

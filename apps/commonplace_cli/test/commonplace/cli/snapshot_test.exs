@@ -13,10 +13,21 @@ defmodule Commonplace.CLI.SnapshotTest do
   alias Commonplace.Tree.Schema
 
   setup do
-    # Reuse the running app's CommitStore + its configured data_dir.
-    # Each test gets its own root_uuid so they don't interact via the
-    # shared store's name index.
-    data_dir = Application.get_env(:commonplace, :data_dir) || "tmp/test_data"
+    # CX-edy test-recovery: pin the app to the default test data_dir
+    # regardless of what prior tests may have left in the env. Earlier
+    # commonplace tests temporarily `Application.put_env(:commonplace,
+    # :data_dir, ...)` for their own fixtures; an interleaved
+    # on_exit restore could leave the env pointing at a dir whose
+    # CubDB no longer exists. We force a known-good state here so
+    # our commits land where CLI.ensure_started will later look.
+    data_dir = "tmp/test_data"
+
+    if Application.get_env(:commonplace, :data_dir) != data_dir do
+      Application.stop(:commonplace)
+      Application.put_env(:commonplace, :data_dir, data_dir)
+      {:ok, _} = Application.ensure_all_started(:commonplace)
+    end
+
     File.mkdir_p!(data_dir)
 
     root_uuid = UUID.uuid4()
@@ -61,42 +72,41 @@ defmodule Commonplace.CLI.SnapshotTest do
          %{dir: dir, file_uuid: file_uuid} do
       ids_before = CommitStore.all_commit_ids_for_doc(CommitStore, file_uuid)
 
-      ExUnit.CaptureIO.capture_io(fn ->
-        Commonplace.CLI.Snapshot.run(dir, "", ["notes.txt"])
-      end)
+      assert {:ok, commit, ^file_uuid} =
+               Commonplace.CLI.Snapshot.do_run(dir, "", ["notes.txt"])
+
+      assert commit.metadata[:kind] == :snapshot
 
       ids_after = CommitStore.all_commit_ids_for_doc(CommitStore, file_uuid)
       new_ids = MapSet.difference(ids_after, ids_before)
       assert MapSet.size(new_ids) == 1,
              "expected exactly one new commit, got #{MapSet.size(new_ids)}"
-
-      [new_id] = MapSet.to_list(new_ids)
-      {:ok, new_commit} = CommitStore.get_commit(CommitStore, new_id)
-      assert new_commit.metadata[:kind] == :snapshot,
-             "newly-created commit should be a snapshot, got #{inspect(new_commit.metadata)}"
     end
 
     test "writes a snapshot for the root schema when no path is given",
          %{dir: dir, root: root_uuid} do
       ids_before = CommitStore.all_commit_ids_for_doc(CommitStore, root_uuid)
 
-      ExUnit.CaptureIO.capture_io(fn ->
-        Commonplace.CLI.Snapshot.run(dir, "", [])
-      end)
+      assert {:ok, commit, ^root_uuid} =
+               Commonplace.CLI.Snapshot.do_run(dir, "", [])
+
+      assert commit.metadata[:kind] == :snapshot
 
       ids_after = CommitStore.all_commit_ids_for_doc(CommitStore, root_uuid)
       new_ids = MapSet.difference(ids_after, ids_before)
       assert MapSet.size(new_ids) == 1
-
-      [new_id] = MapSet.to_list(new_ids)
-      {:ok, new_commit} = CommitStore.get_commit(CommitStore, new_id)
-      assert new_commit.metadata[:kind] == :snapshot
     end
 
-    # Not-found path resolution → System.halt(1). System.halt terminates
-    # the BEAM and can't be caught by ExUnit, so the unresolved-path
-    # behavior is exercised at the Walk.resolve_path layer (covered by
-    # uuid_test.exs and the broader Walk tests) rather than via direct
-    # CLI invocation here.
+    # CX-edy test-recovery: do_run/3 returns structured errors instead
+    # of calling System.halt/1. That lets tests assert the unresolved-
+    # path behavior directly without terminating the BEAM (previously
+    # a stale workspace root file in shared `tmp/test_data` would halt
+    # the whole test suite mid-run). The `run/3` wrapper keeps halt
+    # semantics for real CLI invocation.
+    test "returns :path_not_found when the path does not resolve",
+         %{dir: dir} do
+      assert {:error, {:path_not_found, "ghost.txt"}} =
+               Commonplace.CLI.Snapshot.do_run(dir, "", ["ghost.txt"])
+    end
   end
 end
