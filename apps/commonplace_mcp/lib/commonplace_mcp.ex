@@ -21,7 +21,9 @@ defmodule Commonplace.MCP do
      dispatched, and the reply written to stdout.
   """
 
+  alias Commonplace.Dataflow.RedLog
   alias Commonplace.MCP.{Server, Stdio}
+  alias Commonplace.Presence.Mailbox
   alias Commonplace.Presence.Server, as: PresenceServer
   alias Commonplace.Sync.CheckoutRegistry
 
@@ -162,18 +164,30 @@ defmodule Commonplace.MCP do
   # Build a presence_starter function compatible with Server.new.
   # Spawns a Presence.Server rooted at `root_uuid`, and broadcasts a
   # presence.enter event on the containing dir's magenta topic.
+  #
+  # CX-92u: also spawns a per-agent mailbox onramp. The onramp subscribes
+  # to `agents/{name}` on magenta and appends each message to a red log
+  # whose UUID is derived deterministically from the agent's cold
+  # identity — so when the agent reconnects, it tails the same log and
+  # picks up any messages sent while it was offline. Mailbox failures
+  # degrade gracefully: presence still starts without a mailbox.
   defp presence_starter(root_uuid) do
     fn name, type ->
+      store = Commonplace.Store.CommitStoreClient
+
       case PresenceServer.start_link(
              name: name,
              type: type,
              dir_uuid: root_uuid,
-             store: Commonplace.Store.CommitStoreClient
+             store: store
            ) do
         {:ok, pid} ->
           uuid = PresenceServer.uuid(pid)
+          identity_uuid = PresenceServer.identity_uuid(pid)
           broadcast_presence(root_uuid, "presence.enter", name, type, uuid)
-          {:ok, %{pid: pid, uuid: uuid, name: name, type: type, dir_uuid: root_uuid}}
+
+          base = %{pid: pid, uuid: uuid, name: name, type: type, dir_uuid: root_uuid}
+          {:ok, Map.merge(base, start_mailbox(name, identity_uuid, store))}
 
         {:error, reason} ->
           {:error, reason}
@@ -181,12 +195,39 @@ defmodule Commonplace.MCP do
     end
   end
 
+  defp start_mailbox(name, identity_uuid, store) do
+    mailbox_uuid = Mailbox.log_uuid_for_identity(identity_uuid)
+    mailbox_topic = Mailbox.topic_for_name(name)
+
+    case RedLog.start_onramp(mailbox_uuid, mailbox_topic, store) do
+      {:ok, onramp_pid} ->
+        %{
+          mailbox_uuid: mailbox_uuid,
+          mailbox_topic: mailbox_topic,
+          mailbox_pid: onramp_pid
+        }
+
+      {:error, reason} ->
+        require Logger
+
+        Logger.warning(
+          "commonplace_mcp: failed to start mailbox onramp for #{name}: " <> inspect(reason)
+        )
+
+        %{}
+    end
+  end
+
   # Build a presence_stopper function compatible with Server.shutdown.
   # Broadcasts presence.leave on the dir and stops the Presence.Server
   # (its terminate/2 callback removes the .bot file from the schema).
+  # CX-92u: also flushes + stops the per-agent mailbox onramp so the
+  # final events addressed during this session persist before exit.
   defp presence_stopper(root_uuid) do
     fn info ->
       %{pid: pid, uuid: uuid, name: name, type: type} = info
+
+      stop_mailbox(info)
 
       broadcast_presence(root_uuid, "presence.leave", name, type, uuid)
 
@@ -203,6 +244,26 @@ defmodule Commonplace.MCP do
       :ok
     end
   end
+
+  defp stop_mailbox(%{mailbox_pid: pid}) when is_pid(pid) do
+    if Process.alive?(pid) do
+      try do
+        RedLog.commit_onramp(pid)
+      catch
+        :exit, _ -> :ok
+      end
+
+      try do
+        GenServer.stop(pid, :normal, 5_000)
+      catch
+        :exit, _ -> :ok
+      end
+    end
+
+    :ok
+  end
+
+  defp stop_mailbox(_), do: :ok
 
   defp broadcast_presence(dir_uuid, event_type, name, type, uuid) do
     Commonplace.Dataflow.Magenta.send(

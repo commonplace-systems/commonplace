@@ -70,6 +70,14 @@ defmodule Commonplace.MCP.Server do
   def presence_uuid(%__MODULE__{presence_info: nil}), do: nil
   def presence_uuid(%__MODULE__{presence_info: %{uuid: uuid}}), do: uuid
 
+  @spec mailbox_uuid(t()) :: String.t() | nil
+  def mailbox_uuid(%__MODULE__{presence_info: %{mailbox_uuid: uuid}}), do: uuid
+  def mailbox_uuid(%__MODULE__{}), do: nil
+
+  @spec mailbox_topic(t()) :: String.t() | nil
+  def mailbox_topic(%__MODULE__{presence_info: %{mailbox_topic: topic}}), do: topic
+  def mailbox_topic(%__MODULE__{}), do: nil
+
   @doc """
   Orderly teardown. Calls the configured presence_stopper with the
   presence_info captured at initialize (if any). Safe to call when no
@@ -114,6 +122,8 @@ defmodule Commonplace.MCP.Server do
     server_info =
       %{"name" => @server_name, "version" => @server_version}
       |> maybe_put("presenceUuid", presence_uuid_of(presence_info))
+      |> maybe_put("mailboxUuid", mailbox_uuid_of(presence_info))
+      |> maybe_put("mailboxTopic", mailbox_topic_of(presence_info))
 
     result = %{
       "protocolVersion" => @protocol_version,
@@ -215,6 +225,12 @@ defmodule Commonplace.MCP.Server do
 
   defp presence_uuid_of(nil), do: nil
   defp presence_uuid_of(%{uuid: uuid}), do: uuid
+
+  defp mailbox_uuid_of(%{mailbox_uuid: uuid}), do: uuid
+  defp mailbox_uuid_of(_), do: nil
+
+  defp mailbox_topic_of(%{mailbox_topic: topic}), do: topic
+  defp mailbox_topic_of(_), do: nil
 
   defp maybe_put(map, _k, nil), do: map
   defp maybe_put(map, k, v), do: Map.put(map, k, v)

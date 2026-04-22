@@ -24,6 +24,27 @@ defmodule Commonplace.MCP.ServerTest do
     end
   end
 
+  # CX-92u: presence_starter variant that also returns a mailbox uuid +
+  # topic, simulating what the production escript does when it spawns a
+  # per-agent onramp alongside the PresenceServer.
+  defp stub_presence_starter_with_mailbox do
+    test_pid = self()
+
+    fn name, type ->
+      send(test_pid, {:presence_started, name, type})
+
+      {:ok,
+       %{
+         pid: self(),
+         name: name,
+         type: type,
+         uuid: "uuid-" <> name,
+         mailbox_uuid: "mailbox-" <> name,
+         mailbox_topic: "agents/" <> name
+       }}
+    end
+  end
+
   defp stub_presence_stopper do
     test_pid = self()
     fn info -> send(test_pid, {:presence_stopped, info}) end
@@ -87,7 +108,41 @@ defmodule Commonplace.MCP.ServerTest do
 
       assert {:ok, result, s2} = Server.handle(s, request)
       refute Map.has_key?(result["serverInfo"], "presenceUuid")
+      refute Map.has_key?(result["serverInfo"], "mailboxUuid")
+      refute Map.has_key?(result["serverInfo"], "mailboxTopic")
       assert Server.presence_uuid(s2) == nil
+      assert Server.mailbox_uuid(s2) == nil
+      assert Server.mailbox_topic(s2) == nil
+    end
+
+    test "when presence_starter returns mailbox fields, surfaces them in initialize response (CX-92u)" do
+      s = Server.new(presence_starter: stub_presence_starter_with_mailbox())
+
+      request = {:request, 1, "initialize",
+                 %{"protocolVersion" => "2025-06-18",
+                   "clientInfo" => %{"name" => "claude-code", "version" => "1.0"}}}
+
+      assert {:ok, result, s2} = Server.handle(s, request)
+
+      assert result["serverInfo"]["mailboxUuid"] == "mailbox-claude-code"
+      assert result["serverInfo"]["mailboxTopic"] == "agents/claude-code"
+      assert Server.mailbox_uuid(s2) == "mailbox-claude-code"
+      assert Server.mailbox_topic(s2) == "agents/claude-code"
+    end
+
+    test "when presence_starter omits mailbox fields, initialize response omits them too" do
+      s = Server.new(presence_starter: stub_presence_starter())
+
+      request = {:request, 1, "initialize",
+                 %{"protocolVersion" => "2025-06-18",
+                   "clientInfo" => %{"name" => "claude-code", "version" => "1.0"}}}
+
+      assert {:ok, result, s2} = Server.handle(s, request)
+
+      refute Map.has_key?(result["serverInfo"], "mailboxUuid")
+      refute Map.has_key?(result["serverInfo"], "mailboxTopic")
+      assert Server.mailbox_uuid(s2) == nil
+      assert Server.mailbox_topic(s2) == nil
     end
   end
 
@@ -109,6 +164,25 @@ defmodule Commonplace.MCP.ServerTest do
       Server.shutdown(s2)
 
       assert_received {:presence_stopped, %{uuid: "uuid-claude", name: "claude", type: :bot}}
+    end
+
+    test "passes mailbox fields through to presence_stopper on shutdown (CX-92u)" do
+      s =
+        Server.new(
+          presence_starter: stub_presence_starter_with_mailbox(),
+          presence_stopper: stub_presence_stopper()
+        )
+
+      request = {:request, 1, "initialize",
+                 %{"protocolVersion" => "2025-06-18",
+                   "clientInfo" => %{"name" => "claude", "version" => "1"}}}
+
+      assert {:ok, _result, s2} = Server.handle(s, request)
+      Server.shutdown(s2)
+
+      assert_received {:presence_stopped, info}
+      assert info.mailbox_uuid == "mailbox-claude"
+      assert info.mailbox_topic == "agents/claude"
     end
 
     test "with no presence bootstrap, shutdown is a no-op", %{server: s} do
