@@ -297,22 +297,32 @@ defmodule Commonplace.MergeCommand.HandlerTest do
       # Peer A: chained L is :latest, sibling R imported.
       uuid = "mcmd-determ-a"
       {l, r} = build_l_r(store_a, uuid)
-      path = register_in_root(store_a, root_a, "determ_doc", uuid)
-      topic = "commands/#{path}/merge"
 
-      Magenta.subscribe(topic)
+      # Use distinct entry names per peer. Both handlers subscribe to
+      # the "merge" verb sentinel (β topology), so both receive every
+      # message — we keep each peer's handler isolated from the other's
+      # request by making the path resolve only in the matching peer's
+      # root. Before CX-nuc2, the incidental __merge.log write moved
+      # peer A's :latest to a schema-shaped commit, so peer A's handler
+      # error-pathed on the second request and never emitted
+      # merge_completed; that accidentally isolated the test. Leaf-doc
+      # merges now leave the target untouched, so we isolate explicitly.
+      path_a = register_in_root(store_a, root_a, "determ_a_doc", uuid)
+      topic_a = "commands/#{path_a}/merge"
+
+      Magenta.subscribe(topic_a)
 
       # First request runs through this test's handler (the one started
       # in setup) — its :latest = L, so it merges (L, R).
       Magenta.send(
-        topic,
+        topic_a,
         Magenta.message("merge", "test", %{
           "other_ref" => Base.encode16(r.id, case: :lower),
           "strategy" => "translate"
         })
       )
 
-      assert_receive {:magenta, ^topic, %Magenta{type: "merge_completed"} = reply_a}, 2000
+      assert_receive {:magenta, ^topic_a, %Magenta{type: "merge_completed"} = reply_a}, 2000
       commit_a_id = Base.decode16!(reply_a.payload["commit_id"], case: :lower)
 
       # Now stand up an independent peer-B store/handler whose :latest
@@ -333,7 +343,7 @@ defmodule Commonplace.MergeCommand.HandlerTest do
       root_b = "mcmd-root-b-#{:rand.uniform(1_000_000)}"
       root_schema_b = Schema.new_schema()
       CommitStore.create_commit(store_b, root_b, Encoding.encode_update(root_schema_b), nil)
-      register_in_root(store_b, root_b, "determ_doc", uuid)
+      register_in_root(store_b, root_b, "determ_b_doc", uuid)
 
       handler_b = :"mcmd_handler_b_#{:rand.uniform(1_000_000)}"
 
@@ -348,17 +358,8 @@ defmodule Commonplace.MergeCommand.HandlerTest do
         if Process.alive?(handler_b_pid), do: GenServer.stop(handler_b_pid)
       end)
 
-      topic_b = "commands/determ_doc/merge"
+      topic_b = "commands/determ_b_doc/merge"
       Magenta.subscribe(topic_b)
-
-      # Drain the first peer's reply that already landed on the same
-      # topic name (subscribers see it before peer B publishes its own).
-      :ok =
-        receive do
-          {:magenta, ^topic_b, %Magenta{type: "merge_completed"}} -> :ok
-        after
-          0 -> :ok
-        end
 
       Magenta.send(
         topic_b,
@@ -462,6 +463,100 @@ defmodule Commonplace.MergeCommand.HandlerTest do
       {_l, r} = build_schema_l_r(store, target_uuid)
 
       path = register_in_root(store, root, "reuse_doc", target_uuid)
+      topic = "commands/#{path}/merge"
+
+      Magenta.subscribe(topic)
+
+      request =
+        Magenta.message("merge", "test", %{
+          "other_ref" => Base.encode16(r.id, case: :lower),
+          "strategy" => "translate"
+        })
+
+      Magenta.send(topic, request)
+      assert_receive {:magenta, ^topic, %Magenta{}}, 2000
+      {:ok, onramp_first} = GenServer.call(handler, {:get_onramp, path})
+
+      Magenta.send(topic, request)
+      assert_receive {:magenta, ^topic, %Magenta{}}, 2000
+      {:ok, onramp_second} = GenServer.call(handler, {:get_onramp, path})
+
+      assert onramp_first == onramp_second
+      assert Process.alive?(onramp_first)
+    end
+  end
+
+  describe "leaf-doc merge log (CX-nuc2)" do
+    test "merge on a leaf-doc target does NOT add a __merge.log entry to the target",
+         %{store: store, root: root} do
+      target_uuid = "mcmd-leaf-no-entry"
+      {_l, r} = build_l_r(store, target_uuid)
+
+      path = register_in_root(store, root, "leaf_no_entry_doc", target_uuid)
+      topic = "commands/#{path}/merge"
+
+      Magenta.subscribe(topic)
+
+      request =
+        Magenta.message("merge", "test", %{
+          "other_ref" => Base.encode16(r.id, case: :lower),
+          "strategy" => "translate"
+        })
+
+      Magenta.send(topic, request)
+      assert_receive {:magenta, ^topic, %Magenta{type: "merge_completed"}}, 2000
+
+      # The target is a text doc. Adding a "__merge.log" schema entry
+      # into it would write a schema-shaped commit over a text chain,
+      # corrupting the leaf. The CX-nuc2 design puts the merge log at a
+      # separate UUID5-derived UUID, so the leaf target's own schema view
+      # must stay empty.
+      target_schema = load_schema(store, target_uuid)
+      assert :error = Schema.get_entry(target_schema, "__merge.log")
+    end
+
+    test "merge_completed event is persisted in the UUID5-derived per-doc merge log",
+         %{store: store, root: root, handler: handler} do
+      target_uuid = "mcmd-leaf-mergelog"
+      {_l, r} = build_l_r(store, target_uuid)
+
+      path = register_in_root(store, root, "leaf_mergelog_doc", target_uuid)
+      topic = "commands/#{path}/merge"
+
+      Magenta.subscribe(topic)
+
+      request =
+        Magenta.message("merge", "test", %{
+          "other_ref" => Base.encode16(r.id, case: :lower),
+          "strategy" => "translate"
+        })
+
+      Magenta.send(topic, request)
+      assert_receive {:magenta, ^topic, %Magenta{type: "merge_completed"}}, 2000
+
+      # Flush the onramp to persist events before reading.
+      {:ok, onramp} = GenServer.call(handler, {:get_onramp, path})
+      RedLog.commit_onramp(onramp)
+
+      # The log lives at the deterministic UUID5-derived address — no
+      # schema entry points at it, but any peer can rediscover it given
+      # the target_uuid.
+      log_uuid = Commonplace.MergeCommand.MergeLog.log_uuid_for_doc(target_uuid)
+      log = RedLog.load(log_uuid, store)
+      events = RedLog.read(log)
+
+      assert Enum.any?(events, fn e ->
+               e["type"] == "merge_completed" and e["payload"]["path"] == path
+             end),
+             "expected merge_completed event in leaf-doc merge log, got: #{inspect(events)}"
+    end
+
+    test "second merge on the same leaf doc reuses the in-memory onramp",
+         %{store: store, root: root, handler: handler} do
+      target_uuid = "mcmd-leaf-reuse"
+      {_l, r} = build_l_r(store, target_uuid)
+
+      path = register_in_root(store, root, "leaf_reuse_doc", target_uuid)
       topic = "commands/#{path}/merge"
 
       Magenta.subscribe(topic)

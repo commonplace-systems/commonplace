@@ -35,26 +35,34 @@ defmodule Commonplace.MergeCommand.Handler do
   through JSON — the onramp persists events via `Jason.encode!`, which
   rejects non-UTF8 binaries.
 
-  ## Red-log onramp (CX-3hvu)
+  ## Red-log onramp (CX-3hvu, CX-nuc2)
 
-  On the first successful merge for a given path, the handler
-  lazy-creates a `__merge.log` schema entry under the target doc
-  (mirrors Bursar's `__bursar.log` pattern at
-  `lib/commonplace/green/bursar.ex:497-579`) and starts a
-  `RedLog.start_onramp/3` for that log, subscribed to the per-path
-  merge topic. The onramp is started BEFORE the reply is published so
-  the first `merge_completed` event lands in the log. Subsequent
-  merges on the same path reuse the in-memory onramp pid. Scope is
-  schema-target merges — leaf-doc merges short-circuit with
-  `:not_a_schema` until CX-nuc2 lands a design.
+  On the first successful merge for a given path, the handler starts a
+  `RedLog.start_onramp/3` subscribed to the per-path merge topic. The
+  onramp is started BEFORE the reply is published so the first
+  `merge_completed` event lands in the log. Subsequent merges on the
+  same path reuse the in-memory onramp pid.
+
+  The log's UUID depends on the target doc's shape:
+
+  - Schema target: a `__merge.log` schema entry is lazy-created under
+    the target, pointing at a fresh log UUID. Mirrors Bursar's
+    `__bursar.log` pattern (`lib/commonplace/green/bursar.ex:497-579`).
+    Lets consumers traverse to the log from the tree.
+
+  - Leaf target (CX-nuc2): the log lives at a UUID5-derived address
+    (`Commonplace.MergeCommand.MergeLog.log_uuid_for_doc/1`). No schema
+    entry is written — adding one would corrupt the leaf's chain.
+    Consumers rediscover the log deterministically from the target_uuid.
   """
 
   use GenServer
 
   alias Commonplace.Dataflow.{Magenta, RedLog}
+  alias Commonplace.MergeCommand.MergeLog
   alias Commonplace.Store.{CommitStore, CommitStoreClient, Merger, MergePolicy}
-  alias Commonplace.Tree.{Schema, Walk}
-  alias Yelixer.Encoding
+  alias Commonplace.Tree.{DocBuilder, Schema, Walk}
+  alias Yelixer.{Doc, Encoding}
 
   @source "merge_command_handler"
   @merge_log_entry "__merge.log"
@@ -177,14 +185,44 @@ defmodule Commonplace.MergeCommand.Handler do
         state
 
       _ ->
-        log_uuid = ensure_merge_log_entry(state.store, target_uuid)
+        log_uuid = resolve_merge_log_uuid(state.store, target_uuid)
         {:ok, pid} = RedLog.start_onramp(log_uuid, topic, state.store)
         %{state | onramps: Map.put(state.onramps, path, pid)}
     end
   end
 
+  # Pick the merge log's UUID based on the target's shape. Schema
+  # targets get a traversable `__merge.log` entry; leaf targets get a
+  # deterministic UUID5-derived address (CX-nuc2) — writing a schema
+  # entry to a leaf would corrupt its chain.
+  defp resolve_merge_log_uuid(store, target_uuid) do
+    if schema_target?(store, target_uuid) do
+      ensure_merge_log_entry(store, target_uuid)
+    else
+      MergeLog.log_uuid_for_doc(target_uuid)
+    end
+  end
+
+  # A doc is "schema-shaped" iff its reconstructed state carries both
+  # the `__schema` and `entries` YMap types that `Schema.new_schema/0`
+  # declares. We can't rely on `Schema.version/1` because snapshot
+  # compaction round-trips the YMap types but not every scalar value
+  # written into them — a schema target post-snapshot typically has
+  # `Schema.version(doc) == nil` even though its structure is intact.
+  # We also can't rely on a single-commit apply: merge commits' updates
+  # don't re-declare type roots, so `Doc.new()+apply_update(merge_commit)`
+  # misses the `__schema`/`entries` types. Full-chain replay via
+  # `DocBuilder.reconstruct_doc/2` is authoritative.
+  defp schema_target?(store, target_uuid) do
+    case DocBuilder.reconstruct_doc(store, target_uuid) do
+      {:ok, doc} -> Doc.has_type?(doc, "__schema") and Doc.has_type?(doc, "entries")
+      _ -> false
+    end
+  end
+
   # Lookup or lazy-create the __merge.log schema entry under
-  # `target_uuid`. Parallels Bursar's `__bursar.log` pattern.
+  # `target_uuid`. Parallels Bursar's `__bursar.log` pattern. Only safe
+  # to call on schema targets — see `schema_target?/2`.
   defp ensure_merge_log_entry(store, target_uuid) do
     schema = load_target_schema(store, target_uuid)
 
