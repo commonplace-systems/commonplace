@@ -21,12 +21,23 @@ defmodule Commonplace.Sync.NodeSync do
 
   Default `fallback: true` per design — cross-epoch peers should
   auto-recover; the caller can disable with `fallback: false`.
+
+  ## Merge adoption (CX-8k1v)
+
+  After an import succeeds, `MergeAdopter.maybe_adopt/2` opportunistically
+  advances `:latest` to the imported commit iff the commit is a merge
+  whose ancestor DAG dominates the current local `:latest`. Lets peers
+  that only receive merges (never invoke one locally) converge on the
+  merge head autonomously. Non-merge imports and non-dominating merges
+  are no-ops. See `Commonplace.Sync.MergeAdopter` for the design
+  rationale and alternative (c) that was considered and not taken.
   """
 
   alias Commonplace.LateEditAutoTranslator
   alias Commonplace.Store.Commit
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Store.CommitStore
+  alias Commonplace.Sync.MergeAdopter
 
   require Logger
 
@@ -116,14 +127,20 @@ defmodule Commonplace.Sync.NodeSync do
   def import_with_translation(store \\ CommitStore, commit, opts \\ []) do
     case LateEditAutoTranslator.maybe_auto_translate(store, commit, opts) do
       {:ok, :no_translation_needed} ->
-        CommitStoreClient.import_commit(store, commit)
+        result = CommitStoreClient.import_commit(store, commit)
+        _ = MergeAdopter.maybe_adopt(store, commit)
+        result
 
       {:ok, kind, translated} when kind in [:translated, :fallback] ->
-        CommitStoreClient.import_commit(store, translated)
+        result = CommitStoreClient.import_commit(store, translated)
+        _ = MergeAdopter.maybe_adopt(store, translated)
+        result
 
       {:ok, :skipped, reason} ->
         emit_auto_skip_stored(commit, reason)
-        CommitStoreClient.import_commit(store, commit)
+        result = CommitStoreClient.import_commit(store, commit)
+        _ = MergeAdopter.maybe_adopt(store, commit)
+        result
     end
   end
 

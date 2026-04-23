@@ -234,4 +234,131 @@ defmodule Commonplace.Sync.NodeSyncImportHookTest do
       refute_receive {:telemetry, [:commonplace, :late_edit, :auto_skip_stored], _, _}, 100
     end
   end
+
+  describe "merge adoption (CX-8k1v)" do
+    # Build a two-sibling shape with :latest pointing at R. The import
+    # path then receives a merge commit whose merge_parents include R +
+    # parent_id is L — dominating local :latest. After the hook fires,
+    # :latest should advance to the merge.
+    test "hook advances :latest when imported commit is a dominating merge",
+         %{store: store} do
+      uuid = "hook-adopt"
+      {:ok, _genesis} = CommitStore.ensure_genesis(store, uuid)
+
+      # C → L chained.
+      doc_c = Doc.new(client_id: 1)
+      {doc_c, _} = Doc.get_or_create_type(doc_c, "t", :text)
+      doc_c = Text.insert(doc_c, "t", 0, "abc")
+
+      _reg =
+        CommitStore.create_chained_commit(
+          store,
+          uuid,
+          Encoding.encode_update(doc_c),
+          %{kind: :regular}
+        )
+
+      {:ok, c_snap} = CommitStore.snapshot(store, uuid)
+
+      doc_l = Doc.new(client_id: 2)
+      {doc_l, _} = Doc.get_or_create_type(doc_l, "t", :text)
+      {:ok, doc_l} = Encoding.apply_update(doc_l, c_snap.update)
+      doc_l = Text.insert(doc_l, "t", 0, "L")
+      l = CommitStore.create_chained_commit(store, uuid, Encoding.encode_update(doc_l), %{kind: :regular})
+
+      # R is a sibling of L, imported then promoted to :latest to
+      # simulate peer B whose local head is R (not L).
+      doc_r = Doc.new(client_id: 3)
+      {doc_r, _} = Doc.get_or_create_type(doc_r, "t", :text)
+      {:ok, doc_r} = Encoding.apply_update(doc_r, c_snap.update)
+      doc_r = Text.insert(doc_r, "t", 3, "R")
+
+      r =
+        Commit.new(uuid, Encoding.encode_update(doc_r), c_snap.id, %{
+          kind: :regular,
+          snapshot_parent: c_snap.id
+        })
+
+      :ok = CommitStore.import_commit(store, r, validator: fn _ -> :ok end)
+      :ok = CommitStore.set_latest(store, uuid, r.id)
+
+      capture_telemetry([:commonplace, :sync, :merge_adopted])
+
+      # Peer A's merge M arrives via sync: parent_id=l, merge_parents=[r].
+      merge = Commit.new(uuid, <<"m-payload">>, l.id, %{kind: :merge}, [r.id])
+      _ = NodeSync.import_with_translation(store, merge, fallback: false)
+
+      assert_receive {:telemetry, [:commonplace, :sync, :merge_adopted], _, meta}, 500
+      assert meta.commit_id == merge.id
+      assert meta.prev_latest == r.id
+
+      {:ok, latest} = CommitStore.latest_commit(store, uuid)
+      assert latest.id == merge.id
+    end
+
+    test "hook does NOT advance :latest when the imported merge doesn't dominate",
+         %{store: store} do
+      uuid = "hook-noadopt"
+      {:ok, _genesis} = CommitStore.ensure_genesis(store, uuid)
+
+      doc_c = Doc.new(client_id: 1)
+      {doc_c, _} = Doc.get_or_create_type(doc_c, "t", :text)
+      doc_c = Text.insert(doc_c, "t", 0, "abc")
+
+      _reg =
+        CommitStore.create_chained_commit(
+          store,
+          uuid,
+          Encoding.encode_update(doc_c),
+          %{kind: :regular}
+        )
+
+      {:ok, c_snap} = CommitStore.snapshot(store, uuid)
+
+      doc_l = Doc.new(client_id: 2)
+      {doc_l, _} = Doc.get_or_create_type(doc_l, "t", :text)
+      {:ok, doc_l} = Encoding.apply_update(doc_l, c_snap.update)
+      doc_l = Text.insert(doc_l, "t", 0, "L")
+      l = CommitStore.create_chained_commit(store, uuid, Encoding.encode_update(doc_l), %{kind: :regular})
+
+      doc_r = Doc.new(client_id: 3)
+      {doc_r, _} = Doc.get_or_create_type(doc_r, "t", :text)
+      {:ok, doc_r} = Encoding.apply_update(doc_r, c_snap.update)
+      doc_r = Text.insert(doc_r, "t", 3, "R")
+
+      r =
+        Commit.new(uuid, Encoding.encode_update(doc_r), c_snap.id, %{
+          kind: :regular,
+          snapshot_parent: c_snap.id
+        })
+
+      :ok = CommitStore.import_commit(store, r, validator: fn _ -> :ok end)
+
+      # Local head diverged AFTER R → X. The incoming merge dominates
+      # {L, R} but NOT X, so the hook must leave :latest alone.
+      doc_x = Doc.new(client_id: 4)
+      {doc_x, _} = Doc.get_or_create_type(doc_x, "t", :text)
+      {:ok, doc_x} = Encoding.apply_update(doc_x, r.update)
+      doc_x = Text.insert(doc_x, "t", 0, "X")
+
+      x =
+        Commit.new(uuid, Encoding.encode_update(doc_x), r.id, %{
+          kind: :regular,
+          snapshot_parent: r.id
+        })
+
+      :ok = CommitStore.import_commit(store, x, validator: fn _ -> :ok end)
+      :ok = CommitStore.set_latest(store, uuid, x.id)
+
+      capture_telemetry([:commonplace, :sync, :merge_adopted])
+
+      merge = Commit.new(uuid, <<"m-payload">>, l.id, %{kind: :merge}, [r.id])
+      _ = NodeSync.import_with_translation(store, merge, fallback: false)
+
+      refute_receive {:telemetry, [:commonplace, :sync, :merge_adopted], _, _}, 200
+
+      {:ok, latest} = CommitStore.latest_commit(store, uuid)
+      assert latest.id == x.id
+    end
+  end
 end
