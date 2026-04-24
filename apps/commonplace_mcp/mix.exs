@@ -29,7 +29,16 @@ defmodule Commonplace.MCP.MixProject do
   defp deps do
     [
       {:commonplace, in_umbrella: true},
-      {:jason, "~> 1.4"}
+      {:jason, "~> 1.4"},
+      # CX-pd6k: anubis_mcp is the active Elixir MCP library tracking
+      # three protocol versions and implementing the rare features
+      # (sampling, elicitation, completion, session resumption). We
+      # vendor it behind the `Commonplace.MCP.*` namespace so all
+      # callers depend on our wrappers, not on anubis types directly
+      # — a future fork swap touches the facade, not every caller.
+      # LGPL-3.0; survivable as a library dep, flag if commonplace
+      # ever ships statically into proprietary distro.
+      {:anubis_mcp, "~> 1.1"}
     ]
   end
 end
