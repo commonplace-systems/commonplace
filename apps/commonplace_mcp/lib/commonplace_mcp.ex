@@ -22,7 +22,7 @@ defmodule Commonplace.MCP do
   """
 
   alias Commonplace.Dataflow.RedLog
-  alias Commonplace.MCP.{Server, Stdio}
+  alias Commonplace.MCP.AnubisServer
   alias Commonplace.Presence.Mailbox
   alias Commonplace.Presence.Server, as: PresenceServer
   alias Commonplace.Sync.CheckoutRegistry
@@ -37,14 +37,31 @@ defmodule Commonplace.MCP do
         # from the workspace root itself).
         presence_uuid = resolve_presence_uuid(data_dir, root_uuid)
 
-        server =
-          Server.new(
+        # CX-hf71: register the presence hooks with AnubisServer via
+        # :persistent_term (it reads them back in init/2 + terminate/2).
+        # The hand-rolled Commonplace.MCP.Server path is retained on
+        # disk for CX-xaof to clean up; it is no longer wired to
+        # stdio. All live MCP traffic goes through anubis.
+        :ok =
+          AnubisServer.config(
             presence_starter: presence_starter(presence_uuid),
             presence_stopper: presence_stopper(presence_uuid)
           )
 
-        Stdio.run_stdio(server)
-        :ok
+        {:ok, sup} =
+          Supervisor.start_link(
+            [{AnubisServer, transport: :stdio}],
+            strategy: :one_for_one
+          )
+
+        # Block the escript so the supervisor keeps the anubis
+        # session + stdio transport alive. Anubis terminates cleanly
+        # on stdin EOF via its own shutdown path.
+        Process.monitor(sup)
+
+        receive do
+          {:DOWN, _ref, :process, ^sup, _} -> :ok
+        end
 
       {:error, :not_running} ->
         IO.puts(:stderr, """
