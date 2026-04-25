@@ -238,6 +238,57 @@ defmodule Commonplace.CommandRouterTest do
       assert Commonplace.Document.ContentType.get_content(read3) == "third version"
     end
 
+    # CX-o3r7: write must thread `signing_context` from its opts all the
+    # way to the underlying CommitStore so the resulting commit is signed
+    # by the SESSION's bound key, not whatever's in the global SecretStore.
+    # Today, opts loses signing_context at the CommandRouter ↔ CommitStoreClient
+    # boundary (CommitStoreClient.create_chained_commit/4 doesn't accept opts),
+    # so MCP-initiated writes silently inherit the human's signing identity.
+    test "write threads signing_context from opts into the underlying signed commit (CX-o3r7)",
+         ctx do
+      {_pid, name} = start_router(ctx)
+      uuid = create_leaf_doc(ctx, "v1 contents")
+
+      {pub, priv} = Commonplace.Crypto.Signing.generate_keypair()
+
+      session_ctx = %Commonplace.Crypto.SigningContext{
+        identity_uuid: "test-session-agent",
+        private_key: priv,
+        public_key: pub
+      }
+
+      assert {:ok, _info} =
+               CommandRouter.write(name, uuid, "v2 contents", signing_context: session_ctx)
+
+      {:ok, latest} = CommitStore.latest_commit(ctx.store, uuid)
+
+      assert latest.signature != nil,
+             "commit must carry a signature when signing_context is supplied"
+
+      assert String.starts_with?(latest.signer_id, "test-session-agent@"),
+             "signer_id must encode the SigningContext's identity_uuid, " <>
+               "got: #{inspect(latest.signer_id)}"
+
+      assert :ok = Commonplace.Crypto.Signing.verify_commit(latest, pub),
+             "signature must verify against the SigningContext's public key"
+    end
+
+    # Companion to the CX-o3r7 plumbing test: `signing_context: :unsigned`
+    # opts in must skip signing even when the global SecretStore has a key.
+    # Mirrors the CommitStore-level :unsigned escape hatch used by MCP-MVP
+    # commits that should not inherit the human's identity.
+    test "write with signing_context: :unsigned skips signing (CX-o3r7)", ctx do
+      {_pid, name} = start_router(ctx)
+      uuid = create_leaf_doc(ctx, "before")
+
+      assert {:ok, _info} =
+               CommandRouter.write(name, uuid, "after", signing_context: :unsigned)
+
+      {:ok, latest} = CommitStore.latest_commit(ctx.store, uuid)
+      assert latest.signature == nil
+      assert latest.signer_id == nil
+    end
+
     test "refuses to clobber a non-text doc unless force: true (CX-yfva)", ctx do
       {_pid, name} = start_router(ctx)
       uuid = UUID.uuid4()

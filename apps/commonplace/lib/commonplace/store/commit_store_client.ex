@@ -27,17 +27,25 @@ defmodule Commonplace.Store.CommitStoreClient do
     end
   end
 
-  def create_chained_commit(server \\ CommitStore, doc_uuid, update, metadata \\ %{}) do
+  def create_chained_commit(server \\ CommitStore, doc_uuid, update, metadata \\ %{}, opts \\ []) do
     case remote_node() do
       {:ok, node} ->
         parent_id = case GenServer.call({CommitStore, node}, {:latest_commit, doc_uuid}) do
           {:ok, commit} -> commit.id
           :none -> nil
         end
-        GenServer.call({CommitStore, node}, {:create_commit, doc_uuid, update, parent_id, metadata})
+        # CX-o3r7: opts (notably :signing_context) carry through to the
+        # remote create_commit call so signing-context-tagged writes don't
+        # silently drop the context just because the local node is in
+        # remote-routing mode. The local branch already had this via
+        # CommitStore.create_chained_commit/5; remote was the gap.
+        GenServer.call(
+          {CommitStore, node},
+          {:create_commit, doc_uuid, update, parent_id, metadata, opts}
+        )
 
       :local ->
-        CommitStore.create_chained_commit(normalize_server(server), doc_uuid, update, metadata)
+        CommitStore.create_chained_commit(normalize_server(server), doc_uuid, update, metadata, opts)
     end
   end
 

@@ -127,6 +127,71 @@ defmodule Commonplace.MCP.Tools.InvokeViewActionTest do
     end
   end
 
+  # CX-o3r7 (S2 of CX-p2qp): InvokeViewAction must accept a session
+  # context map (run/2 + run_with_content/5) and thread :signing_context
+  # into ViewActionDispatch's context. The dispatcher in turn threads it
+  # to action handlers; chat actions (V1+) consume it to sign their
+  # commits with the SESSION's bound key. Today's handlers (edit, history,
+  # fork) don't use it directly, but it must be observable in the audit
+  # broadcast (signer_id derived from the SigningContext when present)
+  # and present in the dispatcher's context map (verified via the
+  # broadcast payload, which currently echoes signer_id).
+  describe "session context plumbing (CX-o3r7)" do
+    setup do
+      Magenta.subscribe("view_actions")
+      :ok
+    end
+
+    test "audit signer_id is derived from session SigningContext when supplied" do
+      {pub, priv} = Commonplace.Crypto.Signing.generate_keypair()
+
+      ctx = %Commonplace.Crypto.SigningContext{
+        identity_uuid: "session-agent-7",
+        private_key: priv,
+        public_key: pub
+      }
+
+      _ =
+        InvokeViewAction.run_with_content(
+          @simple_view,
+          "uuid-1",
+          "edit",
+          %{},
+          %{signing_context: ctx}
+        )
+
+      expected_signer_id = Commonplace.Crypto.Signing.signer_id("session-agent-7", pub)
+
+      assert_receive {:magenta, "view_actions", %Magenta{type: "view_action_invoked"} = msg},
+                     1000
+
+      assert msg.payload["signer_id"] == expected_signer_id,
+             "signer_id must be derived from the session SigningContext, " <>
+               "got: #{inspect(msg.payload["signer_id"])}"
+    end
+
+    test "audit signer_id falls back to mcp-agent@local placeholder when no context" do
+      # Existing default-context behavior must be preserved.
+      _ = InvokeViewAction.run_with_content(@simple_view, "uuid-1", "edit", %{})
+
+      assert_receive {:magenta, "view_actions", %Magenta{type: "view_action_invoked"} = msg},
+                     1000
+
+      assert msg.payload["signer_id"] == "mcp-agent@local"
+    end
+
+    test "run/2 accepts a context map and forwards it (no view_uuid happy path needed)" do
+      # run/2 is the entry point used by Tools.call when context is
+      # available. It MUST forward to run_with_content/5 (or equivalent),
+      # passing the context through. We exercise the validation surface
+      # here — happy path requires a real view in the commit store.
+      assert {:error, :invalid_params, _} = InvokeViewAction.run(%{}, %{})
+
+      assert {:error, :invalid_params, _} =
+               InvokeViewAction.run(%{"action" => "edit"}, %{signing_context: :unsigned})
+    end
+  end
+
   describe "run/1 validation" do
     test "rejects missing view_uuid" do
       assert {:error, :invalid_params, _} = InvokeViewAction.run(%{"action" => "edit"})

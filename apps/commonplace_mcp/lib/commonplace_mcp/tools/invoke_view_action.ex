@@ -75,21 +75,35 @@ defmodule Commonplace.MCP.Tools.InvokeViewAction do
     }
   end
 
-  def run(%{"view_uuid" => uuid, "action" => action} = args)
-      when is_binary(uuid) and is_binary(action) do
+  def run(args), do: run(args, %{})
+
+  # CX-o3r7: run/2 accepts the per-MCP-session context map populated by
+  # AnubisServer.init/2 and threaded through Tools.call. Today its
+  # interesting field is :signing_context — a Commonplace.Crypto.SigningContext
+  # struct (or :unsigned) that flows down to ViewActionDispatch.context
+  # and onward to action handlers, so chat-action commits can be signed
+  # by the session's bound key instead of the global SecretStore.
+  # Existing callers using run/1 get an empty context and the
+  # "mcp-agent@local" placeholder, preserving today's behavior.
+  def run(%{"view_uuid" => uuid, "action" => action} = args, context)
+      when is_binary(uuid) and is_binary(action) and is_map(context) do
     case read_view_content(uuid) do
-      {:ok, content} -> run_with_content(content, uuid, action, args)
+      {:ok, content} -> run_with_content(content, uuid, action, args, context)
       {:error, reason} -> {:error, reason}
     end
   end
 
-  def run(_),
+  def run(_, _),
     do: {:error, :invalid_params, "view_uuid (string) and action (string) are required"}
 
   @doc false
   # Split out so tests can exercise parse + validate + dispatch without
   # needing a live CommitStore. run/1 provides the store-read wrapper.
-  def run_with_content(content, uuid, action, args) when is_binary(content) do
+  def run_with_content(content, uuid, action, args),
+    do: run_with_content(content, uuid, action, args, %{})
+
+  def run_with_content(content, uuid, action, args, session_context)
+      when is_binary(content) and is_map(session_context) do
     target = args["target"]
     extra_args = args["args"] || %{}
 
@@ -101,7 +115,8 @@ defmodule Commonplace.MCP.Tools.InvokeViewAction do
         view_uuid: uuid,
         target: target,
         args: extra_args,
-        signer_id: "mcp-agent@local",
+        signer_id: derive_signer_id(session_context),
+        signing_context: Map.get(session_context, :signing_context),
         source: "mcp"
       }
 
@@ -141,6 +156,17 @@ defmodule Commonplace.MCP.Tools.InvokeViewAction do
   end
 
   # --- Private helpers ---
+
+  # CX-o3r7: derive the audit-payload signer_id from the session
+  # SigningContext when present. Falls back to the placeholder for
+  # legacy callers (run/1) and unsigned writes. The substrate-level
+  # key-minting bead (CX-88mw) will populate signing_context for real
+  # MCP sessions; until then most callers see "mcp-agent@local".
+  defp derive_signer_id(%{signing_context: %Commonplace.Crypto.SigningContext{} = ctx}) do
+    Commonplace.Crypto.Signing.signer_id(ctx.identity_uuid, ctx.public_key)
+  end
+
+  defp derive_signer_id(_), do: "mcp-agent@local"
 
   defp read_view_content(uuid) do
     case DocBuilder.reconstruct_snapshot(CommitStoreClient, uuid) do

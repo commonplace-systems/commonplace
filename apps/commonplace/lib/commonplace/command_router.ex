@@ -193,6 +193,12 @@ defmodule Commonplace.CommandRouter do
   @impl true
   def handle_call({:write, uuid, new_content, opts}, _from, state) do
     force? = Keyword.get(opts, :force, false)
+    # CX-o3r7: forward signing_context (when present) to the underlying
+    # CommitStoreClient.create_chained_commit/5 so MCP-initiated writes can
+    # be signed by the session's bound key instead of inheriting the global
+    # SecretStore. Absent → CommitStore falls back to its default behavior
+    # (global key, or unsigned if no key configured).
+    commit_opts = Keyword.take(opts, [:signing_context])
     args = %{"uuid" => uuid, "new_bytes" => byte_size(new_content)}
 
     result =
@@ -207,7 +213,7 @@ defmodule Commonplace.CommandRouter do
                 old_content = ContentType.get_content(doc) || ""
                 doc = Diff.apply_diff(doc, old_content, new_content)
                 update = Yelixer.Encoding.encode_update(doc)
-                CommitStoreClient.create_chained_commit(state.store, uuid, update)
+                CommitStoreClient.create_chained_commit(state.store, uuid, update, %{}, commit_opts)
 
                 audit = %{
                   "uuid" => uuid,
@@ -229,7 +235,7 @@ defmodule Commonplace.CommandRouter do
                 fresh = ContentType.create(fresh, :text, "(forced)")
                 fresh = ContentType.insert_text(fresh, 0, new_content)
                 update = Yelixer.Encoding.encode_update(fresh)
-                CommitStoreClient.create_chained_commit(state.store, uuid, update)
+                CommitStoreClient.create_chained_commit(state.store, uuid, update, %{}, commit_opts)
 
                 audit = %{
                   "uuid" => uuid,
