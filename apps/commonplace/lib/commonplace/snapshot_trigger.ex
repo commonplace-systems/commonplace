@@ -41,9 +41,48 @@ defmodule Commonplace.SnapshotTrigger do
 
   @default_chain_length_threshold 100
 
+  # CX-0nkq: per-doc debounce window. SnapshotTrigger.maybe_snapshot
+  # is fired by the lazy reader path (DocBuilder.maybe_lazy_snapshot)
+  # via Task.start, by the producer-side hook, by the sweeper, and by
+  # the explicit CLI command. Under heavy reader pressure the Tasks
+  # pile up at the CommitStore mailbox — fork on a deep tree timed
+  # out at 5s under this contention. The debounce caps to one
+  # snapshot attempt per doc per @debounce_window_ms, regardless of
+  # how many readers triggered the path. Proper architectural fix
+  # is a single-flight SnapshotWorker GenServer (still tracked in
+  # CX-0nkq); this is the smallest viable relief.
+  @debounce_window_ms 10_000
+  @debounce_table :snapshot_trigger_debounce
+
+  @doc false
+  # Called from Commonplace.Application.start/2 to create the ETS
+  # table that backs `recent_attempt?/2` + `record_attempt/1`. Public
+  # so concurrent readers in any process can probe without going
+  # through a GenServer.
+  def init_debounce_table do
+    if :ets.whereis(@debounce_table) == :undefined do
+      try do
+        :ets.new(@debounce_table, [
+          :set,
+          :public,
+          :named_table,
+          read_concurrency: true,
+          write_concurrency: true
+        ])
+      rescue
+        # Race: a parallel caller created the table between our
+        # whereis check and our :ets.new — already exists is fine.
+        ArgumentError -> :ok
+      end
+    end
+
+    :ok
+  end
+
   @type maybe_snapshot_result ::
           {:ok, :snapshotted, Commonplace.Store.Commit.t()}
           | {:ok, :below_threshold, {:chain_length, non_neg_integer(), pos_integer()}}
+          | {:ok, :debounced, {:debounce_window_ms, pos_integer()}}
 
   @doc """
   Check whether `doc_uuid` has crossed the configured snapshot
@@ -76,7 +115,26 @@ defmodule Commonplace.SnapshotTrigger do
   @spec maybe_snapshot(GenServer.server(), String.t(), keyword()) :: maybe_snapshot_result()
   def maybe_snapshot(store \\ CommitStore, doc_uuid, opts \\ []) do
     threshold = resolve_threshold(opts)
+    now_ms = Keyword.get(opts, :now, System.system_time(:millisecond))
 
+    window =
+      Keyword.get(
+        opts,
+        :debounce_window_ms,
+        Application.get_env(:commonplace, :snapshot_trigger_debounce_window_ms, @debounce_window_ms)
+      )
+
+    cond do
+      window > 0 and recent_attempt?(doc_uuid, now_ms, window) ->
+        {:ok, :debounced, {:debounce_window_ms, window}}
+
+      true ->
+        record_attempt(doc_uuid, now_ms)
+        do_maybe_snapshot(store, doc_uuid, threshold, opts)
+    end
+  end
+
+  defp do_maybe_snapshot(store, doc_uuid, threshold, opts) do
     case CommitStore.latest_commit(store, doc_uuid) do
       :none ->
         {:ok, :below_threshold, {:chain_length, 0, threshold}}
@@ -98,6 +156,20 @@ defmodule Commonplace.SnapshotTrigger do
             {:ok, :below_threshold, {:chain_length, chain_length, threshold}}
         end
     end
+  end
+
+  defp recent_attempt?(doc_uuid, now_ms, window) do
+    init_debounce_table()
+
+    case :ets.lookup(@debounce_table, doc_uuid) do
+      [{^doc_uuid, last_ms}] -> now_ms - last_ms < window
+      [] -> false
+    end
+  end
+
+  defp record_attempt(doc_uuid, now_ms) do
+    init_debounce_table()
+    :ets.insert(@debounce_table, {doc_uuid, now_ms})
   end
 
   # CX-592q: lull-aware heuristic. Both `:soft_chain_length_threshold`
