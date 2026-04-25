@@ -154,9 +154,56 @@ defmodule Commonplace.ViewActionDispatch do
     {:error, "cannot fork: no view UUID in context"}
   end
 
+  # CX-487i (V1+V2 of CX-p2qp): chat post_message routes through
+  # Commonplace.Chat.Actions.post_message. Required args: messages_uuid,
+  # room, author_path, text. Optional: reply_to. signer_id and
+  # signing_context flow from session context (CX-o3r7 plumbing).
+  defp do_dispatch("post_message", %{args: args} = context) when is_map(args) do
+    with {:ok, messages_uuid} <- fetch_arg(args, "messages_uuid"),
+         {:ok, room} <- fetch_arg(args, "room"),
+         {:ok, author_path} <- fetch_arg(args, "author_path"),
+         {:ok, text} <- fetch_arg(args, "text") do
+      action_opts =
+        [
+          room: room,
+          author_path: author_path,
+          signer_id: Map.get(context, :signer_id) || "mcp-agent@local"
+        ]
+        |> maybe_kw(:reply_to, args["reply_to"])
+        |> maybe_kw(:signing_context, Map.get(context, :signing_context))
+        |> maybe_kw(:store, Map.get(context, :store))
+
+      case Commonplace.Chat.Actions.post_message(messages_uuid, text, action_opts) do
+        {:ok, %{message_id: id, ts: ts}} ->
+          {:ok, :tree_mutation,
+           %{action: "post_message", message_id: id, ts: ts, messages_uuid: messages_uuid}}
+
+        {:error, reason} ->
+          {:error, "post_message failed: #{inspect(reason)}"}
+      end
+    end
+  end
+
+  defp do_dispatch("post_message", _context) do
+    {:error, "post_message requires args map with messages_uuid, room, author_path, text"}
+  end
+
   defp do_dispatch(other, _context) do
     {:error, "unknown view action: #{other}"}
   end
+
+  defp fetch_arg(args, key) do
+    case Map.get(args, key) do
+      nil -> {:error, "missing required arg: #{key}"}
+      "" -> {:error, "missing required arg: #{key}"}
+      value when is_binary(value) -> {:ok, value}
+      other -> {:error, "arg #{key} must be a string, got: #{inspect(other)}"}
+    end
+  end
+
+  defp maybe_kw(kw, _key, nil), do: kw
+  defp maybe_kw(kw, _key, ""), do: kw
+  defp maybe_kw(kw, key, value), do: Keyword.put(kw, key, value)
 
   # Attach a freshly-forked doc to the workspace root schema under
   # `attach_name`. Returns `:ok` on success or `{:error, reason}` on

@@ -4,6 +4,64 @@ defmodule Commonplace.ViewActionDispatchTest do
   alias Commonplace.ViewActionDispatch
   alias Commonplace.Dataflow.Magenta
 
+  # CX-487i (V1+V2 of CX-p2qp): chat post_message clause routes through
+  # Commonplace.Chat.Actions.post_message and returns a :tree_mutation
+  # intent. args carries messages_uuid + room + author_path + text +
+  # optional reply_to. signer_id and signing_context come from session
+  # context per the CX-o3r7 plumbing seam.
+  describe "dispatch/2 post_message (CX-487i)" do
+    setup do
+      Magenta.subscribe("view_actions")
+
+      # The chat post_message handler defaults to CommitStoreClient
+      # (which routes to the production-named CommitStore started by
+      # Application.start in test env). We seed a fresh _messages doc
+      # under a random UUID so concurrent tests don't collide.
+      messages_uuid = UUID.uuid4()
+      doc = Commonplace.Chat.Messages.new()
+      update = Yelixer.Encoding.encode_update(doc)
+      Commonplace.Store.CommitStore.create_commit(messages_uuid, update, nil)
+
+      %{messages_uuid: messages_uuid}
+    end
+
+    test "post_message dispatches to Chat.Actions and returns tree_mutation",
+         %{messages_uuid: muuid} do
+      context = %{
+        view_path: "chat/general",
+        view_uuid: "view-uuid-stub",
+        args: %{
+          "messages_uuid" => muuid,
+          "room" => "general",
+          "author_path" => "alice.usr",
+          "text" => "hello from dispatcher"
+        },
+        signer_id: "alice@aaaaaaaa",
+        source: "test"
+      }
+
+      assert {:ok, :tree_mutation, details} =
+               ViewActionDispatch.dispatch("post_message", context)
+
+      assert is_binary(details.message_id)
+      assert is_binary(details.ts)
+      assert details.action == "post_message"
+
+      # The audit broadcast still fires (existing dispatcher contract).
+      assert_receive {:magenta, "view_actions",
+                      %Magenta{type: "view_action_invoked", payload: %{"action" => "post_message"}}},
+                     500
+    end
+
+    test "post_message with missing args returns {:error, reason}" do
+      assert {:error, _reason} =
+               ViewActionDispatch.dispatch("post_message", %{
+                 view_uuid: "v",
+                 args: %{"text" => "no messages_uuid"}
+               })
+    end
+  end
+
   describe "dispatch/2 audit broadcast" do
     test "broadcasts a magenta event on view_actions topic for every call" do
       Magenta.subscribe("view_actions")
