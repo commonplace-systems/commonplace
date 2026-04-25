@@ -66,7 +66,7 @@ defmodule Commonplace.Chat.Actions do
             |> maybe_put("reply_to", Keyword.get(opts, :reply_to))
 
           commit_entry(doc, store, messages_uuid, entry, opts)
-          broadcast_chain(Keyword.fetch!(opts, :room), "post", entry, %{})
+          broadcast_chain(Keyword.fetch!(opts, :room), "post", entry, %{}, opts)
 
           {:ok, %{message_id: message_id, ts: ts}}
 
@@ -114,7 +114,8 @@ defmodule Commonplace.Chat.Actions do
             Keyword.fetch!(opts, :room),
             "edit",
             entry,
-            %{"edit_of" => target_message_id}
+            %{"edit_of" => target_message_id},
+            opts
           )
 
           {:ok, %{message_id: edit_id, ts: ts}}
@@ -160,7 +161,8 @@ defmodule Commonplace.Chat.Actions do
             Keyword.fetch!(opts, :room),
             "delete",
             entry,
-            %{"tombstone_of" => target_message_id}
+            %{"tombstone_of" => target_message_id},
+            opts
           )
 
           {:ok, %{message_id: tomb_id, ts: ts}}
@@ -211,7 +213,15 @@ defmodule Commonplace.Chat.Actions do
   # Verb selects the type ("post" | "edit" | "delete"); extra_payload
   # carries verb-specific fields ({} for post, %{"edit_of" => …} for
   # edit, %{"tombstone_of" => …} for delete).
-  defp broadcast_chain(room, verb, entry, extra_payload) do
+  #
+  # CX-9zpb: also lazily ensures a red-onramp is running for this room
+  # IF opts carries :messages_log_uuid. The onramp's init synchronously
+  # subscribes to the topic, so by the time ensure_started returns the
+  # subscriber is set — broadcasting after is safe (no first-message
+  # drop).
+  defp broadcast_chain(room, verb, entry, extra_payload, opts) do
+    _ = ensure_room_onramp(room, opts)
+
     payload =
       %{
         "message_id" => entry["id"],
@@ -224,5 +234,29 @@ defmodule Commonplace.Chat.Actions do
     msg = Magenta.message(verb, "chat", payload)
     Magenta.send("chat:#{room}:events", msg)
     :ok
+  end
+
+  # Lazy onramp-start (per chat-room.md / msg #3042). Triggered on every
+  # action; idempotent. Skipped when caller didn't supply a log uuid —
+  # broadcast-only mode is fine for tests + flows that don't need the
+  # red audit trail. Production code paths supply :messages_log_uuid via
+  # the action args (resolved by C1 chrome / dispatcher).
+  defp ensure_room_onramp(room, opts) do
+    case Keyword.get(opts, :messages_log_uuid) do
+      nil ->
+        :ok
+
+      log_uuid when is_binary(log_uuid) ->
+        store_opt =
+          case Keyword.get(opts, :store) do
+            nil -> []
+            store -> [store: store]
+          end
+
+        case Commonplace.Chat.OnrampSupervisor.ensure_started(room, log_uuid, store_opt) do
+          {:ok, _pid} -> :ok
+          {:error, _} -> :ok
+        end
+    end
   end
 end
