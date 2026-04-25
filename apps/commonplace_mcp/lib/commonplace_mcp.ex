@@ -38,6 +38,17 @@ defmodule Commonplace.MCP do
     # tearing the transport down.
     redirect_logger_to_stderr()
 
+    # Diagnostic: write to stderr what the default handler config is
+    # NOW (after our redirect). If MCP-client logs still show stdout
+    # poisoning, this stderr line tells us whether the redirect ran
+    # and what the handler ended up looking like.
+    case :logger.get_handler_config(:default) do
+      {:ok, cfg} ->
+        IO.puts(:stderr, "commonplace_mcp: logger default handler config = #{inspect(cfg.config, limit: 5)}")
+      other ->
+        IO.puts(:stderr, "commonplace_mcp: get_handler_config(:default) = #{inspect(other)}")
+    end
+
     case attach_to_serve() do
       {:ok, root_uuid, data_dir} ->
         # CX-voi: presence lands in the sandbox checkout the agent was
@@ -112,14 +123,46 @@ defmodule Commonplace.MCP do
   end
 
   # Reconfigure the Erlang :logger default handler so Elixir's Logger
-  # writes to stderr (`:standard_error`) instead of stdout. Idempotent
-  # and tolerant of missing handlers (e.g. when the escript is loaded
-  # from inside a test process that's already detached the default).
+  # writes to stderr (`:standard_error`) instead of stdout. The MCP
+  # escript uses stdout as its JSON-RPC transport — any Logger output
+  # interleaved on stdout is interpreted by the MCP client as garbled
+  # protocol traffic and eventually drops the transport.
+  #
+  # Belt-and-suspenders: try update_handler_config first, then if that
+  # returned an error tuple OR the handler had been swapped to a fresh
+  # one with stdout config, remove the default and re-add it pointed at
+  # stderr. We also retry after Application.ensure_all_started for
+  # :anubis_mcp / :hermes_mcp in case those install their own handlers.
   defp redirect_logger_to_stderr do
-    try do
-      :logger.update_handler_config(:default, :config, %{type: :standard_error})
-    catch
-      _, _ -> :ok
+    update_result =
+      try do
+        :logger.update_handler_config(:default, :config, %{type: :standard_error})
+      catch
+        kind, reason -> {:error, {kind, reason}}
+      end
+
+    case update_result do
+      :ok ->
+        :ok
+
+      {:error, _reason} ->
+        # Handler missing or rejected the partial update — replace it.
+        try do
+          :logger.remove_handler(:default)
+        catch
+          _, _ -> :ok
+        end
+
+        try do
+          :logger.add_handler(:default, :logger_std_h, %{
+            config: %{type: :standard_error},
+            formatter:
+              {:logger_formatter,
+               %{single_line: true, template: [:level, " ", :msg, "\n"]}}
+          })
+        catch
+          _, _ -> :ok
+        end
     end
 
     :ok
