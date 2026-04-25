@@ -11,6 +11,19 @@ defmodule Commonplace.Application do
     # dep is first added.
     _ = Application.ensure_all_started(:xmerl)
 
+    # CX-o8tx: feed reflog amortization's dirty-set from local commit
+    # creates. Idempotent attach — re-attach on app restart is harmless
+    # because telemetry treats handler_id as a primary key.
+    _ = :telemetry.detach("commonplace-reflog-dirty-tracker")
+
+    :ok =
+      :telemetry.attach(
+        "commonplace-reflog-dirty-tracker",
+        [:commonplace, :commit, :create],
+        &Commonplace.Reflog.Snapshot.handle_commit_event/4,
+        nil
+      )
+
     data_dir = Application.get_env(:commonplace, :data_dir, "data")
 
     children =

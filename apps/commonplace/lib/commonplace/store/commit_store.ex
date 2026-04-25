@@ -468,6 +468,16 @@ defmodule Commonplace.Store.CommitStore do
 
   @impl true
   def handle_call({:latest_commit, doc_uuid}, _from, state) do
+    # CX-o8tx: emit telemetry per latest_commit read so the reflog
+    # amortization tests can prove that clean subtrees were short-circuited
+    # without a read. Production cost is negligible when no handler is
+    # attached.
+    :telemetry.execute(
+      [:commonplace, :commit, :latest_read],
+      %{system_time: System.system_time()},
+      %{doc_uuid: doc_uuid}
+    )
+
     case CubDB.get(state.db, {:latest, doc_uuid}) do
       nil ->
         {:reply, :none, state}

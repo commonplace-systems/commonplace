@@ -24,6 +24,19 @@ defmodule Commonplace.Reflog.Snapshot do
   # a 1000-dir tree (CX-0nkq queue contention).
   @cursor_table :reflog_checkpoint_cursor
 
+  # CX-o8tx: amortization state — fed by telemetry on commit creates so
+  # only changed subtrees are walked at checkpoint time.
+  #
+  # @parent_index_table maps child_uuid → MapSet of data_dir_uuids that
+  # currently list it as an entry. Populated lazily during walks. Read by
+  # mark_dirty/1 to propagate dirtiness up to ancestors.
+  #
+  # @dirty_table holds {data_dir_uuid, true} entries marked by mark_dirty/1.
+  # snapshot_dir consults it to decide whether to short-circuit a clean
+  # subtree.
+  @parent_index_table :reflog_parent_index
+  @dirty_table :reflog_dirty_set
+
   @doc """
   Reset the per-reflog-dir cursor cache. Tests use this between
   checkpoint/3 invocations to start from a known cold state.
@@ -33,6 +46,75 @@ defmodule Commonplace.Reflog.Snapshot do
     :ets.delete_all_objects(@cursor_table)
     :ok
   end
+
+  @doc """
+  Reset the amortization-state ETS tables (parent_index + dirty_set).
+  Tests call this to start from cold-start semantics.
+  """
+  def clear_amortization_state do
+    ensure_parent_index_table()
+    ensure_dirty_table()
+    :ets.delete_all_objects(@parent_index_table)
+    :ets.delete_all_objects(@dirty_table)
+    :ok
+  end
+
+  @doc """
+  Reset only the dirty bits. Used between warm-up and the measured
+  checkpoint in tests so accumulated setup-time dirty bits don't pollute
+  the measurement.
+  """
+  def clear_dirty_set do
+    ensure_dirty_table()
+    :ets.delete_all_objects(@dirty_table)
+    :ok
+  end
+
+  @doc """
+  Mark a doc_uuid as dirty for the next checkpoint, propagating dirtiness
+  up to all known ancestors via the parent_index. Called from a telemetry
+  handler attached to [:commonplace, :commit, :create] (see
+  handle_commit_event/4).
+  """
+  def mark_dirty(uuid) when is_binary(uuid) do
+    ensure_parent_index_table()
+    ensure_dirty_table()
+    propagate_dirty([uuid], MapSet.new())
+    :ok
+  end
+
+  defp propagate_dirty([], _seen), do: :ok
+
+  defp propagate_dirty([uuid | rest], seen) do
+    if MapSet.member?(seen, uuid) do
+      propagate_dirty(rest, seen)
+    else
+      :ets.insert(@dirty_table, {uuid, true})
+      seen = MapSet.put(seen, uuid)
+
+      parents =
+        case :ets.lookup(@parent_index_table, uuid) do
+          [{^uuid, set}] -> MapSet.to_list(set)
+          [] -> []
+        end
+
+      propagate_dirty(parents ++ rest, seen)
+    end
+  end
+
+  @doc """
+  Telemetry handler for [:commonplace, :commit, :create]. Attached at
+  Application.start so every commit on the local CommitStore feeds the
+  dirty-set. Inline marking is cheap (parent chains are typically <10
+  deep); if profiles ever show a hot spot, route through a GenServer.cast
+  to a DirtyTracker.
+  """
+  def handle_commit_event(_event_name, _measurements, %{doc_uuid: doc_uuid}, _config)
+      when is_binary(doc_uuid) do
+    mark_dirty(doc_uuid)
+  end
+
+  def handle_commit_event(_event_name, _measurements, _metadata, _config), do: :ok
 
   @doc """
   Create a checkpoint snapshot of the entire tree.
@@ -64,11 +146,58 @@ defmodule Commonplace.Reflog.Snapshot do
   """
   def snapshot_dir(data_dir_uuid, reflog_dir_uuid, store) do
     ensure_cursor_table()
+    ensure_parent_index_table()
+    ensure_dirty_table()
+
+    # CX-o8tx amortization fast-path: if this data_dir is NOT marked dirty
+    # AND we have a cursor that mirrors it, return the cached
+    # reflog_commit_id without reading anything below.
+    #
+    # The dirty bit is set by mark_dirty/1 (driven by commit telemetry) and
+    # propagates up through parent_index, so a clean subtree means: no
+    # commit landed on this dir or any of its descendants since last
+    # checkpoint. Writes were already short-circuited by CX-71ej; this cuts
+    # the reads as well.
+    case fast_path_lookup(data_dir_uuid, reflog_dir_uuid) do
+      {:hit, cached_cid} ->
+        {:ok, cached_cid}
+
+      :miss ->
+        do_snapshot_dir(data_dir_uuid, reflog_dir_uuid, store)
+    end
+  end
+
+  defp fast_path_lookup(data_dir_uuid, reflog_dir_uuid) do
+    cond do
+      :ets.member(@dirty_table, data_dir_uuid) ->
+        :miss
+
+      true ->
+        case lookup_cursor(reflog_dir_uuid) do
+          %{data_dir_uuid: ^data_dir_uuid, reflog_commit_id: cached_cid} ->
+            {:hit, cached_cid}
+
+          _ ->
+            :miss
+        end
+    end
+  end
+
+  defp do_snapshot_dir(data_dir_uuid, reflog_dir_uuid, store) do
+    # Clear the dirty bit BEFORE doing the work. Any commit landing on this
+    # dir or a descendant during our walk will re-mark it dirty and trigger
+    # a re-checkpoint next round; clearing first avoids the alternate race
+    # where we clear AFTER work and lose a concurrent dirty mark.
+    :ets.delete(@dirty_table, data_dir_uuid)
 
     # Load the data directory's schema
     data_schema = load_schema(data_dir_uuid, store)
     entries = Schema.list_entries(data_schema)
               |> Enum.reject(&String.starts_with?(&1.name, "__"))
+
+    # CX-o8tx: keep parent_index current so future commit telemetry can
+    # propagate dirtiness through this dir.
+    populate_parent_index(data_dir_uuid, entries)
 
     # Get the data dir's own schema commit_id
     schema_cid_hex =
@@ -162,6 +291,7 @@ defmodule Commonplace.Reflog.Snapshot do
         commit = CommitStoreClient.create_chained_commit(store, snapshot_uuid, update)
 
         store_cursor(reflog_dir_uuid, %{
+          data_dir_uuid: data_dir_uuid,
           schema_cid: schema_cid_hex,
           entries: entry_cids,
           reflog_commit_id: commit.id
@@ -202,6 +332,53 @@ defmodule Commonplace.Reflog.Snapshot do
       _tid ->
         @cursor_table
     end
+  end
+
+  defp ensure_parent_index_table do
+    case :ets.whereis(@parent_index_table) do
+      :undefined ->
+        :ets.new(@parent_index_table, [
+          :named_table,
+          :public,
+          :set,
+          read_concurrency: true,
+          write_concurrency: true
+        ])
+
+      _tid ->
+        @parent_index_table
+    end
+  end
+
+  defp ensure_dirty_table do
+    case :ets.whereis(@dirty_table) do
+      :undefined ->
+        :ets.new(@dirty_table, [
+          :named_table,
+          :public,
+          :set,
+          read_concurrency: true,
+          write_concurrency: true
+        ])
+
+      _tid ->
+        @dirty_table
+    end
+  end
+
+  defp populate_parent_index(parent_data_dir_uuid, entries) do
+    Enum.each(entries, fn entry ->
+      existing =
+        case :ets.lookup(@parent_index_table, entry.node_id) do
+          [{_, set}] -> set
+          [] -> MapSet.new()
+        end
+
+      :ets.insert(
+        @parent_index_table,
+        {entry.node_id, MapSet.put(existing, parent_data_dir_uuid)}
+      )
+    end)
   end
 
   defp lookup_cursor(reflog_dir_uuid) do

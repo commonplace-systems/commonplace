@@ -226,6 +226,116 @@ defmodule Commonplace.Reflog.SnapshotTest do
              "sub_b's reflog snapshot should NOT have advanced when only sub_a's file changed"
     end
 
+    # CX-o8tx: the CX-71ej cursor short-circuits the WRITES on an unchanged
+    # subtree but still READS every file/dir's latest_commit to detect
+    # change. Amortization: when a subtree is known-clean (no commits since
+    # last checkpoint via the dirty-set fed by telemetry), skip reads
+    # entirely and return the cached reflog_commit_id.
+    test "fast-path: clean subtree skips reads after warming (CX-o8tx)",
+         %{store: store} do
+      Snapshot.clear_cursor()
+      Snapshot.clear_amortization_state()
+
+      changed_file = create_text_doc(store, "changed.txt", "v1")
+      stable_file = create_text_doc(store, "stable.txt", "fixed")
+
+      sub_a_uuid = UUID.uuid4()
+      sub_a = Schema.new_schema()
+      sub_a = Schema.add_file(sub_a, "changed.txt", changed_file)
+      CommitStore.create_commit(store, sub_a_uuid, Yelixer.Encoding.encode_update(sub_a), nil)
+
+      sub_b_uuid = UUID.uuid4()
+      sub_b = Schema.new_schema()
+      sub_b = Schema.add_file(sub_b, "stable.txt", stable_file)
+      CommitStore.create_commit(store, sub_b_uuid, Yelixer.Encoding.encode_update(sub_b), nil)
+
+      root_uuid = UUID.uuid4()
+      root_doc = Schema.new_schema()
+      root_doc = Schema.add_directory(root_doc, "sub_a", sub_a_uuid)
+      root_doc = Schema.add_directory(root_doc, "sub_b", sub_b_uuid)
+      CommitStore.create_commit(store, root_uuid, Yelixer.Encoding.encode_update(root_doc), nil)
+
+      # Warm checkpoint — populates cursor + parent_index + clears any
+      # dirty bits accumulated during the setup commits.
+      {:ok, _cid1} = Snapshot.checkpoint(root_uuid, store)
+      Snapshot.clear_dirty_set()
+
+      ref = :erlang.unique_integer([:positive])
+      parent = self()
+
+      :ok =
+        :telemetry.attach(
+          {:cx_o8tx_test, ref},
+          [:commonplace, :commit, :latest_read],
+          fn _e, _m, %{doc_uuid: uuid}, _c -> send(parent, {:read, uuid}) end,
+          nil
+        )
+
+      try do
+        # Modify changed_file. CommitStore broadcasts :commit, :create →
+        # the application-level dirty-tracker handler calls Snapshot.mark_dirty,
+        # which (via parent_index) marks sub_a and root as dirty. sub_b stays
+        # clean — its data_dir has nothing under the changed_file's parent
+        # chain.
+        doc = Yelixer.Doc.new()
+        doc = ContentType.create(doc, :text, "changed.txt")
+        doc = ContentType.insert_text(doc, 0, "v2")
+        update = Yelixer.Encoding.encode_update(doc)
+        CommitStore.create_chained_commit(store, changed_file, update)
+
+        # Drain reads from create_chained_commit — we only care about
+        # what the second checkpoint reads.
+        flush_reads()
+
+        {:ok, _cid2} = Snapshot.checkpoint(root_uuid, store)
+
+        reads = collect_reads()
+
+        refute sub_b_uuid in reads,
+               "sub_b's data dir was read during the second checkpoint — amortization fast-path failed"
+
+        refute stable_file in reads,
+               "stable.txt was read during the second checkpoint — amortization fast-path failed"
+
+        assert sub_a_uuid in reads or changed_file in reads,
+               "expected at least one read on sub_a's subtree, got reads=#{inspect(reads)}"
+      after
+        :telemetry.detach({:cx_o8tx_test, ref})
+      end
+    end
+
+    # CX-o8tx cold-start safety: with empty cursor / empty parent_index,
+    # the very first checkpoint must walk the whole tree (no fast-path
+    # skips), populating the index so subsequent checkpoints can amortize.
+    test "cold start with empty amortization state walks the whole tree (CX-o8tx)",
+         %{store: store} do
+      Snapshot.clear_cursor()
+      Snapshot.clear_amortization_state()
+
+      file1 = create_text_doc(store, "a.txt", "a")
+      file2 = create_text_doc(store, "b.txt", "b")
+
+      root_uuid = UUID.uuid4()
+      root_doc = Schema.new_schema()
+      root_doc = Schema.add_file(root_doc, "a.txt", file1)
+      root_doc = Schema.add_file(root_doc, "b.txt", file2)
+      CommitStore.create_commit(store, root_uuid, Yelixer.Encoding.encode_update(root_doc), nil)
+
+      {:ok, _cid} = Snapshot.checkpoint(root_uuid, store)
+
+      # The root snapshot doc must record both files' commit_ids — i.e.
+      # the cold-start walk did NOT skip them just because dirty bits
+      # were absent.
+      {:ok, owner_uuid} = Snapshot.ensure_reflog_branch(root_uuid, "server", store)
+      owner_schema = load_schema(owner_uuid, store)
+      {:ok, snap_entry} = Schema.get_entry(owner_schema, "__snapshot")
+
+      content = Snapshot.read_snapshot(snap_entry.node_id, store)
+      assert is_map(content)
+      assert Map.has_key?(content, "a.txt")
+      assert Map.has_key?(content, "b.txt")
+    end
+
     test "two checkpoints create a chain with different commit_ids", %{store: store} do
       file_uuid = create_text_doc(store, "test.txt", "version 1")
 
@@ -281,6 +391,22 @@ defmodule Commonplace.Reflog.SnapshotTest do
     update = Yelixer.Encoding.encode_update(doc)
     CommitStore.create_commit(store, uuid, update, nil)
     uuid
+  end
+
+  defp flush_reads do
+    receive do
+      {:read, _} -> flush_reads()
+    after
+      0 -> :ok
+    end
+  end
+
+  defp collect_reads(acc \\ []) do
+    receive do
+      {:read, uuid} -> collect_reads([uuid | acc])
+    after
+      0 -> acc
+    end
   end
 
   defp load_schema(uuid, store) do
