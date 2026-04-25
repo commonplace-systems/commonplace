@@ -139,6 +139,93 @@ defmodule Commonplace.Reflog.SnapshotTest do
       assert content["__schema_cid"] == Base.encode16(root_commit.id, case: :lower)
     end
 
+    # CX-71ej: with the per-dir cursor, a checkpoint over an unchanged tree
+    # must short-circuit — same reflog_commit_id, no new commits anywhere in
+    # the reflog chain. Eliminates the ~2k writes-per-1000-dir-checkpoint that
+    # were starving CommitStore (CX-0nkq).
+    test "two checkpoints on an unchanged tree return the same reflog_commit_id (CX-71ej)",
+         %{store: store} do
+      Snapshot.clear_cursor()
+
+      file_uuid = create_text_doc(store, "stable.txt", "no edits here")
+
+      root_uuid = UUID.uuid4()
+      root_doc = Schema.new_schema()
+      root_doc = Schema.add_file(root_doc, "stable.txt", file_uuid)
+      CommitStore.create_commit(store, root_uuid, Yelixer.Encoding.encode_update(root_doc), nil)
+
+      {:ok, cid1} = Snapshot.checkpoint(root_uuid, store)
+      {:ok, cid2} = Snapshot.checkpoint(root_uuid, store)
+
+      assert cid1 == cid2,
+             "second checkpoint over unchanged tree should reuse the cursor's cached reflog_commit_id"
+
+      # The snapshot doc's chain should be just genesis + one checkpoint write
+      # — the second call must not have appended a new commit.
+      {:ok, owner_uuid} = Snapshot.ensure_reflog_branch(root_uuid, "server", store)
+      owner_schema = load_schema(owner_uuid, store)
+      {:ok, snap_entry} = Schema.get_entry(owner_schema, "__snapshot")
+
+      log = CommitStore.commit_log(store, snap_entry.node_id)
+
+      assert length(log) == 2,
+             "snapshot chain should be genesis + 1 checkpoint, got #{length(log)}"
+    end
+
+    # CX-71ej: change in a leaf bubbles up — only the path from root to that
+    # file should produce new reflog commits. Sibling subtrees stay cached.
+    test "modifying one file only writes new reflogs along its path (CX-71ej)",
+         %{store: store} do
+      Snapshot.clear_cursor()
+
+      changed_file = create_text_doc(store, "changed.txt", "v1")
+      stable_file = create_text_doc(store, "stable.txt", "fixed")
+
+      sub_a_uuid = UUID.uuid4()
+      sub_a = Schema.new_schema()
+      sub_a = Schema.add_file(sub_a, "changed.txt", changed_file)
+      CommitStore.create_commit(store, sub_a_uuid, Yelixer.Encoding.encode_update(sub_a), nil)
+
+      sub_b_uuid = UUID.uuid4()
+      sub_b = Schema.new_schema()
+      sub_b = Schema.add_file(sub_b, "stable.txt", stable_file)
+      CommitStore.create_commit(store, sub_b_uuid, Yelixer.Encoding.encode_update(sub_b), nil)
+
+      root_uuid = UUID.uuid4()
+      root_doc = Schema.new_schema()
+      root_doc = Schema.add_directory(root_doc, "sub_a", sub_a_uuid)
+      root_doc = Schema.add_directory(root_doc, "sub_b", sub_b_uuid)
+      CommitStore.create_commit(store, root_uuid, Yelixer.Encoding.encode_update(root_doc), nil)
+
+      {:ok, _cid1} = Snapshot.checkpoint(root_uuid, store)
+
+      # Capture sub_b's reflog snapshot commit_id BEFORE the second checkpoint
+      {:ok, owner_uuid} = Snapshot.ensure_reflog_branch(root_uuid, "server", store)
+      owner_schema = load_schema(owner_uuid, store)
+      {:ok, sub_b_reflog_dir} = Schema.get_entry(owner_schema, "sub_b")
+      sub_b_reflog_schema_before = load_schema(sub_b_reflog_dir.node_id, store)
+      {:ok, sub_b_snap_entry_before} = Schema.get_entry(sub_b_reflog_schema_before, "__snapshot")
+
+      {:ok, sub_b_snap_before} =
+        CommitStore.latest_commit(store, sub_b_snap_entry_before.node_id)
+
+      # Modify the file in sub_a only
+      doc = Yelixer.Doc.new()
+      doc = ContentType.create(doc, :text, "changed.txt")
+      doc = ContentType.insert_text(doc, 0, "v2")
+      update = Yelixer.Encoding.encode_update(doc)
+      CommitStore.create_chained_commit(store, changed_file, update)
+
+      {:ok, _cid2} = Snapshot.checkpoint(root_uuid, store)
+
+      # sub_b's snapshot doc latest must be unchanged — no new commit was written
+      {:ok, sub_b_snap_after} =
+        CommitStore.latest_commit(store, sub_b_snap_entry_before.node_id)
+
+      assert sub_b_snap_before.id == sub_b_snap_after.id,
+             "sub_b's reflog snapshot should NOT have advanced when only sub_a's file changed"
+    end
+
     test "two checkpoints create a chain with different commit_ids", %{store: store} do
       file_uuid = create_text_doc(store, "test.txt", "version 1")
 
