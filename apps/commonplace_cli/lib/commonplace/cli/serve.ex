@@ -222,7 +222,7 @@ defmodule Commonplace.CLI.Serve do
     # Ensure epmd is running — escripts don't start it automatically
     ensure_epmd()
 
-    # CX-c2bx: disable :global's overlapping-partition protection
+    # CX-y6uc: disable :global's overlapping-partition protection
     # (default-on since OTP 25). Each MCP escript invocation is a
     # short-lived node joining + leaving; the heuristic mistakes that
     # for a partition and forcibly disconnects subsequent escripts.

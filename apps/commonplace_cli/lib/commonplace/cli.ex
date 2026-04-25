@@ -175,7 +175,7 @@ defmodule Commonplace.CLI do
         serve_node = content |> String.trim() |> String.to_atom()
 
         # Start a temporary CLI node so we can connect.
-        # CX-c2bx: disable :global's overlapping-partition protection
+        # CX-y6uc: disable :global's overlapping-partition protection
         # (default-on since OTP 25). Each CLI invocation is short-lived;
         # without this, repeated CLI calls trip serve's :global into
         # disconnecting them. Must be set before Node.start.

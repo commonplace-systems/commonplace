@@ -160,7 +160,7 @@ defmodule Commonplace.MCP do
   end
 
   defp connect(serve_node) do
-    # CX-c2bx: disable :global's overlapping-partition protection
+    # CX-y6uc: disable :global's overlapping-partition protection
     # (default-on since OTP 25). Each MCP escript invocation is a
     # short-lived node joining + leaving; the heuristic mistakes that
     # for a partition and forcibly disconnects subsequent escripts,
