@@ -110,7 +110,7 @@ defmodule Commonplace.MCP.AnubisServer do
     args = Map.get(params || %{}, "arguments", %{})
     context = presence_context(frame)
 
-    case Tools.call(name, args, context) do
+    case safe_tool_call(name, args, context) do
       {:ok, result} ->
         {:reply, result, frame}
 
@@ -120,8 +120,44 @@ defmodule Commonplace.MCP.AnubisServer do
       {:error, :invalid_params, detail} ->
         {:error, Error.protocol(:invalid_params, %{message: detail}), frame}
 
+      {:error, {:tool_crashed, kind, reason}} ->
+        # In-band MCP tool error so the agent sees the failure and the
+        # session stays alive. Without this, an exit raised inside the
+        # tool (e.g. CommitStore GenServer.call timeout under load —
+        # CX-0nkq) propagates up through anubis's session GenServer
+        # and tears the stdio transport down.
+        :telemetry.execute(
+          [:commonplace, :mcp, :tool_call, :crashed],
+          %{system_time: System.system_time()},
+          %{tool: name, kind: kind, reason: reason}
+        )
+
+        text =
+          "tool '#{name}' crashed: #{kind} #{Exception.format_exit(reason)}. " <>
+            "Likely a CommitStore overload (CX-0nkq). Retrying may help."
+
+        {:reply,
+         %{
+           "isError" => true,
+           "content" => [%{"type" => "text", "text" => text}]
+         }, frame}
+
       {:error, reason} ->
         {:error, Error.execution(stringify(reason)), frame}
+    end
+  end
+
+  # Catch :exit (GenServer.call timeouts, dead processes, etc.) and
+  # error (raised exceptions) from tool execution so a single bad call
+  # doesn't take down the MCP session. Returns a tagged error that
+  # handle_request maps to an in-band MCP tool error.
+  defp safe_tool_call(name, args, context) do
+    try do
+      Tools.call(name, args, context)
+    catch
+      :exit, reason -> {:error, {:tool_crashed, :exit, reason}}
+      :error, reason -> {:error, {:tool_crashed, :error, reason}}
+      :throw, reason -> {:error, {:tool_crashed, :throw, reason}}
     end
   end
 
