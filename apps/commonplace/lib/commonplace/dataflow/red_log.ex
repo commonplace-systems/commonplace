@@ -92,6 +92,14 @@ defmodule Commonplace.Dataflow.RedLog do
 
   # --- Onramp GenServer ---
 
+  # CX-j99d: debounce window for auto-commit. Without auto-commit,
+  # incoming magenta messages accumulate in the onramp's in-memory
+  # YArray and stay invisible to tail_red (which reads from the
+  # commit store). Per-message commits are wasteful under burst
+  # load. The debounce gives bursts time to coalesce into one
+  # commit while still flushing visibly within human time.
+  @auto_commit_debounce_ms 250
+
   @doc "Start a magenta→red onramp process that subscribes and persists."
   def start_onramp(log_uuid, magenta_topic, store \\ CommitStoreClient) do
     GenServer.start_link(__MODULE__, %{
@@ -110,18 +118,44 @@ defmodule Commonplace.Dataflow.RedLog do
   def init(%{uuid: uuid, topic: topic, store: store}) do
     Magenta.subscribe(topic)
     log = load(uuid, store)
-    {:ok, %{log: log, topic: topic}}
+    {:ok, %{log: log, topic: topic, commit_ref: nil}}
   end
 
   @impl true
   def handle_info({:magenta, _path, %Magenta{} = msg}, state) do
     log = append(state.log, msg)
-    {:noreply, %{state | log: log}}
+    state = %{state | log: log}
+    {:noreply, schedule_auto_commit(state)}
+  end
+
+  def handle_info(:auto_commit, state) do
+    log = commit(state.log)
+    {:noreply, %{state | log: log, commit_ref: nil}}
   end
 
   @impl true
   def handle_call(:commit, _from, state) do
     log = commit(state.log)
-    {:reply, :ok, %{state | log: log}}
+    state = cancel_auto_commit(%{state | log: log})
+    {:reply, :ok, state}
   end
+
+  defp schedule_auto_commit(%{commit_ref: ref} = state) when is_reference(ref) do
+    # Already scheduled — let it fire on its own cadence so a sustained
+    # burst still gets one commit per debounce window rather than
+    # repeatedly resetting the timer (which could starve persistence).
+    state
+  end
+
+  defp schedule_auto_commit(state) do
+    ref = Process.send_after(self(), :auto_commit, @auto_commit_debounce_ms)
+    %{state | commit_ref: ref}
+  end
+
+  defp cancel_auto_commit(%{commit_ref: ref} = state) when is_reference(ref) do
+    Process.cancel_timer(ref)
+    %{state | commit_ref: nil}
+  end
+
+  defp cancel_auto_commit(state), do: state
 end
