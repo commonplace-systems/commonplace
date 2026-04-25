@@ -2,69 +2,132 @@ defmodule Commonplace.MCP.Tools do
   @moduledoc """
   Registry of MCP tools exposed by the commonplace server.
 
-  `list/0` returns the tool catalog for `tools/list`. `call/2` dispatches a
-  `tools/call` request to the right implementation module. Each tool lives in
-  its own module under `Commonplace.MCP.Tools.*` and implements a single
-  `run/1` function returning `{:ok, result}` / `{:error, …}`.
+  `list/0` returns the tool catalog for `tools/list`. `call/3`
+  dispatches a `tools/call` request to the right implementation.
+  Two registries are merged at runtime:
 
-  Return-tuple conventions mirror `Server.handle/2`:
+    * **System tools** — the seven shipped substrate tools
+      (`cat`, `fork`, `invoke_view_action`, `send_magenta`,
+      `tail_red`, `write`, `presence_info`) plus the meta-tools
+      (`call_tool`, `list_tools`). Compile-time, in this module.
+    * **CRDT tools** (CX-y3q) — read at runtime from
+      `__system/tools/`. Each interface doc declares an MCP-facing
+      shape + a magenta address; `Commonplace.MCP.CrdtTools.list/2`
+      and `.call/3` handle the dynamic side.
 
-    * `{:ok, result_map}`          — tool succeeded
-    * `{:error, :not_found}`       — no tool by that name is registered
-    * `{:error, :invalid_params, detail}` — tool rejected its arguments
-    * `{:error, reason}`           — anything else (mapped to internal_error)
+  Precedence: when a CRDT tool name collides with a system tool,
+  the system tool wins on dispatch (the collision is observable via
+  telemetry `[:commonplace, :mcp, :tool_dispatch, :name_collision]`).
+
+  ## Meta-tools
+
+  `call_tool` and `list_tools` are in the system registry but **not**
+  in the dispatchable catalog returned by `list/0`. That makes them
+  always-callable but invisible to recursion through `call_tool`.
+
+  ## Return-tuple conventions
+
+    * `{:ok, result_map}`                 — tool succeeded
+    * `{:error, :not_found}`              — no tool by that name
+    * `{:error, :invalid_params, detail}` — tool rejected arguments
+    * `{:error, {:handler_not_found, p}}` — CRDT tool's handler doc missing
+    * `{:error, reason}`                  — anything else (→ internal_error)
   """
 
-  alias Commonplace.MCP.Tools.Fork, as: ForkTool
-  alias Commonplace.MCP.Tools.SendMagenta, as: SendMagentaTool
-  alias Commonplace.MCP.Tools.TailRed, as: TailRedTool
-  alias Commonplace.MCP.Tools.Cat, as: CatTool
-  alias Commonplace.MCP.Tools.Write, as: WriteTool
-  alias Commonplace.MCP.Tools.InvokeViewAction, as: InvokeViewActionTool
-  alias Commonplace.MCP.Tools.PresenceInfo, as: PresenceInfoTool
+  alias Commonplace.MCP.CrdtTools
 
-  @registry %{
-    "fork" => ForkTool,
-    "send_magenta" => SendMagentaTool,
-    "tail_red" => TailRedTool,
-    "cat" => CatTool,
-    "write" => WriteTool,
-    "invoke_view_action" => InvokeViewActionTool,
-    "presence_info" => PresenceInfoTool
+  alias Commonplace.MCP.Tools.{
+    CallTool,
+    Cat,
+    Fork,
+    InvokeViewAction,
+    ListTools,
+    PresenceInfo,
+    SendMagenta,
+    TailRed,
+    Write
   }
 
-  @doc "Return the tool catalog (list of %{name, description, inputSchema})."
+  # Tools listed in the catalog returned by `list/0` (visible at
+  # session-init + via the `list_tools` meta-tool).
+  @cataloged_registry %{
+    "fork" => Fork,
+    "send_magenta" => SendMagenta,
+    "tail_red" => TailRed,
+    "cat" => Cat,
+    "write" => Write,
+    "invoke_view_action" => InvokeViewAction,
+    "presence_info" => PresenceInfo
+  }
+
+  # Meta-tools — always callable but never appear in the catalog.
+  @meta_registry %{
+    "call_tool" => CallTool,
+    "list_tools" => ListTools
+  }
+
+  # System-tool names a CRDT tool can shadow but never displace.
+  @system_names Map.keys(@cataloged_registry) ++ Map.keys(@meta_registry)
+
+  @doc "Return the merged tool catalog (system + CRDT). Excludes meta-tools."
   def list do
-    @registry
-    |> Map.values()
-    |> Enum.map(& &1.descriptor())
-    |> Enum.sort_by(& &1["name"])
+    static =
+      @cataloged_registry
+      |> Map.values()
+      |> Enum.map(& &1.descriptor())
+
+    crdt =
+      case Commonplace.Workspace.root_uuid() do
+        {:ok, root_uuid} -> CrdtTools.list(Commonplace.Store.CommitStoreClient, root_uuid)
+        _ -> []
+      end
+
+    # System tools win on name collision; drop CRDT entries that shadow.
+    crdt = Enum.reject(crdt, fn descriptor -> descriptor["name"] in @system_names end)
+
+    (static ++ crdt) |> Enum.sort_by(& &1["name"])
   end
 
   @doc """
-  Dispatch a tools/call request to the implementation.
+  Dispatch a tools/call request.
 
-  `context` carries per-session state (e.g. presence_uuid /
-  mailbox_uuid / mailbox_topic for the `presence_info` tool). Tools
-  that declare `run/2` get it; tools that only declare `run/1` are
-  called the old way and ignore context.
+  Static system tool wins; falls through to CRDT tool when the name
+  isn't in the system registry. Meta-tools (`call_tool`, `list_tools`)
+  are reachable directly through this function but are not returned
+  by `list/0`.
+
+  `context` carries per-session state (e.g. presence_uuid for
+  `presence_info`). Tools declaring `run/2` get it; `run/1`-only
+  tools are called the old way.
   """
   def call(name, arguments, context \\ %{})
 
   def call(name, arguments, context)
       when is_binary(name) and is_map(arguments) and is_map(context) do
-    case Map.fetch(@registry, name) do
-      {:ok, mod} ->
-        if function_exported?(mod, :run, 2) do
-          mod.run(arguments, context)
-        else
-          mod.run(arguments)
-        end
-
-      :error ->
-        {:error, :not_found}
+    cond do
+      mod = Map.get(@cataloged_registry, name) -> dispatch_static(mod, arguments, context)
+      mod = Map.get(@meta_registry, name) -> dispatch_static(mod, arguments, context)
+      true -> dispatch_crdt(name, arguments)
     end
   end
 
   def call(_name, _arguments, _context), do: {:error, :not_found}
+
+  defp dispatch_static(mod, arguments, context) do
+    if function_exported?(mod, :run, 2) do
+      mod.run(arguments, context)
+    else
+      mod.run(arguments)
+    end
+  end
+
+  defp dispatch_crdt(name, arguments) do
+    case Commonplace.Workspace.root_uuid() do
+      {:ok, root_uuid} ->
+        CrdtTools.call(name, arguments, root_uuid: root_uuid)
+
+      _ ->
+        {:error, :not_found}
+    end
+  end
 end
