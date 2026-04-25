@@ -91,7 +91,11 @@ defmodule Commonplace.Process.Orchestrator do
         reconcile(state)
       rescue
         e ->
-          Logger.error("Orchestrator reconcile failed: #{Exception.message(e)}")
+          Logger.error(
+            "Orchestrator reconcile failed:\n" <>
+              Exception.format(:error, e, __STACKTRACE__)
+          )
+
           state
       end
 
@@ -368,22 +372,29 @@ defmodule Commonplace.Process.Orchestrator do
 
   defp detect_source_changes(state, new_config) do
     Enum.flat_map(new_config, fn config ->
-      if Map.has_key?(state.processes, config.name) && Map.get(state.processes, config.name) do
-        case read_source(config.source, state) do
-          {:ok, _code, hash} ->
-            old_hash = Map.get(state.source_hashes, config.name)
-            if old_hash != nil and old_hash != hash, do: [config.name], else: []
+      cond do
+        # Process has no source file (e.g. sandbox-exec or external
+        # command). Source-change detection doesn't apply.
+        is_nil(config.source) ->
+          []
 
-          _ ->
-            []
-        end
-      else
-        []
+        Map.has_key?(state.processes, config.name) && Map.get(state.processes, config.name) ->
+          case read_source(config.source, state) do
+            {:ok, _code, hash} ->
+              old_hash = Map.get(state.source_hashes, config.name)
+              if old_hash != nil and old_hash != hash, do: [config.name], else: []
+
+            _ ->
+              []
+          end
+
+        true ->
+          []
       end
     end)
   end
 
-  defp read_source(filename, state) do
+  defp read_source(filename, state) when is_binary(filename) do
     root_doc = load_schema(state.root_uuid, state.store)
 
     case Schema.get_entry(root_doc, filename) do

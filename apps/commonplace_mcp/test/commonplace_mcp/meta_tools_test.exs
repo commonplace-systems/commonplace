@@ -18,7 +18,7 @@ defmodule Commonplace.MCP.MetaToolsTest do
       assert {:ok, _result} = Tools.call("list_tools", %{})
     end
 
-    test "returns the merged catalog (system tools, no meta-tools)" do
+    test "returns the merged catalog including meta-tools" do
       {:ok, result} = Tools.call("list_tools", %{})
 
       structured =
@@ -29,13 +29,16 @@ defmodule Commonplace.MCP.MetaToolsTest do
 
       names = Enum.map(structured["tools"], & &1["name"])
 
-      # System tools present
+      # System substrate tools present
       assert "cat" in names
       assert "presence_info" in names
 
-      # Meta-tools deliberately absent
-      refute "call_tool" in names
-      refute "list_tools" in names
+      # Meta-tools present too — session-init clients need to see them
+      # to be able to dispatch (the whole point of the late-bind /
+      # reflection meta-tools is to be reachable by exactly those
+      # clients). Recursion guard is at dispatch time, not list time.
+      assert "call_tool" in names
+      assert "list_tools" in names
     end
   end
 
@@ -81,14 +84,14 @@ defmodule Commonplace.MCP.MetaToolsTest do
   end
 
   describe "Tools.list/0" do
-    test "includes system tools and excludes meta-tools" do
+    test "includes substrate tools AND meta-tools" do
       catalog = Tools.list()
       names = Enum.map(catalog, & &1["name"])
 
       assert "cat" in names
       assert "presence_info" in names
-      refute "call_tool" in names
-      refute "list_tools" in names
+      assert "call_tool" in names
+      assert "list_tools" in names
     end
   end
 end

@@ -21,9 +21,15 @@ defmodule Commonplace.MCP.Tools do
 
   ## Meta-tools
 
-  `call_tool` and `list_tools` are in the system registry but **not**
-  in the dispatchable catalog returned by `list/0`. That makes them
-  always-callable but invisible to recursion through `call_tool`.
+  `call_tool` and `list_tools` are in the system registry AND in the
+  catalog returned by `list/0`. They MUST appear in `tools/list` so
+  clients that register tools only at session-init (Claude Code,
+  most others) can see and dispatch them — the whole point of the
+  late-bind/reflection meta-tools is to be reachable by exactly those
+  clients. The recursion guard lives at dispatch time inside
+  `Commonplace.MCP.Tools.CallTool.run/2`: name ∈ {"call_tool",
+  "list_tools"} returns `:not_found`, breaking recursion before it
+  starts. Catalog visibility is unaffected.
 
   ## Return-tuple conventions
 
@@ -48,9 +54,13 @@ defmodule Commonplace.MCP.Tools do
     Write
   }
 
-  # Tools listed in the catalog returned by `list/0` (visible at
-  # session-init + via the `list_tools` meta-tool).
-  @cataloged_registry %{
+  # All static tools — substrate + meta. Both groups are visible in
+  # the catalog returned by `list/0` (session-init clients need to
+  # see the meta-tools to invoke them), but the meta-tools live in
+  # a separate map so dispatch can recognise them as the recursion-
+  # guard surface and so future status (e.g. annotation as
+  # `category: "meta"`) is straightforward.
+  @substrate_registry %{
     "fork" => Fork,
     "send_magenta" => SendMagenta,
     "tail_red" => TailRed,
@@ -60,20 +70,24 @@ defmodule Commonplace.MCP.Tools do
     "presence_info" => PresenceInfo
   }
 
-  # Meta-tools — always callable but never appear in the catalog.
   @meta_registry %{
     "call_tool" => CallTool,
     "list_tools" => ListTools
   }
 
   # System-tool names a CRDT tool can shadow but never displace.
-  @system_names Map.keys(@cataloged_registry) ++ Map.keys(@meta_registry)
+  @system_names Map.keys(@substrate_registry) ++ Map.keys(@meta_registry)
 
-  @doc "Return the merged tool catalog (system + CRDT). Excludes meta-tools."
+  @doc """
+  Return the merged tool catalog (system substrate + meta + CRDT).
+
+  Meta-tools (`call_tool`, `list_tools`) are included — clients that
+  register tools only at session-init must see them to dispatch.
+  Recursion guard is at call time, not list time.
+  """
   def list do
     static =
-      @cataloged_registry
-      |> Map.values()
+      (Map.values(@substrate_registry) ++ Map.values(@meta_registry))
       |> Enum.map(& &1.descriptor())
 
     crdt =
@@ -105,7 +119,7 @@ defmodule Commonplace.MCP.Tools do
   def call(name, arguments, context)
       when is_binary(name) and is_map(arguments) and is_map(context) do
     cond do
-      mod = Map.get(@cataloged_registry, name) -> dispatch_static(mod, arguments, context)
+      mod = Map.get(@substrate_registry, name) -> dispatch_static(mod, arguments, context)
       mod = Map.get(@meta_registry, name) -> dispatch_static(mod, arguments, context)
       true -> dispatch_crdt(name, arguments)
     end
