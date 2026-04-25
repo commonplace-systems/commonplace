@@ -93,7 +93,26 @@ defmodule Commonplace.CommandRouter do
   `ContentType.get_content/1` projection, which for non-text docs may
   produce surprising ops — `force: true` is opt-in destruction.
   """
-  def write(server \\ __MODULE__, uuid, new_content, opts \\ [])
+  # CX-yfva: explicit head + clauses to avoid Elixir's ambiguity with
+  # two non-adjacent defaults. The previous shape
+  # `def write(server \\ __MODULE__, uuid, new_content, opts \\ [])`
+  # caused arity-3 calls (`write(uuid, content, opts)`) to bind
+  # `server = uuid`, sending the GenServer.call to a binary instead
+  # of a registered name — which then crashed inside MCP's tool
+  # dispatch as a FunctionClauseError.
+  def write(uuid, new_content) when is_binary(new_content) do
+    write(__MODULE__, uuid, new_content, [])
+  end
+
+  def write(uuid, new_content, opts) when is_binary(new_content) and is_list(opts) do
+    write(__MODULE__, uuid, new_content, opts)
+  end
+
+  def write(server, uuid, new_content) when is_binary(new_content) do
+    write(server, uuid, new_content, [])
+  end
+
+  def write(server, uuid, new_content, opts)
       when is_binary(new_content) and is_list(opts) do
     GenServer.call(server, {:write, uuid, new_content, opts})
   end
