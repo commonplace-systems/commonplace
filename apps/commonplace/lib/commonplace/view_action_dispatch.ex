@@ -188,6 +188,86 @@ defmodule Commonplace.ViewActionDispatch do
     {:error, "post_message requires args map with messages_uuid, room, author_path, text"}
   end
 
+  # CX-ybhb (V3 of CX-p2qp): edit_message routes through
+  # Commonplace.Chat.Actions.edit_message. Required args: messages_uuid,
+  # room, author_path, message_id, text.
+  defp do_dispatch("edit_message", %{args: args} = context) when is_map(args) do
+    with {:ok, messages_uuid} <- fetch_arg(args, "messages_uuid"),
+         {:ok, room} <- fetch_arg(args, "room"),
+         {:ok, author_path} <- fetch_arg(args, "author_path"),
+         {:ok, message_id} <- fetch_arg(args, "message_id"),
+         {:ok, text} <- fetch_arg(args, "text") do
+      action_opts =
+        [
+          room: room,
+          author_path: author_path,
+          signer_id: Map.get(context, :signer_id) || "mcp-agent@local"
+        ]
+        |> maybe_kw(:signing_context, Map.get(context, :signing_context))
+        |> maybe_kw(:store, Map.get(context, :store))
+
+      case Commonplace.Chat.Actions.edit_message(messages_uuid, message_id, text, action_opts) do
+        {:ok, %{message_id: edit_id, ts: ts}} ->
+          {:ok, :tree_mutation,
+           %{
+             action: "edit_message",
+             message_id: edit_id,
+             edit_of: message_id,
+             ts: ts,
+             messages_uuid: messages_uuid
+           }}
+
+        {:error, reason} ->
+          {:error, "edit_message failed: #{inspect(reason)}"}
+      end
+    end
+  end
+
+  defp do_dispatch("edit_message", _context) do
+    {:error,
+     "edit_message requires args map with messages_uuid, room, author_path, message_id, text"}
+  end
+
+  # CX-ybhb (V3 of CX-p2qp): delete_message routes through
+  # Commonplace.Chat.Actions.delete_message. Required args:
+  # messages_uuid, room, author_path, message_id. (No `text` — a
+  # tombstone is the act, not new content.)
+  defp do_dispatch("delete_message", %{args: args} = context) when is_map(args) do
+    with {:ok, messages_uuid} <- fetch_arg(args, "messages_uuid"),
+         {:ok, room} <- fetch_arg(args, "room"),
+         {:ok, author_path} <- fetch_arg(args, "author_path"),
+         {:ok, message_id} <- fetch_arg(args, "message_id") do
+      action_opts =
+        [
+          room: room,
+          author_path: author_path,
+          signer_id: Map.get(context, :signer_id) || "mcp-agent@local"
+        ]
+        |> maybe_kw(:signing_context, Map.get(context, :signing_context))
+        |> maybe_kw(:store, Map.get(context, :store))
+
+      case Commonplace.Chat.Actions.delete_message(messages_uuid, message_id, action_opts) do
+        {:ok, %{message_id: tomb_id, ts: ts}} ->
+          {:ok, :tree_mutation,
+           %{
+             action: "delete_message",
+             message_id: tomb_id,
+             tombstone_of: message_id,
+             ts: ts,
+             messages_uuid: messages_uuid
+           }}
+
+        {:error, reason} ->
+          {:error, "delete_message failed: #{inspect(reason)}"}
+      end
+    end
+  end
+
+  defp do_dispatch("delete_message", _context) do
+    {:error,
+     "delete_message requires args map with messages_uuid, room, author_path, message_id"}
+  end
+
   defp do_dispatch(other, _context) do
     {:error, "unknown view action: #{other}"}
   end

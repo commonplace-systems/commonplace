@@ -49,7 +49,6 @@ defmodule Commonplace.Chat.Actions do
          :ok <- require_opt(opts, :signer_id),
          :ok <- require_opt(opts, :author_path) do
       store = Keyword.get(opts, :store, CommitStoreClient)
-      signing_context = Keyword.get(opts, :signing_context)
 
       case load_messages_doc(store, messages_uuid) do
         {:ok, doc} ->
@@ -66,23 +65,105 @@ defmodule Commonplace.Chat.Actions do
             }
             |> maybe_put("reply_to", Keyword.get(opts, :reply_to))
 
-          doc = Messages.append(doc, entry)
-          update = Yelixer.Encoding.encode_update(doc)
-
-          commit_opts =
-            if signing_context, do: [signing_context: signing_context], else: []
-
-          CommitStoreClient.create_chained_commit(
-            store,
-            messages_uuid,
-            update,
-            %{},
-            commit_opts
-          )
-
-          broadcast_post(Keyword.fetch!(opts, :room), entry)
+          commit_entry(doc, store, messages_uuid, entry, opts)
+          broadcast_chain(Keyword.fetch!(opts, :room), "post", entry, %{})
 
           {:ok, %{message_id: message_id, ts: ts}}
+
+        :none ->
+          {:error, :not_found}
+      end
+    end
+  end
+
+  @doc """
+  Append an EDIT entry to the `_messages` doc, marking the new entry's
+  `edit_of` as the target `message_id`. Append-only: the original
+  entry is NOT mutated. Readers walk forward via `Messages.materialize/1`
+  to compute current text.
+
+  Required opts: `:room`, `:signer_id`, `:author_path`. Optional:
+  `:signing_context`, `:store`. Returns `{:ok, %{message_id, ts}}`
+  where `message_id` is the EDIT entry's id (a fresh UUID).
+  """
+  def edit_message(messages_uuid, target_message_id, new_text, opts)
+      when is_binary(messages_uuid) and is_binary(target_message_id) and is_binary(new_text) and
+             is_list(opts) do
+    with :ok <- require_opt(opts, :room),
+         :ok <- require_opt(opts, :signer_id),
+         :ok <- require_opt(opts, :author_path) do
+      store = Keyword.get(opts, :store, CommitStoreClient)
+
+      case load_messages_doc(store, messages_uuid) do
+        {:ok, doc} ->
+          edit_id = UUID.uuid4()
+          ts = DateTime.utc_now() |> DateTime.to_iso8601()
+
+          entry = %{
+            "id" => edit_id,
+            "ts" => ts,
+            "author_signer_id" => Keyword.fetch!(opts, :signer_id),
+            "author_path" => Keyword.fetch!(opts, :author_path),
+            "text" => new_text,
+            "edit_of" => target_message_id
+          }
+
+          commit_entry(doc, store, messages_uuid, entry, opts)
+
+          broadcast_chain(
+            Keyword.fetch!(opts, :room),
+            "edit",
+            entry,
+            %{"edit_of" => target_message_id}
+          )
+
+          {:ok, %{message_id: edit_id, ts: ts}}
+
+        :none ->
+          {:error, :not_found}
+      end
+    end
+  end
+
+  @doc """
+  Append a TOMBSTONE entry to the `_messages` doc. Monotone — concurrent
+  tombstones converge (any tombstone hides the message; the second is a
+  harmless no-op observable in `Messages.materialize/1`).
+
+  Required opts: `:room`, `:signer_id`, `:author_path`. Optional:
+  `:signing_context`, `:store`. Returns `{:ok, %{message_id, ts}}`
+  where `message_id` is the TOMBSTONE entry's id.
+  """
+  def delete_message(messages_uuid, target_message_id, opts)
+      when is_binary(messages_uuid) and is_binary(target_message_id) and is_list(opts) do
+    with :ok <- require_opt(opts, :room),
+         :ok <- require_opt(opts, :signer_id),
+         :ok <- require_opt(opts, :author_path) do
+      store = Keyword.get(opts, :store, CommitStoreClient)
+
+      case load_messages_doc(store, messages_uuid) do
+        {:ok, doc} ->
+          tomb_id = UUID.uuid4()
+          ts = DateTime.utc_now() |> DateTime.to_iso8601()
+
+          entry = %{
+            "id" => tomb_id,
+            "ts" => ts,
+            "author_signer_id" => Keyword.fetch!(opts, :signer_id),
+            "author_path" => Keyword.fetch!(opts, :author_path),
+            "tombstone_of" => target_message_id
+          }
+
+          commit_entry(doc, store, messages_uuid, entry, opts)
+
+          broadcast_chain(
+            Keyword.fetch!(opts, :room),
+            "delete",
+            entry,
+            %{"tombstone_of" => target_message_id}
+          )
+
+          {:ok, %{message_id: tomb_id, ts: ts}}
 
         :none ->
           {:error, :not_found}
@@ -110,15 +191,37 @@ defmodule Commonplace.Chat.Actions do
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
-  defp broadcast_post(room, entry) do
-    payload = %{
-      "message_id" => entry["id"],
-      "author_signer_id" => entry["author_signer_id"],
-      "author_path" => entry["author_path"],
-      "ts" => entry["ts"]
-    }
+  # Append the entry, encode, commit. Shared by post/edit/delete so
+  # signing-context threading and chain-commit semantics live in one
+  # place.
+  defp commit_entry(doc, store, messages_uuid, entry, opts) do
+    doc = Messages.append(doc, entry)
+    update = Yelixer.Encoding.encode_update(doc)
 
-    msg = Magenta.message("post", "chat", payload)
+    commit_opts =
+      case Keyword.get(opts, :signing_context) do
+        nil -> []
+        ctx -> [signing_context: ctx]
+      end
+
+    CommitStoreClient.create_chained_commit(store, messages_uuid, update, %{}, commit_opts)
+  end
+
+  # Magenta envelope for post/edit/delete events on chat:{room}:events.
+  # Verb selects the type ("post" | "edit" | "delete"); extra_payload
+  # carries verb-specific fields ({} for post, %{"edit_of" => …} for
+  # edit, %{"tombstone_of" => …} for delete).
+  defp broadcast_chain(room, verb, entry, extra_payload) do
+    payload =
+      %{
+        "message_id" => entry["id"],
+        "author_signer_id" => entry["author_signer_id"],
+        "author_path" => entry["author_path"],
+        "ts" => entry["ts"]
+      }
+      |> Map.merge(extra_payload)
+
+    msg = Magenta.message(verb, "chat", payload)
     Magenta.send("chat:#{room}:events", msg)
     :ok
   end

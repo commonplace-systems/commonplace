@@ -60,6 +60,66 @@ defmodule Commonplace.ViewActionDispatchTest do
                  args: %{"text" => "no messages_uuid"}
                })
     end
+
+    test "edit_message dispatches to Chat.Actions and returns tree_mutation",
+         %{messages_uuid: muuid} do
+      {:ok, %{message_id: m1}} =
+        Commonplace.Chat.Actions.post_message(muuid, "v1",
+          room: "general",
+          signer_id: "alice@aaaaaaaa",
+          author_path: "alice.usr"
+        )
+
+      context = %{
+        view_uuid: "view-uuid-stub",
+        args: %{
+          "messages_uuid" => muuid,
+          "room" => "general",
+          "author_path" => "alice.usr",
+          "message_id" => m1,
+          "text" => "v2"
+        },
+        signer_id: "alice@aaaaaaaa",
+        source: "test"
+      }
+
+      assert {:ok, :tree_mutation, details} =
+               ViewActionDispatch.dispatch("edit_message", context)
+
+      assert details.action == "edit_message"
+      assert details.edit_of == m1
+      assert is_binary(details.message_id)
+      refute details.message_id == m1
+    end
+
+    test "delete_message dispatches to Chat.Actions and returns tree_mutation",
+         %{messages_uuid: muuid} do
+      {:ok, %{message_id: m1}} =
+        Commonplace.Chat.Actions.post_message(muuid, "to be deleted",
+          room: "general",
+          signer_id: "alice@aaaaaaaa",
+          author_path: "alice.usr"
+        )
+
+      context = %{
+        view_uuid: "view-uuid-stub",
+        args: %{
+          "messages_uuid" => muuid,
+          "room" => "general",
+          "author_path" => "alice.usr",
+          "message_id" => m1
+        },
+        signer_id: "alice@aaaaaaaa",
+        source: "test"
+      }
+
+      assert {:ok, :tree_mutation, details} =
+               ViewActionDispatch.dispatch("delete_message", context)
+
+      assert details.action == "delete_message"
+      assert details.tombstone_of == m1
+      assert is_binary(details.message_id)
+    end
   end
 
   describe "dispatch/2 audit broadcast" do
