@@ -5,7 +5,12 @@ import Config
 config :commonplace_web, CommonplaceWebWeb.Endpoint,
   http: [ip: {127, 0, 0, 1}, port: 4002],
   secret_key_base: "26FYrtjPc3AIBms1hcBZdZn2iMKjSDPhFQigjlroque2gzSoGp+XaaNt49h+In1C",
-  server: false
+  # CX-xwh4: server:true unconditional in test so Wallaby feature tests
+  # have a real Bandit listener on :4002. LiveViewTest works either
+  # way (it doesn't go through HTTP); Wallaby requires the listener.
+  # Tradeoff: every test run binds 4002. Acceptable; gate via env var
+  # if it becomes a CI concern.
+  server: true
 
 # Print only warnings and errors during test
 config :logger, level: :warning
@@ -39,3 +44,28 @@ config :commonplace,
   # Disable auto_compact in tests — the SecretStore is small and
   # compaction is unnecessary for test workloads.
   secret_store_auto_compact: false
+
+# CX-xwh4: Wallaby end-to-end tests via portable Chrome-for-Testing.
+# Binaries fetched by `bin/setup-browser` into apps/commonplace_web/
+# priv/browser/. Headless mode keeps tests CI-friendly (no X11).
+#
+# Wallaby's chromedriver config takes:
+#   * `path:`   path to the chromedriver binary itself
+#   * `binary:` path to the Chrome browser binary chromedriver drives
+config :wallaby,
+  driver: Wallaby.Chrome,
+  otp_app: :commonplace_web,
+  base_url: "http://localhost:4002",
+  chromedriver: [
+    path:
+      Path.expand(
+        "../apps/commonplace_web/priv/browser/chromedriver-linux64/chromedriver",
+        __DIR__
+      ),
+    binary:
+      Path.expand(
+        "../apps/commonplace_web/priv/browser/chrome-linux64/chrome",
+        __DIR__
+      ),
+    headless: true
+  ]

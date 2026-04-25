@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# CX-xwh4: fetch a pinned Chrome-for-Testing + matched chromedriver into
+# apps/commonplace_web/priv/browser/ for Wallaby end-to-end tests.
+# No sudo, no system Chrome dependency, version-stable.
+#
+# Idempotent — skips if both binaries are already in place. Re-run after
+# bumping CHROME_VERSION below to get a new build.
+
+set -euo pipefail
+
+# Pin the version. Bump deliberately by changing this line + re-running.
+# Latest stable URLs at https://googlechromelabs.github.io/chrome-for-testing/
+CHROME_VERSION="${CHROME_VERSION:-148.0.7778.56}"
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BROWSER_DIR="$REPO_ROOT/apps/commonplace_web/priv/browser"
+CHROME_BIN="$BROWSER_DIR/chrome-linux64/chrome"
+CHROMEDRIVER_BIN="$BROWSER_DIR/chromedriver-linux64/chromedriver"
+
+mkdir -p "$BROWSER_DIR"
+
+if [[ -x "$CHROME_BIN" && -x "$CHROMEDRIVER_BIN" ]]; then
+  installed_version="$("$CHROME_BIN" --version 2>/dev/null | awk '{print $NF}' || echo unknown)"
+  if [[ "$installed_version" == "$CHROME_VERSION" ]]; then
+    echo "Chrome-for-Testing $CHROME_VERSION already installed at $BROWSER_DIR"
+    echo "  CHROME=$CHROME_BIN"
+    echo "  CHROMEDRIVER=$CHROMEDRIVER_BIN"
+    exit 0
+  else
+    echo "Found Chrome $installed_version, want $CHROME_VERSION — refetching."
+    rm -rf "$BROWSER_DIR/chrome-linux64" "$BROWSER_DIR/chromedriver-linux64"
+  fi
+fi
+
+CHROME_URL="https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chrome-linux64.zip"
+DRIVER_URL="https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chromedriver-linux64.zip"
+
+echo "Fetching Chrome-for-Testing $CHROME_VERSION (linux64)..."
+echo "  $CHROME_URL"
+curl -fsSL "$CHROME_URL" -o "$BROWSER_DIR/chrome.zip"
+unzip -q -o "$BROWSER_DIR/chrome.zip" -d "$BROWSER_DIR"
+rm "$BROWSER_DIR/chrome.zip"
+
+echo "Fetching chromedriver $CHROME_VERSION (linux64)..."
+echo "  $DRIVER_URL"
+curl -fsSL "$DRIVER_URL" -o "$BROWSER_DIR/chromedriver.zip"
+unzip -q -o "$BROWSER_DIR/chromedriver.zip" -d "$BROWSER_DIR"
+rm "$BROWSER_DIR/chromedriver.zip"
+
+chmod +x "$CHROME_BIN" "$CHROMEDRIVER_BIN"
+
+echo
+echo "Installed:"
+echo "  Chrome:        $("$CHROME_BIN" --version)"
+echo "  Chromedriver:  $("$CHROMEDRIVER_BIN" --version | head -1)"
+echo
+echo "Wallaby reads paths via config/test.exs:"
+echo "  config :wallaby, chromedriver: [binary: \"$CHROMEDRIVER_BIN\", ...]"

@@ -27,3 +27,8 @@ tmp/
 .dolt/
 *.db
 .worktrees/
+
+# CX-xwh4: Wallaby browser tests use portable Chrome fetched by
+# bin/setup-browser. Binaries are large + version-pinned; don't commit.
+apps/commonplace_web/priv/browser/
+apps/commonplace_web/screenshots/

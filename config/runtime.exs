@@ -20,8 +20,14 @@ if System.get_env("PHX_SERVER") do
   config :commonplace_web, CommonplaceWebWeb.Endpoint, server: true
 end
 
-config :commonplace_web, CommonplaceWebWeb.Endpoint,
-  http: [port: String.to_integer(System.get_env("PORT", "4000"))]
+# CX-xwh4: only override the http binding outside test. In test the
+# binding comes from config/test.exs (127.0.0.1:4002 — the address
+# Wallaby's base_url targets). A blanket runtime override here would
+# clobber that and Wallaby would hit a stale port.
+unless config_env() == :test do
+  config :commonplace_web, CommonplaceWebWeb.Endpoint,
+    http: [ip: {0, 0, 0, 0}, port: String.to_integer(System.get_env("PORT", "4000"))]
+end
 
 if config_env() == :prod do
   # The secret key base is used to sign/encrypt cookies and other secrets.

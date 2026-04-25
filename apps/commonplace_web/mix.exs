@@ -63,7 +63,11 @@ defmodule CommonplaceWeb.MixProject do
       {:jason, "~> 1.2"},
       {:dns_cluster, "~> 0.2.0"},
       {:bandit, "~> 1.5"},
-      {:commonplace, in_umbrella: true}
+      {:commonplace, in_umbrella: true},
+      # CX-xwh4: end-to-end browser tests via Wallaby + portable
+      # Chrome-for-Testing (fetched into priv/browser/ by
+      # bin/setup-browser; pinned version for reproducibility).
+      {:wallaby, "~> 0.30", runtime: false, only: :test}
     ]
   end
 
