@@ -36,12 +36,21 @@ defmodule Commonplace.Sync.Watcher do
     schema_entries = Schema.entries(schema_doc)
     inode_registry = Keyword.get(opts, :inode_registry)
 
-    # Get files/dirs on disk (exclude system dirs)
+    # Get files/dirs on disk (exclude system dirs + honorific presence
+    # files — see CX-3ine). Honorific files (.bot/.exe/.usr/.who) are
+    # owned by the running actor process; if a stale one is left on
+    # disk after the reaper removes its schema entry, Sync.Agent must
+    # NOT auto-create a fresh schema entry for it. The previous
+    # behavior re-resurrected reaped presence entries each tick,
+    # producing a 1Hz commit storm that fanned out via PubSub to
+    # DocCache invalidation + Orchestrator dispatch + ViewCompute
+    # subscribers, pegging serve at ~94% CPU.
     disk_entries =
       case File.ls(dir) do
         {:ok, names} ->
           names
           |> Enum.reject(&String.starts_with?(&1, ".commonplace"))
+          |> Enum.reject(&Schema.honorific_extension?/1)
           |> MapSet.new()
 
         {:error, _} ->

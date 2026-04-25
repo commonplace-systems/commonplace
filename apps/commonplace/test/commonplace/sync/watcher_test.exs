@@ -124,6 +124,31 @@ defmodule Commonplace.Sync.WatcherTest do
       # No changes when content matches
       assert changes == []
     end
+
+    # CX-3ine: Sync.Agent must NOT auto-create schema entries for
+    # honorific-extension files (.bot/.exe/.usr/.who) sitting on disk.
+    # Those files are owned by the running actor process. The previous
+    # behavior re-resurrected reaped presence entries each tick,
+    # producing a 1Hz commit storm that pegged serve at ~94% CPU
+    # (manifested during workspace MCP smoke testing 2026-04-25).
+    test "ignores honorific presence files on disk (CX-3ine)",
+         %{store: store, watch_dir: dir, root_uuid: root} do
+      # Create one regular file and four honorific files.
+      File.write!(Path.join(dir, "regular.txt"), "user data")
+      File.write!(Path.join(dir, "claude-code.bot"), "")
+      File.write!(Path.join(dir, "executable.exe"), "")
+      File.write!(Path.join(dir, "alice.usr"), "")
+      File.write!(Path.join(dir, "agent.who"), "")
+
+      changes = Watcher.detect_changes(root, dir, store)
+
+      # Only regular.txt should appear as a change. Honorific files are
+      # filtered out — Watcher behaves as if they aren't on disk at all.
+      assert length(changes) == 1
+      [change] = changes
+      assert change.type == :created
+      assert change.name == "regular.txt"
+    end
   end
 
   describe "apply_changes/4" do
