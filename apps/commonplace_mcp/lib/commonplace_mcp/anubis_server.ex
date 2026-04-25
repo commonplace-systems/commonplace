@@ -83,7 +83,42 @@ defmodule Commonplace.MCP.AnubisServer do
           |> Frame.assign(:mailbox_uuid, Map.get(info, :mailbox_uuid))
           |> Frame.assign(:mailbox_topic, Map.get(info, :mailbox_topic))
 
-        _ ->
+        nil ->
+          # CX-m8xl: presence_starter NOT in :persistent_term — escript
+          # main/0 didn't run AnubisServer.config before the supervisor
+          # started, OR the persistent_term key was cleared. Either way,
+          # the agent's presence_info tool will return all-NIL fields.
+          require Logger
+
+          Logger.warning(
+            "AnubisServer.init/2 (#{inspect(client_name)}): no presence_starter " <>
+              "in :persistent_term. presence_info will return nil values. " <>
+              "Check that Commonplace.MCP.AnubisServer.config/1 was called " <>
+              "before Supervisor.start_link in the escript main/0."
+          )
+
+          frame
+
+        false ->
+          # `starter && starter.(...)` short-circuited because starter
+          # was non-nil but falsy (impossible in practice — starter
+          # values are functions). Defensive branch.
+          require Logger
+          Logger.warning("AnubisServer.init/2 (#{inspect(client_name)}): starter short-circuited unexpectedly")
+          frame
+
+        other ->
+          # CX-m8xl: presence_starter exists but returned non-:ok. Most
+          # likely PresenceServer.start_link failed (e.g. CommitStore
+          # call timed out under load — CX-0nkq territory). Surface so
+          # operators can correlate with downstream presence_info NIL.
+          require Logger
+
+          Logger.warning(
+            "AnubisServer.init/2 (#{inspect(client_name)}): presence_starter " <>
+              "returned #{inspect(other)}. presence_info will return nil values."
+          )
+
           frame
       end
 
