@@ -28,6 +28,16 @@ defmodule Commonplace.MCP do
   alias Commonplace.Sync.CheckoutRegistry
 
   def main(_argv \\ []) do
+    # CX-re6b: route Elixir Logger output to stderr. The MCP escript
+    # uses stdout as its JSON-RPC transport channel; any Logger write
+    # (including the warnings emitted from anubis itself, presence
+    # bootstrap diagnostics, and CommitStore events) interleaved on
+    # stdout corrupts the protocol stream — Claude Code's MCP client
+    # logs them as "Ignoring non-JSON line on stdout" and eventually
+    # one parses far enough to be misinterpreted as a response,
+    # tearing the transport down.
+    redirect_logger_to_stderr()
+
     case attach_to_serve() do
       {:ok, root_uuid, data_dir} ->
         # CX-voi: presence lands in the sandbox checkout the agent was
@@ -99,6 +109,20 @@ defmodule Commonplace.MCP do
 
         System.halt(1)
     end
+  end
+
+  # Reconfigure the Erlang :logger default handler so Elixir's Logger
+  # writes to stderr (`:standard_error`) instead of stdout. Idempotent
+  # and tolerant of missing handlers (e.g. when the escript is loaded
+  # from inside a test process that's already detached the default).
+  defp redirect_logger_to_stderr do
+    try do
+      :logger.update_handler_config(:default, :config, %{type: :standard_error})
+    catch
+      _, _ -> :ok
+    end
+
+    :ok
   end
 
   defp attach_to_serve do

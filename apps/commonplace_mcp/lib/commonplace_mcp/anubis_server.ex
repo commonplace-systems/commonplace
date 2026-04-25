@@ -137,7 +137,14 @@ defmodule Commonplace.MCP.AnubisServer do
 
   @impl Anubis.Server
   def handle_request(%{"method" => "tools/list"}, frame) do
-    {:reply, %{"tools" => Tools.list()}, frame}
+    case safe_invoke(fn -> Tools.list() end) do
+      {:ok, tools} ->
+        {:reply, %{"tools" => tools}, frame}
+
+      {:error, crash} ->
+        log_handler_crash("tools/list", crash)
+        {:error, Error.execution(crash_text("tools/list", crash)), frame}
+    end
   end
 
   def handle_request(%{"method" => "tools/call", "params" => params}, frame) do
@@ -145,17 +152,20 @@ defmodule Commonplace.MCP.AnubisServer do
     args = Map.get(params || %{}, "arguments", %{})
     context = presence_context(frame)
 
-    case safe_tool_call(name, args, context) do
-      {:ok, result} ->
+    case safe_invoke(fn -> Tools.call(name, args, context) end) do
+      {:ok, {:ok, result}} ->
         {:reply, result, frame}
 
-      {:error, :not_found} ->
+      {:ok, {:error, :not_found}} ->
         {:error, Error.protocol(:method_not_found, %{method: name}), frame}
 
-      {:error, :invalid_params, detail} ->
+      {:ok, {:error, :invalid_params, detail}} ->
         {:error, Error.protocol(:invalid_params, %{message: detail}), frame}
 
-      {:error, {:tool_crashed, kind, reason}} ->
+      {:ok, {:error, reason}} ->
+        {:error, Error.execution(stringify(reason)), frame}
+
+      {:error, {kind, reason} = crash} ->
         # In-band MCP tool error so the agent sees the failure and the
         # session stays alive. Without this, an exit raised inside the
         # tool (e.g. CommitStore GenServer.call timeout under load —
@@ -167,8 +177,10 @@ defmodule Commonplace.MCP.AnubisServer do
           %{tool: name, kind: kind, reason: reason}
         )
 
+        log_handler_crash("tools/call(#{name})", crash)
+
         text =
-          "tool '#{name}' crashed: #{kind} #{Exception.format_exit(reason)}. " <>
+          "tool '#{name}' crashed: #{kind} #{format_crash_reason(crash)}. " <>
             "Likely a CommitStore overload (CX-0nkq). Retrying may help."
 
         {:reply,
@@ -177,52 +189,108 @@ defmodule Commonplace.MCP.AnubisServer do
            "content" => [%{"type" => "text", "text" => text}]
          }, frame}
 
-      {:error, reason} ->
-        {:error, Error.execution(stringify(reason)), frame}
-    end
-  end
+      {:error, {kind, reason, _stack} = crash} ->
+        :telemetry.execute(
+          [:commonplace, :mcp, :tool_call, :crashed],
+          %{system_time: System.system_time()},
+          %{tool: name, kind: kind, reason: reason}
+        )
 
-  # Catch :exit (GenServer.call timeouts, dead processes, etc.) and
-  # error (raised exceptions) from tool execution so a single bad call
-  # doesn't take down the MCP session. Returns a tagged error that
-  # handle_request maps to an in-band MCP tool error.
-  defp safe_tool_call(name, args, context) do
-    try do
-      Tools.call(name, args, context)
-    catch
-      :exit, reason -> {:error, {:tool_crashed, :exit, reason}}
-      :error, reason -> {:error, {:tool_crashed, :error, reason}}
-      :throw, reason -> {:error, {:tool_crashed, :throw, reason}}
+        log_handler_crash("tools/call(#{name})", crash)
+
+        text =
+          "tool '#{name}' crashed: #{kind} #{format_crash_reason(crash)}. " <>
+            "Likely a CommitStore overload (CX-0nkq). Retrying may help."
+
+        {:reply,
+         %{
+           "isError" => true,
+           "content" => [%{"type" => "text", "text" => text}]
+         }, frame}
     end
   end
 
   def handle_request(%{"method" => "resources/list"}, frame) do
-    result = %{
-      "resources" => Resources.list(),
-      "resourceTemplates" => Resources.templates()
-    }
+    case safe_invoke(fn ->
+           %{
+             "resources" => Resources.list(),
+             "resourceTemplates" => Resources.templates()
+           }
+         end) do
+      {:ok, result} ->
+        {:reply, result, frame}
 
-    {:reply, result, frame}
+      {:error, crash} ->
+        log_handler_crash("resources/list", crash)
+        {:error, Error.execution(crash_text("resources/list", crash)), frame}
+    end
   end
 
   def handle_request(%{"method" => "resources/read", "params" => params}, frame) do
     uri = Map.get(params || %{}, "uri", "")
 
-    case Resources.read(uri) do
-      {:ok, contents} ->
+    case safe_invoke(fn -> Resources.read(uri) end) do
+      {:ok, {:ok, contents}} ->
         {:reply, %{"contents" => contents}, frame}
 
-      {:error, :not_found} ->
+      {:ok, {:error, :not_found}} ->
         {:error, Error.resource(:not_found, %{uri: uri}), frame}
 
-      {:error, reason} ->
+      {:ok, {:error, reason}} ->
         {:error, Error.execution(stringify(reason)), frame}
+
+      {:error, crash} ->
+        log_handler_crash("resources/read(#{uri})", crash)
+        {:error, Error.execution(crash_text("resources/read", crash)), frame}
     end
   end
 
   def handle_request(%{"method" => method}, frame) do
     {:error, Error.protocol(:method_not_found, %{method: method}), frame}
   end
+
+  @doc """
+  Catch :exit, :error, and :throw from any zero-arg function and convert
+  them to a tagged tuple so handle_request branches can return in-band
+  MCP errors instead of letting the exit propagate up to anubis's
+  session GenServer (which would tear down the stdio transport).
+
+  Returns:
+    * `{:ok, value}` on success
+    * `{:error, {:exit, reason}}` for GenServer.call timeouts, dead pids, etc.
+    * `{:error, {:error, exception, stacktrace}}` for raised exceptions
+    * `{:error, {:throw, value}}` for thrown values
+
+  CX-re6b: previously only `tools/call` had this protection (CX-0nkq).
+  When the CX-71ej fix dropped CommitStore queue load, the surviving
+  rare-timeout in `tools/list` (which reads the CRDT-tools schema)
+  became the new session-killer. Symmetric protection on every
+  handler removes the whole class of failure.
+  """
+  def safe_invoke(fun) when is_function(fun, 0) do
+    try do
+      {:ok, fun.()}
+    catch
+      :exit, reason -> {:error, {:exit, reason}}
+      :throw, reason -> {:error, {:throw, reason}}
+      kind, reason when kind in [:error] -> {:error, {kind, reason, __STACKTRACE__}}
+    end
+  end
+
+  defp log_handler_crash(label, crash) do
+    require Logger
+    Logger.warning("MCP handler crash in #{label}: #{inspect(crash, limit: 200)}")
+  end
+
+  defp crash_text(label, crash) do
+    "#{label} crashed: #{format_crash_reason(crash)}. " <>
+      "Session preserved via safe_invoke (CX-re6b). Retrying may help."
+  end
+
+  defp format_crash_reason({:exit, reason}), do: Exception.format_exit(reason)
+  defp format_crash_reason({:throw, value}), do: "throw " <> inspect(value)
+  defp format_crash_reason({:error, exception, _stack}), do: Exception.message(exception)
+  defp format_crash_reason(other), do: inspect(other)
 
   defp presence_context(frame) do
     %{

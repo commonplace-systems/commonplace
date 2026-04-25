@@ -210,4 +210,43 @@ defmodule Commonplace.MCP.AnubisServerTest do
       assert err.reason == :method_not_found
     end
   end
+
+  # CX-re6b: tools/list, resources/list, resources/read previously
+  # propagated :exit straight to the anubis session GenServer, which
+  # tore down the stdio transport (manifested as "all tools gone" in
+  # workspace round 13 batch 2). The session-level safe_invoke wrapper
+  # catches :exit / :error / :throw and converts them to in-band MCP
+  # error responses, mirroring CX-0nkq's tools/call protection.
+  describe "safe_invoke/1 (CX-re6b)" do
+    test "passes through happy-path return value" do
+      assert {:ok, 42} = AnubisServer.safe_invoke(fn -> 42 end)
+    end
+
+    test "catches :exit and returns tagged error (the CX-re6b symptom)" do
+      assert {:error, {:exit, :boom}} =
+               AnubisServer.safe_invoke(fn -> exit(:boom) end)
+    end
+
+    test "catches a raised exception and returns tagged error" do
+      assert {:error, {:error, %RuntimeError{message: "kaboom"}, _stack}} =
+               AnubisServer.safe_invoke(fn -> raise "kaboom" end)
+    end
+
+    test "catches a throw and returns tagged error" do
+      assert {:error, {:throw, :early}} =
+               AnubisServer.safe_invoke(fn -> throw(:early) end)
+    end
+
+    test "catches GenServer.call timeout (the actual production failure mode)" do
+      # Simulate a CommitStore overload by calling a dead pid — same exit
+      # shape as a 5s timeout on GenServer.call.
+      dead = spawn(fn -> :ok end)
+      Process.sleep(20)
+
+      assert {:error, {:exit, _}} =
+               AnubisServer.safe_invoke(fn ->
+                 GenServer.call(dead, :anything, 100)
+               end)
+    end
+  end
 end
