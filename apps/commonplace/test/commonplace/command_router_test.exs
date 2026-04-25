@@ -181,6 +181,32 @@ defmodule Commonplace.CommandRouterTest do
       {:ok, read3} = Commonplace.Tree.DocBuilder.reconstruct_snapshot(ctx.store, uuid)
       assert Commonplace.Document.ContentType.get_content(read3) == "third version"
     end
+
+    test "refuses to clobber a non-text doc unless force: true (CX-yfva)", ctx do
+      {_pid, name} = start_router(ctx)
+      uuid = UUID.uuid4()
+
+      # Seed a :map-typed doc — anything non-:text triggers the guard.
+      doc = Yelixer.Doc.new()
+      doc = Commonplace.Document.ContentType.create(doc, :map, "config.json")
+      update = Yelixer.Encoding.encode_update(doc)
+      CommitStore.create_commit(ctx.store, uuid, update, nil)
+
+      # Default — refused.
+      assert {:error, {:type_mismatch, :map}} =
+               CommandRouter.write(name, uuid, "plain text content")
+
+      # Verify the doc was NOT mutated.
+      {:ok, read} = Commonplace.Tree.DocBuilder.reconstruct_snapshot(ctx.store, uuid)
+      assert Commonplace.Document.ContentType.get_type(read) == :map
+
+      # Force flag — proceeds.
+      assert {:ok, info} =
+               CommandRouter.write(name, uuid, "plain text content", force: true)
+
+      assert info["forced"] == true
+      assert info["new_bytes"] == byte_size("plain text content")
+    end
   end
 
   describe "branch_activate / branch_deactivate" do

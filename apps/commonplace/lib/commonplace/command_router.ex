@@ -83,11 +83,19 @@ defmodule Commonplace.CommandRouter do
   @doc """
   Update the text content of an existing blue doc identified by `uuid` to
   `new_content`, using a Myers-diff smart merge (character-level insert/delete
-  ops) so concurrent CRDT edits are preserved. Returns {:ok, %{...}} or
-  {:error, :not_found} if the doc does not exist.
+  ops) so concurrent CRDT edits are preserved. Returns {:ok, %{...}}; or
+  `{:error, :not_found}` if the doc does not exist; or
+  `{:error, {:type_mismatch, actual_type}}` (CX-yfva) if the doc's content
+  type isn't `:text` and `force: false` (the default).
+
+  Pass `force: true` in `opts` to override the type check and clobber a
+  non-text doc into text. The Myers-diff still runs against the
+  `ContentType.get_content/1` projection, which for non-text docs may
+  produce surprising ops — `force: true` is opt-in destruction.
   """
-  def write(server \\ __MODULE__, uuid, new_content) when is_binary(new_content) do
-    GenServer.call(server, {:write, uuid, new_content})
+  def write(server \\ __MODULE__, uuid, new_content, opts \\ [])
+      when is_binary(new_content) and is_list(opts) do
+    GenServer.call(server, {:write, uuid, new_content, opts})
   end
 
   # --- GenServer ---
@@ -129,25 +137,62 @@ defmodule Commonplace.CommandRouter do
   end
 
   @impl true
-  def handle_call({:write, uuid, new_content}, _from, state) do
+  def handle_call({:write, uuid, new_content, opts}, _from, state) do
+    force? = Keyword.get(opts, :force, false)
     args = %{"uuid" => uuid, "new_bytes" => byte_size(new_content)}
 
     result =
       Events.run("write", args, fn ->
         case DocBuilder.reconstruct_snapshot(state.store, uuid) do
           {:ok, doc} ->
-            old_content = ContentType.get_content(doc) || ""
-            doc = Diff.apply_diff(doc, old_content, new_content)
-            update = Yelixer.Encoding.encode_update(doc)
-            CommitStoreClient.create_chained_commit(state.store, uuid, update)
+            type = ContentType.get_type(doc)
 
-            audit = %{
-              "uuid" => uuid,
-              "old_bytes" => byte_size(old_content),
-              "new_bytes" => byte_size(new_content)
-            }
+            cond do
+              type == :text or type == nil ->
+                # Same-shape write — Myers-diff onto the existing text.
+                old_content = ContentType.get_content(doc) || ""
+                doc = Diff.apply_diff(doc, old_content, new_content)
+                update = Yelixer.Encoding.encode_update(doc)
+                CommitStoreClient.create_chained_commit(state.store, uuid, update)
 
-            {:ok, audit, audit}
+                audit = %{
+                  "uuid" => uuid,
+                  "old_bytes" => byte_size(old_content),
+                  "new_bytes" => byte_size(new_content),
+                  "forced" => false
+                }
+
+                {:ok, audit, audit}
+
+              force? ->
+                # CX-yfva: forced clobber. Diff doesn't make sense across
+                # type changes (Myers-diff between a YMap and a text string
+                # is undefined); we replace the doc wholesale by writing a
+                # new text doc as the next commit on the chain. Convergence
+                # follows reconstruct_snapshot semantics for schema/text
+                # docs (latest commit wins).
+                fresh = Yelixer.Doc.new()
+                fresh = ContentType.create(fresh, :text, "(forced)")
+                fresh = ContentType.insert_text(fresh, 0, new_content)
+                update = Yelixer.Encoding.encode_update(fresh)
+                CommitStoreClient.create_chained_commit(state.store, uuid, update)
+
+                audit = %{
+                  "uuid" => uuid,
+                  "old_bytes" => 0,
+                  "new_bytes" => byte_size(new_content),
+                  "forced" => true,
+                  "previous_type" => Atom.to_string(type)
+                }
+
+                {:ok, audit, audit}
+
+              true ->
+                # Default refuse path. Default-destructive behavior was a
+                # footgun — agents could trash views, JSON, etc. with a
+                # single tool call.
+                {:error, {:type_mismatch, type}}
+            end
 
           :none ->
             {:error, :not_found}
@@ -155,6 +200,13 @@ defmodule Commonplace.CommandRouter do
       end)
 
     {:reply, result, state}
+  end
+
+  # Backward-compat: the pre-CX-yfva call shape was {:write, uuid, content}
+  # without the opts list. Accept it and default opts = [].
+  @impl true
+  def handle_call({:write, uuid, new_content}, from, state) do
+    handle_call({:write, uuid, new_content, []}, from, state)
   end
 
   @impl true
