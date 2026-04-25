@@ -28,7 +28,20 @@ defmodule Commonplace.CommandRouter do
   alias Commonplace.Store.GC
   alias Commonplace.Tree.{DocBuilder, Fork, Merge, Schema}
 
-  defstruct [:store]
+  # CX-kqz3: in_flight_forks dedups concurrent fork requests on the same
+  # source_uuid. Without it, an MCP escript whose first fork call timed out
+  # at 5s (default GenServer.call timeout) would retry, queuing duplicate
+  # fork work behind the first; under repeat retry, all schedulers pinned
+  # on serial fork work and net_kernel's heartbeat starved → escript saw
+  # serve as :nodedown even though serve was alive.
+  defstruct store: nil, in_flight_forks: MapSet.new()
+
+  # The fork timeout has to span the actual fork work. CommandRouter.fork
+  # delegates to a Task, but the GenServer.call here STILL waits the same
+  # bounded time because it's the outer client's deadline. Default 5s
+  # was tight under MCP load; 30s gives a deep tree fork enough runway
+  # without inviting the retry storm CX-kqz3 chases.
+  @fork_call_timeout 30_000
 
   # --- Client API ---
 
@@ -40,9 +53,11 @@ defmodule Commonplace.CommandRouter do
   @doc """
   Fork a directory subtree by DAG-branching from `source_uuid`.
   Returns {:ok, new_uuid} or {:error, reason}.
+  Returns `{:error, :fork_in_progress}` if a fork of this source is
+  already running (CX-kqz3).
   """
   def fork(server \\ __MODULE__, source_uuid) do
-    GenServer.call(server, {:fork, source_uuid})
+    GenServer.call(server, {:fork, source_uuid}, @fork_call_timeout)
   end
 
   @doc """
@@ -126,14 +141,34 @@ defmodule Commonplace.CommandRouter do
   end
 
   @impl true
-  def handle_call({:fork, source_uuid}, _from, state) do
-    result =
-      Events.run("fork", %{"source_uuid" => source_uuid}, fn ->
-        new_uuid = Fork.fork_directory(source_uuid, state.store)
-        {:ok, new_uuid, %{"new_uuid" => new_uuid}}
-      end)
+  def handle_call({:fork, source_uuid}, from, state) do
+    cond do
+      MapSet.member?(state.in_flight_forks, source_uuid) ->
+        # CX-kqz3: dedup the retry storm. Caller will receive an in-band
+        # MCP error and either back off or surface to the user. Crucially
+        # the retry does NOT join CommitStore's queue.
+        {:reply, {:error, :fork_in_progress}, state}
 
-    {:reply, result, state}
+      true ->
+        store = state.store
+        router = self()
+
+        # Run the actual fork on a dedicated Task so CommandRouter can
+        # process other commands (and reject duplicate fork requests on
+        # the same source) while this fork runs. Reply lands later via
+        # the {:fork_done, ...} info message.
+        Task.start(fn ->
+          result =
+            Events.run("fork", %{"source_uuid" => source_uuid}, fn ->
+              new_uuid = Fork.fork_directory(source_uuid, store)
+              {:ok, new_uuid, %{"new_uuid" => new_uuid}}
+            end)
+
+          send(router, {:fork_done, from, source_uuid, result})
+        end)
+
+        {:noreply, %{state | in_flight_forks: MapSet.put(state.in_flight_forks, source_uuid)}}
+    end
   end
 
   @impl true
@@ -274,6 +309,12 @@ defmodule Commonplace.CommandRouter do
       end)
 
     {:reply, result, state}
+  end
+
+  @impl true
+  def handle_info({:fork_done, from, source_uuid, result}, state) do
+    GenServer.reply(from, result)
+    {:noreply, %{state | in_flight_forks: MapSet.delete(state.in_flight_forks, source_uuid)}}
   end
 
   # --- Merge report → audit-friendly summary ---

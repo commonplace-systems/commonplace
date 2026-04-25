@@ -66,6 +66,62 @@ defmodule Commonplace.CommandRouterTest do
       assert done["result"]["new_uuid"] == new_uuid
       assert is_integer(done["duration_ms"])
     end
+
+    # CX-kqz3: rapid fork retries on the same source piled up at
+    # CommandRouter under MCP load (round 16 v1), saturated CommitStore,
+    # starved net_kernel's heartbeat, and the escript declared serve
+    # :nodedown. Async fork + per-source in-flight set short-circuits
+    # the retry storm: a second fork of an in-flight source returns
+    # immediately with `{:error, :fork_in_progress}` instead of joining
+    # the queue.
+    #
+    # Test injects state directly via :sys.replace_state instead of
+    # racing on real fork timing — fork on an empty root is microsecond-
+    # fast and would complete before any reasonable Process.sleep, making
+    # the test flaky. The dedup logic itself is what matters.
+    test "in-flight set rejects duplicate fork of same source (CX-kqz3)", ctx do
+      {pid, name} = start_router(ctx)
+
+      :sys.replace_state(pid, fn state ->
+        %{state | in_flight_forks: MapSet.put(state.in_flight_forks, ctx.root)}
+      end)
+
+      assert {:error, :fork_in_progress} = CommandRouter.fork(name, ctx.root)
+    end
+
+    test "in-flight set is cleared after fork completes (CX-kqz3)", ctx do
+      {pid, name} = start_router(ctx)
+
+      assert {:ok, _new_uuid} = CommandRouter.fork(name, ctx.root)
+
+      state = :sys.get_state(pid)
+      refute MapSet.member?(state.in_flight_forks, ctx.root),
+             "in_flight_forks should be empty after fork completion, got: #{inspect(state.in_flight_forks)}"
+    end
+
+    test "concurrent forks of different sources both succeed (CX-kqz3)", ctx do
+      {_pid, name} = start_router(ctx)
+
+      # Two separate roots, both fork-able concurrently.
+      other_root = UUID.uuid4()
+      other_doc = Schema.new_schema()
+      update = Yelixer.Encoding.encode_update(other_doc)
+      CommitStore.create_commit(ctx.store, other_root, update, nil)
+
+      first = Task.async(fn -> CommandRouter.fork(name, ctx.root) end)
+      second = Task.async(fn -> CommandRouter.fork(name, other_root) end)
+
+      assert {:ok, _} = Task.await(first, 5_000)
+      assert {:ok, _} = Task.await(second, 5_000)
+    end
+
+    test "after a fork completes, the same source can be forked again (CX-kqz3)",
+         ctx do
+      {_pid, name} = start_router(ctx)
+
+      assert {:ok, _first} = CommandRouter.fork(name, ctx.root)
+      assert {:ok, _second} = CommandRouter.fork(name, ctx.root)
+    end
   end
 
   describe "merge" do
