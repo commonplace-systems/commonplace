@@ -50,15 +50,26 @@ defmodule Commonplace.Chat.Messages do
   silently mutating an unrelated message.
   """
 
+  alias Commonplace.Document.ContentType
   alias Yelixer.{Doc, Types.Array}
 
-  @type_name "_messages"
+  # CX-0trq: _messages is a ContentType :array envelope — `_root` YMap
+  # carries `_type="array"` + `_name="_messages"` metadata, the actual
+  # YArray lives under the registered "content" type. cat now returns
+  # the JSON-string entries; introspection tools that route through
+  # ContentType.get_type/get_content/get_meta light up.
+  #
+  # The named array's KEY inside the doc is "content" (ContentType's
+  # convention); the doc's display name is "_messages" (set in `_root`).
+  # Callers continue using `Messages.append/list/materialize` and don't
+  # see this layer.
+  @display_name "_messages"
+  @content_type "content"
 
-  @doc "Create a fresh `_messages` doc with the YArray top-level type registered."
+  @doc "Create a fresh `_messages` doc with the ContentType :array envelope."
   def new do
     doc = Doc.new()
-    {doc, _} = Doc.get_or_create_type(doc, @type_name, :array)
-    doc
+    ContentType.create(doc, :array, @display_name)
   end
 
   @doc """
@@ -66,7 +77,7 @@ defmodule Commonplace.Chat.Messages do
   Atom-keyed maps round-trip as string-keyed (Jason normalizes).
   """
   def append(%Doc{} = doc, %{} = entry) do
-    Array.push(doc, @type_name, [Jason.encode!(entry)])
+    Array.push(doc, @content_type, [Jason.encode!(entry)])
   end
 
   @doc """
@@ -77,7 +88,7 @@ defmodule Commonplace.Chat.Messages do
   """
   def list(%Doc{} = doc) do
     doc
-    |> Array.to_list(@type_name)
+    |> Array.to_list(@content_type)
     |> Enum.map(&Jason.decode!/1)
   end
 

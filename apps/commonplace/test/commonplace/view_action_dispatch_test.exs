@@ -92,6 +92,39 @@ defmodule Commonplace.ViewActionDispatchTest do
       refute details.message_id == m1
     end
 
+    # CX-1kl1 regression: dispatcher must thread args["messages_log_uuid"]
+    # to Chat.Actions so the lazy red onramp triggers via the MCP path.
+    # Pre-fix: dispatcher dropped messages_log_uuid; ensure_room_onramp
+    # short-circuited; tail_red on the log doc returned 0 events even
+    # after a successful post.
+    test "post_message threads args['messages_log_uuid'] to lazy onramp (CX-1kl1)",
+         %{messages_uuid: muuid} do
+      log_uuid = UUID.uuid4()
+      Commonplace.Chat.OnrampSupervisor.reset()
+
+      context = %{
+        view_uuid: "v",
+        args: %{
+          "messages_uuid" => muuid,
+          "messages_log_uuid" => log_uuid,
+          "room" => "general",
+          "author_path" => "alice.usr",
+          "text" => "log me"
+        },
+        signer_id: "alice@aaaaaaaa",
+        source: "test"
+      }
+
+      assert {:ok, :tree_mutation, _details} =
+               ViewActionDispatch.dispatch("post_message", context)
+
+      # The onramp's ETS-tracked room→pid index should now have an entry
+      # for "general" — observable proof that the dispatcher threaded
+      # messages_log_uuid all the way down to ensure_room_onramp.
+      assert :ets.lookup(:chat_onramp_room_index, "general") != [],
+             "post_message dispatcher must thread messages_log_uuid → ensure lazy onramp started"
+    end
+
     test "delete_message dispatches to Chat.Actions and returns tree_mutation",
          %{messages_uuid: muuid} do
       {:ok, %{message_id: m1}} =

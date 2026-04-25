@@ -219,10 +219,14 @@ defmodule Commonplace.Chat.Rooms do
 
   # Reactions live in a top-level YMap with composite-key boolean values
   # — the (β-revised) shape from chat-room.md a5f3f5e §Reactions.
+  # CX-0trq: wrapped in a ContentType :map envelope so `cat` returns
+  # the keyspace as a map (introspection-friendly) and the doc
+  # self-describes via _root metadata. The composite-key contents are
+  # unchanged.
   defp mint_reactions_doc(store) do
     uuid = UUID.uuid4()
     doc = Yelixer.Doc.new()
-    {doc, _} = Yelixer.Doc.get_or_create_type(doc, "_reactions", :map)
+    doc = ContentType.create(doc, :map, "_reactions")
     update = Yelixer.Encoding.encode_update(doc)
     CommitStoreClient.create_chained_commit(store, uuid, update)
     uuid

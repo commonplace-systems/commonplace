@@ -170,6 +170,7 @@ defmodule Commonplace.ViewActionDispatch do
           signer_id: Map.get(context, :signer_id) || "mcp-agent@local"
         ]
         |> maybe_kw(:reply_to, args["reply_to"])
+        |> maybe_kw(:messages_log_uuid, args["messages_log_uuid"])
         |> maybe_kw(:signing_context, Map.get(context, :signing_context))
         |> maybe_kw(:store, Map.get(context, :store))
 
@@ -203,6 +204,7 @@ defmodule Commonplace.ViewActionDispatch do
           author_path: author_path,
           signer_id: Map.get(context, :signer_id) || "mcp-agent@local"
         ]
+        |> maybe_kw(:messages_log_uuid, args["messages_log_uuid"])
         |> maybe_kw(:signing_context, Map.get(context, :signing_context))
         |> maybe_kw(:store, Map.get(context, :store))
 
@@ -243,6 +245,7 @@ defmodule Commonplace.ViewActionDispatch do
           author_path: author_path,
           signer_id: Map.get(context, :signer_id) || "mcp-agent@local"
         ]
+        |> maybe_kw(:messages_log_uuid, args["messages_log_uuid"])
         |> maybe_kw(:signing_context, Map.get(context, :signing_context))
         |> maybe_kw(:store, Map.get(context, :store))
 

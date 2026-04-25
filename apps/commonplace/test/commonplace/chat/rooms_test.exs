@@ -111,6 +111,26 @@ defmodule Commonplace.Chat.RoomsTest do
       assert {:error, :exists} = Rooms.create(root, "general", store: store)
     end
 
+    # CX-0trq regression: _messages and _reactions must be ContentType
+    # envelopes so MCP cat tool returns structured content (not null/null/null).
+    test "_messages doc has a ContentType :array envelope (cat-able)",
+         %{store: store, root: root} do
+      {:ok, room} = Rooms.create(root, "general", store: store)
+
+      {:ok, doc} = DocBuilder.reconstruct_snapshot(store, room.messages_uuid)
+      assert Commonplace.Document.ContentType.get_type(doc) == :array
+      assert Commonplace.Document.ContentType.get_meta(doc, "_name") == "_messages"
+    end
+
+    test "_reactions doc has a ContentType :map envelope (cat-able)",
+         %{store: store, root: root} do
+      {:ok, room} = Rooms.create(root, "general", store: store)
+
+      {:ok, doc} = DocBuilder.reconstruct_snapshot(store, room.reactions_uuid)
+      assert Commonplace.Document.ContentType.get_type(doc) == :map
+      assert Commonplace.Document.ContentType.get_meta(doc, "_name") == "_reactions"
+    end
+
     test "rejects path-unsafe room names (slashes, leading dots)",
          %{store: store, root: root} do
       assert {:error, :invalid_name} = Rooms.create(root, "with/slash", store: store)
