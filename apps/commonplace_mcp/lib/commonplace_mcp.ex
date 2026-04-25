@@ -160,6 +160,14 @@ defmodule Commonplace.MCP do
   end
 
   defp connect(serve_node) do
+    # CX-c2bx: disable :global's overlapping-partition protection
+    # (default-on since OTP 25). Each MCP escript invocation is a
+    # short-lived node joining + leaving; the heuristic mistakes that
+    # for a partition and forcibly disconnects subsequent escripts,
+    # surfacing as MCP "Connection closed" errors. Must be set before
+    # Node.start.
+    :application.set_env(:kernel, :prevent_overlapping_partitions, false)
+
     cli_name = :"commonplace_mcp_#{:rand.uniform(999_999)}"
 
     case Node.start(cli_name, :shortnames) do
