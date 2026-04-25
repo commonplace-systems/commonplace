@@ -28,8 +28,21 @@ defmodule Commonplace.Sync.Agent do
     # %{doc_uuid => commit_id} — the commit whose content is currently on disk
     :written_commits,
     # InodeTracker.Registry pid (nil if shadow tracking disabled)
-    :inode_registry
+    :inode_registry,
+    # CX-0nkq: monotonic ms timestamp of last reflog checkpoint. nil
+    # means "never" — first sync_once will checkpoint. Subsequent
+    # ticks skip the checkpoint until @reflog_checkpoint_min_interval_ms
+    # elapses, giving 10x relief on the per-second sync flood while
+    # preserving CX-86t2's race-fix property (synchronous-when-fired).
+    :last_reflog_checkpoint_ms
   ]
+
+  # Minimum wall-clock gap between back-to-back reflog checkpoints
+  # in the same Sync.Agent. SyncLoop ticks at 1s; without this gate
+  # we'd burn one full-tree reflog walk per second per agent. The
+  # 10s cadence preserves audit cadence while eliminating the
+  # contention spam under heavy commit activity (CX-0nkq).
+  @reflog_checkpoint_min_interval_ms 10_000
 
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts)
@@ -66,24 +79,41 @@ defmodule Commonplace.Sync.Agent do
   @impl true
   def handle_call(:sync_once, _from, state) do
     state = do_sync(state)
-
-    # CX-86t2: run the reflog checkpoint synchronously. The prior
-    # implementation used `Task.start` to avoid blocking the sync
-    # cycle, but the async checkpoint's load+mutate+create_chained_commit
-    # pattern for adding the `__reflog` entry to root races with any
-    # concurrent writer to root_uuid (test code, remote peer, MCP
-    # command, etc.). Each writer encodes their own stale view of root
-    # state and writes it as the chained commit's update; because
-    # `reconstruct_snapshot/2` applies only the latest commit, the
-    # last-writer-wins drops the earlier writer's mutation. A flaky
-    # test (agent_test.exs:154) surfaced this when the test wrote to
-    # root between sync_once returning and the next sync_once's export
-    # phase: crdt_file.txt was silently lost from root's schema. Sync
-    # checkpointing here restores the invariant that sync_once returns
-    # only once all writes triggered by this cycle are fully durable.
-    Commonplace.Reflog.Snapshot.checkpoint(state.root_uuid, state.store, "server")
+    state = maybe_reflog_checkpoint(state)
 
     {:reply, :ok, state}
+  end
+
+  # CX-86t2: when the reflog checkpoint fires, it runs synchronously
+  # inside sync_once. The prior async-via-Task.start implementation
+  # raced with concurrent root writers (test code, remote peer, MCP
+  # command) — each encoded its own stale view of root, and because
+  # reconstruct_snapshot/2 applies only the latest commit, the
+  # last-writer-wins dropped the earlier writer's mutation. A flaky
+  # test (agent_test.exs:154) surfaced this when the test wrote to
+  # root between sync_once returning and the next sync_once's export
+  # phase: crdt_file.txt was silently lost from root's schema.
+  # Synchronous checkpointing restores the invariant that sync_once
+  # returns only once all writes it triggered are fully durable.
+  #
+  # CX-0nkq: rate-limit at @reflog_checkpoint_min_interval_ms. Without
+  # this gate, SyncLoop's 1s tick produces one full-tree reflog walk
+  # per second per agent — wasteful and a major contributor to
+  # CommitStore mailbox contention during heavy commit activity (e.g.
+  # MCP fork on a deep tree timed out at 5s under this pressure).
+  # The gate is a wall-clock skip, not an idempotency check; a real
+  # skip-when-nothing-changed cursor is the proper fix tracked in
+  # CX-0nkq's body.
+  defp maybe_reflog_checkpoint(state) do
+    now_ms = System.monotonic_time(:millisecond)
+    last = state.last_reflog_checkpoint_ms
+
+    if last == nil or now_ms - last >= @reflog_checkpoint_min_interval_ms do
+      Commonplace.Reflog.Snapshot.checkpoint(state.root_uuid, state.store, "server")
+      %{state | last_reflog_checkpoint_ms: now_ms}
+    else
+      state
+    end
   end
 
   defp do_sync(state) do
