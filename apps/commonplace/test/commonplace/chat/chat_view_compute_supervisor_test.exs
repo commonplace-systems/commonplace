@@ -81,6 +81,41 @@ defmodule Commonplace.Chat.ChatViewComputeSupervisorTest do
     mint_doc(uuid, doc)
   end
 
+  @chat_compute_spec """
+  <compute-spec schema="1">
+    <pipeline>
+      <step kind="decode_json_array"/>
+      <step kind="materialize">
+        <chains>
+          <chain field="edit_of" semantics="latest_replaces"/>
+          <chain field="tombstone_of" semantics="marks_deleted"/>
+        </chains>
+      </step>
+      <step kind="render">
+        <function module="Commonplace.Chat.ChatViewBuilder" name="build_view_xml"/>
+      </step>
+    </pipeline>
+  </compute-spec>
+  """
+
+  defp mint_compute_spec do
+    uuid = UUID.uuid4()
+    doc = Yelixer.Doc.new()
+    doc = ContentType.create(doc, :text, "_compute")
+    doc = ContentType.insert_text(doc, 0, @chat_compute_spec)
+    mint_doc(uuid, doc)
+  end
+
+  defp ensure_started(room_name, messages_uuid, view_uuid) do
+    spec_uuid = mint_compute_spec()
+
+    ChatViewComputeSupervisor.ensure_started(room_name,
+      source_uuid: messages_uuid,
+      target_uuid: view_uuid,
+      spec_uuid: spec_uuid
+    )
+  end
+
   defp read_view_content(uuid) do
     {:ok, doc} = DocBuilder.reconstruct_snapshot(CommitStoreClient, uuid)
     ContentType.get_content(doc) || ""
@@ -92,7 +127,7 @@ defmodule Commonplace.Chat.ChatViewComputeSupervisorTest do
       view_uuid = mint_view_doc()
 
       assert {:ok, pid} =
-               ChatViewComputeSupervisor.ensure_started("alpha", messages_uuid, view_uuid)
+               ensure_started("alpha", messages_uuid, view_uuid)
 
       assert is_pid(pid)
       assert Process.alive?(pid)
@@ -105,10 +140,10 @@ defmodule Commonplace.Chat.ChatViewComputeSupervisorTest do
       view_uuid = mint_view_doc()
 
       assert {:ok, pid1} =
-               ChatViewComputeSupervisor.ensure_started("beta", messages_uuid, view_uuid)
+               ensure_started("beta", messages_uuid, view_uuid)
 
       assert {:ok, pid2} =
-               ChatViewComputeSupervisor.ensure_started("beta", messages_uuid, view_uuid)
+               ensure_started("beta", messages_uuid, view_uuid)
 
       assert pid1 == pid2
     end
@@ -119,8 +154,8 @@ defmodule Commonplace.Chat.ChatViewComputeSupervisorTest do
       m2 = mint_messages_doc()
       v2 = mint_view_doc()
 
-      {:ok, pid1} = ChatViewComputeSupervisor.ensure_started("room1", m1, v1)
-      {:ok, pid2} = ChatViewComputeSupervisor.ensure_started("room2", m2, v2)
+      {:ok, pid1} = ensure_started("room1", m1, v1)
+      {:ok, pid2} = ensure_started("room2", m2, v2)
 
       assert pid1 != pid2
       assert Process.alive?(pid1)
@@ -134,7 +169,7 @@ defmodule Commonplace.Chat.ChatViewComputeSupervisorTest do
       view_uuid = mint_view_doc()
 
       {:ok, _pid} =
-        ChatViewComputeSupervisor.ensure_started("hello", messages_uuid, view_uuid)
+        ensure_started("hello", messages_uuid, view_uuid)
 
       # Initial compute on start should have produced an empty-list view.
       # Wait for it to land before posting.
@@ -165,7 +200,7 @@ defmodule Commonplace.Chat.ChatViewComputeSupervisorTest do
       messages_uuid = mint_messages_doc()
       view_uuid = mint_view_doc()
 
-      {:ok, pid} = ChatViewComputeSupervisor.ensure_started("z", messages_uuid, view_uuid)
+      {:ok, pid} = ensure_started("z", messages_uuid, view_uuid)
 
       assert :ok = ChatViewComputeSupervisor.stop("z")
       refute Process.alive?(pid)

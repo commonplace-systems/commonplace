@@ -51,11 +51,18 @@ defmodule CommonplaceWebWeb.ChatRoomLive do
 
             # Lazy-start the ViewCompute so this room's _view.xml stays
             # in sync with _messages. ensure_started is idempotent.
-            ChatViewComputeSupervisor.ensure_started(
-              room_name,
-              room.messages_uuid,
-              room.view_uuid
-            )
+            # CX-h4mc (M5 sub-bead iv): :spec_uuid path now drives the
+            # chat compute (ChatViewCompute Elixir module deleted; per-room
+            # `_compute` doc IS the spec). For pre-M5 rooms missing
+            # _compute, skip the start (display will fall back to whatever
+            # `_view.xml` currently has — typically the static template).
+            if room.compute_uuid do
+              ChatViewComputeSupervisor.ensure_started(room_name,
+                source_uuid: room.messages_uuid,
+                target_uuid: room.view_uuid,
+                spec_uuid: room.compute_uuid
+              )
+            end
 
             socket =
               socket

@@ -32,7 +32,7 @@ defmodule Commonplace.Chat.Rooms do
   two trigger paths to maintain).
   """
 
-  alias Commonplace.Chat.{ChatViewBuilder, ChatViewCompute, Messages, TemplateBootstrap}
+  alias Commonplace.Chat.{ChatViewBuilder, Messages, TemplateBootstrap}
   alias Commonplace.CommandRouter
   alias Commonplace.Materialize
   alias Commonplace.Store.CommitStoreClient
@@ -82,7 +82,10 @@ defmodule Commonplace.Chat.Rooms do
   end
 
   defp lookup_room_children(room_dir_uuid, opts) do
-    with {:ok, children} <-
+    # _compute optional for pre-M5 templates that haven't migrated yet
+    # (TemplateBootstrap idempotently adds it; rooms forked after that
+    # will have it). lookup_optional_child returns nil if missing.
+    with {:ok, primary} <-
            Lookup.extract_named_children(
              room_dir_uuid,
              ["_messages", "_reactions", "_messages.log", "_view.xml"],
@@ -90,10 +93,11 @@ defmodule Commonplace.Chat.Rooms do
            ) do
       {:ok,
        %{
-         messages_uuid: children["_messages"],
-         reactions_uuid: children["_reactions"],
-         log_uuid: children["_messages.log"],
-         view_uuid: children["_view.xml"]
+         messages_uuid: primary["_messages"],
+         reactions_uuid: primary["_reactions"],
+         log_uuid: primary["_messages.log"],
+         view_uuid: primary["_view.xml"],
+         compute_uuid: lookup_optional_child(room_dir_uuid, "_compute", opts)
        }}
     end
   end
@@ -140,20 +144,34 @@ defmodule Commonplace.Chat.Rooms do
   def lookup(root_uuid, room_name, opts \\ [])
       when is_binary(root_uuid) and is_binary(room_name) and is_list(opts) do
     path = "#{@chat_dir}/#{room_name}"
-    names = ["_messages", "_reactions", "_messages.log", "_view.xml"]
+    # CX-h4mc (M5 sub-bead iv): _compute is the 5th canonical sub-doc
+    # (M5 sub-bead i added it to /chat/__template/). For pre-M5 rooms
+    # missing _compute, lookup falls back to nil — Chat.Rooms.upgrade_compute
+    # adds it on demand.
+    primary_names = ["_messages", "_reactions", "_messages.log", "_view.xml"]
 
     with {:ok, room_dir_uuid} <- Lookup.lookup_doc_by_path(root_uuid, path, opts),
-         {:ok, children} <- Lookup.extract_named_children(room_dir_uuid, names, opts) do
+         {:ok, primary} <- Lookup.extract_named_children(room_dir_uuid, primary_names, opts) do
+      compute_uuid = lookup_optional_child(room_dir_uuid, "_compute", opts)
+
       {:ok,
        %{
          room_dir_uuid: room_dir_uuid,
-         messages_uuid: children["_messages"],
-         reactions_uuid: children["_reactions"],
-         log_uuid: children["_messages.log"],
-         view_uuid: children["_view.xml"]
+         messages_uuid: primary["_messages"],
+         reactions_uuid: primary["_reactions"],
+         log_uuid: primary["_messages.log"],
+         view_uuid: primary["_view.xml"],
+         compute_uuid: compute_uuid
        }}
     else
       {:error, _reason} -> {:error, :not_found}
+    end
+  end
+
+  defp lookup_optional_child(parent_uuid, name, opts) do
+    case Lookup.extract_named_children(parent_uuid, [name], opts) do
+      {:ok, %{^name => uuid}} -> uuid
+      _ -> nil
     end
   end
 
@@ -189,14 +207,71 @@ defmodule Commonplace.Chat.Rooms do
     end
   end
 
+  @doc """
+  CX-h4mc (M5 sub-bead iv): per-room migration helper for pre-M5 rooms.
+  Pre-M5 rooms (created during M4) lack the `_compute` sub-doc. This
+  helper forks `/chat/__template/_compute` (added by M5 sub-bead i)
+  and adds the resulting doc to the room directory's schema.
+
+  Idempotent — second call no-ops if `_compute` is already present.
+
+  Returns `:ok` on success, `{:error, :not_found}` if the room or
+  template doesn't exist.
+  """
+  def upgrade_compute(root_uuid, room_name, opts \\ [])
+      when is_binary(root_uuid) and is_binary(room_name) and is_list(opts) do
+    store = Keyword.get(opts, :store, CommitStoreClient)
+
+    with {:ok, room} <- lookup(root_uuid, room_name, opts) do
+      if room.compute_uuid do
+        :ok
+      else
+        with :ok <- TemplateBootstrap.ensure_template(root_uuid, opts),
+             {:ok, template_compute_uuid} <-
+               Lookup.lookup_doc_by_path(
+                 root_uuid,
+                 "#{@chat_dir}/__template/_compute",
+                 opts
+               ) do
+          forked_compute_uuid = Fork.fork_directory(template_compute_uuid, store)
+
+          room_doc = load_schema(room.room_dir_uuid, store)
+          room_doc = Schema.add_file(room_doc, "_compute", forked_compute_uuid)
+          update = Yelixer.Encoding.encode_update(room_doc)
+          CommitStoreClient.create_chained_commit(store, room.room_dir_uuid, update)
+
+          :ok
+        end
+      end
+    end
+  end
+
+  # Materialize chain rules read from the per-room _compute spec doc
+  # when present (M5); falls back to inline default rules for pre-M5
+  # rooms that haven't been migrated via upgrade_compute.
   defp materialize_messages(messages_uuid, store) do
     case DocBuilder.reconstruct_snapshot(store, messages_uuid) do
       {:ok, doc} ->
-        Materialize.materialize(Messages.list(doc), ChatViewCompute.chain_rules())
+        Materialize.materialize(Messages.list(doc), default_chain_rules())
 
       :none ->
         []
     end
+  end
+
+  # Pre-M5 inline chain rules — kept here as the data-only fallback for
+  # `upgrade_view_xml` callers that don't pass spec-derived rules.
+  # ChatViewCompute Elixir module is gone (M5 (iv) DELETE); these data
+  # live with the chat-tier callers that need them. Substrate-pure
+  # consumers read chain rules from per-room `_compute` spec doc via
+  # ComputeSpec.
+  defp default_chain_rules do
+    %{
+      chains: [
+        %{field: "edit_of", semantics: :latest_replaces},
+        %{field: "tombstone_of", semantics: :marks_deleted}
+      ]
+    }
   end
 
   # --- Private ---

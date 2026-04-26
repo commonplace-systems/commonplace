@@ -26,7 +26,6 @@ defmodule Commonplace.Chat.ChatViewComputeSupervisor do
 
   use DynamicSupervisor
 
-  alias Commonplace.Chat.ChatViewCompute
   alias Commonplace.ViewCompute
 
   @table :chat_view_compute_room_index
@@ -42,18 +41,21 @@ defmodule Commonplace.Chat.ChatViewComputeSupervisor do
   end
 
   @doc """
-  Ensure a ViewCompute is running for `room_name` reading `source_uuid`
-  (the room's `_messages` doc) and writing to `target_uuid` (the
-  room's `_view.xml` doc). If one exists, return its pid; else start a
-  new child under the supervisor and track it.
+  Ensure a ViewCompute is running for `room_name`. Reads source_uuid
+  (`_messages`), target_uuid (`_view.xml`), and spec_uuid (`_compute`)
+  from opts. The spec_uuid path drives compute via
+  `Commonplace.View.ComputeSpec` (M5 sub-bead iv).
+
+  Required opts:
+    * `:source_uuid` — the room's `_messages` doc
+    * `:target_uuid` — the room's `_view.xml` doc
+    * `:spec_uuid` — the room's `_compute` spec doc
 
   Optional opts:
     * `:store` — CommitStore name (defaults to `CommitStoreClient`)
     * `:router` — CommandRouter (defaults to `Commonplace.CommandRouter`)
   """
-  def ensure_started(room_name, source_uuid, target_uuid, opts \\ [])
-      when is_binary(room_name) and is_binary(source_uuid) and is_binary(target_uuid) and
-             is_list(opts) do
+  def ensure_started(room_name, opts) when is_binary(room_name) and is_list(opts) do
     ensure_room_index_table()
 
     case lookup_pid(room_name) do
@@ -61,13 +63,16 @@ defmodule Commonplace.Chat.ChatViewComputeSupervisor do
         {:ok, pid}
 
       :none ->
-        compute_fn = ChatViewCompute.compute_fn(room_name)
+        source_uuid = Keyword.fetch!(opts, :source_uuid)
+        target_uuid = Keyword.fetch!(opts, :target_uuid)
+        spec_uuid = Keyword.fetch!(opts, :spec_uuid)
 
         child_opts =
           [
             source_uuid: source_uuid,
             target_uuid: target_uuid,
-            compute_fn: compute_fn,
+            spec_uuid: spec_uuid,
+            spec_context: %{room_name: room_name},
             name: nil
           ]
           |> maybe_put(:store, Keyword.get(opts, :store))
