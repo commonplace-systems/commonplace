@@ -45,7 +45,11 @@ defmodule Commonplace.Chat.Actions do
   """
   def post_message(messages_uuid, text, opts)
       when is_binary(messages_uuid) and is_binary(text) and is_list(opts) do
-    with :ok <- require_opt(opts, :room),
+    # CX-00ze: defense-in-depth — also reject whitespace-only at the
+    # action layer so callers other than ChatRoomLive (MCP, CLI, etc.)
+    # can't accidentally land blank messages.
+    with :ok <- require_non_blank(text, "text"),
+         :ok <- require_opt(opts, :room),
          :ok <- require_opt(opts, :signer_id),
          :ok <- require_opt(opts, :author_path) do
       store = Keyword.get(opts, :store, CommitStoreClient)
@@ -89,7 +93,10 @@ defmodule Commonplace.Chat.Actions do
   def edit_message(messages_uuid, target_message_id, new_text, opts)
       when is_binary(messages_uuid) and is_binary(target_message_id) and is_binary(new_text) and
              is_list(opts) do
-    with :ok <- require_opt(opts, :room),
+    # CX-00ze: edits with whitespace-only text would silently blank
+    # the rendered message. Reject at the action layer.
+    with :ok <- require_non_blank(new_text, "new_text"),
+         :ok <- require_opt(opts, :room),
          :ok <- require_opt(opts, :signer_id),
          :ok <- require_opt(opts, :author_path) do
       store = Keyword.get(opts, :store, CommitStoreClient)
@@ -179,6 +186,15 @@ defmodule Commonplace.Chat.Actions do
     case Keyword.get(opts, key) do
       nil -> {:error, "missing required opt: #{inspect(key)}"}
       "" -> {:error, "missing required opt: #{inspect(key)}"}
+      _ -> :ok
+    end
+  end
+
+  # CX-00ze: reject empty-after-trim strings — accepts non-blank
+  # content, rejects "" / "   " / "\t\n" / etc.
+  defp require_non_blank(value, label) when is_binary(value) do
+    case String.trim(value) do
+      "" -> {:error, "#{label} is empty or whitespace-only"}
       _ -> :ok
     end
   end

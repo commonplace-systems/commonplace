@@ -83,25 +83,31 @@ defmodule CommonplaceWebWeb.ChatRoomLive do
   end
 
   @impl true
-  def handle_event("post_message", %{"text" => text}, socket)
-      when is_binary(text) and text != "" do
-    %{room: room, room_name: room_name} = socket.assigns
+  def handle_event("post_message", %{"text" => text}, socket) when is_binary(text) do
+    # CX-00ze: trim before checking empty so whitespace-only submits
+    # ("   " or "\t\n") are no-ops, matching the empty-string case.
+    trimmed = String.trim(text)
 
-    Actions.post_message(room.messages_uuid, text,
-      room: room_name,
-      signer_id: @placeholder_signer_id,
-      author_path: @placeholder_author_path,
-      messages_log_uuid: room.log_uuid
-    )
+    if trimmed == "" do
+      {:noreply, socket}
+    else
+      %{room: room, room_name: room_name} = socket.assigns
 
-    # The commits PubSub topic will re-trigger handle_info; we don't
-    # need to re-render here. But returning :noreply with reset form is
-    # the natural shape for the composer.
-    {:noreply, socket}
+      Actions.post_message(room.messages_uuid, trimmed,
+        room: room_name,
+        signer_id: @placeholder_signer_id,
+        author_path: @placeholder_author_path,
+        messages_log_uuid: room.log_uuid
+      )
+
+      # The commits PubSub topic will re-trigger handle_info; we don't
+      # need to re-render here.
+      {:noreply, socket}
+    end
   end
 
   def handle_event("post_message", _params, socket) do
-    # Empty submit — ignore.
+    # No "text" key in payload — ignore.
     {:noreply, socket}
   end
 
