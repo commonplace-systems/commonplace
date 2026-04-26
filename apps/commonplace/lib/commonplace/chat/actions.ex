@@ -31,7 +31,8 @@ defmodule Commonplace.Chat.Actions do
   alias Commonplace.Chat.Messages
   alias Commonplace.Dataflow.Magenta
   alias Commonplace.Store.CommitStoreClient
-  alias Commonplace.Tree.DocBuilder
+  alias Commonplace.Tree.{DocBuilder, Schema, Walk}
+  alias Commonplace.Workspace
 
   @doc """
   Post a new message to the `_messages` doc identified by
@@ -274,5 +275,114 @@ defmodule Commonplace.Chat.Actions do
           {:error, _} -> :ok
         end
     end
+  end
+
+  # === CX-icc2 (sub-bead i of CX-8cw5) =====================================
+  # invoke_view_action context auto-resolution. Per consensus #3115 → #3135:
+  # shape (a) hardcoded resolvers, optional view_path, caller-wins, explicit
+  # error on bad view_path (not silent fallback).
+  #
+  # Three branches per docstring:
+  #   * view_path absent → {:ok, args_unchanged}
+  #   * view_path supplied + clean → {:ok, args_with_substrate-derived-fields}
+  #   * view_path supplied + bad   → {:error, reason}
+  #
+  # Substrate-derived fields for chat actions: messages_uuid, messages_log_uuid,
+  # room (basename of parent dir), author_path (from session.presence_path).
+  # ==========================================================================
+
+  @doc """
+  Resolve substrate-derived args for the named view action. Caller-supplied
+  args win. Returns `{:ok, fully_resolved_args}` or `{:error, reason}`.
+
+  Chat actions (`post_message`, `edit_message`, `delete_message`) resolve
+  `messages_uuid` / `messages_log_uuid` / `room` / `author_path`. Unknown
+  actions pass args through unchanged (so future view types can carry
+  their own resolver clauses without affecting chat).
+  """
+  def resolve_args(action, args, view_uuid, context)
+
+  def resolve_args(action, args, view_uuid, context)
+      when action in ~w(post_message edit_message delete_message) do
+    resolve_messages_doc_action(args, view_uuid, context)
+  end
+
+  def resolve_args(_action, args, _view_uuid, _context), do: {:ok, args}
+
+  @substrate_derived_fields ~w(messages_uuid messages_log_uuid room author_path)
+
+  defp resolve_messages_doc_action(args, _view_uuid, context) do
+    cond do
+      # Fully-explicit args (ChatRoomLive's path) — skip resolution
+      # entirely. Avoids errors when view_path is informational-only
+      # (e.g., legacy callers that supplied view_path before
+      # auto-resolution existed) AND callers don't actually need any
+      # substrate-derived fields.
+      Enum.all?(@substrate_derived_fields, &Map.has_key?(args, &1)) ->
+        {:ok, args}
+
+      # No view_path → no resolution attempted. Caller's args pass
+      # through unchanged; if they're missing required fields, the
+      # dispatcher's existing fetch_arg validation surfaces it.
+      Map.get(context, :view_path) in [nil, ""] ->
+        {:ok, args}
+
+      true ->
+        view_path = Map.get(context, :view_path)
+
+        with {:ok, parent_uuid} <- resolve_parent_dir(view_path),
+             {:ok, messages_uuid} <- resolve_sibling_uuid(parent_uuid, "_messages"),
+             {:ok, log_uuid} <- resolve_sibling_uuid(parent_uuid, "_messages.log") do
+          room_name = view_path |> Path.dirname() |> Path.basename()
+          author_path = Map.get(context, :presence_path)
+
+          resolved =
+            args
+            |> maybe_resolve("messages_uuid", messages_uuid)
+            |> maybe_resolve("messages_log_uuid", log_uuid)
+            |> maybe_resolve("room", room_name)
+            |> maybe_resolve("author_path", author_path)
+
+          {:ok, resolved}
+        else
+          {:error, reason} ->
+            {:error,
+             "auto-resolution failed for view_path #{inspect(view_path)}: #{inspect(reason)}"}
+        end
+    end
+  end
+
+  defp resolve_parent_dir(view_path) do
+    parent_path = Path.dirname(view_path)
+
+    with {:ok, root_uuid} <- Workspace.root_uuid(),
+         loader = &load_schema_for_walk/1,
+         {:ok, parent_uuid} <- Walk.resolve_path(root_uuid, parent_path, loader) do
+      {:ok, parent_uuid}
+    end
+  end
+
+  defp resolve_sibling_uuid(parent_uuid, name) do
+    doc = load_schema_for_walk(parent_uuid)
+
+    case Schema.get_entry(doc, name) do
+      {:ok, entry} -> {:ok, entry.node_id}
+      :error -> {:error, {:no_sibling, name}}
+    end
+  end
+
+  defp load_schema_for_walk(uuid) do
+    case DocBuilder.reconstruct_snapshot(CommitStoreClient, uuid) do
+      {:ok, doc} -> doc
+      :none -> Schema.new_schema()
+    end
+  end
+
+  # Caller-wins maybe_put: only set the key if the resolved value is non-nil
+  # AND the caller didn't already supply it.
+  defp maybe_resolve(args, _key, nil), do: args
+
+  defp maybe_resolve(args, key, value) do
+    if Map.has_key?(args, key), do: args, else: Map.put(args, key, value)
   end
 end

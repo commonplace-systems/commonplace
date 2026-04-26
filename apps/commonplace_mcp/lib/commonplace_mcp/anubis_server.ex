@@ -82,6 +82,12 @@ defmodule Commonplace.MCP.AnubisServer do
           |> Frame.assign(:presence_uuid, Map.get(info, :uuid))
           |> Frame.assign(:mailbox_uuid, Map.get(info, :mailbox_uuid))
           |> Frame.assign(:mailbox_topic, Map.get(info, :mailbox_topic))
+          # CX-9rbc (sub-bead iii of CX-8cw5): expose the agent's bound
+          # name (e.g. "commonplace.bot") so ViewActionDispatch's auto-
+          # resolution can fill author_path without a substrate
+          # reverse-lookup. Substrate-wide value — any future action
+          # needing author identity reads it from frame.assigns.
+          |> Frame.assign(:presence_path, Map.get(info, :name))
 
         nil ->
           # CX-m8xl: presence_starter NOT in :persistent_term — escript
@@ -296,7 +302,11 @@ defmodule Commonplace.MCP.AnubisServer do
     %{
       presence_uuid: frame.assigns[:presence_uuid],
       mailbox_uuid: frame.assigns[:mailbox_uuid],
-      mailbox_topic: frame.assigns[:mailbox_topic]
+      mailbox_topic: frame.assigns[:mailbox_topic],
+      # CX-9rbc: thread the agent's bound name down to Tools.call so
+      # ViewActionDispatch's auto-resolution (CX-icc2) can fill
+      # author_path without a reverse-lookup.
+      presence_path: frame.assigns[:presence_path]
     }
   end
 

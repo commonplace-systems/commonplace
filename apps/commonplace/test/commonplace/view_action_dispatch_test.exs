@@ -27,11 +27,15 @@ defmodule Commonplace.ViewActionDispatchTest do
 
     test "post_message dispatches to Chat.Actions and returns tree_mutation",
          %{messages_uuid: muuid} do
+      # CX-icc2: view_path omitted intentionally — this test exercises
+      # dispatcher routing with fully-explicit args (the ChatRoomLive
+      # path), not auto-resolution. With view_path absent, the resolver
+      # is a no-op and args pass through unchanged.
       context = %{
-        view_path: "chat/general",
         view_uuid: "view-uuid-stub",
         args: %{
           "messages_uuid" => muuid,
+          "messages_log_uuid" => "log-stub",
           "room" => "general",
           "author_path" => "alice.usr",
           "text" => "hello from dispatcher"
