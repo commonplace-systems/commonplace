@@ -40,7 +40,13 @@ defmodule CommonplaceWebWeb.FeatureCase do
   setup _tags do
     # Mirror the wiki_live_test.exs CommitStore-repoint pattern so each
     # feature test runs against a fresh workspace.
-    prior_data_dir = Application.get_env(:commonplace, :data_dir)
+    #
+    # Restore to the test-config default ("tmp/test_data") in on_exit —
+    # NOT a captured prior_data_dir. Captured-prior is racy under
+    # parallel async:false execution (test A captures prior=tmp/test_data
+    # then sets scratch1; test B's setup runs before A's on_exit and
+    # captures prior=scratch1; B's on_exit then restores to a deleted
+    # scratch dir, leaving production CommitStore dead).
     dir = Path.join(System.tmp_dir!(), "cp_feature_#{:rand.uniform(1_000_000_000)}")
     File.mkdir_p!(dir)
     Application.put_env(:commonplace, :data_dir, dir)
@@ -71,10 +77,10 @@ defmodule CommonplaceWebWeb.FeatureCase do
     on_exit(fn ->
       _ = Supervisor.terminate_child(sup, Commonplace.Store.CommitStore)
       _ = Supervisor.delete_child(sup, Commonplace.Store.CommitStore)
-      Application.put_env(:commonplace, :data_dir, prior_data_dir)
+      Application.put_env(:commonplace, :data_dir, "tmp/test_data")
 
-      _ =
-        Supervisor.start_child(sup, {Commonplace.Store.CommitStore, data_dir: prior_data_dir})
+      {:ok, _pid} =
+        Supervisor.start_child(sup, {Commonplace.Store.CommitStore, data_dir: "tmp/test_data"})
 
       File.rm_rf!(dir)
       Commonplace.Tree.DocCache.clear()

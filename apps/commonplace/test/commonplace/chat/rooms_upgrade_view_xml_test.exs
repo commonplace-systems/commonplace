@@ -20,7 +20,9 @@ defmodule Commonplace.Chat.RoomsUpgradeViewXmlTest do
   alias Commonplace.Tree.{DocBuilder, Schema}
 
   setup do
-    prior_data_dir = Application.get_env(:commonplace, :data_dir)
+    # Restore to test-config default ("tmp/test_data") in on_exit — see
+    # chat_view_compute_supervisor_test.exs for why captured-prior is
+    # racy under parallel async:false execution.
     dir = Path.join(System.tmp_dir!(), "cp_rooms_upgrade_#{:rand.uniform(1_000_000_000)}")
     File.mkdir_p!(dir)
     Application.put_env(:commonplace, :data_dir, dir)
@@ -37,10 +39,10 @@ defmodule Commonplace.Chat.RoomsUpgradeViewXmlTest do
     on_exit(fn ->
       _ = Supervisor.terminate_child(sup, Commonplace.Store.CommitStore)
       _ = Supervisor.delete_child(sup, Commonplace.Store.CommitStore)
-      Application.put_env(:commonplace, :data_dir, prior_data_dir)
+      Application.put_env(:commonplace, :data_dir, "tmp/test_data")
 
-      _ =
-        Supervisor.start_child(sup, {Commonplace.Store.CommitStore, data_dir: prior_data_dir})
+      {:ok, _pid} =
+        Supervisor.start_child(sup, {Commonplace.Store.CommitStore, data_dir: "tmp/test_data"})
 
       Commonplace.Tree.DocCache.clear()
       File.rm_rf!(dir)

@@ -20,10 +20,10 @@ defmodule Commonplace.MCP.Tools.InvokeViewActionChatIntegrationTest do
   alias Commonplace.Tree.{DocBuilder, Schema}
 
   setup do
-    # Per the actions_resolve_args_test pattern: per-test scratch dir +
-    # CommitStore restart so workspace state doesn't leak.
-    prior_data_dir = Application.get_env(:commonplace, :data_dir)
-
+    # Per-test scratch dir + CommitStore restart. Restore to the
+    # test-config default ("tmp/test_data") in on_exit — captured-prior
+    # is racy under parallel async:false execution (see
+    # chat_view_compute_supervisor_test.exs).
     dir =
       Path.join(System.tmp_dir!(), "cp_invoke_view_action_chat_#{:rand.uniform(1_000_000_000)}")
 
@@ -42,12 +42,12 @@ defmodule Commonplace.MCP.Tools.InvokeViewActionChatIntegrationTest do
     on_exit(fn ->
       _ = Supervisor.terminate_child(sup, Commonplace.Store.CommitStore)
       _ = Supervisor.delete_child(sup, Commonplace.Store.CommitStore)
-      Application.put_env(:commonplace, :data_dir, prior_data_dir)
+      Application.put_env(:commonplace, :data_dir, "tmp/test_data")
 
-      _ =
+      {:ok, _pid} =
         Supervisor.start_child(
           sup,
-          {Commonplace.Store.CommitStore, data_dir: prior_data_dir}
+          {Commonplace.Store.CommitStore, data_dir: "tmp/test_data"}
         )
 
       Commonplace.Tree.DocCache.clear()

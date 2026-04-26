@@ -18,11 +18,15 @@ defmodule Commonplace.Chat.ChatViewComputeSupervisorTest do
   alias Commonplace.Tree.DocBuilder
 
   setup do
-    # Per-test scratch dir + CommitStore restart, mirrors
-    # actions_resolve_args_test pattern. Ensures clean state for the
-    # supervisor's lazy lifecycle assertions.
-    prior_data_dir = Application.get_env(:commonplace, :data_dir)
-
+    # Per-test scratch dir + CommitStore restart. Restore to the
+    # test-config default ("tmp/test_data") in on_exit — NOT a captured
+    # prior_data_dir. Captured-prior is racy under parallel async:false
+    # test execution (CI runs hotter than local): test A captures
+    # prior=tmp/test_data + sets scratch1; test B's setup runs before
+    # A's on_exit + captures prior=scratch1; B's on_exit then restores
+    # to a deleted scratch dir, leaving production CommitStore dead for
+    # subsequent tests. Restoring to the static config default avoids
+    # the chain.
     dir =
       Path.join(System.tmp_dir!(), "cp_chat_view_compute_sup_#{:rand.uniform(1_000_000_000)}")
 
@@ -43,12 +47,12 @@ defmodule Commonplace.Chat.ChatViewComputeSupervisorTest do
       ChatViewComputeSupervisor.reset()
       _ = Supervisor.terminate_child(sup, Commonplace.Store.CommitStore)
       _ = Supervisor.delete_child(sup, Commonplace.Store.CommitStore)
-      Application.put_env(:commonplace, :data_dir, prior_data_dir)
+      Application.put_env(:commonplace, :data_dir, "tmp/test_data")
 
-      _ =
+      {:ok, _pid} =
         Supervisor.start_child(
           sup,
-          {Commonplace.Store.CommitStore, data_dir: prior_data_dir}
+          {Commonplace.Store.CommitStore, data_dir: "tmp/test_data"}
         )
 
       Commonplace.Tree.DocCache.clear()
