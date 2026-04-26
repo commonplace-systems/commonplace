@@ -73,13 +73,24 @@ defmodule Commonplace.ViewCompute do
   alias Commonplace.Document.ContentType
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.DocBuilder
+  alias Commonplace.View.ComputeSpec
 
-  defstruct [:source_uuid, :target_uuid, :compute_fn, :name, :router, :store, :last_computed_at]
+  defstruct [
+    :source_uuid,
+    :target_uuid,
+    :compute_fn,
+    :spec_uuid,
+    :name,
+    :router,
+    :store,
+    :last_computed_at
+  ]
 
   @type t :: %__MODULE__{
           source_uuid: String.t(),
           target_uuid: String.t(),
-          compute_fn: (String.t() -> String.t()),
+          compute_fn: (term() -> term()),
+          spec_uuid: String.t() | nil,
           name: atom() | nil,
           router: GenServer.server(),
           store: GenServer.server(),
@@ -120,28 +131,77 @@ defmodule Commonplace.ViewCompute do
   def init(opts) do
     source_uuid = Keyword.fetch!(opts, :source_uuid)
     target_uuid = Keyword.fetch!(opts, :target_uuid)
-    compute_fn = Keyword.fetch!(opts, :compute_fn)
     name = Keyword.get(opts, :name)
     router = Keyword.get(opts, :router, CommandRouter)
     store = Keyword.get(opts, :store, CommitStoreClient)
 
-    CPPubSub.subscribe_blue(source_uuid)
+    # CX-wxbp (M5 sub-bead iii): mutually-exclusive :compute_fn vs
+    # :spec_uuid opts. Per round-1 Q5: validate exactly one supplied;
+    # round-1 audit (I): malformed specs surface BEFORE compute-time
+    # via ComputeSpec.validate.
+    compute_fn_opt = Keyword.get(opts, :compute_fn)
+    spec_uuid_opt = Keyword.get(opts, :spec_uuid)
 
-    state = %__MODULE__{
-      source_uuid: source_uuid,
-      target_uuid: target_uuid,
-      compute_fn: compute_fn,
-      name: name,
-      router: router,
-      store: store
-    }
+    with {:ok, {compute_fn, spec_uuid}} <-
+           resolve_compute(compute_fn_opt, spec_uuid_opt, opts, store) do
+      CPPubSub.subscribe_blue(source_uuid)
+      if spec_uuid, do: CPPubSub.subscribe_blue(spec_uuid)
 
-    # Fire an initial recompute asynchronously so the target reflects
-    # the current source state at startup. Use cast-to-self rather than
-    # synchronous work in init/1 to avoid blocking start_link.
-    send(self(), :initial_compute)
+      state = %__MODULE__{
+        source_uuid: source_uuid,
+        target_uuid: target_uuid,
+        compute_fn: compute_fn,
+        spec_uuid: spec_uuid,
+        name: name,
+        router: router,
+        store: store
+      }
 
-    {:ok, state}
+      send(self(), :initial_compute)
+      {:ok, state}
+    else
+      {:error, reason} -> {:stop, reason}
+    end
+  end
+
+  # Resolve the compute_fn from opts. Three branches:
+  #   :compute_fn supplied (legacy direct-closure callers)
+  #   :spec_uuid supplied — read + parse + validate spec; build closure
+  #   neither / both — error
+  defp resolve_compute(nil, nil, _opts, _store) do
+    {:error, "must supply exactly one of :compute_fn or :spec_uuid"}
+  end
+
+  defp resolve_compute(compute_fn, nil, _opts, _store) when is_function(compute_fn, 1) do
+    {:ok, {compute_fn, nil}}
+  end
+
+  defp resolve_compute(nil, spec_uuid, opts, store) when is_binary(spec_uuid) do
+    spec_context = Keyword.get(opts, :spec_context, %{})
+
+    with {:ok, content} <- read_spec_content(store, spec_uuid),
+         {:ok, spec} <- ComputeSpec.parse(content),
+         :ok <- ComputeSpec.validate(spec) do
+      compute_fn = fn raw_input -> ComputeSpec.interpret(spec, raw_input, spec_context) end
+      {:ok, {compute_fn, spec_uuid}}
+    end
+  end
+
+  defp resolve_compute(_, _, _, _) do
+    {:error, "must supply exactly one of :compute_fn or :spec_uuid (not both)"}
+  end
+
+  defp read_spec_content(store, spec_uuid) do
+    case DocBuilder.reconstruct_snapshot(store, spec_uuid) do
+      {:ok, doc} ->
+        case ContentType.get_content(doc) do
+          nil -> {:error, "spec doc #{spec_uuid} is empty"}
+          content -> {:ok, content}
+        end
+
+      :none ->
+        {:error, "spec doc #{spec_uuid} not found"}
+    end
   end
 
   @impl true
@@ -154,9 +214,24 @@ defmodule Commonplace.ViewCompute do
     {:noreply, do_compute(state)}
   end
 
+  # CX-wxbp (M5 sub-bead iii): restart-on-spec-commit. When the spec
+  # doc receives a new commit (operator edits the chat compute spec),
+  # terminate this instance — the supervisor restarts it which re-reads
+  # + re-parses + re-validates the new spec. Simpler than hot-reloading
+  # the closure (round-1 Q2: restart-the-instance).
+  @impl true
+  def handle_info({:commit, spec_uuid, _commit_id, _meta}, %{spec_uuid: spec_uuid} = state)
+      when is_binary(spec_uuid) do
+    Logger.debug(fn ->
+      "ViewCompute #{inspect(state.name || state.source_uuid)}: spec doc #{spec_uuid} updated — restarting"
+    end)
+
+    {:stop, :normal, state}
+  end
+
   @impl true
   def handle_info({:commit, _other_uuid, _commit_id, _meta}, state) do
-    # Not our source — ignore.
+    # Not our source / not our spec — ignore.
     {:noreply, state}
   end
 

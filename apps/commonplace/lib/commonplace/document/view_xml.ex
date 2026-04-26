@@ -44,7 +44,8 @@ defmodule Commonplace.Document.ViewXml do
     defstruct tag: :unknown, attrs: %{}, children: []
   end
 
-  @known_tags ~w(view entity body text field list action arg include provenance raw args)a
+  @known_tags ~w(view entity body text field list action arg include provenance raw args
+                 compute-spec pipeline step chains chain function)a
 
   @doc """
   Parse a view XML string into a `%Node{}` tree rooted at the top element.
