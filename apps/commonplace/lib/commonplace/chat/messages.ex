@@ -92,134 +92,27 @@ defmodule Commonplace.Chat.Messages do
     |> Enum.map(&Jason.decode!/1)
   end
 
+  # CX-q15o M2: chat's chain semantics declared as data and consumed by
+  # the substrate-tier `Commonplace.Materialize` primitive. Mechanical
+  # M3 migration: delete this attr; XML reader fills the same shape.
+  @chain_rules %{
+    chains: [
+      %{field: "edit_of", semantics: :latest_replaces},
+      %{field: "tombstone_of", semantics: :marks_deleted}
+    ]
+  }
+
   @doc """
   Walk edit/tombstone chains to produce the current rendered view —
   one map per ORIGINAL message (entries with no `edit_of` and no
-  `tombstone_of`), with `text` set to the chain tip's text,
+  `tombstone_of`), with chain-tip's text replacing the original's,
   `edited?` / `edited_at` / `deleted?` flags computed.
 
-  See module docstring for chain-resolution semantics.
+  Thin wrapper around `Commonplace.Materialize.materialize/2` —
+  chat-tier chain semantics live in `@chain_rules` (data, not code);
+  substrate primitive interprets them.
   """
   def materialize(%Doc{} = doc) do
-    entries = list(doc)
-    indexed = Enum.with_index(entries)
-    by_id = Map.new(indexed, fn {entry, idx} -> {entry["id"], {entry, idx}} end)
-
-    # Compute root_of/1 for every entry: walk edit_of/tombstone_of links
-    # until landing on an entry that is itself an original (no chain
-    # pointer) and exists in by_id. Entries whose chain doesn't terminate
-    # at a known original are orphans; they produce no root.
-    roots =
-      Enum.reduce(indexed, %{}, fn {entry, _idx}, acc ->
-        case resolve_root(entry, by_id, MapSet.new()) do
-          {:ok, root_id} -> Map.put(acc, entry["id"], root_id)
-          :orphan -> acc
-        end
-      end)
-
-    # Group every entry's id by the root it resolves to. Originals also
-    # appear in the group keyed by their own id so the chain-tip pick
-    # has the original entry as a fallback when no edits exist.
-    grouped =
-      Enum.reduce(indexed, %{}, fn {entry, idx}, acc ->
-        case Map.get(roots, entry["id"]) do
-          nil ->
-            acc
-
-          root_id ->
-            Map.update(acc, root_id, [{entry, idx}], &[{entry, idx} | &1])
-        end
-      end)
-
-    # Emit one rendered map per original, in original-array-position
-    # order so the thread reads top-to-bottom in the order originals
-    # were posted.
-    indexed
-    |> Enum.filter(fn {entry, _} -> original?(entry) end)
-    |> Enum.map(fn {original, _idx} ->
-      chain = Map.get(grouped, original["id"], []) |> Enum.sort_by(fn {_, idx} -> idx end)
-      render(original, chain)
-    end)
-  end
-
-  # --- Private ---
-
-  defp original?(entry) do
-    not Map.has_key?(entry, "edit_of") and not Map.has_key?(entry, "tombstone_of")
-  end
-
-  defp resolve_root(entry, by_id, seen) do
-    cond do
-      MapSet.member?(seen, entry["id"]) ->
-        # Cycle — treat as orphan to avoid infinite loop.
-        :orphan
-
-      original?(entry) ->
-        if Map.has_key?(by_id, entry["id"]), do: {:ok, entry["id"]}, else: :orphan
-
-      true ->
-        target_id = entry["edit_of"] || entry["tombstone_of"]
-
-        case Map.get(by_id, target_id) do
-          {parent, _idx} ->
-            resolve_root(parent, by_id, MapSet.put(seen, entry["id"]))
-
-          nil ->
-            :orphan
-        end
-    end
-  end
-
-  defp render(original, chain) do
-    edits =
-      chain
-      |> Enum.filter(fn {e, _} -> Map.has_key?(e, "edit_of") end)
-
-    tombstones =
-      chain
-      |> Enum.filter(fn {e, _} -> Map.has_key?(e, "tombstone_of") end)
-
-    deleted? = tombstones != []
-    edited? = edits != []
-
-    # Latest edit by array position wins. If no edits, text comes from
-    # the original. If a partial-chain edit drops `text` (defensive — a
-    # malformed actor could omit it), fall back to the previous entry.
-    text =
-      case edits do
-        [] ->
-          Map.get(original, "text")
-
-        _ ->
-          {edit, _} = Enum.max_by(edits, fn {_, idx} -> idx end)
-          Map.get(edit, "text") || Map.get(original, "text")
-      end
-
-    edited_at =
-      case edits do
-        [] ->
-          nil
-
-        _ ->
-          {edit, _} = Enum.max_by(edits, fn {_, idx} -> idx end)
-          Map.get(edit, "ts")
-      end
-
-    base = %{
-      "id" => original["id"],
-      "text" => text,
-      "deleted?" => deleted?,
-      "edited?" => edited?
-    }
-
-    base =
-      Enum.reduce(["ts", "author_signer_id", "author_path", "reply_to"], base, fn key, acc ->
-        case Map.get(original, key) do
-          nil -> acc
-          value -> Map.put(acc, key, value)
-        end
-      end)
-
-    if edited_at, do: Map.put(base, "edited_at", edited_at), else: base
+    Commonplace.Materialize.materialize(list(doc), @chain_rules)
   end
 end
