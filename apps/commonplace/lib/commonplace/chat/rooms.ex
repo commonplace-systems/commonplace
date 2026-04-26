@@ -32,12 +32,11 @@ defmodule Commonplace.Chat.Rooms do
   two trigger paths to maintain).
   """
 
-  alias Commonplace.Chat.{ChatViewBuilder, ChatViewCompute, Messages}
+  alias Commonplace.Chat.{ChatViewBuilder, ChatViewCompute, Messages, TemplateBootstrap}
   alias Commonplace.CommandRouter
-  alias Commonplace.Document.ContentType
   alias Commonplace.Materialize
   alias Commonplace.Store.CommitStoreClient
-  alias Commonplace.Tree.{DocBuilder, Lookup, Schema}
+  alias Commonplace.Tree.{DocBuilder, Fork, Lookup, Schema}
 
   @chat_dir "chat"
 
@@ -45,31 +44,88 @@ defmodule Commonplace.Chat.Rooms do
   Create a chat room under `/chat/{room_name}/`. Returns the UUIDs of
   the room directory and all canonical sub-docs.
 
+  CX-dvba (M4 sub-bead iii — keystone): pure substrate operation. Forks
+  the chat-room template at `/chat/__template/` via
+  `Tree.Fork.fork_directory/2`; customizes `_view.xml` with the new
+  room name; adds the room to the `/chat` schema. Six lines of
+  orchestration over substrate primitives.
+
+  Lazy template-ensure: `TemplateBootstrap.ensure_template/2` runs at
+  app boot AND idempotently here so test/CLI environments without a
+  boot-fired ensure get a working template on first room create.
+
   Optional opts:
     * `:store` — CommitStore name (defaults to `CommitStoreClient`)
 
   Errors:
     * `{:error, :exists}` — room name is already taken under `/chat/`
     * `{:error, :invalid_name}` — name fails the path-safe check
-      (empty, leading dot, contains slash)
+      (empty, leading dot/underscore, contains slash)
   """
   def create(root_uuid, room_name, opts \\ [])
       when is_binary(root_uuid) and is_binary(room_name) and is_list(opts) do
     store = Keyword.get(opts, :store, CommitStoreClient)
+    template_path = "#{@chat_dir}/__template"
 
     with :ok <- validate_name(room_name),
-         {:ok, chat_dir_uuid} <- ensure_chat_dir(root_uuid, store),
-         :ok <- ensure_not_exists(chat_dir_uuid, room_name, store) do
-      {room_dir_uuid, sub_docs} = mint_room(room_name, store)
-
-      # Add the room dir to the /chat schema.
-      chat_schema = load_schema(chat_dir_uuid, store)
-      chat_schema = Schema.add_directory(chat_schema, room_name, room_dir_uuid)
-      update = Yelixer.Encoding.encode_update(chat_schema)
-      CommitStoreClient.create_chained_commit(store, chat_dir_uuid, update)
+         :ok <- TemplateBootstrap.ensure_template(root_uuid, opts),
+         {:ok, chat_dir_uuid} <- Lookup.lookup_doc_by_path(root_uuid, @chat_dir, opts),
+         :ok <- ensure_not_exists(chat_dir_uuid, room_name, store),
+         {:ok, template_uuid} <- Lookup.lookup_doc_by_path(root_uuid, template_path, opts) do
+      room_dir_uuid = Fork.fork_directory(template_uuid, store)
+      {:ok, sub_docs} = lookup_room_children(room_dir_uuid, opts)
+      :ok = customize_view_xml(sub_docs.view_uuid, room_name, store)
+      :ok = add_to_chat_schema(chat_dir_uuid, room_name, room_dir_uuid, store)
 
       {:ok, Map.put(sub_docs, :room_dir_uuid, room_dir_uuid)}
     end
+  end
+
+  defp lookup_room_children(room_dir_uuid, opts) do
+    with {:ok, children} <-
+           Lookup.extract_named_children(
+             room_dir_uuid,
+             ["_messages", "_reactions", "_messages.log", "_view.xml"],
+             opts
+           ) do
+      {:ok,
+       %{
+         messages_uuid: children["_messages"],
+         reactions_uuid: children["_reactions"],
+         log_uuid: children["_messages.log"],
+         view_uuid: children["_view.xml"]
+       }}
+    end
+  end
+
+  # Direct store-aware write so create/3's per-test :store opts thread
+  # through. CommandRouter.write (used by upgrade_view_xml) routes to
+  # the production-named CommitStore — fine for runtime, but tests
+  # using a separate named CommitStore need the explicit store
+  # parameter.
+  defp customize_view_xml(view_uuid, room_name, store) do
+    rendered = ChatViewBuilder.build_view_xml([], room_name)
+
+    {:ok, doc} = DocBuilder.reconstruct_snapshot(store, view_uuid)
+    current = Commonplace.Document.ContentType.get_content(doc) || ""
+    length = String.length(current)
+
+    doc =
+      doc
+      |> Commonplace.Document.ContentType.delete_text(0, length)
+      |> Commonplace.Document.ContentType.insert_text(0, rendered)
+
+    update = Yelixer.Encoding.encode_update(doc)
+    CommitStoreClient.create_chained_commit(store, view_uuid, update)
+    :ok
+  end
+
+  defp add_to_chat_schema(chat_dir_uuid, room_name, room_dir_uuid, store) do
+    chat_schema = load_schema(chat_dir_uuid, store)
+    chat_schema = Schema.add_directory(chat_schema, room_name, room_dir_uuid)
+    update = Yelixer.Encoding.encode_update(chat_schema)
+    CommitStoreClient.create_chained_commit(store, chat_dir_uuid, update)
+    :ok
   end
 
   @doc """
@@ -160,30 +216,6 @@ defmodule Commonplace.Chat.Rooms do
     end
   end
 
-  # Mint /chat directory if missing; return its uuid.
-  defp ensure_chat_dir(root_uuid, store) do
-    root_doc = load_schema(root_uuid, store)
-
-    case Schema.get_entry(root_doc, @chat_dir) do
-      {:ok, entry} ->
-        {:ok, entry.node_id}
-
-      :error ->
-        chat_dir_uuid = UUID.uuid4()
-        chat_dir_schema = Schema.new_schema()
-        update = Yelixer.Encoding.encode_update(chat_dir_schema)
-        CommitStoreClient.create_chained_commit(store, chat_dir_uuid, update)
-
-        # Reload root and add the /chat entry.
-        root_doc = load_schema(root_uuid, store)
-        root_doc = Schema.add_directory(root_doc, @chat_dir, chat_dir_uuid)
-        update = Yelixer.Encoding.encode_update(root_doc)
-        CommitStoreClient.create_chained_commit(store, root_uuid, update)
-
-        {:ok, chat_dir_uuid}
-    end
-  end
-
   defp ensure_not_exists(chat_dir_uuid, room_name, store) do
     chat_doc = load_schema(chat_dir_uuid, store)
 
@@ -191,82 +223,6 @@ defmodule Commonplace.Chat.Rooms do
       :error -> :ok
       {:ok, _} -> {:error, :exists}
     end
-  end
-
-  # Mint room directory + all sub-docs + room schema. Returns
-  # {room_dir_uuid, %{messages_uuid, reactions_uuid, log_uuid, view_uuid}}.
-  defp mint_room(room_name, store) do
-    messages_uuid = mint_messages_doc(store)
-    reactions_uuid = mint_reactions_doc(store)
-    log_uuid = mint_log_doc(store)
-    view_uuid = mint_view_doc(room_name, store)
-
-    room_dir_uuid = UUID.uuid4()
-    room_schema = Schema.new_schema()
-    room_schema = Schema.add_file(room_schema, "_messages", messages_uuid)
-    room_schema = Schema.add_file(room_schema, "_reactions", reactions_uuid)
-    room_schema = Schema.add_file(room_schema, "_messages.log", log_uuid)
-    room_schema = Schema.add_file(room_schema, "_view.xml", view_uuid)
-    update = Yelixer.Encoding.encode_update(room_schema)
-    CommitStoreClient.create_chained_commit(store, room_dir_uuid, update)
-
-    {room_dir_uuid,
-     %{
-       messages_uuid: messages_uuid,
-       reactions_uuid: reactions_uuid,
-       log_uuid: log_uuid,
-       view_uuid: view_uuid
-     }}
-  end
-
-  defp mint_messages_doc(store) do
-    uuid = UUID.uuid4()
-    doc = Messages.new()
-    update = Yelixer.Encoding.encode_update(doc)
-    CommitStoreClient.create_chained_commit(store, uuid, update)
-    uuid
-  end
-
-  # Reactions live in a top-level YMap with composite-key boolean values
-  # — the (β-revised) shape from chat-room.md a5f3f5e §Reactions.
-  # CX-0trq: wrapped in a ContentType :map envelope so `cat` returns
-  # the keyspace as a map (introspection-friendly) and the doc
-  # self-describes via _root metadata. The composite-key contents are
-  # unchanged.
-  defp mint_reactions_doc(store) do
-    uuid = UUID.uuid4()
-    doc = Yelixer.Doc.new()
-    doc = ContentType.create(doc, :map, "_reactions")
-    update = Yelixer.Encoding.encode_update(doc)
-    CommitStoreClient.create_chained_commit(store, uuid, update)
-    uuid
-  end
-
-  # Red-channel onramp target. Same shape as RedLog's "events" YArray.
-  defp mint_log_doc(store) do
-    uuid = UUID.uuid4()
-    doc = Commonplace.Dataflow.RedLog.new(uuid, store).doc
-    update = Yelixer.Encoding.encode_update(doc)
-    CommitStoreClient.create_chained_commit(store, uuid, update)
-    uuid
-  end
-
-  # CX-tb7s (M3 sub-bead v): initial _view.xml shape comes from
-  # ChatViewBuilder — single source of truth for the chat view-XML.
-  # ChatViewCompute will overwrite this with materialized content on
-  # first message, but the initial shape is already M3-canonical so
-  # workspace claude reading the doc before any post sees the same
-  # vocabulary.
-  defp mint_view_doc(room_name, store) do
-    uuid = UUID.uuid4()
-    rendered = ChatViewBuilder.build_view_xml([], room_name)
-
-    doc = Yelixer.Doc.new()
-    doc = ContentType.create(doc, :text, "_view.xml")
-    doc = ContentType.insert_text(doc, 0, rendered)
-    update = Yelixer.Encoding.encode_update(doc)
-    CommitStoreClient.create_chained_commit(store, uuid, update)
-    uuid
   end
 
   defp load_schema(uuid, store) do
