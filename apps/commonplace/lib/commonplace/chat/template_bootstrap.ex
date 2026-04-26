@@ -97,12 +97,31 @@ defmodule Commonplace.Chat.TemplateBootstrap do
     chat_doc = load_schema(chat_dir_uuid, store)
 
     case Schema.get_entry(chat_doc, @template_name) do
-      {:ok, _entry} ->
-        # Idempotent: template already minted, no-op.
-        :ok
+      {:ok, entry} ->
+        # CX-qbhb (M5 sub-bead i): existing template may be pre-M5 and
+        # lack the _compute spec doc. Migrate forward by adding _compute
+        # if missing. Idempotent: if _compute already there, no-op.
+        ensure_compute_in_template(entry.node_id, store)
 
       :error ->
         mint_template(chat_dir_uuid, store)
+    end
+  end
+
+  defp ensure_compute_in_template(template_dir_uuid, store) do
+    template_doc = load_schema(template_dir_uuid, store)
+
+    case Schema.get_entry(template_doc, "_compute") do
+      {:ok, _entry} ->
+        :ok
+
+      :error ->
+        compute_uuid = mint_compute_doc(store)
+        template_doc = load_schema(template_dir_uuid, store)
+        template_doc = Schema.add_file(template_doc, "_compute", compute_uuid)
+        update = Yelixer.Encoding.encode_update(template_doc)
+        CommitStoreClient.create_chained_commit(store, template_dir_uuid, update)
+        :ok
     end
   end
 
@@ -111,6 +130,7 @@ defmodule Commonplace.Chat.TemplateBootstrap do
     reactions_uuid = mint_reactions_doc(store)
     log_uuid = mint_log_doc(store)
     view_uuid = mint_view_doc(store)
+    compute_uuid = mint_compute_doc(store)
 
     template_dir_uuid = UUID.uuid4()
     template_schema = Schema.new_schema()
@@ -118,6 +138,7 @@ defmodule Commonplace.Chat.TemplateBootstrap do
     template_schema = Schema.add_file(template_schema, "_reactions", reactions_uuid)
     template_schema = Schema.add_file(template_schema, "_messages.log", log_uuid)
     template_schema = Schema.add_file(template_schema, "_view.xml", view_uuid)
+    template_schema = Schema.add_file(template_schema, "_compute", compute_uuid)
     update = Yelixer.Encoding.encode_update(template_schema)
     CommitStoreClient.create_chained_commit(store, template_dir_uuid, update)
 
@@ -162,6 +183,39 @@ defmodule Commonplace.Chat.TemplateBootstrap do
     doc = Yelixer.Doc.new()
     doc = ContentType.create(doc, :text, "_view.xml")
     doc = ContentType.insert_text(doc, 0, rendered)
+    update = Yelixer.Encoding.encode_update(doc)
+    CommitStoreClient.create_chained_commit(store, uuid, update)
+    uuid
+  end
+
+  # CX-qbhb (M5 sub-bead i): chat compute spec doc — declarative XML
+  # carrying the chain rules + render-fn reference + pipeline kinds
+  # (held positions #2/#3/#4). Substrate Commonplace.View.ComputeSpec
+  # (sub-bead ii) parses + interprets this. After M5 (iv) ships,
+  # ChatViewCompute Elixir module DELETES; this doc IS the spec.
+  @chat_compute_spec """
+  <compute-spec schema="1">
+    <pipeline>
+      <step kind="decode_json_array"/>
+      <step kind="materialize">
+        <chains>
+          <chain field="edit_of" semantics="latest_replaces"/>
+          <chain field="tombstone_of" semantics="marks_deleted"/>
+        </chains>
+      </step>
+      <step kind="render">
+        <function module="Commonplace.Chat.ChatViewBuilder" name="build_view_xml"/>
+      </step>
+    </pipeline>
+  </compute-spec>
+  """
+
+  defp mint_compute_doc(store) do
+    uuid = UUID.uuid4()
+
+    doc = Yelixer.Doc.new()
+    doc = ContentType.create(doc, :text, "_compute")
+    doc = ContentType.insert_text(doc, 0, @chat_compute_spec)
     update = Yelixer.Encoding.encode_update(doc)
     CommitStoreClient.create_chained_commit(store, uuid, update)
     uuid

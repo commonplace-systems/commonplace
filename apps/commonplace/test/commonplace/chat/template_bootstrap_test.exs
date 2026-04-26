@@ -158,4 +158,68 @@ defmodule Commonplace.Chat.TemplateBootstrapTest do
       assert {:error, :invalid_name} = Rooms.create(root, "__template")
     end
   end
+
+  # CX-qbhb (M5 sub-bead i): _compute spec doc lives in the template
+  # alongside the existing 4 sub-docs. Carries chain rules + render-fn
+  # reference for the substrate ComputeSpec interpreter (sub-bead ii).
+  describe "ensure_template/2 — _compute spec doc (M5 sub-bead i)" do
+    test "mints _compute alongside the existing 4 sub-docs", %{root: root} do
+      assert :ok = TemplateBootstrap.ensure_template(root)
+
+      {:ok, template_entry} = lookup_template(root)
+      template_doc = load_schema(template_entry.node_id)
+
+      assert {:ok, compute_entry} = Schema.get_entry(template_doc, "_compute")
+      assert is_binary(compute_entry.node_id)
+    end
+
+    test "_compute content carries chain rules + render-fn reference (M5 spec shape)",
+         %{root: root} do
+      :ok = TemplateBootstrap.ensure_template(root)
+
+      {:ok, template_entry} = lookup_template(root)
+      template_doc = load_schema(template_entry.node_id)
+      {:ok, compute_entry} = Schema.get_entry(template_doc, "_compute")
+
+      {:ok, compute_doc} = DocBuilder.reconstruct_snapshot(CommitStoreClient, compute_entry.node_id)
+      content = ContentType.get_content(compute_doc) || ""
+
+      # Sub-bead (ii) extends @known_tags for <compute-spec>; for (i) we
+      # just verify the doc parses as ANY ViewXml node.
+      assert {:ok, %ViewXml.Node{}} = ViewXml.parse(content)
+
+      # Chain rules — M2 shape declared in XML
+      assert content =~ ~s(field="edit_of")
+      assert content =~ ~s(semantics="latest_replaces")
+      assert content =~ ~s(field="tombstone_of")
+      assert content =~ ~s(semantics="marks_deleted")
+
+      # Render-fn reference — function-by-name (held #2)
+      assert content =~ "Commonplace.Chat.ChatViewBuilder"
+      assert content =~ "build_view_xml"
+
+      # Pipeline kinds enumerated (held #4)
+      assert content =~ ~s(kind="decode_json_array")
+      assert content =~ ~s(kind="materialize")
+      assert content =~ ~s(kind="render")
+    end
+
+    test "idempotence: re-ensure with existing template + _compute is a no-op",
+         %{root: root} do
+      :ok = TemplateBootstrap.ensure_template(root)
+
+      {:ok, template_entry} = lookup_template(root)
+      template_doc = load_schema(template_entry.node_id)
+      {:ok, compute_entry_1} = Schema.get_entry(template_doc, "_compute")
+
+      :ok = TemplateBootstrap.ensure_template(root)
+
+      {:ok, template_entry_2} = lookup_template(root)
+      template_doc_2 = load_schema(template_entry_2.node_id)
+      {:ok, compute_entry_2} = Schema.get_entry(template_doc_2, "_compute")
+
+      assert compute_entry_2.node_id == compute_entry_1.node_id,
+             "idempotent re-ensure must not re-mint _compute"
+    end
+  end
 end
