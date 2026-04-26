@@ -56,7 +56,8 @@ defmodule Commonplace.Application do
         {DynamicSupervisor, name: Commonplace.Checkout.Supervisor, strategy: :one_for_one},
         {Commonplace.Dataflow.GraphRegistry, []},
         Commonplace.CommandRouter,
-        Commonplace.Chat.OnrampSupervisor
+        Commonplace.Chat.OnrampSupervisor,
+        Commonplace.Chat.ChatViewComputeSupervisor
       ] ++ snapshot_sweeper_children() ++ presence_reaper_children()
 
     opts = [strategy: :one_for_one, name: Commonplace.Supervisor]

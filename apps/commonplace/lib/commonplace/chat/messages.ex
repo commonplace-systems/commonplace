@@ -92,27 +92,23 @@ defmodule Commonplace.Chat.Messages do
     |> Enum.map(&Jason.decode!/1)
   end
 
-  # CX-q15o M2: chat's chain semantics declared as data and consumed by
-  # the substrate-tier `Commonplace.Materialize` primitive. Mechanical
-  # M3 migration: delete this attr; XML reader fills the same shape.
-  @chain_rules %{
-    chains: [
-      %{field: "edit_of", semantics: :latest_replaces},
-      %{field: "tombstone_of", semantics: :marks_deleted}
-    ]
-  }
-
   @doc """
   Walk edit/tombstone chains to produce the current rendered view —
   one map per ORIGINAL message (entries with no `edit_of` and no
   `tombstone_of`), with chain-tip's text replacing the original's,
   `edited?` / `edited_at` / `deleted?` flags computed.
 
-  Thin wrapper around `Commonplace.Materialize.materialize/2` —
-  chat-tier chain semantics live in `@chain_rules` (data, not code);
-  substrate primitive interprets them.
+  CX-7kl3 (M3 sub-bead ii): chain rules live in
+  `Commonplace.Chat.ChatViewCompute.chain_rules/0` (the chat compute
+  spec), not inline here — substrate-pure direction. This delegates to
+  the substrate primitive with the rules from there. Existing callers
+  (ChatRoomLive, integration tests) get the same materialized-list
+  shape they always did.
   """
   def materialize(%Doc{} = doc) do
-    Commonplace.Materialize.materialize(list(doc), @chain_rules)
+    Commonplace.Materialize.materialize(
+      list(doc),
+      Commonplace.Chat.ChatViewCompute.chain_rules()
+    )
   end
 end
