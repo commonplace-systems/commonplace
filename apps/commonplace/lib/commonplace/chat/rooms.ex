@@ -39,14 +39,37 @@ defmodule Commonplace.Chat.Rooms do
 
   @chat_dir "chat"
 
+  # CX-waid (M3 sub-bead iii): <action> declarations carry <arg from="..."/>
+  # children — substrate ArgResolver consumes them, Chat.Actions.resolve_args/4
+  # per-action clauses are gone. Three resolver kinds in play:
+  #   ../{name}        → sibling-doc UUID
+  #   ..               → parent dir basename (room name)
+  #   $session.{key}   → MCP session context lookup
+  # The "args" attribute names caller-supplied scalars (text, message_id),
+  # the <arg> children name substrate-resolved fields.
   @view_xml_template """
   <view schema="1">
     <entity kind="chat-room" name="{{ROOM_NAME}}">
       <body>
         <text format="markdown">Chat room.</text>
-        <action name="post_message" label="Post"/>
-        <action name="edit_message" label="Edit"/>
-        <action name="delete_message" label="Delete"/>
+        <action name="post_message" label="Post" args="text:string">
+          <arg name="messages_uuid" from="../_messages"/>
+          <arg name="messages_log_uuid" from="../_messages.log"/>
+          <arg name="room" from=".."/>
+          <arg name="author_path" from="$session.presence_path"/>
+        </action>
+        <action name="edit_message" label="Edit" args="message_id:string,text:string">
+          <arg name="messages_uuid" from="../_messages"/>
+          <arg name="messages_log_uuid" from="../_messages.log"/>
+          <arg name="room" from=".."/>
+          <arg name="author_path" from="$session.presence_path"/>
+        </action>
+        <action name="delete_message" label="Delete" args="message_id:string">
+          <arg name="messages_uuid" from="../_messages"/>
+          <arg name="messages_log_uuid" from="../_messages.log"/>
+          <arg name="room" from=".."/>
+          <arg name="author_path" from="$session.presence_path"/>
+        </action>
       </body>
     </entity>
   </view>

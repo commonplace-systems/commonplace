@@ -79,7 +79,41 @@ defmodule Commonplace.View.ArgResolver do
     end)
   end
 
+  @doc """
+  Find the `<action name="...">` node anywhere in `view_node`'s subtree
+  and resolve its `<arg>` declarations. Convenience wrapper around
+  `resolve/4` for the dispatcher path (InvokeViewAction +
+  CommonplaceWebWeb.ViewActions) — both walk the full view AST to find
+  the action by name, so factor that here.
+  """
+  @spec resolve_action(
+          ViewXml.Node.t(),
+          String.t(),
+          map(),
+          map(),
+          keyword()
+        ) :: {:ok, map()} | {:error, String.t() | term()}
+  def resolve_action(view_node, action_name, supplied_args, context, opts \\ [])
+      when is_binary(action_name) and is_map(supplied_args) and is_map(context) do
+    case find_action(view_node, action_name) do
+      nil -> {:error, "action #{action_name} not declared in view"}
+      action_node -> resolve(action_node, supplied_args, context, opts)
+    end
+  end
+
   # --- Private ---
+
+  defp find_action(%ViewXml.Node{tag: :action, attrs: %{"name" => name}} = node, name),
+    do: node
+
+  defp find_action(%ViewXml.Node{children: children}, action_name) do
+    Enum.find_value(children, fn
+      %ViewXml.Node{} = child -> find_action(child, action_name)
+      _ -> nil
+    end)
+  end
+
+  defp find_action(_, _), do: nil
 
   defp collect_arg_declarations(%ViewXml.Node{children: children}) do
     Enum.flat_map(children, fn

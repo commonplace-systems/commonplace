@@ -159,15 +159,15 @@ defmodule Commonplace.ViewActionDispatch do
   # room, author_path, text. Optional: reply_to. signer_id and
   # signing_context flow from session context (CX-o3r7 plumbing).
   #
-  # CX-y0qj (sub-bead ii of CX-8cw5): auto-resolve missing args from
-  # view_path + session.presence_path BEFORE fetch_arg validation.
-  # Caller-wins: explicitly supplied args pass through unchanged
-  # (ChatRoomLive's path); MCP minimal-args path gets substrate
-  # resolution.
-  defp do_dispatch("post_message", %{args: args, view_uuid: view_uuid} = context)
+  # CX-waid (M3 sub-bead iii): args arrive PRE-RESOLVED by
+  # `Commonplace.View.ArgResolver` running in InvokeViewAction (MCP
+  # path) and CommonplaceWebWeb.ViewActions (HTML path). The dispatcher
+  # no longer calls Chat.Actions.resolve_args/4 — substrate resolution
+  # happens upstream now. Caller-wins precedence is preserved by
+  # ArgResolver's maybe_put semantics.
+  defp do_dispatch("post_message", %{args: args} = context)
        when is_map(args) do
-    with {:ok, args} <- Commonplace.Chat.Actions.resolve_args("post_message", args, view_uuid, context),
-         {:ok, messages_uuid} <- fetch_arg(args, "messages_uuid"),
+    with {:ok, messages_uuid} <- fetch_arg(args, "messages_uuid"),
          {:ok, room} <- fetch_arg(args, "room"),
          {:ok, author_path} <- fetch_arg(args, "author_path"),
          {:ok, text} <- fetch_arg(args, "text") do
@@ -199,11 +199,11 @@ defmodule Commonplace.ViewActionDispatch do
 
   # CX-ybhb (V3 of CX-p2qp): edit_message routes through
   # Commonplace.Chat.Actions.edit_message. Required args: messages_uuid,
-  # room, author_path, message_id, text.
-  defp do_dispatch("edit_message", %{args: args, view_uuid: view_uuid} = context)
+  # room, author_path, message_id, text. (CX-waid: args pre-resolved
+  # by ArgResolver upstream.)
+  defp do_dispatch("edit_message", %{args: args} = context)
        when is_map(args) do
-    with {:ok, args} <- Commonplace.Chat.Actions.resolve_args("edit_message", args, view_uuid, context),
-         {:ok, messages_uuid} <- fetch_arg(args, "messages_uuid"),
+    with {:ok, messages_uuid} <- fetch_arg(args, "messages_uuid"),
          {:ok, room} <- fetch_arg(args, "room"),
          {:ok, author_path} <- fetch_arg(args, "author_path"),
          {:ok, message_id} <- fetch_arg(args, "message_id"),
@@ -243,11 +243,11 @@ defmodule Commonplace.ViewActionDispatch do
   # CX-ybhb (V3 of CX-p2qp): delete_message routes through
   # Commonplace.Chat.Actions.delete_message. Required args:
   # messages_uuid, room, author_path, message_id. (No `text` — a
-  # tombstone is the act, not new content.)
-  defp do_dispatch("delete_message", %{args: args, view_uuid: view_uuid} = context)
+  # tombstone is the act, not new content.) (CX-waid: args pre-resolved
+  # by ArgResolver upstream.)
+  defp do_dispatch("delete_message", %{args: args} = context)
        when is_map(args) do
-    with {:ok, args} <- Commonplace.Chat.Actions.resolve_args("delete_message", args, view_uuid, context),
-         {:ok, messages_uuid} <- fetch_arg(args, "messages_uuid"),
+    with {:ok, messages_uuid} <- fetch_arg(args, "messages_uuid"),
          {:ok, room} <- fetch_arg(args, "room"),
          {:ok, author_path} <- fetch_arg(args, "author_path"),
          {:ok, message_id} <- fetch_arg(args, "message_id") do

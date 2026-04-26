@@ -43,6 +43,7 @@ defmodule Commonplace.MCP.Tools.InvokeViewAction do
   alias Commonplace.MCP.Tools.Response
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.DocBuilder
+  alias Commonplace.View.ArgResolver
   alias Commonplace.ViewActionDispatch
 
   def descriptor do
@@ -109,12 +110,19 @@ defmodule Commonplace.MCP.Tools.InvokeViewAction do
 
     with :ok <- verify_is_view(content),
          {:ok, view_node} <- parse_view(content),
-         :ok <- verify_action_declared(view_node, action) do
+         :ok <- verify_action_declared(view_node, action),
+         {:ok, resolved_args} <-
+           ArgResolver.resolve_action(
+             view_node,
+             action,
+             extra_args,
+             resolver_context(args, session_context)
+           ) do
       context = %{
         view_path: args["view_path"],
         view_uuid: uuid,
         target: target,
-        args: extra_args,
+        args: resolved_args,
         signer_id: derive_signer_id(session_context),
         signing_context: Map.get(session_context, :signing_context),
         source: "mcp"
@@ -153,6 +161,15 @@ defmodule Commonplace.MCP.Tools.InvokeViewAction do
       {:error, reason} when is_binary(reason) -> {:error, reason}
       {:error, reason} -> {:error, inspect(reason)}
     end
+  end
+
+  # CX-waid (M3 sub-bead iii): build the context map ArgResolver expects.
+  # `:view_path` drives `..` and `../{name}` kinds; session keys (e.g.
+  # `:presence_path`) drive `$session.X` kinds. We forward whatever the
+  # MCP session populated; ArgResolver's `lookup_session_key` handles
+  # both string and atom keys defensively.
+  defp resolver_context(args, session_context) do
+    Map.merge(session_context, %{view_path: args["view_path"]})
   end
 
   # --- Private helpers ---

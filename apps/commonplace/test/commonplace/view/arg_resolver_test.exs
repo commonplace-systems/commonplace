@@ -219,6 +219,51 @@ defmodule Commonplace.View.ArgResolverTest do
     end
   end
 
+  describe "resolve_action/5 — find <action> by name in view AST" do
+    test "finds action by name then resolves via resolve/4" do
+      xml = """
+      <view>
+        <action name="post" args="text:string">
+          <arg name="room" from=".."/>
+        </action>
+        <action name="other"/>
+      </view>
+      """
+
+      {:ok, %ViewXml.Node{tag: :view} = view} = ViewXml.parse(xml)
+      context = %{view_path: "/chat/general/_view.xml"}
+
+      assert {:ok, %{"room" => "general"}} =
+               ArgResolver.resolve_action(view, "post", %{}, context)
+    end
+
+    test "returns {:error, _} when the named action is not declared" do
+      xml = ~s(<view><action name="post"/></view>)
+      {:ok, view} = ViewXml.parse(xml)
+
+      assert {:error, reason} = ArgResolver.resolve_action(view, "missing", %{}, %{})
+      assert reason =~ "missing"
+    end
+
+    test "finds nested action under <entity><body><action>" do
+      xml = """
+      <view>
+        <entity kind="chat-room">
+          <body>
+            <action name="post"><arg name="room" from=".."/></action>
+          </body>
+        </entity>
+      </view>
+      """
+
+      {:ok, view} = ViewXml.parse(xml)
+      context = %{view_path: "/chat/general/_view.xml"}
+
+      assert {:ok, %{"room" => "general"}} =
+               ArgResolver.resolve_action(view, "post", %{}, context)
+    end
+  end
+
   describe "resolve/4 — non-chat synthetic anchor (substrate domain-agnosticism)" do
     @doc """
     A "task list" view declaring `complete_task` action with three
