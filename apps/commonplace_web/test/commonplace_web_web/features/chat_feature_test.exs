@@ -39,18 +39,25 @@ defmodule CommonplaceWebWeb.Features.ChatFeatureTest do
         messages_log_uuid: room.log_uuid
       )
 
+    # CX-lok1 (M3 sub-bead iv): selectors updated for the new generic-
+    # renderer chat shape. Header is the chat_room entity's <header>;
+    # message text lives in <p class="cp-text"> inside an entity--message;
+    # composer is an <input name="text"> inside the post_message form.
     session
     |> visit("/chat/general")
-    |> assert_has(css("h1", text: "#general"))
-    |> assert_has(css(".message-text", text: "hello from claude (via MCP)"))
-    |> assert_has(css("#composer"))
-    |> fill_in(css("input[name='text']"), with: "hello back from the browser")
-    |> click(css("button[type='submit']"))
-    # The phx-submit dispatches → Chat.Actions.post_message → CommitStore
-    # commit → Phoenix.PubSub on commits:{messages_uuid} → handle_info
-    # re-materializes → re-renders. Wallaby waits for the assertion to
-    # become true, so an explicit sleep isn't needed.
-    |> assert_has(css(".message-text", text: "hello back from the browser"))
+    |> assert_has(css(".entity--chat_room"))
+    # The post_message FORM is the composer; its visible Send button + text
+    # input replace the legacy `<form id="composer">`.
+    |> assert_text("Send")
+    |> assert_has(css(".cp-text", text: "hello from claude (via MCP)"))
+    |> fill_in(css(~s(form[phx-value-action="post_message"] input[name="text"])),
+        with: "hello back from the browser"
+      )
+    |> click(css(~s(form[phx-value-action="post_message"] button[type="submit"])))
+    # The phx-submit dispatches → ChatRoomLive handle_event("view_action") →
+    # ArgResolver → ViewActionDispatch → Chat.Actions.post_message → commit
+    # → ViewCompute recompute → view-XML write → commits PubSub → re-render.
+    |> assert_has(css(".cp-text", text: "hello back from the browser"))
     |> take_screenshot(name: "chat_round_trip")
   end
 end

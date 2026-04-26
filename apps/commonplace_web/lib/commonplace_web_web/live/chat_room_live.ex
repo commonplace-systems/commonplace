@@ -1,34 +1,21 @@
 defmodule CommonplaceWebWeb.ChatRoomLive do
   @moduledoc """
-  CX-71o3 (C1 of CX-p2qp): chat-room LiveView chrome.
+  CX-71o3 / CX-lok1 (M3 sub-bead iv): chat-room LiveView, thinned to
+  a generic wrapper around `CommonplaceWebWeb.ViewRenderer`.
 
-  Per chat-room.md (commit bb83a1b on commonplace-plan/main), MVP uses
-  the (β) pragmatic path — a chat-specific LiveView module that loads
-  `_messages` directly and renders `Commonplace.Chat.Messages.materialize/1`
-  output via HEEX, sidestepping the generic ViewRenderer's
-  CRDT-collection-source gap. The substrate followup that introduces a
-  generic CRDT-collection renderer (filed in chat-room.md "Future
-  hooks") would let this module's render path swap to that mechanism
-  without changing the action handlers.
+  Per the M3 spec architectural anchor (views.md): view-XML IS the
+  rendered semantic output. ChatRoomLive's job:
 
-  ## Mount + lookup
-
-  URL is `/chat/:room`. `mount/3` walks the workspace root schema for
-  `/chat/{room}/_messages` via `Commonplace.Chat.Rooms.lookup/3`. If
-  the room doesn't exist, renders a "room not found" state. (Room
-  creation is `Commonplace.Chat.Rooms.create/3` — a separate flow;
-  this view doesn't auto-create on first visit.)
-
-  ## Live updates: roundtrip + re-materialize
-
-  Per the spec scope guardrail (msg #3055): roundtrip-only updates, no
-  optimistic UI. `handle_event("post_message", ...)` calls
-  `Chat.Actions.post_message/3` synchronously and waits for the commit.
-  The same commit hits the `commits:{messages_uuid}` PubSub topic; our
-  `handle_info({:commit, ...})` re-fetches + re-materializes + re-
-  renders. Slightly redundant for the local poster (we'll re-render
-  what we just rendered) but ensures cross-tab convergence is a
-  free-by-construction consequence of the same path.
+  1. Look up the room's `_view.xml` doc UUID via `Chat.Rooms.lookup`.
+  2. Ensure the per-room `Chat.ChatViewComputeSupervisor` ViewCompute
+     instance is running (lazy-start trigger from the LiveView path,
+     mirroring how `Chat.Actions.commit_entry` triggers the onramp).
+  3. Subscribe to commits on the view doc (so the LiveView re-renders
+     whenever ViewCompute writes new view-XML).
+  4. Fetch view-XML content, pipe through `ViewRenderer.render_view/2`.
+  5. Translate user interactions (`phx-click="view_action"` and
+     `phx-submit="view_action"`) into substrate-resolved dispatch via
+     `Commonplace.View.ArgResolver` + `CommonplaceWebWeb.ViewActions`.
 
   Author identity is a placeholder until CX-88mw lands per-session
   signing infrastructure (see chat-room.md "v1: placeholder signers").
@@ -36,14 +23,18 @@ defmodule CommonplaceWebWeb.ChatRoomLive do
 
   use CommonplaceWebWeb, :live_view
 
-  alias Commonplace.Chat.{Actions, Messages, Rooms}
+  alias Commonplace.Chat.{ChatViewComputeSupervisor, Rooms}
+  alias Commonplace.Document.ContentType
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.DocBuilder
+  alias Commonplace.View.ArgResolver
+  alias Commonplace.Document.ViewXml
+  alias Commonplace.ViewActionDispatch
+  alias CommonplaceWebWeb.{ViewActions, ViewRenderer}
 
-  # Placeholder author identity (CX-88mw substrate followup will populate
-  # these from the session's bound key + presence record).
+  # Placeholder until CX-88mw substrate per-session key minting lands.
   @placeholder_signer_id "web-user@local"
-  @placeholder_author_path "web-user.usr"
+  @placeholder_presence_path "web-user.usr"
 
   @impl true
   def mount(%{"room" => room_name}, _session, socket) do
@@ -52,14 +43,25 @@ defmodule CommonplaceWebWeb.ChatRoomLive do
         case Rooms.lookup(root_uuid, room_name) do
           {:ok, room} ->
             if connected?(socket) do
-              Phoenix.PubSub.subscribe(Commonplace.PubSub, "commits:#{room.messages_uuid}")
+              # Subscribe to view-doc commits so each ViewCompute write
+              # re-renders the LiveView (cross-tab convergence + own-write
+              # roundtrip both flow through the same path).
+              Phoenix.PubSub.subscribe(Commonplace.PubSub, "commits:#{room.view_uuid}")
             end
+
+            # Lazy-start the ViewCompute so this room's _view.xml stays
+            # in sync with _messages. ensure_started is idempotent.
+            ChatViewComputeSupervisor.ensure_started(
+              room_name,
+              room.messages_uuid,
+              room.view_uuid
+            )
 
             socket =
               socket
               |> assign(:room_name, room_name)
               |> assign(:room, room)
-              |> assign(:messages, load_messages(room.messages_uuid))
+              |> assign(:view_xml, load_view_xml(room.view_uuid))
               |> assign(:page_title, "##{room_name}")
               |> assign(:not_found, false)
 
@@ -82,46 +84,56 @@ defmodule CommonplaceWebWeb.ChatRoomLive do
     end
   end
 
+  # Unified handler for both phx-click (action without args) and
+  # phx-submit (action with args). The dispatched form/button payload
+  # is shaped the same way: `action` + optional `target` + the rest are
+  # action args. Substrate ArgResolver fills resolution gaps.
   @impl true
-  def handle_event("post_message", %{"text" => text}, socket) when is_binary(text) do
-    # CX-00ze: trim before checking empty so whitespace-only submits
-    # ("   " or "\t\n") are no-ops, matching the empty-string case.
-    trimmed = String.trim(text)
+  def handle_event("view_action", payload, socket) do
+    %{room: room, room_name: room_name} = socket.assigns
 
-    if trimmed == "" do
-      {:noreply, socket}
-    else
-      %{room: room, room_name: room_name} = socket.assigns
+    action_name = payload["action"] || ""
+    target = payload["target"]
+    supplied_args = Map.drop(payload, ["action", "target"])
 
-      Actions.post_message(room.messages_uuid, trimmed,
-        room: room_name,
+    view_path = "/chat/#{room_name}/_view.xml"
+
+    resolver_context = %{
+      view_path: view_path,
+      presence_path: @placeholder_presence_path
+    }
+
+    with {:ok, view_node} <- ViewXml.parse(load_view_xml(room.view_uuid)),
+         {:ok, resolved_args} <-
+           ArgResolver.resolve_action(view_node, action_name, supplied_args, resolver_context) do
+      context = %{
+        view_path: view_path,
+        view_uuid: room.view_uuid,
+        target: target,
+        args: resolved_args,
         signer_id: @placeholder_signer_id,
-        author_path: @placeholder_author_path,
-        messages_log_uuid: room.log_uuid
-      )
+        source: "chat_room_live"
+      }
 
-      # The commits PubSub topic will re-trigger handle_info; we don't
-      # need to re-render here.
-      {:noreply, socket}
+      case ViewActions.dispatch(action_name, context, socket) do
+        {:ok, updated_socket} ->
+          {:noreply, updated_socket}
+
+        {:error, reason} ->
+          {:noreply, put_flash(socket, :error, reason)}
+      end
+    else
+      {:error, reason} ->
+        {:noreply,
+         put_flash(socket, :error, "view_action #{action_name} failed: #{inspect(reason)}")}
     end
-  end
-
-  def handle_event("post_message", _params, socket) do
-    # No "text" key in payload — ignore.
-    {:noreply, socket}
   end
 
   @impl true
   def handle_info({:commit, _doc_uuid, _commit_id, _metadata}, socket) do
-    # Re-materialize from the latest commit. Per design (msg #3055): no
-    # intermediate state — re-fetch + re-render is the simplest correct
-    # shape and free cross-tab convergence as a side effect.
     case socket.assigns[:room] do
-      nil ->
-        {:noreply, socket}
-
-      room ->
-        {:noreply, assign(socket, :messages, load_messages(room.messages_uuid))}
+      nil -> {:noreply, socket}
+      room -> {:noreply, assign(socket, :view_xml, load_view_xml(room.view_uuid))}
     end
   end
 
@@ -131,12 +143,17 @@ defmodule CommonplaceWebWeb.ChatRoomLive do
     Commonplace.Workspace.root_uuid()
   end
 
-  defp load_messages(messages_uuid) do
-    case DocBuilder.reconstruct_snapshot(CommitStoreClient, messages_uuid) do
-      {:ok, doc} -> Messages.materialize(doc)
-      :none -> []
+  defp load_view_xml(view_uuid) do
+    case DocBuilder.reconstruct_snapshot(CommitStoreClient, view_uuid) do
+      {:ok, doc} -> ContentType.get_content(doc) || ""
+      :none -> ""
     end
   end
+
+  # ViewActionDispatch is referenced via ViewActions.dispatch indirection
+  # but keep the alias load-bearing so the moduledoc explanation is
+  # accurate when readers grep.
+  _ = ViewActionDispatch
 
   # --- Render ---
 
@@ -150,46 +167,7 @@ defmodule CommonplaceWebWeb.ChatRoomLive do
           <p>No room named <code>{@room_name}</code> exists at <code>/chat/{@room_name}/</code>.</p>
         </div>
       <% else %>
-        <h1 class="text-2xl font-bold mb-4">#{@room_name}</h1>
-
-        <ul id="messages" class="space-y-2 mb-4">
-          <%= for message <- @messages do %>
-            <li
-              id={"message-" <> message["id"]}
-              class={[
-                "p-2 rounded",
-                if(message["deleted?"], do: "bg-base-200 italic opacity-60", else: "bg-base-100")
-              ]}
-            >
-              <%= if message["deleted?"] do %>
-                <em>[deleted]</em>
-              <% else %>
-                <div class="text-sm text-base-content/60">
-                  <span class="font-semibold">{message["author_path"]}</span>
-                  <%= if message["edited?"] do %>
-                    <span class="text-xs">(edited)</span>
-                  <% end %>
-                </div>
-                <div class="message-text">{message["text"]}</div>
-              <% end %>
-            </li>
-          <% end %>
-        </ul>
-
-        <form
-          phx-submit="post_message"
-          id="composer"
-          class="flex gap-2"
-        >
-          <input
-            type="text"
-            name="text"
-            placeholder="Type a message..."
-            class="input input-bordered flex-1"
-            autocomplete="off"
-          />
-          <button type="submit" class="btn btn-primary">Post</button>
-        </form>
+        {ViewRenderer.render_view(@view_xml, "/chat/" <> @room_name)}
       <% end %>
     </div>
     """

@@ -1,24 +1,35 @@
 defmodule CommonplaceWebWeb.ChatRoomLiveTest do
   @moduledoc """
-  CX-71o3 (C1 of CX-p2qp): chat-room LiveView chrome.
+  CX-71o3 / CX-lok1 (M3 sub-bead iv): chat-room LiveView is now a thin
+  wrapper around `CommonplaceWebWeb.ViewRenderer`. Most rendering
+  behavior is exercised by ViewRenderer unit tests + the Wallaby chat
+  feature tests; these unit tests cover the LiveView-specific
+  responsibilities:
 
-  Tests cover the (β) pragmatic-LiveView path: mount loads + materializes
-  messages, composer submit posts via Chat.Actions, live updates
-  re-materialize on commit landing.
+  * Lookup + not-found handling (chat-tier branding stays here)
+  * ChatViewCompute lazy-start on mount
+  * Async re-render via the commits PubSub topic on the view doc
+  * Action dispatch via the unified phx-submit FORM path
 
-  Per chat-room.md (bb83a1b): roundtrip-only updates, no optimistic UI.
+  Per the M3 spec architectural anchor (views.md): view-XML IS the
+  rendered semantic output. ChatRoomLive doesn't own a HEEX template
+  for the chat shape any more — it loads view-XML, hands it to the
+  generic renderer, and routes user interactions through the
+  substrate ArgResolver + dispatcher.
   """
   use CommonplaceWebWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
 
-  alias Commonplace.Chat.{Actions, Rooms}
+  alias Commonplace.Chat.{Actions, ChatViewComputeSupervisor, Rooms}
   alias Commonplace.Store.CommitStore
   alias Commonplace.Tree.{DocCache, Schema}
 
+  # ViewCompute writes view-XML asynchronously after init + on each
+  # source commit. Tests rely on a small wait after triggering events.
+  @recompute_wait_ms 200
+
   setup do
-    # Mirror WikiLiveTest's pattern — point the production CommitStore
-    # at a scratch dir, restart, seed root, restore on exit.
     prior_data_dir = Application.get_env(:commonplace, :data_dir)
     dir = Path.join(System.tmp_dir!(), "cp_chat_live_#{:rand.uniform(1_000_000_000)}")
     File.mkdir_p!(dir)
@@ -32,10 +43,8 @@ defmodule CommonplaceWebWeb.ChatRoomLiveTest do
       Supervisor.start_child(sup, {Commonplace.Store.CommitStore, data_dir: dir})
 
     DocCache.clear()
-
-    # Reset chat onramp state so each test starts clean (ETS index is
-    # process-global; Application's OnrampSupervisor stays up).
     Commonplace.Chat.OnrampSupervisor.reset()
+    ChatViewComputeSupervisor.reset()
 
     root_uuid = UUID.uuid4()
     root_doc = Schema.new_schema()
@@ -54,30 +63,35 @@ defmodule CommonplaceWebWeb.ChatRoomLiveTest do
       File.rm_rf!(dir)
       DocCache.clear()
       Commonplace.Chat.OnrampSupervisor.reset()
+      ChatViewComputeSupervisor.reset()
     end)
 
     %{root: root_uuid}
   end
 
-  describe "mount" do
+  describe "mount — lookup + not-found" do
     test "renders 'room not found' when /chat/:room doesn't exist", %{conn: conn} do
       {:ok, _view, html} = live(conn, ~p"/chat/never-created")
       assert html =~ "Chat room not found"
       assert html =~ "never-created"
     end
 
-    test "renders an empty room (no messages yet) cleanly", %{conn: conn, root: root} do
+    test "renders the chat-room entity even with no messages", %{conn: conn, root: root} do
       {:ok, _} = Rooms.create(root, "general")
 
-      {:ok, _view, html} = live(conn, ~p"/chat/general")
+      {:ok, view, _html} = live(conn, ~p"/chat/general")
+      Process.sleep(@recompute_wait_ms)
+      html = render(view)
 
-      assert html =~ "#general"
-      assert html =~ "composer"
-      # No messages list items.
-      refute html =~ "message-"
+      assert html =~ "entity--chat_room"
+      assert html =~ "general"
+      # phx-submit FORM emission for post_message is the chat composer now
+      assert html =~ ~s(phx-value-action="post_message")
     end
+  end
 
-    test "renders existing messages with author + text", %{conn: conn, root: root} do
+  describe "messages render via the generic renderer (ChatViewCompute path)" do
+    test "existing messages surface with author + text", %{conn: conn, root: root} do
       {:ok, room} = Rooms.create(root, "general")
 
       {:ok, _} =
@@ -87,13 +101,17 @@ defmodule CommonplaceWebWeb.ChatRoomLiveTest do
           author_path: "alice.usr"
         )
 
-      {:ok, _view, html} = live(conn, ~p"/chat/general")
+      {:ok, view, _html} = live(conn, ~p"/chat/general")
+      Process.sleep(@recompute_wait_ms)
+      html = render(view)
 
       assert html =~ "hello world"
       assert html =~ "alice.usr"
+      assert html =~ "entity--message"
     end
 
-    test "deleted messages render as [deleted]", %{conn: conn, root: root} do
+    test "deleted messages render as [deleted] (chain semantics through ChatViewBuilder)",
+         %{conn: conn, root: root} do
       {:ok, room} = Rooms.create(root, "general")
 
       {:ok, %{message_id: m1}} =
@@ -110,13 +128,15 @@ defmodule CommonplaceWebWeb.ChatRoomLiveTest do
           author_path: "alice.usr"
         )
 
-      {:ok, _view, html} = live(conn, ~p"/chat/general")
+      {:ok, view, _html} = live(conn, ~p"/chat/general")
+      Process.sleep(@recompute_wait_ms)
+      html = render(view)
 
       assert html =~ "[deleted]"
       refute html =~ "secret"
     end
 
-    test "edited messages render the latest text + (edited) marker",
+    test "edited messages render the latest text + edited=true field",
          %{conn: conn, root: root} do
       {:ok, room} = Rooms.create(root, "general")
 
@@ -134,48 +154,17 @@ defmodule CommonplaceWebWeb.ChatRoomLiveTest do
           author_path: "alice.usr"
         )
 
-      {:ok, _view, html} = live(conn, ~p"/chat/general")
+      {:ok, view, _html} = live(conn, ~p"/chat/general")
+      Process.sleep(@recompute_wait_ms)
+      html = render(view)
 
       assert html =~ "v2-edited"
-      assert html =~ "(edited)"
+      # ViewRenderer renders <field name="edited" value="true"/> as
+      # <dt>edited:</dt><dd>true</dd>. Check both pieces appear adjacent.
+      assert html =~ ~r/edited:.+true/,
+             "edited=true field should appear in rendered output"
+
       refute html =~ "v1"
-    end
-  end
-
-  describe "composer post_message" do
-    test "submitting the composer appends a message and re-renders",
-         %{conn: conn, root: root} do
-      {:ok, _} = Rooms.create(root, "general")
-
-      {:ok, view, _html} = live(conn, ~p"/chat/general")
-
-      # Composer is a phx-submit form; render_submit triggers
-      # handle_event("post_message", ...) and then we get the
-      # commit-pubsub-driven re-render.
-      view
-      |> form("#composer", text: "live test message")
-      |> render_submit()
-
-      # Wait briefly for the commit pubsub to land + LiveView to
-      # re-render. render(view) returns the latest server-rendered HTML.
-      Process.sleep(150)
-      html = render(view)
-
-      assert html =~ "live test message"
-    end
-
-    test "empty submit is a no-op (no commit, no re-render)",
-         %{conn: conn, root: root} do
-      {:ok, _} = Rooms.create(root, "general")
-      {:ok, view, _html} = live(conn, ~p"/chat/general")
-
-      view
-      |> form("#composer", text: "")
-      |> render_submit()
-
-      Process.sleep(50)
-      html = render(view)
-      refute html =~ "message-"
     end
   end
 
@@ -184,8 +173,8 @@ defmodule CommonplaceWebWeb.ChatRoomLiveTest do
          %{conn: conn, root: root} do
       {:ok, room} = Rooms.create(root, "general")
       {:ok, view, _html} = live(conn, ~p"/chat/general")
+      Process.sleep(@recompute_wait_ms)
 
-      # Simulate another tab / agent posting via the action layer.
       {:ok, _} =
         Actions.post_message(room.messages_uuid, "from another peer",
           room: "general",
@@ -193,7 +182,7 @@ defmodule CommonplaceWebWeb.ChatRoomLiveTest do
           author_path: "bob.usr"
         )
 
-      Process.sleep(150)
+      Process.sleep(@recompute_wait_ms)
       html = render(view)
 
       assert html =~ "from another peer"

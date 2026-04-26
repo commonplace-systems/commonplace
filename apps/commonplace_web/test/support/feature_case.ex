@@ -54,6 +54,7 @@ defmodule CommonplaceWebWeb.FeatureCase do
 
     Commonplace.Tree.DocCache.clear()
     Commonplace.Chat.OnrampSupervisor.reset()
+    Commonplace.Chat.ChatViewComputeSupervisor.reset()
 
     root_uuid = UUID.uuid4()
     root_doc = Commonplace.Tree.Schema.new_schema()
@@ -78,6 +79,7 @@ defmodule CommonplaceWebWeb.FeatureCase do
       File.rm_rf!(dir)
       Commonplace.Tree.DocCache.clear()
       Commonplace.Chat.OnrampSupervisor.reset()
+      Commonplace.Chat.ChatViewComputeSupervisor.reset()
     end)
 
     %{root: root_uuid, data_dir: dir}

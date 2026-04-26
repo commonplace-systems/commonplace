@@ -49,7 +49,7 @@ defmodule Commonplace.Chat.Rooms do
   # the <arg> children name substrate-resolved fields.
   @view_xml_template """
   <view schema="1">
-    <entity kind="chat-room" name="{{ROOM_NAME}}">
+    <entity kind="chat_room" name="{{ROOM_NAME}}">
       <body>
         <text format="markdown">Chat room.</text>
         <action name="post_message" label="Post" args="text:string">

@@ -194,4 +194,135 @@ defmodule CommonplaceWebWeb.ViewRendererTest do
       assert html =~ "alert-warning"
     end
   end
+
+  # CX-lok1 (M3 sub-bead iv): two extension paths for the chat view-XML
+  # shape — kind-aware CSS classes on <entity>, and phx-submit FORM
+  # emission for <action args="..."> declarations.
+  describe "render_view/2 — kind-aware entity CSS class (CX-lok1)" do
+    test "<entity kind='message'> renders with entity--message class" do
+      html = render(~s(<view><entity kind="message" id="m1"/></view>))
+      assert html =~ ~s(class="cp-entity entity--message),
+             "kind-aware class missing from <entity kind='message'>"
+    end
+
+    test "<entity kind='chat_room'> renders with entity--chat_room class" do
+      html = render(~s(<view><entity kind="chat_room" name="general"/></view>))
+      assert html =~ ~s(entity--chat_room)
+      # name still surfaces in the header
+      assert html =~ "general"
+    end
+
+    test "<entity> with no kind falls back to generic cp-entity" do
+      html = render(~s(<view><entity name="x"/></view>))
+      assert html =~ "cp-entity"
+      refute html =~ "entity--",
+             "entity-- modifier should not appear when kind is absent"
+    end
+  end
+
+  describe "render_view/2 — phx-submit FORM for <action args> (CX-lok1)" do
+    test "<action args='text:string'> emits a phx-submit form with one text input" do
+      xml = ~s(<view><action name="post_message" label="Send" args="text:string"/></view>)
+      html = render(xml)
+
+      assert html =~ ~s(phx-submit="view_action"),
+             "args present must emit phx-submit, not phx-click"
+
+      assert html =~ ~s(phx-value-action="post_message")
+      assert html =~ ~s(<input type="text" name="text"),
+             "arg name='text' must produce <input name='text'>"
+
+      assert html =~ ~s(<button type="submit") or html =~ "type='submit'"
+      assert html =~ "Send"
+    end
+
+    test "<action args='message_id:string,text:string'> emits two inputs" do
+      xml =
+        ~s(<view><action name="edit_message" label="Edit" args="message_id:string,text:string"/></view>)
+
+      html = render(xml)
+
+      assert html =~ ~s(name="message_id")
+      assert html =~ ~s(name="text")
+      assert html =~ ~s(phx-value-action="edit_message")
+    end
+
+    test "<action> WITHOUT args still emits a phx-click button (existing behavior)" do
+      html = render(~s(<view><action name="edit" label="Edit"/></view>))
+
+      assert html =~ "<button"
+      assert html =~ ~s(phx-click="view_action")
+      refute html =~ ~s(phx-submit="view_action"),
+             "no args means button, not form"
+    end
+
+    test "phx-submit form preserves the `target` attr as phx-value-target when present" do
+      xml =
+        ~s(<view><action name="post" label="X" args="t:string" target="entity-1"/></view>)
+
+      html = render(xml)
+      assert html =~ ~s(phx-value-target="entity-1")
+    end
+
+    test "the form input has `required` attribute (chat doesn't accept blanks)" do
+      xml = ~s(<view><action name="post" label="X" args="text:string"/></view>)
+      html = render(xml)
+      assert html =~ "required"
+    end
+
+    test "non-string types fall back to text input (string-only scope per refinement A)" do
+      # Per (iv) confirm-now (A): only :string supported; future types
+      # file followups. Test pins this scope so reviewers know it's
+      # intentional.
+      xml = ~s(<view><action name="post" label="X" args="count:int"/></view>)
+      html = render(xml)
+      assert html =~ ~s(name="count")
+      assert html =~ ~s(type="text"), "non-string types still emit text input for M3"
+    end
+  end
+
+  describe "render_view/2 — null-tolerant <provenance> (refinement #5 / confirm-now C)" do
+    test "renders <provenance signer='X' ts='Y'/> without commit attr" do
+      html =
+        render(~s(<view><provenance signer="alice@a" ts="2026-04-26T15:25:12Z"/></view>))
+
+      assert html =~ "alice@a"
+      assert html =~ "2026-04-26T15:25:12Z"
+      refute html =~ "()", "no empty parens for absent commit"
+    end
+
+    test "renders <provenance/> with all attrs absent without crashing" do
+      html = render("<view><provenance/></view>")
+      assert html =~ "cp-provenance"
+    end
+  end
+
+  describe "render_view/2 — chat-room round-trip (Anchor C support)" do
+    test "ChatViewBuilder output renders without crash" do
+      messages = [
+        %{
+          "id" => "msg-1",
+          "ts" => "2026-04-26T15:25:12Z",
+          "author_signer_id" => "alice@x",
+          "author_path" => "alice.usr",
+          "text" => "hello room",
+          "edited?" => false,
+          "deleted?" => false
+        }
+      ]
+
+      xml = Commonplace.Chat.ChatViewBuilder.build_view_xml(messages, "general")
+      html = render(xml, "/chat/general")
+
+      assert html =~ "general"
+      assert html =~ "hello room"
+      assert html =~ "alice.usr"
+      assert html =~ "entity--chat_room"
+      assert html =~ "entity--message"
+      # Action declarations rendered as phx-submit forms
+      assert html =~ ~s(phx-value-action="post_message")
+      assert html =~ ~s(phx-value-action="edit_message")
+      assert html =~ ~s(phx-value-action="delete_message")
+    end
+  end
 end

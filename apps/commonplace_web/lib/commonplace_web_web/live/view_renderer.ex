@@ -83,14 +83,28 @@ defmodule CommonplaceWebWeb.ViewRenderer do
   end
 
   defp render_node(%Node{tag: :entity} = n, path) do
-    kind = n.attrs["kind"] || "entity"
+    kind = n.attrs["kind"]
+
+    # CX-lok1 (M3 sub-bead iv): kind-aware CSS class so consumers
+    # (chat stylesheet, future view kinds) can style per-kind without
+    # the renderer baking domain knowledge in. Generic <entity> with
+    # no kind keeps the legacy single-class shape.
+    class =
+      case kind do
+        nil -> "cp-entity border border-base-300 rounded-lg p-4 bg-base-100 space-y-2"
+        k -> ~s(cp-entity entity--#{escape(k)} border border-base-300 rounded-lg p-4 bg-base-100 space-y-2)
+      end
+
     name = n.attrs["name"]
+    label = kind || "entity"
 
     [
-      ~s(<section class="cp-entity border border-base-300 rounded-lg p-4 bg-base-100 space-y-2">),
+      ~s(<section class="),
+      class,
+      ~s(">),
       ~s(<header class="flex items-center gap-2 text-xs uppercase tracking-wide text-base-content/60">),
       ~s(<span class="badge badge-sm badge-primary">),
-      escape(kind),
+      escape(label),
       "</span>",
       if(name, do: [~s(<span class="font-semibold text-base-content/80">), escape(name), "</span>"], else: ""),
       "</header>",
@@ -183,43 +197,14 @@ defmodule CommonplaceWebWeb.ViewRenderer do
     args = n.attrs["args"]
     target = n.attrs["target"]
 
-    # Pass A (CX-vaw): emit phx-click so the wiki LiveView's
-    # handle_event("view_action", ...) catches the click and routes
-    # through CommonplaceWebWeb.ViewActions. phx-value-action carries
-    # the action name; phx-value-target carries the optional target
-    # entity id when present.
-    target_attr =
-      if target, do: [~s( phx-value-target="), escape(target), ~s(")], else: ""
-
-    title_attr =
-      if description, do: [~s( title="), escape(description), ~s(")], else: ""
-
-    [
-      ~s(<div class="cp-action inline-flex flex-col gap-1 mr-2">),
-      ~s(<button type="button" class="btn btn-sm btn-primary"),
-      ~s( phx-click="view_action"),
-      ~s( phx-value-action="),
-      escape(name),
-      ~s("),
-      target_attr,
-      title_attr,
-      ">",
-      escape(label),
-      "</button>",
-      if(description,
-        do: [~s(<span class="text-xs text-base-content/50">), escape(description), "</span>"],
-        else: ""
-      ),
-      if(args,
-        do: [
-          ~s(<span class="text-xs font-mono text-base-content/40">args: ),
-          escape(args),
-          "</span>"
-        ],
-        else: ""
-      ),
-      "</div>"
-    ]
+    # CX-lok1 (M3 sub-bead iv): branch on `args` attribute presence.
+    # With args → phx-submit FORM with one input per arg (chat MVP path).
+    # Without args → phx-click button (existing wiki path; edit/history/fork).
+    case args do
+      nil -> render_action_button(name, label, description, target)
+      "" -> render_action_button(name, label, description, target)
+      args_str -> render_action_form(name, label, description, target, args_str)
+    end
   end
 
   defp render_node(%Node{tag: :include} = n, path) do
@@ -293,6 +278,92 @@ defmodule CommonplaceWebWeb.ViewRenderer do
       %Node{} = child -> render_node(child, path)
       text when is_binary(text) -> escape(text)
     end)
+  end
+
+  # --- CX-lok1 (M3 sub-bead iv) action helpers ---
+
+  # Phx-click button for actions with no args (today's edit/history/fork).
+  defp render_action_button(name, label, description, target) do
+    target_attr =
+      if target, do: [~s( phx-value-target="), escape(target), ~s(")], else: ""
+
+    title_attr =
+      if description, do: [~s( title="), escape(description), ~s(")], else: ""
+
+    [
+      ~s(<div class="cp-action inline-flex flex-col gap-1 mr-2">),
+      ~s(<button type="button" class="btn btn-sm btn-primary),
+      ~s(" phx-click="view_action),
+      ~s(" phx-value-action="),
+      escape(name),
+      ~s("),
+      target_attr,
+      title_attr,
+      ">",
+      escape(label),
+      "</button>",
+      if(description,
+        do: [~s(<span class="text-xs text-base-content/50">), escape(description), "</span>"],
+        else: ""
+      ),
+      "</div>"
+    ]
+  end
+
+  # Phx-submit FORM for actions with args (chat MVP: post_message,
+  # edit_message, delete_message). One <input> per declared arg. String
+  # is the only supported type for M3 (refinement A); future types file
+  # followups.
+  defp render_action_form(name, label, description, target, args_str) do
+    target_attr =
+      if target, do: [~s( phx-value-target="), escape(target), ~s(")], else: ""
+
+    inputs = parse_args(args_str) |> Enum.map(&render_arg_input/1)
+
+    [
+      ~s(<form class="cp-action flex items-center gap-2 my-2"),
+      ~s( phx-submit="view_action),
+      ~s(" phx-value-action="),
+      escape(name),
+      ~s("),
+      target_attr,
+      ">",
+      inputs,
+      ~s(<button type="submit" class="btn btn-sm btn-primary">),
+      escape(label),
+      "</button>",
+      if(description,
+        do: [~s(<span class="text-xs text-base-content/50">), escape(description), "</span>"],
+        else: ""
+      ),
+      "</form>"
+    ]
+  end
+
+  # Parse `args="text:string,message_id:string"` into a list of
+  # %{name: ..., type: ...} maps. Tolerant of whitespace + missing type.
+  defp parse_args(args_str) do
+    args_str
+    |> String.split(",", trim: true)
+    |> Enum.map(fn segment ->
+      case String.split(String.trim(segment), ":", parts: 2) do
+        [name, type] -> %{name: String.trim(name), type: String.trim(type)}
+        [name] -> %{name: String.trim(name), type: "string"}
+      end
+    end)
+    |> Enum.reject(&(&1.name == ""))
+  end
+
+  defp render_arg_input(%{name: name}) do
+    # Only :string is supported for M3 (refinement A); other types fall
+    # back to text input. File followups when non-string args surface.
+    [
+      ~s(<input type="text" name="),
+      escape(name),
+      ~s(" placeholder="),
+      escape(name),
+      ~s(" required class="input input-sm input-bordered flex-1"/>)
+    ]
   end
 
   # --- Staleness indicator ---

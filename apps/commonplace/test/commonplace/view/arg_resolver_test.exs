@@ -248,7 +248,7 @@ defmodule Commonplace.View.ArgResolverTest do
     test "finds nested action under <entity><body><action>" do
       xml = """
       <view>
-        <entity kind="chat-room">
+        <entity kind="chat_room">
           <body>
             <action name="post"><arg name="room" from=".."/></action>
           </body>
