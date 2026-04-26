@@ -32,48 +32,14 @@ defmodule Commonplace.Chat.Rooms do
   two trigger paths to maintain).
   """
 
-  alias Commonplace.Chat.Messages
+  alias Commonplace.Chat.{ChatViewBuilder, ChatViewCompute, Messages}
+  alias Commonplace.CommandRouter
   alias Commonplace.Document.ContentType
+  alias Commonplace.Materialize
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.{DocBuilder, Schema}
 
   @chat_dir "chat"
-
-  # CX-waid (M3 sub-bead iii): <action> declarations carry <arg from="..."/>
-  # children — substrate ArgResolver consumes them, Chat.Actions.resolve_args/4
-  # per-action clauses are gone. Three resolver kinds in play:
-  #   ../{name}        → sibling-doc UUID
-  #   ..               → parent dir basename (room name)
-  #   $session.{key}   → MCP session context lookup
-  # The "args" attribute names caller-supplied scalars (text, message_id),
-  # the <arg> children name substrate-resolved fields.
-  @view_xml_template """
-  <view schema="1">
-    <entity kind="chat_room" name="{{ROOM_NAME}}">
-      <body>
-        <text format="markdown">Chat room.</text>
-        <action name="post_message" label="Post" args="text:string">
-          <arg name="messages_uuid" from="../_messages"/>
-          <arg name="messages_log_uuid" from="../_messages.log"/>
-          <arg name="room" from=".."/>
-          <arg name="author_path" from="$session.presence_path"/>
-        </action>
-        <action name="edit_message" label="Edit" args="message_id:string,text:string">
-          <arg name="messages_uuid" from="../_messages"/>
-          <arg name="messages_log_uuid" from="../_messages.log"/>
-          <arg name="room" from=".."/>
-          <arg name="author_path" from="$session.presence_path"/>
-        </action>
-        <action name="delete_message" label="Delete" args="message_id:string">
-          <arg name="messages_uuid" from="../_messages"/>
-          <arg name="messages_log_uuid" from="../_messages.log"/>
-          <arg name="room" from=".."/>
-          <arg name="author_path" from="$session.presence_path"/>
-        </action>
-      </body>
-    </entity>
-  </view>
-  """
 
   @doc """
   Create a chat room under `/chat/{room_name}/`. Returns the UUIDs of
@@ -135,6 +101,48 @@ defmodule Commonplace.Chat.Rooms do
       else
         :error -> {:error, :not_found}
       end
+    end
+  end
+
+  @doc """
+  CX-tb7s (M3 sub-bead v): rewrite an existing chat room's `_view.xml`
+  to the M3 shape. Idempotent — second call is a no-op (CommandRouter's
+  `Diff.apply_diff/3` short-circuits on identical content).
+
+  Existing pre-M3 rooms (created with the legacy template, kind="chat-room"
+  hyphen, no <arg> children) survive M3 with a single migration call.
+  Materializes existing `_messages` so the new view-XML body carries the
+  current state (post/edit/delete chain-resolved).
+
+  Returns `:ok` on success, `{:error, :not_found}` if the room doesn't
+  exist, or `{:error, reason}` on write failures.
+  """
+  def upgrade_view_xml(root_uuid, room_name, opts \\ [])
+      when is_binary(root_uuid) and is_binary(room_name) and is_list(opts) do
+    store = Keyword.get(opts, :store, CommitStoreClient)
+
+    case lookup(root_uuid, room_name, store: store) do
+      {:ok, room} ->
+        materialized = materialize_messages(room.messages_uuid, store)
+        new_content = ChatViewBuilder.build_view_xml(materialized, room_name)
+
+        case CommandRouter.write(room.view_uuid, new_content) do
+          {:ok, _info} -> :ok
+          {:error, reason} -> {:error, reason}
+        end
+
+      {:error, :not_found} = err ->
+        err
+    end
+  end
+
+  defp materialize_messages(messages_uuid, store) do
+    case DocBuilder.reconstruct_snapshot(store, messages_uuid) do
+      {:ok, doc} ->
+        Materialize.materialize(Messages.list(doc), ChatViewCompute.chain_rules())
+
+      :none ->
+        []
     end
   end
 
@@ -264,13 +272,15 @@ defmodule Commonplace.Chat.Rooms do
     uuid
   end
 
-  # _view.xml carries the action declarations + composer chrome.
-  # Substituting room name into the template lets the rendered XHTML
-  # show "Chat room: {{ROOM_NAME}}" without needing a separate metadata
-  # store. ContentType wraps the XHTML as a text doc.
+  # CX-tb7s (M3 sub-bead v): initial _view.xml shape comes from
+  # ChatViewBuilder — single source of truth for the chat view-XML.
+  # ChatViewCompute will overwrite this with materialized content on
+  # first message, but the initial shape is already M3-canonical so
+  # workspace claude reading the doc before any post sees the same
+  # vocabulary.
   defp mint_view_doc(room_name, store) do
     uuid = UUID.uuid4()
-    rendered = String.replace(@view_xml_template, "{{ROOM_NAME}}", room_name)
+    rendered = ChatViewBuilder.build_view_xml([], room_name)
 
     doc = Yelixer.Doc.new()
     doc = ContentType.create(doc, :text, "_view.xml")
