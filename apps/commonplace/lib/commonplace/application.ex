@@ -61,7 +61,30 @@ defmodule Commonplace.Application do
       ] ++ snapshot_sweeper_children() ++ presence_reaper_children()
 
     opts = [strategy: :one_for_one, name: Commonplace.Supervisor]
-    Supervisor.start_link(children, opts)
+
+    case Supervisor.start_link(children, opts) do
+      {:ok, pid} ->
+        # CX-38fw (M4 sub-bead i): boot-time idempotent template ensure.
+        # Mints /chat/__template/ on first boot; no-op on subsequent
+        # boots. Skipped when no workspace root exists (fresh installs,
+        # test runs without a seeded root) — mirrors the
+        # presence_reaper_children/0 pattern.
+        ensure_chat_template_if_workspace_present()
+        {:ok, pid}
+
+      other ->
+        other
+    end
+  end
+
+  defp ensure_chat_template_if_workspace_present do
+    case Commonplace.Workspace.root_uuid() do
+      {:ok, root_uuid} ->
+        Commonplace.Chat.TemplateBootstrap.ensure_template(root_uuid)
+
+      {:error, _} ->
+        :ok
+    end
   end
 
   @doc false
