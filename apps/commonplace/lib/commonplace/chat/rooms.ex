@@ -37,7 +37,7 @@ defmodule Commonplace.Chat.Rooms do
   alias Commonplace.Document.ContentType
   alias Commonplace.Materialize
   alias Commonplace.Store.CommitStoreClient
-  alias Commonplace.Tree.{DocBuilder, Schema}
+  alias Commonplace.Tree.{DocBuilder, Lookup, Schema}
 
   @chat_dir "chat"
 
@@ -76,31 +76,28 @@ defmodule Commonplace.Chat.Rooms do
   Resolve a room name to its sub-doc UUIDs by walking the workspace
   schema. Returns `{:error, :not_found}` if the room (or the `/chat`
   directory itself) doesn't exist.
+
+  CX-j6ul (M4 sub-bead ii): thin wrapper over the substrate-tier
+  `Commonplace.Tree.Lookup.lookup_path_and_extract/4`. The chat-tier
+  shape (path-walk + named-children-extraction) generalized cleanly.
   """
   def lookup(root_uuid, room_name, opts \\ [])
       when is_binary(root_uuid) and is_binary(room_name) and is_list(opts) do
-    store = Keyword.get(opts, :store, CommitStoreClient)
+    path = "#{@chat_dir}/#{room_name}"
+    names = ["_messages", "_reactions", "_messages.log", "_view.xml"]
 
-    with {:ok, chat_dir_uuid} <- find_chat_dir(root_uuid, store),
-         {:ok, room_dir_uuid} <- find_room_dir(chat_dir_uuid, room_name, store) do
-      room_doc = load_schema(room_dir_uuid, store)
-
-      # Pull each sub-doc UUID out of the room directory's schema.
-      with {:ok, messages_entry} <- Schema.get_entry(room_doc, "_messages"),
-           {:ok, reactions_entry} <- Schema.get_entry(room_doc, "_reactions"),
-           {:ok, log_entry} <- Schema.get_entry(room_doc, "_messages.log"),
-           {:ok, view_entry} <- Schema.get_entry(room_doc, "_view.xml") do
-        {:ok,
-         %{
-           room_dir_uuid: room_dir_uuid,
-           messages_uuid: messages_entry.node_id,
-           reactions_uuid: reactions_entry.node_id,
-           log_uuid: log_entry.node_id,
-           view_uuid: view_entry.node_id
-         }}
-      else
-        :error -> {:error, :not_found}
-      end
+    with {:ok, room_dir_uuid} <- Lookup.lookup_doc_by_path(root_uuid, path, opts),
+         {:ok, children} <- Lookup.extract_named_children(room_dir_uuid, names, opts) do
+      {:ok,
+       %{
+         room_dir_uuid: room_dir_uuid,
+         messages_uuid: children["_messages"],
+         reactions_uuid: children["_reactions"],
+         log_uuid: children["_messages.log"],
+         view_uuid: children["_view.xml"]
+       }}
+    else
+      {:error, _reason} -> {:error, :not_found}
     end
   end
 
@@ -193,24 +190,6 @@ defmodule Commonplace.Chat.Rooms do
     case Schema.get_entry(chat_doc, room_name) do
       :error -> :ok
       {:ok, _} -> {:error, :exists}
-    end
-  end
-
-  defp find_chat_dir(root_uuid, store) do
-    root_doc = load_schema(root_uuid, store)
-
-    case Schema.get_entry(root_doc, @chat_dir) do
-      {:ok, entry} -> {:ok, entry.node_id}
-      :error -> {:error, :not_found}
-    end
-  end
-
-  defp find_room_dir(chat_dir_uuid, room_name, store) do
-    chat_doc = load_schema(chat_dir_uuid, store)
-
-    case Schema.get_entry(chat_doc, room_name) do
-      {:ok, entry} -> {:ok, entry.node_id}
-      :error -> {:error, :not_found}
     end
   end
 
