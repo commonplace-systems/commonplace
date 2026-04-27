@@ -73,32 +73,28 @@ defmodule Commonplace.ViewCompute do
   alias Commonplace.Document.ContentType
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.DocBuilder
-  alias Commonplace.View.{ComputeRunner, ComputeSpec}
+  alias Commonplace.View.ComputeRunner
 
   defstruct [
     :source_uuid,
     :target_uuid,
     :compute_fn,
-    :spec_uuid,
     :code_uuid,
     :name,
     :router,
     :store,
-    :last_computed_at,
-    code_uuids: []
+    :last_computed_at
   ]
 
   @type t :: %__MODULE__{
           source_uuid: String.t(),
           target_uuid: String.t(),
           compute_fn: (term() -> term()),
-          spec_uuid: String.t() | nil,
           code_uuid: String.t() | nil,
           name: atom() | nil,
           router: GenServer.server(),
           store: GenServer.server(),
-          last_computed_at: DateTime.t() | nil,
-          code_uuids: [String.t()]
+          last_computed_at: DateTime.t() | nil
         }
 
   # --- Client API ---
@@ -139,32 +135,24 @@ defmodule Commonplace.ViewCompute do
     router = Keyword.get(opts, :router, CommandRouter)
     store = Keyword.get(opts, :store, CommitStoreClient)
 
-    # M5 (CX-wxbp), M6 (CX-7v9x), M7 (CX-fe7f): three mutually-exclusive
-    # opts for compute resolution:
+    # CX-pcn4 (M7 sub-bead v): two mutually-exclusive opts for compute
+    # resolution after M5/M6 XML compute-spec form deletion:
     #   :compute_fn — direct closure (legacy; still first-class)
-    #   :spec_uuid  — M5/M6 XML compute-spec doc (deprecated; deleted in M7 sub-bead v)
-    #   :code_uuid  — M7 Elixir-source-as-pipeline code-doc
+    #   :code_uuid  — M7 Elixir-source-as-pipeline code-doc via ComputeRunner
     # Exactly one must be supplied; init/1 validates.
     compute_fn_opt = Keyword.get(opts, :compute_fn)
-    spec_uuid_opt = Keyword.get(opts, :spec_uuid)
     code_uuid_opt = Keyword.get(opts, :code_uuid)
 
-    with {:ok, resolved} <-
-           resolve_compute_v3(compute_fn_opt, spec_uuid_opt, code_uuid_opt, opts, store) do
-      {compute_fn, spec_uuid, code_uuid, code_uuids} = resolved
-
+    with {:ok, {compute_fn, code_uuid}} <-
+           resolve_compute(compute_fn_opt, code_uuid_opt, opts, store) do
       CPPubSub.subscribe_blue(source_uuid)
-      if spec_uuid, do: CPPubSub.subscribe_blue(spec_uuid)
       if code_uuid, do: CPPubSub.subscribe_blue(code_uuid)
-      Enum.each(code_uuids, &CPPubSub.subscribe_blue/1)
 
       state = %__MODULE__{
         source_uuid: source_uuid,
         target_uuid: target_uuid,
         compute_fn: compute_fn,
-        spec_uuid: spec_uuid,
         code_uuid: code_uuid,
-        code_uuids: code_uuids,
         name: name,
         router: router,
         store: store
@@ -177,27 +165,15 @@ defmodule Commonplace.ViewCompute do
     end
   end
 
-  # CX-fe7f (M7 sub-bead iii): three-way mutex resolver. M7 :code_uuid
-  # path drives compute via Commonplace.View.ComputeRunner. M5/M6
-  # :spec_uuid path retained for chat-tier-not-yet-migrated callers
-  # (deletes when chat migrates in sub-bead iv); :compute_fn legacy path
-  # for direct closures unchanged.
-  defp resolve_compute_v3(nil, nil, nil, _opts, _store) do
-    {:error, "must supply exactly one of :compute_fn, :spec_uuid, or :code_uuid"}
+  defp resolve_compute(nil, nil, _opts, _store) do
+    {:error, "must supply exactly one of :compute_fn or :code_uuid"}
   end
 
-  defp resolve_compute_v3(fn_opt, nil, nil, _opts, _store) when is_function(fn_opt, 1) do
-    {:ok, {fn_opt, nil, nil, []}}
+  defp resolve_compute(fn_opt, nil, _opts, _store) when is_function(fn_opt, 1) do
+    {:ok, {fn_opt, nil}}
   end
 
-  defp resolve_compute_v3(nil, spec_uuid, nil, opts, store) when is_binary(spec_uuid) do
-    case resolve_compute(nil, spec_uuid, opts, store) do
-      {:ok, {cf, su, cuids}} -> {:ok, {cf, su, nil, cuids}}
-      err -> err
-    end
-  end
-
-  defp resolve_compute_v3(nil, nil, code_uuid, opts, store) when is_binary(code_uuid) do
+  defp resolve_compute(nil, code_uuid, opts, store) when is_binary(code_uuid) do
     spec_context = Keyword.get(opts, :spec_context, %{})
 
     with :ok <- ComputeRunner.validate(code_uuid, store) do
@@ -208,120 +184,12 @@ defmodule Commonplace.ViewCompute do
         end
       end
 
-      {:ok, {compute_fn, nil, code_uuid, []}}
-    end
-  end
-
-  defp resolve_compute_v3(_, _, _, _, _) do
-    {:error,
-     "must supply exactly one of :compute_fn, :spec_uuid, or :code_uuid (not multiple)"}
-  end
-
-  # Resolve the compute_fn from opts. Three branches:
-  #   :compute_fn supplied (legacy direct-closure callers)
-  #   :spec_uuid supplied — read + parse + validate spec; build closure
-  #   neither / both — error
-  defp resolve_compute(nil, nil, _opts, _store) do
-    {:error, "must supply exactly one of :compute_fn or :spec_uuid"}
-  end
-
-  defp resolve_compute(compute_fn, nil, _opts, _store) when is_function(compute_fn, 1) do
-    {:ok, {compute_fn, nil, []}}
-  end
-
-  defp resolve_compute(nil, spec_uuid, opts, store) when is_binary(spec_uuid) do
-    spec_context = Keyword.get(opts, :spec_context, %{})
-    # CX-7v9x (M6 sub-bead ii): validate may resolve M6 `<function ref>` forms
-    # which need :spec_path. Threaded from spec_context if caller supplied it.
-    spec_path = Map.get(spec_context, :spec_path)
-    # CX-6fhe (M6 sub-bead iii): root_uuid for path-walking the resolved
-    # ref to its source-doc UUID. Falls back to Workspace.root_uuid when
-    # caller doesn't pass one (production path); tests with a custom
-    # CommitStore pass it explicitly.
-    root_uuid = Map.get(spec_context, :root_uuid)
-
-    validate_opts =
-      [store: store]
-      |> maybe_kw_put(:spec_path, spec_path)
-
-    with {:ok, content} <- read_spec_content(store, spec_uuid),
-         {:ok, spec} <- ComputeSpec.parse(content),
-         {:ok, validated_spec} <- ComputeSpec.validate(spec, validate_opts) do
-      compute_fn = fn raw_input ->
-        ComputeSpec.interpret(validated_spec, raw_input, spec_context)
-      end
-
-      # Extract code_uuids from M6 render steps' resolved refs.
-      code_uuids = extract_code_uuids(validated_spec, spec_path, root_uuid, store)
-
-      {:ok, {compute_fn, spec_uuid, code_uuids}}
+      {:ok, {compute_fn, code_uuid}}
     end
   end
 
   defp resolve_compute(_, _, _, _) do
-    {:error, "must supply exactly one of :compute_fn or :spec_uuid (not both)"}
-  end
-
-  defp maybe_kw_put(kw, _key, nil), do: kw
-  defp maybe_kw_put(kw, key, value), do: Keyword.put(kw, key, value)
-
-  # CX-6fhe (M6 sub-bead iii): walk validated spec's pipeline; for each
-  # M6 render step (carrying :ref), resolve the source-doc UUID via
-  # SourceDoc-style path walk so ViewCompute can subscribe to its
-  # commits. M5 render steps (no :ref) contribute no code_uuids.
-  defp extract_code_uuids(_validated_spec, nil, _root_uuid, _store), do: []
-
-  defp extract_code_uuids(validated_spec, spec_path, root_uuid, store)
-       when is_binary(spec_path) do
-    validated_spec.pipeline
-    |> Enum.flat_map(fn
-      %{kind: :render, ref: ref} when is_binary(ref) ->
-        case resolve_ref_to_uuid(ref, spec_path, root_uuid, store) do
-          {:ok, uuid} -> [uuid]
-          _ -> []
-        end
-
-      _ ->
-        []
-    end)
-  end
-
-  defp resolve_ref_to_uuid(ref, spec_path, root_uuid, store) do
-    parent = Path.dirname(spec_path)
-
-    target_path =
-      case ref do
-        "../" <> rest ->
-          if parent in [".", ""], do: rest, else: Path.join(parent, rest)
-
-        "./" <> rest ->
-          if parent in [".", ""], do: rest, else: Path.join(parent, rest)
-
-        _ ->
-          ref
-      end
-
-    with {:ok, root} <- resolve_root(root_uuid),
-         {:ok, uuid} <-
-           Commonplace.Tree.Lookup.lookup_doc_by_path(root, target_path, store: store) do
-      {:ok, uuid}
-    end
-  end
-
-  defp resolve_root(nil), do: Commonplace.Workspace.root_uuid()
-  defp resolve_root(uuid) when is_binary(uuid), do: {:ok, uuid}
-
-  defp read_spec_content(store, spec_uuid) do
-    case DocBuilder.reconstruct_snapshot(store, spec_uuid) do
-      {:ok, doc} ->
-        case ContentType.get_content(doc) do
-          nil -> {:error, "spec doc #{spec_uuid} is empty"}
-          content -> {:ok, content}
-        end
-
-      :none ->
-        {:error, "spec doc #{spec_uuid} not found"}
-    end
+    {:error, "must supply exactly one of :compute_fn or :code_uuid (not both)"}
   end
 
   @impl true
@@ -344,31 +212,15 @@ defmodule Commonplace.ViewCompute do
   # stop messages on dead process are ignored).
   @impl true
   def handle_info({:commit, uuid, _commit_id, _meta}, state) when is_binary(uuid) do
-    cond do
-      uuid == state.spec_uuid ->
-        Logger.debug(fn ->
-          "ViewCompute #{inspect(state.name || state.source_uuid)}: spec doc #{uuid} updated — restarting"
-        end)
+    if uuid == state.code_uuid do
+      Logger.debug(fn ->
+        "ViewCompute #{inspect(state.name || state.source_uuid)}: code doc #{uuid} updated — restarting"
+      end)
 
-        {:stop, :normal, state}
-
-      uuid == state.code_uuid ->
-        Logger.debug(fn ->
-          "ViewCompute #{inspect(state.name || state.source_uuid)}: code doc #{uuid} updated — restarting"
-        end)
-
-        {:stop, :normal, state}
-
-      uuid in state.code_uuids ->
-        Logger.debug(fn ->
-          "ViewCompute #{inspect(state.name || state.source_uuid)}: code doc #{uuid} updated — restarting"
-        end)
-
-        {:stop, :normal, state}
-
-      true ->
-        # Not our source / not our spec / not our code — ignore.
-        {:noreply, state}
+      {:stop, :normal, state}
+    else
+      # Not our source / not our code — ignore.
+      {:noreply, state}
     end
   end
 
