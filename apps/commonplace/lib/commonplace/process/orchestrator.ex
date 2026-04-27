@@ -14,6 +14,7 @@ defmodule Commonplace.Process.Orchestrator do
 
   @shutdown_grace_ms 5000
 
+  alias Commonplace.Code.SourceDoc
   alias Commonplace.Process.Config
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.Schema
@@ -280,63 +281,45 @@ defmodule Commonplace.Process.Orchestrator do
     end)
   end
 
+  # CX-uffl (M6 sub-bead i.5): compile-and-purge logic delegated to
+  # substrate Commonplace.Code.SourceDoc. Orchestrator keeps its own
+  # source_hash tracking for change-detection in detect_source_changes
+  # (read_source still returns the hash); the actual Code.compile_string
+  # + :code.purge mechanic moves to SourceDoc, including the two-ETS-
+  # table cache (round-1 audit (A) — no stale-entry leak).
   defp hot_reload_module(config, state) do
-    case read_source(config.source, state) do
-      {:ok, source_code, source_hash} ->
-        module_name = module_for(config.name)
-
-        try do
-          # Purge any lingering old version so BEAM can accept a new one.
-          # :code.purge/1 removes the "old" version of a module; it's safe
-          # here because our running process is on the "current" version.
-          :code.purge(module_name)
-
-          # compile_string loads the new version — the current version
-          # becomes "old", and the running GenServer will pick up the new
-          # callbacks on its next fully-qualified call (which GenServer
-          # does for every handle_call/handle_info/etc.).
-          Code.compile_string(source_code)
-          {:ok, source_hash}
-        rescue
-          e -> {:error, e}
-        end
-
-      {:error, reason} ->
-        {:error, reason}
+    with {:ok, _source_code, source_hash, source_uuid} <- read_source_with_uuid(config.source, state),
+         {:ok, _module} <- SourceDoc.compile(source_uuid, state.store) do
+      {:ok, source_hash}
     end
   end
 
   defp start_process(%Config{mode: :elixir} = config, state) do
-    case read_source(config.source, state) do
-      {:ok, source_code, source_hash} ->
-        try do
-          Code.compile_string(source_code)
+    with {:ok, _source_code, source_hash, source_uuid} <- read_source_with_uuid(config.source, state),
+         {:ok, _module} <- SourceDoc.compile(source_uuid, state.store) do
+      module_name = module_for(config.name)
 
-          module_name = module_for(config.name)
+      init_opts = [
+        store: state.store,
+        root_uuid: state.root_uuid,
+        name: config.name,
+        config: %{
+          "source" => config.source,
+          "owns" => config.owns,
+          "restart" => Atom.to_string(config.restart),
+          "depends_on" => config.depends_on
+        }
+      ]
 
-          init_opts = [
-            store: state.store,
-            root_uuid: state.root_uuid,
-            name: config.name,
-            config: %{
-              "source" => config.source,
-              "owns" => config.owns,
-              "restart" => Atom.to_string(config.restart),
-              "depends_on" => config.depends_on
-            }
-          ]
-
-          # Use start (not start_link) to avoid linking child to orchestrator
-          case GenServer.start(module_name, init_opts) do
-            {:ok, pid} -> {:ok, pid, source_hash}
-            error -> {:error, error}
-          end
-        rescue
-          e -> {:error, e}
-        end
-
-      {:error, reason} ->
-        {:error, reason}
+      # Use start (not start_link) to avoid linking child to orchestrator.
+      # module_name is the convention-derived name; SourceDoc.compile
+      # returned the source's actual self-named module — they should
+      # match if source author follows Commonplace.UserProcess.<Name>
+      # convention. If not, GenServer.start surfaces the mismatch.
+      case GenServer.start(module_name, init_opts) do
+        {:ok, pid} -> {:ok, pid, source_hash}
+        error -> {:error, error}
+      end
     end
   end
 
@@ -395,6 +378,17 @@ defmodule Commonplace.Process.Orchestrator do
   end
 
   defp read_source(filename, state) when is_binary(filename) do
+    case read_source_with_uuid(filename, state) do
+      {:ok, content, hash, _uuid} -> {:ok, content, hash}
+      {:error, _} = err -> err
+    end
+  end
+
+  # CX-uffl (M6 sub-bead i.5): variant exposing the source doc's UUID
+  # so callers can hand off to SourceDoc.compile/2. Schema-resolution
+  # layer stays in Orchestrator (which has user-process-name → doc-uuid
+  # mapping); SourceDoc operates one layer down.
+  defp read_source_with_uuid(filename, state) when is_binary(filename) do
     root_doc = load_schema(state.root_uuid, state.store)
 
     case Schema.get_entry(root_doc, filename) do
@@ -405,7 +399,7 @@ defmodule Commonplace.Process.Orchestrator do
             {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
             content = ContentType.get_content(doc) || ""
             hash = :erlang.md5(content)
-            {:ok, content, hash}
+            {:ok, content, hash, entry.node_id}
 
           :none ->
             {:error, :no_commit}
