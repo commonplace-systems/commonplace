@@ -422,6 +422,146 @@ defmodule Commonplace.ViewComputeTest do
     end
   end
 
+  # CX-fe7f (M7 sub-bead iii): :code_uuid opt replaces :spec_uuid for
+  # the M7 Elixir-source-as-pipeline path. Mutex with :compute_fn and
+  # :spec_uuid (legacy; kept until sub-bead v deletes ComputeSpec).
+  describe "ViewCompute :code_uuid opt (M7 sub-bead iii)" do
+    alias Commonplace.Code.SourceDoc
+
+    setup do
+      SourceDoc.reset_cache()
+      on_exit(fn -> SourceDoc.reset_cache() end)
+      :ok
+    end
+
+    defp seed_compute_doc(store, source_string) do
+      uuid = UUID.uuid4()
+      doc = Yelixer.Doc.new()
+      doc = ContentType.create(doc, :text, "_compute")
+      doc = ContentType.insert_text(doc, 0, source_string)
+      update = Yelixer.Encoding.encode_update(doc)
+      CommitStore.create_commit(store, uuid, update, nil)
+      uuid
+    end
+
+    test "init reads compute-doc + computes via ComputeRunner",
+         %{store: store, router: router} do
+      source_uuid = seed_text_doc(store, "hello")
+      target_uuid = seed_text_doc(store, "")
+
+      compute_source = ~S"""
+      defmodule Cp.Test.M7VC do
+        def compute(raw, ctx) do
+          "VIEW: #{String.upcase(raw)} for #{ctx.room_name}"
+        end
+      end
+      """
+
+      code_uuid = seed_compute_doc(store, compute_source)
+
+      {:ok, pid} =
+        ViewCompute.start_link(
+          source_uuid: source_uuid,
+          target_uuid: target_uuid,
+          code_uuid: code_uuid,
+          spec_context: %{room_name: "general"},
+          store: store,
+          router: router
+        )
+
+      :ok =
+        wait_until(fn ->
+          read_content(store, target_uuid) == "VIEW: HELLO for general"
+        end)
+
+      GenServer.stop(pid)
+    end
+
+    test "code_uuid commit triggers {:stop, :normal} (restart-the-instance)",
+         %{store: store, router: router} do
+      source_uuid = seed_text_doc(store, "hello")
+      target_uuid = seed_text_doc(store, "")
+
+      compute_source = ~S"""
+      defmodule Cp.Test.M7VCRestart do
+        def compute(raw, _ctx), do: raw
+      end
+      """
+
+      code_uuid = seed_compute_doc(store, compute_source)
+
+      {:ok, pid} =
+        ViewCompute.start_link(
+          source_uuid: source_uuid,
+          target_uuid: target_uuid,
+          code_uuid: code_uuid,
+          spec_context: %{room_name: "alpha"},
+          store: store,
+          router: router
+        )
+
+      Process.monitor(pid)
+
+      send(pid, {:commit, code_uuid, "fake-commit-id", %{}})
+
+      assert_receive {:DOWN, _ref, :process, ^pid, _reason}, 500
+    end
+
+    test "init/1 errors when missing compute/2 export in code-doc",
+         %{store: store, router: router} do
+      source_uuid = seed_text_doc(store, "hello")
+      target_uuid = seed_text_doc(store, "")
+
+      bad_compute_source = ~S"""
+      defmodule Cp.Test.M7VCNoCompute do
+        def something_else, do: :nope
+      end
+      """
+
+      code_uuid = seed_compute_doc(store, bad_compute_source)
+
+      Process.flag(:trap_exit, true)
+
+      {result, _log} =
+        ExUnit.CaptureLog.with_log(fn ->
+          ViewCompute.start_link(
+            source_uuid: source_uuid,
+            target_uuid: target_uuid,
+            code_uuid: code_uuid,
+            spec_context: %{},
+            store: store,
+            router: router
+          )
+        end)
+
+      assert {:error, _} = result
+    end
+
+    test "init/1 errors when both :code_uuid and :compute_fn supplied",
+         %{store: store, router: router} do
+      source_uuid = seed_text_doc(store, "hello")
+      target_uuid = seed_text_doc(store, "")
+
+      code_uuid = seed_compute_doc(store, "defmodule X do def compute(_,_), do: :ok end")
+
+      Process.flag(:trap_exit, true)
+
+      {result, _log} =
+        ExUnit.CaptureLog.with_log(fn ->
+          ViewCompute.start_link(
+            source_uuid: source_uuid,
+            target_uuid: target_uuid,
+            code_uuid: code_uuid,
+            compute_fn: fn x -> x end,
+            store: store,
+            router: router
+          )
+        end)
+
+      assert {:error, _} = result
+    end
+  end
+
   defp wait_until(fun, deadline_ms \\ 2000) do
     deadline = System.monotonic_time(:millisecond) + deadline_ms
     do_wait(fun, deadline)
