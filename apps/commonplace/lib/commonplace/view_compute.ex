@@ -83,7 +83,8 @@ defmodule Commonplace.ViewCompute do
     :name,
     :router,
     :store,
-    :last_computed_at
+    :last_computed_at,
+    code_uuids: []
   ]
 
   @type t :: %__MODULE__{
@@ -94,7 +95,8 @@ defmodule Commonplace.ViewCompute do
           name: atom() | nil,
           router: GenServer.server(),
           store: GenServer.server(),
-          last_computed_at: DateTime.t() | nil
+          last_computed_at: DateTime.t() | nil,
+          code_uuids: [String.t()]
         }
 
   # --- Client API ---
@@ -142,16 +144,18 @@ defmodule Commonplace.ViewCompute do
     compute_fn_opt = Keyword.get(opts, :compute_fn)
     spec_uuid_opt = Keyword.get(opts, :spec_uuid)
 
-    with {:ok, {compute_fn, spec_uuid}} <-
+    with {:ok, {compute_fn, spec_uuid, code_uuids}} <-
            resolve_compute(compute_fn_opt, spec_uuid_opt, opts, store) do
       CPPubSub.subscribe_blue(source_uuid)
       if spec_uuid, do: CPPubSub.subscribe_blue(spec_uuid)
+      Enum.each(code_uuids, &CPPubSub.subscribe_blue/1)
 
       state = %__MODULE__{
         source_uuid: source_uuid,
         target_uuid: target_uuid,
         compute_fn: compute_fn,
         spec_uuid: spec_uuid,
+        code_uuids: code_uuids,
         name: name,
         router: router,
         store: store
@@ -173,7 +177,7 @@ defmodule Commonplace.ViewCompute do
   end
 
   defp resolve_compute(compute_fn, nil, _opts, _store) when is_function(compute_fn, 1) do
-    {:ok, {compute_fn, nil}}
+    {:ok, {compute_fn, nil, []}}
   end
 
   defp resolve_compute(nil, spec_uuid, opts, store) when is_binary(spec_uuid) do
@@ -181,6 +185,11 @@ defmodule Commonplace.ViewCompute do
     # CX-7v9x (M6 sub-bead ii): validate may resolve M6 `<function ref>` forms
     # which need :spec_path. Threaded from spec_context if caller supplied it.
     spec_path = Map.get(spec_context, :spec_path)
+    # CX-6fhe (M6 sub-bead iii): root_uuid for path-walking the resolved
+    # ref to its source-doc UUID. Falls back to Workspace.root_uuid when
+    # caller doesn't pass one (production path); tests with a custom
+    # CommitStore pass it explicitly.
+    root_uuid = Map.get(spec_context, :root_uuid)
 
     validate_opts =
       [store: store]
@@ -193,7 +202,10 @@ defmodule Commonplace.ViewCompute do
         ComputeSpec.interpret(validated_spec, raw_input, spec_context)
       end
 
-      {:ok, {compute_fn, spec_uuid}}
+      # Extract code_uuids from M6 render steps' resolved refs.
+      code_uuids = extract_code_uuids(validated_spec, spec_path, root_uuid, store)
+
+      {:ok, {compute_fn, spec_uuid, code_uuids}}
     end
   end
 
@@ -203,6 +215,52 @@ defmodule Commonplace.ViewCompute do
 
   defp maybe_kw_put(kw, _key, nil), do: kw
   defp maybe_kw_put(kw, key, value), do: Keyword.put(kw, key, value)
+
+  # CX-6fhe (M6 sub-bead iii): walk validated spec's pipeline; for each
+  # M6 render step (carrying :ref), resolve the source-doc UUID via
+  # SourceDoc-style path walk so ViewCompute can subscribe to its
+  # commits. M5 render steps (no :ref) contribute no code_uuids.
+  defp extract_code_uuids(_validated_spec, nil, _root_uuid, _store), do: []
+
+  defp extract_code_uuids(validated_spec, spec_path, root_uuid, store)
+       when is_binary(spec_path) do
+    validated_spec.pipeline
+    |> Enum.flat_map(fn
+      %{kind: :render, ref: ref} when is_binary(ref) ->
+        case resolve_ref_to_uuid(ref, spec_path, root_uuid, store) do
+          {:ok, uuid} -> [uuid]
+          _ -> []
+        end
+
+      _ ->
+        []
+    end)
+  end
+
+  defp resolve_ref_to_uuid(ref, spec_path, root_uuid, store) do
+    parent = Path.dirname(spec_path)
+
+    target_path =
+      case ref do
+        "../" <> rest ->
+          if parent in [".", ""], do: rest, else: Path.join(parent, rest)
+
+        "./" <> rest ->
+          if parent in [".", ""], do: rest, else: Path.join(parent, rest)
+
+        _ ->
+          ref
+      end
+
+    with {:ok, root} <- resolve_root(root_uuid),
+         {:ok, uuid} <-
+           Commonplace.Tree.Lookup.lookup_doc_by_path(root, target_path, store: store) do
+      {:ok, uuid}
+    end
+  end
+
+  defp resolve_root(nil), do: Commonplace.Workspace.root_uuid()
+  defp resolve_root(uuid) when is_binary(uuid), do: {:ok, uuid}
 
   defp read_spec_content(store, spec_uuid) do
     case DocBuilder.reconstruct_snapshot(store, spec_uuid) do
@@ -227,25 +285,35 @@ defmodule Commonplace.ViewCompute do
     {:noreply, do_compute(state)}
   end
 
-  # CX-wxbp (M5 sub-bead iii): restart-on-spec-commit. When the spec
-  # doc receives a new commit (operator edits the chat compute spec),
-  # terminate this instance — the supervisor restarts it which re-reads
-  # + re-parses + re-validates the new spec. Simpler than hot-reloading
-  # the closure (round-1 Q2: restart-the-instance).
+  # CX-wxbp (M5 sub-bead iii) + CX-6fhe (M6 sub-bead iii):
+  # Restart-on-spec-or-code-commit. Either the spec doc OR any
+  # subscribed code doc (M6 <function ref> targets) receiving a new
+  # commit triggers {:stop, :normal} — supervisor restarts which
+  # re-reads spec + re-resolves refs + re-compiles via SourceDoc
+  # (recompile triggered by new content_hash). Eventually consistent:
+  # simultaneous commits result in a single restart cycle (subsequent
+  # stop messages on dead process are ignored).
   @impl true
-  def handle_info({:commit, spec_uuid, _commit_id, _meta}, %{spec_uuid: spec_uuid} = state)
-      when is_binary(spec_uuid) do
-    Logger.debug(fn ->
-      "ViewCompute #{inspect(state.name || state.source_uuid)}: spec doc #{spec_uuid} updated — restarting"
-    end)
+  def handle_info({:commit, uuid, _commit_id, _meta}, state) when is_binary(uuid) do
+    cond do
+      uuid == state.spec_uuid ->
+        Logger.debug(fn ->
+          "ViewCompute #{inspect(state.name || state.source_uuid)}: spec doc #{uuid} updated — restarting"
+        end)
 
-    {:stop, :normal, state}
-  end
+        {:stop, :normal, state}
 
-  @impl true
-  def handle_info({:commit, _other_uuid, _commit_id, _meta}, state) do
-    # Not our source / not our spec — ignore.
-    {:noreply, state}
+      uuid in state.code_uuids ->
+        Logger.debug(fn ->
+          "ViewCompute #{inspect(state.name || state.source_uuid)}: code doc #{uuid} updated — restarting"
+        end)
+
+        {:stop, :normal, state}
+
+      true ->
+        # Not our source / not our spec / not our code — ignore.
+        {:noreply, state}
+    end
   end
 
   @impl true

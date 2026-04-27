@@ -290,6 +290,138 @@ defmodule Commonplace.ViewComputeTest do
     end
   end
 
+  # CX-6fhe (M6 sub-bead iii): code_uuid as third commit subscription.
+  # When spec uses M6 <function ref> form, ViewCompute resolves the
+  # source-doc UUID at init, subscribes to its commits, and restarts
+  # on any source-edit (eventually consistent with spec edits).
+  describe "ViewCompute code_uuid subscription (M6 sub-bead iii)" do
+    alias Commonplace.Code.SourceDoc
+    alias Commonplace.Tree.Schema
+
+    setup %{store: store} do
+      SourceDoc.reset_cache()
+
+      # Seed a synthetic tree so the M6 spec can resolve "../_renderer.ex"
+      # M5 callers don't hit this path; only M6 specs need it.
+      renderer_source = """
+      defmodule Cp.Test.M6Live do
+        def render(entries, room) do
+          items = Enum.map_join(entries, ",", & &1["title"] || "_")
+          "<live room=\\"\#{room}\\">\#{items}</live>"
+        end
+      end
+      """
+
+      renderer_uuid = UUID.uuid4()
+      renderer_doc = Yelixer.Doc.new()
+      renderer_doc = ContentType.create(renderer_doc, :text, "_renderer.ex")
+      renderer_doc = ContentType.insert_text(renderer_doc, 0, renderer_source)
+      update = Yelixer.Encoding.encode_update(renderer_doc)
+      CommitStore.create_commit(store, renderer_uuid, update, nil)
+
+      spec_xml = """
+      <compute-spec schema="1">
+        <pipeline>
+          <step kind="decode_json_array"/>
+          <step kind="render">
+            <function ref="../_renderer.ex" name="render"/>
+          </step>
+        </pipeline>
+      </compute-spec>
+      """
+
+      spec_uuid = UUID.uuid4()
+      spec_doc = Yelixer.Doc.new()
+      spec_doc = ContentType.create(spec_doc, :text, "_compute")
+      spec_doc = ContentType.insert_text(spec_doc, 0, spec_xml)
+      update = Yelixer.Encoding.encode_update(spec_doc)
+      CommitStore.create_commit(store, spec_uuid, update, nil)
+
+      dir_uuid = UUID.uuid4()
+      dir_schema = Schema.new_schema()
+      dir_schema = Schema.add_file(dir_schema, "_renderer.ex", renderer_uuid)
+      dir_schema = Schema.add_file(dir_schema, "_compute", spec_uuid)
+      update = Yelixer.Encoding.encode_update(dir_schema)
+      CommitStore.create_commit(store, dir_uuid, update, nil)
+
+      root_uuid = UUID.uuid4()
+      root_doc = Schema.new_schema()
+      root_doc = Schema.add_directory(root_doc, "test", dir_uuid)
+      update = Yelixer.Encoding.encode_update(root_doc)
+      CommitStore.create_commit(store, root_uuid, update, nil)
+      File.write!(Path.join(Application.get_env(:commonplace, :data_dir, "tmp/test_data"), "root"), root_uuid)
+
+      on_exit(fn -> SourceDoc.reset_cache() end)
+
+      %{spec_uuid: spec_uuid, renderer_uuid: renderer_uuid, root_uuid: root_uuid}
+    end
+
+    test "code_uuid subscription is set up at init for M6 form",
+         %{store: store, router: router, spec_uuid: spec_uuid, renderer_uuid: renderer_uuid, root_uuid: root_uuid} do
+      source_uuid = seed_messages_doc(store)
+      target_uuid = seed_view_doc(store)
+
+      {:ok, pid} =
+        ViewCompute.start_link(
+          source_uuid: source_uuid,
+          target_uuid: target_uuid,
+          spec_uuid: spec_uuid,
+          spec_context: %{room_name: "alpha", spec_path: "test/_compute", root_uuid: root_uuid},
+          store: store,
+          router: router
+        )
+
+      state = ViewCompute.state(pid)
+      assert renderer_uuid in state.code_uuids
+
+      GenServer.stop(pid)
+    end
+
+    test "commit on code_uuid triggers {:stop, :normal} (round-1: restart-the-instance)",
+         %{store: store, router: router, spec_uuid: spec_uuid, renderer_uuid: renderer_uuid, root_uuid: root_uuid} do
+      source_uuid = seed_messages_doc(store)
+      target_uuid = seed_view_doc(store)
+
+      {:ok, pid} =
+        ViewCompute.start_link(
+          source_uuid: source_uuid,
+          target_uuid: target_uuid,
+          spec_uuid: spec_uuid,
+          spec_context: %{room_name: "alpha", spec_path: "test/_compute", root_uuid: root_uuid},
+          store: store,
+          router: router
+        )
+
+      Process.monitor(pid)
+
+      send(pid, {:commit, renderer_uuid, "fake-commit-id", %{}})
+
+      assert_receive {:DOWN, _ref, :process, ^pid, _reason}, 500
+    end
+
+    test "M5 specs (no <function ref>) have empty code_uuids list",
+         %{store: store, router: router} do
+      source_uuid = seed_messages_doc(store)
+      target_uuid = seed_view_doc(store)
+      m5_spec_uuid = seed_compute_spec(store, @chat_compute_spec)
+
+      {:ok, pid} =
+        ViewCompute.start_link(
+          source_uuid: source_uuid,
+          target_uuid: target_uuid,
+          spec_uuid: m5_spec_uuid,
+          spec_context: %{room_name: "general"},
+          store: store,
+          router: router
+        )
+
+      state = ViewCompute.state(pid)
+      assert state.code_uuids == []
+
+      GenServer.stop(pid)
+    end
+  end
+
   defp wait_until(fun, deadline_ms \\ 2000) do
     deadline = System.monotonic_time(:millisecond) + deadline_ms
     do_wait(fun, deadline)
