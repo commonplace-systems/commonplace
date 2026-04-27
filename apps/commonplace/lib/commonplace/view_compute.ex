@@ -178,11 +178,21 @@ defmodule Commonplace.ViewCompute do
 
   defp resolve_compute(nil, spec_uuid, opts, store) when is_binary(spec_uuid) do
     spec_context = Keyword.get(opts, :spec_context, %{})
+    # CX-7v9x (M6 sub-bead ii): validate may resolve M6 `<function ref>` forms
+    # which need :spec_path. Threaded from spec_context if caller supplied it.
+    spec_path = Map.get(spec_context, :spec_path)
+
+    validate_opts =
+      [store: store]
+      |> maybe_kw_put(:spec_path, spec_path)
 
     with {:ok, content} <- read_spec_content(store, spec_uuid),
          {:ok, spec} <- ComputeSpec.parse(content),
-         :ok <- ComputeSpec.validate(spec) do
-      compute_fn = fn raw_input -> ComputeSpec.interpret(spec, raw_input, spec_context) end
+         {:ok, validated_spec} <- ComputeSpec.validate(spec, validate_opts) do
+      compute_fn = fn raw_input ->
+        ComputeSpec.interpret(validated_spec, raw_input, spec_context)
+      end
+
       {:ok, {compute_fn, spec_uuid}}
     end
   end
@@ -190,6 +200,9 @@ defmodule Commonplace.ViewCompute do
   defp resolve_compute(_, _, _, _) do
     {:error, "must supply exactly one of :compute_fn or :spec_uuid (not both)"}
   end
+
+  defp maybe_kw_put(kw, _key, nil), do: kw
+  defp maybe_kw_put(kw, key, value), do: Keyword.put(kw, key, value)
 
   defp read_spec_content(store, spec_uuid) do
     case DocBuilder.reconstruct_snapshot(store, spec_uuid) do

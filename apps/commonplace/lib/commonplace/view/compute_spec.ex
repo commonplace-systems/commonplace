@@ -58,12 +58,17 @@ defmodule Commonplace.View.ComputeSpec do
   similar to ArgResolver if signatures diverge.
   """
 
+  alias Commonplace.Code.SourceDoc
   alias Commonplace.Document.ViewXml
   alias Commonplace.Materialize
 
   defmodule Step do
     @moduledoc false
-    defstruct [:kind, :chains, :module, :function]
+    # CX-7v9x (M6 sub-bead ii): :ref carries the M6 <function ref> form
+    # (e.g., "../_renderer.ex"). For M5 form, :module is set directly.
+    # validate/2 resolves :ref → cached :module so apply_step always
+    # reads :module + :function regardless of source form.
+    defstruct [:kind, :chains, :module, :function, :ref]
     @type t :: %__MODULE__{}
   end
 
@@ -165,18 +170,62 @@ defmodule Commonplace.View.ComputeSpec do
     end
   end
 
+  # CX-7v9x (M6 sub-bead ii): dispatch on attrs presence.
+  # M5 form: <function module="..." name="..."/>
+  # M6 form: <function ref="..." name="..."/>
+  # Mutex: exactly one form per step. Both forms or neither: error.
+  # name is REQUIRED-ALWAYS in M6 form (round-1 question resolution).
   defp parse_render_step(%ViewXml.Node{} = step) do
     case find_child(step, :function) do
-      %ViewXml.Node{attrs: %{"module" => mod, "name" => fn_name}} ->
-        {:ok,
-         %Step{
-           kind: :render,
-           module: String.to_atom("Elixir.#{mod}"),
-           function: String.to_atom(fn_name)
-         }}
+      nil ->
+        {:error, "render step missing <function .../> child"}
 
-      _ ->
-        {:error, "render step missing <function module=\"...\" name=\"...\"/> child"}
+      %ViewXml.Node{attrs: attrs} ->
+        parse_function_attrs(attrs)
+    end
+  end
+
+  defp parse_function_attrs(attrs) do
+    has_module = Map.has_key?(attrs, "module")
+    has_ref = Map.has_key?(attrs, "ref")
+    fn_name = Map.get(attrs, "name")
+
+    cond do
+      has_module and has_ref ->
+        {:error, "function mutex: cannot supply both module= and ref= attributes"}
+
+      not has_module and not has_ref ->
+        {:error, "function missing module=... or ref=... attribute"}
+
+      has_module ->
+        # M5 form requires name as before.
+        case fn_name do
+          nil ->
+            {:error, "function missing name= attribute"}
+
+          name when is_binary(name) ->
+            {:ok,
+             %Step{
+               kind: :render,
+               module: String.to_atom("Elixir.#{Map.fetch!(attrs, "module")}"),
+               function: String.to_atom(name)
+             }}
+        end
+
+      has_ref ->
+        # M6 form: name is REQUIRED-ALWAYS (round-1 audit).
+        case fn_name do
+          nil ->
+            {:error, "function ref= form requires name= attribute (M6 round-1: name required-always)"}
+
+          name when is_binary(name) ->
+            {:ok,
+             %Step{
+               kind: :render,
+               ref: Map.fetch!(attrs, "ref"),
+               function: String.to_atom(name)
+             }}
+        end
     end
   end
 
@@ -195,22 +244,57 @@ defmodule Commonplace.View.ComputeSpec do
   Validate a parsed spec at supervisor-start. Catches missing render-fn
   modules / non-exported functions BEFORE compute-time so failures
   don't fire as silent runtime crashes.
+
+  CX-7v9x (M6 sub-bead ii): returns `{:ok, validated_spec}` so the
+  M6 `<function ref>` form can carry resolved modules cached on the
+  Step struct. M5 form's spec passes through unchanged.
+
+  Optional opts (required for M6 form):
+    * `:spec_path` — the spec doc's path (drives `..`-relative resolution)
+    * `:store` — CommitStore name
   """
-  @spec validate(t()) :: :ok | {:error, String.t()}
-  def validate(%__MODULE__{pipeline: pipeline}) do
-    Enum.reduce_while(pipeline, :ok, fn step, :ok ->
-      case validate_step(step) do
-        :ok -> {:cont, :ok}
+  @spec validate(t(), keyword()) :: {:ok, t()} | {:error, String.t()}
+  def validate(%__MODULE__{pipeline: pipeline} = spec, opts \\ []) do
+    Enum.reduce_while(pipeline, {:ok, []}, fn step, {:ok, acc} ->
+      case validate_step(step, opts) do
+        {:ok, validated_step} -> {:cont, {:ok, [validated_step | acc]}}
         {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
+    |> case do
+      {:ok, reversed} -> {:ok, %{spec | pipeline: Enum.reverse(reversed)}}
+      err -> err
+    end
   end
 
-  defp validate_step(%Step{kind: :render, module: module, function: function}) do
-    resolve_render_fn(module, function, 2)
+  # M5 form: module already set; resolve via Code.ensure_loaded.
+  defp validate_step(%Step{kind: :render, ref: nil, module: module, function: function} = step, _opts) do
+    case resolve_render_fn(module, function, 2) do
+      :ok -> {:ok, step}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
-  defp validate_step(%Step{}), do: :ok
+  # M6 form: ref set; resolve via SourceDoc, cache module on step.
+  defp validate_step(%Step{kind: :render, ref: ref, function: function} = step, opts)
+       when is_binary(ref) do
+    spec_path = Keyword.get(opts, :spec_path)
+    store = Keyword.get(opts, :store, Commonplace.Store.CommitStoreClient)
+
+    case spec_path do
+      nil ->
+        {:error,
+         "M6 <function ref> form requires :spec_path opt to validate (got nil)"}
+
+      path when is_binary(path) ->
+        with {:ok, module} <- SourceDoc.resolve(ref, path, store),
+             :ok <- resolve_render_fn(module, function, 2) do
+          {:ok, %{step | module: module}}
+        end
+    end
+  end
+
+  defp validate_step(%Step{} = step, _opts), do: {:ok, step}
 
   @doc """
   Resolve a render-fn `(module, function, arity)`. Returns `{:ok, mfa}`
