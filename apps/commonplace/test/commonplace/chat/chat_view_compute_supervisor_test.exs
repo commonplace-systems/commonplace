@@ -81,28 +81,30 @@ defmodule Commonplace.Chat.ChatViewComputeSupervisorTest do
     mint_doc(uuid, doc)
   end
 
-  @chat_compute_spec """
-  <compute-spec schema="1">
-    <pipeline>
-      <step kind="decode_json_array"/>
-      <step kind="materialize">
-        <chains>
-          <chain field="edit_of" semantics="latest_replaces"/>
-          <chain field="tombstone_of" semantics="marks_deleted"/>
-        </chains>
-      </step>
-      <step kind="render">
-        <function module="Commonplace.Chat.ChatViewBuilder" name="build_view_xml"/>
-      </step>
-    </pipeline>
-  </compute-spec>
+  # CX-9tj0 (M7 sub-bead iv): _compute body is Elixir source per the M7
+  # ship; supervisor's :spec_uuid opt now feeds ViewCompute's :code_uuid
+  # path which expects ComputeRunner.validate(compute/2 exported).
+  @chat_compute_source ~S"""
+  defmodule Commonplace.UserCode.Chat.Compute do
+    alias Commonplace.Compute
+
+    def compute(raw, ctx) do
+      raw
+      |> Compute.decode_json_array()
+      |> Compute.materialize(chains: [
+        {:edit_of, :latest_replaces},
+        {:tombstone_of, :marks_deleted}
+      ])
+      |> Commonplace.Chat.ChatViewBuilder.build_view_xml(ctx.room_name)
+    end
+  end
   """
 
   defp mint_compute_spec do
     uuid = UUID.uuid4()
     doc = Yelixer.Doc.new()
     doc = ContentType.create(doc, :text, "_compute")
-    doc = ContentType.insert_text(doc, 0, @chat_compute_spec)
+    doc = ContentType.insert_text(doc, 0, @chat_compute_source)
     mint_doc(uuid, doc)
   end
 

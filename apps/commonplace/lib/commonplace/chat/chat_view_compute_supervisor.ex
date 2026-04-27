@@ -65,13 +65,16 @@ defmodule Commonplace.Chat.ChatViewComputeSupervisor do
       :none ->
         source_uuid = Keyword.fetch!(opts, :source_uuid)
         target_uuid = Keyword.fetch!(opts, :target_uuid)
-        spec_uuid = Keyword.fetch!(opts, :spec_uuid)
+        # CX-9tj0 (M7 sub-bead iv): :spec_uuid → :code_uuid for the M7
+        # ComputeRunner path. Same physical doc UUID; semantics shifted
+        # from XML compute-spec to Elixir compute fn source.
+        code_uuid = Keyword.fetch!(opts, :spec_uuid)
 
         child_opts =
           [
             source_uuid: source_uuid,
             target_uuid: target_uuid,
-            spec_uuid: spec_uuid,
+            code_uuid: code_uuid,
             spec_context: %{room_name: room_name},
             name: nil
           ]

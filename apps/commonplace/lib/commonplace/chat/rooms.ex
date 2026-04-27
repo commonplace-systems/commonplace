@@ -34,6 +34,7 @@ defmodule Commonplace.Chat.Rooms do
 
   alias Commonplace.Chat.{ChatViewBuilder, Messages, TemplateBootstrap}
   alias Commonplace.CommandRouter
+  alias Commonplace.Document.ContentType
   alias Commonplace.Materialize
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.{DocBuilder, Fork, Lookup, Schema}
@@ -244,6 +245,66 @@ defmodule Commonplace.Chat.Rooms do
         end
       end
     end
+  end
+
+  @doc """
+  CX-9tj0 (M7 sub-bead iv): per-room migration helper for M5/M6 rooms
+  that still carry XML-form `_compute` body. Replaces XML body with
+  Elixir source per the M7 substrate. Idempotent — bodies already in
+  Elixir form (post-M7 rooms) no-op.
+
+  Detects XML via leading-`<` heuristic (matches TemplateBootstrap's
+  upgrade discipline).
+
+  Returns `:ok` on success, `{:error, :not_found}` if the room doesn't
+  exist or has no `_compute` doc (pre-M5 rooms — call upgrade_compute/3
+  first).
+  """
+  def upgrade_compute_to_m7(root_uuid, room_name, opts \\ [])
+      when is_binary(root_uuid) and is_binary(room_name) and is_list(opts) do
+    store = Keyword.get(opts, :store, CommitStoreClient)
+
+    with {:ok, room} <- lookup(root_uuid, room_name, opts) do
+      case room.compute_uuid do
+        nil ->
+          {:error, :not_found}
+
+        compute_uuid ->
+          rewrite_compute_to_m7(compute_uuid, store)
+      end
+    end
+  end
+
+  defp rewrite_compute_to_m7(compute_uuid, store) do
+    case DocBuilder.reconstruct_snapshot(store, compute_uuid) do
+      {:ok, doc} ->
+        content = ContentType.get_content(doc) || ""
+
+        if compute_body_is_xml?(content) do
+          length = String.length(content)
+          new_content = TemplateBootstrap.chat_compute_source()
+
+          doc =
+            doc
+            |> ContentType.delete_text(0, length)
+            |> ContentType.insert_text(0, new_content)
+
+          update = Yelixer.Encoding.encode_update(doc)
+          CommitStoreClient.create_chained_commit(store, compute_uuid, update)
+          :ok
+        else
+          :ok
+        end
+
+      :none ->
+        {:error, :not_found}
+    end
+  end
+
+  defp compute_body_is_xml?(content) do
+    content
+    |> String.trim_leading()
+    |> String.starts_with?("<")
   end
 
   # Materialize chain rules read from the per-room _compute spec doc

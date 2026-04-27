@@ -50,6 +50,35 @@ defmodule Commonplace.Chat.TemplateBootstrap do
   @chat_dir "chat"
   @template_name "__template"
 
+  # CX-9tj0 (M7 sub-bead iv): canonical chat compute source. The Elixir
+  # source IS the pipeline; substrate ComputeRunner reads + compiles +
+  # calls module.compute(raw, ctx). Module attribute declared here so
+  # both mint_compute_doc + ensure_compute_in_template's upgrade path
+  # share one source-of-truth string. Public accessor at
+  # `chat_compute_source/0` lets `Chat.Rooms.upgrade_compute_to_m7/3`
+  # reuse the same string for per-room migration.
+  @chat_compute_source ~S"""
+  defmodule Commonplace.UserCode.Chat.Compute do
+    alias Commonplace.Compute
+
+    def compute(raw, ctx) do
+      raw
+      |> Compute.decode_json_array()
+      |> Compute.materialize(chains: [
+        {:edit_of, :latest_replaces},
+        {:tombstone_of, :marks_deleted}
+      ])
+      |> Commonplace.Chat.ChatViewBuilder.build_view_xml(ctx.room_name)
+    end
+  end
+  """
+
+  @doc """
+  Public accessor for the canonical chat compute source. Used by
+  `Chat.Rooms.upgrade_compute_to_m7/3` (per-room migration).
+  """
+  def chat_compute_source, do: @chat_compute_source
+
   @doc """
   Idempotently ensure `/chat/__template/` exists under `root_uuid`. If
   the template directory is already present, returns `:ok` without any
@@ -108,12 +137,17 @@ defmodule Commonplace.Chat.TemplateBootstrap do
     end
   end
 
+  # CX-9tj0 (M7 sub-bead iv): _compute body shifted XML→Elixir source
+  # for the M7 ComputeRunner path. Idempotent migration:
+  # - if _compute missing → mint with Elixir body
+  # - if _compute exists with XML body (M5/M6 ship) → upgrade body to Elixir
+  # - if _compute exists with Elixir body (post-M7) → no-op
   defp ensure_compute_in_template(template_dir_uuid, store) do
     template_doc = load_schema(template_dir_uuid, store)
 
     case Schema.get_entry(template_doc, "_compute") do
-      {:ok, _entry} ->
-        :ok
+      {:ok, entry} ->
+        upgrade_compute_body_if_xml(entry.node_id, store)
 
       :error ->
         compute_uuid = mint_compute_doc(store)
@@ -123,6 +157,44 @@ defmodule Commonplace.Chat.TemplateBootstrap do
         CommitStoreClient.create_chained_commit(store, template_dir_uuid, update)
         :ok
     end
+  end
+
+  # Detect XML-vs-Elixir body via leading-`<` heuristic; upgrade XML
+  # bodies to Elixir source. Idempotent — bodies starting with non-`<`
+  # are assumed Elixir and left alone.
+  defp upgrade_compute_body_if_xml(compute_uuid, store) do
+    case DocBuilder.reconstruct_snapshot(store, compute_uuid) do
+      {:ok, doc} ->
+        content = ContentType.get_content(doc) || ""
+
+        if xml_body?(content) do
+          rewrite_compute_doc(compute_uuid, doc, content, store)
+        else
+          :ok
+        end
+
+      :none ->
+        :ok
+    end
+  end
+
+  defp xml_body?(content) do
+    content
+    |> String.trim_leading()
+    |> String.starts_with?("<")
+  end
+
+  defp rewrite_compute_doc(compute_uuid, doc, current_content, store) do
+    length = String.length(current_content)
+
+    doc =
+      doc
+      |> ContentType.delete_text(0, length)
+      |> ContentType.insert_text(0, @chat_compute_source)
+
+    update = Yelixer.Encoding.encode_update(doc)
+    CommitStoreClient.create_chained_commit(store, compute_uuid, update)
+    :ok
   end
 
   defp mint_template(chat_dir_uuid, store) do
@@ -188,34 +260,13 @@ defmodule Commonplace.Chat.TemplateBootstrap do
     uuid
   end
 
-  # CX-qbhb (M5 sub-bead i): chat compute spec doc — declarative XML
-  # carrying the chain rules + render-fn reference + pipeline kinds
-  # (held positions #2/#3/#4). Substrate Commonplace.View.ComputeSpec
-  # (sub-bead ii) parses + interprets this. After M5 (iv) ships,
-  # ChatViewCompute Elixir module DELETES; this doc IS the spec.
-  @chat_compute_spec """
-  <compute-spec schema="1">
-    <pipeline>
-      <step kind="decode_json_array"/>
-      <step kind="materialize">
-        <chains>
-          <chain field="edit_of" semantics="latest_replaces"/>
-          <chain field="tombstone_of" semantics="marks_deleted"/>
-        </chains>
-      </step>
-      <step kind="render">
-        <function module="Commonplace.Chat.ChatViewBuilder" name="build_view_xml"/>
-      </step>
-    </pipeline>
-  </compute-spec>
-  """
 
   defp mint_compute_doc(store) do
     uuid = UUID.uuid4()
 
     doc = Yelixer.Doc.new()
     doc = ContentType.create(doc, :text, "_compute")
-    doc = ContentType.insert_text(doc, 0, @chat_compute_spec)
+    doc = ContentType.insert_text(doc, 0, @chat_compute_source)
     update = Yelixer.Encoding.encode_update(doc)
     CommitStoreClient.create_chained_commit(store, uuid, update)
     uuid

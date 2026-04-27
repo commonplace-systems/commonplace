@@ -173,7 +173,7 @@ defmodule Commonplace.Chat.TemplateBootstrapTest do
       assert is_binary(compute_entry.node_id)
     end
 
-    test "_compute content carries chain rules + render-fn reference (M5 spec shape)",
+    test "_compute content carries chain rules + render-fn reference (M7 Elixir shape)",
          %{root: root} do
       :ok = TemplateBootstrap.ensure_template(root)
 
@@ -184,24 +184,20 @@ defmodule Commonplace.Chat.TemplateBootstrapTest do
       {:ok, compute_doc} = DocBuilder.reconstruct_snapshot(CommitStoreClient, compute_entry.node_id)
       content = ContentType.get_content(compute_doc) || ""
 
-      # Sub-bead (ii) extends @known_tags for <compute-spec>; for (i) we
-      # just verify the doc parses as ANY ViewXml node.
-      assert {:ok, %ViewXml.Node{}} = ViewXml.parse(content)
+      # CX-9tj0 (M7 sub-bead iv): _compute body is Elixir source. Chain
+      # rules expressed as author-friendly tuple form via Compute stdlib.
+      assert content =~ "defmodule Commonplace.UserCode.Chat.Compute"
+      assert content =~ "def compute(raw, ctx)"
+      assert content =~ "Compute.decode_json_array"
+      assert content =~ "Compute.materialize"
 
-      # Chain rules — M2 shape declared in XML
-      assert content =~ ~s(field="edit_of")
-      assert content =~ ~s(semantics="latest_replaces")
-      assert content =~ ~s(field="tombstone_of")
-      assert content =~ ~s(semantics="marks_deleted")
+      # Chain rules — M7 author-facing tuple form
+      assert content =~ "{:edit_of, :latest_replaces}"
+      assert content =~ "{:tombstone_of, :marks_deleted}"
 
-      # Render-fn reference — function-by-name (held #2)
-      assert content =~ "Commonplace.Chat.ChatViewBuilder"
-      assert content =~ "build_view_xml"
-
-      # Pipeline kinds enumerated (held #4)
-      assert content =~ ~s(kind="decode_json_array")
-      assert content =~ ~s(kind="materialize")
-      assert content =~ ~s(kind="render")
+      # Render-fn called by name (chat-tier ChatViewBuilder)
+      assert content =~ "Commonplace.Chat.ChatViewBuilder.build_view_xml"
+      assert content =~ "ctx.room_name"
     end
 
     test "idempotence: re-ensure with existing template + _compute is a no-op",
