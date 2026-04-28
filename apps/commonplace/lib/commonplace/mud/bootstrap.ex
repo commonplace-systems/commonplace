@@ -38,7 +38,18 @@ defmodule Commonplace.MUD.Bootstrap do
     set_exits(clearing_uuid, %{"west" => start_uuid}, store)
 
     cloak_uuid = create_object(%Object{name: "cloak", aliases: ["cape", "black cloak"], description: "A heavy black cloak. It looks warm."}, store)
-    fountain_uuid = create_object(%Object{name: "fountain", aliases: ["water"], description: "A stone fountain murmurs softly.", fixed: true}, store)
+    fountain_uuid =
+      create_object(
+        %Object{
+          name: "fountain",
+          aliases: ["water"],
+          description: "A stone fountain murmurs softly.",
+          fixed: true,
+          tick_interval_ms: 8_000,
+          tick_message: "The fountain burbles softly."
+        },
+        store
+      )
 
     add_dir_entry(start_uuid, "cloak.obj", cloak_uuid, store)
     add_dir_entry(clearing_uuid, "fountain.obj", fountain_uuid, store)

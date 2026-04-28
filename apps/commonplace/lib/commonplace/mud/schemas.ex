@@ -26,13 +26,15 @@ defmodule Commonplace.MUD.Schemas do
     defstruct name: "",
               description: "",
               exits: %{},
-              tick_interval_ms: nil
+              tick_interval_ms: nil,
+              tick_message: nil
 
     @type t :: %__MODULE__{
             name: String.t(),
             description: String.t(),
             exits: %{String.t() => String.t()},
-            tick_interval_ms: pos_integer() | nil
+            tick_interval_ms: pos_integer() | nil,
+            tick_message: String.t() | nil
           }
   end
 
@@ -42,14 +44,16 @@ defmodule Commonplace.MUD.Schemas do
               aliases: [],
               description: "",
               fixed: false,
-              tick_interval_ms: nil
+              tick_interval_ms: nil,
+              tick_message: nil
 
     @type t :: %__MODULE__{
             name: String.t(),
             aliases: [String.t()],
             description: String.t(),
             fixed: boolean(),
-            tick_interval_ms: pos_integer() | nil
+            tick_interval_ms: pos_integer() | nil,
+            tick_message: String.t() | nil
           }
   end
 
@@ -78,7 +82,8 @@ defmodule Commonplace.MUD.Schemas do
       "name" => r.name,
       "description" => r.description,
       "exits" => r.exits,
-      "tick_interval_ms" => r.tick_interval_ms
+      "tick_interval_ms" => r.tick_interval_ms,
+      "tick_message" => r.tick_message
     })
   end
 
@@ -89,7 +94,8 @@ defmodule Commonplace.MUD.Schemas do
       "aliases" => o.aliases,
       "description" => o.description,
       "fixed" => o.fixed,
-      "tick_interval_ms" => o.tick_interval_ms
+      "tick_interval_ms" => o.tick_interval_ms,
+      "tick_message" => o.tick_message
     })
   end
 
@@ -112,7 +118,8 @@ defmodule Commonplace.MUD.Schemas do
            name: Map.get(m, "name", ""),
            description: Map.get(m, "description", ""),
            exits: Map.get(m, "exits", %{}),
-           tick_interval_ms: Map.get(m, "tick_interval_ms")
+           tick_interval_ms: Map.get(m, "tick_interval_ms"),
+           tick_message: Map.get(m, "tick_message")
          }}
 
       err ->
@@ -129,7 +136,8 @@ defmodule Commonplace.MUD.Schemas do
            aliases: Map.get(m, "aliases", []),
            description: Map.get(m, "description", ""),
            fixed: Map.get(m, "fixed", false),
-           tick_interval_ms: Map.get(m, "tick_interval_ms")
+           tick_interval_ms: Map.get(m, "tick_interval_ms"),
+           tick_message: Map.get(m, "tick_message")
          }}
 
       err ->

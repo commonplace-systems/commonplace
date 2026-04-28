@@ -58,7 +58,8 @@ defmodule Commonplace.Application do
         Commonplace.CommandRouter,
         Commonplace.Chat.OnrampSupervisor,
         Commonplace.Chat.ChatViewComputeSupervisor,
-        Commonplace.MUD.MoveServer
+        Commonplace.MUD.MoveServer,
+        Commonplace.MUD.TickBot
       ] ++ snapshot_sweeper_children() ++ presence_reaper_children()
 
     opts = [strategy: :one_for_one, name: Commonplace.Supervisor]
