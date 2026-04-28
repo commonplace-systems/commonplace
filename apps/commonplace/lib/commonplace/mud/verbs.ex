@@ -109,13 +109,14 @@ defmodule Commonplace.MUD.Verbs do
   end
 
   defp emit_verb_error(verb_name, reason, ctx) do
-    World.broadcast_room(ctx.current_room_uuid, %{
-      kind: :verb_error,
-      verb: verb_name,
-      reason: reason
-    })
-
-    World.tell(ctx.player_uuid, %{kind: :verb_error, verb: verb_name, reason: reason})
+    # Broadcast to bystanders only — the actor gets a separate reply
+    # via the dispatch's {:error, ...} return value, so they don't
+    # see the same verb_error rendered three times.
+    World.broadcast_room(
+      ctx.current_room_uuid,
+      %{kind: :verb_error, verb: verb_name, reason: reason},
+      except: [ctx.player_uuid]
+    )
   end
 
   # ---- Built-in verbs ----
@@ -143,6 +144,21 @@ defmodule Commonplace.MUD.Verbs do
 
   defp do_look(%Parser.Command{argv: []}, ctx) do
     {:reply, render_room(ctx)}
+  end
+
+  defp do_look(%Parser.Command{target: target}, ctx) when target in ["here", "room"] do
+    {:reply, render_room(ctx)}
+  end
+
+  defp do_look(%Parser.Command{target: target}, ctx) when target in ["me", "self", "myself"] do
+    case Schemas.load_player(ctx.player_dir_uuid, ctx.store) do
+      {:ok, %Player{} = pl} ->
+        title = if pl.title == "", do: pl.name, else: pl.title
+        {:reply, "#{title}\n#{pl.description}"}
+
+      _ ->
+        {:reply, ctx.player_name}
+    end
   end
 
   defp do_look(%Parser.Command{target: target}, ctx) do
@@ -426,18 +442,18 @@ defmodule Commonplace.MUD.Verbs do
   defp dispatch_builder("@verb", cmd, ctx), do: do_verb_edit(cmd, ctx)
 
   defp dispatch_builder("@dump", cmd, ctx) do
-    case cmd.target do
-      nil ->
+    cond do
+      cmd.target in [nil, "here", "room"] ->
         case World.get_room(ctx.current_room_uuid, ctx.store) do
           {:ok, room} -> {:reply, inspect(room, pretty: true)}
           _ -> {:error, "no room"}
         end
 
-      target ->
-        case find_in_scope(target, ctx) do
+      true ->
+        case find_in_scope(cmd.target, ctx) do
           {:ok, :object, obj} -> {:reply, inspect(obj, pretty: true)}
           {:ok, :player, pl} -> {:reply, inspect(pl, pretty: true)}
-          _ -> {:error, "Can't find \"#{target}\"."}
+          _ -> {:error, "Can't find \"#{cmd.target}\"."}
         end
     end
   end
@@ -496,9 +512,10 @@ defmodule Commonplace.MUD.Verbs do
     {:error, "Try: @dig <direction> <name>"}
   end
 
-  defp do_dig(%Parser.Command{argv: [direction, name | _]}, ctx) do
+  defp do_dig(%Parser.Command{argv: [direction | name_parts]}, ctx) do
     direction = String.downcase(direction)
     opposite = Parser.opposite_direction(direction)
+    name = Enum.join(name_parts, " ")
 
     cond do
       not Parser.direction?(direction) ->
@@ -549,7 +566,8 @@ defmodule Commonplace.MUD.Verbs do
 
   defp do_rename(%Parser.Command{argv: argv}, _ctx) when length(argv) < 2, do: {:error, "Try: @name <target> <new name>"}
 
-  defp do_rename(%Parser.Command{argv: [target, new_name | _]}, ctx) do
+  defp do_rename(%Parser.Command{argv: [target | rest]}, ctx) do
+    new_name = Enum.join(rest, " ")
     update_meta(target, "name", new_name, ctx)
   end
 

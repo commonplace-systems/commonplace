@@ -230,7 +230,18 @@ defmodule Commonplace.MUD.PlayerSession do
       state.output_fn.("(current source — type new lines to replace; '.' to save, '@abort' to cancel)")
       state.output_fn.(ed.current)
     else
-      state.output_fn.("(new verb — type lines, '.' to save, '@abort' to cancel)")
+      state.output_fn.(
+        "(new verb — type lines, '.' to save, '@abort' to cancel)\n" <>
+          "verb body shape:\n" <>
+          "  defmodule UserVerb do\n" <>
+          "    alias Commonplace.MUD.Output\n" <>
+          "    def run(ctx) do\n" <>
+          "      Output.tell(ctx, \"You feel something happen.\")\n" <>
+          "      Output.broadcast(ctx, \"\#{ctx.player_name} does something.\")\n" <>
+          "      :ok\n" <>
+          "    end\n" <>
+          "  end"
+      )
     end
 
     {:noreply, %{state | mode: {:editor, Map.put(ed, :lines, [])}}}
