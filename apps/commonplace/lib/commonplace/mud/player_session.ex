@@ -36,7 +36,8 @@ defmodule Commonplace.MUD.PlayerSession do
     :store,
     :output_fn,
     :owner_pid,
-    mode: :normal
+    mode: :normal,
+    buffer: nil
   ]
 
   ## Client
@@ -50,6 +51,9 @@ defmodule Commonplace.MUD.PlayerSession do
   @doc "Synchronously deliver input and wait for the verb to finish processing."
   def input_sync(pid, line), do: GenServer.call(pid, {:input, line}, 10_000)
 
+  @doc "Drain and clear the buffered output (only valid for buffered sessions)."
+  def drain_buffer(pid), do: GenServer.call(pid, :drain_buffer, 5_000)
+
   def stop(pid), do: GenServer.stop(pid, :normal)
 
   ## Server
@@ -59,7 +63,18 @@ defmodule Commonplace.MUD.PlayerSession do
     name = Keyword.fetch!(opts, :player_name)
     root_uuid = Keyword.fetch!(opts, :root_uuid)
     store = Keyword.get(opts, :store, CommitStoreClient)
-    output_fn = Keyword.get(opts, :output_fn, &IO.puts/1)
+    buffered? = Keyword.get(opts, :buffered, false)
+
+    output_fn =
+      cond do
+        buffered? ->
+          self_pid = self()
+          fn line -> GenServer.cast(self_pid, {:buffer_append, line}) end
+
+        true ->
+          Keyword.get(opts, :output_fn, &IO.puts/1)
+      end
+
     owner_pid = Keyword.get(opts, :owner_pid)
 
     case bootstrap_player(name, root_uuid, store) do
@@ -74,7 +89,8 @@ defmodule Commonplace.MUD.PlayerSession do
           root_uuid: root_uuid,
           store: store,
           output_fn: output_fn,
-          owner_pid: owner_pid
+          owner_pid: owner_pid,
+          buffer: if(buffered?, do: [], else: nil)
         }
 
         Topics.subscribe_room(state.current_room_uuid)
@@ -93,7 +109,17 @@ defmodule Commonplace.MUD.PlayerSession do
     process_input(line, state)
   end
 
+  def handle_cast({:buffer_append, line}, state) when is_list(state.buffer) do
+    {:noreply, %{state | buffer: state.buffer ++ [line]}}
+  end
+
+  def handle_cast({:buffer_append, _line}, state), do: {:noreply, state}
+
   @impl true
+  def handle_call(:drain_buffer, _from, state) do
+    {:reply, state.buffer || [], %{state | buffer: if(is_list(state.buffer), do: [], else: nil)}}
+  end
+
   def handle_call({:input, line}, _from, state) do
     case process_input(line, state) do
       {:noreply, new_state} -> {:reply, :ok, new_state}

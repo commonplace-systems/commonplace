@@ -48,6 +48,8 @@ defmodule Commonplace.MCP.Tools do
     Fork,
     InvokeViewAction,
     ListTools,
+    MudRead,
+    MudSend,
     PresenceInfo,
     SendMagenta,
     TailRed,
@@ -67,7 +69,9 @@ defmodule Commonplace.MCP.Tools do
     "cat" => Cat,
     "write" => Write,
     "invoke_view_action" => InvokeViewAction,
-    "presence_info" => PresenceInfo
+    "presence_info" => PresenceInfo,
+    "mud_send" => MudSend,
+    "mud_read" => MudRead
   }
 
   @meta_registry %{
