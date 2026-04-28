@@ -57,7 +57,8 @@ defmodule Commonplace.Application do
         {Commonplace.Dataflow.GraphRegistry, []},
         Commonplace.CommandRouter,
         Commonplace.Chat.OnrampSupervisor,
-        Commonplace.Chat.ChatViewComputeSupervisor
+        Commonplace.Chat.ChatViewComputeSupervisor,
+        Commonplace.MUD.MoveServer
       ] ++ snapshot_sweeper_children() ++ presence_reaper_children()
 
     opts = [strategy: :one_for_one, name: Commonplace.Supervisor]
