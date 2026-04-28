@@ -15,7 +15,7 @@ defmodule Commonplace.MUD.PlayerSession do
   use GenServer
   require Logger
 
-  alias Commonplace.MUD.{Parser, Schemas, Topics, Verbs}
+  alias Commonplace.MUD.{Parser, Schemas, Topics, Verbs, VerbSource}
   alias Commonplace.MUD.Schemas.{Player, Room}
   alias Commonplace.Presence
   alias Commonplace.Store.CommitStoreClient
@@ -35,7 +35,8 @@ defmodule Commonplace.MUD.PlayerSession do
     :root_uuid,
     :store,
     :output_fn,
-    :owner_pid
+    :owner_pid,
+    mode: :normal
   ]
 
   ## Client
@@ -100,7 +101,7 @@ defmodule Commonplace.MUD.PlayerSession do
     end
   end
 
-  defp process_input(line, state) do
+  defp process_input(line, %__MODULE__{mode: :normal} = state) do
     cmd = Parser.parse(line)
 
     if cmd.verb == "" do
@@ -109,6 +110,43 @@ defmodule Commonplace.MUD.PlayerSession do
       ctx = build_ctx(state, cmd)
       result = Verbs.dispatch(cmd, ctx)
       handle_verb_result(result, state)
+    end
+  end
+
+  defp process_input(line, %__MODULE__{mode: {:editor, ed}} = state) do
+    case String.trim(line) do
+      "." ->
+        save_verb(ed, state)
+
+      "@abort" ->
+        state.output_fn.("(aborted, no changes saved)")
+        {:noreply, %{state | mode: :normal}}
+
+      _ ->
+        new_lines = ed.lines ++ [line]
+        {:noreply, %{state | mode: {:editor, %{ed | lines: new_lines}}}}
+    end
+  end
+
+  defp save_verb(ed, state) do
+    source_text = Enum.join(ed.lines, "\n")
+
+    case VerbSource.save_verb(ed.target_uuid, ed.verb_name, source_text, state.store) do
+      :ok ->
+        state.output_fn.("(saved #{ed.target_label}:#{ed.verb_name} — compiles cleanly)")
+        {:noreply, %{state | mode: :normal}}
+
+      {:error, {:compile_error, msg}} ->
+        state.output_fn.("(saved with compile error: #{msg})")
+        {:noreply, %{state | mode: :normal}}
+
+      {:error, {:no_run_export, _}} ->
+        state.output_fn.("(saved, but the module does not export run/1 — verb won't fire)")
+        {:noreply, %{state | mode: :normal}}
+
+      {:error, other} ->
+        state.output_fn.("(save failed: #{inspect(other)})")
+        {:noreply, %{state | mode: :normal}}
     end
   end
 
@@ -157,6 +195,19 @@ defmodule Commonplace.MUD.PlayerSession do
     new_state = %{state | current_room_uuid: dest_uuid}
     render_room(new_state)
     {:noreply, new_state}
+  end
+
+  defp handle_verb_result({:enter_editor, %{} = ed}, state) do
+    state.output_fn.("=== editing #{ed.target_label}:#{ed.verb_name} ===")
+
+    if ed.current != "" do
+      state.output_fn.("(current source — type new lines to replace; '.' to save, '@abort' to cancel)")
+      state.output_fn.(ed.current)
+    else
+      state.output_fn.("(new verb — type lines, '.' to save, '@abort' to cancel)")
+    end
+
+    {:noreply, %{state | mode: {:editor, Map.put(ed, :lines, [])}}}
   end
 
   ## Rendering

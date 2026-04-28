@@ -16,21 +16,106 @@ defmodule Commonplace.MUD.Verbs do
   side effects go through `Commonplace.MUD.World`.
   """
 
-  alias Commonplace.MUD.{Parser, Schemas, World}
+  alias Commonplace.MUD.{Parser, Schemas, VerbSource, World}
   alias Commonplace.MUD.Schemas.{Object, Player, Room}
   alias Commonplace.Tree.Schema
   alias Commonplace.Store.CommitStoreClient
 
-  @builders ~w(@dig @create @desc @name @listen @dump)
+  @builders ~w(@dig @create @desc @name @listen @dump @verb)
 
   @doc "Dispatch a parsed command. Returns one of the verb-result tuples."
   def dispatch(%Parser.Command{verb: ""}, _ctx), do: :ok
 
   def dispatch(%Parser.Command{verb: verb} = cmd, ctx) do
     cond do
-      verb in @builders -> dispatch_builder(verb, cmd, ctx)
-      true -> dispatch_builtin(verb, cmd, ctx)
+      verb in @builders ->
+        dispatch_builder(verb, cmd, ctx)
+
+      true ->
+        case dispatch_user_verb(verb, cmd, ctx) do
+          :unhandled -> dispatch_builtin(verb, cmd, ctx)
+          other -> other
+        end
     end
+  end
+
+  # ---- User-authored verbs (P3) ----
+
+  defp dispatch_user_verb(verb_name, _cmd, ctx) do
+    case find_verb_in_scope(verb_name, ctx) do
+      {:ok, host_kind, host_uuid, host_name} ->
+        run_user_verb(host_kind, host_uuid, host_name, verb_name, ctx)
+
+      :not_found ->
+        :unhandled
+    end
+  end
+
+  defp find_verb_in_scope(verb_name, ctx) do
+    inventory_objects = World.list_objects_in(ctx.inventory_uuid, ctx.store)
+    room_objects = World.list_objects_in(ctx.current_room_uuid, ctx.store)
+
+    candidates =
+      Enum.map(inventory_objects, &{:object, &1.node_id, &1.name}) ++
+        Enum.map(room_objects, &{:object, &1.node_id, &1.name}) ++
+        [{:room, ctx.current_room_uuid, "here"}]
+
+    Enum.find_value(candidates, :not_found, fn {kind, uuid, name} ->
+      case VerbSource.find_source(uuid, verb_name, ctx.store) do
+        {:ok, _} -> {:ok, kind, uuid, name}
+        _ -> nil
+      end
+    end)
+  end
+
+  defp run_user_verb(host_kind, host_uuid, host_name, verb_name, ctx) do
+    verb_ctx = build_user_verb_ctx(host_kind, host_uuid, host_name, ctx)
+
+    case VerbSource.run_verb(host_uuid, verb_name, verb_ctx, ctx.store) do
+      {:ok, _} ->
+        :ok
+
+      {:error, {:compile_error, msg}} ->
+        emit_verb_error(verb_name, "compile error: #{msg}", ctx)
+        {:error, "(verb #{verb_name} failed to compile)"}
+
+      {:error, {:runtime_error, msg}} ->
+        emit_verb_error(verb_name, msg, ctx)
+        {:error, "(verb #{verb_name} crashed: #{msg})"}
+
+      {:error, {:no_run_export, _}} ->
+        {:error, "(verb #{verb_name} has no run/1)"}
+
+      :not_found ->
+        :unhandled
+
+      _ ->
+        :unhandled
+    end
+  end
+
+  defp build_user_verb_ctx(:object, host_uuid, _host_name, ctx) do
+    object =
+      case Schemas.load_object(host_uuid, ctx.store) do
+        {:ok, obj} -> obj
+        _ -> nil
+      end
+
+    Map.merge(ctx, %{object_uuid: host_uuid, object: object})
+  end
+
+  defp build_user_verb_ctx(:room, _host_uuid, _host_name, ctx) do
+    Map.merge(ctx, %{object_uuid: nil, object: nil})
+  end
+
+  defp emit_verb_error(verb_name, reason, ctx) do
+    World.broadcast_room(ctx.current_room_uuid, %{
+      kind: :verb_error,
+      verb: verb_name,
+      reason: reason
+    })
+
+    World.tell(ctx.player_uuid, %{kind: :verb_error, verb: verb_name, reason: reason})
   end
 
   # ---- Built-in verbs ----
@@ -338,6 +423,7 @@ defmodule Commonplace.MUD.Verbs do
   defp dispatch_builder("@desc", cmd, ctx), do: do_desc(cmd, ctx)
   defp dispatch_builder("@name", cmd, ctx), do: do_rename(cmd, ctx)
   defp dispatch_builder("@listen", _cmd, ctx), do: {:reply, "Now listening to room #{ctx.current_room_uuid}. (Debug: red events will appear inline.)"}
+  defp dispatch_builder("@verb", cmd, ctx), do: do_verb_edit(cmd, ctx)
 
   defp dispatch_builder("@dump", cmd, ctx) do
     case cmd.target do
@@ -353,6 +439,56 @@ defmodule Commonplace.MUD.Verbs do
           {:ok, :player, pl} -> {:reply, inspect(pl, pretty: true)}
           _ -> {:error, "Can't find \"#{target}\"."}
         end
+    end
+  end
+
+  defp do_verb_edit(%Parser.Command{argv: argv}, _ctx) when length(argv) < 1 do
+    {:error, "Try: @verb <target>:<verbname>"}
+  end
+
+  defp do_verb_edit(%Parser.Command{argv: [spec | _]}, ctx) do
+    case String.split(spec, ":", parts: 2) do
+      [target, verb_name] when verb_name != "" ->
+        cond do
+          target in ["here", "room"] ->
+            current = read_current_source(ctx.current_room_uuid, verb_name, ctx)
+            {:enter_editor, %{target_uuid: ctx.current_room_uuid, target_label: "here", verb_name: verb_name, current: current}}
+
+          true ->
+            case World.find_entry_by_name(ctx.current_room_uuid, target, ctx.store) do
+              {:ok, %Schema.Entry{type: :dir, name: name, node_id: uuid}} ->
+                if String.ends_with?(name, ".obj") do
+                  current = read_current_source(uuid, verb_name, ctx)
+                  {:enter_editor, %{target_uuid: uuid, target_label: target, verb_name: verb_name, current: current}}
+                else
+                  {:error, "Can only edit verbs on objects (or here/room)."}
+                end
+
+              _ ->
+                case World.find_entry_by_name(ctx.inventory_uuid, target, ctx.store) do
+                  {:ok, %Schema.Entry{type: :dir, name: name, node_id: uuid}} ->
+                    if String.ends_with?(name, ".obj") do
+                      current = read_current_source(uuid, verb_name, ctx)
+                      {:enter_editor, %{target_uuid: uuid, target_label: target, verb_name: verb_name, current: current}}
+                    else
+                      {:error, "Can only edit verbs on objects (or here/room)."}
+                    end
+
+                  _ ->
+                    {:error, "You don't see \"#{target}\" here or in inventory."}
+                end
+            end
+        end
+
+      _ ->
+        {:error, "Try: @verb <target>:<verbname>"}
+    end
+  end
+
+  defp read_current_source(target_uuid, verb_name, ctx) do
+    case VerbSource.read_source(target_uuid, verb_name, ctx.store) do
+      {:ok, text} -> text
+      _ -> ""
     end
   end
 
@@ -553,6 +689,9 @@ defmodule Commonplace.MUD.Verbs do
       @create object|room <name>       create here
       @desc <target> <text>            set description (target: here, or obj name)
       @name <target> <new name>        rename
+      @verb <target>:<verbname>        edit a verb on a room/object (line editor;
+                                       finish with '.' on its own line, '@abort'
+                                       cancels)
       @listen                          subscribe to debug events
       @dump [target]                   dump raw struct
     """

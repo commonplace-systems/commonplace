@@ -23,7 +23,7 @@ defmodule Commonplace.MUD.TickBot do
   use GenServer
   require Logger
 
-  alias Commonplace.MUD.{Schemas, World}
+  alias Commonplace.MUD.{Schemas, VerbSource, World}
   alias Commonplace.MUD.Schemas.{Object, Room}
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.Schema
@@ -111,11 +111,11 @@ defmodule Commonplace.MUD.TickBot do
       Enum.reduce(tickers, state.last_tick, fn ticker, acc ->
         case Map.get(acc, ticker.uuid) do
           nil ->
-            fire(ticker)
+            fire(ticker, state.store)
             Map.put(acc, ticker.uuid, now)
 
           last when now - last >= ticker.interval_ms ->
-            fire(ticker)
+            fire(ticker, state.store)
             Map.put(acc, ticker.uuid, now)
 
           _ ->
@@ -126,11 +126,29 @@ defmodule Commonplace.MUD.TickBot do
     %{state | last_tick: new_last_tick}
   end
 
-  defp fire(%{message: nil}), do: :ok
+  defp fire(%{uuid: host_uuid, room_uuid: room_uuid, message: msg}, store) do
+    ctx = %{current_room_uuid: room_uuid, store: store, host_uuid: host_uuid}
 
-  defp fire(%{room_uuid: room_uuid, message: msg}) do
-    World.broadcast_room(room_uuid, %{kind: :custom, text: msg})
-    :ok
+    case VerbSource.run_verb(host_uuid, "tick", ctx, store) do
+      {:ok, _} ->
+        :ok
+
+      :not_found ->
+        if msg, do: World.broadcast_room(room_uuid, %{kind: :custom, text: msg})
+        :ok
+
+      {:error, {:runtime_error, reason}} ->
+        World.broadcast_room(room_uuid, %{kind: :verb_error, verb: "tick", reason: reason})
+        :ok
+
+      {:error, {:compile_error, reason}} ->
+        World.broadcast_room(room_uuid, %{kind: :verb_error, verb: "tick", reason: reason})
+        :ok
+
+      _ ->
+        if msg, do: World.broadcast_room(room_uuid, %{kind: :custom, text: msg})
+        :ok
+    end
   rescue
     e ->
       Logger.warning("TickBot fire crashed: #{Exception.message(e)}")
