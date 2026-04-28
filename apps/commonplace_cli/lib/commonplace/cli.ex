@@ -104,6 +104,7 @@ defmodule Commonplace.CLI do
       "attest" -> Commonplace.CLI.Attest.run(data_dir, relative_path, rest)
       "checkpoint" -> Commonplace.CLI.Checkpoint.run(data_dir, relative_path, rest)
       "snapshot" -> Commonplace.CLI.Snapshot.run(data_dir, relative_path, rest)
+      "mud" -> Commonplace.CLI.Mud.run(data_dir, relative_path, rest)
       _ ->
         IO.puts(:stderr, "Unknown command: #{cmd}")
         IO.puts(:stderr, "Run 'commonplace --help' for usage.")

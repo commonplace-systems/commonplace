@@ -9,7 +9,11 @@ defmodule Commonplace.MUD.Topics do
 
   alias Commonplace.Dataflow.PubSub, as: CPPubSub
 
+  def room_topic(room_uuid), do: "red:#{room_uuid}"
+  def player_tell_topic(player_uuid), do: "red:#{player_uuid}"
+
   def subscribe_room(room_uuid), do: CPPubSub.subscribe_red(room_uuid)
+  def unsubscribe_room(room_uuid), do: Phoenix.PubSub.unsubscribe(Commonplace.PubSub, room_topic(room_uuid))
   def broadcast_room(room_uuid, msg), do: CPPubSub.broadcast_red(room_uuid, msg)
 
   def subscribe_player_tell(player_uuid), do: CPPubSub.subscribe_red(player_uuid)
