@@ -149,4 +149,36 @@ defmodule Commonplace.Gold.ChainTest do
     assert att2.commit_id == att1.commit_id
     assert att2.id != att1.id
   end
+
+  # CX-2fia: regression — RedLog defaults its store to CommitStoreClient
+  # (a stateless routing MODULE, not a registered GenServer process).
+  # Pre-fix Gold.Chain.attest crashed with :no_process trying to
+  # GenServer.call(CommitStoreClient, ...). normalize_store/1 substitutes
+  # CommitStoreClient → CommitStore for direct GenServer calls.
+  describe "CX-2fia regression: routing-module store" do
+    alias Commonplace.Store.CommitStoreClient
+
+    test "attest accepts CommitStoreClient routing module without crashing" do
+      # CommitStoreClient routes to the production-named CommitStore process
+      # (which the Application supervisor starts at boot under :commonplace
+      # env). This test ensures Gold.Chain doesn't crash when handed the
+      # routing module — it normalizes to the underlying GenServer.
+      uuid = UUID.uuid4()
+      CommitStore.create_commit(CommitStore, uuid, "data", nil)
+
+      result = Chain.attest(uuid, CommitStoreClient)
+      assert match?({:ok, _att}, result) or match?({:error, _}, result),
+             "should not crash with :no_process; got: #{inspect(result)}"
+    end
+
+    test "latest_attestation accepts CommitStoreClient routing module" do
+      uuid = UUID.uuid4()
+      assert :none = Chain.latest_attestation(uuid, CommitStoreClient)
+    end
+
+    test "chain accepts CommitStoreClient routing module" do
+      uuid = UUID.uuid4()
+      assert [] = Chain.chain(uuid, CommitStoreClient)
+    end
+  end
 end

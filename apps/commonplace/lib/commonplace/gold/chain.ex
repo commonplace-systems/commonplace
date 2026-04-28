@@ -7,7 +7,17 @@ defmodule Commonplace.Gold.Chain do
   """
 
   alias Commonplace.Gold.Attestation
-  alias Commonplace.Store.CommitStore
+  alias Commonplace.Store.{CommitStore, CommitStoreClient}
+
+  # CommitStoreClient is a stateless routing MODULE, not a registered
+  # GenServer process. RedLog passes it as `store` (its default for the
+  # onramp), but Gold.Chain's direct GenServer.call(store, ...) crashes
+  # with :no_process when store == CommitStoreClient. Normalize to the
+  # actual local GenServer for direct calls. (Attestation operations
+  # are not yet routed remotely; single-node assumption acceptable for
+  # MVP — followup if multi-node attestation surfaces.)
+  defp normalize_store(CommitStoreClient), do: CommitStore
+  defp normalize_store(other), do: other
 
   @doc """
   Attest the current head of a document.
@@ -16,6 +26,7 @@ defmodule Commonplace.Gold.Chain do
   and stores it in CubDB.
   """
   def attest(doc_uuid, store \\ CommitStore) do
+    store = normalize_store(store)
     # Get the current head commit
     case CommitStore.latest_commit(store, doc_uuid) do
       {:ok, commit} ->
@@ -47,18 +58,18 @@ defmodule Commonplace.Gold.Chain do
 
   @doc "Get the latest attestation for a document."
   def latest_attestation(doc_uuid, store \\ CommitStore) do
-    GenServer.call(store, {:latest_attestation, doc_uuid})
+    GenServer.call(normalize_store(store), {:latest_attestation, doc_uuid})
   end
 
   @doc "Walk the attestation chain for a document, newest first."
   def chain(doc_uuid, store \\ CommitStore, opts \\ []) do
     limit = Keyword.get(opts, :limit, 100)
-    GenServer.call(store, {:attestation_chain, doc_uuid, limit})
+    GenServer.call(normalize_store(store), {:attestation_chain, doc_uuid, limit})
   end
 
   @doc "Verify the entire attestation chain for a document."
   def verify_chain(doc_uuid, public_key, store \\ CommitStore) do
-    attestations = chain(doc_uuid, store)
+    attestations = chain(doc_uuid, normalize_store(store))
 
     Enum.reduce_while(attestations, :ok, fn att, _acc ->
       with :ok <- Attestation.verify_id(att),
