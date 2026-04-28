@@ -1,8 +1,21 @@
 defmodule Commonplace.MUD.Bootstrap do
   @moduledoc """
-  Idempotent v0 world seeding. Creates three rooms (start, forest-path,
-  clearing), a cloak.obj in the start room, and a fountain.obj in the
-  clearing on first run. Subsequent calls are no-ops.
+  Idempotent v0 world seeding/repair.
+
+  `seed/2` (and its alias `repair/2`) ensures the three demo rooms
+  (start, forest-path, clearing) exist with canonical descriptions and
+  exits, plus the bootstrap objects (cloak in start, fountain in
+  clearing) — creating any missing piece without clobbering existing
+  state.
+
+  Three states this function must handle idempotently:
+
+    1. Empty world (fresh init) — create everything.
+    2. Already-seeded world — no-ops on every check; cheap.
+    3. Stub world — `start` exists with the featureless-room
+       description left behind by `PlayerSession.ensure_start_room`'s
+       fallback. Refresh start's description + exits, create the
+       missing rooms/objects.
 
   Layout:
 
@@ -19,64 +32,137 @@ defmodule Commonplace.MUD.Bootstrap do
   alias Commonplace.Tree.Schema
   alias Yelixer.Encoding
 
-  def seed(root_uuid, store \\ CommitStoreClient) do
-    {:ok, root_schema} = Schemas.load_dir_schema(root_uuid, store)
+  @stub_descriptions [
+    "A featureless white room. The world has not been built out yet."
+  ]
 
-    case Schema.get_entry(root_schema, "start") do
-      {:ok, _} -> {:ok, :already_seeded}
-      :error -> do_seed(root_uuid, store)
+  def seed(root_uuid, store \\ CommitStoreClient), do: repair(root_uuid, store)
+
+  def repair(root_uuid, store \\ CommitStoreClient) do
+    start_uuid =
+      ensure_room(root_uuid, "start", %Room{
+        name: "The Start Room",
+        description: "A cozy stone chamber. Exits lead north and east.",
+        exits: %{}
+      }, store, refresh_if_stub: true)
+
+    forest_uuid =
+      ensure_room(root_uuid, "forest-path", %Room{
+        name: "A Forest Path",
+        description: "Tall oaks line a winding dirt path. The Start Room lies south.",
+        exits: %{}
+      }, store)
+
+    clearing_uuid =
+      ensure_room(root_uuid, "clearing", %Room{
+        name: "A Sunlit Clearing",
+        description: "A grassy clearing dappled with sunlight. The Start Room lies west.",
+        exits: %{}
+      }, store)
+
+    merge_exits(start_uuid, %{"north" => forest_uuid, "east" => clearing_uuid}, store)
+    merge_exits(forest_uuid, %{"south" => start_uuid}, store)
+    merge_exits(clearing_uuid, %{"west" => start_uuid}, store)
+
+    ensure_object(start_uuid, "cloak.obj", %Object{
+      name: "cloak",
+      aliases: ["cape", "black cloak"],
+      description: "A heavy black cloak. It looks warm."
+    }, store)
+
+    ensure_object(clearing_uuid, "fountain.obj", %Object{
+      name: "fountain",
+      aliases: ["water"],
+      description: "A stone fountain murmurs softly.",
+      fixed: true,
+      tick_interval_ms: 8_000,
+      tick_message: "The fountain burbles softly."
+    }, store)
+
+    {:ok, :ready}
+  end
+
+  ## Private
+
+  defp ensure_room(parent_uuid, name, %Room{} = canonical, store, opts \\ []) do
+    refresh_if_stub = Keyword.get(opts, :refresh_if_stub, false)
+    {:ok, parent_schema} = Schemas.load_dir_schema(parent_uuid, store)
+
+    case Schema.get_entry(parent_schema, name) do
+      {:ok, %Schema.Entry{node_id: room_uuid}} ->
+        if refresh_if_stub do
+          maybe_refresh_room(room_uuid, canonical, store)
+        end
+
+        room_uuid
+
+      :error ->
+        room_uuid =
+          Schemas.create_dir_with_meta(
+            Schemas.room_filename(),
+            Schemas.encode_room(canonical),
+            store
+          )
+
+        :ok = add_dir_entry(parent_uuid, name, room_uuid, store)
+        room_uuid
     end
   end
 
-  defp do_seed(root_uuid, store) do
-    start_uuid = create_room(%Room{name: "The Start Room", description: "A cozy stone chamber. Exits lead north and east.", exits: %{}}, store)
-    forest_uuid = create_room(%Room{name: "A Forest Path", description: "Tall oaks line a winding dirt path. The Start Room lies south.", exits: %{}}, store)
-    clearing_uuid = create_room(%Room{name: "A Sunlit Clearing", description: "A grassy clearing dappled with sunlight. The Start Room lies west.", exits: %{}}, store)
+  defp maybe_refresh_room(room_uuid, %Room{} = canonical, store) do
+    case Schemas.load_room(room_uuid, store) do
+      {:ok, %Room{description: desc} = current} when desc in @stub_descriptions ->
+        merged = %Room{
+          name: canonical.name,
+          description: canonical.description,
+          exits: current.exits,
+          tick_interval_ms: current.tick_interval_ms,
+          tick_message: current.tick_message
+        }
 
-    set_exits(start_uuid, %{"north" => forest_uuid, "east" => clearing_uuid}, store)
-    set_exits(forest_uuid, %{"south" => start_uuid}, store)
-    set_exits(clearing_uuid, %{"west" => start_uuid}, store)
+        write_room(room_uuid, merged, store)
 
-    cloak_uuid = create_object(%Object{name: "cloak", aliases: ["cape", "black cloak"], description: "A heavy black cloak. It looks warm."}, store)
-    fountain_uuid =
-      create_object(
-        %Object{
-          name: "fountain",
-          aliases: ["water"],
-          description: "A stone fountain murmurs softly.",
-          fixed: true,
-          tick_interval_ms: 8_000,
-          tick_message: "The fountain burbles softly."
-        },
-        store
-      )
-
-    add_dir_entry(start_uuid, "cloak.obj", cloak_uuid, store)
-    add_dir_entry(clearing_uuid, "fountain.obj", fountain_uuid, store)
-
-    add_dir_entry(root_uuid, "start", start_uuid, store)
-    add_dir_entry(root_uuid, "forest-path", forest_uuid, store)
-    add_dir_entry(root_uuid, "clearing", clearing_uuid, store)
-
-    {:ok, :seeded}
+      _ ->
+        :ok
+    end
   end
 
-  defp create_room(room, store) do
-    json = Schemas.encode_room(room)
-    Schemas.create_dir_with_meta(Schemas.room_filename(), json, store)
+  defp ensure_object(parent_uuid, filename, %Object{} = canonical, store) do
+    {:ok, parent_schema} = Schemas.load_dir_schema(parent_uuid, store)
+
+    case Schema.get_entry(parent_schema, filename) do
+      {:ok, _} ->
+        :ok
+
+      :error ->
+        obj_uuid =
+          Schemas.create_dir_with_meta(
+            Schemas.object_filename(),
+            Schemas.encode_object(canonical),
+            store
+          )
+
+        :ok = add_dir_entry(parent_uuid, filename, obj_uuid, store)
+        :ok
+    end
   end
 
-  defp create_object(obj, store) do
-    json = Schemas.encode_object(obj)
-    Schemas.create_dir_with_meta(Schemas.object_filename(), json, store)
+  defp merge_exits(room_uuid, exits, store) do
+    case Schemas.load_room(room_uuid, store) do
+      {:ok, %Room{} = room} ->
+        new_exits = Map.merge(exits, room.exits)
+        write_room(room_uuid, %Room{room | exits: new_exits}, store)
+
+      _ ->
+        :ok
+    end
   end
 
-  defp set_exits(room_dir_uuid, exits, store) do
+  defp write_room(room_dir_uuid, %Room{} = room, store) do
     {:ok, schema} = Schemas.load_dir_schema(room_dir_uuid, store)
     {:ok, entry} = Schema.get_entry(schema, Schemas.room_filename())
-    {:ok, %Room{} = room} = Schemas.load_room(room_dir_uuid, store)
-    json = Schemas.encode_room(%Room{room | exits: Map.merge(room.exits, exits)})
-    :ok = Schemas.write_meta_doc(entry.node_id, json, store)
+    :ok = Schemas.write_meta_doc(entry.node_id, Schemas.encode_room(room), store)
+    :ok
   end
 
   defp add_dir_entry(parent_uuid, name, child_uuid, store) do

@@ -17,7 +17,7 @@ defmodule Commonplace.MUD.Bot do
   (matches MoveServer / TickBot's clustering choice).
   """
 
-  alias Commonplace.MUD.PlayerSession
+  alias Commonplace.MUD.{Bootstrap, PlayerSession}
   alias Commonplace.Store.CommitStoreClient
 
   @type event :: %{optional(atom) => any}
@@ -93,6 +93,11 @@ defmodule Commonplace.MUD.Bot do
         {:error, :no_workspace_root}
 
       root ->
+        # Idempotently ensure the demo world exists before any session
+        # spawns — otherwise PlayerSession's stub fallback wins and
+        # the bot lands in a featureless start room.
+        Bootstrap.seed(root, store)
+
         # The PlayerSession globally registers itself by name.
         global_name = {:global, {__MODULE__, name}}
 

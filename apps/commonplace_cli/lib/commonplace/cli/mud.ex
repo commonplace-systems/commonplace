@@ -42,10 +42,7 @@ defmodule Commonplace.CLI.Mud do
       System.halt(1)
     end
 
-    case Bootstrap.seed(root, CommitStoreClient) do
-      {:ok, :seeded} -> IO.puts("(world seeded)")
-      {:ok, :already_seeded} -> :ok
-    end
+    {:ok, :ready} = Bootstrap.seed(root, CommitStoreClient)
 
     {:ok, session} =
       PlayerSession.start_link(
