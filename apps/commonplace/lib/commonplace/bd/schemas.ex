@@ -1,0 +1,448 @@
+defmodule Commonplace.Bd.Schemas do
+  @moduledoc """
+  Encode/decode helpers for the Beads-on-Commonplace JSON-backed
+  documents. Same shape as `Commonplace.MUD.Schemas` — JSON inside a
+  Yelixer text doc, parsed on read, re-encoded on write.
+
+  Spec: /home/jes/commonplace-plan/docs/beads-on-commonplace.md §3.
+
+  P1 scope: title and description are plain strings inside the
+  field-bag for now (the spec calls for title-as-nested-YText and
+  description-as-YText sibling doc; the live-collab affordance is P3
+  per §11 / §12).
+  """
+
+  alias Commonplace.Document.ContentType
+  alias Commonplace.Store.CommitStoreClient
+  alias Commonplace.Tree.{DocBuilder, Schema}
+  alias Yelixer.Doc
+  alias Yelixer.Encoding
+
+  @issue_file "__issue.json"
+  @comment_filename_pattern ~r/^c-[a-z0-9]+\.json$/
+  @meta_file "__meta.json"
+  @deps_file "deps.json"
+  @description_file "description.txt"
+
+  @valid_statuses ~w(open in_progress blocked review closed wontfix)
+  @valid_priorities ~w(p0 p1 p2 p3)
+  @valid_types ~w(feature bug task epic spike)
+
+  defmodule Issue do
+    @enforce_keys [:id]
+    defstruct id: nil,
+              title: "",
+              status: "open",
+              priority: "p2",
+              type: "task",
+              owner: nil,
+              created_at: nil,
+              updated_at: nil,
+              closed_at: nil,
+              closed_reason: nil,
+              labels: [],
+              extra: %{}
+
+    @type t :: %__MODULE__{
+            id: String.t(),
+            title: String.t(),
+            status: String.t(),
+            priority: String.t(),
+            type: String.t(),
+            owner: String.t() | nil,
+            created_at: String.t() | nil,
+            updated_at: String.t() | nil,
+            closed_at: String.t() | nil,
+            closed_reason: String.t() | nil,
+            labels: [String.t()],
+            extra: map()
+          }
+  end
+
+  defmodule Comment do
+    @enforce_keys [:id]
+    defstruct id: nil,
+              author: nil,
+              created_at: nil,
+              edited_at: nil,
+              deleted: false,
+              body: "",
+              reply_to: nil
+
+    @type t :: %__MODULE__{
+            id: String.t(),
+            author: String.t() | nil,
+            created_at: String.t() | nil,
+            edited_at: String.t() | nil,
+            deleted: boolean(),
+            body: String.t(),
+            reply_to: String.t() | nil
+          }
+  end
+
+  defmodule Edge do
+    @enforce_keys [:from, :to, :kind]
+    defstruct from: nil,
+              to: nil,
+              kind: "blocks",
+              created_at: nil,
+              created_by: nil
+
+    @type t :: %__MODULE__{
+            from: String.t(),
+            to: String.t(),
+            kind: String.t(),
+            created_at: String.t() | nil,
+            created_by: String.t() | nil
+          }
+
+    def key(%__MODULE__{from: f, to: t, kind: k}), do: "#{f}::#{t}::#{k}"
+    def key(from, to, kind) when is_binary(from) and is_binary(to) and is_binary(kind), do: "#{from}::#{to}::#{kind}"
+  end
+
+  defmodule Label do
+    @enforce_keys [:name]
+    defstruct name: nil,
+              color: nil,
+              description: ""
+
+    @type t :: %__MODULE__{
+            name: String.t(),
+            color: String.t() | nil,
+            description: String.t()
+          }
+  end
+
+  defmodule Meta do
+    defstruct prefix: "CX",
+              statuses: ~w(open in_progress blocked review closed wontfix),
+              priorities: ~w(p0 p1 p2 p3),
+              types: ~w(feature bug task epic spike),
+              default_owner: nil,
+              extra: %{}
+
+    @type t :: %__MODULE__{
+            prefix: String.t(),
+            statuses: [String.t()],
+            priorities: [String.t()],
+            types: [String.t()],
+            default_owner: String.t() | nil,
+            extra: map()
+          }
+  end
+
+  def issue_filename, do: @issue_file
+  def description_filename, do: @description_file
+  def meta_filename, do: @meta_file
+  def deps_filename, do: @deps_file
+  def comment_filename(id), do: "#{id}.json"
+
+  def valid_statuses, do: @valid_statuses
+  def valid_priorities, do: @valid_priorities
+  def valid_types, do: @valid_types
+
+  def comment_filename?(name), do: Regex.match?(@comment_filename_pattern, name)
+
+  # ---- Issue encoding ----
+
+  def encode_issue(%Issue{} = i) do
+    base = %{
+      "id" => i.id,
+      "title" => i.title,
+      "status" => i.status,
+      "priority" => i.priority,
+      "type" => i.type,
+      "owner" => i.owner,
+      "created_at" => i.created_at,
+      "updated_at" => i.updated_at,
+      "closed_at" => i.closed_at,
+      "closed_reason" => i.closed_reason,
+      "labels" => i.labels
+    }
+
+    Map.merge(base, i.extra) |> Jason.encode!()
+  end
+
+  def decode_issue(json) when is_binary(json) do
+    case Jason.decode(json) do
+      {:ok, m} ->
+        known = ~w(id title status priority type owner created_at updated_at closed_at closed_reason labels)
+        extra = Map.drop(m, known)
+
+        {:ok,
+         %Issue{
+           id: Map.get(m, "id", ""),
+           title: Map.get(m, "title", ""),
+           status: Map.get(m, "status", "open"),
+           priority: Map.get(m, "priority", "p2"),
+           type: Map.get(m, "type", "task"),
+           owner: Map.get(m, "owner"),
+           created_at: Map.get(m, "created_at"),
+           updated_at: Map.get(m, "updated_at"),
+           closed_at: Map.get(m, "closed_at"),
+           closed_reason: Map.get(m, "closed_reason"),
+           labels: Map.get(m, "labels", []),
+           extra: extra
+         }}
+
+      err ->
+        err
+    end
+  end
+
+  # ---- Comment encoding ----
+
+  def encode_comment(%Comment{} = c) do
+    Jason.encode!(%{
+      "id" => c.id,
+      "author" => c.author,
+      "created_at" => c.created_at,
+      "edited_at" => c.edited_at,
+      "deleted" => c.deleted,
+      "body" => c.body,
+      "reply_to" => c.reply_to
+    })
+  end
+
+  def decode_comment(json) when is_binary(json) do
+    case Jason.decode(json) do
+      {:ok, m} ->
+        {:ok,
+         %Comment{
+           id: Map.get(m, "id", ""),
+           author: Map.get(m, "author"),
+           created_at: Map.get(m, "created_at"),
+           edited_at: Map.get(m, "edited_at"),
+           deleted: Map.get(m, "deleted", false),
+           body: Map.get(m, "body", ""),
+           reply_to: Map.get(m, "reply_to")
+         }}
+
+      err ->
+        err
+    end
+  end
+
+  # ---- Edge encoding (one entry in deps.json) ----
+
+  def encode_edge_value(%Edge{} = e) do
+    %{
+      "from" => e.from,
+      "to" => e.to,
+      "kind" => e.kind,
+      "created_at" => e.created_at,
+      "created_by" => e.created_by
+    }
+  end
+
+  def decode_edge_value(map) when is_map(map) do
+    %Edge{
+      from: Map.get(map, "from", ""),
+      to: Map.get(map, "to", ""),
+      kind: Map.get(map, "kind", "blocks"),
+      created_at: Map.get(map, "created_at"),
+      created_by: Map.get(map, "created_by")
+    }
+  end
+
+  def encode_deps(edges) when is_list(edges) do
+    edges
+    |> Enum.map(fn %Edge{} = e -> {Edge.key(e), encode_edge_value(e)} end)
+    |> Enum.into(%{})
+    |> Jason.encode!()
+  end
+
+  def decode_deps(json) when is_binary(json) do
+    case Jason.decode(json) do
+      {:ok, m} ->
+        edges =
+          m
+          |> Enum.map(fn {_key, val} -> decode_edge_value(val) end)
+
+        {:ok, edges}
+
+      err ->
+        err
+    end
+  end
+
+  # ---- Label encoding ----
+
+  def encode_label(%Label{} = l) do
+    Jason.encode!(%{
+      "name" => l.name,
+      "color" => l.color,
+      "description" => l.description
+    })
+  end
+
+  def decode_label(json) when is_binary(json) do
+    case Jason.decode(json) do
+      {:ok, m} ->
+        {:ok,
+         %Label{
+           name: Map.get(m, "name", ""),
+           color: Map.get(m, "color"),
+           description: Map.get(m, "description", "")
+         }}
+
+      err ->
+        err
+    end
+  end
+
+  # ---- Meta encoding ----
+
+  def encode_meta(%Meta{} = m) do
+    base = %{
+      "prefix" => m.prefix,
+      "statuses" => m.statuses,
+      "priorities" => m.priorities,
+      "types" => m.types,
+      "default_owner" => m.default_owner
+    }
+
+    Map.merge(base, m.extra) |> Jason.encode!()
+  end
+
+  def decode_meta(json) when is_binary(json) do
+    case Jason.decode(json) do
+      {:ok, map} ->
+        known = ~w(prefix statuses priorities types default_owner)
+        extra = Map.drop(map, known)
+
+        {:ok,
+         %Meta{
+           prefix: Map.get(map, "prefix", "CX"),
+           statuses: Map.get(map, "statuses", @valid_statuses),
+           priorities: Map.get(map, "priorities", @valid_priorities),
+           types: Map.get(map, "types", @valid_types),
+           default_owner: Map.get(map, "default_owner"),
+           extra: extra
+         }}
+
+      err ->
+        err
+    end
+  end
+
+  # ---- Loading ----
+
+  def load_issue(dir_uuid, store \\ CommitStoreClient), do: load_meta(dir_uuid, @issue_file, &decode_issue/1, store)
+  def load_comment(dir_uuid, filename, store \\ CommitStoreClient), do: load_meta(dir_uuid, filename, &decode_comment/1, store)
+  def load_label(dir_uuid, store \\ CommitStoreClient) do
+    case load_dir_schema(dir_uuid, store) do
+      {:ok, schema} ->
+        case Schema.get_entry(schema, "label.json") do
+          {:ok, entry} ->
+            case DocBuilder.reconstruct_doc(store, entry.node_id) do
+              {:ok, doc} ->
+                case ContentType.get_content(doc) do
+                  json when is_binary(json) -> decode_label(json)
+                  nil -> {:error, :empty_doc}
+                end
+
+              :none ->
+                {:error, :no_doc}
+            end
+
+          :error ->
+            {:error, :no_label_entry}
+        end
+
+      _ ->
+        {:error, :missing}
+    end
+  end
+
+  def load_meta_doc(uuid, store \\ CommitStoreClient) do
+    case DocBuilder.reconstruct_doc(store, uuid) do
+      {:ok, doc} ->
+        case ContentType.get_content(doc) do
+          json when is_binary(json) -> decode_meta(json)
+          nil -> {:error, :empty_doc}
+        end
+
+      :none ->
+        {:error, :no_doc}
+    end
+  end
+
+  def load_deps_doc(uuid, store \\ CommitStoreClient) do
+    case DocBuilder.reconstruct_doc(store, uuid) do
+      {:ok, doc} ->
+        case ContentType.get_content(doc) do
+          json when is_binary(json) -> decode_deps(json)
+          nil -> {:ok, []}
+        end
+
+      :none ->
+        {:ok, []}
+    end
+  end
+
+  defp load_meta(dir_uuid, filename, decoder, store) do
+    with {:ok, schema} <- load_dir_schema(dir_uuid, store),
+         {:ok, entry} <- Schema.get_entry(schema, filename),
+         {:ok, doc} <- DocBuilder.reconstruct_doc(store, entry.node_id),
+         json when is_binary(json) <- ContentType.get_content(doc) do
+      decoder.(json)
+    else
+      :error -> {:error, {:no_meta_entry, filename}}
+      :none -> {:error, {:no_doc, filename}}
+      nil -> {:error, {:empty_doc, filename}}
+      other -> {:error, other}
+    end
+  end
+
+  def load_dir_schema(uuid, store \\ CommitStoreClient) when is_binary(uuid) do
+    case CommitStoreClient.latest_commit(store, uuid) do
+      {:ok, commit} ->
+        doc = Schema.new_schema()
+        {:ok, doc} = Encoding.apply_update(doc, commit.update)
+        {:ok, doc}
+
+      :none ->
+        {:error, :missing}
+    end
+  end
+
+  # ---- Writing ----
+
+  def create_text_doc(json, store \\ CommitStoreClient) when is_binary(json) do
+    uuid = UUID.uuid4()
+    doc = Doc.new()
+    doc = ContentType.create(doc, :text, "metadata")
+    doc = if json != "", do: ContentType.insert_text(doc, 0, json), else: doc
+    update = Encoding.encode_update(doc)
+    CommitStoreClient.create_commit(store, uuid, update, nil)
+    uuid
+  end
+
+  def write_text_doc(uuid, json, store \\ CommitStoreClient) when is_binary(uuid) and is_binary(json) do
+    {:ok, doc} = DocBuilder.reconstruct_doc(store, uuid)
+    current = ContentType.get_content(doc) || ""
+    doc = if current != "", do: ContentType.delete_text(doc, 0, String.length(current)), else: doc
+    doc = if json != "", do: ContentType.insert_text(doc, 0, json), else: doc
+    update = Encoding.encode_update(doc)
+    CommitStoreClient.create_chained_commit(store, uuid, update)
+    :ok
+  end
+
+  def create_dir_with_meta(meta_filename, json, store \\ CommitStoreClient) do
+    dir_uuid = UUID.uuid4()
+    dir_doc = Schema.new_schema()
+
+    dir_doc =
+      if json do
+        meta_uuid = create_text_doc(json, store)
+        Schema.add_file(dir_doc, meta_filename, meta_uuid)
+      else
+        dir_doc
+      end
+
+    update = Encoding.encode_update(dir_doc)
+    CommitStoreClient.create_commit(store, dir_uuid, update, nil)
+    dir_uuid
+  end
+end
