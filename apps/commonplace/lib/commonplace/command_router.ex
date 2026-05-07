@@ -1,22 +1,221 @@
 defmodule Commonplace.CommandRouter do
   @moduledoc """
-  Singleton GenServer that routes mutating command verbs through a single
-  surface, emitting magenta command.initiated / command.completed / command.failed
-  events around each handler call.
+  The single observable command surface for every mutating verb in
+  Commonplace. Singleton `GenServer`; every `fork`, `merge`, `gc`,
+  branch toggle, and `write` lands here, gets dispatched, and emits
+  a `command.initiated` → `command.completed`/`command.failed`
+  magenta event triple around the handler.
 
-  Every command verb (fork, merge, gc, branch_activate, …) is a handle_call
-  clause here. The CLI and the MCP server both call through this router instead
-  of calling the underlying modules (Fork / Merge / GC / …) directly, so that
-  every invocation lands on the `__commands` magenta topic and — via the
-  standard magenta→red onramp — on a gold-attested audit chain.
+  The CLI and the MCP server (and any future caller that mutates
+  state) call through this router rather than calling the
+  underlying modules — `Commonplace.Tree.Fork`,
+  `Commonplace.Tree.Merge`, `Commonplace.Store.GC`,
+  `Commonplace.Tree.Schema` — directly. Anything that *isn't*
+  routed through here is invisible to magenta and therefore
+  invisible to the rest of the workspace's reactive graph.
 
   ## Why this exists
 
-  Commonplace's color-channel design wants a single observable command surface.
-  Direct module calls from the CLI bypass magenta entirely, leaving MCP with
-  no way to "participate in the graph" beyond blind writes. Full magenta
-  pub/sub routing would rebuild GenServer.call from scratch — so we use
-  GenServer.call natively here and emit magenta events as a side-effect.
+  Commonplace's color-channel discipline (red / blue / cyan /
+  magenta / green) gives every observable change in the workspace
+  a topic to subscribe to. The hard part is making sure all
+  mutations are observable. The naive choice — let every caller
+  fire its own magenta events — fragments responsibility and lets
+  ad-hoc paths skip the broadcast. The pure-magenta choice — route
+  every command request as a magenta message and have a dedicated
+  consumer dispatch them — would rebuild `GenServer.call` from
+  scratch (request/reply over pub/sub, with timeouts and
+  back-pressure).
+
+  CommandRouter splits the difference: native `GenServer.call` for
+  the request/reply path, magenta events emitted as a side-effect.
+  The single GenServer is the chokepoint; the magenta broadcasts
+  are wrapped around each handler by `Commonplace.CommandRouter.Events.run/3`,
+  not duplicated by callers.
+
+  Magenta is itself the input to the magenta→red onramp, which
+  appends each command event to a red-channel audit chain.
+  Gold-chain attestation (CX-9rl) signs the resulting red entries
+  downstream of CommandRouter; the router itself does not sign.
+
+  ## Public commands
+
+  Five verbs make up the P1 router surface:
+
+    - `fork/2` — DAG-branch a directory subtree. Delegates to
+      `Commonplace.Tree.Fork.fork_directory/2`. Async via Task
+      (see "Async fork" below).
+    - `merge/3` — three-way CRDT merge into a target subtree.
+      Delegates to `Commonplace.Tree.Merge.merge/3`. Returns a
+      summary map suitable for audit-log inclusion.
+    - `gc/2` — reachability garbage-collect from `root_uuid`.
+      Delegates to `Commonplace.Store.GC.report/2`. Read-only-ish
+      audit (the actual sweep is a separate operation).
+    - `branch_activate/3` and `branch_deactivate/3` — flip the
+      `:nosync` flag on a named child entry of `parent_uuid`. Both
+      route through `Commonplace.Tree.Schema.set_sync/3`; the
+      magenta verb name distinguishes them so audit consumers see
+      the user intent, not just the underlying primitive.
+    - `write/2..4` — Myers-diff smart-merge text update. Reads the
+      doc's current content, builds a character-level edit script
+      against `new_content`, applies it as a chained commit. The
+      multi-arity dance is CX-yfva — see below.
+
+  ## Magenta event triple
+
+  Every dispatch produces three events on the `__commands` magenta
+  topic, wrapped by `Events.run/3`:
+
+      command.initiated   { verb, args, request_id }
+      command.completed   { verb, args, request_id, result }
+        — OR —
+      command.failed      { verb, args, request_id, reason }
+
+  The `request_id` ties the triple together so a downstream audit
+  consumer can match an `initiated` to its `completed`/`failed`
+  even with concurrent dispatches in flight. The `args` map carries
+  what the caller asked for (UUIDs, byte counts, etc.); audit
+  consumers redact or transform it as needed.
+
+  Magenta is **best-effort** — `Events.run/3` doesn't block on the
+  PubSub broadcast. A subscriber that crashed mid-event will miss
+  it; the gold-chain audit is the durable record, not magenta.
+
+  ## Async fork (CX-kqz3)
+
+  `fork/2` is the only async verb in the router. The handler:
+
+    1. Checks `state.in_flight_forks` — if a fork of this source
+       is already running, returns `{:error, :fork_in_progress}`
+       immediately and rejects the duplicate.
+    2. Otherwise, marks the source as in-flight and spawns a
+       `Task` to do the actual fork work.
+    3. Returns `{:noreply, ...}` — the GenServer is free to
+       process other commands while the fork runs.
+    4. When the Task finishes, it sends `{:fork_done, from, ...}`
+       back to the router; `handle_info/2` then replies to the
+       original caller and clears the in-flight flag.
+
+  Why async, why dedup? CX-kqz3's diagnosis: an MCP escript whose
+  first fork call timed out at the default 5s `GenServer.call`
+  timeout would retry, queuing duplicate fork work behind the
+  first. Under repeat retry, all schedulers pinned on serial fork
+  work; `net_kernel`'s heartbeat starved; and the escript saw the
+  serve node as `:nodedown` even though it was alive. The Task
+  pattern lets the router stay responsive; the in-flight set
+  rejects the retries before they re-enter the queue. The
+  `@fork_call_timeout` of 30s gives a deep-tree fork enough
+  runway without inviting that retry storm.
+
+  All other verbs are synchronous — fork is the only one slow
+  enough to need this treatment.
+
+  ## The multi-arity `write/2..4` dance (CX-yfva)
+
+  `write` has four explicit arities. Why not one definition with
+  default params?
+
+      def write(server \\\\ __MODULE__, uuid, new_content, opts \\\\ [])
+
+  is what got bitten. Two non-adjacent `\\\\` defaults bracketing a
+  positional argument is ambiguous to Elixir's compiler when called
+  with three positional arguments:
+
+      write(uuid, new_content, opts)
+
+  binds `server = uuid`, `uuid = new_content`, `new_content = opts`
+  — wrong dispatch. The `GenServer.call` then fires against a UUID
+  string rather than a registered process name and crashes inside
+  MCP's tool dispatch with a `FunctionClauseError`.
+
+  The fix is explicit clauses for the four valid call shapes
+  (`uuid + content`, `uuid + content + opts`, `server + uuid +
+  content`, `server + uuid + content + opts`); each delegates to
+  the four-arg form with the right defaults. No more ambiguous
+  binding because the compiler dispatches on arity, not on
+  default-param expansion.
+
+  ## Force-overwrite and type guard on `write` (CX-yfva)
+
+  `write` defaults to `{:error, {:type_mismatch, actual_type}}`
+  when the target doc isn't text. Default-destructive behaviour
+  was a footgun — an agent could trash a view doc, a JSON
+  config, or a binary attachment with one tool call. The guard
+  refuses unless the caller passes `force: true`.
+
+  `force: true` is opt-in destruction: it rebuilds the doc as a
+  fresh text doc holding `new_content`, drops the prior content
+  variant. Convergence then follows
+  `DocBuilder.reconstruct_snapshot/2` semantics (latest commit
+  wins). Useful for "I know what I'm doing" administrative
+  rewrites; not the default.
+
+  ## Signing-context forwarding (CX-o3r7)
+
+  When `write` is called with `signing_context: <key_id>` in
+  opts, that context flows through to
+  `CommitStoreClient.create_chained_commit/5`'s opts. MCP-bound
+  sessions can sign their commits with the session's bound key
+  rather than inheriting the global `SecretStore` key. Absent →
+  the underlying CommitStore falls back to its default behaviour
+  (global key, or unsigned if no key is configured).
+
+  This is the only place CommandRouter touches signing — a
+  one-line passthrough, not a signing decision.
+
+  ## Interaction with sister modules
+
+  - `Commonplace.Tree.Schema` — the `branch_activate`/`branch_deactivate`
+    verbs delegate to `Schema.set_sync/3` after pulling the parent
+    schema via `DocBuilder.reconstruct_snapshot/2`. CommandRouter
+    owns the magenta event triple and the entry-existence check;
+    the actual flag flip is Schema's primitive. (See `Tree.Schema`'s
+    "sync flag" section for the per-entry semantics.)
+  - `Commonplace.Tree.Fork` — `fork/2` delegates to
+    `Fork.fork_directory/2`. CommandRouter owns the in-flight
+    dedup, the Task management, and the magenta wrapping; the
+    deep-copy itself lives in Fork. (See `Tree.Fork`'s "DAG branch
+    structure" section for what the fork actually does.)
+  - `Commonplace.Tree.Merge` — `merge/3` delegates to
+    `Merge.merge/3`; CommandRouter projects the merge report to a
+    flat audit-friendly summary map.
+  - `Commonplace.Store.GC` — `gc/2` delegates to `GC.report/2`.
+  - `Commonplace.Document.Diff` — `write/2..4` uses
+    `Diff.apply_diff/3` for the Myers-diff merge.
+
+  ## Invariants
+
+    - **Every dispatch emits a complete event triple.** Either
+      `initiated → completed` or `initiated → failed` — never just
+      `initiated`. `Events.run/3` enforces this via try/rescue
+      around the body; even an unexpected exception lands as a
+      `failed` event.
+    - **One fork in flight per source UUID.** `in_flight_forks`
+      blocks duplicates; the second concurrent caller for the same
+      source receives `{:error, :fork_in_progress}` immediately and
+      doesn't queue work.
+    - **`:type_mismatch` is the default-refuse on non-text
+      writes.** No silent clobber of structured docs.
+    - **Magenta is best-effort; gold chain is the durable record.**
+      A subscriber that drops events sees gaps; the audit consumer
+      that runs against the red→gold chain is the canonical one.
+
+  ## What this module is NOT
+
+  - **Not a transport.** Magenta broadcasts go via Phoenix.PubSub;
+    the wire is the caller's concern.
+  - **Not the persistence layer.** Commits are still written by
+    `CommitStoreClient`; the router orchestrates the write but
+    doesn't own the storage.
+  - **Not the audit consumer.** Magenta events are emitted here;
+    the magenta→red onramp and gold-chain attestation live
+    downstream.
+  - **Not the only mutation surface.** Internal modules that
+    bypass the router (e.g. presence creation via
+    `Commonplace.Presence.create/3`) skip the magenta events
+    deliberately — they're trusted internal paths whose events
+    would be noise. New external surfaces should go through the
+    router.
   """
 
   use GenServer
