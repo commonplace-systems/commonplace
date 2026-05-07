@@ -2,10 +2,10 @@ defmodule Commonplace.Tree.Schema do
   @moduledoc """
   Directory-as-CRDT — the substrate atom for Commonplace's tree.
 
-  A schema doc *is* a directory. It maps child names to the UUIDs
-  of other docs (files or sub-directories), with metadata about
-  whether each child should sync. Walk a path through Commonplace's
-  tree and you're walking a chain of schema docs, one per directory.
+  A schema doc *is* a directory: it maps child names to the UUIDs of
+  other docs (files or sub-directories), with per-child sync metadata.
+  Walking a path through Commonplace's tree means traversing a chain of
+  schema docs, one per directory level.
 
       Yelixer.Doc
         ├── "schema"  (YMap)  — meta-state for this directory
@@ -18,139 +18,144 @@ defmodule Commonplace.Tree.Schema do
   Every other tree module — `Commonplace.Tree.Walk`,
   `Commonplace.Tree.Lookup`, `Commonplace.Tree.DocBuilder`,
   `Commonplace.Tree.Fork`, `Commonplace.Tree.Merge` — operates over
-  schema docs. Every doc tree in the workspace bottoms out in
-  schemas; everything else (text, JSON metadata, presence files,
-  binaries) is a *leaf* referenced by UUID from inside a schema's
-  `entries`.
+  schema docs. Every doc tree in the workspace bottoms out in schemas;
+  everything else (text, JSON metadata, presence files, binaries) is a
+  *leaf* referenced by UUID from a schema's `entries`.
 
   ## Why two top-level YMaps
 
-  `"schema"` carries meta-state that belongs to the directory itself
-  — currently just `"version"`, eventually room for `root` config
-  and future evolution. `"entries"` carries the directory's actual
-  contents. Splitting them lets the meta-state grow without
-  colliding with user-chosen entry names. (A future `"version"` key
-  in `entries` would mean a directory whose child file is named
-  "version"; meta lives in its own YMap to avoid that.)
+  A `Yelixer.Doc` (the underlying Yjs document wrapper) can hold
+  multiple named top-level shared types. `"schema"` holds meta-state
+  that belongs to the directory itself — currently just `"version"`,
+  with room for root config and future evolution. `"entries"` holds the
+  directory's actual contents. Separating them prevents meta-keys from
+  colliding with user-chosen child names: a directory with a child named
+  `"version"` would conflict if meta lived in the same YMap.
 
   ## The encoded entry value: `"type:uuid[:nosync]"`
 
-  Each `entries[name]` is a string. The format is:
+  Each `entries[name]` value is a plain string. The format is:
 
-      "doc:<uuid>"                — a file entry, sync enabled
-      "dir:<uuid>"                — a directory entry, sync enabled
-      "doc:<uuid>:nosync"         — file entry, sync disabled
-      "dir:<uuid>:nosync"         — directory entry, sync disabled
+      "doc:<uuid>"          — file entry, sync enabled
+      "dir:<uuid>"          — directory entry, sync enabled
+      "doc:<uuid>:nosync"   — file entry, sync disabled
+      "dir:<uuid>:nosync"   — directory entry, sync disabled
 
-  Why a string instead of a structured value (a nested YMap, say)?
-  Three reasons:
+  Why a string rather than a nested YMap? Three reasons:
 
     1. **Yelixer YMap values are scalars.** A nested YMap could be
-       expressed as a sub-type with the `__sub:CLIENT:CLOCK` naming
-       scheme from `Yelixer.Doc` — but that costs a separate type
-       registration and an additional doc-shape entry per directory
-       child. At Commonplace's scale (thousands of directories with
-       thousands of entries) the overhead is real.
-    2. **YMap LWW per key gives clean concurrent semantics for
-       free.** Two replicas concurrently calling `add_file` for the
-       same name resolve via Yjs's `(Lamport, clientID)` tiebreak,
-       same as any other YMap key. A structured value would need
-       independent LWW on each sub-field, which is *not* what the
-       directory-entry contract wants ("the entry is one logical
-       value, not a record of independently editable fields").
-    3. **The `:` delimiter is safe.** UUIDs are hex digits and
-       dashes (no colons); our type tags are `"doc"` and `"dir"`
-       (no colons); the optional `"nosync"` suffix is a fixed token.
-       `String.split/2` round-trips cleanly with no escaping logic.
+       expressed using `Yelixer.Doc`'s `__sub:CLIENT:CLOCK` sub-type
+       naming scheme, but that costs a separate type registration and an
+       extra doc-shape entry per child. At Commonplace's scale —
+       thousands of directories, thousands of entries — the overhead
+       compounds.
+    2. **YMap last-write-wins (LWW) per key gives clean concurrent
+       semantics for free.** Two replicas concurrently writing the same
+       child name resolve via Yjs's `(Lamport-clock, clientID)` tiebreak,
+       identical to any other YMap key. A structured value would require
+       independent LWW on each sub-field, which is wrong: a directory
+       entry is one logical value, not a record of independently editable
+       fields.
+    3. **The `:` delimiter is unambiguous.** UUIDs are hex digits and
+       dashes (no colons); type tags are `"doc"` and `"dir"` (no
+       colons); `"nosync"` is a fixed token. `String.split/2` round-trips
+       cleanly without escaping logic.
 
-  `encode_entry/3` and `decode_entry/1` are the codec; everything
-  in this module reads and writes through them.
+  `encode_entry/3` and `decode_entry/1` are the sole codec; all reads
+  and writes in this module go through them. A legacy bare-UUID form
+  (pre-dating this scheme — entries that were just a raw UUID with
+  no type tag) is still decoded for backward compatibility with old
+  updates that may surface via `apply_update/2`; `decode_entry/1`'s
+  third arm handles it by treating the UUID as a `"doc"` entry with
+  sync enabled.
 
   ## Honorific extensions and the presence-uniqueness invariant (CX-edy)
 
-  Four file extensions are reserved as **honorifics** for presence
-  documents:
+  Four file extensions are reserved as **honorifics** — markers that a
+  file is a *presence document*, advertising the live existence of an
+  actor in the workspace:
 
       .bot   .exe   .usr   .who
 
-  These extensions are how `Commonplace.Presence` advertises the
-  live existence of an actor. The single-presence-location
-  invariant ("an actor's `.usr` lives at exactly one path") is what
-  lets cross-cluster presence queries terminate; if it ever
-  weakened, an attacker (or a buggy CLI) could double-publish a
-  presence file under the same name in two locations and corrupt
-  every query that relies on the invariant.
+  The *single-presence-location invariant* requires that an actor's
+  presence file (e.g. `alice.usr`) exists at exactly one path in the
+  tree. This invariant lets cross-cluster presence queries terminate; if
+  it broke, a buggy CLI or an attacker (the CX-edy threat model) could
+  double-publish a presence file at two locations under the same actor
+  name, corrupting every query that relies on uniqueness.
 
-  `forbid_honorific!/1` is the **opt-in guard** that untrusted
-  write entrypoints (CLI `ln`, CLI `import`, future MCP tools) must
-  call before adding user-provided names. Trusted internal callers
-  — `Commonplace.Presence.create/3`, `Presence.move/3` — bypass the
-  guard because they're the canonical path for honorific files.
-  The check is case-insensitive (`Foo.USR` and `bar.Usr` are both
-  rejected) so the comparison can't be circumvented by case
-  shenanigans.
+  `forbid_honorific!/1` is the **opt-in guard** that untrusted write
+  entrypoints (CLI `ln`, CLI `import`, future MCP tools) must call
+  before adding user-provided names. Trusted internal callers —
+  `Commonplace.Presence.create/3` and `Presence.move/3` — bypass the
+  guard because they *are* the canonical path for honorific files. The
+  check is case-insensitive (`Foo.USR` and `bar.Usr` are both rejected)
+  so casing tricks cannot circumvent it.
 
-  Living the guard *here* matters: this module is the chokepoint
-  for every directory mutation. Anywhere else, an attacker could
-  add a `.usr` entry by going around the guard.
+  The guard lives *here* because this module is the chokepoint for all
+  directory mutations. Anywhere else, an attacker could add a `.usr`
+  entry by going around it.
 
   ## The sync flag and branch deactivation
 
-  The `:nosync` suffix is a per-entry "skip me when computing sync
-  subscriptions" flag. The path-prefix subscription model — the
-  sync agent subscribes to whatever entries the workspace's local
-  config wants to mirror — uses the flag to keep deactivated
-  branches off the wire while still leaving them as resolvable
+  The `:nosync` suffix is a per-entry flag meaning "omit me when
+  computing sync subscriptions." The sync agent subscribes to path
+  prefixes the workspace's local config wants to mirror; the flag lets
+  deactivated branches stay off the wire while remaining resolvable
   paths in the tree.
 
   Two helpers wrap `set_sync/3` for readability:
 
-    - `activate/2` flips the flag on (entry resumes syncing)
-    - `deactivate/2` flips the flag off (entry parks locally)
+    - `activate/2` — sets the flag to `true`; the entry resumes syncing.
+    - `deactivate/2` — sets the flag to `false`; the entry parks locally.
 
   New entries default to `sync: true` (no `:nosync` suffix). Only
-  explicit toggles via `set_sync/3` flip them off.
+  explicit calls to `set_sync/3` change the flag.
 
   ## Public surface
 
-    - `new_schema/0` — fresh empty schema with both YMaps
-      registered and `version` set.
-    - `version/1` — read schema version (currently always `1`).
-    - `add_file/3`, `add_directory/3` — write entries with the right
-      `type` tag.
-    - `remove_entry/2` — delete by name; standard YMap key delete.
-    - `entries/1` — raw `%{name => %{"type", "node_id", "sync"}}`
-      map for callers that want a flat dump.
+    - `new_schema/0` — fresh empty schema doc with both YMaps registered
+      and `version` set to `"1"`.
+    - `version/1` — read the schema version (currently always `1`).
+    - `add_file/3`, `add_directory/3` — write entries with the correct
+      type tag; both default to `sync: true`.
+    - `remove_entry/2` — delete an entry by name via YMap key delete.
+    - `entries/1` — raw `%{name => %{"type", "node_id", "sync"}}` map
+      for callers that need a flat dump.
     - `get_entry/2`, `list_entries/1` — `%Entry{}`-shaped views.
     - `set_sync/3`, `activate/2`, `deactivate/2` — sync-flag toggles.
-    - `resolve_name/2` — `name → node_id`, the projection used by
-      tree walks that don't care about type or sync metadata.
+    - `resolve_name/2` — maps a child name to its `node_id`; the
+      projection used by tree walks that don't need type or sync
+      metadata.
     - `honorific_extension?/1`, `forbid_honorific!/1` — the
-      reserved-extension guard documented above.
+      reserved-extension guard described above.
 
   ## Invariants
 
     - Entry names are unique within a directory (YMap key uniqueness;
       concurrent writes resolve by Yjs LWW).
     - Encoded values round-trip through `decode_entry/1` losslessly.
-    - The `"schema"` and `"entries"` types are always registered
-      after any operation (`ensure_types/1` is defensive against
-      docs that arrive without them, e.g. via `apply_update`).
-    - `sync: true` is the default; only explicit `set_sync/3`
-      toggles flip it off.
+    - `"schema"` and `"entries"` YMap types are always present after any
+      operation; `ensure_types/1` is defensive against docs that arrive
+      without them (e.g. via `apply_update`). All public reads
+      (`entries/1`, `version/1`, `set_sync/3`, `remove_entry/2`)
+      internally call `ensure_types/1` so callers can hand in a
+      freshly-applied doc without first wondering whether the
+      registrations made it across the wire.
+    - `sync: true` is the default; only explicit `set_sync/3` calls
+      change it.
 
   ## What this module is NOT
 
-  - **Not a path resolver** — that's `Commonplace.Tree.Walk` /
-    `Commonplace.Tree.Lookup`. Schema only resolves single-name
-    entries within one directory.
-  - **Not a fork** — `Commonplace.Tree.Fork` deep-copies subtrees
-    and produces a `ForkManifest`; this module supplies the per-
-    directory primitive Fork composes.
-  - **Not the file-system sync agent** — it sets the sync flag;
-    the agent reads it.
-  - **Not a writer of presence files** — `Commonplace.Presence` is
-    the trusted write path for honorific entries.
+  - **Not a path resolver** — that is `Commonplace.Tree.Walk` and
+    `Commonplace.Tree.Lookup`. Schema resolves single child-name lookups
+    within one directory only.
+  - **Not a fork** — `Commonplace.Tree.Fork` deep-copies subtrees and
+    produces a `ForkManifest`; this module is the per-directory primitive
+    that Fork composes.
+  - **Not the sync agent** — it sets the sync flag; the agent reads it.
+  - **Not a writer of presence files** — `Commonplace.Presence` is the
+    trusted write path for honorific entries.
   """
 
   alias Yelixer.{Doc, Types.YMap}
@@ -160,10 +165,9 @@ defmodule Commonplace.Tree.Schema do
 
   defmodule Entry do
     @moduledoc """
-    A single entry in a schema document — the decoded form of one
-    `entries[name]` value. The `type` field is normalized to atoms
-    (`:doc` or `:dir`) for pattern-matching ergonomics; the wire
-    form keeps the lowercase strings.
+    Decoded form of one `entries[name]` value. `type` is normalized
+    to atoms (`:doc` or `:dir`) for pattern-matching ergonomics;
+    the wire format uses the lowercase strings `"doc"` and `"dir"`.
     """
     defstruct [:name, :type, :node_id, sync: true]
 
@@ -176,10 +180,10 @@ defmodule Commonplace.Tree.Schema do
   end
 
   @doc """
-  Returns a fresh empty schema doc — both YMaps registered, version
-  set to `"1"`. Use this as the starting point when minting a new
-  directory; subsequent `add_file/3` / `add_directory/3` calls
-  populate the `entries` map.
+  Returns a fresh empty schema doc with both YMaps registered and
+  `version` set to `"1"`. Use this as the starting point when
+  creating a new directory; subsequent `add_file/3` and
+  `add_directory/3` calls populate `entries`.
   """
   def new_schema do
     doc = Doc.new()
@@ -203,16 +207,10 @@ defmodule Commonplace.Tree.Schema do
   @honorific_extensions ~w(.bot .exe .usr .who)
 
   @doc """
-  Return true iff `name` ends in one of the reserved honorific
-  extensions: `.bot`, `.exe`, `.usr`, `.who` (CX-edy). The comparison
-  is case-insensitive.
-
-  Honorific extensions are reserved for presence documents — files
-  that advertise an actor's live existence. The
-  `Commonplace.Presence` module is the only trusted path for creating
-  them; any user-facing write path must refuse to place new entries
-  with these extensions, or an attacker could double-publish presence
-  and break the single-presence-location invariant.
+  Returns `true` when `name` ends in one of the four reserved
+  honorific extensions: `.bot`, `.exe`, `.usr`, `.who`. Check is
+  case-insensitive. See the `@moduledoc` for the CX-edy threat model
+  and the single-presence-location invariant this guard protects.
   """
   @spec honorific_extension?(String.t()) :: boolean()
   def honorific_extension?(name) when is_binary(name) do
@@ -221,10 +219,10 @@ defmodule Commonplace.Tree.Schema do
   end
 
   @doc """
-  Raise `ArgumentError` when `name` ends in a reserved honorific
-  extension (CX-edy). Call this at untrusted write entrypoints (CLI
-  ln, CLI import, future presence.move MCP tool) before adding
-  user-provided names to the schema.
+  Raises `ArgumentError` when `name` ends in a reserved honorific
+  extension. Call this at untrusted write entrypoints — CLI `ln`,
+  CLI `import`, future MCP tools — before adding user-provided names
+  to the schema. Trusted callers (`Commonplace.Presence`) bypass it.
   """
   @spec forbid_honorific!(String.t()) :: :ok
   def forbid_honorific!(name) when is_binary(name) do
@@ -239,34 +237,34 @@ defmodule Commonplace.Tree.Schema do
   end
 
   @doc """
-  Adds a file entry. Defaults to `sync: true`. Does NOT call
-  `forbid_honorific!/1` — callers that need the guard (untrusted
-  write paths) must invoke it explicitly.
+  Adds a file entry with `sync: true`. Does not call
+  `forbid_honorific!/1` — untrusted write paths must invoke that
+  guard explicitly before calling this.
   """
   def add_file(doc, name, node_id) when is_binary(name) and is_binary(node_id) do
     add_entry(doc, name, "doc", node_id)
   end
 
   @doc """
-  Adds a directory entry. Same shape as `add_file/3` — `sync: true`
-  default; honorific guard is opt-in.
+  Adds a directory entry with `sync: true`. Same contract as
+  `add_file/3`: the honorific guard is opt-in for callers.
   """
   def add_directory(doc, name, node_id) when is_binary(name) and is_binary(node_id) do
     add_entry(doc, name, "dir", node_id)
   end
 
   @doc """
-  Removes an entry by name. The underlying `YMap.delete/3` clears
-  the key; concurrent re-adds from another replica resolve by Yjs
-  LWW per key (no tombstone-blocks-set rule — same shape as the
-  Beads dependency-edge semantics in §5.4 of beads-on-commonplace).
+  Removes an entry by name via `YMap.delete/3`. Concurrent re-adds
+  from another replica resolve by Yjs LWW per key — no
+  tombstone-blocks-set rule (same semantics as Beads dependency
+  edges, §5.4 of beads-on-commonplace).
   """
   def remove_entry(doc, name) when is_binary(name) do
     doc = ensure_types(doc)
     YMap.delete(doc, @entries_type, name)
   end
 
-  @doc "Get all entries as a raw map of {name => %{type, node_id}}."
+  @doc "Returns all entries as `%{name => %{\"type\", \"node_id\", \"sync\"}}`."
   def entries(doc) do
     doc = ensure_types(doc)
     raw = YMap.to_map(doc, @entries_type)
@@ -283,7 +281,7 @@ defmodule Commonplace.Tree.Schema do
     end)
   end
 
-  @doc "Get a single entry by name."
+  @doc "Returns a single `%Entry{}` by name, or `:error` if absent."
   def get_entry(doc, name) when is_binary(name) do
     all = entries(doc)
 
@@ -302,7 +300,7 @@ defmodule Commonplace.Tree.Schema do
     end
   end
 
-  @doc "List all entries as Entry structs."
+  @doc "Returns all entries as a list of `%Entry{}` structs."
   def list_entries(doc) do
     entries(doc)
     |> Enum.map(fn {name, entry_map} ->
@@ -315,7 +313,7 @@ defmodule Commonplace.Tree.Schema do
     end)
   end
 
-  @doc "Set the sync flag on an entry (activate/deactivate)."
+  @doc "Sets the sync flag on a named entry. No-op if the entry does not exist."
   def set_sync(doc, name, sync) when is_binary(name) and is_boolean(sync) do
     doc = ensure_types(doc)
     all = entries(doc)
@@ -331,13 +329,13 @@ defmodule Commonplace.Tree.Schema do
     end
   end
 
-  @doc "Activate a branch (set sync:true)."
+  @doc "Marks the entry as syncing (`sync: true`). Shorthand for `set_sync/3`."
   def activate(doc, name), do: set_sync(doc, name, true)
 
-  @doc "Deactivate a branch (set sync:false)."
+  @doc "Marks the entry as local-only (`sync: false`). Shorthand for `set_sync/3`."
   def deactivate(doc, name), do: set_sync(doc, name, false)
 
-  @doc "Resolve a name to its node_id."
+  @doc "Maps a child name to its `node_id`, discarding type and sync metadata."
   def resolve_name(doc, name) when is_binary(name) do
     case get_entry(doc, name) do
       {:ok, entry} -> {:ok, entry.node_id}
@@ -353,16 +351,12 @@ defmodule Commonplace.Tree.Schema do
     doc
   end
 
-  # Codec for the entry-value string. Only place in this module that
-  # knows the wire shape; everything else goes through these.
+  # Sole codec for the entry-value string. All reads and writes pass
+  # through here — no other function knows the wire shape.
   #
-  # The `:` delimiter is safe because UUIDs are hex+dashes (no
-  # colons) and our type tags are word-only ("doc" / "dir"). The
-  # third arm of decode_entry handles a legacy two-token form where
-  # the entry string was just a raw UUID with no type tag — that
-  # shape predates the encoded-string scheme and survives only as a
-  # decode fallback for old-format updates that are still in the
-  # wild.
+  # The third arm of decode_entry handles a legacy bare-UUID form
+  # (no type tag) that predates the encoded-string scheme; it
+  # survives as a fallback for old-format updates still in the wild.
   defp encode_entry(type, node_id, true), do: "#{type}:#{node_id}"
   defp encode_entry(type, node_id, false), do: "#{type}:#{node_id}:nosync"
 
