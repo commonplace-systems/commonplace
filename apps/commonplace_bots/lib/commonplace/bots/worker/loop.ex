@@ -113,7 +113,8 @@ defmodule Commonplace.Bots.Worker.Loop do
       "tool_use" ->
         assistant_msg = %{"role" => "assistant", "content" => Map.get(response, "content", [])}
         tool_uses = collect_tool_uses(response)
-        tool_results = Enum.map(tool_uses, &dispatch_tool(state, &1))
+        state_with_budget = Map.put(state, :budget_snapshot, snapshot_budget(state, budget))
+        tool_results = Enum.map(tool_uses, &dispatch_tool(state_with_budget, &1))
         user_msg = %{"role" => "user", "content" => tool_results}
         loop(state, messages ++ [assistant_msg, user_msg], tools, budget)
 
@@ -192,5 +193,16 @@ defmodule Commonplace.Bots.Worker.Loop do
   defp wall_clock_exceeded?(state, budget) do
     elapsed = System.monotonic_time(:millisecond) - budget.started_at
     elapsed >= state.config.max_wall_ms
+  end
+
+  defp snapshot_budget(state, budget) do
+    elapsed = System.monotonic_time(:millisecond) - budget.started_at
+
+    %{
+      calls_remaining: budget.calls_remaining,
+      output_tokens_remaining:
+        max(state.config.max_output_tokens - budget.output_tokens_used, 0),
+      wall_ms_remaining: max(state.config.max_wall_ms - elapsed, 0)
+    }
   end
 end

@@ -35,9 +35,25 @@ defmodule Commonplace.Bots.Worker.Tools do
   drift over time.
   """
 
-  alias Commonplace.Bots.Worker.Tools.{PostMessage, Remember}
+  alias Commonplace.Bots.Worker.Tools.{
+    CheckTurnRemaining,
+    ListFiles,
+    PostMessage,
+    ReadChat,
+    ReadFile,
+    ReadMemory,
+    Remember
+  }
 
-  @tool_modules [PostMessage, Remember]
+  @tool_modules [
+    PostMessage,
+    Remember,
+    ReadChat,
+    ReadMemory,
+    ListFiles,
+    ReadFile,
+    CheckTurnRemaining
+  ]
 
   @spec tool_defs(map()) :: [map()]
   def tool_defs(_state) do
