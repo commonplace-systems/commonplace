@@ -23,8 +23,8 @@ defmodule Commonplace.Bots.Application do
   @impl true
   def start(_type, _args) do
     children = [
-      {Task.Supervisor, name: Commonplace.Bots.WorkerSupervisor}
-      # Dispatcher added in phase 3 once subscription + trigger wiring lands.
+      {Task.Supervisor, name: Commonplace.Bots.WorkerSupervisor},
+      Commonplace.Bots.Dispatcher
     ]
 
     opts = [strategy: :one_for_one, name: Commonplace.Bots.Supervisor]
