@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# bot-demo-post — post a message into the running bot demo BEAM.
+#
+# Usage:
+#   bin/bot-demo-post "<text>" [author_path]
+#
+# Defaults:
+#   author_path = workspace.usr  (the workspace agent's identity;
+#                                 .usr suffix means human-tier per
+#                                 the loop-prevention convention)
+#
+# Requires the serve BEAM to be running with:
+#   iex --sname botdemo@localhost -S mix
+# AND Bots.DemoSession.start(<root_uuid>) already invoked in that
+# session (see runbook in the commit message that ships this file).
+
+set -euo pipefail
+
+if [ $# -lt 1 ]; then
+  echo "usage: bin/bot-demo-post \"<text>\" [author_path]" >&2
+  exit 64
+fi
+
+export BOTDEMO_TEXT="$1"
+export BOTDEMO_AUTHOR="${2:-workspace.usr}"
+
+cd "$(dirname "$0")/.."
+
+exec mix run --no-start --no-compile -e '
+  text = System.get_env("BOTDEMO_TEXT") || ""
+  author = System.get_env("BOTDEMO_AUTHOR") || "workspace.usr"
+  node = :"botdemo@localhost"
+
+  unless Node.connect(node) do
+    IO.puts(:stderr, "failed to connect to #{inspect(node)} — is `iex --sname botdemo@localhost -S mix` running?")
+    System.halt(1)
+  end
+
+  case :rpc.call(node, Commonplace.Bots.DemoSession, :post, [text, author], 15_000) do
+    {:ok, %{message_id: id, ts: ts}} ->
+      IO.puts("posted msg_id=#{id} ts=#{ts} author=#{author}")
+
+    {:error, reason} ->
+      IO.puts(:stderr, "post failed: #{inspect(reason)}")
+      System.halt(2)
+
+    {:badrpc, reason} ->
+      IO.puts(:stderr, "rpc failed: #{inspect(reason)}")
+      System.halt(3)
+  end
+'

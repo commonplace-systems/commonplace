@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# bot-demo-read — print the most recent messages from the demo room.
+#
+# Usage:
+#   bin/bot-demo-read [limit]
+#
+# Defaults:
+#   limit = 20
+#
+# Requires the same serve BEAM + Bots.DemoSession bootstrap as
+# bot-demo-post.
+
+set -euo pipefail
+
+export BOTDEMO_LIMIT="${1:-20}"
+
+cd "$(dirname "$0")/.."
+
+exec mix run --no-start --no-compile -e '
+  limit = String.to_integer(System.get_env("BOTDEMO_LIMIT") || "20")
+  node = :"botdemo@localhost"
+
+  unless Node.connect(node) do
+    IO.puts(:stderr, "failed to connect to #{inspect(node)} — is `iex --sname botdemo@localhost -S mix` running?")
+    System.halt(1)
+  end
+
+  case :rpc.call(node, Commonplace.Bots.DemoSession, :read, [limit], 15_000) do
+    entries when is_list(entries) ->
+      Enum.each(entries, fn {author, text, ts} ->
+        IO.puts("[#{ts}] #{author}: #{text}")
+      end)
+
+    {:badrpc, reason} ->
+      IO.puts(:stderr, "rpc failed: #{inspect(reason)}")
+      System.halt(3)
+  end
+'
