@@ -32,9 +32,11 @@ defmodule Commonplace.Store.CommitStore do
 
   Commits are append-only — `do_write_commit/6` and friends use
   `CubDB.put_multi/2` so the new `{:commit, id}` row and the
-  `{:latest, doc_uuid}` advance land atomically. The `:latest` pointer
-  is the only thing that's ever *rewritten*; the underlying commits
-  are immutable.
+  `{:latest, doc_uuid}` advance land atomically. Commit-shaped rows
+  (`{:commit, id}`, `{:attestation, id}`) are immutable once
+  written; head pointers (`{:latest, _}`, `{:latest_attestation, _}`,
+  `{:merge_point, _, _}`, `{:last_merge_commit, _, _}`,
+  `{:latest_merge_head, _}`) are rewritten as the head advances.
 
   ## The `:latest` pointer
 
@@ -300,6 +302,29 @@ defmodule Commonplace.Store.CommitStore do
       it based on the per-call context.
     * **Not the remote transport.** `CommitStoreClient` handles
       local-vs-remote routing.
+    * **Not the attestation API.** `Commonplace.Gold.Chain` owns the
+      gold-channel attestation surface and calls into CommitStore's
+      `{:store_attestation, ...}` / `{:latest_attestation, ...}` /
+      `{:attestation_chain, ...}` handle_calls directly via
+      `GenServer.call/2`. There are deliberately no public wrappers
+      here — attestation verbs live with their owner; CommitStore is
+      just the durable tier.
+
+  ## Cross-version handle_call shapes
+
+  Two pairs of `handle_call` clauses match arity-shorter tuples
+  that no current public function emits:
+
+      {:create_commit, doc_uuid, update, parent_id, metadata}
+      {:create_chained_commit, doc_uuid, update, metadata}
+
+  These exist for cross-version `GenServer.call/2` from older
+  client builds (notably CLI escripts pinned to a pre-CX-o3r7
+  release) connecting to a newer `serve` node. New clients always
+  send the longer tuple with the trailing `opts` keyword list; old
+  clients send the shorter shape and the handler delegates to the
+  full path with `opts = []`. Drop these only after a release
+  audit confirms no in-flight escripts still emit the short form.
   """
 
   use GenServer
