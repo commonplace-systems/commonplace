@@ -24,6 +24,10 @@ fi
 export BOTDEMO_TEXT="$1"
 export BOTDEMO_AUTHOR="${2:-workspace.usr}"
 
+# Shared cookie with the serve node — see runbook. Without this,
+# distributed Erlang rejects the RPC with :nodedown.
+export ERL_AFLAGS="-setcookie ${BOTDEMO_COOKIE:-commonplace-bots-demo} -sname client$$@localhost"
+
 cd "$(dirname "$0")/.."
 
 exec mix run --no-start --no-compile -e '

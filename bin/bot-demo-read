@@ -14,6 +14,8 @@ set -euo pipefail
 
 export BOTDEMO_LIMIT="${1:-20}"
 
+export ERL_AFLAGS="-setcookie ${BOTDEMO_COOKIE:-commonplace-bots-demo} -sname client$$@localhost"
+
 cd "$(dirname "$0")/.."
 
 exec mix run --no-start --no-compile -e '
