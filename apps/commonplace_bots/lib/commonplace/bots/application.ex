@@ -24,6 +24,7 @@ defmodule Commonplace.Bots.Application do
   def start(_type, _args) do
     children = [
       {Task.Supervisor, name: Commonplace.Bots.WorkerSupervisor},
+      Commonplace.Bots.RateLimit,
       Commonplace.Bots.Dispatcher
     ]
 

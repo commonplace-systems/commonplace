@@ -57,22 +57,24 @@ defmodule Commonplace.Bots.Dispatcher do
   use GenServer
   require Logger
 
-  alias Commonplace.Bots.{Entity, Trigger}
+  alias Commonplace.Bots.{Activity, Entity, RateLimit, Trigger}
   alias Commonplace.Chat.Messages
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.DocBuilder
 
-  defstruct rooms: %{}, store: CommitStoreClient, worker_hook: nil
+  defstruct rooms: %{}, store: CommitStoreClient, worker_hook: nil, rate_limit_enabled: true
 
   @type room_info :: %{
           required(:dir_uuid) => String.t(),
-          required(:messages_uuid) => String.t()
+          required(:messages_uuid) => String.t(),
+          required(:activity_uuid) => String.t() | nil
         }
 
   @type t :: %__MODULE__{
           rooms: %{String.t() => room_info()},
           store: module() | atom(),
-          worker_hook: (String.t(), Entity.t(), map() -> any())
+          worker_hook: (String.t(), Entity.t(), map() -> any()),
+          rate_limit_enabled: boolean()
         }
 
   ## Public API
@@ -111,7 +113,8 @@ defmodule Commonplace.Bots.Dispatcher do
     state = %__MODULE__{
       rooms: %{},
       store: Keyword.get(opts, :store, CommitStoreClient),
-      worker_hook: Keyword.get(opts, :worker_hook, &__MODULE__.log_wake/3)
+      worker_hook: Keyword.get(opts, :worker_hook, &__MODULE__.log_wake/3),
+      rate_limit_enabled: Keyword.get(opts, :rate_limit_enabled, true)
     }
 
     {:ok, state}
@@ -127,7 +130,13 @@ defmodule Commonplace.Bots.Dispatcher do
         :ok
     end
 
-    info = %{dir_uuid: dir_uuid, messages_uuid: messages_uuid}
+    activity_uuid =
+      case Activity.ensure_doc(dir_uuid, state.store) do
+        {:ok, uuid} -> uuid
+        _ -> nil
+      end
+
+    info = %{dir_uuid: dir_uuid, messages_uuid: messages_uuid, activity_uuid: activity_uuid}
     {:reply, :ok, %{state | rooms: Map.put(state.rooms, room, info)}}
   end
 
@@ -217,13 +226,56 @@ defmodule Commonplace.Bots.Dispatcher do
         )
 
       decision when decision == :wake or is_tuple(decision) ->
-        :telemetry.execute(
-          [:commonplace, :bots, :dispatcher, :trigger_fired],
-          %{system_time: System.system_time()},
-          %{room: room, bot: entity.name}
-        )
+        case maybe_acquire(state, room, entity.name) do
+          :ok ->
+            :telemetry.execute(
+              [:commonplace, :bots, :dispatcher, :trigger_fired],
+              %{system_time: System.system_time()},
+              %{room: room, bot: entity.name}
+            )
 
-        state.worker_hook.(room, entity, event)
+            log_activity(state, room, %{
+              "room" => room,
+              "bot" => entity.name,
+              "decision" => "fired",
+              "message_id" => Map.get(event, "message_id")
+            })
+
+            state.worker_hook.(room, entity, event)
+
+          {:throttled, reason} ->
+            :telemetry.execute(
+              [:commonplace, :bots, :dispatcher, :trigger_suppressed],
+              %{system_time: System.system_time()},
+              %{room: room, bot: entity.name, reason: reason}
+            )
+
+            log_activity(state, room, %{
+              "room" => room,
+              "bot" => entity.name,
+              "decision" => "suppressed",
+              "reason" => to_string(reason),
+              "message_id" => Map.get(event, "message_id")
+            })
+        end
+    end
+  end
+
+  defp maybe_acquire(%{rate_limit_enabled: false}, _room, _bot), do: :ok
+
+  defp maybe_acquire(_state, room, bot) do
+    RateLimit.acquire(room, bot)
+  end
+
+  defp log_activity(state, room, entry) do
+    case Map.get(state.rooms, room) do
+      %{activity_uuid: uuid} when is_binary(uuid) ->
+        # Best-effort; failures are observability noise, not behavior bugs.
+        Task.start(fn -> Activity.append(uuid, entry, state.store) end)
+        :ok
+
+      _ ->
+        :ok
     end
   end
 
@@ -264,5 +316,26 @@ defmodule Commonplace.Bots.Dispatcher do
     )
 
     :ok
+  end
+
+  @doc """
+  Default production worker_hook: spawn the Worker as a
+  supervised Task and ensure `RateLimit.release/2` runs whether
+  the worker exits cleanly, crashes, or hits a cap.
+
+  Tests pass their own `worker_hook` and are responsible for
+  calling `release/2` themselves (or disabling rate limits via
+  `rate_limit_enabled: false`).
+  """
+  def spawn_worker(room, entity, event, opts \\ []) do
+    bot = entity.name
+
+    Task.Supervisor.start_child(Commonplace.Bots.WorkerSupervisor, fn ->
+      try do
+        Commonplace.Bots.Worker.run(room, entity, event, opts)
+      after
+        RateLimit.release(room, bot)
+      end
+    end)
   end
 end

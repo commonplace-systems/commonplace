@@ -33,7 +33,9 @@ defmodule Commonplace.Bots.DispatcherTest do
     {:ok, _pid} =
       Supervisor.start_child(
         bots_sup,
-        Supervisor.child_spec({Commonplace.Bots.Dispatcher, [worker_hook: hook]},
+        Supervisor.child_spec(
+          {Commonplace.Bots.Dispatcher,
+           [worker_hook: hook, rate_limit_enabled: false]},
           id: Commonplace.Bots.Dispatcher
         )
       )

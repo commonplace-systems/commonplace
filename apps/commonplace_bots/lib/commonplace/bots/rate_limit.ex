@@ -1,0 +1,202 @@
+defmodule Commonplace.Bots.RateLimit do
+  @moduledoc """
+  RAM-resident rate-limit state for the bot dispatcher.
+
+  Holds three classes of bookkeeping per (room, bot):
+
+    * Per-room sliding-window post counter (default: 3 posts per
+      60 seconds). Counts every successfully-posted message
+      whose author_path ends in `.bot`. Pruned lazily on each
+      check.
+    * Per-bot cooldown (default: 10s after the last post
+      completion). A bot whose last post was less than the
+      cooldown ago is throttled regardless of room budget.
+    * Per-room and global concurrency caps (defaults: 2 per
+      room, 3 global). Counted by `acquire` / `release` calls
+      bracketing the worker task's lifetime.
+
+  ## Why RAM, not a substrate doc
+
+  Per the converged design with commonplace-plan: live counters
+  written every post would thrash the commit DAG. Audit /
+  observability lives in `__bot_activity` (append-only YArray of
+  JSON); live counters live here.
+
+  ## Restart semantics (v0)
+
+  v0 boots with empty state. The phase-6+ replay-from-log
+  rebuild (scan last 60s of `__bot_activity`) is intentionally
+  deferred — the failure mode is more-permissive-at-boot, which
+  is safe. A dispatcher restart inside a sliding window allows
+  up to one extra burst before the window converges; we accept
+  this in exchange for v0 scope.
+
+  ## Public API
+
+      RateLimit.acquire(room, bot)
+        :: :ok | {:throttled, reason}
+
+      RateLimit.release(room, bot)
+        :: :ok        # always — never raises on unknown bot
+
+      RateLimit.record_post(room, bot)
+        :: :ok        # called by Worker on successful post_message
+
+      RateLimit.config(opts)
+        :: :ok        # set process-wide limits (used by tests)
+
+  `reason` ∈ {:per_room_burst, :per_bot_cooldown, :room_concurrency, :global_concurrency}.
+  """
+
+  use GenServer
+
+  @default_per_room_window_ms 60_000
+  @default_per_room_max_posts 3
+  @default_per_bot_cooldown_ms 10_000
+  @default_per_room_concurrency 2
+  @default_global_concurrency 3
+
+  defstruct config: nil,
+            room_posts: %{},
+            last_post_at: %{},
+            room_concurrency: %{},
+            global_concurrency: 0
+
+  ## Public API
+
+  def start_link(opts \\ []) do
+    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  end
+
+  @spec acquire(String.t(), String.t()) :: :ok | {:throttled, atom()}
+  def acquire(room, bot), do: GenServer.call(__MODULE__, {:acquire, room, bot})
+
+  @spec release(String.t(), String.t()) :: :ok
+  def release(room, bot), do: GenServer.call(__MODULE__, {:release, room, bot})
+
+  @spec record_post(String.t(), String.t()) :: :ok
+  def record_post(room, bot), do: GenServer.call(__MODULE__, {:record_post, room, bot})
+
+  @spec config(keyword()) :: :ok
+  def config(opts), do: GenServer.call(__MODULE__, {:config, opts})
+
+  @spec snapshot() :: map()
+  def snapshot, do: GenServer.call(__MODULE__, :snapshot)
+
+  ## GenServer
+
+  @impl true
+  def init(opts) do
+    {:ok, %__MODULE__{config: build_config(opts)}}
+  end
+
+  defp build_config(opts) do
+    %{
+      per_room_window_ms:
+        Keyword.get(opts, :per_room_window_ms, @default_per_room_window_ms),
+      per_room_max_posts:
+        Keyword.get(opts, :per_room_max_posts, @default_per_room_max_posts),
+      per_bot_cooldown_ms:
+        Keyword.get(opts, :per_bot_cooldown_ms, @default_per_bot_cooldown_ms),
+      per_room_concurrency:
+        Keyword.get(opts, :per_room_concurrency, @default_per_room_concurrency),
+      global_concurrency:
+        Keyword.get(opts, :global_concurrency, @default_global_concurrency)
+    }
+  end
+
+  @impl true
+  def handle_call({:acquire, room, bot}, _from, state) do
+    now = System.monotonic_time(:millisecond)
+    state = prune_room(state, room, now)
+
+    cond do
+      cooldown_active?(state, room, bot, now) ->
+        {:reply, {:throttled, :per_bot_cooldown}, state}
+
+      length(Map.get(state.room_posts, room, [])) >= state.config.per_room_max_posts ->
+        {:reply, {:throttled, :per_room_burst}, state}
+
+      Map.get(state.room_concurrency, room, 0) >= state.config.per_room_concurrency ->
+        {:reply, {:throttled, :room_concurrency}, state}
+
+      state.global_concurrency >= state.config.global_concurrency ->
+        {:reply, {:throttled, :global_concurrency}, state}
+
+      true ->
+        state = %{
+          state
+          | room_concurrency:
+              Map.update(state.room_concurrency, room, 1, &(&1 + 1)),
+            global_concurrency: state.global_concurrency + 1
+        }
+
+        {:reply, :ok, state}
+    end
+  end
+
+  @impl true
+  def handle_call({:release, room, _bot}, _from, state) do
+    new_room =
+      case Map.get(state.room_concurrency, room, 0) do
+        n when n <= 1 -> Map.delete(state.room_concurrency, room)
+        n -> Map.put(state.room_concurrency, room, n - 1)
+      end
+
+    state = %{
+      state
+      | room_concurrency: new_room,
+        global_concurrency: max(state.global_concurrency - 1, 0)
+    }
+
+    {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_call({:record_post, room, bot}, _from, state) do
+    now = System.monotonic_time(:millisecond)
+
+    state = %{
+      state
+      | room_posts: Map.update(state.room_posts, room, [now], fn ts -> [now | ts] end),
+        last_post_at: Map.put(state.last_post_at, {room, bot}, now)
+    }
+
+    {:reply, :ok, prune_room(state, room, now)}
+  end
+
+  @impl true
+  def handle_call({:config, opts}, _from, state) do
+    {:reply, :ok, %{state | config: build_config(opts)}}
+  end
+
+  @impl true
+  def handle_call(:snapshot, _from, state) do
+    {:reply, Map.from_struct(state), state}
+  end
+
+  defp prune_room(state, room, now) do
+    cutoff = now - state.config.per_room_window_ms
+
+    case Map.get(state.room_posts, room) do
+      nil ->
+        state
+
+      list ->
+        kept = Enum.filter(list, fn ts -> ts >= cutoff end)
+
+        new_room_posts =
+          if kept == [], do: Map.delete(state.room_posts, room),
+            else: Map.put(state.room_posts, room, kept)
+
+        %{state | room_posts: new_room_posts}
+    end
+  end
+
+  defp cooldown_active?(state, room, bot, now) do
+    case Map.get(state.last_post_at, {room, bot}) do
+      nil -> false
+      then -> now - then < state.config.per_bot_cooldown_ms
+    end
+  end
+end

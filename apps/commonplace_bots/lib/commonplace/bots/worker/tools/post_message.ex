@@ -43,6 +43,7 @@ defmodule Commonplace.Bots.Worker.Tools.PostMessage do
            author_path: author_path
          ) do
       {:ok, %{message_id: id, ts: ts}} ->
+        record_post(state)
         {:ok, Jason.encode!(%{"message_id" => id, "ts" => ts})}
 
       {:error, reason} ->
@@ -51,6 +52,18 @@ defmodule Commonplace.Bots.Worker.Tools.PostMessage do
   end
 
   def call(_state, _input), do: {:error, "post_message requires a non-empty 'text' field"}
+
+  defp record_post(state) do
+    if Process.whereis(Commonplace.Bots.RateLimit) do
+      try do
+        Commonplace.Bots.RateLimit.record_post(state.room, state.entity.name)
+      catch
+        :exit, _ -> :ok
+      end
+    end
+
+    :ok
+  end
 
   defp get_messages_uuid(state) do
     case Keyword.get(state.opts, :messages_uuid) do
