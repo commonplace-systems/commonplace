@@ -188,6 +188,41 @@ defmodule Commonplace.Bots.DispatcherTest do
       assert Enum.sort([name_a, name_b]) == ["alice", "bob"]
     end
 
+    test "production default (worker_hook=nil) spawns a Worker via spawn_worker" do
+      # Restart dispatcher without a worker_hook — exercises the
+      # production default path (Dispatcher.spawn_worker/4 with the
+      # registered room's messages_uuid).
+      bots_sup = Commonplace.Bots.Supervisor
+      _ = Supervisor.terminate_child(bots_sup, Commonplace.Bots.Dispatcher)
+      _ = Supervisor.delete_child(bots_sup, Commonplace.Bots.Dispatcher)
+
+      {:ok, _pid} =
+        Supervisor.start_child(
+          bots_sup,
+          Supervisor.child_spec({Commonplace.Bots.Dispatcher, [rate_limit_enabled: false]},
+            id: Commonplace.Bots.Dispatcher
+          )
+        )
+
+      test_pid = self()
+
+      :telemetry.attach(
+        "worker-started-#{:rand.uniform(1_000_000)}",
+        [:commonplace, :bots, :worker, :started],
+        fn _e, _meas, meta, _cfg -> send(test_pid, {:worker_started, meta}) end,
+        nil
+      )
+
+      alice = mint_bot_dir("I am alice.", "(?i)@alice\\b")
+      room_uuid = mint_room_dir([{"alice.bot", alice}])
+      messages_uuid = mint_messages_doc()
+
+      :ok = Dispatcher.subscribe_room("prod-default", room_uuid, messages_uuid)
+      {:ok, _} = post("prod-default", messages_uuid, "@alice ping")
+
+      assert_receive {:worker_started, %{bot: "alice", room: "prod-default"}}, 1_500
+    end
+
     test "unregistered room receives no events even if posts happen" do
       alice = mint_bot_dir("I am alice.", "(?i)@alice\\b")
       _room_uuid = mint_room_dir([{"alice.bot", alice}])

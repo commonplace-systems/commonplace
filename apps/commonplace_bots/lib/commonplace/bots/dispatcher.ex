@@ -113,7 +113,12 @@ defmodule Commonplace.Bots.Dispatcher do
     state = %__MODULE__{
       rooms: %{},
       store: Keyword.get(opts, :store, CommitStoreClient),
-      worker_hook: Keyword.get(opts, :worker_hook, &__MODULE__.log_wake/3),
+      # When nil, the dispatcher defaults to production mode:
+      # `Dispatcher.spawn_worker/4` supervised under WorkerSupervisor,
+      # with the real Anthropic client and the registered room's
+      # messages_uuid. Tests pass a 3-arity function to intercept the
+      # wake without spawning a worker.
+      worker_hook: Keyword.get(opts, :worker_hook),
       rate_limit_enabled: Keyword.get(opts, :rate_limit_enabled, true)
     }
 
@@ -241,7 +246,7 @@ defmodule Commonplace.Bots.Dispatcher do
               "message_id" => Map.get(event, "message_id")
             })
 
-            state.worker_hook.(room, entity, event)
+            invoke_worker(state, room, entity, event)
 
           {:throttled, reason} ->
             :telemetry.execute(
@@ -265,6 +270,20 @@ defmodule Commonplace.Bots.Dispatcher do
 
   defp maybe_acquire(_state, room, bot) do
     RateLimit.acquire(room, bot)
+  end
+
+  defp invoke_worker(%{worker_hook: hook} = _state, room, entity, event)
+       when is_function(hook, 3) do
+    hook.(room, entity, event)
+  end
+
+  defp invoke_worker(state, room, entity, event) do
+    messages_uuid = get_in(state.rooms, [room, :messages_uuid])
+
+    __MODULE__.spawn_worker(room, entity, event,
+      messages_uuid: messages_uuid,
+      store: state.store
+    )
   end
 
   defp log_activity(state, room, entry) do
@@ -309,7 +328,11 @@ defmodule Commonplace.Bots.Dispatcher do
     end
   end
 
-  @doc false
+  @doc """
+  Logging-only worker_hook for tests / development. Pass as
+  `worker_hook: &Dispatcher.log_wake/3` to inspect dispatch
+  decisions without spawning a worker.
+  """
   def log_wake(room, entity, event) do
     Logger.info(
       "[bots.dispatcher] wake bot=#{entity.name} room=#{room} msg=#{Map.get(event, "message_id")}"
