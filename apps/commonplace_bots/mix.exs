@@ -25,7 +25,11 @@ defmodule Commonplace.Bots.MixProject do
   defp deps do
     [
       {:commonplace, in_umbrella: true},
-      {:jason, "~> 1.4"}
+      {:jason, "~> 1.4"},
+      # HTTP client for the Anthropic Messages API. Req on top of
+      # Finch (Finch is already a transitive via anubis_mcp), so the
+      # marginal weight is small.
+      {:req, "~> 0.5"}
     ]
   end
 end
