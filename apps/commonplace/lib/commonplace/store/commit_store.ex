@@ -1,6 +1,305 @@
 defmodule Commonplace.Store.CommitStore do
   @moduledoc """
-  CubDB-backed persistent storage for the commit Merkle DAG.
+  The persistent storage layer for Commonplace's commit Merkle DAG —
+  one singleton `GenServer` over a single CubDB instance at
+  `<data_dir>/commits/`. Every observable change to every document in
+  the workspace ends up here as a commit; nothing in the system
+  reconstructs doc state without consulting this store.
+
+  ## What's in the store
+
+  CubDB is a single key/value space, partitioned by tuple-keyed
+  namespaces:
+
+      {:commit, commit_id}                  — the Commit struct itself.
+      {:latest, doc_uuid}                   — pointer to the head commit
+                                              on the local branch of
+                                              `doc_uuid`'s DAG.
+      {:merge_point, target, source}        — the source-side commit id
+                                              that was last folded into
+                                              `target` from `source`
+                                              (incremental merge bound).
+      {:last_merge_commit, target, source}  — the target-side commit id
+                                              produced by that merge.
+      {:latest_merge_head, target}          — most-recent target-side
+                                              merge commit from *any*
+                                              source. Used by red-channel
+                                              audit / merge bookkeeping.
+      {:attestation, attestation_id}        — gold-channel attestation
+                                              records (CX-9rl).
+      {:latest_attestation, doc_uuid}       — head of the attestation
+                                              chain for `doc_uuid`.
+
+  Commits are append-only — `do_write_commit/6` and friends use
+  `CubDB.put_multi/2` so the new `{:commit, id}` row and the
+  `{:latest, doc_uuid}` advance land atomically. The `:latest` pointer
+  is the only thing that's ever *rewritten*; the underlying commits
+  are immutable.
+
+  ## The `:latest` pointer
+
+  `:latest` is the **local** head of a doc's DAG. It is per-node, not
+  global. Two nodes in the same cluster can have different `:latest`
+  for the same `doc_uuid` until catch-up sync runs; cross-node merging
+  is a separate concern (see `Commonplace.Store.CrossEpochMerge`).
+
+  Three operations touch `:latest`:
+
+    1. **Local writes** (`create_commit`, `create_chained_commit`,
+       `create_snapshot_commit`, `write_snapshot_cas`,
+       `write_prebuilt_commit_cas`, `do_write_commit/6`) advance
+       `:latest` to the new commit id, unconditionally for plain
+       creates and conditionally for the CAS variants.
+    2. **`set_latest/3`** — explicit re-point, used when a caller has
+       already validated a commit and wants to install it as the new
+       head (e.g. cross-epoch merge writes the merge commit, then
+       calls `set_latest`).
+    3. **`import_commit/3`** (catch-up sync, CX-bv3 / CX-ch5) —
+       persists the commit row but **only** advances `:latest` when
+       there is no existing `:latest` for that uuid. If a local
+       `:latest` already exists, the imported commit is stored as a
+       sibling and `:latest` is left alone. This is what stops a
+       remote catch-up burst from clobbering a newer local head.
+
+  ## Chained vs imported writes
+
+  These two paths exist because they serve different roles:
+
+    * `create_commit/6` / `create_chained_commit/5` build a brand-new
+      commit *here*. The commit is content-addressed at construction
+      time (`Commit.new/4`), signed via the signing context (see
+      "Signing" below), persisted, and `:latest` is moved to it.
+      `create_chained_commit/5` reads the current `:latest` inside the
+      same `handle_call` and uses it as `parent_id` — the read+write
+      atomicity is the *whole point*; see CX-l7j below.
+    * `import_commit/3` accepts a fully-formed `Commit{}` struct from
+      a peer. The id is re-verified against the bytes via
+      `Commit.verify_id/1` (CX-gwz — defends against a hostile peer
+      retagging a delta as `kind: :snapshot` to skip history); the
+      content is passed through a namespace validator (CX-ch5 — the
+      default is `Namespace.validate_commit_from_db/2`, which checks
+      the snapshot-parent chain for membership); on success the
+      commit row is written and `:latest` is **only** advanced if the
+      doc has no existing local head.
+
+  Use `create_*` for local edits. Use `import_commit` for everything
+  arriving over the wire — even if you're tempted to call
+  `create_commit` because "the data's the same." Importing as a
+  create clobbers a newer local `:latest` and silently orphans local
+  work; see the CLAUDE.md note "use `import_commit` (not
+  `create_commit`) when storing remote commits."
+
+  ## Atomicity of `create_chained_commit/5` (CX-l7j)
+
+  The "read latest, build a child off it, write the child" sequence
+  must happen inside one `handle_call`. The original implementation
+  split that across two GenServer calls — `latest_commit/2` followed
+  by `create_commit/6` — which let two concurrent writers both
+  observe the same `:latest`, both produce children rooted at the
+  same parent, and both write. The second writer's `:latest` bump
+  won and the first writer's commit, though persisted as a row, was
+  silently dropped from every linear walk that started at `:latest`.
+  Bundling the read+write under one mailbox slot serializes
+  concurrent writers per doc and prevents that orphaning.
+
+  Callers that don't need the "chain to current latest" semantics —
+  e.g. snapshot construction that compares-and-swaps against an
+  observed parent — use `write_snapshot_cas/5` or
+  `write_prebuilt_commit_cas/2`, which encode the same atomicity
+  with explicit CAS rejection (`{:error, :parent_moved}`) instead of
+  silent re-anchoring.
+
+  ## Snapshots and the umbrella metadata (CX-6sc, CX-bgy, CX-u7p)
+
+  Three layers of "snapshot" exist:
+
+    1. `create_snapshot_commit/4` — primitive that chains a
+       caller-supplied snapshot payload onto the current `:latest`
+       and tags `kind: :snapshot`. Readers that know snapshots
+       (notably `DocBuilder.reconstruct_doc/2`) short-circuit the
+       backward walk on hitting one.
+    2. `snapshot/2` — convenience that reconstructs the doc,
+       generates a deterministic snapshot via
+       `Snapshotter.build_snapshot/3`, and calls
+       `create_snapshot_commit`. The deterministic-anyone property
+       means two nodes snapshotting the same parent produce
+       byte-identical `update`s and `derivation_map`s.
+    3. `write_snapshot_cas/5` — atomic CAS variant of #1. The caller
+       (typically `Snapshotter`) has already built the payload and
+       commits it iff `:latest` still equals `expected_parent_id`.
+       Two callers that observed the same parent produce the same
+       commit id (CX-umz deterministic-anyone) and the second write
+       collapses to a no-op.
+
+  The "umbrella" snapshot metadata (`snapshot_parents`,
+  `derivation_map`, `snapshotter_version`) is built by `Snapshotter`
+  and passed through verbatim. CommitStore stamps `kind: :snapshot`
+  itself so callers cannot forget it.
+
+  ## Genesis stamping (CX-fzi, CX-m3x, CX-a04)
+
+  Every `:regular` commit needs a parent — either an earlier commit
+  on the same DAG or the doc's deterministic genesis. Two pieces of
+  back-fill machinery handle this:
+
+    * `ensure_genesis/2` is the explicit primitive — `Commit.genesis/1`
+      is a pure function of the uuid, so calling it twice returns the
+      same struct and stores to the same id. `:latest` is **not**
+      touched; this is just "make sure the genesis commit row exists."
+    * `maybe_stamp_genesis/3` (private, write-side) — when a caller
+      passes `parent_id = nil` for a uuid that has no `:latest`,
+      stamp the genesis row and use its id as the parent.
+      Pre-umbrella docs that already have a `:latest` keep the nil
+      parent (legacy hatch — empty metadata, no `:kind`) so existing
+      data doesn't need retroactive genesis insertion.
+    * `maybe_stamp_snapshot_parent/3` (private, write-side, CX-a04) —
+      `:regular` commits inherit `snapshot_parent` from the parent's
+      `Namespace.current_namespace/1` unless the caller set one
+      explicitly. Non-`:regular` and legacy-empty metadata are
+      left untouched.
+
+  ## PubSub broadcast contract (CX-4im)
+
+  Every successful write fans out on **two** Phoenix.PubSub topics:
+
+      "commits:<doc_uuid>"   {:commit, doc_uuid, commit.id, metadata}
+      "blue:<doc_uuid>"      {:commit, doc_uuid, commit.id, metadata}
+
+  Both topics carry the same message shape. The duality is a
+  known wart documented in CX-4im — `commits:` is the historical
+  storage-layer topic, `blue:` is the color-channel topic that
+  `Tree.DocCache`, `WikiLive`, `TreeLive`, and other UI subscribers
+  hang off of. Until they're unified, the write path emits both so
+  that CommandRouter-initiated writes (MCP, CLI) reach UI subscribers
+  the same way Document.Server edits do.
+
+  Broadcast happens **after** the CubDB write returns. There is no
+  rollback on PubSub failure — a subscriber that crashed will miss
+  the event, and the durable record is the row in CubDB, not the
+  broadcast.
+
+  The CAS variants emit the same pair. `import_commit/3` deliberately
+  does *not* broadcast — catch-up sync produces large bursts of
+  commits and the historical subscribers (UI live views, DocCache)
+  would re-reconstruct on every one. The catch-up path uses its own
+  end-of-burst signal instead.
+
+  Telemetry emits in parallel with PubSub:
+
+      [:commonplace, :commit, :create]                        (writes)
+      [:commonplace, :commit, :latest_read]                   (reads, CX-o8tx)
+      [:commonplace, :commit, :rejected, :id_mismatch]        (CX-gwz)
+      [:commonplace, :commit, :rejected, :namespace_mismatch] (CX-ch5)
+      [:commonplace, :commit, :rejected, :unknown_reference]  (CX-fbs6)
+
+  `:latest_read` exists so the reflog amortization tests
+  (`Reflog.Snapshot`, CX-o8tx) can prove that clean subtrees were
+  short-circuited without a read. Production cost is negligible
+  when no handler is attached.
+
+  ## Signing (CX-hoj, CX-o3r7)
+
+  Commit signing is opt-in and per-write. `do_write_commit/6` calls
+  `maybe_sign_commit/2` with the `:signing_context` option:
+
+    * `%Commonplace.Crypto.SigningContext{}` — sign with the
+      supplied identity + private key. MCP-bound sessions use this
+      so commits attest to the agent's identity rather than the
+      human's default key.
+    * `:unsigned` — explicitly skip signing even when a global key
+      is configured. MCP-MVP agent commits use this to avoid
+      inheriting the human's identity.
+    * `nil` (default) — fall back to the global
+      `Commonplace.Store.SecretStore` key. If the SecretStore
+      isn't running or has no key, the commit is unsigned.
+      Preserved as legacy behavior for callers that haven't been
+      updated.
+
+  The CAS write paths (`write_snapshot_cas/5`,
+  `write_prebuilt_commit_cas/2`) do **not** wire signing-context
+  forwarding — snapshot construction happens above this layer and
+  prebuilt commits are already assembled by the caller. Signed
+  callers route through `create_commit` / `create_chained_commit`.
+
+  ## CommitStoreClient access discipline
+
+  Callers should route through `Commonplace.Store.CommitStoreClient`,
+  not call CommitStore directly. The client is a thin dispatcher that
+  routes to either the local GenServer or a remote `serve` node
+  depending on whether the CLI is running standalone or against a
+  long-lived BEAM. Direct `CommitStore.foo/n` calls work when the
+  process is local but silently break the "talk to serve" mode that
+  the CLI uses to share a single CubDB across invocations.
+
+  Tests can pass a custom server pid; the client normalizes its
+  `server` argument so the CLI alias resolves to the real
+  CommitStore but explicit pids pass through.
+
+  ## CubDB crash recovery (`init/1`)
+
+  CubDB occasionally fails to open after an unclean shutdown. Rather
+  than crash the whole supervision tree on boot — which would brick
+  the workspace — `init/1` probes the database with a small range
+  scan, and on failure archives the corrupt dir to
+  `<path>.corrupt.<unix-ts>` and starts fresh. This is **lossy** by
+  design: a corrupt commits/ DB cannot be recovered in-process, and
+  the alternative is an unbootable workspace. The
+  `<path>.corrupt.<ts>` directory is preserved on disk for
+  out-of-band recovery.
+
+  The `open_cubdb/1` helper traps exits while starting CubDB so an
+  init crash in CubDB itself doesn't take the GenServer down before
+  the recovery branch runs. Any pending `:EXIT` message from a
+  failed CubDB process is drained before the trap is restored.
+
+  ## Merge bookkeeping
+
+  Four keys track merge state per `(target, source)` pair:
+
+    * `:merge_point` — the source-side commit id last folded in.
+      Used by `Tree.Merge` to find the lower bound for an
+      incremental three-way merge so re-merges skip already-folded
+      commits.
+    * `:last_merge_commit` — the target-side commit produced by
+      that merge. Forms the upper bound used by audit / reflog.
+    * `:latest_merge_head` — the same target-side id, but keyed by
+      target alone. Answers "was this target ever merged from
+      anywhere?" without iterating all sources.
+    * Storage is direct K/V — no DAG walking required for these
+      bookkeeping reads.
+
+  ## Invariants
+
+    * Commits are immutable. `{:commit, id}` rows are never
+      overwritten with new content (idempotent re-puts of the same
+      bytes are fine).
+    * `:latest` always points at a stored commit. Concurrent
+      writers per doc are serialized through the GenServer mailbox.
+    * Imported commits never clobber a present local `:latest`.
+    * Every successful local write broadcasts on both
+      `commits:<uuid>` and `blue:<uuid>`.
+    * Every successful local write emits
+      `[:commonplace, :commit, :create]` telemetry.
+    * `verify_id/1` runs before any `import_commit` is trusted.
+
+  ## What this module is NOT
+
+    * **Not the CRDT layer.** Yelixer owns CRDT semantics; this
+      module only stores opaque update bytes.
+    * **Not the read path.** Reconstruction lives in
+      `Tree.DocBuilder` (and cached results in `Tree.DocCache`);
+      this module returns raw commits.
+    * **Not the namespace validator.** That logic lives in
+      `Commonplace.Store.Namespace`; CommitStore just wires it into
+      `import_commit/3`.
+    * **Not the merge engine.** `Tree.Merge` and
+      `Store.CrossEpochMerge` compute merge updates; CommitStore
+      stores their output.
+    * **Not the signing engine.** `Commonplace.Crypto.Signing` does
+      the actual signing; CommitStore decides *whether* to invoke
+      it based on the per-call context.
+    * **Not the remote transport.** `CommitStoreClient` handles
+      local-vs-remote routing.
   """
 
   use GenServer
@@ -12,6 +311,25 @@ defmodule Commonplace.Store.CommitStore do
     GenServer.start_link(__MODULE__, opts, name: name)
   end
 
+  @doc """
+  Persist a commit at a caller-supplied `parent_id` and advance
+  `:latest` to it.
+
+  The lowest-level write entry point — callers that already know
+  exactly which commit they want to chain off use this. For the
+  "chain off whatever is currently latest" semantics that virtually
+  all local edits want, use `create_chained_commit/5` so the
+  read+write is atomic (CX-l7j).
+
+  `parent_id = nil` on a doc that has no prior `:latest` triggers
+  deterministic-genesis stamping (CX-m3x): the genesis commit row
+  is materialized and used as the parent. Pre-umbrella docs that
+  already have a `:latest` retain legacy behavior — the nil parent
+  is preserved.
+
+  `opts[:signing_context]` selects the signing identity for this
+  commit; see the module-level "Signing" section.
+  """
   def create_commit(server \\ __MODULE__, doc_uuid, update, parent_id, metadata \\ %{}, opts \\ []) do
     GenServer.call(
       server,
@@ -158,10 +476,23 @@ defmodule Commonplace.Store.CommitStore do
     GenServer.call(server, {:all_commit_ids_for_doc, doc_uuid})
   end
 
+  @doc """
+  Look up a single commit by id. Returns `{:ok, commit}` or `:none`.
+  Does not walk the DAG and does not consult `:latest` — pure
+  point-read on the `{:commit, id}` row.
+  """
   def get_commit(server \\ __MODULE__, commit_id) do
     GenServer.call(server, {:get_commit, commit_id})
   end
 
+  @doc """
+  Return the local head commit for `doc_uuid` as `{:ok, commit}`,
+  or `:none` if the doc has no `:latest` entry on this node.
+
+  Emits a `[:commonplace, :commit, :latest_read]` telemetry event so
+  the reflog amortization tests (CX-o8tx) can prove that clean
+  subtrees were short-circuited without a read.
+  """
   def latest_commit(server \\ __MODULE__, doc_uuid) do
     GenServer.call(server, {:latest_commit, doc_uuid})
   end
@@ -181,7 +512,17 @@ defmodule Commonplace.Store.CommitStore do
     GenServer.call(server, {:is_ancestor, ancestor_id, descendant_id})
   end
 
-  @doc "Point a UUID at an existing commit without creating a new one."
+  @doc """
+  Point `doc_uuid`'s `:latest` at an existing commit without
+  creating a new one. The caller is responsible for ensuring the
+  target commit is already persisted and that re-pointing is
+  causally safe — there is no ancestry check here.
+
+  Used by cross-epoch merge to install a pre-built merge commit
+  (CX-fdjh) and by tests that need to construct specific DAG
+  shapes. Not a substitute for the CAS variants when concurrent
+  writers might race.
+  """
   def set_latest(server \\ __MODULE__, doc_uuid, commit_id) do
     GenServer.call(server, {:set_latest, doc_uuid, commit_id})
   end
