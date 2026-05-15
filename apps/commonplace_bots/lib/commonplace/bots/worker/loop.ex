@@ -66,7 +66,9 @@ defmodule Commonplace.Bots.Worker.Loop do
     loop(state, messages, tools, %{
       calls_remaining: state.config.max_calls,
       output_tokens_used: 0,
-      started_at: started_at
+      started_at: started_at,
+      active_model: state.config.model,
+      fell_back: false
     })
   end
 
@@ -89,10 +91,51 @@ defmodule Commonplace.Bots.Worker.Loop do
             handle_response(state, messages, tools, budget, response)
 
           {:error, reason} ->
-            {:error, {:client_failure, reason}}
+            case maybe_fall_back(state, budget, reason) do
+              {:fallback, new_budget} ->
+                loop(state, messages, tools, new_budget)
+
+              :no_fallback ->
+                {:error, {:client_failure, reason}}
+            end
         end
     end
   end
+
+  # CX-hl7j: on a retryable Anthropic error (HTTP 529 Overloaded,
+  # 503 Service Unavailable, 502 Bad Gateway) AND not already
+  # fallen back, swap the active model to the configured fallback
+  # and retry the same loop iteration. One retry, no exponential —
+  # if the fallback also fails we terminate cleanly.
+  defp maybe_fall_back(_state, %{fell_back: true}, _reason), do: :no_fallback
+
+  defp maybe_fall_back(state, budget, {:http_status, code, _}) when code in [502, 503, 529] do
+    case state.config.fallback_model do
+      nil ->
+        :no_fallback
+
+      model when model == budget.active_model ->
+        # Already using the fallback model as the primary —
+        # nothing to fall back to.
+        :no_fallback
+
+      fallback ->
+        :telemetry.execute(
+          [:commonplace, :bots, :worker, :model_fell_back],
+          %{system_time: System.system_time()},
+          %{
+            from: budget.active_model,
+            to: fallback,
+            reason: :http_status,
+            code: code
+          }
+        )
+
+        {:fallback, %{budget | active_model: fallback, fell_back: true}}
+    end
+  end
+
+  defp maybe_fall_back(_state, _budget, _reason), do: :no_fallback
 
   defp handle_response(state, messages, tools, budget, response) do
     tokens_in = get_in(response, ["usage", "output_tokens"]) || 0
@@ -157,7 +200,7 @@ defmodule Commonplace.Bots.Worker.Loop do
       max(state.config.max_output_tokens - budget.output_tokens_used, 1)
 
     %{
-      model: state.config.model,
+      model: budget.active_model,
       system: state.entity.persona,
       messages: messages,
       tools: tools,

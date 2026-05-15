@@ -121,6 +121,8 @@ defmodule Commonplace.Bots.Worker do
     outcome
   end
 
+  @default_fallback_model "claude-haiku-4-5-20251001"
+
   defp build_config(%Entity{bot_config: bot_config}, opts) do
     %{
       max_calls: fetch_pos_int(bot_config, "max_calls", opts, :max_calls, @default_max_calls),
@@ -134,7 +136,13 @@ defmodule Commonplace.Bots.Worker do
         ),
       max_wall_ms:
         fetch_pos_int(bot_config, "max_wall_ms", opts, :max_wall_ms, @default_max_wall_ms),
-      model: Keyword.get(opts, :model, Map.get(bot_config, "model", "claude-sonnet-4-6"))
+      model: Keyword.get(opts, :model, Map.get(bot_config, "model", "claude-sonnet-4-6")),
+      fallback_model:
+        Keyword.get(
+          opts,
+          :fallback_model,
+          Map.get(bot_config, "fallback_model", @default_fallback_model)
+        )
     }
   end
 
