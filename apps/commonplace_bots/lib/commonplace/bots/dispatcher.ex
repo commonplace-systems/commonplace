@@ -122,7 +122,34 @@ defmodule Commonplace.Bots.Dispatcher do
       rate_limit_enabled: Keyword.get(opts, :rate_limit_enabled, true)
     }
 
+    # CX-gptu: surface worker outcomes (end_turn / cap_hit / error)
+    # into __bot_activity so the substrate reflects the full
+    # lifecycle, not just the trigger decision. Telemetry → activity
+    # fan-out lives here in the dispatcher (the activity-logging
+    # owner); the worker stays substrate-pure.
+    handler_id = "bots-dispatcher-worker-finished-#{:erlang.unique_integer([:positive])}"
+    dispatcher_pid = self()
+
+    :telemetry.attach(
+      handler_id,
+      [:commonplace, :bots, :worker, :finished],
+      fn _event, _measurements, meta, _config ->
+        send(dispatcher_pid, {:worker_finished, meta})
+      end,
+      nil
+    )
+
+    Process.put(:telemetry_handler_id, handler_id)
+
     {:ok, state}
+  end
+
+  @impl true
+  def terminate(_reason, _state) do
+    case Process.get(:telemetry_handler_id) do
+      nil -> :ok
+      id -> :telemetry.detach(id)
+    end
   end
 
   @impl true
@@ -162,6 +189,12 @@ defmodule Commonplace.Bots.Dispatcher do
   @impl true
   def handle_info({:magenta, _path, msg}, state) do
     handle_chat_event(msg, state)
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:worker_finished, meta}, state) do
+    log_outcome(state, meta)
     {:noreply, state}
   end
 
@@ -296,6 +329,51 @@ defmodule Commonplace.Bots.Dispatcher do
       _ ->
         :ok
     end
+  end
+
+  # CX-gptu: translate a worker_finished telemetry meta into an
+  # __bot_activity entry. Outcomes map to the schema's reserved
+  # decisions:
+  #
+  #   {:ok, :end_turn}        → "completed"
+  #   {:cap_hit, :calls|...}  → "cap_hit"  + reason
+  #   {:error, _}             → "error"    + reason
+  defp log_outcome(state, %{room: room, bot: bot, outcome: outcome} = _meta) do
+    entry = outcome_entry(room, bot, outcome)
+    log_activity(state, room, entry)
+  end
+
+  defp log_outcome(_state, _meta), do: :ok
+
+  defp outcome_entry(room, bot, {:ok, :end_turn}) do
+    %{"room" => room, "bot" => bot, "decision" => "completed"}
+  end
+
+  defp outcome_entry(room, bot, {:cap_hit, which}) do
+    %{
+      "room" => room,
+      "bot" => bot,
+      "decision" => "cap_hit",
+      "reason" => to_string(which)
+    }
+  end
+
+  defp outcome_entry(room, bot, {:error, reason}) do
+    %{
+      "room" => room,
+      "bot" => bot,
+      "decision" => "error",
+      "reason" => inspect(reason)
+    }
+  end
+
+  defp outcome_entry(room, bot, other) do
+    %{
+      "room" => room,
+      "bot" => bot,
+      "decision" => "error",
+      "reason" => "unexpected outcome: #{inspect(other)}"
+    }
   end
 
   defp bot_authored?(author_path) when is_binary(author_path) do
