@@ -131,7 +131,18 @@ defmodule Commonplace.MCP.Tools do
 
   def call(_name, _arguments, _context), do: {:error, :not_found}
 
+  # CX-k320: load the module before asking which arities it exports.
+  # `function_exported?/3` returns false for an unloaded module, and
+  # tools live in eager-compiled-but-lazy-loaded application modules.
+  # Without ensure_loaded? the first dispatch of a fresh-process or
+  # fresh-test-VM session falls back to `run/1` — losing the context
+  # map (and silently shipping presence_uuid=nil to a tool that
+  # depends on it). Subsequent calls see the loaded module and
+  # behave correctly, which is what made the bug
+  # order-dependent in meta_tools_test.exs:51.
   defp dispatch_static(mod, arguments, context) do
+    _ = Code.ensure_loaded?(mod)
+
     if function_exported?(mod, :run, 2) do
       mod.run(arguments, context)
     else
