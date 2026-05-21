@@ -129,6 +129,14 @@ defmodule Commonplace.Bots.Worker do
       %{room: room, bot: entity.name, outcome: outcome}
     )
 
+    # CX-q8nk(2): per-entity red log — append the outcome event to
+    # the bot's own __red_log doc when one exists. Distinct from
+    # the room-level __bot_activity log (CX-gptu): __red_log is
+    # the bot's private durable trail across rooms; __bot_activity
+    # is the room's view of all bots that fired in it. A bot that
+    # operates in multiple rooms gets one cross-room ledger here.
+    maybe_write_red_log(entity, room, event, outcome, opts)
+
     outcome
   end
 
@@ -183,6 +191,69 @@ defmodule Commonplace.Bots.Worker do
   end
 
   defp short_id, do: UUID.uuid4() |> String.slice(0..7)
+
+  @red_log_child "__red_log"
+
+  defp maybe_write_red_log(%Entity{children: children} = entity, room, event, outcome, opts) do
+    case Map.get(children, @red_log_child) do
+      nil ->
+        :ok
+
+      red_log_uuid when is_binary(red_log_uuid) ->
+        store = Keyword.get(opts, :store, Commonplace.Store.CommitStoreClient)
+        entry = outcome_to_event(room, entity, event, outcome)
+
+        try do
+          Commonplace.Dataflow.RedLog.load(red_log_uuid, store)
+          |> Commonplace.Dataflow.RedLog.append_raw(entry)
+          |> Commonplace.Dataflow.RedLog.commit()
+
+          :telemetry.execute(
+            [:commonplace, :bots, :worker, :red_log_written],
+            %{system_time: System.system_time()},
+            %{bot: entity.name, room: room, red_log_uuid: red_log_uuid}
+          )
+        rescue
+          e ->
+            :telemetry.execute(
+              [:commonplace, :bots, :worker, :red_log_write_failed],
+              %{system_time: System.system_time()},
+              %{bot: entity.name, reason: Exception.message(e)}
+            )
+        catch
+          kind, reason ->
+            :telemetry.execute(
+              [:commonplace, :bots, :worker, :red_log_write_failed],
+              %{system_time: System.system_time()},
+              %{bot: entity.name, reason: "#{kind}: #{inspect(reason)}"}
+            )
+        end
+    end
+  end
+
+  defp outcome_to_event(room, %Entity{} = entity, event, outcome) do
+    base = %{
+      "ts" => DateTime.utc_now() |> DateTime.to_iso8601(),
+      "kind" => "worker_outcome",
+      "room" => room,
+      "bot" => entity.name,
+      "message_id" => Map.get(event, "message_id"),
+      "source_author" => Map.get(event, "author_path")
+    }
+
+    Map.merge(base, outcome_fields(outcome))
+  end
+
+  defp outcome_fields({:ok, :end_turn}), do: %{"decision" => "completed"}
+
+  defp outcome_fields({:cap_hit, which}),
+    do: %{"decision" => "cap_hit", "reason" => to_string(which)}
+
+  defp outcome_fields({:error, reason}),
+    do: %{"decision" => "error", "reason" => inspect(reason)}
+
+  defp outcome_fields(other),
+    do: %{"decision" => "error", "reason" => "unexpected: #{inspect(other)}"}
 
   @default_fallback_model "claude-haiku-4-5-20251001"
 

@@ -135,15 +135,25 @@ defmodule Commonplace.Bots.Demo do
     persona_uuid = mint_text_doc(write_store, "persona.md", persona)
     memory_uuid = mint_text_doc(write_store, "memory.jsonl", "")
     trigger_uuid = mint_text_doc(write_store, "trigger.regex", trigger)
+    red_log_uuid = mint_red_log(write_store)
 
     schema =
       Schema.new_schema()
       |> Schema.add_file("persona.md", persona_uuid)
       |> Schema.add_file("memory.jsonl", memory_uuid)
       |> Schema.add_file("trigger.regex", trigger_uuid)
+      |> Schema.add_file("__red_log", red_log_uuid)
 
     uuid = UUID.uuid4()
     update = Yelixer.Encoding.encode_update(schema)
+    CommitStore.create_commit(write_store, uuid, update, nil)
+    uuid
+  end
+
+  defp mint_red_log(write_store) do
+    uuid = UUID.uuid4()
+    log = Commonplace.Dataflow.RedLog.new(uuid)
+    update = Yelixer.Encoding.encode_update(log.doc)
     CommitStore.create_commit(write_store, uuid, update, nil)
     uuid
   end
