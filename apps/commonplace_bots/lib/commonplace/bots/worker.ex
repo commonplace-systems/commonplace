@@ -101,16 +101,27 @@ defmodule Commonplace.Bots.Worker do
       %{room: room, bot: entity.name, message_id: Map.get(event, "message_id")}
     )
 
+    # CX-q8nk(1): .exe presence flicker. Register a per-worker
+    # honorific .exe under the bot's directory while the loop runs;
+    # always remove it on exit (success, cap, error, crash). Skip
+    # cleanly if Presence.create fails so a flaky write doesn't
+    # take the worker down — observability shouldn't gate behavior.
+    presence = maybe_start_presence(entity, opts)
+
     outcome =
-      Loop.run(%{
-        room: room,
-        entity: entity,
-        event: event,
-        config: config,
-        client_fn: client_fn,
-        tools_module: tools_module,
-        opts: opts
-      })
+      try do
+        Loop.run(%{
+          room: room,
+          entity: entity,
+          event: event,
+          config: config,
+          client_fn: client_fn,
+          tools_module: tools_module,
+          opts: opts
+        })
+      after
+        maybe_stop_presence(presence)
+      end
 
     :telemetry.execute(
       [:commonplace, :bots, :worker, :finished],
@@ -120,6 +131,58 @@ defmodule Commonplace.Bots.Worker do
 
     outcome
   end
+
+  # Returns either a {fname, dir_uuid, store} tuple to clean up on
+  # exit, or nil when presence is disabled / minting failed.
+  defp maybe_start_presence(%Entity{} = entity, opts) do
+    if Keyword.get(opts, :presence_enabled, true) do
+      worker_name = "#{entity.name}-#{short_id()}"
+      fname = "#{worker_name}.exe"
+      store = Keyword.get(opts, :store, Commonplace.Store.CommitStoreClient)
+
+      try do
+        case Commonplace.Presence.create(worker_name, :exe, entity.dir_uuid, store) do
+          {:ok, _uuid} ->
+            :telemetry.execute(
+              [:commonplace, :bots, :worker, :presence_started],
+              %{system_time: System.system_time()},
+              %{bot: entity.name, fname: fname, dir_uuid: entity.dir_uuid}
+            )
+
+            {fname, entity.dir_uuid, store}
+
+          _ ->
+            nil
+        end
+      rescue
+        _ -> nil
+      catch
+        _, _ -> nil
+      end
+    else
+      nil
+    end
+  end
+
+  defp maybe_stop_presence(nil), do: :ok
+
+  defp maybe_stop_presence({fname, dir_uuid, store}) do
+    try do
+      Commonplace.Presence.remove(fname, dir_uuid, store)
+
+      :telemetry.execute(
+        [:commonplace, :bots, :worker, :presence_stopped],
+        %{system_time: System.system_time()},
+        %{fname: fname, dir_uuid: dir_uuid}
+      )
+    rescue
+      _ -> :ok
+    catch
+      _, _ -> :ok
+    end
+  end
+
+  defp short_id, do: UUID.uuid4() |> String.slice(0..7)
 
   @default_fallback_model "claude-haiku-4-5-20251001"
 
