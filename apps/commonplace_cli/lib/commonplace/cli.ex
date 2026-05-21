@@ -27,6 +27,7 @@ defmodule Commonplace.CLI do
     merge <source> [target]       Merge source branch into target (default: cwd)
     serve                         Start the workspace daemon
     ps                            List managed processes
+    process remove <name>         Remove a process entry from root __processes.json
     signal <topic> <type> [json]  Send a magenta message
     secret <command>              Manage local secrets (set/get/list/delete)
     keygen [name]                 Generate Ed25519 signing keypair
@@ -92,6 +93,11 @@ defmodule Commonplace.CLI do
       "replay" -> Commonplace.CLI.Replay.run(data_dir, relative_path, rest)
       "serve" -> Commonplace.CLI.Serve.run(data_dir, relative_path, rest)
       "ps" -> Commonplace.CLI.Ps.run(data_dir, relative_path, rest)
+      "process" ->
+        case Commonplace.CLI.Process.run(data_dir, relative_path, rest) do
+          0 -> :ok
+          code -> System.halt(code)
+        end
       "uuid" -> Commonplace.CLI.Uuid.run(data_dir, relative_path, rest)
       "inspect" -> Commonplace.CLI.InspectCmd.run(data_dir, relative_path, rest)
       "event" -> Commonplace.CLI.Event.run(data_dir, relative_path, rest)
