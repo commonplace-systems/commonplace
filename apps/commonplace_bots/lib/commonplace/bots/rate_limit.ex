@@ -83,6 +83,35 @@ defmodule Commonplace.Bots.RateLimit do
   @spec snapshot() :: map()
   def snapshot, do: GenServer.call(__MODULE__, :snapshot)
 
+  @typedoc """
+  A historical bot post used to seed sliding-window counters on
+  dispatcher boot. `ts` is an ISO-8601 timestamp; RateLimit
+  converts to monotonic-equivalent internally via
+  `now_monotonic - DateTime.diff(now_utc, ts)`.
+  """
+  @type historical_post :: %{required(:bot) => String.t(), required(:ts) => String.t()}
+
+  @doc """
+  CX-q8nk(3): seed sliding-window counters for `room` from recent
+  bot-authored posts. Used by `Dispatcher.subscribe_room/3` to
+  rebuild rate-limit state from the room's `_messages` doc after
+  a dispatcher restart — without this, the dispatcher boots with
+  empty counters (more-permissive-at-boot) and would allow up to
+  one extra burst before the sliding window converges.
+
+  Only posts within `per_room_window_ms` of now are kept;
+  anything older is dropped on the floor (replaying ancient
+  history would over-count). Per-bot cooldowns are seeded from
+  the most-recent post per bot within `per_bot_cooldown_ms`.
+
+  Concurrency counters are NOT seeded — no workers are running at
+  boot.
+  """
+  @spec seed_from_history(String.t(), [historical_post()]) :: :ok
+  def seed_from_history(room, posts) when is_binary(room) and is_list(posts) do
+    GenServer.call(__MODULE__, {:seed_from_history, room, posts})
+  end
+
   ## GenServer
 
   @impl true
@@ -174,6 +203,79 @@ defmodule Commonplace.Bots.RateLimit do
   def handle_call(:snapshot, _from, state) do
     {:reply, Map.from_struct(state), state}
   end
+
+  @impl true
+  def handle_call({:seed_from_history, room, posts}, _from, state) do
+    now_mono = System.monotonic_time(:millisecond)
+    now_utc = DateTime.utc_now()
+    window_ms = state.config.per_room_window_ms
+    cooldown_ms = state.config.per_bot_cooldown_ms
+
+    {room_ts, latest_per_bot} =
+      posts
+      |> Enum.reduce({[], %{}}, fn %{bot: bot, ts: ts_iso}, {ts_acc, bot_acc} ->
+        case parse_iso(ts_iso) do
+          {:ok, dt} ->
+            delta_ms = DateTime.diff(now_utc, dt, :millisecond)
+
+            cond do
+              delta_ms < 0 ->
+                # Future ts in the log (clock skew or test artifact);
+                # treat as "now" for safety so it counts as recent.
+                {[now_mono | ts_acc], maybe_update_latest(bot_acc, bot, now_mono, cooldown_ms)}
+
+              delta_ms <= window_ms ->
+                mono_eq = now_mono - delta_ms
+                {[mono_eq | ts_acc], maybe_update_latest(bot_acc, bot, mono_eq, cooldown_ms)}
+
+              true ->
+                # Outside the post-burst window — skip from room_posts.
+                # Still consider it for cooldown if recent enough.
+                if delta_ms <= cooldown_ms do
+                  mono_eq = now_mono - delta_ms
+                  {ts_acc, maybe_update_latest(bot_acc, bot, mono_eq, cooldown_ms)}
+                else
+                  {ts_acc, bot_acc}
+                end
+            end
+
+          :error ->
+            {ts_acc, bot_acc}
+        end
+      end)
+
+    room_posts =
+      if room_ts == [] do
+        Map.delete(state.room_posts, room)
+      else
+        Map.put(state.room_posts, room, Enum.sort(room_ts, :desc))
+      end
+
+    last_post_at =
+      Enum.reduce(latest_per_bot, state.last_post_at, fn {bot, ts}, acc ->
+        Map.put(acc, {room, bot}, ts)
+      end)
+
+    {:reply, :ok, %{state | room_posts: room_posts, last_post_at: last_post_at}}
+  end
+
+  defp maybe_update_latest(acc, bot, mono_eq, cooldown_ms) do
+    # Only track per-bot latest if it's within the cooldown window.
+    if mono_eq + cooldown_ms < System.monotonic_time(:millisecond) do
+      acc
+    else
+      Map.update(acc, bot, mono_eq, fn prior -> max(prior, mono_eq) end)
+    end
+  end
+
+  defp parse_iso(ts) when is_binary(ts) do
+    case DateTime.from_iso8601(ts) do
+      {:ok, dt, _offset} -> {:ok, dt}
+      _ -> :error
+    end
+  end
+
+  defp parse_iso(_), do: :error
 
   defp prune_room(state, room, now) do
     cutoff = now - state.config.per_room_window_ms

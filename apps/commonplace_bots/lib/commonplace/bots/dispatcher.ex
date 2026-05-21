@@ -169,6 +169,16 @@ defmodule Commonplace.Bots.Dispatcher do
       end
 
     info = %{dir_uuid: dir_uuid, messages_uuid: messages_uuid, activity_uuid: activity_uuid}
+
+    # CX-q8nk(3): seed RateLimit sliding-window counters from
+    # recent bot posts in _messages so a dispatcher restart inside
+    # a 60s window doesn't allow an extra burst before counters
+    # converge. Concurrency counters stay at zero — no workers run
+    # at boot. Skip silently when rate limits are disabled (tests).
+    if state.rate_limit_enabled do
+      seed_rate_limit(room, messages_uuid, state.store)
+    end
+
     {:reply, :ok, %{state | rooms: Map.put(state.rooms, room, info)}}
   end
 
@@ -317,6 +327,57 @@ defmodule Commonplace.Bots.Dispatcher do
       messages_uuid: messages_uuid,
       store: state.store
     )
+  end
+
+  # CX-q8nk(3): on subscribe, walk the room's _messages doc for
+  # bot-authored posts and hand them to RateLimit. Best-effort —
+  # failures here surface only as telemetry; the room still
+  # subscribes either way.
+  defp seed_rate_limit(room, messages_uuid, store) do
+    try do
+      case DocBuilder.reconstruct_snapshot(store, messages_uuid) do
+        {:ok, doc} ->
+          posts =
+            doc
+            |> Messages.materialize()
+            |> Enum.filter(fn e -> bot_authored?(Map.get(e, "author_path", "")) end)
+            |> Enum.map(fn e -> %{bot: bot_name(Map.get(e, "author_path", "")), ts: Map.get(e, "ts")} end)
+
+          if posts != [] do
+            RateLimit.seed_from_history(room, posts)
+
+            :telemetry.execute(
+              [:commonplace, :bots, :dispatcher, :rate_limit_seeded],
+              %{system_time: System.system_time()},
+              %{room: room, post_count: length(posts)}
+            )
+          end
+
+        _ ->
+          :ok
+      end
+    rescue
+      e ->
+        :telemetry.execute(
+          [:commonplace, :bots, :dispatcher, :rate_limit_seed_failed],
+          %{system_time: System.system_time()},
+          %{room: room, reason: Exception.message(e)}
+        )
+    catch
+      kind, reason ->
+        :telemetry.execute(
+          [:commonplace, :bots, :dispatcher, :rate_limit_seed_failed],
+          %{system_time: System.system_time()},
+          %{room: room, reason: "#{kind}: #{inspect(reason)}"}
+        )
+    end
+  end
+
+  defp bot_name(author_path) when is_binary(author_path) do
+    case Regex.run(~r/^(.+?)\.bot(?::.+)?$/, author_path) do
+      [_, name] -> name
+      _ -> author_path
+    end
   end
 
   defp log_activity(state, room, entry) do
