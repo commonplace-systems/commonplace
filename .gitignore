@@ -32,3 +32,10 @@ tmp/
 # bin/setup-browser. Binaries are large + version-pinned; don't commit.
 apps/commonplace_web/priv/browser/
 apps/commonplace_web/screenshots/
+
+# Escript outputs — multi-MB binaries built by `mix escript.build`.
+# apps/commonplace_cli/commonplace_cli is currently tracked (legacy
+# from early CLI days); other apps' escripts are ignored to prevent
+# accidental commits when `git add apps/<name>/` picks up the
+# generated file (see CX-k320 fix-up commit c31031e).
+apps/commonplace_mcp/commonplace_mcp
