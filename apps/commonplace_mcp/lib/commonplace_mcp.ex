@@ -1,24 +1,215 @@
 defmodule Commonplace.MCP do
   @moduledoc """
-  Entry point for the `commonplace_mcp` escript.
+  The `commonplace_mcp` escript entry point — the front door an MCP
+  client (e.g. Claude Code) knocks on to join a live commonplace workspace.
 
-  Bootstraps a stdio JSON-RPC 2.0 loop that acts as a Model Context
-  Protocol server, exposing commonplace's Layer 2 channels surface
-  (blue/red/magenta reads + writes, CLI verbs as tools) to an MCP
-  client (e.g. Claude Code).
+  ## Why this module exists
 
-  ## Lifecycle
+  An MCP client needs to read and write commonplace's dataflow channels
+  and invoke CLI verbs as tools. Opening the workspace's CubDB store
+  directly from the escript is rejected for two reasons:
 
-  1. Read the current workspace's `data_dir` (`.commonplace/`) via
-     `Commonplace.CLI.find_data_dir/1`.
-  2. Attempt to attach to a running `commonplace serve` via distributed
-     Erlang (same mechanism the CLI uses).
-  3. If no serve is running, refuse with a clear error on stderr and
-     exit 1. We do not start our own CubDB because (a) two openers race
-     and corrupt the store and (b) our audit events need to land on the
-     same PubSub that the rest of the graph observes.
-  4. Enter `Commonplace.MCP.Stdio.run_stdio/0`. Each line is parsed,
-     dispatched, and the reply written to stdout.
+  - **Two openers corrupt the store.** `commonplace serve` holds the
+    workspace's CubDB open. A second opener racing on the same files
+    corrupts it. There can be exactly one writer.
+  - **Audit events must land on the shared graph.** Every write emits
+    events that other agents, the web UI, and sync peers observe via
+    PubSub. An isolated escript node would drop those events into a
+    private void.
+
+  This escript is a **thin bridge, not a store**: it refuses to serve
+  unless `commonplace serve` is already running, attaches to that node
+  over distributed Erlang, and routes all store traffic through it via
+  `Commonplace.Store.CommitStoreClient`. This is the
+  **refuse-without-serve contract**: no serve → hard exit 1 with an
+  actionable stderr message. See `attach_to_serve/0` and the
+  `{:error, :not_running}` arm of `main/1`.
+
+  ## The blue/red/magenta layer model
+
+  commonplace's dataflow is split into color-coded channels, defined
+  canonically in `Commonplace.Dataflow.Channel`. Three matter here:
+
+  - **blue** — the CRDT documents themselves (the durable state an
+    agent reads and writes).
+  - **red** — persistent, append-only event logs
+    (`Commonplace.Dataflow.RedLog`). A red log is a YArray that
+    accumulates events forever; it is the durable backbone of an
+    agent's *mailbox*.
+  - **magenta** — ephemeral, fire-and-forget pub/sub on path-based
+    topics (`Commonplace.Dataflow.Magenta`, riding Phoenix.PubSub). A
+    magenta message is `{type, source, payload, timestamp}` and reaches
+    only processes subscribed *right now* — nothing is retained. Two
+    topic shapes matter here: a directory's presence topic (for
+    enter/leave broadcasts) and a per-agent address topic `agents/<name>`
+    (where senders drop mail).
+
+  The mailbox bridges layers: a **magenta→red onramp** subscribes to
+  the agent's magenta address topic and appends every message into the
+  agent's red log. Live delivery is ephemeral (magenta); the
+  recoverable backlog is durable (red). See "Presence + mailbox
+  bootstrap" below.
+
+  ## The stderr routing fix (CX-re6b)
+
+  stdout is the JSON-RPC transport and carries only protocol frames.
+  The Erlang `:logger` defaults to stdout, as do warnings from
+  `anubis_mcp`, presence-bootstrap diagnostics, and CommitStore events.
+  A single interleaved Logger line poisons the stream: the MCP client
+  logs it as "Ignoring non-JSON line on stdout," and a long log entry
+  can be misread as a protocol response, tearing the transport down.
+  `main/1`'s *first* act is therefore `redirect_logger_to_stderr/0`,
+  which re-points the `:default` logger handler at `:standard_error`.
+  Everything diagnostic in this module uses `IO.puts(:stderr, …)` for
+  the same reason.
+
+  ## The serving layer: anubis, not the hand-rolled substrate
+
+  This escript does NOT run the line-by-line loop in
+  `Commonplace.MCP.Stdio`. That hand-rolled JSON-RPC layer
+  (`Stdio` + `Commonplace.MCP.Server` + `Commonplace.MCP.Protocol`) is
+  retained on disk but unwired from stdin — CX-xaof tracks its removal.
+  All live traffic is served by `Commonplace.MCP.AnubisServer`, an
+  `anubis_mcp`-backed server supervised under a one-for-one tree.
+  `main/1` blocks on a monitor of that supervisor; anubis shuts down on
+  stdin EOF, the supervisor goes `:DOWN`, and the escript returns.
+
+  Tool/resource registration still flows through `Commonplace.MCP.Tools`
+  and `Commonplace.MCP.Resources` — AnubisServer only translates
+  anubis's dispatch into the call surface those modules already expose.
+
+  ## Presence + mailbox bootstrap
+
+  Joining a workspace means more than opening a transport: the agent
+  must announce itself and start receiving mail. This module supplies
+  AnubisServer with two closures (stored in `:persistent_term`) via
+  `AnubisServer.config/1`:
+
+  - **`presence_starter/1`** spawns a `Commonplace.Presence.Server`
+    (writes a `.bot` presence file and runs a heartbeat) and broadcasts
+    `presence.enter` on the directory's magenta topic. It then starts a
+    per-agent **mailbox onramp**: a `RedLog` onramp
+    (`Commonplace.Dataflow.RedLog.start_onramp/3`) subscribed to the
+    agent's magenta address topic, appending every message into a red
+    log whose UUID is derived from the agent's cold identity via
+    `Commonplace.Presence.Mailbox.log_uuid_for_identity/1`. That
+    derivation is what makes offline mail recoverable — traced under
+    "Worked example: identity → mailbox UUID → recovery" below.
+    Mailbox failure is graceful: presence still starts without a mailbox.
+  - **`presence_stopper/1`** flushes and stops the onramp (persisting
+    the session's final addressed messages), broadcasts `presence.leave`,
+    then *synchronously* stops the Presence.Server so its `terminate/2`
+    removes the `.bot` file before the escript exits.
+
+  Anubis calls these after the initialize handshake completes — see
+  `Commonplace.MCP.AnubisServer` ("Presence + mailbox bootstrap") for
+  why init/terminate (not the initialize response) is the hook point,
+  and why clients fetch identifiers via a `presence_info` tool call
+  instead of `serverInfo`.
+
+  ### Worked example: identity → mailbox UUID → recovery
+
+  This trace ties together the determinism claim, the red log, and
+  why mail survives a disconnect. Say an agent has cold
+  `identity_uuid` `"7e3a…"` — a stable per-agent identity that does
+  NOT change between sessions (distinct from the per-session presence
+  `uuid`, which does).
+
+  1. On connect, `presence_starter/1` spawns a `Presence.Server` and
+     reads back its `identity_uuid` (`"7e3a…"`).
+  2. `start_mailbox/3` calls
+     `Commonplace.Presence.Mailbox.log_uuid_for_identity("7e3a…")`,
+     which is a pure `uuid5(:url, "urn:commonplace:agent-mailbox:" <>
+     "7e3a…")`. Pure means: *same identity in, same log UUID out, every
+     session, forever.* Call it `M`.
+  3. The onramp begins tailing magenta topic `agents/<name>` and
+     appending each message into red log `M`. Because a red log is
+     append-only and persisted to the commit store, `M` already holds
+     everything written during prior sessions.
+  4. The agent disconnects. A peer sends mail:
+     `Magenta.send("agents/<name>", msg)`. With no onramp subscribed,
+     the magenta broadcast evaporates — *unless* the peer's own write
+     path also appends to `M` (the durable copy survives regardless of
+     who is listening). The ephemeral magenta frame is lost; the
+     red-log entry is not.
+  5. The agent reconnects in a new session. Its `identity_uuid` is
+     still `"7e3a…"`, so step 2 re-derives the *same* `M`. The onramp
+     loads `M` from the store (`RedLog.load/2`) and the agent sees the
+     full backlog — including messages sent while it was offline.
+
+  Because the mailbox UUID is a *pure function of cold identity*, an
+  agent never needs to be told where its mailbox lives — it recomputes
+  the address from who it is. No per-session provisioning, no registry
+  lookup, no lost mail. See `Commonplace.Presence.Mailbox` for the
+  derivation and `Commonplace.Dataflow.RedLog` (`load/2`,
+  `start_onramp/3`) for the persistence.
+
+  ## Which directory does presence land in? (CX-voi)
+
+  An agent is typically launched from inside a *sandbox checkout*, not
+  the workspace root, and presence should land where the agent actually
+  is. `resolve_presence_uuid/2` calls
+  `Commonplace.Sync.CheckoutRegistry.find_for_cwd/2` (reads
+  `checkouts.json` directly — no running registry process required) to
+  map cwd to the most tightly enclosing checkout's UUID, falling back
+  to the workspace `root_uuid` when cwd is outside every registered
+  checkout.
+
+  ## Worked example: a Claude Code session in a sandbox checkout
+
+  Client launches `commonplace_mcp` with cwd
+  `~/ws/sandboxes/feature-x` (a registered checkout, uuid `C`);
+  workspace root uuid is `R`.
+
+  1. `main/1` redirects Logger → stderr.
+  2. `attach_to_serve/0`: `Workspace.discover/1` walks up to find
+     `.commonplace/`, reads `node_name` → the serve node atom, starts a
+     short-lived randomly-named node, sets
+     `:prevent_overlapping_partitions = false` (CX-y6uc — without this,
+     `:global` mistakes each ephemeral escript for a network partition
+     and forcibly disconnects later ones, surfacing as MCP "Connection
+     closed"), connects, points CommitStoreClient at the serve node,
+     reads `root` → `R`. Returns `{:ok, R, data_dir}`.
+  3. `resolve_presence_uuid(data_dir, R)`: cwd is inside checkout `C`,
+     so presence_uuid = `C`, not `R`.
+  4. `AnubisServer.config/1` stashes the two closures (rooted at `C`).
+  5. Supervisor starts AnubisServer on `:stdio`; `main/1` blocks on the
+     monitor.
+  6. Client completes initialize; anubis calls the starter: a
+     Presence.Server appears under dir `C` (heartbeat begins, `.bot`
+     file written), `presence.enter` broadcasts on `C`'s magenta topic,
+     and a mailbox onramp begins tailing topic `agents/<name>` into red
+     log `uuid5(identity)` — picking up anything sent since last session.
+  7. Client calls `tools/call presence_info`, learns its presence_uuid
+     and mailbox coordinates.
+  8. Client closes stdin → anubis shuts down → terminate fires the
+     stopper: onramp commits its tail, `presence.leave` broadcasts on
+     `C`, Presence.Server stops synchronously (removing the `.bot`
+     file), supervisor goes `:DOWN`, `main/1`'s `receive` returns.
+
+  Contrast: launch from the workspace root (`~/ws`). Step 3 finds no
+  enclosing checkout, so presence_uuid falls back to `R` and the agent
+  appears at the root.
+
+  ## Sister modules (chase the thread)
+
+  - `Commonplace.MCP.AnubisServer` — the actual MCP server; consumes
+    the two closures this module configures.
+  - `Commonplace.Workspace` — `discover/1` (find `.commonplace/`) and
+    `root_uuid/0`.
+  - `Commonplace.Store.CommitStoreClient` — `set_remote_node/1` aims all
+    store calls at the attached serve node.
+  - `Commonplace.Presence.Server` / `Commonplace.Presence.Mailbox` —
+    presence document + heartbeat, and the deterministic mailbox-log
+    derivation.
+  - `Commonplace.Dataflow.RedLog` — `start_onramp/3` / `commit_onramp/1`
+    drive the mailbox.
+  - `Commonplace.Dataflow.Magenta` — the ephemeral pub/sub channel
+    presence and mailboxes ride on.
+  - `Commonplace.Dataflow.Channel` — canonical definition of the
+    blue/red/magenta (and cyan/green) color layers.
+  - `Commonplace.Sync.CheckoutRegistry` — `find_for_cwd/2` resolves the
+    presence directory.
   """
 
   alias Commonplace.Dataflow.RedLog
@@ -27,15 +218,22 @@ defmodule Commonplace.MCP do
   alias Commonplace.Presence.Server, as: PresenceServer
   alias Commonplace.Sync.CheckoutRegistry
 
+  @doc """
+  escript entry point; the session's entire lifecycle in one function.
+
+  Executes a sequence of gates before serving: redirect Logger to
+  stderr, then `attach_to_serve/0`. Each failure arm is a deliberate
+  **refusal** — an actionable stderr message and `System.halt(1)` rather
+  than a half-working session (the refuse-without-serve contract). On
+  success: resolve the presence directory, hand AnubisServer its
+  presence closures, start the anubis session on `:stdio`, then *block*
+  on a monitor of the supervisor. That `receive` is what keeps the
+  escript — and the agent's presence/mailbox — alive until the client
+  closes stdin.
+  """
   def main(_argv \\ []) do
-    # CX-re6b: route Elixir Logger output to stderr. The MCP escript
-    # uses stdout as its JSON-RPC transport channel; any Logger write
-    # (including the warnings emitted from anubis itself, presence
-    # bootstrap diagnostics, and CommitStore events) interleaved on
-    # stdout corrupts the protocol stream — Claude Code's MCP client
-    # logs them as "Ignoring non-JSON line on stdout" and eventually
-    # one parses far enough to be misinterpreted as a response,
-    # tearing the transport down.
+    # CX-re6b: redirect Logger to stderr before anything touches stdout.
+    # See @moduledoc "The stderr routing fix" for rationale.
     redirect_logger_to_stderr()
 
     # Diagnostic: write to stderr what the default handler config is
@@ -51,18 +249,15 @@ defmodule Commonplace.MCP do
 
     case attach_to_serve() do
       {:ok, root_uuid, data_dir} ->
-        # CX-voi: presence lands in the sandbox checkout the agent was
-        # launched from, not always at workspace root. Resolve cwd →
-        # nearest CheckoutRegistry entry. Fallback to root_uuid when
-        # cwd is outside every registered checkout (e.g. agent launched
-        # from the workspace root itself).
+        # CX-voi: presence lands in the enclosing sandbox checkout, not
+        # always the workspace root. Falls back to root_uuid when cwd
+        # is outside every registered checkout.
         presence_uuid = resolve_presence_uuid(data_dir, root_uuid)
 
-        # CX-hf71: register the presence hooks with AnubisServer via
-        # :persistent_term (it reads them back in init/2 + terminate/2).
-        # The hand-rolled Commonplace.MCP.Server path is retained on
-        # disk for CX-xaof to clean up; it is no longer wired to
-        # stdio. All live MCP traffic goes through anubis.
+        # CX-hf71: stash presence hooks in :persistent_term for
+        # AnubisServer to call in init/2 + terminate/2. All live MCP
+        # traffic goes through anubis; the hand-rolled Server path is
+        # retained on disk for CX-xaof to remove.
         :ok =
           AnubisServer.config(
             presence_starter: presence_starter(presence_uuid),
@@ -122,17 +317,13 @@ defmodule Commonplace.MCP do
     end
   end
 
-  # Reconfigure the Erlang :logger default handler so Elixir's Logger
-  # writes to stderr (`:standard_error`) instead of stdout. The MCP
-  # escript uses stdout as its JSON-RPC transport — any Logger output
-  # interleaved on stdout is interpreted by the MCP client as garbled
-  # protocol traffic and eventually drops the transport.
+  # Reconfigure the Erlang :logger default handler to write to
+  # `:standard_error` instead of stdout. stdout is the JSON-RPC
+  # transport; any Logger line interleaved there corrupts the protocol.
   #
-  # Belt-and-suspenders: try update_handler_config first, then if that
-  # returned an error tuple OR the handler had been swapped to a fresh
-  # one with stdout config, remove the default and re-add it pointed at
-  # stderr. We also retry after Application.ensure_all_started for
-  # :anubis_mcp / :hermes_mcp in case those install their own handlers.
+  # Belt-and-suspenders: try update_handler_config first; on failure
+  # (handler missing or rejected the partial update), remove and
+  # re-add the handler pointed at stderr.
   defp redirect_logger_to_stderr do
     update_result =
       try do
@@ -198,12 +389,16 @@ defmodule Commonplace.MCP do
     end
   end
 
-  # CX-voi: pick the presence dir_uuid — nearest enclosing checkout
-  # for the escript's cwd, falling back to workspace root_uuid when
-  # cwd is outside every registered checkout.
+  # CX-voi: map cwd → nearest enclosing checkout UUID, falling back to
+  # root_uuid. See @moduledoc "Which directory does presence land in?"
   defp resolve_presence_uuid(data_dir, root_uuid) do
     config_path = Path.join(data_dir, "checkouts.json")
 
+    # find_for_cwd/2 returns {:ok, %{uuid: ..., sync_dir: ..., type: ...}}
+    # for the most tightly enclosing checkout, or :none when cwd is
+    # outside every checkout (or checkouts.json is missing). The two
+    # arms below are therefore total — no other shape is possible. See
+    # `Commonplace.Sync.CheckoutRegistry.find_for_cwd/2`.
     case CheckoutRegistry.find_for_cwd(config_path, File.cwd!()) do
       {:ok, %{uuid: uuid}} -> uuid
       :none -> root_uuid
@@ -253,16 +448,15 @@ defmodule Commonplace.MCP do
     end
   end
 
-  # Build a presence_starter function compatible with Server.new.
-  # Spawns a Presence.Server rooted at `root_uuid`, and broadcasts a
-  # presence.enter event on the containing dir's magenta topic.
-  #
-  # CX-92u: also spawns a per-agent mailbox onramp. The onramp subscribes
-  # to `agents/{name}` on magenta and appends each message to a red log
+  # Build the presence_starter closure for AnubisServer.
+  # Spawns a Presence.Server rooted at `root_uuid`, broadcasts
+  # `presence.enter` on the dir's magenta topic, then starts a
+  # per-agent mailbox onramp (CX-92u). The onramp subscribes to
+  # `agents/{name}` on magenta and appends each message to a red log
   # whose UUID is derived deterministically from the agent's cold
-  # identity — so when the agent reconnects, it tails the same log and
-  # picks up any messages sent while it was offline. Mailbox failures
-  # degrade gracefully: presence still starts without a mailbox.
+  # identity — so on reconnect the agent tails the same log and
+  # recovers messages sent while offline. Mailbox failure is graceful:
+  # presence still starts without a mailbox.
   defp presence_starter(root_uuid) do
     fn name, type ->
       store = Commonplace.Store.CommitStoreClient
@@ -287,10 +481,23 @@ defmodule Commonplace.MCP do
     end
   end
 
+  # Start the agent's mailbox; return fields to merge into the presence
+  # info map. On success: `%{mailbox_uuid: uuid, mailbox_topic: topic,
+  # mailbox_pid: pid}`. On failure: `%{}` (see the failure arm below
+  # for why that's safe). The caller (presence_starter/1) Map.merges
+  # this into the base presence map either way.
+  #
+  # mailbox_uuid is the deterministic red-log address derived from the
+  # agent's cold identity (see @moduledoc "identity → mailbox UUID →
+  # recovery"); mailbox_topic is the magenta address `agents/<name>`.
   defp start_mailbox(name, identity_uuid, store) do
     mailbox_uuid = Mailbox.log_uuid_for_identity(identity_uuid)
     mailbox_topic = Mailbox.topic_for_name(name)
 
+    # Subscribe a magenta→red onramp to `agents/<name>` and persist
+    # every message into red log `mailbox_uuid`. Failure is graceful:
+    # a crashed onramp must not abort the agent's join — presence is
+    # required, mail delivery is not (see the {:error} arm).
     case RedLog.start_onramp(mailbox_uuid, mailbox_topic, store) do
       {:ok, onramp_pid} ->
         %{
@@ -306,15 +513,22 @@ defmodule Commonplace.MCP do
           "commonplace_mcp: failed to start mailbox onramp for #{name}: " <> inspect(reason)
         )
 
+        # Empty map is safe: presence_starter/1 Map.merges this into
+        # the base presence map, so the agent still gets a complete
+        # presence record (pid/uuid/name/type/dir_uuid) with no
+        # mailbox_* keys. presence_stopper/1's stop_mailbox/1 falls
+        # through its catch-all when no mailbox_pid is present — teardown
+        # is a no-op. The agent joins and runs fully, without durable
+        # mail this session.
         %{}
     end
   end
 
-  # Build a presence_stopper function compatible with Server.shutdown.
-  # Broadcasts presence.leave on the dir and stops the Presence.Server
-  # (its terminate/2 callback removes the .bot file from the schema).
-  # CX-92u: also flushes + stops the per-agent mailbox onramp so the
-  # final events addressed during this session persist before exit.
+  # Build the presence_stopper closure for AnubisServer.
+  # Flushes and stops the mailbox onramp (CX-92u — persists the
+  # session's final addressed messages), broadcasts `presence.leave`,
+  # then synchronously stops the Presence.Server so its `terminate/2`
+  # removes the `.bot` file before the escript exits.
   defp presence_stopper(root_uuid) do
     fn info ->
       %{pid: pid, uuid: uuid, name: name, type: type} = info
