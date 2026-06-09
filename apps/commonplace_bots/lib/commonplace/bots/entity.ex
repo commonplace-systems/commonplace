@@ -24,10 +24,15 @@ defmodule Commonplace.Bots.Entity do
   Optional:
 
       bot.json        — text doc with a JSON object; per-bot overrides
-                        for dispatcher cost ceilings (max_calls,
-                        max_tokens, max_wall_clock_ms) and any future
-                        knobs. Missing or unparseable → use the
-                        dispatcher defaults.
+                        for the worker's hard caps and model choice:
+                        `max_calls`, `max_output_tokens`, `max_wall_ms`,
+                        `model`, `fallback_model`. `Entity` only decodes
+                        this to a plain map (`bot_config`) — it does NOT
+                        interpret the keys; `Commonplace.Bots.Worker`
+                        does (see its `build_config/2`), and is the
+                        authority on the knob set and the per-knob
+                        defaults. Missing or unparseable → empty map →
+                        worker defaults.
       trigger.code    — text doc with an Elixir expression evaluating
                         to `:skip | :wake | {:wake, priority}`. Slot
                         reserved; not consumed by v0 (the regex
@@ -45,8 +50,8 @@ defmodule Commonplace.Bots.Entity do
 
   ## Read path
 
-      iex> {:ok, entity} = Entity.load(store, bot_dir_uuid)
-      iex> entity.name
+      iex> {:ok, entity} = Entity.load(store, bot_dir_uuid, "alice.bot")
+      iex> entity.name      # display_name with the `.bot` suffix stripped
       "alice"
       iex> entity.persona
       "You are alice. ..."
