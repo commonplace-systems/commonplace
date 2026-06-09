@@ -1,10 +1,117 @@
 defmodule Commonplace.Tree.Merge do
   @moduledoc """
-  Merges changes from a source branch into a target branch using DAG ancestry.
+  Three-way merge of one branch's document tree into another's.
 
-  Finds common ancestors in the shared commit DAG, computes CRDT diffs for
-  content docs, and structurally diffs schemas with recursive child pairing.
-  No ForkManifest — provenance is in the DAG itself.
+  `Commonplace.Tree.Fork` deep-copies a subtree into fresh UUIDs; this
+  module reconverges the two copies — recursively, directory by directory,
+  leaf by leaf. Distinct from `Commonplace.Store.Merger`, which reconciles
+  divergent CRDT namespaces/epochs of a *single* document; this one walks a
+  tree of separate documents related only by shared commit ancestry. Public
+  entry: `merge/3`, returning `{:ok, %MergeReport{}}`.
+
+  ## Provenance lives in the DAG, not a manifest
+
+  Forking records no explicit "doc X is a copy of doc Y." The forked copy's
+  commit chain shares a common ancestor with the original in the
+  content-addressed commit DAG. "Are these two docs related, and where did
+  they diverge?" is answered by `CommitStore.find_common_ancestor/3` — no
+  `ForkManifest` to keep in sync.
+
+  ## Two node kinds, two merge strategies
+
+  A tree node is either a **leaf** (a content document — text, etc.) or a
+  **directory** (a *schema* document mapping entry names to child UUIDs;
+  see `Commonplace.Tree.Schema`). `is_schema?/2` distinguishes them, and
+  `merge_tree/4` dispatches:
+
+  - **Leaf merge** is a CRDT diff. A *state vector* summarizes how much
+    of each client's edit history a document already holds, so diffing
+    the reconstructed source against the baseline's state vector yields
+    exactly the ops the source added *since the baseline*. We encode that
+    delta as a Yjs update (`Encoding.encode_diff/2`) and apply it to the
+    target (`Encoding.apply_update/2`). CRDT semantics make this
+    commutative and idempotent, so re-merging is safe. An empty diff
+    (≤ 2 bytes) means nothing new — we record the merge point and stop.
+  - **Directory merge** is a *structural* three-way diff. We line up the
+    entry maps of source, target, and common ancestor, and for each name
+    decide what happened to it (the matrix below), recursing into
+    children whose docs share ancestry.
+
+  ## Choosing the baseline
+
+  A three-way merge needs a baseline to diff against. Normally that is
+  the common ancestor. But merges are *incremental*: after a first merge,
+  a **merge point** is stored in the `CommitStore` per `(target, source)`
+  pair — the source commit last folded in — and subsequent merges diff
+  from there, so already-merged changes are never reconsidered.
+
+  When the DAG has no common ancestor (`:none` — e.g. a chain broken by
+  `parent_id: nil` edits), we fall back to a stored merge point if one
+  exists, and otherwise no-op. This keeps repeated merges across detached
+  chains working without a live ancestry link.
+
+  ## The directory decision matrix
+
+  For each entry name present in source and/or target,
+  `merge_directory_entries/8` asks where it exists (source / target /
+  ancestor) and acts:
+
+  - **In source & target** — same logical entry on both sides. If their
+    `node_id`s share DAG ancestry, recurse (`merge_tree`). If they don't,
+    the ancestor decides which case it is. If the ancestor held this name
+    with the *same* `node_id` as target, source must have *replaced* the
+    entry (deleted the old doc and recreated it under the same name) — a
+    *node_id replacement*, handled as delete-old + add-new (or a conflict
+    if target also changed the old doc). Otherwise neither entry descends
+    from a shared original, so both sides created it independently — a
+    *true collision*, resolved by auto-renaming the incoming source entry
+    to `name.merge-conflict` (`unique_rename/2`).
+  - **In source only, not in ancestor** — added on source → fork the new
+    doc into target.
+  - **In target only, not in ancestor** — either a genuine target-only
+    addition (keep), or a source *deletion after a prior merge* (it was
+    present at the merge point but is gone now). The merge-point schema
+    plus a DAG-ancestry lineage check on `node_id`s tells these apart, so an
+    independently-created same-named target doc is never deleted.
+  - **In target & ancestor, gone from source** — removed on source. Delete
+    from target *unless* target modified it since the ancestor (then it
+    is a delete-vs-modify conflict).
+  - **In source & ancestor, gone from target** — target already removed
+    it; stay removed.
+
+  ## Conflict policy
+
+  The module auto-resolves what it safely can and *records* what it
+  cannot. Name collisions are auto-renamed (never lose data); deletions
+  that race a real edit become `{:delete_vs_modify, name, node_id}`
+  conflicts in the report rather than silently dropping either side.
+
+  The pivotal predicate is "was this target doc modified *by the user*,
+  not merely by prior merges/forks?" (`target_modified_by_user?/3`).
+  Merge and fork operations create commits too, so a naive "has the head
+  moved?" check would flag every previously-merged doc as conflicting.
+  The `latest_merge_head` tracker records the commit a merge last
+  produced; if the target's head still equals it, only merges have
+  touched the doc and there is no real conflict. (On the very first
+  merge, with no tracker yet, a timestamp comparison against the *fork
+  point* — the common-ancestor commit where the branches diverged —
+  stands in.)
+
+  ## What it returns
+
+  `%MergeReport{}` fields: `merged_docs` (leaves that took an update),
+  `new_docs` (entries forked into target), `deleted_docs`, `conflicts`,
+  and `auto_renamed`. Callers inspect it to surface conflicts and renames.
+
+  After a directory merge, `maybe_filter_processes/2` strips fork-unsafe
+  process config from a merged-in `__processes.json`
+  (see `Commonplace.Process.Config`) so live-process definitions don't
+  leak across branch boundaries.
+
+  CRDT and reconstruction mechanics are deferred to their owners:
+  `Yelixer.Encoding` (diff/apply/encode), `Commonplace.Tree.DocBuilder`
+  (chain vs. snapshot reconstruction), and `Commonplace.Tree.Fork` (the
+  deep copy `fork_into_target/3` delegates to).
   """
 
   alias Commonplace.Store.CommitStoreClient, as: CommitStore
