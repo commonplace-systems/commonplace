@@ -5,10 +5,12 @@ defmodule Commonplace.Tree.Cherrypick do
   Takes a source commit_id and a target doc_uuid. Extracts the DELTA
   the source commit introduced — the ops present in the source but not
   in its parent — and applies that delta to the target's current
-  state. The resulting commit on the target encodes the full merged
-  state (so readers via `reconstruct_snapshot/2` see everything), while
-  its content is exactly what you'd get by pulling the source commit's
-  changes in isolation.
+  state. The resulting commit's update bytes encode the full merged
+  state (target + delta), so a snapshot reader (`reconstruct_snapshot/2`)
+  sees the complete document; what the cherry-pick *contributes*,
+  though, is exactly the source commit's isolated delta — the target's
+  existing content is untouched and nothing is synthesized the way a
+  three-way merge might.
 
   Yjs CRDT semantics make cherry-pick idempotent and commutative: a
   second cherry-pick of the same source is a no-op on observable
