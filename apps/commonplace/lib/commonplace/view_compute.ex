@@ -30,13 +30,33 @@ defmodule Commonplace.ViewCompute do
   `ViewCompute` pattern into an Orchestrator-spawned SmartDoc flavor;
   existing callers migrate mechanically.
 
+  ## Two ways to supply the computation
+
+  Exactly one of two mutually-exclusive opts resolves the transformation
+  (`init/1` validates, and stops with an error if neither or both are
+  given):
+
+  * `:compute_fn` — a direct closure (the legacy path, still
+    first-class). Used in the examples below.
+  * `:code_uuid` — the UUID of an Elixir *source-code document* in the
+    tree; the computation is whatever pipeline that doc compiles to, run
+    via `Commonplace.View.ComputeRunner`. `init/1` wraps it in a
+    `compute_fn` with the identical shape, so everything downstream is
+    the same. This is the M7 path (CX-pcn4) that lets the computation
+    *itself* be substrate-defined and editable — the transform is a code
+    doc like any other.
+
+  These create two independent reactivity axes (see Lifecycle): editing
+  the *source content* reruns the compute; editing the *code doc*
+  re-derives the compute itself.
+
   ## Compute function shape
 
-  The `compute_fn` is a 1-arity function taking the source doc's
-  current text content (a string — what `ContentType.get_content/1`
-  returns) and returning the target doc's new text content (a string).
-  Pure and synchronous — no IO, no ownership of state beyond its
-  inputs.
+  Whichever source supplied it, `compute_fn` is a 1-arity function
+  taking the source doc's current text content (a string — what
+  `ContentType.get_content/1` returns) and returning the target doc's
+  new text content (a string). Pure and synchronous — no IO, no
+  ownership of state beyond its inputs.
 
   For a wiki-home style view:
 
@@ -63,6 +83,15 @@ defmodule Commonplace.ViewCompute do
   If the computed result equals the current target content, no commit
   is created — `CommandRouter.write` already has that short-circuit
   because `Diff.apply_diff/3` produces an empty op list on no-op.
+
+  When started with `:code_uuid`, the server *also* subscribes to
+  `blue:<code_uuid>`. A commit there means the computation's definition
+  changed, not its input — so the server stops `:normal` and lets its
+  supervisor restart it, which re-resolves and recompiles the code doc
+  from scratch (CX-wxbp / CX-6fhe). This is eventually consistent:
+  several near-simultaneous code commits collapse into a single restart
+  cycle, because stop messages delivered to the already-dead process are
+  ignored.
   """
 
   use GenServer
