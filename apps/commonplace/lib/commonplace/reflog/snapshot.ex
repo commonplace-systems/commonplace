@@ -1,10 +1,67 @@
 defmodule Commonplace.Reflog.Snapshot do
   @moduledoc """
-  Recursive checkpoint snapshots of the document tree.
+  Recursive checkpoint snapshots of the document tree — a git-reflog-style
+  record of "what was every doc's head commit at time T."
 
-  Walks the data tree bottom-up, creating reflog entries that record
-  the commit_id of every file and child directory at checkpoint time.
-  The root reflog commit unambiguously captures the entire tree state.
+  ## What a checkpoint is, and why
+
+  A checkpoint walks the data tree and records the latest `commit_id` of
+  every file and directory into a *parallel* reflog tree — one whose shape
+  mirrors the data tree — rooted at `__reflog/{owner}/…`. For each data
+  directory there is a matching reflog directory holding a `__snapshot`
+  doc: a `name → commit_id` map where files map to their own commit_id and
+  child directories map to *that child directory's own reflog commit_id*. Because each directory's reflog commit folds
+  in its children's, the single root reflog commit_id transitively pins
+  the entire tree's state: one handle from which the whole "what every doc
+  pointed at" snapshot can be recovered. (`__`-prefixed entries — the
+  reflog itself, `__snapshot`, `__bursar.log`, … — are meta-docs and are
+  skipped by the walk.)
+
+  Checkpoints are written by `Commonplace.Sync.Agent` after each sync (for
+  crash-durability of the synced tree) and periodically by
+  `Commonplace.Reflog.CheckpointTimer`.
+
+  ## The cost problem and the two-layer amortization
+
+  A naive checkpoint re-reads and re-writes the *entire* tree every time —
+  on a 1000-directory tree that is ~2k `create_chained_commit` calls, and
+  the sync loop fires every second. That floods the `CommitStore` mailbox.
+  Two independent ETS-backed short-circuits cut the two different costs;
+  this module IS the "change-aware cursor" that `Sync.Agent`'s rate-limit
+  comment names as the proper follow-up:
+
+    * **Idempotency cursor (CX-71ej)** — cuts WRITES. Per reflog directory
+      (`@cursor_table`) we remember `{schema_cid, entry CIDs, last
+      reflog_commit_id}`. If the data dir's schema commit and every
+      entry's commit_id still match the cursor *and* we minted no new
+      child reflog dir this round, both writes (the reflog schema and the
+      snapshot doc) are skipped and the cached commit_id is returned.
+
+    * **Dirty-set (CX-o8tx)** — cuts READS. A telemetry handler on
+      `[:commonplace, :commit, :create]` (`handle_commit_event/4` →
+      `mark_dirty/1`) marks each committed doc dirty and propagates the
+      mark *up* to every known ancestor through a lazily-built
+      `@parent_index` (child_uuid → set of parent dir uuids). A directory
+      absent from `@dirty_table` therefore means no commit landed on it or
+      any descendant since the last checkpoint, so the whole subtree is
+      skipped without even reading below it.
+
+  The cursor alone still has to *read* a clean dir's CIDs to discover it's
+  unchanged; the dirty-set is what lets a clean subtree avoid that read
+  entirely. Together, an unchanged tree costs almost nothing.
+
+  ## Two correctness properties worth knowing
+
+    * **Change bubbles up.** Each directory's reflog commit_id is derived
+      recursively from its children's returned commit_ids. A single leaf
+      edit therefore changes the commit_id all the way up the path to the
+      root: every ancestor's cursor mismatches and writes a fresh
+      snapshot — but *only* along the changed path, nowhere else.
+
+    * **Dirty bit cleared before work, not after.** `do_snapshot_dir`
+      clears a directory's dirty bit *before* walking it, so a commit that
+      lands mid-walk re-marks the dir and triggers a re-checkpoint next
+      round. Clearing after the work would lose a concurrently-set mark.
   """
 
   alias Commonplace.Tree.{Schema, DocBuilder}
