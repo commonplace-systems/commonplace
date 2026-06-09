@@ -8,15 +8,21 @@ defmodule Commonplace.ViewActionDispatch do
 
   Per `docs/views.md` (Pass A + Pass C), every invocation:
 
-  1. Broadcasts a magenta audit event on the `view_actions` topic so
-     the audit-trail property holds regardless of invocation surface.
+  1. Broadcasts an audit event on the *magenta* channel's
+     `view_actions` topic — magenta is Commonplace's color-named
+     convention for audit / provenance events (the color vocabulary is
+     owned by `Commonplace.Dataflow.Channel`). This fires *before*
+     validation and for *every* action, including ones that go on to
+     fail, so the audit trail records every attempt from either
+     invocation surface — not just the successes.
   2. Validates required context (e.g. `view_uuid` for actions that
      need a target doc).
   3. Pattern-matches on action name to either:
      - Return a `{:ok, :ui_transition, details}` intent that the
        caller applies to their UI state.
-     - Perform a tree mutation (via `Commonplace.CommandRouter`) and
-       return `{:ok, :tree_mutation, details}`.
+     - Perform a tree mutation — a change to the document tree that
+       lands a commit, via `Commonplace.CommandRouter` — and return
+       `{:ok, :tree_mutation, details}`.
      - Return `{:error, reason}`.
 
   The dispatcher owns the "what does this action mean" logic. Callers
@@ -31,6 +37,11 @@ defmodule Commonplace.ViewActionDispatch do
         args: %{},                        # action args
         signer_id: "wiki-user@local"      # invoker identity (placeholder)
       }
+
+  No key is globally required — the `context` type marks them all
+  optional, and each action validates only what it needs: `edit` and
+  `fork` require `view_uuid`; the chat actions (`post_message`,
+  `edit_message`, `delete_message`) require an `args` map.
 
   ## Return tuples
 
