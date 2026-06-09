@@ -1,16 +1,77 @@
 defmodule Commonplace.Store.CrossEpochMerge do
   @moduledoc """
-  Cross-epoch translate-into-primary merge (CX-fdjh / Build 7.3).
+  The engine behind `Merger`'s `:translate` strategy: merge two commits
+  from different snapshot epochs by commuting one side's edits through
+  their common ancestor into the other side's namespace
+  (CX-fdjh / Build 7.3).
 
-  Given two commits `L` and `R` in the same Merkle commit DAG, produce
-  a merge commit whose `update` carries R's edits-since-common-ancestor
-  C commuted into L's namespace. The resulting commit has:
+  Given two commits `L` (the primary/target) and `R` (the source) in the
+  same Merkle commit DAG, produce a merge commit whose `update` carries
+  R's edits since their common ancestor `C`, re-expressed in **L's
+  namespace** — so L stays the canonical line and R's novel work is
+  folded onto it. The resulting commit has:
 
       parent_id     = L.id
       merge_parents = [R.id]
       metadata      = %{kind: :merge, snapshot_parent: L_ns}
 
-  where `L_ns = Namespace.current_namespace(L)`.
+  where `L_ns = Namespace.current_namespace(L)`. (For the strategy
+  choice that routes here — `:translate` vs `:merge_snapshot` — see
+  `Commonplace.Store.Merger`.)
+
+  ## Why "cross-epoch"
+
+  A snapshot starts a new **epoch** (a fresh namespace into which the
+  doc's items are re-identified — see `Commonplace.Store.Namespace`). If
+  L and R have each crossed one or more snapshots since their common
+  ancestor C, their edits carry item ids from *different* namespaces —
+  R's update can't simply be applied onto L, because its
+  `origin`/`right_origin`/parent refs name ids that don't exist in L's
+  namespace. **C is the pivot**: every snapshot records a derivation map
+  back to its parent namespace, so a chain of them composes into a
+  translation between any two epochs that share C.
+
+  ## The two-pass translation (R → C → L)
+
+  R's novel edits start in R's namespace and must end in L's. They get
+  there via C:
+
+    - **Pass 1 (R→C)** rewrites R's refs to the common-ancestor
+      namespace, using R_chain's *forward* derivation maps composed into
+      one (`r_composed`, keys = R-ns, values = C-ns — already in the
+      source→target direction the translator wants, so no inversion).
+    - **Pass 2 (C→L)** rewrites those C-namespace refs into L's
+      namespace, using L_chain's forward maps composed and then
+      *inverted* (`l_inverse`, keys = C-ns, values = L-ns).
+
+  The asymmetry — pass 1 uses its map as-is, pass 2 inverts — falls out
+  of one fixed fact: the translator always consumes a
+  `%{source_ref => target_ref}` map. Composing a chain's forward DMs
+  (each maps its own namespace to its parent's) always yields
+  `tip-ns => C-ns`, so both composed maps point *toward* C. For pass 1
+  that already *is* the needed direction — `r_composed` is `R-ns => C-ns`,
+  exactly source→target for R→C. For pass 2 the needed direction is C→L,
+  the reverse of `l_composed`'s `L-ns => C-ns`, so it is inverted to
+  `C-ns => L-ns`.
+
+  Both passes run through `LateEditPreflight.translate_and_validate/2` —
+  the same all-or-nothing translator the late-edit path uses. An empty
+  composed map means that side never crossed a snapshot since C, so that
+  pass is a no-op.
+
+  ## The re-authoring filter (the subtle invariant)
+
+  Before translating, R's edit bundle is filtered: any item whose own id
+  appears as a *new-id* key in `r_composed` — i.e. the item is itself one
+  of R's snapshot-re-identified items — is **dropped**
+  (`drop_reauthored_items/2`).
+  Those items are R-side *re-authorings* of content already at C — and L
+  holds that same content under L-namespace ids via L_chain's
+  re-authorings. The merge is ultimately applied onto `D_L`, which
+  already contains that content, so keeping R's re-authored copies would
+  **double-insert C's content**. Only R's *novel* post-C edits survive;
+  delete-set entries targeting dropped items are trimmed for the same
+  reason.
 
   ## Algorithm
 
@@ -44,20 +105,34 @@ defmodule Commonplace.Store.CrossEpochMerge do
      l_inverse)`. On failure emit the same event with `phase: :c_to_l`.
   9. Emit merge commit struct via `Commit.new/5` with the pass-2 bytes.
 
-  ## Scope
+  ## Byte-determinism and scope
 
-  Ships with in-memory byte-determinism on the commit struct. Persisting
-  via `CommitStore.import_commit/2` requires CX-fbs6 (namespace
-  validator must accept translated commits whose item-authorship
-  clients are new to L's namespace). Integration-level CID-dedup
-  tests deferred to a follow-up once CX-fbs6 lands.
+  The merge commit is byte-deterministic in memory: identity-preserving
+  translation plus a content-address that excludes `timestamp` (see
+  `Commonplace.Store.Commit`) means two peers merging the same `(L, R)`
+  produce the same commit id. Persisting via `CommitStore.import_commit/2`
+  relies on CX-fbs6's role-split namespace validation — a translated
+  commit introduces item-authorship clients new to L's namespace, which
+  the validator must accept *as authorship* rather than reject as dangling
+  references (see `Commonplace.Store.Namespace`'s role-split).
+  Integration-level CID-dedup tests are deferred to a follow-up.
 
-  ## Red events
+  ## Red events (audit telemetry)
 
   All pre-flight failures re-use CX-fefz's `[:commonplace, :late_edit,
   :untranslatable]` event path, adding a `phase: :r_to_c | :c_to_l`
   key so downstream handlers can distinguish which translation pass
   rejected the merge.
+
+  ## What this module is NOT
+
+  - **Not the strategy chooser.** `Commonplace.Store.Merger` decides
+    `:translate` vs `:merge_snapshot` and routes here;
+    `Commonplace.Store.MergeSnapshotter` is the other engine.
+  - **Not the derivation-map algebra.** It composes and inverts maps via
+    `Commonplace.Store.Namespace`; it does not define them.
+  - **Not the persister.** It returns an in-memory commit;
+    `CommitStore.import_commit/2` stores it.
   """
 
   alias Commonplace.Store.{
