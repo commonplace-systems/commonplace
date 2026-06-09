@@ -1,17 +1,69 @@
 defmodule Commonplace.Store.Snapshotter do
   @moduledoc """
-  Builds snapshot payloads: a deterministic Yjs update plus a
-  derivation map from new item ids back to the source items they came
-  from (CX-6sc / CX-bgy build 5).
+  Builds snapshot *payloads* — the raw material a snapshot commit is
+  written from: a deterministic Yjs update plus a *derivation map*
+  (CX-6sc / CX-bgy, build 5). This module produces the bytes; the
+  caller does the content-addressed write.
 
-  The snapshot update itself is produced by `Yelixer.Doc.snapshot_update/1`,
-  which is byte-deterministic across Yelixer instances that hold the
-  same logical state (verified by `Yelixer.SnapshotDeterminismTest`).
+  ## Why a snapshot needs a derivation map
 
-  The derivation map is `%{source_snapshot_hash => %{new_id => old_id}}`
-  where ids are `{client_id, clock}` tuples. For MVP (single-parent
-  snapshots) there is exactly one top-level key; the late-edit
-  translation pipeline (build 6) will compose these maps across epochs.
+  A snapshot re-encodes a document's entire current state into one
+  self-contained Yjs update. But it does not preserve the original CRDT
+  item identities: `Yelixer.Doc.snapshot_update/1` replays the state
+  into a *fresh* doc, minting brand-new ids (`{client_id, clock}`
+  tuples) for every item. That fresh id-space is a new *namespace* (a
+  new "epoch") — and any edit a peer authored against the *old*
+  namespace now refers to item ids that no longer exist here. (A
+  namespace is the identity space a doc's items live in, named by the
+  snapshot commit that opened it; the vocabulary is owned by
+  `Commonplace.Store.Namespace`.)
+
+  The derivation map is the dictionary that keeps those would-be-orphaned
+  edits recoverable. It records, for each item the snapshot minted,
+  which source item it was derived from:
+
+      %{source_namespace_id => %{new_id => old_id}}
+
+  where `new_id` and `old_id` are the `{client_id, clock}` item tuples
+  above, and `source_namespace_id` is the parent snapshot's namespace
+  (a commit id). The late-edit translation pipeline (`Commonplace.Store.Translator`,
+  build 6) reads this map to re-express an old-epoch edit's operations
+  in terms of the snapshot's new ids, so a cross-epoch edit can still be
+  applied instead of silently dropped. (`Commonplace.LateEditAutoTranslator`
+  is the sync-path hook that drives it.)
+
+  ## Determinism is load-bearing
+
+  `snapshot_update/1` is byte-deterministic across Yelixer instances
+  that hold the same logical state (verified by
+  `Yelixer.SnapshotDeterminismTest`). That is what makes
+  "deterministic-anyone" snapshotting (CX-umz) work: any node that
+  observes the same parent independently builds *byte-identical*
+  snapshot content, so the content-addressed commit id they each compute
+  is the same — and the compare-and-swap write in
+  `CommitStore.write_snapshot_cas/5` collapses concurrent attempts into
+  one commit instead of forking history. Both `CommitStore.snapshot/2`
+  and `Commonplace.SnapshotTrigger` route through `build_snapshot/3` so
+  they agree on the payload bytes.
+
+  That determinism has one subtlety `build/1` enforces by hand:
+  `snapshot_update/1` mints new ids using the *source* doc's own
+  `client_id`, which is random for a freshly reconstructed doc. Two
+  independent reconstructions of the same logical state would otherwise
+  disagree on the minter and produce different bytes. So `build/1`
+  overwrites it with a deterministic function of the source's own
+  contents — the smallest `client_id` present among the source's items
+  (0 if empty) — before running the replay.
+
+  ## Map shape and multi-parent snapshots
+
+  For an MVP single-parent snapshot there is exactly one top-level key:
+  the parent's namespace id (its `current_namespace`, falling back to
+  the parent commit's own id for a doc's first snapshot). `snapshot_parents`
+  is a list, and the outer map is keyed by namespace, precisely so a
+  snapshot that one day collapses more than one epoch can carry one
+  entry per source namespace — that future composition across epochs is
+  build 6's job; here there is always exactly one.
   """
 
   @snapshotter_version 1
