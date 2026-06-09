@@ -1,7 +1,10 @@
 defmodule Commonplace.Crypto.SigningContext do
   @moduledoc """
-  Per-call signing context for `CommitStore.create_commit/5` and
-  `CommitStore.create_chained_commit/4` (CX-hoj).
+  Per-call signing context, threaded as the `:signing_context` entry of
+  the trailing `opts` to `CommitStore.create_commit/6` and
+  `CommitStore.create_chained_commit/5` (CX-hoj). (The lower-arity heads
+  of those functions omit `opts` and therefore cannot carry a context —
+  they take the global-SecretStore fallback described below.)
 
   CommitStore historically signed commits by reading
   `signing_key:default` / `signing_pub:default` / `signing_identity`
@@ -34,6 +37,16 @@ defmodule Commonplace.Crypto.SigningContext do
       encoded; decode before constructing).
     * `:public_key` — raw Ed25519 public-key bytes used to derive the
       signer_id fingerprint.
+
+  The raw-bytes requirement is exactly the shape returned by
+  `Commonplace.Crypto.Signing.generate_keypair/0` (`{public_key,
+  private_key}`) — so a freshly-minted agent keypair plugs straight in,
+  while keys read from the base64-at-rest global SecretStore must be
+  `Base.decode64`'d first. `Commonplace.Crypto.Signing.signer_id/2`
+  performs the `identity_uuid` + `public_key` → "identity@fingerprint"
+  derivation. Sourcing the keypair and the actor's identity UUID for a
+  given session is the caller's job (e.g. the MCP session bootstrap),
+  not this struct's.
   """
 
   @enforce_keys [:identity_uuid, :private_key, :public_key]
