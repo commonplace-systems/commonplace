@@ -1,36 +1,132 @@
 defmodule Commonplace.Store.Namespace do
   @moduledoc """
-  Namespace-membership walker for the Merkle-tracked Yjs umbrella.
+  Namespace toolkit: which clientIDs belong to a trust root, which trust
+  root a new commit should declare, and how to translate references across
+  snapshot epochs.
 
-  A "namespace" is the set of clientIDs observed in the commit chain
-  rooted at a given snapshot_parent. Walking from a regular commit's
-  `snapshot_parent` back to the namespace root (a `:genesis` or
-  `:snapshot`) and aggregating clientIDs tells us which Yjs participants
-  the trust root has already witnessed.
+  A **namespace** is the set of Yjs clientIDs witnessed in the commit
+  chain rooted at a given **trust root** — a `:genesis` or `:snapshot`
+  commit. Walking back from a commit's `snapshot_parent` to that root and
+  unioning each commit's clientIDs answers "which participants has this
+  lineage's trust root already seen?"
 
-  The validator uses this set to reject regular commits whose update
-  ops reference clientIDs outside the namespace — the mechanism that
-  stops a peer from reusing someone else's snapshot as a signing
-  shortcut (see docs/namespace-model.md in commonplace-plan).
+  Namespaces exist because snapshots **re-identify** items: a snapshot
+  can rewrite the `{clientID, clock}` ids of the state it captures into
+  a fresh namespace, so the same logical text carries different ids on
+  either side of a snapshot boundary. That power needs two guardrails,
+  and this module is both:
+
+    1. A **membership check** that prevents cross-namespace forgery
+       (`validate_commit/2` and friends).
+    2. A **translation algebra** (`inverse_derivation_map/1`,
+       `compose_dms/1`) that rewrites references across snapshot epochs
+       so cross-epoch merges and late edits still resolve.
+
+  `current_namespace/1` is the write-side helper: given the commit you
+  are chaining onto, it returns the `snapshot_parent` the new commit
+  should declare.
+
+  ## The anti-forgery invariant (the membership half)
+
+  `validate_commit/2` is the trust boundary on the import path. A
+  `:regular` commit must declare the `snapshot_parent` it descends from;
+  the validator walks from the commit's `parent_id` back to that trust
+  root, aggregating clientIDs into the namespace, then checks the
+  commit's update against it.
+
+  The check is **role-split** (CX-fbs6):
+
+    - **Reference clientIDs** — the ids an op points *at*: `origin`,
+      `right_origin`, an `{:id, _}` parent, delete-set targets. These
+      must already be members of the namespace.
+    - **Authorship clientIDs** — the ids of the *new* items this commit
+      inserts. These are exempt; they *extend* the namespace when the
+      commit lands.
+
+  Without the split, a legitimately translated cross-epoch commit (whose
+  new items carry fresh authorship ids) would be rejected for
+  "introducing" unseen ids. With it, only dangling *references* are
+  rejected — the exact forgery prevented: a peer cannot craft a commit
+  whose ops point at clientIDs this lineage never witnessed (e.g. by
+  grafting another doc's snapshot as a trust-root "shortcut" to make
+  foreign references look valid). See docs/namespace-model.md in
+  commonplace-plan.
 
   ## Walk rules
 
-  - `:genesis` — the walk terminates; no clientIDs contributed.
-  - `:snapshot` — the walk terminates here, and the snapshot's own
-    update contributes its full state-vector clientIDs (snapshots are
-    trust roots that carry complete namespace membership).
-  - `:regular` — contributes its update's clientIDs and continues to
-    its `parent_id`.
-  - `:merge` — contributes clientIDs and continues (a merge commit
-    carries deltas, not a trust boundary).
-  - legacy (`metadata == %{}`) — contributes clientIDs and continues.
+  `walk/3` aggregates clientIDs by commit kind:
+
+  - `:genesis` — terminates; contributes nothing (empty namespace).
+  - `:snapshot` — terminates AND contributes its full state-vector
+    clientIDs (a snapshot is a trust root carrying complete membership).
+  - `:regular` — contributes its update's clientIDs, continues to
+    `parent_id`.
+  - `:merge` — contributes clientIDs, continues (a merge carries deltas,
+    not a trust boundary).
+  - legacy (`metadata == %{}`) — contributes, continues.
+
+  Because regular commits between the trust root and the new commit also
+  extend the namespace, the walk starts at the new commit's `parent_id`,
+  not at `snapshot_parent` — the validator must see those intermediate
+  commits too.
 
   ## Bootstrap
 
   A regular commit whose `snapshot_parent` is a fresh genesis sees an
-  empty namespace. The validator accepts such commits unconditionally —
-  this is how the first real edit after doc creation binds the first
-  clientID into the namespace.
+  **empty** namespace and is accepted unconditionally
+  (`MapSet.size(namespace) == 0` arm). This is how the first edit after
+  doc creation binds the first clientID — there is nothing yet to be a
+  member of.
+
+  ## Trust-root computation
+
+  `current_namespace/1` is the write-side counterpart of the walk. A
+  `:snapshot` or `:genesis` is its own trust root (returns `commit.id`);
+  `:regular` and `:merge` inherit `commit.metadata.snapshot_parent`;
+  legacy `%{}` returns `nil` — pre-umbrella commits carry no trust root,
+  so callers chaining off them are not auto-stamped.
+
+  ## Derivation-map algebra (the translation half)
+
+  A snapshot's **derivation map** (DM) records how it re-identified
+  items: `%{source_snapshot_hash => %{new_id => old_id}}`, where ids are
+  `{clientID, clock}` tuples. Two operations turn it into a reference
+  translator:
+
+  - `inverse_derivation_map/1` flips each inner `new_id => old_id` to
+    `old_id => new_id`, so a reference minted in a post-snapshot
+    namespace can be rewritten back into the source namespace. The
+    late-edit translator (Build 6.3) and cross-epoch merge (Build 7.3)
+    rely on this.
+  - `compose_dms/1` chains a list of per-epoch maps `[DM1..DMn]` into a
+    single map from the newest namespace to the oldest. A reference
+    whose mid-chain lookup misses is dropped — the composed map only
+    claims ids that trace all the way back. This lets a ref be translated
+    across an arbitrary number of snapshot epochs using only
+    derivation-map bytes, never snapshot contents (load-bearing for
+    Build 7.3 / 7.4).
+
+  ## Invariants
+
+  - A `:regular` commit's reference clientIDs must be a subset of its
+    namespace, or it is rejected with `{:error, {:unknown_reference, _}}`.
+  - A post-umbrella `:regular` commit MUST carry a `snapshot_parent`; a
+    missing one is `{:error, :missing_snapshot_parent}` (legacy `%{}` is
+    the only read-side hatch, handled before this check).
+  - The empty namespace accepts unconditionally (bootstrap).
+  - `compose_dms([])` is identity (`%{}`); `compose_dms([dm])` is `dm`.
+
+  ## What this module is NOT
+
+  - **Not the validator's caller.** `CommitStore.import_commit/3` invokes
+    `validate_commit_from_db/2`; this module only computes the verdict.
+  - **Not the id-integrity check.** `Commonplace.Store.Commit.verify_id/1`
+    proves a commit's bytes match its hash and runs *first*; namespace
+    validation assumes a hash-verified commit and asks the separate
+    question of whether its references are in-namespace (the CX-gwz
+    ordering: id gate, then namespace validator).
+  - **Not the snapshotter.** It consumes derivation maps that
+    `Commonplace.Store.Snapshotter` produces; it does not build them.
   """
 
   alias Commonplace.Store.CommitStore
@@ -159,10 +255,10 @@ defmodule Commonplace.Store.Namespace do
 
   # compose_pair(earlier, later): combine two DMs where `earlier` is
   # closer to S0 in the chain and `later` is closer to Sn. For each
-  # entry `{new_in_Sc, mid_in_Sb}` in `later`, find `mid_in_Sb` as a
-  # KEY in some inner map of `earlier`. If found, that earlier inner
-  # map's value `old_in_Sa` becomes the composed entry under the same
-  # earlier outer hash.
+  # entry `{new_in_Sc, mid_in_Sb}` in `later`, look `mid_in_Sb` up as a
+  # key in `earlier`'s inner maps. If it resolves to a value `old_in_Sa`,
+  # emit `{new_in_Sc => old_in_Sa}` under that same earlier outer hash —
+  # chaining the two hops `new_in_Sc -> mid_in_Sb -> old_in_Sa` into one.
   defp compose_pair(earlier, later) do
     Enum.reduce(later, %{}, fn {_later_hash, later_inner}, acc ->
       Enum.reduce(later_inner, acc, fn {new_in_Sc, mid_in_Sb}, acc2 ->
