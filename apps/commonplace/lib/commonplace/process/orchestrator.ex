@@ -1,13 +1,92 @@
 defmodule Commonplace.Process.Orchestrator do
   @moduledoc """
-  Watches __processes.json and manages Elixir process lifecycle.
+  Runs live processes whose declarations *and* source code both live in
+  the CRDT document tree.
 
-  Periodically reads the __processes.json CRDT doc, diffs against
-  the current running state, and starts/stops/restarts processes
-  to match the declared configuration.
+  This is the substrate's "malleable software" engine. A running program
+  is not deployed from outside; it is described by data inside the store.
+  A `__processes.json` document declares *which* processes should be
+  running and how they are wired, and (for in-BEAM processes) each one's
+  *source code* is itself a `.exs` document in the same tree. Editing
+  those documents — the same way you'd edit any other CRDT doc — changes
+  what is actually running. This module is what makes that true: it
+  watches those documents and bends the live system to match them.
 
-  Each Elixir process is compiled from a source .exs document in
-  the CRDT tree and started as a supervised GenServer.
+  ## The reconcile loop (declarative convergence)
+
+  Like a Kubernetes controller, the orchestrator does not apply changes
+  imperatively. On a fixed interval (crash-isolated: a failed reconcile
+  logs and retries next tick rather than taking the GenServer down) it:
+
+  1. reads the *declared* config by collecting every `__processes.json`
+     in the tree,
+  2. diffs it against the *currently running* config (`Process.Config.diff`),
+  3. and starts / stops / reloads processes until the two agree.
+
+  The running system is therefore eventually-consistent with the
+  documents, with no separate "deploy" step.
+
+  ## Two kinds of process
+
+  - `:elixir` — the source `.exs` document is compiled (via
+    `Commonplace.Code.SourceDoc`) into a module and started as a
+    GenServer *inside* this BEAM node.
+  - `:sandbox_exec` — an external OS command run in a sandbox directory
+    by `Process.SandboxExecRunner`, with `$secret:KEY` references in its
+    env resolved from the node-local `Store.SecretStore` first.
+
+  ## Hot reload vs cold restart
+
+  Not every change requires a restart:
+
+  - A change to a process's **config** (its declaration in
+    `__processes.json`) requires a **cold restart** — stop the old
+    instance, start a new one.
+  - A change to *only* a process's **source code** (same declaration,
+    edited `.exs`) triggers a **hot reload** for `:elixir` processes:
+    recompile and replace the module in place, leaving the GenServer and
+    its state intact. If a hot reload fails, the process falls back to
+    a cold restart, so a bad edit never leaves stale code running.
+
+  ## Where declarations come from (scoping)
+
+  `read_processes_config/1` walks the whole tree recursively, gathering a
+  `__processes.json` from *every* directory, not just the root. A
+  process's `scope_uuid` records where it was found: `nil` for the root
+  (it sees the full tree) or the directory's UUID for one declared in a
+  subdirectory (it is scoped to that subtree). This lets a subdirectory
+  carry its own self-contained set of processes.
+
+  ## Ports and dataflow
+
+  Processes are not islands: an `:elixir` process can declare `__ports__`
+  — named inputs/outputs bound to documents in the tree. At start the
+  orchestrator resolves those ports to concrete UUIDs, wires the
+  corresponding PubSub subscriptions (`Dataflow.Wiring`), and registers
+  the resulting edges in the `Dataflow.GraphRegistry` so the live wiring
+  graph is observable. When a commit arrives on the *blue* channel
+  (Commonplace's color-named convention for live document edits — the
+  color vocabulary is owned by `Dataflow.Channel`) for a UUID that some
+  process has bound as an input, `dispatch_to_processes/4` reconstructs
+  the new document and hands it to that process's `handle_blue/2`.
+  Because a process can react to a commit by writing one — which is
+  itself a commit — propagation is depth-limited (`@max_propagation_depth`)
+  to break runaway feedback loops.
+
+  ## Lifecycle and isolation
+
+  Managed processes are started with `GenServer.start` (not
+  `start_link`): the orchestrator deliberately does *not* link to its
+  children, so a crashing user process cannot cascade and take the
+  orchestrator (and with it, all reconciliation) down. On shutdown,
+  `terminate/2` walks each managed OS process and its children with
+  SIGTERM, waits a grace period, then SIGKILLs survivors — targeting
+  individual pids rather than process-group kills (`kill -- -PID`), which
+  could reach the BEAM itself or unrelated processes sharing the group.
+
+  Mechanism deferred: compile/purge to `Commonplace.Code.SourceDoc`,
+  config parsing/diffing to `Commonplace.Process.Config`, port resolution
+  and wiring to `Commonplace.Dataflow.Wiring`.
   """
 
   use GenServer
