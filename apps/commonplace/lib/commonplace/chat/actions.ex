@@ -16,8 +16,8 @@ defmodule Commonplace.Chat.Actions do
   Keeps the dispatcher pattern-match shallow and the action logic in a
   module testable on its own.
 
-  V1+V2 ship `post_message/3`. V3 will add `edit_message/3` and
-  `delete_message/3`. V4 (followup) adds `react/3`.
+  `post_message/3`, `edit_message/4`, and `delete_message/3` are all
+  shipped (V1–V3); `react/3` is the remaining followup (V4).
 
   ## Signing
 
@@ -25,7 +25,20 @@ defmodule Commonplace.Chat.Actions do
   is the substrate seam (CX-o3r7) — when present, the resulting commit
   is signed with that context's key. When absent, falls back to the
   global SecretStore or unsigned, matching the existing CommitStore
-  default-signing behavior.
+  default-signing behavior. See `Commonplace.Crypto.SigningContext`.
+
+  ## Side effects beyond the commit
+
+  Each handler does more than append-and-commit the entry. *After* the
+  commit it broadcasts a magenta event on `chat:{room}:events` (verb =
+  `post` / `edit` / `delete`) so live views can update, and — only when
+  the caller passes `:messages_log_uuid` — lazily ensures the room's
+  **red-channel** onramp is running (CX-9zpb), mirroring the action into
+  the durable `_messages.log` audit trail. The onramp start is
+  idempotent and skipped entirely in broadcast-only mode (no log uuid),
+  which is fine for tests and flows that don't need the audit trail. See
+  `Commonplace.Dataflow.Channel` for the magenta (ephemeral) vs red
+  (durable) channel distinction.
   """
 
   alias Commonplace.Chat.Messages
