@@ -5,7 +5,7 @@ defmodule Commonplace.Bots.Dispatcher do
   Sibling to `Commonplace.Sync.Agent`. **Not** orchestrator-managed
   (the orchestrator compiles processes from `.exs` source docs in
   the CRDT tree; bot-dispatcher is umbrella infra). Started under
-  `Commonplace.Bots.Application` from phase 3 onward.
+  `Commonplace.Bots.Application`.
 
   ## Lifecycle
 
@@ -28,30 +28,47 @@ defmodule Commonplace.Bots.Dispatcher do
 
     1. Loads the message body from the `_messages` doc.
     2. Enumerates `*.bot/` entries under the room directory.
-    3. For each entity, loads it via `Entity.load/3` and calls
-       `Trigger.evaluate/3` with the enriched event.
-    4. On `:wake`, hands off to `:worker_hook` (default
-       `Bots.Worker.spawn/3` — phase 4 wires the real worker;
-       phase 3 ships a logging stub so the subscription pipeline
-       is testable on its own).
+    3. For each such entity (a `.bot/` directory loaded into a struct —
+       persona, memory, trigger rules; see `Commonplace.Bots.Entity`),
+       calls `Trigger.evaluate/3` with the enriched event.
+    4. On a wake decision (`:wake` or a wake tuple), acquires a
+       rate-limit slot (see below) and, if granted, hands off to
+       `:worker_hook`. The production default spawns the real
+       `Commonplace.Bots.Worker` as a supervised Task
+       (`spawn_worker/4`); tests pass a 3-arity hook (e.g.
+       `&log_wake/3`) to observe the wake without running a worker.
 
-  Bot→bot loop prevention is enforced at step 1: events whose
-  `author_path` ends in `.bot` are dropped before bot enumeration.
-  This is the loop-prevention contract agreed with commonplace-plan
-  ("controlled by rate limits, not by bots-ignore-bots" — except
-  for the strict no-bot-replies-to-bot edge, which is here).
+  Bot→bot loop prevention runs *before* the steps above: any event
+  whose `author_path` is bot-authored — it ends in `.bot`, or carries
+  the `.bot:` session form (e.g. `alice.bot:3f2a`) — is dropped before
+  bots are even enumerated. This is the loop-prevention contract agreed
+  with commonplace-plan ("controlled by rate limits, not by
+  bots-ignore-bots" — except for the strict no-bot-replies-to-bot edge,
+  which is here).
 
-  ## v0 scope
+  ## Rate limiting and activity logging
 
-  Phase 3 (this commit) wires the subscription + trigger eval
-  pipeline with a logging worker hook. Phase 4 swaps the hook for
-  the real cave-diver worker. Phase 6 adds:
+  A wake that passes loop-prevention and trigger eval still has to
+  acquire a slot from `Commonplace.Bots.RateLimit` (per-room sliding
+  window + per-bot cooldown + concurrency caps) before a worker runs;
+  `spawn_worker/4` releases the slot whether the worker exits cleanly,
+  crashes, or hits a cap. On `subscribe_room/3` the dispatcher re-seeds
+  those sliding-window counters from recent bot posts in the room's
+  `_messages` doc (CX-q8nk), so a restart mid-window can't grant an
+  extra burst before the counters reconverge.
 
-    * RAM rate-limit counter (per-room sliding window + per-bot
-      cooldown + concurrency caps)
-    * `__bot_activity` substrate-doc emission for trigger
-      decisions
-    * `.exe` presence flicker during worker lifetime
+  Decisions are also mirrored into the room's `__bot_activity` substrate
+  doc — an append-only audit log of bot activity, owned by
+  `Commonplace.Bots.Activity`. Two kinds of entry land there: the trigger
+  outcome at dispatch time (`fired` when a rate-limit slot is granted,
+  `suppressed` when throttled), and — fanned out from a
+  `[:commonplace, :bots, :worker, :finished]` telemetry handler
+  (CX-gptu) — the *worker* outcome once it ends (`completed` / `cap_hit`
+  / `error`). (A `:skip` trigger decision emits telemetry only, not an
+  activity entry.) The worker stays substrate-pure; the dispatcher owns
+  this fan-out so the audit doc reflects the full lifecycle, not just the
+  trigger decision. Activity writes are best-effort (failures are
+  observability noise, not behavior bugs).
   """
 
   use GenServer
