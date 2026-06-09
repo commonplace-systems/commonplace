@@ -1,19 +1,70 @@
 defmodule Commonplace.Sync.EntryAgent do
   @moduledoc """
-  Per-file bidirectional sync agent.
+  Per-file bidirectional sync agent — the leaf of the sparse-sync tree.
 
-  Each EntryAgent manages sync for a single document/file pair:
-  - **Inbound** (CRDT → disk): when a new commit appears in the store,
-    reconstruct the document content and write it to disk atomically.
-  - **Outbound** (disk → CRDT): when the file changes on disk,
-    create a new CRDT document with the file content and commit it.
+  Each EntryAgent keeps one on-disk file and one CRDT document (its
+  `doc_uuid`) in sync, in both directions. One `sync_once/1` cycle runs
+  outbound then inbound:
 
-  Uses content hashing (MD5) to avoid redundant writes in either direction,
-  and commit ID tracking to detect new CRDT-side changes.
+  - **Outbound** (disk → CRDT): if the file's content changed since we
+    last looked, fold that change into the document and commit it.
+  - **Inbound** (CRDT → disk): if a new commit appeared (e.g. from a
+    remote peer), reconstruct the document's content and write it to the
+    file atomically.
 
-  Part of the sparse sync system — one EntryAgent per file. Spawned by
-  DirAgent for directory checkouts, or used standalone as FileAgent for
-  single-file checkouts.
+  ## The echo problem, and the two trackers that solve it
+
+  Naive bidirectional sync loops forever: outbound writes a commit,
+  inbound sees that new commit and writes the file, the next outbound
+  sees a "changed" file and commits again, and so on. EntryAgent breaks
+  the loop with two pieces of remembered state, one per axis:
+
+  - `known_hash` — an MD5 of the content we believe is currently mirrored
+    on *both* sides. Outbound skips when the disk content still hashes to
+    `known_hash` (nothing new to push); inbound skips the file write when
+    a new commit's content hashes to `known_hash` (a metadata-only change
+    that doesn't alter bytes). This is the **content axis**.
+  - `last_written_commit_id` — the id of the latest commit we've already
+    reflected to disk. Inbound skips when the store's latest commit id
+    still matches it (no new CRDT-side change). This is the **commit
+    axis**.
+
+  The two work together to close the echo: an outbound write updates
+  *both* trackers (the commit it just made, and the disk hash), so the
+  inbound half of the *same* cycle sees its own commit as
+  already-reflected and does not write the file back out. You need both
+  because the commit id alone can't tell a content change from a
+  metadata-only commit, and the content hash alone can't notice CRDT-side
+  history moving forward.
+
+  ## Outbound is a diff-and-apply, not a rewrite
+
+  Outbound does **not** re-encode the whole file as a brand-new document.
+  It reconstructs the existing CRDT, computes the text diff between the
+  document's current content and the file, and applies only those
+  incremental Yjs ops (`Commonplace.Document.Diff`). This preserves Yjs
+  item identity (so concurrent edits from other peers still merge) and
+  avoids state-vector bloat. The reconstruction uses a *stable*
+  `client_id` derived from `doc_uuid` (CX-pyi) so every outbound write of
+  this file reuses one state-vector slot instead of minting a fresh
+  random client each time. Only the very first write — when the document
+  has no commits yet — creates a new `:text` document. Inbound/read paths
+  use a plain `Yelixer.Doc.new()`: they never re-encode, so no bloat is
+  possible there.
+
+  ## Snapshot hook
+
+  After persisting an outbound commit the agent calls
+  `Commonplace.SnapshotTrigger.maybe_snapshot/3`, which cuts a snapshot
+  once the commit chain crosses a length threshold (with an optional
+  edit-count-plus-quiet-period heuristic — both
+  `soft_snapshot_chain_threshold` and `snapshot_lull_window_ms` must be
+  set to enable it). Snapshot creation is CAS-deduplicated, so racing
+  peers converge on one snapshot rather than each cutting their own.
+
+  Part of the sparse-sync system — one EntryAgent per file, spawned by
+  `Commonplace.Sync.DirAgent` for directory checkouts, or run standalone
+  (FileAgent) for a single-file checkout.
   """
 
   use GenServer
