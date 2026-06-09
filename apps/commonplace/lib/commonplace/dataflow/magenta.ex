@@ -1,10 +1,40 @@
 defmodule Commonplace.Dataflow.Magenta do
   @moduledoc """
-  Ephemeral magenta messaging on path-based topics.
+  Structured ephemeral messaging on the **magenta** channel.
 
-  Magenta messages are fire-and-forget broadcasts with a standard
-  envelope: {type, source, payload, timestamp}. Used for process
-  lifecycle commands, inter-process communication, and notifications.
+  Magenta is the fire-and-forget color (see `Commonplace.Dataflow.Channel`
+  for where it sits in the taxonomy): transient, unpersisted broadcasts
+  used for process-lifecycle commands, inter-process notifications, and
+  the like. If nobody is subscribed when a message is sent, it is simply
+  gone — there is no durability and no delivery guarantee. This module is
+  the *structured* layer over that channel: a message struct plus a
+  routing scheme.
+
+  ## Paths and topics
+
+  Messages are addressed by a **path** — a slash-delimited logical
+  address such as `commands/{node}/merge`, *not* a document uuid and not
+  necessarily a filesystem path. It maps to the Phoenix PubSub topic
+  `magenta:{path}`. A subscriber to that exact path receives messages as
+  `{:magenta, path, %Magenta{}}` — the producer sends this tuple directly
+  rather than through the generic `Commonplace.Dataflow.PubSub` wrapper,
+  so match *this* shape in `handle_info`, not a `{topic, message}`
+  envelope. The message struct itself carries the fields
+  `{type, source, payload, timestamp}`.
+
+  ## Verb-sentinel dispatch (the wildcard workaround)
+
+  Phoenix PubSub has no wildcard subscription, so a singleton handler
+  that must see *every* `commands/{anything}/merge` command cannot
+  subscribe to `commands/*/merge`. To solve this without a per-path
+  subscriber tree, every `send/2` *also* broadcasts to a **verb sentinel**
+  topic derived from the path's final segment: a send to
+  `commands/foo/merge` additionally hits `magenta:__verbs:merge`. A
+  handler calls `subscribe_to_verb("merge")` and thereby receives every
+  merge command regardless of the path prefix. This is the β-topology
+  sentinel dispatch used by the merge command handler (CX-8qzi); the
+  extra broadcast costs nothing when nobody is subscribed to the
+  sentinel.
   """
 
   defstruct [:type, :source, :payload, :timestamp]
