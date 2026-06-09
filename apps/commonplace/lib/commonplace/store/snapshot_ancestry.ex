@@ -2,24 +2,65 @@ defmodule Commonplace.Store.SnapshotAncestry do
   @moduledoc """
   Snapshot-DAG walker (CX-ntz5 / Build 7.1).
 
-  Given two commits L and R, finds the lowest common ancestor (LCA)
-  snapshot in the snapshot DAG and returns `{C, L_chain, R_chain}`
-  where each chain is the ordered list of snapshots traversed from
-  just-after-C up to and including L's / R's current namespace.
+  ## Why this exists
+
+  Snapshots re-identify a document's items into a fresh namespace (a new
+  *epoch* — see `Commonplace.Store.Namespace`), so two commits that
+  diverged across a snapshot boundary speak different identity dialects.
+  To merge them you first need the most recent epoch they *both* descend
+  from — the shared vocabulary to translate through. This module finds
+  it: the lowest common ancestor (LCA) in the DAG of snapshots, not the
+  DAG of regular commits.
+
+  That LCA is the pivot `C` in `Commonplace.Store.CrossEpochMerge`'s
+  R→C→L two-pass translation. The two chains returned alongside it are
+  the translation paths: `L_chain` / `R_chain` are the snapshots crossed
+  going from `C` back up to each side's current epoch, so a consumer can
+  compose the per-step derivation maps along each chain. In other words,
+  this walker answers "where did these two heads last share an epoch, and
+  what epoch hops separate each of them from it?" — everything
+  `CrossEpochMerge` needs to line the two namespaces up.
+
+  ## What it returns
+
+  Given commits L and R it returns `{C, L_chain, R_chain}` where `C` is
+  the LCA snapshot/genesis id and each chain is the ordered list of
+  snapshots traversed from just-after-`C` up to and including that side's
+  current namespace. If the two histories share no root at all (e.g.
+  unrelated genesis ids), there is no pivot to translate through and the
+  call returns `{:error, :no_common_ancestor}`.
+
+  ## How the walk works
+
+  Every commit carries a `metadata.kind` tag. Four kinds matter here:
+  `:regular` and `:merge` are ordinary edits; `:snapshot` and `:genesis`
+  are the *epoch boundaries*. A `:snapshot` commit additionally carries
+  `metadata.snapshot_parents` — the list of ids of the snapshot/genesis
+  commits it descends from, i.e. its edges in the snapshot DAG (how that
+  list is built is `Commonplace.Store.Snapshotter`'s concern; here we
+  only follow it). A `:genesis` commit is the document's root epoch — it
+  has no snapshot parents and so terminates every walk.
+
+  The snapshot DAG is the sub-graph over just those `:snapshot`/`:genesis`
+  commits, edged by `snapshot_parents`. Regular and merge commits are
+  never part of the chain — the walker always starts from a commit's
+  *namespace* (`Namespace.current_namespace/1`), which is itself a
+  snapshot or genesis id, then steps backward through the snapshot DAG:
+
+    :snapshot → first entry of `metadata.snapshot_parents`
+    :genesis → terminal (appears as last element of the down-chain)
+
+  Each side's "down chain" is ordered most-recent-first (namespace →
+  … → root), so the LCA is found by taking the *first* element of L's
+  down-chain that also appears in R's — first match = lowest (most
+  recent) common ancestor, which is exactly the epoch closest to both
+  heads and therefore the cheapest to translate through.
 
   MVP assumption: snapshot chains are linear — each snapshot has
   exactly one entry in its `snapshot_parents` list. Multi-parent
   snapshots are introduced by Build 7.4 (merge-snapshot construction);
   extending this walker to handle them is scoped as a follow-up when
   cross-merge-snapshot LCA becomes load-bearing.
-
-  The snapshot DAG is walked via:
-    :snapshot → first entry of `metadata.snapshot_parents`
-    :genesis → terminal (appears as last element of the down-chain)
-
-  Regular and merge commits are never part of the chain — the walker
-  always starts from a commit's *namespace* (`Namespace.current_namespace/1`)
-  which is a snapshot or genesis id.
   """
 
   alias Commonplace.Store.{CommitStore, Namespace}
