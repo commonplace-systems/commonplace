@@ -4,11 +4,13 @@ defmodule Commonplace.Chat.Messages do
   shape from chat-room.md (commit a5f3f5e on commonplace-plan/main):
   a top-level `Yelixer.Types.Array` of JSON-encoded message entries.
 
-  This module owns the JSON shape contract and the `materialize/1` walk
-  that resolves edit/tombstone chains into the "current" view that the
-  view-chrome (CX-71o3) renders. Action handlers (V2 post_message, V3
-  edit_message + delete_message) call `append/2` with structured maps;
-  this module Jason-encodes them.
+  This module owns the JSON shape contract and the chat-specific chain
+  RULES; the actual edit/tombstone *walk* is the substrate-tier
+  `Commonplace.Materialize` primitive, which `materialize/1` drives with
+  those rules to produce the "current" view the view-chrome (CX-71o3)
+  renders. Action handlers (V2 post_message, V3 edit_message +
+  delete_message) call `append/2` with structured maps; this module
+  Jason-encodes them.
 
   Why the shape: see chat-room.md "Why JSON-encoded entries, not nested
   YMaps" — Yelixer's `Doc.snapshot_update/1` doesn't replay sub-types
@@ -33,11 +35,11 @@ defmodule Commonplace.Chat.Messages do
 
   ## Chain resolution semantics
 
-  Both `edit_of` and `tombstone_of` resolve TRANSITIVELY: an edit whose
-  `edit_of` points at another edit (depth-2 chain) is recognized as
-  modifying the original message. A tombstone whose `tombstone_of`
-  points at an edit deletes the original. The walk gathers all entries
-  whose chain ultimately roots at a given message_id, then:
+  The walk itself is generic and lives in `Commonplace.Materialize`;
+  this module only supplies the two chain rules (`@chain_rules`:
+  `edit_of` → `:latest_replaces`, `tombstone_of` → `:marks_deleted`).
+  Driving Materialize with them yields, per original message (an entry
+  with no `edit_of` and no `tombstone_of`):
 
     * `text` ← latest non-tombstone entry's text in the chain (by array
       position)
@@ -45,9 +47,19 @@ defmodule Commonplace.Chat.Messages do
     * `edited_at` ← latest edit entry's ts in the chain
     * `deleted?` ← true iff any tombstone roots at this id (monotone)
 
-  Orphan edits/tombstones (whose chain ultimately points at an id that
-  isn't an original message) are filtered from the output rather than
-  silently mutating an unrelated message.
+  Both fields resolve TRANSITIVELY (an `edit_of` pointing at another
+  edit still modifies the original; a `tombstone_of` pointing at an edit
+  still deletes it), and orphan links — whose chain bottoms out at an id
+  that isn't an original message — are filtered rather than allowed to
+  mutate an unrelated message. Those guarantees (transitivity, "latest"
+  = array position, cycle-safety) are Materialize's, not re-implemented
+  here — see its moduledoc for the precise algorithm.
+
+  Note this is the *data* layer: it computes the flags and text above,
+  it does not decide *presentation*. A deleted message still carries its
+  last non-tombstone `text` (the materialized record doesn't blank it);
+  whether the view renders a placeholder, a strikethrough, or an "edited"
+  badge is the view-chrome's (`_view.xml`) call, not this module's.
   """
 
   alias Commonplace.Document.ContentType
