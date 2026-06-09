@@ -2,12 +2,30 @@ defmodule Commonplace.Store.LateEditTranslator do
   @moduledoc """
   Late-edit reference translator (CX-yvhs / Build 6.3).
 
+  A *late edit* is an edit a peer authored against an older snapshot
+  than the one the receiver now holds — encoded while its document was
+  still in a *namespace* (identity space) the receiver has since
+  replaced with a newer snapshot. (Namespace vocabulary is owned by
+  `Commonplace.Store.Namespace`.) Such an edit's *references* — the ids
+  it points at to position its new content relative to existing items —
+  name item identities from that older namespace, which no longer exist
+  under the receiver's current one. This module is the mechanical step
+  that rewrites those references into the current namespace so the edit
+  applies instead of failing or silently dropping. It is the low-level
+  ref-rewriter that `Commonplace.Store.Translator`'s pipeline delegates
+  its translate step to — Translator decides *whether* and *what* to
+  translate and runs pre-flight validation; this module just rewrites
+  the refs.
+
   Given a Yjs V1 update binary `E` and an inverse derivation map
-  `inverse_dm`, produces a new update binary `E'` in which every item's
-  reference fields (`origin`, `right_origin`, and `{:id, _}` parents)
-  have been rewritten through the lookup table. Each item's own
-  identity `(clientID, clock)` is preserved unchanged — this is what
-  makes the translation byte-deterministic across peers (see CX-w62).
+  `inverse_dm`, `translate_update/2` produces a new update binary `E'`
+  in which every item's reference fields (`origin`, `right_origin`, and
+  `{:id, _}` parents) have been rewritten through the lookup table. Each
+  item's *own* identity `(clientID, clock)` is preserved unchanged: the
+  edit's own items are genuinely new content that should keep its
+  identity — only the back-references into prior state are stale.
+  Preserving identities is also what makes the translation
+  byte-deterministic across peers (see CX-w62).
 
   The inverse DM has the shape produced by
   `Commonplace.Store.Namespace.inverse_derivation_map/1`:
