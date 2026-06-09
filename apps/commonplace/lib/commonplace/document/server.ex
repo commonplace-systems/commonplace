@@ -1,9 +1,91 @@
 defmodule Commonplace.Document.Server do
   @moduledoc """
-  GenServer managing a single CRDT document.
+  GenServer owning the live, in-RAM copy of a single CRDT document.
 
-  Wraps a Yelixer.Doc, handles edits, publishes changes
-  to PubSub, and commits state to the CommitStoreClient.
+  Every document in Commonplace has two representations. The durable one
+  is a *chain of commits* in the CommitStore: an append-only,
+  content-addressed log where each commit holds a Yjs binary update and
+  points at its parent. The ephemeral one is a `Yelixer.Doc` — the
+  decoded, editable CRDT held in this process's memory. This server is
+  the bridge: it loads the latest committed state into a `Yelixer.Doc`
+  at startup, applies edits to that in-RAM doc, broadcasts them to peers,
+  and writes new commits back to the chain.
+
+  `parent_commit` is the hinge between the two. It names the commit our
+  in-RAM doc currently descends from — the point a new `commit` chains
+  onto, and the baseline a rebase reconstructs from. Keeping it accurate
+  as state changes (locally and remotely) is most of what this module
+  worries about.
+
+  ## Two sources of change
+
+  A document mutates from two directions, and they are handled
+  differently. (Commonplace names its PubSub topics by color — a
+  convention owned by `Dataflow.PubSub`; here, *blue* carries live local
+  edits between servers for the same UUID, *sync* carries durable remote
+  commits between nodes.)
+
+  - **Local edits** (`insert_text`, `set_key`, `apply_update`, …) mutate
+    the in-RAM `Yelixer.Doc` and are not durable until `commit` writes a
+    new commit to the chain and advances `parent_commit` to it. Local
+    edits broadcast on the *blue* channel so other live servers for the
+    same UUID see them immediately.
+  - **Remote commits** arrive over the *sync* channel from other BEAM
+    nodes (see `handle_info({:remote_commit, ...})`). These are already
+    durable elsewhere; the job here is to fold them into local state
+    correctly without losing in-flight local edits.
+
+  ## Namespace tracking (`current_namespace`) — CX-ch5
+
+  A *namespace* is the identity space a document's CRDT items live in.
+  Most commits inherit their parent's namespace; a *snapshot* commit
+  starts a fresh one by re-encoding the whole visible document under new
+  item IDs (a new *epoch*). A namespace is identified by the id (hash) of
+  the snapshot commit that rooted it — its `snapshot_parent`.
+  `current_namespace` is this server's record of which namespace its
+  in-RAM doc currently belongs to: that hash, which other subsystems
+  (rebase, cross-epoch merge) consult to decide whether an incoming edit
+  speaks the same identity dialect. (Why snapshots exist and how their
+  payloads are built is the Snapshotter's story, not this module's.)
+
+  It is derived from the loaded latest commit at init and advanced
+  whenever state moves to a new namespace: on a local `commit`, on a
+  remote incremental apply, and (resetting to a brand-new root) on a
+  snapshot arrival. Pre-umbrella documents whose latest commit carries
+  legacy `metadata = %{}` have no namespace; the tracker stays `nil` for
+  them, and `advance_namespace/2` is careful never to regress a real
+  namespace back to `nil`.
+
+  ## Applying a remote commit
+
+  Two cases, distinguished by `metadata.kind`:
+
+  - **Incremental** (regular/merge): apply the commit's update on top of
+    the current doc. On success we advance *both* `parent_commit` *and*
+    the store's `:latest` pointer (CX-bgq). Both must move together: if
+    only the in-RAM `parent_commit` advanced, a later snapshot rebase
+    would reconstruct its baseline from a `:latest` the commit-log walk
+    can't reach, diff against a stale doc, and double-apply content the
+    snapshot already contains.
+  - **Snapshot** (CX-u7p + CX-dqn): a snapshot re-encodes the full doc
+    under fresh IDs, so it is applied to a *fresh* `Yelixer.Doc` rather
+    than layered onto the current one. Layering would be wrong precisely
+    because the IDs are fresh: the current doc still holds the *old*
+    identities for the same content, so a CRDT merge of the two
+    identity-sets duplicates that content, and content whose old identity
+    was a tombstone (deleted) reappears under its new, undeleted identity.
+    Any local dirty edits not yet in the snapshot are then positionally
+    rebased onto the fresh doc. This is
+    all-or-nothing: if the rebase fails, the whole snapshot application
+    is aborted and state is left untouched — the snapshot commit is
+    already safe in the CommitStore and can be retried later.
+
+  Commits this node originated (`source_node == Node.self()`) are ignored
+  here; their effects were already applied when they were authored.
+
+  Mechanism lives elsewhere: CRDT encode/decode in `Yelixer.Encoding`,
+  baseline reconstruction in `Tree.DocBuilder`, positional rebase in
+  `Document.Rebase`, namespace derivation in `Store.Namespace`.
   """
 
   use GenServer
