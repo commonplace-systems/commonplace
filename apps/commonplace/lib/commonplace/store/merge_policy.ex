@@ -1,44 +1,85 @@
 defmodule Commonplace.Store.MergePolicy do
   @moduledoc """
-  Merge strategy policy layer (CX-csmr).
+  Policy layer that picks a merge strategy so callers don't have to
+  (CX-csmr).
 
-  Wrapper above `Commonplace.Store.Merger.merge/4` that picks a strategy
-  from configurable policy rather than forcing every caller to specify
-  one. `Merger` remains the mechanism; this module is the decision.
+  `Commonplace.Store.Merger.merge/4` forces every caller to name
+  `:translate` or `:merge_snapshot` — it is the mechanism and takes no
+  position on which is right. MergePolicy is the counterpart Merger
+  anticipated (its "later work can layer heuristics on top" seam): a thin
+  wrapper that resolves a strategy from configurable policy, emits a
+  telemetry event recording *why*, then delegates to `Merger`. Merger is
+  the mechanism; this module is the decision.
+
+  For what the two strategies do and when each is right, see
+  `Commonplace.Store.Merger`'s "Choosing a strategy" section. In short:
+  `:translate` keeps L's namespace and replays R's edits into it;
+  `:merge_snapshot` mints a fresh namespace both sides derive from.
 
   ## Resolution order
 
+  First matching rule wins:
+
   1. **Explicit** — `opts[:strategy]` wins unconditionally. Reason:
-     `:explicit`. Keep the override so callers who know better (tests,
-     CLI with `--strategy`, programmatic callers with context) can
-     bypass policy.
+     `:explicit`. The override lets callers who know better (tests,
+     CLI `--strategy`, context-aware programmatic callers) bypass policy
+     entirely.
   2. **Doc-type config** — `opts[:doc_type]` is looked up in
      `Application.get_env(:commonplace, :merge_policy_by_doc_type, %{})`.
-     If a strategy is mapped for that type, use it. Reason:
-     `:doc_type_config`. Presence docs typically map to
-     `:merge_snapshot` (frequent churn; epoch reset is cheap), while
+     A strategy mapped for that type is used. Reason: `:doc_type_config`.
+     Presence docs typically map to `:merge_snapshot` (frequent churn, so
+     a cheap epoch reset beats translating a long tail of edits), while
      authoritative docs stay on `:translate` (namespace continuity
      matters).
-  3. **State-vector threshold** — if L's namespace carries ≥ threshold
-     distinct client IDs, use `:merge_snapshot` to reset the epoch.
-     Threshold defaults to
+  3. **State-vector threshold** — if L's namespace has accumulated ≥
+     threshold distinct client IDs, use `:merge_snapshot` to reset the
+     epoch. Reason: `:sv_threshold`. (A *state vector* is the per-client
+     clock summary a CRDT namespace carries — one entry per client that
+     has ever written into it. It only grows; a namespace touched by
+     thousands of clients drags a large SV through every future merge
+     and sync. `:merge_snapshot` starts a fresh namespace, shedding that
+     weight.) Threshold defaults to
      `Application.get_env(:commonplace, :merge_snapshot_sv_threshold,
-     1000)` and is overridable per-call via `opts[:sv_threshold]`.
-     Reason: `:sv_threshold`. The anchor is deliberately L (not R):
-     `:translate` produces a commit in L's namespace, so L's SV is
-     what we're preventing from bloating. Adding an R check here
-     would be "improving" in the wrong direction.
+     1000)`, overridable per-call via `opts[:sv_threshold]`. The anchor
+     is deliberately **L**, not R: `:translate` produces a commit in L's
+     namespace, so L's SV is the one to keep from bloating — checking R
+     would optimize the wrong side. Replaying R's edits doesn't change
+     that calculus: the merge commit lands in L's namespace, so it is
+     L's client-id set that carries forward and keeps accumulating
+     across repeated merges — R is just the transient right-hand side
+     of one merge.
   4. **Default** — `:translate`. Reason: `:default`.
 
-  Every invocation emits
-  `[:commonplace, :merge, :strategy_selected]` with metadata
-  `%{strategy, reason, l, r}` before delegating. Observers can switch
-  on `reason` to bucket dashboards (how often does the threshold fire
-  vs. explicit overrides vs. doc-type config?).
+  ## Telemetry
 
-  Underlying `Merger.merge/4` still emits its own `:completed` /
-  `:failed` events — `:strategy_selected` is additive, not a
-  replacement.
+  Every invocation emits `[:commonplace, :merge, :strategy_selected]`
+  with metadata `%{strategy, reason, l, r}` *before* delegating. The
+  `reason` tag lets observers bucket by cause — how often does the
+  threshold fire vs. explicit overrides vs. doc-type config?
+  `Merger.merge/4` still emits its own `:completed` / `:failed` events;
+  `:strategy_selected` is additive, not a replacement.
+
+  ## Worked example
+
+      # No strategy, no doc_type, L's namespace small → falls to default.
+      MergePolicy.merge(store, l_id, r_id)
+      #   → :translate, reason :default
+
+      # L's namespace has seen >1000 clients → threshold fires.
+      MergePolicy.merge(store, l_id, r_id)
+      #   → :merge_snapshot, reason :sv_threshold
+
+      # Caller forces the strategy; policy is bypassed at rule 1.
+      MergePolicy.merge(store, l_id, r_id, strategy: :translate)
+      #   → :translate, reason :explicit
+
+  ## What this module is NOT
+
+  - **Not the merge mechanism.** It chooses a strategy and delegates;
+    `Commonplace.Store.Merger` (and the engines below it) do the merge.
+  - **Not the state-vector source.** L's client-id set comes from
+    `Commonplace.Store.Namespace.namespace_client_ids/2`; this module
+    only compares its size to the threshold.
   """
 
   alias Commonplace.Store.{Merger, Namespace}
