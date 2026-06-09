@@ -7,11 +7,34 @@ defmodule Commonplace.LateEditAutoTranslator do
   an edit written against an older snapshot than the one the receiver
   now holds.
 
+  A document's CRDT items live in a *namespace* — an identity space
+  rooted at one snapshot commit and named by that snapshot's id (an
+  edit records the snapshot it was authored against as its
+  `snapshot_parent`). Each new snapshot opens a fresh namespace (a new
+  "epoch"). An edit authored against an *older* snapshot therefore
+  targets item identities that no longer exist under the receiver's
+  current namespace, so importing it as-is would fail to apply or
+  silently drop; *translation* re-expresses the edit's operations into
+  the receiver's namespace instead. `Namespace.current_namespace/1`
+  reads which namespace a HEAD is currently in.
+
   ## Behavior
 
+  - If the edit is not a `:regular` commit (CX-hmkz), returns
+    `{:ok, :no_translation_needed}` untouched. Only regular commits
+    carry the kind of cross-epoch edit this translates; snapshots,
+    merges, and genesis are self-contained in the DAG (a snapshot
+    re-authors whole state, a merge synthesizes from DAG ancestors,
+    genesis is empty). Translating one anyway would silently rewrite it
+    into a `:regular` claiming the snapshot's content — which corrupts
+    the sibling-merge path: `Commonplace.SiblingMerger` would then
+    mistake the rewritten regular for a genuine cross-epoch sibling and
+    produce a wrong merge.
   - If the edit's `snapshot_parent` already matches local HEAD's
-    current namespace, returns `{:ok, :no_translation_needed}` — the
-    edit is already aligned and can be imported as-is.
+    current namespace — or local HEAD has no namespace yet (a legacy
+    commit with empty metadata) — returns
+    `{:ok, :no_translation_needed}`: the edit is already aligned (or
+    there is no epoch to translate into) and can be imported as-is.
   - If the local store has no head for `edit.doc_uuid`, returns
     `{:ok, :no_translation_needed}` — nothing to translate against.
   - Otherwise invokes
