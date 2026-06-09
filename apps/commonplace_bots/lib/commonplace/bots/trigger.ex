@@ -2,21 +2,30 @@ defmodule Commonplace.Bots.Trigger do
   @moduledoc """
   Trigger contract — decides whether a chat event should wake a bot.
 
-  The contract is one function:
+  Two layers share the verb "evaluate"; keep them apart:
 
-      evaluate(event :: map(), entity :: Entity.t())
-        :: :skip | :wake | {:wake, priority :: float()}
+    * This module is the ROUTER. The dispatcher calls
+      `Trigger.evaluate(kind, event, entity)` (**arity 3**) — it
+      switches on the kind atom and delegates to the matching
+      adapter. This is the only entry point the dispatcher knows.
+    * Each ADAPTER implements the contract proper,
+      `evaluate(event, entity)` (**arity 2**), returning
+      `:skip | :wake | {:wake, priority :: float()}`.
 
   v0 ships a single built-in adapter, `Bots.Trigger.Regex`, driven
   by the entity's `trigger.regex` text doc (one pattern per line,
   ANY line matching → `:wake`). v1 will add `Bots.Trigger.Code`
   driven by `trigger.code` (LLM-judge); v2 a DSPy classifier. All
-  three implement the same contract so the dispatcher's call site
-  doesn't change.
+  implement the same 2-arity contract, so the router — and the
+  dispatcher's single call site — doesn't change as kinds are added.
 
-  The dispatcher calls `evaluate/3` with the kind atom (currently
-  always `:regex` — `Entity.load/3` only fills `trigger_kind:
-  :regex`); future kinds dispatch here.
+  The `kind` comes from `entity.trigger_kind`, which `Entity.load/3`
+  currently always fills as `:regex`, so `:regex` is the only live
+  route today. `evaluate(:code, …)` is already wired but
+  intentionally returns `:skip`: the `trigger.code` slot exists in
+  the directory shape but no adapter consumes it until v1, so the
+  router keeps dispatch inert on that kind rather than crashing on
+  an unbuilt adapter.
 
   ## The event map
 
