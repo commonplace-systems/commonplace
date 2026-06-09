@@ -10,9 +10,23 @@ defmodule Commonplace.Chat.Rooms do
         _messages          ← Y.Array of JSON-encoded message entries
         _reactions         ← top-level YMap with composite-key bool values
         _messages.log      ← red-channel onramp target
+        _compute           ← per-room materialize / chain-resolution spec
+                             (Elixir source post-M7)
 
-  This module owns ROOM lifecycle (create / lookup); per-message actions
-  live in `Commonplace.Chat.Actions`; data-shape helpers in
+  `_compute` is the fifth canonical sub-doc, added to the template in M5
+  (CX-h4mc); it holds the chain-resolution rules (edits replace, deletes
+  tombstone) that turn the raw `_messages` array into the displayed
+  thread — see `Commonplace.Materialize` for what that spec drives. It is
+  **optional on read**: rooms forked before M5 lack it, so `lookup/3`
+  returns `compute_uuid: nil` for them and `upgrade_compute/3` back-fills
+  it on demand. New rooms always get all five (they fork the current
+  template).
+
+  This module owns ROOM lifecycle — `create`, `lookup`, and the per-room
+  migration helpers (`upgrade_view_xml`, `upgrade_compute`,
+  `upgrade_compute_to_m7`) that bring rooms created under earlier
+  milestone templates up to the current sub-doc shape. Per-message
+  actions live in `Commonplace.Chat.Actions`; data-shape helpers in
   `Commonplace.Chat.Messages`. Three concerns kept separate.
 
   ## MVP scope guardrail
