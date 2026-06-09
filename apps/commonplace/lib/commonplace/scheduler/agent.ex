@@ -3,9 +3,11 @@ defmodule Commonplace.Scheduler.Agent do
   Userland one-shot scheduler (CX-6av).
 
   Mounts a CRDT doc at `__system/scheduler` in the workspace root,
-  accepts magenta requests on `agents/scheduler`, persists every
-  schedule in the doc, and publishes a magenta `fire` message on the
-  caller-specified target topic when `fire_at` is reached.
+  accepts requests on the **magenta** channel (ephemeral fire-and-forget
+  pub/sub — see `Commonplace.Dataflow.Channel`) at topic
+  `agents/scheduler`, persists every schedule in the doc, and publishes a
+  magenta `fire` message on the caller-specified target topic when
+  `fire_at` is reached.
 
   The doc IS the schedule DB — no external persistence. Restart /
   crash recovery reads only the doc; any pending entry whose
@@ -28,6 +30,16 @@ defmodule Commonplace.Scheduler.Agent do
 
   Fire emits a magenta `fire` message on the stored target_topic with
   payload = stored payload merged with `%{"id" => schedule_id}`.
+
+  **Replies share the request topic.** Every reply (`scheduled`,
+  `cancelled`, `not_found`, `already_fired`, `listed`) is published back
+  on `agents/scheduler` — the same topic requests arrive on, *not* a
+  per-caller reply topic. So a client subscribes to `agents/scheduler`,
+  sends its request there, and must filter by the message `type` to pick
+  out its reply (it will also see its own request echoed, and any other
+  caller's traffic). The agent is subscribed there too; it ignores any
+  magenta message whose `type` it doesn't recognize as a request, which
+  is precisely what stops its own replies from looping back as new work.
 
   ## Multi-peer caveat
 
