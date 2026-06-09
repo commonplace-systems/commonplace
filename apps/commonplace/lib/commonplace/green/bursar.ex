@@ -1,27 +1,76 @@
 defmodule Commonplace.Green.Bursar do
   @moduledoc """
-  Green Token bursar — exclusive lock manager for commonplace documents.
+  Green-channel **exclusive-lock manager** for commonplace documents.
 
-  Manages named tokens (path-based, same namespace as documents) with
-  deny-on-contention semantics: if a token is held, new requests are rejected.
+  The bursar hands out at most one *token* per path. Tokens are named by
+  path (same namespace as documents — e.g. `"readme.txt"`,
+  `"docs/guide.md"`) and a *holder* is any string the caller picks
+  (process name, session id, …). Contention is resolved by
+  **deny-on-contention, not queueing**: if a token is already held, a
+  competing `acquire` is rejected immediately (`{:denied, holder_info}`)
+  rather than blocked — a caller who wants the lock retries. Re-acquiring
+  a token you already hold is an idempotent success. Denying rather than
+  queueing keeps the bursar from having to hold a waiter list and reason
+  about waiters' liveness (a waiter that crashed mid-queue, ordering
+  across nodes); retry policy lives with the caller instead.
 
-  ## State Storage
+  ## Token lifecycle
 
-  - `__bursar.json` — YMap (blue state): current token holders
-  - `__bursar.log` — JSONL (red events): audit log of all acquire/release/deny events
+  Beyond acquire/release the bursar manages the full custody lifecycle:
 
-  The bursar is the only writer to `__bursar.json`. Everyone else reads.
+    * `acquire/4` — grab a free token; optional `ttl:` makes it
+      auto-expire.
+    * `release/3` — drop a token you hold (holder-checked).
+    * `transfer/4` — hand a held token to a new holder; the clock
+      (`acquired_at` + remaining `ttl_ms`) is **inherited, not reset**.
+    * `renew/4` — keep-alive: re-clock `acquired_at` (optionally changing
+      the TTL) so a long-running hold doesn't expire under the sweep.
+    * `query/2` / `list_tokens/1` — read current custody.
+    * `force_release/2` — admin break-glass; drops a token regardless of
+      holder.
 
-  ## API Layers
+  **TTL auto-expiry.** A token acquired with `ttl:` is released without a
+  caller: a periodic sweep (`:sweep_ttl`, every `sweep_interval` ms)
+  drops any token whose `acquired_at + ttl_ms` has elapsed and emits a
+  `released` event with `reason: "expired"`. TTL is the safety net
+  against a holder that crashes without releasing.
 
-  - **GenServer.call** — same-node callers (Orchestrator, sync agents)
-  - **Magenta PubSub** — graph-internal processes send commands via magenta topics
-  - **CommitStoreClient** — remote callers via distributed Erlang
+  ## State & audit (blue + red)
 
-  ## Token Format
+  Two documents under the bursar's root, both written *only* by the
+  bursar (everyone else reads):
 
-  Tokens are named by path (e.g., "readme.txt", "docs/guide.md").
-  Holders are identified by a string (process name, session ID, etc.).
+    * `__bursar.json` — the live holder table, a JSON blob in a CRDT
+      text doc (**blue** state). Reconstructed on start, so custody
+      survives a bursar restart.
+    * `__bursar.log` — an append-only JSONL audit of every
+      acquire / release / deny / transfer / renew / expire (**red**
+      events).
+
+  (See `Commonplace.Dataflow.Channel` for the blue/red distinction.)
+  Writes to `__bursar.json` use the stable-client_id + incremental-diff
+  pattern (CX-pyi) so the Yjs state vector stays bounded across many
+  custody changes.
+
+  ## Command transports
+
+  The same operations are reachable two ways:
+
+    * **`GenServer.call`** — the typed `acquire`/`release`/… functions
+      above, for same-node callers (Orchestrator, sync agents).
+    * **Magenta commands** — graph-internal / cross-process callers send
+      `green:acquire` / `green:release` / `green:transfer` / `green:renew`
+      / `green:query` messages on the `"__bursar"` magenta topic; the
+      bursar announces outcomes by broadcasting `green:*` event messages
+      back on that same topic.
+
+  Note the transport nuance: although exclusive locking is the **green**
+  concern in the channel taxonomy, the bursar currently carries its
+  commands and events over a dedicated *magenta* topic with `green:`
+  message-type prefixes — it does **not** use the `green:{uuid}` PubSub
+  topic (those helpers exist but are unused here). There is no separate
+  "remote caller" API: a remote observer simply reads `__bursar.json` /
+  `__bursar.log` through the store.
   """
 
   use GenServer
