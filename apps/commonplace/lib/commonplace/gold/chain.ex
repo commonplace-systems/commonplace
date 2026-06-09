@@ -1,9 +1,57 @@
 defmodule Commonplace.Gold.Chain do
   @moduledoc """
-  Gold attestation chain management.
+  Gold attestation chain management — the storage and verification
+  layer over `Commonplace.Gold.Attestation`.
 
-  Stores attestations in CommitStore's CubDB, keyed per-document.
-  Each document can have one gold chain. The chain is append-only.
+  A *gold attestation* is a signed, content-addressed statement that a
+  specific commit was the head of a document at a moment in time
+  ("signer X attests commit Y is the head of doc Z at time T").
+  Attestations form a per-document, hash-linked, append-only chain that
+  lives *separately from the commit DAG*: where the commit DAG records
+  what the document's content IS, the gold chain is a tamper-evident
+  audit trail of who vouched for which head, and when. ("Gold" is
+  Commonplace's name for this signed-provenance tier; the color-channel
+  vocabulary is owned by `Commonplace.Dataflow.Channel`.
+  `Commonplace.Dataflow.RedLog.commit/1` is one producer — it cuts a
+  commit and then best-effort attests it.)
+
+  This module owns the chain as a whole; `Attestation` owns a single
+  record (its struct, signing, and per-record verification). Chains are
+  stored in `CommitStore`'s CubDB keyed per document — one gold chain
+  per document.
+
+  ## Operations
+
+    * `attest/2` — sign the document's current head commit and append
+      it to the chain, linking it to the previous attestation via
+      `prev_attestation_id`. Requires a signing key from
+      `Commonplace.Store.SecretStore`; with no SecretStore or no key it
+      returns `{:error, :no_secret_store}` / `{:error, :no_signing_key}`,
+      and with no commits to attest yet `{:error, :no_commits}`.
+    * `latest_attestation/2` — the newest attestation, or `:none`.
+    * `chain/3` — walk the chain newest-first (default `limit: 100`).
+    * `verify_chain/3` — verify every attestation, both its content
+      address (`Attestation.verify_id/1` — the id is a hash over the
+      commit id, previous-attestation id, signer id and timestamp) and
+      its Ed25519 signature against the given public key. Returns `:ok`,
+      or `{:error, att_id, reason}` at the first attestation that fails.
+
+  The two checks in `verify_chain/3` are complementary: the content
+  address makes the chain *tamper-evident* — because each id folds in
+  its `prev_attestation_id`, you cannot rewrite or reorder history
+  without breaking every id downstream — and the signature makes it
+  *unforgeable*, since only the holder of the signing key could have
+  produced it.
+
+  ## Store routing (MVP)
+
+  Attestation calls go directly to a local `CommitStore` GenServer.
+  `CommitStoreClient` — the stateless routing *module* some onramps
+  (e.g. RedLog) pass as the default `store` — is normalized to the
+  local `CommitStore` first, because a direct `GenServer.call` to the
+  routing module would crash with `:no_process`. Attestation operations
+  are not yet routed across nodes; the single-node assumption is
+  acceptable for the MVP (followup if multi-node attestation surfaces).
   """
 
   alias Commonplace.Gold.Attestation
