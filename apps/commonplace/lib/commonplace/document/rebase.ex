@@ -3,6 +3,23 @@ defmodule Commonplace.Document.Rebase do
   Positional-rebase dispatcher for the commonplace document envelope
   (Phase 1 of CX-6a7 — YText only).
 
+  ## Why "positional"
+
+  When a remote snapshot arrives it re-encodes the whole document under
+  *fresh* item IDs (a new epoch — a fresh identity space; see
+  `Commonplace.Document.Server`). A live document may carry uncommitted
+  *dirty* edits — local edits made after the most-recent committed state
+  and not yet committed — authored against the *old* item identities.
+  Those edits cannot simply be replayed onto the snapshot: the CRDT items
+  they targeted by ID do not exist in the fresh doc. So instead of
+  replaying the original ID-bound operations, we recover *what the dirty
+  edits did* — by diffing the pre-dirty committed content against the
+  dirty content — and re-apply that effect *by position*: an index for
+  text/array, a key for map. Identity-independent replay is what
+  "positional" means here, and it is why a 2-way content diff is the
+  right tool — the `pre` baseline (below) is what makes that diff capture
+  exactly the local edits.
+
   Given `old_doc` (pre-dirty committed state), `dirty_doc` (committed +
   local dirty edits), and `new_doc` (fresh doc after applying a remote
   snapshot), re-author the dirty edits as positional ops on `new_doc`.
