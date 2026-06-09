@@ -1,15 +1,52 @@
 defmodule Commonplace.Store.CommitStoreClient do
   @moduledoc """
-  Dispatches CommitStore calls to either a remote serve node or the local GenServer.
+  The dispatch seam in front of `CommitStore`: routes each call to either
+  a remote `commonplace serve` node or the local GenServer.
 
-  When `commonplace serve` is running, CLI commands connect to its BEAM node
-  and call CommitStore remotely. When serve is not running, calls go to the
-  local CommitStore (which must have been started by the CLI).
+  ## Why this layer exists
 
-  Provides the same API as CommitStore so it can be used as a drop-in
-  replacement. The `server` argument is normalized: if it's this module
-  (from CLI alias), it's mapped to the real CommitStore. Otherwise it's
-  passed through (for tests with custom store instances).
+  `CommitStore` is a singleton GenServer owning a single on-disk CubDB at
+  `.commonplace/commits/`, and CubDB opens that directory *exclusively* —
+  only one OS process can hold it. So when `commonplace serve` is running
+  it owns the database, and a separately-launched CLI or MCP escript
+  (a different OS process) **cannot** open its own copy; doing so would
+  fail, or worse, fork the `:latest` pointer. Instead those processes
+  route their CommitStore calls over BEAM distribution to the serve
+  node's GenServer. When no serve is running, the CLI starts its *own*
+  local CommitStore and calls it directly. This module hides that fork so
+  every call site is written the same way regardless of mode — which is
+  why the project rule is "always go through `CommitStoreClient`, never
+  `CommitStore` directly."
+
+  ## The routing switch
+
+  Mode is decided per-call by `remote_node/0`, which reads a node-wide
+  `:persistent_term` set once at bootstrap (`set_remote_node/1`). It is
+  node-wide deliberately: the MCP server spawns helper GenServers (e.g.
+  `Presence.Server`) that must see the same routing the escript main
+  process configured — see `remote_node/0`.
+
+  ## API shape and gotchas
+
+  Mirrors `CommitStore`'s API so it is a drop-in replacement. Two things
+  to know:
+
+    * **`server` normalization.** Callers alias this module as the
+      `server` arg; `normalize_server/1` maps `__MODULE__` back to the
+      real `CommitStore` for the local branch, and passes anything else
+      through unchanged (so tests can inject a custom store instance).
+    * **Remote "chained" writes take two round-trips.** The remote side
+      exposes only `create_commit` (explicit parent), not the
+      auto-parenting `create_chained_commit`. So in remote mode this
+      module first calls `{:latest_commit, doc_uuid}` to learn the parent,
+      then `create_commit` with it — see `create_chained_commit/5` and
+      `create_snapshot_commit/4`. (`opts`, notably `:signing_context`, is
+      threaded through that second call so remote-routed signed writes
+      don't silently drop their identity — CX-o3r7.)
+
+  Coverage is not total: `snapshot/2` is **local-only** — remote-serve
+  dispatch for it is not yet wired (see that function's doc), so callers
+  in remote mode must invoke `CommitStore.snapshot/2` on the serve node.
   """
 
   alias Commonplace.Store.CommitStore
