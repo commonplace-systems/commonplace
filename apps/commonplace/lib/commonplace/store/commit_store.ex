@@ -30,6 +30,12 @@ defmodule Commonplace.Store.CommitStore do
       {:latest_attestation, doc_uuid}       — head of the attestation
                                               chain for `doc_uuid`.
 
+  (Attestations are proof-of-authorship records on the **gold** color-
+  channel — see `Commonplace.Dataflow.Channel` for the channel
+  vocabulary. They live here because they must be durably bound
+  alongside the commits they attest; `Commonplace.Gold.Chain` owns
+  their API, CommitStore is only their durable tier.)
+
   Commits are append-only — `do_write_commit/6` and friends use
   `CubDB.put_multi/2` so the new `{:commit, id}` row and the
   `{:latest, doc_uuid}` advance land atomically. Commit-shaped rows
@@ -43,7 +49,8 @@ defmodule Commonplace.Store.CommitStore do
   `:latest` is the **local** head of a doc's DAG. It is per-node, not
   global. Two nodes in the same cluster can have different `:latest`
   for the same `doc_uuid` until catch-up sync runs; cross-node merging
-  is a separate concern (see `Commonplace.Store.CrossEpochMerge`).
+  — reconciling two nodes' divergent `:latest` heads back into one — is
+  a separate concern (see `Commonplace.Store.CrossEpochMerge`).
 
   Three operations touch `:latest`:
 
@@ -60,8 +67,10 @@ defmodule Commonplace.Store.CommitStore do
        persists the commit row but **only** advances `:latest` when
        there is no existing `:latest` for that uuid. If a local
        `:latest` already exists, the imported commit is stored as a
-       sibling and `:latest` is left alone. This is what stops a
-       remote catch-up burst from clobbering a newer local head.
+       sibling (a divergent commit off a shared ancestor, kept but
+       off the `:latest` linear walk) and `:latest` is left alone.
+       This is what stops a remote catch-up burst from clobbering a
+       newer local head.
 
   ## Chained vs imported writes
 
@@ -80,7 +89,9 @@ defmodule Commonplace.Store.CommitStore do
       retagging a delta as `kind: :snapshot` to skip history); the
       content is passed through a namespace validator (CX-ch5 — the
       default is `Namespace.validate_commit_from_db/2`, which checks
-      the snapshot-parent chain for membership); on success the
+      the snapshot-parent chain for membership, rejecting a commit
+      whose claimed lineage the node never authorized so a peer can't
+      graft forged history onto a doc's namespace); on success the
       commit row is written and `:latest` is **only** advanced if the
       doc has no existing local head.
 
@@ -111,6 +122,12 @@ defmodule Commonplace.Store.CommitStore do
   with explicit CAS rejection (`{:error, :parent_moved}`) instead of
   silent re-anchoring.
 
+  `import_commit/3` needs no such bundling. It doesn't derive a parent
+  from a `:latest` read — the commit arrives with its `parent_id`
+  already fixed — so there's no read-then-write window for two writers
+  to race over. Its only `:latest` interaction is the conditional
+  advance, itself serialized by the GenServer mailbox.
+
   ## Snapshots and the umbrella metadata (CX-6sc, CX-bgy, CX-u7p)
 
   Three layers of "snapshot" exist:
@@ -123,9 +140,11 @@ defmodule Commonplace.Store.CommitStore do
     2. `snapshot/2` — convenience that reconstructs the doc,
        generates a deterministic snapshot via
        `Snapshotter.build_snapshot/3`, and calls
-       `create_snapshot_commit`. The deterministic-anyone property
-       means two nodes snapshotting the same parent produce
-       byte-identical `update`s and `derivation_map`s.
+       `create_snapshot_commit`. The deterministic-anyone property —
+       `Snapshotter` is built to emit byte-identical output for the
+       same parent state — means two nodes snapshotting the same
+       parent produce byte-identical `update`s and `derivation_map`s,
+       so *anyone* can mint the canonical snapshot.
     3. `write_snapshot_cas/5` — atomic CAS variant of #1. The caller
        (typically `Snapshotter`) has already built the payload and
        commits it iff `:latest` still equals `expected_parent_id`.
@@ -152,8 +171,10 @@ defmodule Commonplace.Store.CommitStore do
       passes `parent_id = nil` for a uuid that has no `:latest`,
       stamp the genesis row and use its id as the parent.
       Pre-umbrella docs that already have a `:latest` keep the nil
-      parent (legacy hatch — empty metadata, no `:kind`) so existing
-      data doesn't need retroactive genesis insertion.
+      parent (legacy hatch — empty metadata, no `:kind`): back-filling
+      a genesis ancestor beneath already-written history would change
+      those commits' parent chains and ids, so the hatch deliberately
+      leaves pre-umbrella docs untouched.
     * `maybe_stamp_snapshot_parent/3` (private, write-side, CX-a04) —
       `:regular` commits inherit `snapshot_parent` from the parent's
       `Namespace.current_namespace/1` unless the caller set one
@@ -220,7 +241,11 @@ defmodule Commonplace.Store.CommitStore do
   The CAS write paths (`write_snapshot_cas/5`,
   `write_prebuilt_commit_cas/2`) do **not** wire signing-context
   forwarding — snapshot construction happens above this layer and
-  prebuilt commits are already assembled by the caller. Signed
+  prebuilt commits are already assembled by the caller. This is a
+  layering choice, not an idempotency constraint: signatures sit
+  *outside* the content address (they never change a commit id), so
+  the omission is only about where the signing context is threaded,
+  not about keeping deterministic-anyone writes byte-identical. Signed
   callers route through `create_commit` / `create_chained_commit`.
 
   ## CommitStoreClient access discipline
@@ -269,6 +294,33 @@ defmodule Commonplace.Store.CommitStore do
       anywhere?" without iterating all sources.
     * Storage is direct K/V — no DAG walking required for these
       bookkeeping reads.
+
+  ## Worked example
+
+  A local edit, the orphan its split predecessor used to cause, and a
+  clobber-safe import — for doc A whose `:latest` starts at `c1`:
+
+      # 1. Local chained write.
+      create_chained_commit(A, update, ...)
+      #   reads :latest (c1) and writes child c2 INSIDE one handle_call,
+      #   advances :latest -> c2, broadcasts on commits:A and blue:A.
+      #   Because read+write share one mailbox slot, a second concurrent
+      #   writer can't also read c1 and root a child there (CX-l7j) — it
+      #   observes c2 and chains off it instead of orphaning c2.
+
+      # 2. CAS snapshot — two nodes both observed parent c2.
+      write_snapshot_cas(A, payload, expected_parent_id: c2)
+      #   first writer: :latest still c2 -> writes snapshot s1, :latest -> s1.
+      #   second writer: :latest now s1 (!= c2) -> {:error, :parent_moved},
+      #   a clean no-op. Both nodes computed the same s1 id anyway
+      #   (deterministic-anyone), so nothing is lost.
+
+      # 3. Import a peer's sibling — clobber-protected.
+      import_commit(%Commit{id: c3, parent_id: c1, ...})
+      #   verify_id passes, namespace validator passes; c3 row is stored.
+      #   A already has a local :latest (s1), so :latest is LEFT at s1
+      #   and c3 is kept as a divergent sibling off c1 — newer local work
+      #   is never silently replaced. A later Tree.Merge reconciles them.
 
   ## Invariants
 
