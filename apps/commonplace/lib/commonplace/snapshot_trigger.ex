@@ -3,32 +3,79 @@ defmodule Commonplace.SnapshotTrigger do
   Mandatory-threshold snapshot trigger primitive (CX-4e2g).
 
   `maybe_snapshot/3` reads the chain length from `doc_uuid`'s current
-  `:latest` back to the most recent `:snapshot` (or `:genesis`) and,
-  if that length crosses a configured threshold, cuts a new snapshot
-  via the CAS write primitive `CommitStore.write_snapshot_cas/5`.
-  Below the threshold — no-op.
+  `:latest` back to the most recent `:snapshot` (or `:genesis`) commit
+  and, if that length crosses a configured threshold, cuts a new
+  snapshot via the compare-and-swap write primitive
+  `CommitStore.write_snapshot_cas/5`. Below the threshold — no-op.
+
+  A snapshot re-encodes the whole document into one self-contained
+  commit, collapsing a long chain of incremental commits into a single
+  read. Cutting them on a chain-length threshold is what bounds the
+  worst-case cost of reconstructing a doc as it accumulates edits —
+  this primitive is the policy that decides *when* that collapse
+  happens.
 
   Designed as the shared primitive that the producer-side hook
   (CX-tvyb), the sync-agent heartbeat sweep (CX-fab5), the
   reader-side lazy path (CX-fkvc), and the explicit CLI command
   (CX-2ok0) will all sit on top of.
 
+  ## When a snapshot fires
+
+  After the debounce guard (below), two independent conditions can
+  trigger a cut:
+
+  1. **Mandatory hard threshold.** When the chain length since the last
+     snapshot reaches `:chain_length_threshold`, a snapshot is cut
+     unconditionally — the backstop that bounds worst-case
+     reconstruction cost.
+  2. **Soft-threshold lull heuristic (CX-592q).** Below the hard cap but
+     at or above a smaller `:soft_chain_length_threshold`, *and* when no
+     new commit has arrived for `:lull_window_ms` of wall-clock time (a
+     lull), a snapshot is cut early. The intuition: a doc that has gone
+     quiet partway up a chain is a cheap moment to checkpoint, rather
+     than waiting to hit the hard cap during the next burst. Inert unless
+     BOTH opts are set.
+
+  Below every threshold — no-op.
+
+  ## Debounce (CX-0nkq)
+
+  A per-doc debounce window sits *in front* of the threshold check.
+  `maybe_snapshot` is fired from several sites at once — most
+  aggressively the reader-side lazy path
+  (`DocBuilder.maybe_lazy_snapshot` via `Task.start`), which under read
+  pressure can spawn many concurrent Tasks that all pile up at the
+  `CommitStore` mailbox (a fork on a deep tree timed out at 5s under
+  that contention). The debounce caps the doc to one snapshot *attempt*
+  per `@debounce_window_ms` regardless of how many callers fire,
+  returning `{:ok, :debounced, _}` for the suppressed ones. The window
+  is backed by a public ETS table (`init_debounce_table/0`, created at
+  application start) so any process can probe it without a GenServer
+  round-trip. This is deliberately the smallest viable relief — the
+  proper single-flight `SnapshotWorker` GenServer is still tracked on
+  CX-0nkq.
+
   ## Concurrency
 
-  Safe to call concurrently from multiple hook sites. Two properties
+  The debounce above is a coarse first filter: it reduces how many
+  callers even attempt a write, but it is best-effort, not a
+  correctness boundary. Exactly-once is enforced *underneath* it — even
+  if several callers slip through the same window, two properties
   together give "exactly one new snapshot per trigger cohort":
 
-  1. Deterministic-anyone snapshotting (CX-umz): callers that observe
-     the same parent build the same update bytes and the same
-     derivation map, so the content-addressed commit id matches.
+  1. Deterministic-anyone snapshotting (CX-umz): any two callers that
+     observe the same parent build byte-identical snapshot content (the
+     re-encoded update plus its metadata), so the content-addressed
+     commit id they each produce is the same.
   2. The CAS write in `CommitStore.write_snapshot_cas/5` only commits
      if `:latest` still matches the expected parent. Callers who
      observed an older parent get `{:error, :parent_moved}`, which
      this module maps to the `:below_threshold` no-op reply.
 
   Callers who read `:latest` *after* the first snapshot landed see
-  `chain_length = 0` (the walk stops at the snapshot) and no-op
-  without even attempting a CAS.
+  `chain_length = 0` — the snapshot is now `:latest` itself, so the
+  walk stops immediately — and no-op without even attempting a CAS.
 
   ## Configuration
 
