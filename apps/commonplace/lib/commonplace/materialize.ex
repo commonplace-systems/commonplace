@@ -10,6 +10,19 @@ defmodule Commonplace.Materialize do
   view-shape with edit/delete-style chains) consumes this primitive
   with its own rule config.
 
+  ## The chain model
+
+  A *chain field* (like `"edit_of"`) set on an entry points back at the
+  entry it modifies — its parent. Following those pointers from any
+  entry walks toward an *original*: an entry that sets *none* of the
+  declared chain fields (the root of its chain). Every materialized
+  output corresponds to exactly one original. Among the links that
+  resolve back to a given original, the *chain tip* is the most recent
+  one *by array position* — input order is treated as chronological, so
+  "latest" means "last in the entry list", not "end of the pointer
+  walk". An entry whose pointers never terminate at a known original is
+  an *orphan* (see Orphan filtering).
+
   ## Rules config shape
 
       %{
@@ -22,13 +35,15 @@ defmodule Commonplace.Materialize do
   Two enumerated chain semantics:
 
   * `:latest_replaces` — each entry whose `<field>` points at another
-    entry forms a chain. The chain tip's non-pointer fields override
-    the original entry's fields. Adds `"edited?"` boolean and
-    `"edited_at"` (chain tip's `"ts"`, if present) to the materialized
-    output.
+    entry forms a chain. The chain tip's *non-pointer* fields — every
+    field except the chain `<field>` itself and the link's own `"id"` —
+    override the original entry's fields. Always adds an `"edited?"`
+    boolean (`false` when the original has no links) plus `"edited_at"`
+    (the chain tip's `"ts"`, if present).
   * `:marks_deleted` — any entry whose `<field>` chain ultimately
-    points at a given original marks that original as deleted. Adds
-    `"deleted?"` boolean to the materialized output.
+    points at a given original marks that original as deleted. Always
+    adds a `"deleted?"` boolean (`false` when nothing deletes the
+    original).
 
   Multiple chain rules can be declared; they're processed independently
   per original. An entry can be a chain link in one chain and absent
@@ -36,9 +51,14 @@ defmodule Commonplace.Materialize do
 
   ## Output shape
 
+  The base of each output is the original entry itself — all its own
+  fields pass through — and each declared rule layers its effect on
+  top, applied in the order the rules are declared (so a later rule's
+  override wins on any field two rules both touch):
+
       %{
         "id" => <original's id>,
-        ...all original's passthrough fields,
+        ...all the original's own fields,
         ...overridden by chain tip's non-pointer fields if :latest_replaces,
         "deleted?" => bool (added if any :marks_deleted chains in rules),
         "edited?" => bool (added if any :latest_replaces chains in rules),
