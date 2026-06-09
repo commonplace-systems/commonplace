@@ -1,41 +1,166 @@
 defmodule Commonplace.Store.Commit do
   @moduledoc """
-  A content-addressed commit in the Merkle DAG.
+  One node in the commit DAG: a content-addressed record of a single
+  change to one document.
 
-  Each commit stores a Yjs update delta and references its parent,
-  forming a tamper-evident history chain.
+  Every Commonplace document is a Y.js CRDT, and its history is a chain
+  of commits. Each commit holds a Yjs **update delta** (the binary that
+  advances a doc from its parent's state to this one) plus a pointer to
+  that parent. Replaying a doc means walking the chain from the root and
+  applying each delta — `Commonplace.Tree.DocBuilder` does the walking;
+  this module is the immutable value it walks over.
 
-  The `metadata` field is a map of free-form annotations (e.g.
-  `%{kind: :snapshot}` for compaction snapshots). Because metadata
-  kinds like `:snapshot` CHANGE replay semantics (see
+  ## Content-addressing: the id *is* the hash
+
+  A commit's `id` is the SHA-256 of its own load-bearing fields — not a
+  random UUID. Two consequences flow from that:
+
+    1. **Tamper-evidence.** Altering a commit's parent, delta, or replay
+       semantics changes its id. A receiver re-hashes (`verify_id/1`)
+       and rejects any commit whose claimed id doesn't match its content.
+       The DAG is Merkle (each node's hash covers its full ancestry via
+       `parent_id`).
+    2. **Convergent ids.** Two nodes that independently produce the same
+       change compute the same id, so the store deduplicates them for
+       free and a doc re-created from the same inputs lands on the same
+       history. `genesis/1` exploits this deliberately (below).
+
+  Every field that changes what a commit *means* must fold into the
+  hash. The rest of this doc catalogues which fields those are and the
+  backward-compatibility hatch that keeps old ids stable.
+
+  ## What binds into the id, and the legacy hatch
+
+  The content-address formula (`content_address/4`) is:
+
+      sha256((parent_id || <<>>) <> update
+               <> canonical_metadata(metadata)
+               <> canonical_merge_parents(merge_parents))
+
+  `parent_id` and `update` have always been hashed. The two later
+  additions — `metadata` and `merge_parents` — each carry a
+  **legacy hatch**: when they hold their default empty value
+  (`%{}` / `[]`), `canonical_*` returns the empty binary, collapsing
+  the formula to the original `sha256(parent_id <> update)`. This keeps
+  historical commit ids byte-for-byte stable. Non-empty values
+  serialize deterministically (`:erlang.term_to_binary/2` with
+  `:deterministic`) and bind into the hash, so new metadata kinds apply
+  to new writes without renaming old commits.
+
+  Just as load-bearing is what stays *out* of the hash. Four struct
+  fields are deliberately excluded: `timestamp` (wall-clock, stamped at
+  construction), `doc_uuid` (a debugging trace of which uuid first wrote
+  the commit), and `signature`/`signer_id` (added later, and themselves
+  a signature *over* the id). None change what the commit means, so
+  leaving them out is exactly what lets `genesis/1` converge on one id
+  across independent re-creations even though each call stamps a
+  different `timestamp`.
+
+  ### `metadata` — replay semantics that MUST be hashed
+
+  `metadata` is a map of free-form annotations whose `:kind` tag
+  declares replay semantics — `:snapshot`, `:merge`, `:genesis`, future
+  kinds. `:snapshot` *changes how readers replay the chain* (see
   `Commonplace.Tree.DocBuilder.reconstruct_doc/2` and
-  `Commonplace.Document.Server.handle_info/2`), metadata MUST be
-  bound into the content address — otherwise a peer could retag an
-  existing commit as a snapshot without changing its id, causing
-  readers to silently discard pre-snapshot history or treat a real
-  snapshot as a normal delta (CX-u7p round-2).
+  `Commonplace.Document.Server.handle_info/2`): it tells a reader it may
+  discard pre-snapshot history. That power is why metadata must bind
+  into the id. Without it, a hostile peer could retag an ordinary delta
+  as `%{kind: :snapshot}` without changing its id, causing readers to
+  silently drop earlier history — or treat a real snapshot as a plain
+  delta (CX-u7p round-2).
 
-  To preserve backward compatibility with historical commits that were
-  hashed with no metadata, the empty-metadata case (`%{}`) still hashes
-  as `sha256(parent_id || <<>> <> update)` — the original formula. Only
-  non-empty metadata maps are folded into the hash. New metadata kinds
-  added later therefore bind into the id for new writes without
-  retroactively changing the ids of historical metadata-free commits.
+  Non-empty metadata MUST include a `:kind` key; `new/5` rejects
+  kindless non-empty metadata at create time (`validate_metadata_kind!/1`).
+  The empty-metadata hatch stays open only for pre-CX-bv3 delta commits
+  that carried no metadata.
 
-  The `merge_parents` field lists additional parent commit ids for
-  merge commits (CX-bv3). Like metadata, merge_parents CHANGES the
-  commit's position in the DAG and so MUST bind into the content
-  address. Empty-list (`[]`, the default) preserves the legacy hash;
-  non-empty merge_parents serialize deterministically and bind into
-  the id. Order matters — `[a, b]` and `[b, a]` hash differently.
+  Metadata may also carry kind-specific keys beyond `:kind`. `genesis/1`
+  stores `%{kind: :genesis, doc_uuid: doc_uuid}`, and because metadata
+  binds into the hash, folding `doc_uuid` in here is exactly what makes a
+  genesis id a pure function of the uuid. Such extra keys *describe* the
+  commit; they don't introduce new replay rules — that stays the `:kind`
+  tag's job.
 
-  When `metadata` is non-empty it MUST include a `:kind` key. The
-  `:kind` tag declares the commit's replay semantics (`:snapshot`,
-  `:merge`, future kinds). Non-empty metadata without a kind is
-  rejected at create time so that every semantically-distinct commit
-  self-describes via a known tag. The empty-metadata legacy hatch
-  remains available for pre-CX-bv3 delta commits that were hashed
-  without any metadata at all.
+  ### `merge_parents` — extra DAG edges that MUST be hashed
+
+  A merge commit has more than one parent. `parent_id` names the
+  primary line; `merge_parents` lists additional parent ids (CX-bv3).
+  These change the commit's position in the DAG, so they bind into the
+  id. **Order matters** — `[a, b]` and `[b, a]` hash to different ids —
+  so callers must provide merge parents in a stable order; the merge
+  code that builds the commit owns that ordering.
+
+  ## Signing happens downstream — on the id
+
+  `signature` and `signer_id` (an identifier of the signing key) are
+  populated after construction by `Commonplace.Store.CommitStore` via
+  `maybe_sign_commit/2`, which signs `commit.id` with the session's
+  Ed25519 key (see `Commonplace.Crypto.Signing.sign_commit/3`). This
+  module mints the id;
+  it never signs. Because the id covers every meaningful field, a
+  signature over the id is transitively a signature over the full
+  commit. Both fields are `nil` on unsigned commits.
+
+  ## Public surface
+
+    - `new/5` — mint a regular commit: validate metadata, stamp the
+      time, compute the id. The everyday constructor, called by
+      `CommitStore` on the write path.
+    - `genesis/1` — the deterministic synthetic first commit of a doc,
+      whose id is a pure function of `doc_uuid` (see its `@doc`).
+      Exploits convergent ids so re-creating a doc lands on the same
+      root.
+    - `verify_id/1` — re-hash and compare to the claimed id. The trust
+      gate `import_commit` runs before anything else reads the commit's
+      fields.
+
+  ## Worked example
+
+      # the synthetic root of doc "d" — id is a pure function of "d"
+      g = Commit.genesis("d")
+      Commit.genesis("d").id == g.id   # true, even on another node at
+      #   another time: same uuid ⇒ same id (timestamp differs but
+      #   isn't hashed) — this is the convergent-ids property
+
+      # node A authors a change to doc "d"
+      c1 = Commit.new("d", update_bytes, nil)
+      #   c1.parent_id == nil, c1.id == sha256(<<>> <> update_bytes)
+
+      # a child builds on it
+      c2 = Commit.new("d", more_bytes, c1.id)
+      #   c2.id == sha256(c1.id <> more_bytes)
+      #   c2's id transitively commits to c1 (Merkle chain)
+
+      # a peer ships us c2; we re-hash before trusting any field
+      :ok = Commit.verify_id(c2)
+      # had the peer flipped c2.parent_id or retagged it a snapshot,
+      # verify_id would return {:error, {:id_mismatch, _, _}}
+
+  ## Invariants
+
+    - **`id == content_address(update, parent_id, metadata, merge_parents)`**
+      for every well-formed commit. `verify_id/1` is the check.
+    - **Empty `metadata`/`merge_parents` reproduce the original
+      `sha256(parent_id <> update)`** — historical ids never move.
+    - **Non-empty `metadata` carries a `:kind`** — enforced at
+      `new/5`; `genesis/1` tags `:genesis`.
+    - **`genesis(doc_uuid)` is deterministic** — same uuid ⇒ same id,
+      across independent re-creations.
+    - **Signing is over the id, not the fields** — done downstream, so
+      it inherits the id's coverage of every meaningful field.
+
+  ## What this module is NOT
+
+  - **Not the store.** Persistence, the `:latest` pointer, chaining,
+    and signing live in `Commonplace.Store.CommitStore` /
+    `CommitStoreClient`. This module is the value object they persist.
+  - **Not the replayer.** Turning a chain of deltas back into a live
+    doc is `Commonplace.Tree.DocBuilder`'s job.
+  - **Not the signer.** It defines the `signature`/`signer_id` fields;
+    `Commonplace.Crypto.Signing` fills them.
+  - **Not the namespace validator.** `verify_id/1` proves a commit is
+    self-consistent; whether it is *allowed* in a given namespace is a
+    downstream check (see CX-gwz: id gate first, validator second).
   """
 
   defstruct [
