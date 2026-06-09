@@ -63,11 +63,14 @@ defmodule Commonplace.Tree.Schema do
 
   `encode_entry/3` and `decode_entry/1` are the sole codec; all reads
   and writes in this module go through them. A legacy bare-UUID form
-  (pre-dating this scheme — entries that were just a raw UUID with
-  no type tag) is still decoded for backward compatibility with old
-  updates that may surface via `apply_update/2`; `decode_entry/1`'s
-  third arm handles it by treating the UUID as a `"doc"` entry with
-  sync enabled.
+  (pre-dating this scheme — entries that were just a raw UUID with no
+  type tag) is still decoded for backward compatibility: an old commit
+  encoded before the `"type:uuid"` scheme existed can still be replayed
+  into a doc via `apply_update/2` and surface a tagless value.
+  `decode_entry/1`'s third arm is the permissive fallback — anything it
+  doesn't recognize as one of the two tagged forms is decoded as a
+  `"doc"` entry with sync enabled, so a legacy or malformed entry reads
+  rather than crashing the caller.
 
   ## Honorific extensions and the presence-uniqueness invariant (CX-edy)
 
@@ -93,16 +96,25 @@ defmodule Commonplace.Tree.Schema do
   so casing tricks cannot circumvent it.
 
   The guard lives *here* because this module is the chokepoint for all
-  directory mutations. Anywhere else, an attacker could add a `.usr`
+  directory mutations — an untrusted entrypoint that adds a name
+  without first calling `forbid_honorific!/1` is the only path by which
+  a user-supplied `.usr` name reaches the tree. The guard polices
+  user-supplied names at those entrypoints; it deliberately does *not*
+  police trusted callers that mint honorific names internally
+  (`Presence` is *meant* to, and is the canonical writer). Anywhere a
+  new untrusted surface skips the guard, an attacker could add a `.usr`
   entry by going around it.
 
   ## The sync flag and branch deactivation
 
   The `:nosync` suffix is a per-entry flag meaning "omit me when
-  computing sync subscriptions." The sync agent subscribes to path
-  prefixes the workspace's local config wants to mirror; the flag lets
-  deactivated branches stay off the wire while remaining resolvable
-  paths in the tree.
+  computing sync subscriptions." It rides inside the entry value string
+  — rather than living in a parallel `entries_sync` YMap — so the whole
+  entry stays a single last-write-wins unit (reason 2 above): toggling
+  sync and re-pointing the entry can't race as two independent edits.
+  The sync agent subscribes to path prefixes the workspace's local
+  config wants to mirror; the flag lets deactivated branches stay off
+  the wire while remaining resolvable paths in the tree.
 
   Two helpers wrap `set_sync/3` for readability:
 
@@ -120,8 +132,9 @@ defmodule Commonplace.Tree.Schema do
     - `add_file/3`, `add_directory/3` — write entries with the correct
       type tag; both default to `sync: true`.
     - `remove_entry/2` — delete an entry by name via YMap key delete.
-    - `entries/1` — raw `%{name => %{"type", "node_id", "sync"}}` map
-      for callers that need a flat dump.
+    - `entries/1` — raw
+      `%{name => %{"type" => _, "node_id" => _, "sync" => _}}` map for
+      callers that need a flat dump.
     - `get_entry/2`, `list_entries/1` — `%Entry{}`-shaped views.
     - `set_sync/3`, `activate/2`, `deactivate/2` — sync-flag toggles.
     - `resolve_name/2` — maps a child name to its `node_id`; the
@@ -135,13 +148,16 @@ defmodule Commonplace.Tree.Schema do
     - Entry names are unique within a directory (YMap key uniqueness;
       concurrent writes resolve by Yjs LWW).
     - Encoded values round-trip through `decode_entry/1` losslessly.
-    - `"schema"` and `"entries"` YMap types are always present after any
-      operation; `ensure_types/1` is defensive against docs that arrive
-      without them (e.g. via `apply_update`). All public reads
-      (`entries/1`, `version/1`, `set_sync/3`, `remove_entry/2`)
-      internally call `ensure_types/1` so callers can hand in a
-      freshly-applied doc without first wondering whether the
-      registrations made it across the wire.
+    - All public reads (`entries/1`, `version/1`, `set_sync/3`,
+      `remove_entry/2`) call `ensure_types/1` implicitly, so callers can
+      hand in a freshly-applied doc without wondering whether the YMap
+      registrations survived the wire. The hazard is specific to
+      `Yelixer.Doc.apply_update/2`: it replays the CRDT operations in an
+      update but does *not* re-declare the named top-level shared types,
+      so a doc reconstructed purely from an update carries the `schema`
+      and `entries` data but no live YMap accessors (the in-memory
+      handles needed to read or mutate those maps). `ensure_types/1` is
+      the defensive step that re-registers them.
     - `sync: true` is the default; only explicit `set_sync/3` calls
       change it.
 
@@ -254,17 +270,17 @@ defmodule Commonplace.Tree.Schema do
   end
 
   @doc """
-  Removes an entry by name via `YMap.delete/3`. Concurrent re-adds
-  from another replica resolve by Yjs LWW per key — no
-  tombstone-blocks-set rule (same semantics as Beads dependency
-  edges, §5.4 of beads-on-commonplace).
+  Removes an entry by name via `YMap.delete/3`. A concurrent re-add of
+  the same name from another replica still wins — a YMap delete leaves
+  no tombstone that blocks a later set, so the entry simply reappears
+  (Yjs LWW per key).
   """
   def remove_entry(doc, name) when is_binary(name) do
     doc = ensure_types(doc)
     YMap.delete(doc, @entries_type, name)
   end
 
-  @doc "Returns all entries as `%{name => %{\"type\", \"node_id\", \"sync\"}}`."
+  @doc "Returns all entries as `%{name => %{\"type\" => _, \"node_id\" => _, \"sync\" => _}}`."
   def entries(doc) do
     doc = ensure_types(doc)
     raw = YMap.to_map(doc, @entries_type)
