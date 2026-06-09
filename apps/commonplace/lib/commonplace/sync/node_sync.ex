@@ -2,14 +2,26 @@ defmodule Commonplace.Sync.NodeSync do
   @moduledoc """
   Per-document sync between BEAM nodes.
 
-  Handles CID set diffing and commit exchange for catch-up sync.
-  Steady-state sync is handled by Phoenix PubSub broadcasts.
+  Handles commit-ID (CID) set diffing and commit exchange for catch-up
+  sync. Steady-state sync is handled by Phoenix PubSub broadcasts.
 
   ## Late-edit auto-translation (CX-7cm1)
 
-  Incoming commits are funneled through `import_with_translation/3`,
-  which invokes `Commonplace.LateEditAutoTranslator.maybe_auto_translate/3`
-  (the CX-atk3 primitive) before calling `CommitStoreClient.import_commit/2`.
+  A peer can author an edit against a *stale* version of a document — one
+  whose snapshot parent (its *epoch*) the rest of the cluster has already
+  moved past by taking a newer snapshot. Imported as-is, such a *late
+  edit* references item identities that no longer exist in the current
+  epoch, so it would fail to apply cleanly or be silently dropped. The
+  fix is to re-express (*translate*) the edit into the current epoch
+  first.
+
+  This module performs that translation at the sync boundary — where
+  cross-epoch commits arrive from other nodes — by funneling every
+  incoming commit through `import_with_translation/3`, which invokes
+  `Commonplace.LateEditAutoTranslator.maybe_auto_translate/3` (the
+  CX-atk3 primitive that owns the actual translation mechanism) before
+  calling `CommitStoreClient.import_commit/2`.
+
   Branch matrix (per commonplace-plan msg 2282):
 
   - `:no_translation_needed` → import original as-is.
