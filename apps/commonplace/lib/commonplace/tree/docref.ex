@@ -13,6 +13,33 @@ defmodule Commonplace.Tree.Docref do
 
   The `@commit` syntax is deferred and not yet supported.
 
+  ## Design — pure resolution, storage injected
+
+  This module is *store-agnostic*: it never opens a document or touches
+  CubDB itself. Everything it needs to descend the tree is passed in by
+  the caller as `opts` — a `:loader` function `(uuid) -> Yelixer.Doc`
+  that hands back a schema doc, plus whichever root UUIDs the requested
+  form needs (`:root_uuid`, `:repo_root_uuid`, `:tree_root_uuid`,
+  `:parent_uuid`/`:ancestors`). That injection is why the signature
+  carries so many root options: each prefix is anchored at a different
+  root, and a given call only supplies the roots its form actually uses
+  (a raw UUID needs no loader or root at all).
+
+  The actual path descent — splitting `"main/docs/plans"` on `/` and
+  walking schema-by-schema, looking up each segment in the parent
+  schema's entries — is delegated to `Commonplace.Tree.Walk`. Docref's
+  job is only to *classify* a reference (which prefix? which root?) and
+  hand the right anchor + remaining path to `Walk.resolve_path/3`.
+
+  Classification is order-sensitive: `resolve/2` tests the forms in a
+  fixed `cond` order (empty → raw UUID → `!` → `/` → `../` → plain
+  path), so a leading `!`/`/`/`../` always wins over being treated as a
+  plain name. Errors surface as `{:error, reason}` — `:empty_ref`,
+  `:no_root`/`:no_repo_root`/`:no_tree_root` when the form's anchor
+  wasn't supplied, `:ancestor_out_of_range` when `../` climbs past the
+  known ancestors, plus whatever `Walk.resolve_path/3` returns for a
+  segment that doesn't exist.
+
   ## Usage
 
       Docref.resolve("550e8400-e29b-41d4-a716-446655440000", root_uuid: nil, loader: nil)
