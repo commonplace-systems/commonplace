@@ -1,16 +1,89 @@
 defmodule Commonplace.Sync.Agent do
   @moduledoc """
-  Bidirectional sync agent — bridges CRDT documents with files on disk.
+  Bidirectional sync agent — keeps a CRDT document tree and a directory
+  of files on disk reflecting each other.
 
-  Uses two layers of version tracking:
-  - Content hashes: fast "did anything change on disk?" gating
-  - Commit ancestry: causal ordering to prevent overwriting remote
-    CRDT updates with stale disk content
+  One agent (a `GenServer`) owns one checkout: a `root_uuid` schema tree
+  and the `sync_dir` it maps to. Each `sync_once/1` runs a full
+  reconciliation in both directions. The hard part is not copying bytes —
+  it is determining, per document, *which side is authoritative this
+  cycle* so the agent never clobbers a fresh CRDT update (arriving from a
+  remote peer, the MCP API, or a merge) with stale disk content it wrote
+  itself a moment ago.
 
-  Sync cycle:
-  1. Outbound (disk → CRDT): detect disk changes, sync to CRDT
-  2. Inbound (CRDT → disk): export CRDT docs where latest commit
-     is a descendant of (or different from) what we last wrote
+  ## Why two layers of version tracking
+
+  - **Content hashes** (`known_hashes`) are the cheap gate: "did this
+    file change on disk since we last looked?" An MD5 per file answers
+    that without reconstructing any CRDT.
+  - **Commit identity** (`written_commits`: `doc_uuid => commit_id`) is
+    the authority gate: the exact commit whose content is *currently on
+    disk*. Inbound export only rewrites a file when the document's latest
+    commit differs — so a file already written is never rewritten, and a
+    doc advanced remotely is.
+
+  Together they arbitrate direction. Unchanged disk hash → divergence
+  came from the CRDT side → **inbound** wins. Changed hash → user edited
+  the file → **outbound** carries it into the CRDT. Without the hash gate
+  the two phases would fight, each cycle overwriting the other's work.
+
+  ## The sync cycle (`do_sync/1`)
+
+  0. **Shadow check** (optional) — detect writes that landed *between*
+     cycles and fold them back in (see "Stale-write detection").
+  1. **Outbound** (disk → CRDT) — `Watcher.detect_changes/4` finds disk
+     edits/adds/deletes; the hash gate filters out files that only the
+     CRDT changed; survivors are applied via `Watcher.apply_changes/4`.
+  2. **Inbound** (CRDT → disk) — walk the schema tree and, per the commit
+     gate above, atomically write any doc whose latest commit isn't the
+     one already on disk.
+  3. **Rescan** — re-read disk state into `known_paths` / `known_hashes`
+     so the next cycle starts from ground truth.
+
+  ## Stale-write detection (shadow tracking)
+
+  Enabled by `shadow_tracking: true`. When inbound writes a file it also
+  hardlinks a *shadow* copy (via `InodeTracker`) tagged with the commit
+  it wrote. Phase 0 of the next cycle compares each shadow's fingerprint
+  to the live file: a mismatch means the file was modified out-of-band
+  after the write but before outbound's snapshot saw it — a write that
+  would otherwise be lost. The agent recovers it by diffing the stale
+  content against the shadow's commit and committing the delta
+  (`check_shadows/1`). This closes the narrow window between one
+  `sync_once` returning and the next one scanning.
+
+  ## State-vector hygiene
+
+  Write paths reconstruct docs under a **stable per-doc client id**
+  (`stable_client_id/1`, CX-pyi), not a fresh random one. A CRDT's state
+  vector grows one slot per distinct client that has ever written; minting
+  a new client id on every sync write would bloat the SV without bound.
+  Read-only paths use a plain `Yelixer.Doc.new/0` — they never re-encode,
+  so they can't bloat anything.
+
+  ## Reflog checkpoint durability
+
+  After each sync, `maybe_reflog_checkpoint/1` writes a recursive reflog
+  checkpoint of the tree. Two properties are deliberate:
+
+  - **Synchronous** (CX-86t2): the checkpoint runs *inside* `sync_once`,
+    not in a background task. Because snapshot reconstruction applies
+    only the latest commit, an async checkpoint encoding a stale view of
+    root could race a concurrent root writer and silently drop its
+    mutation (last-writer-wins). Running it synchronously upholds the
+    contract that `sync_once` returns only once every write it triggered
+    is durable.
+  - **Rate-limited** (CX-0nkq): `SyncLoop` ticks every second, but a
+    full-tree reflog walk per second per agent is wasteful and a major
+    source of `CommitStore` mailbox contention. A wall-clock gate
+    (`@reflog_checkpoint_min_interval_ms`, 10s) skips redundant
+    checkpoints while preserving the synchronous-when-fired property
+    above. (A proper change-aware cursor is the tracked follow-up.)
+
+  Procedural mechanics live in their owning modules: `Commonplace.Sync.Watcher`
+  (disk-change detection/apply), `Commonplace.Sync.Export` /
+  `Commonplace.Sync.InodeTracker` (atomic + shadowed writes), and
+  `Commonplace.Reflog.Snapshot` (the checkpoint walk).
   """
 
   use GenServer
