@@ -22,6 +22,13 @@ defmodule Commonplace.Compute do
   * `decode_json_array/1` — wraps `Enum.map(&Jason.decode!/1)`
   * `materialize/2` — chain-rules adapter over `Commonplace.Materialize`
 
+  This module owns only the *shape bridge*: the author-facing atom/tuple
+  form and its mechanical translation to the substrate form. What a chain
+  rule actually MEANS — the `:latest_replaces` / `:marks_deleted`
+  semantics, orphan filtering, what "latest" resolves to, cycle-safety —
+  lives in `Commonplace.Materialize`, the single source of truth this
+  adapter drives. Reach there (not here) for the resolution semantics.
+
   Expansion follows observed authoring patterns, not pre-design.
   Filter/group-by/time-window/format-conversion are already Enum/Stream;
   authors write Elixir directly. Future named substrate fns IF authoring
@@ -75,6 +82,11 @@ defmodule Commonplace.Compute do
 
   Atom field names → string field names (entries on the wire have
   string keys). Tuple → map. ~10-line adapter.
+
+  Also accepts chains already in the substrate `%{field: ..., semantics:
+  ...}` map form — those pass through untouched. This lets a caller that
+  builds chain rules programmatically (rather than as literal tuples)
+  hand them straight in without round-tripping through the atom form.
   """
   @spec materialize([map()], keyword()) :: [map()]
   def materialize(entries, opts) when is_list(entries) and is_list(opts) do
