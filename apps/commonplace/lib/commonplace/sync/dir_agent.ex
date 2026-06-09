@@ -1,17 +1,62 @@
 defmodule Commonplace.Sync.DirAgent do
   @moduledoc """
-  Per-directory schema watcher.
+  Per-directory schema watcher — one node of the sparse-sync tree.
 
-  Manages a directory in the sparse sync tree: watches the corresponding
-  schema document and maintains child EntryAgents (one per file) and child
-  DirAgents (one per subdirectory).
+  A DirAgent owns the two-way reconciliation between one on-disk
+  directory and the **schema document** that describes it (a schema is
+  the CRDT directory listing: each entry maps a name to a child UUID and
+  a type, `:doc` for a file or `:dir` for a subdirectory). Every
+  checked-out directory has exactly one DirAgent, and together they form
+  a supervision tree mirroring the directory tree: each DirAgent runs a
+  `DynamicSupervisor` under which it starts one `EntryAgent` per file and
+  a child `DirAgent` per subdirectory (this module is its own child
+  spec, so the structure recurses).
 
-  On each sync cycle (`sync_once/1`):
-  1. Scans the disk directory for new/deleted files and reconciles with the schema
-  2. Reloads the schema and reconciles with running child agents
-  3. Delegates to each child EntryAgent's `sync_once/1`
+  ## What "sparse" means
 
-  Part of the sparse sync system — one DirAgent per checked-out directory.
+  Not every entry in the schema is necessarily materialized on this peer.
+  Each schema entry carries a `sync` flag; entries with `sync == false`
+  are skipped entirely — no child agent, no file on disk. A DirAgent only
+  manages the slice of the tree that is actually checked out here.
+
+  ## The sync cycle (`sync_once/1`)
+
+  The schema document is loaded **once** per cycle and threaded through
+  both reconciliation phases. Reloading it between phases would open a
+  window where a remote schema mutation landing mid-cycle is seen by one
+  phase but not the other; the single load closes that race. The phases:
+
+  1. **Disk → schema** (`sync_disk`): scan the directory; files present
+     on disk but absent from the schema are added (new local creations),
+     and schema entries that have vanished from disk are removed (subject
+     to the distinction below).
+  2. **Schema → agents** (`sync_crdt`): schema entries with no running
+     child get one spawned — content authored elsewhere (e.g. pulled
+     from a remote peer) being materialized here; children whose entry
+     was removed from the schema are stopped.
+  3. **Recurse** (`sync_children`): call `sync_once` on every live child,
+     so each `EntryAgent` flushes its file ↔ CRDT diff and each child
+     `DirAgent` runs its own cycle, descending the tree.
+
+  ## Local-delete vs remote-add: the load-bearing distinction
+
+  A name that is in the schema but *not* on disk is ambiguous: it could
+  be a file the user just **deleted locally** (→ drop it from the schema)
+  or an entry a **remote peer just added** that hasn't been written to
+  disk yet (→ keep it; phase 2 spawns its agent and materializes it).
+  DirAgent disambiguates by **child-agent presence**: phase 1 only
+  deletes entries that already have a running child here — i.e. ones this
+  peer had materialized and the user then removed. An entry with no child
+  is treated as a pending remote add, never as a local delete. Getting
+  this wrong would let an incoming remote creation be misread as a delete
+  and erased.
+
+  All schema mutations go through `Commonplace.Sync.SchemaCoordinator`,
+  which serializes concurrent writes to a single schema document so two
+  agents racing to mutate the same schema don't clobber each other.
+
+  Part of the sparse-sync system — see the sparse-sync design doc for the
+  per-entry-agent architecture this is one piece of.
   """
 
   use GenServer
@@ -302,12 +347,12 @@ defmodule Commonplace.Sync.DirAgent do
   # --- Sync: children ---
 
   defp sync_children(state) do
-    # Only sync EntryAgents — child DirAgents manage their own sync
+    # Sync every live child: EntryAgents flush their file<->CRDT diff,
+    # and child DirAgents run their own cycle (recursing down the tree).
+    # Both EntryAgent and DirAgent implement the :sync_once call.
     Enum.each(state.children, fn {_name, pid} ->
       if Process.alive?(pid) do
         try do
-          # Try EntryAgent.sync_once — it will work for EntryAgents
-          # and fail for DirAgents (different handle_call pattern, but both support :sync_once)
           GenServer.call(pid, :sync_once, 30_000)
         catch
           :exit, _ -> :ok
