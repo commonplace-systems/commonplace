@@ -41,9 +41,10 @@ defmodule Commonplace.Chat.Rooms do
 
   If those need to land later they get their own beads.
 
-  Lazy red-onramp start happens in `Chat.Actions.commit_entry` per R1
-  (CX-9zpb); `create/3` does NOT eagerly start an onramp (would create
-  two trigger paths to maintain).
+  Lazy red-onramp start happens in `Chat.Actions` (in `broadcast_chain`
+  via `ensure_room_onramp`, on the first action that supplies a log
+  uuid) per R1 (CX-9zpb); `create/3` does NOT eagerly start an onramp
+  (would create two trigger paths to maintain).
   """
 
   alias Commonplace.Chat.{ChatViewBuilder, Messages, TemplateBootstrap}

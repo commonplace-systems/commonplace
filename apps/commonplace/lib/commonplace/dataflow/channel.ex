@@ -32,8 +32,11 @@ defmodule Commonplace.Dataflow.Channel do
       rather than a CRDT. If nothing is listening, the message is simply
       gone.
     * `:green` — **exclusive locks.** Pure control traffic for the lock
-      manager (bursar): acquisition and release on `green:{uuid}`. It
-      carries coordination, not data.
+      manager (bursar): exclusive-token acquire / release / transfer /
+      renew. (The `green:{uuid}` topic helpers exist for this, though the
+      bursar itself currently rides a dedicated magenta topic with
+      `green:`-prefixed message types — see `Commonplace.Green.Bursar`.)
+      It carries coordination, not data.
 
   Two axes separate the colors: **state vs. command** (blue is the
   state, cyan is the command that produces it) and **durable vs.
