@@ -3,10 +3,19 @@ defmodule Commonplace.SiblingMerger do
   Distributed sibling-commit merge primitive (CX-4qn1).
 
   `maybe_merge_siblings/3` discovers commits that are persisted for
-  `doc_uuid` but NOT on `:latest`'s parent-chain, then collapses them
-  into the local head by running `Merger.merge/4` and CAS-writing the
-  resulting merge commit. The merge commit's `parent_id` is the local
-  head we observed, so the CAS gate
+  `doc_uuid` but NOT reachable in the commit DAG of `:latest` (the
+  per-doc head pointer), then collapses them into that head by running
+  `Merger.merge/4` and CAS-writing the resulting merge commit.
+  "Reachable" here means walking back from `:latest` along *both* the
+  `parent_id` and the `merge_parents` edges — not just the linear
+  parent chain. Following `merge_parents` is what makes the operation
+  idempotent: a sibling already folded into the head by an earlier
+  merge stays reachable *through* that merge commit, so it is not
+  re-merged on every call and repeated invocations settle on
+  `{:ok, :no_siblings}`.
+
+  The merge commit's `parent_id` is the local head we observed, so the
+  compare-and-swap (CAS) gate
   (`CommitStore.write_prebuilt_commit_cas/2`) rejects stale-head
   writers as `:parent_moved` and lets the caller retry on a fresh
   read without clobbering a concurrent local writer.
