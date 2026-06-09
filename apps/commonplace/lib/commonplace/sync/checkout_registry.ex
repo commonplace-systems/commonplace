@@ -1,12 +1,59 @@
 defmodule Commonplace.Sync.CheckoutRegistry do
   @moduledoc """
-  Central coordinator for the multi-checkout system.
+  Central coordinator for the multi-checkout system — the root of the
+  sync-agent forest.
 
-  Persists checkout definitions (sync_dir → uuid mappings) in a JSON file
-  and manages the lifecycle of DirAgent/EntryAgent processes for each checkout.
+  A *checkout* binds a local path (`sync_dir`) to a document root
+  (`uuid`): a `:dir` checkout roots a `Commonplace.Sync.DirAgent` over a
+  directory tree, a `:file` checkout roots a standalone
+  `Commonplace.Sync.EntryAgent` over a single file. This registry owns
+  the set of checkouts and the lifecycle of the agent each one roots. The
+  agents themselves run under the shared `Commonplace.Checkout.Supervisor`
+  (a `DynamicSupervisor`); the registry holds the authoritative
+  checkout ↔ pid mapping.
 
-  On init, reads the JSON file and spawns agents for each persisted checkout.
-  All mutations (register, unregister, reroot) are persisted atomically.
+  ## Persistence is the source of truth
+
+  The checkout set is persisted as a JSON list (`checkouts.json`). That
+  file — not in-memory state — is authoritative: on `init` the registry
+  reads it and re-spawns one agent per entry, so a restart reconstructs
+  the forest from the file. Every mutation (`register`, `unregister`,
+  `reroot`) writes the file back **atomically** (temp file + fsync +
+  rename) before replying, so the on-disk record never lags the running
+  agents.
+
+  ## Live API vs. static lookup
+
+  There are two ways to reach checkout data, and they intentionally
+  differ:
+
+  - The GenServer API (`register/4`, `unregister/2`, `reroot/3`,
+    `list/1`) operates the live registry and its agents.
+  - `find_for_cwd/2` reads `checkouts.json` **directly, with no running
+    registry process**, returning the checkout whose `sync_dir` most
+    tightly encloses a given path. It exists for callers that run before
+    (or without) the registry — notably the MCP presence bootstrap, which
+    must locate the checkout a tool was launched from to place its `.bot`
+    file in the right sandbox rather than at the workspace root.
+
+  ## Breadcrumbs
+
+  On `register` the registry drops a `.commonplace-ref` file in the
+  checkout directory pointing back at the database directory (the one
+  holding `checkouts.json`); `unregister` removes it. This is the reverse
+  pointer of `find_for_cwd`: the breadcrumb lets a tool standing inside a
+  checkout discover *which* Commonplace database owns it, where
+  `find_for_cwd` lets the database discover which checkout owns a given
+  path. Breadcrumbs are skipped for checkouts that live inside the
+  database tree itself.
+
+  ## Reroot
+
+  `reroot/3` re-points an existing checkout at a different document root —
+  stopping the old agent and spawning a fresh one on the new `uuid` (e.g.
+  after switching the branch a directory tracks). It emits a `reroot`
+  audit event on the red channel (channel vocabulary is owned by
+  `Commonplace.Dataflow.Channel`).
   """
 
   use GenServer
