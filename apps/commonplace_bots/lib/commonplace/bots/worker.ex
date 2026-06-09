@@ -1,6 +1,10 @@
 defmodule Commonplace.Bots.Worker do
   @moduledoc """
-  Ephemeral cave-diver worker — one turn per bot per fired trigger.
+  Ephemeral "cave-diver" worker — one turn per bot per fired trigger.
+  The metaphor names the lifecycle: it dives in on a fixed air supply
+  (the hard caps below), does one turn's work, and surfaces carrying
+  nothing — every durable result was written to the substrate, never
+  held in process state.
 
   A worker is a **Task** supervised by
   `Commonplace.Bots.WorkerSupervisor`. It is born when the
@@ -20,8 +24,8 @@ defmodule Commonplace.Bots.Worker do
 
   When a cap is hit, the worker terminates with a
   `{:cap_hit, which}` outcome — no apology message is posted
-  to the chat. Failure visibility is via the entity's red log
-  and the room's `__bot_activity` doc (phase 6).
+  to the chat. Failure (and success) visibility is via the two
+  durable trails described under "Observable side effects" below.
 
   ## Substrate-pure I/O
 
@@ -32,12 +36,41 @@ defmodule Commonplace.Bots.Worker do
     * `remember` appends a JSON line to the bot's `memory.jsonl`
       via the same Yjs text-append primitive any other client
       would use.
-    * `read_chat`, `read_memory`, `list_files`, `read_file` (phase 5)
-      read through `DocBuilder.reconstruct_snapshot/2` — the same
+    * `read_chat`, `read_memory`, `list_files`, `read_file` read
+      through `DocBuilder.reconstruct_snapshot/2` — the same
       read path used by the web UI and any future MCP server.
 
   The principle: a human UI and an MCP server are peers; the
   worker is *also* a peer. No bot-only fast lanes.
+
+  ## Observable side effects
+
+  Beyond posting and remembering through the substrate, a running
+  worker leaves three observable traces — all best-effort (a failed
+  write emits telemetry but never takes the worker down; observability
+  must not gate behavior):
+
+    * **`.exe` presence flicker** (CX-q8nk(1)). For the duration of
+      the loop the worker registers a transient honorific
+      `<name>-<short_id>.exe` doc under the bot's directory, and always
+      removes it on exit — success, cap, error, or crash. `.exe` is the
+      tree's "live process / running presence" actor tag (see the
+      honorific legend in `Commonplace.Bots`), so the presence doc makes
+      a worker's run visible *in the tree itself*, not just in logs.
+
+    * **Per-bot red log** (CX-q8nk(2)). On exit the outcome is appended
+      to the bot's own `__red_log` doc (via `Commonplace.Dataflow.RedLog`)
+      when one exists: the bot's *private, durable* trail of every turn
+      it has taken, across every room it operates in.
+
+    * **Room activity log** (CX-gptu). The terminal
+      `[:commonplace, :bots, :worker, :finished]` telemetry event is
+      what the dispatcher fans out into the room's `__bot_activity` doc
+      — the *room's* view of every bot that fired in it.
+
+  The two durable logs are complementary axes, deliberately not merged:
+  `__red_log` answers "what has this one bot done, everywhere?";
+  `__bot_activity` answers "what happened in this room?".
 
   ## Dependency injection
 
