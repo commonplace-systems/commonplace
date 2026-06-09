@@ -7,23 +7,34 @@ defmodule Commonplace.Bots.Worker.Loop do
   ## Shape
 
   A "turn" in this loop is one HTTP request to the Messages API.
-  The loop builds the initial system+user message pair, then:
+  The loop builds the initial system+user message pair, then on
+  each iteration — *before* issuing a request — checks three
+  cumulative budgets in order. Any one already exhausted ends the
+  loop immediately without another POST:
 
-    1. Check the wall-clock budget. Exceeded → `{:cap_hit, :wall_clock}`.
-    2. Check the call budget. Exceeded → `{:cap_hit, :calls}`.
-    3. POST the current message list + tool definitions + remaining
-       output-token budget.
-    4. Examine `stop_reason`:
-       * `"end_turn"` → loop exits with `{:ok, :end_turn}`. Any
-         `text` content in the final assistant message is
-         informational only; tool side-effects already happened.
-       * `"tool_use"` → for each `tool_use` block in the response,
-         dispatch via `Worker.Tools.dispatch/3`, build a matching
-         `tool_result` block, append `assistant`+`user` messages
-         to the running list, and loop.
-       * `"max_tokens"` → `{:cap_hit, :max_tokens}` (per-call
-         token ceiling hit; distinct from the cumulative cap).
-       * anything else → `{:error, {:unexpected_stop, reason}}`.
+    1. Wall-clock elapsed ≥ `max_wall_ms` → `{:cap_hit, :wall_clock}`.
+    2. Calls already made ≥ `max_calls` → `{:cap_hit, :calls}`.
+    3. Output tokens already spent ≥ `max_output_tokens` →
+       `{:cap_hit, :output_tokens}`. This is the *cumulative* token
+       cap, summed across every response so far; contrast
+       `"max_tokens"` below, which is one *single* response
+       overrunning the per-call ceiling we asked for.
+
+  If all three have headroom it POSTs the current message list +
+  tool definitions + the *remaining* output-token budget (as that
+  request's `max_tokens`), then examines `stop_reason`:
+
+    * `"end_turn"` → loop exits with `{:ok, :end_turn}`. Any
+      `text` content in the final assistant message is
+      informational only; tool side-effects already happened.
+    * `"tool_use"` → for each `tool_use` block in the response,
+      dispatch via `Worker.Tools.dispatch/3`, build a matching
+      `tool_result` block, append `assistant`+`user` messages
+      to the running list, and loop.
+    * `"max_tokens"` → `{:cap_hit, :max_tokens}`. The model hit
+      the per-call ceiling we sent on this one request — distinct
+      from the cumulative `:output_tokens` cap in step 3.
+    * anything else → `{:error, {:unexpected_stop, reason}}`.
 
   ## Tool result on tool errors
 
@@ -31,8 +42,34 @@ defmodule Commonplace.Bots.Worker.Loop do
   returned to the model as a `tool_result` block with
   `is_error: true` so the model can react (apologize, try a
   different tool, give up) rather than the loop blowing up.
-  Only an *infrastructure* error (HTTP failure, malformed
-  response shape) terminates the loop with `{:error, _}`.
+
+  An *infrastructure* error (transport failure, malformed response
+  shape) is different — it is never surfaced to the model, and ends
+  the loop with `{:error, {:client_failure, reason}}`. The one
+  exception is the retryable-overload subset, which gets a single
+  model fallback in first (see below).
+
+  ## Model fallback on overload (CX-hl7j)
+
+  When the client function returns `{:error, reason}` the loop
+  gets ONE rescue attempt before giving up, but only when all of:
+
+    * the error is an overload/unavailable HTTP status —
+      `529 Overloaded`, `503 Service Unavailable`, `502 Bad Gateway`;
+    * a `fallback_model` is configured and differs from the model
+      currently in use; and
+    * no fallback has happened yet this run (one swap, never a chain).
+
+  When all three hold, the loop swaps `active_model` to the
+  fallback and retries the *same* iteration — same message list,
+  and no budget is consumed (a failed POST never counted a call,
+  since the call/token counters only advance on a successful
+  response). Any other error, or a second failure after the swap,
+  terminates with `{:error, {:client_failure, reason}}`.
+
+  This is one cheap insurance retry against transient provider
+  overload — a single hop to a secondary/cheaper model — not a
+  resilience layer: no exponential backoff, no repeated attempts.
 
   ## State
 
