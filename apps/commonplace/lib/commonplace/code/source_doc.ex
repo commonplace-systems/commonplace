@@ -127,9 +127,16 @@ defmodule Commonplace.Code.SourceDoc do
   Resolve a DocRef to a compiled module. Reads the source-doc reachable
   from `context_path` via `ref`, then compiles it.
 
-  ref examples:
-    `"../_renderer.ex"` — sibling of context_path's parent dir
-    `"./_local.ex"` — sibling of context_path itself
+  ref examples (note both leading forms currently resolve *identically*):
+    `"../_renderer.ex"` — a sibling doc in context_path's containing dir
+    `"./_local.ex"` — likewise, a doc in that same containing dir
+
+  `context_path` names a *doc* (a file, e.g.
+  `/chat/__template/_compute`), so resolution strips the single leading
+  `../` or `./` and joins the remainder onto `Path.dirname(context_path)`.
+  Both prefixes therefore land in the same containing directory — `../`
+  does **not** climb to the grandparent here. (This mirrors M3
+  ArgResolver's `from="../_messages"` shape.)
 
   Full DocRef (`docref://path:uuid@cid`) is deferred to a future
   milestone; recognized but unimplemented in M6a.
