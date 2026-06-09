@@ -6,8 +6,17 @@ defmodule Commonplace.Presence.Compactor do
   Long-lived presence docs accumulate one client_id per heartbeat under
   the writer-side bug fixed in CX-6g6 — by the time CX-6g6 lands, some
   docs have tens of thousands of distinct client_ids in their state
-  vector and ~hundred-KB latest commit payloads. This module performs
-  the (B) "snapshot-append" strategy from the design doc:
+  vector and ~hundred-KB latest commit payloads. (The fix that stops new
+  bloat is the stable per-doc client_id in `Commonplace.Presence`; this
+  module cleans up docs that were already bloated before it landed.)
+
+  The obvious cure — delete or rewrite the offending commits — is not
+  available: the commit DAG is **append-only** (data is never removed),
+  so we cannot shrink the *stored* history. What we *can* do is append
+  one more commit that re-states the whole document under a single
+  client_id, so that readers which apply only the latest commit see a
+  small payload. That is the (B) "snapshot-append" strategy from the
+  design doc:
 
   1. Load the doc via existing readers.
   2. Build a self-contained Yjs update under a single client_id via
