@@ -17,19 +17,25 @@ defmodule Commonplace.Sync.MergeAdopter do
     `:latest`, then the merge dominates the local head and it is safe
     to advance `:latest` to the merge.
 
-  Domination guarantees no local work is lost — the local head is
-  already reachable from the merge, so every local commit's content
-  has been folded into the merge's product. When the merge does NOT
-  dominate local `:latest` (a sibling case), this module is a no-op
-  and some other mechanism (SiblingMerger sweep, explicit merge
-  invocation) is responsible for converging.
+  Note the direction: the walk follows *ancestor* edges from the merge,
+  so "the merge reaches local `:latest`" means local `:latest` is an
+  ancestor of the merge — the merge descends from the local head, not
+  the other way around. That is exactly why domination guarantees no
+  local work is lost: since the local head is an ancestor of the merge,
+  every local commit is already in the merge's ancestral closure and so
+  its content is folded into the merge's product. When the merge does
+  NOT dominate local `:latest` (a sibling case — neither head is an
+  ancestor of the other), this module is a no-op and some other
+  mechanism (SiblingMerger sweep, explicit merge invocation) is
+  responsible for converging.
 
   Wired into `Commonplace.Sync.NodeSync.import_with_translation/3`.
 
-  Option (b) from the bead's design matrix. Option (c) — push-based
-  set_latest via the merge-command reply — was considered and not
-  taken because (b) works under offline/catch-up sync without
-  requiring the peer to be subscribed at merge time.
+  Option (b) from CX-8k1v's design matrix — the import-hook adoption
+  implemented here. Option (c) — push-based set_latest via the
+  merge-command reply — was considered and not taken because (b) works
+  under offline/catch-up sync without requiring the peer to be
+  subscribed at merge time.
   """
 
   alias Commonplace.Store.{Commit, CommitStoreClient}
