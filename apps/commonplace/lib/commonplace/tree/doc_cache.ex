@@ -14,6 +14,14 @@ defmodule Commonplace.Tree.DocCache do
   commit (see CX-4im). We subscribe lazily per-uuid on first insert and
   unsubscribe when the uuid is evicted or explicitly invalidated.
 
+  Correctness does **not** depend on that broadcast arriving promptly: the
+  freshness guarantee is the `:latest` comparison above, which every
+  `get_snapshot/2` performs and which rebuilds on any mismatch, so a cache
+  entry can never serve a stale doc even if its invalidation message is
+  delayed or in flight. The `blue:` subscription is *proactive cleanup* —
+  it drops superseded docs from memory and lets the cache unsubscribe —
+  not the thing that keeps reads correct.
+
   Bounded by `max_size` (default 256) with simple LRU eviction based on a
   monotonic access counter.
 
