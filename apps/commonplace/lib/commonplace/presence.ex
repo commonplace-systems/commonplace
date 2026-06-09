@@ -1,9 +1,44 @@
 defmodule Commonplace.Presence do
   @moduledoc """
-  Presence files — actor business cards in the document tree.
+  Presence documents — actor "business cards" in the document tree.
 
-  Actors advertise their existence via presence documents with
-  honorific extensions: .exe (process), .usr (human), .bot (AI), .who (generic).
+  Every actor (a process, a human, an AI agent) advertises its existence
+  by owning a presence document: a small CRDT map, stored like any other
+  document and registered as a file in a parent directory's schema. The
+  filename encodes the actor's TYPE via an **honorific extension**:
+
+    * `.exe` — a process
+    * `.usr` — a human
+    * `.bot` — an AI agent
+    * `.who` — generic / unspecified
+
+  (`parse_honorific/1` and `filename/2` convert between `name` + type and
+  the on-disk filename; `discover/2` lists the actors of a given type in a
+  schema.) The map carries the actor's live state — `name`, `type`,
+  `status`, `started_at`, a `heartbeat` timestamp refreshed by
+  `heartbeat/2`, and optional `activity` / `owner` / `cwd` /
+  `capabilities` attributes — so presence doubles as a liveness signal: a
+  fresh heartbeat says the actor is still alive, a stale one says it is
+  probably gone.
+
+  ## Single-writer invariant (load-bearing)
+
+  Every write to a presence doc (create, status update, heartbeat,
+  restart) reconstructs it under a *stable* `client_id` derived from the
+  doc's uuid (`:erlang.phash2`). This keeps the Yjs state vector at one
+  client slot instead of minting a fresh random client per write —
+  without it the SV grows unbounded, O(N) in the number of writes
+  (CX-3ty / CX-6g6).
+
+  That sharing is safe **only because a presence doc is semantically
+  single-writer**: an actor owns its own `.bot` / `.usr` / `.exe` /
+  `.who` file and no one else writes to it. If two distinct writers
+  shared a `client_id` on the same doc from the same base state,
+  `YMap.set` would mint identical `(client_id, clock)` pairs and
+  `Encoding.apply_update` would silently drop one side as "already
+  known." Anyone adding a *shared* presence-like document must NOT reuse
+  this scheme — see `Commonplace.Presence.Identity`, which faces exactly
+  this and solves it differently.
   """
 
   alias Commonplace.Tree.Schema
