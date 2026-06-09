@@ -2,19 +2,50 @@ defmodule Commonplace.Store.MergeSnapshotter do
   @moduledoc """
   Merge-snapshot construction (CX-dx22 / Build 7.4).
 
-  A merge-snapshot establishes a fresh namespace that both branches L
-  and R derive from. It produces a `:snapshot` commit with
+  `build_merge_snapshot/4` is the two-parent generalization of
+  `Commonplace.Store.Snapshotter`: where a plain snapshot re-encodes
+  *one* branch's state into a fresh namespace, a *merge-snapshot* merges
+  two divergent branches — `L` and `R`, identified by the commit ids
+  `l_id` and `r_id` of the two branch heads being merged — and
+  re-encodes the *merged* state into a fresh namespace that
+  both branches derive from. (A *namespace* is the identity space a
+  doc's CRDT items live in, named by the snapshot commit that opened it;
+  the vocabulary is owned by `Commonplace.Store.Namespace`.)
+
+  ## Why a merge-snapshot
+
+  `Commonplace.Store.CrossEpochMerge` (the `:translate` strategy) folds
+  R into L's *existing* namespace: the merged result still lives in
+  `L_ns`, with R's edits re-expressed in terms of L's ids. The
+  `:merge_snapshot` strategy this module builds makes the opposite move
+  — it computes the same merged content but then *resets the id-space*,
+  minting a brand-new namespace that BOTH L and R translate forward
+  into. `Commonplace.Store.MergePolicy` owns the decision of *when* to
+  pay for a reset instead of translating into an ever-growing namespace
+  (large divergence / state-vector growth is what motivates the reset).
+
+  Because there are now two source namespaces, the derivation map
+  carries two inner entries — the multi-parent shape `Snapshotter`'s
+  single-parent map anticipated. The result is a `:snapshot` commit with
 
       snapshot_parents = [L_ns, R_ns]
       derivation_map   = %{L_ns => DM_L_inner, R_ns => DM_R_inner}
 
-  where each inner map goes `new_id → source_ns_id`. Late edits authored
-  against either `L_ns` or `R_ns` translate through the corresponding
-  inner map into the merge-snapshot's fresh namespace; the outer-map-
+  where each inner map goes `new_id → source_ns_id`. A late edit authored
+  against either `L_ns` or `R_ns` translates through its corresponding
+  inner map into the merge-snapshot's fresh namespace; the outer-map
   flatten in `LateEditTranslator.build_inverse_dm/1` (CX-2rd Build 6.2)
   already handles the two-entry shape transparently.
 
   ## Algorithm
+
+  The construction below is reimplementation-grade detail: every step
+  delegates the heavy CRDT machinery to a named module
+  (`SnapshotAncestry`, `CrossEpochMerge`, `Snapshotter`). What a *caller*
+  relies on is the metadata shape above plus byte-determinism (below);
+  the steps exist to explain how the two inner derivation maps get
+  populated correctly — the subtle part, since L/C content and R-only
+  content reach the fresh namespace by different paths (steps 6–7).
 
   1. Resolve `C = common_ancestor(L, R)`, plus `L_chain` and `R_chain`.
   2. Compose each chain's forward DMs (`new → old` direction). The
