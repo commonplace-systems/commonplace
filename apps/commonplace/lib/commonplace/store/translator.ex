@@ -1,39 +1,78 @@
 defmodule Commonplace.Store.Translator do
   @moduledoc """
-  End-to-end late-edit translation entry point (CX-fefz / Build 6.5).
+  Entry point for translating a **late edit** onto a snapshot
+  (CX-fefz / Build 6.5).
 
-  Composes the three sub-beads that make up the late-edit translation
-  pipeline:
+  A *late edit* is a commit authored against a prior namespace — call it
+  `P` — that arrives after a snapshot — call it `S` — has already
+  **re-identified** `P`'s items into a fresh namespace of its own.
+  (`P` is the namespace the edit was written in; `S` is the snapshot
+  commit it must be moved onto, and `S`'s re-identified ids form the
+  target namespace.) The edit's refs (`origin`, `right_origin`,
+  `{:id, _}` parents, delete-set targets) still name the `P`-namespace
+  ids that `S` renamed, so the edit cannot be applied as-is: every such
+  ref must be rewritten from its `P`-id to the equivalent id in `S`'s
+  namespace. This module performs that rewrite and returns a commit that
+  lands cleanly on `S`.
 
-  - 6.2 `Commonplace.Store.Namespace.inverse_derivation_map/1` —
-    inverts the target snapshot's forward derivation map so refs in
-    the edit's source namespace can be rewritten to the target
-    snapshot's namespace.
-  - 6.3 `Commonplace.Store.LateEditTranslator.translate_update/2` —
-    rewrites each item's `origin`, `right_origin`, and `{:id, _}`
-    parent refs through the inverse DM, preserving every item's own
-    identity.
-  - 6.4 `Commonplace.Store.LateEditPreflight.translate_and_validate/2` —
-    walks every ref before any translation output, short-circuiting
-    atomically on the first missing entry.
+  Re-identification and the derivation maps (DMs) that record it are
+  `Commonplace.Store.Namespace`'s domain — see its "derivation-map
+  algebra" section. This module is that algebra's primary consumer.
 
-  Returns `{:ok, translated_commit}` on success — a new
-  `Commonplace.Store.Commit` struct whose `update` is the translated
-  bytes, `parent_id` is the target snapshot's id, and metadata carries
-  `%{kind: :regular, snapshot_parent: target_snapshot.id}`. The struct
-  is returned in memory; callers persist via `CommitStore.import_commit/2`.
+  ## The pipeline
 
-  Byte-determinism: because the translator preserves every item's
-  identity and the content-address excludes timestamp, two independent
-  peers translating the same `(edit, target_snapshot)` produce
-  byte-identical translated commits (identical `id`, `update`,
-  `metadata`, `parent_id`). The store's content-addressing then
-  collapses them into a single stored entry.
+  `translate_edit/4` composes three Build-6 sub-steps:
 
-  ## Red events
+    1. **Invert the DM** (6.2) — `Namespace.inverse_derivation_map/1`
+       turns `S`'s forward DM (`new_id => old_id`) into the
+       `old_id => new_id` lookup used to rewrite a `P`-ref to its
+       `S`-ref. (`build_inverse_dm/1` first expands the per-item DM
+       across each item's sub-clocks, so a ref into the middle of a
+       consolidated insert still resolves; that function documents the
+       why.)
+    2. **Pre-flight** (6.4) —
+       `LateEditPreflight.translate_and_validate/2` walks *every* ref
+       before emitting any output, making translation all-or-nothing.
+    3. **Translate** (6.3) — `LateEditTranslator` rewrites each ref
+       through the inverse DM, preserving every item's own identity.
 
-  All outcomes emit a telemetry event under the `[:commonplace,
-  :late_edit, ...]` prefix (sibling to CX-ch5's
+  On success, returns `{:ok, translated_commit}` — a fresh
+  `Commonplace.Store.Commit` whose `update` is the rewritten bytes,
+  `parent_id` is `S`'s id, and metadata is
+  `%{kind: :regular, snapshot_parent: S.id}`. The struct is returned
+  in memory; callers persist it via `CommitStore.import_commit/2`.
+
+  ## When translation fails: case_a / case_b
+
+  A ref is *untranslatable* when its target is absent from the inverse
+  DM. In the MVP — where the DM carries only items still live in `S` —
+  that absence means the target was **tombstoned before `S` was built**.
+  Two sub-cases (owned by `LateEditPreflight`):
+
+    - `:case_a` — the edit's *op target* is gone: a `{:id, _}` parent
+      link or a delete-set entry points at an item `S` no longer has.
+    - `:case_b` — the edit's *insert anchor* is gone: an `origin` or
+      `right_origin` of an adjacent insert was tombstoned before `S`.
+
+  Pre-flight short-circuits on the first such ref, emits
+  `[:commonplace, :late_edit, :untranslatable]`, and returns
+  `{:error, {:untranslatable, reason, ref_id}}` — `ref_id` is the
+  exact `{client_id, clock}` that missed.
+
+  ## Byte-determinism
+
+  The primary path preserves every item's identity, and the
+  content-address excludes `timestamp` (see `Commonplace.Store.Commit`).
+  Two independent peers translating the same `(edit, S)` therefore
+  produce byte-identical commits — same `id`, `update`, `metadata`,
+  `parent_id` — and the store's content-addressing collapses them to one
+  entry. The positional-rebase fallback is the one path that breaks this.
+
+  ## Red events (audit telemetry)
+
+  All outcomes emit a `:telemetry` event under the `[:commonplace,
+  :late_edit, ...]` prefix — the "red" / audit-channel family (sibling
+  to CX-ch5's
   `[:commonplace, :commit, :rejected, :namespace_mismatch]`):
 
   - `[:commonplace, :late_edit, :translated]` on success, with
@@ -44,9 +83,9 @@ defmodule Commonplace.Store.Translator do
     `{client_id, clock}` that failed lookup — the actionable detail
     for audit/debug.
   - `[:commonplace, :late_edit, :fallback]` when Build 6.6's
-    opt-in positional-rebase fallback resolves an otherwise
-    untranslatable edit, with metadata `%{edit_hash, target_snapshot,
-    reason, ref_id, commit_id}`.
+    positional-rebase fallback resolves an otherwise untranslatable
+    edit, with metadata `%{edit_hash, target_snapshot, reason, ref_id,
+    commit_id}`.
 
   ## Positional-rebase fallback (CX-7sln / Build 6.6)
 
@@ -54,10 +93,23 @@ defmodule Commonplace.Store.Translator do
   `pre_doc: %Yelixer.Doc{}` (a reconstruction of the edit's source
   namespace state). When set, pre-flight failures dispatch to
   `Commonplace.Document.Rebase.rebase/3` (CX-6a7) to re-author the
-  dirty edit as native-coordinate ops on the target snapshot. The
-  result is a valid commit under the local peer's client id — at the
-  cost of byte-determinism across peers. The default is `false`,
-  matching 6.5's fail-loud behavior.
+  edit as native-coordinate ops on the target snapshot. The result is a
+  valid commit under the local peer's client id — at the cost of
+  byte-determinism across peers. The default is `false`, matching
+  6.5's fail-loud behavior.
+
+  ## What this module is NOT
+
+  - **Not the derivation-map algebra.** It consumes
+    `Commonplace.Store.Namespace`'s inverse/compose maps; beyond the
+    sub-clock expansion in `build_inverse_dm/1` it neither builds nor
+    inverts them itself.
+  - **Not the ref rewriter or the validator.** `LateEditTranslator`
+    does the per-op rewrite; `LateEditPreflight` does the all-or-nothing
+    pre-check. This module composes them and stamps the result commit.
+  - **Not the persister.** It returns an in-memory commit;
+    `CommitStore.import_commit/2` stores it (and re-runs namespace
+    validation on the way in).
   """
 
   alias Commonplace.Document.Rebase
