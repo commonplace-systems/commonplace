@@ -8,12 +8,22 @@ defmodule CommonplaceWebWeb.ViewRenderer do
 
   Per `docs/views.md`, this renderer covers the 10-element vocabulary:
   `<view>`, `<entity>`, `<body>`, `<text>`, `<field>`, `<list>`,
-  `<action>`, `<include>`, `<provenance>`, `<raw>`.
+  `<action>`, `<include>`, `<provenance>`, `<raw>`. Unknown elements
+  outside this vocabulary are not errors — the renderer drops the
+  wrapper and renders their children, staying forward-compatible with
+  future vocabulary additions.
 
-  Pass A (CX-vaw) additions:
-  - Actions render as clickable `phx-click="view_action"` buttons.
-    The wiki LiveView catches the event and forwards through
-    `CommonplaceWebWeb.ViewActions.dispatch/3`.
+  Action rendering (CX-vaw / CX-lok1) — an `<action>` renders one of
+  two ways, keyed on its `args` attribute:
+  - **no `args`** → a `phx-click="view_action"` button (the wiki
+    edit / history / fork path);
+  - **`args="name:type,…"`** → a `phx-submit="view_action"` form with
+    one text input per declared arg (the chat MVP path: post_message /
+    edit_message / delete_message). M3 supports `:string` args only;
+    other types fall back to a text input.
+
+  Either way the wiki LiveView catches the event and forwards through
+  `CommonplaceWebWeb.ViewActions.dispatch/3`.
 
   Remaining first-pass limits:
   - Transclusion (`<include>`) is expanded once at the top of
