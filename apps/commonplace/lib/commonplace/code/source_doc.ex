@@ -273,7 +273,11 @@ defmodule Commonplace.Code.SourceDoc do
     end
   end
 
-  defp now_ms, do: System.monotonic_time(:millisecond)
+  # Strictly monotonic access stamp. Millisecond wall-time ties (several
+  # compiles inside one ms) made LRU eviction order arbitrary — the
+  # sort_by in evict_over_cap broke ties by ETS table order, evicting
+  # recently-touched entries under load (flaky R8c cap test).
+  defp now_ms, do: :erlang.unique_integer([:monotonic])
 
   # Evict least-recently-used entries until the cache is back within the cap.
   # Keyed off the index table (one entry per uuid); purge_stale/1 reclaims the
