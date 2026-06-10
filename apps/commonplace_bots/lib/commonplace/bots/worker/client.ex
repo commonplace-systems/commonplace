@@ -12,6 +12,19 @@ defmodule Commonplace.Bots.Worker.Client do
   raising — the dispatcher continues for other bots, the worker
   outcome is captured in telemetry.
 
+  ## Return shapes
+
+  `call/1` returns `{:ok, response_body_map}` on HTTP 200, or one of
+  three error shapes — the worker loop (`Commonplace.Bots.Worker.Loop`)
+  distinguishes them:
+
+    * `{:error, :missing_api_key}` — no `ANTHROPIC_API_KEY` in the env.
+    * `{:error, {:http_status, status, body}}` — a non-200 response.
+      The loop keys its one-shot model fallback on this, retrying on a
+      `529` / `503` / `502` overload status.
+    * `{:error, {:transport_error, exception}}` — `Req` got no response
+      at all (timeout, DNS, connection refused).
+
   ## Why not stream
 
   v0 workers have hard caps on output tokens and wall-clock; the
