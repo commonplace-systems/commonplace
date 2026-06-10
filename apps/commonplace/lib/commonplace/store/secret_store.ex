@@ -1,9 +1,18 @@
 defmodule Commonplace.Store.SecretStore do
   @moduledoc """
-  Local CubDB-backed storage for secrets.
+  Local CubDB-backed storage for secrets (keypairs, API tokens).
 
-  Secrets are node-local, never synced via CRDTs or PubSub.
-  Used to inject keypairs and API tokens into process environments.
+  Secrets are **node-local**: a plain CubDB under `<data_dir>/secrets`,
+  never synced via CRDTs or PubSub. That is the load-bearing invariant —
+  a secret *value* must never enter the synced document tree.
+
+  The bridge between that invariant and actually *using* secrets is
+  `resolve_env/2`: a (synced) process declaration's env map can carry
+  `"$secret:KEY_NAME"` placeholders, and at launch the node-local store
+  substitutes the real value in. So the synced declaration only ever
+  holds the reference, never the secret itself. `set/3` / `get/2` /
+  `delete/2` manage entries; `list/1` deliberately returns names only,
+  never values.
   """
 
   use GenServer
