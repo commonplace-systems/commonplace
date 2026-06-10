@@ -1,9 +1,19 @@
 defmodule Commonplace.Store.GC do
   @moduledoc """
-  Garbage collection: find orphaned documents not reachable from any root.
+  Garbage collection — **detection only**. Finds orphaned documents:
+  those present in the CommitStore but not reachable from a given root.
 
-  Walks the schema tree from root, collects all reachable UUIDs, then
-  compares against all document UUIDs in the CommitStore to find orphans.
+  It walks the schema tree from the root, collects every reachable UUID,
+  and subtracts that from the set of all document UUIDs in the store; the
+  remainder are orphans. `find_orphans/2` returns the `{reachable,
+  orphaned}` MapSets; `report/2` wraps them with counts.
+
+  **Nothing is ever deleted.** The CommitStore is append-only (data is
+  never removed), so "GC" here means *identifying* unreferenced docs —
+  for auditing, debugging dangling references, or a future external
+  archival step — not reclaiming their space. And an orphan is only
+  orphaned relative to the root you pass: a doc reachable from a
+  *different* root that wasn't supplied still shows up as an orphan here.
   """
 
   alias Commonplace.Tree.Walk
