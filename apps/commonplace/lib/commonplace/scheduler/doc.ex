@@ -16,8 +16,11 @@ defmodule Commonplace.Scheduler.Doc do
   Status transitions are append-only (pending → fired, pending →
   cancelled). CRDT merges of concurrent terminal writes converge by
   last-write-wins on the scalar string — for the scheduler's
-  semantics, any terminal status is fine (subscribers have already
-  received at least one magenta broadcast).
+  semantics, any terminal status is fine: subscribers have already
+  received at least one magenta broadcast (magenta = the ephemeral
+  fire-and-forget notification channel; see `Commonplace.Dataflow.Channel`),
+  so whichever terminal status wins the merge, the notification already
+  happened.
   """
 
   alias Yelixer.{Doc, Encoding}
