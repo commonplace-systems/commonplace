@@ -2,15 +2,21 @@ defmodule Commonplace.Document.ContentType do
   @moduledoc """
   Document envelope system for commonplace.
 
-  Every document is a YMap at root (the "envelope"), containing:
-  - "_type" key: "text" | "map" | "array" | "xml"
-  - "_name" key: human-readable document name
-  - "content" key: the actual content, stored in a separate named Yjs type
-  - Arbitrary metadata keys
+  Every document is a single `Yelixer.Doc` holding TWO top-level Yjs
+  types side by side:
 
-  The root envelope uses the type name "root" (a YMap).
-  Content is stored in a separate named type "content", whose Yjs type
-  depends on the document's _type.
+  - the **envelope** — a YMap registered under the name `"root"` — whose
+    keys are `"_type"` (`"text" | "map" | "array" | "xml"`), `"_name"`
+    (a human-readable name), and any arbitrary metadata;
+  - the **content** — a separate top-level type registered under the
+    name `"content"` — holding the actual payload. Its Yjs type is
+    chosen from `"_type"`: `Text` for text, `YMap` for map, `Array` for
+    array, `XMLFragment` for xml.
+
+  The key subtlety: `"content"` is NOT a key inside the envelope YMap —
+  it is a *sibling* named type in the same Doc. So `_type` / `_name` /
+  metadata are read from the `"root"` map (`get_type/1`), while the
+  payload is read from the `"content"` type (`get_content/1`).
   """
 
   alias Yelixer.Doc
