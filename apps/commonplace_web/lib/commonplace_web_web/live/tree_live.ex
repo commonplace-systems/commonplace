@@ -2,8 +2,15 @@ defmodule CommonplaceWebWeb.TreeLive do
   @moduledoc """
   LiveView for browsing the commonplace document tree.
 
-  Shows the directory listing on the left, document content on the right.
-  Subscribes to PubSub blue channel for real-time content updates.
+  Directory listing on the left, the selected document's content on the
+  right. Selecting a document subscribes to *that doc's* blue channel so
+  its content updates live; changing selection (and `terminate/2`)
+  unsubscribes the previous one.
+
+  Side effect: while a connected session is open it registers a
+  `browser-<id>.usr` presence actor under the workspace root (with a
+  15s heartbeat), so an open tree-browser tab is visible to others as a
+  live `.usr` presence. The actor is stopped on `terminate/2`.
   """
 
   use CommonplaceWebWeb, :live_view
