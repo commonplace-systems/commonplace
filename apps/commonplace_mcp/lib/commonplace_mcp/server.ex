@@ -7,6 +7,43 @@ defmodule Commonplace.MCP.Server do
   intentionally a plain struct, not a GenServer: the stdio loop owns it as
   a local variable and threads updated copies through each message.
 
+  ## Request routing and the initialize gate
+
+  `handle/2` is the single entry point the stdio loop calls per
+  message. It pattern-matches the parsed `Protocol` term and routes:
+
+    * `initialize` — the MCP handshake; ALWAYS allowed, even as the
+      very first message. Records the client info + negotiated
+      protocol version, starts presence (below), and replies with
+      `serverInfo` + `capabilities`.
+    * `tools/list`, `tools/call` — delegate to `Commonplace.MCP.Tools`.
+    * `resources/list`, `resources/read` — delegate to
+      `Commonplace.MCP.Resources`.
+    * any other request method — `{:error, :method_not_found, …}`.
+    * notifications — `{:noreply, …}`: acknowledged but never
+      answered (`notifications/initialized` is the expected one).
+
+  The protocol invariant: **any request other than `initialize`,
+  arriving before initialize has completed, is rejected with
+  `:invalid_request`.** This gate is the entire reason the server
+  tracks `initialized?`. It applies to *requests* only —
+  notifications are always accepted regardless of handshake state.
+
+  ## Presence lifecycle (dependency-injected)
+
+  The server does not know how presence is minted. The bootstrap
+  (the `Commonplace.MCP` escript entry point) injects a
+  `presence_starter` and `presence_stopper` via `new/1`; tests inject
+  stubs. At `initialize` the server calls the starter with the client
+  name, and on success captures the returned `presence_info` (a
+  `uuid` plus optional `mailbox_uuid` / `mailbox_topic`) into its
+  state — echoing those ids back in `serverInfo` so the client can
+  locate its presence doc and mailbox. `shutdown/1` calls the stopper
+  with that same captured info for orderly teardown. A missing
+  starter, or one that errors, simply yields no presence and the
+  handshake still succeeds: presence is best-effort and never gates
+  the protocol.
+
   ## handle/2 return shapes
 
     * `{:ok, result, server}`          — reply to a request with this result
