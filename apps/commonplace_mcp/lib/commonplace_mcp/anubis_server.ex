@@ -13,9 +13,18 @@ defmodule Commonplace.MCP.AnubisServer do
   Anubis calls `init/2` AFTER the initialize handshake completes
   (post `notifications/initialized`). That's where we spawn the
   `Commonplace.Presence.Server` and the per-agent mailbox onramp, then
-  stash the three identifiers (presence_uuid, mailbox_uuid,
-  mailbox_topic) into `frame.assigns`. The `presence_info` tool reads
-  them back.
+  stash the presence identifiers — presence_uuid, mailbox_uuid,
+  mailbox_topic, plus `presence_path` (the agent's bound name like
+  `"commonplace.bot"`, CX-9rbc, used so `ViewActionDispatch` can fill
+  author_path without a substrate reverse-lookup) — into
+  `frame.assigns`, where the `presence_info` tool and every
+  `tools/call` context (`presence_context/1`) read them back.
+
+  Presence is best-effort: if `config/1` never ran (no
+  `presence_starter` in `:persistent_term`) or the starter errors,
+  `init/2` logs a warning and proceeds with empty assigns —
+  `presence_info` then returns all-nil fields but the session still
+  works.
 
   ### Wire contract break
 
@@ -25,6 +34,27 @@ defmodule Commonplace.MCP.AnubisServer do
   Clients now call `tools/call presence_info` (snake_case keys) after
   initialization instead. CX-xaof removes the hand-rolled substrate
   once this path has proven itself.
+
+  ## Crash resilience (CX-0nkq, CX-re6b)
+
+  Every `handle_request/2` branch runs its real work inside
+  `safe_invoke/1`, which catches `:exit` / `:error` / `:throw` and
+  returns them as a tagged tuple. The disease: a handler can raise an
+  exit — most often a `CommitStore` `GenServer.call` timeout under
+  load (CX-0nkq) — and an uncaught exit propagates up through anubis's
+  per-session GenServer, tearing the whole stdio transport down and
+  killing the agent's session.
+
+  Instead, a caught crash becomes a *survivable* failure: `tools/call`
+  returns an **in-band** MCP error (`%{"isError" => true, …}`) so the
+  agent sees a retryable tool failure, and the read-only handlers
+  (`tools/list`, `resources/*`) return a protocol execution error.
+  Either way the session lives. (Originally only `tools/call` was
+  guarded; CX-re6b extended the same wrap to every handler once a rare
+  `tools/list` timeout — it reads the CRDT-tools schema — became the
+  surviving session-killer after CX-71ej dropped CommitStore queue
+  load.) A `[:commonplace, :mcp, :tool_call, :crashed]` telemetry
+  event fires on each intercepted `tools/call` crash.
 
   ## Shutdown
 
