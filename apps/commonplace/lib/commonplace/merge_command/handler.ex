@@ -35,6 +35,17 @@ defmodule Commonplace.MergeCommand.Handler do
   through JSON — the onramp persists events via `Jason.encode!`, which
   rejects non-UTF8 binaries.
 
+  ## Deterministic, idempotent merges (CX-1mml)
+
+  Two peers can invoke `merge` on the same sibling pair concurrently,
+  each seeing it locally as `{latest, other_ref}` in the opposite order.
+  Before merging, the handler canonicalizes the pair by CID
+  (`Merger.canonical_pair/2`) so both feed the merge in the same order
+  and produce a *byte-identical* commit. Persisting is a CAS that treats
+  `:parent_moved` as success, so the second peer's identical commit is a
+  no-op rather than a conflict. Net effect: concurrent merges of the
+  same pair converge instead of forking the DAG.
+
   ## Red-log onramp (CX-3hvu, CX-nuc2)
 
   On the first successful merge for a given path, the handler starts a
