@@ -7,10 +7,16 @@ defmodule Commonplace.MCP.Tools.CallTool do
   the agent can invoke it now via `call_tool({name, args})`. The
   dispatcher resolves at call time against the live catalog.
 
-  Recursive guard: meta-tools (`call_tool`, `list_tools`) are
-  registered in the system surface but NOT in the dispatchable
-  catalog. Calling `call_tool({name: "call_tool", ...})` returns
-  `:not_found` — recursion can't begin.
+  Recursion guard: `call_tool` is itself a normal, *dispatchable*
+  tool in the catalog — session-init clients must be able to see and
+  invoke it (that's the whole point). The guard against it invoking
+  itself, or `list_tools`, lives here at call time: `run/2` returns
+  `:not_found` for any inner `name` that is a meta-tool (`call_tool`,
+  `list_tools`), so a `call_tool({name: "call_tool", …})` bounce never
+  begins. It is NOT enforced by hiding the meta-tools from the catalog
+  (they are visible and directly callable). This is the same guard
+  `Commonplace.MCP.Tools` documents living "at call time, in
+  `CallTool.run/2`."
   """
 
   alias Commonplace.MCP.Tools
