@@ -1,7 +1,8 @@
 # Trust & Attenuation — code-reality survey notes (checkpoint)
 
 Date: 2026-06-10, branch `trust-attenuation` @ main 396b266.
-Status: **R1 (CX-tdkq.1) and R2 (CX-tdkq.2) IMPLEMENTED on this branch.**
+Status: **R1 (CX-tdkq.1), R2 (CX-tdkq.2), and phase 2.5 (CX-tdkq.24) IMPLEMENTED on this branch.**
+This is the full **deployable flat-allowlist trust tier** — the natural merge point.
 Design doc (complete, §1–8) lives in **commonplace-plan's repo**: `docs/trust-and-attenuation.md`.
 
 ## Implemented (this branch)
@@ -20,12 +21,19 @@ Design doc (complete, §1–8) lives in **commonplace-plan's repo**: `docs/trust
 - `f8f70c0` Gate B second ingress: `__processes.json` declaration gate
   (only protection for `:sandbox_exec`; revocation stops running
   processes via reconcile convergence)
+- `98f821e` NodeIdentity — per-workspace Ed25519 keypair (local, never
+  synced), identity = node_id
+- `90cd9b2` Trust auto-trusts the local node identity (zero-config
+  single-node strict)
+- `31dad86` node-sign system-minted commits (`:snapshot`/`:merge`) at
+  the CommitStore write chokepoints — closes both strict-mode hazards
 
-Open follow-ups (relayed to commonplace-plan for beads): re-scope
-CX-tdkq.21 (phase 1.5 largely subsumed); strict-mode hazard — unsigned
-auto-snapshots brick code-doc executability; unsigned merge commits vs
-strict federation import. Phase 3 (cert docs, CX-tdkq.22) awaiting
-direction.
+Open follow-ups: phase 3 (attenuable cert docs, CX-tdkq.22) — design
+build-ready in doc §4, awaiting go/no-go; CX-tdkq.21 re-scoped to
+revocation residuals (P2); multi-node strict cross-pinning is the
+documented node-key custody gap (phase-3 root-attestation). Mint-site
+residuals not node-signed: fork + translator mint user-derived
+`:regular` commits (need the user's key, not 2.5's scope).
 
 ---
 
