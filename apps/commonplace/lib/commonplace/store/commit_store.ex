@@ -1046,6 +1046,30 @@ defmodule Commonplace.Store.CommitStore do
   @max_pending_imports 1024
 
   defp handle_validated_import(commit, opts, state) do
+    case Commonplace.Trust.authorized?(commit, :write, {:doc, commit.doc_uuid}) do
+      :ok ->
+        handle_namespace_validated_import(commit, opts, state)
+
+      {:error, reason} ->
+        # R1 (CX-tdkq.1): trust rejections are HARD rejects — unlike a
+        # namespace :unknown_reference they don't resolve when another
+        # commit lands, so they never enter the R11 pending queue.
+        :telemetry.execute(
+          [:commonplace, :commit, :rejected, :trust],
+          %{system_time: System.system_time()},
+          %{
+            commit_id: commit.id,
+            doc_uuid: commit.doc_uuid,
+            signer_id: commit.signer_id,
+            reason: reason
+          }
+        )
+
+        {:reply, {:error, {:trust_rejected, reason}}, state}
+    end
+  end
+
+  defp handle_namespace_validated_import(commit, opts, state) do
     case validator_for(opts, state).(commit) do
       :ok ->
         case CubDB.get(state.db, {:commit, commit.id}) do
