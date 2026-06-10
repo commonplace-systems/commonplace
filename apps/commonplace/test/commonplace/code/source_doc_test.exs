@@ -139,7 +139,7 @@ defmodule Commonplace.Code.SourceDocTest do
       # Round-1 audit (A) — no stale entry leak
       # The :source_doc_index should have exactly one entry for this uuid
       # (the latest hash); the old hash entry should have been deleted.
-      index_entries = :ets.match_object(:source_doc_index, {uuid, :_})
+      index_entries = :ets.match_object(:source_doc_index, {uuid, :_, :_})
       assert length(index_entries) == 1, "no stale uuid entries in index after recompile"
     end
   end
@@ -205,6 +205,44 @@ defmodule Commonplace.Code.SourceDocTest do
 
       assert {:error, :not_found} =
                SourceDoc.resolve("../no_such_file.ex", spec_path, store)
+    end
+  end
+
+  describe "compile cache cap (R8c / CX-tdkq.8)" do
+    setup do
+      Application.put_env(:commonplace, :source_doc_cache_max, 2)
+      on_exit(fn -> Application.delete_env(:commonplace, :source_doc_cache_max) end)
+      :ok
+    end
+
+    defp mod_src(n), do: "defmodule Commonplace.UserCode.CapTest.M#{n} do def v, do: #{n} end"
+
+    defp cached_uuids do
+      :source_doc_index |> :ets.tab2list() |> Enum.map(fn {uuid, _h, _a} -> uuid end) |> MapSet.new()
+    end
+
+    test "evicts least-recently-used modules once over the cap" do
+      a = mint_source_doc(mod_src(1))
+      b = mint_source_doc(mod_src(2))
+      c = mint_source_doc(mod_src(3))
+
+      assert {:ok, _} = SourceDoc.compile(a)
+      assert {:ok, _} = SourceDoc.compile(b)
+      # Touch A so B is now the least-recently-used of the two.
+      assert {:ok, _} = SourceDoc.compile(a)
+
+      # Cache is at the cap (2: A, B). Compiling C must evict the LRU (B).
+      assert {:ok, _} = SourceDoc.compile(c)
+
+      assert :ets.info(:source_doc_index, :size) == 2
+      uuids = cached_uuids()
+      assert MapSet.member?(uuids, a), "A was recently used — should survive"
+      assert MapSet.member?(uuids, c), "C was just compiled — should be present"
+      refute MapSet.member?(uuids, b), "B was LRU — should have been evicted"
+
+      # Evicted entry recompiles transparently on next access (it's a cache).
+      assert {:ok, _} = SourceDoc.compile(b)
+      assert :ets.info(:source_doc_index, :size) == 2
     end
   end
 end

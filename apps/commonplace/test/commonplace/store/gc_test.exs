@@ -93,4 +93,36 @@ defmodule Commonplace.Store.GCTest do
     assert MapSet.member?(all, uuid1)
     assert MapSet.member?(all, uuid2)
   end
+
+  test "archive_orphans/3 exports orphan state without deleting (R8b)", %{store: store, dir: dir} do
+    root_uuid = UUID.uuid4()
+    file_uuid = UUID.uuid4()
+    orphan_uuid = UUID.uuid4()
+
+    # Reachable file.
+    doc = ContentType.create(Yelixer.Doc.new(), :text, "file.txt")
+    doc = ContentType.insert_text(doc, 0, "reachable")
+    CommitStore.create_commit(store, file_uuid, Yelixer.Encoding.encode_update(doc), nil)
+
+    # Orphan, not referenced by any schema.
+    odoc = ContentType.create(Yelixer.Doc.new(), :text, "orphan.txt")
+    odoc = ContentType.insert_text(odoc, 0, "orphan content")
+    CommitStore.create_commit(store, orphan_uuid, Yelixer.Encoding.encode_update(odoc), nil)
+
+    root_doc = Schema.add_file(Schema.new_schema(), "file.txt", file_uuid)
+    CommitStore.create_commit(store, root_uuid, Yelixer.Encoding.encode_update(root_doc), nil)
+
+    dest = Path.join(dir, "orphans.jsonl")
+    assert {:ok, %{archived: 1, skipped: 0, path: ^dest}} = GC.archive_orphans(root_uuid, dest, store)
+
+    lines = dest |> File.read!() |> String.split("\n", trim: true)
+    assert length(lines) == 1
+    entry = Jason.decode!(hd(lines))
+    assert entry["uuid"] == orphan_uuid
+    assert is_binary(entry["state_b64"]) and entry["state_b64"] != ""
+    refute entry["uuid"] in [root_uuid, file_uuid]
+
+    # Nothing was deleted — the orphan is still in the append-only store.
+    assert {:ok, _} = CommitStore.latest_commit(store, orphan_uuid)
+  end
 end

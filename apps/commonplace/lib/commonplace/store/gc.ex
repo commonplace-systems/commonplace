@@ -18,6 +18,7 @@ defmodule Commonplace.Store.GC do
 
   alias Commonplace.Tree.Walk
   alias Commonplace.Tree.Schema
+  alias Commonplace.Tree.DocBuilder
   alias Commonplace.Store.CommitStoreClient
 
   @doc """
@@ -58,5 +59,59 @@ defmodule Commonplace.Store.GC do
       orphaned_count: MapSet.size(orphaned),
       orphaned_uuids: orphaned
     }
+  end
+
+  @doc """
+  Archive the current state of every orphaned doc to a JSONL file at
+  `dest_path`, **without deleting anything** (R8 part b / CX-tdkq.8). This
+  is the external archival step the module's "GC" detection always
+  anticipated: an operator can stash or inspect unreferenced docs' state
+  before deciding their fate. Reclaiming store space — *deleting* the
+  archived orphans from the append-only store — is a separate, gated
+  decision (CX-tdkq.17), deliberately NOT done here.
+
+  Each JSONL line is a self-contained snapshot of one orphan:
+
+      {"uuid": <uuid>,
+       "latest_commit": <hex commit id>,
+       "state_b64": <base64 of the doc's full reconstructed Yjs update>}
+
+  `state_b64` is the *reconstructed full state* (not just the latest
+  delta), so a line is enough to re-materialize the doc elsewhere.
+
+  Returns `{:ok, %{archived: n, skipped: m, path: dest_path}}` — `skipped`
+  counts orphans with no reconstructable state (defensive; normally 0).
+  """
+  def archive_orphans(root_uuid, dest_path, store \\ CommitStoreClient) do
+    {_reachable, orphaned} = find_orphans(root_uuid, store)
+
+    {lines, archived, skipped} =
+      Enum.reduce(orphaned, {[], 0, 0}, fn uuid, {acc, a, s} ->
+        case archive_line(uuid, store) do
+          {:ok, line} -> {[line | acc], a + 1, s}
+          :skip -> {acc, a, s + 1}
+        end
+      end)
+
+    contents = if lines == [], do: "", else: Enum.join(Enum.reverse(lines), "\n") <> "\n"
+    File.write!(dest_path, contents)
+
+    {:ok, %{archived: archived, skipped: skipped, path: dest_path}}
+  end
+
+  defp archive_line(uuid, store) do
+    with {:ok, doc} <- DocBuilder.reconstruct_doc(store, uuid),
+         {:ok, commit} <- CommitStoreClient.latest_commit(store, uuid) do
+      line =
+        Jason.encode!(%{
+          "uuid" => uuid,
+          "latest_commit" => Base.encode16(commit.id, case: :lower),
+          "state_b64" => Base.encode64(Yelixer.Encoding.encode_update(doc))
+        })
+
+      {:ok, line}
+    else
+      _ -> :skip
+    end
   end
 end

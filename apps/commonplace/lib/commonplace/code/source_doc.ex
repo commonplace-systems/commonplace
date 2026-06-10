@@ -188,9 +188,24 @@ defmodule Commonplace.Code.SourceDoc do
     :ok
   end
 
+  # R8(c) / CX-tdkq.8: bound the compile cache. Edits already reclaim their
+  # own old module (purge_stale on hash change), but nothing capped growth
+  # across DISTINCT code docs, and a deleted doc's module was never reclaimed
+  # — a long-lived substrate accumulated compiled modules without bound. The
+  # index table now carries a monotonic last-access stamp so we can evict
+  # least-recently-used entries once the cache exceeds the cap. A miss after
+  # eviction simply recompiles — correctness is unaffected, it's a cache.
+  @default_max_cached_modules 256
+
+  defp max_cached_modules do
+    Application.get_env(:commonplace, :source_doc_cache_max, @default_max_cached_modules)
+  end
+
   defp lookup_cached(uuid, hash) do
-    with [{^uuid, ^hash}] <- :ets.lookup(@index_table, uuid),
+    with [{^uuid, ^hash, _accessed}] <- :ets.lookup(@index_table, uuid),
          [{^hash, module}] <- :ets.lookup(@cache_table, hash) do
+      # Touch on hit so the LRU eviction order reflects real usage.
+      :ets.insert(@index_table, {uuid, hash, now_ms()})
       {:ok, module}
     else
       _ -> :miss
@@ -199,7 +214,7 @@ defmodule Commonplace.Code.SourceDoc do
 
   defp purge_stale(uuid) do
     case :ets.lookup(@index_table, uuid) do
-      [{^uuid, old_hash}] ->
+      [{^uuid, old_hash, _accessed}] ->
         case :ets.lookup(@cache_table, old_hash) do
           [{^old_hash, old_module}] ->
             try do
@@ -227,8 +242,9 @@ defmodule Commonplace.Code.SourceDoc do
     try do
       [{module, _bin} | _] = Code.compile_string(source, filename)
 
-      :ets.insert(@index_table, {uuid, hash})
+      :ets.insert(@index_table, {uuid, hash, now_ms()})
       :ets.insert(@cache_table, {hash, module})
+      evict_over_cap()
 
       {:ok, module}
     rescue
@@ -236,6 +252,25 @@ defmodule Commonplace.Code.SourceDoc do
     catch
       kind, reason -> {:error, {kind, reason}}
     end
+  end
+
+  defp now_ms, do: System.monotonic_time(:millisecond)
+
+  # Evict least-recently-used entries until the cache is back within the cap.
+  # Keyed off the index table (one entry per uuid); purge_stale/1 reclaims the
+  # module, the cache row, and the index row together.
+  defp evict_over_cap do
+    cap = max_cached_modules()
+
+    if :ets.info(@index_table, :size) > cap do
+      @index_table
+      |> :ets.tab2list()
+      |> Enum.sort_by(fn {_uuid, _hash, accessed} -> accessed end)
+      |> Enum.drop(-cap)
+      |> Enum.each(fn {uuid, _hash, _accessed} -> purge_stale(uuid) end)
+    end
+
+    :ok
   end
 
   # --- Path resolution ---
