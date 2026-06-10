@@ -122,6 +122,46 @@ defmodule Commonplace.TrustTest do
       assert %{accept_unsigned: true} = Trust.default_config()
     end
 
+    test "config/0 auto-trusts the local node identity (phase 2.5)" do
+      # The node trusts its OWN system-minted commits by construction —
+      # its signing key is local-only and unforgeable by a peer — so a
+      # single-node strict workspace needs zero pinning for node-signed
+      # snapshots/merges. config/0 folds the node identity→pubkey in.
+      tmp = Path.join(System.tmp_dir!(), "trust-node-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp)
+
+      old = Application.get_env(:commonplace, :data_dir)
+      Application.put_env(:commonplace, :data_dir, tmp)
+
+      Application.put_env(:commonplace, :trust, %{
+        accept_unsigned: false,
+        trusted_identities: %{}
+      })
+
+      on_exit(fn ->
+        if old, do: Application.put_env(:commonplace, :data_dir, old),
+          else: Application.delete_env(:commonplace, :data_dir)
+
+        Application.delete_env(:commonplace, :trust)
+        File.rm_rf!(tmp)
+      end)
+
+      {:ok, node_ctx} = Commonplace.Crypto.NodeIdentity.signing_context()
+
+      cfg = Trust.config()
+      assert Map.has_key?(cfg.trusted_identities, node_ctx.identity_uuid)
+
+      # And a commit the node signs passes authorized? in strict mode.
+      commit =
+        Commit.new("d", "u", nil)
+        |> Signing.sign_commit(
+          node_ctx.private_key,
+          Signing.signer_id(node_ctx.identity_uuid, node_ctx.public_key)
+        )
+
+      assert :ok = Trust.authorized?(commit, :write, {:doc, "d"}, cfg)
+    end
+
     test "config/0 falls back to trust.json under data_dir" do
       tmp = Path.join(System.tmp_dir!(), "trust-cfg-#{System.unique_integer([:positive])}")
       File.mkdir_p!(tmp)
@@ -143,7 +183,9 @@ defmodule Commonplace.TrustTest do
 
       cfg = Trust.config()
       assert cfg.accept_unsigned == false
-      assert cfg.trusted_identities == %{"some-uuid" => "AAAA"}
+      # User pin survives; config/0 also folds in the local node identity
+      # (phase 2.5), so assert the user entry is present rather than exact.
+      assert cfg.trusted_identities["some-uuid"] == "AAAA"
     end
   end
 end

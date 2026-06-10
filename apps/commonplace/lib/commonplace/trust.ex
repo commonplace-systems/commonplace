@@ -183,9 +183,31 @@ defmodule Commonplace.Trust do
   """
   @spec config() :: config()
   def config do
-    case Application.get_env(:commonplace, :trust) do
-      %{} = cfg -> normalize(cfg)
-      nil -> config_from_file() || default_config()
+    base =
+      case Application.get_env(:commonplace, :trust) do
+        %{} = cfg -> normalize(cfg)
+        nil -> config_from_file() || default_config()
+      end
+
+    with_local_node_trust(base)
+  end
+
+  # Phase 2.5 (CX-tdkq.24): the local node always trusts its OWN
+  # system-minted commits — its signing key is local-only and a peer
+  # cannot forge it, so this is anchored in local config (the node
+  # keypair file), exactly the §4 anchor model. Folding the node
+  # identity→pubkey into the trusted set means a single-node strict
+  # workspace accepts node-signed snapshots/merges with zero pinning.
+  # Best-effort: if the node key can't be sourced, the set is unchanged
+  # (the node's commits will then fail strict checks — visible, not
+  # silent).
+  defp with_local_node_trust(cfg) do
+    with {:ok, identity} <- Commonplace.Crypto.NodeIdentity.identity(),
+         {:ok, pub} <- Commonplace.Crypto.NodeIdentity.public_key() do
+      trusted = Map.put_new(cfg.trusted_identities, identity, Signing.encode_key(pub))
+      %{cfg | trusted_identities: trusted}
+    else
+      _ -> cfg
     end
   end
 
