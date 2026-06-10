@@ -9,10 +9,63 @@ defmodule Commonplace.Presence.Identity do
 
   alias Commonplace.Tree.Schema
   alias Commonplace.Document.ContentType
-  alias Commonplace.Store.CommitStoreClient
+  alias Commonplace.Store.{CommitStore, CommitStoreClient}
   alias Commonplace.Presence
+  alias Commonplace.SiblingMerger
 
   @identities_dir "__identities__"
+
+  @doc """
+  Collapse imported sibling commits on an identity doc into `:latest`
+  (CX-tdkq.1 / R1).
+
+  Identity docs are shared multi-writer documents: a concurrent write
+  from another node arrives via `import_commit`, which deliberately does
+  not advance `:latest` — leaving it a sibling that `read/2`'s
+  latest-commit reconstruction can't see. Reads and writes below call
+  this first so the registry converges instead of silently dropping the
+  remote write.
+
+  `CommitStoreClient` is a stateless routing module, not a GenServer, so
+  it is normalized to the local `CommitStore` for the merger's direct
+  calls (same single-node MVP assumption as `Gold.Chain`).
+  """
+  def converge(uuid, store \\ CommitStoreClient) do
+    SiblingMerger.maybe_merge_siblings(normalize_store(store), uuid)
+  end
+
+  defp normalize_store(CommitStoreClient), do: CommitStore
+  defp normalize_store(other), do: other
+
+  # Metadata for identity-doc writes (CX-tdkq.1 / R1).
+  #
+  # SiblingMerger's underlying merge resolves the common ancestor at
+  # snapshot-chain granularity (SnapshotAncestry walks
+  # metadata.snapshot_parent back to a trust root), so legacy `%{}`
+  # commits — whose namespace is nil — can never be converged. Writing
+  # `%{kind: :regular}` lets CommitStore auto-stamp `snapshot_parent`
+  # (genesis for a fresh doc), making the doc umbrella-shaped and
+  # mergeable.
+  #
+  # The umbrella shape is applied only when the stamp can succeed: a
+  # fresh doc (genesis parent) or a doc whose head already carries a
+  # namespace. Chaining a `:regular` commit onto a LEGACY head would
+  # produce kind-without-snapshot_parent, which peers' namespace
+  # validators reject on import — so legacy docs keep writing legacy
+  # commits (and simply don't converge, as before).
+  defp write_metadata(uuid, store) do
+    case CommitStoreClient.latest_commit(store, uuid) do
+      :none ->
+        %{kind: :regular}
+
+      {:ok, head} ->
+        if Commonplace.Store.Namespace.current_namespace(head) do
+          %{kind: :regular}
+        else
+          %{}
+        end
+    end
+  end
 
   @doc "Ensure the __identities__ system directory exists in the root schema."
   def ensure_identities_dir(root_uuid, store \\ CommitStoreClient) do
@@ -65,7 +118,7 @@ defmodule Commonplace.Presence.Identity do
         doc = ContentType.set_key(doc, "last_seen", now)
 
         update = Yelixer.Encoding.encode_update(doc)
-        CommitStoreClient.create_commit(store, uuid, update, nil)
+        CommitStoreClient.create_commit(store, uuid, update, nil, write_metadata(uuid, store))
 
         # Add to identities schema
         id_doc = load_schema(id_dir_uuid, store)
@@ -77,16 +130,28 @@ defmodule Commonplace.Presence.Identity do
     end
   end
 
-  @doc "Read a cold identity document."
+  @doc "Read a cold identity document (converging any imported siblings first)."
   def read(uuid, store \\ CommitStoreClient) do
-    case CommitStoreClient.latest_commit(store, uuid) do
-      {:ok, commit} ->
-        doc = Yelixer.Doc.new()
-        {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
-        ContentType.get_content(doc)
+    converge(uuid, store)
 
-      :none ->
-        nil
+    case reconstruct(uuid, store) do
+      {:ok, doc} -> ContentType.get_content(doc)
+      :none -> nil
+    end
+  end
+
+  # Full-chain reconstruction with the workspace's stable client_id
+  # reapplied so subsequent writes reuse the same Yjs client (the
+  # CX-3ty/CX-6g6 state-vector discipline).
+  #
+  # Latest-commit-only reconstruction is no longer sufficient here: a
+  # SiblingMerger merge commit is a DELTA on top of the local head (R's
+  # translated edits), so reading just the head would drop everything
+  # the pre-merge chain carried.
+  defp reconstruct(uuid, store) do
+    case Commonplace.Tree.DocBuilder.reconstruct_doc(store, uuid) do
+      {:ok, doc} -> {:ok, %{doc | client_id: stable_client_id(uuid)}}
+      :none -> :none
     end
   end
 
@@ -125,14 +190,14 @@ defmodule Commonplace.Presence.Identity do
 
   @doc "Update last_seen timestamp on a cold identity."
   def touch_last_seen(uuid, store \\ CommitStoreClient) do
-    case CommitStoreClient.latest_commit(store, uuid) do
-      {:ok, commit} ->
-        doc = Yelixer.Doc.new(client_id: stable_client_id(uuid))
-        {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
+    converge(uuid, store)
+
+    case reconstruct(uuid, store) do
+      {:ok, doc} ->
         now = DateTime.utc_now() |> DateTime.to_iso8601()
         doc = ContentType.set_key(doc, "last_seen", now)
         update = Yelixer.Encoding.encode_update(doc)
-        CommitStoreClient.create_chained_commit(store, uuid, update)
+        CommitStoreClient.create_chained_commit(store, uuid, update, write_metadata(uuid, store))
 
       :none ->
         :ok
@@ -141,11 +206,10 @@ defmodule Commonplace.Presence.Identity do
 
   @doc "Add a public key to an identity document."
   def add_public_key(identity_uuid, public_key_b64, store \\ CommitStoreClient) do
-    case CommitStoreClient.latest_commit(store, identity_uuid) do
-      {:ok, commit} ->
-        doc = Yelixer.Doc.new(client_id: stable_client_id(identity_uuid))
-        {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
+    converge(identity_uuid, store)
 
+    case reconstruct(identity_uuid, store) do
+      {:ok, doc} ->
         # Get existing keys or start empty
         content = ContentType.get_content(doc)
 
@@ -165,7 +229,13 @@ defmodule Commonplace.Presence.Identity do
           keys = keys ++ [public_key_b64]
           doc = ContentType.set_key(doc, "public_keys", Jason.encode!(keys))
           update = Yelixer.Encoding.encode_update(doc)
-          CommitStoreClient.create_chained_commit(store, identity_uuid, update)
+
+          CommitStoreClient.create_chained_commit(
+            store,
+            identity_uuid,
+            update,
+            write_metadata(identity_uuid, store)
+          )
         end
 
         :ok
