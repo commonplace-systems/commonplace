@@ -38,6 +38,15 @@ defmodule Commonplace.Crypto.SigningTest do
     assert {:error, :unsigned} = Signing.verify_commit(commit)
   end
 
+  test "verify_commit/2 returns :unsigned for nil-signature commit instead of crashing",
+       %{commit: commit, pub: pub} do
+    # The /2 head must guard nil signatures the same way /1 does — otherwise
+    # :crypto.verify(:eddsa, :none, id, nil, ...) raises badarg on exactly the
+    # adversarial input (an unsigned commit presented to the gate).
+    assert commit.signature == nil
+    assert {:error, :unsigned} = Signing.verify_commit(commit, pub)
+  end
+
   test "signed? returns true for signed commits", %{commit: commit, priv: priv} do
     signed = Signing.sign_commit(commit, priv, "alice")
     assert Signing.signed?(signed) == true

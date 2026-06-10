@@ -31,6 +31,11 @@ defmodule Commonplace.Crypto.Signing do
   """
   def verify_commit(%Commit{signature: nil}), do: {:error, :unsigned}
 
+  # Guard nil signatures on the /2 head too: :crypto.verify raises badarg on a
+  # nil signature, and the adversarial input at the import gate is precisely an
+  # unsigned commit. Return the same {:error, :unsigned} as /1 rather than crash.
+  def verify_commit(%Commit{signature: nil}, _public_key), do: {:error, :unsigned}
+
   def verify_commit(%Commit{} = commit, public_key) when is_binary(public_key) do
     case :crypto.verify(:eddsa, :none, commit.id, commit.signature, [public_key, :ed25519]) do
       true -> :ok
