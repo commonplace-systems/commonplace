@@ -10,6 +10,8 @@ defmodule CommonplaceWebWeb.ChatRoomLive do
   2. Ensure the per-room `Chat.ChatViewComputeSupervisor` ViewCompute
      instance is running (lazy-start trigger from the LiveView path,
      mirroring how `Chat.Actions.commit_entry` triggers the onramp).
+     Skipped for pre-M5 rooms that have no `_compute` doc — they fall
+     back to whatever static `_view.xml` already holds.
   3. Subscribe to commits on the view doc (so the LiveView re-renders
      whenever ViewCompute writes new view-XML).
   4. Fetch view-XML content, pipe through `ViewRenderer.render_view/2`.
@@ -17,8 +19,22 @@ defmodule CommonplaceWebWeb.ChatRoomLive do
      `phx-submit="view_action"`) into substrate-resolved dispatch via
      `Commonplace.View.ArgResolver` + `CommonplaceWebWeb.ViewActions`.
 
+  ## Re-render is roundtrip-driven, not optimistic
+
+  After mount, `view_xml` is re-assigned in exactly one place: the
+  `handle_info` for a `{:commit, …}` on the subscribed view doc
+  (step 3). The action handler (step 5) dispatches and commits but does
+  NOT push fresh view-XML into the socket itself — the new render
+  arrives only once ViewCompute has recomputed `_view.xml` and that
+  commit echoes back over the subscription. So a user's own action and
+  a remote peer's both reach the screen through the *same* recompute
+  path, and every connected tab converges to identical view-XML instead
+  of each rendering an optimistic guess.
+
   Author identity is a placeholder until CX-88mw lands per-session
-  signing infrastructure (see chat-room.md "v1: placeholder signers").
+  signing infrastructure (the dispatch context carries a placeholder
+  `signer_id`/`presence_path`, not a `signing_context` — see
+  chat-room.md "v1: placeholder signers").
   """
 
   use CommonplaceWebWeb, :live_view
