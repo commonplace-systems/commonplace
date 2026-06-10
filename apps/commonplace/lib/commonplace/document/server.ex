@@ -291,35 +291,53 @@ defmodule Commonplace.Document.Server do
   @impl true
   def handle_info({:remote_commit, commit, source_node}, state) do
     if source_node != Node.self() do
-      CommitStoreClient.import_commit(state.commit_store, commit)
+      # R1 (CX-tdkq.1): the import verdict is load-bearing. Applying a
+      # commit the store rejected (id-mismatch, trust, namespace) would
+      # let it take effect in the live doc and — worse — point :latest at
+      # a commit that was never persisted.
+      case CommitStoreClient.import_commit(state.commit_store, commit) do
+        accepted when accepted in [:ok, :already_exists] ->
+          apply_remote_commit(commit, state)
 
-      if snapshot_commit?(commit) do
-        handle_snapshot_commit(commit, state)
-      else
-        # CX-bgq: on successful remote-incremental apply, advance both
-        # state.parent_commit (so rebase reconstructs the baseline at the
-        # right point) and the store's :latest (so reconstruct_doc_at's
-        # commit_log walk can reach it). Otherwise a subsequent snapshot
-        # rebase diffs from a stale baseline and double-applies content
-        # that the snapshot already contains.
-        case Yelixer.Encoding.apply_update(state.doc, commit.update) do
-          {:ok, doc} ->
-            CommitStoreClient.set_latest(state.commit_store, state.uuid, commit.id)
+        {:error, reason} ->
+          :telemetry.execute(
+            [:commonplace, :document, :remote_commit_rejected],
+            %{system_time: System.system_time()},
+            %{uuid: state.uuid, commit_id: commit.id, reason: reason}
+          )
 
-            {:noreply,
-             %{
-               state
-               | doc: doc,
-                 parent_commit: commit.id,
-                 current_namespace: advance_namespace(state.current_namespace, commit)
-             }}
-
-          {:error, _} ->
-            {:noreply, state}
-        end
+          {:noreply, state}
       end
     else
       {:noreply, state}
+    end
+  end
+
+  defp apply_remote_commit(commit, state) do
+    if snapshot_commit?(commit) do
+      handle_snapshot_commit(commit, state)
+    else
+      # CX-bgq: on successful remote-incremental apply, advance both
+      # state.parent_commit (so rebase reconstructs the baseline at the
+      # right point) and the store's :latest (so reconstruct_doc_at's
+      # commit_log walk can reach it). Otherwise a subsequent snapshot
+      # rebase diffs from a stale baseline and double-applies content
+      # that the snapshot already contains.
+      case Yelixer.Encoding.apply_update(state.doc, commit.update) do
+        {:ok, doc} ->
+          CommitStoreClient.set_latest(state.commit_store, state.uuid, commit.id)
+
+          {:noreply,
+           %{
+             state
+             | doc: doc,
+               parent_commit: commit.id,
+               current_namespace: advance_namespace(state.current_namespace, commit)
+           }}
+
+        {:error, _} ->
+          {:noreply, state}
+      end
     end
   end
 

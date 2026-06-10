@@ -469,6 +469,53 @@ defmodule Commonplace.Document.ServerSyncTest do
     assert Process.alive?(pid)
   end
 
+  test "trust-rejected remote_commit is neither applied in-memory nor advances :latest",
+       %{store: store} do
+    # R1 bypass fix (CX-tdkq.1): handle_info({:remote_commit, ...}) used to
+    # IGNORE import_commit's verdict and apply + set_latest regardless —
+    # making any import gate moot on this path. A rejected commit must leave
+    # the in-memory doc, the store, and :latest untouched.
+    uuid = "sync-trust-#{:rand.uniform(1_000_000)}"
+
+    initial_doc = Yelixer.Doc.new(client_id: 10)
+    initial_doc = Commonplace.Document.ContentType.create(initial_doc, :text, "TrustDoc")
+    initial_doc = Commonplace.Document.ContentType.insert_text(initial_doc, 0, "hello")
+    initial_update = Yelixer.Encoding.encode_update(initial_doc)
+    initial_commit = CommitStore.create_commit(store, uuid, initial_update, nil)
+
+    pid =
+      start_supervised!(
+        {Server, uuid: uuid, commit_store: store, client_id: 70},
+        id: uuid
+      )
+
+    assert Server.get_content(pid) == "hello"
+
+    # Strict trust config: unsigned commits are rejected at import.
+    Application.put_env(:commonplace, :trust, %{
+      accept_unsigned: false,
+      trusted_identities: %{}
+    })
+
+    on_exit(fn -> Application.delete_env(:commonplace, :trust) end)
+
+    remote_doc = Yelixer.Doc.new(client_id: 99)
+    {:ok, remote_doc} = Yelixer.Encoding.apply_update(remote_doc, initial_update)
+    remote_doc = Commonplace.Document.ContentType.insert_text(remote_doc, 5, " evil")
+    remote_update = Yelixer.Encoding.encode_update(remote_doc)
+    rejected_commit = Commonplace.Store.Commit.new(uuid, remote_update, initial_commit.id)
+
+    send(pid, {:remote_commit, rejected_commit, :fake_remote_node})
+    _ = Server.get_doc(pid)
+
+    # Not persisted, not applied, :latest untouched.
+    assert CommitStore.get_commit(store, rejected_commit.id) == :none
+    assert Server.get_content(pid) == "hello"
+    assert {:ok, latest} = CommitStore.latest_commit(store, uuid)
+    assert latest.id == initial_commit.id
+    assert Process.alive?(pid)
+  end
+
   test "remote_commit with invalid update does not crash the server", %{store: store} do
     uuid = "sync-bad-#{:rand.uniform(1_000_000)}"
 
