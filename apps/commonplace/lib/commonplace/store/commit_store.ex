@@ -833,6 +833,12 @@ defmodule Commonplace.Store.CommitStore do
 
   @impl true
   def handle_call({:write_prebuilt_commit_cas, %Commit{} = commit}, _from, state) do
+    # Phase 2.5 (CX-tdkq.24): a prebuilt commit is a system-minted merge
+    # (Merger/CrossEpochMerge → Commit.new, never signed). Node-sign it
+    # so strict mode accepts it. Signing is over the id, which is already
+    # bound — so the CAS dedup (keyed on id) is unaffected.
+    commit = maybe_sign_commit(commit)
+
     case CubDB.get(state.db, {:latest, commit.doc_uuid}) do
       latest_id when latest_id == commit.parent_id ->
         CubDB.put_multi(state.db, [
@@ -1448,36 +1454,68 @@ defmodule Commonplace.Store.CommitStore do
   # agent commits that should not inherit the human's identity).
   # Default (nil context) falls back to the global SecretStore — the
   # legacy behavior, preserved for callers that haven't been updated.
+  #
+  # CX-tdkq.24 (phase 2.5): when the nil branch would otherwise leave a
+  # SYSTEM-minted commit (kind :snapshot or :merge) unsigned, the node
+  # identity signs it as the accountable fallback — so strict mode
+  # accepts system commits. Regular user commits are untouched (still
+  # unsigned absent a user key/context).
   defp maybe_sign_commit(commit, signing_context \\ nil)
+
+  # Never re-sign: a commit that already carries a signature (e.g. a
+  # remote/prebuilt commit re-written idempotently) keeps its signer.
+  defp maybe_sign_commit(%Commit{signature: sig} = commit, _) when not is_nil(sig), do: commit
 
   defp maybe_sign_commit(commit, :unsigned), do: commit
 
   defp maybe_sign_commit(commit, %Commonplace.Crypto.SigningContext{} = ctx) do
+    sign_with_context(commit, ctx)
+  end
+
+  defp maybe_sign_commit(commit, nil) do
+    case global_secret_context() do
+      {:ok, ctx} -> sign_with_context(commit, ctx)
+      :none -> node_sign_if_system(commit)
+    end
+  end
+
+  defp sign_with_context(commit, ctx) do
     signer_id = Commonplace.Crypto.Signing.signer_id(ctx.identity_uuid, ctx.public_key)
     Commonplace.Crypto.Signing.sign_commit(commit, ctx.private_key, signer_id)
   end
 
-  defp maybe_sign_commit(commit, nil) do
-    case Process.whereis(Commonplace.Store.SecretStore) do
-      nil ->
-        commit
+  # The node-identity fallback applies only to system-minted commits, so
+  # ordinary unsigned user commits keep their (unsigned) behavior.
+  defp node_sign_if_system(%Commit{metadata: %{kind: kind}} = commit)
+       when kind in [:snapshot, :merge] do
+    case Commonplace.Crypto.NodeIdentity.signing_context() do
+      {:ok, ctx} -> sign_with_context(commit, ctx)
+      {:error, _} -> commit
+    end
+  end
 
-      _pid ->
-        with {:ok, encoded_key} <- Commonplace.Store.SecretStore.get("signing_key:default"),
-             {:ok, private_key} <- Base.decode64(encoded_key),
-             {:ok, encoded_pub} <- Commonplace.Store.SecretStore.get("signing_pub:default"),
-             {:ok, public_key} <- Base.decode64(encoded_pub) do
-          identity_uuid =
-            case Commonplace.Store.SecretStore.get("signing_identity") do
-              {:ok, uuid} -> uuid
-              :not_found -> "anonymous"
-            end
+  defp node_sign_if_system(commit), do: commit
 
-          signer_id = Commonplace.Crypto.Signing.signer_id(identity_uuid, public_key)
-          Commonplace.Crypto.Signing.sign_commit(commit, private_key, signer_id)
-        else
-          _ -> commit
+  defp global_secret_context do
+    with _pid when not is_nil(_pid) <- Process.whereis(Commonplace.Store.SecretStore),
+         {:ok, encoded_key} <- Commonplace.Store.SecretStore.get("signing_key:default"),
+         {:ok, private_key} <- Base.decode64(encoded_key),
+         {:ok, encoded_pub} <- Commonplace.Store.SecretStore.get("signing_pub:default"),
+         {:ok, public_key} <- Base.decode64(encoded_pub) do
+      identity_uuid =
+        case Commonplace.Store.SecretStore.get("signing_identity") do
+          {:ok, uuid} -> uuid
+          :not_found -> "anonymous"
         end
+
+      {:ok,
+       %Commonplace.Crypto.SigningContext{
+         identity_uuid: identity_uuid,
+         private_key: private_key,
+         public_key: public_key
+       }}
+    else
+      _ -> :none
     end
   end
 end
