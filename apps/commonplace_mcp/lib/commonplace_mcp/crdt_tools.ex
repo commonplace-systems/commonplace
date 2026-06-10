@@ -18,6 +18,41 @@ defmodule Commonplace.MCP.CrdtTools do
     from `arguments`, dispatches, waits for the typed reply, and
     returns the MCP result map.
 
+  ## Dispatch and the two error channels
+
+  `call/3` turns a tool call into a magenta request/reply: it renders
+  the interface's `send_payload_template` against `arguments`, stamps
+  a fresh `correlation_id`, broadcasts on
+  `commands/<target_path>/<send_type>`, and blocks until a reply of
+  the interface's declared `success_type` / `error_type` arrives
+  bearing that *same* correlation_id — replies of the wrong type or
+  id are ignored and waited past, so concurrent dispatches don't
+  cross wires — or until the interface's `timeout_ms` elapses.
+
+  Two distinct error channels come out of this, and the distinction
+  is load-bearing for callers:
+
+    * **Protocol errors** — `{:error, :not_found}` (no such tool) and
+      `{:error, {:handler_not_found, path}}` (the interface exists but
+      its `target_path` handler doc doesn't resolve). The tool never
+      ran; the MCP layer turns these into JSON-RPC errors.
+    * **In-band tool errors** — `{:ok, %{"isError" => true, …}}`. The
+      call *succeeded* at the protocol level, but the result tells the
+      model the tool failed. This wraps three cases: a handler that
+      replied with its `error_type`, a dispatch that timed out, and a
+      payload template referencing an argument that wasn't supplied.
+
+  So a `{:ok, map()}` return is **not** automatically success — a
+  caller must inspect `"isError"`. (Successful results carry both a
+  human-readable `"content"` text block and the raw reply under
+  `"structuredContent"`.)
+
+  Which channel a handler's reply lands in is decided purely by its
+  message *type* — `success_type` is always wrapped as success,
+  `error_type` always as an in-band error — never by inspecting the
+  reply payload. A handler signals failure by replying with its
+  `error_type`, not by setting a flag inside a `success_type` reply.
+
   ## Out of scope here
 
   - Progress forwarding (handler emits, dispatcher silently discards
