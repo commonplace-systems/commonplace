@@ -47,7 +47,12 @@ defmodule Commonplace.View.ComputeRunner do
 
   Runtime correctness (return shape, edge-case behavior, side effects)
   is author responsibility — the (α) commit accepts looser substrate
-  validation in exchange for full Elixir expressiveness.
+  validation in exchange for full Elixir expressiveness. The runner is
+  shape-agnostic: it passes `raw` straight through and returns whatever
+  `compute/2` returns, untouched. So the input shape (set by the view's
+  data wiring) and the output shape (e.g. view-XML) are contracts
+  between the author's code and its consumers — not anything this module
+  inspects or enforces.
   """
 
   alias Commonplace.Code.SourceDoc
