@@ -22,14 +22,23 @@ defmodule Commonplace.Bots.RateLimit do
   observability lives in `__bot_activity` (append-only YArray of
   JSON); live counters live here.
 
-  ## Restart semantics (v0)
+  ## Restart semantics
 
-  v0 boots with empty state. The phase-6+ replay-from-log
-  rebuild (scan last 60s of `__bot_activity`) is intentionally
-  deferred — the failure mode is more-permissive-at-boot, which
-  is safe. A dispatcher restart inside a sliding window allows
-  up to one extra burst before the window converges; we accept
-  this in exchange for v0 scope.
+  Counters are RAM-only, so the GenServer boots with empty state.
+  The base failure mode is *more-permissive-at-boot* (empty
+  counters → a sliding window could briefly allow up to one extra
+  burst before it re-converges), which is the safe direction to
+  fail.
+
+  That gap is closed by `seed_from_history/2` (CX-q8nk(3)): the
+  dispatcher calls it from `subscribe_room/3`, rebuilding a room's
+  sliding-window + per-bot-cooldown counters from the recent
+  bot-authored posts in the room's `_messages` doc — so a restart
+  mid-window can't grant an extra burst. (Note the source is
+  `_messages`, the durable chat log, not `__bot_activity`.)
+  Concurrency counters are NOT seeded — no workers run at boot —
+  and posts older than the window/cooldown are dropped so replaying
+  ancient history can't over-count.
 
   ## Public API
 
@@ -44,6 +53,11 @@ defmodule Commonplace.Bots.RateLimit do
 
       RateLimit.config(opts)
         :: :ok        # set process-wide limits (used by tests)
+
+      RateLimit.seed_from_history(room, posts)
+        :: :ok        # re-seed window/cooldown counters on restart
+                      # (called by Dispatcher.subscribe_room/3) —
+                      # see "Restart semantics" above
 
   `reason` ∈ {:per_room_burst, :per_bot_cooldown, :room_concurrency, :global_concurrency}.
   """
