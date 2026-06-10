@@ -14,6 +14,9 @@ defmodule CommonplaceWebWeb.ViewActions do
   * `{:ok, :ui_transition, %{action: "history"}}` → toggle `show_history`
   * `{:ok, :tree_mutation, %{action: "fork", short_uuid: short}}` →
     `put_flash(socket, :info, ...)`
+  * `{:ok, _class, _details}` (any other dispatcher result shape) → a
+    neutral "completed" flash. Forward-compat: a result intent the wiki
+    doesn't model yet is acknowledged rather than crashing the LiveView.
   * `{:error, reason}` → propagated as-is for the caller to flash.
   """
 
