@@ -2,13 +2,22 @@ defmodule Commonplace.MCP.Stdio do
   @moduledoc """
   Line-delimited JSON-RPC loop over stdio (or any reader/emit pair).
 
+  > **Status — superseded but retained.** This is the *hand-rolled*
+  > transport loop (`Stdio` + `Commonplace.MCP.Server` + `Protocol`).
+  > The escript no longer drives it from stdin; all live MCP traffic is
+  > served by `Commonplace.MCP.AnubisServer` (anubis_mcp). It is kept on
+  > disk with test coverage until CX-xaof removes it — edit it for the
+  > legacy path or its tests, not to change live behavior.
+
   `run/2` is the test-friendly entrypoint: it takes a `reader` function
   that returns one line at a time (or `:eof`) and an `emit` function that
   writes each response line to the output. This indirection lets us drive
   the loop from in-process tests without a real OS process.
 
-  `run_stdio/0` is the production entrypoint used by the escript — it
-  wires the reader to `:io.get_line/1` and the emitter to `IO.puts/1`.
+  `run_stdio/0` *was* the escript's production entrypoint — it wires the
+  reader to `IO.gets/2` and the emitter to `IO.puts/1`. The escript no
+  longer calls it (see the status note above); it survives for the
+  legacy path and its tests.
 
   Each line is parsed as JSON-RPC 2.0 via `Protocol.decode/1`, dispatched
   through `Server.handle/2`, and the outcome is encoded back via
@@ -35,7 +44,7 @@ defmodule Commonplace.MCP.Stdio do
     result
   end
 
-  @doc "Production entrypoint — reads from stdin, writes to stdout."
+  @doc "Legacy stdin/stdout entrypoint (no longer wired by the escript — see the module status note)."
   @spec run_stdio(Server.t()) :: Server.t()
   def run_stdio(server \\ Server.new()) do
     reader = fn ->
