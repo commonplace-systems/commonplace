@@ -647,6 +647,19 @@ defmodule CommonplaceWebWeb.WikiLive do
     end)
   end
 
+  # R10 (CX-tdkq.10): unsubscribe the loaded page's blue topic on teardown.
+  # Phoenix auto-drops PubSub subs when the LiveView process dies, but making
+  # it explicit matches tree_live and keeps the subscribe/unsubscribe pairing
+  # legible (the §5.7 edge-debt item).
+  @impl true
+  def terminate(_reason, socket) do
+    if socket.assigns[:page_uuid] do
+      CPPubSub.unsubscribe_blue(socket.assigns.page_uuid)
+    end
+
+    :ok
+  end
+
   # --- Helpers ---
 
   defp load_page(socket, path) do

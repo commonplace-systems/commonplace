@@ -107,6 +107,22 @@ defmodule CommonplaceWebWeb.ChatRoomLive do
     end
   end
 
+  # R10 (CX-tdkq.10): unsubscribe the room's view-doc commits topic on
+  # teardown. Phoenix auto-drops the sub when the LiveView dies, but the
+  # explicit pairing matches tree_live and closes the §5.7 edge-debt item.
+  @impl true
+  def terminate(_reason, socket) do
+    case socket.assigns[:room] do
+      %{view_uuid: view_uuid} when is_binary(view_uuid) ->
+        Phoenix.PubSub.unsubscribe(Commonplace.PubSub, "commits:#{view_uuid}")
+
+      _ ->
+        :ok
+    end
+
+    :ok
+  end
+
   # Unified handler for both phx-click (action without args) and
   # phx-submit (action with args). The dispatched form/button payload
   # is shaped the same way: `action` + optional `target` + the rest are
