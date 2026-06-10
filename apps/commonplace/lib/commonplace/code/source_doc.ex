@@ -111,15 +111,34 @@ defmodule Commonplace.Code.SourceDoc do
   def compile(uuid, store \\ CommitStoreClient) when is_binary(uuid) do
     ensure_tables()
 
-    with {:ok, source, hash} <- read(uuid, store) do
-      case lookup_cached(uuid, hash) do
-        {:ok, module} ->
-          {:ok, module}
+    # Gate B (CX-tdkq.2 / R2): every commit contributing to a code doc
+    # since the trusted baseline must hold :execute. Runs BEFORE the
+    # cache lookup — deliberately on cache hits too — so a trust-config
+    # change (revocation) takes effect on the next compile rather than
+    # being masked by an already-cached module. This is the narrow waist
+    # both execute ingresses share (ComputeRunner and the Orchestrator,
+    # which reads source itself and would bypass a gate in read/2).
+    case Commonplace.Trust.authorized_to_execute?(store, uuid) do
+      :ok ->
+        with {:ok, source, hash} <- read(uuid, store) do
+          case lookup_cached(uuid, hash) do
+            {:ok, module} ->
+              {:ok, module}
 
-        :miss ->
-          purge_stale(uuid)
-          do_compile(uuid, source, hash)
-      end
+            :miss ->
+              purge_stale(uuid)
+              do_compile(uuid, source, hash)
+          end
+        end
+
+      {:error, reason} ->
+        :telemetry.execute(
+          [:commonplace, :code, :rejected, :trust],
+          %{system_time: System.system_time()},
+          %{doc_uuid: uuid, reason: reason}
+        )
+
+        {:error, {:execution_denied, reason}}
     end
   end
 

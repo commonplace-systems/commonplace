@@ -109,6 +109,75 @@ defmodule Commonplace.Trust do
   end
 
   @doc """
+  Is every commit contributing to this doc's state authorized for
+  `:execute`? The Gate B check (CX-tdkq.2 / R2).
+
+  Walks the doc's commit chain newest-first and checks each commit with
+  `authorized?(commit, :execute, {:doc, uuid})`, stopping at the trusted
+  baseline:
+
+    * a **snapshot** commit — checked, then the walk stops: a snapshot
+      re-encodes the full visible state, so once it is trusted, earlier
+      history is irrelevant;
+    * the **genesis** commit — exempt and terminal: synthetic, unsigned
+      by construction, and its update is empty (contributes nothing).
+
+  Checking only the head would be unsound — write-time laundering: the
+  edit flow re-encodes FULL doc state, so a trusted editor's head commit
+  physically contains every earlier contributor's surviving bytes (see
+  design doc §2 Gate B). Every contributor since the baseline must hold
+  `:execute`.
+
+  An empty chain returns `:ok` — there is nothing to execute, and the
+  caller's read fails with `:not_found` on its own.
+
+  The walk follows `parent_id` only (like `DocBuilder`'s replay). A
+  merge commit's `merge_parents` side arrives as translated bytes inside
+  the merge commit itself, which is checked — and merge commits are
+  minted unsigned today, so strict mode conservatively denies converged
+  code docs (code docs are not expected to be merge-converged; see the
+  full-state invariant in the design doc).
+  """
+  @spec authorized_to_execute?(GenServer.server(), String.t(), config() | nil) ::
+          :ok | {:error, term()}
+  def authorized_to_execute?(store, doc_uuid, cfg \\ nil) do
+    cfg = cfg || config()
+
+    if cfg.accept_unsigned and cfg.trusted_identities == %{} do
+      # Fully-permissive config: no commit can fail (unsigned passes,
+      # unknown signers pass, and with no pinned keys there is no
+      # forgery case) — skip the chain walk so the default config keeps
+      # compile O(cache-hit) on hot paths.
+      :ok
+    else
+      walk_contributors(store, doc_uuid, cfg)
+    end
+  end
+
+  defp walk_contributors(store, doc_uuid, cfg) do
+    Commonplace.Store.CommitStoreClient.commit_log(store, doc_uuid, limit: 10_000)
+    |> Enum.reduce_while(:ok, fn commit, :ok ->
+      cond do
+        match?(%{metadata: %{kind: :genesis}}, commit) ->
+          {:halt, :ok}
+
+        true ->
+          case authorized?(commit, :execute, {:doc, doc_uuid}, cfg) do
+            :ok ->
+              if match?(%{metadata: %{kind: :snapshot}}, commit) do
+                {:halt, :ok}
+              else
+                {:cont, :ok}
+              end
+
+            {:error, reason} ->
+              {:halt, {:error, {:untrusted_contributor, commit.id, reason}}}
+          end
+      end
+    end)
+  end
+
+  @doc """
   Resolve the workspace trust config: application env `:commonplace,
   :trust` → `<data_dir>/trust.json` → `default_config/0`.
   """
