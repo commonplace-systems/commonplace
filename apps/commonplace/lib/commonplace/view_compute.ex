@@ -104,6 +104,15 @@ defmodule Commonplace.ViewCompute do
   alias Commonplace.Tree.DocBuilder
   alias Commonplace.View.ComputeRunner
 
+  # R6 (CX-tdkq.6) backpressure + loop-safety defaults.
+  @default_compute_timeout_ms 10_000
+  # A view recomputing faster than this within the window is in a cycle, not
+  # responding to human edits — trip the fuse. Generous so legitimate edit
+  # bursts (already collapsed by coalescing) never trip it; only a tight
+  # self-feeding loop sustains this rate.
+  @default_fuse_max 50
+  @default_fuse_window_ms 1_000
+
   defstruct [
     :source_uuid,
     :target_uuid,
@@ -112,7 +121,17 @@ defmodule Commonplace.ViewCompute do
     :name,
     :router,
     :store,
-    :last_computed_at
+    :last_computed_at,
+    # R6: async single-flight + coalesce
+    :computing,
+    pending: false,
+    # R6: rate fuse
+    recompute_log: [],
+    tripped: false,
+    # R6: config
+    compute_timeout_ms: @default_compute_timeout_ms,
+    fuse_max: @default_fuse_max,
+    fuse_window_ms: @default_fuse_window_ms
   ]
 
   @type t :: %__MODULE__{
@@ -123,7 +142,14 @@ defmodule Commonplace.ViewCompute do
           name: atom() | nil,
           router: GenServer.server(),
           store: GenServer.server(),
-          last_computed_at: DateTime.t() | nil
+          last_computed_at: DateTime.t() | nil,
+          computing: {pid(), reference(), reference()} | nil,
+          pending: boolean(),
+          recompute_log: [integer()],
+          tripped: boolean(),
+          compute_timeout_ms: pos_integer(),
+          fuse_max: pos_integer(),
+          fuse_window_ms: pos_integer()
         }
 
   # --- Client API ---
@@ -184,7 +210,10 @@ defmodule Commonplace.ViewCompute do
         code_uuid: code_uuid,
         name: name,
         router: router,
-        store: store
+        store: store,
+        compute_timeout_ms: Keyword.get(opts, :compute_timeout_ms, @default_compute_timeout_ms),
+        fuse_max: Keyword.get(opts, :fuse_max, @default_fuse_max),
+        fuse_window_ms: Keyword.get(opts, :fuse_window_ms, @default_fuse_window_ms)
       }
 
       send(self(), :initial_compute)
@@ -223,13 +252,63 @@ defmodule Commonplace.ViewCompute do
 
   @impl true
   def handle_info(:initial_compute, state) do
-    {:noreply, do_compute(state)}
+    {:noreply, request_compute(state)}
   end
 
   @impl true
   def handle_info({:commit, source_uuid, _commit_id, _meta}, %{source_uuid: source_uuid} = state) do
-    {:noreply, do_compute(state)}
+    # R6: a source commit requests a recompute. request_compute coalesces
+    # (single-flight + pending) and trips the rate fuse on a runaway loop.
+    {:noreply, request_compute(state)}
   end
+
+  # R6: the async compute task finished (or was killed by the timeout).
+  @impl true
+  def handle_info({:DOWN, ref, :process, _down_pid, reason}, %{computing: {_pid, ref, timer}} = state) do
+    if is_reference(timer), do: Process.cancel_timer(timer)
+
+    case reason do
+      r when r in [:normal, :killed] ->
+        :ok
+
+      other ->
+        Logger.error(
+          "ViewCompute #{inspect(state.name)}: compute task exited #{inspect(other)}"
+        )
+    end
+
+    state = %{state | computing: nil, last_computed_at: DateTime.utc_now()}
+
+    # Coalesced request(s) arrived while we were computing — run exactly one
+    # more against the now-latest state.
+    if state.pending do
+      {:noreply, start_compute(%{state | pending: false})}
+    else
+      {:noreply, state}
+    end
+  end
+
+  # R6: the in-flight compute overran its timeout — kill it. The {:DOWN, ...}
+  # that follows (reason :killed) does the bookkeeping + drains any pending.
+  @impl true
+  def handle_info({:compute_timeout, ref}, %{computing: {pid, ref, _timer}} = state) do
+    Logger.error(
+      "ViewCompute #{inspect(state.name)}: compute exceeded #{state.compute_timeout_ms}ms — killing"
+    )
+
+    :telemetry.execute(
+      [:commonplace, :view_compute, :compute_timeout],
+      %{system_time: System.system_time()},
+      %{name: state.name, source_uuid: state.source_uuid, target_uuid: state.target_uuid}
+    )
+
+    Process.exit(pid, :kill)
+    {:noreply, state}
+  end
+
+  # Stale DOWN / timeout for a compute we already finished — ignore.
+  def handle_info({:DOWN, _ref, :process, _pid, _reason}, state), do: {:noreply, state}
+  def handle_info({:compute_timeout, _ref}, state), do: {:noreply, state}
 
   # CX-wxbp (M5 sub-bead iii) + CX-6fhe (M6 sub-bead iii):
   # Restart-on-spec-or-code-commit. Either the spec doc OR any
@@ -258,10 +337,13 @@ defmodule Commonplace.ViewCompute do
     {:noreply, state}
   end
 
+  # recompute/1 is an explicit, synchronous force (tests + seeding). It runs
+  # the compute inline and bypasses the async/coalesce/fuse machinery on
+  # purpose — it's an out-of-band manual trigger, not the reactive path.
   @impl true
   def handle_call(:recompute, _from, state) do
-    new_state = do_compute(state)
-    {:reply, :ok, new_state}
+    do_compute_work(state)
+    {:reply, :ok, %{state | last_computed_at: DateTime.utc_now()}}
   end
 
   @impl true
@@ -269,9 +351,53 @@ defmodule Commonplace.ViewCompute do
     {:reply, state, state}
   end
 
-  # --- Private ---
+  # --- Private: R6 scheduling (async single-flight + coalesce + rate fuse) ---
 
-  defp do_compute(%__MODULE__{} = state) do
+  # Request a recompute. If the fuse is tripped, do nothing. If a compute is
+  # already running, mark a single coalesced re-run (collapsing a burst of N
+  # source commits into one recompute against the latest state — the read
+  # side tolerates this). Otherwise start one.
+  defp request_compute(%__MODULE__{tripped: true} = state), do: state
+  defp request_compute(%__MODULE__{computing: c} = state) when c != nil, do: %{state | pending: true}
+  defp request_compute(%__MODULE__{} = state), do: start_compute(state)
+
+  defp start_compute(%__MODULE__{} = state) do
+    now = System.monotonic_time(:millisecond)
+    log = [now | state.recompute_log] |> Enum.filter(&(now - &1 < state.fuse_window_ms))
+
+    if length(log) > state.fuse_max do
+      trip_fuse(state, length(log))
+    else
+      # Run the compute in a monitored process so a slow/hanging/raising
+      # compute_fn (e.g. arbitrary substrate code via ComputeRunner) can't
+      # block this GenServer — it stays responsive to coalesce further
+      # requests. The timer enforces the timeout.
+      {pid, ref} = spawn_monitor(fn -> do_compute_work(state) end)
+      timer = Process.send_after(self(), {:compute_timeout, ref}, state.compute_timeout_ms)
+      %{state | computing: {pid, ref, timer}, recompute_log: log, pending: false}
+    end
+  end
+
+  defp trip_fuse(%__MODULE__{} = state, rate) do
+    Logger.error(
+      "ViewCompute #{inspect(state.name || state.source_uuid)}: recompute rate fuse tripped " <>
+        "(>#{state.fuse_max} recomputes / #{state.fuse_window_ms}ms) — likely a reactive cycle. " <>
+        "Halting recomputes; restart the view after breaking the loop."
+    )
+
+    :telemetry.execute(
+      [:commonplace, :view_compute, :fuse_tripped],
+      %{rate: rate},
+      %{name: state.name, source_uuid: state.source_uuid, target_uuid: state.target_uuid}
+    )
+
+    %{state | tripped: true, computing: nil, pending: false}
+  end
+
+  # The actual computation: read latest source, transform, write target.
+  # Runs in the async task (reactive path) or inline (recompute/1). Returns
+  # :ok; never lets a compute_fn raise escape uncaught on the inline path.
+  defp do_compute_work(%__MODULE__{} = state) do
     try do
       source_content = read_content(state.store, state.source_uuid)
       new_content = state.compute_fn.(source_content)
@@ -291,14 +417,14 @@ defmodule Commonplace.ViewCompute do
           Logger.error("ViewCompute #{inspect(state.name)}: write failed: #{inspect(reason)}")
       end
 
-      %{state | last_computed_at: DateTime.utc_now()}
+      :ok
     rescue
       e ->
         Logger.error(
           "ViewCompute #{inspect(state.name)}: compute raised #{Exception.message(e)}"
         )
 
-        state
+        :ok
     end
   end
 
