@@ -7,6 +7,10 @@ defmodule Commonplace.CLI.Checkout do
   - `commonplace checkout /path/to/dir docref` — register directory checkout
   - `commonplace checkout /path/to/file docref --file` — register file checkout
   - `commonplace checkout --remove /path` — unregister a checkout
+  - `commonplace checkout <docref>` — **legacy**: a lone positional arg
+    re-roots the whole workspace to that docref. This is a significant
+    operation (it changes what the workspace points at); the dedicated
+    `commonplace reroot` command is the current, clearer way to do it.
   """
 
   alias Commonplace.CLI
