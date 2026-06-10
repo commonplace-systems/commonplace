@@ -6,6 +6,16 @@ defmodule Commonplace.Sync.SchemaCoordinator do
   checkouts), mutations must be serialized to avoid CRDT state corruption.
   Each schema UUID gets a coordinating GenServer process on-demand.
 
+  Serialization is just the GenServer's single mailbox: every mutation
+  for a given UUID routes to the one process registered under it (via
+  `Registry`), so the full read-modify-write cycle below — reconstruct,
+  apply the mutation fn, commit — runs atomically with respect to other
+  mutations of the *same* schema. Distinct UUIDs get independent
+  coordinators and proceed in parallel. "Atomic" here means
+  no-interleaving, not rollback: a `mutation_fn` that raises commits
+  nothing (the crash aborts before the commit) and takes the coordinator
+  down with it — it is simply restarted on the next `mutate/3`.
+
   Usage:
 
       SchemaCoordinator.mutate(schema_uuid, store, fn doc ->
