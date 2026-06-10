@@ -30,13 +30,29 @@ defmodule Commonplace.MCP.Tools.InvokeViewAction do
   * Unknown actions, not-a-view docs, missing view UUIDs, and
     undeclared actions all return `{:error, reason_string}`.
 
+  ## Per-session signing context (CX-o3r7)
+
+  `run/2` — the arity `AnubisServer` threads through `Tools.call` —
+  carries the per-session context map. Its load-bearing field is
+  `:signing_context`: a `Commonplace.Crypto.SigningContext` (or
+  `:unsigned`) that flows into `ViewActionDispatch`'s context and on to
+  the action handlers, so a resulting commit can be signed by the
+  session's *bound* key instead of the global SecretStore. The audit
+  `signer_id` is derived from that context when present. Legacy `run/1`
+  callers (and unsigned sessions) get an empty context and fall back to
+  the `"mcp-agent@local"` placeholder. (The session context also feeds
+  `ArgResolver` — e.g. `:presence_path` resolves `$session.*` action
+  args.)
+
   ## Not in this pass
 
   * Dynamic action discovery per view (commonplace-plan's "pattern 3"
     — focused per-view registration at session restart)
   * JSON-schema args validation on complex actions
-  * Signed-identity propagation from MCP sessions (placeholder
-    `signer_id` "mcp-agent@local" until identity wiring lands)
+  * The upstream key-*minting* that populates a session's
+    `signing_context` (CX-88mw). The propagation path above is wired,
+    but until minting lands real MCP sessions still fall back to the
+    `"mcp-agent@local"` placeholder.
   """
 
   alias Commonplace.Document.{ContentType, ViewDetect, ViewXml}
