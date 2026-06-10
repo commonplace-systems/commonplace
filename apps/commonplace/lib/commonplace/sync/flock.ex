@@ -4,6 +4,22 @@ defmodule Commonplace.Sync.Flock do
 
   Provides shared and exclusive locks for coordinating file access
   between BEAM processes and external unix processes (sandboxes).
+
+  ## Advisory and fail-open — important
+
+  These are *advisory* flock(2) locks: they coordinate only between
+  parties that take the lock, and acquisition is **best-effort**. The
+  scoped `with_exclusive_lock/3` / `with_shared_lock/3` helpers, if they
+  cannot acquire (a 30s timeout under contention, or any open/flock
+  error such as a missing lock file), log a warning and run the function
+  **anyway, unlocked**. So a caller gets mutual exclusion on the happy
+  path but NOT a guarantee under failure — these reduce the chance of a
+  conflicting concurrent write, they don't eliminate it.
+
+  The manual `try_lock/2` + `unlock/1` pair does NOT fail open: it
+  returns `{:error, reason}` and leaves the decision to the caller.
+  Acquisition retries on `:would_block` (100ms backoff) and `:eintr`
+  until the timeout; `:enoent` and other errors return immediately.
   """
 
   require Logger
