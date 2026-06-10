@@ -714,7 +714,12 @@ defmodule Commonplace.Store.CommitStore do
   # cheap `:get_db` call for callers that hold a pid rather than the name.
   defp ready(name, db) do
     :persistent_term.put({__MODULE__, :db, name}, db)
-    {:ok, %{db: db, name: name}}
+    # pending_imports (R11 / CX-tdkq.11): commits that failed namespace
+    # validation because a commit they reference hasn't landed yet. Held and
+    # retried after each successful import, so out-of-order delivery (PubSub
+    # + catch-up interleaving) no longer drops legitimate commits. In-memory:
+    # on restart, catch-up sync re-sends. commit.id => {commit, opts}.
+    {:ok, %{db: db, name: name, pending_imports: %{}}}
   end
 
   @impl true
@@ -1035,28 +1040,20 @@ defmodule Commonplace.Store.CommitStore do
     end
   end
 
-  defp handle_validated_import(commit, opts, state) do
-    validator =
-      Keyword.get(opts, :validator) ||
-        fn c -> Commonplace.Store.Namespace.validate_commit_from_db(state.db, c) end
+  # R11 (CX-tdkq.11): cap on commits held awaiting an out-of-order
+  # dependency. Beyond this we fall back to a hard reject (as before) rather
+  # than grow memory unbounded — a small queue, not a durable store.
+  @max_pending_imports 1024
 
-    case validator.(commit) do
+  defp handle_validated_import(commit, opts, state) do
+    case validator_for(opts, state).(commit) do
       :ok ->
         case CubDB.get(state.db, {:commit, commit.id}) do
           nil ->
-            # Store the commit. If no :latest exists for this doc, set it —
-            # otherwise leave :latest alone (avoids clobbering a newer local head).
-            case CubDB.get(state.db, {:latest, commit.doc_uuid}) do
-              nil ->
-                CubDB.put_multi(state.db, [
-                  {{:commit, commit.id}, commit},
-                  {{:latest, commit.doc_uuid}, commit.id}
-                ])
-
-              _existing_latest ->
-                CubDB.put(state.db, {:commit, commit.id}, commit)
-            end
-
+            state = do_store_imported(commit, state)
+            # R11: a freshly-landed commit may be the reference an earlier
+            # out-of-order arrival was waiting on — retry the pending queue.
+            state = retry_pending_imports(state)
             {:reply, :ok, state}
 
           _existing ->
@@ -1064,38 +1061,103 @@ defmodule Commonplace.Store.CommitStore do
         end
 
       {:error, reason} ->
-        # CX-fbs6: emit a distinct telemetry event for reference-axis
-        # rejections so handlers can tell which check caught the commit.
-        # The legacy :namespace_mismatch event still fires as a
-        # catch-all so existing subscribers keep working.
-        case reason do
-          {:unknown_reference, outside} ->
-            :telemetry.execute(
-              [:commonplace, :commit, :rejected, :unknown_reference],
-              %{system_time: System.system_time()},
-              %{
-                commit_id: commit.id,
-                doc_uuid: commit.doc_uuid,
-                outside: outside
-              }
-            )
+        emit_namespace_rejection(commit, reason)
+        # R11: hold the rejected commit and retry it once a later import lands
+        # the reference it's waiting on, instead of dropping a legitimate
+        # commit that merely arrived before its dependency (§6.1).
+        {:reply, {:error, {:namespace_rejected, reason}}, maybe_queue_pending(commit, opts, reason, state)}
+    end
+  end
 
-          _ ->
-            :ok
-        end
+  defp validator_for(opts, state) do
+    Keyword.get(opts, :validator) ||
+      fn c -> Commonplace.Store.Namespace.validate_commit_from_db(state.db, c) end
+  end
 
+  # Persist an imported commit. If the doc has no local :latest, point it
+  # here; otherwise leave :latest alone (don't clobber a newer local head).
+  defp do_store_imported(commit, state) do
+    case CubDB.get(state.db, {:latest, commit.doc_uuid}) do
+      nil ->
+        CubDB.put_multi(state.db, [
+          {{:commit, commit.id}, commit},
+          {{:latest, commit.doc_uuid}, commit.id}
+        ])
+
+      _existing_latest ->
+        CubDB.put(state.db, {:commit, commit.id}, commit)
+    end
+
+    state
+  end
+
+  defp emit_namespace_rejection(commit, reason) do
+    # CX-fbs6: a distinct event for reference-axis rejections so handlers can
+    # tell which check caught the commit; the legacy :namespace_mismatch
+    # event still fires as a catch-all so existing subscribers keep working.
+    case reason do
+      {:unknown_reference, outside} ->
         :telemetry.execute(
-          [:commonplace, :commit, :rejected, :namespace_mismatch],
+          [:commonplace, :commit, :rejected, :unknown_reference],
           %{system_time: System.system_time()},
-          %{
-            commit_id: commit.id,
-            doc_uuid: commit.doc_uuid,
-            reason: reason
-          }
+          %{commit_id: commit.id, doc_uuid: commit.doc_uuid, outside: outside}
         )
 
-        {:reply, {:error, {:namespace_rejected, reason}}, state}
+      _ ->
+        :ok
     end
+
+    :telemetry.execute(
+      [:commonplace, :commit, :rejected, :namespace_mismatch],
+      %{system_time: System.system_time()},
+      %{commit_id: commit.id, doc_uuid: commit.doc_uuid, reason: reason}
+    )
+  end
+
+  defp maybe_queue_pending(commit, opts, reason, state) do
+    pending = state.pending_imports
+
+    cond do
+      Map.has_key?(pending, commit.id) ->
+        state
+
+      map_size(pending) >= @max_pending_imports ->
+        # Queue full — leave it hard-rejected (telemetry already fired).
+        state
+
+      true ->
+        :telemetry.execute(
+          [:commonplace, :commit, :deferred, :out_of_order],
+          %{system_time: System.system_time()},
+          %{commit_id: commit.id, doc_uuid: commit.doc_uuid, reason: reason}
+        )
+
+        %{state | pending_imports: Map.put(pending, commit.id, {commit, opts})}
+    end
+  end
+
+  # Fixpoint retry: re-validate every queued commit against the now-updated
+  # store; persist any that pass (each one may unblock others) and drop them
+  # from the queue, repeating until a full pass makes no progress. Terminates
+  # because each progressing pass removes at least one finite-set entry.
+  defp retry_pending_imports(state) do
+    {state, progressed} =
+      Enum.reduce(state.pending_imports, {state, false}, fn {id, {commit, opts}}, {st, prog} ->
+        case validator_for(opts, st).(commit) do
+          :ok ->
+            st =
+              if CubDB.get(st.db, {:commit, commit.id}) == nil,
+                do: do_store_imported(commit, st),
+                else: st
+
+            {%{st | pending_imports: Map.delete(st.pending_imports, id)}, true}
+
+          {:error, _reason} ->
+            {st, prog}
+        end
+      end)
+
+    if progressed, do: retry_pending_imports(state), else: state
   end
 
   # ── R4(a): caller-side reads ─────────────────────────────────────────────
