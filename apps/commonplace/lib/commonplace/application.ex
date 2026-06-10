@@ -60,7 +60,9 @@ defmodule Commonplace.Application do
         Commonplace.Chat.ChatViewComputeSupervisor,
         Commonplace.MUD.MoveServer,
         Commonplace.MUD.TickBot
-      ] ++ snapshot_sweeper_children() ++ presence_reaper_children()
+      ] ++
+        snapshot_sweeper_children() ++
+        presence_reaper_children() ++ compute_rehydrator_children()
 
     opts = [strategy: :one_for_one, name: Commonplace.Supervisor]
 
@@ -133,6 +135,23 @@ defmodule Commonplace.Application do
                ]}
           }
         ]
+
+      {:error, _} ->
+        []
+    end
+  end
+
+  @doc false
+  # CX-tdkq.3 (architecture-review R3): resume chat view-computes on boot so
+  # computed views survive a BEAM restart without a human re-opening each
+  # room. Appended after ChatViewComputeSupervisor (whose DynamicSupervisor +
+  # ETS index it drives) so the dependency is up first. Workspace-gated like
+  # the presence Reaper — no rehydrator on test runs / fresh installs. Root is
+  # resolved dynamically at scan time, so a `cp checkout` re-root is followed.
+  def compute_rehydrator_children do
+    case Commonplace.Workspace.root_uuid() do
+      {:ok, _root_uuid} ->
+        [{Commonplace.Chat.ComputeRehydrator, []}]
 
       {:error, _} ->
         []
