@@ -1,9 +1,52 @@
 defmodule CommonplaceWebWeb.WikiLive do
   @moduledoc """
-  Wiki-style LiveView for browsing, creating, and editing commonplace documents.
+  Wiki-style LiveView for browsing, creating, and editing commonplace
+  documents.
 
-  Pages are CRDT documents in the tree. Wiki links [[PageName]] navigate between them.
-  Supports view mode (rendered content) and edit mode (CodeMirror + Yjs).
+  Pages are CRDT documents in the tree, addressed by their path under
+  the workspace root; `[[PageName]]` (and `[[PageName|Display]]`) wiki
+  links navigate between them. A page loads in one of two modes —
+  `:view` (rendered) or `:edit` (a collaborative editor).
+
+  ## View mode renders one of several page kinds
+
+  A loaded page's content is not always markdown — the content area of
+  `render/1` branches on what the doc actually is:
+
+    * the **special** `recent-changes` page → a generated change list;
+    * a **presence doc** (filename carries a `.usr` / `.bot` / `.exe` /
+      `.who` honorific, and the content is the YMap) → an identity /
+      presence card;
+    * a **view-XML doc** (`ViewDetect.is_view?`) → handed to
+      `ViewRenderer.render_view/2`, so its `<action>` buttons
+      `phx-click` the `view_action` handler — the same dispatch surface
+      `ChatRoomLive` uses;
+    * otherwise **markdown** → a small in-module renderer (headings,
+      lists, `[[wikilinks]]`, bold / italic / code).
+
+  ## Edit mode is collaborative (Yjs over a JS hook)
+
+  Clicking Edit only flips `:mode` to `:edit`; it deliberately does NOT
+  push document state yet, because the `YjsHook` div hasn't rendered.
+  The hook mounts, sends `"yjs_request_init"`, and the server replies
+  with the full Yjs document state (`push_yjs_state` → a `"yjs_init"`
+  event). Thereafter each local CodeMirror change arrives as a base64
+  Yjs update on `"yjs_edit"`, which the server commits
+  (`create_chained_commit`) and rebroadcasts on the blue channel so
+  other open editors converge.
+
+  ## Live updates and the enrichment invariant
+
+  A loaded page subscribes to its doc's blue channel; a `{:commit, …}`
+  refreshes `page_content` (in view mode only), and navigating away
+  unsubscribes the previous page first. Every refresh of a loaded
+  page's content goes through `read_and_enrich/3`, which re-attaches a
+  presence doc's cold identity record under `:__identity__` — so the
+  identity panel survives a heartbeat/status commit or an Edit→View
+  toggle instead of vanishing.
+
+  Author identity for `view_action` dispatch is a placeholder
+  (`"wiki-user@local"`) until per-session signing lands.
   """
 
   use CommonplaceWebWeb, :live_view
