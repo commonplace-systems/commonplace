@@ -27,6 +27,24 @@ defmodule Commonplace.SmartDoc do
   - `@cyan_outputs` — push edits to docs (implicitly subscribes to their blue)
   - `@red_inputs` — subscribe to docs' event logs
   - `@magenta_outputs` — docs to push events to (optional declaration)
+
+  ## Declaring ports vs driving them
+
+  The macro half (above) only *declares* ports and input handlers: it
+  generates `__ports__/0` (the four lists as a map, read by the
+  Orchestrator) plus default no-op `handle_blue/2` / `handle_red/2` that
+  you override to react to incoming blue commits and red events.
+
+  The output half is the runtime helpers `push_cyan/3` and
+  `push_magenta/3`. Ports are declared by a logical *ref* (e.g.
+  `"output"`); the Orchestrator resolves each ref to a doc UUID at
+  wiring time and hands it back in `state.resolved_ports`. The push
+  helpers look the ref up there, so an unresolved ref no-ops to
+  `:error`. `push_cyan/3` routes through
+  `Commonplace.CommandRouter.write/3` → `Commonplace.Document.Diff`
+  (Myers grapheme diff → minimal insert/delete ops) — the same write
+  path MCP uses, so computed edits get the same CRDT-correctness as
+  authored ones.
   """
 
   defmacro __using__(_opts) do
