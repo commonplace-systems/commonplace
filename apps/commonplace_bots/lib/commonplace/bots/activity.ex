@@ -1,8 +1,19 @@
 defmodule Commonplace.Bots.Activity do
   @moduledoc """
-  The room-level `__bot_activity` substrate doc — append-only
-  YArray of JSON entries recording every trigger decision the
-  dispatcher makes.
+  The room-level `__bot_activity` substrate doc — an append-only
+  YArray of JSON entries giving the *room's* view of bot activity.
+  It has two producers, both routed through the dispatcher:
+
+    * the trigger decisions the dispatcher *acts on* — `fired`
+      (worker spawned) and `suppressed` (rate-limited); and
+    * the outcome of each worker it spawned — `completed`,
+      `cap_hit`, `error` (the CX-gptu worker-outcome fan-out).
+
+  A `:skip` trigger decision is deliberately NOT recorded here — it
+  emits telemetry only, never an activity entry — so the log stays
+  scannable: every entry is a real wake or a wake's result. (For a
+  bot's own private cross-room trail, see `__red_log` in
+  `Commonplace.Bots.Worker`; this doc is the per-room counterpart.)
 
   Same shape as `Chat.Messages` (`_messages`): a top-level
   `ContentType.create(doc, :array, "__bot_activity")` array
@@ -17,7 +28,7 @@ defmodule Commonplace.Bots.Activity do
         "ts"           => "<iso8601>",
         "room"         => "<room-name>",
         "bot"          => "<stripped-display-name>" | nil,
-        "decision"     => "fired" | "suppressed" | "skipped" | "completed" | "cap_hit" | "error",
+        "decision"     => "fired" | "suppressed" | "completed" | "cap_hit" | "error",
         "reason"       => "<atom-as-string>",
         "message_id"   => "<chat msg id>" | nil
       }
@@ -26,8 +37,6 @@ defmodule Commonplace.Bots.Activity do
     * `decision="suppressed"` — trigger matched but rate-limit
       blocked. `reason` ∈ {:per_room_burst, :per_bot_cooldown,
       :room_concurrency, :global_concurrency}.
-    * `decision="skipped"` — trigger evaluated, returned :skip.
-      (v0 emits this sparingly to keep the log scannable.)
     * `decision="completed"` — worker finished with :end_turn.
     * `decision="cap_hit"` — worker terminated on a cap; `reason`
       names which.
