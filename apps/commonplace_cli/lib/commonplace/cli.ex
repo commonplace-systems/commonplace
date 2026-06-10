@@ -34,6 +34,8 @@ defmodule Commonplace.CLI do
     attest [path]                 Sign the head of a document (gold chain)
     checkpoint [--owner name]     Create a reflog checkpoint
     snapshot [path]               Force a snapshot commit for the doc at path (or workspace root)
+    mud connect <name>            Connect to the workspace MUD world (shares the serve daemon)
+    bd <subcommand>               Beads issue tracker on commonplace (create/show/update/close/list/ready/…)
   """
 
   @workspace_dir ".commonplace"
