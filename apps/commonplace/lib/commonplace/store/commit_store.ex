@@ -1497,7 +1497,7 @@ defmodule Commonplace.Store.CommitStore do
   defp node_sign_if_system(commit), do: commit
 
   defp global_secret_context do
-    with _pid when not is_nil(_pid) <- Process.whereis(Commonplace.Store.SecretStore),
+    with pid when is_pid(pid) <- Process.whereis(Commonplace.Store.SecretStore),
          {:ok, encoded_key} <- Commonplace.Store.SecretStore.get("signing_key:default"),
          {:ok, private_key} <- Base.decode64(encoded_key),
          {:ok, encoded_pub} <- Commonplace.Store.SecretStore.get("signing_pub:default"),
