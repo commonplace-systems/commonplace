@@ -10,9 +10,15 @@ defmodule Commonplace.Document.ViewXml do
   input string into Elixir-friendly `%Node{}` structs. Renderers walk the
   tree and dispatch on `tag`.
 
-  Unknown elements are preserved as `%Node{tag: :unknown, ...}` so renderers
-  can decide whether to ignore, render as raw text, or warn. We don't fail
-  on unknown elements — forward-compatibility with future vocabulary
+  The element names that get a canonical atom `tag` (rather than
+  `:unknown`) are the authoritative `@known_tags` list — a *superset* of
+  the 10 view elements: it also covers the `<action>` argument
+  sub-elements (`arg`, `args`) and a few retained legacy compute-spec
+  tags. Any element name outside `@known_tags` becomes
+  `%Node{tag: :unknown, ...}` (the original element name is not retained
+  — only its attributes and children are), so renderers can decide
+  whether to ignore, render as raw text, or warn. We don't fail on
+  unknown elements — forward-compatibility with future vocabulary
   extensions is a goal.
   """
 
@@ -30,8 +36,10 @@ defmodule Commonplace.Document.ViewXml do
     * `:attrs` — map of attribute names (as strings) to their values (as
       strings).
     * `:children` — list of child nodes (`%Node{}`) and text literals
-      (binaries). Whitespace-only text between elements is preserved so
-      renderers can decide whether to collapse it.
+      (binaries). Whitespace-only text between elements is **dropped**
+      during parsing (it is almost always pretty-printing indentation),
+      so `children` holds only element nodes and text runs containing at
+      least one non-whitespace character.
     """
 
     @type child :: t() | String.t()
@@ -175,9 +183,9 @@ defmodule Commonplace.Document.ViewXml do
   defp to_attr_value(v), do: to_string(v)
 
   # Map xmerl element names (atoms) to our tag atoms. Known vocabulary
-  # elements get their canonical atom; everything else gets `:unknown` with
-  # the original name preserved via the `attrs[:__unknown_tag__]` sentinel so
-  # renderers can log / display it.
+  # elements (see @known_tags) get their canonical atom; everything else
+  # collapses to `:unknown` — the original element name is discarded here
+  # (only attrs + children survive on the resulting %Node{}).
   defp atom_to_tag(name) when is_atom(name) do
     if name in @known_tags do
       name
