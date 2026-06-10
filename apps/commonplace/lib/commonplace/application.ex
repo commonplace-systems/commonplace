@@ -56,6 +56,10 @@ defmodule Commonplace.Application do
         {DynamicSupervisor, name: Commonplace.Checkout.Supervisor, strategy: :one_for_one},
         {Commonplace.Dataflow.GraphRegistry, []},
         Commonplace.CommandRouter,
+        # R4(b) / CX-tdkq.4: single-flight scheduler in front of
+        # SnapshotTrigger for the reader-side lazy-snapshot path (replaces
+        # the per-doc ETS debounce). Idle until DocBuilder requests a snapshot.
+        Commonplace.SnapshotWorker,
         Commonplace.Chat.OnrampSupervisor,
         Commonplace.Chat.ChatViewComputeSupervisor,
         Commonplace.MUD.MoveServer,

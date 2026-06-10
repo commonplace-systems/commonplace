@@ -51,7 +51,12 @@ defmodule Commonplace.Tree.DocBuilder do
 
   defp maybe_lazy_snapshot(store, uuid, chain_length) do
     if lazy_snapshot_enabled?() and chain_length >= lazy_snapshot_threshold() do
-      Task.start(fn -> Commonplace.SnapshotTrigger.maybe_snapshot(store, uuid) end)
+      # R4(b) / CX-tdkq.4: route through the single-flight SnapshotWorker
+      # instead of an unbounded `Task.start`. Under read pressure many reads
+      # of the same doc fire this path at once; the worker collapses them to
+      # one in-flight snapshot attempt (plus at most one coalesced re-run)
+      # rather than piling up redundant Tasks. Replaces the old ETS debounce.
+      Commonplace.SnapshotWorker.request(store, uuid)
     end
 
     :ok

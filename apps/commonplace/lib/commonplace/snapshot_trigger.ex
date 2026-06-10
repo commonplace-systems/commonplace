@@ -39,30 +39,28 @@ defmodule Commonplace.SnapshotTrigger do
 
   Below every threshold — no-op.
 
-  ## Debounce (CX-0nkq)
+  ## Single-flight scheduling (CX-tdkq.4 R4b, was CX-0nkq)
 
-  A per-doc debounce window sits *in front* of the threshold check.
-  `maybe_snapshot` is fired from several sites at once — most
-  aggressively the reader-side lazy path
-  (`DocBuilder.maybe_lazy_snapshot` via `Task.start`), which under read
-  pressure can spawn many concurrent Tasks that all pile up at the
-  `CommitStore` mailbox (a fork on a deep tree timed out at 5s under
-  that contention). The debounce caps the doc to one snapshot *attempt*
-  per `@debounce_window_ms` regardless of how many callers fire,
-  returning `{:ok, :debounced, _}` for the suppressed ones. The window
-  is backed by a public ETS table (`init_debounce_table/0`, created at
-  application start) so any process can probe it without a GenServer
-  round-trip. This is deliberately the smallest viable relief — the
-  proper single-flight `SnapshotWorker` GenServer is still tracked on
-  CX-0nkq.
+  `maybe_snapshot` is fired from several sites at once — most aggressively
+  the reader-side lazy path (`DocBuilder.maybe_lazy_snapshot`), which under
+  read pressure can trigger many concurrent attempts for the same doc. This
+  module is the pure threshold-check primitive; the storm is managed *in
+  front of it* by `Commonplace.SnapshotWorker`, a single-flight GenServer
+  that allows at most one in-flight snapshot computation per doc and
+  coalesces concurrent same-doc requests into a single re-run. (It replaced
+  an earlier coarse per-doc ETS time debounce, which suppressed legitimate
+  snapshots as readily as redundant ones.) The deliberate callers — the
+  sweeper, the sync agent, and the explicit CLI command — call this
+  primitive directly; they're naturally rate-limited and don't need the
+  worker.
 
   ## Concurrency
 
-  The debounce above is a coarse first filter: it reduces how many
-  callers even attempt a write, but it is best-effort, not a
-  correctness boundary. Exactly-once is enforced *underneath* it — even
-  if several callers slip through the same window, two properties
-  together give "exactly one new snapshot per trigger cohort":
+  Exactly-once does not depend on the single-flight worker — that's a
+  performance layer, not a correctness boundary. Even if several callers
+  attempt a write concurrently (the worker only fronts the lazy path; the
+  sweeper/agent/CLI call in directly), two properties together give
+  "exactly one new snapshot per trigger cohort":
 
   1. Deterministic-anyone snapshotting (CX-umz): any two callers that
      observe the same parent build byte-identical snapshot content (the
@@ -88,48 +86,9 @@ defmodule Commonplace.SnapshotTrigger do
 
   @default_chain_length_threshold 100
 
-  # CX-0nkq: per-doc debounce window. SnapshotTrigger.maybe_snapshot
-  # is fired by the lazy reader path (DocBuilder.maybe_lazy_snapshot)
-  # via Task.start, by the producer-side hook, by the sweeper, and by
-  # the explicit CLI command. Under heavy reader pressure the Tasks
-  # pile up at the CommitStore mailbox — fork on a deep tree timed
-  # out at 5s under this contention. The debounce caps to one
-  # snapshot attempt per doc per @debounce_window_ms, regardless of
-  # how many readers triggered the path. Proper architectural fix
-  # is a single-flight SnapshotWorker GenServer (still tracked in
-  # CX-0nkq); this is the smallest viable relief.
-  @debounce_window_ms 10_000
-  @debounce_table :snapshot_trigger_debounce
-
-  @doc false
-  # Called from Commonplace.Application.start/2 to create the ETS
-  # table that backs `recent_attempt?/2` + `record_attempt/1`. Public
-  # so concurrent readers in any process can probe without going
-  # through a GenServer.
-  def init_debounce_table do
-    if :ets.whereis(@debounce_table) == :undefined do
-      try do
-        :ets.new(@debounce_table, [
-          :set,
-          :public,
-          :named_table,
-          read_concurrency: true,
-          write_concurrency: true
-        ])
-      rescue
-        # Race: a parallel caller created the table between our
-        # whereis check and our :ets.new — already exists is fine.
-        ArgumentError -> :ok
-      end
-    end
-
-    :ok
-  end
-
   @type maybe_snapshot_result ::
           {:ok, :snapshotted, Commonplace.Store.Commit.t()}
           | {:ok, :below_threshold, {:chain_length, non_neg_integer(), pos_integer()}}
-          | {:ok, :debounced, {:debounce_window_ms, pos_integer()}}
 
   @doc """
   Check whether `doc_uuid` has crossed the configured snapshot
@@ -162,23 +121,7 @@ defmodule Commonplace.SnapshotTrigger do
   @spec maybe_snapshot(GenServer.server(), String.t(), keyword()) :: maybe_snapshot_result()
   def maybe_snapshot(store \\ CommitStore, doc_uuid, opts \\ []) do
     threshold = resolve_threshold(opts)
-    now_ms = Keyword.get(opts, :now, System.system_time(:millisecond))
-
-    window =
-      Keyword.get(
-        opts,
-        :debounce_window_ms,
-        Application.get_env(:commonplace, :snapshot_trigger_debounce_window_ms, @debounce_window_ms)
-      )
-
-    cond do
-      window > 0 and recent_attempt?(doc_uuid, now_ms, window) ->
-        {:ok, :debounced, {:debounce_window_ms, window}}
-
-      true ->
-        record_attempt(doc_uuid, now_ms)
-        do_maybe_snapshot(store, doc_uuid, threshold, opts)
-    end
+    do_maybe_snapshot(store, doc_uuid, threshold, opts)
   end
 
   defp do_maybe_snapshot(store, doc_uuid, threshold, opts) do
@@ -203,20 +146,6 @@ defmodule Commonplace.SnapshotTrigger do
             {:ok, :below_threshold, {:chain_length, chain_length, threshold}}
         end
     end
-  end
-
-  defp recent_attempt?(doc_uuid, now_ms, window) do
-    init_debounce_table()
-
-    case :ets.lookup(@debounce_table, doc_uuid) do
-      [{^doc_uuid, last_ms}] -> now_ms - last_ms < window
-      [] -> false
-    end
-  end
-
-  defp record_attempt(doc_uuid, now_ms) do
-    init_debounce_table()
-    :ets.insert(@debounce_table, {doc_uuid, now_ms})
   end
 
   # CX-592q: lull-aware heuristic. Both `:soft_chain_length_threshold`
