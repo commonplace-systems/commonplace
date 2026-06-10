@@ -519,6 +519,30 @@ defmodule Commonplace.Process.Orchestrator do
   end
 
   defp parse_processes_doc(doc_uuid, dir_uuid, root_uuid, store) do
+    case Commonplace.Trust.authorized_to_execute?(store, doc_uuid) do
+      :ok ->
+        do_parse_processes_doc(doc_uuid, dir_uuid, root_uuid, store)
+
+      {:error, reason} ->
+        # Gate B second ingress (CX-tdkq.2 / R2): a __processes.json
+        # declaration is execute-authority — it can spawn in-BEAM code
+        # or OS commands with $secret:KEY env resolution. An untrusted
+        # declaration contributes NO processes; and because the
+        # declared config shrinks, the reconcile loop's normal
+        # convergence also stops an already-running process whose
+        # declaration lost trust. This is the only gate on
+        # :sandbox_exec, which never touches SourceDoc.compile.
+        :telemetry.execute(
+          [:commonplace, :process, :rejected, :trust],
+          %{system_time: System.system_time()},
+          %{doc_uuid: doc_uuid, dir_uuid: dir_uuid, reason: reason}
+        )
+
+        []
+    end
+  end
+
+  defp do_parse_processes_doc(doc_uuid, dir_uuid, root_uuid, store) do
     case CommitStoreClient.latest_commit(store, doc_uuid) do
       {:ok, commit} ->
         doc = Yelixer.Doc.new()
