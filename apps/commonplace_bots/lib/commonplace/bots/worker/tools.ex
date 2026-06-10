@@ -12,20 +12,26 @@ defmodule Commonplace.Bots.Worker.Tools do
   `dispatch/3` is the dispatch table the loop walks for each
   `tool_use` block.
 
-  ## Phase-4 tools (this commit)
+  ## The tools
+
+  Seven tools are live in the registry (`@tool_modules`) and
+  offered to the model on every turn — two writers and five
+  readers. All route through the substrate's ordinary read/write
+  primitives (see `Commonplace.Bots.Worker`'s "Substrate-pure I/O"
+  note); there is no staged rollout left to wire.
 
     * `post_message` — append a chat message to the room's
       `_messages` doc as the bot.
     * `remember` — append a JSONL line to the bot's
       `memory.jsonl` doc.
-
-  ## Phase-5 read tools (next phase)
-
-    * `read_chat`
-    * `read_memory`
-    * `list_files`
-    * `read_file`
-    * `check_turn_remaining`
+    * `read_chat` — read recent messages from the room.
+    * `read_memory` — read back the bot's own `memory.jsonl`.
+    * `list_files` — list the entries under a directory in the tree.
+    * `read_file` — read a text doc's content.
+    * `check_turn_remaining` — report this turn's remaining budget
+      (calls / output tokens / wall-clock), read from the
+      `:budget_snapshot` the loop stamps into `state` before each
+      dispatch.
 
   ## Why a registry instead of a `case`
 
