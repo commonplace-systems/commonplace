@@ -550,7 +550,7 @@ defmodule Commonplace.Store.CommitStore do
   """
   @spec all_commit_ids_for_doc(GenServer.server(), String.t()) :: MapSet.t()
   def all_commit_ids_for_doc(server \\ __MODULE__, doc_uuid) do
-    GenServer.call(server, {:all_commit_ids_for_doc, doc_uuid})
+    do_all_commit_ids_for_doc(resolve_db(server), doc_uuid)
   end
 
   @doc """
@@ -559,7 +559,7 @@ defmodule Commonplace.Store.CommitStore do
   point-read on the `{:commit, id}` row.
   """
   def get_commit(server \\ __MODULE__, commit_id) do
-    GenServer.call(server, {:get_commit, commit_id})
+    do_get_commit(resolve_db(server), commit_id)
   end
 
   @doc """
@@ -571,22 +571,22 @@ defmodule Commonplace.Store.CommitStore do
   subtrees were short-circuited without a read.
   """
   def latest_commit(server \\ __MODULE__, doc_uuid) do
-    GenServer.call(server, {:latest_commit, doc_uuid})
+    do_latest_commit(resolve_db(server), doc_uuid)
   end
 
   @doc "Walk the commit chain for a doc, returning commits newest-first."
   def commit_log(server \\ __MODULE__, doc_uuid, opts \\ []) do
-    GenServer.call(server, {:commit_log, doc_uuid, opts})
+    do_commit_log(resolve_db(server), doc_uuid, opts)
   end
 
   @doc "Return a MapSet of all document UUIDs that have a `:latest` entry."
   def all_doc_uuids(server \\ __MODULE__) do
-    GenServer.call(server, :all_doc_uuids)
+    do_all_doc_uuids(resolve_db(server))
   end
 
   @doc "Check if `ancestor_id` is an ancestor of `descendant_id` in the commit DAG."
   def is_ancestor?(server \\ __MODULE__, ancestor_id, descendant_id) do
-    GenServer.call(server, {:is_ancestor, ancestor_id, descendant_id})
+    do_is_ancestor(resolve_db(server), ancestor_id, descendant_id)
   end
 
   @doc """
@@ -606,7 +606,7 @@ defmodule Commonplace.Store.CommitStore do
 
   @doc "Return a MapSet of all commit IDs for a document (walks the chain)."
   def commit_ids_for_doc(server \\ __MODULE__, doc_uuid) do
-    GenServer.call(server, {:commit_ids_for_doc, doc_uuid})
+    collect_commit_ids(resolve_db(server), doc_uuid)
   end
 
   @doc """
@@ -652,7 +652,7 @@ defmodule Commonplace.Store.CommitStore do
 
   @doc "Find the most recent common ancestor between two UUID chains."
   def find_common_ancestor(server \\ __MODULE__, uuid_a, uuid_b) do
-    GenServer.call(server, {:find_common_ancestor, uuid_a, uuid_b})
+    do_find_common_ancestor(resolve_db(server), uuid_a, uuid_b)
   end
 
   @doc "Store the commit ID of the source at the time of a merge, for incremental merging."
@@ -662,7 +662,7 @@ defmodule Commonplace.Store.CommitStore do
 
   @doc "Retrieve the stored merge point commit ID for a (target, source) pair."
   def get_merge_point(server \\ __MODULE__, target_uuid, source_uuid) do
-    GenServer.call(server, {:get_merge_point, target_uuid, source_uuid})
+    CubDB.get(resolve_db(server), {:merge_point, target_uuid, source_uuid})
   end
 
   @doc "Record the target's head commit after any merge (keyed by target+source and target-only)."
@@ -672,11 +672,12 @@ defmodule Commonplace.Store.CommitStore do
 
   @doc "Get the target's head commit after the most recent merge from any source."
   def get_latest_merge_head(server \\ __MODULE__, target_uuid) do
-    GenServer.call(server, {:get_latest_merge_head, target_uuid})
+    CubDB.get(resolve_db(server), {:latest_merge_head, target_uuid})
   end
 
   @impl true
   def init(opts) do
+    name = Keyword.get(opts, :name, __MODULE__)
     data_dir = Keyword.fetch!(opts, :data_dir)
     path = Path.join(data_dir, "commits")
     File.mkdir_p!(path)
@@ -685,21 +686,39 @@ defmodule Commonplace.Store.CommitStore do
       {:ok, db} ->
         case probe_integrity(db) do
           :ok ->
-            {:ok, %{db: db}}
+            ready(name, db)
 
           {:error, reason} ->
             require Logger
             Logger.warning("CubDB corrupt on probe (#{inspect(reason)}). Archiving and starting fresh.")
             CubDB.stop(db)
-            recover_cubdb(path)
+            recover_cubdb(name, path)
         end
 
       {:error, reason} ->
         require Logger
         Logger.warning("CubDB failed to open (#{inspect(reason)}). Archiving and starting fresh.")
-        recover_cubdb(path)
+        recover_cubdb(name, path)
     end
   end
+
+  # R4(a): publish the CubDB handle so reads can run in the caller process
+  # against it directly, never queuing behind a write in this GenServer's
+  # mailbox (CX-tdkq.4). Keyed by the registered name so isolated test stores
+  # and the production singleton don't collide; resolve_db/1 falls back to a
+  # cheap `:get_db` call for callers that hold a pid rather than the name.
+  defp ready(name, db) do
+    :persistent_term.put({__MODULE__, :db, name}, db)
+    {:ok, %{db: db, name: name}}
+  end
+
+  @impl true
+  def terminate(_reason, %{name: name}) do
+    :persistent_term.erase({__MODULE__, :db, name})
+    :ok
+  end
+
+  def terminate(_reason, _state), do: :ok
 
   defp open_cubdb(path) do
     # Trap exits so CubDB init crashes don't kill us
@@ -730,7 +749,7 @@ defmodule Commonplace.Store.CommitStore do
     result
   end
 
-  defp recover_cubdb(path) do
+  defp recover_cubdb(name, path) do
     archive_corrupt_db(path)
 
     {:ok, db} =
@@ -740,7 +759,7 @@ defmodule Commonplace.Store.CommitStore do
         auto_compact: true
       )
 
-    {:ok, %{db: db}}
+    ready(name, db)
   end
 
   @impl true
@@ -836,19 +855,17 @@ defmodule Commonplace.Store.CommitStore do
     end
   end
 
+  # R4(a): hand a caller the live CubDB handle. O(1), no disk I/O — the cheap
+  # fallback for resolve_db/1 when persistent_term has no entry for the given
+  # server reference (e.g. a pid rather than the registered name).
+  @impl true
+  def handle_call(:get_db, _from, state) do
+    {:reply, state.db, state}
+  end
+
   @impl true
   def handle_call({:all_commit_ids_for_doc, doc_uuid}, _from, state) do
-    ids =
-      CubDB.select(state.db,
-        min_key: {:commit, ""},
-        max_key: {:commit, <<255>>}
-      )
-      |> Enum.reduce(MapSet.new(), fn
-        {{:commit, id}, %{doc_uuid: ^doc_uuid}}, acc -> MapSet.put(acc, id)
-        _, acc -> acc
-      end)
-
-    {:reply, ids, state}
+    {:reply, do_all_commit_ids_for_doc(state.db, doc_uuid), state}
   end
 
   @impl true
@@ -878,69 +895,27 @@ defmodule Commonplace.Store.CommitStore do
 
   @impl true
   def handle_call({:get_commit, commit_id}, _from, state) do
-    case CubDB.get(state.db, {:commit, commit_id}) do
-      nil -> {:reply, :none, state}
-      commit -> {:reply, {:ok, commit}, state}
-    end
+    {:reply, do_get_commit(state.db, commit_id), state}
   end
 
   @impl true
   def handle_call({:latest_commit, doc_uuid}, _from, state) do
-    # CX-o8tx: emit telemetry per latest_commit read so the reflog
-    # amortization tests can prove that clean subtrees were short-circuited
-    # without a read. Production cost is negligible when no handler is
-    # attached.
-    :telemetry.execute(
-      [:commonplace, :commit, :latest_read],
-      %{system_time: System.system_time()},
-      %{doc_uuid: doc_uuid}
-    )
-
-    case CubDB.get(state.db, {:latest, doc_uuid}) do
-      nil ->
-        {:reply, :none, state}
-
-      commit_id ->
-        commit = CubDB.get(state.db, {:commit, commit_id})
-        {:reply, {:ok, commit}, state}
-    end
+    {:reply, do_latest_commit(state.db, doc_uuid), state}
   end
 
   @impl true
   def handle_call({:commit_log, doc_uuid, opts}, _from, state) do
-    limit = Keyword.get(opts, :limit, 100)
-
-    case CubDB.get(state.db, {:latest, doc_uuid}) do
-      nil ->
-        {:reply, [], state}
-
-      commit_id ->
-        log = collect_log(state.db, commit_id, limit, [])
-        {:reply, log, state}
-    end
+    {:reply, do_commit_log(state.db, doc_uuid, opts), state}
   end
 
   @impl true
   def handle_call(:all_doc_uuids, _from, state) do
-    uuids =
-      CubDB.select(state.db,
-        min_key: {:latest, ""},
-        max_key: {:latest, <<255>>}
-      )
-      |> Enum.map(fn {{:latest, uuid}, _commit_id} -> uuid end)
-
-    {:reply, MapSet.new(uuids), state}
-  end
-
-  @impl true
-  def handle_call({:is_ancestor, nil, _descendant_id}, _from, state) do
-    {:reply, false, state}
+    {:reply, do_all_doc_uuids(state.db), state}
   end
 
   @impl true
   def handle_call({:is_ancestor, ancestor_id, descendant_id}, _from, state) do
-    result = walk_ancestors(state.db, ancestor_id, descendant_id)
-    {:reply, result, state}
+    {:reply, do_is_ancestor(state.db, ancestor_id, descendant_id), state}
   end
 
   @impl true
@@ -951,8 +926,7 @@ defmodule Commonplace.Store.CommitStore do
 
   @impl true
   def handle_call({:commit_ids_for_doc, doc_uuid}, _from, state) do
-    ids = collect_commit_ids(state.db, doc_uuid)
-    {:reply, ids, state}
+    {:reply, collect_commit_ids(state.db, doc_uuid), state}
   end
 
   @impl true
@@ -993,9 +967,7 @@ defmodule Commonplace.Store.CommitStore do
 
   @impl true
   def handle_call({:find_common_ancestor, uuid_a, uuid_b}, _from, state) do
-    ids_a = collect_commit_ids(state.db, uuid_a)
-    result = walk_to_ancestor(state.db, uuid_b, ids_a)
-    {:reply, result, state}
+    {:reply, do_find_common_ancestor(state.db, uuid_a, uuid_b), state}
   end
 
   @impl true
@@ -1119,6 +1091,85 @@ defmodule Commonplace.Store.CommitStore do
 
         {:reply, {:error, {:namespace_rejected, reason}}, state}
     end
+  end
+
+  # ── R4(a): caller-side reads ─────────────────────────────────────────────
+  #
+  # These `do_*` functions hold the read logic so it can run either inside the
+  # GenServer (the `handle_call` clauses above, used by remote/cross-version
+  # clients via CommitStoreClient) or directly in the caller process (the
+  # public functions, via resolve_db/1). Running in the caller means the
+  # disk-bound CubDB btree traversal — which `CubDB.get/select` perform in the
+  # calling process, not the CubDB GenServer — no longer queues behind a write
+  # in this store's mailbox. Reads stay consistent: each CubDB.get takes its
+  # own snapshot, exactly as before. Writes remain serialized here. (CX-tdkq.4)
+
+  defp resolve_db(server) do
+    case :persistent_term.get({__MODULE__, :db, server}, nil) do
+      nil -> GenServer.call(server, :get_db)
+      db -> db
+    end
+  end
+
+  defp do_get_commit(db, commit_id) do
+    case CubDB.get(db, {:commit, commit_id}) do
+      nil -> :none
+      commit -> {:ok, commit}
+    end
+  end
+
+  defp do_latest_commit(db, doc_uuid) do
+    # CX-o8tx: emit telemetry per latest_commit read so the reflog
+    # amortization tests can prove that clean subtrees were short-circuited
+    # without a read. Production cost is negligible when no handler is
+    # attached.
+    :telemetry.execute(
+      [:commonplace, :commit, :latest_read],
+      %{system_time: System.system_time()},
+      %{doc_uuid: doc_uuid}
+    )
+
+    case CubDB.get(db, {:latest, doc_uuid}) do
+      nil -> :none
+      commit_id -> {:ok, CubDB.get(db, {:commit, commit_id})}
+    end
+  end
+
+  defp do_commit_log(db, doc_uuid, opts) do
+    limit = Keyword.get(opts, :limit, 100)
+
+    case CubDB.get(db, {:latest, doc_uuid}) do
+      nil -> []
+      commit_id -> collect_log(db, commit_id, limit, [])
+    end
+  end
+
+  defp do_all_doc_uuids(db) do
+    CubDB.select(db,
+      min_key: {:latest, ""},
+      max_key: {:latest, <<255>>}
+    )
+    |> Enum.map(fn {{:latest, uuid}, _commit_id} -> uuid end)
+    |> MapSet.new()
+  end
+
+  defp do_all_commit_ids_for_doc(db, doc_uuid) do
+    CubDB.select(db,
+      min_key: {:commit, ""},
+      max_key: {:commit, <<255>>}
+    )
+    |> Enum.reduce(MapSet.new(), fn
+      {{:commit, id}, %{doc_uuid: ^doc_uuid}}, acc -> MapSet.put(acc, id)
+      _, acc -> acc
+    end)
+  end
+
+  defp do_is_ancestor(_db, nil, _descendant_id), do: false
+  defp do_is_ancestor(db, ancestor_id, descendant_id), do: walk_ancestors(db, ancestor_id, descendant_id)
+
+  defp do_find_common_ancestor(db, uuid_a, uuid_b) do
+    ids_a = collect_commit_ids(db, uuid_a)
+    walk_to_ancestor(db, uuid_b, ids_a)
   end
 
   defp do_write_commit(state, doc_uuid, update, parent_id, metadata, opts) do

@@ -59,6 +59,38 @@ defmodule Commonplace.Store.CommitStoreTest do
     end
   end
 
+  describe "reads served outside the GenServer (CX-tdkq.4 R4a)" do
+    # R4(a): reads run in the caller process against a directly-held CubDB
+    # handle, not through the CommitStore GenServer mailbox. Suspending the
+    # GenServer must NOT stall reads — if a read still routed through it, the
+    # GenServer.call would time out. Writes continue to serialize through the
+    # process (we do them before suspending).
+    test "point and scan reads succeed while the CommitStore process is suspended", %{
+      store: store
+    } do
+      c1 = CommitStore.create_commit(store, "doc-suspend", <<9>>, nil)
+      c2 = CommitStore.create_commit(store, "doc-suspend", <<9, 9>>, c1.id)
+
+      pid = Process.whereis(store)
+      :sys.suspend(pid)
+
+      try do
+        assert {:ok, fetched} = CommitStore.get_commit(store, c2.id)
+        assert fetched.id == c2.id
+
+        assert {:ok, latest} = CommitStore.latest_commit(store, "doc-suspend")
+        assert latest.id == c2.id
+
+        assert [^c2 | _] = CommitStore.commit_log(store, "doc-suspend")
+        assert MapSet.member?(CommitStore.all_doc_uuids(store), "doc-suspend")
+        assert MapSet.member?(CommitStore.commit_ids_for_doc(store, "doc-suspend"), c1.id)
+        assert CommitStore.is_ancestor?(store, c1.id, c2.id)
+      after
+        :sys.resume(pid)
+      end
+    end
+  end
+
   describe "DAG chain" do
     test "can walk the full commit history via parent IDs", %{store: store} do
       c1 = CommitStore.create_commit(store, "doc-1", <<1>>, nil)

@@ -200,7 +200,8 @@ defmodule Commonplace.Store.CrossEpochMerge do
     Enum.reduce_while(chain, {:ok, []}, fn id, {:ok, acc} ->
       case CommitStore.get_commit(store, id) do
         {:ok, snap} -> {:cont, {:ok, [snap | acc]}}
-        :not_found -> {:halt, {:error, {:unknown_snapshot, id}}}
+        # get_commit/2 returns :none for a missing row (CX-tdkq.4).
+        :none -> {:halt, {:error, {:unknown_snapshot, id}}}
       end
     end)
     |> case do
@@ -298,7 +299,11 @@ defmodule Commonplace.Store.CrossEpochMerge do
       {:ok, c} ->
         collect_replay_chain(store, c.parent_id, [c | acc])
 
-      :not_found ->
+      # CommitStore.get_commit/2 signals a missing row with :none (never
+      # :not_found). Matching the wrong atom here was dead code that would
+      # have raised CaseClauseError on a genuinely absent commit; surfaced by
+      # the R4(a) read refactor making the return type inferrable (CX-tdkq.4).
+      :none ->
         :error
     end
   end

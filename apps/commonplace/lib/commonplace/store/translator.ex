@@ -132,7 +132,9 @@ defmodule Commonplace.Store.Translator do
       {:ok, snapshot} ->
         translate_edit_with_snapshot(edit, snapshot, opts)
 
-      :not_found ->
+      # get_commit/2 returns :none for a missing row, never :not_found
+      # (CX-tdkq.4 — dead clause surfaced by the R4(a) read refactor).
+      :none ->
         {:error, {:target_snapshot_not_found, target_snapshot_id}}
     end
   end
