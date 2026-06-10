@@ -1,8 +1,35 @@
 # Trust & Attenuation — code-reality survey notes (checkpoint)
 
 Date: 2026-06-10, branch `trust-attenuation` @ main 396b266.
-Status: Phase-1 design discussion with commonplace-plan (clod-squad msgs #4908–#4915).
-Design doc lives in **commonplace-plan's repo**: `docs/trust-and-attenuation.md` (their skeleton, my code-reality sections pending).
+Status: **R1 (CX-tdkq.1) and R2 (CX-tdkq.2) IMPLEMENTED on this branch.**
+Design doc (complete, §1–8) lives in **commonplace-plan's repo**: `docs/trust-and-attenuation.md`.
+
+## Implemented (this branch)
+
+- `74e9dfd` nil-sig guard on `verify_commit/2`
+- `dfa9eaa` `Commonplace.Trust.authorized?/3` seam — flat allowlist +
+  `accept_unsigned` from workspace-local config (app env →
+  `<data_dir>/trust.json` → permissive default)
+- `7cbfc7e` Gate A: trust check in `import_commit`'s DEFAULT chain
+- `7a12772` Document.Server respects the import verdict (bypass fix)
+- `94e725f` identity-doc convergence via SiblingMerger (umbrella-shape
+  metadata; full-chain reads)
+- `e0d842e` Gate B: `Trust.authorized_to_execute?` contributor-chain walk
+  inside `SourceDoc.compile` (laundering-proof; runs on cache hits)
+- `24423a9` deterministic LRU stamps in SourceDoc (pre-existing flake)
+- `f8f70c0` Gate B second ingress: `__processes.json` declaration gate
+  (only protection for `:sandbox_exec`; revocation stops running
+  processes via reconcile convergence)
+
+Open follow-ups (relayed to commonplace-plan for beads): re-scope
+CX-tdkq.21 (phase 1.5 largely subsumed); strict-mode hazard — unsigned
+auto-snapshots brick code-doc executability; unsigned merge commits vs
+strict federation import. Phase 3 (cert docs, CX-tdkq.22) awaiting
+direction.
+
+---
+
+# Original survey (historical)
 
 ## Trust surface inventory (verified, file:line)
 
