@@ -85,22 +85,59 @@ defmodule Commonplace.Store.Snapshotter do
   route through this so they agree on payload bytes (load-bearing for
   deterministic-anyone — CX-umz).
   """
+  @typedoc """
+  A built snapshot payload, or a guard trip. `{:error, {:nested_subtypes,
+  names}}` (CX-tdkq.5 R5) means the source carries CRDT sub-types nested
+  inside maps/arrays that `Yelixer.Doc.snapshot_update/1` cannot replay —
+  snapshotting would silently drop their state, so the caller must refuse
+  and retain the full chain instead. See `build_payload/2`.
+  """
+  @type build_result ::
+          {:ok, binary(), map()}
+          | {:error, {:nested_subtypes, [String.t()]}}
+
   @spec build_snapshot(GenServer.server(), String.t(), Commonplace.Store.Commit.t()) ::
-          {binary(), map()}
+          build_result()
   def build_snapshot(server, doc_uuid, parent_commit) do
-    source_doc = reconstruct_source(server, doc_uuid, parent_commit)
-    {update_bytes, dm_inner} = build(source_doc)
+    server
+    |> reconstruct_source(doc_uuid, parent_commit)
+    |> build_payload(parent_commit)
+  end
 
-    parent_namespace =
-      Commonplace.Store.Namespace.current_namespace(parent_commit) || parent_commit.id
+  @doc """
+  Build a snapshot payload from an already-reconstructed source doc, or
+  refuse if the doc cannot be snapshotted without data loss.
 
-    metadata = %{
-      snapshot_parents: [parent_namespace],
-      derivation_map: %{parent_namespace => dm_inner},
-      snapshotter_version: snapshotter_version()
-    }
+  Returns `{:ok, update_bytes, metadata}` for a snapshottable doc, or
+  `{:error, {:nested_subtypes, names}}` when the source carries CRDT
+  sub-types nested inside maps/arrays (R5 guard, CX-tdkq.5). Those sub-types
+  are dropped by `Yelixer.Doc.snapshot_update/1`; cutting the snapshot would
+  silently lose their state, so the only safe outcome is to NOT snapshot —
+  the full commit chain is retained, which preserves the nested CRDT. This
+  turns a delayed, data-losing trap into a visible no-op (callers emit
+  telemetry / a clear error). See the design-doc edict in
+  docs/architecture-review.md §8 R5.
+  """
+  @spec build_payload(Yelixer.Doc.t(), Commonplace.Store.Commit.t()) :: build_result()
+  def build_payload(%Yelixer.Doc{} = source_doc, parent_commit) do
+    case Yelixer.Doc.nested_subtype_names(source_doc) do
+      [] ->
+        {update_bytes, dm_inner} = build(source_doc)
 
-    {update_bytes, metadata}
+        parent_namespace =
+          Commonplace.Store.Namespace.current_namespace(parent_commit) || parent_commit.id
+
+        metadata = %{
+          snapshot_parents: [parent_namespace],
+          derivation_map: %{parent_namespace => dm_inner},
+          snapshotter_version: snapshotter_version()
+        }
+
+        {:ok, update_bytes, metadata}
+
+      names ->
+        {:error, {:nested_subtypes, names}}
+    end
   end
 
   defp reconstruct_source(_server, _uuid, %{metadata: %{kind: :genesis}}) do

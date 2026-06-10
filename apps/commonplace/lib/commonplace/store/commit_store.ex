@@ -476,8 +476,10 @@ defmodule Commonplace.Store.CommitStore do
   parent produce the same `update` bytes and the same `derivation_map`
   contents (deterministic-anyone property — see tests).
 
-  Returns `{:ok, snapshot_commit}` or `{:error, :not_found}` if the
-  doc has no `:latest` commit.
+  Returns `{:ok, snapshot_commit}`, `{:error, :not_found}` if the doc has
+  no `:latest` commit, or `{:error, {:nested_subtypes, names}}` if the doc
+  carries CRDT sub-types nested inside maps/arrays that cannot be snapshotted
+  without data loss (R5 guard, CX-tdkq.5 — refusing keeps the full chain).
   """
   def snapshot(server \\ __MODULE__, doc_uuid) do
     case latest_commit(server, doc_uuid) do
@@ -485,11 +487,14 @@ defmodule Commonplace.Store.CommitStore do
         {:error, :not_found}
 
       {:ok, parent} ->
-        {update_bytes, metadata} =
-          Commonplace.Store.Snapshotter.build_snapshot(server, doc_uuid, parent)
+        case Commonplace.Store.Snapshotter.build_snapshot(server, doc_uuid, parent) do
+          {:ok, update_bytes, metadata} ->
+            commit = create_snapshot_commit(server, doc_uuid, update_bytes, metadata)
+            {:ok, commit}
 
-        commit = create_snapshot_commit(server, doc_uuid, update_bytes, metadata)
-        {:ok, commit}
+          {:error, {:nested_subtypes, _names}} = error ->
+            error
+        end
     end
   end
 

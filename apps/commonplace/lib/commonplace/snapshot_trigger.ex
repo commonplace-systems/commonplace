@@ -89,6 +89,7 @@ defmodule Commonplace.SnapshotTrigger do
   @type maybe_snapshot_result ::
           {:ok, :snapshotted, Commonplace.Store.Commit.t()}
           | {:ok, :below_threshold, {:chain_length, non_neg_integer(), pos_integer()}}
+          | {:ok, :skipped, {:nested_subtypes, [String.t()]}}
 
   @doc """
   Check whether `doc_uuid` has crossed the configured snapshot
@@ -168,8 +169,26 @@ defmodule Commonplace.SnapshotTrigger do
   end
 
   defp attempt_snapshot(store, doc_uuid, parent_commit, threshold) do
-    {update_bytes, metadata} = Snapshotter.build_snapshot(store, doc_uuid, parent_commit)
+    case Snapshotter.build_snapshot(store, doc_uuid, parent_commit) do
+      {:ok, update_bytes, metadata} ->
+        write_snapshot(store, doc_uuid, update_bytes, metadata, parent_commit, threshold)
 
+      {:error, {:nested_subtypes, names}} ->
+        # R5 guard (CX-tdkq.5): the doc carries CRDT sub-types nested inside
+        # maps/arrays that snapshot_update/1 would drop. Refusing the cut
+        # retains the full chain (no data loss); emit telemetry so the
+        # otherwise-silent limitation is visible.
+        :telemetry.execute(
+          [:commonplace, :snapshot, :skipped, :nested_subtypes],
+          %{system_time: System.system_time()},
+          %{doc_uuid: doc_uuid, subtypes: names}
+        )
+
+        {:ok, :skipped, {:nested_subtypes, names}}
+    end
+  end
+
+  defp write_snapshot(store, doc_uuid, update_bytes, metadata, parent_commit, threshold) do
     case CommitStore.write_snapshot_cas(
            store,
            doc_uuid,
