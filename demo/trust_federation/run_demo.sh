@@ -56,12 +56,13 @@ fi
 grep -h "\[B\]" "$SHARED/b.log" || true
 
 echo "=== launching Node A (strict) — pulls + enforces ==="
-elixir --sname cpa --cookie "$COOKIE" -S mix run --no-start demo/trust_federation/node_a.exs "$DIR_A" "$SHARED" \
-  > "$SHARED/a.log" 2>&1
+# node_a writes its clean transcript directly to $SESSION_LOG (survives the
+# temp-dir cleanup and any wrapper signal).
+SESSION_LOG="$SESSION_LOG" \
+  elixir --sname cpa --cookie "$COOKIE" -S mix run --no-start demo/trust_federation/node_a.exs "$DIR_A" "$SHARED" \
+  > "$SHARED/a.raw" 2>&1
 A_RC=$?
-# Preserve a clean transcript before the temp dir is reaped.
-grep -av -E "Failed to lookup telemetry|redefining module|local function|performance penalty|hexdocs|^https|^This means|make:|==>|Nothing to be done" "$SHARED/a.log" > "$SESSION_LOG"
-cat "$SESSION_LOG"
+cat "$SESSION_LOG" 2>/dev/null
 
 echo "=== Node B log tail ==="
 grep -h "\[B\]" "$SHARED/b.log" || true

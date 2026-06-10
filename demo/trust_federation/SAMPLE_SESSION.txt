@@ -1,0 +1,52 @@
+
+
+
+NODE A (strict) — federation trust boundary live test
+    A node: :cpa@commonplace
+    B node: :cpb@commonplace
+    accept_unsigned: false
+    pinned trusted writer: "alice-trusted-writer"
+
+[A] connecting to peer B…
+    Node.connect: true
+----------------------------------------------------------------
+PART 1 — commit-level: pull B's commits via real catch-up sync (Gate A)
+----------------------------------------------------------------
+
+23:21:36.392 [debug] NodeSync catch_up doc-signed: fetched 1, sent 0
+
+23:21:36.394 [debug] NodeSync catch_up doc-unsigned: fetched 1, sent 0
+
+23:21:36.395 [debug] NodeSync catch_up code-evil: fetched 1, sent 0
+
+  Gate A rejections actually emitted during sync:
+    rejected: {"doc-unsigned", :unsigned}
+    rejected: {"code-evil", :unsigned}
+
+  Did each commit land in A's store?
+  [PASS] signed-by-trusted DATA commit → ACCEPTED + persisted
+    get_commit: :present
+  [PASS] unsigned DATA commit → REJECTED at Gate A, NOT persisted
+    get_commit: :none
+  [PASS] accepted commit's content is live on A
+    content: "hello from a trusted writer"
+----------------------------------------------------------------
+PART 2 — RCE: an unsigned CODE doc from the peer must never execute (Gate A + Gate B)
+----------------------------------------------------------------
+  [PASS] peer's unsigned code doc was REJECTED at import — never stored on A
+    get_commit(code-evil): :none
+  [PASS] SourceDoc.compile(code-evil) fails — the RCE never runs
+    compile result: "{:error, :not_found}"
+  [PASS] Gate B refuses an unsigned code doc even when present: {:execution_denied, …}
+    compile result: "{:error, {:execution_denied, {:untrusted_contributor, EAE324FCFEF5…, :unsigned}}}"
+----------------------------------------------------------------
+
+6/6 live federation checks passed
+
+Honest scope: this proves an untrusted commit/code arriving over the
+sync/import path is REJECTED by the strict node — the federation defense.
+It does NOT claim a cookie-holding cluster member is contained: a BEAM
+cluster shares the distribution cookie and is ONE trust domain by design
+(see trust-and-attenuation.md §1). The gate defends the import seam; a
+distinct federation transport is future work.
+

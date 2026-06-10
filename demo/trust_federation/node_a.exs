@@ -44,12 +44,15 @@ Application.put_env(:commonplace, :trust, %{
 })
 
 defmodule D do
-  def hr, do: IO.puts(String.duplicate("-", 64))
-  def say(s), do: IO.puts(s)
-  def kv(k, v), do: IO.puts("    #{k}: #{inspect(v)}")
+  @log System.get_env("SESSION_LOG", "/tmp/cp_fed_session.log")
+  def init, do: File.write!(@log, "")
+  defp emit(s), do: (IO.puts(s); File.write!(@log, s <> "\n", [:append]))
+  def hr, do: emit(String.duplicate("-", 64))
+  def say(s), do: emit(s)
+  def kv(k, v), do: emit("    #{k}: #{inspect(v)}")
   def verdict(ok, s) do
     mark = if ok, do: "PASS", else: "FAIL"
-    IO.puts("  [#{mark}] #{s}")
+    emit("  [#{mark}] #{s}")
     ok
   end
 
@@ -73,6 +76,7 @@ parent = self()
   nil
 )
 
+D.init()
 D.say("\nNODE A (strict) — federation trust boundary live test")
 D.kv("A node", Node.self())
 D.kv("B node", b_node)
