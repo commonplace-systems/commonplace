@@ -1,12 +1,23 @@
 defmodule Commonplace.Workspace do
   @moduledoc """
-  Workspace discovery helpers — shared by the CLI and MCP entrypoints.
+  Workspace discovery + identity helpers — shared across the CLI, MCP,
+  and web/core entrypoints.
 
   A commonplace workspace is any directory containing a `.commonplace/`
-  subdirectory. `discover/1` walks upward from a starting path looking for
-  one, returning the resolved `data_dir` (the `.commonplace/` directory
-  itself) and the relative path from that workspace root to the original
-  starting directory.
+  subdirectory. Three helpers:
+
+  * `discover/1` walks upward from a starting path to the nearest such
+    directory, returning the resolved `data_dir` (the `.commonplace/`
+    directory itself) and the relative path from that workspace root to
+    the original starting directory.
+  * `root_uuid/0` reads the workspace's root schema UUID from
+    `<data_dir>/root` (`data_dir` from application env).
+  * `node_id/0` reads — or atomically creates on first call — the
+    persistent per-workspace node-id (CX-njf): a stable string that
+    underpins `Identity.stable_client_id/1`. It is workspace-scoped (not
+    `node()`-derived) so it survives BEAM restarts without reintroducing
+    the state-vector bloat a host-derived id would, while still differing
+    between separate installs.
   """
 
   @workspace_dir ".commonplace"
