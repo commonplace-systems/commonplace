@@ -7,6 +7,14 @@ defmodule Commonplace.MCP.Server do
   intentionally a plain struct, not a GenServer: the stdio loop owns it as
   a local variable and threads updated copies through each message.
 
+  > **Status — superseded but retained.** This is the *hand-rolled*
+  > server (`Stdio` + this module + `Protocol`). The escript no longer
+  > wires it to stdin; all live MCP traffic is served by
+  > `Commonplace.MCP.AnubisServer` (anubis_mcp). It is kept on disk with
+  > test coverage until CX-xaof removes it — edit it for the legacy path
+  > or its tests, not to change live behavior. The routing and presence
+  > contract below describe how this layer worked / still works in tests.
+
   ## Request routing and the initialize gate
 
   `handle/2` is the single entry point the stdio loop calls per
