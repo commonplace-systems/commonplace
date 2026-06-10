@@ -8,6 +8,13 @@ defmodule Commonplace.Document.ViewTransclusion do
   the render-time path — ViewRenderer calls `expand/2` before walking
   the tree to emit HEEx.
 
+  Resolution is idempotent with respect to compute-time inlining: if an
+  `<include>` already carries substantive children (a compute step
+  inlined it earlier), the resolver leaves that content untouched and
+  only recurses into it for nested includes. Render-time fetching fires
+  *only* for includes that weren't already expanded — so running this
+  over an already-computed view is safe and won't double-inline.
+
   ## Cycle detection
 
   Every call maintains a visited-UUIDs set. If an include references a
