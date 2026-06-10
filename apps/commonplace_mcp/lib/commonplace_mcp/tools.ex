@@ -6,18 +6,24 @@ defmodule Commonplace.MCP.Tools do
   dispatches a `tools/call` request to the right implementation.
   Two registries are merged at runtime:
 
-    * **System tools** — the seven shipped substrate tools
+    * **System tools** — the nine shipped substrate tools
       (`cat`, `fork`, `invoke_view_action`, `send_magenta`,
-      `tail_red`, `write`, `presence_info`) plus the meta-tools
-      (`call_tool`, `list_tools`). Compile-time, in this module.
+      `tail_red`, `write`, `presence_info`, `mud_send`, `mud_read`)
+      plus the meta-tools (`call_tool`, `list_tools`). Compile-time,
+      in this module.
     * **CRDT tools** (CX-y3q) — read at runtime from
       `__system/tools/`. Each interface doc declares an MCP-facing
       shape + a magenta address; `Commonplace.MCP.CrdtTools.list/2`
       and `.call/3` handle the dynamic side.
 
-  Precedence: when a CRDT tool name collides with a system tool,
-  the system tool wins on dispatch (the collision is observable via
-  telemetry `[:commonplace, :mcp, :tool_dispatch, :name_collision]`).
+  Precedence: when a CRDT tool name collides with a system tool, the
+  system tool wins — silently, in two places. `list/0` drops the
+  shadowing CRDT entry from the catalog (the name appears once, as the
+  system tool), and `call/3`'s dispatch cond checks both system
+  registries before falling through to CRDT tools, so a colliding CRDT
+  name is never reached. There is no telemetry on the collision today:
+  a CRDT author who reuses a system name simply finds their tool
+  invisible and unreachable.
 
   ## Meta-tools
 
@@ -111,8 +117,9 @@ defmodule Commonplace.MCP.Tools do
 
   Static system tool wins; falls through to CRDT tool when the name
   isn't in the system registry. Meta-tools (`call_tool`, `list_tools`)
-  are reachable directly through this function but are not returned
-  by `list/0`.
+  are reachable through this function AND returned by `list/0` (see
+  the "Meta-tools" note in the moduledoc) — the recursion guard is at
+  call time, not by hiding them from the catalog.
 
   `context` carries per-session state (e.g. presence_uuid for
   `presence_info`). Tools declaring `run/2` get it; `run/1`-only
