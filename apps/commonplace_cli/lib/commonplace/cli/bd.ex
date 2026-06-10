@@ -2,10 +2,19 @@ defmodule Commonplace.CLI.Bd do
   @moduledoc """
   Beads-on-Commonplace CLI: `commonplace bd <subcommand>`.
 
+  A beads-style issue tracker implemented *on the commonplace substrate*:
+  issues, deps, labels, and comments are stored as CRDT documents in the
+  workspace tree (under a `bd` dir, lazily created via
+  `Commonplace.Bd.Workspace.ensure_bd_dir/2`), so they sync, branch, and
+  merge like any other doc — that is what distinguishes it from the
+  external `bd` tool whose surface it mirrors. This module is only the
+  CLI frontend; each subcommand dispatches to the `Commonplace.Bd.*`
+  modules (`Issue`, `Dep`, `Label`, `Comment`, `Ready`, `Importer`).
+
   Spec: /home/jes/commonplace-plan/docs/beads-on-commonplace.md §9.3.
 
   P1 subcommands: create, show, update, close, list, ready, blocked,
-  comment, dep, label, import. Mirrors the bd CLI shape so muscle
+  comment, dep, label, import. Mirrors the `bd` CLI shape so muscle
   memory transfers.
   """
 
