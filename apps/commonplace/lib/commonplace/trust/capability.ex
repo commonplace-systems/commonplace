@@ -125,6 +125,17 @@ defmodule Commonplace.Trust.Capability do
   end
 
   @doc """
+  Ergonomic alias for `issue/5` — reads as the UCAN "A delegates to B"
+  operation. Root issue: `parent_cid = nil`. Delegation: pass the parent
+  struct as `opts[:parent]` for mint-time narrowing validation.
+  """
+  @spec delegate(SigningContext.t(), keyed_identity(), claim(), binary() | nil, keyword()) ::
+          {:ok, t()} | {:error, term()}
+  def delegate(issuer_ctx, audience, claim, parent_cid \\ nil, opts \\ []) do
+    issue(issuer_ctx, audience, claim, parent_cid, opts)
+  end
+
+  @doc """
   Is `child` a valid attenuation of `parent` — verbs ⊆, scope ⊆, and the
   caveat window no wider? Public so `verify_chain` reuses it per link.
   """
