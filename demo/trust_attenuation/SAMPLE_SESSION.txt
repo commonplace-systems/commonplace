@@ -1,0 +1,54 @@
+
+NODE A (strict) — live capability ATTENUATION demo
+    A node: :cpa@commonplace
+    B node: :cpb@commonplace
+    pinned anchor: "root (only)"
+
+[A] connecting to peer B…
+    Node.connect: true
+[A] fetched 10 certs from B and stored them locally.
+----------------------------------------------------------------------
+SCENARIO 1 — ACCEPTED: bob writes within his grant (pulled cross-node via catch_up)
+----------------------------------------------------------------------
+  [PASS] bob's in-scope commit ACCEPTED + persisted on A
+    doc content on A: "bob writes within his grant"
+----------------------------------------------------------------------
+SCENARIO — REJECTED: forged-sig cert
+----------------------------------------------------------------------
+  [PASS] forged-sig cert → REJECTED with :invalid_signature
+    import returned: {:error, {:trust_rejected, :invalid_signature}}
+    gate reason (telemetry): :invalid_signature
+    signed by: "bob"
+----------------------------------------------------------------------
+SCENARIO — REJECTED: over-broad cert (narrowing violation)
+----------------------------------------------------------------------
+  [PASS] over-broad cert (narrowing violation) → REJECTED with :not_attenuation
+    import returned: {:error, {:trust_rejected, :not_attenuation}}
+    gate reason (telemetry): :not_attenuation
+    signed by: "bob"
+----------------------------------------------------------------------
+SCENARIO — REJECTED: stolen chain (commit-author binding)
+----------------------------------------------------------------------
+  [PASS] stolen chain (commit-author binding) → REJECTED with :capability_author_mismatch
+    import returned: {:error, {:trust_rejected, :capability_author_mismatch}}
+    gate reason (telemetry): :capability_author_mismatch
+    signed by: "mallory"
+----------------------------------------------------------------------
+SCENARIO — REJECTED: expired cert
+----------------------------------------------------------------------
+  [PASS] expired cert → REJECTED with :expired
+    import returned: {:error, {:trust_rejected, :expired}}
+    gate reason (telemetry): :expired
+    signed by: "bob"
+----------------------------------------------------------------------
+
+5/5 live attenuation checks passed
+
+Honest scope: this proves the strict node's import/sync gate enforces the
+capability chain — accepts a commit whose root→alice→bob delegation verifies
+to the locally-pinned root and grants {write, d1}, and rejects forged,
+over-broad (narrowing-violating), stolen-chain (author-binding), and expired
+certs. It does NOT claim a cookie-holding cluster member is contained: a BEAM
+cluster is one trust domain by design (trust-and-attenuation.md §1). The gate
+defends the import seam; the certs travel by CID over that same seam.
+
