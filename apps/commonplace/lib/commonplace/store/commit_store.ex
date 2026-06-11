@@ -568,6 +568,25 @@ defmodule Commonplace.Store.CommitStore do
   end
 
   @doc """
+  Persist a capability cert (CX-tdkq.22b). Content-addressed by its CID;
+  idempotent. The cert is the immutable trust VALUE — not a CRDT doc.
+  """
+  def store_capability(server \\ __MODULE__, %Commonplace.Trust.Capability{} = cap) do
+    GenServer.call(server, {:store_capability, cap})
+  end
+
+  @doc """
+  Fetch a capability cert by CID. Returns `{:ok, cap}` or `:none`. Pure
+  point-read, runs in the caller process (mirrors `get_commit/2`).
+  """
+  def get_capability(server \\ __MODULE__, cid) do
+    case CubDB.get(resolve_db(server), {:capability, cid}) do
+      nil -> :none
+      cap -> {:ok, cap}
+    end
+  end
+
+  @doc """
   Return the local head commit for `doc_uuid` as `{:ok, commit}`,
   or `:none` if the doc has no `:latest` entry on this node.
 
@@ -1020,6 +1039,27 @@ defmodule Commonplace.Store.CommitStore do
     ])
 
     {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_call({:store_capability, %Commonplace.Trust.Capability{} = cap}, _from, state) do
+    # CX-tdkq.22b: a cert is a content-addressed immutable VALUE, keyed by
+    # its CID (mirrors the attestation store). Idempotent — same CID
+    # overwrites identical bytes. No head pointer: certs are referenced by
+    # CID (from a commit's metadata / a child cert's proof), not "latest".
+    CubDB.put(state.db, {:capability, cap.id}, cap)
+    {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_call({:get_capability, cid}, _from, state) do
+    reply =
+      case CubDB.get(state.db, {:capability, cid}) do
+        nil -> :none
+        cap -> {:ok, cap}
+      end
+
+    {:reply, reply, state}
   end
 
   @impl true

@@ -135,6 +135,20 @@ defmodule Commonplace.Store.CommitStoreClient do
     end
   end
 
+  def store_capability(server \\ CommitStore, cap) do
+    case remote_node() do
+      {:ok, node} -> GenServer.call({CommitStore, node}, {:store_capability, cap})
+      :local -> CommitStore.store_capability(normalize_server(server), cap)
+    end
+  end
+
+  def get_capability(server \\ CommitStore, cid) do
+    case remote_node() do
+      {:ok, node} -> GenServer.call({CommitStore, node}, {:get_capability, cid})
+      :local -> CommitStore.get_capability(normalize_server(server), cid)
+    end
+  end
+
   def latest_commit(server \\ CommitStore, doc_uuid) do
     case remote_node() do
       {:ok, node} ->
