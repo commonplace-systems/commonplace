@@ -1,9 +1,35 @@
 # Trust & Attenuation — code-reality survey notes (checkpoint)
 
 Date: 2026-06-10, branch `trust-attenuation` @ main 396b266.
-Status: **R1 (CX-tdkq.1), R2 (CX-tdkq.2), and phase 2.5 (CX-tdkq.24) IMPLEMENTED on this branch.**
-This is the full **deployable flat-allowlist trust tier** — the natural merge point.
-Design doc (complete, §1–8) lives in **commonplace-plan's repo**: `docs/trust-and-attenuation.md`.
+Status: **R1 (CX-tdkq.1), R2 (CX-tdkq.2), phase 2.5 (CX-tdkq.24), and Phase 3 (CX-tdkq.22a–f) IMPLEMENTED on this branch.**
+R1+R2+2.5 = the deployable flat-allowlist tier (already merged to main). Phase 3 = the
+attenuable capability cert-DAG (the "attenuation" half). Design doc (complete) +
+implementation plan: `docs/trust-and-attenuation.md` (commonplace-plan) +
+`docs/trust-phase3-implementation-plan.md` (here).
+
+## Phase 3 — attenuable capability cert-DAG (CX-tdkq.22a–f)
+
+- `1d77789` 22a `Commonplace.Trust.Capability` — content-addressed cert value
+  (CID excl. sig), full 32-byte pubkey issuer/audience, mint-time narrowing
+- `f49455f` 22b CubDB `{:capability, cid}` storage (mirrors attestations)
+- `1a8d5a6` 22c `Commonplace.Trust.VerifyChain.verify_chain` — full-pubkey
+  key-link, `:delegate`-on-non-leaf, narrowing, full-pubkey root anchor,
+  effective=intersection
+- `d67979d` 22d `authorized?` cert path + ⭐ commit-author binding (gates unchanged)
+- `681c733` 22e envelope (`capability_proof` in metadata) + R11 pending defer;
+  **security fix:** retry re-runs the FULL trust+namespace pipeline (a deferred
+  commit never bypasses the cert check)
+- `4285a71` 22f issuance API `Capability.delegate` + delegation e2e
+- `18affe3` 22f minimal `commonplace cap` CLI
+
+Two load-bearing crypto bindings: full-pubkey chain links (the 8-char fingerprint
+is 2^32 forgeable) and the commit-author binding (`verify_commit` vs
+`leaf.audience.pubkey` — defeats capability theft). MVP ships doc-UUID-set scopes;
+subtree scopes (Wrinkle-H write-gated schema walk) are CX-tdkq.23, separate.
+
+---
+
+## (historical) Status before Phase 3
 
 ## Implemented (this branch)
 
