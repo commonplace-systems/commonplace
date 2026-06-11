@@ -32,6 +32,7 @@ defmodule Commonplace.CLI do
     secret <command>              Manage local secrets (set/get/list/delete)
     keygen [name]                 Generate Ed25519 signing keypair
     attest [path]                 Sign the head of a document (gold chain)
+    cap <issue|delegate|show>     Issue/attenuate capability certs (phase 3)
     checkpoint [--owner name]     Create a reflog checkpoint
     snapshot [path]               Force a snapshot commit for the doc at path (or workspace root)
     mud connect <name>            Connect to the workspace MUD world (shares the serve daemon)
@@ -110,6 +111,7 @@ defmodule Commonplace.CLI do
       "secret" -> Commonplace.CLI.Secret.run(data_dir, relative_path, rest)
       "keygen" -> Commonplace.CLI.Keygen.run(data_dir, relative_path, rest)
       "attest" -> Commonplace.CLI.Attest.run(data_dir, relative_path, rest)
+      "cap" -> Commonplace.CLI.Cap.run(data_dir, relative_path, rest)
       "checkpoint" -> Commonplace.CLI.Checkpoint.run(data_dir, relative_path, rest)
       "snapshot" -> Commonplace.CLI.Snapshot.run(data_dir, relative_path, rest)
       "mud" -> Commonplace.CLI.Mud.run(data_dir, relative_path, rest)
