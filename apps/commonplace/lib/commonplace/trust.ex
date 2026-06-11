@@ -71,25 +71,93 @@ defmodule Commonplace.Trust do
     authorized?(commit, verb, scope, config())
   end
 
-  @spec authorized?(Commit.t(), verb(), scope(), config()) :: :ok | {:error, term()}
-  def authorized?(%Commit{signature: nil}, _verb, _scope, cfg) do
+  @doc """
+  As `authorized?/3` but with explicit config (and, for the phase-3
+  capability path, an explicit cert store). The gates call the 3-arity
+  head; `store` defaults to `CommitStoreClient` so the seam is unchanged.
+  """
+  @spec authorized?(Commit.t(), verb(), scope(), config(), GenServer.server()) ::
+          :ok | {:error, term()}
+  def authorized?(commit, verb, scope, cfg, store \\ Commonplace.Store.CommitStoreClient)
+
+  def authorized?(%Commit{signature: nil}, _verb, _scope, cfg, _store) do
     if cfg.accept_unsigned, do: :ok, else: {:error, :unsigned}
   end
 
-  def authorized?(%Commit{} = commit, _verb, _scope, cfg) do
+  def authorized?(%Commit{} = commit, verb, scope, cfg, store) do
     case Signing.parse_signer_id(commit.signer_id || "") do
       {:ok, identity_uuid, _fingerprint} ->
         case Map.fetch(cfg.trusted_identities, identity_uuid) do
           {:ok, pinned} ->
+            # (a) degenerate fast-path: a locally-pinned identity is an
+            # unattenuated root — R1/R2 behavior, unchanged.
             verify_against_pinned(commit, pinned)
 
           :error ->
-            if cfg.accept_unsigned, do: :ok, else: {:error, {:untrusted_signer, identity_uuid}}
+            # (b) not pinned: if the commit carries a capability proof,
+            # walk the cert chain; else (c) fall to the existing logic.
+            case Map.get(commit.metadata, :capability_proof) do
+              nil ->
+                if cfg.accept_unsigned, do: :ok, else: {:error, {:untrusted_signer, identity_uuid}}
+
+              leaf_cid ->
+                capability_path(commit, verb, scope, leaf_cid, cfg, store)
+            end
         end
 
       {:error, :invalid_signer_id} ->
         if cfg.accept_unsigned, do: :ok, else: {:error, :invalid_signer_id}
     end
+  end
+
+  # Phase-3 capability path (CX-tdkq.22d). The chain authorizes the
+  # commit only if (1) the commit was signed by the LEAF cert's audience
+  # key — the ⭐ commit-author binding that prevents attaching someone
+  # else's public chain (capability theft) — (2) the chain verifies
+  # against the locally-anchored root keys, and (3) the effective
+  # capability grants the requested {verb, scope}.
+  defp capability_path(commit, verb, scope, leaf_cid, cfg, store) do
+    with {:ok, leaf} <- fetch_cap(store, leaf_cid),
+         :ok <- author_binding(commit, leaf),
+         {:ok, effective} <-
+           Commonplace.Trust.VerifyChain.verify_chain(leaf_cid, anchor_keys(cfg), store),
+         :ok <- grants?(effective, verb, scope) do
+      :ok
+    end
+  end
+
+  defp fetch_cap(store, cid) do
+    case Commonplace.Store.CommitStoreClient.get_capability(store, cid) do
+      {:ok, cap} -> {:ok, cap}
+      :none -> {:error, :awaiting_capability}
+    end
+  end
+
+  defp author_binding(commit, %{audience: {_uuid, audience_pub}}) do
+    case Signing.verify_commit(commit, audience_pub) do
+      :ok -> :ok
+      {:error, _} -> {:error, :capability_author_mismatch}
+    end
+  end
+
+  defp grants?(%{verbs: verbs, scope: {:docs, docs}}, verb, {:doc, uuid}) do
+    if verb in verbs and uuid in docs, do: :ok, else: {:error, :capability_insufficient}
+  end
+
+  # The locally-pinned trusted-identity keys ARE the cert-chain root
+  # anchors (§4: an allowlist entry = an unattenuated root). Decode every
+  # pinned pubkey into the anchor set.
+  defp anchor_keys(cfg) do
+    cfg.trusted_identities
+    |> Map.values()
+    |> Enum.flat_map(&List.wrap/1)
+    |> Enum.flat_map(fn encoded ->
+      case Signing.decode_key(encoded) do
+        {:ok, key} -> [key]
+        {:error, _} -> []
+      end
+    end)
+    |> MapSet.new()
   end
 
   # A trusted identity's signature must verify against one of its pinned
