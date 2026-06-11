@@ -1048,6 +1048,9 @@ defmodule Commonplace.Store.CommitStore do
     # overwrites identical bytes. No head pointer: certs are referenced by
     # CID (from a commit's metadata / a child cert's proof), not "latest".
     CubDB.put(state.db, {:capability, cap.id}, cap)
+    # CX-tdkq.22e: a landed cert may be exactly what a commit deferred with
+    # :awaiting_capability was waiting on — retry the pending queue.
+    state = retry_pending_imports(state)
     {:reply, :ok, state}
   end
 
@@ -1092,37 +1095,13 @@ defmodule Commonplace.Store.CommitStore do
   @max_pending_imports 1024
 
   defp handle_validated_import(commit, opts, state) do
-    case Commonplace.Trust.authorized?(commit, :write, {:doc, commit.doc_uuid}) do
-      :ok ->
-        handle_namespace_validated_import(commit, opts, state)
-
-      {:error, reason} ->
-        # R1 (CX-tdkq.1): trust rejections are HARD rejects — unlike a
-        # namespace :unknown_reference they don't resolve when another
-        # commit lands, so they never enter the R11 pending queue.
-        :telemetry.execute(
-          [:commonplace, :commit, :rejected, :trust],
-          %{system_time: System.system_time()},
-          %{
-            commit_id: commit.id,
-            doc_uuid: commit.doc_uuid,
-            signer_id: commit.signer_id,
-            reason: reason
-          }
-        )
-
-        {:reply, {:error, {:trust_rejected, reason}}, state}
-    end
-  end
-
-  defp handle_namespace_validated_import(commit, opts, state) do
-    case validator_for(opts, state).(commit) do
+    case import_validation(commit, opts, state) do
       :ok ->
         case CubDB.get(state.db, {:commit, commit.id}) do
           nil ->
             state = do_store_imported(commit, state)
-            # R11: a freshly-landed commit may be the reference an earlier
-            # out-of-order arrival was waiting on — retry the pending queue.
+            # R11: a freshly-landed commit may be the reference (or the cert)
+            # an earlier out-of-order arrival was waiting on — retry the queue.
             state = retry_pending_imports(state)
             {:reply, :ok, state}
 
@@ -1130,12 +1109,59 @@ defmodule Commonplace.Store.CommitStore do
             {:reply, :already_exists, state}
         end
 
-      {:error, reason} ->
+      # CX-tdkq.22e: a commit awaiting its authorizing cert DEFERS (the cert
+      # may land later), exactly like a namespace out-of-order reference.
+      {:error, {:trust, :awaiting_capability}} ->
+        {:reply, {:error, {:trust_rejected, :awaiting_capability}},
+         maybe_queue_pending(commit, opts, :awaiting_capability, state)}
+
+      # R1: other trust rejections are HARD — they never resolve by waiting.
+      {:error, {:trust, reason}} ->
+        :telemetry.execute(
+          [:commonplace, :commit, :rejected, :trust],
+          %{system_time: System.system_time()},
+          %{commit_id: commit.id, doc_uuid: commit.doc_uuid, signer_id: commit.signer_id, reason: reason}
+        )
+
+        {:reply, {:error, {:trust_rejected, reason}}, state}
+
+      {:error, {:namespace, reason}} ->
         emit_namespace_rejection(commit, reason)
-        # R11: hold the rejected commit and retry it once a later import lands
-        # the reference it's waiting on, instead of dropping a legitimate
-        # commit that merely arrived before its dependency (§6.1).
+        # R11: hold the rejected commit and retry once its dependency lands.
         {:reply, {:error, {:namespace_rejected, reason}}, maybe_queue_pending(commit, opts, reason, state)}
+    end
+  end
+
+  # The full import validation pipeline — trust gate THEN namespace —
+  # run identically by the initial import and the R11 retry, so a commit
+  # deferred for one reason (e.g. an absent cert) is re-checked against
+  # BOTH gates when it is retried (never bypasses the cert check).
+  defp import_validation(commit, opts, state) do
+    with :ok <- trust_check(commit, state),
+         :ok <- namespace_check(commit, opts, state) do
+      :ok
+    end
+  end
+
+  defp trust_check(commit, state) do
+    # Thread this store's own name so the phase-3 capability path fetches
+    # certs from THIS db (not the routing default).
+    case Commonplace.Trust.authorized?(
+           commit,
+           :write,
+           {:doc, commit.doc_uuid},
+           Commonplace.Trust.config(),
+           state.name
+         ) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:trust, reason}}
+    end
+  end
+
+  defp namespace_check(commit, opts, state) do
+    case validator_for(opts, state).(commit) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:namespace, reason}}
     end
   end
 
@@ -1213,7 +1239,10 @@ defmodule Commonplace.Store.CommitStore do
   defp retry_pending_imports(state) do
     {state, progressed} =
       Enum.reduce(state.pending_imports, {state, false}, fn {id, {commit, opts}}, {st, prog} ->
-        case validator_for(opts, st).(commit) do
+        # Re-run the FULL pipeline (trust + namespace), not just namespace —
+        # a commit deferred for :awaiting_capability must re-pass the cert
+        # check, never bypass it (CX-tdkq.22e).
+        case import_validation(commit, opts, st) do
           :ok ->
             st =
               if CubDB.get(st.db, {:commit, commit.id}) == nil,
