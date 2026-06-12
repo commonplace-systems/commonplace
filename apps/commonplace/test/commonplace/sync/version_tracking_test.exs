@@ -76,15 +76,27 @@ defmodule Commonplace.Sync.VersionTrackingTest do
       {:ok, loop_b} = SyncLoop.start_link(
         dir: dir_b, root_uuid: root, store: store, interval: 50
       )
-      Process.sleep(300)
-      assert File.read!(Path.join(dir_b, "doc.txt")) == "v1"
+
+      await = fn path, expected ->
+        Enum.reduce_while(1..100, nil, fn _, _ ->
+          case File.read(path) do
+            {:ok, ^expected} -> {:halt, :ok}
+            _ -> Process.sleep(100) && {:cont, nil}
+          end
+        end) || flunk("#{path} never reached #{inspect(expected)}")
+      end
+
+      await.(Path.join(dir_b, "doc.txt"), "v1")
 
       # Peer A modifies
       File.write!(Path.join(dir_a, "doc.txt"), "v2")
-      Process.sleep(800)
 
-      # Peer B should have v2 (not v1 overwriting the CRDT)
-      assert File.read!(Path.join(dir_b, "doc.txt")) == "v2"
+      # Peer B should EVENTUALLY have v2 (not v1 overwriting the CRDT).
+      # Await-poll rather than a fixed sleep: the test pins propagation
+      # correctness, not an 800ms latency SLA — fixed sleeps flaked
+      # under full-suite load (seen when CX-saix's YMap origin-threading
+      # added a small per-write cost that narrowed the old margin).
+      await.(Path.join(dir_b, "doc.txt"), "v2")
 
       # Verify CRDT also has v2 (not corrupted by stale outbound)
       root_doc = load_schema(root, store)
