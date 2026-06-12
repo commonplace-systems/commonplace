@@ -112,8 +112,13 @@ defmodule Commonplace.Process.Orchestrator do
     defstruct [:pid, :mode, :sandbox_dir, :os_pid, :started_at, :scope_uuid, :wiring_info, :resolved_ports]
   end
 
+  # Unnamed by default (tests start ad-hoc instances); the supervised
+  # child spec passes name: __MODULE__ for the singleton (CX-tdkq.12 O3).
   def start_link(opts) do
-    GenServer.start_link(__MODULE__, opts)
+    case Keyword.get(opts, :name) do
+      nil -> GenServer.start_link(__MODULE__, opts)
+      name -> GenServer.start_link(__MODULE__, opts, name: name)
+    end
   end
 
   @doc "Get the map of running process names to pids."
@@ -128,29 +133,62 @@ defmodule Commonplace.Process.Orchestrator do
 
   @impl true
   def init(opts) do
-    # CX-tdkq.12 (O1): sweep the prior generation BEFORE the first
-    # reconcile. Managed processes are unnamed+unlinked, so without this
-    # a restarted orchestrator duplicates everything its predecessor
-    # left running. The status file is the only handle on them.
-    data_dir = Application.get_env(:commonplace, :data_dir, "data")
-    {:ok, swept} = Commonplace.Process.Sweep.sweep_status_file(data_dir)
+    # CX-tdkq.12 (O4): the supervised child spec passes the :workspace
+    # sentinel so every supervisor RESTART re-resolves the root (correct
+    # after a re-root). A missing root file stops cleanly — a
+    # half-configured boot should not crash-loop the supervisor.
+    with {:ok, root_uuid} <- resolve_root(Keyword.fetch!(opts, :root_uuid)) do
+      # CX-tdkq.12 (O1): sweep the prior generation BEFORE the first
+      # reconcile. Managed processes are unnamed+unlinked, so without
+      # this a restarted orchestrator duplicates everything its
+      # predecessor left running. The status file is the only handle.
+      data_dir = Application.get_env(:commonplace, :data_dir, "data")
+      {:ok, swept} = Commonplace.Process.Sweep.sweep_status_file(data_dir)
 
-    if swept > 0 do
-      Logger.info("Orchestrator: swept #{swept} prior-generation process entr#{if swept == 1, do: "y", else: "ies"} before reconciling")
+      if swept > 0 do
+        Logger.info("Orchestrator: swept #{swept} prior-generation process entr#{if swept == 1, do: "y", else: "ies"} before reconciling")
+      end
+
+      warn_if_permissive()
+
+      state = %__MODULE__{
+        root_uuid: root_uuid,
+        store: Keyword.get(opts, :store, CommitStoreClient),
+        interval: Keyword.get(opts, :interval, 5000),
+        processes: %{},
+        current_config: [],
+        source_hashes: %{},
+        started_at: DateTime.utc_now()
+      }
+
+      schedule_reconcile(state)
+      {:ok, state}
     end
+  end
 
-    state = %__MODULE__{
-      root_uuid: Keyword.fetch!(opts, :root_uuid),
-      store: Keyword.get(opts, :store, CommitStoreClient),
-      interval: Keyword.get(opts, :interval, 5000),
-      processes: %{},
-      current_config: [],
-      source_hashes: %{},
-      started_at: DateTime.utc_now()
-    }
+  defp resolve_root(:workspace) do
+    case Commonplace.Workspace.root_uuid() do
+      {:ok, root_uuid} -> {:ok, root_uuid}
+      _ -> {:stop, :no_workspace_root}
+    end
+  end
 
-    schedule_reconcile(state)
-    {:ok, state}
+  defp resolve_root(root_uuid) when is_binary(root_uuid), do: {:ok, root_uuid}
+
+  # CX-tdkq.12 (O7): a permissive workspace running the orchestrator
+  # auto-executes any synced-in code doc ungated (Gate B fast-paths a
+  # fully-permissive config). Legitimate for a single-operator serve —
+  # but the posture must be VISIBLE at the one moment it matters.
+  defp warn_if_permissive do
+    cfg = Commonplace.Trust.config()
+
+    if cfg.accept_unsigned do
+      Logger.warning(
+        "Orchestrator running with a permissive trust config: declared processes " <>
+          "(including code docs synced from peers) will auto-execute ungated. " <>
+          "Pin identities / set accept_unsigned:false in trust.json for strict gating."
+      )
+    end
   end
 
   @impl true

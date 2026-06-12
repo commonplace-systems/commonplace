@@ -67,7 +67,8 @@ defmodule Commonplace.Application do
       ] ++
         snapshot_sweeper_children() ++
         presence_reaper_children() ++
-        compute_rehydrator_children() ++ federation_pull_children()
+        compute_rehydrator_children() ++
+        federation_pull_children() ++ orchestrator_children()
 
     opts = [strategy: :one_for_one, name: Commonplace.Supervisor]
 
@@ -108,6 +109,33 @@ defmodule Commonplace.Application do
       [{Commonplace.SnapshotSweeper, []}]
     else
       []
+    end
+  end
+
+  @doc false
+  # Orchestrator-on-boot (CX-tdkq.12, O2): DOUBLE-GATED — the embedder
+  # must explicitly opt in (`:orchestrator_on_boot`, default false) AND
+  # the workspace root must resolve. Running declared processes is a
+  # trust-boundary decision, not a supervision detail: web/MCP/bots/CLI
+  # one-shots and tests never auto-execute substrate code unless they
+  # deliberately configure it. `commonplace serve` opts in.
+  def orchestrator_children do
+    enabled = Application.get_env(:commonplace, :orchestrator_on_boot, false)
+
+    case {enabled, Commonplace.Workspace.root_uuid()} do
+      {true, {:ok, _root}} ->
+        [
+          %{
+            id: Commonplace.Process.Orchestrator,
+            start:
+              {Commonplace.Process.Orchestrator, :start_link,
+               [[root_uuid: :workspace, name: Commonplace.Process.Orchestrator]]},
+            restart: :permanent
+          }
+        ]
+
+      _ ->
+        []
     end
   end
 
