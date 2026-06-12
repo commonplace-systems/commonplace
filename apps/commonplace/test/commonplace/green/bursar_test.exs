@@ -321,6 +321,115 @@ defmodule Commonplace.Green.BursarTest do
     end
   end
 
+  # Move #4 (CX-tdkq.7) lease semantics: liveness is EPHEMERAL, ownership
+  # is DURABLE. Renewals never touch the store; a Bursar restart re-clocks
+  # every loaded token to load time (full-TTL grace). The load-bearing
+  # safety invariant: re-clock can only EXTEND a lease, never release it
+  # early — so a stale acquire can never win while an old lease might
+  # still have a live holder. Worst case is failover LATENCY (≤ one extra
+  # TTL after a restart), never two concurrent holders.
+  describe "lease semantics (move #4)" do
+    defp latest_commit_ids(ctx) do
+      {:ok, schema} = DocBuilder.reconstruct_snapshot(ctx.store, ctx.root)
+      {:ok, state_entry} = Schema.get_entry(schema, "__bursar.json")
+      {:ok, log_entry} = Schema.get_entry(schema, "__bursar.log")
+      {:ok, state_commit} = CommitStore.latest_commit(ctx.store, state_entry.node_id)
+      {:ok, log_commit} = CommitStore.latest_commit(ctx.store, log_entry.node_id)
+      {state_commit.id, log_commit.id}
+    end
+
+    test "renew is memory-only: no commit to state or log docs", ctx do
+      {_pid, name} = start_bursar(ctx, nil, sweep_interval: 60_000)
+
+      assert {:ok, _} = Bursar.acquire(name, "lease.txt", "alice", ttl: 60_000)
+      before_ids = latest_commit_ids(ctx)
+
+      assert {:ok, renewed} = Bursar.renew(name, "lease.txt", "alice")
+      assert renewed.holder == "alice"
+
+      assert latest_commit_ids(ctx) == before_ids
+    end
+
+    test "renew via magenta is memory-only too", ctx do
+      {pid, name} = start_bursar(ctx, nil, sweep_interval: 60_000)
+
+      assert {:ok, _} = Bursar.acquire(name, "lease.txt", "alice", ttl: 60_000)
+      before_ids = latest_commit_ids(ctx)
+
+      Commonplace.Dataflow.Magenta.send(
+        "__bursar",
+        Commonplace.Dataflow.Magenta.message("green:renew", "alice", %{
+          "path" => "lease.txt",
+          "holder" => "alice"
+        })
+      )
+
+      # Synchronize on the GenServer having processed the magenta cast
+      _ = :sys.get_state(pid)
+      assert {:held, %{holder: "alice"}} = Bursar.query(name, "lease.txt")
+      assert latest_commit_ids(ctx) == before_ids
+    end
+
+    test "restart re-clocks loaded tokens: held token does NOT expire on stored acquired_at", ctx do
+      {pid, _name} = start_bursar(ctx, :reclock_src, sweep_interval: 60_000)
+
+      assert {:ok, _} = Bursar.acquire(:reclock_src, "lease.txt", "alice", ttl: 200)
+      GenServer.stop(pid)
+
+      # Sleep PAST the original expiry, then restart. Without re-clock the
+      # loaded token would be instantly sweepable; with re-clock it gets a
+      # fresh full TTL from load time.
+      Process.sleep(300)
+
+      {:ok, pid2} =
+        Bursar.start_link(root_uuid: ctx.root, store: ctx.store,
+          name: :reclock_dst, sweep_interval: 60_000)
+      on_exit(fn -> if Process.alive?(pid2), do: GenServer.stop(pid2) end)
+
+      send(pid2, :sweep_ttl)
+      _ = :sys.get_state(pid2)
+
+      assert {:held, %{holder: "alice"}} = Bursar.query(:reclock_dst, "lease.txt")
+    end
+
+    test "INVARIANT: dead holder + bursar restart → new holder within 2×TTL, never concurrent", ctx do
+      ttl = 300
+      {pid, _name} = start_bursar(ctx, :invariant_src, sweep_interval: 60_000)
+
+      # "alice" acquires, then dies (never renews again).
+      assert {:ok, _} = Bursar.acquire(:invariant_src, "lease.txt", "alice", ttl: ttl)
+
+      # Bursar restarts BEFORE the lease expires.
+      GenServer.stop(pid)
+
+      {:ok, pid2} =
+        Bursar.start_link(root_uuid: ctx.root, store: ctx.store,
+          name: :invariant_dst, sweep_interval: 50)
+      on_exit(fn -> if Process.alive?(pid2), do: GenServer.stop(pid2) end)
+      restarted_at = System.monotonic_time(:millisecond)
+
+      # Immediately post-restart the dead lease is still live (re-clock
+      # EXTENDED it) — a competing acquire must be DENIED, not granted.
+      assert {:denied, %{holder: "alice"}} =
+               Bursar.acquire(:invariant_dst, "lease.txt", "bob", ttl: ttl)
+
+      # Failover: bob acquires once the re-clocked lease expires — within
+      # 2×TTL of the restart, and never while alice's lease is unexpired.
+      result =
+        Enum.reduce_while(1..100, :timeout, fn _, _ ->
+          case Bursar.acquire(:invariant_dst, "lease.txt", "bob", ttl: ttl) do
+            {:ok, _} -> {:halt, :acquired}
+            {:denied, _} -> Process.sleep(25) && {:cont, :timeout}
+          end
+        end)
+
+      elapsed = System.monotonic_time(:millisecond) - restarted_at
+      assert result == :acquired
+      assert elapsed >= ttl, "bob acquired at #{elapsed}ms — before the re-clocked TTL elapsed"
+      assert elapsed <= 2 * ttl + 200, "failover took #{elapsed}ms (> 2×TTL + slack)"
+    end
+  end
+
   describe "renew" do
     test "renew by holder resets the TTL clock", ctx do
       {pid, name} = start_bursar(ctx, nil, sweep_interval: 60_000)
@@ -365,23 +474,19 @@ defmodule Commonplace.Green.BursarTest do
       assert {:error, :not_held} = Bursar.renew(name, "readme.txt", "alice")
     end
 
-    test "renew logs an event", ctx do
+    test "renew logs NO event (liveness is ephemeral — move #4)", ctx do
       {_pid, name} = start_bursar(ctx, nil, sweep_interval: 60_000)
 
       Bursar.acquire(name, "readme.txt", "alice", ttl: 1000)
-      assert {:ok, _} = Bursar.renew(name, "readme.txt", "alice", ttl: 5000)
+      assert {:ok, info} = Bursar.renew(name, "readme.txt", "alice", ttl: 5000)
+      assert info.ttl_ms == 5000
 
       {:ok, schema} = DocBuilder.reconstruct_snapshot(ctx.store, ctx.root)
       {:ok, log_entry} = Schema.get_entry(schema, "__bursar.log")
       log = RedLog.load(log_entry.node_id, ctx.store)
       events = RedLog.read(log)
 
-      renew_events = Enum.filter(events, fn e -> e["event"] == "renew" end)
-      assert length(renew_events) == 1
-      [e] = renew_events
-      assert e["path"] == "readme.txt"
-      assert e["holder"] == "alice"
-      assert e["ttl_ms"] == 5000
+      assert Enum.filter(events, fn e -> e["event"] == "renew" end) == []
     end
 
     test "renew via magenta", ctx do

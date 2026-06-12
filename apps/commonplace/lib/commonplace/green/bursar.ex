@@ -35,6 +35,20 @@ defmodule Commonplace.Green.Bursar do
   `released` event with `reason: "expired"`. TTL is the safety net
   against a holder that crashes without releasing.
 
+  **Ephemeral liveness vs durable ownership (move #4, CX-tdkq.7).**
+  Ownership changes — acquire / release / transfer / expiry — are
+  persisted and logged. `renew` is **memory-only**: it re-clocks
+  `acquired_at` in the token table and broadcasts, but never commits
+  (a lease heartbeat at TTL/3 would otherwise write ~17k commits/day
+  into an append-only store). The restart story compensates:
+  `load_state` **re-clocks every loaded token to load time**, granting
+  a full fresh TTL. The load-bearing safety invariant is that re-clock
+  can only EXTEND a lease, never release it early — combined with
+  deny-on-contention this means a Bursar restart can delay failover by
+  at most one extra TTL but can never produce two concurrent holders.
+  (Corollary: a `renew ttl:`-changed TTL is not durable across a
+  restart; the acquire-time TTL is what reloads.)
+
   ## State & audit (blue + red)
 
   Two documents under the bursar's root, both written *only* by the
@@ -288,12 +302,14 @@ defmodule Commonplace.Green.Bursar do
             :keep -> info.ttl_ms
           end
 
+        # Liveness is EPHEMERAL (move #4): renew updates memory only — no
+        # persist_state, no log_event. A heartbeat renewing every TTL/3
+        # would otherwise commit ~17k times/day into an append-only store.
+        # Restart durability comes from load_state's re-clock instead.
         new_info = %{info | acquired_at: DateTime.utc_now(), ttl_ms: ttl_ms}
         tokens = Map.put(state.tokens, path, new_info)
         state = %{state | tokens: tokens}
-        state = persist_state(state)
         extra = if ttl_ms, do: %{"ttl_ms" => ttl_ms}, else: %{}
-        state = log_event(state, "renew", path, holder, extra)
 
         broadcast_green_event("renewed", path, holder, extra)
         {:reply, {:ok, new_info}, state}
@@ -430,13 +446,11 @@ defmodule Commonplace.Green.Bursar do
           {:noreply, state}
 
         %{holder: ^holder} = info ->
+          # Memory-only, same as the call path — see handle_call({:renew,...}).
           ttl_ms = new_ttl_ms || info.ttl_ms
           new_info = %{info | acquired_at: DateTime.utc_now(), ttl_ms: ttl_ms}
           tokens = Map.put(state.tokens, path, new_info)
           state = %{state | tokens: tokens}
-          state = persist_state(state)
-          extra = if ttl_ms, do: %{"ttl_ms" => ttl_ms, "via" => "magenta"}, else: %{"via" => "magenta"}
-          state = log_event(state, "renew", path, holder, extra)
           broadcast_green_event("renewed", path, holder, %{"ttl_ms" => ttl_ms})
           {:noreply, state}
 
@@ -521,14 +535,20 @@ defmodule Commonplace.Green.Bursar do
               json_str = ContentType.get_content(doc) || "{}"
               case Jason.decode(json_str) do
                 {:ok, map} when is_map(map) ->
+                  # RE-CLOCK on load (move #4): renews are memory-only, so a
+                  # stored acquired_at understates liveness. Every loaded token
+                  # gets a fresh full TTL from load time. INVARIANT: re-clock
+                  # can only EXTEND a lease, never release it early — acquire
+                  # denies while any unexpired token exists, so the worst case
+                  # of a dead holder's lingering lease is failover LATENCY
+                  # (≤ one extra TTL after a restart), never two holders. The
+                  # stored acquired_at remains in __bursar.json for audit only.
+                  now = DateTime.utc_now()
+
                   tokens = Map.new(map, fn {path, info} ->
-                    acquired_at = case DateTime.from_iso8601(info["acquired_at"] || "") do
-                      {:ok, dt, _} -> dt
-                      _ -> DateTime.utc_now()
-                    end
-                    ttl_ms = info["ttl_ms"]
-                    {path, %{holder: info["holder"], acquired_at: acquired_at, ttl_ms: ttl_ms}}
+                    {path, %{holder: info["holder"], acquired_at: now, ttl_ms: info["ttl_ms"]}}
                   end)
+
                   {entry.node_id, tokens}
                 _ ->
                   {entry.node_id, %{}}
