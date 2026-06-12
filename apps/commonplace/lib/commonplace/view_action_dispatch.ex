@@ -294,8 +294,87 @@ defmodule Commonplace.ViewActionDispatch do
      "delete_message requires args map with messages_uuid, room, author_path, message_id"}
   end
 
+  # CX-2qjd: outline actions route through Commonplace.Outline.* — the
+  # SAME mutation implementation OutlineLive's keybinds call directly
+  # (outliner.md §5: one implementation, two entry points). The agent's
+  # signing_context threads through, so MCP-driven restructuring is
+  # signed with the agent's own key (CX-88mw).
+  @outline_actions ~w(add_item set_text indent_item outdent_item reorder_item toggle_collapse delete_item)
+
+  defp do_dispatch(action, %{args: args} = context)
+       when action in @outline_actions and is_map(args) do
+    with {:ok, uuid} <- fetch_arg(args, "outline_uuid") do
+      store = Map.get(context, :store) || CommitStoreClient
+
+      opts =
+        []
+        |> maybe_kw(:signing_context, Map.get(context, :signing_context))
+
+      case run_outline_action(action, store, uuid, args, opts) do
+        {:ok, details} ->
+          {:ok, :tree_mutation, Map.merge(%{action: action, outline_uuid: uuid}, details)}
+
+        :ok ->
+          {:ok, :tree_mutation, %{action: action, outline_uuid: uuid}}
+
+        {:error, reason} ->
+          {:error, "#{action} failed: #{inspect(reason)}"}
+      end
+    end
+  end
+
+  defp do_dispatch(action, _context) when action in @outline_actions do
+    {:error, "#{action} requires args map with outline_uuid (+ per-action args)"}
+  end
+
   defp do_dispatch(other, _context) do
     {:error, "unknown view action: #{other}"}
+  end
+
+  defp run_outline_action("add_item", store, uuid, args, opts) do
+    attrs =
+      %{text: Map.get(args, "text", "")}
+      |> then(fn m -> if args["parent"] in [nil, ""], do: m, else: Map.put(m, :parent, args["parent"]) end)
+      |> then(fn m -> if args["after"] in [nil, ""], do: m, else: Map.put(m, :after, args["after"]) end)
+
+    with {:ok, id} <- Commonplace.Outline.add_item(store, uuid, attrs, opts), do: {:ok, %{id: id}}
+  end
+
+  defp run_outline_action("set_text", store, uuid, args, opts) do
+    with {:ok, id} <- fetch_arg(args, "id"),
+         {:ok, text} <- fetch_arg(args, "text") do
+      Commonplace.Outline.set_text(store, uuid, id, text, opts)
+    end
+  end
+
+  defp run_outline_action("indent_item", store, uuid, args, opts) do
+    with {:ok, id} <- fetch_arg(args, "id"), do: Commonplace.Outline.indent(store, uuid, id, opts)
+  end
+
+  defp run_outline_action("outdent_item", store, uuid, args, opts) do
+    with {:ok, id} <- fetch_arg(args, "id"), do: Commonplace.Outline.outdent(store, uuid, id, opts)
+  end
+
+  defp run_outline_action("reorder_item", store, uuid, args, opts) do
+    with {:ok, id} <- fetch_arg(args, "id"),
+         {:ok, dir} <- fetch_arg(args, "direction") do
+      Commonplace.Outline.reorder(store, uuid, id, String.to_existing_atom(dir), opts)
+    end
+  end
+
+  defp run_outline_action("toggle_collapse", store, uuid, args, opts) do
+    with {:ok, id} <- fetch_arg(args, "id") do
+      item = Commonplace.Outline.items(store, uuid) |> Enum.find(&(&1.id == id))
+
+      if item,
+        do: Commonplace.Outline.set_collapsed(store, uuid, id, not item.collapsed, opts),
+        else: {:error, :no_such_item}
+    end
+  end
+
+  defp run_outline_action("delete_item", store, uuid, args, opts) do
+    with {:ok, id} <- fetch_arg(args, "id"),
+         do: Commonplace.Outline.delete_item(store, uuid, id, opts)
   end
 
   defp fetch_arg(args, key) do

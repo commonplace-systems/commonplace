@@ -49,10 +49,59 @@ defmodule Commonplace.Outline do
         doc = ContentType.create(Yelixer.Doc.new(), :xml, @outline_doc)
         CommitStoreClient.create_commit(store, uuid, Yelixer.Encoding.encode_update(doc), nil)
 
+        view_uuid = UUID.uuid4()
+        view_doc = ContentType.create(Yelixer.Doc.new(), :text, "_view.xml")
+        view_doc = ContentType.insert_text(view_doc, 0, view_xml_template(name))
+        CommitStoreClient.create_commit(store, view_uuid, Yelixer.Encoding.encode_update(view_doc), nil)
+
         room_doc = Schema.add_file(room_doc, @outline_doc, uuid)
+        room_doc = Schema.add_file(room_doc, "_view.xml", view_uuid)
         commit_schema(store, room_uuid, room_doc, opts)
         {:ok, uuid}
     end
+  end
+
+  @doc "Read the outline room's `_view.xml` (the action-discovery surface)."
+  def view_xml(name, root, store \\ CommitStoreClient) do
+    with {:ok, dir_entry} <- Schema.get_entry(load_schema(root, store), @outline_dir),
+         {:ok, room_entry} <- Schema.get_entry(load_schema(dir_entry.node_id, store), name),
+         {:ok, view_entry} <- Schema.get_entry(load_schema(room_entry.node_id, store), "_view.xml"),
+         {:ok, doc} <- DocBuilder.reconstruct_doc(store, view_entry.node_id) do
+      {:ok, ContentType.get_content(doc) || ""}
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
+  # The declared action surface (CX-2qjd): agents discover these over
+  # MCP; ArgResolver resolves <arg from="../_outline"> to the doc uuid.
+  # Same vocabulary as chat's render_actions.
+  defp view_xml_template(name) do
+    """
+    <view title="outline: #{name}">
+      <action name="add_item" label="Add item" args="text:string,parent:string,after:string">
+        <arg name="outline_uuid" from="../_outline"/>
+      </action>
+      <action name="set_text" label="Edit text" args="id:string,text:string">
+        <arg name="outline_uuid" from="../_outline"/>
+      </action>
+      <action name="indent_item" label="Indent" args="id:string">
+        <arg name="outline_uuid" from="../_outline"/>
+      </action>
+      <action name="outdent_item" label="Outdent" args="id:string">
+        <arg name="outline_uuid" from="../_outline"/>
+      </action>
+      <action name="reorder_item" label="Move" args="id:string,direction:string">
+        <arg name="outline_uuid" from="../_outline"/>
+      </action>
+      <action name="toggle_collapse" label="Collapse/expand" args="id:string">
+        <arg name="outline_uuid" from="../_outline"/>
+      </action>
+      <action name="delete_item" label="Delete" args="id:string">
+        <arg name="outline_uuid" from="../_outline"/>
+      </action>
+    </view>
+    """
   end
 
   @doc """
