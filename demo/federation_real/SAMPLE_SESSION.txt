@@ -1,0 +1,25 @@
+SHARED=/tmp/cp_fed_real.bzJRy3  PORT=43341
+(note: no epmd, no cookie, no --sname anywhere below)
+=== launching Node B (agent's home + federation HTTP surface) ===
+[B] agent registered: 20e4182e-5d9a-4e27-93c0-071c0287333f
+[B]   birth commit signer: jes-root@51d8faf2  ← the CREATOR signed it (D9)
+[B] root delegated {write, [8c601b61…]} → agent  (cert fd6589e01a99…)
+[B]   (CLI equivalent: commonplace cap delegate --audience 20e4182e…)
+[B] agent authored doc 8c601b61… (IN scope, proof stamped) signer=20e4182e-5d9a-4e27-93c0-071c0287333f@0f128331
+[B] agent authored doc 39cfeeaf… (OUT of scope — A's gate should refuse)
+[B] mallory-bot authored doc 183cf344… (signed, but NO cert)
+[B] federation surface up on http://127.0.0.1:43341  (bearer-token gated; no cookie, no epmd, no distribution)
+[B] ready — waiting for Node A to pull
+=== launching Node A (strict puller — separate trust domain) ===
+[A] strict workspace up — pinned ONLY jes-root's pubkey; B is just a URL
+[A] pulling 3 docs from http://127.0.0.1:43341 over plain HTTP (no cookie, no distribution)…
+[A] pull report: imported=1 rejected=5 deferred=0 errors=0
+[A] ACCEPT ✅ in-scope agent commit LANDED — signer 20e4182e-5d9a-4e27-93c0-071c0287333f@0f128331
+[A]          its cert chain traveled in the envelope and verified to the pinned root
+[A] REJECT ✅ agent's OUT-of-scope commit (capability_insufficient) — nothing landed (strict Gate A refused it)
+[A] REJECT ✅ mallory-bot's uncertified commit (untrusted_signer) — nothing landed (strict Gate A refused it)
+[A] 403   ✅ wrong bearer token never got to talk (online layer ≠ import gate)
+[A] 
+[A] DEMO PASSED — federation for real: two OS processes, two trust domains,
+[A] one pinned root, and a dumb HTTP pipe. Authorization lives at the gate.
+=== done (rc=0) ===

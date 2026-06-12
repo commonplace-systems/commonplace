@@ -36,6 +36,33 @@ defmodule Commonplace.Federation.Envelope do
   # Mirrors Trust.VerifyChain's chain-length bound.
   @max_chain 64
 
+  # `[:safe]` refuses atoms not yet interned in THIS VM — and module
+  # loading is lazy, so a fresh node that has never touched a Commit
+  # would reject a perfectly valid envelope (observed live: a fresh
+  # `mix run --no-start` puller had no :doc_uuid/:snapshot_parent/...).
+  # This module is necessarily loaded before decode runs, so listing the
+  # wire format's CLOSED atom universe here interns it deterministically.
+  # Grow the list when the metadata vocabulary grows — the federation
+  # demo (fresh-VM puller) is the regression guard.
+  @wire_atoms [
+                # Commit struct fields
+                :id, :doc_uuid, :parent_id, :update, :timestamp, :signature,
+                :signer_id, :metadata, :merge_parents,
+                # commit metadata vocabulary
+                :kind, :regular, :snapshot, :merge, :genesis,
+                :snapshot_parent, :capability_proof, :derivation_map,
+                # Capability struct fields + claim vocabulary
+                :issuer, :audience, :claim, :proof, :sig,
+                :verbs, :scope, :caveats, :not_before, :not_after, :docs,
+                :write, :execute, :delegate,
+                # DateTime fields (commit timestamps)
+                :year, :month, :day, :hour, :minute, :second, :microsecond,
+                :time_zone, :zone_abbr, :utc_offset, :std_offset, :calendar
+              ]
+
+  @doc "The closed atom universe of the wire format (interned at module load)."
+  def wire_atoms, do: @wire_atoms
+
   @doc """
   Encode a commit and its supporting certs into a JSON envelope binary.
   """
