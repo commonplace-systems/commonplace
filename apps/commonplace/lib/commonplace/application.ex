@@ -66,7 +66,8 @@ defmodule Commonplace.Application do
         Commonplace.MUD.TickBot
       ] ++
         snapshot_sweeper_children() ++
-        presence_reaper_children() ++ compute_rehydrator_children()
+        presence_reaper_children() ++
+        compute_rehydrator_children() ++ federation_pull_children()
 
     opts = [strategy: :one_for_one, name: Commonplace.Supervisor]
 
@@ -107,6 +108,23 @@ defmodule Commonplace.Application do
       [{Commonplace.SnapshotSweeper, []}]
     else
       []
+    end
+  end
+
+  @doc false
+  # Federation pull client (phase C, CX-orfw): started ONLY when peers
+  # are explicitly configured — federation is off by default.
+  #
+  #     config :commonplace, :federation_pull,
+  #       interval_ms: 30_000, peers: [%{name:, base_url:, token:, docs:}]
+  def federation_pull_children do
+    case Application.get_env(:commonplace, :federation_pull) do
+      %{peers: [_ | _] = peers} = cfg ->
+        [{Commonplace.Federation.PullClient,
+          peers: peers, interval_ms: Map.get(cfg, :interval_ms, 30_000)}]
+
+      _ ->
+        []
     end
   end
 

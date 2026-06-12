@@ -24,7 +24,6 @@ defmodule CommonplaceWebWeb.FederationController do
 
   alias Commonplace.Federation.Envelope
   alias Commonplace.Store.CommitStoreClient
-  alias Commonplace.Trust.Capability
   alias CommonplaceWebWeb.FederationPeerBudget
 
   def cids(conn, %{"uuid" => uuid}) do
@@ -53,7 +52,7 @@ defmodule CommonplaceWebWeb.FederationController do
     peer = conn.assigns.federation_peer
 
     with {:ok, %{commit: commit, certs: certs}} <- Envelope.decode(encoded),
-         :ok <- verify_certs(certs) do
+         :ok <- Envelope.verify_certs(certs) do
       if FederationPeerBudget.over_budget?(peer) do
         conn
         |> put_status(429)
@@ -80,19 +79,5 @@ defmodule CommonplaceWebWeb.FederationController do
 
   defp respond_import(conn, _peer, {:error, reason}) do
     json(conn, %{result: "rejected", reason: inspect(reason)})
-  end
-
-  # Certs are self-verifying values: content-addressed id + issuer sig.
-  # Verify BEFORE storing so a peer can't bloat the cert store with
-  # garbage (VerifyChain would also reject them on use — this is early
-  # hygiene, not the authority check).
-  defp verify_certs(certs) do
-    if Enum.all?(certs, fn %Capability{} = c ->
-         Capability.verify_id(c) == :ok and Capability.verify_sig(c) == :ok
-       end) do
-      :ok
-    else
-      {:error, :invalid_cert}
-    end
   end
 end

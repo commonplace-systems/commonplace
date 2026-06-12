@@ -33,6 +33,7 @@ defmodule Commonplace.MixProject do
       {:file_system, "~> 1.0"},
       {:jason, "~> 1.4"},
       {:telemetry, "~> 1.0"},
+      {:req, "~> 0.5"},
       {:elixir_make, "~> 0.9", runtime: false},
       {:libcluster, "~> 3.3"}
     ]

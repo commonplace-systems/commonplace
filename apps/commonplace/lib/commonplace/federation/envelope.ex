@@ -133,4 +133,21 @@ defmodule Commonplace.Federation.Envelope do
   rescue
     ArgumentError -> {:error, :bad_payload}
   end
+
+  @doc """
+  Verify that every inlined cert is a self-consistent value (content
+  address matches, issuer signature verifies) BEFORE it is stored.
+  Early hygiene against cert-store bloat — NOT the authority check
+  (that's `VerifyChain`, at import time, anchored to local pins).
+  """
+  @spec verify_certs([Capability.t()]) :: :ok | {:error, :invalid_cert}
+  def verify_certs(certs) do
+    if Enum.all?(certs, fn %Capability{} = c ->
+         Capability.verify_id(c) == :ok and Capability.verify_sig(c) == :ok
+       end) do
+      :ok
+    else
+      {:error, :invalid_cert}
+    end
+  end
 end
