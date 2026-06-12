@@ -72,7 +72,7 @@ defmodule Commonplace.Application do
         snapshot_sweeper_children() ++
         presence_reaper_children() ++
         compute_rehydrator_children() ++
-        federation_pull_children() ++ orchestrator_children()
+        federation_pull_children() ++ orchestrator_children() ++ bursar_children()
 
     opts = [strategy: :one_for_one, name: Commonplace.Supervisor]
 
@@ -134,6 +134,38 @@ defmodule Commonplace.Application do
             start:
               {Commonplace.Process.Orchestrator, :start_link,
                [[root_uuid: :workspace, name: Commonplace.Process.Orchestrator]]},
+            restart: :permanent
+          }
+        ]
+
+      _ ->
+        []
+    end
+  end
+
+  @doc false
+  # Bursar-on-boot (move #4, CX-tdkq.7, B8): DOUBLE-GATED like
+  # orchestrator_children/0 — explicit opt-in (`:bursar_on_boot`,
+  # default false) AND a resolvable workspace root. The Bursar is the
+  # cluster's lock authority and rides the serve node's single-owner
+  # designation (the same convention that makes serve the CommitStore
+  # owner): only a deliberately-configured embedder (`commonplace
+  # serve`) starts one. Everyone else — web, MCP, tests, bare `mix run`
+  # temp nodes — reaches it through Commonplace.Green.BursarClient or
+  # fails closed. Root is resolved at gate time; a `cp checkout`
+  # re-root needs a serve restart to follow (same trade-off the
+  # orchestrator makes, acceptable for the serve lifecycle).
+  def bursar_children do
+    enabled = Application.get_env(:commonplace, :bursar_on_boot, false)
+
+    case {enabled, Commonplace.Workspace.root_uuid()} do
+      {true, {:ok, root_uuid}} ->
+        [
+          %{
+            id: Commonplace.Green.Bursar,
+            start:
+              {Commonplace.Green.Bursar, :start_link,
+               [[root_uuid: root_uuid, name: Commonplace.Green.Bursar]]},
             restart: :permanent
           }
         ]

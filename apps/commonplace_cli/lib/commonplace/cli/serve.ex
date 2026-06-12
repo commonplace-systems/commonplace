@@ -58,6 +58,16 @@ defmodule Commonplace.CLI.Serve do
 
     IO.puts("  Orchestrator: #{inspect(orch)} (supervised)")
 
+    # Start the green-token Bursar SUPERVISED (move #4, CX-tdkq.7):
+    # serve is the cluster's single-owner node (it owns the CommitStore),
+    # so the lock authority lives here and nowhere else. Other nodes
+    # reach it via BursarClient ({Bursar, node} over distribution) or
+    # fail closed. whereis-guarded like the orchestrator: if the app
+    # already booted with :bursar_on_boot, reuse it.
+    bursar = start_supervised_bursar(root)
+
+    IO.puts("  Bursar: #{inspect(bursar)} (supervised, green-token lock authority)")
+
     # Wait a moment for processes to start
     Process.sleep(2000)
 
@@ -89,6 +99,25 @@ defmodule Commonplace.CLI.Serve do
           start:
             {Orchestrator, :start_link,
              [[root_uuid: :workspace, name: Orchestrator, store: CommitStore, interval: 2000]]},
+          restart: :permanent
+        }
+
+        {:ok, pid} = Supervisor.start_child(Commonplace.Supervisor, spec)
+        pid
+
+      pid ->
+        pid
+    end
+  end
+
+  defp start_supervised_bursar(root) do
+    alias Commonplace.Green.Bursar
+
+    case Process.whereis(Bursar) do
+      nil ->
+        spec = %{
+          id: Bursar,
+          start: {Bursar, :start_link, [[root_uuid: root, name: Bursar]]},
           restart: :permanent
         }
 

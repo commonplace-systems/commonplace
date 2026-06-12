@@ -193,7 +193,12 @@ defmodule Commonplace.Green.Bursar do
     state = %__MODULE__{root_uuid: root_uuid, store: store}
     state = load_state(state)
 
-    sweep_interval = Keyword.get(opts, :sweep_interval, 10_000)
+    # Expiry detection lags a dead lease by up to one sweep; embedders
+    # that need faster failover configure :bursar_sweep_interval_ms.
+    sweep_interval =
+      Keyword.get(opts, :sweep_interval) ||
+        Application.get_env(:commonplace, :bursar_sweep_interval_ms, 10_000)
+
     state = %{state | sweep_interval: sweep_interval}
 
     # Start TTL sweep timer

@@ -97,7 +97,12 @@ defmodule Commonplace.MUD.TickBot do
       last_tick: %{},
       bursar: Keyword.get(opts, :bursar, Bursar),
       holder: Keyword.get(opts, :holder, "tick_bot@#{node()}"),
-      lease_ttl_ms: Keyword.get(opts, :lease_ttl_ms, @default_lease_ttl_ms),
+      # Failover latency is bounded by this TTL; embedders that need a
+      # tighter bound configure :tick_lease_ttl_ms (Application children
+      # carry no opts).
+      lease_ttl_ms:
+        Keyword.get(opts, :lease_ttl_ms) ||
+          Application.get_env(:commonplace, :tick_lease_ttl_ms, @default_lease_ttl_ms),
       last_renew: nil
     }
 
