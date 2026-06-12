@@ -201,10 +201,17 @@ defmodule Commonplace.Trust do
 
   The walk follows `parent_id` only (like `DocBuilder`'s replay). A
   merge commit's `merge_parents` side arrives as translated bytes inside
-  the merge commit itself, which is checked — and merge commits are
-  minted unsigned today, so strict mode conservatively denies converged
-  code docs (code docs are not expected to be merge-converged; see the
-  full-state invariant in the design doc).
+  the merge commit itself, which is checked. Since phase 2.5
+  (CX-tdkq.24/.25/.26), system-minted commits — snapshots, merges, and
+  cross-epoch translated commits — are NODE-signed, and the local node's
+  key is folded into the trusted set (see `with_local_node_trust/1`), so
+  they pass this check and node-signed snapshots form the execute
+  baseline. Caveat (D11, federate-for-real plan): because the walk halts
+  at the first passing `:snapshot` and phase-1 trust is verb-agnostic, a
+  node-signed snapshot absorbs earlier write-only contributors into that
+  baseline — tracked in the follow-up bead "Gate B execute-baseline vs
+  write-only contributors"; v1 delegation policy is to not issue
+  write-without-execute certs scoped to code docs.
   """
   @spec authorized_to_execute?(GenServer.server(), String.t(), config() | nil) ::
           :ok | {:error, term()}

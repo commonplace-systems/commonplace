@@ -159,6 +159,7 @@ defmodule Commonplace.Store.Translator do
             snapshot.id,
             %{kind: :regular, snapshot_parent: snapshot.id}
           )
+          |> node_sign()
 
         emit_translated(edit, snapshot, translated)
         {:ok, translated}
@@ -205,9 +206,27 @@ defmodule Commonplace.Store.Translator do
           snapshot.id,
           %{kind: :regular, snapshot_parent: snapshot.id}
         )
+        |> node_sign()
 
       emit_fallback(edit, snapshot, reason, ref_id, translated)
       {:ok, translated}
+    end
+  end
+
+  # CX-tdkq.26: translation is a system action of the receiving node —
+  # no user is in the loop and the original signature cannot survive the
+  # byte rewrite. Node-sign so strict Gate A accepts the result. The
+  # signature lives outside the content address, so commit ids stay
+  # deterministic across peers. On a node-identity failure the commit is
+  # left unsigned (visible under strict mode, not silent).
+  defp node_sign(%Commit{} = commit) do
+    case Commonplace.Crypto.NodeIdentity.signing_context() do
+      {:ok, ctx} ->
+        signer_id = Commonplace.Crypto.Signing.signer_id(ctx.identity_uuid, ctx.public_key)
+        Commonplace.Crypto.Signing.sign_commit(commit, ctx.private_key, signer_id)
+
+      {:error, _} ->
+        commit
     end
   end
 
