@@ -93,3 +93,89 @@ defmodule Commonplace.Federation.EnvelopeTest do
     assert {:error, :unsupported_version} = Envelope.decode(Jason.encode!(%{map | "v" => 99}))
   end
 end
+
+defmodule Commonplace.Federation.EnvelopeForCommitTest do
+  @moduledoc """
+  `Envelope.for_commit/2`: the SERVING side builds an envelope that
+  inlines the commit's full cert chain (leaf → root, following `proof`
+  pointers), so a strict receiver never defers on a cert the sender had.
+  """
+  use ExUnit.Case, async: false
+
+  alias Commonplace.Crypto.{Signing, SigningContext}
+  alias Commonplace.Federation.Envelope
+  alias Commonplace.Store.{Commit, CommitStore}
+  alias Commonplace.Trust.Capability
+
+  setup do
+    dir = Path.join(System.tmp_dir!(), "cp_env_fc_#{:rand.uniform(1_000_000_000)}")
+    File.mkdir_p!(dir)
+    store = :"env_fc_store_#{:rand.uniform(1_000_000)}"
+    start_supervised!({CommitStore, data_dir: dir, name: store})
+    on_exit(fn -> File.rm_rf!(dir) end)
+    %{store: store}
+  end
+
+  defp ident(id) do
+    {pub, priv} = Signing.generate_keypair()
+    %{ctx: %SigningContext{identity_uuid: id, private_key: priv, public_key: pub},
+      keyed: {id, pub}, priv: priv, pub: pub, signer: Signing.signer_id(id, pub)}
+  end
+
+  test "inlines the full chain leaf→root for a delegated commit", %{store: store} do
+    root = ident("root")
+    alice = ident("alice")
+
+    {:ok, c_root} =
+      Capability.delegate(root.ctx, alice.keyed, %{
+        verbs: [:write, :delegate],
+        scope: {:docs, ["d1"]},
+        caveats: %{not_before: nil, not_after: nil}
+      })
+
+    bob = ident("bob")
+
+    {:ok, c_leaf} =
+      Capability.delegate(alice.ctx, bob.keyed, %{
+        verbs: [:write],
+        scope: {:docs, ["d1"]},
+        caveats: %{not_before: nil, not_after: nil}
+      }, c_root.id, parent: c_root)
+
+    :ok = CommitStore.store_capability(store, c_root)
+    :ok = CommitStore.store_capability(store, c_leaf)
+
+    commit =
+      Commit.new("d1", "p", nil, %{kind: :regular, capability_proof: c_leaf.id})
+      |> Signing.sign_commit(bob.priv, bob.signer)
+
+    encoded = Envelope.for_commit(store, commit)
+    {:ok, %{commit: ^commit, certs: certs}} = Envelope.decode(encoded)
+
+    assert Enum.map(certs, & &1.id) |> Enum.sort() == Enum.sort([c_root.id, c_leaf.id])
+  end
+
+  test "a commit with no capability_proof gets an empty cert list", %{store: store} do
+    commit = Commit.new("d2", "p", nil, %{kind: :regular})
+    assert {:ok, %{certs: []}} = store |> Envelope.for_commit(commit) |> Envelope.decode()
+  end
+
+  test "missing certs are skipped, present prefix still inlined", %{store: store} do
+    root = ident("root")
+    alice = ident("alice")
+
+    {:ok, cert} =
+      Capability.delegate(root.ctx, alice.keyed, %{
+        verbs: [:write],
+        scope: {:docs, ["d3"]},
+        caveats: %{not_before: nil, not_after: nil}
+      })
+
+    # Cert NOT stored — serving side simply can't inline it.
+    commit =
+      Commit.new("d3", "p", nil, %{kind: :regular, capability_proof: cert.id})
+      |> Signing.sign_commit(alice.priv, alice.signer)
+
+    assert {:ok, %{certs: []}} = store |> Envelope.for_commit(commit) |> Envelope.decode()
+  end
+end

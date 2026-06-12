@@ -32,8 +32,19 @@ defmodule CommonplaceWebWeb.Router do
     live "/chat/:room", ChatRoomLive
   end
 
-  # Other scopes may use custom stacks.
-  # scope "/api", CommonplaceWebWeb do
-  #   pipe_through :api
-  # end
+  pipeline :federation do
+    plug :accepts, ["json"]
+    plug CommonplaceWebWeb.Plugs.FederationAuth
+  end
+
+  # Federation pull endpoints (phase C, CX-orfw). Bearer-token gated
+  # (online layer); landing is decided by Gate A at import (offline
+  # layer). No peers configured ⇒ everything 403s.
+  scope "/federation", CommonplaceWebWeb do
+    pipe_through :federation
+
+    get "/docs/:uuid/cids", FederationController, :cids
+    post "/docs/:uuid/commits", FederationController, :commits
+    post "/import", FederationController, :import
+  end
 end

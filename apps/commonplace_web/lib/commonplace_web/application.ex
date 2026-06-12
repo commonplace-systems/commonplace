@@ -11,8 +11,9 @@ defmodule CommonplaceWeb.Application do
       CommonplaceWebWeb.Telemetry,
       {DNSCluster, query: Application.get_env(:commonplace_web, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: CommonplaceWeb.PubSub},
-      # Start a worker by calling: CommonplaceWeb.Worker.start_link(arg)
-      # {CommonplaceWeb.Worker, arg},
+      # Per-peer deferral budget for the federation import endpoint
+      # (CX-orfw.1 — bounds pending_imports contribution per peer).
+      CommonplaceWebWeb.FederationPeerBudget,
       # Start to serve requests, typically the last entry
       CommonplaceWebWeb.Endpoint
     ]

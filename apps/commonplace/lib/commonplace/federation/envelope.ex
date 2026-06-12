@@ -29,9 +29,12 @@ defmodule Commonplace.Federation.Envelope do
   """
 
   alias Commonplace.Store.Commit
+  alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Trust.Capability
 
   @version 1
+  # Mirrors Trust.VerifyChain's chain-length bound.
+  @max_chain 64
 
   @doc """
   Encode a commit and its supporting certs into a JSON envelope binary.
@@ -43,6 +46,27 @@ defmodule Commonplace.Federation.Envelope do
       commit: pack(commit),
       certs: Enum.map(certs, &pack/1)
     })
+  end
+
+  @doc """
+  Build the envelope for a commit, inlining its full cert chain
+  (leaf → root, following `proof` pointers, bounded like `VerifyChain`).
+  Certs the local store doesn't hold are simply not inlined — the
+  receiver may then defer on `:awaiting_capability`, which is its call.
+  """
+  @spec for_commit(GenServer.server(), Commit.t()) :: binary()
+  def for_commit(store, %Commit{} = commit) do
+    encode(commit, collect_chain(store, commit.metadata[:capability_proof], []))
+  end
+
+  defp collect_chain(_store, nil, acc), do: Enum.reverse(acc)
+  defp collect_chain(_store, _cid, acc) when length(acc) >= @max_chain, do: Enum.reverse(acc)
+
+  defp collect_chain(store, cid, acc) do
+    case CommitStoreClient.get_capability(store, cid) do
+      {:ok, %Capability{} = cert} -> collect_chain(store, cert.proof, [cert | acc])
+      :none -> Enum.reverse(acc)
+    end
   end
 
   @doc """
