@@ -328,10 +328,18 @@ defmodule Commonplace.Process.Orchestrator do
                 %{name: name, mode: config.mode}
               )
 
-              %{acc |
+              acc = %{acc |
                 processes: Map.put(acc.processes, name, info),
                 source_hashes: Map.put(acc.source_hashes, name, source_hash)
               }
+
+              # CX-tdkq.12 (sweep completeness): record the start
+              # IMMEDIATELY, not just at tick end — a crash between a
+              # start and the end-of-tick status write would otherwise
+              # leave a running process invisible to the next
+              # generation's sweep, and reconcile would duplicate it.
+              write_status_file(acc)
+              acc
 
             {:error, _reason} ->
               acc
@@ -618,6 +626,12 @@ defmodule Commonplace.Process.Orchestrator do
           "mode" => to_string(proc.mode),
           "sandbox_dir" => proc.sandbox_dir,
           "os_pid" => get_os_pid(proc),
+          # CX-tdkq.12: the sweep's intra-VM handle on a prior
+          # generation's managed processes (they're unnamed+unlinked by
+          # design, so this file is the only way a restarted
+          # orchestrator can find them). Local-node pids only — exactly
+          # what sweep needs.
+          "beam_pid" => String.trim_leading(inspect(proc.pid), "#PID"),
           "started_at" => DateTime.to_iso8601(proc.started_at),
           "alive" => Process.alive?(proc.pid)
         }}
