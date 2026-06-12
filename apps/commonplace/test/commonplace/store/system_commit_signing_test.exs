@@ -12,7 +12,7 @@ defmodule Commonplace.Store.SystemCommitSigningTest do
   use ExUnit.Case, async: false
 
   alias Commonplace.Crypto.{NodeIdentity, Signing}
-  alias Commonplace.Store.{Commit, CommitStore}
+  alias Commonplace.Store.{Commit, CommitStore, SecretStore}
   alias Yelixer.{Doc, Encoding}
   alias Yelixer.Types.Text
 
@@ -112,6 +112,36 @@ defmodule Commonplace.Store.SystemCommitSigningTest do
     assert merge.metadata.kind == :merge
     assert merge.signature != nil
     assert :ok = Signing.verify_commit(merge, ctx.public_key)
+  end
+
+  test "snapshot in a keygen'd workspace is node-signed, not global-signed",
+       %{store: store} do
+    # CX-tdkq.25: a snapshot is a SYSTEM action, not a human one — even
+    # when a global user key is configured (the keygen'd-workspace
+    # scenario), system kinds must carry NODE attribution, not the
+    # human's.
+    {global_pub, global_priv} = Signing.generate_keypair()
+    SecretStore.set("signing_key:default", Base.encode64(global_priv))
+    SecretStore.set("signing_pub:default", Base.encode64(global_pub))
+    SecretStore.set("signing_identity", "human-uuid")
+
+    on_exit(fn ->
+      SecretStore.delete("signing_key:default")
+      SecretStore.delete("signing_pub:default")
+      SecretStore.delete("signing_identity")
+    end)
+
+    # Mint a snapshot through the normal path (no explicit signing_context).
+    uuid = "keygen-snap-#{:rand.uniform(1_000_000)}"
+    CommitStore.create_commit(store, uuid, text_doc("abc"), nil)
+    {:ok, snapshot} = CommitStore.snapshot(store, uuid)
+
+    {:ok, node_identity} = NodeIdentity.identity()
+
+    assert snapshot.signer_id =~ node_identity,
+           "system commit must carry NODE attribution, got #{snapshot.signer_id}"
+
+    refute snapshot.signer_id =~ "human-uuid"
   end
 
   test "the node-signed snapshot is accepted by Gate B in strict mode",

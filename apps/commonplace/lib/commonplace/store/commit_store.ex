@@ -1524,9 +1524,8 @@ defmodule Commonplace.Store.CommitStore do
   # Default (nil context) falls back to the global SecretStore — the
   # legacy behavior, preserved for callers that haven't been updated.
   #
-  # CX-tdkq.24 (phase 2.5): when the nil branch would otherwise leave a
-  # SYSTEM-minted commit (kind :snapshot or :merge) unsigned, the node
-  # identity signs it as the accountable fallback — so strict mode
+  # CX-tdkq.24 (phase 2.5): SYSTEM-minted commits (kind :snapshot or
+  # :merge) reaching the nil branch are node-signed so strict mode
   # accepts system commits. Regular user commits are untouched (still
   # unsigned absent a user key/context).
   defp maybe_sign_commit(commit, signing_context \\ nil)
@@ -1541,10 +1540,20 @@ defmodule Commonplace.Store.CommitStore do
     sign_with_context(commit, ctx)
   end
 
+  # CX-tdkq.25: system-minted commits (snapshot/merge) are SYSTEM actions —
+  # always node-sign them, even when a global user key is configured, so
+  # attribution is correct and zero-config single-node strict holds for
+  # keygen'd workspaces too. Only non-system commits fall back to the
+  # global SecretStore key.
+  defp maybe_sign_commit(%Commit{metadata: %{kind: kind}} = commit, nil)
+       when kind in [:snapshot, :merge] do
+    node_sign_if_system(commit)
+  end
+
   defp maybe_sign_commit(commit, nil) do
     case global_secret_context() do
       {:ok, ctx} -> sign_with_context(commit, ctx)
-      :none -> node_sign_if_system(commit)
+      :none -> commit
     end
   end
 
@@ -1553,8 +1562,8 @@ defmodule Commonplace.Store.CommitStore do
     Commonplace.Crypto.Signing.sign_commit(commit, ctx.private_key, signer_id)
   end
 
-  # The node-identity fallback applies only to system-minted commits, so
-  # ordinary unsigned user commits keep their (unsigned) behavior.
+  # Node-sign a system-minted commit; on a node-identity failure the
+  # commit is left unchanged (visible under strict mode, not silent).
   defp node_sign_if_system(%Commit{metadata: %{kind: kind}} = commit)
        when kind in [:snapshot, :merge] do
     case Commonplace.Crypto.NodeIdentity.signing_context() do
@@ -1562,8 +1571,6 @@ defmodule Commonplace.Store.CommitStore do
       {:error, _} -> commit
     end
   end
-
-  defp node_sign_if_system(commit), do: commit
 
   defp global_secret_context do
     with pid when is_pid(pid) <- Process.whereis(Commonplace.Store.SecretStore),
