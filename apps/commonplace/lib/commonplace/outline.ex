@@ -55,6 +55,20 @@ defmodule Commonplace.Outline do
     end
   end
 
+  @doc """
+  Resolve `/outline/{name}/_outline` to its doc uuid by walking the
+  workspace schema (the same live binding chat's room lookup uses).
+  """
+  def lookup(name, root_uuid, store \\ CommitStoreClient) do
+    with {:ok, dir_entry} <- Schema.get_entry(load_schema(root_uuid, store), @outline_dir),
+         {:ok, room_entry} <- Schema.get_entry(load_schema(dir_entry.node_id, store), name),
+         {:ok, doc_entry} <- Schema.get_entry(load_schema(room_entry.node_id, store), @outline_doc) do
+      {:ok, doc_entry.node_id}
+    else
+      :error -> {:error, :not_found}
+    end
+  end
+
   # --- mutations (store level: load → Internal op → commit) ---
 
   @doc """
@@ -305,7 +319,7 @@ defmodule Commonplace.Outline do
 
       doc = El.insert_child(doc, name, 0, :text)
       {:text, text_name} = El.children(doc, name) |> List.first()
-      Txt.insert(doc, text_name, 0, text)
+      if text == "", do: doc, else: Txt.insert(doc, text_name, 0, text)
     end
 
     @doc "LWW attribute write on the item with the given id."

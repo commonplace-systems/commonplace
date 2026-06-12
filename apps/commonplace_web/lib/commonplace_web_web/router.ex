@@ -30,6 +30,9 @@ defmodule CommonplaceWebWeb.Router do
     # `:room` is the human-friendly room name; ChatRoomLive walks the
     # workspace schema to resolve `/chat/{room}/_messages`.
     live "/chat/:room", ChatRoomLive
+
+    # CX-k8tn: Workflowy-style outliner on the flat-bag-of-xml-items model.
+    live "/outline/:name", OutlineLive
   end
 
   pipeline :federation do
