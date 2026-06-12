@@ -1,0 +1,27 @@
+==> commonplace
+make: Nothing to be done for 'all'.
+[proof] booting the :commonplace application (orchestrator_on_boot: true, scratch workspace /tmp/cp_orch_proof_138166)
+
+09:11:46.092 [warning] Orchestrator running with a permissive trust config: declared processes (including code docs synced from peers) will auto-execute ungated. Pin identities / set accept_unsigned:false in trust.json for strict gating.
+[proof] orchestrator supervised on boot: #PID<0.294.0>
+[proof] declared managed process 'proof_sleeper' in __processes.json
+[proof] generation 1: proof_sleeper running at #PID<0.302.0> (managed by #PID<0.294.0>)
+[proof] 
+[proof] >>> KILLING the orchestrator (Process.exit(_, :kill)) — pre-move-#2 this was unrecoverable <<<
+[proof] 
+[proof] supervisor restarted the orchestrator: #PID<0.305.0>
+
+09:11:51.192 [debug] Sweep: stopping prior-generation process proof_sleeper (<0.302.0>)
+
+09:11:51.195 [info] Orchestrator: swept 1 prior-generation process entry before reconciling
+
+09:11:51.195 [warning] Orchestrator running with a permissive trust config: declared processes (including code docs synced from peers) will auto-execute ungated. Pin identities / set accept_unsigned:false in trust.json for strict gating.
+warning: redefining module Commonplace.UserProcess.ProofSleeper (current version defined in memory)
+└─ docref:/a839ef92-695e-448d-8ccd-175e4605c941:1: Commonplace.UserProcess.ProofSleeper (module)
+
+[proof] generation 2: proof_sleeper running at #PID<0.312.0>
+[proof] prior generation swept: p1 (#PID<0.302.0>) alive? false
+[proof] exactly one generation: p2 != p1? true
+[proof] 
+[proof] PROOF PASSED — crash → supervisor restart → sweep (no duplicate generation) → re-reconcile.
+[proof] The malleable-software engine now survives its own death.
