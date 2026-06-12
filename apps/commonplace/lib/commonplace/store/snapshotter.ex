@@ -146,8 +146,16 @@ defmodule Commonplace.Store.Snapshotter do
 
   defp reconstruct_source(server, uuid, _parent) do
     case Commonplace.Tree.DocBuilder.reconstruct_doc(server, uuid) do
-      {:ok, doc} -> doc
-      :none -> Yelixer.Doc.new()
+      {:ok, doc} ->
+        # CX-saix: a replayed doc's type registry doesn't know `content`
+        # (no CRDT item carries the registration) — without hydrating
+        # from the envelope, snapshot_update silently skips the content
+        # type entirely (an xml outline snapshotted to EMPTY). Hydrate
+        # exactly like readers do.
+        Commonplace.Document.ContentType.hydrate(doc)
+
+      :none ->
+        Yelixer.Doc.new()
     end
   end
 

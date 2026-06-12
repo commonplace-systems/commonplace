@@ -182,6 +182,25 @@ defmodule Commonplace.Document.ContentType do
     end
   end
 
+  @doc """
+  Register the doc's `content` type in its type registry from the
+  envelope's `_type` field (no-op when already registered or untyped).
+
+  A REPLAYED doc (apply_update of raw commits) has no registry entry
+  for `content` — the writer registered it via the facade, but no CRDT
+  item carries that fact, so replay can't recover it. Readers hydrate
+  lazily inside `get_content/1`; pipelines that hand the doc to
+  registry-driven machinery (`Yelixer.Doc.snapshot_update/1` — the
+  Snapshotter, CX-saix found xml snapshots silently emptying) must
+  hydrate FIRST or the content type is invisible to them.
+  """
+  def hydrate(%Doc{} = doc) do
+    case get_type(doc) do
+      nil -> doc
+      type -> ensure_content_type(doc, type)
+    end
+  end
+
   defp ensure_content_type(%Doc{} = doc, type) do
     if Doc.has_type?(doc, @content_type) do
       doc
