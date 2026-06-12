@@ -67,8 +67,23 @@ defmodule Commonplace.Presence.Identity do
     end
   end
 
-  @doc "Ensure the __identities__ system directory exists in the root schema."
-  def ensure_identities_dir(root_uuid, store \\ CommitStoreClient) do
+  # CX-88mw(ii): the commit opts derived from a caller's `opts`. Only
+  # `:signing_context` is forwarded — when absent, every write keeps the
+  # legacy default-signing behavior bit-for-bit.
+  defp commit_opts(opts) do
+    case Keyword.get(opts, :signing_context) do
+      nil -> []
+      ctx -> [signing_context: ctx]
+    end
+  end
+
+  @doc """
+  Ensure the __identities__ system directory exists in the root schema.
+
+  `opts[:signing_context]` (CX-88mw ii) signs the directory-creation and
+  root-schema commits when the dir is minted here; no-op when it exists.
+  """
+  def ensure_identities_dir(root_uuid, store \\ CommitStoreClient, opts \\ []) do
     root_doc = load_schema(root_uuid, store)
 
     case Schema.get_entry(root_doc, @identities_dir) do
@@ -80,21 +95,29 @@ defmodule Commonplace.Presence.Identity do
         dir_uuid = UUID.uuid4()
         dir_doc = Schema.new_schema()
         update = Yelixer.Encoding.encode_update(dir_doc)
-        CommitStoreClient.create_commit(store, dir_uuid, update, nil)
+        CommitStoreClient.create_commit(store, dir_uuid, update, nil, %{}, commit_opts(opts))
 
         # Add to root schema
         root_doc = load_schema(root_uuid, store)
         root_doc = Schema.add_directory(root_doc, @identities_dir, dir_uuid)
         update = Yelixer.Encoding.encode_update(root_doc)
-        CommitStoreClient.create_chained_commit(store, root_uuid, update)
+        CommitStoreClient.create_chained_commit(store, root_uuid, update, %{}, commit_opts(opts))
 
         {:ok, dir_uuid}
     end
   end
 
-  @doc "Register a cold identity. Creates if new, updates last_seen if existing."
-  def register(name, type, root_uuid, store \\ CommitStoreClient) do
-    {:ok, id_dir_uuid} = ensure_identities_dir(root_uuid, store)
+  @doc """
+  Register a cold identity. Creates if new, updates last_seen if existing.
+
+  `opts[:signing_context]` (CX-88mw ii / D9): the registration commits —
+  identity doc, __identities__ schema entry, and any schema commits made
+  by `ensure_identities_dir` — are signed with the supplied
+  `Commonplace.Crypto.SigningContext`. Without it, the legacy behavior
+  (global-SecretStore fallback / unsigned) is unchanged.
+  """
+  def register(name, type, root_uuid, store \\ CommitStoreClient, opts \\ []) do
+    {:ok, id_dir_uuid} = ensure_identities_dir(root_uuid, store, opts)
     fname = Presence.filename(name, type)
 
     id_doc = load_schema(id_dir_uuid, store)
@@ -102,7 +125,7 @@ defmodule Commonplace.Presence.Identity do
     case Schema.get_entry(id_doc, fname) do
       {:ok, entry} ->
         # Existing identity — update last_seen
-        touch_last_seen(entry.node_id, store)
+        touch_last_seen(entry.node_id, store, opts)
         {:ok, entry.node_id}
 
       :error ->
@@ -118,15 +141,56 @@ defmodule Commonplace.Presence.Identity do
         doc = ContentType.set_key(doc, "last_seen", now)
 
         update = Yelixer.Encoding.encode_update(doc)
-        CommitStoreClient.create_commit(store, uuid, update, nil, write_metadata(uuid, store))
+
+        CommitStoreClient.create_commit(
+          store,
+          uuid,
+          update,
+          nil,
+          write_metadata(uuid, store),
+          commit_opts(opts)
+        )
 
         # Add to identities schema
         id_doc = load_schema(id_dir_uuid, store)
         id_doc = Schema.add_file(id_doc, fname, uuid)
         update = Yelixer.Encoding.encode_update(id_doc)
-        CommitStoreClient.create_chained_commit(store, id_dir_uuid, update)
+        CommitStoreClient.create_chained_commit(store, id_dir_uuid, update, %{}, commit_opts(opts))
 
         {:ok, uuid}
+    end
+  end
+
+  @doc """
+  Register an agent as a first-class signing principal (CX-88mw ii):
+  a `:bot` cold identity + a freshly-minted (idempotent) per-agent
+  Ed25519 keypair in the node-local SecretStore + the pubkey appended to
+  the identity doc. Returns `{:ok, identity_uuid, public_key}`.
+
+  ## Who signs the registration (decision D9)
+
+  The CREATOR signs: pass the minting principal's `SigningContext` as
+  `opts[:signing_context]` — the same principal that subsequently
+  `cap delegate`s the agent its scoped capability cert, so
+  accountability chains end-to-end. In headless contexts (no human in
+  the loop) pass the node's context
+  (`Commonplace.Crypto.NodeIdentity.signing_context/0`) — node-signing
+  is the sanctioned fallback.
+
+  The pubkey copy in the identity doc is convenience only (D6):
+  authority comes from the capability cert delegated to this key, never
+  from the (peer-writable) identity doc.
+
+  `opts[:secret_store]` overrides the SecretStore instance holding the
+  agent's key custody (defaults to the global one).
+  """
+  def register_agent(name, root_uuid, store \\ CommitStoreClient, opts \\ []) do
+    secret_store = Keyword.get(opts, :secret_store, Commonplace.Store.SecretStore)
+
+    with {:ok, uuid} <- register(name, :bot, root_uuid, store, opts),
+         {:ok, pub} <- Commonplace.Crypto.AgentKeys.ensure(uuid, secret_store),
+         :ok <- add_public_key(uuid, Base.encode64(pub), store, opts) do
+      {:ok, uuid, pub}
     end
   end
 
@@ -188,8 +252,11 @@ defmodule Commonplace.Presence.Identity do
     end
   end
 
-  @doc "Update last_seen timestamp on a cold identity."
-  def touch_last_seen(uuid, store \\ CommitStoreClient) do
+  @doc """
+  Update last_seen timestamp on a cold identity.
+  `opts[:signing_context]` signs the commit (CX-88mw ii).
+  """
+  def touch_last_seen(uuid, store \\ CommitStoreClient, opts \\ []) do
     converge(uuid, store)
 
     case reconstruct(uuid, store) do
@@ -197,15 +264,28 @@ defmodule Commonplace.Presence.Identity do
         now = DateTime.utc_now() |> DateTime.to_iso8601()
         doc = ContentType.set_key(doc, "last_seen", now)
         update = Yelixer.Encoding.encode_update(doc)
-        CommitStoreClient.create_chained_commit(store, uuid, update, write_metadata(uuid, store))
+
+        CommitStoreClient.create_chained_commit(
+          store,
+          uuid,
+          update,
+          write_metadata(uuid, store),
+          commit_opts(opts)
+        )
 
       :none ->
         :ok
     end
   end
 
-  @doc "Add a public key to an identity document."
-  def add_public_key(identity_uuid, public_key_b64, store \\ CommitStoreClient) do
+  @doc """
+  Add a public key to an identity document.
+
+  Convenience copy only (D6): authority comes from a capability cert
+  delegated to the key, never from this (peer-writable) doc.
+  `opts[:signing_context]` signs the commit (CX-88mw ii).
+  """
+  def add_public_key(identity_uuid, public_key_b64, store \\ CommitStoreClient, opts \\ []) do
     converge(identity_uuid, store)
 
     case reconstruct(identity_uuid, store) do
@@ -234,7 +314,8 @@ defmodule Commonplace.Presence.Identity do
             store,
             identity_uuid,
             update,
-            write_metadata(identity_uuid, store)
+            write_metadata(identity_uuid, store),
+            commit_opts(opts)
           )
         end
 

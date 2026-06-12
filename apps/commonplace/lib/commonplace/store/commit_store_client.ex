@@ -54,13 +54,18 @@ defmodule Commonplace.Store.CommitStoreClient do
   defp normalize_server(__MODULE__), do: CommitStore
   defp normalize_server(server), do: server
 
-  def create_commit(server \\ CommitStore, doc_uuid, update, parent_id, metadata \\ %{}) do
+  def create_commit(server \\ CommitStore, doc_uuid, update, parent_id, metadata \\ %{}, opts \\ []) do
     case remote_node() do
       {:ok, node} ->
-        GenServer.call({CommitStore, node}, {:create_commit, doc_uuid, update, parent_id, metadata})
+        # CX-88mw: opts (notably :signing_context) ride along on the
+        # remote call too — same gap-closure as create_chained_commit/5.
+        GenServer.call(
+          {CommitStore, node},
+          {:create_commit, doc_uuid, update, parent_id, metadata, opts}
+        )
 
       :local ->
-        CommitStore.create_commit(normalize_server(server), doc_uuid, update, parent_id, metadata)
+        CommitStore.create_commit(normalize_server(server), doc_uuid, update, parent_id, metadata, opts)
     end
   end
 

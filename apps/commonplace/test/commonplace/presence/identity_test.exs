@@ -267,6 +267,130 @@ defmodule Commonplace.Presence.IdentityTest do
     end
   end
 
+  describe "signing_context threading (CX-88mw ii / D9)" do
+    alias Commonplace.Crypto.{Signing, SigningContext}
+
+    defp creator_ctx do
+      {pub, priv} = Signing.generate_keypair()
+      ctx = %SigningContext{identity_uuid: "creator", private_key: priv, public_key: pub}
+      {ctx, Signing.signer_id("creator", pub)}
+    end
+
+    defp latest!(store, uuid) do
+      {:ok, commit} = CommitStore.latest_commit(store, uuid)
+      commit
+    end
+
+    test "register signs the identity doc AND the schema commits with the creator's key",
+         %{store: store, root: root} do
+      {ctx, signer} = creator_ctx()
+
+      {:ok, uuid} =
+        Identity.register("scribe", :bot, root, store, signing_context: ctx)
+
+      # The identity doc's birth commit carries the CREATOR's signature (D9).
+      identity_commit = latest!(store, uuid)
+      assert identity_commit.signer_id == signer
+      assert :ok = Signing.verify_commit(identity_commit, ctx.public_key)
+
+      # The __identities__ schema commit (add_file) is creator-signed too.
+      {:ok, id_dir_uuid} = Identity.ensure_identities_dir(root, store)
+      dir_commit = latest!(store, id_dir_uuid)
+      assert dir_commit.signer_id == signer
+
+      # ensure_identities_dir's root-schema commit (add_directory) — the
+      # dir was created inside this register call, so its commits must
+      # carry the same context.
+      root_commit = latest!(store, root)
+      assert root_commit.signer_id == signer
+    end
+
+    test "register without a context keeps the legacy unsigned behavior",
+         %{store: store, root: root} do
+      {:ok, uuid} = Identity.register("plain", :bot, root, store)
+      assert latest!(store, uuid).signature == nil
+    end
+
+    test "add_public_key with signing_context signs the appended-key commit",
+         %{store: store, root: root} do
+      {ctx, signer} = creator_ctx()
+      {:ok, uuid} = Identity.register("keyed", :bot, root, store)
+
+      :ok =
+        Identity.add_public_key(uuid, Base.encode64("fake-pub"), store, signing_context: ctx)
+
+      commit = latest!(store, uuid)
+      assert commit.signer_id == signer
+      assert :ok = Signing.verify_commit(commit, ctx.public_key)
+    end
+
+    test "touch_last_seen with signing_context signs", %{store: store, root: root} do
+      {ctx, signer} = creator_ctx()
+      {:ok, uuid} = Identity.register("touched", :bot, root, store)
+
+      Process.sleep(10)
+      Identity.touch_last_seen(uuid, store, signing_context: ctx)
+
+      assert latest!(store, uuid).signer_id == signer
+    end
+  end
+
+  describe "register_agent (CX-88mw ii)" do
+    alias Commonplace.Crypto.{AgentKeys, Signing, SigningContext}
+    alias Commonplace.Store.SecretStore
+
+    setup do
+      dir = Path.join(System.tmp_dir!(), "cp_agent_secrets_#{:rand.uniform(1_000_000_000)}")
+      File.mkdir_p!(dir)
+      name = :"agent_secrets_#{:rand.uniform(1_000_000)}"
+      {:ok, pid} = SecretStore.start_link(data_dir: dir, name: name)
+
+      on_exit(fn ->
+        if Process.alive?(pid), do: GenServer.stop(pid)
+        File.rm_rf!(dir)
+      end)
+
+      %{secrets: name}
+    end
+
+    test "registers a :bot, mints its key, binds the pubkey into the identity doc",
+         %{store: store, root: root, secrets: secrets} do
+      {cpub, cpriv} = Signing.generate_keypair()
+      ctx = %SigningContext{identity_uuid: "creator", private_key: cpriv, public_key: cpub}
+
+      assert {:ok, uuid, pub} =
+               Identity.register_agent("worker", root, store,
+                 signing_context: ctx,
+                 secret_store: secrets
+               )
+
+      # Registered as a :bot cold identity.
+      assert {:ok, ^uuid} = Identity.lookup("worker", :bot, root, store)
+
+      # Key custody landed in the SecretStore; context matches.
+      assert {:ok, agent_ctx} = AgentKeys.signing_context_for(uuid, secrets)
+      assert agent_ctx.public_key == pub
+
+      # D6: convenience pubkey copy in the identity doc (authority stays
+      # in the cert chain, not here).
+      assert Base.encode64(pub) in Identity.get_public_keys(uuid, store)
+
+      # D9: the registration commits are signed by the CREATOR.
+      {:ok, commit} = CommitStore.latest_commit(store, uuid)
+      assert commit.signer_id == Signing.signer_id("creator", cpub)
+    end
+
+    test "register_agent is idempotent on the identity and keeps the same key",
+         %{store: store, root: root, secrets: secrets} do
+      {:ok, uuid1, pub1} = Identity.register_agent("stable", root, store, secret_store: secrets)
+      Process.sleep(10)
+      {:ok, uuid2, pub2} = Identity.register_agent("stable", root, store, secret_store: secrets)
+
+      assert uuid1 == uuid2
+      assert pub1 == pub2
+    end
+  end
+
   defp load_schema(uuid, store) do
     case CommitStore.latest_commit(store, uuid) do
       {:ok, commit} ->
