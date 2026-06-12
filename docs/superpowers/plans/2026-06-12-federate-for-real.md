@@ -21,7 +21,8 @@
 | D1 | Agents-as-principals vs federation: one mechanism or two? | **One.** Peer root = root-grained principal; agent = single-principal-grained peer. Same cert-DAG, same `cap delegate`, same Gate A. |
 | D2 | Transport: shared-cookie BEAM distribution acceptable for dogfood? | **No.** Cookie = unrestricted RPC = one trust domain (demo READMEs already disclaim it). A non-distribution transport is required for any real cross-trust-domain claim. |
 | D3 | Transport: port the Rust MQTT layer vs minimal HTTP envelope? | **HTTP envelope (lean, ~500-800 LOC).** There is NO MQTT in the Elixir tree (no deps, no broker, no macaroons — verified in mix.lock + grep). Commits/certs are content-addressed and self-verifying, so the transport stays thin and Gate A remains the only door. MQTT port re-evaluated only if a broker need (fan-out, offline queueing) emerges from dogfooding. *(Confirmed with commonplace-plan after premise correction — their MQTT lean was Rust-legacy.)* |
-| D4 | Pull vs push sync over the new transport? | **Pull-first** (CID-diff catch-up over HTTP, mirrors existing `NodeSync.catch_up`). Push/streaming later if dogfood latency hurts. **(OPEN — awaiting commonplace-plan confirm.)** |
+| D4 | Pull vs push sync over the new transport? | **DECIDED: pull-first** (commonplace-plan confirmed, msg 5091) — CID-diff catch-up over HTTP, mirrors existing `NodeSync.catch_up`; naturally handles availability + ordering (pending-queue covers stragglers). Push (Channel broadcast) layers on later for latency. |
+| D12 | Envelope payload encoding | Versioned JSON wrapper; commit/cert payloads as `base64(term_to_binary(...))` decoded with `binary_to_term([:safe])`. Rationale: commit ids hash metadata maps with ATOM keys/values — naive JSON round-trip mangles them and breaks `Commit.verify_id/1`. Both v1 ends are BEAM; `[:safe]` blocks atom-creation from untrusted bytes (needed atoms all pre-exist). Cross-runtime JSON codec is a later additive change behind the same endpoints. |
 | D5 | Agent private-key custody | **SecretStore**, keys `"signing_key:<identity_uuid>"` / `"signing_pub:<identity_uuid>"` (base64, mirrors the `:default` slots). Node-local, never synced — the NodeIdentity pattern per-agent. `CommitStore.global_secret_context` is NOT touched; per-call SigningContext threading bypasses global slots by design. |
 | D6 | Agent pubkey binding | Convenience copy in the identity doc via existing `add_public_key/3`; **authority comes from the cert, not the doc** (anchor rule from trust-and-attenuation.md). |
 | D7 | CX-tdkq.26 fix shape | **Node-sign translated commits inside `Translator.translate_edit_with_snapshot/3`** (covers both auto-translate paths + positional fallback). Translation is a system action OF THE RECEIVING NODE → receiver's NodeIdentity is the principled signer, exactly the phase-2.5 pattern. Signature is outside the content address, so commit ids stay deterministic across nodes. |
@@ -304,7 +305,7 @@ Flow: `register_agent` → `Capability.issue(root_ctx, {agent_uuid, agent_pub}, 
 
 ---
 
-## Phase C — federation transport (provisional: pull-first HTTP envelope; finalize after D4 confirms)
+## Phase C — federation transport (COMPLETE 2026-06-12: a5e3acd envelope, 34fc030 endpoints+budget, 4283a57 pull client, + real-socket round-trip test; suites 1548/70/106 all green)
 
 > Gate A/Gate B/Trust are NOT modified in this phase. The transport's only job is moving self-verifying values (commits, certs) between stores; `import_commit` remains the sole ingress.
 
