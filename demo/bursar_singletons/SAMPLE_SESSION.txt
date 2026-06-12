@@ -1,0 +1,30 @@
+[proof] A (bursar_proof_a_3560590@commonplace): booting :commonplace with :bursar_on_boot (scratch /tmp/cp_bursar_proof_a_458984)
+
+17:59:47.171 [info] Bursar started for c633fb6f-a541-4f35-8054-60b24548e2a2, 0 active tokens
+[proof] A: Bursar #PID<0.299.0> + TickBot #PID<0.295.0> supervised, locally named
+[proof] A: :global.registered_names() == [] — no singleton registration to race
+[proof] A: tick lease held by "tick_bot@bursar_proof_a_3560590@commonplace"
+[proof] A: Move.move room1→room2 :ok under green tokens (no MoveServer anywhere)
+[proof] B: starting peer node (the bare-mix-run temp node that used to orphan the singletons)…
+
+17:59:47.584 [info] Cluster: node joined — bursar_proof_b@commonplace
+[proof] B (bursar_proof_b@commonplace): :commonplace booted; connected nodes on A: [:bursar_proof_b@commonplace]
+[proof] B: no Bursar started (gate default-off) — the lock authority stays unique
+[proof] A+B: :global.registered_names() == [] on BOTH after join — nothing raced, nothing killed, nothing orphaned
+[proof] B: TickBot :not_leader (no bursar route — fail-closed idle)
+[proof] B: Move.move → {:error, :bursar_unavailable} — never moves unlocked
+[proof] B: attached (set_remote_node bursar_proof_a_3560590@commonplace) — store AND bursar now route to A
+[proof] B: Move.move room2→room1 :ok — green tokens acquired on A's Bursar over distribution
+[proof] A: terminating the TickBot leader permanently (simulating the leader's demise)…
+[proof] B: still :not_leader — the dead leader's lease is honored until TTL (no double-hold, only latency)
+
+17:59:50.683 [info] Bursar: token expired — __singletons/tick_bot (held by tick_bot@bursar_proof_a_3560590@commonplace)
+[proof] B: TOOK OVER the tick lease in 2663ms (TTL 3000 + sweep 500) — holder "tick_bot@bursar_proof_b@commonplace"
+[proof] 
+
+17:59:50.693 [info] Cluster: node left — bursar_proof_b@commonplace
+[proof] PROOF COMPLETE:
+[proof]   • zero :global registrations before/after a temp node joined — the split-brain surface is gone
+[proof]   • temp node booted the app with no Bursar, idled fail-closed, denied unlocked moves
+[proof]   • after CLI-style attach, its moves took green tokens on A through the BursarClient seam
+[proof]   • leader death → failover bounded by lease TTL + sweep (2663ms), never two leaders
