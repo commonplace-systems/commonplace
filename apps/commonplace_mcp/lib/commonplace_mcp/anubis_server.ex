@@ -118,6 +118,12 @@ defmodule Commonplace.MCP.AnubisServer do
           # reverse-lookup. Substrate-wide value — any future action
           # needing author identity reads it from frame.assigns.
           |> Frame.assign(:presence_path, Map.get(info, :name))
+          # CX-88mw(iii): per-session signing bootstrap — mint
+          # (idempotently) the agent's keypair and stash a ready
+          # SigningContext so every Tools.call context carries it and
+          # action commits are signed by the SESSION's bound key
+          # instead of the "mcp-agent@local" placeholder.
+          |> assign_signing_context(Map.get(info, :identity_uuid))
 
         nil ->
           # CX-m8xl: presence_starter NOT in :persistent_term — escript
@@ -160,6 +166,39 @@ defmodule Commonplace.MCP.AnubisServer do
 
     {:ok, frame}
   end
+
+  # CX-88mw(iii): mint (idempotent) + load the per-agent signing key for
+  # the session's COLD identity uuid (the persistent actor record — hot
+  # presence uuids change per session). Best-effort, mirroring the
+  # presence bootstrap: any failure (SecretStore down, corrupt slots,
+  # legacy starter without :identity_uuid) logs and leaves the session
+  # unsigned rather than killing the handshake.
+  defp assign_signing_context(frame, identity_uuid) when is_binary(identity_uuid) do
+    alias Commonplace.Crypto.AgentKeys
+
+    case safe_invoke(fn ->
+           with {:ok, _pub} <- AgentKeys.ensure(identity_uuid),
+                {:ok, ctx} <- AgentKeys.signing_context_for(identity_uuid) do
+             {:ok, ctx}
+           end
+         end) do
+      {:ok, {:ok, ctx}} ->
+        Frame.assign(frame, :signing_context, ctx)
+
+      other ->
+        require Logger
+
+        Logger.warning(
+          "AnubisServer: per-agent signing bootstrap failed for identity " <>
+            "#{identity_uuid}: #{inspect(other, limit: 50)}. Session commits " <>
+            "will fall back to the unsigned/placeholder path."
+        )
+
+        frame
+    end
+  end
+
+  defp assign_signing_context(frame, _no_identity_uuid), do: frame
 
   @impl Anubis.Server
   def terminate(_reason, frame) do
@@ -336,7 +375,11 @@ defmodule Commonplace.MCP.AnubisServer do
       # CX-9rbc: thread the agent's bound name down to Tools.call so
       # ViewActionDispatch's auto-resolution (CX-icc2) can fill
       # author_path without a reverse-lookup.
-      presence_path: frame.assigns[:presence_path]
+      presence_path: frame.assigns[:presence_path],
+      # CX-88mw(iii): the session's real SigningContext (or nil for
+      # legacy/keyless sessions). InvokeViewAction threads it into
+      # ViewActionDispatch so action commits are signed by the agent.
+      signing_context: frame.assigns[:signing_context]
     }
   end
 

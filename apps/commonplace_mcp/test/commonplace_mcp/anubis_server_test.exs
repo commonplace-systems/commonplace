@@ -72,6 +72,48 @@ defmodule Commonplace.MCP.AnubisServerTest do
     end
   end
 
+  describe "init/2 — session signing bootstrap (CX-88mw iii)" do
+    # The starter for a REAL session exposes the agent's cold-identity
+    # uuid; init mints (idempotently) the per-agent keypair and stashes
+    # a ready SigningContext in frame.assigns for Tools.call threading.
+    defp identity_starter(identity_uuid) do
+      fn name, _type ->
+        {:ok, %{pid: self(), name: name, uuid: "hot-" <> name, identity_uuid: identity_uuid}}
+      end
+    end
+
+    test "mints a per-agent key and assigns a real SigningContext" do
+      identity_uuid = UUID.uuid4()
+      AnubisServer.config(presence_starter: identity_starter(identity_uuid))
+
+      assert {:ok, frame} = AnubisServer.init(%{"name" => "agent"}, Frame.new())
+
+      assert %Commonplace.Crypto.SigningContext{identity_uuid: ^identity_uuid} =
+               frame.assigns[:signing_context]
+
+      # Custody landed in the (global) SecretStore via AgentKeys.
+      assert {:ok, ctx} = Commonplace.Crypto.AgentKeys.signing_context_for(identity_uuid)
+      assert ctx.public_key == frame.assigns[:signing_context].public_key
+    end
+
+    test "reconnect reuses the same key (idempotent ensure)" do
+      identity_uuid = UUID.uuid4()
+      AnubisServer.config(presence_starter: identity_starter(identity_uuid))
+
+      {:ok, frame1} = AnubisServer.init(%{"name" => "agent"}, Frame.new())
+      {:ok, frame2} = AnubisServer.init(%{"name" => "agent"}, Frame.new())
+
+      assert frame1.assigns[:signing_context].public_key ==
+               frame2.assigns[:signing_context].public_key
+    end
+
+    test "sessions whose starter exposes no identity_uuid get no signing context" do
+      AnubisServer.config(presence_starter: stub_starter(self()))
+      {:ok, frame} = AnubisServer.init(%{"name" => "legacy"}, Frame.new())
+      assert frame.assigns[:signing_context] == nil
+    end
+  end
+
   describe "terminate/2" do
     test "calls the configured stopper with the presence info stashed at init" do
       AnubisServer.config(

@@ -472,7 +472,18 @@ defmodule Commonplace.MCP do
           identity_uuid = PresenceServer.identity_uuid(pid)
           broadcast_presence(root_uuid, "presence.enter", name, type, uuid)
 
-          base = %{pid: pid, uuid: uuid, name: name, type: type, dir_uuid: root_uuid}
+          # CX-88mw(iii): expose the COLD identity uuid so AnubisServer's
+          # session signing bootstrap can key the agent's per-identity
+          # signing keypair (hot presence uuids change every session).
+          base = %{
+            pid: pid,
+            uuid: uuid,
+            name: name,
+            type: type,
+            dir_uuid: root_uuid,
+            identity_uuid: identity_uuid
+          }
+
           {:ok, Map.merge(base, start_mailbox(name, identity_uuid, store))}
 
         {:error, reason} ->
