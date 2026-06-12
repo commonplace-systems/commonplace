@@ -52,6 +52,8 @@ defmodule Commonplace.Trust do
   alias Commonplace.Crypto.Signing
   alias Commonplace.Store.Commit
 
+  require Logger
+
   @type verb :: :write | :execute
   @type scope :: {:doc, String.t()}
   @type config :: %{
@@ -260,8 +262,33 @@ defmodule Commonplace.Trust do
   def config do
     base =
       case Application.get_env(:commonplace, :trust) do
-        %{} = cfg -> normalize(cfg)
-        nil -> config_from_file() || default_config()
+        %{} = cfg ->
+          normalize(cfg)
+
+        nil ->
+          # CX-tdkq.12 Task 0 (O6): fail CLOSED, never open. An ABSENT
+          # trust.json is the intended zero-config permissive default.
+          # A PRESENT-but-unreadable/unparseable one means the operator
+          # configured trust and we can no longer tell what it said —
+          # the safe reading is "trust nothing" (reject-all), loudly.
+          # Silently degrading a strict workspace to permissive would
+          # turn a corrupt file into auto-RCE under an on-boot
+          # orchestrator.
+          case config_from_file() do
+            {:ok, cfg} ->
+              cfg
+
+            :absent ->
+              default_config()
+
+            {:error, reason} ->
+              Logger.error(
+                "trust.json is present but unreadable/unparseable (#{inspect(reason)}) — " <>
+                  "FAILING CLOSED: rejecting all non-node-signed commits until the file is fixed or removed"
+              )
+
+              %{accept_unsigned: false, trusted_identities: %{}}
+          end
       end
 
     with_local_node_trust(base)
@@ -292,14 +319,24 @@ defmodule Commonplace.Trust do
     %{accept_unsigned: true, trusted_identities: %{}}
   end
 
+  # `:absent` (no file — permissive default applies) is distinct from
+  # `{:error, reason}` (file exists but can't be trusted — fail closed).
   defp config_from_file do
     data_dir = Application.get_env(:commonplace, :data_dir, "data")
 
-    with {:ok, raw} <- File.read(Path.join(data_dir, "trust.json")),
-         {:ok, json} <- Jason.decode(raw) do
-      normalize(json)
-    else
-      _ -> nil
+    case File.read(Path.join(data_dir, "trust.json")) do
+      {:error, :enoent} ->
+        :absent
+
+      {:error, reason} ->
+        {:error, {:unreadable, reason}}
+
+      {:ok, raw} ->
+        case Jason.decode(raw) do
+          {:ok, json} when is_map(json) -> {:ok, normalize(json)}
+          {:ok, _not_a_map} -> {:error, :not_a_map}
+          {:error, %Jason.DecodeError{} = err} -> {:error, {:invalid_json, Exception.message(err)}}
+        end
     end
   end
 
