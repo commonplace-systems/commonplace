@@ -16,32 +16,53 @@ defmodule Commonplace.MUD.TickBot do
   broadcast to their parent room. User-authored `tick.elx` verbs are
   P3 (hot-reloaded via `Commonplace.Code.SourceDoc.compile/2`).
 
-  Globally registered as `{:global, __MODULE__}` so a clustered MUD
-  has exactly one ticker.
+  ## Lease-based leadership (move #4, CX-tdkq.7)
+
+  The `{:global, __MODULE__}` registration is retired — `:global`
+  name-conflict resolution on node join could kill or orphan the
+  singleton, and a netsplit allowed two tickers. Instead, every TickBot
+  instance is locally registered and contends for one green-token
+  lease (`"__singletons/tick_bot"`) each tick:
+
+    * the holder ticks and keep-alives the lease (renew at TTL/3 —
+      memory-only on the Bursar side);
+    * non-holders skip the tick and retry next heartbeat;
+    * a dead leader's lease expires after `lease_ttl_ms` and another
+      instance takes over (failover bounded by the TTL);
+    * no Bursar reachable (no local, no remote serve — e.g. a bare
+      `mix run` temp node) ⇒ `{:error, :bursar_unavailable}` ⇒ idle.
+      Fail-closed: the process exists everywhere, but it can only
+      tick where the cluster's lock authority grants it.
   """
 
   use GenServer
   require Logger
 
+  alias Commonplace.Green.{Bursar, BursarClient}
   alias Commonplace.MUD.{Schemas, VerbSource, World}
   alias Commonplace.MUD.Schemas.{Object, Room}
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.Schema
 
-  @global_name {:global, __MODULE__}
   @default_heartbeat_ms 1000
+  @lease_path "__singletons/tick_bot"
+  @default_lease_ttl_ms 60_000
 
   defstruct [
     :root_uuid,
     :store,
     :heartbeat_ms,
-    :last_tick
+    :last_tick,
+    :bursar,
+    :holder,
+    :lease_ttl_ms,
+    :last_renew
   ]
 
   ## Client
 
   def start_link(opts \\ []) do
-    name = Keyword.get(opts, :name, @global_name)
+    name = Keyword.get(opts, :name, __MODULE__)
 
     case GenServer.start_link(__MODULE__, opts, name: name) do
       {:ok, pid} -> {:ok, pid}
@@ -58,8 +79,12 @@ defmodule Commonplace.MUD.TickBot do
     }
   end
 
-  @doc "Force an immediate tick scan (for tests). Synchronous."
-  def tick_now(server \\ @global_name), do: GenServer.call(server, :tick_now, 10_000)
+  @doc """
+  Force an immediate tick scan (for tests). Synchronous. Returns `:ok`
+  when this instance holds the tick lease and ticked, `:not_leader`
+  when the lease is held elsewhere or no Bursar is reachable.
+  """
+  def tick_now(server \\ __MODULE__), do: GenServer.call(server, :tick_now, 10_000)
 
   ## Server
 
@@ -69,7 +94,11 @@ defmodule Commonplace.MUD.TickBot do
       root_uuid: Keyword.get(opts, :root_uuid),
       store: Keyword.get(opts, :store, CommitStoreClient),
       heartbeat_ms: Keyword.get(opts, :heartbeat_ms, @default_heartbeat_ms),
-      last_tick: %{}
+      last_tick: %{},
+      bursar: Keyword.get(opts, :bursar, Bursar),
+      holder: Keyword.get(opts, :holder, "tick_bot@#{node()}"),
+      lease_ttl_ms: Keyword.get(opts, :lease_ttl_ms, @default_lease_ttl_ms),
+      last_renew: nil
     }
 
     if Keyword.get(opts, :auto_start, true) do
@@ -81,7 +110,7 @@ defmodule Commonplace.MUD.TickBot do
 
   @impl true
   def handle_info(:tick, state) do
-    new_state = run_tick(state)
+    {_leader?, new_state} = maybe_tick(state)
     schedule_tick(state.heartbeat_ms)
     {:noreply, new_state}
   end
@@ -90,11 +119,52 @@ defmodule Commonplace.MUD.TickBot do
 
   @impl true
   def handle_call(:tick_now, _from, state) do
-    new_state = run_tick(state)
-    {:reply, :ok, new_state}
+    case maybe_tick(state) do
+      {:ok, new_state} -> {:reply, :ok, new_state}
+      {:not_leader, new_state} -> {:reply, :not_leader, new_state}
+    end
   end
 
   defp schedule_tick(ms), do: Process.send_after(self(), :tick, ms)
+
+  ## Leadership lease
+
+  defp maybe_tick(state) do
+    case ensure_leader(state) do
+      {:leader, state} -> {:ok, run_tick(state)}
+      {:not_leader, state} -> {:not_leader, state}
+    end
+  end
+
+  # Acquire is idempotent for the current holder but does NOT re-clock
+  # the lease — keep-alive is renew's job, fired at TTL/3 (and
+  # immediately on first leadership observation, which also covers a
+  # supervisor-restarted leader inheriting its own stale-clocked token).
+  defp ensure_leader(state) do
+    case BursarClient.acquire(state.bursar, @lease_path, state.holder, ttl: state.lease_ttl_ms) do
+      {:ok, _} ->
+        {:leader, maybe_renew(state)}
+
+      {:denied, _} ->
+        {:not_leader, %{state | last_renew: nil}}
+
+      # :bursar_unavailable — no lock authority reachable, so never tick
+      # (fail-closed; the bare-mix-run temp-node case).
+      {:error, _} ->
+        {:not_leader, %{state | last_renew: nil}}
+    end
+  end
+
+  defp maybe_renew(state) do
+    now = System.monotonic_time(:millisecond)
+
+    if state.last_renew == nil or now - state.last_renew >= div(state.lease_ttl_ms, 3) do
+      _ = BursarClient.renew(state.bursar, @lease_path, state.holder)
+      %{state | last_renew: now}
+    else
+      state
+    end
+  end
 
   defp run_tick(%__MODULE__{root_uuid: nil} = state) do
     case Commonplace.Workspace.root_uuid() do
