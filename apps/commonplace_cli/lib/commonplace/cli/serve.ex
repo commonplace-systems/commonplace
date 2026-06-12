@@ -50,14 +50,13 @@ defmodule Commonplace.CLI.Serve do
     pid_file = Path.join(data_dir, "orchestrator.pid")
     File.write!(pid_file, "#{System.pid()}\n")
 
-    # Start the orchestrator
-    {:ok, orch} = Orchestrator.start_link(
-      root_uuid: root,
-      store: CommitStore,
-      interval: 2000
-    )
+    # Start the orchestrator SUPERVISED (CX-tdkq.12): under
+    # Commonplace.Supervisor a crash restarts it (sweeping its prior
+    # generation first) instead of being unrecoverable. whereis-guarded:
+    # if the app already booted with :orchestrator_on_boot, reuse it.
+    orch = start_supervised_orchestrator()
 
-    IO.puts("  Orchestrator: #{inspect(orch)}")
+    IO.puts("  Orchestrator: #{inspect(orch)} (supervised)")
 
     # Wait a moment for processes to start
     Process.sleep(2000)
@@ -75,24 +74,73 @@ defmodule Commonplace.CLI.Serve do
 
     IO.puts("\nPress Ctrl+C to stop.")
 
-    # Block forever — the orchestrator runs in the background
-    ref = Process.monitor(orch)
+    # Block while the orchestrator runs. A :DOWN no longer ends serve —
+    # the supervisor restarts the orchestrator; we re-attach and keep
+    # going. Only a restart that doesn't happen (supervisor gave up)
+    # ends the daemon.
+    wait_on_orchestrator(Process.monitor(orch), orch, data_dir, pid_file)
+  end
 
+  defp start_supervised_orchestrator do
+    case Process.whereis(Orchestrator) do
+      nil ->
+        spec = %{
+          id: Orchestrator,
+          start:
+            {Orchestrator, :start_link,
+             [[root_uuid: :workspace, name: Orchestrator, store: CommitStore, interval: 2000]]},
+          restart: :permanent
+        }
+
+        {:ok, pid} = Supervisor.start_child(Commonplace.Supervisor, spec)
+        pid
+
+      pid ->
+        pid
+    end
+  end
+
+  defp wait_on_orchestrator(ref, orch, data_dir, pid_file) do
     receive do
       {:DOWN, ^ref, :process, ^orch, reason} ->
-        IO.puts("\nOrchestrator stopped: #{inspect(reason)}")
-        File.rm(pid_file)
-        cleanup_node_name(data_dir)
+        IO.puts("\nOrchestrator down (#{inspect(reason)}) — supervisor restarting…")
+
+        case await_orchestrator_restart(40) do
+          {:ok, new_pid} ->
+            IO.puts("  Orchestrator restarted: #{inspect(new_pid)} (prior generation swept)")
+            wait_on_orchestrator(Process.monitor(new_pid), new_pid, data_dir, pid_file)
+
+          :gone ->
+            IO.puts("  Orchestrator did not come back — shutting down serve.")
+            File.rm(pid_file)
+            cleanup_node_name(data_dir)
+        end
+    end
+  end
+
+  defp await_orchestrator_restart(0), do: :gone
+
+  defp await_orchestrator_restart(n) do
+    case Process.whereis(Orchestrator) do
+      nil ->
+        Process.sleep(250)
+        await_orchestrator_restart(n - 1)
+
+      pid ->
+        {:ok, pid}
     end
   end
 
   @shutdown_grace_ms 5000
 
-  @doc "Kill orphaned processes from a previous serve instance."
+  @doc """
+  Kill a prior serve's own OS process (via its pid file). Managed-process
+  cleanup moved to `Commonplace.Process.Sweep` (CX-tdkq.12): the
+  orchestrator sweeps its prior generation on EVERY (re)start, not just
+  at serve boot — serve only reaps the previous serve itself.
+  """
   def kill_orphans(data_dir) do
     kill_orchestrator_orphan(data_dir)
-    sandbox_dirs = kill_managed_orphans(data_dir)
-    cleanup_sandbox_dirs(sandbox_dirs)
   end
 
   defp kill_orchestrator_orphan(data_dir) do
@@ -109,76 +157,10 @@ defmodule Commonplace.CLI.Serve do
     end
   end
 
-  defp kill_managed_orphans(data_dir) do
-    status_file = Path.join(data_dir, "orchestrator_status.json")
-
-    case File.read(status_file) do
-      {:ok, content} ->
-        case Jason.decode(content) do
-          {:ok, %{"processes" => processes}} when is_map(processes) ->
-            sandbox_dirs =
-              processes
-              |> Enum.flat_map(fn {name, info} ->
-                os_pid = info["os_pid"]
-
-                if os_pid do
-                  IO.puts("Killing orphaned process: #{name} (PGID #{os_pid})")
-                  kill_process_tree("#{os_pid}")
-                end
-
-                # Collect sandbox dirs for cleanup
-                case info["sandbox_dir"] do
-                  dir when is_binary(dir) -> [dir]
-                  _ -> []
-                end
-              end)
-
-            File.rm(status_file)
-            sandbox_dirs
-
-          _ ->
-            File.rm(status_file)
-            []
-        end
-
-      {:error, _} ->
-        []
-    end
-  end
-
   defp kill_process_tree(pid_str) do
-    # Try process group kill, individual PID kill, and child process kill.
-    # When spawned from an escript or Port.open, PGID often differs from PID,
-    # so process group kill alone misses the target.
-    group_alive = match?({_, 0}, System.cmd("kill", ["-0", "--", "-#{pid_str}"], stderr_to_stdout: true))
-    pid_alive = match?({_, 0}, System.cmd("kill", ["-0", pid_str], stderr_to_stdout: true))
-
-    if group_alive or pid_alive do
-      # SIGTERM phase — hit the process group, the PID itself, and its children
-      if group_alive, do: System.cmd("kill", ["-TERM", "--", "-#{pid_str}"], stderr_to_stdout: true)
-      if pid_alive do
-        System.cmd("pkill", ["-TERM", "-P", pid_str], stderr_to_stdout: true)
-        System.cmd("kill", ["-TERM", pid_str], stderr_to_stdout: true)
-      end
-      Process.sleep(@shutdown_grace_ms)
-      # SIGKILL phase
-      if group_alive, do: System.cmd("kill", ["-9", "--", "-#{pid_str}"], stderr_to_stdout: true)
-      System.cmd("pkill", ["-9", "-P", pid_str], stderr_to_stdout: true)
-      System.cmd("kill", ["-9", pid_str], stderr_to_stdout: true)
-      Process.sleep(500)
-    end
-  end
-
-  # Only clean up sandbox dirs that were tracked in the old status file.
-  # Previously this deleted ALL /tmp/cp_sandbox_* which could destroy
-  # sandboxes belonging to other workspaces or still-running processes.
-  defp cleanup_sandbox_dirs(sandbox_dirs) do
-    Enum.each(sandbox_dirs, fn dir ->
-      if File.dir?(dir) do
-        IO.puts("Cleaning up sandbox: #{dir}")
-        File.rm_rf(dir)
-      end
-    end)
+    # Ported to core (CX-tdkq.12) so the orchestrator's sweep and serve
+    # share one implementation.
+    Commonplace.Process.Sweep.kill_process_tree(pid_str, grace_ms: @shutdown_grace_ms)
   end
 
   defp ensure_processes_json(root, proc_file) do
