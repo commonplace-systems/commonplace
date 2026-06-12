@@ -121,4 +121,77 @@ defmodule Commonplace.Process.OrchestratorRestartTest do
 
     GenServer.stop(orch)
   end
+
+  test "restart sweeps the prior generation — no duplicates", %{store: store, root: root} do
+    declare!(store, root, "restart_sleeper_two", "Two")
+
+    orch_a = start_orchestrator!(store, root)
+    p1 = await_running(orch_a, "restart_sleeper_two")
+    assert Process.alive?(p1)
+
+    # The orchestrator dies hard — no terminate/2 cleanup runs. p1
+    # survives (unlinked by design): exactly the duplicate-leak setup.
+    Process.exit(orch_a, :kill)
+    refute Process.alive?(orch_a)
+    assert Process.alive?(p1)
+
+    orch_b = start_orchestrator!(store, root)
+    p2 = await_running(orch_b, "restart_sleeper_two")
+
+    # Sweep correctness: the prior generation is REAPED, the new
+    # generation is the only one running.
+    refute Process.alive?(p1)
+    assert Process.alive?(p2)
+    assert p2 != p1
+
+    GenServer.stop(orch_b)
+  end
+
+  test "sweep tolerates a stale/garbage status file", %{store: store, root: root, dir: dir} do
+    File.write!(
+      Path.join(dir, "orchestrator_status.json"),
+      Jason.encode!(%{
+        "pid" => "999999",
+        "processes" => %{
+          "long_gone" => %{"mode" => "elixir", "beam_pid" => "<0.99999999.0>", "os_pid" => nil},
+          "half_gone" => %{"mode" => "sandbox_exec", "beam_pid" => "not even a pid", "os_pid" => nil}
+        }
+      })
+    )
+
+    declare!(store, root, "restart_sleeper_three", "Three")
+    orch = start_orchestrator!(store, root)
+    assert await_running(orch, "restart_sleeper_three")
+
+    GenServer.stop(orch)
+  end
+
+  test "missing status file: sweep is a no-op, reconcile proceeds", %{store: store, root: root} do
+    declare!(store, root, "restart_sleeper_four", "Four")
+    orch = start_orchestrator!(store, root)
+    assert await_running(orch, "restart_sleeper_four")
+    GenServer.stop(orch)
+  end
+
+  test "declaration gating survives restart (O8): untrusted declarations stay dead",
+       %{store: store, root: root} do
+    declare!(store, root, "restart_sleeper_five", "Five")
+
+    orch_a = start_orchestrator!(store, root)
+    p1 = await_running(orch_a, "restart_sleeper_five")
+    Process.exit(orch_a, :kill)
+
+    # Strict mode with nothing pinned: the (unsigned) declaration loses
+    # trust. The restarted orchestrator must sweep p1 AND not restart it.
+    Application.put_env(:commonplace, :trust, %{accept_unsigned: false, trusted_identities: %{}})
+
+    orch_b = start_orchestrator!(store, root)
+    # Give reconcile a few ticks.
+    Process.sleep(500)
+
+    refute Process.alive?(p1)
+    assert Orchestrator.running_processes(orch_b) == %{}
+
+    GenServer.stop(orch_b)
+  end
 end

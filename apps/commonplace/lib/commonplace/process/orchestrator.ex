@@ -128,6 +128,17 @@ defmodule Commonplace.Process.Orchestrator do
 
   @impl true
   def init(opts) do
+    # CX-tdkq.12 (O1): sweep the prior generation BEFORE the first
+    # reconcile. Managed processes are unnamed+unlinked, so without this
+    # a restarted orchestrator duplicates everything its predecessor
+    # left running. The status file is the only handle on them.
+    data_dir = Application.get_env(:commonplace, :data_dir, "data")
+    {:ok, swept} = Commonplace.Process.Sweep.sweep_status_file(data_dir)
+
+    if swept > 0 do
+      Logger.info("Orchestrator: swept #{swept} prior-generation process entr#{if swept == 1, do: "y", else: "ies"} before reconciling")
+    end
+
     state = %__MODULE__{
       root_uuid: Keyword.fetch!(opts, :root_uuid),
       store: Keyword.get(opts, :store, CommitStoreClient),
