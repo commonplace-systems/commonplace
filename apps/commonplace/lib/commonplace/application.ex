@@ -62,7 +62,11 @@ defmodule Commonplace.Application do
         Commonplace.SnapshotWorker,
         Commonplace.Chat.OnrampSupervisor,
         Commonplace.Chat.ChatViewComputeSupervisor,
-        Commonplace.MUD.MoveServer,
+        # MoveServer is RETIRED (move #4, CX-tdkq.7): cross-doc moves now
+        # take per-path green tokens (Commonplace.MUD.Move) instead of
+        # serializing through a :global singleton. TickBot remains an
+        # unconditional child but only ticks while holding the green tick
+        # lease — on nodes with no Bursar route it idles, fail-closed.
         Commonplace.MUD.TickBot
       ] ++
         snapshot_sweeper_children() ++

@@ -2,7 +2,7 @@ defmodule Commonplace.MUD.OutputTest do
   use ExUnit.Case
 
   alias Commonplace.Code.SourceDoc
-  alias Commonplace.MUD.{Bootstrap, MoveServer, PlayerSession, Schemas, VerbSource}
+  alias Commonplace.MUD.{Bootstrap, PlayerSession, Schemas, VerbSource}
   alias Commonplace.Store.CommitStore
   alias Commonplace.Tree.Schema
   alias Yelixer.Encoding
@@ -27,19 +27,22 @@ defmodule Commonplace.MUD.OutputTest do
       SourceDoc.reset_cache()
     end)
 
-    case GenServer.whereis({:global, MoveServer}) do
+    # Moves take green tokens (move #4): start a Bursar under its default
+    # name so World.move's default route finds it (replaces the retired
+    # :global MoveServer).
+    case GenServer.whereis(Commonplace.Green.Bursar) do
       nil -> :ok
       pid -> GenServer.stop(pid)
     end
 
-    {:ok, _} = MoveServer.start_link(store: store)
+    {:ok, bursar_pid} =
+      Commonplace.Green.Bursar.start_link(
+        root_uuid: UUID.uuid4(),
+        store: store,
+        sweep_interval: 60_000
+      )
 
-    on_exit(fn ->
-      case GenServer.whereis({:global, MoveServer}) do
-        nil -> :ok
-        pid -> GenServer.stop(pid)
-      end
-    end)
+    on_exit(fn -> if Process.alive?(bursar_pid), do: GenServer.stop(bursar_pid) end)
 
     root_uuid = UUID.uuid4()
     update = Encoding.encode_update(Schema.new_schema())

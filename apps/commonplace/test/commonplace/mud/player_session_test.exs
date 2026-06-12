@@ -1,7 +1,7 @@
 defmodule Commonplace.MUD.PlayerSessionTest do
   use ExUnit.Case
 
-  alias Commonplace.MUD.{Bootstrap, MoveServer, PlayerSession}
+  alias Commonplace.MUD.{Bootstrap, PlayerSession}
   alias Commonplace.Store.CommitStore
   alias Commonplace.Tree.Schema
   alias Yelixer.Encoding
@@ -20,19 +20,22 @@ defmodule Commonplace.MUD.PlayerSessionTest do
     start_supervised!({CommitStore, data_dir: dir, name: store_name})
     on_exit(fn -> File.rm_rf!(dir) end)
 
-    # Register MoveServer at the global name so World.move/4 routes to it.
-    case GenServer.whereis({:global, MoveServer}) do
+    # Moves take green tokens (move #4): start a Bursar under its default
+    # name so World.move's default route finds it (replaces the retired
+    # :global MoveServer).
+    case GenServer.whereis(Commonplace.Green.Bursar) do
       nil -> :ok
       pid -> GenServer.stop(pid)
     end
 
-    {:ok, _} = MoveServer.start_link(store: store_name)
-    on_exit(fn ->
-      case GenServer.whereis({:global, MoveServer}) do
-        nil -> :ok
-        pid -> GenServer.stop(pid)
-      end
-    end)
+    {:ok, bursar_pid} =
+      Commonplace.Green.Bursar.start_link(
+        root_uuid: UUID.uuid4(),
+        store: store_name,
+        sweep_interval: 60_000
+      )
+
+    on_exit(fn -> if Process.alive?(bursar_pid), do: GenServer.stop(bursar_pid) end)
 
     root_uuid = UUID.uuid4()
     update = Encoding.encode_update(Schema.new_schema())

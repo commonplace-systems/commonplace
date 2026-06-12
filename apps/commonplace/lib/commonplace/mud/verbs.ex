@@ -238,7 +238,7 @@ defmodule Commonplace.MUD.Verbs do
          true <- takable_entry?(entry) || {:error, "You can't take that."},
          {:ok, %Object{} = obj} <- Schemas.load_object(entry.node_id, ctx.store),
          :ok <- ensure_not_fixed(obj),
-         :ok <- World.move(entry.node_id, entry.name, ctx.current_room_uuid, ctx.inventory_uuid) do
+         :ok <- World.move(entry.node_id, entry.name, ctx.current_room_uuid, ctx.inventory_uuid, store: ctx.store) do
       World.broadcast_room(ctx.current_room_uuid, %{
         kind: :take,
         who: ctx.player_name,
@@ -266,7 +266,7 @@ defmodule Commonplace.MUD.Verbs do
   defp do_drop(%Parser.Command{target: target}, ctx) do
     with {:ok, entry} <- World.find_entry_by_name(ctx.inventory_uuid, target, ctx.store),
          {:ok, %Object{} = obj} <- Schemas.load_object(entry.node_id, ctx.store),
-         :ok <- World.move(entry.node_id, entry.name, ctx.inventory_uuid, ctx.current_room_uuid) do
+         :ok <- World.move(entry.node_id, entry.name, ctx.inventory_uuid, ctx.current_room_uuid, store: ctx.store) do
       World.broadcast_room(ctx.current_room_uuid, %{
         kind: :drop,
         who: ctx.player_name,
@@ -290,7 +290,7 @@ defmodule Commonplace.MUD.Verbs do
     with {:ok, obj_entry} <- World.find_entry_by_name(ctx.inventory_uuid, obj_name, ctx.store),
          {:ok, %Object{} = obj} <- Schemas.load_object(obj_entry.node_id, ctx.store),
          {:ok, target_inv_uuid, target_player_name} <- find_player_inventory(target_name, ctx),
-         :ok <- World.move(obj_entry.node_id, obj_entry.name, ctx.inventory_uuid, target_inv_uuid) do
+         :ok <- World.move(obj_entry.node_id, obj_entry.name, ctx.inventory_uuid, target_inv_uuid, store: ctx.store) do
       World.broadcast_room(ctx.current_room_uuid, %{
         kind: :give,
         who: ctx.player_name,
@@ -405,7 +405,7 @@ defmodule Commonplace.MUD.Verbs do
   defp do_go(direction, ctx) do
     with {:ok, %Room{} = room} <- World.get_room(ctx.current_room_uuid, ctx.store),
          {:ok, dest_uuid} <- Map.fetch(room.exits, direction) |> wrap_fetch(),
-         :ok <- World.move(ctx.player_uuid, ctx.presence_filename, ctx.current_room_uuid, dest_uuid) do
+         :ok <- World.move(ctx.player_uuid, ctx.presence_filename, ctx.current_room_uuid, dest_uuid, store: ctx.store) do
       World.broadcast_room(ctx.current_room_uuid, %{
         kind: :depart,
         who: ctx.player_name,

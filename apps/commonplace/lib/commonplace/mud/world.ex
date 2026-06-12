@@ -7,7 +7,7 @@ defmodule Commonplace.MUD.World do
   """
 
   alias Commonplace.Document.ContentType
-  alias Commonplace.MUD.{MoveServer, Schemas, Topics}
+  alias Commonplace.MUD.{Move, Schemas, Topics}
   alias Commonplace.Presence
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.{DocBuilder, Schema, Walk}
@@ -43,16 +43,21 @@ defmodule Commonplace.MUD.World do
   end
 
   @doc """
-  Move a doc from one parent directory to another via the singleton
-  MoveServer. Returns `:ok` on success, `{:error, :gone}` if the doc no
-  longer lives at the source path (race-loss).
+  Move a doc from one parent directory to another under green tokens
+  (`Commonplace.MUD.Move` — the retired-`MoveServer` replacement).
+  Returns `:ok` on success, `{:error, :gone}` if the doc no longer
+  lives at the source path (race-loss), `{:error, :busy}` if the dir
+  tokens stayed contended through the retry budget, or
+  `{:error, :bursar_unavailable}` when no lock authority is reachable
+  (fail-closed — never move unlocked).
 
   `name` is the entry name in both the source and destination schemas;
-  for v0 we don't rename on move.
+  for v0 we don't rename on move. `opts` are threaded to `Move.move/5`
+  (notably `:store`).
   """
-  def move(thing_uuid, name, source_dir_uuid, dest_dir_uuid)
+  def move(thing_uuid, name, source_dir_uuid, dest_dir_uuid, opts \\ [])
       when is_binary(thing_uuid) and is_binary(name) and is_binary(source_dir_uuid) and is_binary(dest_dir_uuid) do
-    MoveServer.move(thing_uuid, name, source_dir_uuid, dest_dir_uuid)
+    Move.move(thing_uuid, name, source_dir_uuid, dest_dir_uuid, opts)
   end
 
   @doc "Read a metadata struct out of a directory doc."
