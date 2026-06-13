@@ -154,6 +154,29 @@ defmodule Commonplace.Store.CommitStoreClient do
     end
   end
 
+  # execute_clean watermark cache (CX-tdkq.27) — node-local; in a clustered
+  # setup it lives with the db on the serving node, so route like commit_log.
+  def get_execute_clean(server \\ CommitStore, fp, commit_id) do
+    case remote_node() do
+      {:ok, node} -> GenServer.call({CommitStore, node}, {:get_execute_clean, fp, commit_id})
+      :local -> CommitStore.get_execute_clean(normalize_server(server), fp, commit_id)
+    end
+  end
+
+  def put_execute_clean(server \\ CommitStore, fp, commit_id, bool) do
+    case remote_node() do
+      {:ok, node} -> GenServer.cast({CommitStore, node}, {:put_execute_clean, fp, commit_id, bool})
+      :local -> CommitStore.put_execute_clean(normalize_server(server), fp, commit_id, bool)
+    end
+  end
+
+  def flush_execute_clean(server \\ CommitStore) do
+    case remote_node() do
+      {:ok, node} -> GenServer.call({CommitStore, node}, :flush_execute_clean)
+      :local -> CommitStore.flush_execute_clean(normalize_server(server))
+    end
+  end
+
   def latest_commit(server \\ CommitStore, doc_uuid) do
     case remote_node() do
       {:ok, node} ->

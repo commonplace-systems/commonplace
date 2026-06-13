@@ -586,6 +586,40 @@ defmodule Commonplace.Store.CommitStore do
     end
   end
 
+  # --- execute_clean watermark cache (CX-tdkq.27) ---
+  #
+  # A node-LOCAL, NON-SYNCED derived verdict: "is the chain ending at this
+  # snapshot/commit execute-clean under the trust config fingerprinted by `fp`?"
+  # It is NOT a commit and NOT part of any commit's content address — federation
+  # never reads or writes these keys, so the phase-2.5 deterministic-snapshot
+  # property is untouched. Keying on `fp` (a fingerprint of the trusted set) means
+  # a trust-config change self-invalidates stale verdicts. Correctness never
+  # depends on it: Gate B's continue-default re-walks full append-only history on a
+  # miss. See `Commonplace.Trust.authorized_to_execute?`.
+
+  @doc """
+  Read a cached execute-clean verdict. `{:ok, boolean}` or `:miss`. Pure point-read
+  in the caller process (mirrors `get_capability/2`).
+  """
+  @spec get_execute_clean(GenServer.server(), term(), binary()) :: {:ok, boolean()} | :miss
+  def get_execute_clean(server \\ __MODULE__, fp, commit_id) do
+    do_get_execute_clean(resolve_db(server), fp, commit_id)
+  end
+
+  @doc """
+  Cache an execute-clean verdict. Fire-and-forget cast — a lost write just means
+  the verdict is recomputed on the next walk, so the compile hot path never blocks
+  on cache I/O.
+  """
+  @spec put_execute_clean(GenServer.server(), term(), binary(), boolean()) :: :ok
+  def put_execute_clean(server \\ __MODULE__, fp, commit_id, bool) when is_boolean(bool) do
+    GenServer.cast(server, {:put_execute_clean, fp, commit_id, bool})
+  end
+
+  @doc "Drop every execute-clean cache entry (e.g. on a trust-config change — CX-tdkq.21)."
+  @spec flush_execute_clean(GenServer.server()) :: :ok
+  def flush_execute_clean(server \\ __MODULE__), do: GenServer.call(server, :flush_execute_clean)
+
   @doc """
   Return the local head commit for `doc_uuid` as `{:ok, commit}`,
   or `:none` if the doc has no `:latest` entry on this node.
@@ -898,6 +932,25 @@ defmodule Commonplace.Store.CommitStore do
     {:reply, state.db, state}
   end
 
+  # execute_clean cache (CX-tdkq.27). Read also exposed as a remote-routable call
+  # for clustered stores; writes are casts; flush is a call.
+  @impl true
+  def handle_call({:get_execute_clean, fp, commit_id}, _from, state) do
+    {:reply, do_get_execute_clean(state.db, fp, commit_id), state}
+  end
+
+  @impl true
+  def handle_call(:flush_execute_clean, _from, state) do
+    keys =
+      CubDB.select(state.db)
+      |> Stream.map(fn {k, _v} -> k end)
+      |> Stream.filter(&match?({:execute_clean, _, _}, &1))
+      |> Enum.to_list()
+
+    Enum.each(keys, &CubDB.delete(state.db, &1))
+    {:reply, :ok, state}
+  end
+
   @impl true
   def handle_call({:all_commit_ids_for_doc, doc_uuid}, _from, state) do
     {:reply, do_all_commit_ids_for_doc(state.db, doc_uuid), state}
@@ -1087,6 +1140,13 @@ defmodule Commonplace.Store.CommitStore do
         chain = collect_attestation_chain(state.db, att_id, limit, [])
         {:reply, chain, state}
     end
+  end
+
+  # execute_clean watermark cache write (CX-tdkq.27) — fire-and-forget.
+  @impl true
+  def handle_cast({:put_execute_clean, fp, commit_id, bool}, state) do
+    CubDB.put(state.db, {:execute_clean, fp, commit_id}, bool)
+    {:noreply, state}
   end
 
   # R11 (CX-tdkq.11): cap on commits held awaiting an out-of-order
@@ -1281,6 +1341,13 @@ defmodule Commonplace.Store.CommitStore do
     case CubDB.get(db, {:commit, commit_id}) do
       nil -> :none
       commit -> {:ok, commit}
+    end
+  end
+
+  defp do_get_execute_clean(db, fp, commit_id) do
+    case CubDB.get(db, {:execute_clean, fp, commit_id}) do
+      nil -> :miss
+      bool when is_boolean(bool) -> {:ok, bool}
     end
   end
 

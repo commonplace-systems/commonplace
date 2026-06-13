@@ -298,4 +298,40 @@ defmodule Commonplace.Store.CommitStoreTest do
       assert :none = CommitStore.latest_commit(store, "doc-incoming")
     end
   end
+
+  describe "execute_clean watermark cache (CX-tdkq.27)" do
+    test "put/get round-trips, keyed by fingerprint AND commit id", %{store: store} do
+      fp = 12_345
+      cid = <<1, 2, 3>>
+
+      assert :miss = CommitStore.get_execute_clean(store, fp, cid)
+
+      :ok = CommitStore.put_execute_clean(store, fp, cid, true)
+      # Barrier the fire-and-forget cast (mailbox is FIFO).
+      _ = :sys.get_state(store)
+
+      assert {:ok, true} = CommitStore.get_execute_clean(store, fp, cid)
+      # A different fingerprint (config changed) or unknown commit → miss.
+      assert :miss = CommitStore.get_execute_clean(store, 99_999, cid)
+      assert :miss = CommitStore.get_execute_clean(store, fp, <<9, 9>>)
+    end
+
+    test "false verdicts round-trip too", %{store: store} do
+      :ok = CommitStore.put_execute_clean(store, 1, <<7>>, false)
+      _ = :sys.get_state(store)
+      assert {:ok, false} = CommitStore.get_execute_clean(store, 1, <<7>>)
+    end
+
+    test "flush drops all cache entries", %{store: store} do
+      :ok = CommitStore.put_execute_clean(store, 1, <<1>>, true)
+      :ok = CommitStore.put_execute_clean(store, 2, <<2>>, false)
+      _ = :sys.get_state(store)
+      assert {:ok, true} = CommitStore.get_execute_clean(store, 1, <<1>>)
+
+      :ok = CommitStore.flush_execute_clean(store)
+
+      assert :miss = CommitStore.get_execute_clean(store, 1, <<1>>)
+      assert :miss = CommitStore.get_execute_clean(store, 2, <<2>>)
+    end
+  end
 end
