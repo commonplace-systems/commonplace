@@ -180,40 +180,58 @@ defmodule Commonplace.Trust do
 
   @doc """
   Is every commit contributing to this doc's state authorized for
-  `:execute`? The Gate B check (CX-tdkq.2 / R2).
+  `:execute`? The Gate B check (CX-tdkq.2 / R2, hardened in CX-tdkq.27).
 
   Walks the doc's commit chain newest-first and checks each commit with
-  `authorized?(commit, :execute, {:doc, uuid})`, stopping at the trusted
-  baseline:
+  `authorized?(commit, :execute, {:doc, uuid})`. Checking only the head
+  would be unsound — write-time laundering: the edit flow re-encodes FULL
+  doc state, so a trusted editor's head commit physically contains every
+  earlier contributor's surviving bytes (design doc §2 Gate B). Every
+  contributor since the baseline must hold `:execute`.
 
-    * a **snapshot** commit — checked, then the walk stops: a snapshot
-      re-encodes the full visible state, so once it is trusted, earlier
-      history is irrelevant;
-    * the **genesis** commit — exempt and terminal: synthetic, unsigned
-      by construction, and its update is empty (contributes nothing).
+  ## Snapshots: continue-default + local watermark cache (CX-tdkq.27)
 
-  Checking only the head would be unsound — write-time laundering: the
-  edit flow re-encodes FULL doc state, so a trusted editor's head commit
-  physically contains every earlier contributor's surviving bytes (see
-  design doc §2 Gate B). Every contributor since the baseline must hold
-  `:execute`.
+  A node-signed snapshot is a *contributor* whose signer holds `:execute`
+  (the node, via verb-agnostic auto-trust) — but that does NOT mean the
+  history it collapsed was execute-clean. A naive "halt at the first
+  authorized snapshot" therefore launders un-`:execute`-authorized
+  contributions into an execute-terminal baseline. The store is
+  **append-only** (pre-snapshot history is never GC'd), so the sound fix is
+  to **continue** past a snapshot whose cleanliness we don't already know
+  and re-check the still-present absorbed history — which catches the
+  laundered contributor without bricking legacy snapshots (their pre-fix
+  history is execute-clean).
+
+  The continue-default is correct on its own; a **node-local watermark
+  cache** (`CommitStore.get/put_execute_clean`, keyed by a fingerprint of
+  the trust config) is layered on top purely as an optimization: a snapshot
+  cached `true` halts the walk early (and bounds the `commit_log` 10k-limit
+  risk). The verdict is **node-subjective** (config-relative), so it is
+  *never* placed in the synced commit — that would dent the phase-2.5
+  deterministic-snapshot / CAS-dedup property. Keying on the config
+  fingerprint means a trust-config change (e.g. a revocation) self-
+  invalidates stale verdicts: the next walk recomputes under the new config.
+
+  The walk backfills as a side effect: every snapshot it *continued past*
+  is cached `true` if the walk ended `:ok` (all-below clean) or `false` if
+  it ended `:error`. Writes are fire-and-forget casts, so the compile hot
+  path never blocks on cache I/O.
+
+  ## Genesis and merges
+
+  The **genesis** commit is exempt and terminal (synthetic, empty update).
+  The walk follows `parent_id` only. A **merge** commit's `merge_parents`
+  side is absorbed bytes the `parent_id` walk never visits, so a snapshot
+  cached `true` above an *unclean* merge can be wrong until the merge-omission
+  follow-up (CX-obfb) traverses `merge_parents` (or enforces
+  no-delta-merge-on-code-docs). This is latent: a write-without-`:execute`
+  contributor is only cert-expressible (phase-3), and CX-tdkq.28 guards that
+  input at mint meanwhile. (Since phase 2.5 system-minted commits — including
+  merges — are node-signed and locally auto-trusted, so the older "merges
+  unsigned → strict denies converged code docs" note is **stale**.)
 
   An empty chain returns `:ok` — there is nothing to execute, and the
   caller's read fails with `:not_found` on its own.
-
-  The walk follows `parent_id` only (like `DocBuilder`'s replay). A
-  merge commit's `merge_parents` side arrives as translated bytes inside
-  the merge commit itself, which is checked. Since phase 2.5
-  (CX-tdkq.24/.25/.26), system-minted commits — snapshots, merges, and
-  cross-epoch translated commits — are NODE-signed, and the local node's
-  key is folded into the trusted set (see `with_local_node_trust/1`), so
-  they pass this check and node-signed snapshots form the execute
-  baseline. Caveat (D11, federate-for-real plan): because the walk halts
-  at the first passing `:snapshot` and phase-1 trust is verb-agnostic, a
-  node-signed snapshot absorbs earlier write-only contributors into that
-  baseline — tracked in the follow-up bead "Gate B execute-baseline vs
-  write-only contributors"; v1 delegation policy is to not issue
-  write-without-execute certs scoped to code docs.
   """
   @spec authorized_to_execute?(GenServer.server(), String.t(), config() | nil) ::
           :ok | {:error, term()}
@@ -223,35 +241,49 @@ defmodule Commonplace.Trust do
     if cfg.accept_unsigned and cfg.trusted_identities == %{} do
       # Fully-permissive config: no commit can fail (unsigned passes,
       # unknown signers pass, and with no pinned keys there is no
-      # forgery case) — skip the chain walk so the default config keeps
-      # compile O(cache-hit) on hot paths.
+      # forgery case) — skip the chain walk (and any cache I/O) so the
+      # default config keeps compile O(cache-hit) on hot paths.
       :ok
     else
-      walk_contributors(store, doc_uuid, cfg)
+      log = Commonplace.Store.CommitStoreClient.commit_log(store, doc_uuid, limit: 10_000)
+      walk_contributors(store, doc_uuid, log, cfg)
     end
   end
 
-  defp walk_contributors(store, doc_uuid, cfg) do
-    Commonplace.Store.CommitStoreClient.commit_log(store, doc_uuid, limit: 10_000)
-    |> Enum.reduce_while(:ok, fn commit, :ok ->
-      cond do
-        match?(%{metadata: %{kind: :genesis}}, commit) ->
-          {:halt, :ok}
+  # Cache key namespace: the verdict is only valid for the trust config that
+  # produced it, so a config change invalidates it for free.
+  defp cfg_fingerprint(cfg), do: :erlang.phash2(cfg.trusted_identities)
 
-        true ->
-          case authorized?(commit, :execute, {:doc, doc_uuid}, cfg) do
-            :ok ->
-              if match?(%{metadata: %{kind: :snapshot}}, commit) do
-                {:halt, :ok}
-              else
-                {:cont, :ok}
-              end
+  defp walk_contributors(store, doc_uuid, log, cfg) do
+    fp = cfg_fingerprint(cfg)
 
-            {:error, reason} ->
-              {:halt, {:error, {:untrusted_contributor, commit.id, reason}}}
-          end
-      end
-    end)
+    {verdict, passed} =
+      Enum.reduce_while(log, {:ok, []}, fn commit, {:ok, passed} ->
+        cond do
+          match?(%{metadata: %{kind: :genesis}}, commit) ->
+            {:halt, {:ok, passed}}
+
+          true ->
+            case authorized?(commit, :execute, {:doc, doc_uuid}, cfg) do
+              {:error, reason} ->
+                {:halt, {{:error, {:untrusted_contributor, commit.id, reason}}, passed}}
+
+              :ok ->
+                if match?(%{metadata: %{kind: :snapshot}}, commit) do
+                  case Commonplace.Store.CommitStoreClient.get_execute_clean(store, fp, commit.id) do
+                    {:ok, true} -> {:halt, {:ok, passed}}
+                    _ -> {:cont, {:ok, [commit.id | passed]}}
+                  end
+                else
+                  {:cont, {:ok, passed}}
+                end
+            end
+        end
+      end)
+
+    clean? = verdict == :ok
+    Enum.each(passed, &Commonplace.Store.CommitStoreClient.put_execute_clean(store, fp, &1, clean?))
+    verdict
   end
 
   @doc """
