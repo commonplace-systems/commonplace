@@ -162,4 +162,72 @@ defmodule Commonplace.Trust.CapabilityTest do
                Capability.issue(alice_ctx, bob, wider, parent.id, parent: parent)
     end
   end
+
+  describe "mint-time write-without-execute guard (CX-tdkq.28)" do
+    setup do
+      dir = Path.join(System.tmp_dir!(), "cp_capguard_#{:rand.uniform(1_000_000)}")
+      File.mkdir_p!(dir)
+      name = :"capguard_store_#{:rand.uniform(1_000_000)}"
+      start_supervised!({Commonplace.Store.CommitStore, data_dir: dir, name: name})
+      on_exit(fn -> File.rm_rf!(dir) end)
+
+      code_uuid = "aaaaaaaa-0000-0000-0000-000000000001"
+      data_uuid = "bbbbbbbb-0000-0000-0000-000000000002"
+      seed_text(name, code_uuid, "_renderer.ex", "defmodule Guard.Foo do\n  def x, do: 1\nend\n")
+      seed_text(name, data_uuid, "notes", "just some prose, not code")
+
+      %{store: name, code_uuid: code_uuid, data_uuid: data_uuid}
+    end
+
+    test "refuses write-without-execute scoped to a code doc", ctx do
+      c = ctx.code_uuid
+      claim = %{verbs: [:write], scope: {:docs, [c]}, caveats: %{not_before: nil, not_after: nil}}
+
+      assert {:error, {:write_without_execute_on_code_doc, ^c}} =
+               Capability.issue(ctx.issuer_ctx, ctx.audience, claim, nil, store: ctx.store)
+    end
+
+    test "allows write-without-execute on a non-code doc", ctx do
+      claim = %{verbs: [:write], scope: {:docs, [ctx.data_uuid]}, caveats: %{not_before: nil, not_after: nil}}
+      assert {:ok, _} = Capability.issue(ctx.issuer_ctx, ctx.audience, claim, nil, store: ctx.store)
+    end
+
+    test "allows write+execute on a code doc", ctx do
+      claim = %{verbs: [:write, :execute], scope: {:docs, [ctx.code_uuid]}, caveats: %{not_before: nil, not_after: nil}}
+      assert {:ok, _} = Capability.issue(ctx.issuer_ctx, ctx.audience, claim, nil, store: ctx.store)
+    end
+
+    test "override flag allows write-without-execute on a code doc", ctx do
+      claim = %{verbs: [:write], scope: {:docs, [ctx.code_uuid]}, caveats: %{not_before: nil, not_after: nil}}
+
+      assert {:ok, _} =
+               Capability.issue(ctx.issuer_ctx, ctx.audience, claim, nil,
+                 store: ctx.store,
+                 allow_write_without_execute: true
+               )
+    end
+
+    test "delegate inherits the guard", ctx do
+      # Parent grants write+execute on the code doc; the delegation narrows to
+      # write-only on the same code doc → refused at mint (delegate funnels to issue).
+      parent_claim = %{verbs: [:write, :execute], scope: {:docs, [ctx.code_uuid]}, caveats: %{not_before: nil, not_after: nil}}
+      {:ok, parent} = Capability.issue(ctx.issuer_ctx, ctx.audience, parent_claim, nil, store: ctx.store)
+
+      {_child, child_ctx} = ident("delegatee-id")
+      narrowed = %{verbs: [:write], scope: {:docs, [ctx.code_uuid]}, caveats: %{not_before: nil, not_after: nil}}
+
+      assert {:error, {:write_without_execute_on_code_doc, _}} =
+               Capability.delegate(child_ctx, ctx.audience, narrowed, parent.id,
+                 parent: parent,
+                 store: ctx.store
+               )
+    end
+  end
+
+  defp seed_text(store, uuid, name, body) do
+    doc = Yelixer.Doc.new() |> Commonplace.Document.ContentType.create(:text, name)
+    doc = Commonplace.Document.ContentType.insert_text(doc, 0, body)
+    update = Yelixer.Encoding.encode_update(doc)
+    Commonplace.Store.CommitStore.create_commit(store, uuid, update, nil, %{})
+  end
 end

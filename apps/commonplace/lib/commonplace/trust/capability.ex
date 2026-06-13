@@ -118,7 +118,8 @@ defmodule Commonplace.Trust.Capability do
     issuer = {issuer_ctx.identity_uuid, issuer_ctx.public_key}
     claim = normalize_claim(claim)
 
-    with :ok <- check_attenuation(claim, opts[:parent]) do
+    with :ok <- check_mint_policy(claim, opts),
+         :ok <- check_attenuation(claim, opts[:parent]) do
       cap = new(issuer, audience, claim, parent_cid) |> sign(issuer_ctx.private_key)
       {:ok, cap}
     end
@@ -151,6 +152,32 @@ defmodule Commonplace.Trust.Capability do
   end
 
   # --- private ---
+
+  # CX-tdkq.28 — interim, defense-in-depth: refuse minting a :write-without-:execute
+  # cert scoped to a doc that *looks like* code (best-effort, CodeDocHeuristic). A
+  # write-only cert on a code doc is the LAUNDERING INPUT: a peer lands code bytes
+  # under :write that a later node-signed snapshot can absorb into the execute
+  # baseline. Closing it at mint stops the input; CX-tdkq.27 is the airtight backstop
+  # for when this heuristic misses. Override: opts[:allow_write_without_execute].
+  defp check_mint_policy(claim, opts) do
+    verbs = MapSet.new(claim.verbs)
+    write_without_execute? = MapSet.member?(verbs, :write) and not MapSet.member?(verbs, :execute)
+
+    cond do
+      not write_without_execute? -> :ok
+      opts[:allow_write_without_execute] -> :ok
+      true -> check_no_code_doc_in_scope(claim.scope, opts)
+    end
+  end
+
+  defp check_no_code_doc_in_scope({:docs, uuids}, opts) do
+    store = opts[:store] || Commonplace.Store.CommitStoreClient
+
+    case Enum.find(uuids, &Commonplace.Trust.CodeDocHeuristic.code_doc?(&1, store)) do
+      nil -> :ok
+      uuid -> {:error, {:write_without_execute_on_code_doc, uuid}}
+    end
+  end
 
   defp check_attenuation(_claim, nil), do: :ok
 
