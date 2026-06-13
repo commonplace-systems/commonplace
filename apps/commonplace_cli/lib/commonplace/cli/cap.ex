@@ -84,16 +84,36 @@ defmodule Commonplace.CLI.Cap do
 
   # --- commands ---
 
+  @mint_switches [
+    audience: :string,
+    verbs: :string,
+    docs: :string,
+    not_after: :string,
+    parent: :string,
+    # CX-tdkq.28: override the mint-time write-without-execute-on-code-doc guard.
+    allow_write_without_execute: :boolean
+  ]
+
+  @doc false
+  def parse_mint_argv(argv) do
+    {opts, _, _} = OptionParser.parse(argv, strict: @mint_switches)
+    opts
+  end
+
+  @doc false
+  # Opts forwarded into Capability.issue/delegate: the store the code-doc
+  # heuristic reads, plus the explicit override flag (CX-tdkq.28).
+  def mint_opts(opts) do
+    [store: CommitStoreClient, allow_write_without_execute: !!opts[:allow_write_without_execute]]
+  end
+
   defp mint(kind, argv) do
-    {opts, _, _} =
-      OptionParser.parse(argv,
-        strict: [audience: :string, verbs: :string, docs: :string, not_after: :string, parent: :string]
-      )
+    opts = parse_mint_argv(argv)
 
     with {:ok, audience} <- parse_audience(opts[:audience] || ""),
          {:ok, claim} <- parse_claim(opts),
          {:ok, ctx} <- local_signing_context(),
-         {:ok, cap} <- do_mint(kind, ctx, audience, claim, opts[:parent]) do
+         {:ok, cap} <- do_mint(kind, ctx, audience, claim, opts) do
       :ok = CommitStoreClient.store_capability(CommitStoreClient, cap)
       IO.puts("Issued capability: #{Base.encode16(cap.id, case: :lower)}")
       IO.puts("  issuer:   #{elem(cap.issuer, 0)}")
@@ -103,18 +123,29 @@ defmodule Commonplace.CLI.Cap do
       IO.puts("  scope:    #{Enum.join(docs, ",")}")
       if cap.proof, do: IO.puts("  proof:    #{Base.encode16(cap.proof, case: :lower)}")
     else
+      {:error, {:write_without_execute_on_code_doc, uuid}} ->
+        IO.puts(:stderr, """
+        cap #{kind} refused: doc #{uuid} looks like CODE, and a :write-without-:execute
+        cert on a code doc is the execute-baseline laundering input (CX-tdkq.28).
+        Grant :execute too, or pass --allow-write-without-execute to override (best-effort
+        heuristic; the Gate-B execute-clean walk is the airtight backstop).
+        """)
+
+        System.halt(1)
+
       {:error, reason} ->
         IO.puts(:stderr, "cap #{kind} failed: #{inspect(reason)}")
         System.halt(1)
     end
   end
 
-  defp do_mint(:issue, ctx, audience, claim, _parent), do: Capability.issue(ctx, audience, claim, nil)
+  defp do_mint(:issue, ctx, audience, claim, opts),
+    do: Capability.issue(ctx, audience, claim, nil, mint_opts(opts))
 
-  defp do_mint(:delegate, ctx, audience, claim, parent_hex) do
-    with {:ok, parent_cid} <- decode_cid(parent_hex),
+  defp do_mint(:delegate, ctx, audience, claim, opts) do
+    with {:ok, parent_cid} <- decode_cid(opts[:parent]),
          {:ok, parent} <- fetch_parent(parent_cid) do
-      Capability.delegate(ctx, audience, claim, parent_cid, parent: parent)
+      Capability.delegate(ctx, audience, claim, parent_cid, [parent: parent] ++ mint_opts(opts))
     end
   end
 
@@ -165,9 +196,12 @@ defmodule Commonplace.CLI.Cap do
   defp usage do
     IO.puts(:stderr, """
     Usage:
-      commonplace cap issue    --audience ID:PUBKEY_B64 --verbs write,delegate --docs d1,d2 [--not-after ISO8601]
-      commonplace cap delegate --parent CID_HEX --audience ID:PUBKEY_B64 --verbs write --docs d1 [--not-after ISO8601]
+      commonplace cap issue    --audience ID:PUBKEY_B64 --verbs write,delegate --docs d1,d2 [--not-after ISO8601] [--allow-write-without-execute]
+      commonplace cap delegate --parent CID_HEX --audience ID:PUBKEY_B64 --verbs write --docs d1 [--not-after ISO8601] [--allow-write-without-execute]
       commonplace cap show CID_HEX
+
+      --allow-write-without-execute  override the CX-tdkq.28 guard that refuses a
+                                     :write-without-:execute cert scoped to a code doc
     """)
 
     System.halt(1)

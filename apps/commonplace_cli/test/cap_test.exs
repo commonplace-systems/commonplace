@@ -44,4 +44,17 @@ defmodule Commonplace.CLI.CapTest do
     assert {:error, {:bad_timestamp, _}} =
              Cap.parse_claim(verbs: "write", docs: "d1", not_after: "not-a-date")
   end
+
+  test "parse_mint_argv recognizes the --allow-write-without-execute boolean flag (CX-tdkq.28)" do
+    assert Cap.parse_mint_argv(["--allow-write-without-execute"])[:allow_write_without_execute] == true
+    refute Cap.parse_mint_argv([])[:allow_write_without_execute]
+  end
+
+  test "mint_opts forwards the store + override into the Capability call (CX-tdkq.28)" do
+    assert Cap.mint_opts(allow_write_without_execute: true) ==
+             [store: Commonplace.Store.CommitStoreClient, allow_write_without_execute: true]
+
+    assert Cap.mint_opts([]) ==
+             [store: Commonplace.Store.CommitStoreClient, allow_write_without_execute: false]
+  end
 end
