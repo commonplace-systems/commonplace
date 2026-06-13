@@ -23,8 +23,54 @@ defmodule Commonplace.Process.SandboxExecRunnerTest do
     update = Yelixer.Encoding.encode_update(root_doc)
     CommitStore.create_commit(store_name, root_uuid, update, nil)
 
-    on_exit(fn -> File.rm_rf!(dir) end)
+    on_exit(fn ->
+      # CX-exg0 backstop: if a test fails BEFORE its GenServer.stop, the runner
+      # (linked to the test, not trapping exits) dies via the link WITHOUT
+      # running terminate/2 — so its bash tree leaks. A leaked `__CP_STDERR__`
+      # relay bash holds the suite's output pipe open and hangs CI on EOF. Reap
+      # any such orphan here. We kill ONLY relays that have reparented to init
+      # (ppid == 1) — a live test's relay is still owned by the BEAM, so this is
+      # safe under concurrency and never kills an in-flight command. The happy
+      # path is already covered by terminate/2's tree-reap; this guards failures.
+      reap_orphaned_relays()
+      File.rm_rf!(dir)
+    end)
+
     %{store: store_name, root: root_uuid}
+  end
+
+  # Kill the tree of any `__CP_STDERR__` relay bash that has reparented to init
+  # (ppid 1) — i.e. a leaked orphan whose owning runner died without terminate.
+  defp reap_orphaned_relays do
+    case System.cmd("pgrep", ["-f", "__CP_STDERR__"], stderr_to_stdout: true) do
+      {out, 0} ->
+        out
+        |> String.split("\n", trim: true)
+        |> Enum.map(&String.to_integer/1)
+        |> Enum.filter(&reparented?/1)
+        |> Enum.each(&kill_orphan_tree/1)
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp reparented?(pid) do
+    case System.cmd("ps", ["-o", "ppid=", "-p", "#{pid}"], stderr_to_stdout: true) do
+      {out, 0} -> String.trim(out) == "1"
+      _ -> false
+    end
+  end
+
+  defp kill_orphan_tree(pid) do
+    children =
+      case System.cmd("pgrep", ["-P", "#{pid}"], stderr_to_stdout: true) do
+        {out, 0} -> out |> String.split("\n", trim: true) |> Enum.map(&String.to_integer/1)
+        _ -> []
+      end
+
+    Enum.each(children, &kill_orphan_tree/1)
+    System.cmd("kill", ["-9", "#{pid}"], stderr_to_stdout: true)
   end
 
   describe "accessors" do
@@ -226,6 +272,58 @@ defmodule Commonplace.Process.SandboxExecRunnerTest do
 
       stdout_lines = events |> Enum.filter(&(&1["type"] == "stdout")) |> Enum.map(& &1["line"])
       assert "custom_value" in stdout_lines
+    end
+  end
+
+  describe "orphan reaping (CX-exg0)" do
+    test "stopping a runner with a long-running command leaves no orphaned OS descendants",
+         %{store: store, root: root} do
+      {:ok, pid} =
+        SandboxExecRunner.start_link(
+          root_uuid: root,
+          store: store,
+          command: "sleep",
+          args: ["3600"],
+          sync_interval: 50
+        )
+
+      Process.sleep(600)
+      os_pid = SandboxExecRunner.os_pid(pid)
+      assert is_integer(os_pid)
+
+      # Collect the full descendant tree (the bash + its pipeline children:
+      # the `sleep 3600` user command and the __CP_STDERR__ while-read relay)
+      # WHILE it is still alive, so a reparent race can't hide them.
+      tree = [os_pid | descendant_pids(os_pid)]
+      assert length(tree) >= 2, "expected bash + pipeline children, got #{inspect(tree)}"
+
+      GenServer.stop(pid, :normal, 10_000)
+      Process.sleep(600)
+
+      survivors =
+        Enum.filter(tree, fn p ->
+          match?({_, 0}, System.cmd("kill", ["-0", "#{p}"], stderr_to_stdout: true))
+        end)
+
+      assert survivors == [],
+             "orphaned OS processes survived runner stop: #{inspect(survivors)} " <>
+               "(these hold the test output pipe open and hang the suite)"
+    end
+  end
+
+  # Recursively collect all descendant OS pids of `os_pid` via `pgrep -P`.
+  defp descendant_pids(os_pid) do
+    case System.cmd("pgrep", ["-P", "#{os_pid}"], stderr_to_stdout: true) do
+      {out, 0} ->
+        children =
+          out
+          |> String.split("\n", trim: true)
+          |> Enum.map(&String.to_integer/1)
+
+        children ++ Enum.flat_map(children, &descendant_pids/1)
+
+      _ ->
+        []
     end
   end
 

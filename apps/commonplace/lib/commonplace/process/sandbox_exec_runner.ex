@@ -162,12 +162,17 @@ defmodule Commonplace.Process.SandboxExecRunner do
 
   @impl true
   def terminate(_reason, state) do
-    # Kill the OS process and its children first, before closing port or deleting sandbox.
-    # Avoids process-group kills (kill -- -PID) which could affect the BEAM or
-    # unrelated processes sharing the same group.
+    # Reap the OS process TREE first, before closing the port or deleting the
+    # sandbox. The bash we spawn runs a pipeline — the user command plus the
+    # `__CP_STDERR__` relay loop — as its children. The previous code killed the
+    # bash PARENT (`kill os_pid`) before `pkill -P os_pid`'d its children, so the
+    # children REPARENTED to init and escaped the -P match → orphans that hold
+    # the Port's stdout pipe open and hang piped readers / CI (CX-exg0). Fix:
+    # snapshot the whole descendant tree WHILE bash is alive, then signal it
+    # leaves-first, escalating TERM→KILL. (Still per-pid, never a `kill -- -PID`
+    # process-group kill, which could hit the BEAM or unrelated processes.)
     if state.os_pid do
-      System.cmd("kill", ["-TERM", "#{state.os_pid}"], stderr_to_stdout: true)
-      System.cmd("pkill", ["-TERM", "-P", "#{state.os_pid}"], stderr_to_stdout: true)
+      reap_tree(state.os_pid, @shutdown_grace_ms)
     end
 
     # Close port if still open
@@ -177,11 +182,6 @@ defmodule Commonplace.Process.SandboxExecRunner do
       catch
         _, _ -> :ok
       end
-    end
-
-    # Wait for the OS process to exit before cleaning up sandbox
-    if state.os_pid do
-      wait_for_exit(state.os_pid, @shutdown_grace_ms)
     end
 
     # Commit any remaining events
@@ -196,24 +196,54 @@ defmodule Commonplace.Process.SandboxExecRunner do
     :ok
   end
 
-  defp wait_for_exit(os_pid, timeout) when timeout > 0 do
-    case System.cmd("kill", ["-0", "#{os_pid}"], stderr_to_stdout: true) do
-      {_, 0} ->
-        # Still alive — wait and retry
-        Process.sleep(200)
-        wait_for_exit(os_pid, timeout - 200)
+  # Kill `os_pid` and every descendant. Descendants are collected FIRST (while
+  # the root is still alive, so reparenting can't hide them), then the whole set
+  # is signalled by pid — leaves-first — TERM, then KILL for any survivors.
+  defp reap_tree(os_pid, grace_ms) do
+    tree = descendant_os_pids(os_pid) ++ [os_pid]
+    signal_tree(tree, "-TERM")
+
+    unless wait_all_dead(tree, grace_ms) do
+      signal_tree(tree, "-KILL")
+      wait_all_dead(tree, 1_000)
+    end
+
+    :ok
+  end
+
+  # Recursively collect all descendant OS pids of `os_pid` via `pgrep -P`.
+  defp descendant_os_pids(os_pid) do
+    case System.cmd("pgrep", ["-P", "#{os_pid}"], stderr_to_stdout: true) do
+      {out, 0} ->
+        children =
+          out
+          |> String.split("\n", trim: true)
+          |> Enum.map(&String.to_integer/1)
+
+        children ++ Enum.flat_map(children, &descendant_os_pids/1)
 
       _ ->
-        # Dead
-        :ok
+        []
     end
   end
 
-  defp wait_for_exit(os_pid, _timeout) do
-    # Timed out — force kill individual process and its children
-    System.cmd("kill", ["-9", "#{os_pid}"], stderr_to_stdout: true)
-    System.cmd("pkill", ["-9", "-P", "#{os_pid}"], stderr_to_stdout: true)
-    Process.sleep(200)
+  defp signal_tree(pids, sig) do
+    Enum.each(pids, fn p -> System.cmd("kill", [sig, "#{p}"], stderr_to_stdout: true) end)
+  end
+
+  defp wait_all_dead(pids, timeout) when timeout > 0 do
+    if Enum.all?(pids, &os_dead?/1) do
+      true
+    else
+      Process.sleep(100)
+      wait_all_dead(pids, timeout - 100)
+    end
+  end
+
+  defp wait_all_dead(_pids, _timeout), do: false
+
+  defp os_dead?(pid) do
+    not match?({_, 0}, System.cmd("kill", ["-0", "#{pid}"], stderr_to_stdout: true))
   end
 
   # --- Private ---
