@@ -310,6 +310,45 @@ defmodule Commonplace.Store.CommitHoistTest do
     end
   end
 
+  describe "write_cpu site tagging (CX-3erd follow-up)" do
+    test "hoisted create_chained_commit emits caller-side write_cpu with site: :caller and build > 0",
+         %{store: store} do
+      attach([:commonplace, :commit_store, :write_cpu])
+
+      uuid = "hoist-write-cpu-caller"
+      commit = CommitStoreClient.create_chained_commit(store, uuid, <<1>>, %{})
+      assert commit.doc_uuid == uuid
+
+      assert_receive {:telemetry, [:commonplace, :commit_store, :write_cpu], meas,
+                      %{site: :caller} = meta}
+
+      assert meta.verb == :create_chained_commit
+      assert meta.doc_uuid == uuid
+      assert meas.build > 0
+      # The caller never persists — that phase belongs to the server's
+      # :put_built_commit event.
+      assert meas.persist == 0
+      assert meas.validate == 0
+    end
+
+    test "the server-side :put_built_commit event carries site: :server with build == 0",
+         %{store: store} do
+      attach([:commonplace, :commit_store, :write_cpu])
+
+      uuid = "hoist-write-cpu-server"
+      _commit = CommitStoreClient.create_chained_commit(store, uuid, <<1>>, %{})
+
+      assert_receive {:telemetry, [:commonplace, :commit_store, :write_cpu], meas,
+                      %{verb: :put_built_commit} = meta}
+
+      assert meta.site == :server
+      assert meta.doc_uuid == uuid
+      assert meas.build == 0
+      assert meas.sign == 0
+      assert meas.persist > 0
+    end
+  end
+
   describe "import_commit verify_id-at-the-edge (CX-3erd / CX-gwz)" do
     test "local-mode import of an id-tampered commit rejects without reaching the server, telemetry still fires",
          %{store: store} do

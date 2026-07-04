@@ -46,10 +46,11 @@ defmodule Commonplace.Telemetry do
       `:store_capability`, which isn't doc-keyed).
 
   * `[:commonplace, :commit_store, :write_cpu]` - CPU-share breakdown
-    inside the serialized section (CX-9hql, R4c rung-0). Emitted for the
-    two commit-building paths that do CPU work inside a handle_call:
-    the `create_commit`/`create_chained_commit` family and
-    `import_commit`.
+    of the commit write phases (CX-9hql, R4c rung-0). Emitted for the
+    commit-building paths that do real CPU work: the
+    `create_commit`/`create_chained_commit` family, `import_commit`,
+    and (since CX-3erd) the hoisted caller-side build+sign in
+    `CommitStoreClient`, which lands via `:put_built_commit`.
     * Measurements: `%{build: native_time, sign: native_time,
       validate: native_time, persist: native_time}` — each phase is 0
       for a verb that doesn't run it (e.g. `import_commit` never runs
@@ -58,7 +59,15 @@ defmodule Commonplace.Telemetry do
       `maybe_sign_commit/2`; `validate` = `Commit.verify_id/1` plus the
       trust/namespace/code-doc-heuristic gate chain (import path only);
       `persist` = the CubDB put(s).
-    * Metadata: `%{verb: atom, doc_uuid: string}`.
+    * Metadata: `%{verb: atom, doc_uuid: string, site: :server |
+      :caller}` — `site: :server` means the work ran INSIDE
+      `CommitStore`'s serialized GenServer section (the rung-1
+      signal); `site: :caller` means it was hoisted off the mailbox
+      into the calling process (CX-3erd — total-cost visibility, NOT
+      mailbox pressure). A hoisted write produces two events: the
+      client's `site: :caller` build/sign timings (verb =
+      `:create_commit`/`:create_chained_commit`) and the server's
+      `site: :server` persist timing (verb = `:put_built_commit`).
 
   * `[:commonplace, :commit_store, :queue_depth]` - periodic CommitStore
     mailbox-depth sample (CX-9hql, R4c rung-0), emitted by the companion

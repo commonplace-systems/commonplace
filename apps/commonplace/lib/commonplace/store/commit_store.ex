@@ -1658,11 +1658,15 @@ defmodule Commonplace.Store.CommitStore do
     {result, System.monotonic_time() - start}
   end
 
+  # Every emission from this module runs inside the GenServer's
+  # serialized section, hence `site: :server` (the rung-1 signal). The
+  # hoisted caller-side build/sign timings are emitted by
+  # `CommitStoreClient` with `site: :caller` (CX-3erd follow-up).
   defp emit_write_cpu(verb, doc_uuid, build_ns, sign_ns, validate_ns, persist_ns) do
     :telemetry.execute(
       [:commonplace, :commit_store, :write_cpu],
       %{build: build_ns, sign: sign_ns, validate: validate_ns, persist: persist_ns},
-      %{verb: verb, doc_uuid: doc_uuid}
+      %{verb: verb, doc_uuid: doc_uuid, site: :server}
     )
   end
 

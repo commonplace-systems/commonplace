@@ -97,6 +97,7 @@ defmodule Commonplace.Store.CommitStoreClient do
         local_server = normalize_server(server)
 
         caller_side_write(
+          :create_commit,
           local_server,
           doc_uuid,
           update,
@@ -129,6 +130,7 @@ defmodule Commonplace.Store.CommitStoreClient do
         local_server = normalize_server(server)
 
         caller_side_write(
+          :create_chained_commit,
           local_server,
           doc_uuid,
           update,
@@ -151,16 +153,34 @@ defmodule Commonplace.Store.CommitStoreClient do
   #
   # `legacy_fallback` is the fully-serialized CommitStore verb, invoked
   # only after @max_chain_attempts consecutive CAS losses.
-  defp caller_side_write(server, doc_uuid, update, metadata, opts, parent_fun, legacy_fallback) do
+  #
+  # `verb` is the ORIGINATING client verb (:create_commit or
+  # :create_chained_commit) — it tags the caller-side write_cpu
+  # emission below so build/sign visibility isn't lost for the hoisted
+  # path (which otherwise only shows up as :put_built_commit persist
+  # time on the server side).
+  defp caller_side_write(verb, server, doc_uuid, update, metadata, opts, parent_fun, legacy_fallback) do
     db = CommitStore.db_handle(server)
-    attempt_write(db, server, doc_uuid, update, metadata, opts, parent_fun, legacy_fallback, @max_chain_attempts)
+
+    attempt_write(
+      verb,
+      db,
+      server,
+      doc_uuid,
+      update,
+      metadata,
+      opts,
+      parent_fun,
+      legacy_fallback,
+      @max_chain_attempts
+    )
   end
 
-  defp attempt_write(_db, _server, _doc_uuid, _update, _metadata, _opts, _parent_fun, legacy_fallback, 0) do
+  defp attempt_write(_verb, _db, _server, _doc_uuid, _update, _metadata, _opts, _parent_fun, legacy_fallback, 0) do
     legacy_fallback.()
   end
 
-  defp attempt_write(db, server, doc_uuid, update, metadata, opts, parent_fun, legacy_fallback, attempts_left) do
+  defp attempt_write(verb, db, server, doc_uuid, update, metadata, opts, parent_fun, legacy_fallback, attempts_left) do
     observed_latest_id = CubDB.get(db, {:latest, doc_uuid})
     parent_id = parent_fun.(observed_latest_id)
 
@@ -168,10 +188,20 @@ defmodule Commonplace.Store.CommitStoreClient do
 
     case CommitStore.put_built_commit(server, built.commit, observed_latest_id, built.genesis) do
       {:ok, commit} ->
+        # Emitted ONCE per successful write, with the final landed
+        # attempt's timings — retried attempts' build costs are not
+        # accumulated (deliberate simplification).
+        :telemetry.execute(
+          [:commonplace, :commit_store, :write_cpu],
+          %{build: built.build_ns, sign: built.sign_ns, validate: 0, persist: 0},
+          %{verb: verb, doc_uuid: doc_uuid, site: :caller}
+        )
+
         commit
 
       {:error, :parent_moved} ->
         attempt_write(
+          verb,
           db,
           server,
           doc_uuid,
