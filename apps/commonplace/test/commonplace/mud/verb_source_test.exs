@@ -198,6 +198,7 @@ defmodule Commonplace.MUD.VerbSourceTest do
   end
 
   test "tick.elx on an object overrides tick_message", ctx do
+    alias Commonplace.Green.Bursar
     alias Commonplace.MUD.{Topics, TickBot}
 
     fountain_dir =
@@ -217,6 +218,29 @@ defmodule Commonplace.MUD.VerbSourceTest do
 
     :ok = VerbSource.save_verb(fountain_dir, "tick", src, ctx.store)
 
+    # CX-pvrl: this test only cares about tick.elx firing, not
+    # World.move — so its TickBot gets a dedicated, uniquely-named
+    # Bursar instead of ctx's default-named one (which the setup starts
+    # so World.move's take/drop/east tests elsewhere in this module can
+    # find it). The application also boots an unconditional
+    # `Commonplace.MUD.TickBot` singleton (default name, real 1s
+    # heartbeat, `bursar:` defaulting to the literal `Bursar` atom) for
+    # the whole `mix test` run; if this test's TickBot pointed at the
+    # shared default-named Bursar, that ambient singleton could win the
+    # "__singletons/tick_bot" lease first and this tick_now would flake
+    # with :not_leader. A private Bursar is invisible to it.
+    bursar_name = :"verb_source_tick_bursar_#{:rand.uniform(1_000_000)}"
+
+    {:ok, bursar_pid} =
+      Bursar.start_link(
+        root_uuid: UUID.uuid4(),
+        store: ctx.store,
+        name: bursar_name,
+        sweep_interval: 60_000
+      )
+
+    on_exit(fn -> if Process.alive?(bursar_pid), do: GenServer.stop(bursar_pid) end)
+
     name = :"tick_bot_#{:rand.uniform(1_000_000)}"
 
     {:ok, _pid} =
@@ -225,7 +249,8 @@ defmodule Commonplace.MUD.VerbSourceTest do
         store: ctx.store,
         root_uuid: ctx.root,
         heartbeat_ms: 999_999,
-        auto_start: false
+        auto_start: false,
+        bursar: bursar_name
       )
 
     Topics.subscribe_room(clearing_uuid(ctx))
