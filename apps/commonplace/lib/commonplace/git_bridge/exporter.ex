@@ -18,7 +18,11 @@ defmodule Commonplace.GitBridge.Exporter do
       local-only parking);
     * `Commonplace.Presence.parse_honorific/1` recognizes its name as a
       presence file (`.bot` / `.exe` / `.usr` / `.who`) — presence is
-      workspace liveness plumbing, not tree content bound for git.
+      workspace liveness plumbing, not tree content bound for git;
+    * its name is not filesystem-safe (`"."`, `".."`, empty, or contains
+      `/`, `\\`, or a NUL byte) — entry names come from the CRDT store
+      and are joined into paths under `repo_dir`, so a traversal-shaped
+      name must never reach `Path.join`.
 
   ## Renderers
 
@@ -115,7 +119,18 @@ defmodule Commonplace.GitBridge.Exporter do
   defp eligible?(entry) do
     not String.starts_with?(entry.name, "__") and
       entry.sync != false and
-      match?(:error, Presence.parse_honorific(entry.name))
+      match?(:error, Presence.parse_honorific(entry.name)) and
+      safe_name?(entry.name)
+  end
+
+  # Entry names are CRDT-store-controlled data used to build paths under
+  # repo_dir. Reject anything that could traverse out of the export tree
+  # (or smuggle a path separator into a single schema level).
+  defp safe_name?(name) when name in ["", ".", ".."], do: false
+
+  defp safe_name?(name) do
+    not (String.contains?(name, "/") or String.contains?(name, "\\") or
+           String.contains?(name, <<0>>))
   end
 
   defp export_doc(entry, dir_path, rel_path, store, manifest, authors, warnings) do
@@ -228,8 +243,18 @@ defmodule Commonplace.GitBridge.Exporter do
   end
 
   defp protected?(rel_path) do
-    Enum.any?(@protected_prefixes, fn prefix ->
-      rel_path == prefix or String.starts_with?(rel_path, prefix <> "/")
-    end)
+    traversal?(rel_path) or
+      Enum.any?(@protected_prefixes, fn prefix ->
+        rel_path == prefix or String.starts_with?(rel_path, prefix <> "/")
+      end)
+  end
+
+  # A rel_path that could escape repo_dir must never be deleted (or have
+  # its parent dirs cleaned): previous manifests can be reconstructed
+  # from on-disk sidecar files, so treat them as untrusted too.
+  defp traversal?(rel_path) do
+    Path.type(rel_path) != :relative or
+      ".." in Path.split(rel_path) or
+      String.contains?(rel_path, <<0>>)
   end
 end

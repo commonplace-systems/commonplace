@@ -174,6 +174,45 @@ defmodule Commonplace.GitBridge.ExporterTest do
     assert File.exists?(Path.join(dir, ".commonplace/mount.json"))
   end
 
+  test "traversal-shaped entry names are never exported", %{store: store, repo_dir: dir} do
+    create_text(store, "uuid-evil", "evil", "escaped!")
+    create_text(store, "uuid-ok", "ok.txt", "fine")
+
+    root =
+      Schema.new_schema()
+      |> Schema.add_file("../evil.txt", "uuid-evil")
+      |> Schema.add_file("nested/evil.txt", "uuid-evil")
+      |> Schema.add_file("..", "uuid-evil")
+      |> Schema.add_file("ok.txt", "uuid-ok")
+
+    create_schema(store, "uuid-root", root)
+
+    {:ok, result} = Exporter.export("uuid-root", dir, store)
+
+    # only the safe entry lands
+    assert Map.keys(result.manifest) == ["ok.txt"]
+    assert File.read!(Path.join(dir, "ok.txt")) == "fine"
+
+    # nothing escaped repo_dir, and no separator smuggled a nested write
+    refute File.exists?(Path.join(Path.dirname(dir), "evil.txt"))
+    refute File.exists?(Path.join(dir, "nested"))
+  end
+
+  test "traversal-shaped previous_manifest keys are never pruned", %{store: store, repo_dir: dir} do
+    outside = Path.join(Path.dirname(dir), "outside_#{:rand.uniform(1_000_000_000)}.txt")
+    File.write!(outside, "precious")
+    on_exit(fn -> File.rm(outside) end)
+
+    empty_root = Schema.new_schema()
+    create_schema(store, "uuid-root", empty_root)
+
+    previous = %{("../" <> Path.basename(outside)) => %{}}
+
+    {:ok, _result} = Exporter.export("uuid-root", dir, store, previous)
+
+    assert File.read!(outside) == "precious"
+  end
+
   test "unrenderable content types are skipped with a warning, not written", %{store: store, repo_dir: dir} do
     # XML doc: renders fine via the tuple-tree JSON rendering (documented
     # deviation), so use a doc with no commits to trigger the true skip path.
