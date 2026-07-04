@@ -34,7 +34,7 @@ defmodule Commonplace.Audit.LwwLoss do
   alias Commonplace.Tree.DocBuilder
   alias Yelixer.{BlockStore, DeleteSet, Doc, Encoding, Item}
 
-  @type status :: :visible | :tombstoned | :missing
+  @type status :: :visible | :tombstoned | :missing | :skipped
   @type finding :: %{
           key: {term(), String.t()},
           expected_content: term(),
@@ -47,12 +47,21 @@ defmodule Commonplace.Audit.LwwLoss do
   @doc """
   Audit every doc in the store. Returns `{:ok, %{uuid => [finding]}}`
   containing only docs with at least one finding.
+
+  Options:
+
+    * `:full_replay` (default `true`) — also replay the complete regular
+      history from genesis. On stores with long text chains this is
+      O(n²) in yelixer today (CX-w1fw; a 49MB store did not finish in
+      2h41m), so large-store audits should pass `full_replay: false`
+      and rely on the production (reader-visible) view; findings then
+      carry `full_replay: :skipped`.
   """
-  @spec audit_store(GenServer.server()) :: {:ok, %{String.t() => [finding()]}}
-  def audit_store(store) do
+  @spec audit_store(GenServer.server(), keyword()) :: {:ok, %{String.t() => [finding()]}}
+  def audit_store(store, opts \\ []) do
     findings =
       for uuid <- CommitStoreClient.all_doc_uuids(store),
-          {:ok, fs} = audit_doc(store, uuid),
+          {:ok, fs} = audit_doc(store, uuid, opts),
           fs != [],
           into: %{} do
         {uuid, fs}
@@ -63,9 +72,10 @@ defmodule Commonplace.Audit.LwwLoss do
 
   @doc """
   Audit one doc's chain. Returns `{:ok, [finding]}` (empty when clean).
+  Takes the same options as `audit_store/2`.
   """
-  @spec audit_doc(GenServer.server(), String.t()) :: {:ok, [finding()]}
-  def audit_doc(store, uuid) do
+  @spec audit_doc(GenServer.server(), String.t(), keyword()) :: {:ok, [finding()]}
+  def audit_doc(store, uuid, opts \\ []) do
     commits =
       CommitStoreClient.commit_log(store, uuid, limit: 10_000)
       |> Enum.reverse()
@@ -77,15 +87,15 @@ defmodule Commonplace.Audit.LwwLoss do
     writes = causal_writes(decoded)
     deletes = Enum.map(decoded, fn {pos, commit, _items, ds} -> {pos, commit, ds} end)
 
-    full_replay = replay(regular)
+    full_replay = if Keyword.get(opts, :full_replay, true), do: replay(regular), else: :skipped
     production = reconstruct_production(store, uuid)
 
     findings =
       for {key, w} <- writes,
           not intentionally_deleted?(deletes, w),
-          status_full = item_status(full_replay, w.id),
+          status_full = replay_status(full_replay, w.id),
           status_prod = item_status(production, w.id),
-          status_full != :visible or status_prod != :visible do
+          (status_full not in [:visible, :skipped]) or status_prod != :visible do
         %{
           key: key,
           expected_content: content_value(w.content),
@@ -162,6 +172,9 @@ defmodule Commonplace.Audit.LwwLoss do
       _ -> nil
     end
   end
+
+  defp replay_status(:skipped, _id), do: :skipped
+  defp replay_status(doc, id), do: item_status(doc, id)
 
   defp item_status(nil, _id), do: :missing
 
