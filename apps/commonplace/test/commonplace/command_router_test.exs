@@ -362,6 +362,39 @@ defmodule Commonplace.CommandRouterTest do
                CommandRouter.branch_activate(name, ctx.root, "nope")
     end
 
+    # CX-hoj: branch_activate/branch_deactivate create a real chained
+    # commit (the schema mutation) but, until this bead, silently
+    # dropped `signing_context` on the floor — every branch toggle
+    # inherited whatever the global SecretStore fallback signs with,
+    # never the session's bound key. Mirrors the CX-o3r7 write test.
+    test "branch_deactivate threads signing_context from opts into the schema commit (CX-hoj)",
+         ctx do
+      {_pid, name} = start_router(ctx)
+      _child_uuid = setup_parent_with_child_dir(ctx)
+
+      {pub, priv} = Commonplace.Crypto.Signing.generate_keypair()
+
+      session_ctx = %Commonplace.Crypto.SigningContext{
+        identity_uuid: "test-session-agent",
+        private_key: priv,
+        public_key: pub
+      }
+
+      assert {:ok, _} =
+               CommandRouter.branch_deactivate(name, ctx.root, "feature-x",
+                 signing_context: session_ctx
+               )
+
+      {:ok, latest} = CommitStore.latest_commit(ctx.store, ctx.root)
+
+      assert latest.signature != nil,
+             "schema commit must carry a signature when signing_context is supplied"
+
+      assert String.starts_with?(latest.signer_id, "test-session-agent@"),
+             "signer_id must encode the SigningContext's identity_uuid, " <>
+               "got: #{inspect(latest.signer_id)}"
+    end
+
     test "branch activate broadcasts command.initiated and command.completed", ctx do
       {_pid, name} = start_router(ctx)
       _child_uuid = setup_parent_with_child_dir(ctx)

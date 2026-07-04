@@ -96,7 +96,7 @@ defmodule Commonplace.MUD.TickBot do
       heartbeat_ms: Keyword.get(opts, :heartbeat_ms, @default_heartbeat_ms),
       last_tick: %{},
       bursar: Keyword.get(opts, :bursar, Bursar),
-      holder: Keyword.get(opts, :holder, "tick_bot@#{node()}"),
+      holder: Keyword.get(opts, :holder, default_holder()),
       # Failover latency is bounded by this TTL; embedders that need a
       # tighter bound configure :tick_lease_ttl_ms (Application children
       # carry no opts).
@@ -132,6 +132,20 @@ defmodule Commonplace.MUD.TickBot do
 
   defp schedule_tick(ms), do: Process.send_after(self(), :tick, ms)
 
+  # CX-tdkq.32: the default holder is a NAMED principal, never a free
+  # string — it's prefixed with the node identity so the Bursar's
+  # `authenticated_as` binding (see `Commonplace.Green.Bursar` moduledoc
+  # "Holder binding") ties this lease to an accountable signer, not
+  # just whatever `node()` happened to return. Falls back to the old
+  # unprefixed form only if the node identity is unavailable (fresh
+  # data_dir failure) so TickBot still degrades rather than crashing.
+  defp default_holder do
+    case Commonplace.Crypto.NodeIdentity.identity() do
+      {:ok, node_identity} -> "#{node_identity}/tick_bot@#{node()}"
+      {:error, _} -> "tick_bot@#{node()}"
+    end
+  end
+
   ## Leadership lease
 
   defp maybe_tick(state) do
@@ -146,7 +160,13 @@ defmodule Commonplace.MUD.TickBot do
   # immediately on first leadership observation, which also covers a
   # supervisor-restarted leader inheriting its own stale-clocked token).
   defp ensure_leader(state) do
-    case BursarClient.acquire(state.bursar, @lease_path, state.holder, ttl: state.lease_ttl_ms) do
+    # holder: nil + authenticated_as: state.holder is the derive path
+    # (Bursar.resolve_holder) — no redundant_holder_param noise every
+    # heartbeat, same bound effective holder either way.
+    case BursarClient.acquire(state.bursar, @lease_path, nil,
+           ttl: state.lease_ttl_ms,
+           authenticated_as: state.holder
+         ) do
       {:ok, _} ->
         {:leader, maybe_renew(state)}
 
@@ -164,7 +184,8 @@ defmodule Commonplace.MUD.TickBot do
     now = System.monotonic_time(:millisecond)
 
     if state.last_renew == nil or now - state.last_renew >= div(state.lease_ttl_ms, 3) do
-      _ = BursarClient.renew(state.bursar, @lease_path, state.holder)
+      _ =
+        BursarClient.renew(state.bursar, @lease_path, nil, authenticated_as: state.holder)
       %{state | last_renew: now}
     else
       state

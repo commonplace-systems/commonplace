@@ -281,18 +281,26 @@ defmodule Commonplace.CommandRouter do
   Enable sync on a named child directory of `parent_uuid` (sets `:nosync`
   false, so the sync agent exports it to disk).
   Returns `{:ok, %{parent_uuid, name, sync: true}}` or `{:error, :not_found}`.
+
+  Pass `signing_context: key_id` in `opts` to sign the resulting schema
+  commit with a specific key (CX-hoj — same forwarding as `write/2..4`).
   """
-  def branch_activate(server \\ __MODULE__, parent_uuid, name) do
-    GenServer.call(server, {:branch_set_sync, parent_uuid, name, true})
+  def branch_activate(server \\ __MODULE__, parent_uuid, name, opts \\ []) do
+    commit_opts = Keyword.take(opts, [:signing_context])
+    GenServer.call(server, {:branch_set_sync, parent_uuid, name, true, commit_opts})
   end
 
   @doc """
   Disable sync on a named child directory of `parent_uuid` (sets `:nosync`
   true, so the sync agent stops exporting it to disk).
   Returns `{:ok, %{parent_uuid, name, sync: false}}` or `{:error, :not_found}`.
+
+  Pass `signing_context: key_id` in `opts` to sign the resulting schema
+  commit with a specific key (CX-hoj — same forwarding as `write/2..4`).
   """
-  def branch_deactivate(server \\ __MODULE__, parent_uuid, name) do
-    GenServer.call(server, {:branch_set_sync, parent_uuid, name, false})
+  def branch_deactivate(server \\ __MODULE__, parent_uuid, name, opts \\ []) do
+    commit_opts = Keyword.take(opts, [:signing_context])
+    GenServer.call(server, {:branch_set_sync, parent_uuid, name, false, commit_opts})
   end
 
   @doc """
@@ -467,7 +475,7 @@ defmodule Commonplace.CommandRouter do
   end
 
   @impl true
-  def handle_call({:branch_set_sync, parent_uuid, name, sync?}, _from, state) do
+  def handle_call({:branch_set_sync, parent_uuid, name, sync?, commit_opts}, _from, state) do
     verb = if sync?, do: "branch_activate", else: "branch_deactivate"
     args = %{"parent_uuid" => parent_uuid, "name" => name}
 
@@ -479,7 +487,15 @@ defmodule Commonplace.CommandRouter do
               {:ok, _entry} ->
                 doc = Schema.set_sync(doc, name, sync?)
                 update = Yelixer.Encoding.encode_update(doc)
-                CommitStoreClient.create_chained_commit(state.store, parent_uuid, update)
+
+                CommitStoreClient.create_chained_commit(
+                  state.store,
+                  parent_uuid,
+                  update,
+                  %{},
+                  commit_opts
+                )
+
                 {:ok, %{"parent_uuid" => parent_uuid, "name" => name, "sync" => sync?}}
 
               :error ->
@@ -492,6 +508,13 @@ defmodule Commonplace.CommandRouter do
       end)
 
     {:reply, result, state}
+  end
+
+  # Backward-compat: pre-CX-hoj callers sent {:branch_set_sync, ...}
+  # without the commit_opts slot.
+  @impl true
+  def handle_call({:branch_set_sync, parent_uuid, name, sync?}, from, state) do
+    handle_call({:branch_set_sync, parent_uuid, name, sync?, []}, from, state)
   end
 
   @impl true

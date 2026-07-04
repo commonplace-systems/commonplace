@@ -85,6 +85,35 @@ defmodule Commonplace.Green.Bursar do
   topic (those helpers exist but are unused here). There is no separate
   "remote caller" API: a remote observer simply reads `__bursar.json` /
   `__bursar.log` through the store.
+
+  ## Holder binding (CX-tdkq.32)
+
+  A holder was, until this bead, any string the caller picked — a
+  verified agent could acquire/transfer/release a token while claiming
+  to be a different holder. `authenticated_as` (an identity string — a
+  `SigningContext.identity_uuid` or node-identity id) in `opts` binds
+  the effective holder to that authenticated principal:
+
+    * `authenticated_as` present, `holder` nil/omitted — derive:
+      `holder := authenticated_as`.
+    * `authenticated_as` present, `holder` present and EQUAL — proceed;
+      emits `[:commonplace, :bursar, :redundant_holder_param]`
+      (evidence for retiring the separate `holder` param later).
+    * `authenticated_as` present, `holder` present and DIFFERENT —
+      `{:error, :holder_mismatch}` (impersonation attempt), for
+      `acquire`, `transfer`'s `from_holder`, and `release`'s `holder`.
+    * `authenticated_as` absent — legacy behavior, unchanged (in-domain
+      internal callers), but emits `[:commonplace, :bursar,
+      :unbound_holder]` so those call sites are enumerable too.
+
+  `renew` is bound the same way as `acquire` — it is the ephemeral
+  re-acquire path (move #4), not exempt from the binding.
+
+  This is orthogonal to the pre-existing holder-checked rejection
+  (contending against a token actually held by someone else), which is
+  unchanged: release/transfer/renew against a token held by someone
+  other than the (bound) caller still return `{:error, {:not_holder,
+  current_holder}}`.
   """
 
   use GenServer
@@ -120,19 +149,36 @@ defmodule Commonplace.Green.Bursar do
   @doc """
   Acquire an exclusive token for a path.
   Options: [ttl: milliseconds] — auto-expires after TTL. Default: no expiry.
-  Returns {:ok, token_info} or {:denied, holder_info}.
+
+  `authenticated_as` (CX-tdkq.32) binds the effective holder to an
+  authenticated caller identity — see the moduledoc section "Holder
+  binding" below. Returns {:ok, token_info}, {:denied, holder_info},
+  or {:error, :holder_mismatch} when `holder` conflicts with
+  `authenticated_as`.
   """
   def acquire(server \\ __MODULE__, path, holder, opts \\ []) do
-    ttl_ms = Keyword.get(opts, :ttl, nil)
-    GenServer.call(server, {:acquire, path, holder, ttl_ms})
+    case resolve_holder(holder, opts) do
+      {:ok, effective_holder} ->
+        ttl_ms = Keyword.get(opts, :ttl, nil)
+        GenServer.call(server, {:acquire, path, effective_holder, ttl_ms})
+
+      {:error, _} = err ->
+        err
+    end
   end
 
   @doc """
   Release a held token. Only the current holder can release.
   Returns :ok or {:error, reason}.
+
+  `opts[:authenticated_as]` binds the effective holder (CX-tdkq.32) —
+  see `acquire/4`.
   """
-  def release(server \\ __MODULE__, path, holder) do
-    GenServer.call(server, {:release, path, holder})
+  def release(server \\ __MODULE__, path, holder, opts \\ []) do
+    case resolve_holder(holder, opts) do
+      {:ok, effective_holder} -> GenServer.call(server, {:release, path, effective_holder})
+      {:error, _} = err -> err
+    end
   end
 
   @doc """
@@ -158,9 +204,20 @@ defmodule Commonplace.Green.Bursar do
   Only the current holder can transfer. `acquired_at` and `ttl_ms` are preserved
   (i.e. the new holder inherits the remaining time on the clock).
   Returns {:ok, token_info} or {:error, reason}.
+
+  `opts[:authenticated_as]` binds `from_holder` (CX-tdkq.32) — the
+  claimed source of a transfer is exactly as impersonable as a release
+  holder, so it gets the same check. `to_holder` is not bound; the
+  new holder derives its own binding the next time it acts.
   """
-  def transfer(server \\ __MODULE__, path, from_holder, to_holder) do
-    GenServer.call(server, {:transfer, path, from_holder, to_holder})
+  def transfer(server \\ __MODULE__, path, from_holder, to_holder, opts \\ []) do
+    case resolve_holder(from_holder, opts) do
+      {:ok, effective_from_holder} ->
+        GenServer.call(server, {:transfer, path, effective_from_holder, to_holder})
+
+      {:error, _} = err ->
+        err
+    end
   end
 
   @doc """
@@ -168,15 +225,61 @@ defmodule Commonplace.Green.Bursar do
   TTL sweep. Options: [ttl: milliseconds] — if provided, updates the TTL value;
   otherwise keeps the existing TTL.
   Returns {:ok, token_info} or {:error, reason}.
+
+  `opts[:authenticated_as]` binds the effective holder (CX-tdkq.32) —
+  renew is the ephemeral re-acquire path (move #4), so it is bound
+  exactly like `acquire/4`, not exempted.
   """
   def renew(server \\ __MODULE__, path, holder, opts \\ []) do
-    new_ttl_ms =
-      case Keyword.fetch(opts, :ttl) do
-        {:ok, v} -> {:set, v}
-        :error -> :keep
-      end
+    case resolve_holder(holder, opts) do
+      {:ok, effective_holder} ->
+        new_ttl_ms =
+          case Keyword.fetch(opts, :ttl) do
+            {:ok, v} -> {:set, v}
+            :error -> :keep
+          end
 
-    GenServer.call(server, {:renew, path, holder, new_ttl_ms})
+        GenServer.call(server, {:renew, path, effective_holder, new_ttl_ms})
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  # --- Holder binding (CX-tdkq.32) ---
+  #
+  # Resolve the effective holder from a caller-supplied `holder` plus
+  # `opts[:authenticated_as]`. See the moduledoc "Holder binding"
+  # section for the full semantics table.
+  defp resolve_holder(holder, opts) do
+    case Keyword.get(opts, :authenticated_as) do
+      nil ->
+        :telemetry.execute(
+          [:commonplace, :bursar, :unbound_holder],
+          %{system_time: System.system_time()},
+          %{holder: holder}
+        )
+
+        {:ok, holder}
+
+      authenticated_as ->
+        cond do
+          is_nil(holder) ->
+            {:ok, authenticated_as}
+
+          holder == authenticated_as ->
+            :telemetry.execute(
+              [:commonplace, :bursar, :redundant_holder_param],
+              %{system_time: System.system_time()},
+              %{holder: holder}
+            )
+
+            {:ok, authenticated_as}
+
+          true ->
+            {:error, :holder_mismatch}
+        end
+    end
   end
 
   # --- GenServer Callbacks ---

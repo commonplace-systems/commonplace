@@ -33,9 +33,9 @@ defmodule Commonplace.Green.BursarClient do
     safe(fn -> Bursar.acquire(route(server), path, holder, opts) end)
   end
 
-  @doc "Release a held token. See `Bursar.release/3`."
-  def release(server \\ Bursar, path, holder) do
-    safe(fn -> Bursar.release(route(server), path, holder) end)
+  @doc "Release a held token. See `Bursar.release/4`."
+  def release(server \\ Bursar, path, holder, opts \\ []) do
+    safe(fn -> Bursar.release(route(server), path, holder, opts) end)
   end
 
   @doc "Query token status. See `Bursar.query/2`."
@@ -53,9 +53,9 @@ defmodule Commonplace.Green.BursarClient do
     safe(fn -> Bursar.force_release(route(server), path) end)
   end
 
-  @doc "Transfer a held token to a new holder. See `Bursar.transfer/4`."
-  def transfer(server \\ Bursar, path, from_holder, to_holder) do
-    safe(fn -> Bursar.transfer(route(server), path, from_holder, to_holder) end)
+  @doc "Transfer a held token to a new holder. See `Bursar.transfer/5`."
+  def transfer(server \\ Bursar, path, from_holder, to_holder, opts \\ []) do
+    safe(fn -> Bursar.transfer(route(server), path, from_holder, to_holder, opts) end)
   end
 
   @doc "Renew (keep-alive) a held token. See `Bursar.renew/4`."

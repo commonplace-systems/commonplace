@@ -66,7 +66,7 @@ defmodule Commonplace.MUD.Move do
     retries = Keyword.get(opts, :retries, @retries)
     retry_ms = Keyword.get(opts, :retry_ms, @retry_ms)
 
-    holder = "move:#{inspect(self())}@#{node()}"
+    holder = default_holder()
     paths = Enum.sort([source_dir_uuid, dest_dir_uuid])
 
     case acquire_all(paths, holder, bursar, ttl, retries, retry_ms) do
@@ -79,6 +79,21 @@ defmodule Commonplace.MUD.Move do
 
       {:error, _} = err ->
         err
+    end
+  end
+
+  # CX-tdkq.32: the default holder is a NAMED principal, never a free
+  # string — prefixed with the node identity so the Bursar's
+  # `authenticated_as` binding ties this ephemeral per-move holder to
+  # an accountable signer. The pid/ref suffix keeps it unique per
+  # concurrent move (multiple moves must not collide on one holder
+  # string). Falls back to the old unprefixed form only if the node
+  # identity is unavailable, so a move still fails closed rather than
+  # crashing.
+  defp default_holder do
+    case Commonplace.Crypto.NodeIdentity.identity() do
+      {:ok, node_identity} -> "#{node_identity}/move-#{inspect(self())}@#{node()}"
+      {:error, _} -> "move:#{inspect(self())}@#{node()}"
     end
   end
 
@@ -108,7 +123,7 @@ defmodule Commonplace.MUD.Move do
   defp try_acquire([], _holder, _bursar, _ttl, _got), do: :ok
 
   defp try_acquire([path | rest], holder, bursar, ttl, got) do
-    case BursarClient.acquire(bursar, path, holder, ttl: ttl) do
+    case BursarClient.acquire(bursar, path, holder, ttl: ttl, authenticated_as: holder) do
       {:ok, _} -> try_acquire(rest, holder, bursar, ttl, [path | got])
       {:denied, _} -> {:denied, got}
       {:error, reason} -> {:error, reason, got}
@@ -116,7 +131,9 @@ defmodule Commonplace.MUD.Move do
   end
 
   defp release_all(paths, holder, bursar) do
-    Enum.each(paths, fn path -> BursarClient.release(bursar, path, holder) end)
+    Enum.each(paths, fn path ->
+      BursarClient.release(bursar, path, holder, authenticated_as: holder)
+    end)
   end
 
   # --- The move itself (unchanged from MoveServer v0) ---

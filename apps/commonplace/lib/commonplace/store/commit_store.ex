@@ -380,6 +380,7 @@ defmodule Commonplace.Store.CommitStore do
   """
 
   use GenServer
+  require Logger
 
   alias Commonplace.Store.Commit
   alias Commonplace.Trust.CodeDocHeuristic
@@ -852,8 +853,9 @@ defmodule Commonplace.Store.CommitStore do
       ^expected_parent_id ->
         metadata = Map.put(metadata, :kind, :snapshot)
 
-        commit =
-          Commit.new(doc_uuid, update, expected_parent_id, metadata) |> maybe_sign_commit()
+        commit = Commit.new(doc_uuid, update, expected_parent_id, metadata)
+        warn_if_non_system_cas(commit, :snapshot_cas)
+        commit = maybe_sign_commit(commit)
 
         CubDB.put_multi(state.db, [
           {{:commit, commit.id}, commit},
@@ -891,6 +893,12 @@ defmodule Commonplace.Store.CommitStore do
     # (Merger/CrossEpochMerge → Commit.new, never signed). Node-sign it
     # so strict mode accepts it. Signing is over the id, which is already
     # bound — so the CAS dedup (keyed on id) is unaffected.
+    #
+    # CX-hoj: only system kinds (:snapshot / :merge) are meant to reach
+    # this bare (no signing_context) call — a future user-payload path
+    # through prebuilt-CAS must not silently inherit ambient/node
+    # identity, so warn + telemetry loudly if one ever does.
+    warn_if_non_system_cas(commit, :prebuilt_cas)
     commit = maybe_sign_commit(commit)
 
     case CubDB.get(state.db, {:latest, commit.doc_uuid}) do
@@ -1640,6 +1648,34 @@ defmodule Commonplace.Store.CommitStore do
     end
   end
 
+  # CX-hoj: the CAS write paths (`write_snapshot_cas/5`,
+  # `write_prebuilt_commit_cas/2`) call `maybe_sign_commit/1` with no
+  # context deliberately — today only node-signed system kinds
+  # (`:snapshot`/`:merge`) route through them. If a commit of any other
+  # kind reaches one of these bare calls, it would silently inherit
+  # ambient identity (global key or node key) with no per-call
+  # signing_context to say otherwise. Surface that loudly instead.
+  defp warn_if_non_system_cas(%Commit{metadata: metadata, doc_uuid: doc_uuid, id: id}, via)
+       when via in [:snapshot_cas, :prebuilt_cas] do
+    kind = Map.get(metadata, :kind)
+
+    unless kind in [:snapshot, :merge] do
+      Logger.warning(
+        "CommitStore: non-system-kind commit (kind=#{inspect(kind)}) reached #{via} " <>
+          "unsigned-context CAS path — this path is meant only for node-signed " <>
+          "system commits (doc_uuid=#{doc_uuid})"
+      )
+
+      :telemetry.execute(
+        [:commonplace, :commit, :ambient_signed],
+        %{system_time: System.system_time()},
+        %{doc_uuid: doc_uuid, commit_id: id, via: :cas}
+      )
+    end
+
+    :ok
+  end
+
   # CX-hoj: prefer the per-call signing context when one is supplied.
   # Pass `signing_context: :unsigned` to deliberately skip signing even
   # when the global SecretStore has a key configured (used by MCP-MVP
@@ -1673,10 +1709,29 @@ defmodule Commonplace.Store.CommitStore do
     node_sign_if_system(commit)
   end
 
+  # CX-hoj: the global SecretStore fallback is AMBIENT identity — it
+  # signs with whatever key happens to be loaded in this process,
+  # regardless of which caller/session produced the update. This does
+  # NOT remove the fallback (that's a later bead: once the demotion
+  # worklist below is empty, nil -> :unsigned becomes the end state).
+  # For now, every actual ambient-sign is made ENUMERABLE via telemetry
+  # so un-threaded callers can be found and migrated to an explicit
+  # `signing_context`.
   defp maybe_sign_commit(commit, nil) do
     case global_secret_context() do
-      {:ok, ctx} -> sign_with_context(commit, ctx)
-      :none -> commit
+      {:ok, ctx} ->
+        signed = sign_with_context(commit, ctx)
+
+        :telemetry.execute(
+          [:commonplace, :commit, :ambient_signed],
+          %{system_time: System.system_time()},
+          %{doc_uuid: signed.doc_uuid, commit_id: signed.id}
+        )
+
+        signed
+
+      :none ->
+        commit
     end
   end
 

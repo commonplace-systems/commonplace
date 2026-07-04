@@ -16,10 +16,11 @@ defmodule Commonplace.MUD.MoveTest do
     on_exit(fn -> File.rm_rf!(dir) end)
 
     bursar_name = :"bursar_#{:rand.uniform(1_000_000)}"
+    bursar_root = UUID.uuid4()
 
     {:ok, bpid} =
       Bursar.start_link(
-        root_uuid: UUID.uuid4(),
+        root_uuid: bursar_root,
         store: store_name,
         name: bursar_name,
         sweep_interval: 60_000
@@ -27,7 +28,12 @@ defmodule Commonplace.MUD.MoveTest do
 
     on_exit(fn -> if Process.alive?(bpid), do: GenServer.stop(bpid) end)
 
-    %{store: store_name, bursar: bursar_name, opts: [store: store_name, bursar: bursar_name]}
+    %{
+      store: store_name,
+      bursar: bursar_name,
+      bursar_root: bursar_root,
+      opts: [store: store_name, bursar: bursar_name]
+    }
   end
 
   defp make_dir_with_object(store, obj_name) do
@@ -162,6 +168,38 @@ defmodule Commonplace.MUD.MoveTest do
 
       {:ok, entry} = Schema.get_entry(load(source, ctx.store), "sword.obj")
       assert entry.node_id == obj_dir
+    end
+
+    # CX-tdkq.32: Move is an internal system caller — its default holder
+    # must be a NAMED principal (derived from the node identity, with a
+    # unique per-move suffix), never a bare "move:#{inspect(self())}"
+    # string. Forced denial (both dir tokens pre-held elsewhere) surfaces
+    # the requester's holder string in the audit log's "denied" event.
+    test "default holder is prefixed with the node identity, not a bare pid string", ctx do
+      {:ok, node_identity} = Commonplace.Crypto.NodeIdentity.identity()
+
+      {source, obj_dir} = make_dir_with_object(ctx.store, "ring")
+      dest = empty_dir(ctx.store)
+
+      {:ok, _} = Bursar.acquire(ctx.bursar, source, "occupier")
+      {:ok, _} = Bursar.acquire(ctx.bursar, dest, "occupier")
+
+      assert {:error, :busy} =
+               Move.move(obj_dir, "ring.obj", source, dest, ctx.opts ++ [retries: 0, retry_ms: 1])
+
+      {:ok, schema} =
+        Commonplace.Tree.DocBuilder.reconstruct_snapshot(ctx.store, ctx.bursar_root)
+
+      {:ok, log_entry} = Schema.get_entry(schema, "__bursar.log")
+      log = Commonplace.Dataflow.RedLog.load(log_entry.node_id, ctx.store)
+      events = Commonplace.Dataflow.RedLog.read(log)
+
+      denied_events = Enum.filter(events, fn e -> e["event"] == "denied" end)
+      assert length(denied_events) > 0
+
+      assert Enum.all?(denied_events, fn e ->
+               String.starts_with?(e["holder"], "#{node_identity}/move-")
+             end)
     end
   end
 end

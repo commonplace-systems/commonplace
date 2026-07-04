@@ -261,5 +261,22 @@ defmodule Commonplace.MUD.TickBotTest do
       assert :not_leader = TickBot.tick_now(name)
       refute_receive {"red:" <> _, _}, 50
     end
+
+    # CX-tdkq.32: TickBot is an internal system caller — its default
+    # holder must be a NAMED principal (derived from the node identity),
+    # never a free string. Only exercised when the test does NOT
+    # override `holder:` (every other test in this file does, to keep
+    # multiple TickBots from contending on the same lease).
+    test "default holder is prefixed with the node identity, not a bare node() string", ctx do
+      {:ok, node_identity} = Commonplace.Crypto.NodeIdentity.identity()
+      {_pid, name} = start_tickbot(ctx)
+
+      assert :ok = TickBot.tick_now(name)
+
+      assert {:held, %{holder: holder}} =
+               Commonplace.Green.Bursar.query(ctx.bursar, "__singletons/tick_bot")
+
+      assert String.starts_with?(holder, "#{node_identity}/tick_bot@")
+    end
   end
 end
