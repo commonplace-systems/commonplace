@@ -655,6 +655,37 @@ defmodule Commonplace.Store.CommitStore do
   def db_handle(server \\ __MODULE__), do: resolve_db(server)
 
   @doc """
+  Return the `Commonplace.Store.TrustSideStore` name/pid registered as this
+  CommitStore instance's companion (R4c carve-out). Defaults to the bare
+  module name when the instance was started without an explicit
+  `:trust_side_store` opt (e.g. a bare `CommitStore.start_link/1` in a test
+  that never touches capability/execute_clean behavior). Resolved via
+  `persistent_term`, same pattern as `resolve_db/1`, so it's a cheap
+  same-process read for callers (notably `CommitStoreClient`) that need to
+  address the correct companion instance in a multi-trio test suite.
+  """
+  @spec trust_side_store_name(GenServer.server()) :: GenServer.server()
+  def trust_side_store_name(server \\ __MODULE__) do
+    case :persistent_term.get({__MODULE__, :trust_side_store, server}, nil) do
+      nil -> GenServer.call(server, :get_trust_side_store)
+      name -> name
+    end
+  end
+
+  @doc """
+  Return the `Commonplace.Store.PendingImports` name/pid registered as this
+  CommitStore instance's companion (R4c carve-out). See
+  `trust_side_store_name/1` for the resolution pattern.
+  """
+  @spec pending_imports_name(GenServer.server()) :: GenServer.server()
+  def pending_imports_name(server \\ __MODULE__) do
+    case :persistent_term.get({__MODULE__, :pending_imports, server}, nil) do
+      nil -> GenServer.call(server, :get_pending_imports)
+      name -> name
+    end
+  end
+
+  @doc """
   Return a MapSet of every commit id persisted for `doc_uuid`, including
   commits that are NOT reachable from `:latest` (i.e. siblings imported
   via `import_commit/2` that have no descendant on the local head's
@@ -679,6 +710,13 @@ defmodule Commonplace.Store.CommitStore do
   @doc """
   Persist a capability cert (CX-tdkq.22b). Content-addressed by its CID;
   idempotent. The cert is the immutable trust VALUE — not a CRDT doc.
+
+  R4c carve-out: this is now a thin back-compat shim. The actual row lives
+  in `Commonplace.Store.TrustSideStore`, and the `handle_call` below
+  delegates to it (raises if this instance's TrustSideStore companion isn't
+  running — see `trust_side_store_name/1`). Retained here because
+  `Commonplace.Store.CommitStoreClient`'s remote mode addresses this
+  GenServer's registered name directly over BEAM distribution.
   """
   def store_capability(server \\ __MODULE__, %Commonplace.Trust.Capability{} = cap) do
     GenServer.call(server, {:store_capability, cap})
@@ -705,6 +743,13 @@ defmodule Commonplace.Store.CommitStore do
   # a trust-config change self-invalidates stale verdicts. Correctness never
   # depends on it: Gate B's continue-default re-walks full append-only history on a
   # miss. See `Commonplace.Trust.authorized_to_execute?`.
+  #
+  # R4c carve-out: the underlying rows now live in
+  # `Commonplace.Store.TrustSideStore`. Reads stay direct db point-reads here
+  # (no TrustSideStore process needed — mirrors `get_capability/2`); the
+  # mutating verbs (`put_execute_clean/4`, `flush_execute_clean/1`) delegate
+  # to TrustSideStore, so an instance exercising these needs its
+  # TrustSideStore companion running (e.g. via `Commonplace.Store.Supervisor`).
 
   @doc """
   Read a cached execute-clean verdict. `{:ok, boolean}` or `:miss`. Pure point-read
@@ -718,7 +763,8 @@ defmodule Commonplace.Store.CommitStore do
   @doc """
   Cache an execute-clean verdict. Fire-and-forget cast — a lost write just means
   the verdict is recomputed on the next walk, so the compile hot path never blocks
-  on cache I/O.
+  on cache I/O. Forwarded to `Commonplace.Store.TrustSideStore` (cast-to-cast,
+  still fire-and-forget end to end).
   """
   @spec put_execute_clean(GenServer.server(), term(), binary(), boolean()) :: :ok
   def put_execute_clean(server \\ __MODULE__, fp, commit_id, bool) when is_boolean(bool) do
@@ -849,23 +895,39 @@ defmodule Commonplace.Store.CommitStore do
     path = Path.join(data_dir, "commits")
     File.mkdir_p!(path)
 
+    # R4c carve-out: the names of this instance's companion processes
+    # (Commonplace.Store.TrustSideStore, Commonplace.Store.PendingImports).
+    # Default to `nil` — NOT the bare module names — so a bare
+    # `CommitStore.start_link/1` (started standalone, e.g. by a test that
+    # only exercises plain commit reads/writes) never silently addresses
+    # whatever process happens to be registered under the production
+    # default name (notably the real singleton `Commonplace.Application`
+    # boots for the whole test run). `nil` is a genuine "no companion"
+    # sentinel: pending-import casts become no-ops (see
+    # `maybe_notify_landed/2` / `maybe_enqueue_pending/4` below) and the capability/
+    # execute_clean shims raise if actually invoked (correctly — those
+    # verbs need `Commonplace.Store.Supervisor`'s trio wiring, which always
+    # passes explicit names, never relies on this default).
+    trust_side_store = Keyword.get(opts, :trust_side_store, nil)
+    pending_imports = Keyword.get(opts, :pending_imports, nil)
+
     case open_cubdb(path) do
       {:ok, db} ->
         case probe_integrity(db) do
           :ok ->
-            ready(name, db)
+            ready(name, db, trust_side_store, pending_imports)
 
           {:error, reason} ->
             require Logger
             Logger.warning("CubDB corrupt on probe (#{inspect(reason)}). Archiving and starting fresh.")
             CubDB.stop(db)
-            recover_cubdb(name, path)
+            recover_cubdb(name, path, trust_side_store, pending_imports)
         end
 
       {:error, reason} ->
         require Logger
         Logger.warning("CubDB failed to open (#{inspect(reason)}). Archiving and starting fresh.")
-        recover_cubdb(name, path)
+        recover_cubdb(name, path, trust_side_store, pending_imports)
     end
   end
 
@@ -874,15 +936,28 @@ defmodule Commonplace.Store.CommitStore do
   # mailbox (CX-tdkq.4). Keyed by the registered name so isolated test stores
   # and the production singleton don't collide; resolve_db/1 falls back to a
   # cheap `:get_db` call for callers that hold a pid rather than the name.
-  defp ready(name, db) do
+  #
+  # R4c carve-out: the R11 pending-imports queue and the capability/
+  # execute_clean rows no longer live in this GenServer's state — they were
+  # extracted to `Commonplace.Store.TrustSideStore` (capability certs +
+  # execute_clean watermarks) and `Commonplace.Store.PendingImports` (the R11
+  # retry queue). This state only remembers WHICH instances of those
+  # companion processes belong to this CommitStore, so the back-compat shims
+  # below know where to delegate.
+  defp ready(name, db, trust_side_store, pending_imports) do
     :persistent_term.put({__MODULE__, :db, name}, db)
-    # pending_imports (R11 / CX-tdkq.11): commits that failed namespace
-    # validation because a commit they reference hasn't landed yet. Held and
-    # retried after each successful import, so out-of-order delivery (PubSub
-    # + catch-up interleaving) no longer drops legitimate commits. In-memory:
-    # on restart, catch-up sync re-sends. commit.id => {commit, opts}.
+    :persistent_term.put({__MODULE__, :trust_side_store, name}, trust_side_store)
+    :persistent_term.put({__MODULE__, :pending_imports, name}, pending_imports)
     queue_poller = maybe_start_queue_poller(name)
-    {:ok, %{db: db, name: name, pending_imports: %{}, queue_poller: queue_poller}}
+
+    {:ok,
+     %{
+       db: db,
+       name: name,
+       queue_poller: queue_poller,
+       trust_side_store: trust_side_store,
+       pending_imports: pending_imports
+     }}
   end
 
   # CX-9hql (R4c rung-0): start the companion mailbox-depth poller unless
@@ -910,6 +985,8 @@ defmodule Commonplace.Store.CommitStore do
   @impl true
   def terminate(_reason, %{name: name} = state) do
     :persistent_term.erase({__MODULE__, :db, name})
+    :persistent_term.erase({__MODULE__, :trust_side_store, name})
+    :persistent_term.erase({__MODULE__, :pending_imports, name})
 
     case Map.get(state, :queue_poller) do
       pid when is_pid(pid) ->
@@ -957,7 +1034,7 @@ defmodule Commonplace.Store.CommitStore do
     result
   end
 
-  defp recover_cubdb(name, path) do
+  defp recover_cubdb(name, path, trust_side_store, pending_imports) do
     archive_corrupt_db(path)
 
     {:ok, db} =
@@ -967,7 +1044,7 @@ defmodule Commonplace.Store.CommitStore do
         auto_compact: true
       )
 
-    ready(name, db)
+    ready(name, db, trust_side_store, pending_imports)
   end
 
   @impl true
@@ -1147,6 +1224,16 @@ defmodule Commonplace.Store.CommitStore do
     {:reply, state.db, state}
   end
 
+  @impl true
+  def handle_call(:get_trust_side_store, _from, state) do
+    {:reply, state.trust_side_store, state}
+  end
+
+  @impl true
+  def handle_call(:get_pending_imports, _from, state) do
+    {:reply, state.pending_imports, state}
+  end
+
   # execute_clean cache (CX-tdkq.27). Read also exposed as a remote-routable call
   # for clustered stores; writes are casts; flush is a call.
   @impl true
@@ -1156,14 +1243,11 @@ defmodule Commonplace.Store.CommitStore do
 
   @impl true
   def handle_call(:flush_execute_clean, _from, state) do
-    keys =
-      CubDB.select(state.db)
-      |> Stream.map(fn {k, _v} -> k end)
-      |> Stream.filter(&match?({:execute_clean, _, _}, &1))
-      |> Enum.to_list()
-
-    Enum.each(keys, &CubDB.delete(state.db, &1))
-    {:reply, :ok, state}
+    # R4c carve-out: delegate to this instance's TrustSideStore companion —
+    # it owns the execute_clean rows now. Synchronous on purpose (callers
+    # need the guarantee stale verdicts are wiped before this returns).
+    reply = Commonplace.Store.TrustSideStore.flush_execute_clean(state.trust_side_store)
+    {:reply, reply, state}
   end
 
   @impl true
@@ -1323,15 +1407,11 @@ defmodule Commonplace.Store.CommitStore do
   @impl true
   def handle_call({:store_capability, %Commonplace.Trust.Capability{} = cap}, _from, state) do
     instrumented(:store_capability, nil, fn ->
-      # CX-tdkq.22b: a cert is a content-addressed immutable VALUE, keyed by
-      # its CID (mirrors the attestation store). Idempotent — same CID
-      # overwrites identical bytes. No head pointer: certs are referenced by
-      # CID (from a commit's metadata / a child cert's proof), not "latest".
-      CubDB.put(state.db, {:capability, cap.id}, cap)
-      # CX-tdkq.22e: a landed cert may be exactly what a commit deferred with
-      # :awaiting_capability was waiting on — retry the pending queue.
-      state = retry_pending_imports(state)
-      {:reply, :ok, state}
+      # R4c carve-out: delegate to this instance's TrustSideStore companion,
+      # which owns the {:capability, cid} row and notifies PendingImports
+      # (CX-tdkq.22e) once the cert is durably stored.
+      reply = Commonplace.Store.TrustSideStore.store_capability(state.trust_side_store, cap)
+      {:reply, reply, state}
     end)
   end
 
@@ -1371,16 +1451,15 @@ defmodule Commonplace.Store.CommitStore do
   end
 
   # execute_clean watermark cache write (CX-tdkq.27) — fire-and-forget.
+  # R4c carve-out: forwarded to TrustSideStore's own cast (cast-to-cast, so
+  # this stays fire-and-forget end to end). A no-op if this instance's
+  # TrustSideStore companion isn't running — same "lost write, recomputed on
+  # next walk" tolerance the doc above already promises.
   @impl true
   def handle_cast({:put_execute_clean, fp, commit_id, bool}, state) do
-    CubDB.put(state.db, {:execute_clean, fp, commit_id}, bool)
+    Commonplace.Store.TrustSideStore.put_execute_clean(state.trust_side_store, fp, commit_id, bool)
     {:noreply, state}
   end
-
-  # R11 (CX-tdkq.11): cap on commits held awaiting an out-of-order
-  # dependency. Beyond this we fall back to a hard reject (as before) rather
-  # than grow memory unbounded — a small queue, not a durable store.
-  @max_pending_imports 1024
 
   defp handle_validated_import(commit, opts, state, verify_ns) do
     {validation_result, validation_ns} = timed(fn -> import_validation(commit, opts, state) end)
@@ -1392,9 +1471,13 @@ defmodule Commonplace.Store.CommitStore do
           nil ->
             {state, persist_ns} = timed(fn -> do_store_imported(commit, state) end)
             emit_write_cpu(:import_commit, commit.doc_uuid, 0, 0, validate_ns, persist_ns)
-            # R11: a freshly-landed commit may be the reference (or the cert)
-            # an earlier out-of-order arrival was waiting on — retry the queue.
-            state = retry_pending_imports(state)
+            # R11 / R4c carve-out: a freshly-landed commit may be the
+            # reference (or the cert) an earlier out-of-order arrival was
+            # waiting on. Notify this instance's PendingImports companion
+            # (a no-op when this instance has none configured — see
+            # `maybe_notify_landed/2`); it re-submits its whole held queue
+            # through THIS SAME import_commit/3 front door.
+            maybe_notify_landed(state, commit.id)
             {:reply, :ok, state}
 
           _existing ->
@@ -1406,9 +1489,9 @@ defmodule Commonplace.Store.CommitStore do
       # may land later), exactly like a namespace out-of-order reference.
       {:error, {:trust, :awaiting_capability}} ->
         emit_write_cpu(:import_commit, commit.doc_uuid, 0, 0, validate_ns, 0)
+        maybe_enqueue_pending(state, commit, opts, :awaiting_capability)
 
-        {:reply, {:error, {:trust_rejected, :awaiting_capability}},
-         maybe_queue_pending(commit, opts, :awaiting_capability, state)}
+        {:reply, {:error, {:trust_rejected, :awaiting_capability}}, state}
 
       # R1: other trust rejections are HARD — they never resolve by waiting.
       {:error, {:trust, reason}} ->
@@ -1444,9 +1527,30 @@ defmodule Commonplace.Store.CommitStore do
         emit_write_cpu(:import_commit, commit.doc_uuid, 0, 0, validate_ns, 0)
         emit_namespace_rejection(commit, reason)
         # R11: hold the rejected commit and retry once its dependency lands.
-        {:reply, {:error, {:namespace_rejected, reason}}, maybe_queue_pending(commit, opts, reason, state)}
+        maybe_enqueue_pending(state, commit, opts, reason)
+        {:reply, {:error, {:namespace_rejected, reason}}, state}
     end
   end
+
+  # R4c carve-out: `state.pending_imports` is `nil` unless this instance was
+  # started with an explicit companion (see `init/1`) — notably, always
+  # non-nil when started via `Commonplace.Store.Supervisor`, always `nil`
+  # for a standalone `CommitStore.start_link/1`. `nil` means "this instance
+  # has no PendingImports companion," so these are no-ops rather than
+  # addressing whatever process happens to be registered under the bare
+  # `Commonplace.Store.PendingImports` module name (which, in a running
+  # `Commonplace.Application` — including during the test suite — is a
+  # REAL, unrelated singleton; silently talking to it would leak held
+  # commits across otherwise-isolated test instances).
+  defp maybe_notify_landed(%{pending_imports: nil}, _commit_id), do: :ok
+
+  defp maybe_notify_landed(%{pending_imports: pending_imports}, commit_id),
+    do: Commonplace.Store.PendingImports.notify_landed(pending_imports, commit_id)
+
+  defp maybe_enqueue_pending(%{pending_imports: nil}, _commit, _opts, _reason), do: :ok
+
+  defp maybe_enqueue_pending(%{pending_imports: pending_imports}, commit, opts, reason),
+    do: Commonplace.Store.PendingImports.enqueue(pending_imports, commit, opts, reason)
 
   # The full import validation pipeline — trust gate, THEN the
   # no-delta-merge-on-code-docs guard, THEN namespace — run identically
@@ -1563,55 +1667,6 @@ defmodule Commonplace.Store.CommitStore do
       %{system_time: System.system_time()},
       %{commit_id: commit.id, doc_uuid: commit.doc_uuid, reason: reason}
     )
-  end
-
-  defp maybe_queue_pending(commit, opts, reason, state) do
-    pending = state.pending_imports
-
-    cond do
-      Map.has_key?(pending, commit.id) ->
-        state
-
-      map_size(pending) >= @max_pending_imports ->
-        # Queue full — leave it hard-rejected (telemetry already fired).
-        state
-
-      true ->
-        :telemetry.execute(
-          [:commonplace, :commit, :deferred, :out_of_order],
-          %{system_time: System.system_time()},
-          %{commit_id: commit.id, doc_uuid: commit.doc_uuid, reason: reason}
-        )
-
-        %{state | pending_imports: Map.put(pending, commit.id, {commit, opts})}
-    end
-  end
-
-  # Fixpoint retry: re-validate every queued commit against the now-updated
-  # store; persist any that pass (each one may unblock others) and drop them
-  # from the queue, repeating until a full pass makes no progress. Terminates
-  # because each progressing pass removes at least one finite-set entry.
-  defp retry_pending_imports(state) do
-    {state, progressed} =
-      Enum.reduce(state.pending_imports, {state, false}, fn {id, {commit, opts}}, {st, prog} ->
-        # Re-run the FULL pipeline (trust + namespace), not just namespace —
-        # a commit deferred for :awaiting_capability must re-pass the cert
-        # check, never bypass it (CX-tdkq.22e).
-        case import_validation(commit, opts, st) do
-          :ok ->
-            st =
-              if CubDB.get(st.db, {:commit, commit.id}) == nil,
-                do: do_store_imported(commit, st),
-                else: st
-
-            {%{st | pending_imports: Map.delete(st.pending_imports, id)}, true}
-
-          {:error, _reason} ->
-            {st, prog}
-        end
-      end)
-
-    if progressed, do: retry_pending_imports(state), else: state
   end
 
   # ── R4(a): caller-side reads ─────────────────────────────────────────────

@@ -72,7 +72,7 @@ defmodule Commonplace.Store.CommitStoreClient do
   # through the legacy GenServer.call shapes below, since there's no
   # local CubDB handle to read :latest from without a round-trip anyway.
 
-  alias Commonplace.Store.{CommitStore, CommitBuilder, Commit}
+  alias Commonplace.Store.{CommitStore, CommitBuilder, Commit, TrustSideStore}
 
   # Bounded optimistic-CAS retry count for the caller-side hoisted write
   # path, before falling back to the legacy serialized verb. Kept small
@@ -264,10 +264,17 @@ defmodule Commonplace.Store.CommitStoreClient do
     end
   end
 
+  # R4c carve-out: in LOCAL mode these route DIRECTLY to TrustSideStore —
+  # local mode already has direct access to the companion process (via
+  # `CommitStore.trust_side_store_name/1`, resolved per-instance so test
+  # isolation with custom trio names still works), so it doesn't need the
+  # remote-compat indirection through CommitStore's GenServer.call shims.
+  # REMOTE mode is unchanged: it still addresses CommitStore's registered
+  # name over BEAM distribution, which delegates server-side.
   def store_capability(server \\ CommitStore, cap) do
     case remote_node() do
       {:ok, node} -> GenServer.call({CommitStore, node}, {:store_capability, cap})
-      :local -> CommitStore.store_capability(normalize_server(server), cap)
+      :local -> TrustSideStore.store_capability(CommitStore.trust_side_store_name(normalize_server(server)), cap)
     end
   end
 
@@ -289,15 +296,23 @@ defmodule Commonplace.Store.CommitStoreClient do
 
   def put_execute_clean(server \\ CommitStore, fp, commit_id, bool) do
     case remote_node() do
-      {:ok, node} -> GenServer.cast({CommitStore, node}, {:put_execute_clean, fp, commit_id, bool})
-      :local -> CommitStore.put_execute_clean(normalize_server(server), fp, commit_id, bool)
+      {:ok, node} ->
+        GenServer.cast({CommitStore, node}, {:put_execute_clean, fp, commit_id, bool})
+
+      :local ->
+        TrustSideStore.put_execute_clean(
+          CommitStore.trust_side_store_name(normalize_server(server)),
+          fp,
+          commit_id,
+          bool
+        )
     end
   end
 
   def flush_execute_clean(server \\ CommitStore) do
     case remote_node() do
       {:ok, node} -> GenServer.call({CommitStore, node}, :flush_execute_clean)
-      :local -> CommitStore.flush_execute_clean(normalize_server(server))
+      :local -> TrustSideStore.flush_execute_clean(CommitStore.trust_side_store_name(normalize_server(server)))
     end
   end
 

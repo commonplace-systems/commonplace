@@ -14,11 +14,25 @@ defmodule Commonplace.Store.CapabilityEnvelopeTest do
   alias Commonplace.Store.{Commit, CommitStore}
   alias Commonplace.Trust.Capability
 
+  # R4c carve-out: store_capability/2 now delegates to TrustSideStore, and
+  # the retry it triggers (PendingImports.notify_capability, a cast) is
+  # ASYNCHRONOUS — landing is no longer guaranteed by the time
+  # `store_capability/2` returns. Tests that assert on the retry's effect
+  # poll via `wait_until/2` instead of asserting immediately.
   setup do
     dir = Path.join(System.tmp_dir!(), "capenv_#{:rand.uniform(1_000_000)}")
     File.mkdir_p!(dir)
-    name = :"capenv_store_#{:rand.uniform(1_000_000)}"
-    start_supervised!({CommitStore, data_dir: dir, name: name})
+    n = :rand.uniform(1_000_000)
+    name = :"capenv_store_#{n}"
+
+    start_supervised!(
+      {Commonplace.Store.Supervisor,
+       data_dir: dir,
+       name: :"capenv_sup_#{n}",
+       commit_store_name: name,
+       trust_side_store_name: :"capenv_tss_#{n}",
+       pending_imports_name: :"capenv_pi_#{n}"}
+    )
 
     {root_pub, root_priv} = Signing.generate_keypair()
     root_ctx = %SigningContext{identity_uuid: "root", private_key: root_priv, public_key: root_pub}
@@ -56,10 +70,11 @@ defmodule Commonplace.Store.CapabilityEnvelopeTest do
              CommitStore.import_commit(store, commit, validator: fn _ -> :ok end)
     assert :none = CommitStore.get_commit(store, commit.id)
 
-    # The cert arrives — which retries the pending queue.
+    # The cert arrives — which retries the pending queue. The retry itself
+    # is an async cast (PendingImports.notify_capability), so poll for it.
     :ok = CommitStore.store_capability(store, leaf)
 
-    assert {:ok, _} = CommitStore.get_commit(store, commit.id)
+    wait_until(fn -> match?({:ok, _}, CommitStore.get_commit(store, commit.id)) end)
   end
 
   test "a commit with a present, valid cert imports straight away",
@@ -86,5 +101,27 @@ defmodule Commonplace.Store.CapabilityEnvelopeTest do
     # A later successful import must not resurrect it.
     :ok = CommitStore.store_capability(store, %Commonplace.Trust.Capability{id: <<1::256>>})
     assert :none = CommitStore.get_commit(store, commit.id)
+  end
+
+  # Poll `fun` (returns boolean) until it's true or `timeout_ms` elapses.
+  # The R4c carve-out made PendingImports' retry notifications async casts,
+  # so a handful of tests here need to wait for a retry to land rather than
+  # asserting immediately after the triggering call returns.
+  defp wait_until(fun, timeout_ms \\ 500) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    do_wait_until(fun, deadline)
+  end
+
+  defp do_wait_until(fun, deadline) do
+    if fun.() do
+      :ok
+    else
+      if System.monotonic_time(:millisecond) >= deadline do
+        flunk("condition not met within timeout")
+      else
+        Process.sleep(10)
+        do_wait_until(fun, deadline)
+      end
+    end
   end
 end

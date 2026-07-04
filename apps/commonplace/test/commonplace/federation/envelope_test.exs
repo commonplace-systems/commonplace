@@ -107,11 +107,23 @@ defmodule Commonplace.Federation.EnvelopeForCommitTest do
   alias Commonplace.Store.{Commit, CommitStore}
   alias Commonplace.Trust.Capability
 
+  # R4c carve-out: store_capability/2 delegates to TrustSideStore, so this
+  # needs the full trio (a bare CommitStore has no companion by default).
   setup do
     dir = Path.join(System.tmp_dir!(), "cp_env_fc_#{:rand.uniform(1_000_000_000)}")
     File.mkdir_p!(dir)
-    store = :"env_fc_store_#{:rand.uniform(1_000_000)}"
-    start_supervised!({CommitStore, data_dir: dir, name: store})
+    n = :rand.uniform(1_000_000)
+    store = :"env_fc_store_#{n}"
+
+    start_supervised!(
+      {Commonplace.Store.Supervisor,
+       data_dir: dir,
+       name: :"env_fc_sup_#{n}",
+       commit_store_name: store,
+       trust_side_store_name: :"env_fc_tss_#{n}",
+       pending_imports_name: :"env_fc_pi_#{n}"}
+    )
+
     on_exit(fn -> File.rm_rf!(dir) end)
     %{store: store}
   end

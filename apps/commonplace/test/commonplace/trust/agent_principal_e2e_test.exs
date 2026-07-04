@@ -31,8 +31,19 @@ defmodule Commonplace.Trust.AgentPrincipalE2ETest do
     dir = Path.join(System.tmp_dir!(), "cp_agent_e2e_#{:rand.uniform(1_000_000_000)}")
     File.mkdir_p!(dir)
 
-    store = :"agent_e2e_store_#{:rand.uniform(1_000_000)}"
-    start_supervised!({CommitStore, data_dir: dir, name: store})
+    # R4c carve-out: store_capability/2 delegates to TrustSideStore, so this
+    # needs the full trio (a bare CommitStore has no companion by default).
+    n = :rand.uniform(1_000_000)
+    store = :"agent_e2e_store_#{n}"
+
+    start_supervised!(
+      {Commonplace.Store.Supervisor,
+       data_dir: dir,
+       name: :"agent_e2e_sup_#{n}",
+       commit_store_name: store,
+       trust_side_store_name: :"agent_e2e_tss_#{n}",
+       pending_imports_name: :"agent_e2e_pi_#{n}"}
+    )
 
     secrets = :"agent_e2e_secrets_#{:rand.uniform(1_000_000)}"
     {:ok, secrets_pid} = SecretStore.start_link(data_dir: Path.join(dir, "secrets"), name: secrets)

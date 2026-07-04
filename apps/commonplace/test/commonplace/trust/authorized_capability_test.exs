@@ -20,11 +20,23 @@ defmodule Commonplace.Trust.AuthorizedCapabilityTest do
   alias Commonplace.Trust
   alias Commonplace.Trust.Capability
 
+  # R4c carve-out: store_capability/2 delegates to TrustSideStore, so this
+  # needs the full trio (a bare CommitStore has no companion by default).
   setup do
     dir = Path.join(System.tmp_dir!(), "authcap_#{:rand.uniform(1_000_000)}")
     File.mkdir_p!(dir)
-    name = :"authcap_store_#{:rand.uniform(1_000_000)}"
-    start_supervised!({CommitStore, data_dir: dir, name: name})
+    n = :rand.uniform(1_000_000)
+    name = :"authcap_store_#{n}"
+
+    start_supervised!(
+      {Commonplace.Store.Supervisor,
+       data_dir: dir,
+       name: :"authcap_sup_#{n}",
+       commit_store_name: name,
+       trust_side_store_name: :"authcap_tss_#{n}",
+       pending_imports_name: :"authcap_pi_#{n}"}
+    )
+
     on_exit(fn -> File.rm_rf!(dir) end)
 
     # root (locally-pinned anchor) delegates to alice.
