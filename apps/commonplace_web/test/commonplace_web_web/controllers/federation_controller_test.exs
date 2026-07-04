@@ -25,10 +25,32 @@ defmodule CommonplaceWebWeb.FederationControllerTest do
     File.mkdir_p!(dir)
     Application.put_env(:commonplace, :data_dir, dir)
 
+    # R4c carve-out: swap ALL THREE trio children, not just CommitStore —
+    # see the identical comment in federation_round_trip_test.exs for why
+    # (TrustSideStore/PendingImports resolve their handle/reference ONCE,
+    # at their own init/1; leaving them running after a CommitStore swap
+    # would pin them to the OLD, about-to-be-abandoned instance).
     sup = Commonplace.Store.CommitStoreSupervisor
+    _ = Supervisor.terminate_child(sup, Commonplace.Store.PendingImports)
+    _ = Supervisor.delete_child(sup, Commonplace.Store.PendingImports)
+    _ = Supervisor.terminate_child(sup, Commonplace.Store.TrustSideStore)
+    _ = Supervisor.delete_child(sup, Commonplace.Store.TrustSideStore)
     _ = Supervisor.terminate_child(sup, CommitStore)
     _ = Supervisor.delete_child(sup, CommitStore)
-    {:ok, _pid} = Supervisor.start_child(sup, {CommitStore, data_dir: dir})
+
+    {:ok, _pid} =
+      Supervisor.start_child(
+        sup,
+        {CommitStore,
+         data_dir: dir,
+         trust_side_store: Commonplace.Store.TrustSideStore,
+         pending_imports: Commonplace.Store.PendingImports}
+      )
+
+    {:ok, _} =
+      Supervisor.start_child(sup, {Commonplace.Store.TrustSideStore, commit_store: CommitStore})
+
+    {:ok, _} = Supervisor.start_child(sup, {Commonplace.Store.PendingImports, commit_store: CommitStore})
 
     Application.put_env(:commonplace_web, :federation_peers, %{@token => @peer})
 

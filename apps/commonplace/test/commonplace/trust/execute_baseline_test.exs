@@ -14,11 +14,26 @@ defmodule Commonplace.Trust.ExecuteBaselineTest do
   alias Commonplace.Store.CommitStore
   alias Commonplace.Trust
 
+  # R4c carve-out: the execute_clean watermark cache now lives in
+  # TrustSideStore (reached here via CommitStoreClient's local-mode
+  # routing), so this needs the full trio (a bare CommitStore has no
+  # companion by default — the cache write would silently no-op).
   setup do
     dir = Path.join(System.tmp_dir!(), "cp_exec_baseline_#{:rand.uniform(1_000_000)}")
     File.mkdir_p!(dir)
-    name = :"exec_baseline_store_#{:rand.uniform(1_000_000)}"
-    start_supervised!({CommitStore, data_dir: dir, name: name})
+    n = :rand.uniform(1_000_000)
+    name = :"exec_baseline_store_#{n}"
+    trust_side_store = :"exec_baseline_tss_#{n}"
+
+    start_supervised!(
+      {Commonplace.Store.Supervisor,
+       data_dir: dir,
+       name: :"exec_baseline_sup_#{n}",
+       commit_store_name: name,
+       trust_side_store_name: trust_side_store,
+       pending_imports_name: :"exec_baseline_pi_#{n}"}
+    )
+
     on_exit(fn -> File.rm_rf!(dir) end)
 
     {tpub, tpriv} = Signing.generate_keypair()
@@ -31,7 +46,14 @@ defmodule Commonplace.Trust.ExecuteBaselineTest do
 
     strict = %{accept_unsigned: false, trusted_identities: %{tid => Signing.encode_key(tpub)}}
 
-    %{store: name, tctx: tctx, uctx: uctx, strict: strict, fp: :erlang.phash2(strict.trusted_identities)}
+    %{
+      store: name,
+      trust_side_store: trust_side_store,
+      tctx: tctx,
+      uctx: uctx,
+      strict: strict,
+      fp: :erlang.phash2(strict.trusted_identities)
+    }
   end
 
   defp put(store, uuid, body, metadata, ctx) do
@@ -46,8 +68,12 @@ defmodule Commonplace.Trust.ExecuteBaselineTest do
     latest.id
   end
 
-  # A synchronous call barriers the fire-and-forget put_execute_clean cast.
-  defp barrier(store), do: :sys.get_state(store)
+  # A synchronous call to BOTH mailboxes barriers the fire-and-forget
+  # put_execute_clean cast (CommitStore -> TrustSideStore, R4c carve-out).
+  defp barrier(store, trust_side_store) do
+    :sys.get_state(store)
+    :sys.get_state(trust_side_store)
+  end
 
   test "laundering CLOSED: walk continues past a trusted snapshot and catches the untrusted contributor below",
        %{store: s, tctx: t, uctx: u, strict: cfg} do
@@ -68,33 +94,33 @@ defmodule Commonplace.Trust.ExecuteBaselineTest do
   end
 
   test "a clean walk backfills the snapshot true; a second walk halts at the cached snapshot",
-       %{store: s, tctx: t, strict: cfg, fp: fp} do
+       %{store: s, trust_side_store: tss, tctx: t, strict: cfg, fp: fp} do
     uuid = UUID.uuid4()
     put(s, uuid, "defmodule Clean do\nend", %{kind: :regular}, t)
     put(s, uuid, "defmodule Clean do\n  def a, do: 1\nend", %{kind: :snapshot}, t)
     snap = snapshot_id(s, uuid)
 
     assert :ok = Trust.authorized_to_execute?(s, uuid, cfg)
-    barrier(s)
+    barrier(s, tss)
     assert {:ok, true} = CommitStore.get_execute_clean(s, fp, snap)
 
     assert :ok = Trust.authorized_to_execute?(s, uuid, cfg)
   end
 
   test "a denied walk backfills the passed snapshot false",
-       %{store: s, tctx: t, uctx: u, strict: cfg, fp: fp} do
+       %{store: s, trust_side_store: tss, tctx: t, uctx: u, strict: cfg, fp: fp} do
     uuid = UUID.uuid4()
     put(s, uuid, "defmodule Laundered do\nend", %{kind: :regular}, u)
     put(s, uuid, "defmodule Laundered do\n  def a, do: 1\nend", %{kind: :snapshot}, t)
     snap = snapshot_id(s, uuid)
 
     assert {:error, _} = Trust.authorized_to_execute?(s, uuid, cfg)
-    barrier(s)
+    barrier(s, tss)
     assert {:ok, false} = CommitStore.get_execute_clean(s, fp, snap)
   end
 
   test "permissive fast-path returns :ok and writes no cache",
-       %{store: s, uctx: u} do
+       %{store: s, trust_side_store: tss, uctx: u} do
     uuid = UUID.uuid4()
     put(s, uuid, "defmodule Whatever do\nend", %{kind: :regular}, u)
     put(s, uuid, "defmodule Whatever do\n  def a, do: 1\nend", %{kind: :snapshot}, u)
@@ -102,7 +128,7 @@ defmodule Commonplace.Trust.ExecuteBaselineTest do
 
     permissive = %{accept_unsigned: true, trusted_identities: %{}}
     assert :ok = Trust.authorized_to_execute?(s, uuid, permissive)
-    barrier(s)
+    barrier(s, tss)
     assert :miss = CommitStore.get_execute_clean(s, :erlang.phash2(%{}), snap)
   end
 end

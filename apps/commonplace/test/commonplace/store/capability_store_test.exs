@@ -11,11 +11,27 @@ defmodule Commonplace.Store.CapabilityStoreTest do
   alias Commonplace.Store.CommitStore
   alias Commonplace.Trust.Capability
 
+  # R4c carve-out: store_capability/2 and get_capability/2 now delegate to
+  # this instance's Commonplace.Store.TrustSideStore companion, so the test
+  # needs the full trio running (a bare CommitStore has no companion by
+  # default — see CommitStore.init/1 — and store_capability would raise).
+  # Distinct per-test names keep this isolated from every other trio in the
+  # suite, notably the real production singleton the app boots at test start.
   setup do
     dir = Path.join(System.tmp_dir!(), "cap_store_#{:rand.uniform(1_000_000)}")
     File.mkdir_p!(dir)
-    name = :"cap_store_#{:rand.uniform(1_000_000)}"
-    start_supervised!({CommitStore, data_dir: dir, name: name})
+    n = :rand.uniform(1_000_000)
+    name = :"cap_store_#{n}"
+
+    start_supervised!(
+      {Commonplace.Store.Supervisor,
+       data_dir: dir,
+       name: :"cap_store_sup_#{n}",
+       commit_store_name: name,
+       trust_side_store_name: :"cap_store_tss_#{n}",
+       pending_imports_name: :"cap_store_pi_#{n}"}
+    )
+
     on_exit(fn -> File.rm_rf!(dir) end)
 
     {pub, priv} = Signing.generate_keypair()

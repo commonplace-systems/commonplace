@@ -34,20 +34,22 @@ defmodule Commonplace.Application do
         {Cluster.Supervisor,
          [Commonplace.Cluster.topology(), [name: Commonplace.ClusterSupervisor]]},
         Commonplace.Cluster.EventHandler,
+        # R4c carve-out: CommitStore's capability store, execute_clean
+        # watermark cache, and R11 pending-imports retry queue were
+        # extracted into their own processes (TrustSideStore,
+        # PendingImports). `Commonplace.Store.Supervisor` supervises the
+        # trio with `:rest_for_one` (see its moduledoc for why). Nested
+        # here under the same `id` the old bare-CommitStore wrapper used,
+        # so the outer `Commonplace.Supervisor`'s restart accounting for
+        # "the store subsystem" is unchanged; that outer supervisor is
+        # `:one_for_one` so a fatal, repeated failure of the whole store
+        # subsystem doesn't cascade into restarting unrelated siblings.
         %{
           id: Commonplace.Store.CommitStoreSupervisor,
           type: :supervisor,
           start:
-            {Supervisor, :start_link,
-             [
-               [{Commonplace.Store.CommitStore, data_dir: data_dir}],
-               [
-                 strategy: :one_for_one,
-                 max_restarts: 2,
-                 max_seconds: 10,
-                 name: Commonplace.Store.CommitStoreSupervisor
-               ]
-             ]}
+            {Commonplace.Store.Supervisor, :start_link,
+             [[data_dir: data_dir, name: Commonplace.Store.CommitStoreSupervisor]]}
         },
         {Commonplace.Store.SecretStore, data_dir: data_dir},
         Commonplace.Tree.DocCache,

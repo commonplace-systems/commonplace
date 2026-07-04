@@ -16,11 +16,23 @@ defmodule Commonplace.Trust.VerifyChainTest do
   alias Commonplace.Store.CommitStore
   alias Commonplace.Trust.{Capability, VerifyChain}
 
+  # R4c carve-out: store_capability/2 delegates to TrustSideStore, so this
+  # needs the full trio (a bare CommitStore has no companion by default).
   setup do
     dir = Path.join(System.tmp_dir!(), "vchain_#{:rand.uniform(1_000_000)}")
     File.mkdir_p!(dir)
-    name = :"vchain_store_#{:rand.uniform(1_000_000)}"
-    start_supervised!({CommitStore, data_dir: dir, name: name})
+    n = :rand.uniform(1_000_000)
+    name = :"vchain_store_#{n}"
+
+    start_supervised!(
+      {Commonplace.Store.Supervisor,
+       data_dir: dir,
+       name: :"vchain_sup_#{n}",
+       commit_store_name: name,
+       trust_side_store_name: :"vchain_tss_#{n}",
+       pending_imports_name: :"vchain_pi_#{n}"}
+    )
+
     on_exit(fn -> File.rm_rf!(dir) end)
     %{store: name}
   end

@@ -20,10 +20,38 @@ defmodule Commonplace.Federation.PullClientTest do
     dir = Path.join(System.tmp_dir!(), "cp_pull_#{:rand.uniform(1_000_000_000)}")
     File.mkdir_p!(dir)
 
-    serving = :"pull_serving_#{:rand.uniform(1_000_000)}"
-    pulling = :"pull_pulling_#{:rand.uniform(1_000_000)}"
-    start_supervised!(Supervisor.child_spec({CommitStore, data_dir: Path.join(dir, "a"), name: serving}, id: :serving))
-    start_supervised!(Supervisor.child_spec({CommitStore, data_dir: Path.join(dir, "b"), name: pulling}, id: :pulling))
+    # R4c carve-out: PullClient calls CommitStoreClient.store_capability/2
+    # on the PULLING side when inlining a fetched envelope's cert chain,
+    # and this test also calls CommitStore.store_capability/2 directly on
+    # the SERVING side — both delegate to TrustSideStore, so both stores
+    # need the full trio (a bare CommitStore has no companion by default).
+    n = :rand.uniform(1_000_000)
+    serving = :"pull_serving_#{n}"
+    pulling = :"pull_pulling_#{n}"
+
+    start_supervised!(
+      Supervisor.child_spec(
+        {Commonplace.Store.Supervisor,
+         data_dir: Path.join(dir, "a"),
+         name: :"pull_serving_sup_#{n}",
+         commit_store_name: serving,
+         trust_side_store_name: :"pull_serving_tss_#{n}",
+         pending_imports_name: :"pull_serving_pi_#{n}"},
+        id: :serving
+      )
+    )
+
+    start_supervised!(
+      Supervisor.child_spec(
+        {Commonplace.Store.Supervisor,
+         data_dir: Path.join(dir, "b"),
+         name: :"pull_pulling_sup_#{n}",
+         commit_store_name: pulling,
+         trust_side_store_name: :"pull_pulling_tss_#{n}",
+         pending_imports_name: :"pull_pulling_pi_#{n}"},
+        id: :pulling
+      )
+    )
 
     # Strict trust on the PULLING side: only the root is pinned.
     {root_pub, root_priv} = Signing.generate_keypair()

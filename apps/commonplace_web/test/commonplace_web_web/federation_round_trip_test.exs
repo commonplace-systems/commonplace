@@ -33,17 +33,56 @@ defmodule CommonplaceWebWeb.FederationRoundTripTest do
     dir = Path.join(System.tmp_dir!(), "cp_fed_rt_#{:rand.uniform(1_000_000_000)}")
     File.mkdir_p!(dir)
 
-    # Serving side = the DEFAULT CommitStore (the controller's store),
-    # pointed at scratch (wiki_live_test pattern).
+    # Serving side = the DEFAULT trio (the controller's store + its
+    # TrustSideStore/PendingImports companions), pointed at scratch
+    # (wiki_live_test pattern).
+    #
+    # R4c carve-out: swap ALL THREE trio children, not just CommitStore.
+    # `Commonplace.Store.CommitStoreSupervisor` is now
+    # `Commonplace.Store.Supervisor` (`:rest_for_one`) rather than a bare
+    # one_for_one wrapping only CommitStore — TrustSideStore resolves its
+    # CubDB handle ONCE, at its own `init/1`, via
+    # `CommitStore.db_handle/1`. Manually restarting only the CommitStore
+    # child (as the pre-carve-out test did) would leave TrustSideStore
+    # pinned to the OLD (about-to-be-abandoned) db handle — exactly the
+    # staleness `Commonplace.Store.Supervisor`'s moduledoc warns about,
+    # here triggered by an explicit admin swap rather than a crash.
     Application.put_env(:commonplace, :data_dir, dir)
     sup = Commonplace.Store.CommitStoreSupervisor
+    _ = Supervisor.terminate_child(sup, Commonplace.Store.PendingImports)
+    _ = Supervisor.delete_child(sup, Commonplace.Store.PendingImports)
+    _ = Supervisor.terminate_child(sup, Commonplace.Store.TrustSideStore)
+    _ = Supervisor.delete_child(sup, Commonplace.Store.TrustSideStore)
     _ = Supervisor.terminate_child(sup, CommitStore)
     _ = Supervisor.delete_child(sup, CommitStore)
-    {:ok, _} = Supervisor.start_child(sup, {CommitStore, data_dir: dir})
+    {:ok, _} =
+      Supervisor.start_child(
+        sup,
+        {CommitStore,
+         data_dir: dir,
+         trust_side_store: Commonplace.Store.TrustSideStore,
+         pending_imports: Commonplace.Store.PendingImports}
+      )
 
-    # Pulling side = its own store, its own root.
-    pulling = :"fed_rt_pulling_#{:rand.uniform(1_000_000)}"
-    start_supervised!({CommitStore, data_dir: Path.join(dir, "pulling"), name: pulling})
+    {:ok, _} =
+      Supervisor.start_child(sup, {Commonplace.Store.TrustSideStore, commit_store: CommitStore})
+
+    {:ok, _} = Supervisor.start_child(sup, {Commonplace.Store.PendingImports, commit_store: CommitStore})
+
+    # Pulling side = its own trio, its own root. PullClient calls
+    # store_capability/2 on this side when inlining a fetched envelope's
+    # cert chain, which (R4c carve-out) delegates to TrustSideStore.
+    n = :rand.uniform(1_000_000)
+    pulling = :"fed_rt_pulling_#{n}"
+
+    start_supervised!(
+      {Commonplace.Store.Supervisor,
+       data_dir: Path.join(dir, "pulling"),
+       name: :"fed_rt_pulling_sup_#{n}",
+       commit_store_name: pulling,
+       trust_side_store_name: :"fed_rt_pulling_tss_#{n}",
+       pending_imports_name: :"fed_rt_pulling_pi_#{n}"}
+    )
 
     # Real HTTP server on an ephemeral port: parsers + the real router.
     server = start_supervised!({Bandit, plug: ServerPipeline, scheme: :http, port: 0})

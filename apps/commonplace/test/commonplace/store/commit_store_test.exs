@@ -3,13 +3,29 @@ defmodule Commonplace.Store.CommitStoreTest do
 
   alias Commonplace.Store.{Commit, CommitStore}
 
+  # R4c carve-out: put_execute_clean/4 and flush_execute_clean/1 delegate to
+  # TrustSideStore, so this file needs the full trio (a bare CommitStore has
+  # no companion by default). Everything else in this file only exercises
+  # plain commit reads/writes, which are unaffected by the trio being present.
   setup do
     dir = Path.join(System.tmp_dir!(), "commonplace_test_#{:rand.uniform(1_000_000)}")
     File.mkdir_p!(dir)
-    name = :"commit_store_#{:rand.uniform(1_000_000)}"
-    start_supervised!({CommitStore, data_dir: dir, name: name})
+    n = :rand.uniform(1_000_000)
+    name = :"commit_store_#{n}"
+
+    trust_side_store = :"commit_store_tss_#{n}"
+
+    start_supervised!(
+      {Commonplace.Store.Supervisor,
+       data_dir: dir,
+       name: :"commit_store_sup_#{n}",
+       commit_store_name: name,
+       trust_side_store_name: trust_side_store,
+       pending_imports_name: :"commit_store_pi_#{n}"}
+    )
+
     on_exit(fn -> File.rm_rf!(dir) end)
-    %{store: name}
+    %{store: name, trust_side_store: trust_side_store}
   end
 
   describe "create_commit/3" do
@@ -300,15 +316,19 @@ defmodule Commonplace.Store.CommitStoreTest do
   end
 
   describe "execute_clean watermark cache (CX-tdkq.27)" do
-    test "put/get round-trips, keyed by fingerprint AND commit id", %{store: store} do
+    # R4c carve-out: put_execute_clean/4 is now a cast-to-cast hop
+    # (CommitStore → TrustSideStore, which owns the row). Barrier BOTH
+    # mailboxes (each is FIFO, so once both have drained anything queued
+    # before this point, the write is durable) before reading back.
+    test "put/get round-trips, keyed by fingerprint AND commit id", %{store: store, trust_side_store: tss} do
       fp = 12_345
       cid = <<1, 2, 3>>
 
       assert :miss = CommitStore.get_execute_clean(store, fp, cid)
 
       :ok = CommitStore.put_execute_clean(store, fp, cid, true)
-      # Barrier the fire-and-forget cast (mailbox is FIFO).
       _ = :sys.get_state(store)
+      _ = :sys.get_state(tss)
 
       assert {:ok, true} = CommitStore.get_execute_clean(store, fp, cid)
       # A different fingerprint (config changed) or unknown commit → miss.
@@ -316,16 +336,18 @@ defmodule Commonplace.Store.CommitStoreTest do
       assert :miss = CommitStore.get_execute_clean(store, fp, <<9, 9>>)
     end
 
-    test "false verdicts round-trip too", %{store: store} do
+    test "false verdicts round-trip too", %{store: store, trust_side_store: tss} do
       :ok = CommitStore.put_execute_clean(store, 1, <<7>>, false)
       _ = :sys.get_state(store)
+      _ = :sys.get_state(tss)
       assert {:ok, false} = CommitStore.get_execute_clean(store, 1, <<7>>)
     end
 
-    test "flush drops all cache entries", %{store: store} do
+    test "flush drops all cache entries", %{store: store, trust_side_store: tss} do
       :ok = CommitStore.put_execute_clean(store, 1, <<1>>, true)
       :ok = CommitStore.put_execute_clean(store, 2, <<2>>, false)
       _ = :sys.get_state(store)
+      _ = :sys.get_state(tss)
       assert {:ok, true} = CommitStore.get_execute_clean(store, 1, <<1>>)
 
       :ok = CommitStore.flush_execute_clean(store)
