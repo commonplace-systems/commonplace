@@ -21,18 +21,24 @@ defmodule Commonplace.MUD.TickBotTest do
     start_supervised!({CommitStore, data_dir: dir, name: store})
     on_exit(fn -> File.rm_rf!(dir) end)
 
-    # Moves take green tokens (move #4): start a Bursar under its default
-    # name so World.move's default route finds it (replaces the retired
-    # :global MoveServer).
-    case GenServer.whereis(Commonplace.Green.Bursar) do
-      nil -> :ok
-      pid -> GenServer.stop(pid)
-    end
+    # CX-pvrl: this module doesn't exercise World.move, only TickBot
+    # leadership — so it gets its OWN uniquely-named Bursar rather than
+    # registering under the default `Commonplace.Green.Bursar` name.
+    # The application boots an unconditional `Commonplace.MUD.TickBot`
+    # singleton (default name, real 1s heartbeat, `bursar:` defaulting
+    # to the literal `Bursar` atom) for the whole `mix test` run; if this
+    # module's Bursar were registered under that default name, the
+    # ambient singleton would find it and race this module's own
+    # TickBot instances for the same "__singletons/tick_bot" lease
+    # (intermittent :not_leader flake). A uniquely-named Bursar is
+    # invisible to that ambient TickBot.
+    bursar_name = :"tick_bot_test_bursar_#{:rand.uniform(1_000_000)}"
 
     {:ok, bursar_pid} =
       Commonplace.Green.Bursar.start_link(
         root_uuid: UUID.uuid4(),
         store: store,
+        name: bursar_name,
         sweep_interval: 60_000
       )
 
@@ -55,7 +61,8 @@ defmodule Commonplace.MUD.TickBotTest do
           store: ctx.store,
           root_uuid: ctx.root,
           heartbeat_ms: 999_999,
-          auto_start: false
+          auto_start: false,
+          bursar: ctx.bursar
         ] ++ extra_opts
       )
 
@@ -179,7 +186,7 @@ defmodule Commonplace.MUD.TickBotTest do
 
       {:ok, _} =
         Commonplace.Green.Bursar.acquire(
-          Commonplace.Green.Bursar, "__singletons/tick_bot", "some-other-node")
+          ctx.bursar, "__singletons/tick_bot", "some-other-node")
 
       {_pid, name} = start_tickbot(ctx, holder: "me")
 
@@ -195,7 +202,7 @@ defmodule Commonplace.MUD.TickBotTest do
       assert_receive {"red:" <> _, %{kind: :custom, text: "The wind howls."}}, 100
 
       assert {:held, %{holder: "me"}} =
-               Commonplace.Green.Bursar.query(Commonplace.Green.Bursar, "__singletons/tick_bot")
+               Commonplace.Green.Bursar.query(ctx.bursar, "__singletons/tick_bot")
     end
 
     test "renewal keeps the leader alive past the original TTL", ctx do
@@ -215,7 +222,7 @@ defmodule Commonplace.MUD.TickBotTest do
       assert :ok = TickBot.tick_now(name)
 
       assert {:held, %{holder: "me"}} =
-               Commonplace.Green.Bursar.query(Commonplace.Green.Bursar, "__singletons/tick_bot")
+               Commonplace.Green.Bursar.query(ctx.bursar, "__singletons/tick_bot")
     end
 
     test "failover: a second TickBot takes over after the dead leader's TTL expires", ctx do
@@ -249,7 +256,7 @@ defmodule Commonplace.MUD.TickBotTest do
       assert elapsed <= 2 * ttl + 200, "failover took #{elapsed}ms"
 
       assert {:held, %{holder: "b"}} =
-               Commonplace.Green.Bursar.query(Commonplace.Green.Bursar, "__singletons/tick_bot")
+               Commonplace.Green.Bursar.query(ctx.bursar, "__singletons/tick_bot")
     end
 
     test "no bursar reachable → :not_leader, no crash (fail-closed)", ctx do
