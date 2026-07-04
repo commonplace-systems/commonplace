@@ -626,16 +626,27 @@ defmodule CommonplaceWebWeb.WikiLive do
   end
 
   defp render_inline(text, current_path) do
-    # Replace [[PageName]] and [[PageName|Display]] with links
-    Regex.replace(~r/\[\[([^\]]+)\]\]/, text, fn _, inner ->
+    # Replace [[PageName]] and [[PageName|Display]] with links. Section
+    # paths (`[[plan/start]]`) resolve relative to the current page's
+    # directory; the `.md` fallback (see `resolve_page_entry/2`) is applied
+    # at page-load time, not here, so the href stays extensionless.
+    Regex.replace(~r/\[\[([^\]]+)\]\]/, text, fn full, inner ->
       {page, display} =
         case String.split(inner, "|", parts: 2) do
           [page, display] -> {String.trim(page), String.trim(display)}
           [page] -> {String.trim(page), String.trim(page)}
         end
 
-      href = wiki_path(join_path(current_path, sanitize_page_name(page)))
-      "<a href=\"#{escape(href)}\" class=\"text-primary hover:underline font-medium\">#{escape(display)}</a>"
+      case sanitize_wiki_link(page) do
+        {:ok, sanitized} ->
+          href = wiki_path(join_path(current_path, sanitized))
+          "<a href=\"#{escape(href)}\" class=\"text-primary hover:underline font-medium\">#{escape(display)}</a>"
+
+        :error ->
+          # A `..` segment would escape the current directory — render the
+          # original bracketed text as plain (unlinked) content instead.
+          escape(full)
+      end
     end)
     |> then(fn text ->
       # Bold
@@ -689,8 +700,19 @@ defmodule CommonplaceWebWeb.WikiLive do
         # Try to load the specific page
         schema = if dir_uuid, do: load_schema(dir_uuid), else: Schema.new_schema()
 
-        case Schema.get_entry(schema, page_name) do
-          {:ok, entry} when entry.type == :dir ->
+        # `resolve_page_entry/2` tries the exact name first, falling back to
+        # a `.md` variant (GitBridge-synced pages are named e.g. `world.md`
+        # so GitHub renders them natively). Exact matches always win — a
+        # legacy extensionless page named the same as a `.md` fallback
+        # target is never shadowed. Note: this only substitutes the final
+        # path segment's filename; it does NOT create intermediate
+        # directories — `resolve_dir/2` above already returned `nil` (and
+        # thus an empty schema) for a missing intermediate dir, so a path
+        # like `plan/start` where `plan/` doesn't exist falls straight
+        # through to the :error/create-prompt branch below, scoped to
+        # what exists, same as it always has.
+        case resolve_page_entry(schema, page_name) do
+          {:ok, resolved_name, entry} when entry.type == :dir ->
             # It's a directory — show its contents
             dir_entries = list_entries(entry.node_id)
 
@@ -704,14 +726,14 @@ defmodule CommonplaceWebWeb.WikiLive do
               entries: dir_entries,
               show_history: false,
               history: [],
-              page_title: "#{page_name} — Commonplace Wiki"
+              page_title: "#{resolved_name} — Commonplace Wiki"
             )
 
-          {:ok, entry} ->
+          {:ok, resolved_name, entry} ->
             # It's a document — show it. Centralized enrichment ensures the
             # presence identity panel survives live refreshes (see
             # handle_info({:commit,...}) and the "view" toggle handler).
-            content = read_and_enrich(entry.node_id, page_name, root)
+            content = read_and_enrich(entry.node_id, resolved_name, root)
 
             if connected?(socket) do
               CPPubSub.subscribe_blue(entry.node_id)
@@ -720,18 +742,19 @@ defmodule CommonplaceWebWeb.WikiLive do
             socket
             |> assign(
               current_path: dir_path,
-              page_name: page_name,
+              page_name: resolved_name,
               page_uuid: entry.node_id,
               page_content: content,
               mode: :view,
               entries: entries,
               show_history: false,
               history: [],
-              page_title: "#{display_name(page_name)} — Commonplace Wiki"
+              page_title: "#{display_name(resolved_name)} — Commonplace Wiki"
             )
 
           :error ->
-            # Page doesn't exist — offer to create
+            # Page doesn't exist (neither the exact name nor its `.md`
+            # fallback) — offer to create
             socket
             |> assign(
               current_path: dir_path,
@@ -864,6 +887,29 @@ defmodule CommonplaceWebWeb.WikiLive do
     end
   end
 
+  # Resolves a page name against a schema, trying the exact name first and
+  # then a `.md` fallback (see the comment at the `load_page/2` call site).
+  # An exact match always wins over the fallback. Returns
+  # `{:ok, resolved_name, entry}` or `:error`.
+  defp resolve_page_entry(schema, page_name) do
+    case Schema.get_entry(schema, page_name) do
+      {:ok, entry} ->
+        {:ok, page_name, entry}
+
+      :error ->
+        if String.contains?(page_name, ".") do
+          :error
+        else
+          md_name = page_name <> ".md"
+
+          case Schema.get_entry(schema, md_name) do
+            {:ok, entry} -> {:ok, md_name, entry}
+            :error -> :error
+          end
+        end
+    end
+  end
+
   defp resolve_dir(root_uuid, path) do
     loader = &load_schema/1
 
@@ -913,6 +959,27 @@ defmodule CommonplaceWebWeb.WikiLive do
     |> String.replace(~r/[^\w\s\-.]/, "")
     |> String.replace(~r/\s+/, "-")
     |> String.downcase()
+  end
+
+  # Sanitizes a (possibly section-scoped) wikilink target: each `/`-
+  # separated segment is sanitized independently (so `/` survives — a plain
+  # `sanitize_page_name/1` on the whole string would strip it) and the
+  # result is rejoined with `/`. Any `..` segment is rejected outright
+  # rather than sanitized away, so a link can never climb out of the
+  # current directory — callers must treat `:error` as "not a link".
+  defp sanitize_wiki_link(page) do
+    segments = String.split(page, "/")
+
+    if Enum.any?(segments, fn seg -> String.trim(seg) == ".." end) do
+      :error
+    else
+      sanitized =
+        segments
+        |> Enum.map(&sanitize_page_name/1)
+        |> Enum.join("/")
+
+      {:ok, sanitized}
+    end
   end
 
   defp display_name(name) when is_binary(name) do

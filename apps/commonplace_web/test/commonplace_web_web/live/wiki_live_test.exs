@@ -18,7 +18,9 @@ defmodule CommonplaceWebWeb.WikiLiveTest do
   alias Commonplace.Presence
   alias Commonplace.Presence.Identity
   alias Commonplace.Store.CommitStore
+  alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.{DocCache, Schema}
+  alias Commonplace.Document.ContentType
 
   setup do
     # The web app boots the commonplace app which starts a default
@@ -153,10 +155,116 @@ defmodule CommonplaceWebWeb.WikiLiveTest do
     end
   end
 
+  describe "[[wikilinks]] resolve to .md pages and section paths" do
+    test "[[world]] from a page in a dir containing world.md navigates without a create prompt",
+         %{conn: conn, root: root_uuid} do
+      create_md_page(root_uuid, "home.md", "See [[world]] for more.")
+      create_md_page(root_uuid, "world.md", "# World\n\nHello from the world page.")
+
+      {:ok, _view, home_html} = live(conn, "/wiki/home.md")
+      assert home_html =~ ~s(href="/wiki/world")
+
+      {:ok, _view, world_html} = live(conn, "/wiki/world")
+
+      refute world_html =~ "(new)",
+             "world.md should resolve via the .md fallback, not offer to create a duplicate page"
+
+      assert world_html =~ "Hello from the world page."
+    end
+
+    test "an exact extensionless entry wins over the .md fallback when both exist",
+         %{conn: conn, root: root_uuid} do
+      create_md_page(root_uuid, "world", "Exact extensionless page content.")
+      create_md_page(root_uuid, "world.md", "The .md fallback content.")
+
+      {:ok, _view, html} = live(conn, "/wiki/world")
+
+      assert html =~ "Exact extensionless page content."
+      refute html =~ "The .md fallback content."
+    end
+
+    test "[[plan/start]] resolves to a nested directory's start.md",
+         %{conn: conn, root: root_uuid} do
+      plan_uuid = create_dir(root_uuid, "plan")
+      create_md_page(root_uuid, "home.md", "See [[plan/start]] for the plan.")
+      create_md_page(plan_uuid, "start.md", "# Plan\n\nThe plan starts here.")
+
+      {:ok, _view, home_html} = live(conn, "/wiki/home.md")
+      assert home_html =~ ~s(href="/wiki/plan/start")
+
+      {:ok, _view, plan_html} = live(conn, "/wiki/plan/start")
+
+      refute plan_html =~ "(new)",
+             "plan/start should resolve to plan/start.md via the .md fallback"
+
+      assert plan_html =~ "The plan starts here."
+    end
+
+    test "[[../escape]] does not escape the current directory",
+         %{conn: conn, root: root_uuid} do
+      create_md_page(root_uuid, "home.md", "Nice try: [[../escape]]")
+
+      {:ok, _view, html} = live(conn, "/wiki/home.md")
+
+      refute html =~ ~s(href="/wiki/../escape")
+      refute html =~ ~s(href="/wiki/escape")
+      assert html =~ "[[../escape]]"
+    end
+  end
+
   defp read_root_schema(root_uuid) do
     {:ok, commit} = CommitStore.latest_commit(Commonplace.Store.CommitStore, root_uuid)
     doc = Schema.new_schema()
     {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
     doc
+  end
+
+  defp read_schema(uuid) do
+    case CommitStore.latest_commit(Commonplace.Store.CommitStore, uuid) do
+      {:ok, commit} ->
+        doc = Schema.new_schema()
+        {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
+        doc
+
+      :none ->
+        Schema.new_schema()
+    end
+  end
+
+  # Creates a markdown text document under `dir_uuid`'s schema named
+  # `filename`, with `body` as its initial content. Mirrors the
+  # `"create_page"` handler in WikiLive.
+  defp create_md_page(dir_uuid, filename, body) do
+    uuid = UUID.uuid4()
+    doc = Yelixer.Doc.new()
+    doc = ContentType.create(doc, :text, filename)
+    doc = ContentType.insert_text(doc, 0, body)
+    update = Yelixer.Encoding.encode_update(doc)
+    CommitStoreClient.create_commit(uuid, update, nil)
+
+    schema = read_schema(dir_uuid)
+    schema = Schema.add_file(schema, filename, uuid)
+    schema_update = Yelixer.Encoding.encode_update(schema)
+    CommitStoreClient.create_chained_commit(dir_uuid, schema_update)
+
+    DocCache.clear()
+    uuid
+  end
+
+  # Creates a subdirectory named `name` under `parent_uuid`'s schema and
+  # returns the new directory's uuid.
+  defp create_dir(parent_uuid, name) do
+    dir_uuid = UUID.uuid4()
+    doc = Schema.new_schema()
+    update = Yelixer.Encoding.encode_update(doc)
+    CommitStoreClient.create_commit(dir_uuid, update, nil)
+
+    schema = read_schema(parent_uuid)
+    schema = Schema.add_directory(schema, name, dir_uuid)
+    schema_update = Yelixer.Encoding.encode_update(schema)
+    CommitStoreClient.create_chained_commit(parent_uuid, schema_update)
+
+    DocCache.clear()
+    dir_uuid
   end
 end
