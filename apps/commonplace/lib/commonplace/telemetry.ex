@@ -106,6 +106,15 @@ defmodule Commonplace.Telemetry do
   (e.g. "> 10× baseline p95") once this telemetry has run for a few
   weeks, not treated as a load-bearing number today.
 
+  Read queue pressure ALONGSIDE the `write_cpu` persist share: after
+  CX-3erd's hoist, the first measured datapoint put server-side write
+  cost at ~97% persist (CubDB `put_multi`) — coordinator sharding
+  (rung 2) would parallelize only the remaining sliver, so if pressure
+  ever shows up, ask "is it persist-bound?" first. Persist-bound
+  pressure is a rung-3 (storage-side) problem — batching, or reopening
+  the storage conversation on actual rung-3 evidence — and sharding
+  coordinators would be the wrong fix for it.
+
   ## Console Logger
 
   `Commonplace.Telemetry` provides `attach_console_logger/0` which logs
