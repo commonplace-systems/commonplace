@@ -382,6 +382,7 @@ defmodule Commonplace.Store.CommitStore do
   use GenServer
 
   alias Commonplace.Store.Commit
+  alias Commonplace.Trust.CodeDocHeuristic
 
   def start_link(opts) do
     name = Keyword.get(opts, :name, __MODULE__)
@@ -1185,6 +1186,22 @@ defmodule Commonplace.Store.CommitStore do
 
         {:reply, {:error, {:trust_rejected, reason}}, state}
 
+      # CX-obfb: a delta-merge (merge_parents non-empty, or a
+      # MergeSnapshotter-shaped 2+ element snapshot_parents) targeting a
+      # code doc is a HARD reject — it never resolves by waiting, same
+      # rationale as R1 trust rejections. The classifier is best-effort
+      # content-sniffing (Commonplace.Trust.CodeDocHeuristic), so this is
+      # defense-in-depth alongside the sibling-merge and explicit-merge
+      # seams, not a substitute for Gate B.
+      {:error, {:code_doc_delta_merge, _doc_uuid} = reason} ->
+        :telemetry.execute(
+          [:commonplace, :commit, :rejected, :code_doc_delta_merge],
+          %{system_time: System.system_time()},
+          %{doc_uuid: commit.doc_uuid, commit_id: commit.id}
+        )
+
+        {:reply, {:error, reason}, state}
+
       {:error, {:namespace, reason}} ->
         emit_namespace_rejection(commit, reason)
         # R11: hold the rejected commit and retry once its dependency lands.
@@ -1192,16 +1209,55 @@ defmodule Commonplace.Store.CommitStore do
     end
   end
 
-  # The full import validation pipeline — trust gate THEN namespace —
-  # run identically by the initial import and the R11 retry, so a commit
-  # deferred for one reason (e.g. an absent cert) is re-checked against
-  # BOTH gates when it is retried (never bypasses the cert check).
+  # The full import validation pipeline — trust gate, THEN the
+  # no-delta-merge-on-code-docs guard, THEN namespace — run identically
+  # by the initial import and the R11 retry, so a commit deferred for one
+  # reason (e.g. an absent cert) is re-checked against ALL gates when it
+  # is retried (never bypasses an earlier check).
   defp import_validation(commit, opts, state) do
     with :ok <- trust_check(commit, state),
+         :ok <- code_doc_delta_merge_check(commit, state),
          :ok <- namespace_check(commit, opts, state) do
       :ok
     end
   end
+
+  # CX-obfb: forbid delta-merges from landing on code docs. Gate B
+  # (`Commonplace.Trust.authorized_to_execute?`) walks a doc's commit
+  # chain via `parent_id` only, so a merge commit's `merge_parents`
+  # side-line — or a MergeSnapshotter two-parent snapshot — is never
+  # visited by the execute-authorization walk, even though its absorbed
+  # bytes reach a compile read. Rather than teach the walk to traverse
+  # merge edges, code-doc convergence is required to happen by
+  # re-authorship instead: an `:execute`-authorized signer mints a
+  # regular full-state commit.
+  #
+  # `state.name` (not the routing default) is threaded through so the
+  # classifier's reconstruct read resolves THIS store's CubDB handle —
+  # safe to call from inside this GenServer's own handle_call because
+  # `reconstruct_snapshot` bottoms out in `resolve_db/1`, which reads a
+  # `:persistent_term` handle directly rather than `GenServer.call`ing
+  # back into this same (currently busy) process.
+  defp code_doc_delta_merge_check(commit, state) do
+    if delta_merge_shaped?(commit) and CodeDocHeuristic.code_doc?(commit.doc_uuid, state.name) do
+      {:error, {:code_doc_delta_merge, commit.doc_uuid}}
+    else
+      :ok
+    end
+  end
+
+  # A delta-merge commit is either:
+  #   - a `:translate`-style merge: non-empty `merge_parents`, or
+  #   - a MergeSnapshotter-style merge-snapshot: `metadata.snapshot_parents`
+  #     carrying 2+ entries (the two-parent shape; a normal single-lineage
+  #     snapshot carries exactly one).
+  defp delta_merge_shaped?(%Commit{merge_parents: merge_parents}) when merge_parents != [], do: true
+
+  defp delta_merge_shaped?(%Commit{metadata: %{snapshot_parents: snapshot_parents}})
+       when is_list(snapshot_parents) and length(snapshot_parents) > 1,
+       do: true
+
+  defp delta_merge_shaped?(_commit), do: false
 
   defp trust_check(commit, state) do
     # Thread this store's own name so the phase-3 capability path fetches

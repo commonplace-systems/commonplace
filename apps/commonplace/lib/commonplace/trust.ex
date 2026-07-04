@@ -220,15 +220,34 @@ defmodule Commonplace.Trust do
   ## Genesis and merges
 
   The **genesis** commit is exempt and terminal (synthetic, empty update).
-  The walk follows `parent_id` only. A **merge** commit's `merge_parents`
-  side is absorbed bytes the `parent_id` walk never visits, so a snapshot
-  cached `true` above an *unclean* merge can be wrong until the merge-omission
-  follow-up (CX-obfb) traverses `merge_parents` (or enforces
-  no-delta-merge-on-code-docs). This is latent: a write-without-`:execute`
-  contributor is only cert-expressible (phase-3), and CX-tdkq.28 guards that
-  input at mint meanwhile. (Since phase 2.5 system-minted commits — including
-  merges — are node-signed and locally auto-trusted, so the older "merges
-  unsigned → strict denies converged code docs" note is **stale**.)
+  The walk follows `parent_id` only — a **merge** commit's `merge_parents`
+  side (the absorbed bytes of whatever it folded in) is never visited.
+
+  That omission is closed for code docs by CX-obfb's
+  no-delta-merge-on-code-docs enforcement rather than by teaching this
+  walk to traverse `merge_parents`: a delta-merge (non-empty
+  `merge_parents`, or a MergeSnapshotter two-parent
+  `metadata.snapshot_parents`) is refused at every seam that could land
+  one on a code doc — `CommitStore.import_commit/3`
+  (`Commonplace.Trust.CodeDocHeuristic.code_doc?/2` gate),
+  `Commonplace.SiblingMerger.maybe_merge_siblings/3` (skips instead of
+  auto-merging), and `Commonplace.Store.Merger.merge/4` (refuses both
+  `:translate` and `:merge_snapshot`). A code doc therefore never
+  acquires a merge_parents side-line in the first place, so its
+  `parent_id`-only chain is exactly its full contributor history and this
+  walk is sound for it. Convergence for a code doc instead happens by
+  re-authorship: an `:execute`-authorized signer mints a regular
+  full-state commit with the merged content.
+
+  Non-code docs are unaffected — Gate B does not apply to them, so they
+  continue to merge freely via any strategy.
+
+  The classifier is still best-effort content-sniffing and a doc that
+  can't be reconstructed locally (or doesn't content-sniff as code)
+  classifies `false` — a residual miss on that classifier is covered by
+  the mint-time guard (CX-tdkq.28) for the write-without-`:execute`
+  input path; broadening the classifier's reach is tracked separately
+  (CX-6g0j).
 
   An empty chain returns `:ok` — there is nothing to execute, and the
   caller's read fails with `:not_found` on its own.

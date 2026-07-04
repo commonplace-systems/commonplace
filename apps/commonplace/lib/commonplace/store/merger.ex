@@ -106,9 +106,25 @@ defmodule Commonplace.Store.Merger do
     caller's.
   - **Not a canonicalizer by default.** Pair ordering is left as-is unless the
     caller opts into `canonical_pair/2`.
+
+  ## Code docs converge by re-authorship, not by merge (CX-obfb)
+
+  Both strategies are refused when the target doc classifies as a code
+  doc (`Commonplace.Trust.CodeDocHeuristic.code_doc?/2`): `:translate`
+  mints a delta-merge commit (`merge_parents = [R]`) whose side-line
+  Gate B (`Commonplace.Trust.authorized_to_execute?`) never traverses
+  (it walks `parent_id` only), and `:merge_snapshot` absorbs R's bytes
+  into a fresh namespace's update — reaching a compile read the same
+  unchecked way. Refusing here (as well as at `CommitStore.import_commit/3`
+  and `Commonplace.SiblingMerger.maybe_merge_siblings/3`) means a code doc's
+  linear `parent_id` history is never missing an execute-authorization
+  check. Convergence for a code doc instead happens by re-authorship: an
+  `:execute`-authorized signer mints a regular full-state commit with the
+  merged content.
   """
 
-  alias Commonplace.Store.{CrossEpochMerge, MergeSnapshotter}
+  alias Commonplace.Store.{CommitStore, CrossEpochMerge, MergeSnapshotter}
+  alias Commonplace.Trust.CodeDocHeuristic
 
   @type strategy :: :translate | :merge_snapshot
   @type result :: {:ok, Commonplace.Store.Commit.t()} | {:error, term()}
@@ -120,25 +136,49 @@ defmodule Commonplace.Store.Merger do
         emit_failed(:strategy_required, nil, l_id, r_id)
         {:error, :strategy_required}
 
-      {:ok, :translate} ->
-        dispatch(:translate, l_id, r_id, fn ->
-          CrossEpochMerge.merge(store, l_id, r_id, Keyword.delete(opts, :strategy))
-        end)
-
-      {:ok, :merge_snapshot} ->
-        dispatch(:merge_snapshot, l_id, r_id, fn ->
-          MergeSnapshotter.build_merge_snapshot(
-            store,
-            l_id,
-            r_id,
-            Keyword.delete(opts, :strategy)
-          )
-        end)
+      {:ok, strategy} when strategy in [:translate, :merge_snapshot] ->
+        case code_doc_merge_refusal(store, l_id, r_id, strategy) do
+          {:error, _reason} = err -> err
+          :ok -> dispatch_strategy(store, l_id, r_id, strategy, opts)
+        end
 
       {:ok, other} ->
         reason = {:unknown_strategy, other}
         emit_failed(reason, other, l_id, r_id)
         {:error, reason}
+    end
+  end
+
+  defp dispatch_strategy(store, l_id, r_id, :translate, opts) do
+    dispatch(:translate, l_id, r_id, fn ->
+      CrossEpochMerge.merge(store, l_id, r_id, Keyword.delete(opts, :strategy))
+    end)
+  end
+
+  defp dispatch_strategy(store, l_id, r_id, :merge_snapshot, opts) do
+    dispatch(:merge_snapshot, l_id, r_id, fn ->
+      MergeSnapshotter.build_merge_snapshot(
+        store,
+        l_id,
+        r_id,
+        Keyword.delete(opts, :strategy)
+      )
+    end)
+  end
+
+  # CX-obfb: refuse before dispatching to either engine when the doc
+  # classifies as code. `l_id`'s commit names the doc_uuid (both L and R
+  # share one doc). Best-effort: an unclassifiable doc (e.g. not locally
+  # reconstructable, or `l_id` itself unresolvable) falls through to the
+  # normal dispatch, which will itself error out on a bad id.
+  defp code_doc_merge_refusal(store, l_id, r_id, strategy) do
+    with {:ok, l_commit} <- CommitStore.get_commit(store, l_id),
+         true <- CodeDocHeuristic.code_doc?(l_commit.doc_uuid, store) do
+      reason = {:code_doc_merge_refused, strategy, l_commit.doc_uuid}
+      emit_failed(reason, strategy, l_id, r_id)
+      {:error, reason}
+    else
+      _ -> :ok
     end
   end
 

@@ -41,12 +41,16 @@ defmodule Commonplace.SiblingMerger do
   """
 
   alias Commonplace.Store.{Commit, CommitStore, Merger}
+  alias Commonplace.Trust.CodeDocHeuristic
+
+  require Logger
 
   @default_strategy :translate
 
   @type merged_result ::
           {:ok, :merged, Commit.t()}
           | {:ok, :no_siblings}
+          | {:ok, :code_doc_skip}
 
   @doc """
   Merge any sibling commits for `doc_uuid` into `:latest`.
@@ -61,6 +65,13 @@ defmodule Commonplace.SiblingMerger do
     - `{:ok, :no_siblings}` when every persisted commit for `doc_uuid`
       is already on `:latest`'s chain (or the doc has no commits at
       all).
+    - `{:ok, :code_doc_skip}` (CX-obfb) when a sibling exists but
+      `doc_uuid` classifies as a code doc: auto-merging would emit a
+      delta-merge commit whose `merge_parents` side-line Gate B
+      (`Commonplace.Trust.authorized_to_execute?`) never traverses, so
+      un-authorized content could reach execution unchecked. Heads stay
+      divergent — code docs converge only by re-authorship (an
+      `:execute`-authorized signer minting a regular full-state commit).
   """
   @spec maybe_merge_siblings(GenServer.server(), String.t(), keyword()) :: merged_result()
   def maybe_merge_siblings(store \\ CommitStore, doc_uuid, opts \\ []) do
@@ -76,8 +87,30 @@ defmodule Commonplace.SiblingMerger do
         sibling_ids = MapSet.difference(all_for_doc, covered)
 
         case MapSet.to_list(sibling_ids) do
-          [] -> {:ok, :no_siblings}
-          [sibling_id | _] -> merge_and_write(store, latest, sibling_id, strategy)
+          [] ->
+            {:ok, :no_siblings}
+
+          [sibling_id | _] ->
+            # Only tax the path where a sibling actually exists — the
+            # common no-op case (:no_siblings) skips the classifier read.
+            if CodeDocHeuristic.code_doc?(doc_uuid, store) do
+              Logger.warning(
+                "SiblingMerger: skipping auto-merge for code doc #{doc_uuid} — " <>
+                  "no-delta-merge-on-code-docs invariant (CX-obfb). Heads stay " <>
+                  "divergent; converge by re-authorship (an :execute-authorized " <>
+                  "signer mints a regular full-state commit)."
+              )
+
+              :telemetry.execute(
+                [:commonplace, :sibling_merge, :skipped_code_doc],
+                %{system_time: System.system_time()},
+                %{doc_uuid: doc_uuid, latest_id: latest.id, sibling_id: sibling_id}
+              )
+
+              {:ok, :code_doc_skip}
+            else
+              merge_and_write(store, latest, sibling_id, strategy)
+            end
         end
     end
   end
