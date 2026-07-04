@@ -32,6 +32,7 @@ config :commonplace,
   # in tests so async writes don't race with test isolation. Tests that
   # need the sweeper or the lazy trigger flip these flags in their setup.
   snapshot_sweeper_enabled: false,
+  git_bridge_on_boot: false,
   reader_lazy_snapshot_enabled: false,
   # CX-9hql: the CommitStoreQueuePoller ticks on its own timer and would
   # otherwise emit `[:commonplace, :commit_store, :queue_depth]` in the

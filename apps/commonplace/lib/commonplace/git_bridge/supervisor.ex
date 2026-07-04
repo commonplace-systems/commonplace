@@ -11,12 +11,14 @@ defmodule Commonplace.GitBridge.Supervisor do
   production wiring is a one-line config, but every argument is
   overridable so tests can point it at a tmp dir.
 
-  This module intentionally is NOT wired into
-  `Commonplace.Application`'s supervision tree for G1 — starting git
-  mirrors automatically on every boot is an integration decision for a
-  later phase (it needs a story for "which mounts get mirrored,"
-  credentials for remotes, etc.). It is fully usable standalone via
-  `start_supervised!({Commonplace.GitBridge.Supervisor, opts})` today.
+  Wired into `Commonplace.Application`'s tree via
+  `git_bridge_children/0` (default-on outside test): the durable-mapping
+  requirement is that bridges RESTART ON NODE BOOT from the persisted
+  file — a mirror that silently stays down after a reboot looks covered
+  while backing up nothing. "Which mounts get mirrored" IS the mapping
+  file (absent/empty ⇒ zero children); remote credentials come from
+  SecretStore at push time. Tests start isolated instances via
+  `start_supervised!({Commonplace.GitBridge.Supervisor, opts})`.
   """
 
   use Supervisor

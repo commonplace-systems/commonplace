@@ -74,7 +74,8 @@ defmodule Commonplace.Application do
         snapshot_sweeper_children() ++
         presence_reaper_children() ++
         compute_rehydrator_children() ++
-        federation_pull_children() ++ orchestrator_children() ++ bursar_children()
+        federation_pull_children() ++
+        orchestrator_children() ++ bursar_children() ++ git_bridge_children()
 
     opts = [strategy: :one_for_one, name: Commonplace.Supervisor]
 
@@ -113,6 +114,24 @@ defmodule Commonplace.Application do
   def snapshot_sweeper_children do
     if Application.get_env(:commonplace, :snapshot_sweeper_enabled, true) do
       [{Commonplace.SnapshotSweeper, []}]
+    else
+      []
+    end
+  end
+
+  @doc false
+  # GitBridge-on-boot (CX-b0ow.1): the durable-mapping condition — a git
+  # mirror that silently stays down after a node reboot is worse than no
+  # mirror, because it LOOKS covered. The supervisor reads
+  # `<data_dir>/git_bridges.json` at boot and starts one bridge per
+  # persisted mapping (absent/empty file ⇒ zero children, so this is
+  # free until `add_mapping/2` is first used). Each bridge start emits a
+  # `:started` red event, so boot gaps are visible. Default-off only in
+  # test (config/test.exs) to keep suite runs from touching a shared
+  # mapping file.
+  def git_bridge_children do
+    if Application.get_env(:commonplace, :git_bridge_on_boot, true) do
+      [{Commonplace.GitBridge.Supervisor, [store: Commonplace.Store.CommitStoreClient]}]
     else
       []
     end
