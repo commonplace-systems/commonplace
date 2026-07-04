@@ -160,18 +160,30 @@ defmodule Commonplace.GitBridge.ExporterTest do
     File.mkdir_p!(Path.join(dir, ".commonplace"))
     File.write!(Path.join(dir, ".commonplace/mount.json"), "{}\n")
 
+    # GitBridge G1.5 (CX-b0ow.4): the commit archive lives under
+    # `.commonplace/archive/<uuid>/<commit>.json` — same protected
+    # prefix, so this pin test doubles as its guard. Extend it
+    # explicitly rather than trusting the shared `.commonplace` prefix
+    # alone, since archive rows are exactly the kind of "backup data"
+    # a prune-boundary regression would silently destroy.
+    File.mkdir_p!(Path.join(dir, ".commonplace/archive/doc-a"))
+    archive_row_path = Path.join(dir, ".commonplace/archive/doc-a/deadbeef.json")
+    File.write!(archive_row_path, "{}\n")
+
     empty_root = Schema.new_schema()
     create_schema(store, "uuid-root", empty_root)
 
     previous = %{
       ".git/HEAD" => %{},
-      ".commonplace/mount.json" => %{}
+      ".commonplace/mount.json" => %{},
+      ".commonplace/archive/doc-a/deadbeef.json" => %{}
     }
 
     {:ok, _result} = Exporter.export("uuid-root", dir, store, previous)
 
     assert File.exists?(Path.join(dir, ".git/HEAD"))
     assert File.exists?(Path.join(dir, ".commonplace/mount.json"))
+    assert File.exists?(archive_row_path)
   end
 
   test "traversal-shaped entry names are never exported", %{store: store, repo_dir: dir} do

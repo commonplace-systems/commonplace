@@ -24,7 +24,7 @@ defmodule Commonplace.GitBridge.Server do
   use GenServer
   require Logger
 
-  alias Commonplace.GitBridge.{Exporter, Sidecar, Git}
+  alias Commonplace.GitBridge.{Exporter, Sidecar, Git, Archive}
   alias Commonplace.Tree.{Schema, DocBuilder}
   alias Commonplace.Dataflow.PubSub
   alias Commonplace.{Presence, Workspace}
@@ -147,11 +147,23 @@ defmodule Commonplace.GitBridge.Server do
     previous_manifest = state.last_manifest || Sidecar.read_previous_manifest(state.repo_dir)
 
     case Exporter.export(state.mount_uuid, state.repo_dir, state.store, previous_manifest) do
-      {:ok, %{manifest: manifest, authors: authors, warnings: warnings}} ->
+      {:ok, %{manifest: manifest, authors: authors, warnings: warnings, schema_uuids: schema_uuids}} ->
         Sidecar.write(state.repo_dir, state.mount_uuid, manifest, previous_manifest)
         Sidecar.ensure_gitattributes(state.repo_dir)
 
-        result = commit_and_push(state, manifest, authors, warnings)
+        # G1.5 (CX-b0ow.4): archive rows land in the SAME git commit as
+        # the content they back, so this runs after Sidecar.write and
+        # before the commit step below.
+        doc_uuids =
+          manifest
+          |> Map.values()
+          |> Enum.map(& &1.uuid)
+          |> MapSet.new()
+          |> MapSet.union(schema_uuids)
+
+        %{archived_count: archived_count} = Archive.archive(state.store, state.repo_dir, doc_uuids)
+
+        result = commit_and_push(state, manifest, authors, warnings, archived_count)
 
         {result, %{state | last_manifest: manifest}}
 
@@ -161,12 +173,18 @@ defmodule Commonplace.GitBridge.Server do
     end
   end
 
-  defp commit_and_push(state, manifest, authors, warnings) do
+  defp commit_and_push(state, manifest, authors, warnings, archived_count) do
     case Git.dirty?(state.repo_dir) do
       {:ok, true} ->
         case Git.commit_all(state.repo_dir, authors: authors) do
           {:ok, sha} ->
-            meta = %{sha: sha, warnings: warnings, manifest_size: map_size(manifest)}
+            meta = %{
+              sha: sha,
+              warnings: warnings,
+              manifest_size: map_size(manifest),
+              archived_count: archived_count
+            }
+
             PubSub.broadcast_red(state.mount_uuid, {:git_bridge, :committed, meta})
             maybe_push(state, meta)
             {:ok, Map.put(meta, :committed, true)}
@@ -177,7 +195,13 @@ defmodule Commonplace.GitBridge.Server do
         end
 
       {:ok, false} ->
-        {:ok, %{committed: false, manifest_size: map_size(manifest), warnings: warnings}}
+        {:ok,
+         %{
+           committed: false,
+           manifest_size: map_size(manifest),
+           warnings: warnings,
+           archived_count: archived_count
+         }}
 
       {:error, reason} ->
         Logger.warning("GitBridge.Server: git status failed for #{state.mount_uuid}: #{inspect(reason)}")
