@@ -147,6 +147,12 @@ defmodule Commonplace.GitBridge.ServerTest do
     {:ok, result} = Server.sync_now(name)
     assert result.committed == true
 
+    # GitBridge G1.5 (CX-b0ow.4): the archive row count rides the same
+    # :committed event metadata as sha/manifest_size/warnings.
+    assert is_integer(result.archived_count)
+    assert result.archived_count > 0
+    assert File.exists?(Path.join(repo_dir, ".commonplace/archive/watermarks.json"))
+
     assert File.read!(Path.join(repo_dir, "a.txt")) == "hello world"
     assert Jason.decode!(File.read!(Path.join(repo_dir, "b.json"))) == %{"k" => "v"}
     assert File.read!(Path.join(repo_dir, "signed.txt")) == "signed content"

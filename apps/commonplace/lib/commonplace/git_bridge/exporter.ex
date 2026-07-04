@@ -52,6 +52,14 @@ defmodule Commonplace.GitBridge.Exporter do
   raw commit id binary from `CommitStoreClient.latest_commit/2` (hex
   encoding is `Sidecar`'s job, not this module's).
 
+  Also returns `schema_uuids`: every directory-schema doc uuid visited
+  during the walk (including `mount_uuid` itself). `Commonplace.GitBridge.Archive`
+  (GitBridge G1.5) reuses this set — schema docs are part of tree
+  history and belong in the commit archive, but they never appear in
+  `manifest` (that only tracks leaf `:doc` entries), so it would
+  otherwise have no way to enumerate them without re-walking the tree
+  and re-implementing this module's eligibility filter.
+
   Given `previous_manifest` (only its keys matter), any rel_path that
   was exported last cycle but is absent from this cycle's manifest is
   pruned from `repo_dir` — file removed (or directory removed
@@ -72,47 +80,60 @@ defmodule Commonplace.GitBridge.Exporter do
   @doc """
   Export the tree rooted at `mount_uuid` into `repo_dir`.
 
-  Returns `{:ok, %{manifest:, authors:, warnings:}}` or `{:error, reason}`.
+  Returns `{:ok, %{manifest:, authors:, warnings:, schema_uuids:}}` or
+  `{:error, reason}`.
   """
   @spec export(String.t(), String.t(), module() | atom(), map()) ::
-          {:ok, %{manifest: map(), authors: MapSet.t(), warnings: [String.t()]}}
+          {:ok,
+           %{
+             manifest: map(),
+             authors: MapSet.t(),
+             warnings: [String.t()],
+             schema_uuids: MapSet.t()
+           }}
           | {:error, term()}
   def export(mount_uuid, repo_dir, store, previous_manifest \\ %{}) do
     File.mkdir_p!(repo_dir)
 
     schema_doc = load_schema(mount_uuid, store)
 
-    {manifest, authors, warnings} =
-      walk(schema_doc, repo_dir, "", store, %{}, MapSet.new(), [])
+    {manifest, authors, warnings, schema_uuids} =
+      walk(schema_doc, repo_dir, "", store, %{}, MapSet.new(), [], MapSet.new([mount_uuid]))
 
     prune(repo_dir, previous_manifest, manifest)
 
-    {:ok, %{manifest: manifest, authors: authors, warnings: warnings}}
+    {:ok, %{manifest: manifest, authors: authors, warnings: warnings, schema_uuids: schema_uuids}}
   rescue
     error -> {:error, error}
   end
 
   # --- Tree walk ---
 
-  defp walk(schema_doc, dir_path, rel_prefix, store, manifest, authors, warnings) do
+  defp walk(schema_doc, dir_path, rel_prefix, store, manifest, authors, warnings, schema_uuids) do
     Schema.list_entries(schema_doc)
     |> Enum.filter(&eligible?/1)
-    |> Enum.reduce({manifest, authors, warnings}, fn entry, {manifest, authors, warnings} ->
-      rel_path = join_rel(rel_prefix, entry.name)
+    |> Enum.reduce({manifest, authors, warnings, schema_uuids}, fn
+      entry, {manifest, authors, warnings, schema_uuids} ->
+        rel_path = join_rel(rel_prefix, entry.name)
 
-      case entry.type do
-        :dir ->
-          sub_dir = Path.join(dir_path, entry.name)
-          File.mkdir_p!(sub_dir)
-          sub_schema = load_schema(entry.node_id, store)
-          walk(sub_schema, sub_dir, rel_path, store, manifest, authors, warnings)
+        case entry.type do
+          :dir ->
+            sub_dir = Path.join(dir_path, entry.name)
+            File.mkdir_p!(sub_dir)
+            sub_schema = load_schema(entry.node_id, store)
+            schema_uuids = MapSet.put(schema_uuids, entry.node_id)
+            walk(sub_schema, sub_dir, rel_path, store, manifest, authors, warnings, schema_uuids)
 
-        :doc ->
-          export_doc(entry, dir_path, rel_path, store, manifest, authors, warnings)
+          :doc ->
+            {manifest, authors, warnings} =
+              export_doc(entry, dir_path, rel_path, store, manifest, authors, warnings)
 
-        _ ->
-          {manifest, authors, [warning("unknown entry type for #{entry.name}") | warnings]}
-      end
+            {manifest, authors, warnings, schema_uuids}
+
+          _ ->
+            {manifest, authors, [warning("unknown entry type for #{entry.name}") | warnings],
+             schema_uuids}
+        end
     end)
   end
 
