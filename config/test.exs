@@ -33,6 +33,11 @@ config :commonplace,
   # need the sweeper or the lazy trigger flip these flags in their setup.
   snapshot_sweeper_enabled: false,
   reader_lazy_snapshot_enabled: false,
+  # CX-9hql: the CommitStoreQueuePoller ticks on its own timer and would
+  # otherwise emit `[:commonplace, :commit_store, :queue_depth]` in the
+  # background during every test, racing test-local telemetry attaches.
+  # Tests that specifically exercise the poller enable it in their setup.
+  commit_store_queue_poll_ms: false,
   # CI: CubDB 2.0.2's auto-compact races with the parallel test
   # suite's SecretStore writes and crashes the SecretStore process
   # (`MatchError {:error, :enoent}` at `cubdb.ex:1499 trigger_compaction`).

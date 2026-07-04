@@ -215,6 +215,13 @@ defmodule Commonplace.Store.CommitStore do
       [:commonplace, :commit, :rejected, :namespace_mismatch] (CX-ch5)
       [:commonplace, :commit, :rejected, :unknown_reference]  (CX-fbs6)
 
+  R4c rung-0 write-path instrumentation (CX-9hql) adds three more,
+  documented in full in `Commonplace.Telemetry`'s moduledoc:
+
+      [:commonplace, :commit_store, :call]         (per WRITE-verb handle_call)
+      [:commonplace, :commit_store, :write_cpu]     (CPU breakdown: build/sign/validate/persist)
+      [:commonplace, :commit_store, :queue_depth]   (periodic mailbox-depth poll)
+
   `:latest_read` exists so the reflog amortization tests
   (`Reflog.Snapshot`, CX-o8tx) can prove that clean subtrees were
   short-circuited without a read. Production cost is negligible
@@ -774,12 +781,48 @@ defmodule Commonplace.Store.CommitStore do
     # retried after each successful import, so out-of-order delivery (PubSub
     # + catch-up interleaving) no longer drops legitimate commits. In-memory:
     # on restart, catch-up sync re-sends. commit.id => {commit, opts}.
-    {:ok, %{db: db, name: name, pending_imports: %{}}}
+    queue_poller = maybe_start_queue_poller(name)
+    {:ok, %{db: db, name: name, pending_imports: %{}, queue_poller: queue_poller}}
+  end
+
+  # CX-9hql (R4c rung-0): start the companion mailbox-depth poller unless
+  # disabled via `config :commonplace, commit_store_queue_poll_ms: nil | false`
+  # (disabled by default in the test env — see config/test.exs). Started
+  # unlinked so a poller crash never takes the store down; it only monitors
+  # us, not vice versa.
+  defp maybe_start_queue_poller(name) do
+    case Application.get_env(:commonplace, :commit_store_queue_poll_ms, 5_000) do
+      ms when is_integer(ms) and ms > 0 ->
+        case Commonplace.Store.CommitStoreQueuePoller.start(
+               target_pid: self(),
+               store_name: name,
+               interval_ms: ms
+             ) do
+          {:ok, pid} -> pid
+          _ -> nil
+        end
+
+      _disabled ->
+        nil
+    end
   end
 
   @impl true
-  def terminate(_reason, %{name: name}) do
+  def terminate(_reason, %{name: name} = state) do
     :persistent_term.erase({__MODULE__, :db, name})
+
+    case Map.get(state, :queue_poller) do
+      pid when is_pid(pid) ->
+        try do
+          GenServer.stop(pid, :normal, 100)
+        catch
+          :exit, _ -> :ok
+        end
+
+      _ ->
+        :ok
+    end
+
     :ok
   end
 
@@ -829,8 +872,10 @@ defmodule Commonplace.Store.CommitStore do
 
   @impl true
   def handle_call({:create_commit, doc_uuid, update, parent_id, metadata}, _from, state) do
-    commit = do_write_commit(state, doc_uuid, update, parent_id, metadata, [])
-    {:reply, commit, state}
+    instrumented(:create_commit, doc_uuid, fn ->
+      commit = do_write_commit(:create_commit, state, doc_uuid, update, parent_id, metadata, [])
+      {:reply, commit, state}
+    end)
   end
 
   @impl true
@@ -839,8 +884,10 @@ defmodule Commonplace.Store.CommitStore do
         _from,
         state
       ) do
-    commit = do_write_commit(state, doc_uuid, update, parent_id, metadata, opts)
-    {:reply, commit, state}
+    instrumented(:create_commit, doc_uuid, fn ->
+      commit = do_write_commit(:create_commit, state, doc_uuid, update, parent_id, metadata, opts)
+      {:reply, commit, state}
+    end)
   end
 
   @impl true
@@ -849,88 +896,92 @@ defmodule Commonplace.Store.CommitStore do
         _from,
         state
       ) do
-    case CubDB.get(state.db, {:latest, doc_uuid}) do
-      ^expected_parent_id ->
-        metadata = Map.put(metadata, :kind, :snapshot)
+    instrumented(:write_snapshot_cas, doc_uuid, fn ->
+      case CubDB.get(state.db, {:latest, doc_uuid}) do
+        ^expected_parent_id ->
+          metadata = Map.put(metadata, :kind, :snapshot)
 
-        commit = Commit.new(doc_uuid, update, expected_parent_id, metadata)
-        warn_if_non_system_cas(commit, :snapshot_cas)
-        commit = maybe_sign_commit(commit)
+          commit = Commit.new(doc_uuid, update, expected_parent_id, metadata)
+          warn_if_non_system_cas(commit, :snapshot_cas)
+          commit = maybe_sign_commit(commit)
 
-        CubDB.put_multi(state.db, [
-          {{:commit, commit.id}, commit},
-          {{:latest, doc_uuid}, commit.id}
-        ])
+          CubDB.put_multi(state.db, [
+            {{:commit, commit.id}, commit},
+            {{:latest, doc_uuid}, commit.id}
+          ])
 
-        :telemetry.execute(
-          [:commonplace, :commit, :create],
-          %{system_time: System.system_time()},
-          %{doc_uuid: doc_uuid}
-        )
+          :telemetry.execute(
+            [:commonplace, :commit, :create],
+            %{system_time: System.system_time()},
+            %{doc_uuid: doc_uuid}
+          )
 
-        Phoenix.PubSub.broadcast(
-          Commonplace.PubSub,
-          "commits:#{doc_uuid}",
-          {:commit, doc_uuid, commit.id, metadata}
-        )
+          Phoenix.PubSub.broadcast(
+            Commonplace.PubSub,
+            "commits:#{doc_uuid}",
+            {:commit, doc_uuid, commit.id, metadata}
+          )
 
-        Phoenix.PubSub.broadcast(
-          Commonplace.PubSub,
-          "blue:#{doc_uuid}",
-          {:commit, doc_uuid, commit.id, metadata}
-        )
+          Phoenix.PubSub.broadcast(
+            Commonplace.PubSub,
+            "blue:#{doc_uuid}",
+            {:commit, doc_uuid, commit.id, metadata}
+          )
 
-        {:reply, {:ok, commit}, state}
+          {:reply, {:ok, commit}, state}
 
-      _other ->
-        {:reply, {:error, :parent_moved}, state}
-    end
+        _other ->
+          {:reply, {:error, :parent_moved}, state}
+      end
+    end)
   end
 
   @impl true
   def handle_call({:write_prebuilt_commit_cas, %Commit{} = commit}, _from, state) do
-    # Phase 2.5 (CX-tdkq.24): a prebuilt commit is a system-minted merge
-    # (Merger/CrossEpochMerge → Commit.new, never signed). Node-sign it
-    # so strict mode accepts it. Signing is over the id, which is already
-    # bound — so the CAS dedup (keyed on id) is unaffected.
-    #
-    # CX-hoj: only system kinds (:snapshot / :merge) are meant to reach
-    # this bare (no signing_context) call — a future user-payload path
-    # through prebuilt-CAS must not silently inherit ambient/node
-    # identity, so warn + telemetry loudly if one ever does.
-    warn_if_non_system_cas(commit, :prebuilt_cas)
-    commit = maybe_sign_commit(commit)
+    instrumented(:write_prebuilt_commit_cas, commit.doc_uuid, fn ->
+      # Phase 2.5 (CX-tdkq.24): a prebuilt commit is a system-minted merge
+      # (Merger/CrossEpochMerge → Commit.new, never signed). Node-sign it
+      # so strict mode accepts it. Signing is over the id, which is already
+      # bound — so the CAS dedup (keyed on id) is unaffected.
+      #
+      # CX-hoj: only system kinds (:snapshot / :merge) are meant to reach
+      # this bare (no signing_context) call — a future user-payload path
+      # through prebuilt-CAS must not silently inherit ambient/node
+      # identity, so warn + telemetry loudly if one ever does.
+      warn_if_non_system_cas(commit, :prebuilt_cas)
+      commit = maybe_sign_commit(commit)
 
-    case CubDB.get(state.db, {:latest, commit.doc_uuid}) do
-      latest_id when latest_id == commit.parent_id ->
-        CubDB.put_multi(state.db, [
-          {{:commit, commit.id}, commit},
-          {{:latest, commit.doc_uuid}, commit.id}
-        ])
+      case CubDB.get(state.db, {:latest, commit.doc_uuid}) do
+        latest_id when latest_id == commit.parent_id ->
+          CubDB.put_multi(state.db, [
+            {{:commit, commit.id}, commit},
+            {{:latest, commit.doc_uuid}, commit.id}
+          ])
 
-        :telemetry.execute(
-          [:commonplace, :commit, :create],
-          %{system_time: System.system_time()},
-          %{doc_uuid: commit.doc_uuid}
-        )
+          :telemetry.execute(
+            [:commonplace, :commit, :create],
+            %{system_time: System.system_time()},
+            %{doc_uuid: commit.doc_uuid}
+          )
 
-        Phoenix.PubSub.broadcast(
-          Commonplace.PubSub,
-          "commits:#{commit.doc_uuid}",
-          {:commit, commit.doc_uuid, commit.id, commit.metadata}
-        )
+          Phoenix.PubSub.broadcast(
+            Commonplace.PubSub,
+            "commits:#{commit.doc_uuid}",
+            {:commit, commit.doc_uuid, commit.id, commit.metadata}
+          )
 
-        Phoenix.PubSub.broadcast(
-          Commonplace.PubSub,
-          "blue:#{commit.doc_uuid}",
-          {:commit, commit.doc_uuid, commit.id, commit.metadata}
-        )
+          Phoenix.PubSub.broadcast(
+            Commonplace.PubSub,
+            "blue:#{commit.doc_uuid}",
+            {:commit, commit.doc_uuid, commit.id, commit.metadata}
+          )
 
-        {:reply, {:ok, commit}, state}
+          {:reply, {:ok, commit}, state}
 
-      _other ->
-        {:reply, {:error, :parent_moved}, state}
-    end
+        _other ->
+          {:reply, {:error, :parent_moved}, state}
+      end
+    end)
   end
 
   # R4(a): hand a caller the live CubDB handle. O(1), no disk I/O — the cheap
@@ -980,14 +1031,16 @@ defmodule Commonplace.Store.CommitStore do
         _from,
         state
       ) do
-    parent_id =
-      case CubDB.get(state.db, {:latest, doc_uuid}) do
-        nil -> nil
-        commit_id -> commit_id
-      end
+    instrumented(:create_chained_commit, doc_uuid, fn ->
+      parent_id =
+        case CubDB.get(state.db, {:latest, doc_uuid}) do
+          nil -> nil
+          commit_id -> commit_id
+        end
 
-    commit = do_write_commit(state, doc_uuid, update, parent_id, metadata, opts)
-    {:reply, commit, state}
+      commit = do_write_commit(:create_chained_commit, state, doc_uuid, update, parent_id, metadata, opts)
+      {:reply, commit, state}
+    end)
   end
 
   @impl true
@@ -1040,26 +1093,35 @@ defmodule Commonplace.Store.CommitStore do
 
   @impl true
   def handle_call({:import_commit, commit, opts}, _from, state) do
-    # CX-gwz: verify the claimed content address BEFORE trusting any
-    # metadata on the commit — a hostile peer could retag a delta as
-    # `%{kind: :snapshot}` and drive reconstruction to skip history.
-    case Commonplace.Store.Commit.verify_id(commit) do
-      :ok ->
-        handle_validated_import(commit, opts, state)
+    instrumented(:import_commit, commit.doc_uuid, fn ->
+      # CX-gwz: verify the claimed content address BEFORE trusting any
+      # metadata on the commit — a hostile peer could retag a delta as
+      # `%{kind: :snapshot}` and drive reconstruction to skip history.
+      # Timed as part of the "validate" write_cpu phase (CX-9hql) —
+      # federation/catch-up import bursts are the credible source of
+      # rung-2 mailbox pressure, so import_commit's CPU share matters.
+      {verify_result, verify_ns} = timed(fn -> Commonplace.Store.Commit.verify_id(commit) end)
 
-      {:error, {:id_mismatch, computed, claimed}} ->
-        :telemetry.execute(
-          [:commonplace, :commit, :rejected, :id_mismatch],
-          %{system_time: System.system_time()},
-          %{
-            claimed_id: claimed,
-            computed_id: computed,
-            doc_uuid: commit.doc_uuid
-          }
-        )
+      case verify_result do
+        :ok ->
+          handle_validated_import(commit, opts, state, verify_ns)
 
-        {:reply, {:error, {:id_mismatch, computed, claimed}}, state}
-    end
+        {:error, {:id_mismatch, computed, claimed}} ->
+          emit_write_cpu(:import_commit, commit.doc_uuid, 0, 0, verify_ns, 0)
+
+          :telemetry.execute(
+            [:commonplace, :commit, :rejected, :id_mismatch],
+            %{system_time: System.system_time()},
+            %{
+              claimed_id: claimed,
+              computed_id: computed,
+              doc_uuid: commit.doc_uuid
+            }
+          )
+
+          {:reply, {:error, {:id_mismatch, computed, claimed}}, state}
+      end
+    end)
   end
 
   @impl true
@@ -1105,15 +1167,17 @@ defmodule Commonplace.Store.CommitStore do
 
   @impl true
   def handle_call({:store_capability, %Commonplace.Trust.Capability{} = cap}, _from, state) do
-    # CX-tdkq.22b: a cert is a content-addressed immutable VALUE, keyed by
-    # its CID (mirrors the attestation store). Idempotent — same CID
-    # overwrites identical bytes. No head pointer: certs are referenced by
-    # CID (from a commit's metadata / a child cert's proof), not "latest".
-    CubDB.put(state.db, {:capability, cap.id}, cap)
-    # CX-tdkq.22e: a landed cert may be exactly what a commit deferred with
-    # :awaiting_capability was waiting on — retry the pending queue.
-    state = retry_pending_imports(state)
-    {:reply, :ok, state}
+    instrumented(:store_capability, nil, fn ->
+      # CX-tdkq.22b: a cert is a content-addressed immutable VALUE, keyed by
+      # its CID (mirrors the attestation store). Idempotent — same CID
+      # overwrites identical bytes. No head pointer: certs are referenced by
+      # CID (from a commit's metadata / a child cert's proof), not "latest".
+      CubDB.put(state.db, {:capability, cap.id}, cap)
+      # CX-tdkq.22e: a landed cert may be exactly what a commit deferred with
+      # :awaiting_capability was waiting on — retry the pending queue.
+      state = retry_pending_imports(state)
+      {:reply, :ok, state}
+    end)
   end
 
   @impl true
@@ -1163,29 +1227,38 @@ defmodule Commonplace.Store.CommitStore do
   # than grow memory unbounded — a small queue, not a durable store.
   @max_pending_imports 1024
 
-  defp handle_validated_import(commit, opts, state) do
-    case import_validation(commit, opts, state) do
+  defp handle_validated_import(commit, opts, state, verify_ns) do
+    {validation_result, validation_ns} = timed(fn -> import_validation(commit, opts, state) end)
+    validate_ns = verify_ns + validation_ns
+
+    case validation_result do
       :ok ->
         case CubDB.get(state.db, {:commit, commit.id}) do
           nil ->
-            state = do_store_imported(commit, state)
+            {state, persist_ns} = timed(fn -> do_store_imported(commit, state) end)
+            emit_write_cpu(:import_commit, commit.doc_uuid, 0, 0, validate_ns, persist_ns)
             # R11: a freshly-landed commit may be the reference (or the cert)
             # an earlier out-of-order arrival was waiting on — retry the queue.
             state = retry_pending_imports(state)
             {:reply, :ok, state}
 
           _existing ->
+            emit_write_cpu(:import_commit, commit.doc_uuid, 0, 0, validate_ns, 0)
             {:reply, :already_exists, state}
         end
 
       # CX-tdkq.22e: a commit awaiting its authorizing cert DEFERS (the cert
       # may land later), exactly like a namespace out-of-order reference.
       {:error, {:trust, :awaiting_capability}} ->
+        emit_write_cpu(:import_commit, commit.doc_uuid, 0, 0, validate_ns, 0)
+
         {:reply, {:error, {:trust_rejected, :awaiting_capability}},
          maybe_queue_pending(commit, opts, :awaiting_capability, state)}
 
       # R1: other trust rejections are HARD — they never resolve by waiting.
       {:error, {:trust, reason}} ->
+        emit_write_cpu(:import_commit, commit.doc_uuid, 0, 0, validate_ns, 0)
+
         :telemetry.execute(
           [:commonplace, :commit, :rejected, :trust],
           %{system_time: System.system_time()},
@@ -1202,6 +1275,8 @@ defmodule Commonplace.Store.CommitStore do
       # defense-in-depth alongside the sibling-merge and explicit-merge
       # seams, not a substitute for Gate B.
       {:error, {:code_doc_delta_merge, _doc_uuid} = reason} ->
+        emit_write_cpu(:import_commit, commit.doc_uuid, 0, 0, validate_ns, 0)
+
         :telemetry.execute(
           [:commonplace, :commit, :rejected, :code_doc_delta_merge],
           %{system_time: System.system_time()},
@@ -1211,6 +1286,7 @@ defmodule Commonplace.Store.CommitStore do
         {:reply, {:error, reason}, state}
 
       {:error, {:namespace, reason}} ->
+        emit_write_cpu(:import_commit, commit.doc_uuid, 0, 0, validate_ns, 0)
         emit_namespace_rejection(commit, reason)
         # R11: hold the rejected commit and retry once its dependency lands.
         {:reply, {:error, {:namespace_rejected, reason}}, maybe_queue_pending(commit, opts, reason, state)}
@@ -1394,6 +1470,47 @@ defmodule Commonplace.Store.CommitStore do
   # in this store's mailbox. Reads stay consistent: each CubDB.get takes its
   # own snapshot, exactly as before. Writes remain serialized here. (CX-tdkq.4)
 
+  # ── CX-9hql (R4c rung-0): write-path telemetry helpers ──────────────────
+  #
+  # `instrumented/3` wraps a single WRITE-verb handle_call body so the
+  # timing/mailbox-depth code isn't duplicated at every call site. It must
+  # add negligible overhead on the hot path: no extra GenServer calls, no
+  # cross-process work — `Process.info(self(), ...)` and
+  # `System.monotonic_time/0` are both cheap same-process reads.
+
+  defp instrumented(verb, doc_uuid, fun) do
+    queue_len =
+      case Process.info(self(), :message_queue_len) do
+        {:message_queue_len, n} -> n
+        nil -> 0
+      end
+
+    {result, duration} = timed(fun)
+
+    :telemetry.execute(
+      [:commonplace, :commit_store, :call],
+      %{duration: duration, queue_len: queue_len},
+      %{verb: verb, doc_uuid: doc_uuid}
+    )
+
+    result
+  end
+
+  # Time a zero-arg function, returning `{result, elapsed_native_time}`.
+  defp timed(fun) do
+    start = System.monotonic_time()
+    result = fun.()
+    {result, System.monotonic_time() - start}
+  end
+
+  defp emit_write_cpu(verb, doc_uuid, build_ns, sign_ns, validate_ns, persist_ns) do
+    :telemetry.execute(
+      [:commonplace, :commit_store, :write_cpu],
+      %{build: build_ns, sign: sign_ns, validate: validate_ns, persist: persist_ns},
+      %{verb: verb, doc_uuid: doc_uuid}
+    )
+  end
+
   defp resolve_db(server) do
     case :persistent_term.get({__MODULE__, :db, server}, nil) do
       nil -> GenServer.call(server, :get_db)
@@ -1469,18 +1586,30 @@ defmodule Commonplace.Store.CommitStore do
     walk_to_ancestor(db, uuid_b, ids_a)
   end
 
-  defp do_write_commit(state, doc_uuid, update, parent_id, metadata, opts) do
+  defp do_write_commit(verb, state, doc_uuid, update, parent_id, metadata, opts) do
     parent_id = maybe_stamp_genesis(state.db, doc_uuid, parent_id)
     metadata = maybe_stamp_snapshot_parent(state.db, parent_id, metadata)
 
-    commit =
-      Commit.new(doc_uuid, update, parent_id, metadata)
-      |> maybe_sign_commit(Keyword.get(opts, :signing_context))
+    # CX-9hql (R4c rung-0): CPU-share breakdown for the commit-building
+    # path. maybe_stamp_genesis/maybe_stamp_snapshot_parent above are
+    # cheap point-reads folded into "build" rather than split out further
+    # — isolating them would need real restructuring, which this bead
+    # (instrumentation only) deliberately avoids; CX-3erd's job is to
+    # actually move CPU out of this section.
+    {commit, build_ns} = timed(fn -> Commit.new(doc_uuid, update, parent_id, metadata) end)
 
-    CubDB.put_multi(state.db, [
-      {{:commit, commit.id}, commit},
-      {{:latest, doc_uuid}, commit.id}
-    ])
+    {commit, sign_ns} =
+      timed(fn -> maybe_sign_commit(commit, Keyword.get(opts, :signing_context)) end)
+
+    {_, persist_ns} =
+      timed(fn ->
+        CubDB.put_multi(state.db, [
+          {{:commit, commit.id}, commit},
+          {{:latest, doc_uuid}, commit.id}
+        ])
+      end)
+
+    emit_write_cpu(verb, doc_uuid, build_ns, sign_ns, 0, persist_ns)
 
     :telemetry.execute(
       [:commonplace, :commit, :create],
