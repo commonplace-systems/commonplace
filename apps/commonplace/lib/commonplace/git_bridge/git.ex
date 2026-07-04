@@ -118,6 +118,15 @@ defmodule Commonplace.GitBridge.Git do
     with {:ok, _} <- run(repo_dir, ["add", "-A"]),
          {:ok, _} <-
            run(repo_dir, [
+             # The bridge IS the committer: set identity explicitly per
+             # invocation instead of relying on ambient git config —
+             # `--author` alone still requires a configured committer
+             # ident, which CI runners and fresh server hosts don't have
+             # ("fatal: empty ident name").
+             "-c",
+             "user.name=commonplace-bridge",
+             "-c",
+             "user.email=bridge@commonplace.local",
              "commit",
              "--author",
              "commonplace-bridge <bridge@commonplace.local>",

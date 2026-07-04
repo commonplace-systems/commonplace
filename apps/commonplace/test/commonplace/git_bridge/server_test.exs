@@ -409,7 +409,10 @@ defmodule Commonplace.GitBridge.ServerTest do
 
     assert_receive {"red:" <> _, {:git_bridge, :pushed, _}}, 1_000
 
-    {log, 0} = System.cmd("git", ["log", "-1", "--pretty=%H"], cd: bare_dir)
+    # Name the ref explicitly: the bare repo's default HEAD branch is
+    # host-config-dependent (master under a bare CI runner, main under
+    # a configured dev box), and the bridge pushes "main".
+    {log, 0} = System.cmd("git", ["log", "-1", "--pretty=%H", "main"], cd: bare_dir)
     assert String.trim(log) != ""
   end
 

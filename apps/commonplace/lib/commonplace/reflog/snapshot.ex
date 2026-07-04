@@ -381,46 +381,50 @@ defmodule Commonplace.Reflog.Snapshot do
     end)
   end
 
-  defp ensure_cursor_table do
-    case :ets.whereis(@cursor_table) do
+  # Table creation is whereis-then-new and callers run in ARBITRARY
+  # processes (the dirty-tracker telemetry handler fires in whichever
+  # process emits [:commonplace, :commit, :create] — one per named
+  # CommitStore, so concurrent under multi-store test suites). Two
+  # racers can both see :undefined; the loser's :ets.new raises
+  # ArgumentError, and an ArgumentError inside a telemetry handler
+  # DETACHES it for the rest of the VM's life — silently killing dirty
+  # tracking. Rescue the lost race and use the winner's table.
+  defp ensure_named_table(name, opts) do
+    case :ets.whereis(name) do
       :undefined ->
-        :ets.new(@cursor_table, [:named_table, :public, :set, read_concurrency: true])
+        try do
+          :ets.new(name, opts)
+        rescue
+          ArgumentError -> name
+        end
 
       _tid ->
-        @cursor_table
+        name
     end
+  end
+
+  defp ensure_cursor_table do
+    ensure_named_table(@cursor_table, [:named_table, :public, :set, read_concurrency: true])
   end
 
   defp ensure_parent_index_table do
-    case :ets.whereis(@parent_index_table) do
-      :undefined ->
-        :ets.new(@parent_index_table, [
-          :named_table,
-          :public,
-          :set,
-          read_concurrency: true,
-          write_concurrency: true
-        ])
-
-      _tid ->
-        @parent_index_table
-    end
+    ensure_named_table(@parent_index_table, [
+      :named_table,
+      :public,
+      :set,
+      read_concurrency: true,
+      write_concurrency: true
+    ])
   end
 
   defp ensure_dirty_table do
-    case :ets.whereis(@dirty_table) do
-      :undefined ->
-        :ets.new(@dirty_table, [
-          :named_table,
-          :public,
-          :set,
-          read_concurrency: true,
-          write_concurrency: true
-        ])
-
-      _tid ->
-        @dirty_table
-    end
+    ensure_named_table(@dirty_table, [
+      :named_table,
+      :public,
+      :set,
+      read_concurrency: true,
+      write_concurrency: true
+    ])
   end
 
   defp populate_parent_index(parent_data_dir_uuid, entries) do
