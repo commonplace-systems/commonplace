@@ -105,22 +105,59 @@ defmodule Commonplace.Store.CommitStore do
   ## Atomicity of `create_chained_commit/5` (CX-l7j)
 
   The "read latest, build a child off it, write the child" sequence
-  must happen inside one `handle_call`. The original implementation
-  split that across two GenServer calls — `latest_commit/2` followed
-  by `create_commit/6` — which let two concurrent writers both
-  observe the same `:latest`, both produce children rooted at the
-  same parent, and both write. The second writer's `:latest` bump
-  won and the first writer's commit, though persisted as a row, was
-  silently dropped from every linear walk that started at `:latest`.
-  Bundling the read+write under one mailbox slot serializes
-  concurrent writers per doc and prevents that orphaning.
+  must never let two concurrent writers both observe the same
+  `:latest`, both produce children rooted at the same parent, and
+  both write — the second writer's `:latest` bump would win and the
+  first writer's commit, though persisted as a row, would be silently
+  dropped from every linear walk that started at `:latest`.
+
+  The ORIGINAL fix (pre-CX-3erd) bundled the whole read+build+sign+write
+  sequence inside one `handle_call`, so the GenServer mailbox serialized
+  concurrent writers per doc — correctness rested on nothing else
+  running between the read and the write.
+
+  CX-3erd hoists the CPU-heavy build+sign work OUT of that serialized
+  section (see `Commonplace.Store.CommitBuilder` and
+  `CommitStoreClient`'s local-mode `create_chained_commit/5`): the
+  client now reads `:latest`, builds+signs the commit in its OWN
+  process, and lands it via `put_built_commit/4`, a CAS'd verb. The
+  trust structure changed, but the invariant didn't:
+
+    * The caller-side read is **never** the source of correctness.
+      CubDB supports concurrent readers via MVCC snapshots, so the
+      read is safe to run outside the mailbox; it may simply be
+      *stale* by the time the write reaches the store.
+    * Correctness rests entirely on the CAS check that
+      `put_built_commit/4` runs INSIDE the store's serialized
+      `handle_call`, comparing `:latest` to the exact value the
+      caller observed before it built. A stale read costs a retry
+      (`{:error, :parent_moved}` — the client rebuilds against the
+      fresh `:latest` and tries again, bounded, then falls back to
+      the legacy serialized verb below), never a wrong write. This is
+      the exact same structure `write_snapshot_cas/5` already had.
+    * CX-l7j's invariant is therefore now **CAS-rejection** instead of
+      **mailbox-bundling** — two racing writers can no longer both
+      silently land children on the same parent; the loser is told
+      so explicitly and retries.
+
+  The two `{:create_commit, ...}` / `{:create_chained_commit, ...}`
+  `handle_call` clauses below (via `do_write_commit/6`) are the
+  RETAINED legacy serialized path — still real bundling, still
+  correct — used by remote-mode callers (who have no local CubDB
+  handle to read from) and as `CommitStoreClient`'s fallback once the
+  bounded caller-side retry loop is exhausted (pathological, sustained
+  contention only).
 
   Callers that don't need the "chain to current latest" semantics —
   e.g. snapshot construction that compares-and-swaps against an
   observed parent — use `write_snapshot_cas/5` or
   `write_prebuilt_commit_cas/2`, which encode the same atomicity
   with explicit CAS rejection (`{:error, :parent_moved}`) instead of
-  silent re-anchoring.
+  silent re-anchoring. `put_built_commit/4` is a third member of this
+  CAS family, differing only in what it CASes against (an
+  independently-supplied `expected_parent_id` rather than
+  `commit.parent_id`) and in optionally landing a genesis row
+  alongside.
 
   `import_commit/3` needs no such bundling. It doesn't derive a parent
   from a `:latest` read — the commit arrives with its `parent_id`
@@ -167,19 +204,31 @@ defmodule Commonplace.Store.CommitStore do
       is a pure function of the uuid, so calling it twice returns the
       same struct and stores to the same id. `:latest` is **not**
       touched; this is just "make sure the genesis commit row exists."
-    * `maybe_stamp_genesis/3` (private, write-side) — when a caller
+    * `CommitBuilder.resolve_genesis/3` (private, CX-3erd — formerly
+      this module's own `maybe_stamp_genesis/3`) — when a caller
       passes `parent_id = nil` for a uuid that has no `:latest`,
-      stamp the genesis row and use its id as the parent.
-      Pre-umbrella docs that already have a `:latest` keep the nil
-      parent (legacy hatch — empty metadata, no `:kind`): back-filling
-      a genesis ancestor beneath already-written history would change
-      those commits' parent chains and ids, so the hatch deliberately
-      leaves pre-umbrella docs untouched.
-    * `maybe_stamp_snapshot_parent/3` (private, write-side, CX-a04) —
+      resolve the genesis id and use it as the parent. Pre-umbrella
+      docs that already have a `:latest` keep the nil parent (legacy
+      hatch — empty metadata, no `:kind`): back-filling a genesis
+      ancestor beneath already-written history would change those
+      commits' parent chains and ids, so the hatch deliberately leaves
+      pre-umbrella docs untouched. Unlike `ensure_genesis/2`, this
+      variant does not write the genesis row itself (it can't — it
+      may run in the caller's process, see CX-3erd below); the row
+      rides along with whichever put lands the commit.
+    * `CommitBuilder.stamp_snapshot_parent/3` (private, CX-a04,
+      formerly this module's own `maybe_stamp_snapshot_parent/3`) —
       `:regular` commits inherit `snapshot_parent` from the parent's
       `Namespace.current_namespace/1` unless the caller set one
       explicitly. Non-`:regular` and legacy-empty metadata are
       left untouched.
+
+  Both now live in `Commonplace.Store.CommitBuilder` (CX-3erd) so the
+  server-serialized path (`do_write_commit/6`) and the caller-side
+  hoisted path (`CommitStoreClient`'s local-mode `create_commit` /
+  `create_chained_commit`) run the EXACT SAME implementation — there
+  is exactly one place genesis/snapshot_parent stamping semantics can
+  be defined, so the two paths can never silently diverge.
 
   ## PubSub broadcast contract (CX-4im)
 
@@ -229,8 +278,10 @@ defmodule Commonplace.Store.CommitStore do
 
   ## Signing (CX-hoj, CX-o3r7)
 
-  Commit signing is opt-in and per-write. `do_write_commit/6` calls
-  `maybe_sign_commit/2` with the `:signing_context` option:
+  Commit signing is opt-in and per-write. `CommitBuilder.build/6` (CX-3erd
+  — the single build pipeline shared by `do_write_commit/6` and the
+  caller-side hoisted path) calls `CommitBuilder.maybe_sign_commit/2`
+  with the `:signing_context` option:
 
     * `%Commonplace.Crypto.SigningContext{}` — sign with the
       supplied identity + private key. MCP-bound sessions use this
@@ -389,7 +440,7 @@ defmodule Commonplace.Store.CommitStore do
   use GenServer
   require Logger
 
-  alias Commonplace.Store.Commit
+  alias Commonplace.Store.{Commit, CommitBuilder}
   alias Commonplace.Trust.CodeDocHeuristic
 
   def start_link(opts) do
@@ -553,6 +604,55 @@ defmodule Commonplace.Store.CommitStore do
   def write_prebuilt_commit_cas(server \\ __MODULE__, %Commit{} = commit) do
     GenServer.call(server, {:write_prebuilt_commit_cas, commit})
   end
+
+  @doc """
+  Atomically persist a caller-BUILT commit — the CX-3erd hoisted write
+  path's landing verb.
+
+  Unlike `write_prebuilt_commit_cas/2` (whose CAS compares `:latest` to
+  `commit.parent_id`), the CAS here compares `:latest` to the
+  independently-supplied `expected_parent_id` — the value the caller
+  observed `:latest` to be *before* it ran `CommitBuilder.build/6`
+  (`nil` means "expect no `:latest` yet"). This is what lets
+  `create_commit`'s explicit-parent writes (whose `commit.parent_id`
+  may be an arbitrary caller-supplied id, not derived from `:latest` at
+  all) share this same landing verb as `create_chained_commit`'s
+  observed-latest writes: both pass whatever they read `:latest` as
+  right before building, and CAS-fail only if that specific observation
+  went stale.
+
+  When `genesis` is non-nil (the caller's build newly resolved a
+  genesis parent — see `CommitBuilder.resolve_genesis/3`), it rides the
+  SAME `put_multi` as the commit + `:latest` rows, so genesis and the
+  first real commit land atomically together. Two concurrent
+  first-writers on a fresh doc both compute the same genesis id
+  (`Commit.genesis/1` is pure); the loser's CAS fails and it retries
+  chained onto the winner instead of double-writing genesis (idempotent
+  either way — `put_multi` collapses same-bytes duplicates).
+
+  Returns `{:ok, commit}` on a successful land, `{:error, :parent_moved}`
+  on CAS mismatch (nothing written).
+  """
+  @spec put_built_commit(GenServer.server(), Commit.t(), binary() | nil, Commit.t() | nil) ::
+          {:ok, Commit.t()} | {:error, :parent_moved}
+  def put_built_commit(server \\ __MODULE__, %Commit{} = commit, expected_parent_id, genesis \\ nil) do
+    GenServer.call(server, {:put_built_commit, commit, expected_parent_id, genesis})
+  end
+
+  @doc """
+  Expose the live CubDB handle for `server` (wraps `resolve_db/1`).
+
+  Public so `Commonplace.Store.CommitStoreClient`'s CX-3erd caller-side
+  build path can run `CommitBuilder.build/6`'s point-reads (genesis /
+  `:latest` / `snapshot_parent` lookups) in the CALLING process, exactly
+  like the R4(a) read helpers (`get_commit/2`, `latest_commit/2`, etc.)
+  already do — never a `GenServer.call` into this store's own mailbox.
+  Only writes need the serialized section; `db_handle/1` hands out
+  nothing but read access to CubDB, which supports concurrent readers
+  safely (MVCC snapshots).
+  """
+  @spec db_handle(GenServer.server()) :: CubDB.t()
+  def db_handle(server \\ __MODULE__), do: resolve_db(server)
 
   @doc """
   Return a MapSet of every commit id persisted for `doc_uuid`, including
@@ -979,6 +1079,61 @@ defmodule Commonplace.Store.CommitStore do
           {:reply, {:ok, commit}, state}
 
         _other ->
+          {:reply, {:error, :parent_moved}, state}
+      end
+    end)
+  end
+
+  @impl true
+  def handle_call({:put_built_commit, %Commit{} = commit, expected_parent_id, genesis}, _from, state) do
+    instrumented(:put_built_commit, commit.doc_uuid, fn ->
+      {cas_result, persist_ns} =
+        timed(fn ->
+          case CubDB.get(state.db, {:latest, commit.doc_uuid}) do
+            ^expected_parent_id ->
+              rows =
+                case genesis do
+                  %Commit{} = g -> [{{:commit, g.id}, g}]
+                  nil -> []
+                end ++
+                  [
+                    {{:commit, commit.id}, commit},
+                    {{:latest, commit.doc_uuid}, commit.id}
+                  ]
+
+              CubDB.put_multi(state.db, rows)
+              :ok
+
+            _other ->
+              :parent_moved
+          end
+        end)
+
+      case cas_result do
+        :ok ->
+          emit_write_cpu(:put_built_commit, commit.doc_uuid, 0, 0, 0, persist_ns)
+
+          :telemetry.execute(
+            [:commonplace, :commit, :create],
+            %{system_time: System.system_time()},
+            %{doc_uuid: commit.doc_uuid}
+          )
+
+          Phoenix.PubSub.broadcast(
+            Commonplace.PubSub,
+            "commits:#{commit.doc_uuid}",
+            {:commit, commit.doc_uuid, commit.id, commit.metadata}
+          )
+
+          Phoenix.PubSub.broadcast(
+            Commonplace.PubSub,
+            "blue:#{commit.doc_uuid}",
+            {:commit, commit.doc_uuid, commit.id, commit.metadata}
+          )
+
+          {:reply, {:ok, commit}, state}
+
+        :parent_moved ->
           {:reply, {:error, :parent_moved}, state}
       end
     end)
@@ -1586,30 +1741,31 @@ defmodule Commonplace.Store.CommitStore do
     walk_to_ancestor(db, uuid_b, ids_a)
   end
 
+  # CX-3erd: the build/sign pipeline itself now lives in
+  # `CommitBuilder.build/6` — the SAME implementation the caller-side
+  # hoisted path (`CommitStoreClient`) uses. This retained
+  # server-serialized path just calls it and persists inline (already
+  # running inside this GenServer's handle_call, so no extra CAS is
+  # needed — the mailbox itself is the serialization).
   defp do_write_commit(verb, state, doc_uuid, update, parent_id, metadata, opts) do
-    parent_id = maybe_stamp_genesis(state.db, doc_uuid, parent_id)
-    metadata = maybe_stamp_snapshot_parent(state.db, parent_id, metadata)
-
-    # CX-9hql (R4c rung-0): CPU-share breakdown for the commit-building
-    # path. maybe_stamp_genesis/maybe_stamp_snapshot_parent above are
-    # cheap point-reads folded into "build" rather than split out further
-    # — isolating them would need real restructuring, which this bead
-    # (instrumentation only) deliberately avoids; CX-3erd's job is to
-    # actually move CPU out of this section.
-    {commit, build_ns} = timed(fn -> Commit.new(doc_uuid, update, parent_id, metadata) end)
-
-    {commit, sign_ns} =
-      timed(fn -> maybe_sign_commit(commit, Keyword.get(opts, :signing_context)) end)
+    built = CommitBuilder.build(state.db, doc_uuid, update, parent_id, metadata, opts)
 
     {_, persist_ns} =
       timed(fn ->
-        CubDB.put_multi(state.db, [
-          {{:commit, commit.id}, commit},
-          {{:latest, doc_uuid}, commit.id}
-        ])
+        rows =
+          case built.genesis do
+            %Commit{} = g -> [{{:commit, g.id}, g}]
+            nil -> []
+          end ++
+            [
+              {{:commit, built.commit.id}, built.commit},
+              {{:latest, doc_uuid}, built.commit.id}
+            ]
+
+        CubDB.put_multi(state.db, rows)
       end)
 
-    emit_write_cpu(verb, doc_uuid, build_ns, sign_ns, 0, persist_ns)
+    emit_write_cpu(verb, doc_uuid, built.build_ns, built.sign_ns, 0, persist_ns)
 
     :telemetry.execute(
       [:commonplace, :commit, :create],
@@ -1620,7 +1776,7 @@ defmodule Commonplace.Store.CommitStore do
     Phoenix.PubSub.broadcast(
       Commonplace.PubSub,
       "commits:#{doc_uuid}",
-      {:commit, doc_uuid, commit.id, metadata}
+      {:commit, doc_uuid, built.commit.id, built.commit.metadata}
     )
 
     # Also broadcast on the blue:UUID topic so UI subscribers (WikiLive,
@@ -1631,10 +1787,10 @@ defmodule Commonplace.Store.CommitStore do
     Phoenix.PubSub.broadcast(
       Commonplace.PubSub,
       "blue:#{doc_uuid}",
-      {:commit, doc_uuid, commit.id, metadata}
+      {:commit, doc_uuid, built.commit.id, built.commit.metadata}
     )
 
-    commit
+    built.commit
   end
 
   defp collect_commit_ids(db, doc_uuid) do
@@ -1730,53 +1886,6 @@ defmodule Commonplace.Store.CommitStore do
     File.mkdir_p!(path)
   end
 
-  # CX-m3x: if a caller hands us `parent_id=nil` for a doc_uuid that
-  # has never been written before, stamp the deterministic genesis and
-  # use its id as the parent. Pre-umbrella docs with an existing :latest
-  # retain legacy behavior (parent_id stays nil) — the write-side rule
-  # so the read-side legacy hatch (empty metadata, no :kind) keeps
-  # working without retroactive genesis insertions.
-  defp maybe_stamp_genesis(_db, _doc_uuid, parent_id) when parent_id != nil, do: parent_id
-
-  defp maybe_stamp_genesis(db, doc_uuid, nil) do
-    case CubDB.get(db, {:latest, doc_uuid}) do
-      nil ->
-        genesis = Commit.genesis(doc_uuid)
-        CubDB.put(db, {:commit, genesis.id}, genesis)
-        genesis.id
-
-      _existing ->
-        nil
-    end
-  end
-
-  # CX-a04: when the caller produces a `:regular` commit without an
-  # explicit `:snapshot_parent`, stamp it from the parent's
-  # `current_namespace` (snapshot.id / genesis.id / inherited). Callers
-  # that set their own snapshot_parent keep it. Non-`:regular` and
-  # legacy `%{}` metadata are untouched.
-  defp maybe_stamp_snapshot_parent(db, parent_id, %{kind: :regular} = metadata) do
-    if Map.has_key?(metadata, :snapshot_parent) do
-      metadata
-    else
-      case stamp_target(db, parent_id) do
-        nil -> metadata
-        sp_id -> Map.put(metadata, :snapshot_parent, sp_id)
-      end
-    end
-  end
-
-  defp maybe_stamp_snapshot_parent(_db, _parent_id, metadata), do: metadata
-
-  defp stamp_target(_db, nil), do: nil
-
-  defp stamp_target(db, parent_id) do
-    case CubDB.get(db, {:commit, parent_id}) do
-      nil -> nil
-      parent -> Commonplace.Store.Namespace.current_namespace(parent)
-    end
-  end
-
   # CX-hoj: the CAS write paths (`write_snapshot_cas/5`,
   # `write_prebuilt_commit_cas/2`) call `maybe_sign_commit/1` with no
   # context deliberately — today only node-signed system kinds
@@ -1805,100 +1914,10 @@ defmodule Commonplace.Store.CommitStore do
     :ok
   end
 
-  # CX-hoj: prefer the per-call signing context when one is supplied.
-  # Pass `signing_context: :unsigned` to deliberately skip signing even
-  # when the global SecretStore has a key configured (used by MCP-MVP
-  # agent commits that should not inherit the human's identity).
-  # Default (nil context) falls back to the global SecretStore — the
-  # legacy behavior, preserved for callers that haven't been updated.
-  #
-  # CX-tdkq.24 (phase 2.5): SYSTEM-minted commits (kind :snapshot or
-  # :merge) reaching the nil branch are node-signed so strict mode
-  # accepts system commits. Regular user commits are untouched (still
-  # unsigned absent a user key/context).
-  defp maybe_sign_commit(commit, signing_context \\ nil)
-
-  # Never re-sign: a commit that already carries a signature (e.g. a
-  # remote/prebuilt commit re-written idempotently) keeps its signer.
-  defp maybe_sign_commit(%Commit{signature: sig} = commit, _) when not is_nil(sig), do: commit
-
-  defp maybe_sign_commit(commit, :unsigned), do: commit
-
-  defp maybe_sign_commit(commit, %Commonplace.Crypto.SigningContext{} = ctx) do
-    sign_with_context(commit, ctx)
-  end
-
-  # CX-tdkq.25: system-minted commits (snapshot/merge) are SYSTEM actions —
-  # always node-sign them, even when a global user key is configured, so
-  # attribution is correct and zero-config single-node strict holds for
-  # keygen'd workspaces too. Only non-system commits fall back to the
-  # global SecretStore key.
-  defp maybe_sign_commit(%Commit{metadata: %{kind: kind}} = commit, nil)
-       when kind in [:snapshot, :merge] do
-    node_sign_if_system(commit)
-  end
-
-  # CX-hoj: the global SecretStore fallback is AMBIENT identity — it
-  # signs with whatever key happens to be loaded in this process,
-  # regardless of which caller/session produced the update. This does
-  # NOT remove the fallback (that's a later bead: once the demotion
-  # worklist below is empty, nil -> :unsigned becomes the end state).
-  # For now, every actual ambient-sign is made ENUMERABLE via telemetry
-  # so un-threaded callers can be found and migrated to an explicit
-  # `signing_context`.
-  defp maybe_sign_commit(commit, nil) do
-    case global_secret_context() do
-      {:ok, ctx} ->
-        signed = sign_with_context(commit, ctx)
-
-        :telemetry.execute(
-          [:commonplace, :commit, :ambient_signed],
-          %{system_time: System.system_time()},
-          %{doc_uuid: signed.doc_uuid, commit_id: signed.id}
-        )
-
-        signed
-
-      :none ->
-        commit
-    end
-  end
-
-  defp sign_with_context(commit, ctx) do
-    signer_id = Commonplace.Crypto.Signing.signer_id(ctx.identity_uuid, ctx.public_key)
-    Commonplace.Crypto.Signing.sign_commit(commit, ctx.private_key, signer_id)
-  end
-
-  # Node-sign a system-minted commit; on a node-identity failure the
-  # commit is left unchanged (visible under strict mode, not silent).
-  defp node_sign_if_system(%Commit{metadata: %{kind: kind}} = commit)
-       when kind in [:snapshot, :merge] do
-    case Commonplace.Crypto.NodeIdentity.signing_context() do
-      {:ok, ctx} -> sign_with_context(commit, ctx)
-      {:error, _} -> commit
-    end
-  end
-
-  defp global_secret_context do
-    with pid when is_pid(pid) <- Process.whereis(Commonplace.Store.SecretStore),
-         {:ok, encoded_key} <- Commonplace.Store.SecretStore.get("signing_key:default"),
-         {:ok, private_key} <- Base.decode64(encoded_key),
-         {:ok, encoded_pub} <- Commonplace.Store.SecretStore.get("signing_pub:default"),
-         {:ok, public_key} <- Base.decode64(encoded_pub) do
-      identity_uuid =
-        case Commonplace.Store.SecretStore.get("signing_identity") do
-          {:ok, uuid} -> uuid
-          :not_found -> "anonymous"
-        end
-
-      {:ok,
-       %Commonplace.Crypto.SigningContext{
-         identity_uuid: identity_uuid,
-         private_key: private_key,
-         public_key: public_key
-       }}
-    else
-      _ -> :none
-    end
-  end
+  # CX-3erd: signing itself now lives in `CommitBuilder.maybe_sign_commit/2`
+  # — the SAME implementation `do_write_commit/6` (via `CommitBuilder.build/6`)
+  # and the caller-side hoisted path both use. The CAS write paths keep
+  # calling it directly (bare, no signing_context) since they sit above
+  # this build pipeline (see the module-level "Signing" section).
+  defp maybe_sign_commit(commit), do: CommitBuilder.maybe_sign_commit(commit)
 end

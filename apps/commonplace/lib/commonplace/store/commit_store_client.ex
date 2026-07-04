@@ -49,7 +49,36 @@ defmodule Commonplace.Store.CommitStoreClient do
   in remote mode must invoke `CommitStore.snapshot/2` on the serve node.
   """
 
-  alias Commonplace.Store.CommitStore
+  # CX-3erd: local-mode writes build+sign caller-side.
+  #
+  # In LOCAL mode, create_commit/6 and create_chained_commit/5 no longer
+  # hand the whole build+sign pipeline to CommitStore's serialized
+  # handle_call. Instead this module reads :latest directly off
+  # CommitStore.db_handle/1 (a plain CubDB point-read, no GenServer
+  # call), builds and signs the commit via
+  # Commonplace.Store.CommitBuilder.build/6 in the CALLING process, and
+  # lands it with CommitStore.put_built_commit/4, a CAS'd verb. A
+  # bounded retry loop (@max_chain_attempts) handles the
+  # {:error, :parent_moved} case (someone else's write landed first --
+  # re-read, rebuild, retry); after exhaustion this module falls back
+  # to the legacy fully-serialized CommitStore.create_commit/6 /
+  # create_chained_commit/5 verbs so a writer always eventually makes
+  # progress even under sustained contention. See CommitStore's
+  # moduledoc, "Atomicity of create_chained_commit (CX-l7j)", for why
+  # the caller-side read is safe (CubDB's MVCC snapshots) and why
+  # correctness rests on the CAS, not the read.
+  #
+  # REMOTE mode is completely unaffected -- remote callers still route
+  # through the legacy GenServer.call shapes below, since there's no
+  # local CubDB handle to read :latest from without a round-trip anyway.
+
+  alias Commonplace.Store.{CommitStore, CommitBuilder, Commit}
+
+  # Bounded optimistic-CAS retry count for the caller-side hoisted write
+  # path, before falling back to the legacy serialized verb. Kept small
+  # -- a handful of retries covers ordinary contention; sustained
+  # contention past this is exactly what the fallback is for.
+  @max_chain_attempts 5
 
   defp normalize_server(__MODULE__), do: CommitStore
   defp normalize_server(server), do: server
@@ -65,7 +94,17 @@ defmodule Commonplace.Store.CommitStoreClient do
         )
 
       :local ->
-        CommitStore.create_commit(normalize_server(server), doc_uuid, update, parent_id, metadata, opts)
+        local_server = normalize_server(server)
+
+        caller_side_write(
+          local_server,
+          doc_uuid,
+          update,
+          metadata,
+          opts,
+          fn _observed_latest_id -> parent_id end,
+          fn -> CommitStore.create_commit(local_server, doc_uuid, update, parent_id, metadata, opts) end
+        )
     end
   end
 
@@ -87,7 +126,62 @@ defmodule Commonplace.Store.CommitStoreClient do
         )
 
       :local ->
-        CommitStore.create_chained_commit(normalize_server(server), doc_uuid, update, metadata, opts)
+        local_server = normalize_server(server)
+
+        caller_side_write(
+          local_server,
+          doc_uuid,
+          update,
+          metadata,
+          opts,
+          fn observed_latest_id -> observed_latest_id end,
+          fn -> CommitStore.create_chained_commit(local_server, doc_uuid, update, metadata, opts) end
+        )
+    end
+  end
+
+  # CX-3erd: bounded optimistic-CAS write loop, LOCAL mode only.
+  #
+  # `parent_fun.(observed_latest_id)` decides what parent_id to build
+  # against — `create_chained_commit` chains to whatever :latest was
+  # observed; `create_commit` ignores the observation and always uses
+  # its caller-supplied explicit parent_id (the observation is used
+  # ONLY as the CAS's `expected_parent_id`, so a race is detected
+  # regardless of which parent the caller chose to build against).
+  #
+  # `legacy_fallback` is the fully-serialized CommitStore verb, invoked
+  # only after @max_chain_attempts consecutive CAS losses.
+  defp caller_side_write(server, doc_uuid, update, metadata, opts, parent_fun, legacy_fallback) do
+    db = CommitStore.db_handle(server)
+    attempt_write(db, server, doc_uuid, update, metadata, opts, parent_fun, legacy_fallback, @max_chain_attempts)
+  end
+
+  defp attempt_write(_db, _server, _doc_uuid, _update, _metadata, _opts, _parent_fun, legacy_fallback, 0) do
+    legacy_fallback.()
+  end
+
+  defp attempt_write(db, server, doc_uuid, update, metadata, opts, parent_fun, legacy_fallback, attempts_left) do
+    observed_latest_id = CubDB.get(db, {:latest, doc_uuid})
+    parent_id = parent_fun.(observed_latest_id)
+
+    built = CommitBuilder.build(db, doc_uuid, update, parent_id, metadata, opts)
+
+    case CommitStore.put_built_commit(server, built.commit, observed_latest_id, built.genesis) do
+      {:ok, commit} ->
+        commit
+
+      {:error, :parent_moved} ->
+        attempt_write(
+          db,
+          server,
+          doc_uuid,
+          update,
+          metadata,
+          opts,
+          parent_fun,
+          legacy_fallback,
+          attempts_left - 1
+        )
     end
   end
 
@@ -237,13 +331,39 @@ defmodule Commonplace.Store.CommitStoreClient do
     end
   end
 
-  def import_commit(server \\ CommitStore, commit) do
+  @doc """
+  Import a peer's commit (CX-bv3 / CX-ch5). In LOCAL mode, CX-3erd
+  hoists the pure id-verification gate (CX-gwz — re-hash the commit
+  and compare to its claimed `id`) to THIS edge, so a tampered commit
+  is rejected without ever reaching the server's mailbox. The same
+  `[:commonplace, :commit, :rejected, :id_mismatch]` telemetry the
+  server emits for this case is duplicated here so rejects observed
+  at the client edge stay observable exactly like server-side ones.
+
+  Trust / namespace / code-doc gates are NOT duplicated here — they
+  stay server-side (`CommitStore.import_commit/3` still runs
+  `Commit.verify_id/1` too, for remote callers and as defense in
+  depth; see that function's `handle_call`).
+  """
+  def import_commit(server \\ CommitStore, commit, opts \\ []) do
     case remote_node() do
       {:ok, node} ->
-        GenServer.call({CommitStore, node}, {:import_commit, commit})
+        GenServer.call({CommitStore, node}, {:import_commit, commit, opts})
 
       :local ->
-        CommitStore.import_commit(normalize_server(server), commit)
+        case Commit.verify_id(commit) do
+          :ok ->
+            CommitStore.import_commit(normalize_server(server), commit, opts)
+
+          {:error, {:id_mismatch, computed, claimed}} = error ->
+            :telemetry.execute(
+              [:commonplace, :commit, :rejected, :id_mismatch],
+              %{system_time: System.system_time()},
+              %{claimed_id: claimed, computed_id: computed, doc_uuid: commit.doc_uuid}
+            )
+
+            error
+        end
     end
   end
 
