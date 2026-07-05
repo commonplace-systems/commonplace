@@ -148,17 +148,11 @@ defmodule Commonplace.CLI.InspectCmd do
     # Block stats
     IO.puts("")
 
-    total_blocks =
-      doc.store.clients
-      |> Enum.map(fn {_id, blocks} -> length(blocks) end)
-      |> Enum.sum()
-
-    total_items =
-      doc.store.clients
-      |> Enum.map(fn {_id, blocks} ->
-        Enum.map(blocks, fn block -> block.length end) |> Enum.sum()
-      end)
-      |> Enum.sum()
+    # CX-w1fw: materialized view — recently-pushed blocks may still be
+    # sitting in client_pending rather than doc.store.clients.
+    all_blocks = Yelixer.BlockStore.all_items(doc.store)
+    total_blocks = length(all_blocks)
+    total_items = all_blocks |> Enum.map(& &1.length) |> Enum.sum()
 
     IO.puts("Blocks: #{total_blocks}")
     IO.puts("Items: #{total_items}")

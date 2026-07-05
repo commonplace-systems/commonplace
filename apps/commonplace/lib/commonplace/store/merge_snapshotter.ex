@@ -300,7 +300,10 @@ defmodule Commonplace.Store.MergeSnapshotter do
   end
 
   defp deterministic_client_id(%Doc{store: store}) do
-    case Map.keys(store.clients) do
+    # CX-w1fw: client_ids/1 includes clients whose only blocks are
+    # still in client_pending — Map.keys(store.clients) alone would
+    # miss them.
+    case BlockStore.client_ids(store) do
       [] -> 0
       clients -> Enum.min(clients)
     end

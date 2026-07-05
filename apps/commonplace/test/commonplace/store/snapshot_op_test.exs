@@ -19,6 +19,7 @@ defmodule Commonplace.Store.SnapshotOpTest do
   use ExUnit.Case
 
   alias Commonplace.Store.{CommitStore, Commit, Namespace}
+  alias Yelixer.BlockStore
 
   setup do
     dir = Path.join(System.tmp_dir!(), "snapshot_op_test_#{:rand.uniform(1_000_000)}")
@@ -191,10 +192,9 @@ defmodule Commonplace.Store.SnapshotOpTest do
       # appears as a key somewhere inside the derivation_map's values.
       {:ok, doc} = Yelixer.Encoding.apply_update(Yelixer.Doc.new(), snapshot.update)
       new_ids =
-        doc.store.clients
-        |> Enum.flat_map(fn {_client, items} ->
-          Enum.map(items, fn it -> {it.id.client, it.id.clock} end)
-        end)
+        doc.store
+        |> BlockStore.all_items()
+        |> Enum.map(fn it -> {it.id.client, it.id.clock} end)
         |> MapSet.new()
 
       covered =

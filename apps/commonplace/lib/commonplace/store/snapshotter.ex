@@ -189,7 +189,10 @@ defmodule Commonplace.Store.Snapshotter do
   # empty. Smallest-by-integer is stable across BEAM nodes and doesn't
   # depend on map iteration order.
   defp deterministic_client_id(%Yelixer.Doc{store: store}) do
-    case Map.keys(store.clients) do
+    # CX-w1fw: client_ids/1 includes clients whose only blocks are
+    # still in client_pending — Map.keys(store.clients) alone would
+    # miss them.
+    case Yelixer.BlockStore.client_ids(store) do
       [] -> 0
       clients -> Enum.min(clients)
     end

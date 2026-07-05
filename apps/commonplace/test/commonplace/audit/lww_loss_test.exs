@@ -55,7 +55,16 @@ defmodule Commonplace.Audit.LwwLossTest do
   defp strip_origins(%Doc{store: store} = doc, client) do
     stripped = for item <- BlockStore.client_blocks(store, client), do: %{item | origin: nil}
 
-    store = %{store | clients: Map.put(store.clients, client, stripped)}
+    # CX-w1fw: client_blocks/2 returns a materialized *view* (pending
+    # items folded in without persisting), so writing `stripped` back
+    # into `clients` directly must also drop client_pending[client] —
+    # otherwise a later BlockStore.get/2 would see the stale,
+    # un-stripped copy still sitting in pending ahead of this write.
+    store = %{store |
+      clients: Map.put(store.clients, client, stripped),
+      client_pending: Map.delete(store.client_pending, client)
+    }
+
     %{doc | store: BlockStore.invalidate_tuple_cache(store, client)}
   end
 
