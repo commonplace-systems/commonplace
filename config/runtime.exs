@@ -31,6 +31,18 @@ if System.get_env("PHX_SERVER") && System.get_env("COMMONPLACE_DATA_DIR") do
   config :commonplace, workspace_lock_on_boot: true
 end
 
+# CX-qat5.7: the local-write gate knob is otherwise Application-env only
+# (default :dry_run — which OBSERVES but still LANDS the write). For an
+# exposed workspace flipped to strict (accept_unsigned: false in
+# trust.json), :dry_run would silently re-open the write hole on the next
+# serve restart, because a strict trust config only DENIES when the gate
+# is :enforce. Map an OS env → the app knob so a serve can boot
+# strict-enforcing durably and PER NODE (a permissive dogfood node simply
+# omits this var). Values: off | dry_run | enforce.
+if gate = System.get_env("COMMONPLACE_LOCAL_WRITE_GATE") do
+  config :commonplace, local_write_gate: String.to_atom(gate)
+end
+
 # CX-xwh4: only override the http binding outside test. In test the
 # binding comes from config/test.exs (127.0.0.1:4002 — the address
 # Wallaby's base_url targets). A blanket runtime override here would
