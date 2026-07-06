@@ -1,8 +1,10 @@
 defmodule Commonplace.MUD.BotTest do
   use ExUnit.Case
 
+  alias Commonplace.Crypto.{AgentKeys, Signing}
   alias Commonplace.MUD.{Bootstrap, Bot, PlayerSession}
-  alias Commonplace.Store.CommitStore
+  alias Commonplace.Presence.Identity
+  alias Commonplace.Store.{CommitStore, SecretStore}
   alias Commonplace.Tree.Schema
   alias Yelixer.Encoding
 
@@ -42,12 +44,24 @@ defmodule Commonplace.MUD.BotTest do
     CommitStore.create_commit(store, root_uuid, update, nil)
     {:ok, _} = Bootstrap.seed(root_uuid, store)
 
+    # CX-5plk: isolated SecretStore so per-bot signing-key custody
+    # assertions don't share state with the app's global SecretStore
+    # (or other tests running concurrently against it).
+    secrets_dir = Path.join(System.tmp_dir!(), "cp_mud_bot_secrets_#{:rand.uniform(1_000_000_000)}")
+    File.mkdir_p!(secrets_dir)
+    secrets_name = :"cp_mud_bot_secrets_#{:rand.uniform(1_000_000_000)}"
+    {:ok, secrets_pid} = SecretStore.start_link(data_dir: secrets_dir, name: secrets_name)
+
     on_exit(fn ->
       Bot.stop("bartleby")
       Bot.stop("watcher")
+      Bot.stop("scribe")
+      Bot.stop("dup")
+      if Process.alive?(secrets_pid), do: GenServer.stop(secrets_pid)
+      File.rm_rf!(secrets_dir)
     end)
 
-    %{store: store, root: root_uuid}
+    %{store: store, root: root_uuid, secrets: secrets_name}
   end
 
   defp human_player(name, ctx) do
@@ -147,5 +161,97 @@ defmodule Commonplace.MUD.BotTest do
     {:ok, inv_events} = Bot.send_input("bartleby", "inventory", store: ctx.store, root_uuid: ctx.root)
     inv_text = Enum.join(inv_events, "\n")
     assert inv_text =~ "cloak"
+  end
+
+  describe "CX-5plk: per-bot signing identity" do
+    test "a bot session's writes are signed with the bot's own resolved identity", ctx do
+      {:ok, _} =
+        Bot.send_input("scribe", "look", store: ctx.store, root_uuid: ctx.root, secret_store: ctx.secrets)
+
+      pid = :global.whereis_name({Bot, "scribe"})
+      assert is_pid(pid)
+      state = :sys.get_state(pid)
+
+      # The session resolved a real signing context (not the pre-CX-5plk
+      # nil/unsigned default).
+      assert %Commonplace.Crypto.SigningContext{} = state.signing_context
+      assert is_binary(state.signer_id)
+
+      # It's the BOT's identity — a `:bot` cold identity registered under
+      # the bot's own name, not some other principal.
+      assert {:ok, identity_uuid} = Identity.lookup("scribe", :bot, ctx.root, ctx.store)
+      assert {:ok, pub} = AgentKeys.ensure(identity_uuid, ctx.secrets)
+      assert state.signer_id == Signing.signer_id(identity_uuid, pub)
+
+      # Store-level: the player-dir commit created at bootstrap actually
+      # carries that signer, not just the in-memory session state.
+      assert {:ok, dir_head} = CommitStore.latest_commit(ctx.store, state.player_dir_uuid)
+      assert dir_head.signer_id == state.signer_id
+    end
+
+    test "same bot name resolves to the same identity/key across calls and a session restart", ctx do
+      {:ok, _} =
+        Bot.send_input("dup", "look", store: ctx.store, root_uuid: ctx.root, secret_store: ctx.secrets)
+
+      pid1 = :global.whereis_name({Bot, "dup"})
+      state1 = :sys.get_state(pid1)
+      assert is_binary(state1.signer_id)
+
+      # Second send_input reuses the SAME live session (same pid), same
+      # signer.
+      {:ok, _} =
+        Bot.send_input("dup", "look", store: ctx.store, root_uuid: ctx.root, secret_store: ctx.secrets)
+
+      assert :global.whereis_name({Bot, "dup"}) == pid1
+      assert :sys.get_state(pid1).signer_id == state1.signer_id
+
+      assert {:ok, identity_uuid} = Identity.lookup("dup", :bot, ctx.root, ctx.store)
+      assert {:ok, pub_before} = AgentKeys.ensure(identity_uuid, ctx.secrets)
+
+      # Restart: stop the session outright, then spawn a fresh one for
+      # the same name — idempotent registration must resolve the SAME
+      # identity_uuid and the SAME keypair (no re-mint).
+      Bot.stop("dup")
+      wait_until(fn -> :global.whereis_name({Bot, "dup"}) == :undefined end)
+
+      {:ok, _} =
+        Bot.send_input("dup", "look", store: ctx.store, root_uuid: ctx.root, secret_store: ctx.secrets)
+
+      pid2 = :global.whereis_name({Bot, "dup"})
+      assert is_pid(pid2)
+      assert pid2 != pid1
+
+      state2 = :sys.get_state(pid2)
+      assert state2.signer_id == state1.signer_id
+
+      assert {:ok, ^identity_uuid} = Identity.lookup("dup", :bot, ctx.root, ctx.store)
+      assert {:ok, ^pub_before} = AgentKeys.ensure(identity_uuid, ctx.secrets)
+    end
+
+    test "permissive-node path is unaffected: a bot with no secret_store override still lands writes", ctx do
+      # No `secret_store:` opt — resolves against the app's global
+      # SecretStore, same as production. Permissive workspaces (no
+      # trust config set, as in this test's environment) don't gate on
+      # signed-vs-unsigned, so the bot's writes land exactly as they did
+      # before CX-5plk.
+      {:ok, events} = Bot.send_input("watcher", "look", store: ctx.store, root_uuid: ctx.root)
+      text = Enum.join(events, "\n")
+      assert text =~ "Start Room"
+
+      {:ok, take_events} = Bot.send_input("watcher", "take cloak", store: ctx.store, root_uuid: ctx.root)
+      assert Enum.join(take_events, "\n") =~ "You take cloak"
+    end
+  end
+
+  defp wait_until(fun, tries \\ 50)
+  defp wait_until(_fun, 0), do: flunk("condition never became true")
+
+  defp wait_until(fun, tries) do
+    if fun.() do
+      :ok
+    else
+      Process.sleep(20)
+      wait_until(fun, tries - 1)
+    end
   end
 end
