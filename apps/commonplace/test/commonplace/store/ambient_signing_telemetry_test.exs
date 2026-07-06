@@ -112,7 +112,13 @@ defmodule Commonplace.Store.AmbientSigningTelemetryTest do
     assert commit.signature == nil
     assert commit.signer_id == nil
 
-    refute_receive {:telemetry, [:commonplace, :commit, :ambient_signed], _, _}, 100
+    # Scope the refute to THIS test's doc: the telemetry event is
+    # node-global, and under a concurrent full-suite run another test's
+    # ambient-signed commit otherwise lands in this mailbox and trips
+    # the refute (observed as a load-only CI flake, run 28800700931 —
+    # same class as local_write_gate_test's pin-2 fix).
+    refute_receive {:telemetry, [:commonplace, :commit, :ambient_signed], _, %{doc_uuid: ^uuid}},
+                   100
   end
 
   test "a non-system-kind commit reaching write_prebuilt_commit_cas ambient-signs with via: :cas telemetry",
