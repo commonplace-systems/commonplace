@@ -125,22 +125,34 @@ defmodule Commonplace.Tree.CherrypickTest do
          %{store: store} do
       # This is the canonical use case: fork source, both branches diverge,
       # cherry-pick one commit from the original back into the fork.
+      #
+      # Both branches' advances are built by reconstructing the REAL chain
+      # first (as the moduledoc's precondition requires: cherry-pick is
+      # only well-defined when the source's op refs point at items the
+      # target has actually seen). Building a from-scratch `Doc.new/1` with
+      # a colliding client_id and calling it a "branch advance" — as this
+      # test used to — has no real origin ancestry at all; it only used to
+      # "work" as a side effect of the pre-H1 bug (CX-cdyi), which pushed
+      # the resulting un-integratable delta into the store raw and let a
+      # later full-chain replay coincidentally satisfy its real
+      # dependency. H1 buffers that delta instead (correctly — it's not
+      # actually cherry-pickable) and excludes it from encode, so this
+      # test must exercise a genuine shared-ancestry cherry-pick instead.
       source = UUID.uuid4()
       text_commit(store, source, "base")
       forked = Fork.fork_directory(source, store)
 
-      # Source advances with a unique edit.
-      source_doc = Doc.new(client_id: 1)
-      source_doc = ContentType.create(source_doc, :text, "doc")
-      source_doc = ContentType.insert_text(source_doc, 0, "base + source-only")
-      source_new_commit =
-        CommitStore.create_chained_commit(store, source, Encoding.encode_update(source_doc))
+      # Source advances with a unique edit, anchored on real "base" content.
+      {:ok, source_base} = DocBuilder.reconstruct_doc(store, source)
+      source_extended = ContentType.insert_text(source_base, 4, " + source-only")
 
-      # Fork advances differently.
-      fork_doc = Doc.new(client_id: 2)
-      fork_doc = ContentType.create(fork_doc, :text, "doc")
-      fork_doc = ContentType.insert_text(fork_doc, 0, "base + fork-only")
-      CommitStore.create_chained_commit(store, forked, Encoding.encode_update(fork_doc))
+      source_new_commit =
+        CommitStore.create_chained_commit(store, source, Encoding.encode_update(source_extended))
+
+      # Fork advances differently, also anchored on its own real "base" content.
+      {:ok, fork_base} = DocBuilder.reconstruct_doc(store, forked)
+      fork_extended = ContentType.insert_text(fork_base, 4, " + fork-only")
+      CommitStore.create_chained_commit(store, forked, Encoding.encode_update(fork_extended))
 
       # Cherry-pick source's advance into the fork.
       {:ok, _cherry_commit} =
