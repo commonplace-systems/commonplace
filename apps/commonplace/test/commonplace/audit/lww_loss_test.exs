@@ -27,7 +27,16 @@ defmodule Commonplace.Audit.LwwLossTest do
     {:ok, store} = CommitStore.start_link(data_dir: dir, name: store_name)
 
     on_exit(fn ->
-      if Process.alive?(store), do: GenServer.stop(store)
+      # alive?-then-stop is racy: the store can begin shutting down
+      # between the check and the stop, making GenServer.stop exit with
+      # :shutdown (observed as a rare CI-only flake). Stop
+      # unconditionally and swallow the already-exiting case.
+      try do
+        GenServer.stop(store)
+      catch
+        :exit, _ -> :ok
+      end
+
       File.rm_rf!(dir)
     end)
 
