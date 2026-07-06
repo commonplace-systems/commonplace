@@ -30,16 +30,19 @@ defmodule Commonplace.GitBridge.Exporter do
     * `:map` / `:array` — `Commonplace.GitBridge.CanonicalJson.encode/1`
       of the Elixir term (`ContentType.get_content/1` already turns
       both into JSON-shaped data: a map or a list).
-    * `:xml` — `Commonplace.Document.ContentType` has no serialized-
-      string accessor for xml (only `materialize_xml_fragment`, which
-      returns a tree of `{:element, tag, attrs, children}` /
-      `{:text, str}` / `{:fragment, children}` tuples). There is no
-      "existing serialized XML string" to reuse, so this renders the
-      materialized tree through `CanonicalJson` after converting the
-      tuple tree to plain maps — deterministic, diffable, and lossless
-      over the same data `get_content/1` already exposes. Documented
-      here as the deviation from the original one-line renderer
-      sketch (no string accessor exists to reuse as-is).
+    * `:xml` — `Commonplace.GitBridge.CanonicalXml.encode/1` of the
+      materialized tuple tree (`ContentType.get_content/1` returns a
+      tree of `{:element, tag, attrs, children}` / `{:text, str}` /
+      `{:fragment, children}` tuples for `:xml` docs) — pretty-printed,
+      deterministic, human-readable XML text (CX-b0ow.5). This is what
+      makes outliner `_outline` trees and chat `_view.xml` files
+      actually readable in git, the whole point of the export. If
+      `CanonicalXml.encode/1` returns `{:error, _}` (a shape it can't
+      serialize), this falls back to the previous renderer — canonical
+      JSON of the tuple tree converted to plain maps — so a doc never
+      fails to export outright just because its content is
+      XML-shaped in some unexpected way; a warning is recorded either
+      way so the fallback is visible, not silent.
     * anything else (nil type, doc reconstruction failure) — skipped;
       a human-readable warning string is appended to the result's
       `warnings` list instead of writing `inspect()`-style garbage to
@@ -72,7 +75,7 @@ defmodule Commonplace.GitBridge.Exporter do
   alias Commonplace.Document.ContentType
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Presence
-  alias Commonplace.GitBridge.CanonicalJson
+  alias Commonplace.GitBridge.{CanonicalJson, CanonicalXml}
   alias Commonplace.Sync.Export
 
   @protected_prefixes [".git", ".commonplace"]
@@ -163,7 +166,7 @@ defmodule Commonplace.GitBridge.Exporter do
         type = ContentType.get_type(doc)
 
         case render(type, doc) do
-          {:ok, content} ->
+          {:ok, content, extra_warning} ->
             path = Path.join(dir_path, entry.name)
             Export.atomic_write(path, content)
 
@@ -174,6 +177,8 @@ defmodule Commonplace.GitBridge.Exporter do
 
             authors = if is_nil(signer_id), do: authors, else: MapSet.put(authors, signer_id)
 
+            warnings = if extra_warning, do: [extra_warning | warnings], else: warnings
+
             {manifest, authors, warnings}
 
           :skip ->
@@ -183,15 +188,26 @@ defmodule Commonplace.GitBridge.Exporter do
     end
   end
 
-  defp render(:text, doc), do: {:ok, ContentType.get_content(doc) || ""}
+  defp render(:text, doc), do: {:ok, ContentType.get_content(doc) || "", nil}
 
-  defp render(:map, doc), do: {:ok, CanonicalJson.encode(ContentType.get_content(doc) || %{})}
+  defp render(:map, doc), do: {:ok, CanonicalJson.encode(ContentType.get_content(doc) || %{}), nil}
 
-  defp render(:array, doc), do: {:ok, CanonicalJson.encode(ContentType.get_content(doc) || [])}
+  defp render(:array, doc), do: {:ok, CanonicalJson.encode(ContentType.get_content(doc) || []), nil}
 
   defp render(:xml, doc) do
     tree = ContentType.get_content(doc) || []
-    {:ok, CanonicalJson.encode(xml_to_json(tree))}
+
+    case CanonicalXml.encode(tree) do
+      {:ok, content} ->
+        {:ok, content, nil}
+
+      {:error, reason} ->
+        # Fallback (documented in the moduledoc above): CanonicalXml
+        # couldn't serialize this tree, so render the tuple tree
+        # through CanonicalJson instead of failing the export outright.
+        {:ok, CanonicalJson.encode(xml_to_json(tree)),
+         warning("xml render fell back to JSON (#{inspect(reason)})")}
+    end
   end
 
   defp render(_other, _doc), do: :skip

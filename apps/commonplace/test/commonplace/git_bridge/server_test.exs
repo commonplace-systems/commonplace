@@ -8,6 +8,8 @@ defmodule Commonplace.GitBridge.ServerTest do
   alias Commonplace.Presence
   alias Commonplace.Dataflow.PubSub
   alias Commonplace.Crypto.{Signing, SigningContext}
+  alias Commonplace.GitBridge.CanonicalXml
+  alias Yelixer.Types.{XMLFragment, XMLElement, XMLText}
 
   setup do
     store_dir = Path.join(System.tmp_dir!(), "cp_gb_server_store_#{:rand.uniform(1_000_000_000)}")
@@ -49,6 +51,43 @@ defmodule Commonplace.GitBridge.ServerTest do
     doc = Yelixer.Doc.new()
     doc = ContentType.create(doc, :map, name)
     doc = Enum.reduce(map, doc, fn {k, v}, acc -> ContentType.set_key(acc, k, v) end)
+    update = Yelixer.Encoding.encode_update(doc)
+    CommitStore.create_commit(store, uuid, update, nil)
+  end
+
+  # An outliner-shaped `:xml` doc: a flat bag of `<item>` elements each
+  # carrying a map-ordering-hostile attribute set (CX-b0ow.5's canonical
+  # XML render pin — attrs must sort byte-stably regardless of the
+  # underlying map's enumeration order).
+  defp create_xml_outline(store, uuid, name) do
+    doc = Yelixer.Doc.new()
+    doc = ContentType.create(doc, :xml, name)
+    doc = XMLFragment.insert_child(doc, "content", 0, {:element, "item"})
+
+    [{:element, _, item_name}] = XMLFragment.to_list(doc, "content")
+
+    doc =
+      Enum.reduce(
+        [
+          {"id", "1"},
+          {"parent", "root"},
+          {"order", "a0"},
+          {"collapsed", "false"},
+          {"a", "1"},
+          {"b", "2"},
+          {"c", "3"},
+          {"d", "4"},
+          {"e", "5"},
+          {"f", "6"}
+        ],
+        doc,
+        fn {k, v}, acc -> XMLElement.set_attribute(acc, item_name, k, v) end
+      )
+
+    doc = XMLElement.insert_child(doc, item_name, 0, :text)
+    [{:text, text_name}] = XMLElement.children(doc, item_name)
+    doc = XMLText.insert(doc, text_name, 0, "first bullet")
+
     update = Yelixer.Encoding.encode_update(doc)
     CommitStore.create_commit(store, uuid, update, nil)
   end
@@ -98,6 +137,7 @@ defmodule Commonplace.GitBridge.ServerTest do
     create_text(store, "doc-nosync", "nosync.txt", "should not appear")
     create_text(store, "doc-sys", "__system", "should not appear")
     create_text(store, "doc-nested", "nested.txt", "deep")
+    create_xml_outline(store, "doc-outline", "_outline")
 
     {:ok, _presence_uuid} = Presence.create("alice", :usr, mount_uuid, store)
 
@@ -112,6 +152,7 @@ defmodule Commonplace.GitBridge.ServerTest do
       |> Schema.add_file("nosync.txt", "doc-nosync")
       |> Schema.set_sync("nosync.txt", false)
       |> Schema.add_file("__system", "doc-sys")
+      |> Schema.add_file("_outline", "doc-outline")
       |> Schema.add_directory("nested", sub_uuid)
 
     create_schema(store, mount_uuid, mount_schema)
@@ -157,6 +198,14 @@ defmodule Commonplace.GitBridge.ServerTest do
     assert Jason.decode!(File.read!(Path.join(repo_dir, "b.json"))) == %{"k" => "v"}
     assert File.read!(Path.join(repo_dir, "signed.txt")) == "signed content"
     assert File.read!(Path.join(repo_dir, "nested/nested.txt")) == "deep"
+
+    # CX-b0ow.5: xml docs render as canonical XML text, not JSON-of-tree.
+    outline_content = File.read!(Path.join(repo_dir, "_outline"))
+    assert outline_content =~ ~r/^<item /
+    assert outline_content =~ "first bullet"
+    assert outline_content =~ ~s(a="1")
+    refute outline_content =~ "\"tag\""
+    assert result.warnings == []
 
     refute File.exists?(Path.join(repo_dir, "nosync.txt"))
     refute File.exists?(Path.join(repo_dir, "__system"))

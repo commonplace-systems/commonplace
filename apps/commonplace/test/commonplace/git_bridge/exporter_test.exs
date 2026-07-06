@@ -94,6 +94,55 @@ defmodule Commonplace.GitBridge.ExporterTest do
     assert is_binary(presence_uuid)
   end
 
+  test "exports xml docs as canonical XML text (CX-b0ow.5), not JSON-of-tree", %{
+    store: store,
+    repo_dir: dir
+  } do
+    alias Yelixer.Types.{XMLFragment, XMLElement, XMLText}
+
+    doc = Yelixer.Doc.new()
+    doc = ContentType.create(doc, :xml, "_outline")
+    doc = XMLFragment.insert_child(doc, "content", 0, {:element, "item"})
+
+    [{:element, _, item_name}] = XMLFragment.to_list(doc, "content")
+
+    attrs = [
+      {"id", "1"},
+      {"parent", "root"},
+      {"order", "a0"},
+      {"collapsed", "false"},
+      {"a", "1"},
+      {"b", "2"},
+      {"c", "3"},
+      {"d", "4"},
+      {"e", "5"},
+      {"f", "6"},
+      {"g", "7"}
+    ]
+
+    doc = Enum.reduce(attrs, doc, fn {k, v}, acc -> XMLElement.set_attribute(acc, item_name, k, v) end)
+
+    doc = XMLElement.insert_child(doc, item_name, 0, :text)
+    [{:text, text_name}] = XMLElement.children(doc, item_name)
+    doc = XMLText.insert(doc, text_name, 0, "first bullet")
+
+    update = Yelixer.Encoding.encode_update(doc)
+    CommitStore.create_commit(store, "uuid-outline", update, nil)
+
+    root = Schema.new_schema() |> Schema.add_file("_outline", "uuid-outline")
+    create_schema(store, "uuid-root", root)
+
+    {:ok, result} = Exporter.export("uuid-root", dir, store)
+
+    content = File.read!(Path.join(dir, "_outline"))
+
+    assert content ==
+             ~s(<item a="1" b="2" c="3" collapsed="false" d="4" e="5" f="6" g="7" id="1" order="a0" parent="root">first bullet</item>\n)
+
+    assert result.warnings == []
+    assert result.manifest["_outline"].type == :xml
+  end
+
   test "exports nested directories preserving structure", %{store: store, repo_dir: dir} do
     create_text(store, "uuid-nested", "nested.txt", "deep")
 
