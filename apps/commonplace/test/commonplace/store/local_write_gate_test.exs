@@ -145,12 +145,17 @@ defmodule Commonplace.Store.LocalWriteGateTest do
       parent = self()
 
       # Count how many times the CAS verb itself runs — a retry loop would
-      # show up as more than one :put_built_commit call.
+      # show up as more than one :put_built_commit call. Filter on THIS
+      # test's doc uuid, not just the verb: the telemetry event is
+      # node-global, and under a concurrent full-suite run another test's
+      # put_built_commit would otherwise land in this mailbox and trip
+      # the refute_receive below (observed as a load-only flake).
       :telemetry.attach(
         {:lwg_cas_call_handler, ref},
         [:commonplace, :commit_store, :call],
-        fn _event, _meas, %{verb: verb} = meta, _cfg ->
-          if verb == :put_built_commit, do: send(parent, {:lwg_cas_call, ref, meta})
+        fn _event, _meas, %{verb: verb, doc_uuid: event_uuid} = meta, _cfg ->
+          if verb == :put_built_commit and event_uuid == uuid,
+            do: send(parent, {:lwg_cas_call, ref, meta})
         end,
         nil
       )
