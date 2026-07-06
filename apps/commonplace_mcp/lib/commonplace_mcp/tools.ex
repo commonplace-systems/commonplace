@@ -6,11 +6,11 @@ defmodule Commonplace.MCP.Tools do
   dispatches a `tools/call` request to the right implementation.
   Two registries are merged at runtime:
 
-    * **System tools** — the nine shipped substrate tools
+    * **System tools** — the shipped substrate tools
       (`cat`, `fork`, `invoke_view_action`, `send_magenta`,
-      `tail_red`, `write`, `presence_info`, `mud_send`, `mud_read`)
-      plus the meta-tools (`call_tool`, `list_tools`). Compile-time,
-      in this module.
+      `tail_red`, `write`, `presence_info`, `mud_send`, `mud_read`,
+      `loom_send`, `loom_read`) plus the meta-tools (`call_tool`,
+      `list_tools`). Compile-time, in this module.
     * **CRDT tools** (CX-y3q) — read at runtime from
       `__system/tools/`. Each interface doc declares an MCP-facing
       shape + a magenta address; `Commonplace.MCP.CrdtTools.list/2`
@@ -54,6 +54,8 @@ defmodule Commonplace.MCP.Tools do
     Fork,
     InvokeViewAction,
     ListTools,
+    LoomRead,
+    LoomSend,
     MudRead,
     MudSend,
     PresenceInfo,
@@ -77,7 +79,9 @@ defmodule Commonplace.MCP.Tools do
     "invoke_view_action" => InvokeViewAction,
     "presence_info" => PresenceInfo,
     "mud_send" => MudSend,
-    "mud_read" => MudRead
+    "mud_read" => MudRead,
+    "loom_send" => LoomSend,
+    "loom_read" => LoomRead
   }
 
   @meta_registry %{
