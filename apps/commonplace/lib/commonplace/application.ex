@@ -64,6 +64,10 @@ defmodule Commonplace.Application do
         Commonplace.SnapshotWorker,
         Commonplace.Chat.OnrampSupervisor,
         Commonplace.Chat.ChatViewComputeSupervisor,
+        # CX-o1l9 (Black M1): pattern-scoped compute supervisor —
+        # substrate-tier sibling of ChatViewComputeSupervisor above,
+        # domain-agnostic (caller-supplied key, not a chat room name).
+        Commonplace.Black.PatternComputeSupervisor,
         # MoveServer is RETIRED (move #4, CX-tdkq.7): cross-doc moves now
         # take per-path green tokens (Commonplace.MUD.Move) instead of
         # serializing through a :global singleton. TickBot remains an
