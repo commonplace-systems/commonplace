@@ -63,6 +63,26 @@ defmodule Commonplace.MUD.SafeVerb.Bounds do
       timeout_ms ->
         Process.exit(pid, :kill)
         Process.demonitor(mon_ref, [:flush])
+        # CX-cj3t.5 §1e (bounds mailbox-flush hygiene): `demonitor(:flush)`
+        # only discards a PENDING `:DOWN` for `mon_ref` — it does nothing
+        # about the child's OWN `{ref, :result, result}` message. Since
+        # neither clause matched before the timeout fired, the child could
+        # still deliver that message in the narrow window between the
+        # `after` clause selecting and `Process.exit/2` landing (the child
+        # finishes and `send/2`s right as the caller times out). Without
+        # this flush that stray tuple sits in the CALLER's mailbox
+        # forever — `ref` is a fresh `make_ref()` every call, so no later
+        # `receive` in this process (including a subsequent verb's own
+        # `Bounds.run/1`) will ever pattern-match it away on its own.
+        # Harmless to future `receive`s (unique ref never re-matches) but
+        # still a real per-timeout mailbox leak — drained here so a
+        # session's mailbox stays clean across repeated timeouts.
+        receive do
+          {^ref, :result, _late_result} -> :ok
+        after
+          0 -> :ok
+        end
+
         {:error, :timeout}
     end
   end
