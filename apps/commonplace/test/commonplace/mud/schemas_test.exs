@@ -56,14 +56,14 @@ defmodule Commonplace.MUD.SchemasTest do
   describe "load from store" do
     test "create_dir_with_meta + load_room round-trip", %{store: store} do
       json = Schemas.encode_room(%Room{name: "Start", description: "A room.", exits: %{}})
-      dir_uuid = Schemas.create_dir_with_meta(Schemas.room_filename(), json, store)
+      {:ok, dir_uuid} = Schemas.create_dir_with_meta(Schemas.room_filename(), json, store)
 
       {:ok, %Room{name: "Start", description: "A room."}} = Schemas.load_room(dir_uuid, store)
     end
 
     test "load_object", %{store: store} do
       json = Schemas.encode_object(%Object{name: "cloak", description: "Warm.", aliases: ["cape"]})
-      dir_uuid = Schemas.create_dir_with_meta(Schemas.object_filename(), json, store)
+      {:ok, dir_uuid} = Schemas.create_dir_with_meta(Schemas.object_filename(), json, store)
 
       {:ok, obj} = Schemas.load_object(dir_uuid, store)
       assert obj.name == "cloak"
@@ -71,13 +71,13 @@ defmodule Commonplace.MUD.SchemasTest do
     end
 
     test "missing meta entry returns error", %{store: store} do
-      empty_dir = Schemas.create_dir_with_meta(nil, nil, store)
+      {:ok, empty_dir} = Schemas.create_dir_with_meta(nil, nil, store)
       assert {:error, _} = Schemas.load_room(empty_dir, store)
     end
 
     test "write_meta_doc replaces content", %{store: store} do
       json = Schemas.encode_room(%Room{name: "Start", description: "First."})
-      dir_uuid = Schemas.create_dir_with_meta(Schemas.room_filename(), json, store)
+      {:ok, dir_uuid} = Schemas.create_dir_with_meta(Schemas.room_filename(), json, store)
 
       {:ok, schema} = Schemas.load_dir_schema(dir_uuid, store)
       {:ok, entry} = Schema.get_entry(schema, Schemas.room_filename())
@@ -99,7 +99,7 @@ defmodule Commonplace.MUD.SchemasTest do
     test "repeated write_meta_doc calls keep the meta doc's client-id set bounded",
          %{store: store} do
       json = Schemas.encode_room(%Room{name: "Start", description: "v0"})
-      dir_uuid = Schemas.create_dir_with_meta(Schemas.room_filename(), json, store)
+      {:ok, dir_uuid} = Schemas.create_dir_with_meta(Schemas.room_filename(), json, store)
       {:ok, schema} = Schemas.load_dir_schema(dir_uuid, store)
       {:ok, entry} = Schema.get_entry(schema, Schemas.room_filename())
 
@@ -118,7 +118,7 @@ defmodule Commonplace.MUD.SchemasTest do
 
     test "repeated add-file-style directory schema commits keep the dir's client-id set bounded",
          %{store: store} do
-      empty_dir = Schemas.create_dir_with_meta(nil, nil, store)
+      {:ok, empty_dir} = Schemas.create_dir_with_meta(nil, nil, store)
 
       Enum.each(1..15, fn n ->
         {:ok, schema} = Schemas.load_dir_schema(empty_dir, store)

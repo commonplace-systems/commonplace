@@ -110,14 +110,14 @@ defmodule Commonplace.MUD.TickBotTest do
 
   test "objects without tick_interval_ms are ignored", ctx do
     # Build a tiny world: one room with an inert object
-    obj_uuid =
+    {:ok, obj_uuid} =
       Schemas.create_dir_with_meta(
         Schemas.object_filename(),
         Schemas.encode_object(%Object{name: "rock", description: "A rock."}),
         ctx.store
       )
 
-    room_uuid =
+    {:ok, room_uuid} =
       Schemas.create_dir_with_meta(
         Schemas.room_filename(),
         Schemas.encode_room(%Room{name: "Cave", description: "Damp."}),
@@ -135,7 +135,7 @@ defmodule Commonplace.MUD.TickBotTest do
   end
 
   test "room-level tick_interval_ms fires the room's own tick_message", ctx do
-    room_uuid =
+    {:ok, room_uuid} =
       Schemas.create_dir_with_meta(
         Schemas.room_filename(),
         Schemas.encode_room(%Room{
@@ -164,7 +164,7 @@ defmodule Commonplace.MUD.TickBotTest do
   # bare-mix-run temp node case.
   describe "lease-based leadership" do
     defp seeded_tunnel(ctx) do
-      room_uuid =
+      {:ok, room_uuid} =
         Schemas.create_dir_with_meta(
           Schemas.room_filename(),
           Schemas.encode_room(%Room{

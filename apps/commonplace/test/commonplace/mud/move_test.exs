@@ -38,7 +38,7 @@ defmodule Commonplace.MUD.MoveTest do
 
   defp make_dir_with_object(store, obj_name) do
     obj_json = Schemas.encode_object(%Object{name: obj_name, description: "An object."})
-    obj_dir = Schemas.create_dir_with_meta(Schemas.object_filename(), obj_json, store)
+    {:ok, obj_dir} = Schemas.create_dir_with_meta(Schemas.object_filename(), obj_json, store)
 
     parent = UUID.uuid4()
     schema = Schema.new_schema() |> Schema.add_directory("#{obj_name}.obj", obj_dir)

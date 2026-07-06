@@ -16,11 +16,13 @@ defmodule Commonplace.MUD.PlayerSessionIdentityTest do
   `@name here <name>` (`Commonplace.MUD.Verbs.do_rename/2` →
   `World.set_meta/6` → `Schemas.write_meta_doc/4`) lands the edit
   signed AND capability-proofed. Player Y, registered/signed but
-  holding NO cert, gets the identical command DENIED — verified at the
-  store level (the room's metadata head does not move), since the MUD
-  verb layer does not yet propagate a denied-write error up into the
-  verb's reply text (a pre-existing gap orthogonal to this bead — see
-  the trailing comment on `assert_write_denied/3`).
+  holding NO cert, gets the identical command DENIED — verified at BOTH
+  the store level (the room's metadata head does not move) AND the verb
+  reply level (CX-93ea closed the gap this moduledoc used to describe:
+  the MUD verb layer now checks every create_commit/create_chained_commit
+  result and surfaces a `{:error, {:trust_rejected, _}}` as a
+  player-visible "you don't have permission" reply instead of a false
+  `:ok`).
   """
   use ExUnit.Case, async: false
 
@@ -198,27 +200,68 @@ defmodule Commonplace.MUD.PlayerSessionIdentityTest do
       )
 
     :ok = PlayerSession.input_sync(y_pid, "@name here Renamed-By-Y")
-    _ = PlayerSession.drain_buffer(y_pid)
+    y_out = PlayerSession.drain_buffer(y_pid)
     PlayerSession.stop(y_pid)
+
+    # CX-93ea: denial is now ALSO visible at the verb-reply level — Y's
+    # session actually printed a permission-denied line, not a silent
+    # false success.
+    assert Enum.any?(y_out, &String.contains?(&1, "don't have permission"))
 
     assert_write_denied(store, room1_meta, x_head.id)
   end
 
-  # CX-lg06 note: the MUD verb layer (`World.set_meta/6` →
+  # CX-93ea: previously the MUD verb layer (`World.set_meta/6` →
   # `Schemas.write_meta_doc/4` → `CommitStoreClient.create_chained_commit/5`)
-  # does not check the commit call's return value — it always reports
-  # `:ok` to its caller even when the local-write gate rejects the
-  # commit (a pre-existing gap across the whole module, not something
-  # this bead's opts-threading introduced or is chartered to fix; see
-  # `Commonplace.MUD.Verbs`/`Commonplace.MUD.World`/`Commonplace.MUD.Move`
-  # — none of their private write helpers pattern-match the create/
-  # chained-commit result). So denial is verified here at the STORE
-  # level (the doc's head commit does not move), exactly like
-  # `Commonplace.MUD.SectionOwnershipTest` verifies denial — not via the
-  # verb's reply text, which would misleadingly still claim success.
+  # never checked the commit call's return value — it always reported
+  # `:ok` to its caller even when the local-write gate rejected the
+  # commit. That's fixed now (see `World.set_meta/6`,
+  # `Commonplace.MUD.Verbs.update_meta/4`), so the store-level check
+  # below is a belt-and-suspenders assertion alongside the verb-reply
+  # assertion in the test above, not a workaround for a gap.
   defp assert_write_denied(store, doc_uuid, expected_head_id) do
     assert {:ok, head} = CommitStore.latest_commit(store, doc_uuid)
     assert head.id == expected_head_id
+  end
+
+  # CX-93ea: a multi-write verb (`@dig` — genesis room doc, THEN an
+  # add-entry write on root, THEN an exit-edge write on the current
+  # room) denied partway through. Y holds no cert at all, so the very
+  # first non-genesis write (linking the new room into root's schema)
+  # is denied and `do_dig_write/4` stops there — the exit-edge write on
+  # room1 never happens. The new room's own genesis commit (exempt from
+  # the trust gate — see `local_write_gate_check/2`'s genesis clause)
+  # DOES land, orphaned with nothing pointing at it: this module has no
+  # rollback (append-only store), so that's the expected, documented
+  # partial-write outcome — not a bug to fix here (same stance as
+  # `Commonplace.MUD.Move`'s dest-add/source-remove ordering and
+  # `WikiLive`'s create-page path, CX-qat5.3).
+  test "a multi-write verb (@dig) denied partway through reports failure and leaves root untouched",
+       %{store: store, root_uuid: root_uuid, secrets: secrets, y_uuid: y_uuid} do
+    {:ok, root_head_before} = CommitStore.latest_commit(store, root_uuid)
+
+    {:ok, y_pid} =
+      PlayerSession.start_link(
+        player_name: "y",
+        root_uuid: root_uuid,
+        store: store,
+        buffered: true,
+        player_identity_uuid: y_uuid,
+        secret_store: secrets,
+        cert_cids: []
+      )
+
+    :ok = PlayerSession.input_sync(y_pid, "@dig north Y's Folly")
+    y_out = PlayerSession.drain_buffer(y_pid)
+    PlayerSession.stop(y_pid)
+
+    assert Enum.any?(y_out, &String.contains?(&1, "don't have permission"))
+    refute Enum.any?(y_out, &String.contains?(&1, "You carve out"))
+
+    # root's directory schema never gained the new room entry — the
+    # add-entry write (the second of three) is what got denied.
+    assert {:ok, root_head_after} = CommitStore.latest_commit(store, root_uuid)
+    assert root_head_after.id == root_head_before.id
   end
 
   ## ---- low-level, root-signed world-building helpers ----

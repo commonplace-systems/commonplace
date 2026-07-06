@@ -252,6 +252,7 @@ defmodule Commonplace.MUD.Verbs do
       :error -> {:error, "You don't see \"#{target}\" here."}
       {:error, :gone} -> {:error, "Someone else grabbed it first."}
       {:error, :collision} -> {:error, "You're already carrying one of those."}
+      {:error, {:trust_rejected, _}} -> {:error, "You don't have permission to take that."}
       {:error, msg} when is_binary(msg) -> {:error, msg}
       _ -> {:error, "You can't take that."}
     end
@@ -280,6 +281,7 @@ defmodule Commonplace.MUD.Verbs do
       :error -> {:error, "You aren't carrying \"#{target}\"."}
       {:error, :collision} -> {:error, "There's already one of those here."}
       {:error, :gone} -> {:error, "It slipped from your grasp."}
+      {:error, {:trust_rejected, _}} -> {:error, "You don't have permission to drop that here."}
       _ -> {:error, "You can't drop that."}
     end
   end
@@ -306,6 +308,7 @@ defmodule Commonplace.MUD.Verbs do
       {:error, :no_such_player} -> {:error, "You don't see \"#{target_name}\" here."}
       {:error, :collision} -> {:error, "#{target_name} is already carrying one of those."}
       {:error, :gone} -> {:error, "It slipped from your grasp."}
+      {:error, {:trust_rejected, _}} -> {:error, "You don't have permission to give that away."}
       _ -> {:error, "You can't give that."}
     end
   end
@@ -427,6 +430,7 @@ defmodule Commonplace.MUD.Verbs do
       :error -> {:error, "You can't go #{direction}."}
       {:error, :gone} -> {:error, "The way #{direction} closed behind you."}
       {:error, :collision} -> {:error, "Something blocks the way #{direction}."}
+      {:error, {:trust_rejected, _}} -> {:error, "You don't have permission to go #{direction}."}
       _ -> {:error, "You can't go #{direction}."}
     end
   end
@@ -527,19 +531,31 @@ defmodule Commonplace.MUD.Verbs do
         {:error, "No opposite for #{direction}"}
 
       true ->
-        json = Schemas.encode_room(%Room{name: name, description: "(no description yet)", exits: %{opposite => ctx.current_room_uuid}})
-        new_room_uuid = Schemas.create_dir_with_meta(Schemas.room_filename(), json, ctx.store, write_opts(ctx))
+        do_dig_write(direction, opposite, name, ctx)
+    end
+  end
 
-        :ok = add_dir_entry(ctx.root_uuid, name, new_room_uuid, ctx)
-        :ok = update_room_exit(ctx.current_room_uuid, direction, new_room_uuid, ctx)
+  # CX-93ea: @dig writes THREE things (the new room's dir+meta doc, the
+  # entry in root, and the exit edge on the current room) — this module
+  # has no rollback (append-only store), so a mid-sequence denial stops
+  # here and reports the failure; whatever landed before the denial
+  # (e.g. the new room's genesis doc with nothing yet pointing at it)
+  # stays as an orphan rather than being cleaned up.
+  defp do_dig_write(direction, opposite, name, ctx) do
+    json = Schemas.encode_room(%Room{name: name, description: "(no description yet)", exits: %{opposite => ctx.current_room_uuid}})
 
-        # CX-qat5.5: the new room is dug FROM ctx.current_room_uuid, so
-        # that's the section context — any node-issued root section cert
-        # covering it gets reissued to also cover new_room_uuid. See
-        # `Sections.auto_extend_for_new_room/3` for the full rules.
-        auto_extend_section(new_room_uuid, ctx.current_room_uuid, ctx.store)
+    with {:ok, new_room_uuid} <- Schemas.create_dir_with_meta(Schemas.room_filename(), json, ctx.store, write_opts(ctx)),
+         :ok <- add_dir_entry(ctx.root_uuid, name, new_room_uuid, ctx),
+         :ok <- update_room_exit(ctx.current_room_uuid, direction, new_room_uuid, ctx) do
+      # CX-qat5.5: the new room is dug FROM ctx.current_room_uuid, so
+      # that's the section context — any node-issued root section cert
+      # covering it gets reissued to also cover new_room_uuid. See
+      # `Sections.auto_extend_for_new_room/3` for the full rules.
+      auto_extend_section(new_room_uuid, ctx.current_room_uuid, ctx.store)
 
-        {:reply, "You carve out a new room (#{name}). #{String.capitalize(direction)} leads there."}
+      {:reply, "You carve out a new room (#{name}). #{String.capitalize(direction)} leads there."}
+    else
+      {:error, reason} -> {:error, commit_error_reply(reason)}
     end
   end
 
@@ -549,26 +565,33 @@ defmodule Commonplace.MUD.Verbs do
 
   defp do_create(%Parser.Command{argv: ["object", name | _]}, ctx) do
     obj_json = Schemas.encode_object(%Object{name: name, description: "(no description yet)"})
-    new_obj_uuid = Schemas.create_dir_with_meta(Schemas.object_filename(), obj_json, ctx.store, write_opts(ctx))
-    :ok = add_dir_entry(ctx.current_room_uuid, "#{name}.obj", new_obj_uuid, ctx)
-    {:reply, "You create a #{name}."}
+
+    with {:ok, new_obj_uuid} <- Schemas.create_dir_with_meta(Schemas.object_filename(), obj_json, ctx.store, write_opts(ctx)),
+         :ok <- add_dir_entry(ctx.current_room_uuid, "#{name}.obj", new_obj_uuid, ctx) do
+      {:reply, "You create a #{name}."}
+    else
+      {:error, reason} -> {:error, commit_error_reply(reason)}
+    end
   end
 
   defp do_create(%Parser.Command{argv: ["room", name | _]}, ctx) do
     json = Schemas.encode_room(%Room{name: name, description: "(no description yet)"})
-    new_uuid = Schemas.create_dir_with_meta(Schemas.room_filename(), json, ctx.store, write_opts(ctx))
-    :ok = add_dir_entry(ctx.root_uuid, name, new_uuid, ctx)
 
-    # CX-qat5.5: `@create room` always builds a DISCONNECTED room (no
-    # exit links it to `ctx.current_room_uuid`) — there is no section
-    # context to anchor a cert-extend inference to, so this passes `nil`
-    # and `auto_extend_for_new_room/3` is a documented no-op
-    # (`{:ok, :no_context}`). If `@create` ever grows a variant that
-    # attaches the new room to the current section, thread that room's
-    # uuid through here instead of `nil`.
-    auto_extend_section(new_uuid, nil, ctx.store)
+    with {:ok, new_uuid} <- Schemas.create_dir_with_meta(Schemas.room_filename(), json, ctx.store, write_opts(ctx)),
+         :ok <- add_dir_entry(ctx.root_uuid, name, new_uuid, ctx) do
+      # CX-qat5.5: `@create room` always builds a DISCONNECTED room (no
+      # exit links it to `ctx.current_room_uuid`) — there is no section
+      # context to anchor a cert-extend inference to, so this passes `nil`
+      # and `auto_extend_for_new_room/3` is a documented no-op
+      # (`{:ok, :no_context}`). If `@create` ever grows a variant that
+      # attaches the new room to the current section, thread that room's
+      # uuid through here instead of `nil`.
+      auto_extend_section(new_uuid, nil, ctx.store)
 
-    {:reply, "You create a new disconnected room (#{name})."}
+      {:reply, "You create a new disconnected room (#{name})."}
+    else
+      {:error, reason} -> {:error, commit_error_reply(reason)}
+    end
   end
 
   defp do_create(%Parser.Command{argv: [other | _]}, _ctx) do
@@ -596,8 +619,10 @@ defmodule Commonplace.MUD.Verbs do
   defp update_meta(target, key, value, ctx) do
     cond do
       target in ["here", "room"] ->
-        :ok = World.set_meta(ctx.current_room_uuid, Schemas.room_filename(), key, value, ctx.store, write_opts(ctx))
-        {:reply, "Updated room #{key}."}
+        case World.set_meta(ctx.current_room_uuid, Schemas.room_filename(), key, value, ctx.store, write_opts(ctx)) do
+          :ok -> {:reply, "Updated room #{key}."}
+          {:error, reason} -> {:error, commit_error_reply(reason)}
+        end
 
       true ->
         case World.find_entry_by_name(ctx.current_room_uuid, target, ctx.store) do
@@ -609,8 +634,10 @@ defmodule Commonplace.MUD.Verbs do
               end
 
             if filename do
-              :ok = World.set_meta(entry.node_id, filename, key, value, ctx.store, write_opts(ctx))
-              {:reply, "Updated #{target} #{key}."}
+              case World.set_meta(entry.node_id, filename, key, value, ctx.store, write_opts(ctx)) do
+                :ok -> {:reply, "Updated #{target} #{key}."}
+                {:error, reason} -> {:error, commit_error_reply(reason)}
+              end
             else
               {:error, "Can't update #{target} #{key}."}
             end
@@ -652,6 +679,10 @@ defmodule Commonplace.MUD.Verbs do
   # (`:signing_context` / `:cert_cids` / `:signer_id`, set up once at
   # `PlayerSession` ingress) — `write_opts/1` below turns that into the
   # keyword list `Commonplace.MUD.SignedWrite` and `World`/`Move` expect.
+  # CX-93ea: was `CommitStoreClient.create_chained_commit(...); :ok` —
+  # the commit result was thrown away, so a trust-gate denial under
+  # `:enforce` still reported `:ok` up to every builder verb call site.
+  # Now checked and propagated.
   defp add_dir_entry(parent_uuid, name, child_uuid, ctx) do
     store = ctx.store
     {:ok, schema} = Schemas.load_dir_schema(parent_uuid, store)
@@ -661,8 +692,10 @@ defmodule Commonplace.MUD.Verbs do
     {metadata, commit_opts} =
       SignedWrite.opts_for(parent_uuid, Keyword.put(write_opts(ctx), :store, store))
 
-    CommitStoreClient.create_chained_commit(store, parent_uuid, update, metadata, commit_opts)
-    :ok
+    case CommitStoreClient.create_chained_commit(store, parent_uuid, update, metadata, commit_opts) do
+      {:error, _} = err -> err
+      _commit -> :ok
+    end
   end
 
   defp update_room_exit(room_dir_uuid, direction, dest_uuid, ctx) do
@@ -674,13 +707,20 @@ defmodule Commonplace.MUD.Verbs do
         json = Schemas.encode_room(%Room{room | exits: new_exits})
         {:ok, schema} = Schemas.load_dir_schema(room_dir_uuid, store)
         {:ok, entry} = Schema.get_entry(schema, Schemas.room_filename())
-        :ok = Schemas.write_meta_doc(entry.node_id, json, store, write_opts(ctx))
-        :ok
+        Schemas.write_meta_doc(entry.node_id, json, store, write_opts(ctx))
 
       err ->
         err
     end
   end
+
+  # CX-93ea: shared translator from a swallowed-no-longer write error to
+  # the player-visible reply text. `{:trust_rejected, _}` is the
+  # expected/common case under `local_write_gate: :enforce`; everything
+  # else (namespace rejection, store errors, etc.) gets a generic
+  # failure message — never silence, never false success.
+  defp commit_error_reply({:trust_rejected, _reason}), do: "You don't have permission to build here."
+  defp commit_error_reply(_other), do: "Something went wrong and that change didn't take effect."
 
   # CX-lg06: the ctx -> {store, signing_context, cert_cids, signer_id}
   # opts adapter every write call site in this module goes through — one

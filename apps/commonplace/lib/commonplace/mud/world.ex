@@ -68,6 +68,11 @@ defmodule Commonplace.MUD.World do
   @doc """
   Set a top-level key on a metadata file, returning :ok or {:error, _}.
 
+  CX-93ea: the underlying `Schemas.write_meta_doc/4` call is checked —
+  a rejected commit (e.g. `{:trust_rejected, _}` under
+  `local_write_gate: :enforce`) now returns `{:error, _}` here instead
+  of a false `:ok`.
+
   `opts` (CX-lg06): `:signing_context`, `:cert_cids`, `:signer_id` —
   threaded into the underlying `Schemas.write_meta_doc/4`; see
   `Commonplace.MUD.SignedWrite`.
@@ -80,11 +85,11 @@ defmodule Commonplace.MUD.World do
          {:ok, parsed} <- Jason.decode(json) do
       updated = Map.put(parsed, key, value) |> Jason.encode!()
       Schemas.write_meta_doc(entry.node_id, updated, store, opts)
-      :ok
     else
       :error -> {:error, :no_meta_entry}
       :none -> {:error, :no_doc}
       nil -> {:error, :empty_doc}
+      {:error, _} = err -> err
       other -> {:error, other}
     end
   end

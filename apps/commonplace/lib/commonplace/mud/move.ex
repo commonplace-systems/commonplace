@@ -144,13 +144,22 @@ defmodule Commonplace.MUD.Move do
 
   # --- The move itself (unchanged from MoveServer v0) ---
 
+  # CX-93ea: dest-add and source-remove are each checked now — if the
+  # dest-add is rejected (trust gate under :enforce, or any other
+  # create_commit error) we stop before touching source at all. If
+  # dest-add lands but source-remove is THEN rejected, the entry is left
+  # in both dirs (no rollback — append-only store, no rollback exists;
+  # this is the existing crash-recovery case from the moduledoc's
+  # "Write ordering" note, just now also reachable via denial instead of
+  # only via a mid-move crash) and the error propagates to the caller
+  # rather than a false `:ok`.
   defp do_move(thing_uuid, name, source_dir_uuid, dest_dir_uuid, store, write_opts) do
     with {:ok, source_schema} <- MudSchemas.load_dir_schema(source_dir_uuid, store),
          {:ok, %Schema.Entry{} = entry} <- check_still_there(source_schema, name, thing_uuid),
          {:ok, dest_schema} <- MudSchemas.load_dir_schema(dest_dir_uuid, store),
-         :ok <- check_no_collision(dest_schema, name) do
-      :ok = add_to_dest(dest_dir_uuid, name, entry, store, write_opts)
-      :ok = remove_from_source(source_dir_uuid, name, store, write_opts)
+         :ok <- check_no_collision(dest_schema, name),
+         :ok <- add_to_dest(dest_dir_uuid, name, entry, store, write_opts),
+         :ok <- remove_from_source(source_dir_uuid, name, store, write_opts) do
       :ok
     else
       {:error, _} = err -> err
@@ -188,8 +197,10 @@ defmodule Commonplace.MUD.Move do
     {metadata, commit_opts} =
       Commonplace.MUD.SignedWrite.opts_for(dest_dir_uuid, Keyword.put(write_opts, :store, store))
 
-    CommitStoreClient.create_chained_commit(store, dest_dir_uuid, update, metadata, commit_opts)
-    :ok
+    case CommitStoreClient.create_chained_commit(store, dest_dir_uuid, update, metadata, commit_opts) do
+      {:error, _} = err -> err
+      _commit -> :ok
+    end
   end
 
   defp remove_from_source(source_dir_uuid, name, store, write_opts) do
@@ -200,7 +211,9 @@ defmodule Commonplace.MUD.Move do
     {metadata, commit_opts} =
       Commonplace.MUD.SignedWrite.opts_for(source_dir_uuid, Keyword.put(write_opts, :store, store))
 
-    CommitStoreClient.create_chained_commit(store, source_dir_uuid, update, metadata, commit_opts)
-    :ok
+    case CommitStoreClient.create_chained_commit(store, source_dir_uuid, update, metadata, commit_opts) do
+      {:error, _} = err -> err
+      _commit -> :ok
+    end
   end
 end

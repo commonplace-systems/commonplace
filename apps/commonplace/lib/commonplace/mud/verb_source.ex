@@ -126,27 +126,32 @@ defmodule Commonplace.MUD.VerbSource do
       when is_binary(source_text) do
     file = "#{verb_name}.elx"
 
-    {:ok, verbs_uuid} = ensure_verbs_dir(target_dir_uuid, store, opts)
-    {:ok, verbs_schema} = Schemas.load_dir_schema(verbs_uuid, store)
+    with {:ok, verbs_uuid} <- ensure_verbs_dir(target_dir_uuid, store, opts),
+         {:ok, verbs_schema} <- Schemas.load_dir_schema(verbs_uuid, store),
+         {:ok, source_uuid} <- save_source(verbs_uuid, verbs_schema, file, source_text, store, opts) do
+      case SourceDoc.compile(source_uuid, store) do
+        {:ok, module} ->
+          if function_exported?(module, :run, 1), do: :ok, else: {:error, {:no_run_export, module}}
 
-    source_uuid =
-      case Schema.get_entry(verbs_schema, file) do
-        {:ok, %Schema.Entry{node_id: uuid}} ->
-          replace_source_doc(uuid, source_text, store, opts)
-          uuid
-
-        :error ->
-          uuid = create_source_doc(source_text, store, opts)
-          add_file_entry(verbs_uuid, file, uuid, store, opts)
-          uuid
+        {:error, _} = err ->
+          err
       end
+    end
+  end
 
-    case SourceDoc.compile(source_uuid, store) do
-      {:ok, module} ->
-        if function_exported?(module, :run, 1), do: :ok, else: {:error, {:no_run_export, module}}
+  defp save_source(verbs_uuid, verbs_schema, file, source_text, store, opts) do
+    case Schema.get_entry(verbs_schema, file) do
+      {:ok, %Schema.Entry{node_id: uuid}} ->
+        case replace_source_doc(uuid, source_text, store, opts) do
+          :ok -> {:ok, uuid}
+          {:error, _} = err -> err
+        end
 
-      {:error, _} = err ->
-        err
+      :error ->
+        with {:ok, uuid} <- create_source_doc(source_text, store, opts),
+             :ok <- add_file_entry(verbs_uuid, file, uuid, store, opts) do
+          {:ok, uuid}
+        end
     end
   end
 
@@ -177,9 +182,10 @@ defmodule Commonplace.MUD.VerbSource do
         {:ok, uuid}
 
       :error ->
-        uuid = Schemas.create_dir_with_meta(nil, nil, store, opts)
-        :ok = add_directory_entry(target_dir_uuid, @verbs_dir, uuid, store, opts)
-        {:ok, uuid}
+        with {:ok, uuid} <- Schemas.create_dir_with_meta(nil, nil, store, opts),
+             :ok <- add_directory_entry(target_dir_uuid, @verbs_dir, uuid, store, opts) do
+          {:ok, uuid}
+        end
     end
   end
 
@@ -190,8 +196,11 @@ defmodule Commonplace.MUD.VerbSource do
     doc = ContentType.insert_text(doc, 0, text)
     update = Encoding.encode_update(doc)
     {metadata, commit_opts} = SignedWrite.opts_for(uuid, Keyword.put(opts, :store, store))
-    CommitStoreClient.create_commit(store, uuid, update, nil, metadata, commit_opts)
-    uuid
+
+    case CommitStoreClient.create_commit(store, uuid, update, nil, metadata, commit_opts) do
+      {:error, _} = err -> err
+      _commit -> {:ok, uuid}
+    end
   end
 
   defp replace_source_doc(uuid, text, store, opts) do
@@ -202,8 +211,11 @@ defmodule Commonplace.MUD.VerbSource do
     doc = ContentType.insert_text(doc, 0, text)
     update = Encoding.encode_update(doc)
     {metadata, commit_opts} = SignedWrite.opts_for(uuid, Keyword.put(opts, :store, store))
-    CommitStoreClient.create_chained_commit(store, uuid, update, metadata, commit_opts)
-    :ok
+
+    case CommitStoreClient.create_chained_commit(store, uuid, update, metadata, commit_opts) do
+      {:error, _} = err -> err
+      _commit -> :ok
+    end
   end
 
   defp add_file_entry(parent_uuid, name, child_uuid, store, opts) do
@@ -211,8 +223,11 @@ defmodule Commonplace.MUD.VerbSource do
     schema = Schema.add_file(schema, name, child_uuid)
     update = Encoding.encode_update(schema)
     {metadata, commit_opts} = SignedWrite.opts_for(parent_uuid, Keyword.put(opts, :store, store))
-    CommitStoreClient.create_chained_commit(store, parent_uuid, update, metadata, commit_opts)
-    :ok
+
+    case CommitStoreClient.create_chained_commit(store, parent_uuid, update, metadata, commit_opts) do
+      {:error, _} = err -> err
+      _commit -> :ok
+    end
   end
 
   defp add_directory_entry(parent_uuid, name, child_uuid, store, opts) do
@@ -220,7 +235,10 @@ defmodule Commonplace.MUD.VerbSource do
     schema = Schema.add_directory(schema, name, child_uuid)
     update = Encoding.encode_update(schema)
     {metadata, commit_opts} = SignedWrite.opts_for(parent_uuid, Keyword.put(opts, :store, store))
-    CommitStoreClient.create_chained_commit(store, parent_uuid, update, metadata, commit_opts)
-    :ok
+
+    case CommitStoreClient.create_chained_commit(store, parent_uuid, update, metadata, commit_opts) do
+      {:error, _} = err -> err
+      _commit -> :ok
+    end
   end
 end

@@ -38,48 +38,53 @@ defmodule Commonplace.MUD.Bootstrap do
 
   def seed(root_uuid, store \\ CommitStoreClient), do: repair(root_uuid, store)
 
+  # CX-93ea: every step is a `with` link now — a rejected write (trust
+  # gate under `:enforce`, or any other create_commit error) stops the
+  # seed/repair sequence at that step and returns `{:error, reason}`
+  # instead of silently reporting `{:ok, :ready}` over a half-built
+  # world. No rollback of steps that already landed (append-only store,
+  # no rollback exists) — a mid-sequence denial can leave some
+  # rooms/objects created and others not; re-running `repair/2` is
+  # idempotent and will pick up where it left off.
   def repair(root_uuid, store \\ CommitStoreClient) do
-    start_uuid =
-      ensure_room(root_uuid, "start", %Room{
-        name: "The Start Room",
-        description: "A cozy stone chamber. Exits lead north and east.",
-        exits: %{}
-      }, store, refresh_if_stub: true)
-
-    forest_uuid =
-      ensure_room(root_uuid, "forest-path", %Room{
-        name: "A Forest Path",
-        description: "Tall oaks line a winding dirt path. The Start Room lies south.",
-        exits: %{}
-      }, store)
-
-    clearing_uuid =
-      ensure_room(root_uuid, "clearing", %Room{
-        name: "A Sunlit Clearing",
-        description: "A grassy clearing dappled with sunlight. The Start Room lies west.",
-        exits: %{}
-      }, store)
-
-    merge_exits(start_uuid, %{"north" => forest_uuid, "east" => clearing_uuid}, store)
-    merge_exits(forest_uuid, %{"south" => start_uuid}, store)
-    merge_exits(clearing_uuid, %{"west" => start_uuid}, store)
-
-    ensure_object(start_uuid, "cloak.obj", %Object{
-      name: "cloak",
-      aliases: ["cape", "black cloak"],
-      description: "A heavy black cloak. It looks warm."
-    }, store)
-
-    ensure_object(clearing_uuid, "fountain.obj", %Object{
-      name: "fountain",
-      aliases: ["water"],
-      description: "A stone fountain murmurs softly.",
-      fixed: true,
-      tick_interval_ms: 8_000,
-      tick_message: "The fountain burbles softly."
-    }, store)
-
-    {:ok, :ready}
+    with {:ok, start_uuid} <-
+           ensure_room(root_uuid, "start", %Room{
+             name: "The Start Room",
+             description: "A cozy stone chamber. Exits lead north and east.",
+             exits: %{}
+           }, store, refresh_if_stub: true),
+         {:ok, forest_uuid} <-
+           ensure_room(root_uuid, "forest-path", %Room{
+             name: "A Forest Path",
+             description: "Tall oaks line a winding dirt path. The Start Room lies south.",
+             exits: %{}
+           }, store),
+         {:ok, clearing_uuid} <-
+           ensure_room(root_uuid, "clearing", %Room{
+             name: "A Sunlit Clearing",
+             description: "A grassy clearing dappled with sunlight. The Start Room lies west.",
+             exits: %{}
+           }, store),
+         :ok <- merge_exits(start_uuid, %{"north" => forest_uuid, "east" => clearing_uuid}, store),
+         :ok <- merge_exits(forest_uuid, %{"south" => start_uuid}, store),
+         :ok <- merge_exits(clearing_uuid, %{"west" => start_uuid}, store),
+         :ok <-
+           ensure_object(start_uuid, "cloak.obj", %Object{
+             name: "cloak",
+             aliases: ["cape", "black cloak"],
+             description: "A heavy black cloak. It looks warm."
+           }, store),
+         :ok <-
+           ensure_object(clearing_uuid, "fountain.obj", %Object{
+             name: "fountain",
+             aliases: ["water"],
+             description: "A stone fountain murmurs softly.",
+             fixed: true,
+             tick_interval_ms: 8_000,
+             tick_message: "The fountain burbles softly."
+           }, store) do
+      {:ok, :ready}
+    end
   end
 
   ## Private
@@ -91,21 +96,24 @@ defmodule Commonplace.MUD.Bootstrap do
     case Schema.get_entry(parent_schema, name) do
       {:ok, %Schema.Entry{node_id: room_uuid}} ->
         if refresh_if_stub do
-          maybe_refresh_room(room_uuid, canonical, store)
+          case maybe_refresh_room(room_uuid, canonical, store) do
+            :ok -> {:ok, room_uuid}
+            {:error, _} = err -> err
+          end
+        else
+          {:ok, room_uuid}
         end
 
-        room_uuid
-
       :error ->
-        room_uuid =
-          Schemas.create_dir_with_meta(
-            Schemas.room_filename(),
-            Schemas.encode_room(canonical),
-            store
-          )
-
-        :ok = add_dir_entry(parent_uuid, name, room_uuid, store)
-        room_uuid
+        with {:ok, room_uuid} <-
+               Schemas.create_dir_with_meta(
+                 Schemas.room_filename(),
+                 Schemas.encode_room(canonical),
+                 store
+               ),
+             :ok <- add_dir_entry(parent_uuid, name, room_uuid, store) do
+          {:ok, room_uuid}
+        end
     end
   end
 
@@ -135,15 +143,14 @@ defmodule Commonplace.MUD.Bootstrap do
         :ok
 
       :error ->
-        obj_uuid =
-          Schemas.create_dir_with_meta(
-            Schemas.object_filename(),
-            Schemas.encode_object(canonical),
-            store
-          )
-
-        :ok = add_dir_entry(parent_uuid, filename, obj_uuid, store)
-        :ok
+        with {:ok, obj_uuid} <-
+               Schemas.create_dir_with_meta(
+                 Schemas.object_filename(),
+                 Schemas.encode_object(canonical),
+                 store
+               ) do
+          add_dir_entry(parent_uuid, filename, obj_uuid, store)
+        end
     end
   end
 
@@ -161,15 +168,17 @@ defmodule Commonplace.MUD.Bootstrap do
   defp write_room(room_dir_uuid, %Room{} = room, store) do
     {:ok, schema} = Schemas.load_dir_schema(room_dir_uuid, store)
     {:ok, entry} = Schema.get_entry(schema, Schemas.room_filename())
-    :ok = Schemas.write_meta_doc(entry.node_id, Schemas.encode_room(room), store)
-    :ok
+    Schemas.write_meta_doc(entry.node_id, Schemas.encode_room(room), store)
   end
 
   defp add_dir_entry(parent_uuid, name, child_uuid, store) do
     {:ok, schema} = Schemas.load_dir_schema(parent_uuid, store)
     schema = Schema.add_directory(schema, name, child_uuid)
     update = Encoding.encode_update(schema)
-    CommitStoreClient.create_chained_commit(store, parent_uuid, update)
-    :ok
+
+    case CommitStoreClient.create_chained_commit(store, parent_uuid, update) do
+      {:error, _} = err -> err
+      _commit -> :ok
+    end
   end
 end

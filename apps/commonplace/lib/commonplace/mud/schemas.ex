@@ -209,8 +209,12 @@ defmodule Commonplace.MUD.Schemas do
   # ---- Writing ----
 
   @doc """
-  Create a new metadata text doc with the given JSON body. Returns the
-  UUID of the new doc.
+  Create a new metadata text doc with the given JSON body.
+
+  Returns `{:ok, uuid}` of the new doc, or `{:error, reason}` (CX-93ea)
+  when the write is rejected — most commonly `{:trust_rejected, _}`
+  under `local_write_gate: :enforce`. Callers must check this rather
+  than assume the doc landed.
 
   `opts` (CX-lg06): `:signing_context`, `:cert_cids`, `:signer_id` — see
   `Commonplace.MUD.SignedWrite`. Genesis doc, so a cert can only cover
@@ -225,12 +229,18 @@ defmodule Commonplace.MUD.Schemas do
     doc = ContentType.insert_text(doc, 0, json)
     update = Encoding.encode_update(doc)
     {metadata, commit_opts} = SignedWrite.opts_for(uuid, Keyword.put(opts, :store, store))
-    CommitStoreClient.create_commit(store, uuid, update, nil, metadata, commit_opts)
-    uuid
+
+    case CommitStoreClient.create_commit(store, uuid, update, nil, metadata, commit_opts) do
+      {:error, _} = err -> err
+      _commit -> {:ok, uuid}
+    end
   end
 
   @doc """
   Replace the contents of an existing metadata text doc with new JSON.
+
+  Returns `:ok` or `{:error, reason}` (CX-93ea) — never swallows a
+  rejected commit.
 
   `opts` (CX-lg06): `:signing_context`, `:cert_cids`, `:signer_id` — see
   `Commonplace.MUD.SignedWrite`.
@@ -244,14 +254,24 @@ defmodule Commonplace.MUD.Schemas do
     doc = ContentType.insert_text(doc, 0, json)
     update = Encoding.encode_update(doc)
     {metadata, commit_opts} = SignedWrite.opts_for(uuid, Keyword.put(opts, :store, store))
-    CommitStoreClient.create_chained_commit(store, uuid, update, metadata, commit_opts)
-    :ok
+
+    case CommitStoreClient.create_chained_commit(store, uuid, update, metadata, commit_opts) do
+      {:error, _} = err -> err
+      _commit -> :ok
+    end
   end
 
   @doc """
   Create a new directory doc, returning its UUID. Optionally writes a
   metadata file inside it (e.g. `__room.json`) and adds it to the new
   directory's schema.
+
+  Returns `{:ok, dir_uuid}` or `{:error, reason}` (CX-93ea) — if the
+  meta doc write is rejected, the directory doc is never created either
+  (short-circuits before the dir's own genesis commit); if the meta doc
+  lands but the dir's own genesis commit is then rejected, the meta doc
+  is left as an orphan (no rollback — append-only store; same
+  partial-write stance as `WikiLive`'s create-page path, CX-qat5.3).
 
   `opts` (CX-lg06): `:signing_context`, `:cert_cids`, `:signer_id` — see
   `Commonplace.MUD.SignedWrite`. Genesis doc — see `create_meta_doc/3`
@@ -261,17 +281,23 @@ defmodule Commonplace.MUD.Schemas do
     dir_uuid = UUID.uuid4()
     dir_doc = Schema.new_schema()
 
-    dir_doc =
-      if json do
-        meta_uuid = create_meta_doc(json, store, opts)
-        Schema.add_file(dir_doc, meta_filename, meta_uuid)
-      else
-        dir_doc
-      end
+    with {:ok, dir_doc} <- maybe_attach_meta(dir_doc, meta_filename, json, store, opts) do
+      update = Encoding.encode_update(dir_doc)
+      {metadata, commit_opts} = SignedWrite.opts_for(dir_uuid, Keyword.put(opts, :store, store))
 
-    update = Encoding.encode_update(dir_doc)
-    {metadata, commit_opts} = SignedWrite.opts_for(dir_uuid, Keyword.put(opts, :store, store))
-    CommitStoreClient.create_commit(store, dir_uuid, update, nil, metadata, commit_opts)
-    dir_uuid
+      case CommitStoreClient.create_commit(store, dir_uuid, update, nil, metadata, commit_opts) do
+        {:error, _} = err -> err
+        _commit -> {:ok, dir_uuid}
+      end
+    end
+  end
+
+  defp maybe_attach_meta(dir_doc, nil, nil, _store, _opts), do: {:ok, dir_doc}
+
+  defp maybe_attach_meta(dir_doc, meta_filename, json, store, opts) do
+    case create_meta_doc(json, store, opts) do
+      {:ok, meta_uuid} -> {:ok, Schema.add_file(dir_doc, meta_filename, meta_uuid)}
+      {:error, _} = err -> err
+    end
   end
 end

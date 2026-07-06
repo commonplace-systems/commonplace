@@ -224,6 +224,14 @@ defmodule Commonplace.MUD.PlayerSession do
         state.output_fn.("(saved, but the module does not export run/1 — verb won't fire)")
         {:noreply, %{state | mode: :normal}}
 
+      # CX-93ea: the write itself (not just compilation) can now fail —
+      # e.g. `{:trust_rejected, _}` under `local_write_gate: :enforce` —
+      # surfaced distinctly so the author sees permission language
+      # instead of a bare inspect() of an internal tuple.
+      {:error, {:trust_rejected, _reason}} ->
+        state.output_fn.("(save failed: you don't have permission to edit verbs here)")
+        {:noreply, %{state | mode: :normal}}
+
       {:error, other} ->
         state.output_fn.("(save failed: #{inspect(other)})")
         {:noreply, %{state | mode: :normal}}
@@ -466,9 +474,10 @@ defmodule Commonplace.MUD.PlayerSession do
         {:ok, entry.node_id}
 
       :error ->
-        new_uuid = Schemas.create_dir_with_meta(nil, nil, store, write_opts)
-        :ok = add_dir_entry(root_uuid, @players_dir, new_uuid, write_opts)
-        {:ok, new_uuid}
+        with {:ok, new_uuid} <- Schemas.create_dir_with_meta(nil, nil, store, write_opts),
+             :ok <- add_dir_entry(root_uuid, @players_dir, new_uuid, write_opts) do
+          {:ok, new_uuid}
+        end
     end
   end
 
@@ -480,26 +489,26 @@ defmodule Commonplace.MUD.PlayerSession do
       {:ok, entry} ->
         {:ok, schema} = Schemas.load_dir_schema(entry.node_id, store)
 
-        inv_uuid =
-          case Schema.get_entry(schema, "inventory") do
-            {:ok, e} ->
-              e.node_id
+        case Schema.get_entry(schema, "inventory") do
+          {:ok, e} ->
+            {:ok, %{player_dir_uuid: entry.node_id, inventory_uuid: e.node_id}}
 
-            :error ->
-              new_uuid = Schemas.create_dir_with_meta(nil, nil, store, write_opts)
-              :ok = add_dir_entry(entry.node_id, "inventory", new_uuid, write_opts)
-              new_uuid
-          end
-
-        {:ok, %{player_dir_uuid: entry.node_id, inventory_uuid: inv_uuid}}
+          :error ->
+            with {:ok, new_uuid} <- Schemas.create_dir_with_meta(nil, nil, store, write_opts),
+                 :ok <- add_dir_entry(entry.node_id, "inventory", new_uuid, write_opts) do
+              {:ok, %{player_dir_uuid: entry.node_id, inventory_uuid: new_uuid}}
+            end
+        end
 
       :error ->
         json = Schemas.encode_player(%Player{name: name, title: name, description: "A traveler."})
-        player_dir_uuid = Schemas.create_dir_with_meta(Schemas.player_filename(), json, store, write_opts)
-        inv_uuid = Schemas.create_dir_with_meta(nil, nil, store, write_opts)
-        :ok = add_dir_entry(player_dir_uuid, "inventory", inv_uuid, write_opts)
-        :ok = add_dir_entry(players_dir_uuid, name, player_dir_uuid, write_opts)
-        {:ok, %{player_dir_uuid: player_dir_uuid, inventory_uuid: inv_uuid}}
+
+        with {:ok, player_dir_uuid} <- Schemas.create_dir_with_meta(Schemas.player_filename(), json, store, write_opts),
+             {:ok, inv_uuid} <- Schemas.create_dir_with_meta(nil, nil, store, write_opts),
+             :ok <- add_dir_entry(player_dir_uuid, "inventory", inv_uuid, write_opts),
+             :ok <- add_dir_entry(players_dir_uuid, name, player_dir_uuid, write_opts) do
+          {:ok, %{player_dir_uuid: player_dir_uuid, inventory_uuid: inv_uuid}}
+        end
     end
   end
 
@@ -518,9 +527,10 @@ defmodule Commonplace.MUD.PlayerSession do
         {:ok, room_uuid, presence_uuid}
 
       :not_found ->
-        {:ok, start_room_uuid} = ensure_start_room(root_uuid, store)
-        {:ok, presence_uuid} = Presence.create(name, :usr, start_room_uuid, store)
-        {:ok, start_room_uuid, presence_uuid}
+        with {:ok, start_room_uuid} <- ensure_start_room(root_uuid, store),
+             {:ok, presence_uuid} <- Presence.create(name, :usr, start_room_uuid, store) do
+          {:ok, start_room_uuid, presence_uuid}
+        end
     end
   end
 
@@ -572,9 +582,11 @@ defmodule Commonplace.MUD.PlayerSession do
 
       :error ->
         json = Schemas.encode_room(%Room{name: "The Start Room", description: "A featureless white room. The world has not been built out yet.", exits: %{}})
-        room_uuid = Schemas.create_dir_with_meta(Schemas.room_filename(), json, store)
-        :ok = add_dir_entry(root_uuid, @start_room_name, room_uuid, store: store)
-        {:ok, room_uuid}
+
+        with {:ok, room_uuid} <- Schemas.create_dir_with_meta(Schemas.room_filename(), json, store),
+             :ok <- add_dir_entry(root_uuid, @start_room_name, room_uuid, store: store) do
+          {:ok, room_uuid}
+        end
     end
   end
 
@@ -589,8 +601,11 @@ defmodule Commonplace.MUD.PlayerSession do
     schema = Schema.add_directory(schema, name, child_uuid)
     update = Encoding.encode_update(schema)
     {metadata, commit_opts} = SignedWrite.opts_for(parent_uuid, write_opts)
-    CommitStoreClient.create_chained_commit(store, parent_uuid, update, metadata, commit_opts)
-    :ok
+
+    case CommitStoreClient.create_chained_commit(store, parent_uuid, update, metadata, commit_opts) do
+      {:error, _} = err -> err
+      _commit -> :ok
+    end
   end
 
   # silence unused alias warning when DocBuilder isn't referenced
