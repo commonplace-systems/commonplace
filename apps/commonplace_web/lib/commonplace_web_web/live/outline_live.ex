@@ -19,6 +19,7 @@ defmodule CommonplaceWebWeb.OutlineLive do
 
   alias Commonplace.Outline
   alias Commonplace.Outline.Tree
+  alias CommonplaceWebWeb.WriteRateLimit
 
   @impl true
   def mount(%{"name" => name}, _session, socket) do
@@ -45,50 +46,66 @@ defmodule CommonplaceWebWeb.OutlineLive do
 
   @impl true
   def handle_event("new_item", params, socket) do
-    attrs =
-      case params["after"] do
-        nil -> %{text: ""}
-        after_id -> %{text: "", parent: params["parent"] || "", after: after_id}
-      end
+    write_gate(socket, fn ->
+      attrs =
+        case params["after"] do
+          nil -> %{text: ""}
+          after_id -> %{text: "", parent: params["parent"] || "", after: after_id}
+        end
 
-    {:ok, _id} = Outline.add_item(store(), socket.assigns.uuid, attrs)
-    {:noreply, reload(socket)}
+      {:ok, _id} = Outline.add_item(store(), socket.assigns.uuid, attrs)
+      {:noreply, reload(socket)}
+    end)
   end
 
   def handle_event("set_text", %{"id" => id, "value" => value}, socket) do
-    :ok = Outline.set_text(store(), socket.assigns.uuid, id, value)
-    {:noreply, reload(socket)}
+    write_gate(socket, fn ->
+      :ok = Outline.set_text(store(), socket.assigns.uuid, id, value)
+      {:noreply, reload(socket)}
+    end)
   end
 
   def handle_event("indent", %{"id" => id}, socket) do
-    _ = Outline.indent(store(), socket.assigns.uuid, id)
-    {:noreply, reload(socket)}
+    write_gate(socket, fn ->
+      _ = Outline.indent(store(), socket.assigns.uuid, id)
+      {:noreply, reload(socket)}
+    end)
   end
 
   def handle_event("outdent", %{"id" => id}, socket) do
-    _ = Outline.outdent(store(), socket.assigns.uuid, id)
-    {:noreply, reload(socket)}
+    write_gate(socket, fn ->
+      _ = Outline.outdent(store(), socket.assigns.uuid, id)
+      {:noreply, reload(socket)}
+    end)
   end
 
   def handle_event("move_up", %{"id" => id}, socket) do
-    _ = Outline.reorder(store(), socket.assigns.uuid, id, :up)
-    {:noreply, reload(socket)}
+    write_gate(socket, fn ->
+      _ = Outline.reorder(store(), socket.assigns.uuid, id, :up)
+      {:noreply, reload(socket)}
+    end)
   end
 
   def handle_event("move_down", %{"id" => id}, socket) do
-    _ = Outline.reorder(store(), socket.assigns.uuid, id, :down)
-    {:noreply, reload(socket)}
+    write_gate(socket, fn ->
+      _ = Outline.reorder(store(), socket.assigns.uuid, id, :down)
+      {:noreply, reload(socket)}
+    end)
   end
 
   def handle_event("toggle_collapse", %{"id" => id}, socket) do
-    item = Enum.find(Outline.items(store(), socket.assigns.uuid), &(&1.id == id))
-    :ok = Outline.set_collapsed(store(), socket.assigns.uuid, id, not item.collapsed)
-    {:noreply, reload(socket)}
+    write_gate(socket, fn ->
+      item = Enum.find(Outline.items(store(), socket.assigns.uuid), &(&1.id == id))
+      :ok = Outline.set_collapsed(store(), socket.assigns.uuid, id, not item.collapsed)
+      {:noreply, reload(socket)}
+    end)
   end
 
   def handle_event("delete", %{"id" => id}, socket) do
-    :ok = Outline.delete_item(store(), socket.assigns.uuid, id)
-    {:noreply, reload(socket)}
+    write_gate(socket, fn ->
+      :ok = Outline.delete_item(store(), socket.assigns.uuid, id)
+      {:noreply, reload(socket)}
+    end)
   end
 
   # Keyboard dispatch from the bullet inputs (outliner.md §3 keybinds).
@@ -119,10 +136,28 @@ defmodule CommonplaceWebWeb.OutlineLive do
 
   defp store, do: Commonplace.Store.CommitStoreClient
 
+  # CX-qat5.6: gate every mutating handler behind the per-connection
+  # write rate limiter before it touches the store. `self()` (this
+  # LiveView process) is the connection key — identity-independent,
+  # stable for the socket's lifetime, and naturally reclaimed by the
+  # limiter's sliding window once the connection goes quiet.
+  defp write_gate(socket, fun) do
+    case WriteRateLimit.check_and_record(self()) do
+      :ok -> fun.()
+      {:error, :rate_limited, _retry_after_ms} ->
+        {:noreply, put_flash(socket, :error, "Too many edits — slow down")}
+    end
+  end
+
   @impl true
   def render(assigns) do
     ~H"""
     <div class="p-6 max-w-3xl mx-auto">
+      <%!-- CX-qat5.6: OutlineLive isn't wrapped by a layout that renders
+           flash (no :app/:bare live_session here), so surface it directly
+           or write-rate-limit errors (and any future put_flash use) would
+           be silently invisible. --%>
+      <CommonplaceWebWeb.Layouts.flash_group flash={@flash} />
       <%= if @not_found do %>
         <p class="text-error">No outline named “{@name}”.</p>
       <% else %>

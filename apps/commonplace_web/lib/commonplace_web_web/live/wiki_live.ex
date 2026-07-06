@@ -57,7 +57,7 @@ defmodule CommonplaceWebWeb.WikiLive do
   alias Commonplace.Dataflow.PubSub, as: CPPubSub
   alias Commonplace.Presence
   alias Commonplace.Presence.Identity
-  alias CommonplaceWebWeb.{ViewRenderer, ViewActions}
+  alias CommonplaceWebWeb.{ViewRenderer, ViewActions, WriteRateLimit}
   import CommonplaceWebWeb.PresenceCard, only: [presence_card: 1]
 
   @impl true
@@ -159,59 +159,11 @@ defmodule CommonplaceWebWeb.WikiLive do
 
   @impl true
   def handle_event("create_page", %{"name" => name}, socket) do
-    name = String.trim(name)
-
-    if name == "" do
-      {:noreply, put_flash(socket, :error, "Page name cannot be empty")}
+    with :ok <- WriteRateLimit.check_and_record(self()) do
+      do_create_page(name, socket)
     else
-      dir_uuid = current_dir_uuid(socket)
-      filename = sanitize_page_name(name)
-
-      # Check if page already exists
-      schema = load_schema(dir_uuid)
-
-      case Schema.get_entry(schema, filename) do
-        {:ok, _} ->
-          # Page exists — navigate to it
-          target =
-            if socket.assigns.current_path == "" do
-              filename
-            else
-              socket.assigns.current_path <> "/" <> filename
-            end
-
-          {:noreply,
-           socket
-           |> assign(:show_create, false)
-           |> push_patch(to: wiki_path(target))}
-
-        :error ->
-          # Create new document
-          uuid = UUID.uuid4()
-          doc = Yelixer.Doc.new()
-          doc = ContentType.create(doc, :text, filename)
-          doc = ContentType.insert_text(doc, 0, "# #{name}\n\nWrite your content here.\n")
-          update = Yelixer.Encoding.encode_update(doc)
-          CommitStoreClient.create_commit(uuid, update, nil)
-
-          # Add to schema via chained commit
-          schema = Schema.add_file(schema, filename, uuid)
-          schema_update = Yelixer.Encoding.encode_update(schema)
-          CommitStoreClient.create_chained_commit(dir_uuid, schema_update)
-
-          target =
-            if socket.assigns.current_path == "" do
-              filename
-            else
-              socket.assigns.current_path <> "/" <> filename
-            end
-
-          {:noreply,
-           socket
-           |> assign(:show_create, false)
-           |> put_flash(:info, "Created #{name}")
-           |> push_patch(to: wiki_path(target))}
-      end
+      {:error, :rate_limited, _retry_after_ms} ->
+        {:noreply, put_flash(socket, :error, "Too many edits — slow down")}
     end
   end
 
@@ -233,20 +185,26 @@ defmodule CommonplaceWebWeb.WikiLive do
 
   @impl true
   def handle_event("yjs_edit", %{"update" => encoded}, socket) do
-    with uuid when not is_nil(uuid) <- socket.assigns.page_uuid,
-         {:ok, update} <- Base.decode64(encoded) do
-      commit = CommitStoreClient.create_chained_commit(uuid, update)
+    case WriteRateLimit.check_and_record(self()) do
+      :ok ->
+        with uuid when not is_nil(uuid) <- socket.assigns.page_uuid,
+             {:ok, update} <- Base.decode64(encoded) do
+          commit = CommitStoreClient.create_chained_commit(uuid, update)
 
-      case commit do
-        %{id: _} ->
-          CPPubSub.broadcast_blue(uuid, update)
-          {:noreply, socket}
+          case commit do
+            %{id: _} ->
+              CPPubSub.broadcast_blue(uuid, update)
+              {:noreply, socket}
 
-        _ ->
-          {:noreply, put_flash(socket, :error, "Failed to save")}
-      end
-    else
-      _ -> {:noreply, socket}
+            _ ->
+              {:noreply, put_flash(socket, :error, "Failed to save")}
+          end
+        else
+          _ -> {:noreply, socket}
+        end
+
+      {:error, :rate_limited, _retry_after_ms} ->
+        {:noreply, put_flash(socket, :error, "Too many edits — slow down")}
     end
   end
 
@@ -261,32 +219,10 @@ defmodule CommonplaceWebWeb.WikiLive do
     # handler. We build a context map and delegate to ViewActions.dispatch.
     # Identity is a placeholder ("wiki-user@local") until real session
     # identity propagation lands alongside signed-commit wiring.
-    action_name = params["action"] || ""
-    target = params["target"]
-    extra_args = Map.drop(params, ["action", "target"])
-
-    view_path =
-      case {socket.assigns.current_path, socket.assigns.page_name} do
-        {"", name} when is_binary(name) -> name
-        {path, name} when is_binary(name) -> path <> "/" <> name
-        _ -> ""
-      end
-
-    context = %{
-      view_path: view_path,
-      view_uuid: socket.assigns.page_uuid,
-      target: target,
-      args: extra_args,
-      signer_id: "wiki-user@local",
-      source: "wiki_live"
-    }
-
-    case ViewActions.dispatch(action_name, context, socket) do
-      {:ok, updated_socket} ->
-        {:noreply, updated_socket}
-
-      {:error, reason} ->
-        {:noreply, put_flash(socket, :error, reason)}
+    case WriteRateLimit.check_and_record(self()) do
+      :ok -> do_view_action(params, socket)
+      {:error, :rate_limited, _retry_after_ms} ->
+        {:noreply, put_flash(socket, :error, "Too many edits — slow down")}
     end
   end
 
@@ -672,6 +608,93 @@ defmodule CommonplaceWebWeb.WikiLive do
   end
 
   # --- Helpers ---
+
+  defp do_create_page(name, socket) do
+    name = String.trim(name)
+
+    if name == "" do
+      {:noreply, put_flash(socket, :error, "Page name cannot be empty")}
+    else
+      dir_uuid = current_dir_uuid(socket)
+      filename = sanitize_page_name(name)
+
+      # Check if page already exists
+      schema = load_schema(dir_uuid)
+
+      case Schema.get_entry(schema, filename) do
+        {:ok, _} ->
+          # Page exists — navigate to it
+          target =
+            if socket.assigns.current_path == "" do
+              filename
+            else
+              socket.assigns.current_path <> "/" <> filename
+            end
+
+          {:noreply,
+           socket
+           |> assign(:show_create, false)
+           |> push_patch(to: wiki_path(target))}
+
+        :error ->
+          # Create new document
+          uuid = UUID.uuid4()
+          doc = Yelixer.Doc.new()
+          doc = ContentType.create(doc, :text, filename)
+          doc = ContentType.insert_text(doc, 0, "# #{name}\n\nWrite your content here.\n")
+          update = Yelixer.Encoding.encode_update(doc)
+          CommitStoreClient.create_commit(uuid, update, nil)
+
+          # Add to schema via chained commit
+          schema = Schema.add_file(schema, filename, uuid)
+          schema_update = Yelixer.Encoding.encode_update(schema)
+          CommitStoreClient.create_chained_commit(dir_uuid, schema_update)
+
+          target =
+            if socket.assigns.current_path == "" do
+              filename
+            else
+              socket.assigns.current_path <> "/" <> filename
+            end
+
+          {:noreply,
+           socket
+           |> assign(:show_create, false)
+           |> put_flash(:info, "Created #{name}")
+           |> push_patch(to: wiki_path(target))}
+      end
+    end
+  end
+
+  defp do_view_action(params, socket) do
+    action_name = params["action"] || ""
+    target = params["target"]
+    extra_args = Map.drop(params, ["action", "target"])
+
+    view_path =
+      case {socket.assigns.current_path, socket.assigns.page_name} do
+        {"", name} when is_binary(name) -> name
+        {path, name} when is_binary(name) -> path <> "/" <> name
+        _ -> ""
+      end
+
+    context = %{
+      view_path: view_path,
+      view_uuid: socket.assigns.page_uuid,
+      target: target,
+      args: extra_args,
+      signer_id: "wiki-user@local",
+      source: "wiki_live"
+    }
+
+    case ViewActions.dispatch(action_name, context, socket) do
+      {:ok, updated_socket} ->
+        {:noreply, updated_socket}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, reason)}
+    end
+  end
 
   defp load_page(socket, path) do
     root = socket.assigns.root_uuid

@@ -98,4 +98,41 @@ defmodule CommonplaceWebWeb.OutlineLiveTest do
     # The commit broadcast drives the re-render.
     assert render_async(view) =~ "From elsewhere" or render(view) =~ "From elsewhere"
   end
+
+  describe "write rate limiting (CX-qat5.6)" do
+    alias CommonplaceWebWeb.WriteRateLimit
+
+    setup do
+      :ok = WriteRateLimit.config(max_writes: 2, window_ms: 60_000)
+
+      on_exit(fn ->
+        # Restore defaults so other test modules aren't affected by this
+        # singleton GenServer's config.
+        :ok = WriteRateLimit.config(max_writes: 30, window_ms: 10_000)
+      end)
+
+      :ok
+    end
+
+    test "the (N+1)th write is rejected without creating a commit, earlier ones succeed",
+         %{conn: conn, uuid: uuid} do
+      {:ok, view, _} = live(conn, ~p"/outline/daily")
+
+      # Each render_click on the same connected view runs handle_event in
+      # the same LiveView process, so all three share one connection key.
+      view |> element("button", "+ item") |> render_click()
+      view |> element("button", "+ item") |> render_click()
+
+      items_after_two = Outline.items(CommitStore, uuid)
+      # 2 seeded (a, b) + 2 successful new_item writes.
+      assert length(items_after_two) == 4
+
+      html = view |> element("button", "+ item") |> render_click()
+
+      items_after_three = Outline.items(CommitStore, uuid)
+      # The 3rd write must NOT have created a commit.
+      assert length(items_after_three) == 4
+      assert html =~ "Too many edits"
+    end
+  end
 end

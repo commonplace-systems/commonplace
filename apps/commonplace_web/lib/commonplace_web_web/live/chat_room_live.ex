@@ -46,7 +46,7 @@ defmodule CommonplaceWebWeb.ChatRoomLive do
   alias Commonplace.View.ArgResolver
   alias Commonplace.Document.ViewXml
   alias Commonplace.ViewActionDispatch
-  alias CommonplaceWebWeb.{ViewActions, ViewRenderer}
+  alias CommonplaceWebWeb.{ViewActions, ViewRenderer, WriteRateLimit}
 
   # Placeholder until CX-88mw substrate per-session key minting lands.
   @placeholder_signer_id "web-user@local"
@@ -129,6 +129,14 @@ defmodule CommonplaceWebWeb.ChatRoomLive do
   # action args. Substrate ArgResolver fills resolution gaps.
   @impl true
   def handle_event("view_action", payload, socket) do
+    case WriteRateLimit.check_and_record(self()) do
+      :ok -> do_view_action(payload, socket)
+      {:error, :rate_limited, _retry_after_ms} ->
+        {:noreply, put_flash(socket, :error, "Too many edits — slow down")}
+    end
+  end
+
+  defp do_view_action(payload, socket) do
     %{room: room, room_name: room_name} = socket.assigns
 
     action_name = payload["action"] || ""

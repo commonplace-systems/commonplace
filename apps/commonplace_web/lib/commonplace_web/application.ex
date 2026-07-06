@@ -14,6 +14,10 @@ defmodule CommonplaceWeb.Application do
       # Per-peer deferral budget for the federation import endpoint
       # (CX-orfw.1 — bounds pending_imports contribution per peer).
       CommonplaceWebWeb.FederationPeerBudget,
+      # CX-qat5.6 (M1 safe subset): per-connection browser write rate
+      # limiter — the LiveView write handlers call
+      # WriteRateLimit.check_and_record/1 before performing a write.
+      CommonplaceWebWeb.WriteRateLimit,
       # Start to serve requests, typically the last entry
       CommonplaceWebWeb.Endpoint
     ]

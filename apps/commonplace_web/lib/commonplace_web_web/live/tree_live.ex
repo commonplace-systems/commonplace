@@ -19,6 +19,7 @@ defmodule CommonplaceWebWeb.TreeLive do
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Dataflow.PubSub, as: CPPubSub
   alias Commonplace.Presence
+  alias CommonplaceWebWeb.WriteRateLimit
 
   @impl true
   def mount(_params, _session, socket) do
@@ -153,21 +154,27 @@ defmodule CommonplaceWebWeb.TreeLive do
 
   @impl true
   def handle_event("yjs_edit", %{"update" => encoded}, socket) do
-    with uuid when not is_nil(uuid) <- socket.assigns.selected_uuid,
-         {:ok, update} <- Base.decode64(encoded) do
-      commit = CommitStoreClient.create_chained_commit(uuid, update)
+    case WriteRateLimit.check_and_record(self()) do
+      :ok ->
+        with uuid when not is_nil(uuid) <- socket.assigns.selected_uuid,
+             {:ok, update} <- Base.decode64(encoded) do
+          commit = CommitStoreClient.create_chained_commit(uuid, update)
 
-      case commit do
-        %{id: _} ->
-          CPPubSub.broadcast_blue(uuid, update)
-          {:noreply, socket}
+          case commit do
+            %{id: _} ->
+              CPPubSub.broadcast_blue(uuid, update)
+              {:noreply, socket}
 
-        _ ->
-          {:noreply, put_flash(socket, :error, "Failed to save")}
-      end
-    else
-      _ ->
-        {:noreply, put_flash(socket, :error, "Invalid edit data")}
+            _ ->
+              {:noreply, put_flash(socket, :error, "Failed to save")}
+          end
+        else
+          _ ->
+            {:noreply, put_flash(socket, :error, "Invalid edit data")}
+        end
+
+      {:error, :rate_limited, _retry_after_ms} ->
+        {:noreply, put_flash(socket, :error, "Too many edits — slow down")}
     end
   end
 
