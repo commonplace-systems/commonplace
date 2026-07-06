@@ -253,9 +253,27 @@ defmodule Commonplace.MUD.Verbs do
   defp run_legacy_user_verb(host_kind, host_uuid, host_name, verb_name, ctx) do
     verb_ctx = build_user_verb_ctx(host_kind, host_uuid, host_name, ctx)
 
-    case VerbSource.run_verb(host_uuid, verb_name, verb_ctx, ctx.store) do
+    # CX-bg1v/CX-qom0 — PLAYER dispatch of a `.elx` verb (a full author
+    # module with ambient reach) is gated by the same allowlist waist as
+    # safe verbs: `require_safe_wrapper: true` makes `SourceDoc.compile`
+    # reject anything that isn't the substrate safe-wrapper (a legacy
+    # module fails as `:not_substrate_wrapped`). This closes the residual
+    # RCE ingress a permissive world leaves open (the `:execute` gate is
+    # vacuous there, and the raw `write` MCP tool can overwrite an
+    # existing legacy verb's body). NOTE: only the PLAYER path passes this
+    # opt — TickBot's system `run_verb/4` (the "tick" verb) and direct
+    # `run_verb` callers do NOT, so trusted/system legacy dispatch is
+    # unchanged. Gating those too is CX-qom0 (needs a system-verb→safe
+    # migration first).
+    case VerbSource.run_verb(host_uuid, verb_name, verb_ctx, ctx.store,
+           require_safe_wrapper: true
+         ) do
       {:ok, _} ->
         :ok
+
+      {:error, {:unsafe_verb, _reason}} ->
+        {:error,
+         "(verb #{verb_name} is unavailable — legacy verbs must be re-authored as safe verbs via @verb)"}
 
       {:error, {:compile_error, msg}} ->
         emit_verb_error(verb_name, "compile error: #{msg}", ctx)

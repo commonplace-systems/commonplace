@@ -104,10 +104,12 @@ defmodule Commonplace.MUD.VerbSource do
   `verb_name`. Returns `{:ok, module}`, `:not_found`, or
   `{:error, reason}`.
   """
-  def compile_verb(target_dir_uuid, verb_name, store \\ CommitStoreClient) do
+  def compile_verb(target_dir_uuid, verb_name, store \\ CommitStoreClient, opts \\ []) do
     case find_source(target_dir_uuid, verb_name, store) do
       {:ok, source_uuid} ->
-        case SourceDoc.compile(source_uuid, store, unique_module: source_uuid) do
+        compile_opts = Keyword.merge([unique_module: source_uuid], opts)
+
+        case SourceDoc.compile(source_uuid, store, compile_opts) do
           {:ok, module} ->
             if function_exported?(module, :run, 1) do
               {:ok, module}
@@ -137,8 +139,8 @@ defmodule Commonplace.MUD.VerbSource do
   Compile errors do not crash the caller. Runtime exceptions are
   rescued; callers can emit a verb_error red event with the message.
   """
-  def run_verb(target_dir_uuid, verb_name, ctx, store \\ CommitStoreClient) do
-    case compile_verb(target_dir_uuid, verb_name, store) do
+  def run_verb(target_dir_uuid, verb_name, ctx, store \\ CommitStoreClient, opts \\ []) do
+    case compile_verb(target_dir_uuid, verb_name, store, opts) do
       {:ok, module} ->
         try do
           {:ok, apply(module, :run, [ctx])}

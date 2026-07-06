@@ -188,6 +188,11 @@ defmodule Commonplace.MUD.VerbSourceTest do
     PlayerSession.stop(bob)
   end
 
+  # CX-qom0: migrated from a player-dispatched LEGACY (full-defmodule)
+  # crashing verb to a SAFE verb — a legacy `.elx` is no longer
+  # player-dispatchable (gated by `require_safe_wrapper: true`). The
+  # allowlist admits no `raise`, so the crash vehicle is a plain
+  # allowlist-clean runtime error (`1 / 0`) instead of `raise "deliberate"`.
   test "user verb runtime exception emits a verb_error event", ctx do
     alice = start_player("alice", ctx)
 
@@ -197,15 +202,7 @@ defmodule Commonplace.MUD.VerbSourceTest do
         entry.node_id
       end
 
-    crash = """
-    defmodule Commonplace.UserCode.Mud.Verb.FountainShake do
-      def run(_ctx) do
-        raise "deliberate"
-      end
-    end
-    """
-
-    :ok = VerbSource.save_verb(fountain_dir, "shake", crash, ctx.store)
+    :ok = VerbSource.save_safe_verb(fountain_dir, "shake", "1 / 0", [fountain_dir], ctx.store)
 
     # Alice walks east into the clearing where fountain lives
     send_input(alice, "east")
@@ -216,12 +213,20 @@ defmodule Commonplace.MUD.VerbSourceTest do
     Process.sleep(60)
 
     out = drain("alice") |> Enum.join("\n")
-    assert out =~ "shake" and out =~ "deliberate"
+    assert out =~ "shake" and out =~ "crashed"
 
     PlayerSession.stop(alice)
   end
 
-  test "tick.elx on an object overrides tick_message", ctx do
+  # CX-qom0: migrated from a LEGACY (full-defmodule, ambient-reach)
+  # `tick.elx` to a SAFE `tick.safe.elx` — `TickBot.fire/2` no longer
+  # dispatches the legacy tick path at all (a plantable legacy verb on a
+  # ticking object/room would otherwise get full store/uuid reach on
+  # every heartbeat, no player involved — the confused-deputy ingress
+  # CX-qom0 closes). The body uses the facade's `emit/2` (a room
+  # broadcast, no doc write, so no owner_grant/intersection check
+  # applies) to fire the same custom event the legacy body used to.
+  test "tick.safe.elx on an object overrides tick_message", ctx do
     alias Commonplace.Green.Bursar
     alias Commonplace.MUD.{Topics, TickBot}
 
@@ -231,16 +236,9 @@ defmodule Commonplace.MUD.VerbSourceTest do
         entry.node_id
       end
 
-    src = """
-    defmodule Commonplace.UserCode.Mud.Verb.FountainTick do
-      def run(ctx) do
-        Commonplace.MUD.World.broadcast_room(ctx.current_room_uuid, %{kind: :custom, text: "Sparks fly!"})
-        :ok
-      end
-    end
-    """
+    body = ~s|Commonplace.MUD.World.Facade.emit(world, %{kind: :custom, text: "Sparks fly!"})|
 
-    :ok = VerbSource.save_verb(fountain_dir, "tick", src, ctx.store)
+    :ok = VerbSource.save_safe_verb(fountain_dir, "tick", body, [fountain_dir], ctx.store)
 
     # CX-pvrl: this test only cares about tick.elx firing, not
     # World.move — so its TickBot gets a dedicated, uniquely-named

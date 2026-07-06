@@ -2,7 +2,7 @@ defmodule Commonplace.MUD.OutputTest do
   use ExUnit.Case
 
   alias Commonplace.Code.SourceDoc
-  alias Commonplace.MUD.{Bootstrap, PlayerSession, Schemas, VerbSource}
+  alias Commonplace.MUD.{Bootstrap, Output, PlayerSession, Schemas, VerbSource}
   alias Commonplace.Store.CommitStore
   alias Commonplace.Tree.Schema
   alias Yelixer.Encoding
@@ -87,37 +87,26 @@ defmodule Commonplace.MUD.OutputTest do
     Process.sleep(60)
   end
 
+  # CX-qom0: this now unit-tests `Commonplace.MUD.Output.tell/2` directly
+  # instead of routing through a player-dispatched LEGACY (full-defmodule)
+  # verb — a legacy `.elx` is no longer player-dispatchable (gated by
+  # `require_safe_wrapper: true`, see `Verbs.run_legacy_user_verb/5`), and
+  # there is no facade method exposing actor-only tell (by design: it's a
+  # thin ctx-shaped wrapper over `World.tell/2`, not a verb-authorable
+  # effect). Real `PlayerSession`s still back the two listeners so the
+  # full PubSub delivery path (`Topics.subscribe_player_tell/1` +
+  # `render_event/2`) is exercised end-to-end, same as before — only the
+  # "how do we call Output" vehicle changed.
   test "Output.tell sends a string to the actor only", ctx do
-    fountain_dir =
-      with {:ok, schema} <- Schemas.load_dir_schema(clearing_uuid(ctx), ctx.store),
-           {:ok, entry} <- Schema.get_entry(schema, "fountain.obj") do
-        entry.node_id
-      end
-
-    src = """
-    defmodule Commonplace.UserCode.Mud.Verb.FountainPing do
-      alias Commonplace.MUD.Output
-
-      def run(ctx) do
-        Output.tell(ctx, "ping-from-tell")
-        :ok
-      end
-    end
-    """
-
-    :ok = VerbSource.save_verb(fountain_dir, "ping", src, ctx.store)
-
     alice = start_player("alice", ctx)
     bob = start_player("bob", ctx)
     drain("alice")
     drain("bob")
 
-    send_input(alice, "east")
-    send_input(bob, "east")
-    drain("alice")
-    drain("bob")
+    alice_state = :sys.get_state(alice)
 
-    send_input(alice, "ping fountain")
+    Output.tell(%{player_uuid: alice_state.player_uuid}, "ping-from-tell")
+    Process.sleep(60)
 
     alice_out = drain("alice") |> Enum.join("\n")
     assert alice_out =~ "ping-from-tell"
@@ -129,26 +118,11 @@ defmodule Commonplace.MUD.OutputTest do
     PlayerSession.stop(bob)
   end
 
+  # CX-qom0: same migration rationale as the `tell` test above — unit-tests
+  # `Output.broadcast/3` directly. Alice and bob both walk into the
+  # clearing first so they share a room (`current_room_uuid`), mirroring
+  # the shared-room setup the legacy-verb vehicle used to establish.
   test "Output.broadcast goes to bystanders, default-excludes actor", ctx do
-    fountain_dir =
-      with {:ok, schema} <- Schemas.load_dir_schema(clearing_uuid(ctx), ctx.store),
-           {:ok, entry} <- Schema.get_entry(schema, "fountain.obj") do
-        entry.node_id
-      end
-
-    src = """
-    defmodule Commonplace.UserCode.Mud.Verb.FountainEmit do
-      alias Commonplace.MUD.Output
-
-      def run(ctx) do
-        Output.broadcast(ctx, "broadcast-from-bcast")
-        :ok
-      end
-    end
-    """
-
-    :ok = VerbSource.save_verb(fountain_dir, "emit", src, ctx.store)
-
     alice = start_player("alice", ctx)
     bob = start_player("bob", ctx)
     drain("alice")
@@ -159,7 +133,14 @@ defmodule Commonplace.MUD.OutputTest do
     drain("alice")
     drain("bob")
 
-    send_input(alice, "emit fountain")
+    alice_state = :sys.get_state(alice)
+
+    Output.broadcast(
+      %{current_room_uuid: alice_state.current_room_uuid, player_uuid: alice_state.player_uuid},
+      "broadcast-from-bcast"
+    )
+
+    Process.sleep(60)
 
     bob_out = drain("bob") |> Enum.join("\n")
     assert bob_out =~ "broadcast-from-bcast"
@@ -218,6 +199,13 @@ defmodule Commonplace.MUD.OutputTest do
     PlayerSession.stop(alice)
   end
 
+  # CX-qom0: migrated from a player-dispatched LEGACY (full-defmodule)
+  # crashing verb to a SAFE verb — a legacy `.elx` is no longer
+  # player-dispatchable. The allowlist admits no `raise`, so the crash
+  # vehicle is a plain allowlist-clean runtime error (`1 / 0`) instead;
+  # the crash still flows through `map_safe_result/3`'s
+  # `{:error, {:runtime_error, _}}` arm, same emit_verb_error shape as the
+  # legacy path exercised.
   test "verb_error appears once for the actor and once for bystanders (CX-7eqk)", ctx do
     fountain_dir =
       with {:ok, schema} <- Schemas.load_dir_schema(clearing_uuid(ctx), ctx.store),
@@ -225,13 +213,7 @@ defmodule Commonplace.MUD.OutputTest do
         entry.node_id
       end
 
-    src = """
-    defmodule Commonplace.UserCode.Mud.Verb.FountainBoom do
-      def run(_ctx), do: raise "boom"
-    end
-    """
-
-    :ok = VerbSource.save_verb(fountain_dir, "boom", src, ctx.store)
+    :ok = VerbSource.save_safe_verb(fountain_dir, "boom", "1 / 0", [fountain_dir], ctx.store)
 
     alice = start_player("alice", ctx)
     bob = start_player("bob", ctx)

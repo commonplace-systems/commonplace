@@ -191,9 +191,9 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
     assert rock_meta2["poked"] == "rock"
   end
 
-  # ---- pin 3: safe path wired + legacy coexistence (no regression) ----
+  # ---- pin 3: safe path wired + legacy verb refused (CX-qom0) ----
 
-  test "pin 3: a safe verb runs through the Facade (invoker-signed, via_verb tagged); a legacy verb is unaffected", %{
+  test "pin 3: a safe verb runs through the Facade (invoker-signed, via_verb tagged); a legacy verb on a different object is refused", %{
     store: store,
     room_uuid: room_uuid,
     inventory_uuid: inventory_uuid
@@ -221,8 +221,18 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
     meta = raw_meta(store, widget_uuid, Schemas.object_filename())
     assert meta["poked"] == "yes"
 
-    # Legacy (full-defmodule) verb on a DIFFERENT object still runs the
-    # old path unchanged (migration boundary, CX-ndvi §4).
+    # CX-qom0: a legacy (full-defmodule, ambient-reach) verb on a
+    # DIFFERENT object is no longer dispatchable through
+    # `Verbs.dispatch/2` at all — `run_legacy_user_verb/5` passes
+    # `require_safe_wrapper: true` to `VerbSource.run_verb/5` for every
+    # dispatch (not just ones a real `PlayerSession` originates;
+    # `Verbs.dispatch/2` is the single untrusted-command surface, with no
+    # caller-trust distinction), so `SourceDoc.compile` rejects the
+    # author's raw `defmodule` as `:not_substrate_wrapped`. This
+    # supersedes the old CX-ndvi §4 "legacy coexistence, no regression"
+    # expectation this pin used to assert — the migration boundary is
+    # now "legacy verbs must be re-authored as safe verbs", not
+    # "legacy verbs keep running forever alongside safe ones".
     gizmo_uuid = create_object(store, "gizmo")
     :ok = add_dir_entry(store, room_uuid, "gizmo.obj", gizmo_uuid)
 
@@ -236,7 +246,9 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
     """
 
     assert :ok = VerbSource.save_verb(gizmo_uuid, "ring", legacy_src, store)
-    assert :ok = Verbs.dispatch(Parser.parse("ring gizmo"), ctx)
+
+    assert {:error, msg} = Verbs.dispatch(Parser.parse("ring gizmo"), ctx)
+    assert msg =~ "unavailable"
   end
 
   # ---- pin 4: section_scope from tree position (foreign-section pin) ----

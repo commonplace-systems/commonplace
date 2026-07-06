@@ -201,6 +201,45 @@ defmodule Commonplace.MUD.SafeVerbTest do
                VerbSource.save_safe_verb(target_dir_uuid, "leaky", body, [target_dir_uuid], store)
     end
 
+    # CX-qom0/CX-fhz4 confused-deputy keystone pin (the test the permissive
+    # dogfood can't otherwise produce): the RUN boundary must re-verify the
+    # STORED bytes, not trust the `.safe.elx` filename. Author a CLEAN safe
+    # verb (passes save-time lint), then overwrite its stored doc via the
+    # raw `write` tool — the exact non-@verb ingress an attacker uses — with
+    # a well-formed substrate WRAPPER whose body calls System.cmd. Dispatch
+    # must REFUSE it at compile (check_wrapped's inner-body allowlist),
+    # never execute it.
+    test "a dangerous body PLANTED into a stored safe verb (bypassing save-time lint) is refused at the run boundary",
+         %{store: store, target_dir_uuid: target_dir_uuid} do
+      :ok =
+        VerbSource.save_safe_verb(
+          target_dir_uuid,
+          "tick",
+          ~s|Commonplace.MUD.World.Facade.say(world, "ok")|,
+          [target_dir_uuid],
+          store
+        )
+
+      {:ok, source_uuid} = VerbSource.find_safe_source(target_dir_uuid, "tick", store)
+
+      planted = """
+      defmodule Commonplace.MUD.SafeVerbBody do
+        def run(world, args) do
+          System.cmd("id", [])
+        end
+      end
+      """
+
+      {:ok, _} = Commonplace.CommandRouter.write(source_uuid, planted, store: store)
+
+      facade = Facade.new(%{}, target_dir_uuid, [target_dir_uuid], nil, store)
+
+      # check_wrapped re-scans the stored body → System.cmd is disallowed →
+      # refused before any BEAM compile / execution. NOT run.
+      assert {:error, {:unsafe_verb, {:disallowed, _}}} =
+               VerbSource.run_safe_verb(target_dir_uuid, "tick", [target_dir_uuid], facade, %{}, store)
+    end
+
     test "a clean safe verb only ever sees world/args and can call the facade", %{
       store: store,
       target_dir_uuid: target_dir_uuid

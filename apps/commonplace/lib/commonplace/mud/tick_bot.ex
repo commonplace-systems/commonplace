@@ -61,6 +61,7 @@ defmodule Commonplace.MUD.TickBot do
   alias Commonplace.Green.{Bursar, BursarClient}
   alias Commonplace.MUD.{Schemas, VerbSource, World}
   alias Commonplace.MUD.Schemas.{Object, Room}
+  alias Commonplace.MUD.World.Facade
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.Schema
 
@@ -308,26 +309,49 @@ defmodule Commonplace.MUD.TickBot do
     %{state | last_tick: new_last_tick}
   end
 
-  defp fire(%{uuid: host_uuid, room_uuid: room_uuid, message: msg}, store) do
-    ctx = %{current_room_uuid: room_uuid, store: store, host_uuid: host_uuid}
+  # CX-qom0: a legacy (full-defmodule, ambient-reach) `tick.elx` is no
+  # longer dispatchable here at all — that was the confused-deputy
+  # ingress: TickBot is a SYSTEM caller (not the player-dispatch path
+  # `Verbs.run_legacy_user_verb/5` gates), so a plantable legacy verb on
+  # any ticking room/object got full store/uuid reach on every heartbeat,
+  # for free, without ever going through a player. Only a SAFE
+  # (`tick.safe.elx`) verb can fire on tick now; a clean `:not_found`
+  # falls back to the built-in `tick_message` broadcast (unchanged
+  # behavior for every room/object that never authored a tick verb at
+  # all).
+  defp fire(%{uuid: host_uuid, room_uuid: room_uuid, message: msg, kind: kind}, store) do
+    case VerbSource.find_safe_source(host_uuid, "tick", store) do
+      {:ok, _source_uuid} ->
+        object_uuid = if kind == :object, do: host_uuid, else: nil
+        ctx = %{current_room_uuid: room_uuid, store: store}
+        facade = Facade.new(ctx, object_uuid, [host_uuid], nil, store)
 
-    case VerbSource.run_verb(host_uuid, "tick", ctx, store) do
-      {:ok, _} ->
-        :ok
+        case VerbSource.run_safe_verb(host_uuid, "tick", [host_uuid], facade, %{}, store) do
+          {:ok, _} ->
+            :ok
+
+          {:error, {:runtime_error, reason}} ->
+            World.broadcast_room(room_uuid, %{kind: :verb_error, verb: "tick", reason: reason})
+            :ok
+
+          {:error, {:compile_error, reason}} ->
+            World.broadcast_room(room_uuid, %{kind: :verb_error, verb: "tick", reason: reason})
+            :ok
+
+          {:error, {:unsafe_verb, reason}} ->
+            World.broadcast_room(room_uuid, %{kind: :verb_error, verb: "tick", reason: inspect(reason)})
+            :ok
+
+          _ ->
+            if msg, do: World.broadcast_room(room_uuid, %{kind: :custom, text: msg})
+            :ok
+        end
 
       :not_found ->
         if msg, do: World.broadcast_room(room_uuid, %{kind: :custom, text: msg})
         :ok
 
-      {:error, {:runtime_error, reason}} ->
-        World.broadcast_room(room_uuid, %{kind: :verb_error, verb: "tick", reason: reason})
-        :ok
-
-      {:error, {:compile_error, reason}} ->
-        World.broadcast_room(room_uuid, %{kind: :verb_error, verb: "tick", reason: reason})
-        :ok
-
-      _ ->
+      {:error, _reason} ->
         if msg, do: World.broadcast_room(room_uuid, %{kind: :custom, text: msg})
         :ok
     end
