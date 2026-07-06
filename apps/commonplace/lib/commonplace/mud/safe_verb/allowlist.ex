@@ -73,6 +73,17 @@ defmodule Commonplace.MUD.SafeVerb.Allowlist do
   ONE-element dot arg list, no module/fun pair at all) — is also
   rejected outright; it's `apply` wearing different syntax.
 
+  ## INTENTIONAL LIMITATION — direct `f.()` on an author's own anon fn
+
+  Because `f.(x)` is structurally indistinguishable from smuggled-value
+  dispatch, an author's OWN anonymous function invoked directly
+  (`f = fn x -> x end; f.(1)`) is rejected. This is a deliberate
+  conservative call, not an oversight: higher-order code still works
+  because the anon fn is invoked INSIDE an allowlisted function
+  (`Enum.map(coll, fn x -> ... end)`) rather than by an author `.()`.
+  The first author who writes `f.()` and sees a rejection should
+  restructure through `Enum`/`Map` combinators.
+
   ## Captures walk INTO their target (REQ 5)
 
   `&System.cmd/2` embeds a full MFA reference without ever "calling"
@@ -284,7 +295,24 @@ defmodule Commonplace.MUD.SafeVerb.Allowlist do
         {:all?, 1},
         {:all?, 2},
         {:any?, 1},
-        {:any?, 2}
+        {:any?, 2},
+        # CX-bg1v keystone review (commonplace-plan #5892) — blessed
+        # additions, all pure, no dispatch/atom/module construction.
+        {:find, 2},
+        {:find_value, 2},
+        {:find_value, 3},
+        {:group_by, 2},
+        {:group_by, 3},
+        {:zip, 1},
+        {:zip, 2},
+        {:chunk_every, 2},
+        {:chunk_every, 3},
+        {:chunk_every, 4},
+        {:map_join, 2},
+        {:map_join, 3},
+        {:frequencies, 1},
+        {:min_max, 1},
+        {:uniq_by, 2}
       ]),
     "Map" =>
       MapSet.new([
@@ -300,7 +328,13 @@ defmodule Commonplace.MUD.SafeVerb.Allowlist do
         {:delete, 2},
         {:new, 0},
         {:new, 1},
-        {:to_list, 1}
+        {:to_list, 1},
+        # CX-bg1v keystone review (#5892) — blessed pure additions.
+        {:update, 3},
+        {:update, 4},
+        {:take, 2},
+        {:drop, 2},
+        {:put_new, 3}
       ]),
     "List" =>
       MapSet.new([
@@ -341,7 +375,10 @@ defmodule Commonplace.MUD.SafeVerb.Allowlist do
         {:pad_leading, 2},
         {:pad_leading, 3},
         {:pad_trailing, 2},
-        {:pad_trailing, 3}
+        {:pad_trailing, 3},
+        # CX-bg1v keystone review (#5892) — blessed pure additions.
+        {:replace_prefix, 3},
+        {:replace_suffix, 3}
       ]),
     "Integer" =>
       MapSet.new([

@@ -120,7 +120,8 @@ defmodule Commonplace.MUD.SafeVerb.AllowlistTest do
     end
 
     test "unknown/unlisted function on an allowed module is rejected" do
-      assert_rejected("Enum.zip([1], [2])")
+      # Enum.random is deliberately unlisted (impure — reads the RNG).
+      assert_rejected("Enum.random([1, 2, 3])")
     end
   end
 
