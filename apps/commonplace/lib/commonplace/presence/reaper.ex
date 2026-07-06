@@ -27,6 +27,16 @@ defmodule Commonplace.Presence.Reaper do
     GenServer.start_link(__MODULE__, opts)
   end
 
+  @doc """
+  The canonical staleness/TTL threshold (ms) for presence heartbeats.
+
+  Exposed so other consumers of presence liveness (e.g. the `list_peers`
+  MCP tool, CX-6sf2.5) derive online/offline status from the SAME
+  threshold the reaper uses to decide what to remove, instead of
+  inventing a second, possibly-inconsistent staleness window.
+  """
+  def default_stale_threshold, do: @default_stale_threshold
+
   @doc "Get the list of stale presence entries without removing them."
   def find_stale(root_uuid, store \\ CommitStoreClient, stale_threshold \\ @default_stale_threshold) do
     root_doc = load_schema(root_uuid, store)
