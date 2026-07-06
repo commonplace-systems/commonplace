@@ -283,7 +283,7 @@ defmodule Commonplace.Trust do
             {:halt, {:ok, passed}}
 
           true ->
-            case authorized?(commit, :execute, {:doc, doc_uuid}, cfg) do
+            case authorized?(commit, :execute, {:doc, doc_uuid}, cfg, store) do
               {:error, reason} ->
                 {:halt, {{:error, {:untrusted_contributor, commit.id, reason}}, passed}}
 

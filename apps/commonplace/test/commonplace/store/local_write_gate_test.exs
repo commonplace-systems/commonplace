@@ -346,35 +346,21 @@ defmodule Commonplace.Store.LocalWriteGateTest do
 
   # ── Pin 7: the write/execute fence ────────────────────────────────────
   #
-  # DEVIATION (flagged per prompt instructions — spec wins over
-  # convenience, but a defect found along the way gets documented rather
-  # than silently worked around): `Trust.authorized_to_execute?/3`'s
-  # Gate-B walk (`walk_contributors/4`, trust.ex) calls the capability
-  # path via the 4-arity `authorized?/4`, which does NOT thread the
-  # `store` argument `authorized_to_execute?/3` was given — it always
-  # falls to `authorized?/5`'s own default (`Commonplace.Store.
-  # CommitStoreClient`, the dispatcher MODULE, not a GenServer
-  # reference). `Commonplace.Trust.VerifyChain.build_chain/2` then calls
-  # bare `CommitStore.get_capability(store, cid)` (not
-  # `CommitStoreClient.get_capability/2`, which would normalize the
-  # module alias) — so a capability-scoped commit hits
-  # `GenServer.call(Commonplace.Store.CommitStoreClient, :get_db, _)`,
-  # which is not a registered process, and the walk crashes rather than
-  # denying. This is a PRE-EXISTING gap orthogonal to CX-qat5.3 (it
-  # affects any capability-delegated Gate-B walk on a non-default store,
-  # regardless of the local-write gate); flagged here rather than
-  # papered over, and NOT fixed in this bead (out of scope — a
-  # store-threading fix belongs to trust.ex/verify_chain.ex, not the
-  # local-write gate seam).
+  # The DEVIATION previously documented here — `walk_contributors/4`
+  # (trust.ex) dropping its `store` argument on the way into the
+  # capability path, and `VerifyChain.build_chain` calling bare
+  # `CommitStore.get_capability/2` (unnormalized), so the Gate-B walk
+  # broke on any NON-default store — was fixed by CX-ziye (the store is
+  # now threaded through `authorized?/5`, and capability fetches route
+  # through `CommitStoreClient.get_capability/2`). Dedicated regression
+  # pins live in
+  # `test/commonplace/trust/execute_capability_named_store_test.exs`.
   #
-  # This pin therefore demonstrates the fence via `Trust.authorized?/5`
-  # directly (the exact function Gate B's walk calls per-commit,
-  # `verb: :execute` — proven safe against a custom store the same way
-  # `AuthorizedCapabilityTest` already exercises it) rather than via the
-  # (currently broken, for non-default stores) `authorized_to_execute?/3`
-  # convenience wrapper. The fence property under test — "a :write-only
-  # capability lands the write but is denied :execute on the SAME
-  # commit" — is unchanged; only the call surface differs.
+  # This pin now exercises the fence BOTH ways: via `Trust.authorized?/5`
+  # directly (the exact per-commit call Gate B's walk makes) AND via the
+  # end-to-end `authorized_to_execute?/3` convenience wrapper on this
+  # test's named non-default store — the intended call surface that the
+  # pre-fix defect forced this pin to avoid.
   describe "pin 7: write/execute fence" do
     test "a player-signed :write-only commit lands (via the local-write gate) but the same signer's capability denies :execute",
          %{store: store} do
@@ -460,6 +446,13 @@ defmodule Commonplace.Store.LocalWriteGateTest do
 
       assert {:error, :capability_insufficient} =
                Trust.authorized?(code_commit, :execute, {:doc, code_uuid}, cfg, store)
+
+      # End-to-end: the same fence via the Gate-B walk itself
+      # (`authorized_to_execute?/3`) on this NAMED non-default store —
+      # denied for the capability-insufficiency reason, not crashed
+      # (CX-ziye).
+      assert {:error, {:untrusted_contributor, _, :capability_insufficient}} =
+               Trust.authorized_to_execute?(store, code_uuid, cfg)
     end
   end
 

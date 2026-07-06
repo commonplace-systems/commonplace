@@ -30,6 +30,7 @@ defmodule Commonplace.Trust.VerifyChain do
   """
 
   alias Commonplace.Store.CommitStore
+  alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Trust.Capability
 
   @max_depth 64
@@ -55,7 +56,7 @@ defmodule Commonplace.Trust.VerifyChain do
     do: {:error, :chain_too_deep}
 
   defp build_chain(cid, store, acc, depth) do
-    case CommitStore.get_capability(store, cid) do
+    case CommitStoreClient.get_capability(store, cid) do
       :none ->
         {:error, :awaiting_capability}
 
