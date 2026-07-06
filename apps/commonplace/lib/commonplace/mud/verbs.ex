@@ -18,12 +18,27 @@ defmodule Commonplace.MUD.Verbs do
 
   alias Commonplace.MUD.{Parser, Schemas, Sections, SignedWrite, VerbSource, World}
   alias Commonplace.MUD.Schemas.{Object, Player, Room}
+  alias Commonplace.MUD.World.Facade
   alias Commonplace.Tree.Schema
   alias Commonplace.Store.CommitStoreClient
+  alias Commonplace.Trust.{Capability, VerifyChain}
 
   require Logger
 
   @builders ~w(@dig @create @desc @name @alias @listen @dump @verb @link @unlink @teleport @go)
+
+  # CX-cj3t.5 §1a (CX-66ca) — single source of truth for "is this verb
+  # word a builtin" at DISPATCH TIME (not define-time reservation — a
+  # user verb named e.g. "take" is simply never reachable, it does not
+  # fail to define). Derived from the explicit `dispatch_builtin/3`
+  # heads below plus the direction words. MVP FLOOR: builtins-first
+  # dispatch (see `dispatch/2`) structurally guarantees a user-authored
+  # `@verb` can never shadow/disable a builtin — no player is ever
+  # locked out of core commands. The explicit `@builtin take` escape
+  # syntax (for a builder who WANTS the builtin despite an override) is
+  # plan's Phase 2, not this bead.
+  @builtins ~w(look say emote take get drop give inventory who quit help go) ++
+              ~w(north south east west up down in out)
 
   @doc "Dispatch a parsed command. Returns one of the verb-result tuples."
   def dispatch(%Parser.Command{verb: ""}, _ctx), do: :ok
@@ -33,6 +48,9 @@ defmodule Commonplace.MUD.Verbs do
       verb in @builders ->
         dispatch_builder(verb, cmd, ctx)
 
+      builtin?(verb) ->
+        dispatch_builtin(verb, cmd, ctx)
+
       true ->
         case dispatch_user_verb(verb, cmd, ctx) do
           :unhandled -> dispatch_builtin(verb, cmd, ctx)
@@ -41,19 +59,57 @@ defmodule Commonplace.MUD.Verbs do
     end
   end
 
-  # ---- User-authored verbs (P3) ----
+  defp builtin?(verb), do: verb in @builtins
 
-  defp dispatch_user_verb(verb_name, _cmd, ctx) do
-    case find_verb_in_scope(verb_name, ctx) do
+  # ---- User-authored verbs (P3, CX-ndvi/CX-cj3t.5) ----
+
+  defp dispatch_user_verb(verb_name, cmd, ctx) do
+    case find_verb_in_scope(verb_name, cmd, ctx) do
       {:ok, host_kind, host_uuid, host_name} ->
-        run_user_verb(host_kind, host_uuid, host_name, verb_name, ctx)
+        run_user_verb(host_kind, host_uuid, host_name, verb_name, cmd, ctx)
 
       :not_found ->
         :unhandled
     end
   end
 
-  defp find_verb_in_scope(verb_name, ctx) do
+  # CX-cj3t.5 §1b (CX-mczs) — resolve by direct-object noun. If
+  # `cmd.target` names a visible object (inventory or room, via the
+  # SAME name/alias matcher `take`/`give` use), the verb is looked up
+  # ONLY on that resolved object — found there, run it there; not found
+  # there, `:unhandled` (fall to builtin), never scan other objects. A
+  # nil/unmatched target falls back to the old scope scan (object >
+  # section-room > world/"here"), unchanged.
+  defp find_verb_in_scope(verb_name, cmd, ctx) do
+    case resolve_target_object(cmd, ctx) do
+      {:ok, uuid, name} ->
+        if verb_source_exists?(uuid, verb_name, ctx.store) do
+          {:ok, :object, uuid, name}
+        else
+          :not_found
+        end
+
+      :none ->
+        find_verb_by_scope_scan(verb_name, ctx)
+    end
+  end
+
+  defp resolve_target_object(%Parser.Command{target: nil}, _ctx), do: :none
+
+  defp resolve_target_object(%Parser.Command{target: target}, ctx) do
+    case World.find_entry_by_name(ctx.inventory_uuid, target, ctx.store) do
+      {:ok, entry} ->
+        {:ok, entry.node_id, entry.name}
+
+      :error ->
+        case World.find_entry_by_name(ctx.current_room_uuid, target, ctx.store) do
+          {:ok, entry} -> {:ok, entry.node_id, entry.name}
+          :error -> :none
+        end
+    end
+  end
+
+  defp find_verb_by_scope_scan(verb_name, ctx) do
     inventory_objects = World.list_objects_in(ctx.inventory_uuid, ctx.store)
     room_objects = World.list_objects_in(ctx.current_room_uuid, ctx.store)
 
@@ -63,14 +119,94 @@ defmodule Commonplace.MUD.Verbs do
         [{:room, ctx.current_room_uuid, "here"}]
 
     Enum.find_value(candidates, :not_found, fn {kind, uuid, name} ->
-      case VerbSource.find_source(uuid, verb_name, ctx.store) do
-        {:ok, _} -> {:ok, kind, uuid, name}
-        _ -> nil
-      end
+      if verb_source_exists?(uuid, verb_name, ctx.store), do: {:ok, kind, uuid, name}, else: nil
     end)
   end
 
-  defp run_user_verb(host_kind, host_uuid, host_name, verb_name, ctx) do
+  # CX-cj3t.5 §1c — a host is a candidate if EITHER a safe (`.safe.elx`)
+  # OR a legacy (`.elx`) source exists, so target resolution works for
+  # both authoring paths; the safe path takes precedence at RUN time
+  # (see `run_user_verb/6`) when both exist on the same host.
+  defp verb_source_exists?(uuid, verb_name, store) do
+    match?({:ok, _}, VerbSource.find_safe_source(uuid, verb_name, store)) or
+      match?({:ok, _}, VerbSource.find_source(uuid, verb_name, store))
+  end
+
+  # CX-cj3t.5 §1c/§1d — prefer the SAFE path; fall to the legacy path
+  # unchanged (migration boundary, CX-ndvi §4) when no safe source
+  # exists for this host+verb.
+  defp run_user_verb(host_kind, host_uuid, host_name, verb_name, cmd, ctx) do
+    case VerbSource.find_safe_source(host_uuid, verb_name, ctx.store) do
+      {:ok, source_uuid} ->
+        run_safe_user_verb(host_kind, host_uuid, host_name, verb_name, source_uuid, cmd, ctx)
+
+      _ ->
+        run_legacy_user_verb(host_kind, host_uuid, host_name, verb_name, ctx)
+    end
+  end
+
+  # CX-cj3t.5 §1d (SECURITY-CRITICAL) — `section_scope` and `owner_grant`
+  # are BOTH derived from the RESOLVED host_uuid (the exact tree
+  # position dispatch just found this verb at), NEVER from the verb
+  # doc's own content. A safe-verb author writes only a bare `run/2`
+  # BODY (no `defmodule`, no scope/grant parameters in scope) — there is
+  # no channel to inject either; this is structural, not merely policy.
+  # A crafted body that names some OTHER uuid as text/a string literal
+  # has no way to reach this function's arguments at all.
+  defp run_safe_user_verb(host_kind, host_uuid, host_name, verb_name, source_uuid, cmd, ctx) do
+    object_uuid = if host_kind == :object, do: host_uuid, else: nil
+    section_scope = [host_uuid]
+    owner_grant = owner_grant_for(host_uuid, ctx.store)
+    via_verb = {source_uuid, host_name}
+
+    facade = Facade.new(ctx, object_uuid, owner_grant, via_verb, ctx.store)
+    args = %{target: cmd.target, argv: cmd.argv, args: cmd.args}
+
+    host_uuid
+    |> VerbSource.run_safe_verb(verb_name, section_scope, facade, args, ctx.store)
+    |> map_safe_result(verb_name, ctx)
+  end
+
+  # Mirrors `run_legacy_user_verb/5`'s (formerly `run_user_verb/5`)
+  # mapping shape one-for-one: `{:ok, _}` → `:ok`; runtime/timeout →
+  # a clean player-facing error (never a crash); a define-gate denial
+  # (`{:error, {:execution_denied, _}}` — revoked/unauthorized definer,
+  # CX-bepn-consistent, checked at VERIFY time on every dispatch) → a
+  # clean "verb unavailable" error, the verb never dispatches; `:not_found`
+  # → `:unhandled` (defensive — `run_user_verb/6` only calls this branch
+  # after `find_safe_source` already returned `{:ok, _}`).
+  defp map_safe_result(result, verb_name, ctx) do
+    case result do
+      {:ok, _} ->
+        :ok
+
+      {:error, {:compile_error, msg}} ->
+        emit_verb_error(verb_name, "compile error: #{msg}", ctx)
+        {:error, "(verb #{verb_name} failed to compile)"}
+
+      {:error, :timeout} ->
+        emit_verb_error(verb_name, "timed out", ctx)
+        {:error, "(verb #{verb_name} timed out)"}
+
+      {:error, {:runtime_error, msg}} ->
+        emit_verb_error(verb_name, msg, ctx)
+        {:error, "(verb #{verb_name} crashed: #{msg})"}
+
+      {:error, {:execution_denied, _reason}} ->
+        {:error, "(verb #{verb_name} is unavailable)"}
+
+      {:error, {:no_run_export, _}} ->
+        {:error, "(verb #{verb_name} has no run/2)"}
+
+      :not_found ->
+        :unhandled
+
+      _ ->
+        :unhandled
+    end
+  end
+
+  defp run_legacy_user_verb(host_kind, host_uuid, host_name, verb_name, ctx) do
     verb_ctx = build_user_verb_ctx(host_kind, host_uuid, host_name, ctx)
 
     case VerbSource.run_verb(host_uuid, verb_name, verb_ctx, ctx.store) do
@@ -94,6 +230,107 @@ defmodule Commonplace.MUD.Verbs do
       _ ->
         :unhandled
     end
+  end
+
+  # CX-cj3t.5 §1d-owner (plan-confirmed option (A), #5833) — the safe
+  # verb's OWNER-authority ceiling: `write_guarded` (Facade) enforces
+  # `scope ⊆ owner_grant` on every facade write. There is NO scope→cert
+  # index in this substrate (get-by-CID only), so this mirrors
+  # `Commonplace.MUD.Sections.auto_extend_for_new_room/3`'s discovery
+  # pattern exactly: walk `host_uuid`'s OWN commit log for
+  # `metadata.capability_proof` CIDs and resolve each via
+  # `CommitStoreClient.get_capability/2`.
+  #
+  # RIDER 1 (plan #5833, security-critical) — VERIFIED-CHAINS-ONLY: each
+  # discovered cert must PASS `Commonplace.Trust.VerifyChain.verify_chain/3`
+  # (the SAME chain-verify path Gate B / the local-write gate use — this
+  # now includes the CX-bepn revocation check + chain-tightest expiry)
+  # BEFORE its scope contributes to the union. A revoked/expired cert
+  # sitting in old commit metadata must NOT keep feeding the owner
+  # ceiling — that would be decorative-revocation reborn at verb
+  # dispatch, the exact failure shape the CX-bepn watermark catch closed
+  # at Gate B.
+  #
+  # RIDER 2 (plan #5833) — (A)'s derived union is the IMPLICIT DEFAULT
+  # ceiling used ONLY when no explicit per-verb grant is attached (design
+  # doc Axis B); a future Phase 2 explicit owner-attached grant only ever
+  # NARROWS this default, never widens it.
+  #
+  # BLIND SPOT (mirrors `Sections`' own documented gap, same root cause):
+  # discovery is get-by-CID over `host_uuid`'s commit log, so a
+  # valid-but-never-yet-used cert covering `host_uuid` is invisible here.
+  # Fails CLOSED: the verb is under-authorized in that case (a write that
+  # could have succeeded is denied) — never the other direction. Empty/no
+  # verified cert found → `owner_grant = MapSet.new([host_uuid])` (the
+  # verb can at least touch its own host object).
+  defp owner_grant_for(host_uuid, store) do
+    start_time = System.monotonic_time()
+
+    certs =
+      store
+      |> CommitStoreClient.commit_log(host_uuid, limit: 10_000)
+      |> Enum.map(&get_in(&1.metadata, [:capability_proof]))
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+      |> Enum.flat_map(fn cid ->
+        case CommitStoreClient.get_capability(store, cid) do
+          {:ok, cap} -> [cap]
+          :none -> []
+        end
+      end)
+
+    anchors = local_anchor_keys()
+
+    verified_certs =
+      Enum.filter(certs, fn cap ->
+        match?({:ok, _effective}, VerifyChain.verify_chain(cap.id, anchors, store))
+      end)
+
+    verified_scopes = Enum.flat_map(verified_certs, &cert_scope_uuids/1)
+
+    # Hygiene (plan #5833): telemetry for the walk cost per dispatch, so
+    # a later per-host_uuid cache decision is data-driven — do NOT
+    # pre-build a cache.
+    :telemetry.execute(
+      [:commonplace, :mud, :owner_grant_walk],
+      %{
+        duration_native: System.monotonic_time() - start_time,
+        cert_count: length(certs),
+        verified_cert_count: length(verified_certs)
+      },
+      %{host_uuid: host_uuid}
+    )
+
+    case verified_scopes do
+      [] -> MapSet.new([host_uuid])
+      scopes -> MapSet.new(scopes)
+    end
+  end
+
+  defp cert_scope_uuids(%Capability{claim: %{scope: {:docs, uuids}}}), do: uuids
+  defp cert_scope_uuids(_), do: []
+
+  # `Commonplace.Trust.VerifyChain.verify_chain/3` requires the caller's
+  # locally-pinned anchor-key set — the same set `Commonplace.Trust`
+  # derives internally (its `anchor_keys/1` is private, and per CX-cj3t.5
+  # §3 constraints `trust.ex` is not to be touched to expose it). This is
+  # a small, mechanical duplication of that derivation (decode every
+  # pinned pubkey from `Trust.config/0`'s PUBLIC config), not a
+  # reimplementation of any verification logic — the actual chain/
+  # revocation/expiry checks all still run inside `VerifyChain` itself.
+  defp local_anchor_keys do
+    cfg = Commonplace.Trust.config()
+
+    cfg.trusted_identities
+    |> Map.values()
+    |> Enum.flat_map(&List.wrap/1)
+    |> Enum.flat_map(fn encoded ->
+      case Commonplace.Crypto.Signing.decode_key(encoded) do
+        {:ok, key} -> [key]
+        {:error, _} -> []
+      end
+    end)
+    |> MapSet.new()
   end
 
   defp build_user_verb_ctx(:object, host_uuid, _host_name, ctx) do
