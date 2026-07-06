@@ -12,6 +12,7 @@ defmodule Commonplace.MUD.Schemas do
   """
 
   alias Commonplace.Document.ContentType
+  alias Commonplace.MUD.SignedWrite
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.{DocBuilder, Schema}
   alias Commonplace.WriterHand
@@ -210,27 +211,40 @@ defmodule Commonplace.MUD.Schemas do
   @doc """
   Create a new metadata text doc with the given JSON body. Returns the
   UUID of the new doc.
+
+  `opts` (CX-lg06): `:signing_context`, `:cert_cids`, `:signer_id` — see
+  `Commonplace.MUD.SignedWrite`. Genesis doc, so a cert can only cover
+  this new uuid if a caller-passed cert's scope was minted wide enough
+  to include it ahead of time (ordinarily not the case — see
+  `SignedWrite` moduledoc on the no-proof-yet case).
   """
-  def create_meta_doc(json, store \\ CommitStoreClient) when is_binary(json) do
+  def create_meta_doc(json, store \\ CommitStoreClient, opts \\ []) when is_binary(json) do
     uuid = UUID.uuid4()
     doc = Doc.new()
     doc = ContentType.create(doc, :text, "metadata")
     doc = ContentType.insert_text(doc, 0, json)
     update = Encoding.encode_update(doc)
-    CommitStoreClient.create_commit(store, uuid, update, nil)
+    {metadata, commit_opts} = SignedWrite.opts_for(uuid, Keyword.put(opts, :store, store))
+    CommitStoreClient.create_commit(store, uuid, update, nil, metadata, commit_opts)
     uuid
   end
 
   @doc """
   Replace the contents of an existing metadata text doc with new JSON.
+
+  `opts` (CX-lg06): `:signing_context`, `:cert_cids`, `:signer_id` — see
+  `Commonplace.MUD.SignedWrite`.
   """
-  def write_meta_doc(uuid, json, store \\ CommitStoreClient) when is_binary(uuid) and is_binary(json) do
-    {:ok, doc} = DocBuilder.reconstruct_doc(store, uuid, client_id: WriterHand.for_doc(uuid))
+  def write_meta_doc(uuid, json, store \\ CommitStoreClient, opts \\ [])
+      when is_binary(uuid) and is_binary(json) do
+    hand = SignedWrite.hand_for(uuid, opts)
+    {:ok, doc} = DocBuilder.reconstruct_doc(store, uuid, client_id: hand)
     current = ContentType.get_content(doc) || ""
     doc = if current != "", do: ContentType.delete_text(doc, 0, String.length(current)), else: doc
     doc = ContentType.insert_text(doc, 0, json)
     update = Encoding.encode_update(doc)
-    CommitStoreClient.create_chained_commit(store, uuid, update)
+    {metadata, commit_opts} = SignedWrite.opts_for(uuid, Keyword.put(opts, :store, store))
+    CommitStoreClient.create_chained_commit(store, uuid, update, metadata, commit_opts)
     :ok
   end
 
@@ -238,21 +252,26 @@ defmodule Commonplace.MUD.Schemas do
   Create a new directory doc, returning its UUID. Optionally writes a
   metadata file inside it (e.g. `__room.json`) and adds it to the new
   directory's schema.
+
+  `opts` (CX-lg06): `:signing_context`, `:cert_cids`, `:signer_id` — see
+  `Commonplace.MUD.SignedWrite`. Genesis doc — see `create_meta_doc/3`
+  note on cert coverage.
   """
-  def create_dir_with_meta(meta_filename, json, store \\ CommitStoreClient) do
+  def create_dir_with_meta(meta_filename, json, store \\ CommitStoreClient, opts \\ []) do
     dir_uuid = UUID.uuid4()
     dir_doc = Schema.new_schema()
 
     dir_doc =
       if json do
-        meta_uuid = create_meta_doc(json, store)
+        meta_uuid = create_meta_doc(json, store, opts)
         Schema.add_file(dir_doc, meta_filename, meta_uuid)
       else
         dir_doc
       end
 
     update = Encoding.encode_update(dir_doc)
-    CommitStoreClient.create_commit(store, dir_uuid, update, nil)
+    {metadata, commit_opts} = SignedWrite.opts_for(dir_uuid, Keyword.put(opts, :store, store))
+    CommitStoreClient.create_commit(store, dir_uuid, update, nil, metadata, commit_opts)
     dir_uuid
   end
 end

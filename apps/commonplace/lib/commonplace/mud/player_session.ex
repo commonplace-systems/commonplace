@@ -10,15 +10,60 @@ defmodule Commonplace.MUD.PlayerSession do
   Player input arrives via `cast({:input, line})`. Output goes through
   an `output_fn :: (text -> :ok)` set at start_link time (defaults to
   IO.puts). The session terminates on `quit` or when its caller exits.
+
+  ## Session identity (CX-lg06)
+
+  Resolved ONCE here at `init/1` — never re-derived downstream — mirroring
+  the discipline `CommonplaceWebWeb.SessionIdentity.resolve/1` uses for
+  the browser door (see `docs/plans/2026-07-06-qat5.2-browser-identity-spec.md`
+  §2.3). Two ways in:
+
+    * `opts[:signing_context]` — a pre-resolved `%SigningContext{}`,
+      passed directly (tests, embedders that already hold the key).
+    * `opts[:player_identity_uuid]` (+ `opts[:secret_store]`, default
+      `Commonplace.Store.SecretStore`) — resolved via
+      `Commonplace.Crypto.AgentKeys.signing_context/2`. `{:error,
+      :not_found}` (no keypair minted for this identity) falls back to
+      the anonymous/unsigned behavior — never crashes the session.
+
+  Neither opt given → `signing_context: nil`, and every write this
+  session's verbs make stays exactly as unsigned as it is today
+  (permissive workspaces must keep working logged-out).
+
+  **Hand model (FLAG):** unlike the browser door's `WriterHand.for_session/2`
+  (which needs a nonce persisted across LiveView remounts), a
+  `PlayerSession` is a single long-lived GenServer for the whole login —
+  there is no reconnect/remount boundary to make a persisted nonce worth
+  the complexity. Signed writes instead use
+  `WriterHand.for_doc_actor(doc_uuid, signer_id)` at each write site (via
+  `Commonplace.MUD.SignedWrite.hand_for/2`) — the deterministic
+  per-(doc, actor) funnel hand already used for docs with genuinely
+  concurrent distinct writers (shared room/dir schemas edited by several
+  players' separate session processes). See `WriterHand`'s moduledoc for
+  why this family is the correct one for concurrent-writer docs.
+
+  **Cert selection (FLAG):** `opts[:cert_cids]` is a flat list of
+  capability CIDs this player is known to hold, threaded into every
+  verb's `ctx` and consulted by `Commonplace.MUD.SignedWrite.opts_for/2`
+  (linear scan, first cert whose scope covers the write's target doc
+  wins — see that module's moduledoc for the full rationale). This
+  build does NOT attempt commit-log discovery of a player's certs at
+  session start (the mechanism `Sections.auto_extend_for_new_room/3`
+  uses for its own candidate search) — callers that already know which
+  certs a player holds (tests, a future login flow) pass them directly;
+  wiring up automatic discovery at session start is a documented
+  follow-up, not required for signed-but-capability-checked writes to
+  work end-to-end.
   """
 
   use GenServer
   require Logger
 
-  alias Commonplace.MUD.{Parser, Schemas, Topics, Verbs, VerbSource}
+  alias Commonplace.Crypto.{AgentKeys, Signing}
+  alias Commonplace.MUD.{Parser, Schemas, SignedWrite, Topics, Verbs, VerbSource}
   alias Commonplace.MUD.Schemas.{Player, Room}
   alias Commonplace.Presence
-  alias Commonplace.Store.CommitStoreClient
+  alias Commonplace.Store.{CommitStoreClient, SecretStore}
   alias Commonplace.Tree.{DocBuilder, Schema}
   alias Yelixer.Encoding
 
@@ -36,8 +81,11 @@ defmodule Commonplace.MUD.PlayerSession do
     :store,
     :output_fn,
     :owner_pid,
+    :signing_context,
+    :signer_id,
     mode: :normal,
-    buffer: nil
+    buffer: nil,
+    cert_cids: []
   ]
 
   ## Client
@@ -76,8 +124,11 @@ defmodule Commonplace.MUD.PlayerSession do
       end
 
     owner_pid = Keyword.get(opts, :owner_pid)
+    cert_cids = Keyword.get(opts, :cert_cids, [])
+    {signing_context, signer_id} = resolve_identity(opts)
+    write_opts = [signing_context: signing_context, cert_cids: cert_cids, signer_id: signer_id, store: store]
 
-    case bootstrap_player(name, root_uuid, store) do
+    case bootstrap_player(name, root_uuid, write_opts) do
       {:ok, ids} ->
         state = %__MODULE__{
           player_name: name,
@@ -90,6 +141,9 @@ defmodule Commonplace.MUD.PlayerSession do
           store: store,
           output_fn: output_fn,
           owner_pid: owner_pid,
+          signing_context: signing_context,
+          signer_id: signer_id,
+          cert_cids: cert_cids,
           buffer: if(buffered?, do: [], else: nil)
         }
 
@@ -157,7 +211,7 @@ defmodule Commonplace.MUD.PlayerSession do
   defp save_verb(ed, state) do
     source_text = Enum.join(ed.lines, "\n")
 
-    case VerbSource.save_verb(ed.target_uuid, ed.verb_name, source_text, state.store) do
+    case VerbSource.save_verb(ed.target_uuid, ed.verb_name, source_text, state.store, session_write_opts(state)) do
       :ok ->
         state.output_fn.("(saved #{ed.target_label}:#{ed.verb_name} — compiles cleanly)")
         {:noreply, %{state | mode: :normal}}
@@ -259,8 +313,24 @@ defmodule Commonplace.MUD.PlayerSession do
       presence_filename: state.presence_filename,
       root_uuid: state.root_uuid,
       store: state.store,
+      signing_context: state.signing_context,
+      signer_id: state.signer_id,
+      cert_cids: state.cert_cids,
       cmd: cmd
     }
+  end
+
+  # CX-lg06: same {store, signing_context, cert_cids, signer_id} shape
+  # `Commonplace.MUD.Verbs`' own `write_opts/1` builds from `ctx` — kept
+  # here too since the `@verb` editor's save happens outside a single
+  # `Verbs.dispatch` call (multi-line input collection in between).
+  defp session_write_opts(state) do
+    [
+      store: state.store,
+      signing_context: state.signing_context,
+      cert_cids: state.cert_cids,
+      signer_id: state.signer_id
+    ]
   end
 
   defp render_room(state) do
@@ -338,12 +408,44 @@ defmodule Commonplace.MUD.PlayerSession do
     state.output_fn.("(event: #{inspect(other)})")
   end
 
+  ## Session identity resolution (CX-lg06)
+
+  # Returns `{signing_context | nil, signer_id | nil}`. See moduledoc
+  # "Session identity" section for the two ways in and the anonymous
+  # fallback.
+  defp resolve_identity(opts) do
+    case Keyword.get(opts, :signing_context) do
+      %Commonplace.Crypto.SigningContext{} = ctx ->
+        {ctx, Signing.signer_id(ctx.identity_uuid, ctx.public_key)}
+
+      nil ->
+        resolve_identity_from_uuid(Keyword.get(opts, :player_identity_uuid), opts)
+    end
+  end
+
+  defp resolve_identity_from_uuid(nil, _opts), do: {nil, nil}
+
+  defp resolve_identity_from_uuid(identity_uuid, opts) when is_binary(identity_uuid) do
+    secret_store = Keyword.get(opts, :secret_store, SecretStore)
+
+    case AgentKeys.signing_context(identity_uuid, secret_store) do
+      {:ok, ctx} -> {ctx, Signing.signer_id(ctx.identity_uuid, ctx.public_key)}
+      {:error, _} -> {nil, nil}
+    end
+  end
+
   ## Bootstrap player
 
-  defp bootstrap_player(name, root_uuid, store) do
-    with {:ok, players_dir_uuid} <- ensure_players_dir(root_uuid, store),
+  # `write_opts` is the keyword list `[store:, signing_context:,
+  # cert_cids:, signer_id:]` resolved once in `init/1` — threaded
+  # through every bootstrap write below (CX-lg06), same shape
+  # `Commonplace.MUD.Verbs`' own `write_opts/1` builds from a verb ctx.
+  defp bootstrap_player(name, root_uuid, write_opts) do
+    store = Keyword.fetch!(write_opts, :store)
+
+    with {:ok, players_dir_uuid} <- ensure_players_dir(root_uuid, write_opts),
          {:ok, %{player_dir_uuid: pdir, inventory_uuid: inv}} <-
-           ensure_player_dir(name, players_dir_uuid, store),
+           ensure_player_dir(name, players_dir_uuid, write_opts),
          {:ok, room_uuid, presence_uuid} <- ensure_player_in_world(name, root_uuid, store) do
       {:ok,
        %{
@@ -355,7 +457,8 @@ defmodule Commonplace.MUD.PlayerSession do
     end
   end
 
-  defp ensure_players_dir(root_uuid, store) do
+  defp ensure_players_dir(root_uuid, write_opts) do
+    store = Keyword.fetch!(write_opts, :store)
     {:ok, root_schema} = Schemas.load_dir_schema(root_uuid, store)
 
     case Schema.get_entry(root_schema, @players_dir) do
@@ -363,13 +466,14 @@ defmodule Commonplace.MUD.PlayerSession do
         {:ok, entry.node_id}
 
       :error ->
-        new_uuid = Schemas.create_dir_with_meta(nil, nil, store)
-        :ok = add_dir_entry(root_uuid, @players_dir, new_uuid, store)
+        new_uuid = Schemas.create_dir_with_meta(nil, nil, store, write_opts)
+        :ok = add_dir_entry(root_uuid, @players_dir, new_uuid, write_opts)
         {:ok, new_uuid}
     end
   end
 
-  defp ensure_player_dir(name, players_dir_uuid, store) do
+  defp ensure_player_dir(name, players_dir_uuid, write_opts) do
+    store = Keyword.fetch!(write_opts, :store)
     {:ok, players_schema} = Schemas.load_dir_schema(players_dir_uuid, store)
 
     case Schema.get_entry(players_schema, name) do
@@ -382,8 +486,8 @@ defmodule Commonplace.MUD.PlayerSession do
               e.node_id
 
             :error ->
-              new_uuid = Schemas.create_dir_with_meta(nil, nil, store)
-              :ok = add_dir_entry(entry.node_id, "inventory", new_uuid, store)
+              new_uuid = Schemas.create_dir_with_meta(nil, nil, store, write_opts)
+              :ok = add_dir_entry(entry.node_id, "inventory", new_uuid, write_opts)
               new_uuid
           end
 
@@ -391,14 +495,21 @@ defmodule Commonplace.MUD.PlayerSession do
 
       :error ->
         json = Schemas.encode_player(%Player{name: name, title: name, description: "A traveler."})
-        player_dir_uuid = Schemas.create_dir_with_meta(Schemas.player_filename(), json, store)
-        inv_uuid = Schemas.create_dir_with_meta(nil, nil, store)
-        :ok = add_dir_entry(player_dir_uuid, "inventory", inv_uuid, store)
-        :ok = add_dir_entry(players_dir_uuid, name, player_dir_uuid, store)
+        player_dir_uuid = Schemas.create_dir_with_meta(Schemas.player_filename(), json, store, write_opts)
+        inv_uuid = Schemas.create_dir_with_meta(nil, nil, store, write_opts)
+        :ok = add_dir_entry(player_dir_uuid, "inventory", inv_uuid, write_opts)
+        :ok = add_dir_entry(players_dir_uuid, name, player_dir_uuid, write_opts)
         {:ok, %{player_dir_uuid: player_dir_uuid, inventory_uuid: inv_uuid}}
     end
   end
 
+  # Presence creation (`Presence.create/4`) is NOT threaded with signing
+  # opts in this build — it's a core module shared with chat/other
+  # surfaces, out of the MUD composition boundary this bead touches, and
+  # it fires at most once ever per player (idempotent thereafter via
+  # `find_presence/3` below). Flagged as a follow-up, not required for
+  # the acceptance path (an already-registered player's repeat logins
+  # never call it again).
   defp ensure_player_in_world(name, root_uuid, store) do
     presence_filename = Presence.filename(name, :usr)
 
@@ -448,6 +559,10 @@ defmodule Commonplace.MUD.PlayerSession do
     end
   end
 
+  # Unsigned on purpose (see `ensure_player_in_world/3` note above) — the
+  # start room, like presence creation, exists at most once ever per
+  # workspace and is not part of this bead's signed-write acceptance
+  # path.
   defp ensure_start_room(root_uuid, store) do
     {:ok, root_schema} = Schemas.load_dir_schema(root_uuid, store)
 
@@ -458,16 +573,23 @@ defmodule Commonplace.MUD.PlayerSession do
       :error ->
         json = Schemas.encode_room(%Room{name: "The Start Room", description: "A featureless white room. The world has not been built out yet.", exits: %{}})
         room_uuid = Schemas.create_dir_with_meta(Schemas.room_filename(), json, store)
-        :ok = add_dir_entry(root_uuid, @start_room_name, room_uuid, store)
+        :ok = add_dir_entry(root_uuid, @start_room_name, room_uuid, store: store)
         {:ok, room_uuid}
     end
   end
 
-  defp add_dir_entry(parent_uuid, name, child_uuid, store) do
+  # `write_opts` here is either the bootstrap-wide keyword list (signed
+  # path, from `ensure_players_dir/2` / `ensure_player_dir/3`) or a bare
+  # `[store: store]` (unsigned path, from `ensure_start_room/2`) —
+  # `SignedWrite.opts_for/2` treats a missing/nil `:signing_context`
+  # identically either way (empty metadata, empty commit opts).
+  defp add_dir_entry(parent_uuid, name, child_uuid, write_opts) do
+    store = Keyword.fetch!(write_opts, :store)
     {:ok, schema} = Schemas.load_dir_schema(parent_uuid, store)
     schema = Schema.add_directory(schema, name, child_uuid)
     update = Encoding.encode_update(schema)
-    CommitStoreClient.create_chained_commit(store, parent_uuid, update)
+    {metadata, commit_opts} = SignedWrite.opts_for(parent_uuid, write_opts)
+    CommitStoreClient.create_chained_commit(store, parent_uuid, update, metadata, commit_opts)
     :ok
   end
 

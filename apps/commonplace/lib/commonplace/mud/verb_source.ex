@@ -22,10 +22,9 @@ defmodule Commonplace.MUD.VerbSource do
 
   alias Commonplace.Code.SourceDoc
   alias Commonplace.Document.ContentType
-  alias Commonplace.MUD.Schemas
+  alias Commonplace.MUD.{Schemas, SignedWrite}
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.{DocBuilder, Schema}
-  alias Commonplace.WriterHand
   alias Yelixer.Doc, as: YDoc
   alias Yelixer.Encoding
 
@@ -119,23 +118,26 @@ defmodule Commonplace.MUD.VerbSource do
   `{:error, {:compile_error, msg}}` if it doesn't compile,
   `{:error, {:no_run_export, module}}` if it compiles but doesn't
   export run/1.
+
+  `opts` (CX-lg06): `:signing_context`, `:cert_cids`, `:signer_id` — see
+  `Commonplace.MUD.SignedWrite`.
   """
-  def save_verb(target_dir_uuid, verb_name, source_text, store \\ CommitStoreClient)
+  def save_verb(target_dir_uuid, verb_name, source_text, store \\ CommitStoreClient, opts \\ [])
       when is_binary(source_text) do
     file = "#{verb_name}.elx"
 
-    {:ok, verbs_uuid} = ensure_verbs_dir(target_dir_uuid, store)
+    {:ok, verbs_uuid} = ensure_verbs_dir(target_dir_uuid, store, opts)
     {:ok, verbs_schema} = Schemas.load_dir_schema(verbs_uuid, store)
 
     source_uuid =
       case Schema.get_entry(verbs_schema, file) do
         {:ok, %Schema.Entry{node_id: uuid}} ->
-          replace_source_doc(uuid, source_text, store)
+          replace_source_doc(uuid, source_text, store, opts)
           uuid
 
         :error ->
-          uuid = create_source_doc(source_text, store)
-          add_file_entry(verbs_uuid, file, uuid, store)
+          uuid = create_source_doc(source_text, store, opts)
+          add_file_entry(verbs_uuid, file, uuid, store, opts)
           uuid
       end
 
@@ -167,7 +169,7 @@ defmodule Commonplace.MUD.VerbSource do
 
   ## Private
 
-  defp ensure_verbs_dir(target_dir_uuid, store) do
+  defp ensure_verbs_dir(target_dir_uuid, store, opts) do
     {:ok, schema} = Schemas.load_dir_schema(target_dir_uuid, store)
 
     case Schema.get_entry(schema, @verbs_dir) do
@@ -175,45 +177,50 @@ defmodule Commonplace.MUD.VerbSource do
         {:ok, uuid}
 
       :error ->
-        uuid = Schemas.create_dir_with_meta(nil, nil, store)
-        :ok = add_directory_entry(target_dir_uuid, @verbs_dir, uuid, store)
+        uuid = Schemas.create_dir_with_meta(nil, nil, store, opts)
+        :ok = add_directory_entry(target_dir_uuid, @verbs_dir, uuid, store, opts)
         {:ok, uuid}
     end
   end
 
-  defp create_source_doc(text, store) do
+  defp create_source_doc(text, store, opts) do
     uuid = UUID.uuid4()
     doc = YDoc.new()
     doc = ContentType.create(doc, :text, "verb")
     doc = ContentType.insert_text(doc, 0, text)
     update = Encoding.encode_update(doc)
-    CommitStoreClient.create_commit(store, uuid, update, nil)
+    {metadata, commit_opts} = SignedWrite.opts_for(uuid, Keyword.put(opts, :store, store))
+    CommitStoreClient.create_commit(store, uuid, update, nil, metadata, commit_opts)
     uuid
   end
 
-  defp replace_source_doc(uuid, text, store) do
-    {:ok, doc} = DocBuilder.reconstruct_doc(store, uuid, client_id: WriterHand.for_doc(uuid))
+  defp replace_source_doc(uuid, text, store, opts) do
+    hand = SignedWrite.hand_for(uuid, opts)
+    {:ok, doc} = DocBuilder.reconstruct_doc(store, uuid, client_id: hand)
     current = ContentType.get_content(doc) || ""
     doc = if current != "", do: ContentType.delete_text(doc, 0, String.length(current)), else: doc
     doc = ContentType.insert_text(doc, 0, text)
     update = Encoding.encode_update(doc)
-    CommitStoreClient.create_chained_commit(store, uuid, update)
+    {metadata, commit_opts} = SignedWrite.opts_for(uuid, Keyword.put(opts, :store, store))
+    CommitStoreClient.create_chained_commit(store, uuid, update, metadata, commit_opts)
     :ok
   end
 
-  defp add_file_entry(parent_uuid, name, child_uuid, store) do
+  defp add_file_entry(parent_uuid, name, child_uuid, store, opts) do
     {:ok, schema} = Schemas.load_dir_schema(parent_uuid, store)
     schema = Schema.add_file(schema, name, child_uuid)
     update = Encoding.encode_update(schema)
-    CommitStoreClient.create_chained_commit(store, parent_uuid, update)
+    {metadata, commit_opts} = SignedWrite.opts_for(parent_uuid, Keyword.put(opts, :store, store))
+    CommitStoreClient.create_chained_commit(store, parent_uuid, update, metadata, commit_opts)
     :ok
   end
 
-  defp add_directory_entry(parent_uuid, name, child_uuid, store) do
+  defp add_directory_entry(parent_uuid, name, child_uuid, store, opts) do
     {:ok, schema} = Schemas.load_dir_schema(parent_uuid, store)
     schema = Schema.add_directory(schema, name, child_uuid)
     update = Encoding.encode_update(schema)
-    CommitStoreClient.create_chained_commit(store, parent_uuid, update)
+    {metadata, commit_opts} = SignedWrite.opts_for(parent_uuid, Keyword.put(opts, :store, store))
+    CommitStoreClient.create_chained_commit(store, parent_uuid, update, metadata, commit_opts)
     :ok
   end
 end

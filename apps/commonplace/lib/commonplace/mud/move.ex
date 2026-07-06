@@ -66,13 +66,19 @@ defmodule Commonplace.MUD.Move do
     retries = Keyword.get(opts, :retries, @retries)
     retry_ms = Keyword.get(opts, :retry_ms, @retry_ms)
 
+    # CX-lg06: :signing_context / :cert_cids / :signer_id ride along in
+    # `opts` (already accepted, previously unused) so both writes below
+    # (dest-add, source-remove) land signed/capability-proofed for the
+    # target doc each one touches — see `Commonplace.MUD.SignedWrite`.
+    write_opts = Keyword.take(opts, [:signing_context, :cert_cids, :signer_id])
+
     holder = default_holder()
     paths = Enum.sort([source_dir_uuid, dest_dir_uuid])
 
     case acquire_all(paths, holder, bursar, ttl, retries, retry_ms) do
       :ok ->
         try do
-          do_move(thing_uuid, name, source_dir_uuid, dest_dir_uuid, store)
+          do_move(thing_uuid, name, source_dir_uuid, dest_dir_uuid, store, write_opts)
         after
           release_all(paths, holder, bursar)
         end
@@ -138,13 +144,13 @@ defmodule Commonplace.MUD.Move do
 
   # --- The move itself (unchanged from MoveServer v0) ---
 
-  defp do_move(thing_uuid, name, source_dir_uuid, dest_dir_uuid, store) do
+  defp do_move(thing_uuid, name, source_dir_uuid, dest_dir_uuid, store, write_opts) do
     with {:ok, source_schema} <- MudSchemas.load_dir_schema(source_dir_uuid, store),
          {:ok, %Schema.Entry{} = entry} <- check_still_there(source_schema, name, thing_uuid),
          {:ok, dest_schema} <- MudSchemas.load_dir_schema(dest_dir_uuid, store),
          :ok <- check_no_collision(dest_schema, name) do
-      :ok = add_to_dest(dest_dir_uuid, name, entry, store)
-      :ok = remove_from_source(source_dir_uuid, name, store)
+      :ok = add_to_dest(dest_dir_uuid, name, entry, store, write_opts)
+      :ok = remove_from_source(source_dir_uuid, name, store, write_opts)
       :ok
     else
       {:error, _} = err -> err
@@ -168,7 +174,7 @@ defmodule Commonplace.MUD.Move do
     end
   end
 
-  defp add_to_dest(dest_dir_uuid, name, %Schema.Entry{type: type, node_id: node_id}, store) do
+  defp add_to_dest(dest_dir_uuid, name, %Schema.Entry{type: type, node_id: node_id}, store, write_opts) do
     {:ok, doc} = MudSchemas.load_dir_schema(dest_dir_uuid, store)
 
     doc =
@@ -178,15 +184,23 @@ defmodule Commonplace.MUD.Move do
       end
 
     update = Encoding.encode_update(doc)
-    CommitStoreClient.create_chained_commit(store, dest_dir_uuid, update)
+
+    {metadata, commit_opts} =
+      Commonplace.MUD.SignedWrite.opts_for(dest_dir_uuid, Keyword.put(write_opts, :store, store))
+
+    CommitStoreClient.create_chained_commit(store, dest_dir_uuid, update, metadata, commit_opts)
     :ok
   end
 
-  defp remove_from_source(source_dir_uuid, name, store) do
+  defp remove_from_source(source_dir_uuid, name, store, write_opts) do
     {:ok, doc} = MudSchemas.load_dir_schema(source_dir_uuid, store)
     doc = Schema.remove_entry(doc, name)
     update = Encoding.encode_update(doc)
-    CommitStoreClient.create_chained_commit(store, source_dir_uuid, update)
+
+    {metadata, commit_opts} =
+      Commonplace.MUD.SignedWrite.opts_for(source_dir_uuid, Keyword.put(write_opts, :store, store))
+
+    CommitStoreClient.create_chained_commit(store, source_dir_uuid, update, metadata, commit_opts)
     :ok
   end
 end

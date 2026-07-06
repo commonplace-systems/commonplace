@@ -1,0 +1,290 @@
+defmodule Commonplace.MUD.PlayerSessionIdentityTest do
+  @moduledoc """
+  CX-lg06 acceptance test — the MUD game loop signs as the player.
+
+  Mirrors the strict+enforce named-store scaffold from
+  `Commonplace.MUD.SectionOwnershipTest` (CX-qat5.4), but drives writes
+  through the REAL dispatch path — `Commonplace.MUD.PlayerSession` →
+  `Commonplace.MUD.Verbs.dispatch/2` — instead of calling
+  `CommitStoreClient` directly, to prove the session-identity threading
+  reaches every commit-producing verb call, not just a hand-built one.
+
+  Player X holds a section cert covering room1 (both the room's
+  directory doc AND its `__room.json` metadata doc — a section cert's
+  scope is a concrete uuid list, so both docs a room-metadata edit
+  touches must be listed; see `Commonplace.MUD.Sections` moduledoc).
+  `@name here <name>` (`Commonplace.MUD.Verbs.do_rename/2` →
+  `World.set_meta/6` → `Schemas.write_meta_doc/4`) lands the edit
+  signed AND capability-proofed. Player Y, registered/signed but
+  holding NO cert, gets the identical command DENIED — verified at the
+  store level (the room's metadata head does not move), since the MUD
+  verb layer does not yet propagate a denied-write error up into the
+  verb's reply text (a pre-existing gap orthogonal to this bead — see
+  the trailing comment on `assert_write_denied/3`).
+  """
+  use ExUnit.Case, async: false
+
+  alias Commonplace.Crypto.{AgentKeys, Signing, SigningContext}
+  alias Commonplace.MUD.{PlayerSession, Sections}
+  alias Commonplace.Presence.Identity
+  alias Commonplace.Store.{CommitStore, CommitStoreClient, SecretStore}
+  alias Commonplace.Tree.Schema
+  alias Commonplace.Document.ContentType
+
+  setup do
+    dir = Path.join(System.tmp_dir!(), "cp_mud_identity_#{:rand.uniform(1_000_000_000)}")
+    File.mkdir_p!(dir)
+    n = :rand.uniform(1_000_000_000)
+    name = :"mi_store_#{n}"
+
+    start_supervised!(
+      {Commonplace.Store.Supervisor,
+       data_dir: dir,
+       name: :"mi_sup_#{n}",
+       commit_store_name: name,
+       trust_side_store_name: :"mi_tss_#{n}",
+       pending_imports_name: :"mi_pi_#{n}"}
+    )
+
+    secrets_dir = Path.join(System.tmp_dir!(), "cp_mud_identity_secrets_#{:rand.uniform(1_000_000_000)}")
+    File.mkdir_p!(secrets_dir)
+    secrets_name = :"mi_secrets_#{n}"
+    {:ok, secrets_pid} = SecretStore.start_link(data_dir: secrets_dir, name: secrets_name)
+
+    old_trust = Application.get_env(:commonplace, :trust)
+    old_knob = Application.get_env(:commonplace, :local_write_gate)
+
+    on_exit(fn ->
+      case old_trust do
+        nil -> Application.delete_env(:commonplace, :trust)
+        v -> Application.put_env(:commonplace, :trust, v)
+      end
+
+      case old_knob do
+        nil -> Application.delete_env(:commonplace, :local_write_gate)
+        v -> Application.put_env(:commonplace, :local_write_gate, v)
+      end
+
+      if Process.alive?(secrets_pid), do: GenServer.stop(secrets_pid)
+      File.rm_rf!(dir)
+      File.rm_rf!(secrets_dir)
+    end)
+
+    {root_pub, root_priv} = Signing.generate_keypair()
+
+    root_ctx = %SigningContext{identity_uuid: "root", private_key: root_priv, public_key: root_pub}
+
+    Application.put_env(:commonplace, :trust, %{
+      accept_unsigned: false,
+      trusted_identities: %{"root" => Signing.encode_key(root_pub)}
+    })
+
+    Application.put_env(:commonplace, :local_write_gate, :enforce)
+
+    # Two SEPARATE roots (CX-lg06 debugging note): `register_player`'s
+    # cold identities use the same `name.usr` honorific-extension
+    # convention as MUD `Presence` — sharing one root between the
+    # identity registry and the MUD world tree means
+    # `PlayerSession.find_presence/3`'s walk matches the IDENTITY
+    # registry's `"x.usr"` entry (under `__identities__`) before ever
+    # reaching the real presence entry under `room1`. Keeping them
+    # separate (as any real deployment would — the identity root is
+    # workspace-wide, the MUD world root is one app's tree within it)
+    # avoids the collision entirely.
+    identity_root_uuid = UUID.uuid4()
+    genesis(store: name, uuid: identity_root_uuid, schema_doc: Schema.new_schema(), ctx: root_ctx)
+
+    root_uuid = UUID.uuid4()
+    genesis(store: name, uuid: root_uuid, schema_doc: Schema.new_schema(), ctx: root_ctx)
+
+    {:ok, x_uuid, x_pub} =
+      Identity.register_player("x", identity_root_uuid, name, signing_context: root_ctx, secret_store: secrets_name)
+
+    {:ok, y_uuid, y_pub} =
+      Identity.register_player("y", identity_root_uuid, name, signing_context: root_ctx, secret_store: secrets_name)
+
+    # --- players/x, players/y directories (root-signed) ---
+    players_dir = new_dir(name, root_ctx)
+    x_dir = new_dir_with_meta(name, root_ctx, Commonplace.MUD.Schemas.player_filename(), player_json("x"))
+    x_inv = new_dir(name, root_ctx)
+    y_dir = new_dir_with_meta(name, root_ctx, Commonplace.MUD.Schemas.player_filename(), player_json("y"))
+    y_inv = new_dir(name, root_ctx)
+
+    add_directory(name, root_ctx, x_dir, "inventory", x_inv)
+    add_directory(name, root_ctx, y_dir, "inventory", y_inv)
+    add_directory(name, root_ctx, players_dir, "x", x_dir)
+    add_directory(name, root_ctx, players_dir, "y", y_dir)
+    add_directory(name, root_ctx, root_uuid, "players", players_dir)
+
+    # --- room1 (dir + __room.json meta doc), no exits needed for this test ---
+    room1_meta = new_text_doc(name, root_ctx, room_json("Room One", %{}))
+    room1_dir = new_dir(name, root_ctx)
+    add_file(name, root_ctx, room1_dir, Commonplace.MUD.Schemas.room_filename(), room1_meta)
+    add_directory(name, root_ctx, root_uuid, "room1", room1_dir)
+
+    # --- presence: both x and y start in room1 ---
+    x_presence = new_map_doc(name, root_ctx, "x", "usr")
+    y_presence = new_map_doc(name, root_ctx, "y", "usr")
+    add_file(name, root_ctx, room1_dir, "x.usr", x_presence)
+    add_file(name, root_ctx, room1_dir, "y.usr", y_presence)
+
+    {:ok, x_ctx} = AgentKeys.signing_context_for(x_uuid, secrets_name)
+    {:ok, _y_ctx} = AgentKeys.signing_context_for(y_uuid, secrets_name)
+
+    # X holds a section cert over room1's dir AND meta doc.
+    assert {:ok, cap} =
+             Sections.issue_section(root_ctx, {x_uuid, x_pub}, [room1_dir, room1_meta], store: name)
+
+    %{
+      store: name,
+      secrets: secrets_name,
+      root_uuid: root_uuid,
+      room1_dir: room1_dir,
+      room1_meta: room1_meta,
+      x_uuid: x_uuid,
+      x_pub: x_pub,
+      x_ctx: x_ctx,
+      y_uuid: y_uuid,
+      y_pub: y_pub,
+      cap: cap
+    }
+  end
+
+  test "a session whose player holds a section cert writes signed+proofed; a session without one is denied",
+       %{
+         store: store,
+         secrets: secrets,
+         root_uuid: root_uuid,
+         room1_dir: room1_dir,
+         room1_meta: room1_meta,
+         x_uuid: x_uuid,
+         x_pub: x_pub,
+         y_uuid: y_uuid,
+         cap: cap
+       } do
+    {:ok, x_pid} =
+      PlayerSession.start_link(
+        player_name: "x",
+        root_uuid: root_uuid,
+        store: store,
+        buffered: true,
+        player_identity_uuid: x_uuid,
+        secret_store: secrets,
+        cert_cids: [cap.id]
+      )
+
+    assert :sys.get_state(x_pid).current_room_uuid == room1_dir
+
+    :ok = PlayerSession.input_sync(x_pid, "@name here Renamed-By-X")
+    _ = PlayerSession.drain_buffer(x_pid)
+    PlayerSession.stop(x_pid)
+
+    assert {:ok, x_head} = CommitStore.latest_commit(store, room1_meta)
+    assert x_head.metadata[:capability_proof] == cap.id
+    assert x_head.signer_id == Signing.signer_id(x_uuid, x_pub)
+    assert {:ok, x_doc} = Commonplace.Tree.DocBuilder.reconstruct_doc(store, room1_meta)
+    assert {:ok, %{"name" => "Renamed-By-X"}} = Jason.decode(ContentType.get_content(x_doc))
+
+    # --- Y: registered, signed, holds NO cert over room1 — denied. ---
+    {:ok, y_pid} =
+      PlayerSession.start_link(
+        player_name: "y",
+        root_uuid: root_uuid,
+        store: store,
+        buffered: true,
+        player_identity_uuid: y_uuid,
+        secret_store: secrets,
+        cert_cids: []
+      )
+
+    :ok = PlayerSession.input_sync(y_pid, "@name here Renamed-By-Y")
+    _ = PlayerSession.drain_buffer(y_pid)
+    PlayerSession.stop(y_pid)
+
+    assert_write_denied(store, room1_meta, x_head.id)
+  end
+
+  # CX-lg06 note: the MUD verb layer (`World.set_meta/6` →
+  # `Schemas.write_meta_doc/4` → `CommitStoreClient.create_chained_commit/5`)
+  # does not check the commit call's return value — it always reports
+  # `:ok` to its caller even when the local-write gate rejects the
+  # commit (a pre-existing gap across the whole module, not something
+  # this bead's opts-threading introduced or is chartered to fix; see
+  # `Commonplace.MUD.Verbs`/`Commonplace.MUD.World`/`Commonplace.MUD.Move`
+  # — none of their private write helpers pattern-match the create/
+  # chained-commit result). So denial is verified here at the STORE
+  # level (the doc's head commit does not move), exactly like
+  # `Commonplace.MUD.SectionOwnershipTest` verifies denial — not via the
+  # verb's reply text, which would misleadingly still claim success.
+  defp assert_write_denied(store, doc_uuid, expected_head_id) do
+    assert {:ok, head} = CommitStore.latest_commit(store, doc_uuid)
+    assert head.id == expected_head_id
+  end
+
+  ## ---- low-level, root-signed world-building helpers ----
+
+  defp genesis(store: store, uuid: uuid, schema_doc: doc, ctx: ctx) do
+    update = Yelixer.Encoding.encode_update(doc)
+    assert %Commonplace.Store.Commit{} = CommitStore.create_commit(store, uuid, update, nil, %{}, signing_context: ctx)
+    uuid
+  end
+
+  defp new_dir(store, ctx) do
+    uuid = UUID.uuid4()
+    genesis(store: store, uuid: uuid, schema_doc: Schema.new_schema(), ctx: ctx)
+  end
+
+  defp new_dir_with_meta(store, ctx, filename, json) do
+    meta_uuid = new_text_doc(store, ctx, json)
+    doc = Schema.add_file(Schema.new_schema(), filename, meta_uuid)
+    uuid = UUID.uuid4()
+    genesis(store: store, uuid: uuid, schema_doc: doc, ctx: ctx)
+  end
+
+  defp new_text_doc(store, ctx, text) do
+    uuid = UUID.uuid4()
+    doc = Yelixer.Doc.new() |> ContentType.create(:text, "meta")
+    doc = ContentType.insert_text(doc, 0, text)
+    update = Yelixer.Encoding.encode_update(doc)
+    assert %Commonplace.Store.Commit{} = CommitStore.create_commit(store, uuid, update, nil, %{}, signing_context: ctx)
+    uuid
+  end
+
+  defp new_map_doc(store, ctx, name, type_ext) do
+    uuid = UUID.uuid4()
+    doc = Yelixer.Doc.new() |> ContentType.create(:map, "#{name}.#{type_ext}")
+    doc = ContentType.set_key(doc, "name", name)
+    doc = ContentType.set_key(doc, "type", type_ext)
+    doc = ContentType.set_key(doc, "status", "starting")
+    update = Yelixer.Encoding.encode_update(doc)
+    assert %Commonplace.Store.Commit{} = CommitStore.create_commit(store, uuid, update, nil, %{}, signing_context: ctx)
+    uuid
+  end
+
+  defp add_directory(store, ctx, parent_uuid, name, child_uuid) do
+    {:ok, schema} = Commonplace.MUD.Schemas.load_dir_schema(parent_uuid, store)
+    schema = Schema.add_directory(schema, name, child_uuid)
+    update = Yelixer.Encoding.encode_update(schema)
+
+    assert %Commonplace.Store.Commit{} =
+             CommitStoreClient.create_chained_commit(store, parent_uuid, update, %{}, signing_context: ctx)
+
+    :ok
+  end
+
+  defp add_file(store, ctx, parent_uuid, name, child_uuid) do
+    {:ok, schema} = Commonplace.MUD.Schemas.load_dir_schema(parent_uuid, store)
+    schema = Schema.add_file(schema, name, child_uuid)
+    update = Yelixer.Encoding.encode_update(schema)
+
+    assert %Commonplace.Store.Commit{} =
+             CommitStoreClient.create_chained_commit(store, parent_uuid, update, %{}, signing_context: ctx)
+
+    :ok
+  end
+
+  defp player_json(name), do: Jason.encode!(%{"kind" => "player", "name" => name, "title" => name, "description" => ""})
+
+  defp room_json(name, exits),
+    do: Jason.encode!(%{"kind" => "room", "name" => name, "description" => "", "exits" => exits})
+end

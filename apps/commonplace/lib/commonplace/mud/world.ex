@@ -65,15 +65,21 @@ defmodule Commonplace.MUD.World do
   def get_object(dir_uuid, store \\ CommitStoreClient), do: Schemas.load_object(dir_uuid, store)
   def get_player(dir_uuid, store \\ CommitStoreClient), do: Schemas.load_player(dir_uuid, store)
 
-  @doc "Set a top-level key on a metadata file, returning :ok or {:error, _}."
-  def set_meta(dir_uuid, filename, key, value, store \\ CommitStoreClient) do
+  @doc """
+  Set a top-level key on a metadata file, returning :ok or {:error, _}.
+
+  `opts` (CX-lg06): `:signing_context`, `:cert_cids`, `:signer_id` —
+  threaded into the underlying `Schemas.write_meta_doc/4`; see
+  `Commonplace.MUD.SignedWrite`.
+  """
+  def set_meta(dir_uuid, filename, key, value, store \\ CommitStoreClient, opts \\ []) do
     with {:ok, schema} <- Schemas.load_dir_schema(dir_uuid, store),
          {:ok, entry} <- Schema.get_entry(schema, filename),
          {:ok, doc} <- DocBuilder.reconstruct_doc(store, entry.node_id),
          json when is_binary(json) <- ContentType.get_content(doc),
          {:ok, parsed} <- Jason.decode(json) do
       updated = Map.put(parsed, key, value) |> Jason.encode!()
-      Schemas.write_meta_doc(entry.node_id, updated, store)
+      Schemas.write_meta_doc(entry.node_id, updated, store, opts)
       :ok
     else
       :error -> {:error, :no_meta_entry}

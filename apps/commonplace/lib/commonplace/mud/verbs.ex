@@ -16,7 +16,7 @@ defmodule Commonplace.MUD.Verbs do
   side effects go through `Commonplace.MUD.World`.
   """
 
-  alias Commonplace.MUD.{Parser, Schemas, Sections, VerbSource, World}
+  alias Commonplace.MUD.{Parser, Schemas, Sections, SignedWrite, VerbSource, World}
   alias Commonplace.MUD.Schemas.{Object, Player, Room}
   alias Commonplace.Tree.Schema
   alias Commonplace.Store.CommitStoreClient
@@ -240,7 +240,7 @@ defmodule Commonplace.MUD.Verbs do
          true <- takable_entry?(entry) || {:error, "You can't take that."},
          {:ok, %Object{} = obj} <- Schemas.load_object(entry.node_id, ctx.store),
          :ok <- ensure_not_fixed(obj),
-         :ok <- World.move(entry.node_id, entry.name, ctx.current_room_uuid, ctx.inventory_uuid, store: ctx.store) do
+         :ok <- World.move(entry.node_id, entry.name, ctx.current_room_uuid, ctx.inventory_uuid, write_opts(ctx)) do
       World.broadcast_room(ctx.current_room_uuid, %{
         kind: :take,
         who: ctx.player_name,
@@ -268,7 +268,7 @@ defmodule Commonplace.MUD.Verbs do
   defp do_drop(%Parser.Command{target: target}, ctx) do
     with {:ok, entry} <- World.find_entry_by_name(ctx.inventory_uuid, target, ctx.store),
          {:ok, %Object{} = obj} <- Schemas.load_object(entry.node_id, ctx.store),
-         :ok <- World.move(entry.node_id, entry.name, ctx.inventory_uuid, ctx.current_room_uuid, store: ctx.store) do
+         :ok <- World.move(entry.node_id, entry.name, ctx.inventory_uuid, ctx.current_room_uuid, write_opts(ctx)) do
       World.broadcast_room(ctx.current_room_uuid, %{
         kind: :drop,
         who: ctx.player_name,
@@ -292,7 +292,7 @@ defmodule Commonplace.MUD.Verbs do
     with {:ok, obj_entry} <- World.find_entry_by_name(ctx.inventory_uuid, obj_name, ctx.store),
          {:ok, %Object{} = obj} <- Schemas.load_object(obj_entry.node_id, ctx.store),
          {:ok, target_inv_uuid, target_player_name} <- find_player_inventory(target_name, ctx),
-         :ok <- World.move(obj_entry.node_id, obj_entry.name, ctx.inventory_uuid, target_inv_uuid, store: ctx.store) do
+         :ok <- World.move(obj_entry.node_id, obj_entry.name, ctx.inventory_uuid, target_inv_uuid, write_opts(ctx)) do
       World.broadcast_room(ctx.current_room_uuid, %{
         kind: :give,
         who: ctx.player_name,
@@ -407,7 +407,7 @@ defmodule Commonplace.MUD.Verbs do
   defp do_go(direction, ctx) do
     with {:ok, %Room{} = room} <- World.get_room(ctx.current_room_uuid, ctx.store),
          {:ok, dest_uuid} <- Map.fetch(room.exits, direction) |> wrap_fetch(),
-         :ok <- World.move(ctx.player_uuid, ctx.presence_filename, ctx.current_room_uuid, dest_uuid, store: ctx.store) do
+         :ok <- World.move(ctx.player_uuid, ctx.presence_filename, ctx.current_room_uuid, dest_uuid, write_opts(ctx)) do
       World.broadcast_room(ctx.current_room_uuid, %{
         kind: :depart,
         who: ctx.player_name,
@@ -528,10 +528,10 @@ defmodule Commonplace.MUD.Verbs do
 
       true ->
         json = Schemas.encode_room(%Room{name: name, description: "(no description yet)", exits: %{opposite => ctx.current_room_uuid}})
-        new_room_uuid = Schemas.create_dir_with_meta(Schemas.room_filename(), json, ctx.store)
+        new_room_uuid = Schemas.create_dir_with_meta(Schemas.room_filename(), json, ctx.store, write_opts(ctx))
 
-        :ok = add_dir_entry(ctx.root_uuid, name, new_room_uuid, ctx.store)
-        :ok = update_room_exit(ctx.current_room_uuid, direction, new_room_uuid, ctx.store)
+        :ok = add_dir_entry(ctx.root_uuid, name, new_room_uuid, ctx)
+        :ok = update_room_exit(ctx.current_room_uuid, direction, new_room_uuid, ctx)
 
         # CX-qat5.5: the new room is dug FROM ctx.current_room_uuid, so
         # that's the section context — any node-issued root section cert
@@ -549,15 +549,15 @@ defmodule Commonplace.MUD.Verbs do
 
   defp do_create(%Parser.Command{argv: ["object", name | _]}, ctx) do
     obj_json = Schemas.encode_object(%Object{name: name, description: "(no description yet)"})
-    new_obj_uuid = Schemas.create_dir_with_meta(Schemas.object_filename(), obj_json, ctx.store)
-    :ok = add_dir_entry(ctx.current_room_uuid, "#{name}.obj", new_obj_uuid, ctx.store)
+    new_obj_uuid = Schemas.create_dir_with_meta(Schemas.object_filename(), obj_json, ctx.store, write_opts(ctx))
+    :ok = add_dir_entry(ctx.current_room_uuid, "#{name}.obj", new_obj_uuid, ctx)
     {:reply, "You create a #{name}."}
   end
 
   defp do_create(%Parser.Command{argv: ["room", name | _]}, ctx) do
     json = Schemas.encode_room(%Room{name: name, description: "(no description yet)"})
-    new_uuid = Schemas.create_dir_with_meta(Schemas.room_filename(), json, ctx.store)
-    :ok = add_dir_entry(ctx.root_uuid, name, new_uuid, ctx.store)
+    new_uuid = Schemas.create_dir_with_meta(Schemas.room_filename(), json, ctx.store, write_opts(ctx))
+    :ok = add_dir_entry(ctx.root_uuid, name, new_uuid, ctx)
 
     # CX-qat5.5: `@create room` always builds a DISCONNECTED room (no
     # exit links it to `ctx.current_room_uuid`) — there is no section
@@ -596,7 +596,7 @@ defmodule Commonplace.MUD.Verbs do
   defp update_meta(target, key, value, ctx) do
     cond do
       target in ["here", "room"] ->
-        :ok = World.set_meta(ctx.current_room_uuid, Schemas.room_filename(), key, value, ctx.store)
+        :ok = World.set_meta(ctx.current_room_uuid, Schemas.room_filename(), key, value, ctx.store, write_opts(ctx))
         {:reply, "Updated room #{key}."}
 
       true ->
@@ -609,7 +609,7 @@ defmodule Commonplace.MUD.Verbs do
               end
 
             if filename do
-              :ok = World.set_meta(entry.node_id, filename, key, value, ctx.store)
+              :ok = World.set_meta(entry.node_id, filename, key, value, ctx.store, write_opts(ctx))
               {:reply, "Updated #{target} #{key}."}
             else
               {:error, "Can't update #{target} #{key}."}
@@ -648,27 +648,51 @@ defmodule Commonplace.MUD.Verbs do
     end
   end
 
-  defp add_dir_entry(parent_uuid, name, child_uuid, store) do
+  # CX-lg06: `ctx` carries the resolved session identity
+  # (`:signing_context` / `:cert_cids` / `:signer_id`, set up once at
+  # `PlayerSession` ingress) — `write_opts/1` below turns that into the
+  # keyword list `Commonplace.MUD.SignedWrite` and `World`/`Move` expect.
+  defp add_dir_entry(parent_uuid, name, child_uuid, ctx) do
+    store = ctx.store
     {:ok, schema} = Schemas.load_dir_schema(parent_uuid, store)
     schema = Schema.add_directory(schema, name, child_uuid)
     update = Yelixer.Encoding.encode_update(schema)
-    CommitStoreClient.create_chained_commit(store, parent_uuid, update)
+
+    {metadata, commit_opts} =
+      SignedWrite.opts_for(parent_uuid, Keyword.put(write_opts(ctx), :store, store))
+
+    CommitStoreClient.create_chained_commit(store, parent_uuid, update, metadata, commit_opts)
     :ok
   end
 
-  defp update_room_exit(room_dir_uuid, direction, dest_uuid, store) do
+  defp update_room_exit(room_dir_uuid, direction, dest_uuid, ctx) do
+    store = ctx.store
+
     case World.get_room(room_dir_uuid, store) do
       {:ok, %Room{} = room} ->
         new_exits = Map.put(room.exits, direction, dest_uuid)
         json = Schemas.encode_room(%Room{room | exits: new_exits})
         {:ok, schema} = Schemas.load_dir_schema(room_dir_uuid, store)
         {:ok, entry} = Schema.get_entry(schema, Schemas.room_filename())
-        :ok = Schemas.write_meta_doc(entry.node_id, json, store)
+        :ok = Schemas.write_meta_doc(entry.node_id, json, store, write_opts(ctx))
         :ok
 
       err ->
         err
     end
+  end
+
+  # CX-lg06: the ctx -> {store, signing_context, cert_cids, signer_id}
+  # opts adapter every write call site in this module goes through — one
+  # seam, so a session's resolved identity (see `PlayerSession`) reaches
+  # every commit-producing verb without re-deriving it downstream.
+  defp write_opts(ctx) do
+    [
+      store: ctx.store,
+      signing_context: Map.get(ctx, :signing_context),
+      cert_cids: Map.get(ctx, :cert_cids, []),
+      signer_id: Map.get(ctx, :signer_id)
+    ]
   end
 
   # ---- Scope resolution ----
