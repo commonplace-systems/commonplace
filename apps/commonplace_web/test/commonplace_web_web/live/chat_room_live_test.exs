@@ -143,7 +143,7 @@ defmodule CommonplaceWebWeb.ChatRoomLiveTest do
       {:ok, room} = Rooms.create(root, "general")
 
       {:ok, %{message_id: m1}} =
-        Actions.post_message(room.messages_uuid, "v1",
+        Actions.post_message(room.messages_uuid, "the original text",
           room: "general",
           signer_id: "alice@aaaaaaaa",
           author_path: "alice.usr"
@@ -166,7 +166,10 @@ defmodule CommonplaceWebWeb.ChatRoomLiveTest do
       assert html =~ ~r/edited:.+true/,
              "edited=true field should appear in rendered output"
 
-      refute html =~ "v1"
+      # Sentinel contains spaces so it can never appear by chance inside
+      # the base64 data-phx-session/-static tokens LiveView embeds in the
+      # html — a bare "v1" did exactly that and flaked CI (run 28787571620).
+      refute html =~ "the original text"
     end
   end
 
