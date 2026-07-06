@@ -236,11 +236,13 @@ defmodule CommonplaceWebWeb.OutlineLive do
   def render(assigns) do
     ~H"""
     <div class="p-6 max-w-3xl mx-auto">
-      <%!-- CX-qat5.6: OutlineLive isn't wrapped by a layout that renders
-           flash (no :app/:bare live_session here), so surface it directly
-           or write-rate-limit errors (and any future put_flash use) would
-           be silently invisible. --%>
-      <CommonplaceWebWeb.Layouts.flash_group flash={@flash} />
+      <%!-- CX-qat5.6 note (superseded by CX-f89w): flash used to not be
+           rendered here because OutlineLive wasn't wrapped by a
+           layout. It's now under the gated `:authenticated` live_session
+           (`layout: {Layouts, :bare}`), which renders flash itself — an
+           extra call here would duplicate ids (e.g. "client-error") and
+           break LiveViewTest. Do not re-add this without removing the
+           live_session's own flash_group. --%>
       <%= if @not_found do %>
         <p class="text-error">No outline named “{@name}”.</p>
       <% else %>

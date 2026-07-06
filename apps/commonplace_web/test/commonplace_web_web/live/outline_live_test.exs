@@ -3,6 +3,14 @@ defmodule CommonplaceWebWeb.OutlineLiveTest do
   CX-k8tn: OutlineLive — render the reconstructed tree, mutate via
   events (the keybind path), and re-render live on commits from OTHER
   writers (the PubSub loop).
+
+  CX-f89w: `/outline/:name` is now gated (read-auth) — anonymous mounts
+  redirect to `/` rather than reaching the LiveView, so `conn` here is
+  authenticated by default (see `setup`). The former "anonymous session
+  write behaves exactly as before (unsigned, funnel hand)" pin is
+  superseded: an anonymous conn can no longer reach `/outline/:name` at
+  all, so that scenario moved to the read-auth gate suite
+  (`test/commonplace_web_web/read_auth_test.exs`).
   """
   use CommonplaceWebWeb.ConnCase, async: false
 
@@ -37,7 +45,30 @@ defmodule CommonplaceWebWeb.OutlineLiveTest do
     {:ok, a} = Outline.add_item(CommitStore, uuid, %{text: "Top task"})
     {:ok, b} = Outline.add_item(CommitStore, uuid, %{text: "Sub task", parent: a})
 
-    %{uuid: uuid, a: a, b: b, root: root_uuid}
+    # CX-f89w: /outline/:name is gated — default `conn` in this module
+    # is a logged-in session so existing (pre-read-auth) test bodies
+    # keep working unmodified. Tests that need a SPECIFIC identity (to
+    # check signer_id) call `login_conn/2` themselves, which fully
+    # replaces the session via `init_test_session/2`.
+    {conn, _identity_uuid, _nonce} = login_conn(Phoenix.ConnTest.build_conn(), root_uuid)
+
+    %{conn: conn, uuid: uuid, a: a, b: b, root: root_uuid}
+  end
+
+  defp login_conn(conn, root) do
+    {:ok, %{identity_uuid: identity_uuid, token: token}} =
+      Invites.mint("mallory-#{System.unique_integer([:positive])}", root)
+
+    {:ok, ^identity_uuid} = Invites.redeem(token)
+    nonce = Base.encode64(:crypto.strong_rand_bytes(16))
+
+    conn =
+      conn
+      |> init_test_session(%{})
+      |> Plug.Conn.put_session(:player_identity_uuid, identity_uuid)
+      |> Plug.Conn.put_session(:session_nonce, nonce)
+
+    {conn, identity_uuid, nonce}
   end
 
   test "renders the nested tree", %{conn: conn, a: a, b: b} do
@@ -138,20 +169,6 @@ defmodule CommonplaceWebWeb.OutlineLiveTest do
   end
 
   describe "logged-in session identity (CX-nn4y, following CX-qat5.2's ChatRoomLive pattern)" do
-    defp login_conn(conn, root) do
-      {:ok, %{identity_uuid: identity_uuid, token: token}} = Invites.mint("mallory", root)
-      {:ok, ^identity_uuid} = Invites.redeem(token)
-      nonce = Base.encode64(:crypto.strong_rand_bytes(16))
-
-      conn =
-        conn
-        |> init_test_session(%{})
-        |> Plug.Conn.put_session(:player_identity_uuid, identity_uuid)
-        |> Plug.Conn.put_session(:session_nonce, nonce)
-
-      {conn, identity_uuid, nonce}
-    end
-
     test "a logged-in session's new_item write is signed as that player and mints under the session hand",
          %{conn: conn, root: root_uuid, uuid: uuid} do
       {conn, identity_uuid, nonce} = login_conn(conn, root_uuid)
@@ -188,19 +205,18 @@ defmodule CommonplaceWebWeb.OutlineLiveTest do
       assert Yelixer.StateVector.get(sv, funnel_hand) == funnel_clock_before
     end
 
-    test "anonymous session write behaves exactly as before (unsigned, funnel hand)",
-         %{conn: conn, uuid: uuid} do
-      {:ok, view, _html} = live(conn, ~p"/outline/daily")
+    # CX-f89w: /outline/:name is now gated — an anonymous conn can no
+    # longer mount OutlineLive at all (superseding the old "anonymous
+    # session write behaves exactly as before (unsigned, funnel hand)"
+    # pin). See the gate regression coverage in read_auth_test.exs.
+    test "anonymous conn is redirected before it can reach the new_item write at all",
+         %{uuid: uuid} do
+      anon_conn = Phoenix.ConnTest.build_conn()
 
-      view |> element("button", "+ item") |> render_click()
+      assert {:error, {:redirect, %{to: "/"}}} = live(anon_conn, ~p"/outline/daily")
 
-      {:ok, commit} = CommitStore.latest_commit(CommitStore, uuid)
-      assert commit.signer_id == nil
-      assert commit.signature == nil
-
-      {:ok, doc} = DocBuilder.reconstruct_doc(CommitStore, uuid)
-      sv = Yelixer.BlockStore.state_vector(doc.store)
-      assert Map.has_key?(sv.clocks, Commonplace.WriterHand.for_doc(uuid))
+      # Still just the 2 seeded items — no anonymous write landed.
+      assert length(Outline.items(CommitStore, uuid)) == 2
     end
   end
 end

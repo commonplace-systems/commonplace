@@ -10,6 +10,14 @@ defmodule CommonplaceWebWeb.WikiLiveTest do
   panel disappeared until the next full navigation. This test pins the
   regression: the Identity panel must still show the cold identity
   first_seen/last_seen after a `Presence.heartbeat/1` landed on the doc.
+
+  CX-f89w: `/wiki` is now gated (read-auth) — anonymous mounts redirect
+  to `/` rather than reaching the LiveView, so `conn` here is
+  authenticated by default (see `setup`). The former "anonymous
+  create_page behaves exactly as before (unsigned, funnel hand)" pin is
+  superseded: an anonymous conn can no longer reach `/wiki` at all, so
+  that scenario moved to the read-auth gate suite
+  (`test/commonplace_web_web/read_auth_test.exs`).
   """
   use CommonplaceWebWeb.ConnCase, async: false
 
@@ -77,7 +85,30 @@ defmodule CommonplaceWebWeb.WikiLiveTest do
       DocCache.clear()
     end)
 
-    %{root: root_uuid}
+    # CX-f89w: /wiki is gated — default `conn` in this module is a
+    # logged-in session so existing (pre-read-auth) test bodies keep
+    # working unmodified. Tests that need a SPECIFIC identity (to check
+    # signer_id) call `login_conn/2` themselves, which fully replaces
+    # the session via `init_test_session/2`.
+    {conn, _identity_uuid, _nonce} = login_conn(Phoenix.ConnTest.build_conn(), root_uuid)
+
+    %{conn: conn, root: root_uuid}
+  end
+
+  defp login_conn(conn, root) do
+    {:ok, %{identity_uuid: identity_uuid, token: token}} =
+      Invites.mint("mallory-#{System.unique_integer([:positive])}", root)
+
+    {:ok, ^identity_uuid} = Invites.redeem(token)
+    nonce = Base.encode64(:crypto.strong_rand_bytes(16))
+
+    conn =
+      conn
+      |> init_test_session(%{})
+      |> Plug.Conn.put_session(:player_identity_uuid, identity_uuid)
+      |> Plug.Conn.put_session(:session_nonce, nonce)
+
+    {conn, identity_uuid, nonce}
   end
 
   describe "presence identity enrichment" do
@@ -214,20 +245,6 @@ defmodule CommonplaceWebWeb.WikiLiveTest do
   end
 
   describe "logged-in session identity (CX-nn4y, following CX-qat5.2's ChatRoomLive pattern)" do
-    defp login_conn(conn, root) do
-      {:ok, %{identity_uuid: identity_uuid, token: token}} = Invites.mint("mallory", root)
-      {:ok, ^identity_uuid} = Invites.redeem(token)
-      nonce = Base.encode64(:crypto.strong_rand_bytes(16))
-
-      conn =
-        conn
-        |> init_test_session(%{})
-        |> Plug.Conn.put_session(:player_identity_uuid, identity_uuid)
-        |> Plug.Conn.put_session(:session_nonce, nonce)
-
-      {conn, identity_uuid, nonce}
-    end
-
     test "create_page lands both commits signed as the player, page doc minted under the session hand",
          %{conn: conn, root: root_uuid} do
       {conn, identity_uuid, nonce} = login_conn(conn, root_uuid)
@@ -267,28 +284,18 @@ defmodule CommonplaceWebWeb.WikiLiveTest do
       refute Map.has_key?(sv.clocks, Commonplace.WriterHand.for_doc(root_uuid))
     end
 
-    test "anonymous create_page behaves exactly as before (unsigned, funnel hand)",
-         %{conn: conn, root: root_uuid} do
-      {:ok, view, _html} = live(conn, ~p"/wiki")
+    # CX-f89w: /wiki is now gated — an anonymous conn can no longer
+    # mount WikiLive at all (superseding the old "anonymous create_page
+    # behaves exactly as before (unsigned, funnel hand)" pin). See the
+    # gate regression coverage in read_auth_test.exs.
+    test "anonymous conn is redirected before it can reach create_page at all",
+         %{root: root_uuid} do
+      anon_conn = Phoenix.ConnTest.build_conn()
 
-      view
-      |> element("button", "New Page")
-      |> render_click()
-
-      view
-      |> form("form[phx-submit=create_page]", %{"name" => "anon page"})
-      |> render_submit()
+      assert {:error, {:redirect, %{to: "/"}}} = live(anon_conn, ~p"/wiki")
 
       schema = read_root_schema(root_uuid)
-      {:ok, entry} = Schema.get_entry(schema, "anon-page")
-
-      {:ok, page_commit} = CommitStore.latest_commit(Commonplace.Store.CommitStore, entry.node_id)
-      assert page_commit.signer_id == nil
-      assert page_commit.signature == nil
-
-      {:ok, dir_doc} = DocBuilder.reconstruct_doc(Commonplace.Store.CommitStore, root_uuid)
-      sv = Yelixer.BlockStore.state_vector(dir_doc.store)
-      assert Map.has_key?(sv.clocks, Commonplace.WriterHand.for_doc(root_uuid))
+      assert :error = Schema.get_entry(schema, "anon-page")
     end
   end
 

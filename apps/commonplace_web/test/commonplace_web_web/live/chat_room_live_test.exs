@@ -16,6 +16,11 @@ defmodule CommonplaceWebWeb.ChatRoomLiveTest do
   for the chat shape any more — it loads view-XML, hands it to the
   generic renderer, and routes user interactions through the
   substrate ArgResolver + dispatcher.
+
+  CX-f89w: `/chat/:room` is now gated (read-auth) — anonymous mounts
+  redirect to `/` rather than reaching the LiveView, so `conn` here is
+  authenticated by default (see `setup`). Anonymous gate regression
+  coverage lives in `test/commonplace_web_web/read_auth_test.exs`.
   """
   use CommonplaceWebWeb.ConnCase, async: false
 
@@ -68,7 +73,30 @@ defmodule CommonplaceWebWeb.ChatRoomLiveTest do
       ChatViewComputeSupervisor.reset()
     end)
 
-    %{root: root_uuid}
+    # CX-f89w: /chat/:room is gated — default `conn` in this module is
+    # a logged-in session so existing (pre-read-auth) test bodies keep
+    # working unmodified. Tests that need a SPECIFIC identity (to check
+    # signer_id) call `login_conn/2` themselves, which fully replaces
+    # the session via `init_test_session/2`.
+    {conn, _identity_uuid} = login_conn(Phoenix.ConnTest.build_conn(), root_uuid)
+
+    %{conn: conn, root: root_uuid}
+  end
+
+  defp login_conn(conn, root) do
+    {:ok, %{identity_uuid: identity_uuid, token: token}} =
+      Invites.mint("mallory-#{System.unique_integer([:positive])}", root)
+
+    {:ok, ^identity_uuid} = Invites.redeem(token)
+    nonce = Base.encode64(:crypto.strong_rand_bytes(16))
+
+    conn =
+      conn
+      |> init_test_session(%{})
+      |> Plug.Conn.put_session(:player_identity_uuid, identity_uuid)
+      |> Plug.Conn.put_session(:session_nonce, nonce)
+
+    {conn, identity_uuid}
   end
 
   describe "mount — lookup + not-found" do
@@ -196,20 +224,6 @@ defmodule CommonplaceWebWeb.ChatRoomLiveTest do
   end
 
   describe "logged-in session identity (CX-qat5.2 acceptance pins 1 + 2)" do
-    defp login_conn(conn, root) do
-      {:ok, %{identity_uuid: identity_uuid, token: token}} = Invites.mint("mallory", root)
-      {:ok, ^identity_uuid} = Invites.redeem(token)
-      nonce = Base.encode64(:crypto.strong_rand_bytes(16))
-
-      conn =
-        conn
-        |> init_test_session(%{})
-        |> Plug.Conn.put_session(:player_identity_uuid, identity_uuid)
-        |> Plug.Conn.put_session(:session_nonce, nonce)
-
-      {conn, identity_uuid}
-    end
-
     test "a logged-in session's chat post lands signed as that player, with zero ambient_signed telemetry",
          %{conn: conn, root: root} do
       {:ok, room} = Rooms.create(root, "general")

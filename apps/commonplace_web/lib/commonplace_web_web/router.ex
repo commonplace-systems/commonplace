@@ -14,6 +14,19 @@ defmodule CommonplaceWebWeb.Router do
     plug :accepts, ["json"]
   end
 
+  # CX-f89w: the HTTP dead-render half of the read-auth gate. Piped
+  # AFTER :browser (needs the fetched session) and only on the gated
+  # scope below — the public scope (/, /login/:token, /logout) must
+  # NOT pipe through this, or nobody could ever authenticate.
+  pipeline :require_auth do
+    plug CommonplaceWebWeb.Plugs.RequireAuth
+  end
+
+  # PUBLIC scope: reachable logged-out. GET / is a minimal login
+  # landing that leaks no document content (see PageController.home).
+  # Boss decision: / stays public rather than fully dark; trivially
+  # flippable later by moving this `get "/"` into the gated scope
+  # below, which would make the whole app dark to anonymous visitors.
   scope "/", CommonplaceWebWeb do
     pipe_through :browser
 
@@ -25,21 +38,33 @@ defmodule CommonplaceWebWeb.Router do
     # SigningContext + hand from that pair on every LiveView mount.
     get "/login/:token", SessionController, :login
     get "/logout", SessionController, :logout
+  end
 
-    live_session :wiki, layout: {CommonplaceWebWeb.Layouts, :bare} do
+  # GATED scope (CX-f89w): wiki/tree/chat/outline are private-repo-
+  # mirrored content — require an authenticated session
+  # (`SessionIdentity.resolve/1` → `{:ok, _}`) to view. LiveView is
+  # two-phase, so BOTH the dead-render (`:require_auth` plug, above)
+  # AND the websocket mount (`on_mount` below) must gate; either one
+  # alone lets the other phase leak content.
+  scope "/", CommonplaceWebWeb do
+    pipe_through [:browser, :require_auth]
+
+    live_session :authenticated,
+      layout: {CommonplaceWebWeb.Layouts, :bare},
+      on_mount: {CommonplaceWebWeb.RequireAuth, :ensure_authenticated} do
       live "/wiki", WikiLive
       live "/wiki/*path", WikiLive
+      live "/tree", TreeLive
+      live "/tree/*path", TreeLive
+
+      # CX-71o3 (C1 of CX-p2qp chat-room umbrella): chat-room LiveView.
+      # `:room` is the human-friendly room name; ChatRoomLive walks the
+      # workspace schema to resolve `/chat/{room}/_messages`.
+      live "/chat/:room", ChatRoomLive
+
+      # CX-k8tn: Workflowy-style outliner on the flat-bag-of-xml-items model.
+      live "/outline/:name", OutlineLive
     end
-    live "/tree", TreeLive
-    live "/tree/*path", TreeLive
-
-    # CX-71o3 (C1 of CX-p2qp chat-room umbrella): chat-room LiveView.
-    # `:room` is the human-friendly room name; ChatRoomLive walks the
-    # workspace schema to resolve `/chat/{room}/_messages`.
-    live "/chat/:room", ChatRoomLive
-
-    # CX-k8tn: Workflowy-style outliner on the flat-bag-of-xml-items model.
-    live "/outline/:name", OutlineLive
   end
 
   pipeline :federation do
