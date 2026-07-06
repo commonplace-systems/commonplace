@@ -457,6 +457,32 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
     assert Process.info(self(), :messages) == {:messages, []}
   end
 
+  # ---- FLAG-A pin: safe-vs-legacy SELECTION (plan pre-merge FIX 1) ----
+
+  test "FLAG A: legacy fallback fires ONLY on a clean :not_found — a store/read error surfaces, never downgrades to legacy", %{
+    store: store,
+    room_uuid: room_uuid
+  } do
+    gem_uuid = create_object(store, "gem")
+    :ok = add_dir_entry(store, room_uuid, "gem.obj", gem_uuid)
+
+    # (a) real, loadable host with no `poke.safe.elx` → :legacy — the
+    #     intended CX-ndvi §4 migration fallback.
+    assert :legacy = Verbs.classify_verb_source(gem_uuid, "poke", store)
+
+    # (b) a safe source present → {:safe, source_uuid}.
+    body = ~s|Commonplace.MUD.World.Facade.set_attr(world, "poked", "yes")|
+    assert :ok = VerbSource.save_safe_verb(gem_uuid, "poke", body, [gem_uuid], store)
+    assert {:ok, source_uuid} = VerbSource.find_safe_source(gem_uuid, "poke", store)
+    assert {:safe, ^source_uuid} = Verbs.classify_verb_source(gem_uuid, "poke", store)
+
+    # (c) a store/read ERROR (host doc unreadable — `{:error, :missing}`
+    #     from the schema load, NOT a clean `:not_found` miss) surfaces
+    #     as an error: a transient read failure must never silently swap
+    #     a facade-bounded safe verb for its ambient-ctx legacy twin.
+    assert {:error, :missing} = Verbs.classify_verb_source(UUID.uuid4(), "poke", store)
+  end
+
   # ---- pin 8: no regression — sanity smoke over builtins/builders ----
 
   test "pin 8: ordinary builtin/builder dispatch is unaffected", %{

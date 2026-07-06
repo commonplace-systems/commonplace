@@ -133,15 +133,51 @@ defmodule Commonplace.MUD.Verbs do
   end
 
   # CX-cj3t.5 §1c/§1d — prefer the SAFE path; fall to the legacy path
-  # unchanged (migration boundary, CX-ndvi §4) when no safe source
-  # exists for this host+verb.
+  # ONLY on a CLEAN miss (`:not_found` — no `<name>.safe.elx` exists),
+  # the intended CX-ndvi §4 migration fallback. A store/read ERROR
+  # (`{:error, reason}`) must NEVER silently swap a facade-bounded safe
+  # verb for its god-power legacy twin (FLAG A, plan pre-merge FIX 1):
+  # a transient failure looking up the safe source must surface as a
+  # clean player-facing error, never a downgrade to the ambient-`ctx`
+  # legacy path (which would let a store blip escalate a bounded verb to
+  # full store/uuid reach).
   defp run_user_verb(host_kind, host_uuid, host_name, verb_name, cmd, ctx) do
-    case VerbSource.find_safe_source(host_uuid, verb_name, ctx.store) do
-      {:ok, source_uuid} ->
+    case classify_verb_source(host_uuid, verb_name, ctx.store) do
+      {:safe, source_uuid} ->
         run_safe_user_verb(host_kind, host_uuid, host_name, verb_name, source_uuid, cmd, ctx)
 
-      _ ->
+      :legacy ->
         run_legacy_user_verb(host_kind, host_uuid, host_name, verb_name, ctx)
+
+      {:error, reason} ->
+        {:error, "(verb #{verb_name} unavailable: #{inspect(reason)})"}
+    end
+  end
+
+  # CX-cj3t.5 FLAG A / plan pre-merge FIX 1 (SECURITY-CRITICAL) — the
+  # safe-vs-legacy SELECTION, factored out so the security-relevant
+  # branch decision is directly testable (see the FLAG-A pin in
+  # `Commonplace.MUD.VerbsSafeDispatchTest`; a real-dispatch pin can't
+  # reach the `{:error, _}` arm because `find_safe_source` and
+  # `find_source` share the same verbs-dir load — no real store can make
+  # one error while the other succeeds, so the arm is defense-in-depth
+  # exercised via this seam).
+  #
+  # `find_safe_source/3`'s contract is `{:ok, uuid} | :not_found |
+  # {:error, term()}`:
+  #   * `{:ok, uuid}` → `{:safe, uuid}` — run the facade-bounded path.
+  #   * `:not_found`  → `:legacy` — no `<name>.safe.elx`; the intended
+  #     CX-ndvi §4 migration fallback to the legacy (ambient-ctx) path.
+  #   * `{:error, _}` → `{:error, reason}` — a store/read failure; the
+  #     caller surfaces a clean error and MUST NOT fall through to
+  #     legacy (no silent facade→god-power downgrade on a transient
+  #     read error).
+  @doc false
+  def classify_verb_source(host_uuid, verb_name, store) do
+    case VerbSource.find_safe_source(host_uuid, verb_name, store) do
+      {:ok, source_uuid} -> {:safe, source_uuid}
+      :not_found -> :legacy
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -318,6 +354,11 @@ defmodule Commonplace.MUD.Verbs do
   # pinned pubkey from `Trust.config/0`'s PUBLIC config), not a
   # reimplementation of any verification logic — the actual chain/
   # revocation/expiry checks all still run inside `VerifyChain` itself.
+  #
+  # DUPLICATE of `Commonplace.Trust.anchor_keys/1` (private) — kept in
+  # sync BY HAND until CX-2rbz exposes a public accessor and deletes
+  # this copy. Any change to the anchor-key derivation in trust.ex MUST
+  # be mirrored here (and vice versa) until then.
   defp local_anchor_keys do
     cfg = Commonplace.Trust.config()
 
