@@ -156,10 +156,112 @@ defmodule Commonplace.GitBridge.Git do
   @doc "Returns `{:ok, tree_hash}` for `HEAD^{tree}`."
   @spec head_tree_hash(String.t()) :: {:ok, String.t()} | {:error, term()}
   def head_tree_hash(repo_dir) do
-    case run(repo_dir, ["rev-parse", "HEAD^{tree}"]) do
+    tree_hash(repo_dir, "HEAD")
+  end
+
+  @doc "Returns `{:ok, tree_hash}` for `<rev>^{tree}` — any resolvable rev, not just HEAD."
+  @spec tree_hash(String.t(), String.t()) :: {:ok, String.t()} | {:error, term()}
+  def tree_hash(repo_dir, rev) do
+    case run(repo_dir, ["rev-parse", rev <> "^{tree}"]) do
       {:ok, out} -> {:ok, String.trim(out)}
       error -> error
     end
+  end
+
+  @doc "Returns `{:ok, sha}` for an arbitrary rev, or `{:error, _}` if it doesn't resolve."
+  @spec rev_parse(String.t(), String.t()) :: {:ok, String.t()} | {:error, term()}
+  def rev_parse(repo_dir, rev) do
+    case run(repo_dir, ["rev-parse", rev]) do
+      {:ok, out} -> {:ok, String.trim(out)}
+      error -> error
+    end
+  end
+
+  @doc """
+  `git fetch remote branch` — populates `refs/remotes/<remote>/<branch>`
+  without touching the local working tree or HEAD. Inbound (G2) reads
+  that remote-tracking ref afterward via `remote_ref/3`.
+  """
+  @spec fetch(String.t(), String.t(), String.t()) :: {:ok, String.t()} | {:error, term()}
+  def fetch(repo_dir, remote, branch) do
+    run(repo_dir, ["fetch", remote, branch])
+  end
+
+  @doc "Returns `{:ok, sha}` for `refs/remotes/<remote>/<branch>`, or `{:error, _}` if absent."
+  @spec remote_ref(String.t(), String.t(), String.t()) :: {:ok, String.t()} | {:error, term()}
+  def remote_ref(repo_dir, remote, branch) do
+    rev_parse(repo_dir, "refs/remotes/#{remote}/#{branch}")
+  end
+
+  @doc """
+  `true` iff `ancestor` is an ancestor of (or equal to) `descendant` in
+  the local object graph — `git merge-base --is-ancestor`. Used by
+  Inbound's force-push detection: a fetched head that is NOT a
+  descendant of our last-pushed commit means history was rewritten
+  upstream.
+  """
+  @spec ancestor?(String.t(), String.t(), String.t()) :: {:ok, boolean()} | {:error, term()}
+  def ancestor?(repo_dir, ancestor, descendant) do
+    case System.cmd("git", ["merge-base", "--is-ancestor", ancestor, descendant],
+           cd: repo_dir,
+           stderr_to_stdout: true
+         ) do
+      {_out, 0} -> {:ok, true}
+      {_out, 1} -> {:ok, false}
+      {out, _code} -> {:error, String.trim(out)}
+    end
+  rescue
+    error -> {:error, Exception.message(error)}
+  catch
+    kind, reason -> {:error, {kind, reason}}
+  end
+
+  @doc """
+  `{status, path}` pairs (`"A"`, `"M"`, `"D"`, `"R100"`, ...) changed
+  between `rev_a` and `rev_b` — `git diff --name-status`. Rename rows
+  (`"R###"`) carry `old_path\\tnew_path`; this returns the new path
+  only, which is what Inbound needs (renames are out of v1 scope and
+  fall through the ordinary eligibility gates on the new path).
+  """
+  @spec diff_name_status(String.t(), String.t(), String.t()) ::
+          {:ok, [{String.t(), String.t()}]} | {:error, term()}
+  def diff_name_status(repo_dir, rev_a, rev_b) do
+    case run(repo_dir, ["diff", "--name-status", rev_a, rev_b]) do
+      {:ok, out} ->
+        rows =
+          out
+          |> String.split("\n", trim: true)
+          |> Enum.map(fn line ->
+            case String.split(line, "\t") do
+              [status | paths] when paths != [] -> {status, List.last(paths)}
+              _ -> nil
+            end
+          end)
+          |> Enum.reject(&is_nil/1)
+
+        {:ok, rows}
+
+      error ->
+        error
+    end
+  end
+
+  @doc "Returns `{:ok, content}` for `<rev>:<path>` (`git show`), or `{:error, _}` if missing."
+  @spec show(String.t(), String.t(), String.t()) :: {:ok, String.t()} | {:error, term()}
+  def show(repo_dir, rev, path) do
+    run(repo_dir, ["show", "#{rev}:#{path}"])
+  end
+
+  @doc """
+  `git reset --hard <rev>` — used by the push-reject recovery path
+  (G2): the bridge's local commits are disposable projections until
+  pushed, so on a non-fast-forward rejection the worktree branch is
+  reset hard to the remote head rather than merged/rebased in
+  git-land. Never used for anything else; never `--force`-push.
+  """
+  @spec reset_hard(String.t(), String.t()) :: {:ok, String.t()} | {:error, term()}
+  def reset_hard(repo_dir, rev) do
+    run(repo_dir, ["reset", "--hard", rev])
   end
 
   # --- Private ---
