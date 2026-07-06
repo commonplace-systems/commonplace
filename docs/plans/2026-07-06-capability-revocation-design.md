@@ -142,19 +142,40 @@ veto; both follow existing house philosophy:
    cached execute-clean verdicts store-wide (one-time re-walk cost on
    next execute per doc). Same mechanism as a trust-config change.
 
-## 8. Build shape (after plan's second pass)
+## 7.6 Verify-time authority validation (second-pass fix 2 — subtle)
+
+Revoker authority (§2) is validated at **verify time, per link — NOT
+at import/arrival time**. Federation makes no ordering promise: a
+revocation record can arrive BEFORE the cert it revokes, and
+path-membership cannot be checked without the cert — an implementation
+that validates at import would DROP early-arriving revocations and the
+revoked cert would resurrect on that peer (precisely the failure §6
+exists to prevent). Records are content-addressed and harmless to store
+unvalidated: on arrival, check only the record's internal consistency
+(signature over its own bytes); its only EFFECT materializes inside a
+verify, where the full chain is in hand and path-membership is
+checkable for free. Stranger records are naturally inert (they never
+match a path) — keep the telemetry counter on ignored records.
+
+## 8. Build shape (build CLEARED by plan second pass, #5704)
 
 1. `Trust.Revocation` struct + canonical encoding + sign/verify.
 2. TrustSideStore rows + CommitStoreClient accessors (store-threaded) +
-   persistent_term set + set-hash.
-3. VerifyChain per-link check (terminal `:revoked`).
+   the `{:revocation_meta, :set_hash}` meta row. **No in-memory set**
+   (per §1 — per-link threaded gets in v1).
+3. VerifyChain per-link check (terminal `:revoked`), with per-link
+   revoker-authority validation per §7.6.
 4. `cfg_fingerprint` fold-in + the cache-invalidation test pin.
 5. `Capability.revoke/2` + `cap revoke` / `cap supersede` CLI.
-6. Envelope/import extension + import hard-deny + catch-up gossip.
+6. Envelope/import extension + import hard-deny + catch-up gossip;
+   arrival-time handling per §7.6 (store sig-consistent records,
+   validate authority only at verify).
 7. Demo: qat5.4's expiry beat gains a true-revocation sibling beat
    (X revokes Z mid-session; Z's next edit denies `:revoked`).
 
 Test pins: authority matrix (path-issuer yes / audience yes / stranger
 ignored), transitivity, cache invalidation (§4), import hard-deny,
-supersession no-gap ordering, store-threading on a named store,
-set-size telemetry.
+EARLY-ARRIVAL (revocation imported before its cert still denies once
+the cert+chain arrive — §7.6), supersession no-gap ordering,
+store-threading on a named store, two-store no-leak, set-size
+telemetry.
