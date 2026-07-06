@@ -57,4 +57,10 @@ defmodule Commonplace.CLI.CapTest do
     assert Cap.mint_opts([]) ==
              [store: Commonplace.Store.CommitStoreClient, allow_write_without_execute: false]
   end
+
+  test "parse_mint_argv recognizes `cap supersede`'s --revoke CID flag (CX-bepn)" do
+    hex = String.duplicate("ab", 32)
+    assert Cap.parse_mint_argv(["--revoke", hex])[:revoke] == hex
+    refute Cap.parse_mint_argv([])[:revoke]
+  end
 end

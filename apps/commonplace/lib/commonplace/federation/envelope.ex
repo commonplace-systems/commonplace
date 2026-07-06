@@ -26,11 +26,24 @@ defmodule Commonplace.Federation.Envelope do
   `CommitStore.import_commit` (Gate A) and certs still verify by
   signature + chain. Decode failures reject malformed bytes early, which
   is hygiene, not security.
+
+  ## Revocations ride the same envelope (CX-bepn, design §6)
+
+  `for_commit/2` also inlines every KNOWN revocation record filed
+  against any cert in the commit's chain (tiny — a revocation is a
+  hash + a pubkey + a signature). `verify_revocations/1` is the same
+  kind of pre-store hygiene as `verify_certs/1` — content address +
+  signature, over the record's OWN bytes — and NOT the authority check
+  (§7.6: authority is checked only inside `Trust.VerifyChain`, at
+  verify time, per link, where the whole chain is in hand). A receiver
+  that stores an unauthorized (stranger) revocation record wastes a few
+  bytes; it is inert everywhere it is later consulted.
   """
 
   alias Commonplace.Store.Commit
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Trust.Capability
+  alias Commonplace.Trust.Revocation
 
   @version 1
   # Mirrors Trust.VerifyChain's chain-length bound.
@@ -55,6 +68,8 @@ defmodule Commonplace.Federation.Envelope do
                 :issuer, :audience, :claim, :proof, :sig,
                 :verbs, :scope, :caveats, :not_before, :not_after, :docs,
                 :write, :execute, :delegate,
+                # Revocation struct fields (CX-bepn)
+                :revoked_cid, :revoker_pubkey,
                 # DateTime fields (commit timestamps)
                 :year, :month, :day, :hour, :minute, :second, :microsecond,
                 :time_zone, :zone_abbr, :utc_offset, :std_offset, :calendar
@@ -64,26 +79,34 @@ defmodule Commonplace.Federation.Envelope do
   def wire_atoms, do: @wire_atoms
 
   @doc """
-  Encode a commit and its supporting certs into a JSON envelope binary.
+  Encode a commit, its supporting certs, and any known revocations
+  (design §6; `revocations` defaults to `[]` so existing 2-arity call
+  sites are unaffected) into a JSON envelope binary.
   """
-  @spec encode(Commit.t(), [Capability.t()]) :: binary()
-  def encode(%Commit{} = commit, certs) when is_list(certs) do
+  @spec encode(Commit.t(), [Capability.t()], [Revocation.t()]) :: binary()
+  def encode(%Commit{} = commit, certs, revocations \\ [])
+      when is_list(certs) and is_list(revocations) do
     Jason.encode!(%{
       v: @version,
       commit: pack(commit),
-      certs: Enum.map(certs, &pack/1)
+      certs: Enum.map(certs, &pack/1),
+      revocations: Enum.map(revocations, &pack/1)
     })
   end
 
   @doc """
   Build the envelope for a commit, inlining its full cert chain
-  (leaf → root, following `proof` pointers, bounded like `VerifyChain`).
-  Certs the local store doesn't hold are simply not inlined — the
-  receiver may then defer on `:awaiting_capability`, which is its call.
+  (leaf → root, following `proof` pointers, bounded like `VerifyChain`)
+  AND every known revocation filed against any cert in that chain
+  (design §6 — revocations ride the same envelope/import path as
+  certs). Certs/revocations the local store doesn't hold are simply not
+  inlined — the receiver may then defer on `:awaiting_capability` (for a
+  missing cert), which is its call.
   """
   @spec for_commit(GenServer.server(), Commit.t()) :: binary()
   def for_commit(store, %Commit{} = commit) do
-    encode(commit, collect_chain(store, commit.metadata[:capability_proof], []))
+    chain = collect_chain(store, commit.metadata[:capability_proof], [])
+    encode(commit, chain, collect_revocations(store, chain))
   end
 
   defp collect_chain(_store, nil, acc), do: Enum.reverse(acc)
@@ -96,22 +119,35 @@ defmodule Commonplace.Federation.Envelope do
     end
   end
 
+  defp collect_revocations(store, chain) do
+    chain
+    |> Enum.flat_map(&CommitStoreClient.get_revocations(store, &1.id))
+    |> Enum.uniq_by(& &1.id)
+  end
+
   @doc """
-  Decode an envelope binary. Returns `{:ok, %{commit: commit, certs: certs}}`
-  or `{:error, reason}` — never raises on untrusted input.
+  Decode an envelope binary. Returns
+  `{:ok, %{commit: commit, certs: certs, revocations: revocations}}` or
+  `{:error, reason}` — never raises on untrusted input. `"revocations"`
+  is optional in the wire JSON (absent ⇒ `[]`) so envelopes written
+  before CX-bepn (e.g. archived `git_bridge` rows) still decode.
   """
   @spec decode(binary()) ::
-          {:ok, %{commit: Commit.t(), certs: [Capability.t()]}}
+          {:ok, %{commit: Commit.t(), certs: [Capability.t()], revocations: [Revocation.t()]}}
           | {:error, :bad_json | :bad_payload | :unsupported_version}
   def decode(binary) when is_binary(binary) do
-    with {:ok, %{"v" => @version, "commit" => commit_b64, "certs" => cert_b64s}}
+    with {:ok, %{"v" => @version, "commit" => commit_b64, "certs" => cert_b64s} = map}
          when is_list(cert_b64s) <- parse_json(binary),
+         revocation_b64s <- Map.get(map, "revocations", []),
+         true <- is_list(revocation_b64s),
          {:ok, %Commit{} = commit} <- unpack(commit_b64),
-         {:ok, certs} <- unpack_certs(cert_b64s) do
-      {:ok, %{commit: commit, certs: certs}}
+         {:ok, certs} <- unpack_certs(cert_b64s),
+         {:ok, revocations} <- unpack_revocations(revocation_b64s) do
+      {:ok, %{commit: commit, certs: certs, revocations: revocations}}
     else
       {:ok, %{"v" => v}} when v != @version -> {:error, :unsupported_version}
       {:ok, _other_shape} -> {:error, :bad_payload}
+      false -> {:error, :bad_payload}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -131,6 +167,7 @@ defmodule Commonplace.Federation.Envelope do
       case term do
         %Commit{} -> {:ok, term}
         %Capability{} -> {:ok, term}
+        %Revocation{} -> {:ok, term}
         _ -> {:error, :bad_payload}
       end
     else
@@ -155,6 +192,20 @@ defmodule Commonplace.Federation.Envelope do
     end
   end
 
+  defp unpack_revocations(b64s) do
+    Enum.reduce_while(b64s, {:ok, []}, fn b64, {:ok, acc} ->
+      case unpack(b64) do
+        {:ok, %Revocation{} = rev} -> {:cont, {:ok, [rev | acc]}}
+        {:ok, _not_a_revocation} -> {:halt, {:error, :bad_payload}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, revocations} -> {:ok, Enum.reverse(revocations)}
+      err -> err
+    end
+  end
+
   defp safe_binary_to_term(bytes) do
     {:ok, :erlang.binary_to_term(bytes, [:safe])}
   rescue
@@ -175,6 +226,27 @@ defmodule Commonplace.Federation.Envelope do
       :ok
     else
       {:error, :invalid_cert}
+    end
+  end
+
+  @doc """
+  Verify that every inlined revocation record is self-consistent
+  (content address matches, signature verifies against its OWN declared
+  `revoker_pubkey`) BEFORE it is stored. Same arrival-time hygiene as
+  `verify_certs/1`, and just as deliberately NOT an authority check
+  (design §7.6): whether the revoker actually has revocation authority
+  over the cert it names can only be validated at verify time, against
+  the full chain — see `Commonplace.Trust.Revocation`'s moduledoc for
+  why validating authority here would DROP early-arriving revocations.
+  """
+  @spec verify_revocations([Revocation.t()]) :: :ok | {:error, :invalid_revocation}
+  def verify_revocations(revocations) do
+    if Enum.all?(revocations, fn %Revocation{} = r ->
+         Revocation.verify_id(r) == :ok and Revocation.verify_sig(r) == :ok
+       end) do
+      :ok
+    else
+      {:error, :invalid_revocation}
     end
   end
 end

@@ -269,12 +269,27 @@ defmodule Commonplace.Trust do
     end
   end
 
-  # Cache key namespace: the verdict is only valid for the trust config that
-  # produced it, so a config change invalidates it for free.
-  defp cfg_fingerprint(cfg), do: :erlang.phash2(cfg.trusted_identities)
+  # Cache key namespace: the verdict is only valid for the trust config AND
+  # the revocation state that produced it, so either changing invalidates
+  # it for free.
+  #
+  # CX-bepn (design §4, "the watermark catch"): folding in
+  # `revocation_set_hash(store)` is REQUIRED, not decorative — without it
+  # a revocation changes effective authority (VerifyChain now denies a
+  # revoked cert's chain) WITHOUT touching `trusted_identities`, so a
+  # verdict cached BEFORE the revocation would keep honoring the revoked
+  # cert at Gate B indefinitely. The hash is read PER-STORE (through the
+  # threaded `store`, never a bare default read — same store-threading
+  # rule as everywhere else revocation state is touched) so a revocation
+  # written to store A never invalidates store B's cache and vice versa.
+  # One extra get per walk, amortized over every cached verdict it
+  # protects.
+  defp cfg_fingerprint(cfg, store) do
+    :erlang.phash2({cfg.trusted_identities, Commonplace.Store.CommitStoreClient.revocation_set_hash(store)})
+  end
 
   defp walk_contributors(store, doc_uuid, log, cfg) do
-    fp = cfg_fingerprint(cfg)
+    fp = cfg_fingerprint(cfg, store)
 
     {verdict, passed} =
       Enum.reduce_while(log, {:ok, []}, fn commit, {:ok, passed} ->

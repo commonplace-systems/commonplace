@@ -18,11 +18,19 @@ defmodule Commonplace.MUD.SectionOwnershipTest do
 
   ## Interim honesty on "revocation" (beat 5)
 
-  Per the spec's scope split (§1), true revocation records are NOT part
-  of this build (design-first, its own bead). Beat 5 exercises the
-  INTERIM mechanism that IS shipped: a short `not_after` caveat window
-  that expires and denies `:expired` — real, enforced, already in
-  `Commonplace.Trust.VerifyChain`.
+  Per the spec's scope split (§1), true revocation records were NOT part
+  of THIS build (design-first, its own bead — CX-bepn, since landed).
+  Beat 5 exercises the INTERIM mechanism that shipped alongside this
+  test: a short `not_after` caveat window that expires and denies
+  `:expired` — real, enforced, already in `Commonplace.Trust.VerifyChain`.
+
+  ## True revocation (beat 5b, CX-bepn)
+
+  Beat 5b is the TRUE-revocation sibling beat qat5.4's expiry beat
+  promised (design doc §8 step 7): X revokes Z's mid-session cert (X is
+  the cert's own issuer — path-issuer authority, §2) and Z's very next
+  edit denies `{:trust_rejected, :revoked}` — no caveat window, no
+  waiting for expiry, immediate and terminal.
   """
   use ExUnit.Case, async: false
 
@@ -302,6 +310,23 @@ defmodule Commonplace.MUD.SectionOwnershipTest do
                room1,
                room_update("room-1, edit by Z after expiry"),
                %{kind: :regular, capability_proof: short_cap.id},
+               signing_context: z.ctx
+             )
+
+    # ── Beat 5b (CX-bepn): TRUE revocation — X (the cert's own issuer,
+    #    §2 path-issuer authority) revokes Z's ORIGINAL (unbounded) cert
+    #    mid-session. Z's cert is still cryptographically well-formed and
+    #    was granting fine a moment ago (beat 4) — but the very next edit
+    #    now denies `:revoked`, terminal, no caveat window involved.
+    assert {:ok, revocation} = Commonplace.Trust.Capability.revoke(x.ctx, z_cap.id)
+    assert :ok = CommitStoreClient.store_revocation(store, revocation)
+
+    assert {:error, {:trust_rejected, :revoked}} =
+             CommitStoreClient.create_chained_commit(
+               store,
+               room1,
+               room_update("room-1, edit by Z after TRUE revocation"),
+               %{kind: :regular, capability_proof: z_cap.id},
                signing_context: z.ctx
              )
 

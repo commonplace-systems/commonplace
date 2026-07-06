@@ -32,11 +32,30 @@ defmodule Commonplace.Store.TrustSideStore do
       continue-default already tolerates a stale/absent read by re-walking
       history.
 
-  Anyone adding a THIRD row family to this store that is mutated in place
-  (i.e. NOT immutable-by-CID and NOT last-write-wins-under-a-disposable-key)
-  must NOT assume this same direct-read license extends to it — that kind
-  of row needs to go through a `GenServer.call` for a consistent read, same
-  as any other mutable state.
+  ## The revocation group is the licensed FOURTH family (CX-bepn)
+
+  `{:revocation, revoked_cid}` (a list of `Commonplace.Trust.Revocation`
+  records — multiple revokers per cert allowed) and the single
+  `{:revocation_meta, :set_hash}` watermark row are also direct
+  point-reads. Unlike the capability row, a `{:revocation, cid}` row IS
+  mutated in place (new revokers append to the list) — but every mutation
+  goes through `store_revocation/2`'s `GenServer.call`, which reads,
+  appends, and writes both the row AND the `:set_hash` watermark in ONE
+  `CubDB.put_multi/2` (atomic within CubDB). A direct reader therefore
+  never observes a torn write, only "before this append" or "after it" —
+  the same "last-write-wins, no torn state" property that licenses
+  `execute_clean`. Design doc
+  docs/plans/2026-07-06-capability-revocation-design.md §1/§4 is explicit
+  that there is NO global in-memory revocation set — every consult of
+  "is this cert revoked" is a per-link CubDB get against the THREADED
+  store (never a bare default-store read — see CX-ziye's store-threading
+  rule, which is exactly the bug shape a global set would reintroduce).
+
+  Anyone adding a FIFTH row family to this store that does NOT fit either
+  the immutable-by-CID pattern or the atomically-multi-put
+  last-write-wins pattern must NOT assume this same direct-read license
+  extends to it — that kind of row needs to go through a `GenServer.call`
+  for a consistent read, same as any other mutable state.
   """
 
   use GenServer
@@ -108,6 +127,56 @@ defmodule Commonplace.Store.TrustSideStore do
     GenServer.cast(server, {:put_execute_clean, fp, commit_id, bool})
   end
 
+  # ── Revocation group (CX-bepn) ──────────────────────────────────────────
+  #
+  # A revocation record is a content-addressed, signed statement that a
+  # capability cert is void (design doc §1). Storage mirrors the
+  # capability group's "durable row beside the capability rows" home;
+  # the `:set_hash` watermark row is the §4 fold-in point that lets
+  # `Commonplace.Trust`'s execute-clean cache self-invalidate on a new
+  # revocation without ever needing a global in-memory set.
+
+  @doc """
+  Persist a revocation record (idempotent by id — re-storing the same
+  revoker's revocation of the same cert is a no-op). Routes through
+  `GenServer.call` so the `{:revocation, cid}` row and the
+  `{:revocation_meta, :set_hash}` watermark update atomically in the
+  SAME write — the watermark must never observe "revocation stored" and
+  "hash bumped" as separable states, or a concurrent `cfg_fingerprint`
+  read could compute a fingerprint that a subsequent revocation, sharing
+  that same fingerprint, would fail to invalidate.
+  """
+  def store_revocation(server \\ __MODULE__, %Commonplace.Trust.Revocation{} = rev) do
+    GenServer.call(server, {:store_revocation, rev})
+  end
+
+  @doc """
+  Fetch every revocation record filed against `revoked_cid` (possibly
+  from multiple revokers). `[]` if none. Direct point-read in the caller
+  process — see the moduledoc's "the revocation group is the licensed
+  FOURTH family" section for why this is safe for this row shape.
+  """
+  def get_revocations(server \\ __MODULE__, revoked_cid) do
+    case CubDB.get(resolve_db(server), {:revocation, revoked_cid}) do
+      nil -> []
+      list -> list
+    end
+  end
+
+  @doc """
+  The per-store revocation-set watermark (design §4): an opaque integer
+  that changes whenever ANY revocation is newly stored in THIS store.
+  Folded into `Commonplace.Trust`'s `cfg_fingerprint`, so a revocation
+  self-invalidates every execute-clean verdict cached under the old
+  fingerprint. `0` if this store has never stored a revocation.
+  """
+  def revocation_set_hash(server \\ __MODULE__) do
+    case CubDB.get(resolve_db(server), {:revocation_meta, :set_hash}) do
+      nil -> 0
+      hash -> hash
+    end
+  end
+
   @doc """
   Drop every execute-clean cache entry (e.g. on a trust-config change —
   CX-tdkq.21). Synchronous `GenServer.call` — callers need the guarantee
@@ -154,6 +223,38 @@ defmodule Commonplace.Store.TrustSideStore do
     GenServer.cast(state.pending_imports, {:notify_capability, cap.id})
 
     {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_call({:store_revocation, %Commonplace.Trust.Revocation{} = rev}, _from, state) do
+    existing = CubDB.get(state.db, {:revocation, rev.revoked_cid}) || []
+
+    if Enum.any?(existing, &(&1.id == rev.id)) do
+      # Content-addressed dedupe: the same revoker revoking the same cert
+      # again is a no-op — no new row, no watermark bump (idempotent,
+      # mirrors store_capability's re-put-of-identical-bytes behavior).
+      {:reply, :ok, state}
+    else
+      updated = [rev | existing]
+      old_hash = CubDB.get(state.db, {:revocation_meta, :set_hash}) || 0
+      new_hash = :erlang.phash2({old_hash, rev.id})
+
+      # Atomic: the row and the watermark land in the SAME put_multi, so
+      # no reader can observe one without the other (§4's load-bearing
+      # requirement — see moduledoc).
+      CubDB.put_multi(state.db, [
+        {{:revocation, rev.revoked_cid}, updated},
+        {{:revocation_meta, :set_hash}, new_hash}
+      ])
+
+      :telemetry.execute(
+        [:commonplace, :trust, :revocation, :stored],
+        %{set_size: length(updated)},
+        %{revoked_cid: rev.revoked_cid}
+      )
+
+      {:reply, :ok, state}
+    end
   end
 
   @impl true

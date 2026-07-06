@@ -9,11 +9,14 @@ defmodule CommonplaceWebWeb.FederationController do
     * `GET  /federation/docs/:uuid/cids`    — the doc's commit-CID set,
       for the puller's diff.
     * `POST /federation/docs/:uuid/commits` — requested CIDs → envelopes
-      (commit + inlined cert chain, `Envelope.for_commit/2`).
-    * `POST /federation/import`             — envelope in: certs are
-      verified (id + sig — self-verifying values) and stored, then the
-      commit goes through `import_commit` — Gate A UNCHANGED, the only
-      door. The per-peer deferral budget 429s a peer that keeps sending
+      (commit + inlined cert chain + known revocations,
+      `Envelope.for_commit/2` — CX-bepn design §6).
+    * `POST /federation/import`             — envelope in: certs AND
+      revocations are verified (id + sig — self-verifying values) and
+      stored, then the commit goes through `import_commit` — Gate A
+      UNCHANGED, the only door. Revocation AUTHORITY is never checked
+      here (§7.6 — that's `Trust.VerifyChain`'s job, at verify time).
+      The per-peer deferral budget 429s a peer that keeps sending
       commits which defer on `:awaiting_capability`, bounding its
       pending-queue contribution (CX-orfw.1 scope note).
 
@@ -51,14 +54,18 @@ defmodule CommonplaceWebWeb.FederationController do
   def import(conn, %{"envelope" => encoded}) when is_binary(encoded) do
     peer = conn.assigns.federation_peer
 
-    with {:ok, %{commit: commit, certs: certs}} <- Envelope.decode(encoded),
-         :ok <- Envelope.verify_certs(certs) do
+    with {:ok, %{commit: commit, certs: certs, revocations: revocations}} <- Envelope.decode(encoded),
+         :ok <- Envelope.verify_certs(certs),
+         :ok <- Envelope.verify_revocations(revocations) do
       if FederationPeerBudget.over_budget?(peer) do
         conn
         |> put_status(429)
         |> json(%{result: "over_deferral_budget"})
       else
         Enum.each(certs, &CommitStoreClient.store_capability(CommitStoreClient, &1))
+        # CX-bepn (design §6): store sig-consistent revocations on
+        # arrival; authority is validated only at verify time (§7.6).
+        Enum.each(revocations, &CommitStoreClient.store_revocation(CommitStoreClient, &1))
         respond_import(conn, peer, CommitStoreClient.import_commit(CommitStoreClient, commit))
       end
     else

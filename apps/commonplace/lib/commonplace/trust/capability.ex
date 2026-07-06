@@ -46,6 +46,7 @@ defmodule Commonplace.Trust.Capability do
   """
 
   alias Commonplace.Crypto.SigningContext
+  alias Commonplace.Trust.Revocation
 
   @type keyed_identity :: {String.t(), binary()}
   @type claim :: %{
@@ -134,6 +135,27 @@ defmodule Commonplace.Trust.Capability do
           {:ok, t()} | {:error, term()}
   def delegate(issuer_ctx, audience, claim, parent_cid \\ nil, opts \\ []) do
     issue(issuer_ctx, audience, claim, parent_cid, opts)
+  end
+
+  @doc """
+  Mint and sign a `Commonplace.Trust.Revocation` (CX-bepn, design §1/§8
+  step 5): `revoker_ctx` says "the cert at `revoked_cid` is void." No
+  authority check happens here — by design (§7.6): whether this signer
+  actually HAS revocation authority over `revoked_cid` (path-issuer or
+  the cert's own audience) can only be checked against the cert's chain,
+  which may not even be locally known yet at mint time. `VerifyChain`
+  validates authority per-link, at verify time. This function is
+  intentionally infallible (mirrors the shape of `issue/5`'s return for
+  API consistency, even though minting a revocation never fails).
+  """
+  @spec revoke(SigningContext.t(), binary()) :: {:ok, Revocation.t()}
+  def revoke(%SigningContext{} = revoker_ctx, revoked_cid) when is_binary(revoked_cid) do
+    rev =
+      revoked_cid
+      |> Revocation.new(revoker_ctx.public_key)
+      |> Revocation.sign(revoker_ctx.private_key)
+
+    {:ok, rev}
   end
 
   @doc """

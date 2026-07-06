@@ -27,6 +27,29 @@ defmodule Commonplace.Trust.VerifyChain do
   tightest caveat window). Because narrowing is enforced this equals the
   leaf's claim, but it is computed explicitly so the returned capability
   is honest regardless.
+
+  ## Revocation (CX-bepn, design §1/§3/§7.6)
+
+  Per chain link, `check_revocations/2` consults every revocation record
+  filed against that link's cert CID — a per-link CubDB get against the
+  THREADED `store`, never a global in-memory set (design §1: the CX-ziye
+  bug shape reborn, cross-store spurious-grant/deny). ANY link revoked
+  by an AUTHORIZED revoker is a terminal `{:error, :revoked}` —
+  transitivity is free-by-construction (a chain THROUGH a revoked link
+  denies without any extra code).
+
+  Revoker AUTHORITY (§2) is validated HERE, at verify time, per link —
+  never at revocation import/arrival (`Commonplace.Trust.Revocation`'s
+  moduledoc has the full rationale: federation makes no ordering
+  promise, and an early-arriving revocation's authority can't be checked
+  before its target cert's chain is known). A revoker is authorized for
+  cert `chain[k]` iff its pubkey is either (a) the issuer of `chain[k]`
+  itself or any of its ancestors (`chain[k..-1]`'s issuers — "root or any
+  ancestor delegator"), or (b) `chain[k]`'s own audience (self-
+  renunciation). An unauthorized (stranger) revocation record is
+  naturally inert — it simply never matches — but is counted via a
+  `[:commonplace, :trust, :revocation, :ignored]` telemetry event so a
+  stranger-record flood is visible.
   """
 
   alias Commonplace.Store.CommitStore
@@ -43,7 +66,8 @@ defmodule Commonplace.Trust.VerifyChain do
     with {:ok, chain} <- build_chain(leaf_cid, store),
          :ok <- check_each_cert(chain),
          :ok <- check_links(chain),
-         :ok <- check_root(List.last(chain), anchor_keys) do
+         :ok <- check_root(List.last(chain), anchor_keys),
+         :ok <- check_revocations(chain, store) do
       {:ok, effective(chain)}
     end
   end
@@ -129,6 +153,75 @@ defmodule Commonplace.Trust.VerifyChain do
     if Capability.attenuates?(child.claim, parent.claim),
       do: :ok,
       else: {:error, :not_attenuation}
+  end
+
+  # --- revocation (CX-bepn, design §1/§3/§7.6) ---
+  #
+  # Per link, terminal `:revoked` if ANY revocation record filed against
+  # that cert's CID is signed by a pubkey authorized over that cert (§2).
+  # Store-threaded (CommitStoreClient.get_revocations/2, never a bare
+  # default-store read) — design §1's no-in-memory-set, per-store rule.
+
+  defp check_revocations(chain, store) do
+    Enum.reduce_while(chain, :ok, fn cap, :ok ->
+      case CommitStoreClient.get_revocations(store, cap.id) do
+        [] ->
+          {:cont, :ok}
+
+        revocations ->
+          authorized_keys = revocation_authority_keys(cap, chain)
+
+          if Enum.any?(revocations, &authorized_revoker?(&1, authorized_keys, cap)) do
+            {:halt, {:error, :revoked}}
+          else
+            {:cont, :ok}
+          end
+      end
+    end)
+  end
+
+  defp authorized_revoker?(rev, authorized_keys, cap) do
+    # Defense in depth (Fable review): re-verify the record's OWN
+    # integrity here, not just path-membership of its DECLARED
+    # revoker_pubkey. Every current ingress (envelope import, cap CLI)
+    # verifies id+sig before storing, but on a mechanism where a record
+    # IS authority the verifier must be self-contained — a forged
+    # record reaching the store through any future unverified path
+    # would otherwise revoke arbitrary certs without holding the
+    # revoker's key. Cost: one Ed25519 verify per record, only on a
+    # revoked-cid hit (rare by design).
+    with true <- MapSet.member?(authorized_keys, rev.revoker_pubkey),
+         :ok <- Commonplace.Trust.Revocation.verify_id(rev),
+         :ok <- Commonplace.Trust.Revocation.verify_sig(rev) do
+      true
+    else
+      _ ->
+        :telemetry.execute(
+          [:commonplace, :trust, :revocation, :ignored],
+          %{system_time: System.system_time()},
+          %{cap_id: cap.id, revoker_pubkey: rev.revoker_pubkey}
+        )
+
+        false
+    end
+  end
+
+  # §2: authorized revokers for `cap` are (a) the issuer of `cap` itself
+  # or any of its ancestors in `chain` (the suffix from `cap` to root —
+  # "root or any ancestor delegator"), or (b) `cap`'s own audience
+  # (self-renunciation, e.g. a compromised-key holder revoking their own
+  # cert). Computed offline from the already-built chain — no new
+  # lookups, per the moduledoc.
+  defp revocation_authority_keys(cap, chain) do
+    {_before, [^cap | ancestors]} = Enum.split_while(chain, &(&1.id != cap.id))
+
+    issuer_keys =
+      [cap | ancestors]
+      |> Enum.map(fn %{issuer: {_uuid, pubkey}} -> pubkey end)
+      |> MapSet.new()
+
+    {_uuid, audience_pubkey} = cap.audience
+    MapSet.put(issuer_keys, audience_pubkey)
   end
 
   # --- root anchor ---

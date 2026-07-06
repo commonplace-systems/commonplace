@@ -775,6 +775,34 @@ defmodule Commonplace.Store.CommitStore do
   @spec flush_execute_clean(GenServer.server()) :: :ok
   def flush_execute_clean(server \\ __MODULE__), do: GenServer.call(server, :flush_execute_clean)
 
+  # --- revocation records (CX-bepn) ---
+  #
+  # Thin back-compat shims, same shape as store_capability/get_capability:
+  # the actual rows live in `Commonplace.Store.TrustSideStore`; retained
+  # here because `CommitStoreClient`'s remote mode addresses this
+  # GenServer's registered name directly over BEAM distribution.
+
+  @doc "Persist a revocation record (CX-bepn design §1/§8 step 2). See `TrustSideStore.store_revocation/2`."
+  def store_revocation(server \\ __MODULE__, %Commonplace.Trust.Revocation{} = rev) do
+    GenServer.call(server, {:store_revocation, rev})
+  end
+
+  @doc "Fetch every revocation filed against `revoked_cid`. `[]` if none. Pure point-read."
+  def get_revocations(server \\ __MODULE__, revoked_cid) do
+    case CubDB.get(resolve_db(server), {:revocation, revoked_cid}) do
+      nil -> []
+      list -> list
+    end
+  end
+
+  @doc "The per-store revocation-set watermark (design §4). Pure point-read."
+  def revocation_set_hash(server \\ __MODULE__) do
+    case CubDB.get(resolve_db(server), {:revocation_meta, :set_hash}) do
+      nil -> 0
+      hash -> hash
+    end
+  end
+
   @doc """
   Return the local head commit for `doc_uuid` as `{:ok, commit}`,
   or `:none` if the doc has no `:latest` entry on this node.
@@ -1435,6 +1463,37 @@ defmodule Commonplace.Store.CommitStore do
       case CubDB.get(state.db, {:capability, cid}) do
         nil -> :none
         cap -> {:ok, cap}
+      end
+
+    {:reply, reply, state}
+  end
+
+  @impl true
+  def handle_call({:store_revocation, %Commonplace.Trust.Revocation{} = rev}, _from, state) do
+    # R4c carve-out shape: delegate to this instance's TrustSideStore
+    # companion, which owns the {:revocation, cid} row + the :set_hash
+    # watermark (atomic multi-put — see TrustSideStore's moduledoc).
+    reply = Commonplace.Store.TrustSideStore.store_revocation(state.trust_side_store, rev)
+    {:reply, reply, state}
+  end
+
+  @impl true
+  def handle_call({:get_revocations, revoked_cid}, _from, state) do
+    reply =
+      case CubDB.get(state.db, {:revocation, revoked_cid}) do
+        nil -> []
+        list -> list
+      end
+
+    {:reply, reply, state}
+  end
+
+  @impl true
+  def handle_call(:revocation_set_hash, _from, state) do
+    reply =
+      case CubDB.get(state.db, {:revocation_meta, :set_hash}) do
+        nil -> 0
+        hash -> hash
       end
 
     {:reply, reply, state}

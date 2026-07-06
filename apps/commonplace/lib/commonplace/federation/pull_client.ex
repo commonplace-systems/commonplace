@@ -121,9 +121,16 @@ defmodule Commonplace.Federation.PullClient do
   defp fetch_missing(transport, peer, doc, missing), do: transport.(:commits, peer, {doc, missing})
 
   defp import_envelope(store, encoded, acc, peer, doc) do
-    with {:ok, %{commit: commit, certs: certs}} <- Envelope.decode(encoded),
-         :ok <- Envelope.verify_certs(certs) do
+    with {:ok, %{commit: commit, certs: certs, revocations: revocations}} <- Envelope.decode(encoded),
+         :ok <- Envelope.verify_certs(certs),
+         :ok <- Envelope.verify_revocations(revocations) do
       Enum.each(certs, &CommitStoreClient.store_capability(store, &1))
+      # CX-bepn (design §6): store sig-consistent revocations on arrival
+      # WITHOUT validating revoker authority here — see
+      # `Commonplace.Trust.Revocation`'s moduledoc (§7.6) for why an
+      # early-arriving revocation (before its target cert's chain is
+      # known) must still be stored, not dropped.
+      Enum.each(revocations, &CommitStoreClient.store_revocation(store, &1))
 
       case NodeSync.import_with_translation(store, commit) do
         :ok ->

@@ -52,7 +52,13 @@ defmodule Commonplace.Trust.ExecuteBaselineTest do
       tctx: tctx,
       uctx: uctx,
       strict: strict,
-      fp: :erlang.phash2(strict.trusted_identities)
+      # CX-bepn (design §4): the cache key now folds in the PER-STORE
+      # revocation-set watermark alongside trusted_identities — a fresh
+      # store with no revocations hashes with `revocation_set_hash == 0`.
+      fp:
+        :erlang.phash2(
+          {strict.trusted_identities, Commonplace.Store.CommitStoreClient.revocation_set_hash(name)}
+        )
     }
   end
 

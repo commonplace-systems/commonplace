@@ -92,6 +92,49 @@ defmodule Commonplace.Federation.EnvelopeTest do
     {:ok, map} = commit |> Envelope.encode([]) |> Jason.decode()
     assert {:error, :unsupported_version} = Envelope.decode(Jason.encode!(%{map | "v" => 99}))
   end
+
+  # CX-bepn: revocations ride the same envelope (design §6).
+  test "round-trip preserves an inlined revocation byte-faithfully" do
+    {commit, cert} = fixture()
+    {revoker_pub, revoker_priv} = Signing.generate_keypair()
+
+    {:ok, rev} =
+      Capability.revoke(
+        %SigningContext{identity_uuid: "revoker", private_key: revoker_priv, public_key: revoker_pub},
+        cert.id
+      )
+
+    encoded = Envelope.encode(commit, [cert], [rev])
+    assert {:ok, %{certs: [decoded_cert], revocations: [decoded_rev]}} = Envelope.decode(encoded)
+
+    assert decoded_cert == cert
+    assert decoded_rev == rev
+    assert :ok = Commonplace.Trust.Revocation.verify_id(decoded_rev)
+    assert :ok = Commonplace.Trust.Revocation.verify_sig(decoded_rev)
+  end
+
+  test "an envelope with no \"revocations\" key decodes as [] (back-compat)" do
+    {commit, cert} = fixture()
+    {:ok, map} = Jason.decode(Envelope.encode(commit, [cert]))
+    without_revocations = Jason.encode!(Map.delete(map, "revocations"))
+
+    assert {:ok, %{revocations: []}} = Envelope.decode(without_revocations)
+  end
+
+  test "verify_revocations rejects a forged revocation signature" do
+    {_commit, cert} = fixture()
+    {revoker_pub, revoker_priv} = Signing.generate_keypair()
+
+    {:ok, rev} =
+      Capability.revoke(
+        %SigningContext{identity_uuid: "revoker", private_key: revoker_priv, public_key: revoker_pub},
+        cert.id
+      )
+
+    forged = %{rev | sig: :crypto.strong_rand_bytes(64)}
+    assert :ok = Envelope.verify_revocations([rev])
+    assert {:error, :invalid_revocation} = Envelope.verify_revocations([forged])
+  end
 end
 
 defmodule Commonplace.Federation.EnvelopeForCommitTest do
@@ -189,5 +232,31 @@ defmodule Commonplace.Federation.EnvelopeForCommitTest do
       |> Signing.sign_commit(alice.priv, alice.signer)
 
     assert {:ok, %{certs: []}} = store |> Envelope.for_commit(commit) |> Envelope.decode()
+  end
+
+  test "inlines a known revocation filed against a cert in the chain (CX-bepn design §6)",
+       %{store: store} do
+    root = ident("root")
+    alice = ident("alice")
+
+    {:ok, cert} =
+      Capability.delegate(root.ctx, alice.keyed, %{
+        verbs: [:write],
+        scope: {:docs, ["d4"]},
+        caveats: %{not_before: nil, not_after: nil}
+      })
+
+    :ok = CommitStore.store_capability(store, cert)
+
+    {:ok, rev} = Capability.revoke(root.ctx, cert.id)
+    :ok = CommitStore.store_revocation(store, rev)
+
+    commit =
+      Commit.new("d4", "p", nil, %{kind: :regular, capability_proof: cert.id})
+      |> Signing.sign_commit(alice.priv, alice.signer)
+
+    encoded = Envelope.for_commit(store, commit)
+    assert {:ok, %{revocations: [decoded_rev]}} = Envelope.decode(encoded)
+    assert decoded_rev == rev
   end
 end

@@ -323,6 +323,44 @@ defmodule Commonplace.Store.CommitStoreClient do
     end
   end
 
+  # Revocation records (CX-bepn) — store-threading shape mirrors the
+  # capability group above, with the SAME split between the mutating verb
+  # (store_revocation, which needs the TrustSideStore companion, exactly
+  # like store_capability) and the pure reads (get_revocations,
+  # revocation_set_hash, which read the CommitStore's OWN db directly —
+  # no TrustSideStore process required — exactly like get_capability /
+  # get_execute_clean). That split matters: `Trust.cfg_fingerprint/2`
+  # calls `revocation_set_hash/1` on EVERY execute-clean walk, including
+  # from callers using a bare `CommitStore.start_link/1` with no
+  # TrustSideStore companion configured — routing that read through the
+  # companion would crash every such caller (`GenServer.call(nil, ...)`),
+  # not just ones that actually touch revocations. REMOTE mode addresses
+  # CommitStore's registered name over BEAM distribution either way.
+  # Store-threading here is exactly what closes the CX-ziye bug shape for
+  # revocations too (design doc §1): a revocation lookup must never
+  # silently consult the DEFAULT store when the caller asked for a NAMED
+  # one.
+  def store_revocation(server \\ CommitStore, rev) do
+    case remote_node() do
+      {:ok, node} -> GenServer.call({CommitStore, node}, {:store_revocation, rev})
+      :local -> TrustSideStore.store_revocation(CommitStore.trust_side_store_name(normalize_server(server)), rev)
+    end
+  end
+
+  def get_revocations(server \\ CommitStore, revoked_cid) do
+    case remote_node() do
+      {:ok, node} -> GenServer.call({CommitStore, node}, {:get_revocations, revoked_cid})
+      :local -> CommitStore.get_revocations(normalize_server(server), revoked_cid)
+    end
+  end
+
+  def revocation_set_hash(server \\ CommitStore) do
+    case remote_node() do
+      {:ok, node} -> GenServer.call({CommitStore, node}, :revocation_set_hash)
+      :local -> CommitStore.revocation_set_hash(normalize_server(server))
+    end
+  end
+
   def latest_commit(server \\ CommitStore, doc_uuid) do
     case remote_node() do
       {:ok, node} ->
