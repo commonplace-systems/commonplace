@@ -15,9 +15,19 @@ defmodule Commonplace.MUD.VerbSource do
         end
       end
 
-  Compilation goes through `Commonplace.Code.SourceDoc.compile/2` which
+  Compilation goes through `Commonplace.Code.SourceDoc.compile/3` which
   caches by content-hash in ETS. Editing a verb changes the hash → next
   call recompiles. That's the v0 hot-reload.
+
+  CX-9f62: every verb compile passes `unique_module: source_uuid`, so the
+  author's `defmodule` name is rewritten to a name derived from the verb
+  source doc's own uuid before compiling. Two verbs authored under the
+  identical `defmodule UserVerb` name (a common author habit — see the
+  example above) therefore compile to two DISTINCT modules instead of
+  colliding in the global BEAM module table (the "verb-name hijack"
+  symptom, where firing verb A on object A could execute verb B's body
+  because both had clobbered the same module atom). Callers only ever see
+  the returned module atom, so this is fully transparent.
   """
 
   alias Commonplace.Code.SourceDoc
@@ -57,7 +67,7 @@ defmodule Commonplace.MUD.VerbSource do
   def compile_verb(target_dir_uuid, verb_name, store \\ CommitStoreClient) do
     case find_source(target_dir_uuid, verb_name, store) do
       {:ok, source_uuid} ->
-        case SourceDoc.compile(source_uuid, store) do
+        case SourceDoc.compile(source_uuid, store, unique_module: source_uuid) do
           {:ok, module} ->
             if function_exported?(module, :run, 1) do
               {:ok, module}
@@ -129,7 +139,7 @@ defmodule Commonplace.MUD.VerbSource do
     with {:ok, verbs_uuid} <- ensure_verbs_dir(target_dir_uuid, store, opts),
          {:ok, verbs_schema} <- Schemas.load_dir_schema(verbs_uuid, store),
          {:ok, source_uuid} <- save_source(verbs_uuid, verbs_schema, file, source_text, store, opts) do
-      case SourceDoc.compile(source_uuid, store) do
+      case SourceDoc.compile(source_uuid, store, unique_module: source_uuid) do
         {:ok, module} ->
           if function_exported?(module, :run, 1), do: :ok, else: {:error, {:no_run_export, module}}
 

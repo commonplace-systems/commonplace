@@ -139,7 +139,7 @@ defmodule Commonplace.Code.SourceDocTest do
       # Round-1 audit (A) — no stale entry leak
       # The :source_doc_index should have exactly one entry for this uuid
       # (the latest hash); the old hash entry should have been deleted.
-      index_entries = :ets.match_object(:source_doc_index, {uuid, :_, :_})
+      index_entries = :ets.match_object(:source_doc_index, {uuid, :_, :_, :_})
       assert length(index_entries) == 1, "no stale uuid entries in index after recompile"
     end
   end
@@ -218,7 +218,10 @@ defmodule Commonplace.Code.SourceDocTest do
     defp mod_src(n), do: "defmodule Commonplace.UserCode.CapTest.M#{n} do def v, do: #{n} end"
 
     defp cached_uuids do
-      :source_doc_index |> :ets.tab2list() |> Enum.map(fn {uuid, _h, _a} -> uuid end) |> MapSet.new()
+      :source_doc_index
+    |> :ets.tab2list()
+    |> Enum.map(fn {uuid, _h, _cache_key, _a} -> uuid end)
+    |> MapSet.new()
     end
 
     test "evicts least-recently-used modules once over the cap" do

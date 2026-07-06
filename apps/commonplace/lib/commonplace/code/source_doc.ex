@@ -43,11 +43,25 @@ defmodule Commonplace.Code.SourceDoc do
   `Commonplace.UserCode.<Domain>.<Name>`. Source author owns module
   identity.
 
-  ## Cache shape (round-1 audit (A))
+  Exception (CX-9f62): when the caller passes `unique_module: key` to
+  `compile/3` (only `Commonplace.MUD.VerbSource` does today), the
+  top-level `defmodule` alias is rewritten before compiling to a name
+  derived from `key` (`Commonplace.MUD.UserVerb.V<sha256 hex>`), so two
+  verb docs authored under the identical `defmodule UserVerb` name
+  never collide in the BEAM module table. This is scoped to the verb
+  path only — `unique_module` absent is byte-for-byte the original
+  self-naming behavior.
+
+  ## Cache shape (round-1 audit (A); cache_key generalized in CX-9f62)
 
   Two ETS tables:
-  * `:source_doc_index` — `{uuid → content_hash}` — latest hash per uuid
-  * `:source_doc_cache` — `{content_hash → module}` — compiled module
+  * `:source_doc_index` — `{uuid, content_hash, cache_key, accessed}` —
+    latest hash + derived cache_key per uuid
+  * `:source_doc_cache` — `{cache_key → module}` — compiled module
+
+  `cache_key` is the bare `content_hash` unless the caller passed
+  `unique_module: key` to `compile/3`, in which case it's `{content_hash,
+  key}` — see "Module name source" below.
 
   Compile flow:
   1. Read source + content_hash from doc
@@ -105,10 +119,26 @@ defmodule Commonplace.Code.SourceDoc do
   Caches by uuid; recompiles only if content_hash changes (round-1
   audit (A) ETS invalidation discipline). Source body is full
   `defmodule X do ... end` — substrate compiles as-is.
+
+  ## `opts` (CX-9f62)
+
+  `:unique_module` — when present (any term, typically the calling
+  doc's own uuid), the source's top-level `defmodule` name is rewritten
+  before compiling to a name derived deterministically from this key,
+  so distinct callers passing distinct keys never collide in the BEAM
+  module table even if their source text uses the identical
+  `defmodule` name. Used by `Commonplace.MUD.VerbSource` so two
+  same-named `@verb`s on different objects compile to distinct modules
+  (fix for the global compile collision / verb-name hijack).
+
+  When `:unique_module` is absent (the default), behavior is UNCHANGED
+  from before this option existed: the source's own `defmodule` name is
+  used as-is. This is relied on by `Commonplace.View.ComputeRunner` and
+  `Commonplace.Process.Orchestrator` — do not change their behavior.
   """
-  @spec compile(binary(), GenServer.server()) ::
+  @spec compile(binary(), GenServer.server(), keyword()) ::
           {:ok, module()} | {:error, term()}
-  def compile(uuid, store \\ CommitStoreClient) when is_binary(uuid) do
+  def compile(uuid, store \\ CommitStoreClient, opts \\ []) when is_binary(uuid) do
     ensure_tables()
 
     # Gate B (CX-tdkq.2 / R2): every commit contributing to a code doc
@@ -121,13 +151,13 @@ defmodule Commonplace.Code.SourceDoc do
     case Commonplace.Trust.authorized_to_execute?(store, uuid) do
       :ok ->
         with {:ok, source, hash} <- read(uuid, store) do
-          case lookup_cached(uuid, hash) do
+          case lookup_cached(uuid, hash, opts) do
             {:ok, module} ->
               {:ok, module}
 
             :miss ->
               purge_stale(uuid)
-              do_compile(uuid, source, hash)
+              do_compile(uuid, source, hash, opts)
           end
         end
 
@@ -220,11 +250,33 @@ defmodule Commonplace.Code.SourceDoc do
     Application.get_env(:commonplace, :source_doc_cache_max, @default_max_cached_modules)
   end
 
-  defp lookup_cached(uuid, hash) do
-    with [{^uuid, ^hash, _accessed}] <- :ets.lookup(@index_table, uuid),
-         [{^hash, module}] <- :ets.lookup(@cache_table, hash) do
+  # Cache key for the compiled-module table. When `:unique_module` is absent
+  # (the compute/view/black path), the key is the bare content hash — byte-
+  # for-byte identical to pre-CX-9f62 behavior, so identical source text
+  # across different docs still shares one compiled module as before.
+  #
+  # When `:unique_module` is present (the verb path), the key also carries
+  # the caller's key so two docs with textually-identical source (e.g. both
+  # authored as `defmodule UserVerb`) never share a cache row — each gets
+  # its own derived module name (see `derive_module_atom/1`).
+  defp cache_key(hash, opts) do
+    case Keyword.get(opts, :unique_module) do
+      nil -> hash
+      key -> {hash, key}
+    end
+  end
+
+  # index_table rows are {uuid, hash, cache_key, accessed}. Carrying the
+  # cache_key alongside the hash (rather than recomputing it from opts)
+  # means eviction (which has no access to the original call's opts) can
+  # still reclaim the right cache_table row via purge_stale/1.
+  defp lookup_cached(uuid, hash, opts) do
+    key = cache_key(hash, opts)
+
+    with [{^uuid, ^hash, ^key, _accessed}] <- :ets.lookup(@index_table, uuid),
+         [{^key, module}] <- :ets.lookup(@cache_table, key) do
       # Touch on hit so the LRU eviction order reflects real usage.
-      :ets.insert(@index_table, {uuid, hash, now_ms()})
+      :ets.insert(@index_table, {uuid, hash, key, now_ms()})
       {:ok, module}
     else
       _ -> :miss
@@ -233,16 +285,16 @@ defmodule Commonplace.Code.SourceDoc do
 
   defp purge_stale(uuid) do
     case :ets.lookup(@index_table, uuid) do
-      [{^uuid, old_hash, _accessed}] ->
-        case :ets.lookup(@cache_table, old_hash) do
-          [{^old_hash, old_module}] ->
+      [{^uuid, _old_hash, old_key, _accessed}] ->
+        case :ets.lookup(@cache_table, old_key) do
+          [{^old_key, old_module}] ->
             try do
               :code.purge(old_module)
             rescue
               _ -> :ok
             end
 
-            :ets.delete(@cache_table, old_hash)
+            :ets.delete(@cache_table, old_key)
 
           [] ->
             :ok
@@ -255,14 +307,24 @@ defmodule Commonplace.Code.SourceDoc do
     end
   end
 
-  defp do_compile(uuid, source, hash) do
+  defp do_compile(uuid, source, hash, opts) do
     filename = "docref://" <> uuid
 
     try do
-      [{module, _bin} | _] = Code.compile_string(source, filename)
+      [{module, _bin} | _] =
+        case Keyword.get(opts, :unique_module) do
+          nil ->
+            Code.compile_string(source, filename)
 
-      :ets.insert(@index_table, {uuid, hash, now_ms()})
-      :ets.insert(@cache_table, {hash, module})
+          key ->
+            ast = Code.string_to_quoted!(source, file: filename, line: 1)
+            new_ast = rewrite_module_name(ast, derive_module_atom(key))
+            Code.compile_quoted(new_ast, filename)
+        end
+
+      cache_key = cache_key(hash, opts)
+      :ets.insert(@index_table, {uuid, hash, cache_key, now_ms()})
+      :ets.insert(@cache_table, {cache_key, module})
       evict_over_cap()
 
       {:ok, module}
@@ -271,6 +333,35 @@ defmodule Commonplace.Code.SourceDoc do
     catch
       kind, reason -> {:error, {kind, reason}}
     end
+  end
+
+  # Deterministic, collision-free module name derived from an arbitrary key
+  # (the verb source doc's own uuid). Same key always derives the same
+  # module name, so re-compiling after a content-hash change (hot reload)
+  # still targets the same atom — purge_stale/2 above reclaims the old code
+  # for that atom before the redefinition, same as the self-named path.
+  defp derive_module_atom(key) do
+    hex = :crypto.hash(:sha256, to_string(key)) |> Base.encode16(case: :lower)
+    String.to_atom("Elixir.Commonplace.MUD.UserVerb.V" <> hex)
+  end
+
+  # Rewrites the FIRST top-level `defmodule` alias found (prewalk = top-down,
+  # left-to-right) to `new_alias_atom`, leaving everything else (including
+  # any nested defmodule, which already has a distinct name) untouched. A
+  # source doc with no defmodule at all is a no-op here; the subsequent
+  # `Code.compile_quoted/2` then returns `[]` and the `[{module,_}|_] = `
+  # match raises, caught by the `rescue` in `do_compile/4` same as today.
+  defp rewrite_module_name(ast, new_alias_atom) do
+    {new_ast, _found?} =
+      Macro.prewalk(ast, false, fn
+        {:defmodule, meta, [_old_alias, body]}, false ->
+          {{:defmodule, meta, [{:__aliases__, [alias: false], [new_alias_atom]}, body]}, true}
+
+        node, found? ->
+          {node, found?}
+      end)
+
+    new_ast
   end
 
   # Strictly monotonic access stamp. Millisecond wall-time ties (several
@@ -288,9 +379,9 @@ defmodule Commonplace.Code.SourceDoc do
     if :ets.info(@index_table, :size) > cap do
       @index_table
       |> :ets.tab2list()
-      |> Enum.sort_by(fn {_uuid, _hash, accessed} -> accessed end)
+      |> Enum.sort_by(fn {_uuid, _hash, _cache_key, accessed} -> accessed end)
       |> Enum.drop(-cap)
-      |> Enum.each(fn {uuid, _hash, _accessed} -> purge_stale(uuid) end)
+      |> Enum.each(fn {uuid, _hash, _cache_key, _accessed} -> purge_stale(uuid) end)
     end
 
     :ok

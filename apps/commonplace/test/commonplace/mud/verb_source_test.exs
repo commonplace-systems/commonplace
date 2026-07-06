@@ -86,6 +86,26 @@ defmodule Commonplace.MUD.VerbSourceTest do
     entry.node_id
   end
 
+  defp start_room_uuid(ctx) do
+    {:ok, schema} = Schemas.load_dir_schema(ctx.root, ctx.store)
+    {:ok, entry} = Schema.get_entry(schema, "start")
+    entry.node_id
+  end
+
+  defp fountain_dir(ctx) do
+    with {:ok, schema} <- Schemas.load_dir_schema(clearing_uuid(ctx), ctx.store),
+         {:ok, entry} <- Schema.get_entry(schema, "fountain.obj") do
+      entry.node_id
+    end
+  end
+
+  defp cloak_dir(ctx) do
+    with {:ok, schema} <- Schemas.load_dir_schema(start_room_uuid(ctx), ctx.store),
+         {:ok, entry} <- Schema.get_entry(schema, "cloak.obj") do
+      entry.node_id
+    end
+  end
+
   test "save_verb writes a source doc, validates compile, and round-trips through find_source", ctx do
     fountain_dir =
       with {:ok, schema} <- Schemas.load_dir_schema(clearing_uuid(ctx), ctx.store),
@@ -259,5 +279,123 @@ defmodule Commonplace.MUD.VerbSourceTest do
 
     assert_receive {"red:" <> _, %{kind: :custom, text: "Sparks fly!"}}, 200
     refute_receive {"red:" <> _, %{kind: :custom, text: "The fountain burbles softly."}}, 50
+  end
+
+  describe "CX-9f62: unique per-verb module naming (kills the global compile collision)" do
+    test "two verbs authored under the SAME defmodule name on DIFFERENT objects compile to distinct modules and both run correctly",
+         ctx do
+      same_name_src = fn text ->
+        """
+        defmodule UserVerb do
+          def run(ctx) do
+            Commonplace.MUD.World.broadcast_room(ctx.current_room_uuid, #{inspect(text)})
+            :ok
+          end
+        end
+        """
+      end
+
+      assert :ok = VerbSource.save_verb(fountain_dir(ctx), "poke", same_name_src.("fountain poke fired"), ctx.store)
+      assert :ok = VerbSource.save_verb(cloak_dir(ctx), "poke", same_name_src.("cloak poke fired"), ctx.store)
+
+      assert {:ok, fountain_mod} = VerbSource.compile_verb(fountain_dir(ctx), "poke", ctx.store)
+      assert {:ok, cloak_mod} = VerbSource.compile_verb(cloak_dir(ctx), "poke", ctx.store)
+
+      # The collision is gone: distinct BEAM module atoms even though both
+      # source docs authored the identical `defmodule UserVerb`.
+      refute fountain_mod == cloak_mod
+
+      alias Commonplace.MUD.Topics
+      Topics.subscribe_room(clearing_uuid(ctx))
+      Topics.subscribe_room(start_room_uuid(ctx))
+
+      assert {:ok, :ok} =
+               VerbSource.run_verb(
+                 fountain_dir(ctx),
+                 "poke",
+                 %{current_room_uuid: clearing_uuid(ctx), player_name: "alice"},
+                 ctx.store
+               )
+
+      assert_receive {"red:" <> _, %{text: "fountain poke fired"}}, 200
+
+      assert {:ok, :ok} =
+               VerbSource.run_verb(
+                 cloak_dir(ctx),
+                 "poke",
+                 %{current_room_uuid: start_room_uuid(ctx), player_name: "alice"},
+                 ctx.store
+               )
+
+      assert_receive {"red:" <> _, %{text: "cloak poke fired"}}, 200
+      refute_received {"red:" <> _, %{text: "fountain poke fired"}}
+    end
+
+    test "invoking the verb on one object never fires the other object's same-named verb (verb-name hijack symptom)",
+         ctx do
+      hijack_src = fn marker ->
+        """
+        defmodule UserVerb do
+          def run(_ctx), do: #{inspect(marker)}
+        end
+        """
+      end
+
+      assert :ok = VerbSource.save_verb(fountain_dir(ctx), "twist", hijack_src.(:fountain_twist), ctx.store)
+      assert :ok = VerbSource.save_verb(cloak_dir(ctx), "twist", hijack_src.(:cloak_twist), ctx.store)
+
+      assert {:ok, :fountain_twist} = VerbSource.run_verb(fountain_dir(ctx), "twist", %{}, ctx.store)
+      assert {:ok, :cloak_twist} = VerbSource.run_verb(cloak_dir(ctx), "twist", %{}, ctx.store)
+
+      # Re-run in the opposite order too — cache hits must still resolve
+      # to the correct, distinct module per object.
+      assert {:ok, :cloak_twist} = VerbSource.run_verb(cloak_dir(ctx), "twist", %{}, ctx.store)
+      assert {:ok, :fountain_twist} = VerbSource.run_verb(fountain_dir(ctx), "twist", %{}, ctx.store)
+    end
+
+    test "a non-verb SourceDoc caller (compute/view/black doc) still compiles under its own self-named module (unaffected)",
+         ctx do
+      alias Commonplace.Document.ContentType
+      alias Commonplace.Store.CommitStore
+      alias Yelixer.Doc, as: YDoc
+
+      uuid = UUID.uuid4()
+      doc = YDoc.new()
+      doc = ContentType.create(doc, :text, "elixir")
+      doc = ContentType.insert_text(doc, 0, "defmodule Commonplace.UserCode.NotAVerb do\n  def value, do: :plain\nend\n")
+      update = Encoding.encode_update(doc)
+      CommitStore.create_commit(ctx.store, uuid, update, nil)
+
+      assert {:ok, mod} = SourceDoc.compile(uuid, ctx.store)
+      assert mod == Commonplace.UserCode.NotAVerb
+      assert mod.value() == :plain
+    end
+
+    test "editing a verb still hot-reloads (content-hash recompile) under the new naming", ctx do
+      assert :ok =
+               VerbSource.save_verb(
+                 fountain_dir(ctx),
+                 "shimmer",
+                 "defmodule UserVerb do\n  def run(_ctx), do: :v1\nend\n",
+                 ctx.store
+               )
+
+      assert {:ok, mod_v1} = VerbSource.compile_verb(fountain_dir(ctx), "shimmer", ctx.store)
+      assert {:ok, :v1} = VerbSource.run_verb(fountain_dir(ctx), "shimmer", %{}, ctx.store)
+
+      assert :ok =
+               VerbSource.save_verb(
+                 fountain_dir(ctx),
+                 "shimmer",
+                 "defmodule UserVerb do\n  def run(_ctx), do: :v2\nend\n",
+                 ctx.store
+               )
+
+      assert {:ok, mod_v2} = VerbSource.compile_verb(fountain_dir(ctx), "shimmer", ctx.store)
+      # Same derived module name (deterministic from the verb doc's own
+      # uuid) — hot reload re-targets the same atom, doesn't leak a new one.
+      assert mod_v1 == mod_v2
+      assert {:ok, :v2} = VerbSource.run_verb(fountain_dir(ctx), "shimmer", %{}, ctx.store)
+    end
   end
 end
