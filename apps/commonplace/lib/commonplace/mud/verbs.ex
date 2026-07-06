@@ -23,7 +23,7 @@ defmodule Commonplace.MUD.Verbs do
 
   require Logger
 
-  @builders ~w(@dig @create @desc @name @listen @dump @verb)
+  @builders ~w(@dig @create @desc @name @alias @listen @dump @verb)
 
   @doc "Dispatch a parsed command. Returns one of the verb-result tuples."
   def dispatch(%Parser.Command{verb: ""}, _ctx), do: :ok
@@ -163,8 +163,10 @@ defmodule Commonplace.MUD.Verbs do
     end
   end
 
-  defp do_look(%Parser.Command{target: target}, ctx) do
-    case find_in_scope(target, ctx) do
+  defp do_look(%Parser.Command{argv: argv}, ctx) do
+    phrase_label = Enum.join(argv, " ")
+
+    case find_in_scope(argv, ctx) do
       {:ok, :object, %Object{} = obj} ->
         {:reply, "#{obj.name}\n#{obj.description}"}
 
@@ -173,7 +175,7 @@ defmodule Commonplace.MUD.Verbs do
         {:reply, "#{title}\n#{pl.description}"}
 
       :not_found ->
-        {:error, "You don't see \"#{target}\" here."}
+        {:error, "You don't see \"#{phrase_label}\" here."}
     end
   end
 
@@ -233,10 +235,16 @@ defmodule Commonplace.MUD.Verbs do
 
   # ---- take / drop / give ----
 
-  defp do_take(%Parser.Command{target: nil}, _ctx), do: {:error, "Take what?"}
+  defp do_take(%Parser.Command{argv: []}, _ctx), do: {:error, "Take what?"}
 
-  defp do_take(%Parser.Command{target: target}, ctx) do
-    with {:ok, entry} <- World.find_entry_by_name(ctx.current_room_uuid, target, ctx.store),
+  # CX-8iyv: greedy-match the full remaining phrase against room entries
+  # (names + aliases) so multi-word object names/aliases resolve
+  # ('take silver coin' matches an object named/aliased "silver coin"),
+  # not just the first word.
+  defp do_take(%Parser.Command{argv: argv}, ctx) do
+    phrase_label = Enum.join(argv, " ")
+
+    with {:ok, entry, _phrase, _remainder} <- greedy_match_entry([ctx.current_room_uuid], argv, ctx.store),
          true <- takable_entry?(entry) || {:error, "You can't take that."},
          {:ok, %Object{} = obj} <- Schemas.load_object(entry.node_id, ctx.store),
          :ok <- ensure_not_fixed(obj),
@@ -249,7 +257,7 @@ defmodule Commonplace.MUD.Verbs do
 
       {:reply, "You take #{obj.name}."}
     else
-      :error -> {:error, "You don't see \"#{target}\" here."}
+      :not_found -> {:error, "You don't see \"#{phrase_label}\" here."}
       {:error, :gone} -> {:error, "Someone else grabbed it first."}
       {:error, :collision} -> {:error, "You're already carrying one of those."}
       {:error, {:trust_rejected, _}} -> {:error, "You don't have permission to take that."}
@@ -264,10 +272,14 @@ defmodule Commonplace.MUD.Verbs do
   defp ensure_not_fixed(%Object{fixed: true, name: name}), do: {:error, "#{name} is fixed in place."}
   defp ensure_not_fixed(_), do: :ok
 
-  defp do_drop(%Parser.Command{target: nil}, _ctx), do: {:error, "Drop what?"}
+  defp do_drop(%Parser.Command{argv: []}, _ctx), do: {:error, "Drop what?"}
 
-  defp do_drop(%Parser.Command{target: target}, ctx) do
-    with {:ok, entry} <- World.find_entry_by_name(ctx.inventory_uuid, target, ctx.store),
+  # CX-8iyv: greedy-match the full remaining phrase against inventory
+  # entries (names + aliases), same rationale as `do_take/2`.
+  defp do_drop(%Parser.Command{argv: argv}, ctx) do
+    phrase_label = Enum.join(argv, " ")
+
+    with {:ok, entry, _phrase, _remainder} <- greedy_match_entry([ctx.inventory_uuid], argv, ctx.store),
          {:ok, %Object{} = obj} <- Schemas.load_object(entry.node_id, ctx.store),
          :ok <- World.move(entry.node_id, entry.name, ctx.inventory_uuid, ctx.current_room_uuid, write_opts(ctx)) do
       World.broadcast_room(ctx.current_room_uuid, %{
@@ -278,7 +290,7 @@ defmodule Commonplace.MUD.Verbs do
 
       {:reply, "You drop #{obj.name}."}
     else
-      :error -> {:error, "You aren't carrying \"#{target}\"."}
+      :not_found -> {:error, "You aren't carrying \"#{phrase_label}\"."}
       {:error, :collision} -> {:error, "There's already one of those here."}
       {:error, :gone} -> {:error, "It slipped from your grasp."}
       {:error, {:trust_rejected, _}} -> {:error, "You don't have permission to drop that here."}
@@ -287,13 +299,48 @@ defmodule Commonplace.MUD.Verbs do
   end
 
   defp do_give(%Parser.Command{argv: argv}, _ctx) when length(argv) < 2 do
-    {:error, "Give what to whom? Try: give <obj> <player>"}
+    {:error, "Give what to whom? Try: give <item> to <player>"}
   end
 
-  defp do_give(%Parser.Command{argv: [obj_name, target_name | _]}, ctx) do
-    with {:ok, obj_entry} <- World.find_entry_by_name(ctx.inventory_uuid, obj_name, ctx.store),
+  # CX-8iyv: give syntax rule — both item and recipient may be multi-word
+  # ('give silver coin to tester'). The word "to" is the robust
+  # disambiguator between the two phrases: split on the first standalone
+  # "to" and use everything before/after verbatim. Without a "to", fall
+  # back to best-effort: greedy-match the item from the front against
+  # inventory (longest matching phrase wins), and treat whatever argv
+  # words remain as the recipient phrase — this keeps the pre-existing
+  # single-word syntax ('give cloak bob') working unchanged.
+  defp do_give(%Parser.Command{argv: argv}, ctx) do
+    case split_on_to(argv) do
+      {item_words, target_words} when item_words != [] and target_words != [] ->
+        give_item_to(Enum.join(item_words, " "), Enum.join(target_words, " "), ctx)
+
+      _ ->
+        do_give_greedy(argv, ctx)
+    end
+  end
+
+  defp split_on_to(argv) do
+    case Enum.split_while(argv, fn w -> String.downcase(w) != "to" end) do
+      {item_words, [_to | rest]} -> {item_words, rest}
+      {_all, []} -> {argv, []}
+    end
+  end
+
+  defp do_give_greedy(argv, ctx) do
+    case greedy_match_entry([ctx.inventory_uuid], argv, ctx.store, min_remainder: 1) do
+      {:ok, _entry, phrase, remainder} when remainder != [] ->
+        give_item_to(phrase, Enum.join(remainder, " "), ctx)
+
+      _ ->
+        {:error, "Give what to whom? Try: give <item> to <player>"}
+    end
+  end
+
+  defp give_item_to(item_phrase, target_phrase, ctx) do
+    with {:ok, obj_entry} <- World.find_entry_by_name(ctx.inventory_uuid, item_phrase, ctx.store),
          {:ok, %Object{} = obj} <- Schemas.load_object(obj_entry.node_id, ctx.store),
-         {:ok, target_inv_uuid, target_player_name} <- find_player_inventory(target_name, ctx),
+         {:ok, target_inv_uuid, target_player_name} <- find_player_inventory(target_phrase, ctx),
          :ok <- World.move(obj_entry.node_id, obj_entry.name, ctx.inventory_uuid, target_inv_uuid, write_opts(ctx)) do
       World.broadcast_room(ctx.current_room_uuid, %{
         kind: :give,
@@ -304,9 +351,9 @@ defmodule Commonplace.MUD.Verbs do
 
       {:reply, "You give #{obj.name} to #{target_player_name}."}
     else
-      :error -> {:error, "You aren't carrying \"#{obj_name}\"."}
-      {:error, :no_such_player} -> {:error, "You don't see \"#{target_name}\" here."}
-      {:error, :collision} -> {:error, "#{target_name} is already carrying one of those."}
+      :error -> {:error, "You aren't carrying \"#{item_phrase}\"."}
+      {:error, :no_such_player} -> {:error, "You don't see \"#{target_phrase}\" here."}
+      {:error, :collision} -> {:error, "#{target_phrase} is already carrying one of those."}
       {:error, :gone} -> {:error, "It slipped from your grasp."}
       {:error, {:trust_rejected, _}} -> {:error, "You don't have permission to give that away."}
       _ -> {:error, "You can't give that."}
@@ -444,6 +491,7 @@ defmodule Commonplace.MUD.Verbs do
   defp dispatch_builder("@create", cmd, ctx), do: do_create(cmd, ctx)
   defp dispatch_builder("@desc", cmd, ctx), do: do_desc(cmd, ctx)
   defp dispatch_builder("@name", cmd, ctx), do: do_rename(cmd, ctx)
+  defp dispatch_builder("@alias", cmd, ctx), do: do_alias(cmd, ctx)
   defp dispatch_builder("@listen", _cmd, ctx), do: {:reply, "Now listening to room #{ctx.current_room_uuid}. (Debug: red events will appear inline.)"}
   defp dispatch_builder("@verb", cmd, ctx), do: do_verb_edit(cmd, ctx)
 
@@ -456,10 +504,10 @@ defmodule Commonplace.MUD.Verbs do
         end
 
       true ->
-        case find_in_scope(cmd.target, ctx) do
+        case find_in_scope(cmd.argv, ctx) do
           {:ok, :object, obj} -> {:reply, inspect(obj, pretty: true)}
           {:ok, :player, pl} -> {:reply, inspect(pl, pretty: true)}
-          _ -> {:error, "Can't find \"#{cmd.target}\"."}
+          _ -> {:error, "Can't find \"#{Enum.join(cmd.argv, " ")}\"."}
         end
     end
   end
@@ -563,7 +611,13 @@ defmodule Commonplace.MUD.Verbs do
     {:error, "Try: @create <object|room> <name>"}
   end
 
-  defp do_create(%Parser.Command{argv: ["object", name | _]}, ctx) do
+  # CX-8iyv: `argv: ["object" | name_parts]` — the FULL remainder is the
+  # name, not just the first word (was `["object", name | _]`, which
+  # silently dropped every word after the first — this is why
+  # `@create room The Silver Fountain` used to mint a disconnected room
+  # literally named "The").
+  defp do_create(%Parser.Command{argv: ["object" | name_parts]}, ctx) do
+    name = Enum.join(name_parts, " ")
     obj_json = Schemas.encode_object(%Object{name: name, description: "(no description yet)"})
 
     with {:ok, new_obj_uuid} <- Schemas.create_dir_with_meta(Schemas.object_filename(), obj_json, ctx.store, write_opts(ctx)),
@@ -574,7 +628,8 @@ defmodule Commonplace.MUD.Verbs do
     end
   end
 
-  defp do_create(%Parser.Command{argv: ["room", name | _]}, ctx) do
+  defp do_create(%Parser.Command{argv: ["room" | name_parts]}, ctx) do
+    name = Enum.join(name_parts, " ")
     json = Schemas.encode_room(%Room{name: name, description: "(no description yet)"})
 
     with {:ok, new_uuid} <- Schemas.create_dir_with_meta(Schemas.room_filename(), json, ctx.store, write_opts(ctx)),
@@ -600,16 +655,77 @@ defmodule Commonplace.MUD.Verbs do
 
   defp do_desc(%Parser.Command{argv: argv}, _ctx) when length(argv) < 2, do: {:error, "Try: @desc <target> <text>"}
 
-  defp do_desc(%Parser.Command{argv: [target | _], args: args}, ctx) do
-    text = strip_first_word(args)
-    update_meta_description(target, text, ctx)
+  # CX-8iyv: target may itself be multi-word ("silver coin") with no
+  # explicit separator from the text that follows it — greedy-match the
+  # longest prefix of argv against room entries (names + aliases),
+  # requiring at least one word left over for the description text.
+  defp do_desc(%Parser.Command{argv: argv}, ctx) do
+    case split_target_and_rest(argv, ctx) do
+      {:ok, target_label, text} when text != "" ->
+        update_meta_description(target_label, text, ctx)
+
+      _ ->
+        {:error, "Try: @desc <target> <text>"}
+    end
   end
 
   defp do_rename(%Parser.Command{argv: argv}, _ctx) when length(argv) < 2, do: {:error, "Try: @name <target> <new name>"}
 
-  defp do_rename(%Parser.Command{argv: [target | rest]}, ctx) do
-    new_name = Enum.join(rest, " ")
-    update_meta(target, "name", new_name, ctx)
+  # CX-8iyv: same greedy target/rest split as `do_desc/2` — lets both
+  # the target ("silver coin") and the new name be multi-word.
+  defp do_rename(%Parser.Command{argv: argv}, ctx) do
+    case split_target_and_rest(argv, ctx) do
+      {:ok, target_label, new_name} when new_name != "" ->
+        update_meta(target_label, "name", new_name, ctx)
+
+      _ ->
+        {:error, "Try: @name <target> <new name>"}
+    end
+  end
+
+  defp do_alias(%Parser.Command{argv: argv}, _ctx) when length(argv) < 2 do
+    {:error, "Try: @alias <target> <new alias>"}
+  end
+
+  # CX-8iyv: `@alias <target> <newalias...>` — adds an alias to an
+  # object so it becomes addressable by that phrase in later
+  # take/drop/look/@desc/@name lookups (which already match against
+  # aliases via `World.find_entry_by_name/3`; this is the missing
+  # setter). Target may be multi-word; whatever argv remains after the
+  # greedy target match becomes the (possibly multi-word) new alias.
+  defp do_alias(%Parser.Command{argv: argv}, ctx) do
+    case split_target_and_rest(argv, ctx) do
+      {:ok, target_label, new_alias} when new_alias != "" ->
+        add_object_alias(target_label, new_alias, ctx)
+
+      _ ->
+        {:error, "Try: @alias <target> <new alias>"}
+    end
+  end
+
+  defp add_object_alias(target, new_alias, ctx) do
+    case find_entry_in_dirs(target, [ctx.current_room_uuid, ctx.inventory_uuid], ctx.store) do
+      {:ok, entry} ->
+        if String.ends_with?(entry.name, ".obj") do
+          case Schemas.load_object(entry.node_id, ctx.store) do
+            {:ok, %Object{aliases: aliases}} ->
+              new_aliases = if new_alias in aliases, do: aliases, else: aliases ++ [new_alias]
+
+              case World.set_meta(entry.node_id, Schemas.object_filename(), "aliases", new_aliases, ctx.store, write_opts(ctx)) do
+                :ok -> {:reply, "#{target} can now also be called \"#{new_alias}\"."}
+                {:error, reason} -> {:error, commit_error_reply(reason)}
+              end
+
+            _ ->
+              {:error, "Can't alias #{target}."}
+          end
+        else
+          {:error, "Can only alias objects."}
+        end
+
+      :error ->
+        {:error, "You don't see \"#{target}\" here."}
+    end
   end
 
   defp update_meta_description(target, text, ctx) do
@@ -645,13 +761,6 @@ defmodule Commonplace.MUD.Verbs do
           :error ->
             {:error, "You don't see \"#{target}\" here."}
         end
-    end
-  end
-
-  defp strip_first_word(args) do
-    case String.split(args, ~r/\s+/, parts: 2) do
-      [_word, rest] -> rest
-      _ -> ""
     end
   end
 
@@ -737,28 +846,71 @@ defmodule Commonplace.MUD.Verbs do
 
   # ---- Scope resolution ----
 
-  defp find_in_scope(target, ctx) do
-    needle = String.downcase(target)
-
-    case World.find_entry_by_name(ctx.inventory_uuid, target, ctx.store) do
-      {:ok, entry} -> resolve_entry(entry, ctx)
-      :error -> find_in_room(target, needle, ctx)
+  # CX-8iyv: multi-word targets — greedy-match the longest prefix of
+  # `argv` against inventory first, then the current room (names +
+  # aliases via `World.find_entry_by_name/3`), so 'look silver coin'
+  # resolves an object named/aliased "silver coin" instead of just
+  # matching the word "silver".
+  defp find_in_scope(argv, ctx) do
+    case greedy_match_entry([ctx.inventory_uuid, ctx.current_room_uuid], argv, ctx.store) do
+      {:ok, entry, _phrase, _remainder} -> resolve_entry(entry, ctx)
+      :not_found -> :not_found
     end
   end
 
-  defp find_in_room(target, needle, ctx) do
-    case World.find_entry_by_name(ctx.current_room_uuid, target, ctx.store) do
-      {:ok, entry} ->
-        cond do
-          String.ends_with?(entry.name, ".usr") ->
-            load_player_for_lookup(entry, needle, ctx)
+  # CX-8iyv: shared greedy phrase matcher for target-taking verbs
+  # (take/drop/look/@dump/@desc/@name/@alias). Tries the longest prefix
+  # of `argv` first (down to a single word), searching `dirs` in order
+  # for each candidate phrase, so multi-word names/aliases win over
+  # shorter partial matches. `min_remainder` reserves that many trailing
+  # words (e.g. so `@desc <target> <text>` always leaves at least one
+  # word for the text) — the match never consumes more than
+  # `length(argv) - min_remainder` words.
+  #
+  # Returns `{:ok, entry, matched_phrase, remainder_words}` or
+  # `:not_found`.
+  defp greedy_match_entry(dirs, argv, store, opts \\ []) do
+    min_remainder = Keyword.get(opts, :min_remainder, 0)
+    max_len = length(argv) - min_remainder
 
-          true ->
-            resolve_entry(entry, ctx)
+    if max_len < 1 do
+      :not_found
+    else
+      Enum.reduce_while(max_len..1//-1, :not_found, fn n, _acc ->
+        phrase = argv |> Enum.take(n) |> Enum.join(" ")
+
+        case find_entry_in_dirs(phrase, dirs, store) do
+          {:ok, entry} -> {:halt, {:ok, entry, phrase, Enum.drop(argv, n)}}
+          :error -> {:cont, :not_found}
         end
+      end)
+    end
+  end
 
-      :error ->
-        :not_found
+  defp find_entry_in_dirs(phrase, dirs, store) do
+    Enum.find_value(dirs, :error, fn dir ->
+      case World.find_entry_by_name(dir, phrase, store) do
+        {:ok, entry} -> {:ok, entry}
+        :error -> nil
+      end
+    end)
+  end
+
+  # CX-8iyv: shared helper for @desc/@name/@alias — greedy-match a
+  # (possibly multi-word) target against the current room, requiring at
+  # least one argv word left over for the text/new-name/new-alias that
+  # follows it. "here"/"room" stay single-word literals (never part of a
+  # greedy phrase match) so they keep addressing the room itself.
+  defp split_target_and_rest(argv, ctx) do
+    case argv do
+      [kw | rest] when kw in ["here", "room"] and rest != [] ->
+        {:ok, kw, Enum.join(rest, " ")}
+
+      _ ->
+        case greedy_match_entry([ctx.current_room_uuid], argv, ctx.store, min_remainder: 1) do
+          {:ok, _entry, phrase, remainder} -> {:ok, phrase, Enum.join(remainder, " ")}
+          :not_found -> :not_found
+        end
     end
   end
 
