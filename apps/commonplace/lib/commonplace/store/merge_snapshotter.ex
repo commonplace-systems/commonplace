@@ -92,6 +92,18 @@ defmodule Commonplace.Store.MergeSnapshotter do
   translated commits whose item-authorship clients are new to the
   target namespace). End-to-end store-accepts-merge-snapshot tests
   land with CX-fbs6.
+
+  ## Relationship to the writer-identity / hand model (CX-41qg, AUDIT ONLY)
+
+  Like `Snapshotter`, the `deterministic_client_id/1` this module uses
+  (via `Snapshotter.build/1`) is a "deterministic-anyone" value, not a
+  writer hand — see `Snapshotter`'s moduledoc for the distinction. Do
+  not substitute `Commonplace.WriterHand.for_doc/1` here: that would
+  make the merge-snapshot's client_id a function of the doc's uuid
+  instead of its merged content, breaking the property that two nodes
+  computing the SAME merge independently still need — byte-identical
+  output regardless of which node ran the merge. Audited under
+  CX-41qg.3 and intentionally left unchanged.
   """
 
   alias Commonplace.Store.{

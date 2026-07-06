@@ -373,6 +373,54 @@ defmodule Commonplace.Reflog.SnapshotTest do
     end
   end
 
+  describe "writer identity — stable per-doc hand (CX-41qg.3)" do
+    # Checkpoints fire on every sync tick (Sync.Agent) plus periodically
+    # (CheckpointTimer). Before this fix, `build_reflog_doc/2` rebuilt
+    # the `__snapshot` doc from scratch via a bare `Doc.new()` on every
+    # non-idempotent round (a cursor miss), minting a fresh random
+    # client_id each time — so the snapshot doc's state vector bloated
+    # one slot PER CHECKPOINT ROUND. The fix pins it to
+    # `WriterHand.for_doc(snapshot_uuid)`.
+    defp sv_client_ids(doc) do
+      Yelixer.BlockStore.state_vector(doc.store).clocks
+      |> Map.keys()
+      |> MapSet.new()
+    end
+
+    test "15 checkpoints over a repeatedly-changing file keep the snapshot doc's client-id set bounded",
+         %{store: store} do
+      Snapshot.clear_cursor()
+
+      file_uuid = create_text_doc(store, "test.txt", "version 0")
+
+      root_uuid = UUID.uuid4()
+      root_doc = Schema.new_schema()
+      root_doc = Schema.add_file(root_doc, "test.txt", file_uuid)
+      CommitStore.create_commit(store, root_uuid, Yelixer.Encoding.encode_update(root_doc), nil)
+
+      Enum.each(1..15, fn n ->
+        doc = Yelixer.Doc.new()
+        doc = ContentType.create(doc, :text, "test.txt")
+        doc = ContentType.insert_text(doc, 0, "version #{n}")
+        update = Yelixer.Encoding.encode_update(doc)
+        CommitStore.create_chained_commit(store, file_uuid, update)
+
+        assert {:ok, _cid} = Snapshot.checkpoint(root_uuid, store)
+      end)
+
+      {:ok, owner_uuid} = Snapshot.ensure_reflog_branch(root_uuid, "server", store)
+      owner_schema = load_schema(owner_uuid, store)
+      {:ok, snap_entry} = Schema.get_entry(owner_schema, "__snapshot")
+
+      {:ok, snap_doc} = Commonplace.Tree.DocBuilder.reconstruct_doc(store, snap_entry.node_id)
+      client_ids = sv_client_ids(snap_doc)
+
+      assert MapSet.size(client_ids) <= 2,
+             "expected a bounded (<=2) set of client ids after 15 checkpoint rounds, " <>
+               "got #{MapSet.size(client_ids)}: #{inspect(client_ids)}"
+    end
+  end
+
   # --- Helpers ---
 
   defp create_text_doc(store, name, content) do

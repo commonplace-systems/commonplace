@@ -53,6 +53,7 @@ defmodule Commonplace.Chat.Rooms do
   alias Commonplace.Materialize
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.{DocBuilder, Fork, Lookup, Schema}
+  alias Commonplace.WriterHand
 
   @chat_dir "chat"
 
@@ -126,7 +127,8 @@ defmodule Commonplace.Chat.Rooms do
   defp customize_view_xml(view_uuid, room_name, store) do
     rendered = ChatViewBuilder.build_view_xml([], room_name)
 
-    {:ok, doc} = DocBuilder.reconstruct_snapshot(store, view_uuid)
+    {:ok, doc} =
+      DocBuilder.reconstruct_snapshot(store, view_uuid, client_id: WriterHand.for_doc(view_uuid))
     current = Commonplace.Document.ContentType.get_content(doc) || ""
     length = String.length(current)
 
@@ -291,7 +293,9 @@ defmodule Commonplace.Chat.Rooms do
   end
 
   defp rewrite_compute_to_m7(compute_uuid, store) do
-    case DocBuilder.reconstruct_snapshot(store, compute_uuid) do
+    case DocBuilder.reconstruct_snapshot(store, compute_uuid,
+           client_id: WriterHand.for_doc(compute_uuid)
+         ) do
       {:ok, doc} ->
         content = ContentType.get_content(doc) || ""
 
@@ -376,8 +380,11 @@ defmodule Commonplace.Chat.Rooms do
     end
   end
 
+  # CX-41qg.3: stable per-doc hand — callers of load_schema/2 re-commit
+  # onto the same uuid (chat dir schema, room dir schema) across
+  # multiple room creates/migrations.
   defp load_schema(uuid, store) do
-    case DocBuilder.reconstruct_snapshot(store, uuid) do
+    case DocBuilder.reconstruct_snapshot(store, uuid, client_id: WriterHand.for_doc(uuid)) do
       {:ok, doc} -> doc
       :none -> Schema.new_schema()
     end

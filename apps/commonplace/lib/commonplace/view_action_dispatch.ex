@@ -60,6 +60,7 @@ defmodule Commonplace.ViewActionDispatch do
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.{DocBuilder, Schema}
   alias Commonplace.Workspace
+  alias Commonplace.WriterHand
   alias Yelixer.Encoding
 
   @type dispatch_ok ::
@@ -414,8 +415,15 @@ defmodule Commonplace.ViewActionDispatch do
     end
   end
 
+  # CX-41qg.3: stable per-doc hand — this is the doc `attach_to_root_schema/2`
+  # re-encodes a new commit onto, and the workspace root schema gets a
+  # fork-attach commit on every fork. Without a fixed client_id each
+  # attach minted a fresh random one, unboundedly bloating the root
+  # schema's state vector.
   defp load_root_schema(root_uuid) do
-    case DocBuilder.reconstruct_snapshot(CommitStoreClient, root_uuid) do
+    case DocBuilder.reconstruct_snapshot(CommitStoreClient, root_uuid,
+           client_id: WriterHand.for_doc(root_uuid)
+         ) do
       {:ok, doc} -> {:ok, doc}
       :none -> {:error, :no_root_schema}
       {:error, reason} -> {:error, reason}

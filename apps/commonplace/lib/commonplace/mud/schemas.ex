@@ -14,6 +14,7 @@ defmodule Commonplace.MUD.Schemas do
   alias Commonplace.Document.ContentType
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.{DocBuilder, Schema}
+  alias Commonplace.WriterHand
   alias Yelixer.Doc
   alias Yelixer.Encoding
 
@@ -185,11 +186,17 @@ defmodule Commonplace.MUD.Schemas do
     end
   end
 
+  # CX-41qg.3: stable per-doc hand — every caller of this loader
+  # re-encodes and chain-commits onto the SAME directory uuid
+  # (`add_file_entry`/`add_directory_entry` in `MUD.VerbSource`, room/obj
+  # metadata attach in this module). Without a fixed client_id every
+  # add-file/add-dir minted a fresh random one, bloating the directory
+  # schema's state vector one slot per entry added, forever.
   @doc "Load a directory's Schema doc, returning `{:ok, schema}` or `{:error, :missing}`."
   def load_dir_schema(uuid, store \\ CommitStoreClient) when is_binary(uuid) do
     case CommitStoreClient.latest_commit(store, uuid) do
       {:ok, commit} ->
-        doc = Schema.new_schema()
+        doc = Schema.new_schema(client_id: WriterHand.for_doc(uuid))
         {:ok, doc} = Encoding.apply_update(doc, commit.update)
         {:ok, doc}
 
@@ -218,7 +225,7 @@ defmodule Commonplace.MUD.Schemas do
   Replace the contents of an existing metadata text doc with new JSON.
   """
   def write_meta_doc(uuid, json, store \\ CommitStoreClient) when is_binary(uuid) and is_binary(json) do
-    {:ok, doc} = DocBuilder.reconstruct_doc(store, uuid)
+    {:ok, doc} = DocBuilder.reconstruct_doc(store, uuid, client_id: WriterHand.for_doc(uuid))
     current = ContentType.get_content(doc) || ""
     doc = if current != "", do: ContentType.delete_text(doc, 0, String.length(current)), else: doc
     doc = ContentType.insert_text(doc, 0, json)

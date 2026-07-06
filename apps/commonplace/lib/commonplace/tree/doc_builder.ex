@@ -20,8 +20,16 @@ defmodule Commonplace.Tree.DocBuilder do
   that point — and the forward replay starts from that snapshot plus
   any commits chained on top. Docs with no snapshot commits replay the
   full chain exactly as before (backward-compatible).
+
+  CX-41qg.3: pass `client_id: id` (mirrors `reconstruct_snapshot/3`,
+  CX-41qg.1) to fix the replica's identity for write funnels that
+  reconstruct the FULL chain (rather than just the latest commit)
+  before re-encoding a new commit — e.g. `Commonplace.Outline`'s
+  mutation helpers. Without it every such write mints a fresh random
+  client_id and the state vector grows one slot per write, forever.
+  Read-only callers can omit the option.
   """
-  def reconstruct_doc(store, uuid) do
+  def reconstruct_doc(store, uuid, opts \\ []) do
     commits = CommitStoreClient.commit_log(store, uuid, limit: 10_000) |> Enum.reverse()
 
     case commits do
@@ -30,7 +38,7 @@ defmodule Commonplace.Tree.DocBuilder do
 
       _ ->
         commits_to_apply = commits |> trim_to_latest_snapshot() |> Enum.reject(&genesis?/1)
-        doc = Doc.new()
+        doc = Doc.new(opts)
 
         result =
           Enum.reduce(commits_to_apply, {:ok, doc}, fn c, {:ok, d} ->

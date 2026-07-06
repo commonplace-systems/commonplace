@@ -88,4 +88,51 @@ defmodule Commonplace.MUD.SchemasTest do
       {:ok, %Room{description: "Second."}} = Schemas.load_room(dir_uuid, store)
     end
   end
+
+  describe "writer identity — stable per-doc hand (CX-41qg.3)" do
+    defp sv_client_ids(doc) do
+      Yelixer.BlockStore.state_vector(doc.store).clocks
+      |> Map.keys()
+      |> MapSet.new()
+    end
+
+    test "repeated write_meta_doc calls keep the meta doc's client-id set bounded",
+         %{store: store} do
+      json = Schemas.encode_room(%Room{name: "Start", description: "v0"})
+      dir_uuid = Schemas.create_dir_with_meta(Schemas.room_filename(), json, store)
+      {:ok, schema} = Schemas.load_dir_schema(dir_uuid, store)
+      {:ok, entry} = Schema.get_entry(schema, Schemas.room_filename())
+
+      Enum.each(1..15, fn n ->
+        new_json = Schemas.encode_room(%Room{name: "Start", description: "v#{n}"})
+        :ok = Schemas.write_meta_doc(entry.node_id, new_json, store)
+      end)
+
+      {:ok, doc} = Commonplace.Tree.DocBuilder.reconstruct_doc(store, entry.node_id)
+      client_ids = sv_client_ids(doc)
+
+      assert MapSet.size(client_ids) <= 2,
+             "expected a bounded (<=2) set of client ids after 15 writes, " <>
+               "got #{MapSet.size(client_ids)}: #{inspect(client_ids)}"
+    end
+
+    test "repeated add-file-style directory schema commits keep the dir's client-id set bounded",
+         %{store: store} do
+      empty_dir = Schemas.create_dir_with_meta(nil, nil, store)
+
+      Enum.each(1..15, fn n ->
+        {:ok, schema} = Schemas.load_dir_schema(empty_dir, store)
+        schema = Schema.add_file(schema, "file#{n}.txt", UUID.uuid4())
+        update = Yelixer.Encoding.encode_update(schema)
+        Commonplace.Store.CommitStoreClient.create_chained_commit(store, empty_dir, update)
+      end)
+
+      {:ok, schema} = Commonplace.Tree.DocBuilder.reconstruct_snapshot(store, empty_dir)
+      client_ids = sv_client_ids(schema)
+
+      assert MapSet.size(client_ids) <= 2,
+             "expected a bounded (<=2) set of client ids after 15 directory writes, " <>
+               "got #{MapSet.size(client_ids)}: #{inspect(client_ids)}"
+    end
+  end
 end

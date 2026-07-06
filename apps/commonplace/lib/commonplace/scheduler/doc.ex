@@ -23,28 +23,41 @@ defmodule Commonplace.Scheduler.Doc do
   happened.
   """
 
+  alias Commonplace.WriterHand
   alias Yelixer.{Doc, Encoding}
   alias Yelixer.Types.YMap
 
   @entries_type "schedules"
 
-  @doc "Create a new empty scheduler doc."
-  def new do
-    doc = Doc.new()
+  @doc "Create a new empty scheduler doc. Accepts Doc.new/1 opts (e.g. `client_id:`)."
+  def new(opts \\ []) do
+    doc = Doc.new(opts)
     {doc, _} = Doc.get_or_create_type(doc, @entries_type, :map)
     doc
   end
 
-  @doc "Load the scheduler doc from the commit store, or return a fresh one."
+  @doc """
+  Load the scheduler doc from the commit store, or return a fresh one.
+
+  CX-41qg.3: keys the replica's client_id off `WriterHand.for_doc(uuid)`
+  — one scheduler doc per workspace, mutated by exactly one
+  `Scheduler.Agent` GenServer (see that module's "multi-peer caveat"),
+  so per-doc sharing is safe. Without this, `schedule`/`cancel`/`fire`
+  each reconstructed via `new/0`'s bare `Doc.new()` and minted a fresh
+  random client_id, bloating the scheduler doc's state vector by one
+  slot per request forever.
+  """
   def load(uuid, store) do
+    client_id = WriterHand.for_doc(uuid)
+
     case Commonplace.Store.CommitStoreClient.latest_commit(store, uuid) do
       {:ok, commit} ->
-        doc = new()
+        doc = new(client_id: client_id)
         {:ok, doc} = Encoding.apply_update(doc, commit.update)
         doc
 
       :none ->
-        new()
+        new(client_id: client_id)
     end
   end
 

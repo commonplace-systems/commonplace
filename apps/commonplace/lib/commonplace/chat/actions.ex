@@ -45,6 +45,7 @@ defmodule Commonplace.Chat.Actions do
   alias Commonplace.Dataflow.Magenta
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.DocBuilder
+  alias Commonplace.WriterHand
 
   @doc """
   Post a new message to the `_messages` doc identified by
@@ -67,7 +68,7 @@ defmodule Commonplace.Chat.Actions do
          :ok <- require_opt(opts, :author_path) do
       store = Keyword.get(opts, :store, CommitStoreClient)
 
-      case load_messages_doc(store, messages_uuid) do
+      case load_messages_doc(store, messages_uuid, opts) do
         {:ok, doc} ->
           message_id = UUID.uuid4()
           ts = DateTime.utc_now() |> DateTime.to_iso8601()
@@ -118,7 +119,7 @@ defmodule Commonplace.Chat.Actions do
          :ok <- require_opt(opts, :author_path) do
       store = Keyword.get(opts, :store, CommitStoreClient)
 
-      case load_messages_doc(store, messages_uuid) do
+      case load_messages_doc(store, messages_uuid, opts) do
         {:ok, doc} ->
           edit_id = UUID.uuid4()
           ts = DateTime.utc_now() |> DateTime.to_iso8601()
@@ -170,7 +171,7 @@ defmodule Commonplace.Chat.Actions do
          :ok <- require_opt(opts, :author_path) do
       store = Keyword.get(opts, :store, CommitStoreClient)
 
-      case load_messages_doc(store, messages_uuid) do
+      case load_messages_doc(store, messages_uuid, opts) do
         {:ok, doc} ->
           tomb_id = UUID.uuid4()
           ts = DateTime.utc_now() |> DateTime.to_iso8601()
@@ -224,8 +225,22 @@ defmodule Commonplace.Chat.Actions do
     end
   end
 
-  defp load_messages_doc(store, uuid) do
-    case DocBuilder.reconstruct_snapshot(store, uuid) do
+  # CX-41qg.3: stable per-(doc, actor) hand (WriterHand.for_doc_actor/2)
+  # so repeated post/edit/delete writes to the same `_messages` doc
+  # converge on a bounded client-id set (one slot per actor per room)
+  # instead of minting a fresh random one per call. Keyed by actor —
+  # NOT the plain per-doc funnel hand — because chat writers are
+  # genuinely concurrent distinct processes with no serializing funnel
+  # (LiveView sessions, MCP loom_send, LoomBridge, bots all call here
+  # directly): two actors sharing one hand can mint colliding
+  # (client_id, clock) ops from the same reconstructed base, and the
+  # loser's message is silently dropped as a "duplicate" on replay.
+  # `:signer_id` is a required opt on every caller, so it's always
+  # available as the actor key.
+  defp load_messages_doc(store, uuid, opts) do
+    hand = WriterHand.for_doc_actor(uuid, Keyword.fetch!(opts, :signer_id))
+
+    case DocBuilder.reconstruct_snapshot(store, uuid, client_id: hand) do
       {:ok, doc} -> {:ok, doc}
       :none -> :none
     end

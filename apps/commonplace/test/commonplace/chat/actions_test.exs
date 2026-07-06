@@ -328,4 +328,129 @@ defmodule Commonplace.Chat.ActionsTest do
       assert {:error, _} = Actions.delete_message(uuid, m1, room: "general", store: store)
     end
   end
+
+  describe "writer identity — stable per-(doc, actor) hand (CX-41qg.3)" do
+    # Before this fix, `load_messages_doc` reconstructed the `_messages`
+    # doc via `DocBuilder.reconstruct_snapshot/2` with no client_id — a
+    # fresh random one every call — so N chat actions minted N distinct
+    # Yjs client ids into the doc's state vector. The fix pins the
+    # reconstruction to `WriterHand.for_doc_actor(messages_uuid,
+    # signer_id)`: one stable slot per actor per room. Per-ACTOR, not
+    # the plain per-doc funnel hand, because chat writers are
+    # genuinely-concurrent distinct processes (LiveView sessions, MCP,
+    # LoomBridge, bots) with no serializing funnel — see the cross-actor
+    # tests below for the collision this avoids.
+    defp sv_client_ids(doc) do
+      Yelixer.BlockStore.state_vector(doc.store).clocks
+      |> Map.keys()
+      |> MapSet.new()
+    end
+
+    test "20 post_message calls keep the state vector's client-id set bounded",
+         %{store: store, messages_uuid: uuid} do
+      Enum.each(1..20, fn n ->
+        assert {:ok, _} =
+                 Actions.post_message(uuid, "message #{n}",
+                   room: "general",
+                   signer_id: "alice@aaaaaaaa",
+                   author_path: "alice.usr",
+                   store: store
+                 )
+      end)
+
+      {:ok, doc} = DocBuilder.reconstruct_snapshot(store, uuid)
+      client_ids = sv_client_ids(doc)
+
+      assert MapSet.size(client_ids) <= 2,
+             "expected a bounded (<=2) set of client ids after 20 posts, " <>
+               "got #{MapSet.size(client_ids)}: #{inspect(client_ids)} " <>
+               "(pre-fix behavior would show one new client id per write, i.e. ~20)"
+    end
+
+    test "mixed post/edit/delete traffic still keeps the client-id set bounded",
+         %{store: store, messages_uuid: uuid} do
+      opts = [room: "general", signer_id: "alice@aaaaaaaa", author_path: "alice.usr", store: store]
+
+      ids =
+        Enum.map(1..10, fn n ->
+          {:ok, %{message_id: id}} = Actions.post_message(uuid, "msg #{n}", opts)
+          id
+        end)
+
+      Enum.each(ids, fn id ->
+        assert {:ok, _} = Actions.edit_message(uuid, id, "edited", opts)
+      end)
+
+      Enum.each(ids, fn id ->
+        assert {:ok, _} = Actions.delete_message(uuid, id, opts)
+      end)
+
+      {:ok, doc} = DocBuilder.reconstruct_snapshot(store, uuid)
+      client_ids = sv_client_ids(doc)
+
+      assert MapSet.size(client_ids) <= 2,
+             "expected a bounded (<=2) set of client ids after 30 mixed writes, " <>
+               "got #{MapSet.size(client_ids)}: #{inspect(client_ids)}"
+    end
+
+    test "distinct actors write under distinct hands (cross-actor collision guard)",
+         %{store: store, messages_uuid: uuid} do
+      # Two actors sharing one hand can mint colliding (client_id, clock)
+      # ops when they reconstruct the same base concurrently — and the
+      # loser's ops are silently skipped as duplicates on replay
+      # (reproduced during CX-41qg.3 review). Distinct hands per actor is
+      # the guard; this pins the derivation actually differing.
+      alice = Commonplace.WriterHand.for_doc_actor(uuid, "alice@aaaaaaaa")
+      bob = Commonplace.WriterHand.for_doc_actor(uuid, "bob@bbbbbbbb")
+      refute alice == bob
+
+      for {signer, path} <- [{"alice@aaaaaaaa", "alice.usr"}, {"bob@bbbbbbbb", "bob.usr"}] do
+        assert {:ok, _} =
+                 Actions.post_message(uuid, "hello from #{path}",
+                   room: "general",
+                   signer_id: signer,
+                   author_path: path,
+                   store: store
+                 )
+      end
+
+      {:ok, doc} = DocBuilder.reconstruct_snapshot(store, uuid)
+      client_ids = sv_client_ids(doc)
+
+      assert MapSet.member?(client_ids, alice)
+      assert MapSet.member?(client_ids, bob)
+    end
+
+    test "concurrent-style divergent appends from two actors both survive replay",
+         %{store: store, messages_uuid: uuid} do
+      # The repro that motivated per-(doc, actor) hands, pinned: both
+      # writers reconstruct the SAME base (neither sees the other's
+      # post), append, and their commits land in chain order. With a
+      # shared hand the second writer's entry vanishes on replay; with
+      # per-actor hands both survive.
+      {:ok, base} = DocBuilder.reconstruct_snapshot(store, uuid)
+      base_update = Yelixer.Encoding.encode_update(base)
+
+      entries =
+        for {actor, text} <- [{"alice@aaaaaaaa", "from A"}, {"bob@bbbbbbbb", "from B"}] do
+          hand = Commonplace.WriterHand.for_doc_actor(uuid, actor)
+          doc = Yelixer.Doc.new(client_id: hand)
+          {:ok, doc} = Yelixer.Encoding.apply_update(doc, base_update)
+          doc = Commonplace.Chat.Messages.append(doc, %{"id" => actor, "text" => text})
+          Yelixer.Encoding.encode_update(doc)
+        end
+
+      replay = Yelixer.Doc.new()
+
+      replay =
+        Enum.reduce([base_update | entries], replay, fn u, d ->
+          {:ok, d} = Yelixer.Encoding.apply_update(d, u)
+          d
+        end)
+
+      ids = Commonplace.Chat.Messages.list(replay) |> Enum.map(& &1["id"])
+      assert "alice@aaaaaaaa" in ids
+      assert "bob@bbbbbbbb" in ids
+    end
+  end
 end

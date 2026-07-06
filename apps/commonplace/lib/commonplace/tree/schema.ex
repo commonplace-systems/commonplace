@@ -200,9 +200,18 @@ defmodule Commonplace.Tree.Schema do
   `version` set to `"1"`. Use this as the starting point when
   creating a new directory; subsequent `add_file/3` and
   `add_directory/3` calls populate `entries`.
+
+  CX-41qg.3: accepts `Doc.new/1` opts (e.g. `client_id:`) — pass them
+  through when the constructed doc will be re-encoded and re-committed
+  under a stable per-doc hand (`Commonplace.WriterHand.for_doc/1`). This
+  MUST be given up front, not patched onto the returned struct after the
+  fact — `new_schema/1` itself mints the `"version"` item below, so a
+  later `%{doc | client_id: id}` swap is too late to change that item's
+  authorship and would still bloat the state vector with a fresh random
+  id on every construction.
   """
-  def new_schema do
-    doc = Doc.new()
+  def new_schema(opts \\ []) do
+    doc = Doc.new(opts)
     {doc, _} = Doc.get_or_create_type(doc, @schema_type, :map)
     {doc, _} = Doc.get_or_create_type(doc, @entries_type, :map)
     doc = YMap.set(doc, @schema_type, "version", "1")

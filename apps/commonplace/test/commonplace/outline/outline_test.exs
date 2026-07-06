@@ -180,4 +180,37 @@ defmodule Commonplace.OutlineTest do
   end
 
   defp materialize(doc), do: Outline.Internal.materialize_items(doc)
+
+  describe "writer identity — stable per-doc hand (CX-41qg.3)" do
+    # `Outline.mutate/4` reconstructs the FULL commit chain via
+    # `DocBuilder.reconstruct_doc/3` before re-encoding each mutation.
+    # Before this fix that call passed no client_id, so every add/edit/
+    # move/delete minted a fresh random one — this pins the fix the
+    # same way `command_router_test.exs`'s "writer identity" describe
+    # block pins CommandRouter's.
+    defp sv_client_ids(doc) do
+      Yelixer.BlockStore.state_vector(doc.store).clocks
+      |> Map.keys()
+      |> MapSet.new()
+    end
+
+    test "20 mixed outline mutations keep the state vector's client-id set bounded",
+         %{store: store, root: root} do
+      {:ok, uuid} = Outline.create("todo", root, store)
+      {:ok, first} = Outline.add_item(store, uuid, %{text: "seed"})
+
+      Enum.each(1..19, fn n ->
+        assert {:ok, _id} = Outline.add_item(store, uuid, %{text: "item #{n}"})
+      end)
+
+      assert :ok = Outline.set_text(store, uuid, first, "renamed")
+
+      {:ok, doc} = Commonplace.Tree.DocBuilder.reconstruct_doc(store, uuid)
+      client_ids = sv_client_ids(doc)
+
+      assert MapSet.size(client_ids) <= 2,
+             "expected a bounded (<=2) set of client ids after 20 mutations, " <>
+               "got #{MapSet.size(client_ids)}: #{inspect(client_ids)}"
+    end
+  end
 end

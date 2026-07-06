@@ -24,6 +24,7 @@ defmodule Commonplace.Outline do
   alias Commonplace.Outline.Order
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.{DocBuilder, Schema}
+  alias Commonplace.WriterHand
 
   @outline_dir "outline"
   @outline_doc "_outline"
@@ -269,8 +270,13 @@ defmodule Commonplace.Outline do
 
   # --- shared plumbing ---
 
+  # CX-41qg.3: stable per-doc hand (WriterHand.for_doc/1) — every
+  # outline mutation reconstructs the FULL chain via
+  # `DocBuilder.reconstruct_doc/3` and re-encodes a new commit, so
+  # without a fixed client_id each call minted a fresh random one and
+  # the outline doc's state vector grew one slot per edit forever.
   defp mutate(store, outline_uuid, opts, fun) do
-    {:ok, doc} = DocBuilder.reconstruct_doc(store, outline_uuid)
+    {:ok, doc} = DocBuilder.reconstruct_doc(store, outline_uuid, client_id: WriterHand.for_doc(outline_uuid))
     {doc, result} = fun.(doc)
 
     case result do

@@ -46,6 +46,7 @@ defmodule Commonplace.Chat.TemplateBootstrap do
   alias Commonplace.Document.ContentType
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.{DocBuilder, Schema}
+  alias Commonplace.WriterHand
 
   @chat_dir "chat"
   @template_name "__template"
@@ -163,7 +164,9 @@ defmodule Commonplace.Chat.TemplateBootstrap do
   # bodies to Elixir source. Idempotent — bodies starting with non-`<`
   # are assumed Elixir and left alone.
   defp upgrade_compute_body_if_xml(compute_uuid, store) do
-    case DocBuilder.reconstruct_snapshot(store, compute_uuid) do
+    case DocBuilder.reconstruct_snapshot(store, compute_uuid,
+           client_id: WriterHand.for_doc(compute_uuid)
+         ) do
       {:ok, doc} ->
         content = ContentType.get_content(doc) || ""
 
@@ -272,8 +275,11 @@ defmodule Commonplace.Chat.TemplateBootstrap do
     uuid
   end
 
+  # CX-41qg.3: stable per-doc hand — every call site chains a fresh
+  # commit onto the SAME uuid across (idempotent, but repeatable)
+  # ensure_template/2 invocations.
   defp load_schema(uuid, store) do
-    case DocBuilder.reconstruct_snapshot(store, uuid) do
+    case DocBuilder.reconstruct_snapshot(store, uuid, client_id: WriterHand.for_doc(uuid)) do
       {:ok, doc} -> doc
       :none -> Schema.new_schema()
     end

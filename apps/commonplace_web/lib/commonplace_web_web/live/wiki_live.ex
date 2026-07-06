@@ -647,6 +647,16 @@ defmodule CommonplaceWebWeb.WikiLive do
           doc = ContentType.insert_text(doc, 0, "# #{name}\n\nWrite your content here.\n")
           update = Yelixer.Encoding.encode_update(doc)
 
+          # CX-41qg.3: `schema` came from `load_schema/1` (the DocCache
+          # read-side cache) with whatever client_id the cache happened
+          # to construct it under. Every new page created in this
+          # directory re-encodes a commit from that doc, so pin the
+          # client_id to a stable per-doc hand before mutating — a
+          # bare cache-served doc would otherwise mint a fresh
+          # random client_id into the directory schema's state vector
+          # on every single page create.
+          schema = %{schema | client_id: Commonplace.WriterHand.for_doc(dir_uuid)}
+
           # CX-qat5.3: check the local-write gate's verdict on BOTH writes
           # before navigating — under the default permissive config
           # neither ever fails, but a strict/enforce workspace must not

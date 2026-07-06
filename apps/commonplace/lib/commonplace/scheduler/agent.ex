@@ -260,7 +260,7 @@ defmodule Commonplace.Scheduler.Agent do
       :error ->
         scheduler_uuid = UUID.uuid4()
         {:ok, _genesis} = CommitStore.ensure_genesis(store, scheduler_uuid)
-        sdoc = SDoc.new()
+        sdoc = SDoc.new(client_id: Commonplace.WriterHand.for_doc(scheduler_uuid))
 
         CommitStoreClient.create_chained_commit(
           store,
@@ -280,16 +280,25 @@ defmodule Commonplace.Scheduler.Agent do
     end
   end
 
+  # CX-41qg.3: `Schema.new_schema/1` takes the client_id UP FRONT (it
+  # mints a "version" item during construction, so patching the struct
+  # field afterward — the `Presence.Identity`-style move — would be too
+  # late: that item would already be recorded under whatever random
+  # client_id `Doc.new/0` picked). This loader backs
+  # `ensure_system_dir`/`ensure_scheduler_entry`, which re-commit onto
+  # the SAME root/system uuids across scheduler agent (re)starts.
   defp schema_loader(store) do
     fn uuid ->
+      client_id = Commonplace.WriterHand.for_doc(uuid)
+
       case CommitStoreClient.latest_commit(store, uuid) do
         {:ok, commit} ->
-          doc = Schema.new_schema()
+          doc = Schema.new_schema(client_id: client_id)
           {:ok, doc} = Encoding.apply_update(doc, commit.update)
           doc
 
         :none ->
-          Schema.new_schema()
+          Schema.new_schema(client_id: client_id)
       end
     end
   end

@@ -64,6 +64,23 @@ defmodule Commonplace.Store.Snapshotter do
   snapshot that one day collapses more than one epoch can carry one
   entry per source namespace — that future composition across epochs is
   build 6's job; here there is always exactly one.
+
+  ## Relationship to the writer-identity / hand model (CX-41qg, AUDIT ONLY)
+
+  `deterministic_client_id/1` below looks like the same "fix the
+  client_id before re-encoding" move the CX-41qg writer-hand sweep
+  applies elsewhere (`Commonplace.WriterHand.for_doc/1`), but it is
+  NOT a hand in that model's sense and must NOT be replaced by one.
+  Hands exist to keep a *specific writer's* Yjs clock stable across
+  restarts; this module's `client_id` exists so that TWO INDEPENDENT
+  NODES computing the same snapshot agree on identical bytes —
+  "deterministic-anyone," not "stable-for-one-writer." Swapping in a
+  per-doc phash2 hand here would still be deterministic-per-node, but
+  it's the WRONG deterministic value to standardize on (this module
+  already has its own, narrower, content-derived rule — smallest
+  client_id among the source's own items) and there is no reason to
+  disturb a property CX-umz already depends on. Audited under CX-41qg.3
+  and intentionally left unchanged.
   """
 
   @snapshotter_version 1

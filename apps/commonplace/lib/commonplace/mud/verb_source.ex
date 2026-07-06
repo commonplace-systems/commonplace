@@ -25,6 +25,7 @@ defmodule Commonplace.MUD.VerbSource do
   alias Commonplace.MUD.Schemas
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.{DocBuilder, Schema}
+  alias Commonplace.WriterHand
   alias Yelixer.Doc, as: YDoc
   alias Yelixer.Encoding
 
@@ -191,7 +192,7 @@ defmodule Commonplace.MUD.VerbSource do
   end
 
   defp replace_source_doc(uuid, text, store) do
-    {:ok, doc} = DocBuilder.reconstruct_doc(store, uuid)
+    {:ok, doc} = DocBuilder.reconstruct_doc(store, uuid, client_id: WriterHand.for_doc(uuid))
     current = ContentType.get_content(doc) || ""
     doc = if current != "", do: ContentType.delete_text(doc, 0, String.length(current)), else: doc
     doc = ContentType.insert_text(doc, 0, text)

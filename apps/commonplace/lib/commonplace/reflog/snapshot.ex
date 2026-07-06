@@ -67,6 +67,7 @@ defmodule Commonplace.Reflog.Snapshot do
   alias Commonplace.Tree.{Schema, DocBuilder}
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Document.ContentType
+  alias Commonplace.WriterHand
 
   require Logger
 
@@ -324,8 +325,6 @@ defmodule Commonplace.Reflog.Snapshot do
 
       _ ->
         # Cursor miss — build and write the reflog snapshot doc + schema.
-        reflog_doc = build_reflog_doc(schema_cid_hex, entry_cids)
-
         schema_update = Yelixer.Encoding.encode_update(reflog_schema_after)
         CommitStoreClient.create_chained_commit(store, reflog_dir_uuid, schema_update)
 
@@ -344,6 +343,15 @@ defmodule Commonplace.Reflog.Snapshot do
               uuid
           end
 
+        # CX-41qg.3: build_reflog_doc/3 takes the snapshot doc's own
+        # uuid so it can mint a stable per-doc hand. Checkpoints fire
+        # every sync tick (Sync.Agent) plus periodically
+        # (CheckpointTimer) — without a fixed client_id, every one of
+        # those rounds rebuilt this doc from scratch via a fresh
+        # `Doc.new()` and minted a new random client_id, so the
+        # `__snapshot` doc's state vector bloated one slot PER
+        # CHECKPOINT ROUND, forever.
+        reflog_doc = build_reflog_doc(snapshot_uuid, schema_cid_hex, entry_cids)
         update = Yelixer.Encoding.encode_update(reflog_doc)
         commit = CommitStoreClient.create_chained_commit(store, snapshot_uuid, update)
 
@@ -358,8 +366,8 @@ defmodule Commonplace.Reflog.Snapshot do
     end
   end
 
-  defp build_reflog_doc(schema_cid_hex, entry_cids) do
-    doc = Yelixer.Doc.new()
+  defp build_reflog_doc(snapshot_uuid, schema_cid_hex, entry_cids) do
+    doc = Yelixer.Doc.new(client_id: WriterHand.for_doc(snapshot_uuid))
     doc = ContentType.create(doc, :map, "reflog_snapshot")
 
     doc =
@@ -510,8 +518,13 @@ defmodule Commonplace.Reflog.Snapshot do
     end
   end
 
+  # CX-41qg.3: every caller of load_schema/2 in this module re-encodes
+  # and commits a new update on the SAME uuid (reflog dir schemas, the
+  # __reflog / owner directory schemas, the root schema) once per
+  # checkpoint round, so a stable per-doc hand is required here too —
+  # harmless for the couple of read-only call sites.
   defp load_schema(uuid, store) do
-    case DocBuilder.reconstruct_snapshot(store, uuid) do
+    case DocBuilder.reconstruct_snapshot(store, uuid, client_id: WriterHand.for_doc(uuid)) do
       {:ok, doc} -> doc
       :none -> Schema.new_schema()
     end
