@@ -408,7 +408,7 @@ defmodule Commonplace.GitBridge.InboundTest do
     assert after_xml == before_xml
   end
 
-  test "pin 7: add/delete rejection — git-side new file and deletion both rejected to conflict path", %{
+  test "pin 7: add/delete ingestion — git-side new file becomes a doc, deletion removes the schema entry", %{
     store: store,
     repo_dir: repo_dir,
     workspace_dir: workspace_dir,
@@ -428,16 +428,82 @@ defmodule Commonplace.GitBridge.InboundTest do
     PubSub.subscribe_red(mount_uuid)
     {:ok, _} = Server.sync_now(name)
 
-    assert_receive {"red:" <> _, {:git_bridge, :conflict_preserved, %{rel_path: "new_file.txt", reason: :added}}}, 2_000
-    assert_receive {"red:" <> _, {:git_bridge, :conflict_preserved, %{rel_path: "a.txt", reason: :deleted}}}, 2_000
+    assert_receive {"red:" <> _, {:git_bridge, :file_added, %{rel_path: "new_file.txt", uuid: new_uuid}}}, 2_000
+    assert_receive {"red:" <> _, {:git_bridge, :file_removed, %{rel_path: "a.txt", uuid: ^doc_uuid}}}, 2_000
 
-    # Doc content untouched by the deletion.
+    # New doc exists with the human's content, and a schema entry was added.
+    assert doc_content(store, new_uuid) == "brand new"
+    {:ok, mount_schema} = DocBuilder.reconstruct_snapshot(store, mount_uuid)
+    assert Schema.resolve_name(mount_schema, "new_file.txt") == {:ok, new_uuid}
+    assert Schema.resolve_name(mount_schema, "a.txt") == :error
+
+    # The deleted doc's underlying content is still recoverable — only
+    # the tree pointer was removed, history is append-only.
     assert doc_content(store, doc_uuid) == "keep me"
 
-    # Next export regenerates the deleted file.
+    # Next export round-trips the add (zero further git diff for it)
+    # and does NOT regenerate the deleted file (it's gone from the tree).
     {:ok, _} = Server.sync_now(name)
+    {:ok, r3} = Server.sync_now(name)
+    assert r3.committed == false
+
+    refute File.exists?(Path.join(repo_dir, "a.txt"))
+    assert File.read!(Path.join(repo_dir, "new_file.txt")) == "brand new"
+  end
+
+  test "pin 7b: add rejection — system/honorific/sidecar-owned names never mint a doc", %{
+    store: store,
+    repo_dir: repo_dir,
+    workspace_dir: workspace_dir,
+    bare_dir: bare_dir,
+    clone_dir: clone_dir
+  } do
+    %{mount_uuid: mount_uuid} = seed_single_doc(store, workspace_dir, "keep me")
+
+    name = start_bridge(mount_uuid: mount_uuid, repo_dir: repo_dir, store: store, remote: bare_dir)
     {:ok, _} = Server.sync_now(name)
-    assert File.exists?(Path.join(repo_dir, "a.txt"))
+
+    human_clone(bare_dir, clone_dir)
+    File.write!(Path.join(clone_dir, "__system"), "reserved")
+    File.write!(Path.join(clone_dir, "alice.usr"), "{}")
+    human_commit_and_push(clone_dir, "add ineligible names")
+
+    PubSub.subscribe_red(mount_uuid)
+    {:ok, _} = Server.sync_now(name)
+
+    assert_receive {"red:" <> _, {:git_bridge, :conflict_preserved, %{rel_path: "__system", reason: :ineligible_add}}}, 2_000
+    assert_receive {"red:" <> _, {:git_bridge, :conflict_preserved, %{rel_path: "alice.usr", reason: :ineligible_add}}}, 2_000
+
+    {:ok, mount_schema} = DocBuilder.reconstruct_snapshot(store, mount_uuid)
+    assert Schema.resolve_name(mount_schema, "__system") == :error
+    assert Schema.resolve_name(mount_schema, "alice.usr") == :error
+  end
+
+  test "pin 7c: rename — git-side rename rejected to conflict path in v1", %{
+    store: store,
+    repo_dir: repo_dir,
+    workspace_dir: workspace_dir,
+    bare_dir: bare_dir,
+    clone_dir: clone_dir
+  } do
+    %{mount_uuid: mount_uuid, doc_uuid: doc_uuid} = seed_single_doc(store, workspace_dir, "keep me stable enough to detect as a rename")
+
+    name = start_bridge(mount_uuid: mount_uuid, repo_dir: repo_dir, store: store, remote: bare_dir)
+    {:ok, _} = Server.sync_now(name)
+
+    human_clone(bare_dir, clone_dir)
+    git!(clone_dir, ["mv", "a.txt", "b.txt"])
+    human_commit_and_push(clone_dir, "rename a.txt to b.txt")
+
+    PubSub.subscribe_red(mount_uuid)
+    {:ok, _} = Server.sync_now(name)
+
+    assert_receive {"red:" <> _, {:git_bridge, :conflict_preserved, %{rel_path: "b.txt", reason: :rename_unsupported}}}, 2_000
+
+    # Original doc/schema entry untouched.
+    assert doc_content(store, doc_uuid) == "keep me stable enough to detect as a rename"
+    {:ok, mount_schema} = DocBuilder.reconstruct_snapshot(store, mount_uuid)
+    assert Schema.resolve_name(mount_schema, "a.txt") == {:ok, doc_uuid}
   end
 
   test "pin 8: sidecar tamper — editing .commonplace/* on git side is ignored entirely", %{

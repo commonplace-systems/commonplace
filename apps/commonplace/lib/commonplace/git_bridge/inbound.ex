@@ -50,9 +50,38 @@ defmodule Commonplace.GitBridge.Inbound do
       / `:array` docs are rejected to the conflict path (their
       canonical render formats aren't line/char-diffable against the
       CRDT structure yet — a fast-follow, not a v1 goal).
-    * git-side file ADDs and DELETEs are rejected to the conflict path
-      (edits-only v1). A delete needs no repair: the doc is unchanged,
-      so the very next export step regenerates the file.
+    * git-side file ADDs (`A`) and DELETEs (`D`) are INGESTED
+      (CX-b0ow.8, fast-follow to G2's edits-only v1):
+      - An ADD mints a fresh TEXT doc from the file's content and adds
+        a schema entry for it under the PARENT directory's schema doc
+        — resolved by walking the schema chain from `mount_uuid`
+        through the rel_path's directory components (not the sidecar
+        manifest, which only tracks leaf docs). If any ancestor
+        directory doesn't already exist as a schema entry, the add is
+        rejected to the conflict path (`:parent_dir_missing`) — v1
+        does not create directory chains implicitly. The SAME
+        eligibility filter `Exporter` applies to exported entries
+        (`__`-prefix, honorific extensions, traversal-unsafe names)
+        also gates ADDs, since a name that would never have been
+        exported must never be ingested back in either. A red
+        `:file_added` event fires on success.
+      - A DELETE removes the doc's entry from its parent schema doc
+        (`Schema.remove_entry/2`). Append-only: the doc's commit chain
+        in the store is untouched, so the content is still
+        reconstructable — only the TREE POINTER to it is gone. The
+        very next export step naturally omits the (now-untracked) file
+        and prunes it from disk (and the sidecar). A red
+        `:file_removed` event fires on success.
+      - RENAMES (`R###`) are rejected to the conflict path in v1
+        (`:rename_unsupported`) — treating a rename as an atomic
+        delete-old + add-new would need to reconcile the OLD and NEW
+        paths' parent schemas as a single transaction, which is more
+        than this fast-follow's blast radius; a human can always
+        express a rename as delete+add across two commits instead.
+      - Both ADD's doc-mint + schema-commit and DELETE's schema-commit
+        route through the same bridge-`SigningContext` seam
+        (`mint_edit`'s sibling helpers below) — the CX-qat5.3 "fourth
+        ingress" chokepoint stays singular.
     * `.commonplace/**` and `.gitattributes` are NEVER ingest-eligible
       — these are bridge-owned artifacts. A human editing them on the
       git side is silently ignored; the bridge regenerates them from
@@ -111,11 +140,12 @@ defmodule Commonplace.GitBridge.Inbound do
   require Logger
 
   alias Commonplace.GitBridge.{Git, Sidecar}
-  alias Commonplace.Tree.DocBuilder
+  alias Commonplace.Tree.{Schema, DocBuilder}
   alias Commonplace.Document.ContentType
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Crypto.AgentKeys
   alias Commonplace.Dataflow.PubSub
+  alias Commonplace.Presence
 
   @remote_name "origin"
   @default_max_inbound_bytes 2 * 1024 * 1024
@@ -244,8 +274,11 @@ defmodule Commonplace.GitBridge.Inbound do
     rel_path == ".gitattributes" or String.starts_with?(rel_path, ".commonplace/")
   end
 
-  defp ingest_one(state, _manifest, _fetched_head, "A", rel_path), do: reject(state, rel_path, :added)
-  defp ingest_one(state, _manifest, _fetched_head, "D", rel_path), do: reject(state, rel_path, :deleted)
+  defp ingest_one(state, manifest, fetched_head, "A", rel_path),
+    do: ingest_add(state, manifest, fetched_head, rel_path)
+
+  defp ingest_one(state, manifest, _fetched_head, "D", rel_path),
+    do: ingest_delete(state, manifest, rel_path)
 
   defp ingest_one(state, manifest, fetched_head, status, rel_path) when status in ["M"] do
     case Map.get(manifest, rel_path) do
@@ -260,7 +293,12 @@ defmodule Commonplace.GitBridge.Inbound do
     end
   end
 
-  # Renames, mode changes, etc. — not v1 scope; conservative reject.
+  # Renames: v1 rejects to the conflict path rather than reconciling the
+  # old and new paths' parent schemas as an atomic delete+add.
+  defp ingest_one(state, _manifest, _fetched_head, "R" <> _rest, rel_path),
+    do: reject(state, rel_path, :rename_unsupported)
+
+  # Mode changes, type changes, etc. — not v1 scope; conservative reject.
   defp ingest_one(state, _manifest, _fetched_head, _status, rel_path), do: reject(state, rel_path, :unsupported_status)
 
   defp ingest_text(state, rel_path, %{"uuid" => uuid, "anchor" => anchor_hex}, fetched_head) do
@@ -305,6 +343,181 @@ defmodule Commonplace.GitBridge.Inbound do
       {:error, reason} ->
         Logger.warning("GitBridge.Inbound: could not resolve #{rel_path}: #{inspect(reason)}")
         %{rel_path: rel_path, uuid: uuid, outcome: :conflict, reason: reason}
+    end
+  end
+
+  # --- ADD (CX-b0ow.8) ---
+
+  defp ingest_add(state, _manifest, fetched_head, rel_path) do
+    cond do
+      not add_eligible?(rel_path) ->
+        reject(state, rel_path, :ineligible_add)
+
+      true ->
+        case resolve_parent_schema(state.store, state.mount_uuid, rel_path) do
+          {:ok, parent_schema_uuid} ->
+            mint_add(state, parent_schema_uuid, fetched_head, rel_path)
+
+          {:error, reason} ->
+            reject(state, rel_path, reason)
+        end
+    end
+  end
+
+  defp mint_add(state, parent_schema_uuid, fetched_head, rel_path) do
+    repo_dir = state.repo_dir
+
+    case Git.show(repo_dir, fetched_head, rel_path) do
+      {:ok, content} ->
+        name = Path.basename(rel_path)
+        signing_opts = bridge_signing_context(state)
+
+        case mint_new_text_doc(state.store, name, content, signing_opts) do
+          {:ok, uuid} ->
+            case add_schema_entry(state.store, parent_schema_uuid, name, uuid, signing_opts) do
+              :ok ->
+                PubSub.broadcast_red(state.mount_uuid, {:git_bridge, :file_added, %{rel_path: rel_path, uuid: uuid}})
+                %{rel_path: rel_path, uuid: uuid, outcome: :clean}
+
+              {:error, reason} ->
+                Logger.warning("GitBridge.Inbound: schema add failed for #{rel_path}: #{inspect(reason)}")
+                reject(state, rel_path, :schema_add_failed)
+            end
+
+          {:error, reason} ->
+            Logger.warning("GitBridge.Inbound: doc mint failed for #{rel_path}: #{inspect(reason)}")
+            reject(state, rel_path, :mint_failed)
+        end
+
+      {:error, reason} ->
+        Logger.warning("GitBridge.Inbound: could not read added file #{rel_path}: #{inspect(reason)}")
+        reject(state, rel_path, reason)
+    end
+  end
+
+  defp mint_new_text_doc(store, name, content, signing_opts) do
+    uuid = UUID.uuid4()
+
+    doc = Yelixer.Doc.new(client_id: stable_client_id(uuid))
+    doc = ContentType.create(doc, :text, name)
+    doc = ContentType.insert_text(doc, 0, content)
+    update = Yelixer.Encoding.encode_update(doc)
+
+    metadata = %{kind: :git_bridge_inbound}
+
+    case CommitStoreClient.create_commit(store, uuid, update, nil, metadata, signing_opts) do
+      %Commonplace.Store.Commit{} -> {:ok, uuid}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp add_schema_entry(store, schema_uuid, name, doc_uuid, signing_opts) do
+    case DocBuilder.reconstruct_snapshot(store, schema_uuid) do
+      {:ok, schema_doc} ->
+        schema_doc = Schema.add_file(schema_doc, name, doc_uuid)
+        update = Yelixer.Encoding.encode_update(schema_doc)
+        metadata = %{kind: :git_bridge_inbound}
+
+        case CommitStoreClient.create_chained_commit(store, schema_uuid, update, metadata, signing_opts) do
+          %Commonplace.Store.Commit{} -> :ok
+          {:error, reason} -> {:error, reason}
+        end
+
+      :none ->
+        {:error, :parent_schema_missing}
+    end
+  end
+
+  # The SAME shape of filter `Exporter.eligible?/1` applies to exported
+  # entries — a name that would never have been exported must never be
+  # ingested back in as a fresh doc either.
+  defp add_eligible?(rel_path) do
+    parts = Path.split(rel_path)
+
+    Enum.all?(parts, &add_safe_name?/1) and
+      not Enum.any?(parts, &String.starts_with?(&1, "__")) and
+      match?(:error, Presence.parse_honorific(List.last(parts)))
+  end
+
+  defp add_safe_name?(name) when name in ["", ".", ".."], do: false
+
+  defp add_safe_name?(name) do
+    not (String.contains?(name, "/") or String.contains?(name, "\\") or String.contains?(name, <<0>>))
+  end
+
+  # --- DELETE (CX-b0ow.8) ---
+
+  defp ingest_delete(state, manifest, rel_path) do
+    case Map.get(manifest, rel_path) do
+      nil ->
+        reject(state, rel_path, :unknown_to_sidecar)
+
+      %{"uuid" => uuid} ->
+        case resolve_parent_schema(state.store, state.mount_uuid, rel_path) do
+          {:ok, parent_schema_uuid} ->
+            signing_opts = bridge_signing_context(state)
+            name = Path.basename(rel_path)
+
+            case remove_schema_entry(state.store, parent_schema_uuid, name, signing_opts) do
+              :ok ->
+                PubSub.broadcast_red(state.mount_uuid, {:git_bridge, :file_removed, %{rel_path: rel_path, uuid: uuid}})
+                %{rel_path: rel_path, uuid: uuid, outcome: :clean}
+
+              {:error, reason} ->
+                Logger.warning("GitBridge.Inbound: schema remove failed for #{rel_path}: #{inspect(reason)}")
+                reject(state, rel_path, :schema_remove_failed)
+            end
+
+          {:error, reason} ->
+            reject(state, rel_path, reason)
+        end
+    end
+  end
+
+  defp remove_schema_entry(store, schema_uuid, name, signing_opts) do
+    case DocBuilder.reconstruct_snapshot(store, schema_uuid) do
+      {:ok, schema_doc} ->
+        schema_doc = Schema.remove_entry(schema_doc, name)
+        update = Yelixer.Encoding.encode_update(schema_doc)
+        metadata = %{kind: :git_bridge_inbound}
+
+        case CommitStoreClient.create_chained_commit(store, schema_uuid, update, metadata, signing_opts) do
+          %Commonplace.Store.Commit{} -> :ok
+          {:error, reason} -> {:error, reason}
+        end
+
+      :none ->
+        {:error, :parent_schema_missing}
+    end
+  end
+
+  # --- Shared: parent-schema resolution by walking the tree from mount_uuid ---
+  #
+  # Deliberately walks the LIVE schema chain (not the sidecar manifest,
+  # which only tracks leaf `:doc` entries) so ADD/DELETE work at any
+  # depth whose ancestor directories already exist. A nested add whose
+  # parent directory doesn't exist yet is rejected (`:parent_dir_missing`)
+  # — v1 does not create directory chains implicitly.
+  defp resolve_parent_schema(store, mount_uuid, rel_path) do
+    dir_parts = rel_path |> Path.split() |> Enum.drop(-1)
+    walk_schema_chain(store, mount_uuid, dir_parts)
+  end
+
+  defp walk_schema_chain(_store, schema_uuid, []), do: {:ok, schema_uuid}
+
+  defp walk_schema_chain(store, schema_uuid, [name | rest]) do
+    case DocBuilder.reconstruct_snapshot(store, schema_uuid) do
+      {:ok, schema_doc} ->
+        case Schema.get_entry(schema_doc, name) do
+          {:ok, %Schema.Entry{type: :dir, node_id: child_uuid}} ->
+            walk_schema_chain(store, child_uuid, rest)
+
+          _ ->
+            {:error, :parent_dir_missing}
+        end
+
+      :none ->
+        {:error, :parent_dir_missing}
     end
   end
 
