@@ -275,8 +275,26 @@ defmodule Commonplace.Outline do
   # `DocBuilder.reconstruct_doc/3` and re-encodes a new commit, so
   # without a fixed client_id each call minted a fresh random one and
   # the outline doc's state vector grew one slot per edit forever.
+  #
+  # CX-nn4y (W4 rider): a caller that already carries its OWN stable
+  # hand — a logged-in browser session, resolved once at login and
+  # threaded down as `opts[:client_id]` — uses that hand instead of the
+  # shared per-doc funnel hand. Two concurrent anonymous/funnel writers
+  # sharing `for_doc/1` can mint colliding (client_id, clock) ops from
+  # the same reconstructed base and the loser's write is silently
+  # skipped as a duplicate on replay (the residual-collision hazard W4
+  # session hands exist to close — see `WriterHand` moduledoc and
+  # `Chat.Actions.load_messages_doc/3` for the same precedence order).
+  # Hand-less callers (MCP, anonymous browser sessions) keep falling
+  # through to `for_doc/1`.
   defp mutate(store, outline_uuid, opts, fun) do
-    {:ok, doc} = DocBuilder.reconstruct_doc(store, outline_uuid, client_id: WriterHand.for_doc(outline_uuid))
+    hand =
+      case Keyword.get(opts, :client_id) do
+        hand when is_integer(hand) -> hand
+        nil -> WriterHand.for_doc(outline_uuid)
+      end
+
+    {:ok, doc} = DocBuilder.reconstruct_doc(store, outline_uuid, client_id: hand)
     {doc, result} = fun.(doc)
 
     case result do

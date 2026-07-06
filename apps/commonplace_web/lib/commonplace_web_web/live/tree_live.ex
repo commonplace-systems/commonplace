@@ -11,6 +11,17 @@ defmodule CommonplaceWebWeb.TreeLive do
   `browser-<id>.usr` presence actor under the workspace root (with a
   15s heartbeat), so an open tree-browser tab is visible to others as a
   live `.usr` presence. The actor is stopped on `terminate/2`.
+
+  Author identity resolves once per mount via
+  `CommonplaceWebWeb.SessionIdentity.resolve/1` (CX-nn4y, following the
+  CX-qat5.2 pattern `ChatRoomLive` established): a logged-in session's
+  `signing_context` reaches the `yjs_edit` save-path commit. There is NO
+  reconstruction-client_id seam to thread a session hand into here — the
+  saved update's Yjs client_id is already baked in by the browser's own
+  Y.Doc (assigned by the Yjs JS library at document-load time), not
+  chosen server-side, same residual noted in `WikiLive`. An anonymous
+  session (no cookie, or one that no longer resolves) falls back to
+  exactly today's behavior: no signing_context.
   """
 
   use CommonplaceWebWeb, :live_view
@@ -19,10 +30,14 @@ defmodule CommonplaceWebWeb.TreeLive do
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Dataflow.PubSub, as: CPPubSub
   alias Commonplace.Presence
-  alias CommonplaceWebWeb.WriteRateLimit
+  alias CommonplaceWebWeb.{SessionIdentity, WriteRateLimit}
 
   @impl true
-  def mount(_params, _session, socket) do
+  def mount(_params, session, socket) do
+    # CX-qat5.2 §2.3 discipline (per CX-nn4y): resolve identity ONCE
+    # here, thread by argument — no downstream re-derivation.
+    identity = SessionIdentity.resolve(session)
+
     data_dir = Application.get_env(:commonplace, :data_dir, "data")
     root = read_root_uuid(data_dir)
 
@@ -52,6 +67,7 @@ defmodule CommonplaceWebWeb.TreeLive do
       |> assign(:selected_name, nil)
       |> assign(:selected_uuid, nil)
       |> assign(:presence_pid, presence_pid)
+      |> assign(:identity, identity)
 
     {:ok, socket}
   end
@@ -158,7 +174,8 @@ defmodule CommonplaceWebWeb.TreeLive do
       :ok ->
         with uuid when not is_nil(uuid) <- socket.assigns.selected_uuid,
              {:ok, update} <- Base.decode64(encoded) do
-          commit = CommitStoreClient.create_chained_commit(uuid, update)
+          commit =
+            CommitStoreClient.create_chained_commit(CommitStoreClient, uuid, update, %{}, commit_opts(socket))
 
           case commit do
             %{id: _} ->
@@ -313,6 +330,16 @@ defmodule CommonplaceWebWeb.TreeLive do
     case File.read(Path.join(data_dir, "root")) do
       {:ok, uuid} -> String.trim(uuid)
       {:error, _} -> nil
+    end
+  end
+
+  # CX-nn4y: commit opts for the current socket's resolved identity —
+  # just `:signing_context` (no `:client_id` seam here; see the
+  # moduledoc note on the browser-Yjs-owned client_id).
+  defp commit_opts(socket) do
+    case socket.assigns[:identity] do
+      {:ok, %{signing_context: ctx}} -> [signing_context: ctx]
+      _ -> []
     end
   end
 end

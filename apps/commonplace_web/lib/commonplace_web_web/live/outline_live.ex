@@ -14,15 +14,32 @@ defmodule CommonplaceWebWeb.OutlineLive do
   implementation, two entry points). Known MVP wart: browser `Tab`
   moves focus as well as indenting (no JS hook yet) — the per-item
   buttons cover every operation regardless.
+
+  Author identity resolves once per mount via
+  `CommonplaceWebWeb.SessionIdentity.resolve/1` (CX-nn4y, following the
+  CX-qat5.2 pattern `ChatRoomLive` established): a logged-in session's
+  stable W4 session hand threads into every `Commonplace.Outline.*` call
+  as `opts[:client_id]` (wins over the shared `WriterHand.for_doc/1`
+  funnel hand), and `opts[:signing_context]` reaches the commit. This
+  closes the residual hazard where two concurrent anonymous/funnel
+  writers sharing one per-doc hand can mint colliding (client_id, clock)
+  ops from the same reconstructed base — the loser's write silently
+  drops as a "duplicate" on replay. An anonymous session (no cookie, or
+  one that no longer resolves) falls back to exactly today's behavior:
+  no client_id override, no signing_context.
   """
   use CommonplaceWebWeb, :live_view
 
   alias Commonplace.Outline
   alias Commonplace.Outline.Tree
-  alias CommonplaceWebWeb.WriteRateLimit
+  alias CommonplaceWebWeb.{SessionIdentity, WriteRateLimit}
 
   @impl true
-  def mount(%{"name" => name}, _session, socket) do
+  def mount(%{"name" => name}, session, socket) do
+    # CX-qat5.2 §2.3 discipline (per CX-nn4y): resolve identity ONCE
+    # here, thread by argument — no downstream re-derivation.
+    identity = SessionIdentity.resolve(session)
+
     with {:ok, root} <- Commonplace.Workspace.root_uuid(),
          {:ok, uuid} <- Outline.lookup(name, root) do
       if connected?(socket) do
@@ -31,11 +48,24 @@ defmodule CommonplaceWebWeb.OutlineLive do
 
       {:ok,
        socket
-       |> assign(name: name, uuid: uuid, not_found: false, page_title: "outline: #{name}")
+       |> assign(
+         name: name,
+         uuid: uuid,
+         not_found: false,
+         page_title: "outline: #{name}",
+         identity: identity
+       )
        |> reload()}
     else
       _ ->
-        {:ok, assign(socket, name: name, uuid: nil, not_found: true, forest: [])}
+        {:ok,
+         assign(socket,
+           name: name,
+           uuid: nil,
+           not_found: true,
+           forest: [],
+           identity: identity
+         )}
     end
   end
 
@@ -57,7 +87,7 @@ defmodule CommonplaceWebWeb.OutlineLive do
       # `{:error, {:trust_rejected, _}}` here instead of `{:ok, id}` —
       # flash it rather than crashing the LiveView on the old rigid
       # `{:ok, _id} = ...` match.
-      case Outline.add_item(store(), socket.assigns.uuid, attrs) do
+      case Outline.add_item(store(), socket.assigns.uuid, attrs, mutate_opts(socket)) do
         {:ok, _id} -> {:noreply, reload(socket)}
         {:error, _reason} -> {:noreply, permission_denied_flash(socket)}
       end
@@ -66,7 +96,7 @@ defmodule CommonplaceWebWeb.OutlineLive do
 
   def handle_event("set_text", %{"id" => id, "value" => value}, socket) do
     write_gate(socket, fn ->
-      case Outline.set_text(store(), socket.assigns.uuid, id, value) do
+      case Outline.set_text(store(), socket.assigns.uuid, id, value, mutate_opts(socket)) do
         :ok -> {:noreply, reload(socket)}
         {:error, _reason} -> {:noreply, permission_denied_flash(socket)}
       end
@@ -75,25 +105,35 @@ defmodule CommonplaceWebWeb.OutlineLive do
 
   def handle_event("indent", %{"id" => id}, socket) do
     write_gate(socket, fn ->
-      {:noreply, apply_or_flash(socket, Outline.indent(store(), socket.assigns.uuid, id))}
+      {:noreply,
+       apply_or_flash(socket, Outline.indent(store(), socket.assigns.uuid, id, mutate_opts(socket)))}
     end)
   end
 
   def handle_event("outdent", %{"id" => id}, socket) do
     write_gate(socket, fn ->
-      {:noreply, apply_or_flash(socket, Outline.outdent(store(), socket.assigns.uuid, id))}
+      {:noreply,
+       apply_or_flash(socket, Outline.outdent(store(), socket.assigns.uuid, id, mutate_opts(socket)))}
     end)
   end
 
   def handle_event("move_up", %{"id" => id}, socket) do
     write_gate(socket, fn ->
-      {:noreply, apply_or_flash(socket, Outline.reorder(store(), socket.assigns.uuid, id, :up))}
+      {:noreply,
+       apply_or_flash(
+         socket,
+         Outline.reorder(store(), socket.assigns.uuid, id, :up, mutate_opts(socket))
+       )}
     end)
   end
 
   def handle_event("move_down", %{"id" => id}, socket) do
     write_gate(socket, fn ->
-      {:noreply, apply_or_flash(socket, Outline.reorder(store(), socket.assigns.uuid, id, :down))}
+      {:noreply,
+       apply_or_flash(
+         socket,
+         Outline.reorder(store(), socket.assigns.uuid, id, :down, mutate_opts(socket))
+       )}
     end)
   end
 
@@ -101,7 +141,7 @@ defmodule CommonplaceWebWeb.OutlineLive do
     write_gate(socket, fn ->
       item = Enum.find(Outline.items(store(), socket.assigns.uuid), &(&1.id == id))
 
-      case Outline.set_collapsed(store(), socket.assigns.uuid, id, not item.collapsed) do
+      case Outline.set_collapsed(store(), socket.assigns.uuid, id, not item.collapsed, mutate_opts(socket)) do
         :ok -> {:noreply, reload(socket)}
         {:error, _reason} -> {:noreply, permission_denied_flash(socket)}
       end
@@ -110,7 +150,7 @@ defmodule CommonplaceWebWeb.OutlineLive do
 
   def handle_event("delete", %{"id" => id}, socket) do
     write_gate(socket, fn ->
-      case Outline.delete_item(store(), socket.assigns.uuid, id) do
+      case Outline.delete_item(store(), socket.assigns.uuid, id, mutate_opts(socket)) do
         :ok -> {:noreply, reload(socket)}
         {:error, _reason} -> {:noreply, permission_denied_flash(socket)}
       end
@@ -144,6 +184,20 @@ defmodule CommonplaceWebWeb.OutlineLive do
   end
 
   defp store, do: Commonplace.Store.CommitStoreClient
+
+  # CX-nn4y: mutation opts for the current socket's resolved identity —
+  # `:client_id` (the session hand, wins over `Outline.mutate/4`'s
+  # `WriterHand.for_doc/1` fallback) and `:signing_context`. Anonymous
+  # sessions get `[]`, matching pre-CX-nn4y behavior exactly.
+  defp mutate_opts(socket) do
+    case socket.assigns[:identity] do
+      {:ok, %{signing_context: ctx, hand: hand}} ->
+        [signing_context: ctx, client_id: hand]
+
+      _ ->
+        []
+    end
+  end
 
   # CX-qat5.6: gate every mutating handler behind the per-connection
   # write rate limiter before it touches the store. `self()` (this

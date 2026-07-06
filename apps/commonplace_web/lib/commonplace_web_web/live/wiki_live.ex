@@ -45,8 +45,25 @@ defmodule CommonplaceWebWeb.WikiLive do
   identity panel survives a heartbeat/status commit or an Edit→View
   toggle instead of vanishing.
 
-  Author identity for `view_action` dispatch is a placeholder
-  (`"wiki-user@local"`) until per-session signing lands.
+  Author identity for `view_action` dispatch, page create, and the
+  directory-schema hand resolve once per mount via
+  `CommonplaceWebWeb.SessionIdentity.resolve/1` (CX-nn4y, following the
+  CX-qat5.2 pattern `ChatRoomLive` established): a logged-in session's
+  `signing_context` reaches both commit-producing paths below
+  (`create_page`'s doc + schema commits, and `yjs_edit`'s content
+  commit), and the session hand is used as the directory-schema
+  reconstruction `client_id` in `create_page` — winning over the shared
+  `WriterHand.for_doc/1` funnel hand two concurrent anonymous/funnel
+  writers would otherwise collide on. The collaborative content doc
+  itself (`yjs_edit`) has NO reconstruction-client_id seam to thread a
+  session hand into: its Yjs update bytes arrive already encoded by the
+  browser's own Y.Doc, whose client_id is assigned by the Yjs JS library
+  at document-load time — a genuinely different, un-substitutable
+  namespace from this module's server-side hand derivation (flagged in
+  CX-nn4y's report rather than inventing new plumbing there). An
+  anonymous session (no cookie, or one that no longer resolves) falls
+  back to exactly today's behavior: placeholder signer, no
+  signing_context, no client_id override.
   """
 
   use CommonplaceWebWeb, :live_view
@@ -57,11 +74,19 @@ defmodule CommonplaceWebWeb.WikiLive do
   alias Commonplace.Dataflow.PubSub, as: CPPubSub
   alias Commonplace.Presence
   alias Commonplace.Presence.Identity
-  alias CommonplaceWebWeb.{ViewRenderer, ViewActions, WriteRateLimit}
+  alias CommonplaceWebWeb.{SessionIdentity, ViewRenderer, ViewActions, WriteRateLimit}
   import CommonplaceWebWeb.PresenceCard, only: [presence_card: 1]
 
+  # Fallback signer for anonymous (not-logged-in, or no-longer-resolvable)
+  # sessions — matches ChatRoomLive's placeholder (CX-qat5.2).
+  @placeholder_signer_id "wiki-user@local"
+
   @impl true
-  def mount(_params, _session, socket) do
+  def mount(_params, session, socket) do
+    # CX-qat5.2 §2.3 discipline (per CX-nn4y): resolve identity ONCE
+    # here, thread by argument — no downstream re-derivation.
+    identity = SessionIdentity.resolve(session)
+
     data_dir = Application.get_env(:commonplace, :data_dir, "data")
     root = read_root_uuid(data_dir)
 
@@ -78,6 +103,7 @@ defmodule CommonplaceWebWeb.WikiLive do
       |> assign(:show_history, false)
       |> assign(:history, [])
       |> assign(:page_title, "Commonplace Wiki")
+      |> assign(:identity, identity)
 
     {:ok, socket}
   end
@@ -189,7 +215,8 @@ defmodule CommonplaceWebWeb.WikiLive do
       :ok ->
         with uuid when not is_nil(uuid) <- socket.assigns.page_uuid,
              {:ok, update} <- Base.decode64(encoded) do
-          commit = CommitStoreClient.create_chained_commit(uuid, update)
+          commit =
+            CommitStoreClient.create_chained_commit(CommitStoreClient, uuid, update, %{}, commit_opts(socket))
 
           case commit do
             %{id: _} ->
@@ -651,21 +678,30 @@ defmodule CommonplaceWebWeb.WikiLive do
           # read-side cache) with whatever client_id the cache happened
           # to construct it under. Every new page created in this
           # directory re-encodes a commit from that doc, so pin the
-          # client_id to a stable per-doc hand before mutating — a
-          # bare cache-served doc would otherwise mint a fresh
-          # random client_id into the directory schema's state vector
-          # on every single page create.
-          schema = %{schema | client_id: Commonplace.WriterHand.for_doc(dir_uuid)}
+          # client_id to a stable hand before mutating — a bare
+          # cache-served doc would otherwise mint a fresh random
+          # client_id into the directory schema's state vector on every
+          # single page create.
+          #
+          # CX-nn4y: a logged-in session's own stable W4 hand wins over
+          # the shared `WriterHand.for_doc/1` funnel hand (same
+          # precedence as `Outline.mutate/4` / `Chat.Actions.
+          # load_messages_doc/3`) — two concurrent sessions creating
+          # pages in the same directory would otherwise collide on the
+          # funnel hand's (client_id, clock).
+          schema = %{schema | client_id: dir_schema_hand(socket, dir_uuid)}
+          opts = commit_opts(socket)
 
           # CX-qat5.3: check the local-write gate's verdict on BOTH writes
           # before navigating — under the default permissive config
           # neither ever fails, but a strict/enforce workspace must not
           # silently "create" a page whose commit(s) were actually
           # denied.
-          with %{id: _} <- CommitStoreClient.create_commit(uuid, update, nil),
+          with %{id: _} <- CommitStoreClient.create_commit(CommitStoreClient, uuid, update, nil, %{}, opts),
                schema = Schema.add_file(schema, filename, uuid),
                schema_update = Yelixer.Encoding.encode_update(schema),
-               %{id: _} <- CommitStoreClient.create_chained_commit(dir_uuid, schema_update) do
+               %{id: _} <-
+                 CommitStoreClient.create_chained_commit(CommitStoreClient, dir_uuid, schema_update, %{}, opts) do
             target =
               if socket.assigns.current_path == "" do
                 filename
@@ -701,12 +737,16 @@ defmodule CommonplaceWebWeb.WikiLive do
         _ -> ""
       end
 
+    {signer_id, signing_context, hand} = identity_fields(socket.assigns[:identity])
+
     context = %{
       view_path: view_path,
       view_uuid: socket.assigns.page_uuid,
       target: target,
       args: extra_args,
-      signer_id: "wiki-user@local",
+      signer_id: signer_id,
+      signing_context: signing_context,
+      hand: hand,
       source: "wiki_live"
     }
 
@@ -996,6 +1036,41 @@ defmodule CommonplaceWebWeb.WikiLive do
     case File.read(Path.join(data_dir, "root")) do
       {:ok, uuid} -> String.trim(uuid)
       {:error, _} -> nil
+    end
+  end
+
+  # CX-nn4y: `signer_id`/`signing_context`/`hand` unpacked from the
+  # mount-resolved identity — see ChatRoomLive's `identity_fields/1` for
+  # the same shape. Anonymous sessions get the placeholder signer,
+  # unsigned.
+  defp identity_fields({:ok, %{signer_id: signer_id} = resolved}) do
+    {signer_id, resolved.signing_context, resolved.hand}
+  end
+
+  defp identity_fields(_anonymous_or_unresolved) do
+    {@placeholder_signer_id, nil, nil}
+  end
+
+  # CX-nn4y: commit opts for the current socket's resolved identity —
+  # just `:signing_context` (no `:client_id` here; `create_commit`/
+  # `create_chained_commit` don't reconstruct a doc from a hand the way
+  # `Outline.mutate/4` does — see the moduledoc note on why the
+  # collaborative content doc has no reconstruction-client_id seam to
+  # thread a session hand into).
+  defp commit_opts(socket) do
+    case socket.assigns[:identity] do
+      {:ok, %{signing_context: ctx}} -> [signing_context: ctx]
+      _ -> []
+    end
+  end
+
+  # CX-nn4y: the directory-schema reconstruction hand — session hand
+  # when the mount resolved one, `WriterHand.for_doc/1` fallback
+  # otherwise (same precedence as `Outline.mutate/4`).
+  defp dir_schema_hand(socket, dir_uuid) do
+    case socket.assigns[:identity] do
+      {:ok, %{hand: hand}} when is_integer(hand) -> hand
+      _ -> Commonplace.WriterHand.for_doc(dir_uuid)
     end
   end
 

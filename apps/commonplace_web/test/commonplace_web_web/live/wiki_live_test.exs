@@ -15,11 +15,12 @@ defmodule CommonplaceWebWeb.WikiLiveTest do
 
   import Phoenix.LiveViewTest
 
+  alias Commonplace.Invites
   alias Commonplace.Presence
   alias Commonplace.Presence.Identity
   alias Commonplace.Store.CommitStore
   alias Commonplace.Store.CommitStoreClient
-  alias Commonplace.Tree.{DocCache, Schema}
+  alias Commonplace.Tree.{DocBuilder, DocCache, Schema}
   alias Commonplace.Document.ContentType
 
   setup do
@@ -209,6 +210,85 @@ defmodule CommonplaceWebWeb.WikiLiveTest do
       refute html =~ ~s(href="/wiki/../escape")
       refute html =~ ~s(href="/wiki/escape")
       assert html =~ "[[../escape]]"
+    end
+  end
+
+  describe "logged-in session identity (CX-nn4y, following CX-qat5.2's ChatRoomLive pattern)" do
+    defp login_conn(conn, root) do
+      {:ok, %{identity_uuid: identity_uuid, token: token}} = Invites.mint("mallory", root)
+      {:ok, ^identity_uuid} = Invites.redeem(token)
+      nonce = Base.encode64(:crypto.strong_rand_bytes(16))
+
+      conn =
+        conn
+        |> init_test_session(%{})
+        |> Plug.Conn.put_session(:player_identity_uuid, identity_uuid)
+        |> Plug.Conn.put_session(:session_nonce, nonce)
+
+      {conn, identity_uuid, nonce}
+    end
+
+    test "create_page lands both commits signed as the player, page doc minted under the session hand",
+         %{conn: conn, root: root_uuid} do
+      {conn, identity_uuid, nonce} = login_conn(conn, root_uuid)
+
+      {:ok, ctx} = Commonplace.Crypto.AgentKeys.signing_context(identity_uuid)
+      expected_signer_id = Commonplace.Crypto.Signing.signer_id(identity_uuid, ctx.public_key)
+      expected_hand = Commonplace.WriterHand.for_session(ctx.public_key, nonce)
+
+      {:ok, view, _html} = live(conn, ~p"/wiki")
+
+      view
+      |> element("button", "New Page")
+      |> render_click()
+
+      view
+      |> form("form[phx-submit=create_page]", %{"name" => "session page"})
+      |> render_submit()
+
+      schema = read_root_schema(root_uuid)
+      {:ok, entry} = Schema.get_entry(schema, "session-page")
+
+      # Both the page doc's create_commit AND the directory schema's
+      # create_chained_commit land signed as the player.
+      {:ok, page_commit} = CommitStore.latest_commit(Commonplace.Store.CommitStore, entry.node_id)
+      assert page_commit.signer_id == expected_signer_id
+      assert page_commit.signature != nil
+
+      {:ok, schema_commit} = CommitStore.latest_commit(Commonplace.Store.CommitStore, root_uuid)
+      assert schema_commit.signer_id == expected_signer_id
+      assert schema_commit.signature != nil
+
+      # The directory schema's reconstruction hand is the session hand,
+      # not the shared WriterHand.for_doc/1 funnel hand.
+      {:ok, dir_doc} = DocBuilder.reconstruct_doc(Commonplace.Store.CommitStore, root_uuid)
+      sv = Yelixer.BlockStore.state_vector(dir_doc.store)
+      assert Map.has_key?(sv.clocks, expected_hand)
+      refute Map.has_key?(sv.clocks, Commonplace.WriterHand.for_doc(root_uuid))
+    end
+
+    test "anonymous create_page behaves exactly as before (unsigned, funnel hand)",
+         %{conn: conn, root: root_uuid} do
+      {:ok, view, _html} = live(conn, ~p"/wiki")
+
+      view
+      |> element("button", "New Page")
+      |> render_click()
+
+      view
+      |> form("form[phx-submit=create_page]", %{"name" => "anon page"})
+      |> render_submit()
+
+      schema = read_root_schema(root_uuid)
+      {:ok, entry} = Schema.get_entry(schema, "anon-page")
+
+      {:ok, page_commit} = CommitStore.latest_commit(Commonplace.Store.CommitStore, entry.node_id)
+      assert page_commit.signer_id == nil
+      assert page_commit.signature == nil
+
+      {:ok, dir_doc} = DocBuilder.reconstruct_doc(Commonplace.Store.CommitStore, root_uuid)
+      sv = Yelixer.BlockStore.state_vector(dir_doc.store)
+      assert Map.has_key?(sv.clocks, Commonplace.WriterHand.for_doc(root_uuid))
     end
   end
 

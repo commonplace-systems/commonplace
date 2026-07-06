@@ -8,9 +8,10 @@ defmodule CommonplaceWebWeb.OutlineLiveTest do
 
   import Phoenix.LiveViewTest
 
+  alias Commonplace.Invites
   alias Commonplace.Outline
   alias Commonplace.Store.CommitStore
-  alias Commonplace.Tree.Schema
+  alias Commonplace.Tree.{DocBuilder, Schema}
 
   setup do
     dir = Path.join(System.tmp_dir!(), "cp_outline_live_#{:rand.uniform(1_000_000_000)}")
@@ -36,7 +37,7 @@ defmodule CommonplaceWebWeb.OutlineLiveTest do
     {:ok, a} = Outline.add_item(CommitStore, uuid, %{text: "Top task"})
     {:ok, b} = Outline.add_item(CommitStore, uuid, %{text: "Sub task", parent: a})
 
-    %{uuid: uuid, a: a, b: b}
+    %{uuid: uuid, a: a, b: b, root: root_uuid}
   end
 
   test "renders the nested tree", %{conn: conn, a: a, b: b} do
@@ -133,6 +134,73 @@ defmodule CommonplaceWebWeb.OutlineLiveTest do
       # The 3rd write must NOT have created a commit.
       assert length(items_after_three) == 4
       assert html =~ "Too many edits"
+    end
+  end
+
+  describe "logged-in session identity (CX-nn4y, following CX-qat5.2's ChatRoomLive pattern)" do
+    defp login_conn(conn, root) do
+      {:ok, %{identity_uuid: identity_uuid, token: token}} = Invites.mint("mallory", root)
+      {:ok, ^identity_uuid} = Invites.redeem(token)
+      nonce = Base.encode64(:crypto.strong_rand_bytes(16))
+
+      conn =
+        conn
+        |> init_test_session(%{})
+        |> Plug.Conn.put_session(:player_identity_uuid, identity_uuid)
+        |> Plug.Conn.put_session(:session_nonce, nonce)
+
+      {conn, identity_uuid, nonce}
+    end
+
+    test "a logged-in session's new_item write is signed as that player and mints under the session hand",
+         %{conn: conn, root: root_uuid, uuid: uuid} do
+      {conn, identity_uuid, nonce} = login_conn(conn, root_uuid)
+
+      {:ok, ctx} = Commonplace.Crypto.AgentKeys.signing_context(identity_uuid)
+      expected_signer_id = Commonplace.Crypto.Signing.signer_id(identity_uuid, ctx.public_key)
+      expected_hand = Commonplace.WriterHand.for_session(ctx.public_key, nonce)
+
+      # Setup already seeded two items via the funnel hand
+      # (`WriterHand.for_doc/1`) with no identity — capture its clock
+      # before the session write so we can prove the session write did
+      # NOT land under it.
+      funnel_hand = Commonplace.WriterHand.for_doc(uuid)
+      {:ok, doc_before} = DocBuilder.reconstruct_doc(CommitStore, uuid)
+      funnel_clock_before = Yelixer.StateVector.get(Yelixer.BlockStore.state_vector(doc_before.store), funnel_hand)
+
+      {:ok, view, _html} = live(conn, ~p"/outline/daily")
+
+      view |> element("button", "+ item") |> render_click()
+
+      # Acceptance: the landed commit is signed as the player.
+      {:ok, commit} = CommitStore.latest_commit(CommitStore, uuid)
+      assert commit.signer_id == expected_signer_id
+      assert commit.signature != nil
+
+      # Acceptance: the mutation minted under the session's stable hand,
+      # not the shared `WriterHand.for_doc/1` funnel hand — the whole
+      # point of CX-nn4y closing the residual-collision hazard.
+      {:ok, doc} = DocBuilder.reconstruct_doc(CommitStore, uuid)
+      sv = Yelixer.BlockStore.state_vector(doc.store)
+      assert Map.has_key?(sv.clocks, expected_hand)
+      # The funnel hand's clock is unchanged — the session write did not
+      # mint under it.
+      assert Yelixer.StateVector.get(sv, funnel_hand) == funnel_clock_before
+    end
+
+    test "anonymous session write behaves exactly as before (unsigned, funnel hand)",
+         %{conn: conn, uuid: uuid} do
+      {:ok, view, _html} = live(conn, ~p"/outline/daily")
+
+      view |> element("button", "+ item") |> render_click()
+
+      {:ok, commit} = CommitStore.latest_commit(CommitStore, uuid)
+      assert commit.signer_id == nil
+      assert commit.signature == nil
+
+      {:ok, doc} = DocBuilder.reconstruct_doc(CommitStore, uuid)
+      sv = Yelixer.BlockStore.state_vector(doc.store)
+      assert Map.has_key?(sv.clocks, Commonplace.WriterHand.for_doc(uuid))
     end
   end
 end
