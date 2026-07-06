@@ -142,3 +142,65 @@ capability-bounded player code (facade + intersection + define gate +
 bounds)'. FINAL REPORT: sha, files, per-suite counts, the §1.1 gate diff
 called out for plan review, the authoring-model migration boundary,
 FLAGS, pre-existing bugs.
+
+## 8. Standing security invariants — post-closure (CX-bg1v / CX-qom0 / CX-n2j2)
+
+The safe-verbs RCE arc closed with these results. The invited-untrusted
+`@verb` lift rests on TWO structural pieces, both filename- AND
+config-independent (they do NOT rely on the permissive-bypassable
+`:execute`/Gate-B walk enforcing):
+
+1. **Safe-path wiring + run-boundary re-check (CX-bg1v / CX-fhz4).**
+   `@verb` authors only safe verbs (`save_safe_verb`, bare `run/2` body,
+   lint + AST allowlist). `Commonplace.MUD.SafeVerb.Allowlist` is
+   closed-by-default; `check_wrapped/1` runs at the `SourceDoc.compile`
+   waist (`require_safe_wrapper: true`) on the STORED bytes, verifying the
+   exact substrate-wrapper shape then allowlisting the inner body — so the
+   `.safe.elx` filename is never trusted as a "was-linted" claim.
+
+2. **Legacy-dispatch gate (CX-qom0).** No author-plantable legacy
+   (full-`defmodule`, ambient-reach) verb is dispatchable by ANYONE. The
+   player path (`Verbs.dispatch` → `run_legacy_user_verb`) passes
+   `require_safe_wrapper: true`, so a legacy module is refused as
+   `:not_substrate_wrapped`. `TickBot.fire` dispatches only a
+   `tick.safe.elx` via the facade-bound safe path (the legacy
+   `run_verb("tick")` call is removed) — a planted `tick.elx` is never
+   looked up. The ONLY legacy code that runs is compiled-in system code
+   that is NOT doc-sourced.
+
+### THE FORWARD GUARD (re-check on any relevant change)
+
+> **INVARIANT:** No invited-writable doc is a `ComputeRunner` /
+> `Orchestrator` input, AND no MUD command creates a runner-input
+> (view / compute-spec / `__processes.json`) doc.
+
+This is what keeps CX-n2j2 (the ComputeRunner/Orchestrator confused
+deputy — a *trusted runner executing author-plantable doc code*)
+OUT of the invited threat model. It holds today by TREE LAYOUT +
+REGISTRATION scope, config-independently: invited `:write` = Sections
+certs over `{:docs, room/object-uuids}` (`:execute` hard-rejected);
+`auto_extend_for_new_room` only adds room uuids; and the MUD command set
+(`@dig @create @desc @name @alias @listen @dump @verb @link @unlink
+@teleport @go`) creates NO view/compute/`__processes` doc. ComputeRunner
+runs only REGISTERED sources, and registration is outside invited scope,
+so compute-spec CONTENT written into a room doc is inert. (`__processes.json`
+is double-closed: `.28`'s `CodeDocHeuristic` catches it at cert mint AND
+MUD never creates it. The `.28`-miss class — view-XML/compute-spec — is
+unreachable because no invited path registers it.)
+
+> **REVIEW TRIGGER:** re-run the CX-n2j2 reachability analysis if EITHER
+> (a) the MUD command set gains a command that creates/registers a
+> runner-input doc (a future `@compute`-style command, a scripted-object
+> feature that registers a view, an `@process` entry), OR (b) the invited
+> `:write` grant scope widens beyond room/object docs (subtree scopes per
+> CX-tdkq.23, a doc-class change). Either silently reopens CX-n2j2 for
+> invited players. Do NOT add a runner-input-creating command or widen
+> invited scope without re-running this analysis.
+
+Defense-in-depth for the BROADER tier (semi-trusted non-MUD principals
+who CAN reach view/compute worlds), NOT invited blockers: **CX-6g0j**
+(extend `CodeDocHeuristic` to catch view-XML/compute-spec) and
+**CX-n2j2** (a runtime gate on `ComputeRunner`/`Orchestrator` doc-code
+execution). Both P2. **CX-n6fv** (OS-level sandbox) remains the phase-4
+horizon for genuine hostile-code containment — the allowlist is
+"demo-grade safe for untrusted," not a formal sandbox.
