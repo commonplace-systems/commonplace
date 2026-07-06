@@ -226,6 +226,10 @@ defmodule Commonplace.MUD.PlayerSessionTest do
       PlayerSession.stop(alice)
     end
 
+    # CX-bg1v/CX-fhz4: `@verb` now authors SAFE verbs (`.safe.elx`) via
+    # `VerbSource.save_safe_verb/6` — a bare `run/2` BODY (no `defmodule`),
+    # lint- and allowlist-checked, not the legacy ambient-store path. The
+    # editor input is now a body using `world`/`args`, not a full module.
     test "saving a non-empty verb body still works", ctx do
       alice = start_player("alice", ctx)
       drain("alice")
@@ -233,13 +237,30 @@ defmodule Commonplace.MUD.PlayerSessionTest do
       send_input(alice, "@verb here:greet3")
       drain("alice")
 
-      send_input(alice, "defmodule UserVerb do")
-      send_input(alice, "  def run(_ctx), do: :ok")
-      send_input(alice, "end")
+      send_input(alice, ~s|Commonplace.MUD.World.Facade.say(world, "hi")|)
       send_input(alice, ".")
       out = drain("alice") |> Enum.join("\n")
 
       assert out =~ "compiles cleanly"
+      assert Process.alive?(alice)
+
+      PlayerSession.stop(alice)
+    end
+
+    # CX-bg1v — the whole point: a dangerous body must be REJECTED at
+    # save, never persisted, never compiled.
+    test "saving a body with a dangerous operation is rejected", ctx do
+      alice = start_player("alice", ctx)
+      drain("alice")
+
+      send_input(alice, "@verb here:greet4")
+      drain("alice")
+
+      send_input(alice, ~s|System.cmd("id", [])|)
+      send_input(alice, ".")
+      out = drain("alice") |> Enum.join("\n")
+
+      assert out =~ "rejected"
       assert Process.alive?(alice)
 
       PlayerSession.stop(alice)

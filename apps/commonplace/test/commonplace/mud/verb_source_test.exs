@@ -138,6 +138,11 @@ defmodule Commonplace.MUD.VerbSourceTest do
     assert {:ok, _} = VerbSource.find_source(fountain_dir, "broke", ctx.store)
   end
 
+  # CX-bg1v/CX-fhz4: `@verb` now authors SAFE verbs (`.safe.elx`) via
+  # `VerbSource.save_safe_verb/6` — a bare `run/2` BODY bound to
+  # `world`/`args`, not a full ambient-store `defmodule`. Updated from the
+  # legacy form this test originally authored (which would now be REJECTED
+  # by `Lint` — `defmodule` is banned in a safe-verb body).
   test "@verb editor flow: alice authors a bow verb on the cloak; bob triggers it", ctx do
     alice = start_player("alice", ctx)
     bob = start_player("bob", ctx)
@@ -154,10 +159,8 @@ defmodule Commonplace.MUD.VerbSourceTest do
     Process.sleep(50)
     drain("alice")
 
-    # Type four lines of source then '.' to save
-    send_input(alice, "defmodule Commonplace.UserCode.Mud.Verb.CloakBow do")
-    send_input(alice, ~s|  def run(ctx), do: Commonplace.MUD.World.broadcast_room(ctx.current_room_uuid, "\#{ctx.player_name} bows gracefully.")|)
-    send_input(alice, "end")
+    # Type a bare run/2 BODY (world/args in scope, no defmodule) then '.' to save.
+    send_input(alice, ~s|Commonplace.MUD.World.Facade.say(world, "bows gracefully.")|)
     send_input(alice, ".")
     Process.sleep(60)
 
@@ -171,14 +174,15 @@ defmodule Commonplace.MUD.VerbSourceTest do
     drain("alice")
     drain("bob")
 
-    # Bob types `bow cloak`. The custom verb on cloak.obj fires.
+    # Bob types `bow cloak`. The custom safe verb on cloak.obj fires,
+    # broadcasting to bob's (the invoker's) current room.
     send_input(bob, "bow cloak")
     Process.sleep(80)
 
     bob_out = drain("bob") |> Enum.join("\n")
     alice_out = drain("alice") |> Enum.join("\n")
 
-    assert (bob_out <> alice_out) =~ "bob bows gracefully"
+    assert (bob_out <> alice_out) =~ "bows gracefully"
 
     PlayerSession.stop(alice)
     PlayerSession.stop(bob)

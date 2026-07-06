@@ -227,18 +227,45 @@ defmodule Commonplace.MUD.PlayerSession do
     end
   end
 
+  # CX-bg1v/CX-fhz4 — `@verb` authoring now goes through the SAFE path
+  # (`VerbSource.save_safe_verb/6`: lint + AST allowlist + define-gate +
+  # facade-bound execution), not the legacy `save_verb/5` (unlinted,
+  # ambient store/ctx access — the RCE surface CX-bg1v closed). The
+  # author's text is a bare `run/2` BODY, not a full `defmodule`; see the
+  # `{:enter_editor, ...}` prompt below for what's in scope.
   defp do_save_verb(ed, source_text, state) do
-    case VerbSource.save_verb(ed.target_uuid, ed.verb_name, source_text, state.store, session_write_opts(state)) do
+    section_scope = [ed.target_uuid]
+
+    case VerbSource.save_safe_verb(
+           ed.target_uuid,
+           ed.verb_name,
+           source_text,
+           section_scope,
+           state.store,
+           session_write_opts(state)
+         ) do
       :ok ->
-        state.output_fn.("(saved #{ed.target_label}:#{ed.verb_name} — compiles cleanly)")
+        state.output_fn.("(saved #{ed.target_label}:#{ed.verb_name} — safe verb, compiles cleanly)")
+        {:noreply, %{state | mode: :normal}}
+
+      {:error, {:lint_violation, reasons}} ->
+        state.output_fn.("(rejected: #{Enum.join(reasons, "; ")})")
+        {:noreply, %{state | mode: :normal}}
+
+      {:error, {:unsafe_verb, reason}} ->
+        state.output_fn.("(rejected: uses a disallowed operation — #{inspect(reason)})")
         {:noreply, %{state | mode: :normal}}
 
       {:error, {:compile_error, msg}} ->
         state.output_fn.("(saved with compile error: #{msg})")
         {:noreply, %{state | mode: :normal}}
 
+      {:error, {:execution_denied, _reason}} ->
+        state.output_fn.("(save failed: you don't have permission to define verbs here)")
+        {:noreply, %{state | mode: :normal}}
+
       {:error, {:no_run_export, _}} ->
-        state.output_fn.("(saved, but the module does not export run/1 — verb won't fire)")
+        state.output_fn.("(saved, but the module does not export run/2 — verb won't fire)")
         {:noreply, %{state | mode: :normal}}
 
       # CX-93ea: the write itself (not just compilation) can now fail —
@@ -311,15 +338,8 @@ defmodule Commonplace.MUD.PlayerSession do
     else
       state.output_fn.(
         "(new verb — type lines, '.' to save, '@abort' to cancel)\n" <>
-          "verb body shape:\n" <>
-          "  defmodule UserVerb do\n" <>
-          "    alias Commonplace.MUD.Output\n" <>
-          "    def run(ctx) do\n" <>
-          "      Output.tell(ctx, \"You feel something happen.\")\n" <>
-          "      Output.broadcast(ctx, \"\#{ctx.player_name} does something.\")\n" <>
-          "      :ok\n" <>
-          "    end\n" <>
-          "  end"
+          "type a bare run/2 BODY (no defmodule) — `world` (this room/object) " <>
+          "and `args` are in scope, e.g. Commonplace.MUD.World.Facade.say(world, \"hi\")"
       )
     end
 

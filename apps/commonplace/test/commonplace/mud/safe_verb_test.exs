@@ -128,9 +128,14 @@ defmodule Commonplace.MUD.SafeVerbTest do
       Application.put_env(:commonplace, :safe_verb_timeout_ms, 100)
       on_exit(fn -> Application.delete_env(:commonplace, :safe_verb_timeout_ms) end)
 
+      # CX-fhz4: the original body used a self-applying anonymous function
+      # (`f.(f)`) — that shape is exactly what the AST allowlist's
+      # `var.(...)` rejection closes (apply-in-disguise), so it no longer
+      # compiles. A huge `Enum.each/2` range reaches the same "runs long
+      # enough to be killed at the timeout" behavior using only
+      # allowlisted surface.
       body = """
-      loop = fn f -> f.(f) end
-      loop.(loop)
+      Enum.each(1..1_000_000_000_000, fn _ -> :ok end)
       """
 
       assert :ok = VerbSource.save_safe_verb(target_dir_uuid, "spin", body, [target_dir_uuid], store)
@@ -154,9 +159,18 @@ defmodule Commonplace.MUD.SafeVerbTest do
       Application.put_env(:commonplace, :safe_verb_max_heap_bytes, 1024 * 1024)
       on_exit(fn -> Application.delete_env(:commonplace, :safe_verb_max_heap_bytes) end)
 
+      # CX-fhz4: the original body used a self-applying anonymous function
+      # (`f.(f, ...)`) to explode the heap — that shape is exactly what the
+      # AST allowlist's `var.(...)` rejection closes (apply-in-disguise), so
+      # it no longer compiles. `List.duplicate/2` isn't on the allowlist
+      # either (not an admitted `List` function), so `Enum.map/2` builds
+      # the seed list instead; `Enum.reduce/3` over a small range with an
+      # 8x-nesting accumulator reaches the same exponential blowup using
+      # only allowlisted surface.
       body = """
-      grow = fn f, acc -> f.(f, [acc, acc, acc, acc, acc, acc, acc, acc]) end
-      grow.(grow, List.duplicate(0, 100_000))
+      Enum.reduce(1..1000, Enum.map(1..100_000, fn _ -> 0 end), fn _, acc ->
+        [acc, acc, acc, acc, acc, acc, acc, acc]
+      end)
       """
 
       assert :ok = VerbSource.save_safe_verb(target_dir_uuid, "bomb", body, [target_dir_uuid], store)
@@ -176,7 +190,14 @@ defmodule Commonplace.MUD.SafeVerbTest do
          %{store: store, target_dir_uuid: target_dir_uuid} do
       body = "Commonplace.Store.CommitStoreClient.commit_log(store, ctx.object_uuid)"
 
-      assert {:error, {:compile_error, _msg}} =
+      # CX-fhz4: this body is now caught even earlier than a compile
+      # error — `Commonplace.Store.CommitStoreClient` isn't on the AST
+      # allowlist's admitted-module table, so `check_wrapped/1` refuses it
+      # at save time, before it ever reaches the BEAM compiler. The
+      # underlying guarantee this test is pinning (no leaked `store`/`ctx`
+      # bindings — only `world`/`args` are ever in scope) still holds; it's
+      # now enforced one layer earlier.
+      assert {:error, {:unsafe_verb, {:disallowed, _reasons}}} =
                VerbSource.save_safe_verb(target_dir_uuid, "leaky", body, [target_dir_uuid], store)
     end
 

@@ -35,13 +35,42 @@ defmodule Commonplace.MUD.SafeVerb.AllowlistTest do
       assert_rejected(":erlang.binary_to_term(bin)")
     end
 
-    test "(f) world.look(...) and world.emote(args) pass (facade carve-out)" do
-      assert :ok == Allowlist.check(~s|world.look("here")|)
-      assert :ok == Allowlist.check("world.emote(args)")
+    test "(f) the dot-call-with-args form world.foo(...) is rejected (crashes at runtime; use the qualified facade form)" do
+      assert_rejected(~s|world.look("here")|)
+      assert_rejected("world.emote(args)")
+    end
+
+    test "(f0) world.field (no-parens field read) is still allowed" do
+      assert :ok == Allowlist.check("world.object_uuid")
     end
 
     test "(g) rebinding world is refused even though the dispatch itself would pass" do
       assert_rejected("world = System\nworld.cmd(\"id\", [])")
+    end
+
+    # CX-fhz4 wiring fix — `world.foo(...)` (struct dot-call WITH args) is
+    # not valid Elixir dispatch (it always crashes at runtime: `world` is a
+    # struct, not a module atom). The calling convention every safe verb
+    # actually uses is the qualified form. Confirms the facade carve
+    # extends to it, ONLY when `world` is the literal first argument.
+    test "(f2) Commonplace.MUD.World.Facade.<fun>(world, ...) passes when world is the literal first arg" do
+      assert :ok == Allowlist.check(~s|Commonplace.MUD.World.Facade.set_attr(world, "k", "v")|)
+      assert :ok == Allowlist.check(~s|Commonplace.MUD.World.Facade.move(world, "dest-uuid")|)
+    end
+
+    test "(f3) the qualified facade form is refused when the first arg isn't the literal world binding" do
+      assert_rejected(~s|other = world\nCommonplace.MUD.World.Facade.set_attr(other, "k", "v")|)
+      assert_rejected(~s|Commonplace.MUD.World.Facade.set_attr(args, "k", "v")|)
+    end
+
+    # CX-fhz4 — the facade carve admits the ACTION methods only, never the
+    # constructor `new/5`: admitting new would let a body mint a facade
+    # bound to an author-chosen object_uuid + owner_grant (a forging /
+    # privilege-escalation vector), even with `world` as the first arg.
+    test "(f4) Facade.new(world, ...) is refused even though world is the literal first arg" do
+      assert_rejected(
+        ~s|Commonplace.MUD.World.Facade.new(world, "victim-uuid", grant, via, store)|
+      )
     end
 
     test "(h) pure field read and a clean pure body both pass" do
@@ -191,7 +220,10 @@ defmodule Commonplace.MUD.SafeVerb.AllowlistTest do
     test "3+ element tuple of pure data passes" do
       assert :ok == Allowlist.check(~s|{:ok, "a", "b"}|)
       assert :ok == Allowlist.check("{1, 2, 3, 4}")
-      assert :ok == Allowlist.check(~s|x = 1\n{:reply, x, world.look("here")}|)
+      assert :ok ==
+               Allowlist.check(
+                 ~s|x = 1\n{:reply, x, Commonplace.MUD.World.Facade.look(world)}|
+               )
     end
 
     test "a call embedded in a tuple is still rejected" do
@@ -208,7 +240,8 @@ defmodule Commonplace.MUD.SafeVerb.AllowlistTest do
   describe "resolved-atom module forms (interpolation regression)" do
     test "plain string interpolation passes" do
       assert :ok == Allowlist.check(~S|name = "x"; "hi #{name}"|)
-      assert :ok == Allowlist.check(~S|world.say("you see #{args.thing}")|)
+      assert :ok ==
+               Allowlist.check(~S|Commonplace.MUD.World.Facade.say(world, "you see #{args.thing}")|)
     end
 
     test "interpolation of a disallowed call is still rejected" do
@@ -219,6 +252,84 @@ defmodule Commonplace.MUD.SafeVerb.AllowlistTest do
       assert :ok == Allowlist.check(~S|:"Elixir.Enum".map([1, 2], fn x -> x end)|)
       assert_rejected(~S|:"Elixir.System".cmd("id", [])|)
       assert_rejected(~S|:"Elixir.Kernel".apply(m, f, a)|)
+    end
+  end
+
+  # CX-fhz4 — the run-boundary re-verification. `check_wrapped/1` is what
+  # `SourceDoc.compile/3` runs against STORED content on every compile
+  # (cache hit or miss), independent of the `.safe.elx` filename.
+  # `SafeVerb.wrap/1` is private (it's only ever reached through
+  # `wrap_and_lint/1`, which would refuse a `System.cmd` body via `Lint`
+  # before `check_wrapped/1` ever saw it) — so these tests build the
+  # exact wrapper text `wrap/1` produces by hand, to exercise
+  # `check_wrapped/1` as its OWN re-verification, independent of `Lint`.
+  defp wrapped(body) do
+    """
+    defmodule Commonplace.MUD.SafeVerbBody do
+      def run(world, args) do
+    #{body}
+      end
+    end
+    """
+  end
+
+  describe "check_wrapped/1 (CX-fhz4 run-boundary re-check)" do
+    test "a correctly-wrapped clean body passes" do
+      assert :ok ==
+               Allowlist.check_wrapped(
+                 wrapped(~s|Commonplace.MUD.World.Facade.say(world, "hi \#{args.name}")|)
+               )
+    end
+
+    test "a wrapped body containing System.cmd is rejected as disallowed" do
+      assert {:error, {:unsafe_verb, {:disallowed, reasons}}} =
+               Allowlist.check_wrapped(wrapped(~s|System.cmd("id", [])|))
+
+      assert reasons != []
+    end
+
+    test "a non-wrapper (legacy full module, wrong arity, wrong param names) is rejected as not_substrate_wrapped" do
+      legacy = """
+      defmodule Foo do
+        def run(ctx) do
+          :ok
+        end
+      end
+      """
+
+      assert {:error, {:unsafe_verb, :not_substrate_wrapped}} = Allowlist.check_wrapped(legacy)
+    end
+
+    test "a two-def module is rejected as not_substrate_wrapped" do
+      two_def = """
+      defmodule Commonplace.MUD.SafeVerbBody do
+        def run(world, args) do
+          :ok
+        end
+
+        def helper, do: :ok
+      end
+      """
+
+      assert {:error, {:unsafe_verb, :not_substrate_wrapped}} = Allowlist.check_wrapped(two_def)
+    end
+
+    test "a module with an extra module attribute is rejected as not_substrate_wrapped" do
+      with_attr = """
+      defmodule Commonplace.MUD.SafeVerbBody do
+        @foo :bar
+
+        def run(world, args) do
+          :ok
+        end
+      end
+      """
+
+      assert {:error, {:unsafe_verb, :not_substrate_wrapped}} = Allowlist.check_wrapped(with_attr)
+    end
+
+    test "a syntax error is reported as unsafe_verb/syntax_error" do
+      assert {:error, {:unsafe_verb, {:syntax_error, _}}} = Allowlist.check_wrapped("defmodule Foo do")
     end
   end
 end

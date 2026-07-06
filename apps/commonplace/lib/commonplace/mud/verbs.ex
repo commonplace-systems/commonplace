@@ -231,6 +231,14 @@ defmodule Commonplace.MUD.Verbs do
       {:error, {:execution_denied, _reason}} ->
         {:error, "(verb #{verb_name} is unavailable)"}
 
+      # CX-fhz4 — the run-boundary re-check found the stored content is
+      # not the verified substrate wrapper (or its body no longer
+      # allowlists). Never crash the dispatch path on this — refuse the
+      # verb the same clean way a define-gate denial does.
+      {:error, {:unsafe_verb, _reason}} ->
+        emit_verb_error(verb_name, "rejected: unsafe", ctx)
+        {:error, "(verb #{verb_name} is unavailable)"}
+
       {:error, {:no_run_export, _}} ->
         {:error, "(verb #{verb_name} has no run/2)"}
 

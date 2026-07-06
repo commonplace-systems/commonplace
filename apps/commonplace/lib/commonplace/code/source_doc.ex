@@ -165,6 +165,14 @@ defmodule Commonplace.Code.SourceDoc do
 
   Both branches share the same cache-lookup/compile/telemetry plumbing
   below them; only the WHICH-check differs.
+
+  `:require_safe_wrapper` (CX-fhz4, default `false`) — when `true`, runs
+  `Commonplace.MUD.SafeVerb.Allowlist.check_wrapped/1` against the
+  STORED source, before the cache lookup (and so on cache hits too),
+  re-verifying both the exact substrate wrapper shape and the body
+  allowlist independent of the `.safe.elx` filename. Set only by
+  `Commonplace.MUD.SafeVerb.compile/3`; every other caller omits it and
+  sees no behavior change.
   """
   @spec compile(binary(), GenServer.server(), keyword()) ::
           {:ok, module()} | {:error, term()}
@@ -191,7 +199,8 @@ defmodule Commonplace.Code.SourceDoc do
 
     case gate_result do
       :ok ->
-        with {:ok, source, hash} <- read(uuid, store) do
+        with {:ok, source, hash} <- read(uuid, store),
+             :ok <- check_safe_wrapper(uuid, source, opts) do
           case lookup_cached(uuid, hash, opts) do
             {:ok, module} ->
               {:ok, module}
@@ -210,6 +219,34 @@ defmodule Commonplace.Code.SourceDoc do
         )
 
         {:error, {:execution_denied, reason}}
+    end
+  end
+
+  # CX-fhz4 — the run-boundary re-verification opt-in. Runs BEFORE the
+  # cache lookup, deliberately on cache hits too (mirrors the gate check
+  # above), so a doc whose stored content isn't the exact substrate
+  # wrapper shape (or whose body no longer allowlists) is refused on
+  # every compile — not just the first one that populated the cache.
+  # Default `false`: every existing caller (ComputeRunner, Orchestrator,
+  # the legacy verb path, and any caller that omits the opt) is
+  # byte-identical to pre-CX-fhz4 behavior.
+  defp check_safe_wrapper(uuid, source, opts) do
+    if Keyword.get(opts, :require_safe_wrapper, false) do
+      case Commonplace.MUD.SafeVerb.Allowlist.check_wrapped(source) do
+        :ok ->
+          :ok
+
+        {:error, reason} = err ->
+          :telemetry.execute(
+            [:commonplace, :code, :rejected, :unsafe_verb],
+            %{system_time: System.system_time()},
+            %{doc_uuid: uuid, reason: reason}
+          )
+
+          err
+      end
+    else
+      :ok
     end
   end
 

@@ -59,6 +59,10 @@ defmodule Commonplace.MUD.SafeVerb do
 
   @placeholder_module "Commonplace.MUD.SafeVerbBody"
 
+  @doc false
+  @spec placeholder_module() :: String.t()
+  def placeholder_module, do: @placeholder_module
+
   @doc """
   Lint the raw `run/1` BODY text and, if clean, wrap it into full
   module source ready to store as a verb doc's content. Returns
@@ -90,10 +94,26 @@ defmodule Commonplace.MUD.SafeVerb do
   reason}}` on a `:define_verb` gate denial (same error shape Gate B
   uses for `:execute` denials — `SourceDoc.compile/3` doesn't
   distinguish the gate class in its error shape, only in which check ran).
+
+  CX-fhz4 — the RUN-BOUNDARY re-check: passes `require_safe_wrapper:
+  true` to `SourceDoc.compile/3`, so on EVERY compile (cache hit or
+  miss) the STORED content is structurally re-verified as the exact
+  substrate wrapper `wrap/1` produces and its body is re-run through
+  `Allowlist.check_wrapped/1`'s allowlist scan. Before this, only the
+  `.safe.elx` FILENAME distinguished a safe verb from legacy — a doc
+  whose content diverged from that shape (hand-edited, replayed from a
+  stale/foreign commit, etc.) would still compile and run under the
+  facade. Now compilation itself refuses anything that isn't the
+  verified wrapper shape with an allowlisted body, independent of how
+  the doc got its name.
   """
   @spec compile(String.t(), [String.t()], GenServer.server()) :: {:ok, module()} | {:error, term()}
   def compile(source_uuid, section_scope, store \\ CommitStoreClient) when is_list(section_scope) do
-    SourceDoc.compile(source_uuid, store, unique_module: source_uuid, gate: {:verb, section_scope})
+    SourceDoc.compile(source_uuid, store,
+      unique_module: source_uuid,
+      gate: {:verb, section_scope},
+      require_safe_wrapper: true
+    )
   end
 
   @doc """

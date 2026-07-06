@@ -38,15 +38,23 @@ defmodule Commonplace.MUD.SafeVerb.Allowlist do
       (`~c`, `~s`, `~w`). None of these can themselves name arbitrary
       code — they're pure structure — so allowing them doesn't reopen
       the REACH this module exists to close.
-    * The facade carve-out: any `.`-call whose receiver is the
-      LITERAL bound parameter `world` (e.g. `world.look(...)`) is
-      allowed unconditionally — `Commonplace.MUD.World.Facade` is the
-      audited least-authority surface a safe verb is bound to; this
-      checker doesn't need to re-enumerate its methods. Both `world`
-      and `args` are protected from rebinding (`world = System` or a
-      destructuring pattern that shadows either name) precisely
-      because the whole carve-out's safety depends on `world` still
-      being the original facade value at the point it's dispatched on.
+    * The facade carve-out: a safe verb reaches its least-authority
+      surface through the QUALIFIED form
+      `Commonplace.MUD.World.Facade.<fun>(world, ...)` — a REMOTE call
+      with the literal alias `Commonplace.MUD.World.Facade`, `world` as
+      the LITERAL first argument (`facade_receiver?/1`), and
+      `{fun, arity}` on the `@facade_allowed` action set (look, describe,
+      get_attr, move, set_attr, create_child, transfer, say, emit — NOT
+      the constructor `new/5`). CX-fhz4: the dot form `world.foo(...)`
+      (struct dot-call WITH args) is NOT admitted — it is not valid
+      Elixir dispatch (`world` is a `%Facade{}` struct value, not a
+      module atom, so `apply/3` on it always crashes at runtime), so
+      admitting it would only let authors write verbs that compile but
+      crash when fired. `world.field` (no-parens field READ) is still
+      allowed. Both `world` and `args` are protected from rebinding
+      (`world = System` or a destructuring pattern shadowing either
+      name) — the carve's safety depends on `world` still being the
+      original facade value where it is passed as the first argument.
 
   ## Structural rejections (REQ 2/3 — the "highest care" section)
 
@@ -62,9 +70,10 @@ defmodule Commonplace.MUD.SafeVerb.Allowlist do
       unconditionally since it can't execute anything.
     * `var.fun(args)` or `var.fun()` (explicit call parens) — DYNAMIC
       dispatch on a receiver that isn't a literal module alias.
-      Rejected outright unless the receiver is the literal `world`
-      param (the facade carve above). This is what closes
-      `mod = String.to_atom(...); mod.cmd(...)` and
+      Rejected outright (INCLUDING `world.fun(args)` — see the facade
+      note above; the working facade form is the qualified
+      `Commonplace.MUD.World.Facade.fun(world, ...)`, not the dot form).
+      This is what closes `mod = String.to_atom(...); mod.cmd(...)` and
       `world = System; world.cmd(...)` — both hinge on a variable,
       not a literal alias, sitting in receiver position.
 
@@ -170,9 +179,11 @@ defmodule Commonplace.MUD.SafeVerb.Allowlist do
         update `%{m | ..}`), list/tuple/binary `<<>>` literals,
         `when` guards. (`%Struct{}` construction is REJECTED.)
 
-      Facade carve: any `.`-call whose receiver is the LITERAL bound
-        param `world` (e.g. `world.look(..)`) — the Facade module is
-        the audited surface; `world`/`args` are un-rebindable.
+      Facade carve: `Commonplace.MUD.World.Facade.<fun>(world, ...)`
+        with `world` as the LITERAL first arg, `<fun>/<arity>` one of
+        look/1 describe/2 get_attr/2 move/2 set_attr/3 create_child/2
+        transfer/3 say/2 emit/2 (the @facade_allowed action set — NOT
+        the constructor new/5). `world`/`args` are un-rebindable.
 
       Sigils (data-only): ~c ~s ~w. (All others rejected.)
 
@@ -404,6 +415,28 @@ defmodule Commonplace.MUD.SafeVerb.Allowlist do
 
   @allowed_sigils [:sigil_c, :sigil_s, :sigil_w]
 
+  # CX-fhz4 — the facade ACTION surface, admitted for
+  # `Commonplace.MUD.World.Facade.<fun>(world, ...)` calls (see the carve
+  # in handle_call). Explicit {fun, arity} — NOT the whole module — so
+  # the constructor `new/5` (which takes an author-controlled object_uuid
+  # + owner_grant and would let a body mint a facade bound to a victim
+  # object) is NOT reachable. Arities are the Facade functions' own
+  # arities (the `world` receiver is the first positional arg). Every
+  # entry is an audited least-authority capability on
+  # `Commonplace.MUD.World.Facade`; adding a Facade fn here is a security
+  # decision (keep in sync with that module's public surface).
+  @facade_allowed MapSet.new([
+                    {:look, 1},
+                    {:describe, 2},
+                    {:get_attr, 2},
+                    {:move, 2},
+                    {:set_attr, 3},
+                    {:create_child, 2},
+                    {:transfer, 3},
+                    {:say, 2},
+                    {:emit, 2}
+                  ])
+
   # VECTOR 11 — reflective / capability side-channels that WEAR a
   # safe-looking bare-local face. Closed-by-default already rejects
   # every one of these (none is on any allow table), but they are pinned
@@ -444,7 +477,7 @@ defmodule Commonplace.MUD.SafeVerb.Allowlist do
   def check(source) when is_binary(source) do
     case Code.string_to_quoted(source) do
       {:ok, ast} ->
-        case scan(ast) |> Enum.uniq() do
+        case scan_body_ast(ast) do
           [] -> :ok
           reasons -> {:error, {:disallowed, reasons}}
         end
@@ -453,6 +486,85 @@ defmodule Commonplace.MUD.SafeVerb.Allowlist do
         {:error, {:syntax_error, "#{inspect(message)}#{inspect(token)}"}}
     end
   end
+
+  # CX-fhz4 — the placeholder module name `SafeVerb.wrap/1` uses. Referenced
+  # (not copy-pasted) so this checker and the wrapper can never drift apart.
+  @placeholder_module Commonplace.MUD.SafeVerb.placeholder_module()
+
+  @doc """
+  CX-fhz4 — the RUN-BOUNDARY re-verification. Where `check/1` scans a raw
+  `run/2` BODY (the author-submitted text, before it's wrapped for
+  storage), `check_wrapped/1` takes the STORED, WRAPPED source (what
+  `SafeVerb.wrap/1` actually produced and what `VerbSource` persisted) and
+  re-derives trust from the bytes on disk instead of trusting the
+  `.safe.elx` filename. It:
+
+    1. parses the text;
+    2. verifies the AST is EXACTLY the substrate wrapper shape —
+       a single top-level `defmodule #{@placeholder_module} do def
+       run(world, args) do <body> end end`, nothing more (no extra defs,
+       attributes, nested modules, `use`/`import`/`alias`) — so a doc
+       that was hand-edited or replayed from a stale/foreign commit
+       can't smuggle in unreviewed module-level code around a clean
+       body;
+    3. extracts `<body>` and runs it through the same `scan_body_ast/1`
+       walk `check/1` uses, so the body itself is held to the identical
+       allowlist bar.
+
+  Returns `:ok` or `{:error, {:unsafe_verb, reason}}`, where `reason` is
+  `{:syntax_error, message}`, `:not_substrate_wrapped`, or
+  `{:disallowed, [String.t()]}`.
+  """
+  @spec check_wrapped(String.t()) :: :ok | {:error, {:unsafe_verb, term()}}
+  def check_wrapped(source) when is_binary(source) do
+    case Code.string_to_quoted(source) do
+      {:ok, ast} ->
+        case extract_wrapped_body(ast) do
+          {:ok, body_ast} ->
+            case scan_body_ast(body_ast) do
+              [] -> :ok
+              reasons -> {:error, {:unsafe_verb, {:disallowed, reasons}}}
+            end
+
+          :error ->
+            {:error, {:unsafe_verb, :not_substrate_wrapped}}
+        end
+
+      {:error, {_meta, message, token}} ->
+        {:error, {:unsafe_verb, {:syntax_error, "#{inspect(message)}#{inspect(token)}"}}}
+    end
+  end
+
+  # The EXACT shape `SafeVerb.wrap/1` emits:
+  #
+  #     defmodule <placeholder> do
+  #       def run(world, args) do
+  #         <body>
+  #       end
+  #     end
+  #
+  # i.e. a single top-level `defmodule` whose entire body is a single
+  # `def run(world, args) do ... end` — nothing else at module level.
+  defp extract_wrapped_body(
+         {:defmodule, _, [{:__aliases__, _, mod_parts}, [do: module_body]]}
+       ) do
+    if alias_name(mod_parts) == @placeholder_module do
+      extract_run_body(module_body)
+    else
+      :error
+    end
+  end
+
+  defp extract_wrapped_body(_other), do: :error
+
+  defp extract_run_body(
+         {:def, _, [{:run, _, [{:world, _, world_ctx}, {:args, _, args_ctx}]}, [do: body]]}
+       )
+       when not is_list(world_ctx) and not is_list(args_ctx) do
+    {:ok, body}
+  end
+
+  defp extract_run_body(_other), do: :error
 
   # ---- macro-surface entry points (VECTOR 10) — rejected outright -----
   # These are the ONLY ways a foreign/aliased name or an author-defined
@@ -584,10 +696,20 @@ defmodule Commonplace.MUD.SafeVerb.Allowlist do
 
   # === helpers =============================================================
 
+  # Shared by `check/1` (raw body text) and `check_wrapped/1` (body AST
+  # extracted from a verified wrapper) — the SAME allowlist walk, deduped.
+  defp scan_body_ast(ast), do: scan(ast) |> Enum.uniq()
+
   defp alias_name(parts), do: parts |> Enum.map(&to_string/1) |> Enum.join(".")
 
   defp var_node?({name, _, ctx}) when is_atom(name) and not is_list(ctx), do: true
   defp var_node?(_), do: false
+
+  # CX-fhz4 — is the FIRST argument of a `Commonplace.MUD.World.Facade.*`
+  # call the literal bound `world` param (not some other variable/value
+  # merely named `world` in a nested scope — a plain variable-read node)?
+  defp facade_receiver?([{:world, _, ctx} | _]) when not is_list(ctx), do: true
+  defp facade_receiver?(_), do: false
 
   defp scan_pairs(pairs) when is_list(pairs) do
     Enum.flat_map(pairs, fn
@@ -700,12 +822,25 @@ defmodule Commonplace.MUD.SafeVerb.Allowlist do
     case mod do
       {:__aliases__, _, parts} ->
         modname = alias_name(parts)
-        arg_reasons ++ check_module_call(modname, fun, arity)
 
-      {:world, _, ctx} when not is_list(ctx) ->
-        # Facade carve-out (REQ 4) — any call on the literal `world` param
-        # is allowed; `Commonplace.MUD.World.Facade` is the audited surface.
-        arg_reasons
+        # CX-fhz4 wiring fix — the qualified-call half of the facade
+        # carve-out (REQ 4). `world.foo(...)` (struct dot-call WITH args)
+        # is not valid Elixir dispatch: `world` is bound to a `%Facade{}`
+        # struct value, not a module atom, so that shape always crashes at
+        # runtime (`apply/3` on a non-atom). The calling convention every
+        # safe-verb author actually uses — and the one the facade's own
+        # moduledoc documents — is the qualified form,
+        # `Commonplace.MUD.World.Facade.foo(world, ...)`. Admit it
+        # unconditionally, but ONLY when the call's first argument is the
+        # literal bound `world` param (same authority as the dot-call
+        # carve below — this doesn't widen WHAT can be reached, only fixes
+        # the syntax shape that can reach it).
+        if modname == "Commonplace.MUD.World.Facade" and facade_receiver?(args) and
+             MapSet.member?(@facade_allowed, {fun, arity}) do
+          arg_reasons
+        else
+          arg_reasons ++ check_module_call(modname, fun, arity)
+        end
 
       atom when is_atom(atom) ->
         # A module that has already been RESOLVED to an atom, not an
