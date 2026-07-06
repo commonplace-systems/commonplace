@@ -64,6 +64,22 @@ defmodule Commonplace.Crypto.AgentKeysTest do
     assert :not_found = AgentKeys.signing_context_for(UUID.uuid4(), secrets)
   end
 
+  describe "signing_context/2 (CX-qat5.2 §2.3 — {:error, reason}-tupled variant)" do
+    test "returns {:ok, ctx} matching signing_context_for/2 when a key exists", %{
+      secrets: secrets
+    } do
+      uuid = UUID.uuid4()
+      {:ok, pub} = AgentKeys.ensure(uuid, secrets)
+
+      assert {:ok, %SigningContext{public_key: ^pub}} = AgentKeys.signing_context(uuid, secrets)
+    end
+
+    test "returns {:error, :not_found} (not the bare :not_found atom) for an unknown identity",
+         %{secrets: secrets} do
+      assert {:error, :not_found} = AgentKeys.signing_context(UUID.uuid4(), secrets)
+    end
+  end
+
   test "keys survive a SecretStore restart (CubDB-backed)", %{
     secrets: secrets,
     secrets_pid: pid,

@@ -237,8 +237,21 @@ defmodule Commonplace.Chat.Actions do
   # loser's message is silently dropped as a "duplicate" on replay.
   # `:signer_id` is a required opt on every caller, so it's always
   # available as the actor key.
+  #
+  # CX-qat5.2 §2.4 (W4 session hands): a caller that already carries its
+  # OWN stable hand — a logged-in browser session, resolved once at
+  # login via `WriterHand.for_session/2` and threaded down through
+  # `ViewActionDispatch`'s `:hand` context key as `opts[:client_id]` —
+  # uses that hand instead of re-deriving the per-actor funnel one.
+  # Hand-less callers (MCP, bots, the bridge) keep falling through to
+  # the `for_doc_actor/2` fallback until their own sessions carry hands
+  # too (out of scope here; this bead only wires the browser side).
   defp load_messages_doc(store, uuid, opts) do
-    hand = WriterHand.for_doc_actor(uuid, Keyword.fetch!(opts, :signer_id))
+    hand =
+      case Keyword.get(opts, :client_id) do
+        hand when is_integer(hand) -> hand
+        nil -> WriterHand.for_doc_actor(uuid, Keyword.fetch!(opts, :signer_id))
+      end
 
     case DocBuilder.reconstruct_snapshot(store, uuid, client_id: hand) do
       {:ok, doc} -> {:ok, doc}

@@ -194,6 +194,31 @@ defmodule Commonplace.Presence.Identity do
     end
   end
 
+  @doc """
+  Register a player as a first-class signing principal (CX-qat5.2 §2.1):
+  a `:usr` cold identity + a freshly-minted (idempotent) per-player
+  Ed25519 keypair in the node-local SecretStore + the pubkey appended to
+  the identity doc. Returns `{:ok, identity_uuid, public_key}`.
+
+  Mirrors `register_agent/4` exactly (same custody + signing shape,
+  same D6/D9 decisions) with one change: `:usr` kind instead of `:bot`,
+  because a browser player is a human principal, not an agent. See
+  `register_agent/4`'s doc for the D9 (creator-signs) and D6
+  (doc-copy-is-convenience, capability-cert-is-authority) rationale —
+  it applies identically here. `Commonplace.Invites.mint/4` is this
+  function's caller: minting an invite registers the player, then
+  mints the one-time login token separately.
+  """
+  def register_player(name, root_uuid, store \\ CommitStoreClient, opts \\ []) do
+    secret_store = Keyword.get(opts, :secret_store, Commonplace.Store.SecretStore)
+
+    with {:ok, uuid} <- register(name, :usr, root_uuid, store, opts),
+         {:ok, pub} <- Commonplace.Crypto.AgentKeys.ensure(uuid, secret_store),
+         :ok <- add_public_key(uuid, Base.encode64(pub), store, opts) do
+      {:ok, uuid, pub}
+    end
+  end
+
   @doc "Read a cold identity document (converging any imported siblings first)."
   def read(uuid, store \\ CommitStoreClient) do
     converge(uuid, store)

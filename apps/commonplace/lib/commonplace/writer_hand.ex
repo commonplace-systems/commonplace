@@ -130,4 +130,42 @@ defmodule Commonplace.WriterHand do
   def for_doc_actor(uuid, actor) when is_binary(uuid) and is_binary(actor) do
     :erlang.phash2({uuid, actor}, 0xFFFF_FFFF)
   end
+
+  # 53-bit ceiling — the JS-safe-integer bound (2^53 - 1), per W2's
+  # Resolved §1. Deliberately the SAME numeric ceiling H2 hardening
+  # already enforces for clock/id sanity — no new special-case width.
+  @session_hand_mask 0x1F_FFFF_FFFF_FFFF
+
+  @doc """
+  Derive a session's hand: the 53-bit **nonce-bearing** family (CX-qat5.2
+  §2.2, W2 Resolved §1) — `lower 53 bits of SHA-256(public_key <>
+  nonce)`. This is a DIFFERENT derivation family from `for_doc/1` /
+  `for_doc_actor/2` above (32-bit, nonce-free, never re-derives) — see
+  moduledoc "Asymmetric deconfliction". Do not widen this function's
+  range down to 32 bits or point a funnel writer at it: the whole reason
+  sessions get the wider 53-bit space is that the population of
+  concurrently-live sessions is much larger than the population of
+  concurrently-live per-doc funnels.
+
+  `public_key` is the session's principal's raw Ed25519 public key
+  (32 bytes); `nonce` is the per-session instance nonce minted once at
+  login and persisted in session state (the browser session cookie, for
+  CX-qat5.2) — NOT re-minted per request, or the hand would move and the
+  state vector would bloat on every remount. Same nonce in, same hand
+  out (stability); a fresh nonce (a distinct session/tab) yields a
+  different hand with overwhelming probability (uniqueness) — see the
+  design doc's birthday-bound arithmetic.
+
+  If a hand collision is ever discovered at `client_namespaces`
+  binding-registration time, THIS is the side that re-derives (mint a
+  fresh nonce, recompute, re-register) — never the deterministic
+  `for_doc/1`/`for_doc_actor/2` family.
+  """
+  @spec for_session(binary(), binary()) :: non_neg_integer()
+  def for_session(public_key, nonce) when is_binary(public_key) and is_binary(nonce) do
+    :crypto.hash(:sha256, public_key <> nonce)
+    |> binary_part(0, 8)
+    |> :binary.decode_unsigned()
+    |> Bitwise.band(@session_hand_mask)
+  end
 end

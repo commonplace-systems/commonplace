@@ -22,6 +22,7 @@ defmodule CommonplaceWebWeb.ChatRoomLiveTest do
   import Phoenix.LiveViewTest
 
   alias Commonplace.Chat.{Actions, ChatViewComputeSupervisor, Rooms}
+  alias Commonplace.Invites
   alias Commonplace.Store.CommitStore
   alias Commonplace.Tree.{DocCache, Schema}
 
@@ -188,6 +189,70 @@ defmodule CommonplaceWebWeb.ChatRoomLiveTest do
 
       assert html =~ "from another peer"
       assert html =~ "bob.usr"
+    end
+  end
+
+  describe "logged-in session identity (CX-qat5.2 acceptance pins 1 + 2)" do
+    defp login_conn(conn, root) do
+      {:ok, %{identity_uuid: identity_uuid, token: token}} = Invites.mint("mallory", root)
+      {:ok, ^identity_uuid} = Invites.redeem(token)
+      nonce = Base.encode64(:crypto.strong_rand_bytes(16))
+
+      conn =
+        conn
+        |> init_test_session(%{})
+        |> Plug.Conn.put_session(:player_identity_uuid, identity_uuid)
+        |> Plug.Conn.put_session(:session_nonce, nonce)
+
+      {conn, identity_uuid}
+    end
+
+    test "a logged-in session's chat post lands signed as that player, with zero ambient_signed telemetry",
+         %{conn: conn, root: root} do
+      {:ok, room} = Rooms.create(root, "general")
+      {conn, identity_uuid} = login_conn(conn, root)
+
+      {:ok, ctx} = Commonplace.Crypto.AgentKeys.signing_context(identity_uuid)
+      expected_signer_id = Commonplace.Crypto.Signing.signer_id(identity_uuid, ctx.public_key)
+
+      ref = make_ref()
+      parent = self()
+
+      :telemetry.attach(
+        {:chat_room_live_ambient_signed, ref},
+        [:commonplace, :commit, :ambient_signed],
+        fn _event, meas, meta, _cfg -> send(parent, {:ambient_signed, ref, meas, meta}) end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach({:chat_room_live_ambient_signed, ref}) end)
+
+      {:ok, view, _html} = live(conn, ~p"/chat/general")
+      Process.sleep(@recompute_wait_ms)
+
+      render_submit(view, "view_action", %{
+        "action" => "post_message",
+        "text" => "hello signed in as mallory"
+      })
+
+      Process.sleep(@recompute_wait_ms)
+      html = render(view)
+
+      assert html =~ "hello signed in as mallory"
+
+      # Acceptance pin 2: the landed commit is signed as the player.
+      {:ok, doc} = Commonplace.Tree.DocBuilder.reconstruct_snapshot(CommitStore, room.messages_uuid)
+      entries = Commonplace.Chat.Messages.list(doc)
+      assert Enum.any?(entries, &(&1["text"] == "hello signed in as mallory"))
+      assert Enum.any?(entries, &(&1["author_signer_id"] == expected_signer_id))
+
+      {:ok, commit} = CommitStore.latest_commit(CommitStore, room.messages_uuid)
+      assert commit.signer_id == expected_signer_id
+      assert commit.signature != nil
+
+      # Acceptance pin 1: zero ambient_signed telemetry for this
+      # session-originated write — it carried its own signing_context.
+      refute_receive {:ambient_signed, ^ref, _meas, _meta}, 100
     end
   end
 end

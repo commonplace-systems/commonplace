@@ -19,6 +19,13 @@ defmodule CommonplaceWebWeb.Router do
 
     get "/", PageController, :home
 
+    # CX-qat5.2 §2.2: invite-redemption login + logout. Binds the
+    # session to a player identity ({identity_uuid, session_nonce} only
+    # — never key material); SessionIdentity.resolve/1 re-derives the
+    # SigningContext + hand from that pair on every LiveView mount.
+    get "/login/:token", SessionController, :login
+    get "/logout", SessionController, :logout
+
     live_session :wiki, layout: {CommonplaceWebWeb.Layouts, :bare} do
       live "/wiki", WikiLive
       live "/wiki/*path", WikiLive

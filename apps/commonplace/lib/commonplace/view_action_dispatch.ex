@@ -74,7 +74,9 @@ defmodule Commonplace.ViewActionDispatch do
           optional(:view_uuid) => String.t() | nil,
           optional(:target) => String.t() | nil,
           optional(:args) => map(),
-          optional(:signer_id) => String.t()
+          optional(:signer_id) => String.t(),
+          optional(:signing_context) => Commonplace.Crypto.SigningContext.t() | nil,
+          optional(:hand) => non_neg_integer() | nil
         }
 
   @doc """
@@ -170,6 +172,9 @@ defmodule Commonplace.ViewActionDispatch do
   # Commonplace.Chat.Actions.post_message. Required args: messages_uuid,
   # room, author_path, text. Optional: reply_to. signer_id and
   # signing_context flow from session context (CX-o3r7 plumbing).
+  # CX-qat5.2 §2.4: `:hand` (the session's stable W4 client-id, when the
+  # caller resolved one) flows through as `:client_id` — see
+  # `Chat.Actions.load_messages_doc/3`'s hand-selection order.
   #
   # CX-waid (M3 sub-bead iii): args arrive PRE-RESOLVED by
   # `Commonplace.View.ArgResolver` running in InvokeViewAction (MCP
@@ -192,6 +197,7 @@ defmodule Commonplace.ViewActionDispatch do
         |> maybe_kw(:reply_to, args["reply_to"])
         |> maybe_kw(:messages_log_uuid, args["messages_log_uuid"])
         |> maybe_kw(:signing_context, Map.get(context, :signing_context))
+        |> maybe_kw(:client_id, Map.get(context, :hand))
         |> maybe_kw(:store, Map.get(context, :store))
 
       case Commonplace.Chat.Actions.post_message(messages_uuid, text, action_opts) do
@@ -228,6 +234,7 @@ defmodule Commonplace.ViewActionDispatch do
         ]
         |> maybe_kw(:messages_log_uuid, args["messages_log_uuid"])
         |> maybe_kw(:signing_context, Map.get(context, :signing_context))
+        |> maybe_kw(:client_id, Map.get(context, :hand))
         |> maybe_kw(:store, Map.get(context, :store))
 
       case Commonplace.Chat.Actions.edit_message(messages_uuid, message_id, text, action_opts) do
@@ -271,6 +278,7 @@ defmodule Commonplace.ViewActionDispatch do
         ]
         |> maybe_kw(:messages_log_uuid, args["messages_log_uuid"])
         |> maybe_kw(:signing_context, Map.get(context, :signing_context))
+        |> maybe_kw(:client_id, Map.get(context, :hand))
         |> maybe_kw(:store, Map.get(context, :store))
 
       case Commonplace.Chat.Actions.delete_message(messages_uuid, message_id, action_opts) do

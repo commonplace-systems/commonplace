@@ -31,10 +31,16 @@ defmodule CommonplaceWebWeb.ChatRoomLive do
   path, and every connected tab converges to identical view-XML instead
   of each rendering an optimistic guess.
 
-  Author identity is a placeholder until CX-88mw lands per-session
-  signing infrastructure (the dispatch context carries a placeholder
-  `signer_id`/`presence_path`, not a `signing_context` — see
-  chat-room.md "v1: placeholder signers").
+  Author identity resolves once per mount via
+  `CommonplaceWebWeb.SessionIdentity.resolve/1` (CX-qat5.2 + CX-41qg.4):
+  a logged-in session's dispatch context carries the player's real
+  `signer_id`/`presence_path` plus a `signing_context` and a stable W4
+  session `hand` (threaded into `Chat.Actions` as the reconstruction
+  `client_id` — see `ViewActionDispatch`'s `:hand` → `:client_id`
+  wiring). An anonymous session (no session cookie, or one that no
+  longer resolves — SecretStore wiped, corrupt key, etc.) falls back to
+  the pre-CX-qat5.2 placeholder signer, unsigned — the permissive
+  workspace must keep working logged-out.
   """
 
   use CommonplaceWebWeb, :live_view
@@ -46,14 +52,20 @@ defmodule CommonplaceWebWeb.ChatRoomLive do
   alias Commonplace.View.ArgResolver
   alias Commonplace.Document.ViewXml
   alias Commonplace.ViewActionDispatch
-  alias CommonplaceWebWeb.{ViewActions, ViewRenderer, WriteRateLimit}
+  alias CommonplaceWebWeb.{SessionIdentity, ViewActions, ViewRenderer, WriteRateLimit}
 
-  # Placeholder until CX-88mw substrate per-session key minting lands.
+  # Fallback signer for anonymous (not-logged-in, or no-longer-resolvable)
+  # sessions — the pre-CX-qat5.2 placeholder, kept so the permissive
+  # workspace keeps working logged-out.
   @placeholder_signer_id "web-user@local"
   @placeholder_presence_path "web-user.usr"
 
   @impl true
-  def mount(%{"room" => room_name}, _session, socket) do
+  def mount(%{"room" => room_name}, session, socket) do
+    # CX-qat5.2 §2.3: resolve identity ONCE here, thread by argument —
+    # no downstream re-derivation, no ambient lookups.
+    identity = SessionIdentity.resolve(session)
+
     case lookup_workspace_root() do
       {:ok, root_uuid} ->
         case Rooms.lookup(root_uuid, room_name) do
@@ -84,6 +96,7 @@ defmodule CommonplaceWebWeb.ChatRoomLive do
               socket
               |> assign(:room_name, room_name)
               |> assign(:room, room)
+              |> assign(:identity, identity)
               |> assign(:view_xml, load_view_xml(room.view_uuid))
               |> assign(:page_title, "##{room_name}")
               |> assign(:not_found, false)
@@ -137,7 +150,7 @@ defmodule CommonplaceWebWeb.ChatRoomLive do
   end
 
   defp do_view_action(payload, socket) do
-    %{room: room, room_name: room_name} = socket.assigns
+    %{room: room, room_name: room_name, identity: identity} = socket.assigns
 
     action_name = payload["action"] || ""
     target = payload["target"]
@@ -145,9 +158,11 @@ defmodule CommonplaceWebWeb.ChatRoomLive do
 
     view_path = "/chat/#{room_name}/_view.xml"
 
+    {signer_id, presence_path, signing_context, hand} = identity_fields(identity)
+
     resolver_context = %{
       view_path: view_path,
-      presence_path: @placeholder_presence_path
+      presence_path: presence_path
     }
 
     with {:ok, view_node} <- ViewXml.parse(load_view_xml(room.view_uuid)),
@@ -158,7 +173,9 @@ defmodule CommonplaceWebWeb.ChatRoomLive do
         view_uuid: room.view_uuid,
         target: target,
         args: resolved_args,
-        signer_id: @placeholder_signer_id,
+        signer_id: signer_id,
+        signing_context: signing_context,
+        hand: hand,
         source: "chat_room_live"
       }
 
@@ -185,6 +202,19 @@ defmodule CommonplaceWebWeb.ChatRoomLive do
   end
 
   # --- Private ---
+
+  # CX-qat5.2 §2.4: unpack the resolved identity into the four fields
+  # the dispatch context threads down. Anonymous sessions get the
+  # placeholder signer, unsigned (nil signing_context, nil hand — the
+  # per-actor funnel hand in `Chat.Actions.load_messages_doc/3` covers
+  # the hand-less case).
+  defp identity_fields({:ok, %{signer_id: signer_id, presence_path: presence_path} = resolved}) do
+    {signer_id, presence_path, resolved.signing_context, resolved.hand}
+  end
+
+  defp identity_fields(:anonymous) do
+    {@placeholder_signer_id, @placeholder_presence_path, nil, nil}
+  end
 
   defp lookup_workspace_root do
     Commonplace.Workspace.root_uuid()

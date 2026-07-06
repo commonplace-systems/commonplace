@@ -453,4 +453,89 @@ defmodule Commonplace.Chat.ActionsTest do
       assert "bob@bbbbbbbb" in ids
     end
   end
+
+  describe "session hand override (CX-qat5.2 §2.4 — opts[:client_id])" do
+    # A logged-in browser session resolves its OWN stable W4 hand once
+    # at login (WriterHand.for_session/2) and threads it down as
+    # opts[:client_id] via ViewActionDispatch's :hand context key. When
+    # present, it wins over the per-(doc, actor) funnel derivation this
+    # module falls back to for hand-less callers.
+    test "opts[:client_id], when present, is used as the reconstruction client_id instead of the per-actor fallback",
+         %{store: store, messages_uuid: uuid} do
+      session_hand = Commonplace.WriterHand.for_session(:crypto.strong_rand_bytes(32), "nonce-1")
+      fallback_hand = Commonplace.WriterHand.for_doc_actor(uuid, "alice@aaaaaaaa")
+      refute session_hand == fallback_hand
+
+      assert {:ok, _} =
+               Actions.post_message(uuid, "hi from a session",
+                 room: "general",
+                 signer_id: "alice@aaaaaaaa",
+                 author_path: "alice.usr",
+                 client_id: session_hand,
+                 store: store
+               )
+
+      {:ok, doc} = DocBuilder.reconstruct_snapshot(store, uuid)
+      client_ids = sv_client_ids(doc)
+
+      assert MapSet.member?(client_ids, session_hand)
+      refute MapSet.member?(client_ids, fallback_hand)
+    end
+
+    test "absent opts[:client_id] keeps the pre-existing per-actor fallback (no regression)",
+         %{store: store, messages_uuid: uuid} do
+      fallback_hand = Commonplace.WriterHand.for_doc_actor(uuid, "alice@aaaaaaaa")
+
+      assert {:ok, _} =
+               Actions.post_message(uuid, "no session hand here",
+                 room: "general",
+                 signer_id: "alice@aaaaaaaa",
+                 author_path: "alice.usr",
+                 store: store
+               )
+
+      {:ok, doc} = DocBuilder.reconstruct_snapshot(store, uuid)
+      assert MapSet.member?(sv_client_ids(doc), fallback_hand)
+    end
+  end
+
+  describe "signed session posts (CX-qat5.2 acceptance pins 1 + 2)" do
+    alias Commonplace.Crypto.{Signing, SigningContext}
+
+    test "a post with a resolved signing_context lands signed as that player's signer_id, with zero ambient_signed telemetry",
+         %{store: store, messages_uuid: uuid} do
+      {pub, priv} = Signing.generate_keypair()
+      identity_uuid = UUID.uuid4()
+      signer_id = Signing.signer_id(identity_uuid, pub)
+      ctx = %SigningContext{identity_uuid: identity_uuid, private_key: priv, public_key: pub}
+
+      ref = make_ref()
+      parent = self()
+
+      :telemetry.attach(
+        {:actions_test_ambient_signed, ref},
+        [:commonplace, :commit, :ambient_signed],
+        fn _event, meas, meta, _cfg -> send(parent, {:ambient_signed, ref, meas, meta}) end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach({:actions_test_ambient_signed, ref}) end)
+
+      assert {:ok, %{message_id: id}} =
+               Actions.post_message(uuid, "signed as a real player",
+                 room: "general",
+                 signer_id: signer_id,
+                 author_path: "alice.usr",
+                 signing_context: ctx,
+                 store: store
+               )
+
+      assert is_binary(id)
+      refute_receive {:ambient_signed, ^ref, _meas, _meta}, 100
+
+      {:ok, commit} = CommitStore.latest_commit(store, uuid)
+      assert commit.signer_id == signer_id
+      assert commit.signature != nil
+    end
+  end
 end

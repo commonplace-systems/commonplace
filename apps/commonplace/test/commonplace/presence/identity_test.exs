@@ -391,6 +391,61 @@ defmodule Commonplace.Presence.IdentityTest do
     end
   end
 
+  describe "register_player (CX-qat5.2 §2.1)" do
+    alias Commonplace.Crypto.{AgentKeys, Signing, SigningContext}
+    alias Commonplace.Store.SecretStore
+
+    setup do
+      dir = Path.join(System.tmp_dir!(), "cp_player_secrets_#{:rand.uniform(1_000_000_000)}")
+      File.mkdir_p!(dir)
+      name = :"player_secrets_#{:rand.uniform(1_000_000)}"
+      {:ok, pid} = SecretStore.start_link(data_dir: dir, name: name)
+
+      on_exit(fn ->
+        if Process.alive?(pid), do: GenServer.stop(pid)
+        File.rm_rf!(dir)
+      end)
+
+      %{secrets: name}
+    end
+
+    test "registers a :usr (not :bot), mints its key, binds the pubkey into the identity doc",
+         %{store: store, root: root, secrets: secrets} do
+      {cpub, cpriv} = Signing.generate_keypair()
+      ctx = %SigningContext{identity_uuid: "creator", private_key: cpriv, public_key: cpub}
+
+      assert {:ok, uuid, pub} =
+               Identity.register_player("alice", root, store,
+                 signing_context: ctx,
+                 secret_store: secrets
+               )
+
+      # Registered as a :usr cold identity — mirrors register_agent's
+      # :bot shape exactly except for this kind (CX-qat5.2 §2.1).
+      assert {:ok, ^uuid} = Identity.lookup("alice", :usr, root, store)
+      refute Identity.lookup("alice", :bot, root, store) == {:ok, uuid}
+
+      assert {:ok, agent_ctx} = AgentKeys.signing_context_for(uuid, secrets)
+      assert agent_ctx.public_key == pub
+
+      assert Base.encode64(pub) in Identity.get_public_keys(uuid, store)
+
+      # D9: the registration commits are signed by the CREATOR.
+      {:ok, commit} = CommitStore.latest_commit(store, uuid)
+      assert commit.signer_id == Signing.signer_id("creator", cpub)
+    end
+
+    test "register_player is idempotent on the identity and keeps the same key",
+         %{store: store, root: root, secrets: secrets} do
+      {:ok, uuid1, pub1} = Identity.register_player("stable", root, store, secret_store: secrets)
+      Process.sleep(10)
+      {:ok, uuid2, pub2} = Identity.register_player("stable", root, store, secret_store: secrets)
+
+      assert uuid1 == uuid2
+      assert pub1 == pub2
+    end
+  end
+
   defp load_schema(uuid, store) do
     case CommitStore.latest_commit(store, uuid) do
       {:ok, commit} ->

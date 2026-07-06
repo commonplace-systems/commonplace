@@ -68,6 +68,25 @@ defmodule Commonplace.Crypto.AgentKeys do
   end
 
   @doc """
+  The agent's `%SigningContext{}` in the `{:error, reason}`-tupled shape
+  the browser-session resolution seam expects (CX-qat5.2 §2.3): checks
+  custody FIRST (no minting here — that's `ensure/2`'s job) and returns
+  `{:error, :not_found}` rather than the bare `:not_found` atom
+  `signing_context_for/2` uses, so `SessionIdentity.resolve/1` can treat
+  every failure branch (missing key, corrupt key) uniformly with a
+  single `with`/`else`.
+  """
+  @spec signing_context(String.t(), GenServer.server()) ::
+          {:ok, SigningContext.t()} | {:error, :not_found | :corrupt_key}
+  def signing_context(identity_uuid, secret_store \\ SecretStore) when is_binary(identity_uuid) do
+    case signing_context_for(identity_uuid, secret_store) do
+      {:ok, ctx} -> {:ok, ctx}
+      :not_found -> {:error, :not_found}
+      {:error, _} = err -> err
+    end
+  end
+
+  @doc """
   Mint a replacement keypair, overwriting the custody slots (D10).
   Certs delegated to the old key stay valid until expiry; the caller is
   responsible for appending the new pubkey to the identity doc.
