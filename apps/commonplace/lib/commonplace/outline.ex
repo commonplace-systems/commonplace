@@ -285,8 +285,15 @@ defmodule Commonplace.Outline do
           end
 
         update = Yelixer.Encoding.encode_update(doc)
-        CommitStoreClient.create_chained_commit(store, outline_uuid, update, %{}, commit_opts)
-        ok
+
+        # CX-qat5.3: propagate a local-write-gate rejection instead of
+        # swallowing it — a denied commit means the mutation did NOT
+        # persist, so callers (OutlineLive, MCP outline actions) must see
+        # the error rather than a false `:ok`/`{:ok, id}`.
+        case CommitStoreClient.create_chained_commit(store, outline_uuid, update, %{}, commit_opts) do
+          {:error, _} = commit_err -> commit_err
+          _commit -> ok
+        end
     end
   end
 

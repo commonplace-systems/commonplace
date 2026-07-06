@@ -1,0 +1,540 @@
+defmodule Commonplace.Store.LocalWriteGateTest do
+  @moduledoc """
+  CX-qat5.3: the third `Trust.authorized?` call-site family — the
+  LOCAL-write gate at `CommitStore`'s create seam (`do_write_commit/7`,
+  the legacy serialized path, AND the `{:put_built_commit, ...}` handler,
+  the CX-3erd hoisted CAS path that `CommitStoreClient`'s local-mode
+  `create_commit`/`create_chained_commit` route through).
+
+  Mirrors `Commonplace.Store.ImportTrustGateTest` (Gate A) in spirit —
+  same verifier (`Trust.authorized?/5`), same error taxonomy
+  (`{:error, {:trust_rejected, reason}}`) — but exercised at the LOCAL
+  create seam instead of `import_commit/3`, and gated additionally by
+  the `:commonplace, :local_write_gate` three-position knob
+  (`:off` / `:dry_run` / `:enforce`).
+
+  See docs/plans/2026-07-06-qat5.3-local-write-gate-spec.md for the
+  full design; test pins below are numbered to match spec §6.
+  """
+  use ExUnit.Case, async: false
+
+  alias Commonplace.Crypto.{NodeIdentity, Signing, SigningContext}
+  alias Commonplace.Document.ContentType
+  alias Commonplace.Store.{Commit, CommitStore, CommitStoreClient}
+  alias Commonplace.Trust
+  alias Commonplace.Trust.Capability
+
+  # Full trio (Store.Supervisor) so the phase-3 capability path (fence pin)
+  # and the CAS/hoisted path (CommitStoreClient) both have a companion
+  # TrustSideStore/PendingImports to address — mirrors
+  # AuthorizedCapabilityTest / ExecuteBaselineTest's setup.
+  setup do
+    dir = Path.join(System.tmp_dir!(), "cp_local_write_gate_#{:rand.uniform(1_000_000_000)}")
+    File.mkdir_p!(dir)
+    n = :rand.uniform(1_000_000_000)
+    name = :"lwg_store_#{n}"
+
+    start_supervised!(
+      {Commonplace.Store.Supervisor,
+       data_dir: dir,
+       name: :"lwg_sup_#{n}",
+       commit_store_name: name,
+       trust_side_store_name: :"lwg_tss_#{n}",
+       pending_imports_name: :"lwg_pi_#{n}"}
+    )
+
+    old_knob = Application.get_env(:commonplace, :local_write_gate)
+
+    on_exit(fn ->
+      Application.delete_env(:commonplace, :trust)
+
+      case old_knob do
+        nil -> Application.delete_env(:commonplace, :local_write_gate)
+        v -> Application.put_env(:commonplace, :local_write_gate, v)
+      end
+
+      File.rm_rf!(dir)
+    end)
+
+    {pub, priv} = Signing.generate_keypair()
+    identity = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    signer_id = Signing.signer_id(identity, pub)
+    ctx = %SigningContext{identity_uuid: identity, private_key: priv, public_key: pub}
+
+    %{store: name, pub: pub, priv: priv, identity: identity, signer_id: signer_id, ctx: ctx}
+  end
+
+  defp strict!(trusted \\ %{}) do
+    Application.put_env(:commonplace, :trust, %{
+      accept_unsigned: false,
+      trusted_identities: trusted
+    })
+  end
+
+  defp enforce!, do: Application.put_env(:commonplace, :local_write_gate, :enforce)
+  defp dry_run!, do: Application.put_env(:commonplace, :local_write_gate, :dry_run)
+  defp off!, do: Application.put_env(:commonplace, :local_write_gate, :off)
+
+  defp text_update(body) do
+    doc = Yelixer.Doc.new() |> ContentType.create(:text, "page.md")
+    doc = ContentType.insert_text(doc, 0, body)
+    Yelixer.Encoding.encode_update(doc)
+  end
+
+  # ── Pin 1: permissive default is a no-op ──────────────────────────────
+  #
+  # The full corpus (mix test apps/commonplace/test, 1790 tests) is the
+  # real proof of this pin — every existing write path keeps working with
+  # the gate compiled in. This is a small, explicit sanity check that both
+  # create paths still land under default config + default knob.
+  describe "pin 1: permissive default is a no-op" do
+    test "do_write_commit path (CommitStore.create_commit) lands unsigned", %{store: store} do
+      uuid = UUID.uuid4()
+      commit = CommitStore.create_commit(store, uuid, text_update("hello"), nil)
+      assert %Commit{} = commit
+      assert {:ok, _} = CommitStore.get_commit(store, commit.id)
+    end
+
+    test "put_built_commit path (CommitStoreClient.create_chained_commit) lands unsigned", %{
+      store: store
+    } do
+      uuid = UUID.uuid4()
+      commit = CommitStoreClient.create_chained_commit(store, uuid, text_update("hello"))
+      assert %Commit{} = commit
+      assert {:ok, _} = CommitStore.get_commit(store, commit.id)
+    end
+  end
+
+  # ── Pin 2: strict + unsigned → rejected, red event, nothing persisted,
+  #    no CAS retry ────────────────────────────────────────────────────
+  describe "pin 2: strict + unsigned browser write is rejected in enforce mode" do
+    test "do_write_commit path rejects, persists nothing, emits telemetry", %{store: store} do
+      strict!()
+      enforce!()
+      uuid = UUID.uuid4()
+
+      ref = make_ref()
+      parent = self()
+
+      :telemetry.attach(
+        {:lwg_reject_handler, ref},
+        [:commonplace, :commit, :rejected, :local_trust],
+        fn _event, meas, meta, _cfg -> send(parent, {:lwg_rejected, ref, meas, meta}) end,
+        nil
+      )
+
+      assert {:error, {:trust_rejected, :unsigned}} =
+               CommitStore.create_commit(store, uuid, text_update("secret"), nil)
+
+      assert :none = CommitStore.latest_commit(store, uuid)
+
+      assert_receive {:lwg_rejected, ^ref, _meas, meta}, 500
+      assert meta.mode == :enforce
+      assert meta.doc_uuid == uuid
+      assert meta.reason == :unsigned
+
+      :telemetry.detach({:lwg_reject_handler, ref})
+    end
+
+    test "put_built_commit / CAS path rejects, persists nothing, does not retry", %{store: store} do
+      strict!()
+      enforce!()
+      uuid = UUID.uuid4()
+
+      ref = make_ref()
+      parent = self()
+
+      # Count how many times the CAS verb itself runs — a retry loop would
+      # show up as more than one :put_built_commit call.
+      :telemetry.attach(
+        {:lwg_cas_call_handler, ref},
+        [:commonplace, :commit_store, :call],
+        fn _event, _meas, %{verb: verb} = meta, _cfg ->
+          if verb == :put_built_commit, do: send(parent, {:lwg_cas_call, ref, meta})
+        end,
+        nil
+      )
+
+      assert {:error, {:trust_rejected, :unsigned}} =
+               CommitStoreClient.create_chained_commit(store, uuid, text_update("secret"))
+
+      assert :none = CommitStore.latest_commit(store, uuid)
+
+      assert_receive {:lwg_cas_call, ^ref, _meta}, 500
+      refute_receive {:lwg_cas_call, ^ref, _meta}, 200
+
+      :telemetry.detach({:lwg_cas_call_handler, ref})
+    end
+
+    test "red event fires on the doc's topic", %{store: store} do
+      strict!()
+      enforce!()
+      uuid = UUID.uuid4()
+
+      Commonplace.Dataflow.PubSub.subscribe_red(uuid)
+
+      assert {:error, {:trust_rejected, :unsigned}} =
+               CommitStore.create_commit(store, uuid, text_update("secret"), nil)
+
+      assert_receive {"red:" <> ^uuid, {:trust, :local_write_denied, meta}}, 500
+      assert meta.doc_uuid == uuid
+      assert meta.reason == :unsigned
+    end
+  end
+
+  # ── Pin 3: strict + player-signed write with pinned identity lands ───
+  describe "pin 3: strict + pinned identity lands" do
+    test "do_write_commit path", %{store: store, pub: pub, identity: identity, ctx: ctx} do
+      strict!(%{identity => Signing.encode_key(pub)})
+      enforce!()
+      uuid = UUID.uuid4()
+
+      commit =
+        CommitStore.create_commit(store, uuid, text_update("hi"), nil, %{},
+          signing_context: ctx
+        )
+
+      assert %Commit{} = commit
+      assert {:ok, _} = CommitStore.get_commit(store, commit.id)
+    end
+
+    test "put_built_commit / CAS path", %{store: store, pub: pub, identity: identity, ctx: ctx} do
+      strict!(%{identity => Signing.encode_key(pub)})
+      enforce!()
+      uuid = UUID.uuid4()
+
+      commit =
+        CommitStoreClient.create_chained_commit(store, uuid, text_update("hi"), %{},
+          signing_context: ctx
+        )
+
+      assert %Commit{} = commit
+      assert {:ok, _} = CommitStore.get_commit(store, commit.id)
+    end
+  end
+
+  # ── Pin 4: strict + system snapshot/merge (node-signed) lands ────────
+  describe "pin 4: node-signed system commits land under strict + enforce" do
+    test "create_snapshot_commit lands (phase 2.5 with_local_node_trust)", %{store: store} do
+      strict!()
+      enforce!()
+      uuid = UUID.uuid4()
+
+      # The base write itself must ALSO pass the gate under strict+enforce
+      # — sign it with the node's own identity (auto-trusted via
+      # `with_local_node_trust/1`) so this test isolates pin 4's actual
+      # claim (the SNAPSHOT is what phase 2.5 node-signs and what must
+      # land) rather than tripping on an unrelated unsigned-base-write
+      # rejection.
+      {:ok, node_ctx} = NodeIdentity.signing_context()
+
+      commit =
+        CommitStore.create_commit(store, uuid, text_update("v1"), nil, %{},
+          signing_context: node_ctx
+        )
+
+      assert %Commit{} = commit
+
+      assert {:ok, snap} = CommitStore.snapshot(store, uuid)
+      assert snap.metadata.kind == :snapshot
+      assert snap.signature != nil
+    end
+  end
+
+  # ── Pin 5: genesis exemption ───────────────────────────────────────────
+  describe "pin 5: genesis exemption" do
+    test "an explicit genesis-kind write is exempt from the gate even unsigned+strict", %{
+      store: store
+    } do
+      strict!()
+      enforce!()
+      uuid = UUID.uuid4()
+      genesis = Commit.genesis(uuid)
+
+      commit =
+        CommitStore.create_commit(store, uuid, genesis.update, nil, genesis.metadata)
+
+      assert %Commit{} = commit
+      assert commit.signature == nil
+    end
+
+    test "genesis rides only when the gated first-write commit passes: denied write leaves no genesis row",
+         %{store: store} do
+      strict!()
+      enforce!()
+      uuid = UUID.uuid4()
+
+      assert {:error, {:trust_rejected, :unsigned}} =
+               CommitStoreClient.create_chained_commit(store, uuid, text_update("first"))
+
+      assert :none = CommitStore.latest_commit(store, uuid)
+      genesis_id = Commit.genesis(uuid).id
+      assert :none = CommitStore.get_commit(store, genesis_id)
+    end
+
+    test "genesis rides along atomically when the gated first-write commit passes", %{
+      store: store,
+      pub: pub,
+      identity: identity,
+      ctx: ctx
+    } do
+      strict!(%{identity => Signing.encode_key(pub)})
+      enforce!()
+      uuid = UUID.uuid4()
+
+      commit =
+        CommitStoreClient.create_chained_commit(store, uuid, text_update("first"), %{},
+          signing_context: ctx
+        )
+
+      assert %Commit{} = commit
+      genesis_id = Commit.genesis(uuid).id
+      assert {:ok, _} = CommitStore.get_commit(store, genesis_id)
+    end
+  end
+
+  # ── Pin 6: dry-run — would-deny logged + telemetry, write still lands ─
+  describe "pin 6: dry_run mode" do
+    test "would-deny is logged via telemetry but the write still lands", %{store: store} do
+      strict!()
+      dry_run!()
+      uuid = UUID.uuid4()
+
+      ref = make_ref()
+      parent = self()
+
+      :telemetry.attach(
+        {:lwg_dryrun_handler, ref},
+        [:commonplace, :commit, :rejected, :local_trust],
+        fn _event, meas, meta, _cfg -> send(parent, {:lwg_dryrun, ref, meas, meta}) end,
+        nil
+      )
+
+      commit = CommitStore.create_commit(store, uuid, text_update("secret"), nil)
+      assert %Commit{} = commit
+      assert {:ok, _} = CommitStore.get_commit(store, commit.id)
+
+      assert_receive {:lwg_dryrun, ^ref, _meas, meta}, 500
+      assert meta.mode == :dry_run
+      assert meta.reason == :unsigned
+      assert meta.doc_uuid == uuid
+
+      :telemetry.detach({:lwg_dryrun_handler, ref})
+    end
+
+    test "dry_run is the implicit default (no explicit config)", %{store: store} do
+      strict!()
+      Application.delete_env(:commonplace, :local_write_gate)
+      uuid = UUID.uuid4()
+
+      commit = CommitStore.create_commit(store, uuid, text_update("secret"), nil)
+      assert %Commit{} = commit
+    end
+  end
+
+  # ── :off — emergency escape hatch ─────────────────────────────────────
+  describe ":off skips the check entirely" do
+    test "an unsigned write lands under strict config when the knob is :off", %{store: store} do
+      strict!()
+      off!()
+      uuid = UUID.uuid4()
+
+      commit = CommitStore.create_commit(store, uuid, text_update("secret"), nil)
+      assert %Commit{} = commit
+    end
+  end
+
+  # ── Pin 7: the write/execute fence ────────────────────────────────────
+  #
+  # DEVIATION (flagged per prompt instructions — spec wins over
+  # convenience, but a defect found along the way gets documented rather
+  # than silently worked around): `Trust.authorized_to_execute?/3`'s
+  # Gate-B walk (`walk_contributors/4`, trust.ex) calls the capability
+  # path via the 4-arity `authorized?/4`, which does NOT thread the
+  # `store` argument `authorized_to_execute?/3` was given — it always
+  # falls to `authorized?/5`'s own default (`Commonplace.Store.
+  # CommitStoreClient`, the dispatcher MODULE, not a GenServer
+  # reference). `Commonplace.Trust.VerifyChain.build_chain/2` then calls
+  # bare `CommitStore.get_capability(store, cid)` (not
+  # `CommitStoreClient.get_capability/2`, which would normalize the
+  # module alias) — so a capability-scoped commit hits
+  # `GenServer.call(Commonplace.Store.CommitStoreClient, :get_db, _)`,
+  # which is not a registered process, and the walk crashes rather than
+  # denying. This is a PRE-EXISTING gap orthogonal to CX-qat5.3 (it
+  # affects any capability-delegated Gate-B walk on a non-default store,
+  # regardless of the local-write gate); flagged here rather than
+  # papered over, and NOT fixed in this bead (out of scope — a
+  # store-threading fix belongs to trust.ex/verify_chain.ex, not the
+  # local-write gate seam).
+  #
+  # This pin therefore demonstrates the fence via `Trust.authorized?/5`
+  # directly (the exact function Gate B's walk calls per-commit,
+  # `verb: :execute` — proven safe against a custom store the same way
+  # `AuthorizedCapabilityTest` already exercises it) rather than via the
+  # (currently broken, for non-default stores) `authorized_to_execute?/3`
+  # convenience wrapper. The fence property under test — "a :write-only
+  # capability lands the write but is denied :execute on the SAME
+  # commit" — is unchanged; only the call surface differs.
+  describe "pin 7: write/execute fence" do
+    test "a player-signed :write-only commit lands (via the local-write gate) but the same signer's capability denies :execute",
+         %{store: store} do
+      {root_pub, root_priv} = Signing.generate_keypair()
+
+      root_ctx = %SigningContext{
+        identity_uuid: "root",
+        private_key: root_priv,
+        public_key: root_pub
+      }
+
+      {alice_pub, alice_priv} = Signing.generate_keypair()
+
+      alice_ctx = %SigningContext{
+        identity_uuid: "alice",
+        private_key: alice_priv,
+        public_key: alice_pub
+      }
+
+      cfg = %{
+        accept_unsigned: false,
+        trusted_identities: %{"root" => Signing.encode_key(root_pub)}
+      }
+
+      Application.put_env(:commonplace, :trust, cfg)
+      enforce!()
+
+      text_uuid = UUID.uuid4()
+      code_uuid = UUID.uuid4()
+
+      {:ok, leaf} =
+        Capability.issue(
+          root_ctx,
+          {"alice", alice_pub},
+          %{verbs: [:write], scope: {:docs, [text_uuid, code_uuid]}, caveats: %{}}
+        )
+
+      :ok = CommitStore.store_capability(store, leaf)
+
+      # The local write gate only checks :write — alice's cap grants it, so
+      # BOTH writes land through the REAL gated seam
+      # (`CommitStore.create_commit` → `do_write_commit` →
+      # `local_write_gate_check/2`), including onto the "code" doc (the
+      # gate doesn't know or care what the bytes look like; that's Gate
+      # B's job).
+      text_commit =
+        CommitStore.create_commit(
+          store,
+          text_uuid,
+          text_update("just prose"),
+          nil,
+          %{kind: :regular, capability_proof: leaf.id},
+          signing_context: alice_ctx
+        )
+
+      assert %Commit{} = text_commit
+      assert {:ok, _} = CommitStore.get_commit(store, text_commit.id)
+
+      code_doc = Yelixer.Doc.new() |> ContentType.create(:text, "code.ex")
+      code_doc = ContentType.insert_text(code_doc, 0, "defmodule Evil do\n  def run, do: :rm_rf\nend")
+      code_update = Yelixer.Encoding.encode_update(code_doc)
+
+      code_commit =
+        CommitStore.create_commit(
+          store,
+          code_uuid,
+          code_update,
+          nil,
+          %{kind: :regular, capability_proof: leaf.id},
+          signing_context: alice_ctx
+        )
+
+      assert %Commit{} = code_commit
+      assert {:ok, _} = CommitStore.get_commit(store, code_commit.id)
+
+      # Gate A / the local-write gate let both land (write-authorized).
+      # Gate B's own verifier call — `Trust.authorized?/5` with
+      # `verb: :execute` — independently denies alice on the SAME
+      # code_commit: the write/execute fence is enforced at a DIFFERENT
+      # seam, never by the local-write gate itself.
+      assert :ok =
+               Trust.authorized?(code_commit, :write, {:doc, code_uuid}, cfg, store)
+
+      assert {:error, :capability_insufficient} =
+               Trust.authorized?(code_commit, :execute, {:doc, code_uuid}, cfg, store)
+    end
+  end
+
+  # ── Pin 8: no-bypass enumeration ───────────────────────────────────────
+  describe "pin 8: no-bypass sweep" do
+    test "every function that constructs a {{:commit, _}, _} PUT row is one of the known gated writers" do
+      source = File.read!("lib/commonplace/store/commit_store.ex")
+      lines = String.split(source, "\n")
+
+      # Walk the file top-to-bottom, tracking which top-level `def`/`defp`
+      # we're currently inside (2-space indented — this module's only
+      # indentation level for definitions), and record the enclosing
+      # definition's name for every line that constructs a `{{:commit,
+      # id}, commit}` PUT-row literal (the `, commit}` / `, g}` /
+      # `, built.commit}` suffix distinguishes a row CONSTRUCTION from a
+      # mere pattern-match read like `{{:commit, id}, %{doc_uuid: ...}}`
+      # inside `do_all_commit_ids_for_doc`'s CubDB.select reduce).
+      def_re = ~r/^  def(p)?\s+([a-zA-Z_][a-zA-Z0-9_?!]*)/
+
+      {_current, writers} =
+        Enum.reduce(lines, {nil, MapSet.new()}, fn line, {current, acc} ->
+          current =
+            case Regex.run(def_re, line) do
+              [_, _, name] -> name
+              nil -> current
+            end
+
+          acc =
+            if current && Regex.match?(~r/\{\{:commit,\s*[\w.]+\},\s*[\w.]+\}/, line) do
+              MapSet.put(acc, current)
+            else
+              acc
+            end
+
+          {current, acc}
+        end)
+
+      # The complete, hand-verified set of functions allowed to construct
+      # a `{:commit, id}` PUT row (verified by inspection at bead-
+      # authoring time — CX-qat5.3):
+      #
+      #   * do_write_commit      — legacy serialized create path, GATED
+      #                            by local_write_gate_check/2.
+      #   * handle_call/3 (put_built_commit clause is unnamed by this
+      #     regex — Elixir `handle_call` overloads all share the name
+      #     "handle_call", so this set collapses every gated/CAS
+      #     handle_call clause under one name) — GATED
+      #     (put_built_commit), and NOT user-write-gated
+      #     (write_snapshot_cas / write_prebuilt_commit_cas — see
+      #     moduledoc "Signing": these sit ABOVE the build pipeline and
+      #     only system-minted deterministic-anyone commits reach them).
+      #   * do_store_imported    — import_commit's landing verb, gated
+      #                            by the SEPARATE, pre-existing Gate A
+      #                            (trust_check/2 via import_validation/3).
+      expected = MapSet.new(["do_write_commit", "handle_call", "do_store_imported"])
+
+      assert writers == expected,
+             "commit-row PUT construction sites changed: found #{inspect(MapSet.to_list(writers))}, " <>
+               "expected exactly #{inspect(MapSet.to_list(expected))}. If you added a new local-write " <>
+               "path that persists a {:commit, id} row, it MUST run through " <>
+               "local_write_gate_check/2 (mirroring do_write_commit / the put_built_commit " <>
+               "handle_call clause) before persisting — this test is the tripwire."
+
+      # Positive control: assert the sweep actually found the CAS-family
+      # handle_call clauses too, so "handle_call" isn't matching zero
+      # gated sites vacuously.
+      handle_call_commit_lines =
+        Enum.count(lines, fn line ->
+          Regex.match?(~r/\{\{:commit,\s*[\w.]+\},\s*[\w.]+\}/, line)
+        end)
+
+      assert handle_call_commit_lines >= 5,
+             "expected at least 5 {:commit, id} PUT-row construction lines " <>
+               "(write_snapshot_cas, write_prebuilt_commit_cas, put_built_commit x2, " <>
+               "do_write_commit x2, do_store_imported) — found #{handle_call_commit_lines}"
+    end
+  end
+end

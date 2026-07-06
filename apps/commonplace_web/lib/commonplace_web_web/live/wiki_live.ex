@@ -196,6 +196,9 @@ defmodule CommonplaceWebWeb.WikiLive do
               CPPubSub.broadcast_blue(uuid, update)
               {:noreply, socket}
 
+            {:error, {:trust_rejected, _reason}} ->
+              {:noreply, put_flash(socket, :error, "You don't have permission to edit this")}
+
             _ ->
               {:noreply, put_flash(socket, :error, "Failed to save")}
           end
@@ -643,25 +646,35 @@ defmodule CommonplaceWebWeb.WikiLive do
           doc = ContentType.create(doc, :text, filename)
           doc = ContentType.insert_text(doc, 0, "# #{name}\n\nWrite your content here.\n")
           update = Yelixer.Encoding.encode_update(doc)
-          CommitStoreClient.create_commit(uuid, update, nil)
 
-          # Add to schema via chained commit
-          schema = Schema.add_file(schema, filename, uuid)
-          schema_update = Yelixer.Encoding.encode_update(schema)
-          CommitStoreClient.create_chained_commit(dir_uuid, schema_update)
+          # CX-qat5.3: check the local-write gate's verdict on BOTH writes
+          # before navigating — under the default permissive config
+          # neither ever fails, but a strict/enforce workspace must not
+          # silently "create" a page whose commit(s) were actually
+          # denied.
+          with %{id: _} <- CommitStoreClient.create_commit(uuid, update, nil),
+               schema = Schema.add_file(schema, filename, uuid),
+               schema_update = Yelixer.Encoding.encode_update(schema),
+               %{id: _} <- CommitStoreClient.create_chained_commit(dir_uuid, schema_update) do
+            target =
+              if socket.assigns.current_path == "" do
+                filename
+              else
+                socket.assigns.current_path <> "/" <> filename
+              end
 
-          target =
-            if socket.assigns.current_path == "" do
-              filename
-            else
-              socket.assigns.current_path <> "/" <> filename
-            end
+            {:noreply,
+             socket
+             |> assign(:show_create, false)
+             |> put_flash(:info, "Created #{name}")
+             |> push_patch(to: wiki_path(target))}
+          else
+            {:error, {:trust_rejected, _reason}} ->
+              {:noreply, put_flash(socket, :error, "You don't have permission to edit this")}
 
-          {:noreply,
-           socket
-           |> assign(:show_create, false)
-           |> put_flash(:info, "Created #{name}")
-           |> push_patch(to: wiki_path(target))}
+            _other ->
+              {:noreply, put_flash(socket, :error, "Failed to create page")}
+          end
       end
     end
   end

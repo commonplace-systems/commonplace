@@ -53,58 +53,67 @@ defmodule CommonplaceWebWeb.OutlineLive do
           after_id -> %{text: "", parent: params["parent"] || "", after: after_id}
         end
 
-      {:ok, _id} = Outline.add_item(store(), socket.assigns.uuid, attrs)
-      {:noreply, reload(socket)}
+      # CX-qat5.3: a local-write-gate rejection surfaces as
+      # `{:error, {:trust_rejected, _}}` here instead of `{:ok, id}` —
+      # flash it rather than crashing the LiveView on the old rigid
+      # `{:ok, _id} = ...` match.
+      case Outline.add_item(store(), socket.assigns.uuid, attrs) do
+        {:ok, _id} -> {:noreply, reload(socket)}
+        {:error, _reason} -> {:noreply, permission_denied_flash(socket)}
+      end
     end)
   end
 
   def handle_event("set_text", %{"id" => id, "value" => value}, socket) do
     write_gate(socket, fn ->
-      :ok = Outline.set_text(store(), socket.assigns.uuid, id, value)
-      {:noreply, reload(socket)}
+      case Outline.set_text(store(), socket.assigns.uuid, id, value) do
+        :ok -> {:noreply, reload(socket)}
+        {:error, _reason} -> {:noreply, permission_denied_flash(socket)}
+      end
     end)
   end
 
   def handle_event("indent", %{"id" => id}, socket) do
     write_gate(socket, fn ->
-      _ = Outline.indent(store(), socket.assigns.uuid, id)
-      {:noreply, reload(socket)}
+      {:noreply, apply_or_flash(socket, Outline.indent(store(), socket.assigns.uuid, id))}
     end)
   end
 
   def handle_event("outdent", %{"id" => id}, socket) do
     write_gate(socket, fn ->
-      _ = Outline.outdent(store(), socket.assigns.uuid, id)
-      {:noreply, reload(socket)}
+      {:noreply, apply_or_flash(socket, Outline.outdent(store(), socket.assigns.uuid, id))}
     end)
   end
 
   def handle_event("move_up", %{"id" => id}, socket) do
     write_gate(socket, fn ->
-      _ = Outline.reorder(store(), socket.assigns.uuid, id, :up)
-      {:noreply, reload(socket)}
+      {:noreply, apply_or_flash(socket, Outline.reorder(store(), socket.assigns.uuid, id, :up))}
     end)
   end
 
   def handle_event("move_down", %{"id" => id}, socket) do
     write_gate(socket, fn ->
-      _ = Outline.reorder(store(), socket.assigns.uuid, id, :down)
-      {:noreply, reload(socket)}
+      {:noreply, apply_or_flash(socket, Outline.reorder(store(), socket.assigns.uuid, id, :down))}
     end)
   end
 
   def handle_event("toggle_collapse", %{"id" => id}, socket) do
     write_gate(socket, fn ->
       item = Enum.find(Outline.items(store(), socket.assigns.uuid), &(&1.id == id))
-      :ok = Outline.set_collapsed(store(), socket.assigns.uuid, id, not item.collapsed)
-      {:noreply, reload(socket)}
+
+      case Outline.set_collapsed(store(), socket.assigns.uuid, id, not item.collapsed) do
+        :ok -> {:noreply, reload(socket)}
+        {:error, _reason} -> {:noreply, permission_denied_flash(socket)}
+      end
     end)
   end
 
   def handle_event("delete", %{"id" => id}, socket) do
     write_gate(socket, fn ->
-      :ok = Outline.delete_item(store(), socket.assigns.uuid, id)
-      {:noreply, reload(socket)}
+      case Outline.delete_item(store(), socket.assigns.uuid, id) do
+        :ok -> {:noreply, reload(socket)}
+        {:error, _reason} -> {:noreply, permission_denied_flash(socket)}
+      end
     end)
   end
 
@@ -148,6 +157,26 @@ defmodule CommonplaceWebWeb.OutlineLive do
         {:noreply, put_flash(socket, :error, "Too many edits — slow down")}
     end
   end
+
+  # CX-qat5.3: `Commonplace.Outline.*` mutations propagate the
+  # local-write gate's `{:error, {:trust_rejected, reason}}` instead of
+  # swallowing it (see `Outline.mutate/4`) — under the default
+  # permissive config this branch never fires; a strict/enforce
+  # workspace surfaces it here instead of crashing the LiveView on a
+  # rigid `:ok = ...` / `{:ok, _} = ...` match.
+  defp permission_denied_flash(socket) do
+    put_flash(socket, :error, "You don't have permission to edit this")
+  end
+
+  # indent/outdent/reorder can ALSO fail with benign structural
+  # no-ops (`:no_preceding_sibling`, `:at_top_level`, `:at_edge` — "can't
+  # move further", not a failure worth flashing, pre-existing UX). Only
+  # a local-write-gate rejection gets a flash; every other outcome just
+  # reloads.
+  defp apply_or_flash(socket, {:error, {:trust_rejected, _reason}}),
+    do: permission_denied_flash(socket)
+
+  defp apply_or_flash(socket, _result), do: reload(socket)
 
   @impl true
   def render(assigns) do

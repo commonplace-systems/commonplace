@@ -402,8 +402,10 @@ defmodule Commonplace.ViewActionDispatch do
       update_binary = Encoding.encode_update(updated)
 
       try do
-        _ = CommitStoreClient.create_chained_commit(root_uuid, update_binary)
-        :ok
+        case CommitStoreClient.create_chained_commit(root_uuid, update_binary) do
+          {:error, _} = err -> err
+          _commit -> :ok
+        end
       rescue
         e -> {:error, Exception.message(e)}
       catch

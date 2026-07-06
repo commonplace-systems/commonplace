@@ -165,6 +165,9 @@ defmodule CommonplaceWebWeb.TreeLive do
               CPPubSub.broadcast_blue(uuid, update)
               {:noreply, socket}
 
+            {:error, {:trust_rejected, _reason}} ->
+              {:noreply, put_flash(socket, :error, "You don't have permission to edit this")}
+
             _ ->
               {:noreply, put_flash(socket, :error, "Failed to save")}
           end

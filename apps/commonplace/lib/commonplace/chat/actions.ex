@@ -82,10 +82,14 @@ defmodule Commonplace.Chat.Actions do
             }
             |> maybe_put("reply_to", Keyword.get(opts, :reply_to))
 
-          commit_entry(doc, store, messages_uuid, entry, opts)
-          broadcast_chain(Keyword.fetch!(opts, :room), "post", entry, %{}, opts)
+          case commit_entry(doc, store, messages_uuid, entry, opts) do
+            {:error, _} = err ->
+              err
 
-          {:ok, %{message_id: message_id, ts: ts}}
+            _commit ->
+              broadcast_chain(Keyword.fetch!(opts, :room), "post", entry, %{}, opts)
+              {:ok, %{message_id: message_id, ts: ts}}
+          end
 
         :none ->
           {:error, :not_found}
@@ -128,17 +132,21 @@ defmodule Commonplace.Chat.Actions do
             "edit_of" => target_message_id
           }
 
-          commit_entry(doc, store, messages_uuid, entry, opts)
+          case commit_entry(doc, store, messages_uuid, entry, opts) do
+            {:error, _} = err ->
+              err
 
-          broadcast_chain(
-            Keyword.fetch!(opts, :room),
-            "edit",
-            entry,
-            %{"edit_of" => target_message_id},
-            opts
-          )
+            _commit ->
+              broadcast_chain(
+                Keyword.fetch!(opts, :room),
+                "edit",
+                entry,
+                %{"edit_of" => target_message_id},
+                opts
+              )
 
-          {:ok, %{message_id: edit_id, ts: ts}}
+              {:ok, %{message_id: edit_id, ts: ts}}
+          end
 
         :none ->
           {:error, :not_found}
@@ -175,17 +183,21 @@ defmodule Commonplace.Chat.Actions do
             "tombstone_of" => target_message_id
           }
 
-          commit_entry(doc, store, messages_uuid, entry, opts)
+          case commit_entry(doc, store, messages_uuid, entry, opts) do
+            {:error, _} = err ->
+              err
 
-          broadcast_chain(
-            Keyword.fetch!(opts, :room),
-            "delete",
-            entry,
-            %{"tombstone_of" => target_message_id},
-            opts
-          )
+            _commit ->
+              broadcast_chain(
+                Keyword.fetch!(opts, :room),
+                "delete",
+                entry,
+                %{"tombstone_of" => target_message_id},
+                opts
+              )
 
-          {:ok, %{message_id: tomb_id, ts: ts}}
+              {:ok, %{message_id: tomb_id, ts: ts}}
+          end
 
         :none ->
           {:error, :not_found}

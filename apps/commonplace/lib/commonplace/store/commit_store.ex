@@ -1168,18 +1168,29 @@ defmodule Commonplace.Store.CommitStore do
         timed(fn ->
           case CubDB.get(state.db, {:latest, commit.doc_uuid}) do
             ^expected_parent_id ->
-              rows =
-                case genesis do
-                  %Commit{} = g -> [{{:commit, g.id}, g}]
-                  nil -> []
-                end ++
-                  [
-                    {{:commit, commit.id}, commit},
-                    {{:latest, commit.doc_uuid}, commit.id}
-                  ]
+              # CX-qat5.3: the local-write gate runs HERE — after the CAS
+              # match (so a stale-parent retry never even reaches the trust
+              # check) and BEFORE put_multi (so a rejection persists
+              # nothing, including the piggy-backed genesis row — see
+              # local_write_gate_check/2).
+              case local_write_gate_check(commit, state) do
+                :ok ->
+                  rows =
+                    case genesis do
+                      %Commit{} = g -> [{{:commit, g.id}, g}]
+                      nil -> []
+                    end ++
+                      [
+                        {{:commit, commit.id}, commit},
+                        {{:latest, commit.doc_uuid}, commit.id}
+                      ]
 
-              CubDB.put_multi(state.db, rows)
-              :ok
+                  CubDB.put_multi(state.db, rows)
+                  :ok
+
+                {:error, _reason} = error ->
+                  error
+              end
 
             _other ->
               :parent_moved
@@ -1212,6 +1223,9 @@ defmodule Commonplace.Store.CommitStore do
 
         :parent_moved ->
           {:reply, {:error, :parent_moved}, state}
+
+        {:error, _reason} = error ->
+          {:reply, error, state}
       end
     end)
   end
@@ -1617,6 +1631,99 @@ defmodule Commonplace.Store.CommitStore do
     end
   end
 
+  # ── CX-qat5.3: the local-write gate ──────────────────────────────────
+  #
+  # The third `Trust.authorized?` call-site family (Gate A gates
+  # federation import, Gate B gates code execution — this gates every
+  # LOCALLY-created commit at the CommitStore create seam, mirroring
+  # import_validation's `trust_check/2` above: same verifier, same
+  # `{:doc, doc_uuid}` scope, same store-name threading for the
+  # deadlock-safety reasoning (phase-3 capability fetches must read via
+  # `state.name`, never `GenServer.call` back into this store's own
+  # mailbox).
+  #
+  # Three-position knob (`Application.get_env(:commonplace,
+  # :local_write_gate, :dry_run)`):
+  #
+  #   * `:off`     — skip the check entirely (emergency escape hatch).
+  #   * `:dry_run` — run the check; a would-deny is logged + given
+  #     telemetry but the write still lands. DEFAULT — under the
+  #     workspace's default permissive trust config `authorized?`
+  #     returns `:ok` for everything, so this is a no-op observation
+  #     window until a workspace flips `accept_unsigned: false` /
+  #     pins identities.
+  #   * `:enforce` — a would-deny is REJECTED: nothing is persisted,
+  #     a red event fires on the doc's topic, and
+  #     `{:error, {:trust_rejected, reason}}` is returned to the
+  #     caller instead of the commit.
+  #
+  # Genesis commits (synthetic, unsigned, `kind: :genesis`) are exempt —
+  # mirroring the exemption Gate B's `authorized_to_execute?` walk
+  # already gives genesis. In practice the primary commit gated here is
+  # never genesis-shaped (genesis rides ALONGSIDE a real commit as the
+  # `built.genesis` / CAS `genesis` companion, never as the gated
+  # struct itself) — this clause is a defensive backstop, and it is
+  # exactly what makes "genesis rides only when the gated commit
+  # passes" true: the companion genesis row is written in the SAME
+  # `put_multi` as the gated commit, so it never lands independently of
+  # whether the gate accepted the write it rode in with.
+  defp local_write_gate_check(%Commit{metadata: %{kind: :genesis}}, _state), do: :ok
+
+  defp local_write_gate_check(commit, state) do
+    case Application.get_env(:commonplace, :local_write_gate, :dry_run) do
+      :off ->
+        :ok
+
+      mode when mode in [:dry_run, :enforce] ->
+        case Commonplace.Trust.authorized?(
+               commit,
+               :write,
+               {:doc, commit.doc_uuid},
+               Commonplace.Trust.config(),
+               state.name
+             ) do
+          :ok -> :ok
+          {:error, reason} -> handle_local_write_denial(mode, commit, reason)
+        end
+    end
+  end
+
+  defp handle_local_write_denial(:dry_run, commit, reason) do
+    Logger.warning(
+      "CommitStore: local write would be DENIED by trust gate (dry_run — write still lands) " <>
+        "doc_uuid=#{commit.doc_uuid} commit_id=#{commit.id} reason=#{inspect(reason)}"
+    )
+
+    :telemetry.execute(
+      [:commonplace, :commit, :rejected, :local_trust],
+      %{system_time: System.system_time()},
+      %{mode: :dry_run, doc_uuid: commit.doc_uuid, commit_id: commit.id, reason: reason}
+    )
+
+    :ok
+  end
+
+  defp handle_local_write_denial(:enforce, commit, reason) do
+    Logger.warning(
+      "CommitStore: local write DENIED by trust gate (enforce) " <>
+        "doc_uuid=#{commit.doc_uuid} commit_id=#{commit.id} reason=#{inspect(reason)}"
+    )
+
+    :telemetry.execute(
+      [:commonplace, :commit, :rejected, :local_trust],
+      %{system_time: System.system_time()},
+      %{mode: :enforce, doc_uuid: commit.doc_uuid, commit_id: commit.id, reason: reason}
+    )
+
+    Commonplace.Dataflow.PubSub.broadcast_red(
+      commit.doc_uuid,
+      {:trust, :local_write_denied,
+       %{doc_uuid: commit.doc_uuid, signer_id: commit.signer_id, reason: reason}}
+    )
+
+    {:error, {:trust_rejected, reason}}
+  end
+
   defp namespace_check(commit, opts, state) do
     case validator_for(opts, state).(commit) do
       :ok -> :ok
@@ -1809,47 +1916,58 @@ defmodule Commonplace.Store.CommitStore do
   defp do_write_commit(verb, state, doc_uuid, update, parent_id, metadata, opts) do
     built = CommitBuilder.build(state.db, doc_uuid, update, parent_id, metadata, opts)
 
-    {_, persist_ns} =
-      timed(fn ->
-        rows =
-          case built.genesis do
-            %Commit{} = g -> [{{:commit, g.id}, g}]
-            nil -> []
-          end ++
-            [
-              {{:commit, built.commit.id}, built.commit},
-              {{:latest, doc_uuid}, built.commit.id}
-            ]
+    # CX-qat5.3: local-write gate — post-build/sign (the commit id and
+    # signature are final), pre-persist. Mirrors import_validation's
+    # trust_check (see that function below); see local_write_gate_check/2
+    # for the knob semantics and genesis exemption.
+    case local_write_gate_check(built.commit, state) do
+      :ok ->
+        {_, persist_ns} =
+          timed(fn ->
+            rows =
+              case built.genesis do
+                %Commit{} = g -> [{{:commit, g.id}, g}]
+                nil -> []
+              end ++
+                [
+                  {{:commit, built.commit.id}, built.commit},
+                  {{:latest, doc_uuid}, built.commit.id}
+                ]
 
-        CubDB.put_multi(state.db, rows)
-      end)
+            CubDB.put_multi(state.db, rows)
+          end)
 
-    emit_write_cpu(verb, doc_uuid, built.build_ns, built.sign_ns, 0, persist_ns)
+        emit_write_cpu(verb, doc_uuid, built.build_ns, built.sign_ns, 0, persist_ns)
 
-    :telemetry.execute(
-      [:commonplace, :commit, :create],
-      %{system_time: System.system_time()},
-      %{doc_uuid: doc_uuid}
-    )
+        :telemetry.execute(
+          [:commonplace, :commit, :create],
+          %{system_time: System.system_time()},
+          %{doc_uuid: doc_uuid}
+        )
 
-    Phoenix.PubSub.broadcast(
-      Commonplace.PubSub,
-      "commits:#{doc_uuid}",
-      {:commit, doc_uuid, built.commit.id, built.commit.metadata}
-    )
+        Phoenix.PubSub.broadcast(
+          Commonplace.PubSub,
+          "commits:#{doc_uuid}",
+          {:commit, doc_uuid, built.commit.id, built.commit.metadata}
+        )
 
-    # Also broadcast on the blue:UUID topic so UI subscribers (WikiLive,
-    # TreeLive) see live updates from CommandRouter-initiated writes (MCP,
-    # CLI) — not just edits that already flow through Document.Server.
-    # CX-4im. Eventually the blue/commits topic duality should be unified;
-    # see the CX-4im notes for the refactor plan.
-    Phoenix.PubSub.broadcast(
-      Commonplace.PubSub,
-      "blue:#{doc_uuid}",
-      {:commit, doc_uuid, built.commit.id, built.commit.metadata}
-    )
+        # Also broadcast on the blue:UUID topic so UI subscribers (WikiLive,
+        # TreeLive) see live updates from CommandRouter-initiated writes (MCP,
+        # CLI) — not just edits that already flow through Document.Server.
+        # CX-4im. Eventually the blue/commits topic duality should be unified;
+        # see the CX-4im notes for the refactor plan.
+        Phoenix.PubSub.broadcast(
+          Commonplace.PubSub,
+          "blue:#{doc_uuid}",
+          {:commit, doc_uuid, built.commit.id, built.commit.metadata}
+        )
 
-    built.commit
+        built.commit
+
+      {:error, _reason} = error ->
+        emit_write_cpu(verb, doc_uuid, built.build_ns, built.sign_ns, 0, 0)
+        error
+    end
   end
 
   defp collect_commit_ids(db, doc_uuid) do

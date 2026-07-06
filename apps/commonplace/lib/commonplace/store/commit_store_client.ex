@@ -199,6 +199,13 @@ defmodule Commonplace.Store.CommitStoreClient do
 
         commit
 
+      # CX-qat5.3: a trust rejection is not a `:parent_moved` — the CAS
+      # observation wasn't stale, the write was actively denied. Retrying
+      # (or falling back to the legacy serialized verb) would just run the
+      # exact same check again and reject again. Surface immediately.
+      {:error, {:trust_rejected, _}} = error ->
+        error
+
       {:error, :parent_moved} ->
         attempt_write(
           verb,
