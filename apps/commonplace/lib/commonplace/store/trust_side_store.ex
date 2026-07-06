@@ -169,6 +169,16 @@ defmodule Commonplace.Store.TrustSideStore do
   Folded into `Commonplace.Trust`'s `cfg_fingerprint`, so a revocation
   self-invalidates every execute-clean verdict cached under the old
   fingerprint. `0` if this store has never stored a revocation.
+
+  NOTE (plan review, CX-bepn close): this is the first MUTABLE row read
+  through the direct-handle path — the carve-out's direct-read license
+  was argued from row IMMUTABILITY, so this exception carries its own
+  argument rather than extending the license: staleness is bounded by
+  CubDB put-visibility (sub-second, and the atomic `put_multi` in
+  `store_revocation` means no reader ever sees a revocation row without
+  its watermark), which sits comfortably inside the eventual-revocation
+  semantics (design §6) that already tolerate federation-scale windows.
+  Do NOT cite this as blanket precedent for direct-reading mutable rows.
   """
   def revocation_set_hash(server \\ __MODULE__) do
     case CubDB.get(resolve_db(server), {:revocation_meta, :set_hash}) do
