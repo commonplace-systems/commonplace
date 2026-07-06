@@ -24,7 +24,7 @@ defmodule Commonplace.GitBridge.Server do
   use GenServer
   require Logger
 
-  alias Commonplace.GitBridge.{Exporter, Sidecar, Git, Archive}
+  alias Commonplace.GitBridge.{Exporter, Sidecar, Git, Archive, Inbound}
   alias Commonplace.Tree.{Schema, DocBuilder}
   alias Commonplace.Dataflow.PubSub
   alias Commonplace.{Presence, Workspace}
@@ -79,7 +79,10 @@ defmodule Commonplace.GitBridge.Server do
       paused: false,
       halted: false,
       presence_uuid: presence_uuid,
-      last_manifest: nil
+      last_manifest: nil,
+      last_pushed_commit: nil,
+      force_push_halted: false,
+      pending_conflicts: %{}
     }
 
     schedule_tick(interval_ms)
@@ -144,6 +147,37 @@ defmodule Commonplace.GitBridge.Server do
   end
 
   defp run_cycle(state) do
+    {:ok, inbound_result} =
+      Inbound.run(%{
+        mount_uuid: state.mount_uuid,
+        repo_dir: state.repo_dir,
+        store: state.store,
+        remote: state.remote,
+        branch: state.branch,
+        last_pushed_commit: state.last_pushed_commit
+      })
+
+    new_conflicts =
+      inbound_result.ingested
+      |> Enum.filter(&Map.has_key?(&1, :conflict_path))
+      |> Map.new(&{&1.conflict_path, &1.conflict_content})
+
+    state = %{
+      state
+      | last_pushed_commit: inbound_result.last_pushed_commit,
+        force_push_halted: inbound_result.force_push_halted,
+        pending_conflicts: Map.merge(state.pending_conflicts, new_conflicts)
+    }
+
+    # CX-b0ow.2: conflict markers are re-materialized from in-memory
+    # state every cycle rather than trusted to survive on disk — a
+    # push-reject's worktree reset (`Git.reset_hard/2`) discards
+    # anything only the rejected local commit was carrying, including
+    # a just-written conflict marker.
+    Enum.each(state.pending_conflicts, fn {rel_path, content} ->
+      Inbound.rewrite_conflict_marker(state.repo_dir, rel_path, content)
+    end)
+
     previous_manifest = state.last_manifest || Sidecar.read_previous_manifest(state.repo_dir)
 
     case Exporter.export(state.mount_uuid, state.repo_dir, state.store, previous_manifest) do
@@ -163,9 +197,9 @@ defmodule Commonplace.GitBridge.Server do
 
         %{archived_count: archived_count} = Archive.archive(state.store, state.repo_dir, doc_uuids)
 
-        result = commit_and_push(state, manifest, authors, warnings, archived_count)
+        {result, new_state} = commit_and_push(state, manifest, authors, warnings, archived_count)
 
-        {result, %{state | last_manifest: manifest}}
+        {result, %{new_state | last_manifest: manifest}}
 
       {:error, reason} ->
         Logger.warning("GitBridge.Server: export failed for #{state.mount_uuid}: #{inspect(reason)}")
@@ -186,43 +220,80 @@ defmodule Commonplace.GitBridge.Server do
             }
 
             PubSub.broadcast_red(state.mount_uuid, {:git_bridge, :committed, meta})
-            maybe_push(state, meta)
-            {:ok, Map.put(meta, :committed, true)}
+            new_state = maybe_push(state, meta)
+            {{:ok, Map.put(meta, :committed, true)}, new_state}
 
           {:error, reason} ->
             Logger.warning("GitBridge.Server: commit failed for #{state.mount_uuid}: #{inspect(reason)}")
-            {:error, reason}
+            {{:error, reason}, state}
         end
 
       {:ok, false} ->
-        {:ok,
-         %{
-           committed: false,
-           manifest_size: map_size(manifest),
-           warnings: warnings,
-           archived_count: archived_count
-         }}
+        {{:ok,
+          %{
+            committed: false,
+            manifest_size: map_size(manifest),
+            warnings: warnings,
+            archived_count: archived_count
+          }}, state}
 
       {:error, reason} ->
         Logger.warning("GitBridge.Server: git status failed for #{state.mount_uuid}: #{inspect(reason)}")
-        {:error, reason}
+        {{:error, reason}, state}
     end
   end
 
-  defp maybe_push(%{remote: nil}, _meta), do: :ok
+  defp maybe_push(%{remote: nil} = state, _meta), do: state
 
-  defp maybe_push(%{remote: remote, branch: branch, repo_dir: repo_dir, mount_uuid: mount_uuid}, meta)
+  defp maybe_push(
+         %{remote: remote, branch: branch, repo_dir: repo_dir, mount_uuid: mount_uuid} = state,
+         meta
+       )
        when is_binary(remote) do
     case Git.push(repo_dir, @remote_name, branch) do
       {:ok, _} ->
+        new_last_pushed =
+          case Git.rev_parse(repo_dir, "HEAD") do
+            {:ok, sha} -> sha
+            _ -> state.last_pushed_commit
+          end
+
         PubSub.broadcast_red(mount_uuid, {:git_bridge, :pushed, meta})
+        %{state | last_pushed_commit: new_last_pushed}
 
       {:error, reason} ->
         Logger.warning("GitBridge.Server: push failed for #{mount_uuid}: #{inspect(reason)}")
         PubSub.broadcast_red(mount_uuid, {:git_bridge, :push_failed, Map.put(meta, :reason, reason)})
-    end
 
-    :ok
+        # CX-b0ow.2 push-reject handling: our local commits are
+        # disposable projections until pushed. Unless we've already
+        # flagged a force-push this cycle (in which case resetting hard
+        # would silently accept the rewritten history instead of
+        # halting on it, per the force-push-detection contract), reset
+        # the worktree branch hard to the remote head we just fetched
+        # and let the NEXT cycle's fetch -> ingest -> export -> commit
+        # -> push regenerate everything from the store. Never --force.
+        if state.force_push_halted do
+          state
+        else
+          reset_to_remote(state)
+        end
+    end
+  end
+
+  defp reset_to_remote(%{repo_dir: repo_dir, branch: branch} = state) do
+    with {:ok, _} <- Git.fetch(repo_dir, @remote_name, branch),
+         {:ok, remote_head} <- Git.remote_ref(repo_dir, @remote_name, branch),
+         {:ok, _} <- Git.reset_hard(repo_dir, remote_head) do
+      %{state | last_pushed_commit: remote_head}
+    else
+      {:error, reason} ->
+        Logger.warning(
+          "GitBridge.Server: could not reset to remote for #{state.mount_uuid}: #{inspect(reason)}"
+        )
+
+        state
+    end
   end
 
   # --- Setup helpers ---
