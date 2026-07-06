@@ -155,8 +155,16 @@ defmodule Commonplace.Tree.DocBuilder do
   snapshot plus any commits chained on top, up to and including the
   target. Without this, merges of compacted branches would start from a
   wrong baseline (`Tree.Merge.merge_leaf/5` uses this function).
+
+  CX-b0ow.9: accepts and forwards `Doc.new/1` opts (mirrors the
+  `reconstruct_doc/3` forwarding added in CX-41qg.3) — in particular
+  `client_id:` (a stable writer hand) and `clock_floor:` (see
+  `Yelixer.Doc.new/1`'s moduledoc), used by
+  `Commonplace.GitBridge.Inbound` to reconstruct an anchor replica
+  under the bridge's hand with mints continued past ops that landed
+  later in the chain.
   """
-  def reconstruct_doc_at(store, uuid, target_commit_id) do
+  def reconstruct_doc_at(store, uuid, target_commit_id, opts \\ []) do
     commits = CommitStoreClient.commit_log(store, uuid, limit: 10_000) |> Enum.reverse()
 
     result =
@@ -171,7 +179,7 @@ defmodule Commonplace.Tree.DocBuilder do
     case result do
       {:found, to_apply} ->
         commits_to_apply = to_apply |> trim_to_latest_snapshot() |> Enum.reject(&genesis?/1)
-        doc = Doc.new()
+        doc = Doc.new(opts)
 
         Enum.reduce(commits_to_apply, {:ok, doc}, fn c, {:ok, d} ->
           Encoding.apply_update(d, c.update)

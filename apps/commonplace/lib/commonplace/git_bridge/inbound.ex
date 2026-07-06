@@ -332,12 +332,47 @@ defmodule Commonplace.GitBridge.Inbound do
           end
 
         true ->
-          # Both sides moved since the anchor: CRDT wins, git's edit is
-          # preserved alongside (never silently dropped) rather than
-          # applied.
-          marker_path = write_conflict_file(repo_dir, rel_path, fetched_head, theirs)
-          PubSub.broadcast_red(state.mount_uuid, {:git_bridge, :conflict_preserved, %{rel_path: rel_path, uuid: uuid, reason: :both_moved}})
-          %{rel_path: rel_path, uuid: uuid, outcome: :conflict, reason: :both_moved, conflict_path: marker_path, conflict_content: theirs}
+          # CX-b0ow.9: both sides moved since the anchor — the ONLY
+          # branch true region-merge changes from v1. Reconstruct a
+          # replica at the anchor (bridge hand, clock-floor continued
+          # past the live SV), splice git's edit into it, and merge the
+          # resulting diff into the LIVE doc rather than bailing
+          # straight to conflict. Region-disjoint edits (A and B don't
+          # touch overlapping text) land silently; overlapping edits
+          # still converge (YATA is deterministic) but the pre-merge
+          # git version is ALSO preserved at the conflict path for
+          # human review — the marker becomes review evidence, not a
+          # rejection, once a merge actually lands. Only genuine
+          # failure (CAS-redo bound exhausted, or a lower-level error)
+          # falls back to v1's full reject-and-preserve behavior.
+          case mint_region_merge(state.store, uuid, anchor, base, theirs, bridge_signing_context(state)) do
+            {:ok, commit} ->
+              if region_overlap?(base, ours, theirs) do
+                marker_path = write_conflict_file(repo_dir, rel_path, fetched_head, theirs)
+
+                PubSub.broadcast_red(
+                  state.mount_uuid,
+                  {:git_bridge, :conflict_preserved, %{rel_path: rel_path, uuid: uuid, reason: :both_moved}}
+                )
+
+                %{
+                  rel_path: rel_path,
+                  uuid: uuid,
+                  outcome: :clean,
+                  commit_id: commit.id,
+                  conflict_path: marker_path,
+                  conflict_content: theirs
+                }
+              else
+                %{rel_path: rel_path, uuid: uuid, outcome: :clean, commit_id: commit.id}
+              end
+
+            {:error, reason} ->
+              Logger.warning("GitBridge.Inbound: region-merge failed for #{rel_path}: #{inspect(reason)}")
+              marker_path = write_conflict_file(repo_dir, rel_path, fetched_head, theirs)
+              PubSub.broadcast_red(state.mount_uuid, {:git_bridge, :conflict_preserved, %{rel_path: rel_path, uuid: uuid, reason: :both_moved}})
+              %{rel_path: rel_path, uuid: uuid, outcome: :conflict, reason: :both_moved, conflict_path: marker_path, conflict_content: theirs}
+          end
       end
     else
       {:error, reason} ->
@@ -587,6 +622,149 @@ defmodule Commonplace.GitBridge.Inbound do
         {:error, reason} -> {:error, reason}
       end
     end
+  end
+
+  # --- True region-merge (CX-b0ow.9) ---
+  #
+  # Runs when `anchor != :latest` (a genuine concurrent CRDT-side edit
+  # landed between the sidecar anchor and now) — v1's `mint_edit`
+  # cannot be reused here because it chains off the ANCHOR, which would
+  # fork the DAG the moment anchor != :latest. Mechanism (spec
+  # docs/plans/2026-07-06-b0ow9-region-merge-spec.md §1):
+  #
+  #   1. Reconstruct a REPLICA at the anchor under the bridge's stable
+  #      hand, with `clock_floor: latest_sv[hand]` so new mints can't
+  #      collide with bridge ops that landed between anchor and
+  #      `:latest` (the clock-continuation subtlety CX-41qg.3 flagged).
+  #   2. Splice git's edit (base -> theirs) into the replica.
+  #   3. `encode_diff(replica_after, anchor_sv)` — U, edit B's new
+  #      blocks + full delete set, captured BEFORE splicing.
+  #   4. Reconstruct the LIVE doc at `:latest`, `apply_update(live, U)`
+  #      — YATA merges B against whatever concurrent edit(s) landed;
+  #      B's origins are anchor-state items the live doc already has.
+  #   5. Encode the MERGED doc's full state and land it as a NEW commit
+  #      chained off `:latest` — this is what keeps the result on the
+  #      chain (as opposed to forking off the anchor). Bounded redo (3
+  #      attempts) on a detected `:latest` move between steps 4 and 5;
+  #      U itself stays valid across a redo since it's anchor-relative,
+  #      not `:latest`-relative.
+  @region_merge_max_attempts 3
+
+  @doc """
+  True region-merge: the "anchor != :latest" counterpart to `mint_edit/6`.
+
+  See the moduledoc-adjacent comment above for the mechanism. Returns
+  `{:ok, commit}` on a successful land, or `{:error, reason}` — callers
+  fall back to v1's conflict-preservation path on error (the caller in
+  this module, `ingest_text/4`, does exactly that).
+  """
+  @spec mint_region_merge(GenServer.server(), String.t(), binary(), String.t(), String.t(), keyword()) ::
+          {:ok, Commonplace.Store.Commit.t()} | {:error, term()}
+  def mint_region_merge(store, doc_uuid, anchor_commit_id, base_text, theirs_text, opts \\ []) do
+    hand = stable_client_id(doc_uuid)
+
+    with {:ok, live_doc} <- DocBuilder.reconstruct_doc(store, doc_uuid) |> ok_or(:no_doc),
+         floor = Yelixer.StateVector.get(Yelixer.BlockStore.state_vector(live_doc.store), hand),
+         {:ok, replica} <-
+           DocBuilder.reconstruct_doc_at(store, doc_uuid, anchor_commit_id, client_id: hand, clock_floor: floor)
+           |> ok_or(:no_anchor) do
+      anchor_sv = Yelixer.BlockStore.state_vector(replica.store)
+      replica_after = Commonplace.Document.Diff.apply_diff(replica, base_text, theirs_text)
+      u_bytes = Yelixer.Encoding.encode_diff(replica_after, anchor_sv)
+
+      do_attempt_region_merge(store, doc_uuid, u_bytes, opts, @region_merge_max_attempts)
+    end
+  end
+
+  # One attempt: reconstruct LIVE at the CURRENT `:latest`, merge U in,
+  # encode the full state, and land it chained off that same `:latest`
+  # — retrying (bounded, decrementing `attempts_left`) whenever
+  # `:latest` is observed to have moved between the reconstruction and
+  # the commit attempt (the CAS redo the spec calls for). `U` (built
+  # once by the caller, above) stays valid across every retry: it's
+  # encoded relative to the anchor's state vector, not `:latest`'s, so
+  # replaying it against a freshly-moved live doc is exactly as valid
+  # as the first attempt.
+  defp do_attempt_region_merge(_store, _doc_uuid, _u_bytes, _opts, 0), do: {:error, :redo_exhausted}
+
+  defp do_attempt_region_merge(store, doc_uuid, u_bytes, opts, attempts_left) do
+    with {:ok, latest} <- CommitStoreClient.latest_commit(store, doc_uuid) |> none_or(:no_latest),
+         {:ok, live} <- DocBuilder.reconstruct_doc_at(store, doc_uuid, latest.id) |> ok_or(:no_latest),
+         {:ok, merged} <- Yelixer.Encoding.apply_update(live, u_bytes) do
+      full_bytes = Yelixer.Encoding.encode_update(merged)
+
+      # CX-b0ow.9 test seam: fires exactly once per attempt, between
+      # building the merged full-state payload and the `:latest`
+      # re-check/commit below. Lets tests deterministically simulate a
+      # write landing in the reconstruct-to-commit window (spec §4 pin
+      # 4 — CAS redo) without depending on real scheduler timing.
+      # Production callers never pass `:race_hook`; stripped before
+      # `opts` reaches `CommitStoreClient.create_commit/6`.
+      maybe_race_hook(opts)
+      commit_opts = Keyword.delete(opts, :race_hook)
+      metadata = %{kind: :git_bridge_inbound}
+
+      case CommitStoreClient.latest_commit(store, doc_uuid) do
+        {:ok, %{id: id}} when id == latest.id ->
+          case CommitStoreClient.create_commit(store, doc_uuid, full_bytes, latest.id, metadata, commit_opts) do
+            %Commonplace.Store.Commit{} = commit -> {:ok, commit}
+            {:error, reason} -> {:error, reason}
+          end
+
+        {:ok, _moved} ->
+          do_attempt_region_merge(store, doc_uuid, u_bytes, opts, attempts_left - 1)
+
+        :none ->
+          {:error, :no_latest}
+      end
+    end
+  end
+
+  defp maybe_race_hook(opts) do
+    case Keyword.get(opts, :race_hook) do
+      fun when is_function(fun, 0) -> fun.()
+      _ -> :ok
+    end
+  end
+
+  defp none_or(:none, tag), do: {:error, tag}
+  defp none_or({:ok, val}, _tag), do: {:ok, val}
+
+  # Best-effort "did A and B touch the same text?" check: diffs base->ours
+  # (the concurrent CRDT edit) and base->theirs (git's edit) independently
+  # via the same grapheme-Myers diff used to build the splices, and looks
+  # for overlapping [start, end) ranges (inserts are zero-width points at
+  # their index). Disjoint edits merge silently; any overlap gets the
+  # pre-merge git version preserved at the conflict path for human review
+  # (spec §0/§3 — the marker becomes review evidence once a merge lands,
+  # not a rejection).
+  defp region_overlap?(base, ours, theirs) do
+    ranges_overlap?(
+      edit_ranges(Commonplace.Document.Diff.diff(base, ours)),
+      edit_ranges(Commonplace.Document.Diff.diff(base, theirs))
+    )
+  end
+
+  defp edit_ranges(edits) do
+    Enum.map(edits, fn
+      {:insert, idx, _text} -> {idx, idx}
+      {:delete, idx, len} -> {idx, idx + len}
+    end)
+  end
+
+  defp ranges_overlap?(ranges_a, ranges_b) do
+    Enum.any?(ranges_a, fn a -> Enum.any?(ranges_b, &single_range_overlap?(a, &1)) end)
+  end
+
+  # Two zero-width (insert) points at the SAME index count as overlapping
+  # — otherwise two edits that both insert at the exact boundary between
+  # untouched text (a very common same-region collision shape: two
+  # appends, two same-position insertions) would be missed by the
+  # strict-inequality check below, which never fires for equal points.
+  defp single_range_overlap?({s, s}, {s, s}), do: true
+
+  defp single_range_overlap?({a_start, a_end}, {b_start, b_end}) do
+    a_start < b_end and b_start < a_end
   end
 
   # CX-b0ow.2: distinct salt from Sync.Agent's stale-write

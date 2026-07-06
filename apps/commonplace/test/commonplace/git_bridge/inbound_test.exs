@@ -254,7 +254,7 @@ defmodule Commonplace.GitBridge.InboundTest do
     assert final =~ "Paragraph B EDITED"
   end
 
-  test "pin 3: conflict — same-region concurrent edit keeps CRDT version, writes conflict file, red event", %{
+  test "pin 3: same-region overlap — CRDT+git converge (v2 true region-merge), pre-merge git version still preserved for review", %{
     store: store,
     repo_dir: repo_dir,
     workspace_dir: workspace_dir,
@@ -285,10 +285,22 @@ defmodule Commonplace.GitBridge.InboundTest do
     PubSub.subscribe_red(mount_uuid)
 
     {:ok, _} = Server.sync_now(name)
+
+    # CX-b0ow.9: v1 rejected any concurrent-edit overlap outright (CRDT
+    # wins, git text never applied). v2's true region-merge instead
+    # lands a real Yjs merge even when the edits touch the same text
+    # region — it converges deterministically (no crash) rather than
+    # bailing, and the pre-merge git version is STILL preserved at the
+    # conflict path (same event/marker as before) as review evidence,
+    # not a rejection.
     assert_receive {"red:" <> _, {:git_bridge, :conflict_preserved, %{reason: :both_moved}}}, 2_000
 
-    # CRDT wins: the doc keeps its own edit, git's text was never applied.
-    assert doc_content(store, doc_uuid) == crdt_edit
+    merged = doc_content(store, doc_uuid)
+    refute is_nil(merged)
+    # The merge actually changed the doc (neither side's text alone,
+    # nor the untouched original, survives verbatim) — proof this
+    # landed as a real merge rather than a silent no-op.
+    assert merged != original
 
     # Reconcile pushes over a couple more cycles; the conflict file must
     # surface in the remote eventually.
@@ -303,6 +315,161 @@ defmodule Commonplace.GitBridge.InboundTest do
 
     conflict_files = scratch |> File.ls!() |> Enum.filter(&String.starts_with?(&1, "a.txt.conflict-"))
     assert conflict_files != []
+  end
+
+  test "pin 11 (headline): CRDT edit + git edit to DISJOINT regions both survive the merge, no conflict file", %{
+    store: store,
+    repo_dir: repo_dir,
+    workspace_dir: workspace_dir,
+    bare_dir: bare_dir,
+    clone_dir: clone_dir
+  } do
+    original = "Paragraph ONE original.\n\nParagraph TWO original."
+    %{mount_uuid: mount_uuid, doc_uuid: doc_uuid} = seed_single_doc(store, workspace_dir, original)
+
+    name = start_bridge(mount_uuid: mount_uuid, repo_dir: repo_dir, store: store, remote: bare_dir)
+    {:ok, _} = Server.sync_now(name)
+
+    human_clone(bare_dir, clone_dir)
+
+    # CRDT-side edit to paragraph ONE, AFTER the clone snapshot with NO
+    # intervening export cycle — the sidecar anchor still points at
+    # `original`, so this is a genuine "anchor != :latest" scenario.
+    {:ok, doc} = DocBuilder.reconstruct_doc(store, doc_uuid)
+    crdt_edit = "Paragraph ONE EDITED.\n\nParagraph TWO original."
+    doc = Commonplace.Document.Diff.apply_diff(doc, original, crdt_edit)
+    update = Yelixer.Encoding.encode_update(doc)
+    CommitStore.create_chained_commit(store, doc_uuid, update)
+
+    # Git-side edit to paragraph TWO (disjoint region), pushed without
+    # ever seeing the CRDT edit.
+    git_edit = "Paragraph ONE original.\n\nParagraph TWO EDITED."
+    human_edit(clone_dir, "a.txt", git_edit)
+    human_commit_and_push(clone_dir, "human edit to disjoint paragraph")
+
+    PubSub.subscribe_red(mount_uuid)
+
+    {:ok, _} = Server.sync_now(name)
+
+    # BOTH edits survive in the merged doc.
+    final = doc_content(store, doc_uuid)
+    assert final =~ "Paragraph ONE EDITED"
+    assert final =~ "Paragraph TWO EDITED"
+
+    # No conflict-preservation event/file — the regions were disjoint.
+    refute_receive {"red:" <> _, {:git_bridge, :conflict_preserved, _}}, 500
+
+    {:ok, _} = Server.sync_now(name)
+
+    scratch = Path.join(System.tmp_dir!(), "cp_gb_in_scratch11_#{:rand.uniform(1_000_000_000)}")
+    on_exit(fn -> File.rm_rf!(scratch) end)
+    git!(".", ["clone", bare_dir, scratch])
+    git!(scratch, ["checkout", "-B", "main", "origin/main"])
+
+    # Re-exported file reflects both edits, and there is no conflict marker.
+    assert File.read!(Path.join(scratch, "a.txt")) =~ "Paragraph ONE EDITED"
+    assert File.read!(Path.join(scratch, "a.txt")) =~ "Paragraph TWO EDITED"
+    conflict_files = scratch |> File.ls!() |> Enum.filter(&String.starts_with?(&1, "a.txt.conflict-"))
+    assert conflict_files == []
+  end
+
+  test "pin 12: clock-continuation — a second region-merge under the same bridge hand doesn't collide with the first's ops", %{
+    store: store,
+    workspace_dir: workspace_dir
+  } do
+    original = "Alpha original.\n\nBeta original.\n\nGamma original."
+    %{doc_uuid: doc_uuid} = seed_single_doc(store, workspace_dir, original)
+
+    {:ok, anchor0} = CommitStore.latest_commit(store, doc_uuid)
+
+    # First region-merge: git-side edit to Alpha, landed under the
+    # bridge's stable hand — mints hand clocks starting at 0.
+    first_edit = "Alpha FIRST EDIT.\n\nBeta original.\n\nGamma original."
+
+    {:ok, _c1} =
+      Commonplace.GitBridge.Inbound.mint_region_merge(store, doc_uuid, anchor0.id, original, first_edit)
+
+    # A concurrent CRDT-side edit (region: Beta) under a DIFFERENT client
+    # id lands on top — `:latest` advances, but the bridge hand's OWN
+    # clock does not (only hand-authored commits move it).
+    {:ok, live} = DocBuilder.reconstruct_doc(store, doc_uuid)
+    crdt_edit = "Alpha FIRST EDIT.\n\nBeta CRDT EDITED.\n\nGamma original."
+    update = Yelixer.Encoding.encode_update(Commonplace.Document.Diff.apply_diff(live, first_edit, crdt_edit))
+    CommitStore.create_chained_commit(store, doc_uuid, update)
+
+    # Second region-merge: reconstructed against the SAME STALE anchor0
+    # (simulating a second inbound edit whose sidecar never advanced past
+    # the ORIGINAL anchor — two edits queued/ingested before a re-export
+    # ever ran) — a git-side edit to Gamma (disjoint region). WITHOUT the
+    # clock floor, this replica's own state vector (which only knows
+    # anchor0's state, hand clock 0) would mint hand clocks starting back
+    # at 0 — directly colliding with c1's already-landed items under the
+    # SAME hand, which would then be silently deduped as already-seen
+    # ids when U is applied to the live doc, dropping this edit's text.
+    second_edit = "Alpha original.\n\nBeta original.\n\nGamma SECOND EDIT."
+
+    {:ok, _c3} =
+      Commonplace.GitBridge.Inbound.mint_region_merge(store, doc_uuid, anchor0.id, original, second_edit)
+
+    final = doc_content(store, doc_uuid)
+    # All three edits survive: the second region-merge's newly-minted
+    # ops did NOT collide with (get silently deduped against) the
+    # first's ops under the shared bridge hand.
+    assert final =~ "Alpha FIRST EDIT"
+    assert final =~ "Beta CRDT EDITED"
+    assert final =~ "Gamma SECOND EDIT"
+  end
+
+  test "pin 13: CAS redo — a `:parent_moved` mid-merge redoes and lands", %{
+    store: store,
+    workspace_dir: workspace_dir
+  } do
+    original = "region one text.\n\nregion two text."
+    %{doc_uuid: doc_uuid} = seed_single_doc(store, workspace_dir, original)
+
+    anchor_commit = CommitStore.latest_commit(store, doc_uuid) |> elem(1)
+
+    # Concurrent CRDT edit (region one) — establishes anchor != :latest.
+    {:ok, doc} = DocBuilder.reconstruct_doc(store, doc_uuid)
+    crdt_edit = "region one EDITED.\n\nregion two text."
+    update = Yelixer.Encoding.encode_update(Commonplace.Document.Diff.apply_diff(doc, original, crdt_edit))
+    CommitStore.create_chained_commit(store, doc_uuid, update)
+
+    theirs = "region one text.\n\nregion two EDITED."
+
+    # The race hook fires once, mid-attempt (after the merge payload is
+    # built, before the final `:latest` re-check) — deterministically
+    # simulating a third write landing in the reconstruct-to-commit
+    # window instead of relying on real scheduler timing.
+    race_fired = :counters.new(1, [])
+
+    race_hook = fn ->
+      if :counters.get(race_fired, 1) == 0 do
+        :counters.add(race_fired, 1, 1)
+        {:ok, live} = DocBuilder.reconstruct_doc(store, doc_uuid)
+        racer_content = ContentType.get_content(live) <> " [racer]"
+        racer_update = Yelixer.Encoding.encode_update(Commonplace.Document.Diff.apply_diff(live, ContentType.get_content(live), racer_content))
+        CommitStore.create_chained_commit(store, doc_uuid, racer_update)
+      end
+    end
+
+    result =
+      Commonplace.GitBridge.Inbound.mint_region_merge(
+        store,
+        doc_uuid,
+        anchor_commit.id,
+        original,
+        theirs,
+        race_hook: race_hook
+      )
+
+    assert {:ok, _commit} = result
+    assert :counters.get(race_fired, 1) == 1
+
+    final = doc_content(store, doc_uuid)
+    assert final =~ "region one EDITED"
+    assert final =~ "region two EDITED"
+    assert final =~ "[racer]"
   end
 
   test "pin 4: push-race — human pushes between fetch and push, worktree resets, next cycle converges", %{
