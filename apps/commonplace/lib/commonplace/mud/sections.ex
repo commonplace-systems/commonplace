@@ -28,10 +28,24 @@ defmodule Commonplace.MUD.Sections do
   CX-ziye found that a dropped store argument silently falls back to the
   default alias, which crashes (or silently misbehaves) on a named
   non-default store — never repeat that here.
+
+  ## New-room cert coverage (CX-qat5.5)
+
+  Digging/creating a room mints a fresh uuid no existing section cert
+  lists in its scope — `auto_extend_for_new_room/3` is issuance
+  automation that reissues a wider node-issued cert to close that gap
+  on room-creation. It is a stopgap, not a scope mechanism: see its own
+  doc for the security rules, and see Wrinkle-H subtree scopes
+  (CX-tdkq.23) for the proper long-term fix (a section cert covering
+  "everything under this dir" without ever reissuing).
   """
 
+  alias Commonplace.Crypto.NodeIdentity
+  alias Commonplace.Dataflow.PubSub, as: CPPubSub
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Trust.Capability
+
+  require Logger
 
   @doc """
   Root/owner `issuer_ctx` issues `audience` a `[:write]`-scoped cert
@@ -44,7 +58,11 @@ defmodule Commonplace.MUD.Sections do
   `opts`:
     * `:verbs` — default `[:write]`. MUST NOT contain `:execute` — hard
       rejected before any cert is minted.
-    * `:ttl_seconds` — sets `claim.caveats.not_after` (nil = unbounded).
+    * `:ttl_seconds` — sets `claim.caveats.not_after` relative to now
+      (nil = unbounded).
+    * `:not_after` — explicit ABSOLUTE `caveats.not_after`; wins over
+      `:ttl_seconds` if both are given (CX-qat5.5 — lets a reissue copy
+      an existing cert's exact expiry instead of computing a new one).
     * `:not_before` — explicit `caveats.not_before` (default nil).
     * `:store` — default `CommitStoreClient`.
     * `:allow_write_without_execute` — forwarded to `Capability.issue/5`
@@ -103,6 +121,175 @@ defmodule Commonplace.MUD.Sections do
     end
   end
 
+  @doc """
+  CX-qat5.5 — new-room cert coverage (auto-extend-on-create). Digging or
+  creating a room mints a fresh `new_room_uuid` that NO existing section
+  cert's scope lists yet (a cert's scope is a frozen uuid list captured
+  at mint time) — without this, a section owner who just carved a room
+  can't write to the room they own. This is issuance AUTOMATION, not a
+  scope mechanism; the proper fix is Wrinkle-H subtree scopes
+  (CX-tdkq.23), which would make a section cert cover "everything under
+  this dir" without ever reissuing. Until that lands, this composes over
+  `issue_section/4` to mint a fresh, wider, superset cert.
+
+  Call with `context_room_uuid` = the room the player was standing in /
+  digging from. Pass `nil` (or omit — see 3rd clause) for a disconnected
+  room with no section context: this is a no-op, `{:ok, :no_context}`.
+
+  ## Security-relevant rules (do not loosen without a design review)
+
+  1. **Node-issued only.** Only certs whose ISSUER is this node's own
+     identity (`Commonplace.Crypto.NodeIdentity`, matched on the FULL
+     issuer tuple — uuid AND pubkey, matching `Capability`'s own
+     full-pubkey-binding discipline) are candidates — the node may
+     reissue a grant it minted itself. A section cert issued by any
+     other principal is NEVER auto-extended (that would be the node
+     escalating someone else's grant): instead this emits
+     `{:trust, :section_extend_skipped, %{cap_id: cid, new_uuid: new_room_uuid, reason: :non_node_issuer}}`
+     on the new room's red topic and logs a warning, so the owner knows
+     to extend manually.
+  2. **Root certs only — never delegations.** A cert with `proof != nil`
+     is an attenuated delegation; its scope stays exactly what its
+     issuer granted. This module never widens a delegation, even one
+     chained from a node-issued root.
+  3. **Context anchors the inference.** `context_room_uuid` must be in
+     the candidate cert's scope — the caller is only auto-extended for
+     the section they were demonstrably standing in when they dug/built.
+     A `nil` context short-circuits to `{:ok, :no_context}` before any
+     lookup.
+
+  ## Reissue mechanics
+
+  A match mints a fresh node-issued ROOT cert (`issue_section/4`) with
+  the SAME audience and verbs, the SAME `not_before`/`not_after` caveat
+  window copied VERBATIM from the old cert (never extended — a reissue
+  preserves the original grant's lifetime, it does not renew it), and
+  `scope = old_scope ++ [new_room_uuid]`. The old (narrower) cert is
+  left untouched — there is no revocation mechanism yet (CX-bepn), so it
+  stays valid; the new cert is a pure superset, so the redundancy is
+  harmless.
+
+  ## Candidate discovery (the enumeration gap — read before extending)
+
+  The capability store only exposes **get-by-CID**
+  (`CommitStoreClient.get_capability/2`); there is no "certs whose scope
+  contains uuid X" index, and building one would be a substrate change
+  (out of scope here — flagged in the CX-qat5.5 completion report,
+  recommend folding into the Wrinkle-H (CX-tdkq.23) subtree-scope work).
+  Instead this walks `context_room_uuid`'s own commit log
+  (`CommitStoreClient.commit_log/3`) for `metadata.capability_proof`
+  CIDs — i.e. certs that have ALREADY been used to author at least one
+  commit on the context room — and resolves each via `get_capability/2`.
+  **Blind spot:** a section cert that covers `context_room_uuid` but has
+  never yet authored a commit there is invisible to this discovery and
+  will silently not be auto-extended (no event fires — this is a
+  discovery miss, not a policy skip). In practice the owner's own
+  section-founding commit (or any subsequent edit) already exercises the
+  cert on every room in the section, so this covers the steady-state
+  case; it is not a substitute for a real scope index.
+
+  `opts`:
+    * `:store` — default `CommitStoreClient`.
+
+  Returns `{:ok, :no_context}` (no context room), or `{:ok, results}`
+  where `results` is a list of one tagged tuple per candidate cert found:
+  `{:reissued, old_cap_id, new_cap}`, `{:skipped, old_cap_id, :delegation | :non_node_issuer | :already_covered}`,
+  or `{:error, old_cap_id, reason}`. `{:error, reason}` (untagged) only
+  when the node's own identity/signing context is unavailable.
+  """
+  @spec auto_extend_for_new_room(String.t(), String.t() | nil, keyword()) ::
+          {:ok, :no_context | [tuple()]} | {:error, term()}
+  def auto_extend_for_new_room(new_room_uuid, context_room_uuid, opts \\ [])
+
+  def auto_extend_for_new_room(_new_room_uuid, nil, _opts), do: {:ok, :no_context}
+
+  def auto_extend_for_new_room(new_room_uuid, context_room_uuid, opts)
+      when is_binary(new_room_uuid) and is_binary(context_room_uuid) do
+    store = Keyword.get(opts, :store, CommitStoreClient)
+
+    with {:ok, node_identity} <- NodeIdentity.identity(),
+         {:ok, node_pub} <- NodeIdentity.public_key() do
+      results =
+        context_room_uuid
+        |> candidate_certs(store)
+        |> Enum.map(
+          &handle_candidate(&1, new_room_uuid, context_room_uuid, {node_identity, node_pub}, store)
+        )
+
+      {:ok, results}
+    else
+      {:error, reason} -> {:error, {:node_identity_unavailable, reason}}
+    end
+  end
+
+  # --- private (auto-extend) ---
+
+  defp candidate_certs(context_room_uuid, store) do
+    store
+    |> CommitStoreClient.commit_log(context_room_uuid, limit: 10_000)
+    |> Enum.map(&get_in(&1.metadata, [:capability_proof]))
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+    |> Enum.flat_map(fn cid ->
+      case CommitStoreClient.get_capability(store, cid) do
+        {:ok, cap} -> [cap]
+        :none -> []
+      end
+    end)
+  end
+
+  defp handle_candidate(cap, new_room_uuid, context_room_uuid, node_issuer, store) do
+    cond do
+      cap.proof != nil ->
+        {:skipped, cap.id, :delegation}
+
+      cap.issuer != node_issuer ->
+        emit_extend_skipped(context_room_uuid, cap, new_room_uuid)
+        {:skipped, cap.id, :non_node_issuer}
+
+      new_room_uuid in scope_uuids(cap) ->
+        {:skipped, cap.id, :already_covered}
+
+      true ->
+        reissue(cap, new_room_uuid, store)
+    end
+  end
+
+  defp scope_uuids(%Capability{claim: %{scope: {:docs, uuids}}}), do: uuids
+
+  defp reissue(cap, new_room_uuid, store) do
+    new_scope = scope_uuids(cap) ++ [new_room_uuid]
+    caveats = cap.claim.caveats
+
+    case NodeIdentity.signing_context() do
+      {:ok, node_ctx} ->
+        case issue_section(node_ctx, cap.audience, new_scope,
+               store: store,
+               verbs: cap.claim.verbs,
+               not_before: caveats.not_before,
+               not_after: caveats.not_after
+             ) do
+          {:ok, new_cap} -> {:reissued, cap.id, new_cap}
+          {:error, reason} -> {:error, cap.id, reason}
+        end
+
+      {:error, reason} ->
+        {:error, cap.id, {:node_signing_context_unavailable, reason}}
+    end
+  end
+
+  defp emit_extend_skipped(context_room_uuid, cap, new_room_uuid) do
+    meta = %{cap_id: cap.id, new_uuid: new_room_uuid, reason: :non_node_issuer}
+
+    Logger.warning(
+      "Commonplace.MUD.Sections: section cert #{inspect(cap.id)} covering room " <>
+        "#{context_room_uuid} was NOT auto-extended to new room #{new_room_uuid} — " <>
+        "issuer is not this node's identity; extend manually."
+    )
+
+    CPPubSub.broadcast_red(new_room_uuid, {:trust, :section_extend_skipped, meta})
+  end
+
   # --- private ---
 
   defp reject_execute(verbs) do
@@ -113,9 +300,19 @@ defmodule Commonplace.MUD.Sections do
 
   defp build_claim(verbs, uuids, opts) do
     not_after =
-      case Keyword.get(opts, :ttl_seconds) do
-        nil -> nil
-        ttl when is_integer(ttl) -> DateTime.add(DateTime.utc_now(), ttl, :second)
+      case Keyword.fetch(opts, :not_after) do
+        # CX-qat5.5: an explicit absolute `:not_after` (e.g. copied
+        # verbatim from a cert being reissued with a wider scope) wins
+        # over `:ttl_seconds`'s relative-to-now computation — reissue
+        # must preserve the ORIGINAL window, never grant a fresh one.
+        {:ok, explicit} ->
+          explicit
+
+        :error ->
+          case Keyword.get(opts, :ttl_seconds) do
+            nil -> nil
+            ttl when is_integer(ttl) -> DateTime.add(DateTime.utc_now(), ttl, :second)
+          end
       end
 
     %{

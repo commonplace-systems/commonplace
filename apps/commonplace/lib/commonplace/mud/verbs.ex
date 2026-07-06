@@ -16,10 +16,12 @@ defmodule Commonplace.MUD.Verbs do
   side effects go through `Commonplace.MUD.World`.
   """
 
-  alias Commonplace.MUD.{Parser, Schemas, VerbSource, World}
+  alias Commonplace.MUD.{Parser, Schemas, Sections, VerbSource, World}
   alias Commonplace.MUD.Schemas.{Object, Player, Room}
   alias Commonplace.Tree.Schema
   alias Commonplace.Store.CommitStoreClient
+
+  require Logger
 
   @builders ~w(@dig @create @desc @name @listen @dump @verb)
 
@@ -531,6 +533,12 @@ defmodule Commonplace.MUD.Verbs do
         :ok = add_dir_entry(ctx.root_uuid, name, new_room_uuid, ctx.store)
         :ok = update_room_exit(ctx.current_room_uuid, direction, new_room_uuid, ctx.store)
 
+        # CX-qat5.5: the new room is dug FROM ctx.current_room_uuid, so
+        # that's the section context — any node-issued root section cert
+        # covering it gets reissued to also cover new_room_uuid. See
+        # `Sections.auto_extend_for_new_room/3` for the full rules.
+        auto_extend_section(new_room_uuid, ctx.current_room_uuid, ctx.store)
+
         {:reply, "You carve out a new room (#{name}). #{String.capitalize(direction)} leads there."}
     end
   end
@@ -550,6 +558,16 @@ defmodule Commonplace.MUD.Verbs do
     json = Schemas.encode_room(%Room{name: name, description: "(no description yet)"})
     new_uuid = Schemas.create_dir_with_meta(Schemas.room_filename(), json, ctx.store)
     :ok = add_dir_entry(ctx.root_uuid, name, new_uuid, ctx.store)
+
+    # CX-qat5.5: `@create room` always builds a DISCONNECTED room (no
+    # exit links it to `ctx.current_room_uuid`) — there is no section
+    # context to anchor a cert-extend inference to, so this passes `nil`
+    # and `auto_extend_for_new_room/3` is a documented no-op
+    # (`{:ok, :no_context}`). If `@create` ever grows a variant that
+    # attaches the new room to the current section, thread that room's
+    # uuid through here instead of `nil`.
+    auto_extend_section(new_uuid, nil, ctx.store)
+
     {:reply, "You create a new disconnected room (#{name})."}
   end
 
@@ -607,6 +625,26 @@ defmodule Commonplace.MUD.Verbs do
     case String.split(args, ~r/\s+/, parts: 2) do
       [_word, rest] -> rest
       _ -> ""
+    end
+  end
+
+  # CX-qat5.5: best-effort issuance automation, never a hard gate on room
+  # creation — a lookup/mint failure here (e.g. no node signing key yet)
+  # is logged, not surfaced as a verb error; the room was already carved
+  # successfully. See `Sections.auto_extend_for_new_room/3` moduledoc for
+  # the full policy (node-issued-only, root-certs-only, context-anchored).
+  defp auto_extend_section(new_room_uuid, context_room_uuid, store) do
+    case Sections.auto_extend_for_new_room(new_room_uuid, context_room_uuid, store: store) do
+      {:ok, _results} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "Commonplace.MUD.Verbs: section cert auto-extend for new room " <>
+            "#{new_room_uuid} failed: #{inspect(reason)}"
+        )
+
+        :ok
     end
   end
 
