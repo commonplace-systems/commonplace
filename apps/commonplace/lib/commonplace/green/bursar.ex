@@ -59,7 +59,11 @@ defmodule Commonplace.Green.Bursar do
       survives a bursar restart.
     * `__bursar.log` — an append-only JSONL audit of every
       acquire / release / deny / transfer / renew / expire (**red**
-      events).
+      events). Denials are deduplicated (CX-sqyc): a repeat denial with
+      an identical (holder, current_holder, op) signature since the
+      path's last custody change is replied/broadcast but NOT persisted
+      — a 1Hz retry loop otherwise floods the append-only store
+      (~86k commits/day) until the log doc kills the Bursar.
 
   (See `Commonplace.Dataflow.Channel` for the blue/red distinction.)
   Writes to `__bursar.json` use the stable-client_id + incremental-diff
@@ -135,7 +139,16 @@ defmodule Commonplace.Green.Bursar do
     :log_uuid,
     :log,
     tokens: %{},  # %{path => %{holder: string, acquired_at: DateTime, ttl_ms: integer | nil}}
-    sweep_interval: 10_000  # ms between TTL sweep checks
+    sweep_interval: 10_000,  # ms between TTL sweep checks
+    # CX-sqyc: memory-only memo of denials already persisted to the red
+    # log — %{path => MapSet of {holder, current_holder, op}}. A retry
+    # loop denied at 1Hz otherwise writes ~86k identical red events/day
+    # into the append-only store (this crashed the 2026-07-06 dogfood
+    # serve). First denial per signature logs; the memo for a path clears
+    # whenever that path's custody changes, so post-transition denials
+    # log again. Denied REPLIES/broadcasts are unaffected — only the
+    # persisted audit trail is deduplicated.
+    denied_memo: %{}
   ]
 
   # --- Client API ---
@@ -318,7 +331,7 @@ defmodule Commonplace.Green.Bursar do
         # Token available — grant it
         token_info = %{holder: holder, acquired_at: DateTime.utc_now(), ttl_ms: ttl_ms}
         tokens = Map.put(state.tokens, path, token_info)
-        state = %{state | tokens: tokens}
+        state = %{state | tokens: tokens} |> clear_denials(path)
         state = persist_state(state)
         ttl_extra = if ttl_ms, do: %{ttl_ms: ttl_ms}, else: %{}
         state = log_event(state, "acquire", path, holder, ttl_extra)
@@ -332,7 +345,7 @@ defmodule Commonplace.Green.Bursar do
 
       %{holder: current_holder} ->
         # Held by someone else — deny
-        state = log_event(state, "denied", path, holder, %{current_holder: current_holder})
+        state = log_denied(state, path, holder, %{current_holder: current_holder})
         {:reply, {:denied, %{holder: current_holder}}, state}
     end
   end
@@ -348,7 +361,7 @@ defmodule Commonplace.Green.Bursar do
     case Map.get(state.tokens, path) do
       %{holder: ^holder} ->
         tokens = Map.delete(state.tokens, path)
-        state = %{state | tokens: tokens}
+        state = %{state | tokens: tokens} |> clear_denials(path)
         state = persist_state(state)
         state = log_event(state, "release", path, holder)
 
@@ -385,7 +398,7 @@ defmodule Commonplace.Green.Bursar do
       %{holder: ^from_holder} = info ->
         new_info = %{info | holder: to_holder}
         tokens = Map.put(state.tokens, path, new_info)
-        state = %{state | tokens: tokens}
+        state = %{state | tokens: tokens} |> clear_denials(path)
         state = persist_state(state)
         state = log_event(state, "transfer", path, to_holder, %{"from" => from_holder, "to" => to_holder})
 
@@ -432,7 +445,7 @@ defmodule Commonplace.Green.Bursar do
     case Map.get(state.tokens, path) do
       %{holder: old_holder} ->
         tokens = Map.delete(state.tokens, path)
-        state = %{state | tokens: tokens}
+        state = %{state | tokens: tokens} |> clear_denials(path)
         state = persist_state(state)
         state = log_event(state, "force_release", path, "admin", %{previous_holder: old_holder})
 
@@ -457,7 +470,7 @@ defmodule Commonplace.Green.Bursar do
         nil ->
           token_info = %{holder: holder, acquired_at: DateTime.utc_now(), ttl_ms: ttl_ms}
           tokens = Map.put(state.tokens, path, token_info)
-          state = %{state | tokens: tokens}
+          state = %{state | tokens: tokens} |> clear_denials(path)
           state = persist_state(state)
           ttl_extra = if ttl_ms, do: %{ttl_ms: ttl_ms}, else: %{}
           state = log_event(state, "acquire", path, holder, Map.merge(%{via: "magenta"}, ttl_extra))
@@ -469,7 +482,7 @@ defmodule Commonplace.Green.Bursar do
           {:noreply, state}
 
         %{holder: current_holder} ->
-          state = log_event(state, "denied", path, holder, %{current_holder: current_holder, via: "magenta"})
+          state = log_denied(state, path, holder, %{current_holder: current_holder, via: "magenta"})
           broadcast_green_event("denied", path, holder, %{current_holder: current_holder})
           {:noreply, state}
       end
@@ -487,7 +500,7 @@ defmodule Commonplace.Green.Bursar do
       case Map.get(state.tokens, path) do
         %{holder: ^holder} ->
           tokens = Map.delete(state.tokens, path)
-          state = %{state | tokens: tokens}
+          state = %{state | tokens: tokens} |> clear_denials(path)
           state = persist_state(state)
           state = log_event(state, "release", path, holder, %{via: "magenta"})
           broadcast_green_event("released", path, holder)
@@ -519,7 +532,7 @@ defmodule Commonplace.Green.Bursar do
           %{holder: ^from_holder} = info ->
             new_info = %{info | holder: to_holder}
             tokens = Map.put(state.tokens, path, new_info)
-            state = %{state | tokens: tokens}
+            state = %{state | tokens: tokens} |> clear_denials(path)
             state = persist_state(state)
             state =
               log_event(state, "transfer", path, to_holder, %{
@@ -532,7 +545,7 @@ defmodule Commonplace.Green.Bursar do
 
           %{holder: current_holder} ->
             state =
-              log_event(state, "denied", path, from_holder, %{
+              log_denied(state, path, from_holder, %{
                 current_holder: current_holder,
                 via: "magenta",
                 op: "transfer"
@@ -564,7 +577,7 @@ defmodule Commonplace.Green.Bursar do
 
         %{holder: current_holder} ->
           state =
-            log_event(state, "denied", path, holder, %{
+            log_denied(state, path, holder, %{
               current_holder: current_holder,
               via: "magenta",
               op: "renew"
@@ -610,7 +623,7 @@ defmodule Commonplace.Green.Bursar do
     state =
       Enum.reduce(expired, state, fn {path, info}, acc ->
         tokens = Map.delete(acc.tokens, path)
-        acc = %{acc | tokens: tokens}
+        acc = %{acc | tokens: tokens} |> clear_denials(path)
         acc = persist_state(acc)
         acc = log_event(acc, "expired", path, info.holder, %{ttl_ms: info.ttl_ms})
         broadcast_green_event("released", path, info.holder, %{reason: "expired"})
@@ -726,6 +739,26 @@ defmodule Commonplace.Green.Bursar do
     log = RedLog.append_raw(state.log, event)
     log = RedLog.commit(log)
     %{state | log: log}
+  end
+
+  # CX-sqyc: persist a denied event only the first time this exact
+  # (holder, current_holder, op) signature is denied for the path since
+  # the path's last custody change. See :denied_memo in the struct.
+  defp log_denied(state, path, holder, extra) do
+    sig = {holder, extra[:current_holder], extra[:op]}
+    seen = Map.get(state.denied_memo, path, MapSet.new())
+
+    if MapSet.member?(seen, sig) do
+      state
+    else
+      state = %{state | denied_memo: Map.put(state.denied_memo, path, MapSet.put(seen, sig))}
+      log_event(state, "denied", path, holder, extra)
+    end
+  end
+
+  # Custody changed for the path — the next denial is news again.
+  defp clear_denials(state, path) do
+    %{state | denied_memo: Map.delete(state.denied_memo, path)}
   end
 
   defp broadcast_green_event(event_type, path, holder, extra \\ %{}) do

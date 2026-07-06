@@ -54,16 +54,22 @@ defmodule Commonplace.MUD.TickBotTest do
   defp start_tickbot(ctx, extra_opts \\ []) do
     name = :"tick_bot_#{:rand.uniform(1_000_000)}"
 
+    # extra_opts FIRST: Keyword.get takes the first match, so tests can
+    # override the defaults below. orphan_sweep defaults OFF here (prod
+    # default is on) — the contention tests in this file exercise plain
+    # deny/backoff semantics; sweep behavior gets its own tests.
     {:ok, pid} =
       TickBot.start_link(
-        [
-          name: name,
-          store: ctx.store,
-          root_uuid: ctx.root,
-          heartbeat_ms: 999_999,
-          auto_start: false,
-          bursar: ctx.bursar
-        ] ++ extra_opts
+        extra_opts ++
+          [
+            name: name,
+            store: ctx.store,
+            root_uuid: ctx.root,
+            heartbeat_ms: 999_999,
+            auto_start: false,
+            bursar: ctx.bursar,
+            orphan_sweep: false
+          ]
       )
 
     {pid, name}
@@ -267,6 +273,68 @@ defmodule Commonplace.MUD.TickBotTest do
 
       assert :not_leader = TickBot.tick_now(name)
       refute_receive {"red:" <> _, _}, 50
+    end
+
+    # CX-sqyc: a denied contender must sleep out the lease TTL instead
+    # of re-acquiring every heartbeat — 1Hz denial retries persisted a
+    # red event each and crashed the dogfood serve's Bursar.
+    test "denied contender backs off to the lease TTL before re-contending", ctx do
+      seeded_tunnel(ctx)
+
+      {:ok, _} =
+        Commonplace.Green.Bursar.acquire(ctx.bursar, "__singletons/tick_bot", "other")
+
+      {_pid, name} = start_tickbot(ctx, holder: "me", lease_ttl_ms: 300)
+
+      assert :not_leader = TickBot.tick_now(name)
+
+      :ok = Commonplace.Green.Bursar.release(ctx.bursar, "__singletons/tick_bot", "other")
+
+      # Lease is free, but the contender is inside its backoff window —
+      # it must not even attempt an acquire yet.
+      assert :not_leader = TickBot.tick_now(name)
+      assert :available = Commonplace.Green.Bursar.query(ctx.bursar, "__singletons/tick_bot")
+
+      Process.sleep(350)
+      assert :ok = TickBot.tick_now(name)
+    end
+
+    # CX-sqyc boot orphan sweep: a serve restarting after a crash may
+    # find the lease held by a dead incarnation, re-clocked to a full
+    # TTL by Bursar.load_state. On the singleton host, a denial before
+    # this instance has ever led breaks the stale lease and takes over.
+    test "orphan sweep: pre-leadership denial breaks a stale lease and takes over", ctx do
+      seeded_tunnel(ctx)
+
+      {:ok, _} =
+        Commonplace.Green.Bursar.acquire(
+          ctx.bursar, "__singletons/tick_bot", "dead-incarnation")
+
+      {_pid, name} = start_tickbot(ctx, holder: "me", orphan_sweep: true)
+
+      assert :ok = TickBot.tick_now(name)
+
+      assert {:held, %{holder: "me"}} =
+               Commonplace.Green.Bursar.query(ctx.bursar, "__singletons/tick_bot")
+    end
+
+    test "orphan sweep does not steal a lease that moved after this instance led", ctx do
+      seeded_tunnel(ctx)
+      {_pid, name} = start_tickbot(ctx, holder: "me", orphan_sweep: true, lease_ttl_ms: 60_000)
+
+      assert :ok = TickBot.tick_now(name)
+
+      # The lease legitimately moves (break-glass + new holder). The
+      # once-leader instance must back off, not sweep.
+      :ok = Commonplace.Green.Bursar.force_release(ctx.bursar, "__singletons/tick_bot")
+
+      {:ok, _} =
+        Commonplace.Green.Bursar.acquire(ctx.bursar, "__singletons/tick_bot", "usurper")
+
+      assert :not_leader = TickBot.tick_now(name)
+
+      assert {:held, %{holder: "usurper"}} =
+               Commonplace.Green.Bursar.query(ctx.bursar, "__singletons/tick_bot")
     end
 
     # CX-tdkq.32: TickBot is an internal system caller — its default

@@ -510,4 +510,56 @@ defmodule Commonplace.Green.BursarTest do
       assert {:held, %{holder: "alice", ttl_ms: 10_000}} = Bursar.query(name, "readme.txt")
     end
   end
+
+  # CX-sqyc: identical repeat denials must not each persist a red event
+  # — a 1Hz retry loop otherwise grows __bursar.log unboundedly (this
+  # crashed the 2026-07-06 dogfood serve). Denied REPLIES are unchanged;
+  # only the persisted audit trail is deduplicated, re-armed by any
+  # custody change on the path.
+  describe "denial dedup (CX-sqyc)" do
+    defp denied_events(ctx) do
+      {:ok, schema} = DocBuilder.reconstruct_snapshot(ctx.store, ctx.root)
+      {:ok, log_entry} = Schema.get_entry(schema, "__bursar.log")
+      log = RedLog.load(log_entry.node_id, ctx.store)
+      Enum.filter(RedLog.read(log), fn e -> e["event"] == "denied" end)
+    end
+
+    test "repeat identical denials persist a single red event", ctx do
+      {_pid, name} = start_bursar(ctx)
+      {:ok, _} = Bursar.acquire(name, "a.txt", "alice")
+
+      for _ <- 1..5 do
+        assert {:denied, %{holder: "alice"}} = Bursar.acquire(name, "a.txt", "bob")
+      end
+
+      assert [%{"holder" => "bob", "current_holder" => "alice"}] = denied_events(ctx)
+    end
+
+    test "a distinct contender still logs its own first denial", ctx do
+      {_pid, name} = start_bursar(ctx)
+      {:ok, _} = Bursar.acquire(name, "a.txt", "alice")
+
+      {:denied, _} = Bursar.acquire(name, "a.txt", "bob")
+      {:denied, _} = Bursar.acquire(name, "a.txt", "bob")
+      {:denied, _} = Bursar.acquire(name, "a.txt", "carol")
+      {:denied, _} = Bursar.acquire(name, "a.txt", "carol")
+
+      assert denied_events(ctx) |> Enum.map(& &1["holder"]) |> Enum.sort() ==
+               ["bob", "carol"]
+    end
+
+    test "custody transition re-arms denial logging for the path", ctx do
+      {_pid, name} = start_bursar(ctx)
+      {:ok, _} = Bursar.acquire(name, "a.txt", "alice")
+
+      {:denied, _} = Bursar.acquire(name, "a.txt", "bob")
+      {:denied, _} = Bursar.acquire(name, "a.txt", "bob")
+
+      :ok = Bursar.release(name, "a.txt", "alice")
+      {:ok, _} = Bursar.acquire(name, "a.txt", "alice")
+      {:denied, _} = Bursar.acquire(name, "a.txt", "bob")
+
+      assert length(denied_events(ctx)) == 2
+    end
+  end
 end

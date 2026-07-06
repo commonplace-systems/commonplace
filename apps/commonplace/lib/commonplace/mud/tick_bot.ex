@@ -33,6 +33,26 @@ defmodule Commonplace.MUD.TickBot do
       `mix run` temp node) ⇒ `{:error, :bursar_unavailable}` ⇒ idle.
       Fail-closed: the process exists everywhere, but it can only
       tick where the cluster's lock authority grants it.
+
+  ## Single instance + denial containment (CX-sqyc)
+
+  Two contending TickBots retrying acquire at 1Hz turned serve-fatal:
+  each denial persisted a red event, bloating `__bursar.log` until the
+  Bursar crashed. Three rules keep contention from ever storming again:
+
+    * **remote clients never contend** — on a node where
+      `CommitStoreClient.remote_node/0` is `{:ok, _}` (the MCP escript,
+      any attached client), the tick singleton is the SERVE's job
+      (CX-l4yv); this instance idles without touching the lease.
+    * **backoff-to-TTL** — a denied contender sleeps until the current
+      lease could have expired (`lease_ttl_ms`) instead of re-acquiring
+      every heartbeat. Failover latency is unchanged (bounded by TTL).
+    * **boot orphan sweep** (`orphan_sweep:` opt, default true) — on the
+      singleton host, the first denial after boot force-releases and
+      retakes the lease, once: with remote clients gated out, any other
+      holder on the host is a dead incarnation's re-clocked lease.
+      (The Bursar independently suppresses repeat-identical denial
+      events from the red log.)
   """
 
   use GenServer
@@ -56,7 +76,10 @@ defmodule Commonplace.MUD.TickBot do
     :bursar,
     :holder,
     :lease_ttl_ms,
-    :last_renew
+    :last_renew,
+    :denied_until,
+    :orphan_sweep,
+    :swept
   ]
 
   ## Client
@@ -103,7 +126,10 @@ defmodule Commonplace.MUD.TickBot do
       lease_ttl_ms:
         Keyword.get(opts, :lease_ttl_ms) ||
           Application.get_env(:commonplace, :tick_lease_ttl_ms, @default_lease_ttl_ms),
-      last_renew: nil
+      last_renew: nil,
+      denied_until: nil,
+      orphan_sweep: Keyword.get(opts, :orphan_sweep, true),
+      swept: false
     }
 
     if Keyword.get(opts, :auto_start, true) do
@@ -160,6 +186,29 @@ defmodule Commonplace.MUD.TickBot do
   # immediately on first leadership observation, which also covers a
   # supervisor-restarted leader inheriting its own stale-clocked token).
   defp ensure_leader(state) do
+    cond do
+      # CX-sqyc / CX-l4yv: singletons are hosted on the serve. A remote
+      # client node (MCP escript, attached CLI) must never contend for
+      # the tick lease — its acquire attempts are pure denial noise.
+      remote_client?() ->
+        {:not_leader, %{state | last_renew: nil}}
+
+      backing_off?(state) ->
+        {:not_leader, state}
+
+      true ->
+        attempt_acquire(state)
+    end
+  end
+
+  defp remote_client?, do: match?({:ok, _}, CommitStoreClient.remote_node())
+
+  defp backing_off?(%{denied_until: nil}), do: false
+
+  defp backing_off?(%{denied_until: until}),
+    do: System.monotonic_time(:millisecond) < until
+
+  defp attempt_acquire(state) do
     # holder: nil + authenticated_as: state.holder is the derive path
     # (Bursar.resolve_holder) — no redundant_holder_param noise every
     # heartbeat, same bound effective holder either way.
@@ -168,16 +217,53 @@ defmodule Commonplace.MUD.TickBot do
            authenticated_as: state.holder
          ) do
       {:ok, _} ->
-        {:leader, maybe_renew(state)}
+        # Leadership proves no orphan is blocking us — retire the boot
+        # sweep so a LATER denial (lease legitimately moved after expiry)
+        # backs off instead of stealing.
+        {:leader, maybe_renew(%{state | denied_until: nil, swept: true})}
 
       {:denied, _} ->
-        {:not_leader, %{state | last_renew: nil}}
+        handle_denied(state)
 
       # :bursar_unavailable — no lock authority reachable, so never tick
-      # (fail-closed; the bare-mix-run temp-node case).
+      # (fail-closed; the bare-mix-run temp-node case). No backoff: when
+      # the serve comes back the next heartbeat may contend immediately.
       {:error, _} ->
         {:not_leader, %{state | last_renew: nil}}
     end
+  end
+
+  # CX-sqyc boot orphan sweep: on the singleton host (remote clients are
+  # gated out above), a denial BEFORE this process has ever led means
+  # the lease is held by a dead incarnation (re-clocked to a full TTL by
+  # the Bursar's load_state) — break it and retake, once per process
+  # lifetime (`swept` also flips on first leadership). Any later denial
+  # backs off for a full lease TTL instead of hammering acquire every
+  # heartbeat.
+  defp handle_denied(%{orphan_sweep: true, swept: false} = state) do
+    state = %{state | swept: true}
+
+    with :ok <- BursarClient.force_release(state.bursar, @lease_path),
+         {:ok, _} <-
+           BursarClient.acquire(state.bursar, @lease_path, nil,
+             ttl: state.lease_ttl_ms,
+             authenticated_as: state.holder
+           ) do
+      Logger.info("TickBot: swept orphaned tick lease and took over")
+      {:leader, maybe_renew(%{state | denied_until: nil})}
+    else
+      _ -> {:not_leader, backoff(state)}
+    end
+  end
+
+  defp handle_denied(state), do: {:not_leader, backoff(state)}
+
+  defp backoff(state) do
+    %{
+      state
+      | last_renew: nil,
+        denied_until: System.monotonic_time(:millisecond) + state.lease_ttl_ms
+    }
   end
 
   defp maybe_renew(state) do
