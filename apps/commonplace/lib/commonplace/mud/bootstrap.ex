@@ -24,6 +24,20 @@ defmodule Commonplace.MUD.Bootstrap do
         forest-path/     __room.json
         clearing/        __room.json + fountain.obj
         players/         (lazily created by PlayerSession)
+        .mud-seeded/     seed-once marker (see CX-k8lq)
+
+  CX-k8lq: rooms/exits are STRUCTURAL — keyed by name under a fixed
+  parent, they never move, so re-running `ensure_room`/`merge_exits`
+  every call (including every login) stays correct and idempotent.
+  Bootstrap objects (cloak, fountain) are MOVABLE — once a player TAKEs
+  one, it leaves its seed room's schema entirely, so "is this filename
+  present in the room" is no longer a valid "does the world have one of
+  these" check; re-running it would mint a duplicate and orphan any
+  player-authored state (verbs) on the original. Movable-object seeding
+  therefore runs at most ONCE per world, gated on the `@seed_marker`
+  entry under `root_uuid` — present means "movable objects already
+  placed, do not re-place them", regardless of where those objects have
+  since wandered.
   """
 
   alias Commonplace.MUD.Schemas
@@ -35,6 +49,15 @@ defmodule Commonplace.MUD.Bootstrap do
   @stub_descriptions [
     "A featureless white room. The world has not been built out yet."
   ]
+
+  # CX-k8lq: seed-once marker for movable bootstrap objects. A plain
+  # entry under the world root — its mere presence means "movable
+  # objects have already been placed for this world, do not place them
+  # again". Named with a leading dot + no extension so it never matches
+  # room-name lookups (`ensure_room`/`ensure_start_room` key on exact
+  # name) or `.obj`/`.usr` suffix filters used elsewhere to list room
+  # contents/players.
+  @seed_marker ".mud-seeded"
 
   def seed(root_uuid, store \\ CommitStoreClient), do: repair(root_uuid, store)
 
@@ -68,26 +91,53 @@ defmodule Commonplace.MUD.Bootstrap do
          :ok <- merge_exits(start_uuid, %{"north" => forest_uuid, "east" => clearing_uuid}, store),
          :ok <- merge_exits(forest_uuid, %{"south" => start_uuid}, store),
          :ok <- merge_exits(clearing_uuid, %{"west" => start_uuid}, store),
-         :ok <-
-           ensure_object(start_uuid, "cloak.obj", %Object{
-             name: "cloak",
-             aliases: ["cape", "black cloak"],
-             description: "A heavy black cloak. It looks warm."
-           }, store),
-         :ok <-
-           ensure_object(clearing_uuid, "fountain.obj", %Object{
-             name: "fountain",
-             aliases: ["water"],
-             description: "A stone fountain murmurs softly.",
-             fixed: true,
-             tick_interval_ms: 8_000,
-             tick_message: "The fountain burbles softly."
-           }, store) do
+         :ok <- ensure_movable_objects_once(root_uuid, start_uuid, clearing_uuid, store) do
       {:ok, :ready}
     end
   end
 
   ## Private
+
+  # CX-k8lq: place the seed-once movable objects (cloak, fountain) IFF
+  # the world has never been seeded before. Checked against a marker
+  # under `root_uuid`, not against "is the object still in its seed
+  # room" — the latter is exactly the bug (a taken cloak reads as
+  # "missing" and gets re-minted). Once objects are placed, the marker
+  # is written so every subsequent call (every login, every repair) is
+  # a single cheap entry lookup that no-ops.
+  defp ensure_movable_objects_once(root_uuid, start_uuid, clearing_uuid, store) do
+    {:ok, root_schema} = Schemas.load_dir_schema(root_uuid, store)
+
+    case Schema.get_entry(root_schema, @seed_marker) do
+      {:ok, _entry} ->
+        :ok
+
+      :error ->
+        with :ok <-
+               ensure_object(start_uuid, "cloak.obj", %Object{
+                 name: "cloak",
+                 aliases: ["cape", "black cloak"],
+                 description: "A heavy black cloak. It looks warm."
+               }, store),
+             :ok <-
+               ensure_object(clearing_uuid, "fountain.obj", %Object{
+                 name: "fountain",
+                 aliases: ["water"],
+                 description: "A stone fountain murmurs softly.",
+                 fixed: true,
+                 tick_interval_ms: 8_000,
+                 tick_message: "The fountain burbles softly."
+               }, store) do
+          mark_seeded(root_uuid, store)
+        end
+    end
+  end
+
+  defp mark_seeded(root_uuid, store) do
+    with {:ok, marker_uuid} <- Schemas.create_dir_with_meta(nil, nil, store) do
+      add_dir_entry(root_uuid, @seed_marker, marker_uuid, store)
+    end
+  end
 
   defp ensure_room(parent_uuid, name, %Room{} = canonical, store, opts \\ []) do
     refresh_if_stub = Keyword.get(opts, :refresh_if_stub, false)
