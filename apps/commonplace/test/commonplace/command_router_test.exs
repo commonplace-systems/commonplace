@@ -316,6 +316,146 @@ defmodule Commonplace.CommandRouterTest do
     end
   end
 
+  describe "writer identity — persistent node-writer hand (CX-41qg.1)" do
+    # Every write through CommandRouter used to reconstruct the doc via
+    # `Yelixer.Doc.new()` — a fresh random client_id each call — then
+    # splice and re-encode under that random id. A CRDT's state vector
+    # grows one entry per DISTINCT client that has ever authored an op,
+    # so N writes from CommandRouter used to mint N client ids and bloat
+    # the SV without bound. The fix gives the write funnel a stable
+    # per-doc client_id (`:erlang.phash2(uuid, 0xFFFF_FFFF)`, the same
+    # scheme Sync.Agent already uses — CX-pyi) so repeated writes to the
+    # same doc converge on (at most) a couple of client slots.
+    defp sv_client_ids(doc) do
+      Yelixer.BlockStore.state_vector(doc.store).clocks
+      |> Map.keys()
+      |> MapSet.new()
+    end
+
+    test "20 sequential writes to the same doc keep the state vector's client-id set bounded",
+         ctx do
+      {_pid, name} = start_router(ctx)
+      uuid = create_leaf_doc(ctx, "seed")
+
+      Enum.each(1..20, fn n ->
+        assert {:ok, _} = CommandRouter.write(name, uuid, "content version #{n}")
+      end)
+
+      {:ok, doc} = Commonplace.Tree.DocBuilder.reconstruct_snapshot(ctx.store, uuid)
+      client_ids = sv_client_ids(doc)
+
+      assert MapSet.size(client_ids) <= 2,
+             "expected a bounded (<=2) set of client ids after 20 writes, " <>
+               "got #{MapSet.size(client_ids)}: #{inspect(client_ids)} " <>
+               "(pre-fix behavior would show one new client id per write, i.e. ~20)"
+    end
+
+    test "20 sequential writes still compose correctly under the stable client id", ctx do
+      {_pid, name} = start_router(ctx)
+      uuid = create_leaf_doc(ctx, "seed")
+
+      final =
+        Enum.reduce(1..20, "seed", fn n, _prev ->
+          new_content = "content version #{n}"
+          assert {:ok, _} = CommandRouter.write(name, uuid, new_content)
+          new_content
+        end)
+
+      {:ok, doc} = Commonplace.Tree.DocBuilder.reconstruct_snapshot(ctx.store, uuid)
+      assert Commonplace.Document.ContentType.get_content(doc) == final
+    end
+
+    test "the forced-clobber write path also uses the stable client id", ctx do
+      {_pid, name} = start_router(ctx)
+      uuid = UUID.uuid4()
+
+      doc = Yelixer.Doc.new()
+      doc = Commonplace.Document.ContentType.create(doc, :map, "config.json")
+      update = Yelixer.Encoding.encode_update(doc)
+      CommitStore.create_commit(ctx.store, uuid, update, nil)
+
+      Enum.each(1..10, fn n ->
+        assert {:ok, _} =
+                 CommandRouter.write(name, uuid, "forced content #{n}", force: true)
+      end)
+
+      {:ok, read} = Commonplace.Tree.DocBuilder.reconstruct_snapshot(ctx.store, uuid)
+      client_ids = sv_client_ids(read)
+
+      assert MapSet.size(client_ids) <= 2,
+             "forced-clobber writes must also mint under the stable client id, " <>
+               "got #{MapSet.size(client_ids)} client ids: #{inspect(client_ids)}"
+    end
+
+    test "branch_set_sync (schema) writes also use the stable client id", ctx do
+      {_pid, name} = start_router(ctx)
+
+      child_uuid = UUID.uuid4()
+      child_doc = Schema.new_schema()
+      child_update = Yelixer.Encoding.encode_update(child_doc)
+      CommitStore.create_commit(ctx.store, child_uuid, child_update, nil)
+
+      parent_doc = Schema.new_schema()
+      parent_doc = Schema.add_directory(parent_doc, "feature-x", child_uuid)
+      parent_update = Yelixer.Encoding.encode_update(parent_doc)
+      CommitStore.create_chained_commit(ctx.store, ctx.root, parent_update)
+
+      Enum.each(1..10, fn _ ->
+        assert {:ok, _} = CommandRouter.branch_deactivate(name, ctx.root, "feature-x")
+        assert {:ok, _} = CommandRouter.branch_activate(name, ctx.root, "feature-x")
+      end)
+
+      {:ok, doc} = Commonplace.Tree.DocBuilder.reconstruct_snapshot(ctx.store, ctx.root)
+      client_ids = sv_client_ids(doc)
+
+      assert MapSet.size(client_ids) <= 2,
+             "schema (branch_set_sync) writes must also mint under a stable client id, " <>
+               "got #{MapSet.size(client_ids)} client ids: #{inspect(client_ids)}"
+    end
+
+    test "a doc written by CommandRouter and by a second stable-id writer (simulating " <>
+           "Sync.Agent's shared phash2(uuid) scheme) converges without clock collision or " <>
+           "lost writes",
+         ctx do
+      {_pid, name} = start_router(ctx)
+      uuid = create_leaf_doc(ctx, "seed")
+
+      stable_id = :erlang.phash2(uuid, 0xFFFF_FFFF)
+
+      # Writer A: CommandRouter's write funnel.
+      assert {:ok, _} = CommandRouter.write(name, uuid, "seed plus A1")
+
+      # Writer B: a second writer using the identical stable-per-doc-uuid
+      # client id scheme (this is exactly what Sync.Agent's
+      # stable_client_id/1 does) but going straight through
+      # CommitStoreClient, bypassing CommandRouter entirely — simulating
+      # the sync agent touching the same doc.
+      {:ok, doc_b} =
+        Commonplace.Tree.DocBuilder.reconstruct_snapshot(ctx.store, uuid, client_id: stable_id)
+
+      old_content = Commonplace.Document.ContentType.get_content(doc_b) || ""
+
+      doc_b =
+        Commonplace.Document.Diff.apply_diff(doc_b, old_content, "seed plus A1 plus B1")
+
+      update_b = Yelixer.Encoding.encode_update(doc_b)
+      Commonplace.Store.CommitStoreClient.create_chained_commit(ctx.store, uuid, update_b)
+
+      # Writer A again.
+      assert {:ok, _} = CommandRouter.write(name, uuid, "seed plus A1 plus B1 plus A2")
+
+      {:ok, final_doc} = Commonplace.Tree.DocBuilder.reconstruct_snapshot(ctx.store, uuid)
+      assert Commonplace.Document.ContentType.get_content(final_doc) ==
+               "seed plus A1 plus B1 plus A2"
+
+      client_ids = sv_client_ids(final_doc)
+
+      assert MapSet.size(client_ids) <= 2,
+             "shared stable-id writers must converge on the same (bounded) client slots, " <>
+               "got #{MapSet.size(client_ids)}: #{inspect(client_ids)}"
+    end
+  end
+
   describe "branch_activate / branch_deactivate" do
     defp setup_parent_with_child_dir(ctx) do
       # Create a child dir and attach it to the root schema.

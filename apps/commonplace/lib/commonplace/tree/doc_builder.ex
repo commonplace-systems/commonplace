@@ -117,11 +117,17 @@ defmodule Commonplace.Tree.DocBuilder do
   Use for schema docs where fork always stores full snapshots.
   This avoids CRDT inconsistency from applying full snapshots on top of each other.
   Returns `{:ok, doc}` or `:none` if no commits exist.
+
+  CX-41qg.1: pass `client_id: id` to fix the replica's identity on the
+  reconstructed doc — needed by write funnels (CommandRouter, Sync.Agent)
+  that re-encode a NEW commit from this doc. Without a stable client_id,
+  every write mints a fresh random one and the state vector grows one
+  slot per write, forever. Read-only callers can omit the option.
   """
-  def reconstruct_snapshot(store, uuid) do
+  def reconstruct_snapshot(store, uuid, opts \\ []) do
     case CommitStoreClient.latest_commit(store, uuid) do
       {:ok, commit} ->
-        doc = Doc.new()
+        doc = Doc.new(opts)
         Encoding.apply_update(doc, commit.update)
 
       :none ->

@@ -410,7 +410,7 @@ defmodule Commonplace.CommandRouter do
 
     result =
       Events.run("write", args, fn ->
-        case DocBuilder.reconstruct_snapshot(state.store, uuid) do
+        case DocBuilder.reconstruct_snapshot(state.store, uuid, client_id: stable_client_id(uuid)) do
           {:ok, doc} ->
             type = ContentType.get_type(doc)
 
@@ -437,7 +437,7 @@ defmodule Commonplace.CommandRouter do
                 # a fresh text doc as the next commit on the chain.
                 # Convergence follows reconstruct_snapshot semantics —
                 # latest commit wins.
-                fresh = Yelixer.Doc.new()
+                fresh = Yelixer.Doc.new(client_id: stable_client_id(uuid))
                 fresh = ContentType.create(fresh, :text, "(forced)")
                 fresh = ContentType.insert_text(fresh, 0, new_content)
                 update = Yelixer.Encoding.encode_update(fresh)
@@ -481,7 +481,9 @@ defmodule Commonplace.CommandRouter do
 
     result =
       Events.run(verb, args, fn ->
-        case DocBuilder.reconstruct_snapshot(state.store, parent_uuid) do
+        case DocBuilder.reconstruct_snapshot(state.store, parent_uuid,
+               client_id: stable_client_id(parent_uuid)
+             ) do
           {:ok, doc} ->
             case Schema.get_entry(doc, name) do
               {:ok, _entry} ->
@@ -541,6 +543,27 @@ defmodule Commonplace.CommandRouter do
   def handle_info({:fork_done, from, source_uuid, result}, state) do
     GenServer.reply(from, result)
     {:noreply, %{state | in_flight_forks: MapSet.delete(state.in_flight_forks, source_uuid)}}
+  end
+
+  # --- CX-41qg.1: persistent node-writer hand ---
+  #
+  # Every write branch below re-encodes a NEW commit from a reconstructed
+  # (or brand-new) doc. Without a fixed client_id, each call to
+  # `Yelixer.Doc.new()` mints a fresh random one, so N writes to the same
+  # doc leave N entries in its state vector — unbounded growth. Instead
+  # we derive a client_id deterministically from the doc's own uuid
+  # (`:erlang.phash2(uuid, 0xFFFF_FFFF)`), the same scheme
+  # `Sync.Agent.stable_client_id/1` already uses (CX-pyi). Per-doc (not
+  # a single whole-server id) is the safer choice: CommandRouter's write
+  # path is a singleton GenServer serializing writes per doc, so there's
+  # no concurrent-writer collision risk, and reusing the exact
+  # phash2(uuid) formula means CommandRouter and Sync.Agent converge on
+  # the SAME client slot for a given doc when both touch it — fewer
+  # total client ids server-wide, and it's already a proven pattern. No
+  # persistence is needed: it's a pure function of the uuid, so it's
+  # stable across restarts by construction.
+  defp stable_client_id(uuid) when is_binary(uuid) do
+    :erlang.phash2(uuid, 0xFFFF_FFFF)
   end
 
   # --- Merge report → audit-friendly summary ---
