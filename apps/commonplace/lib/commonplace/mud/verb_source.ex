@@ -28,11 +28,35 @@ defmodule Commonplace.MUD.VerbSource do
   symptom, where firing verb A on object A could execute verb B's body
   because both had clobbered the same module atom). Callers only ever see
   the returned module atom, so this is fully transparent.
+
+  ## CX-ndvi §4 — this is the LEGACY (trusted) path, UNCHANGED
+
+  Everything above and below this note is the pre-CX-ndvi behavior,
+  byte-for-byte: full author-written `defmodule`, gated on `:execute`
+  (permissive by default — see `Commonplace.Code.SourceDoc.compile/3`),
+  no lint, no facade, ambient `ctx` (today's `World`/`CommitStoreClient`
+  reach). This path stays available for TRUSTED/legacy verbs (a
+  single-writer jes-prototype world, or any verb an operator has
+  reviewed) — CX-ndvi does not remove it or change its gate, its
+  compile behavior, or its error shapes in any way.
+
+  The NEW, capability-bounded path lives ALONGSIDE it in this same
+  module: `save_safe_verb/6`, `find_safe_source/3`, `compile_safe_verb/4`,
+  `run_safe_verb/6` — see `Commonplace.MUD.SafeVerb` for what's
+  different (bare `run/1` body instead of `defmodule`, lint, the
+  `{:verb, section_scope}` define-gate instead of `:execute`, and a
+  `Commonplace.MUD.World.Facade` instead of ambient `ctx`/store reach).
+  Safe verbs are stored under a DISTINCT filename
+  (`<name>.safe.elx`, vs. legacy's `<name>.elx`) in the same
+  `verbs/` directory, so a legacy verb and a safe verb never collide on
+  the same name, and existing legacy verb docs are completely
+  unaffected by the new path's existence.
   """
 
   alias Commonplace.Code.SourceDoc
   alias Commonplace.Document.ContentType
-  alias Commonplace.MUD.{Schemas, SignedWrite}
+  alias Commonplace.MUD.{SafeVerb, Schemas, SignedWrite}
+  alias Commonplace.MUD.World.Facade
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.{DocBuilder, Schema}
   alias Yelixer.Doc, as: YDoc
@@ -46,8 +70,13 @@ defmodule Commonplace.MUD.VerbSource do
   `{:error, reason}` on read failure.
   """
   def find_source(target_dir_uuid, verb_name, store \\ CommitStoreClient) do
-    file = "#{verb_name}.elx"
+    find_named_source(target_dir_uuid, "#{verb_name}.elx", store)
+  end
 
+  # CX-ndvi: shared lookup for both the legacy (`<name>.elx`) and safe
+  # (`<name>.safe.elx`) filenames — the directory-registry walk is
+  # identical either way, only the filename differs.
+  defp find_named_source(target_dir_uuid, file, store) do
     with {:ok, schema} <- Schemas.load_dir_schema(target_dir_uuid, store),
          {:ok, %Schema.Entry{node_id: verbs_uuid}} <- Schema.get_entry(schema, @verbs_dir),
          {:ok, verbs_schema} <- Schemas.load_dir_schema(verbs_uuid, store),
@@ -57,6 +86,17 @@ defmodule Commonplace.MUD.VerbSource do
       :error -> :not_found
       {:error, _} = err -> err
     end
+  end
+
+  @doc """
+  CX-ndvi §4 — find the SAFE verb source doc uuid (`<verb_name>.safe.elx`,
+  distinct from the legacy `find_source/3`'s `<verb_name>.elx`). Same
+  return shape as `find_source/3`.
+  """
+  @spec find_safe_source(String.t(), String.t(), GenServer.server()) ::
+          {:ok, String.t()} | :not_found | {:error, term()}
+  def find_safe_source(target_dir_uuid, verb_name, store \\ CommitStoreClient) do
+    find_named_source(target_dir_uuid, "#{verb_name}.safe.elx", store)
   end
 
   @doc """
@@ -142,6 +182,98 @@ defmodule Commonplace.MUD.VerbSource do
       case SourceDoc.compile(source_uuid, store, unique_module: source_uuid) do
         {:ok, module} ->
           if function_exported?(module, :run, 1), do: :ok, else: {:error, {:no_run_export, module}}
+
+        {:error, _} = err ->
+          err
+      end
+    end
+  end
+
+  @doc """
+  CX-ndvi §3/§4 — compile (or fetch from cache) the SAFE verb at
+  `target_dir_uuid` named `verb_name`, gated on `{:verb, section_scope}`
+  (CX-ndvi §1.1) rather than `:execute`. `section_scope` is the list of
+  anchor uuids (typically `[target_dir_uuid]`, or a wider section list)
+  that the verb's owner's `:define_verb` cert must cover — see
+  `Commonplace.Trust.DefineVerbGate` for why the anchor is the host
+  object/room rather than the verb doc's own fresh uuid.
+
+  Returns `{:ok, module}`, `:not_found`, or `{:error, reason}` —
+  `{:error, {:execution_denied, reason}}` on a define-gate denial (a
+  revoked/unauthorized definer's verb stops dispatching here, verify-
+  time, consistent with CX-bepn).
+  """
+  @spec compile_safe_verb(String.t(), String.t(), [String.t()], GenServer.server()) ::
+          {:ok, module()} | :not_found | {:error, term()}
+  def compile_safe_verb(target_dir_uuid, verb_name, section_scope, store \\ CommitStoreClient)
+      when is_list(section_scope) do
+    case find_safe_source(target_dir_uuid, verb_name, store) do
+      {:ok, source_uuid} ->
+        case SafeVerb.compile(source_uuid, section_scope, store) do
+          {:ok, module} ->
+            if function_exported?(module, :run, 2) do
+              {:ok, module}
+            else
+              {:error, {:no_run_export, module}}
+            end
+
+          {:error, _} = err ->
+            err
+        end
+
+      other ->
+        other
+    end
+  end
+
+  @doc """
+  CX-ndvi §2 — run the SAFE verb at `target_dir_uuid` named `verb_name`,
+  bound ONLY to `facade` (a `%Commonplace.MUD.World.Facade{}` — the
+  invoker's identity + the owner's grant, already closed over) and
+  `args`. No `ctx`, no store, no raw uuid reach beyond what the facade
+  itself exposes. See `Commonplace.MUD.SafeVerb.run/3` for the
+  bounds/error shapes (timeout, heap-kill, runtime error).
+  """
+  @spec run_safe_verb(String.t(), String.t(), [String.t()], Facade.t(), map(), GenServer.server()) ::
+          {:ok, term()} | :not_found | {:error, term()}
+  def run_safe_verb(target_dir_uuid, verb_name, section_scope, %Facade{} = facade, args \\ %{}, store \\ CommitStoreClient) do
+    case compile_safe_verb(target_dir_uuid, verb_name, section_scope, store) do
+      {:ok, module} -> SafeVerb.run(module, facade, args)
+      other -> other
+    end
+  end
+
+  @doc """
+  CX-ndvi §4 — save (create or overwrite) a SAFE verb: `body_text` is a
+  bare `run/1` BODY (no `defmodule` — see `Commonplace.MUD.SafeVerb`),
+  lint-checked before anything is written. Stored (wrapped, per
+  `SafeVerb.wrap_and_lint/1`) at `<target_dir_uuid>/verbs/<verb_name>.safe.elx`
+  — distinct from the legacy `save_verb/5`'s `<verb_name>.elx`, so the
+  two paths never collide on the same verb name.
+
+  Validates by compiling immediately under the `{:verb, section_scope}`
+  gate. A lint violation is refused BEFORE anything is written (unlike
+  the legacy path, which persists even on a compile error so the author
+  can keep editing — a lint violation is a clear, mechanical author
+  mistake, not worth round-tripping through a persisted-but-broken doc).
+
+  Returns `:ok`, `{:error, {:lint_violation, reasons}}`,
+  `{:error, {:compile_error, msg}}`, `{:error, {:execution_denied, reason}}`
+  (define-gate denial), or `{:error, {:no_run_export, module}}`.
+  """
+  @spec save_safe_verb(String.t(), String.t(), String.t(), [String.t()], GenServer.server(), keyword()) ::
+          :ok | {:error, term()}
+  def save_safe_verb(target_dir_uuid, verb_name, body_text, section_scope, store \\ CommitStoreClient, opts \\ [])
+      when is_binary(body_text) and is_list(section_scope) do
+    file = "#{verb_name}.safe.elx"
+
+    with {:ok, wrapped} <- SafeVerb.wrap_and_lint(body_text),
+         {:ok, verbs_uuid} <- ensure_verbs_dir(target_dir_uuid, store, opts),
+         {:ok, verbs_schema} <- Schemas.load_dir_schema(verbs_uuid, store),
+         {:ok, source_uuid} <- save_source(verbs_uuid, verbs_schema, file, wrapped, store, opts) do
+      case SafeVerb.compile(source_uuid, section_scope, store) do
+        {:ok, module} ->
+          if function_exported?(module, :run, 2), do: :ok, else: {:error, {:no_run_export, module}}
 
         {:error, _} = err ->
           err

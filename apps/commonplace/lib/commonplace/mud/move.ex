@@ -70,7 +70,11 @@ defmodule Commonplace.MUD.Move do
     # `opts` (already accepted, previously unused) so both writes below
     # (dest-add, source-remove) land signed/capability-proofed for the
     # target doc each one touches — see `Commonplace.MUD.SignedWrite`.
-    write_opts = Keyword.take(opts, [:signing_context, :cert_cids, :signer_id])
+    # CX-ndvi: :via_verb rides along too (facade-mediated moves tag the
+    # resulting commits with `{verb_doc_ref, owner}` for causal audit —
+    # see `Commonplace.MUD.SignedWrite.opts_for/2`); absent for every
+    # existing (non-facade) caller, so this is additive.
+    write_opts = Keyword.take(opts, [:signing_context, :cert_cids, :signer_id, :via_verb])
 
     holder = default_holder()
     paths = Enum.sort([source_dir_uuid, dest_dir_uuid])

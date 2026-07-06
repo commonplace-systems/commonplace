@@ -135,20 +135,61 @@ defmodule Commonplace.Code.SourceDoc do
   from before this option existed: the source's own `defmodule` name is
   used as-is. This is relied on by `Commonplace.View.ComputeRunner` and
   `Commonplace.Process.Orchestrator` — do not change their behavior.
+
+  ## `:gate` (CX-ndvi §1.1 — the gate-class parameterization)
+
+  `:gate` selects WHICH pre-compile authorization walk runs before the
+  cache lookup. Two shapes:
+
+    * `:execute` (the default, and the only value before CX-ndvi) —
+      unchanged: `Commonplace.Trust.authorized_to_execute?/2` (Gate B).
+      Every existing caller (`Commonplace.View.ComputeRunner`,
+      `Commonplace.Process.Orchestrator`, and any caller that omits
+      `:gate` entirely) takes this path — BYTE-IDENTICAL to the
+      pre-CX-ndvi behavior, including the `{:execution_denied, reason}`
+      error shape and the `[:commonplace, :code, :rejected, :trust]`
+      telemetry event.
+    * `{:verb, section_scope}` — a SAFE MUD verb doc is not ambient
+      player code (untrusted players never hold `:execute`; the verb
+      RUNNER holds it, not the doc). Instead every contributor to the
+      verb doc must hold `:define_verb` for `section_scope` (a list of
+      anchor uuids — see `Commonplace.Trust.DefineVerbGate` for why the
+      anchor is the verb's HOST object/room rather than the verb doc's
+      own fresh uuid). Runs
+      `Commonplace.Trust.DefineVerbGate.authorized_to_define?/3`
+      instead of the execute walk. Used exclusively by
+      `Commonplace.MUD.SafeVerb`/`Commonplace.MUD.VerbSource`'s safe-verb
+      path — the legacy full-`defmodule` verb path and every other
+      caller keep passing no `:gate` (or `:execute` explicitly) and see
+      no behavior change whatsoever.
+
+  Both branches share the same cache-lookup/compile/telemetry plumbing
+  below them; only the WHICH-check differs.
   """
   @spec compile(binary(), GenServer.server(), keyword()) ::
           {:ok, module()} | {:error, term()}
   def compile(uuid, store \\ CommitStoreClient, opts \\ []) when is_binary(uuid) do
     ensure_tables()
 
-    # Gate B (CX-tdkq.2 / R2): every commit contributing to a code doc
-    # since the trusted baseline must hold :execute. Runs BEFORE the
-    # cache lookup — deliberately on cache hits too — so a trust-config
-    # change (revocation) takes effect on the next compile rather than
-    # being masked by an already-cached module. This is the narrow waist
-    # both execute ingresses share (ComputeRunner and the Orchestrator,
-    # which reads source itself and would bypass a gate in read/2).
-    case Commonplace.Trust.authorized_to_execute?(store, uuid) do
+    # Gate B (CX-tdkq.2 / R2) / CX-ndvi §1.1: every commit contributing
+    # to a code doc since the trusted baseline must hold the relevant
+    # authority for the selected gate class. Runs BEFORE the cache
+    # lookup — deliberately on cache hits too — so a trust-config change
+    # (revocation) takes effect on the next compile rather than being
+    # masked by an already-cached module. This is the narrow waist every
+    # execute ingress shares (ComputeRunner and the Orchestrator, which
+    # reads source itself and would bypass a gate in read/2) — the
+    # `{:verb, _}` gate class reuses this exact waist for :define_verb.
+    gate_result =
+      case Keyword.get(opts, :gate, :execute) do
+        :execute ->
+          Commonplace.Trust.authorized_to_execute?(store, uuid)
+
+        {:verb, section_scope} ->
+          Commonplace.Trust.DefineVerbGate.authorized_to_define?(store, uuid, section_scope)
+      end
+
+    case gate_result do
       :ok ->
         with {:ok, source, hash} <- read(uuid, store) do
           case lookup_cached(uuid, hash, opts) do

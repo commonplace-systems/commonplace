@@ -50,6 +50,14 @@ defmodule Commonplace.MUD.SignedWrite do
       unsigned behavior exactly: empty metadata, empty commit opts.
     * `:cert_cids` — list of capability CIDs the session holds (default
       `[]`).
+    * `:via_verb` (CX-ndvi §1.2/§2) — when present, merged into the
+      commit metadata as `%{via_verb: value}` — the causal-audit tag a
+      `Commonplace.MUD.World.Facade` write attaches (`{verb_doc_ref,
+      owner}`) so a verb-mediated commit is distinguishable from a
+      player's direct edit in the same audit trail. Absent by every
+      existing caller (moves/writes issued directly by `Verbs`/`World`
+      never set this) — additive, no behavior change for anyone who
+      doesn't pass it.
 
   Returns `{metadata, commit_opts}` ready to splice into
   `CommitStoreClient.create_commit/6` (metadata as the 5th positional
@@ -62,7 +70,7 @@ defmodule Commonplace.MUD.SignedWrite do
   def opts_for(target_uuid, opts) do
     case Keyword.get(opts, :signing_context) do
       nil ->
-        {%{}, []}
+        {via_verb_metadata(%{}, opts), []}
 
       signing_context ->
         store = Keyword.get(opts, :store, CommitStoreClient)
@@ -75,7 +83,23 @@ defmodule Commonplace.MUD.SignedWrite do
             cap_id -> %{kind: :regular, capability_proof: cap_id}
           end
 
-        {metadata, commit_opts}
+        {via_verb_metadata(metadata, opts), commit_opts}
+    end
+  end
+
+  defp via_verb_metadata(metadata, opts) do
+    case Keyword.get(opts, :via_verb) do
+      nil ->
+        metadata
+
+      via_verb ->
+        # `Commonplace.Store.Commit.new/5` requires a `:kind` tag on any
+        # non-empty metadata map — `find_cert/3` already sets `:regular`
+        # when a capability_proof is attached, but the no-cert branch
+        # above leaves metadata `%{}` (empty, so no :kind needed) UNTIL
+        # via_verb makes it non-empty here. `Map.put_new` so an existing
+        # `:kind` (the capability_proof branch) is never overwritten.
+        metadata |> Map.put(:via_verb, via_verb) |> Map.put_new(:kind, :regular)
     end
   end
 
