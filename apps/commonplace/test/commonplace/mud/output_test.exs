@@ -198,10 +198,13 @@ defmodule Commonplace.MUD.OutputTest do
     alice = start_player("alice", ctx)
     drain("alice")
 
-    send_input(alice, "@dig north Old Stone Bridge")
+    # CX-p0wx: "north" already has a seeded exit (to "A Forest Path"), and
+    # @dig now refuses to clobber an existing exit — use a free direction
+    # ("down") instead so this test still exercises multi-word @dig names.
+    send_input(alice, "@dig down Old Stone Bridge")
     drain("alice")
 
-    send_input(alice, "north")
+    send_input(alice, "down")
     out = drain("alice") |> Enum.join("\n")
     assert out =~ "Old Stone Bridge"
 

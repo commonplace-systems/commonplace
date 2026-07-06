@@ -23,7 +23,7 @@ defmodule Commonplace.MUD.Verbs do
 
   require Logger
 
-  @builders ~w(@dig @create @desc @name @alias @listen @dump @verb)
+  @builders ~w(@dig @create @desc @name @alias @listen @dump @verb @link @unlink @teleport @go)
 
   @doc "Dispatch a parsed command. Returns one of the verb-result tuples."
   def dispatch(%Parser.Command{verb: ""}, _ctx), do: :ok
@@ -494,6 +494,10 @@ defmodule Commonplace.MUD.Verbs do
   defp dispatch_builder("@alias", cmd, ctx), do: do_alias(cmd, ctx)
   defp dispatch_builder("@listen", _cmd, ctx), do: {:reply, "Now listening to room #{ctx.current_room_uuid}. (Debug: red events will appear inline.)"}
   defp dispatch_builder("@verb", cmd, ctx), do: do_verb_edit(cmd, ctx)
+  defp dispatch_builder("@link", cmd, ctx), do: do_link(cmd, ctx)
+  defp dispatch_builder("@unlink", cmd, ctx), do: do_unlink(cmd, ctx)
+  defp dispatch_builder("@teleport", cmd, ctx), do: do_teleport(cmd, ctx)
+  defp dispatch_builder("@go", cmd, ctx), do: do_teleport(cmd, ctx)
 
   defp dispatch_builder("@dump", cmd, ctx) do
     cond do
@@ -583,13 +587,47 @@ defmodule Commonplace.MUD.Verbs do
     end
   end
 
+  # CX-p0wx: @dig onto a direction that ALREADY has an exit used to
+  # silently overwrite it (`update_room_exit/4` did a bare `Map.put`) —
+  # the old target room fell out of the tree (still stored, but no
+  # longer reachable from anywhere) with zero warning, and since
+  # relogin does NOT reset a player's location, a builder who clobbered
+  # their only exit was left permanently stranded with no in-game way
+  # back. Refuse by default: check for an existing exit before writing
+  # anything, and point the builder at `@link`/`@teleport` for the
+  # intentional-repoint / recovery paths instead.
+  defp do_dig_write(direction, opposite, name, ctx) do
+    case World.get_room(ctx.current_room_uuid, ctx.store) do
+      {:ok, %Room{exits: exits}} ->
+        case Map.fetch(exits, direction) do
+          {:ok, existing_uuid} ->
+            {:error,
+             "There is already an exit #{direction} (to #{describe_room(existing_uuid, ctx)}). " <>
+               "Use @link to repoint it or pick another direction."}
+
+          :error ->
+            do_dig_write_new_room(direction, opposite, name, ctx)
+        end
+
+      {:error, reason} ->
+        {:error, commit_error_reply(reason)}
+    end
+  end
+
+  defp describe_room(room_uuid, ctx) do
+    case World.get_room(room_uuid, ctx.store) do
+      {:ok, %Room{name: name}} when name != "" -> name
+      _ -> room_uuid
+    end
+  end
+
   # CX-93ea: @dig writes THREE things (the new room's dir+meta doc, the
   # entry in root, and the exit edge on the current room) — this module
   # has no rollback (append-only store), so a mid-sequence denial stops
   # here and reports the failure; whatever landed before the denial
   # (e.g. the new room's genesis doc with nothing yet pointing at it)
   # stays as an orphan rather than being cleaned up.
-  defp do_dig_write(direction, opposite, name, ctx) do
+  defp do_dig_write_new_room(direction, opposite, name, ctx) do
     json = Schemas.encode_room(%Room{name: name, description: "(no description yet)", exits: %{opposite => ctx.current_room_uuid}})
 
     with {:ok, new_room_uuid} <- Schemas.create_dir_with_meta(Schemas.room_filename(), json, ctx.store, write_opts(ctx)),
@@ -604,6 +642,135 @@ defmodule Commonplace.MUD.Verbs do
       {:reply, "You carve out a new room (#{name}). #{String.capitalize(direction)} leads there."}
     else
       {:error, reason} -> {:error, commit_error_reply(reason)}
+    end
+  end
+
+  # ---- @link / @unlink / @teleport (CX-p0wx: the deliberate-repoint and
+  # stranded-builder recovery primitives) ----
+
+  defp do_link(%Parser.Command{argv: argv}, _ctx) when length(argv) < 2 do
+    {:error, "Try: @link <direction> <room-uuid>"}
+  end
+
+  # CX-p0wx: unlike @dig, @link is EXPECTED to repoint an exit (that's
+  # the whole point — it's the intentional-overwrite counterpart to
+  # @dig's refuse-by-default), so it always overwrites whatever exit
+  # (if any) already sits in that direction. `@dump` already surfaces
+  # neighbor-room uuids, so a builder always has the id they need.
+  defp do_link(%Parser.Command{argv: [direction, room_uuid | _]}, ctx) do
+    direction = String.downcase(direction)
+
+    cond do
+      not Parser.direction?(direction) ->
+        {:error, "Unknown direction: #{direction}"}
+
+      true ->
+        case World.get_room(room_uuid, ctx.store) do
+          {:ok, %Room{} = target} ->
+            case update_room_exit(ctx.current_room_uuid, direction, room_uuid, ctx) do
+              :ok -> {:reply, "Linked #{direction} to #{target.name} (#{room_uuid})."}
+              {:error, reason} -> {:error, commit_error_reply(reason)}
+            end
+
+          _ ->
+            {:error, "No such room: #{room_uuid}"}
+        end
+    end
+  end
+
+  defp do_unlink(%Parser.Command{argv: []}, _ctx), do: {:error, "Try: @unlink <direction>"}
+
+  # CX-pe8d/CX-p0wx: removes an exit from the current room without
+  # touching the neighbor room — the (rare, deliberate) way to
+  # disconnect two rooms. Never errors if the direction had no exit;
+  # that's a no-op, not a failure.
+  defp do_unlink(%Parser.Command{argv: [direction | _]}, ctx) do
+    direction = String.downcase(direction)
+
+    cond do
+      not Parser.direction?(direction) ->
+        {:error, "Unknown direction: #{direction}"}
+
+      true ->
+        case World.get_room(ctx.current_room_uuid, ctx.store) do
+          {:ok, %Room{exits: exits} = room} ->
+            if Map.has_key?(exits, direction) do
+              new_exits = Map.delete(exits, direction)
+              json = Schemas.encode_room(%Room{room | exits: new_exits})
+
+              case write_current_room_meta(ctx.current_room_uuid, json, ctx) do
+                :ok -> {:reply, "Removed the exit #{direction}."}
+                {:error, reason} -> {:error, commit_error_reply(reason)}
+              end
+            else
+              {:reply, "There is no exit #{direction} to remove."}
+            end
+
+          {:error, reason} ->
+            {:error, commit_error_reply(reason)}
+        end
+    end
+  end
+
+  defp write_current_room_meta(room_dir_uuid, json, ctx) do
+    with {:ok, schema} <- Schemas.load_dir_schema(room_dir_uuid, ctx.store),
+         {:ok, entry} <- Schema.get_entry(schema, Schemas.room_filename()) do
+      Schemas.write_meta_doc(entry.node_id, json, ctx.store, write_opts(ctx))
+    end
+  end
+
+  defp do_teleport(%Parser.Command{argv: []}, _ctx) do
+    {:error, "Try: @teleport <room-uuid>"}
+  end
+
+  # CX-p0wx: the stranded-builder escape hatch — moves the player
+  # directly to any room by uuid, bypassing exits entirely. This is
+  # the recovery path for a builder who got stranded before this fix
+  # existed (or who just wants to jump around while building).
+  #
+  # Gating decision: NOT restricted to builders/owners. @teleport moves
+  # only the player's own location (no shared-tree write — no schema
+  # edit, no exit mutation), so it doesn't touch the trust/section-cert
+  # surface any other verb writes through, and gating it here would add
+  # an identity check that doesn't exist anywhere else in this module
+  # (builder-verb access today is "in @builders", not role/owner based).
+  # Given the MUD's current trust posture (single shared trust domain,
+  # no builder/player role split yet), keep it available to everyone —
+  # revisit if/when the MUD grows real roles.
+  defp do_teleport(%Parser.Command{argv: [room_uuid | _]}, ctx) do
+    case World.get_room(room_uuid, ctx.store) do
+      {:ok, %Room{}} ->
+        case World.move(ctx.player_uuid, ctx.presence_filename, ctx.current_room_uuid, room_uuid, write_opts(ctx)) do
+          :ok ->
+            World.broadcast_room(ctx.current_room_uuid, %{
+              kind: :depart,
+              who: ctx.player_name,
+              to: "elsewhere"
+            })
+
+            World.broadcast_room(room_uuid, %{
+              kind: :arrive,
+              who: ctx.player_name,
+              from: "elsewhere"
+            })
+
+            {:moved, room_uuid}
+
+          {:error, :gone} ->
+            {:error, "You couldn't teleport away — try again."}
+
+          {:error, :collision} ->
+            {:error, "Something blocks your arrival there."}
+
+          {:error, {:trust_rejected, _}} ->
+            {:error, "You don't have permission to teleport there."}
+
+          _ ->
+            {:error, "Teleport failed."}
+        end
+
+      _ ->
+        {:error, "No such room: #{room_uuid}"}
     end
   end
 
@@ -957,7 +1124,12 @@ defmodule Commonplace.MUD.Verbs do
       quit                             disconnect
 
     Builders:
-      @dig <dir> <name>                carve a new room in <dir>
+      @dig <dir> <name>                carve a new room in <dir> (refuses if
+                                       <dir> already has an exit)
+      @link <dir> <room-uuid>          point <dir> at an existing room
+                                       (repoint/recovery; see @dump for uuids)
+      @unlink <dir>                    remove the exit in <dir>
+      @teleport <room-uuid> (@go)      jump directly to a room by uuid
       @create object|room <name>       create here
       @desc <target> <text>            set description (target: here, or obj name)
       @name <target> <new name>        rename
