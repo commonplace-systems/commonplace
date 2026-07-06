@@ -240,48 +240,61 @@ defmodule Commonplace.MCP.AnubisServer do
       {:ok, {:error, reason}} ->
         {:error, Error.execution(stringify(reason)), frame}
 
-      {:error, {kind, reason} = crash} ->
-        # In-band MCP tool error so the agent sees the failure and the
-        # session stays alive. Without this, an exit raised inside the
-        # tool (e.g. CommitStore GenServer.call timeout under load —
-        # CX-0nkq) propagates up through anubis's session GenServer
-        # and tears the stdio transport down.
-        :telemetry.execute(
-          [:commonplace, :mcp, :tool_call, :crashed],
-          %{system_time: System.system_time()},
-          %{tool: name, kind: kind, reason: reason}
-        )
+      {:error, crash} ->
+        if clean_disconnect?(crash) do
+          # CX-gq7a: `GenServer.call` against a session that already
+          # exited normally (e.g. a bot's PlayerSession stopping after
+          # `quit`, drained a beat later) surfaces as `:noproc` — plain
+          # teardown, not a crash. Reporting this as an error with the
+          # CX-0nkq overload hint mis-blamed CommitStore for what is
+          # ordinary session-end housekeeping.
+          {:reply,
+           %{
+             "isError" => false,
+             "content" => [
+               %{"type" => "text", "text" => "tool '#{name}': session ended (clean disconnect)."}
+             ]
+           }, frame}
+        else
+          # In-band MCP tool error so the agent sees the failure and the
+          # session stays alive. Without this, an exit raised inside the
+          # tool (e.g. CommitStore GenServer.call timeout under load —
+          # CX-0nkq) propagates up through anubis's session GenServer
+          # and tears the stdio transport down.
+          {kind, reason} =
+            case crash do
+              {kind, reason, _stack} -> {kind, reason}
+              {kind, reason} -> {kind, reason}
+            end
 
-        log_handler_crash("tools/call(#{name})", crash)
+          :telemetry.execute(
+            [:commonplace, :mcp, :tool_call, :crashed],
+            %{system_time: System.system_time()},
+            %{tool: name, kind: kind, reason: reason}
+          )
 
-        text =
-          "tool '#{name}' crashed: #{kind} #{format_crash_reason(crash)}. " <>
-            "Likely a CommitStore overload (CX-0nkq). Retrying may help."
+          log_handler_crash("tools/call(#{name})", crash)
 
-        {:reply,
-         %{
-           "isError" => true,
-           "content" => [%{"type" => "text", "text" => text}]
-         }, frame}
+          hint =
+            # CX-gq7a: the CX-0nkq overload hint is only warranted for an
+            # actual `GenServer.call` timeout — not for raised exceptions
+            # (`:error`), thrown values (`:throw`), or other exit reasons.
+            # Previously this was appended unconditionally to ANY
+            # tools/call failure.
+            if timeout_crash?(crash) do
+              " Likely a CommitStore overload (CX-0nkq). Retrying may help."
+            else
+              ""
+            end
 
-      {:error, {kind, reason, _stack} = crash} ->
-        :telemetry.execute(
-          [:commonplace, :mcp, :tool_call, :crashed],
-          %{system_time: System.system_time()},
-          %{tool: name, kind: kind, reason: reason}
-        )
+          text = "tool '#{name}' crashed: #{kind} #{format_crash_reason(crash)}.#{hint}"
 
-        log_handler_crash("tools/call(#{name})", crash)
-
-        text =
-          "tool '#{name}' crashed: #{kind} #{format_crash_reason(crash)}. " <>
-            "Likely a CommitStore overload (CX-0nkq). Retrying may help."
-
-        {:reply,
-         %{
-           "isError" => true,
-           "content" => [%{"type" => "text", "text" => text}]
-         }, frame}
+          {:reply,
+           %{
+             "isError" => true,
+             "content" => [%{"type" => "text", "text" => text}]
+           }, frame}
+        end
     end
   end
 
@@ -366,6 +379,34 @@ defmodule Commonplace.MCP.AnubisServer do
   defp format_crash_reason({:throw, value}), do: "throw " <> inspect(value)
   defp format_crash_reason({:error, exception, _stack}), do: Exception.message(exception)
   defp format_crash_reason(other), do: inspect(other)
+
+  @doc """
+  CX-gq7a: true if `crash` (a `safe_invoke/1` error tuple) represents a
+  process that already exited cleanly rather than an actual failure —
+  e.g. a `GenServer.call` against a session process that has already
+  exited (a bot's `PlayerSession` stopping after `quit`, then
+  `Bot.send_input`'s drain call landing a beat later) raises `:noproc`.
+  That's normal teardown, not a tool crash, and must not be reported
+  as one. `:normal` (an exit forwarded straight through, not wrapped
+  in a `GenServer.call` failure tuple) is the same story.
+
+  Public so the distinction is directly testable — mirrors
+  `safe_invoke/1`'s own precedent (CX-re6b).
+  """
+  def clean_disconnect?({:exit, :noproc}), do: true
+  def clean_disconnect?({:exit, {:noproc, _}}), do: true
+  def clean_disconnect?({:exit, :normal}), do: true
+  def clean_disconnect?({:exit, {:normal, _}}), do: true
+  def clean_disconnect?(_), do: false
+
+  @doc """
+  CX-gq7a: true only for a genuine `GenServer.call` timeout — the only
+  case that warrants the CX-0nkq CommitStore-overload hint. Previously
+  the hint was appended unconditionally to any `tools/call` crash.
+  """
+  def timeout_crash?({:exit, :timeout}), do: true
+  def timeout_crash?({:exit, {:timeout, _}}), do: true
+  def timeout_crash?(_), do: false
 
   defp presence_context(frame) do
     %{

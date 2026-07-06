@@ -208,9 +208,26 @@ defmodule Commonplace.MUD.PlayerSession do
     end
   end
 
+  # CX-gq7a: an empty (or whitespace-only) verb body — most commonly
+  # typing '.' as the very first line, before any body text — used to
+  # reach `Yelixer.Types.Text.insert/4` with `text == ""`, which had no
+  # no-op clause and raised `FunctionClauseError`, crashing the
+  # PlayerSession. `Text.insert/4` now has a genuine no-op clause for
+  # empty text (defense in depth), but we also validate here so an
+  # accidental blank save reports a clear message instead of silently
+  # writing (or clearing) a verb with no content.
   defp save_verb(ed, state) do
     source_text = Enum.join(ed.lines, "\n")
 
+    if String.trim(source_text) == "" do
+      state.output_fn.("(save aborted: verb body is empty — type a body before '.', or '@abort' to cancel)")
+      {:noreply, %{state | mode: :normal}}
+    else
+      do_save_verb(ed, source_text, state)
+    end
+  end
+
+  defp do_save_verb(ed, source_text, state) do
     case VerbSource.save_verb(ed.target_uuid, ed.verb_name, source_text, state.store, session_write_opts(state)) do
       :ok ->
         state.output_fn.("(saved #{ed.target_label}:#{ed.verb_name} — compiles cleanly)")

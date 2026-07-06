@@ -291,4 +291,54 @@ defmodule Commonplace.MCP.AnubisServerTest do
                end)
     end
   end
+
+  # CX-gq7a: the CX-0nkq "Likely a CommitStore overload" hint was being
+  # appended unconditionally to ANY tools/call failure, including a
+  # dead-process `:noproc` from a session that exited cleanly (e.g. the
+  # MUD bot bridge draining a `PlayerSession` a beat after `quit`
+  # stopped it). These pin the two predicates that separate "clean
+  # disconnect" from "genuine timeout" so the hint is only shown when
+  # actually warranted.
+  describe "clean_disconnect?/1 (CX-gq7a)" do
+    test "a dead-pid GenServer.call exit is a clean disconnect" do
+      dead = spawn(fn -> :ok end)
+      Process.sleep(20)
+
+      {:error, {:exit, reason}} =
+        AnubisServer.safe_invoke(fn -> GenServer.call(dead, :anything, 100) end)
+
+      assert AnubisServer.clean_disconnect?({:exit, reason})
+      refute AnubisServer.timeout_crash?({:exit, reason})
+    end
+
+    test "bare :noproc and :normal exits are clean disconnects" do
+      assert AnubisServer.clean_disconnect?({:exit, :noproc})
+      assert AnubisServer.clean_disconnect?({:exit, :normal})
+      assert AnubisServer.clean_disconnect?({:exit, {:normal, :extra}})
+    end
+
+    test "a genuine GenServer.call timeout is NOT a clean disconnect" do
+      # An unlinked, unregistered process that never replies to any
+      # message — GenServer.call against it genuinely times out rather
+      # than hitting :noproc, exercising the real CX-0nkq shape.
+      blocker = spawn(fn -> Process.sleep(:infinity) end)
+
+      {:error, {:exit, reason}} =
+        AnubisServer.safe_invoke(fn ->
+          GenServer.call(blocker, :anything, 50)
+        end)
+
+      refute AnubisServer.clean_disconnect?({:exit, reason})
+      assert AnubisServer.timeout_crash?({:exit, reason})
+
+      Process.exit(blocker, :kill)
+    end
+
+    test "a raised exception is neither a clean disconnect nor a timeout" do
+      {:error, crash} = AnubisServer.safe_invoke(fn -> raise "kaboom" end)
+
+      refute AnubisServer.clean_disconnect?(crash)
+      refute AnubisServer.timeout_crash?(crash)
+    end
+  end
 end

@@ -86,8 +86,23 @@ defmodule Commonplace.MUD.Bot do
     with {:ok, session} <- ensure_session(name, opts) do
       :ok = PlayerSession.input_sync(session, line)
       Process.sleep(settle)
-      {:ok, PlayerSession.drain_buffer(session)}
+      drain(session)
     end
+  end
+
+  # CX-gq7a: `input_sync` can legitimately terminate the session before
+  # this drain call lands — e.g. `quit`, which replies `:ok` from
+  # `handle_call` and then `{:stop, :normal, ...}`s. `GenServer.call`
+  # against the now-dead pid raises `:noproc`, which used to propagate
+  # straight up as an uncaught exit (surfacing at the MCP layer as a
+  # crash mis-blamed on CommitStore overload — CX-0nkq). That's plain
+  # session teardown, not a failure — reported as a clean-disconnect
+  # event rather than an error.
+  defp drain(session) do
+    {:ok, PlayerSession.drain_buffer(session)}
+  catch
+    :exit, {:noproc, _} -> {:ok, ["(session ended — clean disconnect)"]}
+    :exit, :noproc -> {:ok, ["(session ended — clean disconnect)"]}
   end
 
   @doc """

@@ -176,4 +176,73 @@ defmodule Commonplace.MUD.PlayerSessionTest do
     PlayerSession.stop(alice)
     PlayerSession.stop(bob)
   end
+
+  # CX-gq7a: saving an empty (or '.' as the very first line) @verb body
+  # used to crash the session — `VerbSource.save_verb` reached
+  # `Yelixer.Types.Text.insert/4` with `text == ""`, which had no
+  # no-op clause and raised `FunctionClauseError`. The fix validates at
+  # the editor layer (player_session's save_verb) so a blank body is a
+  # graceful message, never a crash — and the session must survive.
+  describe "@verb editor: empty/'.' save (CX-gq7a)" do
+    test "saving with an empty body reports a validation message and the session survives",
+         ctx do
+      alice = start_player("alice", ctx)
+      drain("alice")
+
+      send_input(alice, "@verb here:greet")
+      drain("alice")
+
+      # Type '.' immediately — no body lines at all.
+      send_input(alice, ".")
+      out = drain("alice") |> Enum.join("\n")
+
+      assert out =~ "empty"
+      assert Process.alive?(alice)
+
+      # The session is still usable afterwards (didn't crash / restart
+      # into a broken state).
+      send_input(alice, "look")
+      look_out = drain("alice") |> Enum.join("\n")
+      assert look_out =~ "Start Room"
+
+      PlayerSession.stop(alice)
+    end
+
+    test "saving a whitespace-only body also reports a validation message and survives",
+         ctx do
+      alice = start_player("alice", ctx)
+      drain("alice")
+
+      send_input(alice, "@verb here:greet2")
+      drain("alice")
+
+      send_input(alice, "   ")
+      send_input(alice, ".")
+      out = drain("alice") |> Enum.join("\n")
+
+      assert out =~ "empty"
+      assert Process.alive?(alice)
+
+      PlayerSession.stop(alice)
+    end
+
+    test "saving a non-empty verb body still works", ctx do
+      alice = start_player("alice", ctx)
+      drain("alice")
+
+      send_input(alice, "@verb here:greet3")
+      drain("alice")
+
+      send_input(alice, "defmodule UserVerb do")
+      send_input(alice, "  def run(_ctx), do: :ok")
+      send_input(alice, "end")
+      send_input(alice, ".")
+      out = drain("alice") |> Enum.join("\n")
+
+      assert out =~ "compiles cleanly"
+      assert Process.alive?(alice)
+
+      PlayerSession.stop(alice)
+    end
+  end
 end

@@ -112,6 +112,29 @@ defmodule Commonplace.MUD.BotTest do
     assert text =~ "Forest Path"
   end
 
+  # CX-gq7a: "quit" stops the PlayerSession (replies :ok, then
+  # `{:stop, :normal, ...}`); the settle-then-drain that
+  # `Bot.send_input` always does lands against the now-dead pid.
+  # `GenServer.call` there raises `:noproc` — this must be reported as
+  # a clean disconnect, NOT bubble up as a crash (which the MCP layer
+  # used to mis-blame on CommitStore overload — CX-0nkq).
+  test "quit stops the session cleanly — send_input reports a clean disconnect, not a crash",
+       ctx do
+    {:ok, _} = Bot.send_input("bartleby", "look", store: ctx.store, root_uuid: ctx.root)
+
+    assert {:ok, events} = Bot.send_input("bartleby", "quit", store: ctx.store, root_uuid: ctx.root)
+    text = Enum.join(events, "\n")
+    assert text =~ "clean disconnect"
+    refute text =~ "CommitStore"
+
+    # The session really did stop; a subsequent send spawns a fresh one
+    # rather than erroring against the dead pid.
+    assert {:ok, fresh_events} =
+             Bot.send_input("bartleby", "look", store: ctx.store, root_uuid: ctx.root)
+
+    assert Enum.join(fresh_events, "\n") =~ "Start Room"
+  end
+
   test "bot hears human player's say", ctx do
     {:ok, _} = Bot.send_input("bartleby", "look", store: ctx.store, root_uuid: ctx.root)
     alice = human_player("alice", ctx)
