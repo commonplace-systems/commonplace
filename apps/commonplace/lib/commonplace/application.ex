@@ -79,7 +79,8 @@ defmodule Commonplace.Application do
         presence_reaper_children() ++
         compute_rehydrator_children() ++
         federation_pull_children() ++
-        orchestrator_children() ++ bursar_children() ++ git_bridge_children()
+        orchestrator_children() ++
+        bursar_children() ++ git_bridge_children() ++ workspace_lock_children(data_dir)
 
     opts = [strategy: :one_for_one, name: Commonplace.Supervisor]
 
@@ -197,6 +198,30 @@ defmodule Commonplace.Application do
 
       _ ->
         []
+    end
+  end
+
+  @doc false
+  # Workspace single-owner lock (CX-qida): an OS advisory flock(2) on
+  # `<data_dir>/serve.lock`, held for the process lifetime by
+  # `Commonplace.Workspace.Lock`. DOUBLE-GATED like orchestrator_children/0
+  # and bursar_children/0 above — explicit opt-in
+  # (`:workspace_lock_on_boot`, default false). Bare `mix test`, library
+  # embedding, and one-shot CLI commands never set this flag and never
+  # take the lock; only `commonplace serve` and the Phoenix-as-serve
+  # Mode B boot path (COMMONPLACE_DATA_DIR + PHX_SERVER, see
+  # config/runtime.exs) opt in — both are "this process owns the
+  # workspace" declarations, not supervision details. Unlike the
+  # orchestrator/bursar gates this one does NOT also require a
+  # resolvable workspace root: the corruption this guards against
+  # (two CubDB writers on one data_dir) can happen even before a root
+  # file exists (e.g. mid-`commonplace init`), so it gates on data_dir
+  # alone.
+  def workspace_lock_children(data_dir) do
+    if Application.get_env(:commonplace, :workspace_lock_on_boot, false) do
+      [{Commonplace.Workspace.Lock, data_dir: data_dir}]
+    else
+      []
     end
   end
 

@@ -164,8 +164,22 @@ defmodule Commonplace.CLI do
             end
 
             Application.put_env(:commonplace, :data_dir, data_dir)
-            {:ok, _} = Application.ensure_all_started(:commonplace)
-            :ok
+
+            case Application.ensure_all_started(:commonplace) do
+              {:ok, _} ->
+                :ok
+
+              {:error, reason} ->
+                # CX-qida: most commonly the workspace single-owner flock
+                # (Commonplace.Workspace.Lock) refusing to start because
+                # another process already holds <data_dir>/serve.lock —
+                # surface that as a clear, fail-fast CLI error instead of
+                # a raw MatchError crash. Commonplace.Workspace.Lock's
+                # own init/1 already printed the detailed lock/holder
+                # message to stderr; this is the summary.
+                IO.puts(:stderr, "Cannot start commonplace: #{inspect(reason)}")
+                System.halt(1)
+            end
 
           {:error, :locked} ->
             IO.puts(:stderr,

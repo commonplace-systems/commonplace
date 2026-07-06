@@ -23,6 +23,14 @@ defmodule Commonplace.CLI.Serve do
       IO.puts("  Cluster: standalone (set COMMONPLACE_NODES to enable clustering)")
     end
 
+    # CX-qida: serve declares itself the workspace owner before booting
+    # the :commonplace app, so Commonplace.Application starts the
+    # single-owner flock (Commonplace.Workspace.Lock) alongside the
+    # orchestrator/bursar. A second serve on the same data_dir fails
+    # fast here (CLI.ensure_started halts nonzero with the lock's error
+    # message) instead of both processes racing CubDB writes.
+    Application.put_env(:commonplace, :workspace_lock_on_boot, true)
+
     CLI.ensure_started(data_dir)
     root = CLI.root_uuid(data_dir)
 

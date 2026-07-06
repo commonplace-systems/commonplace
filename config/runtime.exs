@@ -20,6 +20,17 @@ if System.get_env("PHX_SERVER") do
   config :commonplace_web, CommonplaceWebWeb.Endpoint, server: true
 end
 
+# CX-qida: Phoenix-as-serve Mode B — booting the web app directly
+# against a real workspace `data_dir` (instead of via `commonplace_cli
+# serve`) makes this process the workspace owner just the same, so it
+# must take the same single-owner flock. Gate on the same combination
+# that identifies Mode B: PHX_SERVER (this boot runs the server) AND
+# COMMONPLACE_DATA_DIR (pointed at a real workspace, not the "data"
+# default used by `mix test`/`mix phx.server` without a workspace).
+if System.get_env("PHX_SERVER") && System.get_env("COMMONPLACE_DATA_DIR") do
+  config :commonplace, workspace_lock_on_boot: true
+end
+
 # CX-xwh4: only override the http binding outside test. In test the
 # binding comes from config/test.exs (127.0.0.1:4002 — the address
 # Wallaby's base_url targets). A blanket runtime override here would
