@@ -283,4 +283,39 @@ defmodule Commonplace.MUD.ContainersTest do
   # `World.move/5` (`SignedWrite` opts threaded via `write_opts/1`) that
   # `take`/`drop`/`give` already use, so the enforcement path itself is
   # unchanged — no new trust surface was introduced.
+
+  # plan #5965: the depth-cap must FAIL CLOSED. With the cap set to 0, a
+  # container with any contents can't be proven acyclic past its first
+  # descendant level, so putting it anywhere is refused (rather than
+  # fail-open ALLOW, which would let a deep-but-acyclic nest form a cycle
+  # beyond the BFS's reach). Box A does NOT contain Box X — the guard
+  # just can't prove it within the bound, so it refuses.
+  test "cycle guard fails CLOSED when the subtree exceeds the depth cap", ctx do
+    Application.put_env(:commonplace, :cycle_guard_max_depth, 0)
+    on_exit(fn -> Application.delete_env(:commonplace, :cycle_guard_max_depth) end)
+
+    alice = start_player("alice", ctx)
+    send_input(alice, "@create object Box A")
+    drain("alice")
+    send_input(alice, "@create object Box X")
+    drain("alice")
+    make_container!(ctx.room, "Box A", ctx)
+    make_container!(ctx.room, "Box X", ctx)
+
+    # Make Box A non-empty (a cloak, one level deep) so its subtree
+    # exceeds cap 0.
+    send_input(alice, "take cloak")
+    drain("alice")
+    send_input(alice, "put cloak in Box A")
+    drain("alice")
+
+    send_input(alice, "put Box A in Box X")
+    out = drain("alice") |> Enum.join("\n")
+    assert out =~ "can't put"
+
+    # And it was NOT moved (fail-closed refused the write).
+    send_input(alice, "look in Box X")
+    look = drain("alice") |> Enum.join("\n")
+    refute look =~ "Box A"
+  end
 end

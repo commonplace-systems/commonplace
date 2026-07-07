@@ -925,7 +925,12 @@ defmodule Commonplace.MUD.Verbs do
   # for the wider concurrent-cross-replica caveat this guard does NOT
   # cover (resolved by move-serialization now, Kleppmann-move / CX-liim
   # for the federated future).
-  @cycle_guard_max_depth 32
+  @default_cycle_guard_max_depth 32
+
+  # Configurable so tests can exercise the fail-closed cap without a
+  # 33-deep fixture, and an operator can tune it. Prod default 32.
+  defp cycle_guard_max_depth,
+    do: Application.get_env(:commonplace, :cycle_guard_max_depth, @default_cycle_guard_max_depth)
 
   defp cycle_guard(item_uuid, container_uuid, _store) when item_uuid == container_uuid do
     {:error, :container_cycle}
@@ -949,10 +954,30 @@ defmodule Commonplace.MUD.Verbs do
     bfs_contains?([root_uuid], MapSet.new([root_uuid]), target_uuid, store, 0)
   end
 
-  defp bfs_contains?(_frontier, _visited, _target, _store, depth) when depth > @cycle_guard_max_depth, do: false
+  # An exhausted frontier means the whole subtree was explored without
+  # finding the target — genuinely acyclic (this precedes the depth
+  # check, so a fully-explored shallow tree is correctly `false`).
   defp bfs_contains?([], _visited, _target, _store, _depth), do: false
 
   defp bfs_contains?(frontier, visited, target_uuid, store, depth) do
+    # FAIL-CLOSED (plan #5965): a non-empty frontier past the depth cap
+    # means we could NOT prove the subtree acyclic within the bound, so
+    # assume a cycle and reject. Returning `false` here would fail OPEN —
+    # a deep-but-acyclic nest past the cap → "no cycle found" → ALLOW →
+    # forms a cycle at depth >cap the guard's own BFS can't reach (a
+    # scriptable DoS: an author verb can loop transfers to build the deep
+    # nest). A true cycle still terminates via the visited-set well before
+    # the cap; this only bites a legit >32-deep nest (absurd for
+    # gameplay), where a false-reject is far cheaper than a missed-cycle
+    # infinite move/render walk.
+    if depth > cycle_guard_max_depth() do
+      true
+    else
+      do_bfs_contains?(frontier, visited, target_uuid, store, depth)
+    end
+  end
+
+  defp do_bfs_contains?(frontier, visited, target_uuid, store, depth) do
     children =
       frontier
       |> Enum.flat_map(fn uuid -> World.list_objects_in(uuid, store) end)
