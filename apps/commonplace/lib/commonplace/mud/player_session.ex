@@ -378,7 +378,13 @@ defmodule Commonplace.MUD.PlayerSession do
           "Common calls (always Commonplace.MUD.World.Facade.<fn>(world, ...)):\n" <>
           "  say(world, text)  ·  emit_action(world, \"lift the lid\", \"lifts the lid\")  [attributed: You / <name>]\n" <>
           "  random(world, n) [1..n]  ·  pick(world, list)  ·  actor_carries?(world, name)\n" <>
-          "  get_state(world, key)  ·  put_state(world, key, value)"
+          "  get_state(world, key)  ·  put_state(world, key, value)\n" <>
+          "State rules (CX-drp2): put_state writes IMMEDIATELY and persists at ANY position — " <>
+          "many per verb all stick; it need NOT be the last line.\n" <>
+          "  value may be a string / number / boolean OR a list / string-keyed map (≤1024 bytes, CX-qexv).\n" <>
+          "  Always Facade.fn(world, ...) with `world` the LITERAL first arg — " <>
+          "NO `world |> Facade.fn(...)` (pipe) and NO nesting; bind reads first: " <>
+          "`n = get_state(world, \"n\"); put_state(world, \"n\", n + 1)`. `world`/`args` can't be reassigned."
       )
     end
 

@@ -86,11 +86,27 @@ defmodule Commonplace.MUD.Verbs do
         if verb_source_exists?(uuid, verb_name, ctx.store) do
           {:ok, :object, uuid, name}
         else
-          :not_found
+          # CX-ylge — the named object exists but has no such verb; fall back
+          # to the ROOM host so a room ("here:") verb can still take an object
+          # NAME as its argument (e.g. `push statue` where statue is in the
+          # room). Without this the object-name shadowed the room verb and the
+          # command died as "I don't understand that." We fall back ONLY to the
+          # room host, NOT to other objects' verb tables — CX-mczs's intent
+          # (a verb on a DIFFERENT object must not fire) is preserved.
+          room_host_verb(verb_name, ctx)
         end
 
       :none ->
         find_verb_by_scope_scan(verb_name, ctx)
+    end
+  end
+
+  # CX-ylge — resolve `verb_name` on the current room host only.
+  defp room_host_verb(verb_name, ctx) do
+    if verb_source_exists?(ctx.current_room_uuid, verb_name, ctx.store) do
+      {:ok, :room, ctx.current_room_uuid, "here"}
+    else
+      :not_found
     end
   end
 
@@ -256,6 +272,13 @@ defmodule Commonplace.MUD.Verbs do
         {:error,
          "(verb #{verb_name}: state value rejected — must be a JSON value " <>
            "(string / number / boolean / list / string-keyed map), nested ≤ 8 deep and ≤ 1024 bytes)"}
+
+      # CX-a3rq — a ROOM-hosted verb called an object-only effect
+      # (consume/destroy_child/move_object); the facade refused with
+      # :requires_object_host. Same swallow shape as above — surface it as a
+      # player-facing "won't work here" instead of a silent no-op.
+      {:ok, {:error, :requires_object_host}} ->
+        {:error, "(verb #{verb_name} can't do that here — it needs an object to act on, not a room)"}
 
       {:ok, _} ->
         :ok

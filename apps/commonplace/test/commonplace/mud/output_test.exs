@@ -494,6 +494,42 @@ defmodule Commonplace.MUD.OutputTest do
       PlayerSession.stop(alice)
     end
 
+    test "CX-drp2 REPRO: a NON-last put_state persists through real dispatch (the 'must be last' model is FALSE)",
+         ctx do
+      alice = start_player("alice", ctx)
+      drain("alice")
+      send_input(alice, "east")
+      drain("alice")
+
+      send_input(alice, "@create object gadget")
+      drain("alice")
+
+      {:ok, entry} = Commonplace.MUD.World.find_entry_by_name(clearing_uuid(ctx), "gadget", ctx.store)
+      dir = entry.node_id
+
+      # "first" is written, THEN a say, THEN "second" — so "first" is NOT the
+      # verb's final expression. CX-drp2's reported model says a non-last
+      # put_state is silently discarded; if that were true "first" would be
+      # gone. put_state commits immediately (set_meta), position-independent,
+      # so BOTH must persist.
+      body =
+        ~s|Commonplace.MUD.World.Facade.put_state(world, "first", "A")\n| <>
+          ~s|Commonplace.MUD.World.Facade.say(world, "midway")\n| <>
+          ~s|Commonplace.MUD.World.Facade.put_state(world, "second", "B")|
+
+      :ok = VerbSource.save_safe_verb(dir, "multiwrite", body, [dir], ctx.store)
+
+      send_input(alice, "multiwrite gadget")
+      drain("alice")
+
+      {:ok, meta} = Commonplace.MUD.World.get_meta_map(dir, Schemas.object_filename(), ctx.store)
+      state = meta["state"] || %{}
+      assert state["first"] == "A", "NON-last put_state was discarded — 'must be last' model would be REAL"
+      assert state["second"] == "B"
+
+      PlayerSession.stop(alice)
+    end
+
     test "a never-locked container behaves exactly as before (regression)", ctx do
       alice = start_player("alice", ctx)
       drain("alice")
@@ -573,6 +609,71 @@ defmodule Commonplace.MUD.OutputTest do
       send_input(alice, "get gold from vault")
       allowed = drain("alice") |> Enum.join("\n")
       assert allowed =~ "You get gold from vault."
+
+      PlayerSession.stop(alice)
+    end
+  end
+
+  describe "CX-ylge / CX-a3rq: room-verb dispatch + object-host guard surfacing" do
+    test "CX-ylge: a room verb fires even when its first arg NAMES an in-room object", ctx do
+      alice = start_player("alice", ctx)
+      drain("alice")
+      send_input(alice, "east")
+      drain("alice")
+
+      # An in-room object whose NAME will be the verb's argument.
+      send_input(alice, "@create object statue")
+      drain("alice")
+
+      # A ROOM ("here:") verb — authored on the current room, not on any object.
+      room = clearing_uuid(ctx)
+
+      :ok =
+        VerbSource.save_safe_verb(
+          room,
+          "probemove",
+          ~s|Commonplace.MUD.World.Facade.say(world, "ROOMVERB-FIRED:" <> args.target)|,
+          [room],
+          ctx.store
+        )
+
+      # Arg is a NON-object word → room verb already worked (control).
+      send_input(alice, "probemove xyzzy")
+      control = drain("alice") |> Enum.join("\n")
+      assert control =~ "ROOMVERB-FIRED:xyzzy"
+
+      # Arg NAMES an in-room object → pre-fix this died as "I don't understand
+      # that" (the object-name shadowed the room verb). Now it must fire.
+      send_input(alice, "probemove statue")
+      out = drain("alice") |> Enum.join("\n")
+      assert out =~ "ROOMVERB-FIRED:statue"
+      refute out =~ "don't understand"
+
+      PlayerSession.stop(alice)
+    end
+
+    test "CX-a3rq: a room verb calling an object-only effect surfaces :requires_object_host to the actor", ctx do
+      alice = start_player("alice", ctx)
+      drain("alice")
+      send_input(alice, "east")
+      drain("alice")
+
+      room = clearing_uuid(ctx)
+
+      # consume/2 is object-host only; on a ROOM host the facade refuses with
+      # :requires_object_host. Pre-CX-a3rq that was a silent no-op.
+      :ok =
+        VerbSource.save_safe_verb(
+          room,
+          "vanish",
+          ~s|Commonplace.MUD.World.Facade.consume(world)|,
+          [room],
+          ctx.store
+        )
+
+      send_input(alice, "vanish")
+      out = drain("alice") |> Enum.join("\n")
+      assert out =~ "needs an object to act on"
 
       PlayerSession.stop(alice)
     end
