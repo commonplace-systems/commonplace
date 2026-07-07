@@ -268,6 +268,38 @@ defmodule Commonplace.MUD.World.Facade do
   # Reject list/map/tuple/other — JSON scalars only.
   defp validate_state_value(_), do: {:error, :state_bounds}
 
+  # ---- randomness (CX-9plf) — no effect, no authority: just RNG ----
+  #
+  # CONVERGENCE SAFETY (plan #5976 — load-bearing, don't reopen): RNG in a
+  # verb is safe ONLY because verbs are SINGLE-EXECUTION-then-sync. A verb
+  # runs ONCE on the node dispatching the player's command; its EFFECTS
+  # (commits) sync, and DocBuilder replays those COMMITS, not the verb
+  # code — so producing a different number per run can't threaten
+  # convergence (there is only one run). REVIEW TRIGGER: if verb dispatch
+  # is ever made deterministic-replayable / re-run-per-replica (like
+  # compute/snapshot minting), RNG here would diverge each replica —
+  # remove RNG or seed it deterministically FIRST.
+
+  @doc """
+  CX-9plf — a random integer in `1..n` (dice-style: `random(world, 6)` is
+  a d6). `n` must be a positive integer, else `{:error, :bad_arg}`.
+  Server-side `:rand` (the allowlist bans `Enum.random`/`:rand` by
+  closed-by-default; this is the sanctioned exposure). Cosmetic — no
+  effect, no doc write, no authority.
+  """
+  @spec random(t(), integer()) :: pos_integer() | {:error, :bad_arg}
+  def random(%__MODULE__{}, n) when is_integer(n) and n > 0, do: :rand.uniform(n)
+  def random(%__MODULE__{}, _n), do: {:error, :bad_arg}
+
+  @doc """
+  CX-9plf — a random element of a non-empty list (`nil` if empty or not a
+  list). For shuffled flavor text / random fortunes.
+  """
+  @spec pick(t(), list()) :: term()
+  def pick(%__MODULE__{}, []), do: nil
+  def pick(%__MODULE__{}, list) when is_list(list), do: Enum.random(list)
+  def pick(%__MODULE__{}, _), do: nil
+
   @doc """
   Create a new child object named `name` under this facade's bound
   object. Grant-checked against `{object_uuid}` (the parent). Returns

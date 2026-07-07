@@ -74,6 +74,14 @@ defmodule Commonplace.MUD.SafeVerb.AllowlistTest do
       assert :ok == Allowlist.check(~s|Commonplace.MUD.World.Facade.put_state(world, "lit", true)|)
     end
 
+    # CX-9plf — RNG primitives admitted; raw Enum.random/:rand still banned.
+    test "(f7) Facade.random/2 + pick/2 pass; raw Enum.random / :rand stay rejected" do
+      assert :ok == Allowlist.check(~s|Commonplace.MUD.World.Facade.random(world, 6)|)
+      assert :ok == Allowlist.check(~s|Commonplace.MUD.World.Facade.pick(world, ["a", "b"])|)
+      assert_rejected(~s|Enum.random([1, 2, 3])|)
+      assert_rejected(~s|:rand.uniform(6)|)
+    end
+
     test "(f3) the qualified facade form is refused when the first arg isn't the literal world binding" do
       assert_rejected(~s|other = world\nCommonplace.MUD.World.Facade.set_attr(other, "k", "v")|)
       assert_rejected(~s|Commonplace.MUD.World.Facade.set_attr(args, "k", "v")|)

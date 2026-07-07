@@ -182,9 +182,9 @@ defmodule Commonplace.MUD.SafeVerb.Allowlist do
       Facade carve: `Commonplace.MUD.World.Facade.<fun>(world, ...)`
         with `world` as the LITERAL first arg, `<fun>/<arity>` one of
         look/1 describe/2 get_attr/2 move/2 set_attr/3 create_child/2
-        transfer/3 say/2 emit/2 emit_action/3 get_state/2 put_state/3 (the
-        @facade_allowed action set — NOT the constructor new/5).
-        `world`/`args` are un-rebindable.
+        transfer/3 say/2 emit/2 emit_action/3 get_state/2 put_state/3
+        random/2 pick/2 (the @facade_allowed action set — NOT the
+        constructor new/5). `world`/`args` are un-rebindable.
 
       Sigils (data-only): ~c ~s ~w. (All others rejected.)
 
@@ -445,7 +445,11 @@ defmodule Commonplace.MUD.SafeVerb.Allowlist do
                     # put_state writes it (owner-scoped, bounded, dedicated
                     # meta[state] submap). Unlocks stateful mechanics.
                     {:get_state, 2},
-                    {:put_state, 3}
+                    {:put_state, 3},
+                    # CX-9plf — sanctioned RNG (no effect/authority; just a
+                    # number/element). random(world, n) = 1..n; pick a list.
+                    {:random, 2},
+                    {:pick, 2}
                   ])
 
   # VECTOR 11 — reflective / capability side-channels that WEAR a

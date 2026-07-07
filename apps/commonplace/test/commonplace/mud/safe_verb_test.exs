@@ -313,6 +313,31 @@ defmodule Commonplace.MUD.SafeVerbTest do
     end
   end
 
+  describe "CX-9plf RNG — random / pick" do
+    test "random returns 1..n; bad n → :bad_arg", %{store: store, target_dir_uuid: dir} do
+      f = Facade.new(%{}, dir, [dir], nil, store)
+
+      for _ <- 1..100 do
+        r = Facade.random(f, 6)
+        assert r in 1..6
+      end
+
+      assert Facade.random(f, 1) == 1
+      assert {:error, :bad_arg} = Facade.random(f, 0)
+      assert {:error, :bad_arg} = Facade.random(f, -3)
+      assert {:error, :bad_arg} = Facade.random(f, "x")
+    end
+
+    test "pick returns a list element; nil on empty / non-list", %{store: store, target_dir_uuid: dir} do
+      f = Facade.new(%{}, dir, [dir], nil, store)
+
+      assert Facade.pick(f, [:only]) == :only
+      assert Facade.pick(f, ["a", "b", "c"]) in ["a", "b", "c"]
+      assert Facade.pick(f, []) == nil
+      assert Facade.pick(f, "not a list") == nil
+    end
+  end
+
   describe "legacy vs. safe authoring boundary (pin 8)" do
     test "the legacy full-defmodule path still compiles+runs unchanged (no regression)", %{
       store: store,
