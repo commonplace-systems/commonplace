@@ -383,9 +383,29 @@ defmodule Commonplace.MCP do
               # for any ViewActionDispatch path that runs in the
               # escript's process and touches workspace-scoped state.
               Application.put_env(:commonplace, :data_dir, data_dir)
+              mirror_serve_citizenship_mode(serve_node)
               {:ok, root_uuid, data_dir}
             end
         end
+    end
+  end
+
+  # CX-11p5: escripts don't run config/runtime.exs, so the escript's
+  # :mud_full_citizenship app-env defaults to `false` regardless of the
+  # serve's setting. A Bot driven escript-side reads THIS flag; when false
+  # it takes the STARTER path (presence into the shared start room), which
+  # is {:trust_rejected, :capability_insufficient} on an enforce serve —
+  # only the full-citizen path (spawn in the bot's OWN home, authorized by
+  # its home zone cert) bootstraps under enforce. Mirror the serve's mode
+  # into the escript so escript-driven bots match the serve they attach to.
+  # (CX-z0v7 makes this moot by running the Bot ON the serve.)
+  defp mirror_serve_citizenship_mode(serve_node) do
+    case :rpc.call(serve_node, Application, :get_env, [:commonplace, :mud_full_citizenship]) do
+      flag when is_boolean(flag) ->
+        Application.put_env(:commonplace, :mud_full_citizenship, flag)
+
+      _ ->
+        :ok
     end
   end
 

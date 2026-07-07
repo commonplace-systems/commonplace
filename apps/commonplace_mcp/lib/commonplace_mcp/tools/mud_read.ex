@@ -36,7 +36,9 @@ defmodule Commonplace.MCP.Tools.MudRead do
         {:ok, Response.text(events_text, %{"events" => events})}
 
       {:error, reason} ->
-        {:error, :invalid_params, "MUD read failed: #{inspect(reason)}"}
+        # See mud_send: a Bot runtime failure is a legible tool result
+        # (isError), NOT a protocol -32602 "Invalid params" (CX-11p5).
+        {:ok, Response.error("MUD read failed: #{inspect(reason)}")}
     end
   end
 

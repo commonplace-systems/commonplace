@@ -46,7 +46,13 @@ defmodule Commonplace.MCP.Tools.MudSend do
         {:ok, Response.text(events_text, %{"events" => events})}
 
       {:error, reason} ->
-        {:error, :invalid_params, "MUD send failed: #{inspect(reason)}"}
+        # A Bot runtime failure (e.g. {:bootstrap_failed, {:trust_rejected,
+        # _}}) is NOT a protocol param error — surface it as a legible tool
+        # result (isError), not a cryptic JSON-RPC -32602 "Invalid params"
+        # (which hid the real reason and cost real diagnosis time — CX-11p5).
+        # `:invalid_params` is reserved for the genuine arg-shape mismatch
+        # in the fallback clause below.
+        {:ok, Response.error("MUD send failed: #{inspect(reason)}")}
     end
   end
 
