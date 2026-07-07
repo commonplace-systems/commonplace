@@ -52,6 +52,14 @@ if gate = System.get_env("COMMONPLACE_LOCAL_WRITE_GATE") do
   config :commonplace, local_write_gate: String.to_atom(gate)
 end
 
+# CX-gjpi — the :5199 multiplayer serve opts bots into FULL citizenship (own
+# home + spawn-in-home, co-present with human players in the grafted "mud"
+# world) via this env. Absent (dogfood, standalone) → bots keep the simpler
+# starter-cert + shared-start-spawn behavior. Per-node, like the gate above.
+if System.get_env("COMMONPLACE_MUD_FULL_CITIZENSHIP") in ~w(1 true yes enforce on) do
+  config :commonplace, mud_full_citizenship: true
+end
+
 # CX-xwh4: only override the http binding outside test. In test the
 # binding comes from config/test.exs (127.0.0.1:4002 — the address
 # Wallaby's base_url targets). A blanket runtime override here would

@@ -205,13 +205,56 @@ defmodule Commonplace.MUD.Bot do
 
     case Identity.register_agent(name, root, store, registrar_opts) do
       {:ok, identity_uuid, pub} ->
-        starter = issue_presence_starter_cert(identity_uuid, pub, store)
-        cert_cids = Enum.uniq(starter ++ provisioned_certs(name))
-        [player_identity_uuid: identity_uuid, secret_store: secret_store, cert_cids: cert_cids]
+        # CX-gjpi — in a GRAFTED mud world (the :5199 curated world under
+        # "mud", where `root` is a subtree ≠ the workspace root), a bot
+        # becomes a FULL CITIZEN via the SAME `Citizenship.ensure/5` seam the
+        # web login uses: presence-starter cert + a node-signed home ROOM it
+        # OWNS + spawn-in-home. "One citizenship mechanism, two callers" — so
+        # a bot is a full citizen (own identity, own home, own permissions)
+        # co-present with human players. A NON-grafted world (dogfood, tests:
+        # root == workspace root) keeps the simpler starter-cert + shared-
+        # start-spawn behavior — unchanged.
+        if full_citizenship?() do
+          full_citizen_opts(identity_uuid, pub, name, root, store, secret_store)
+        else
+          starter_cert_opts(identity_uuid, pub, name, store, secret_store)
+        end
 
       {:error, _reason} ->
         []
     end
+  end
+
+  defp full_citizen_opts(identity_uuid, pub, name, root, store, secret_store) do
+    case Commonplace.MUD.Citizenship.ensure(identity_uuid, pub, name, root, store) do
+      {:ok, %{cert_cids: cids, home_room_uuid: home_room_uuid}} ->
+        [
+          player_identity_uuid: identity_uuid,
+          secret_store: secret_store,
+          cert_cids: Enum.uniq(cids ++ provisioned_certs(name)),
+          spawn_room_uuid: home_room_uuid
+        ]
+
+      # Home-provision failed — fall back to starter-cert-only (bot still
+      # spawns, at the shared start room). Never blocks a bot from spawning.
+      _ ->
+        starter_cert_opts(identity_uuid, pub, name, store, secret_store)
+    end
+  end
+
+  defp starter_cert_opts(identity_uuid, pub, name, store, secret_store) do
+    starter = issue_presence_starter_cert(identity_uuid, pub, store)
+    cert_cids = Enum.uniq(starter ++ provisioned_certs(name))
+    [player_identity_uuid: identity_uuid, secret_store: secret_store, cert_cids: cert_cids]
+  end
+
+  # CX-gjpi — the full-citizen bot model (own home + spawn-in-home, co-present
+  # with human players) is OPT-IN per node via app env, exactly like
+  # `:mud_provisioned_certs` / `:local_write_gate`. The :5199 multiplayer
+  # serve sets it true; dogfood + tests leave it false (default) → bots keep
+  # the simpler starter-cert + shared-start-spawn behavior, fully unchanged.
+  defp full_citizenship? do
+    Application.get_env(:commonplace, :mud_full_citizenship, false)
   end
 
   # CX-0a9a (zone-ownership M1): certs granted to a bot OUT OF BAND — e.g.
@@ -258,8 +301,27 @@ defmodule Commonplace.MUD.Bot do
 
   defp resolve_root do
     case Commonplace.Workspace.root_uuid() do
-      {:ok, uuid} -> uuid
+      {:ok, root} -> if full_citizenship?(), do: mud_world_root(root), else: root
       _ -> nil
+    end
+  end
+
+  # CX-gjpi — if the workspace has a "mud" subtree (the migrated curated
+  # world grafted under the :5199 root), bots spawn INTO it, co-present with
+  # web players whose `MudLive` is rooted there too. A workspace with no
+  # "mud" entry (e.g. a standalone dogfood world that IS the MUD) roots at
+  # its own root, unchanged. Callers can still override with `:root_uuid`.
+  defp mud_world_root(workspace_root) do
+    loader = fn uuid ->
+      case Commonplace.Tree.DocBuilder.reconstruct_doc(CommitStoreClient, uuid) do
+        {:ok, doc} -> doc
+        _ -> Yelixer.Doc.new()
+      end
+    end
+
+    case Commonplace.Tree.Walk.resolve_path(workspace_root, "mud", loader) do
+      {:ok, mud_root} -> mud_root
+      _ -> workspace_root
     end
   end
 end
