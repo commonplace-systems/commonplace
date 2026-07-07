@@ -186,14 +186,13 @@ defmodule Commonplace.Trust do
         :presence ->
           presence_doc_carve_ok?(before_doc(before), after_doc, identity_uuid)
 
-        # Fresh doc (no prior commits). The only legitimate fresh target
-        # under a presence cert is a presence-DOC create; a fresh schema
-        # (carries an "entries" type) is not something a presence cert may
-        # author, so refuse it.
+        # Fresh doc (no prior commits) — a create. Gated by the same
+        # presence-doc check, which requires the new doc to be
+        # EXCLUSIVELY a valid own-presence (bound == signer AND no
+        # bundled "entries" type), so a create can't shape-confuse by
+        # bundling presence content + a fake schema type in one write.
         :none ->
-          if Doc.has_type?(after_doc, "entries"),
-            do: false,
-            else: presence_doc_carve_ok?(Doc.new(), after_doc, identity_uuid)
+          presence_doc_carve_ok?(Doc.new(), after_doc, identity_uuid)
       end
     else
       _ -> false
@@ -276,16 +275,21 @@ defmodule Commonplace.Trust do
   end
 
   # --- presence branch: target is the presence doc itself ---
-  # after.bound_identity == signer AND before.bound_identity ∈ {nil,
-  # signer}: blocks both binding-to-another-identity (create) and
-  # rebinding an existing presence doc to hijack it (Sharpening 2's
-  # immutability). Other fields (name/status/heartbeat/…) are advisory
-  # (D2) and unrestricted.
+  # A presence doc must NEVER gain an "entries" (schema) type — that would
+  # flip its established before-type on a LATER write and reroute it to the
+  # schema branch (deferred shape-confusion). Enforcing it here keeps a
+  # presence doc's classification stable forever. Then: after.bound_identity
+  # == signer AND before.bound_identity ∈ {nil, signer} — blocks both
+  # binding-to-another-identity (create) and rebinding an existing presence
+  # doc to hijack it (Sharpening 2's immutability). Other fields
+  # (name/status/heartbeat/…) are advisory (D2) and unrestricted.
   defp presence_doc_carve_ok?(before_doc, after_doc, identity_uuid) do
     after_bid = presence_field(after_doc, "bound_identity")
     before_bid = presence_field(before_doc, "bound_identity")
 
-    after_bid == identity_uuid and before_bid in [nil, identity_uuid]
+    not Doc.has_type?(after_doc, "entries") and
+      after_bid == identity_uuid and
+      before_bid in [nil, identity_uuid]
   end
 
   defp presence_field(doc, key) do

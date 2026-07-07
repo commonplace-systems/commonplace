@@ -207,12 +207,27 @@ defmodule Commonplace.MUD.Bot do
 
     case Identity.register_agent(name, root, store, registrar_opts) do
       {:ok, identity_uuid, pub} ->
-        cert_cids = issue_presence_starter_cert(identity_uuid, pub, store)
+        starter = issue_presence_starter_cert(identity_uuid, pub, store)
+        cert_cids = Enum.uniq(starter ++ provisioned_certs(name))
         [player_identity_uuid: identity_uuid, secret_store: secret_store, cert_cids: cert_cids]
 
       {:error, _reason} ->
         []
     end
+  end
+
+  # CX-0a9a (zone-ownership M1): certs granted to a bot OUT OF BAND — e.g.
+  # a zone-owner's section cert issued by admin at provisioning time —
+  # can't be log-discovered before they've authored a commit (the same
+  # blind spot `issue_presence_starter_cert/3` sidesteps by issuing the
+  # starter cert here at spawn). For M1's known bots those provisioned
+  # cert CIDs are threaded explicitly via app env, keyed by bot name — a
+  # deliberate stand-in for a by-audience capability index / the M2
+  # dynamic-join self-provisioning path. Empty (default) for every bot
+  # that was never provisioned anything, so this is inert unless set.
+  defp provisioned_certs(name) do
+    Application.get_env(:commonplace, :mud_provisioned_certs, %{})
+    |> Map.get(name, [])
   end
 
   # Mints+signs+persists the presence-starter cert. `Capability.issue/5`
