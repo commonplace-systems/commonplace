@@ -41,7 +41,9 @@ defmodule CommonplaceWebWeb.MudLive do
 
   use CommonplaceWebWeb, :live_view
 
-  alias Commonplace.MUD.{Citizenship, PlayerSession, SessionView, SessionViewRegistry}
+  require Logger
+
+  alias Commonplace.MUD.{Citizenship, PlayerSession, SessionView, SessionViewLink, SessionViewRegistry}
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.{DocBuilder, Walk}
   alias CommonplaceWebWeb.SessionIdentity
@@ -75,6 +77,18 @@ defmodule CommonplaceWebWeb.MudLive do
     name = player_name(resolved.presence_path)
     store = CommitStoreClient
 
+    # CX-i9j3 (UI Inc-1 increment 4b): `mud_root` and the player's
+    # `home_room_uuid` (from `Citizenship.ensure/5`) must be resolved
+    # BEFORE minting/loading the view — a freshly-minted view needs
+    # `home_room_uuid` in hand so it can be tree-linked immediately (see
+    # `load_or_new_view/3` / `SessionViewLink`). A resolution failure
+    # here degrades to `home_room_uuid: nil`, `mud_root: nil` — the
+    # player still gets a *working* (floating, unlinked) view-doc and
+    # session, they just can't start a `PlayerSession` without a world
+    # root. This mirrors the pre-existing error-only-socket behavior for
+    # these two failure cases.
+    {mud_root, home_room_uuid, cert_cids, error} = resolve_home(resolved, name, store)
+
     # CX-i9j3 (UI Inc-1 increment 4): the transcript is a committed
     # `SessionView` (one Yjs-XML view-doc), and now it SURVIVES reconnect —
     # `SessionViewRegistry` remembers this identity's current view_uuid
@@ -86,22 +100,39 @@ defmodule CommonplaceWebWeb.MudLive do
     # `SessionView`'s `reregister_root_tag/1`; skipping it yields a corrupt
     # nil-root doc). A missing/stale pointer (nothing registered yet, or a
     # `load/2` failure) falls back to a fresh `SessionView.new/3`, which is
-    # then (re-)registered. Uses the same `store` (CommitStoreClient) as the
-    # rest of MudLive — SessionView routes its genesis + appends through the
-    # client layer.
-    view = load_or_new_view(resolved.identity_uuid, store)
+    # then (re-)registered AND tree-linked (increment 4b) under the
+    # player's home — see `load_or_new_view/3`. Uses the same `store`
+    # (CommitStoreClient) as the rest of MudLive — SessionView routes its
+    # genesis + appends through the client layer.
+    view = load_or_new_view(resolved.identity_uuid, store, home_room_uuid)
 
     socket =
       socket
       |> assign(:authed, true)
-      |> assign(:error, nil)
+      |> assign(:error, error)
       |> assign(:view, view)
       |> assign(:ambient_buffer, SessionView.buffer_new())
       |> assign(:session_pid, nil)
       |> assign(:input_key, 0)
-      |> assign(:home_room_uuid, nil)
+      |> assign(:home_room_uuid, home_room_uuid)
       |> assign(:player_name, name)
 
+    socket =
+      if connected?(socket) and is_binary(mud_root) and is_binary(home_room_uuid) do
+        start_session(socket, name, mud_root, store, resolved, cert_cids, home_room_uuid)
+      else
+        socket
+      end
+
+    {:ok, socket}
+  end
+
+  # Resolves `mud_root` + this player's `home_room_uuid` (via
+  # `Citizenship.ensure/5`). Returns `{mud_root, home_room_uuid,
+  # cert_cids, error}` — `mud_root`/`home_room_uuid` are `nil` and
+  # `error` is a user-facing string on either failure, matching the
+  # pre-4b behavior of surfacing a mount-time error for these two cases.
+  defp resolve_home(resolved, name, store) do
     case resolve_mud_root(store) do
       {:ok, mud_root} ->
         pub = resolved.signing_context.public_key
@@ -113,23 +144,14 @@ defmodule CommonplaceWebWeb.MudLive do
         # session.
         case Citizenship.ensure(resolved.identity_uuid, pub, name, mud_root, store) do
           {:ok, %{cert_cids: cert_cids, home_room_uuid: home_room_uuid}} ->
-            socket = assign(socket, :home_room_uuid, home_room_uuid)
-
-            socket =
-              if connected?(socket) do
-                start_session(socket, name, mud_root, store, resolved, cert_cids, home_room_uuid)
-              else
-                socket
-              end
-
-            {:ok, socket}
+            {mud_root, home_room_uuid, cert_cids, nil}
 
           {:error, reason} ->
-            {:ok, assign(socket, :error, "Could not provision your MUD home: #{inspect(reason)}")}
+            {nil, nil, [], "Could not provision your MUD home: #{inspect(reason)}"}
         end
 
       {:error, reason} ->
-        {:ok, assign(socket, :error, "The MUD world isn't available right now (#{inspect(reason)}).")}
+        {nil, nil, [], "The MUD world isn't available right now (#{inspect(reason)})."}
     end
   end
 
@@ -138,12 +160,19 @@ defmodule CommonplaceWebWeb.MudLive do
   # sanctioned reconstruction path — see the call site's comment). A
   # `load/2` failure (`{:error, _}`, e.g. a stale/garbage-collected uuid)
   # falls back to minting a fresh view rather than crashing the mount.
-  defp load_or_new_view(identity_uuid, store) do
+  #
+  # CX-i9j3 (UI Inc-1 increment 4b): every MINT branch (fresh identity, or
+  # a stale pointer whose `load/2` failed) also tree-links the new view
+  # under the player's home (`maybe_link_view/3`) so it's
+  # reachable-from-root, not just registry-reachable. The RELOAD branch
+  # (`SessionView.load/2` succeeds) deliberately does NOT call the linker
+  # — the view was already linked when it was first minted, and
+  # re-linking on every reconnect would be redundant (idempotent, but
+  # pointless) work.
+  defp load_or_new_view(identity_uuid, store, home_room_uuid) do
     case SessionViewRegistry.get(identity_uuid) do
       nil ->
-        view = SessionView.new(identity_uuid, store)
-        SessionViewRegistry.put(identity_uuid, view.uuid)
-        view
+        mint_and_link(identity_uuid, store, home_room_uuid)
 
       view_uuid ->
         case SessionView.load(view_uuid, store) do
@@ -151,11 +180,45 @@ defmodule CommonplaceWebWeb.MudLive do
             view
 
           {:error, _reason} ->
-            view = SessionView.new(identity_uuid, store)
-            SessionViewRegistry.put(identity_uuid, view.uuid)
-            view
+            mint_and_link(identity_uuid, store, home_room_uuid)
         end
     end
+  end
+
+  defp mint_and_link(identity_uuid, store, home_room_uuid) do
+    view = SessionView.new(identity_uuid, store)
+    SessionViewRegistry.put(identity_uuid, view.uuid)
+    maybe_link_view(view, home_room_uuid, store)
+    view
+  end
+
+  # `home_room_uuid` is `nil` when `resolve_home/3` failed — nothing to
+  # link under, skip silently (the mount-level `error` assign already
+  # surfaces that failure to the player).
+  defp maybe_link_view(_view, nil, _store), do: :ok
+
+  # A linking failure (e.g. a commit rejected under enforce) must never
+  # crash the mount — the player still has a perfectly usable (if
+  # floating/unlinked) view-doc. Log and move on.
+  defp maybe_link_view(view, home_room_uuid, store) do
+    case SessionViewLink.link(home_room_uuid, view.uuid, store) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "MudLive: failed to tree-link session view #{view.uuid} under home #{home_room_uuid}: #{inspect(reason)}"
+        )
+
+        :ok
+    end
+  rescue
+    e ->
+      Logger.warning(
+        "MudLive: exception tree-linking session view #{view.uuid} under home #{home_room_uuid}: #{Exception.message(e)}"
+      )
+
+      :ok
   end
 
   defp start_session(socket, name, mud_root, store, resolved, cert_cids, home_room_uuid) do

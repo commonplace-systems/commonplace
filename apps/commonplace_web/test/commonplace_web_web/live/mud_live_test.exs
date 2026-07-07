@@ -26,7 +26,7 @@ defmodule CommonplaceWebWeb.MudLiveTest do
 
   alias Commonplace.Invites
   alias Commonplace.Store.CommitStore
-  alias Commonplace.Tree.Schema
+  alias Commonplace.Tree.{DocBuilder, Schema, Walk}
   alias CommonplaceWebWeb.MudLive
 
   test "anonymous mount shows the login-required message, no session started", %{conn: conn} do
@@ -185,6 +185,57 @@ defmodule CommonplaceWebWeb.MudLiveTest do
 
       assert html2 =~ "xyzzy-marker-one",
              "reconnect for the same identity must restore the prior transcript via SessionView.load/2"
+    end
+
+    test "a freshly-minted session view is tree-linked and reachable from the workspace/mud root",
+         %{conn: conn, root: root} do
+      {:ok, view, _html} = live_isolated(conn, MudLive, session: get_session(conn))
+
+      socket = :sys.get_state(view.pid).socket
+      view_uuid = socket.assigns.view.uuid
+      home_room_uuid = socket.assigns.home_room_uuid
+
+      assert is_binary(home_room_uuid),
+             "home_room_uuid must resolve for the tree-link to have a parent to attach under"
+
+      loader = fn uuid ->
+        case DocBuilder.reconstruct_doc(Commonplace.Store.CommitStoreClient, uuid) do
+          {:ok, doc} -> doc
+          _ -> Yelixer.Doc.new()
+        end
+      end
+
+      reachable = Walk.reachable_uuids(root, loader)
+
+      assert MapSet.member?(reachable, view_uuid),
+             "freshly-minted view-doc #{view_uuid} must be reachable by walking the tree from the workspace root — " <>
+               "it is currently ONLY reachable via the in-memory SessionViewRegistry (GC-orphanable, does not " <>
+               "survive a serve restart)"
+    end
+
+    test "a reconnect (registry hit) does NOT create a duplicate sessions/ link", %{conn: conn} do
+      {:ok, view1, _html} = live_isolated(conn, MudLive, session: get_session(conn))
+      socket1 = :sys.get_state(view1.pid).socket
+      view_uuid = socket1.assigns.view.uuid
+      home_room_uuid = socket1.assigns.home_room_uuid
+
+      # Second mount for the SAME identity — a registry hit, `SessionView.load/2`
+      # reloads the SAME view_uuid rather than minting a fresh one.
+      {:ok, view2, _html2} = live_isolated(conn, MudLive, session: get_session(conn))
+      socket2 = :sys.get_state(view2.pid).socket
+      assert socket2.assigns.view.uuid == view_uuid
+
+      {:ok, sessions_dir_uuid} =
+        Walk.resolve_path(home_room_uuid, "sessions", fn uuid ->
+          {:ok, doc} = DocBuilder.reconstruct_doc(Commonplace.Store.CommitStoreClient, uuid)
+          doc
+        end)
+
+      {:ok, sessions_doc} = DocBuilder.reconstruct_doc(Commonplace.Store.CommitStoreClient, sessions_dir_uuid)
+      entries = Schema.list_entries(sessions_doc)
+
+      matching = Enum.filter(entries, &(&1.node_id == view_uuid))
+      assert length(matching) == 1, "reconnect must not re-link/duplicate the view's sessions/ entry"
     end
 
     test "a DIFFERENT identity mounting gets its own fresh transcript, not the other identity's turns",
