@@ -483,7 +483,16 @@ defmodule Commonplace.MUD.SafeVerb.Allowlist do
                     {:actor_carries?, 2},
                     # CX-cj3t.10 — directed private messaging (same-room-scoped
                     # + server-attributed + per-target rate cap).
-                    {:whisper, 3}
+                    {:whisper, 3},
+                    # CX-5u5j — own-inventory quest/gift verbs (plan-blessed
+                    # #6171). consume_from_inventory: eat a HELD item (own-
+                    # inventory authority only, distinct from the bound-object
+                    # consume/1). give_from_inventory: gift a held item into a
+                    # SAME-ROOM recipient's inventory mailbox — same-room gate
+                    # BEFORE any global lookup (no-oracle), additive-only
+                    # deposit, server-stamped narration. Both bounded (N=8).
+                    {:consume_from_inventory, 2},
+                    {:give_from_inventory, 3}
                   ])
 
   # VECTOR 11 — reflective / capability side-channels that WEAR a

@@ -768,6 +768,279 @@ defmodule Commonplace.MUD.World.FacadeTest do
     assert {:error, :spawn_limit} = Facade.give_to_actor(f, "coin")
   end
 
+  # ---- CX-5u5j: own-inventory quest/gift verbs (plan-blessed #6171) ----
+  # consume_from_inventory (own-inventory authority, distinct from consume/1)
+  # and give_from_inventory (same-room recipient mailbox, no-global-oracle
+  # ordering + additive-only deposit + server-stamped narration).
+
+  # Link a set of object entries directly into `dir` under one signed commit
+  # (no lifecycle-op charge), for seeding inventories without touching N=8.
+  defp seed_entries(store, sign_ctx, dir, names) do
+    {:ok, schema} = Schemas.load_dir_schema(dir, store)
+
+    schema =
+      Enum.reduce(names, schema, fn name, s ->
+        Commonplace.Tree.Schema.add_directory(s, name, UUID.uuid4())
+      end)
+
+    {meta, opts} =
+      Commonplace.MUD.SignedWrite.opts_for(dir,
+        store: store,
+        signing_context: sign_ctx,
+        cert_cids: [],
+        signer_id: nil,
+        via_verb: nil
+      )
+
+    Commonplace.Store.CommitStoreClient.create_chained_commit(
+      store,
+      dir,
+      Yelixer.Encoding.encode_update(schema),
+      meta,
+      opts
+    )
+
+    :ok
+  end
+
+  test "consume_from_inventory: carrying → :ok and the item is gone from inventory", %{
+    store: store,
+    obj_uuid: obj_uuid,
+    trusted_ctx: trusted_ctx
+  } do
+    inv = lc_dir(store, trusted_ctx, "inv")
+    f = lc_facade(trusted_ctx, obj_uuid, [], %{inventory_uuid: inv}, store)
+
+    {:ok, _} = Facade.give_to_actor(f, "apple")
+    assert has_item?(store, inv, "apple")
+
+    # Bare status only — exactly :ok, never echoing the item's uuid/internals.
+    assert :ok === Facade.consume_from_inventory(f, "apple")
+    refute has_item?(store, inv, "apple")
+  end
+
+  test "consume_from_inventory: not carrying → :not_carrying; blank/whitespace → :not_carrying (fail closed)", %{
+    store: store,
+    obj_uuid: obj_uuid,
+    trusted_ctx: trusted_ctx
+  } do
+    inv = lc_dir(store, trusted_ctx, "inv")
+    f = lc_facade(trusted_ctx, obj_uuid, [], %{inventory_uuid: inv}, store)
+    {:ok, _} = Facade.give_to_actor(f, "apple")
+
+    assert {:error, :not_carrying} = Facade.consume_from_inventory(f, "ghost")
+    # Blank/whitespace must NOT match "anything held" — fail closed.
+    assert {:error, :not_carrying} = Facade.consume_from_inventory(f, "")
+    assert {:error, :not_carrying} = Facade.consume_from_inventory(f, "   ")
+    # And the held item survived the blank calls.
+    assert has_item?(store, inv, "apple")
+  end
+
+  test "consume_from_inventory: no inventory → :no_inventory (no crash)", %{
+    store: store,
+    obj_uuid: obj_uuid,
+    trusted_ctx: trusted_ctx
+  } do
+    f = lc_facade(trusted_ctx, obj_uuid, [], %{}, store)
+    assert {:error, :no_inventory} = Facade.consume_from_inventory(f, "anything")
+  end
+
+  test "consume_from_inventory: charged against the N=8 op cap → :spawn_limit on the 9th", %{
+    store: store,
+    obj_uuid: obj_uuid,
+    trusted_ctx: trusted_ctx
+  } do
+    inv = lc_dir(store, trusted_ctx, "inv")
+    # Seed 9 items WITHOUT charging (direct commit), so the only charges are
+    # consume_from_inventory's own — isolating its op-cap accounting.
+    :ok = seed_entries(store, trusted_ctx, inv, for(i <- 1..9, do: "item#{i}.obj"))
+
+    f = lc_facade(trusted_ctx, obj_uuid, [], %{inventory_uuid: inv}, store)
+
+    for i <- 1..8, do: assert(:ok === Facade.consume_from_inventory(f, "item#{i}"))
+    assert {:error, :spawn_limit} = Facade.consume_from_inventory(f, "item9")
+  end
+
+  # give_from_inventory harness: builds root → "players" → <name> →
+  # "inventory" for each recipient, a room, and the giver's inventory.
+  defp give_world(store, ctx, opts) do
+    root = lc_dir(store, ctx, "root")
+    players = lc_dir(store, ctx, "players")
+    room = lc_dir(store, ctx, "room")
+    giver_inv = lc_dir(store, ctx, "giver_inv")
+
+    # Link "players" into root (exact key, as the players registry uses).
+    :ok = link_child(store, ctx, root, "players", players)
+
+    invs =
+      Map.new(Keyword.get(opts, :recipients, []), fn name ->
+        pdir = lc_dir(store, ctx, "pdir_#{name}")
+        rinv = lc_dir(store, ctx, "rinv_#{name}")
+        :ok = link_child(store, ctx, pdir, "inventory", rinv)
+        :ok = link_child(store, ctx, players, name, pdir)
+        {name, rinv}
+      end)
+
+    # Place presence for the in-room recipients only.
+    for name <- Keyword.get(opts, :in_room, []) do
+      :ok = link_child(store, ctx, room, "#{name}.usr", UUID.uuid4())
+    end
+
+    %{root: root, players: players, room: room, giver_inv: giver_inv, invs: invs}
+  end
+
+  defp link_child(store, ctx, parent, name, child) do
+    {:ok, schema} = Schemas.load_dir_schema(parent, store)
+    schema = Commonplace.Tree.Schema.add_directory(schema, name, child)
+
+    {meta, opts} =
+      Commonplace.MUD.SignedWrite.opts_for(parent,
+        store: store,
+        signing_context: ctx,
+        cert_cids: [],
+        signer_id: nil,
+        via_verb: nil
+      )
+
+    Commonplace.Store.CommitStoreClient.create_chained_commit(
+      store,
+      parent,
+      Yelixer.Encoding.encode_update(schema),
+      meta,
+      opts
+    )
+
+    :ok
+  end
+
+  test "give_from_inventory: same-room recipient with inventory → :ok, item moves giver→recipient", %{
+    store: store,
+    obj_uuid: obj_uuid,
+    trusted_ctx: trusted_ctx
+  } do
+    w = give_world(store, trusted_ctx, recipients: ["bob"], in_room: ["bob"])
+
+    f =
+      lc_facade(
+        trusted_ctx,
+        obj_uuid,
+        [],
+        %{
+          inventory_uuid: w.giver_inv,
+          current_room_uuid: w.room,
+          root_uuid: w.root,
+          player_name: "alice"
+        },
+        store
+      )
+
+    {:ok, _} = Facade.give_to_actor(f, "coin")
+    assert has_item?(store, w.giver_inv, "coin")
+
+    # Bare status only.
+    assert :ok === Facade.give_from_inventory(f, "coin", "bob")
+
+    # Gone from the giver, present in the recipient's inventory under an
+    # instance-unique key.
+    refute has_item?(store, w.giver_inv, "coin")
+    assert has_item?(store, w.invs["bob"], "coin")
+  end
+
+  test "give_from_inventory: ADDITIVE — a recipient's PRE-EXISTING same-named item is NOT clobbered", %{
+    store: store,
+    obj_uuid: obj_uuid,
+    trusted_ctx: trusted_ctx
+  } do
+    w = give_world(store, trusted_ctx, recipients: ["bob"], in_room: ["bob"])
+    # Recipient already holds a "coin" (a plain "coin.obj" key).
+    :ok = seed_entries(store, trusted_ctx, w.invs["bob"], ["coin.obj"])
+
+    f =
+      lc_facade(
+        trusted_ctx,
+        obj_uuid,
+        [],
+        %{inventory_uuid: w.giver_inv, current_room_uuid: w.room, root_uuid: w.root, player_name: "alice"},
+        store
+      )
+
+    {:ok, _} = Facade.give_to_actor(f, "coin")
+    assert :ok === Facade.give_from_inventory(f, "coin", "bob")
+
+    # BOTH coins present — instance-unique deposit key never overwrote the
+    # pre-existing item (additive-only, no-clobber).
+    coin_entries = Enum.filter(lc_entry_names(store, w.invs["bob"]), &String.starts_with?(&1, "coin"))
+    assert length(coin_entries) == 2
+  end
+
+  test "give_from_inventory: recipient NOT in room → :recipient_not_here (no-oracle: off-room name that EXISTS globally still :recipient_not_here)", %{
+    store: store,
+    obj_uuid: obj_uuid,
+    trusted_ctx: trusted_ctx
+  } do
+    # carol is FULLY registered in the players tree (root→players→carol→
+    # inventory) but is NOT present in the room. An off-room name must fail
+    # identically to a nonexistent one — no global existence oracle.
+    w = give_world(store, trusted_ctx, recipients: ["carol"], in_room: [])
+
+    f =
+      lc_facade(
+        trusted_ctx,
+        obj_uuid,
+        [],
+        %{inventory_uuid: w.giver_inv, current_room_uuid: w.room, root_uuid: w.root, player_name: "alice"},
+        store
+      )
+
+    {:ok, _} = Facade.give_to_actor(f, "coin")
+
+    # carol exists globally but is off-room → :recipient_not_here.
+    assert {:error, :recipient_not_here} = Facade.give_from_inventory(f, "coin", "carol")
+    # A totally nonexistent name → the SAME error (indistinguishable).
+    assert {:error, :recipient_not_here} = Facade.give_from_inventory(f, "coin", "nobody")
+    # The item never left the giver.
+    assert has_item?(store, w.giver_inv, "coin")
+    # carol's inventory was never touched.
+    refute has_item?(store, w.invs["carol"], "coin")
+  end
+
+  test "give_from_inventory: blank recipient → :recipient_not_here; not carrying → :not_carrying; no inventory → :no_inventory", %{
+    store: store,
+    obj_uuid: obj_uuid,
+    trusted_ctx: trusted_ctx
+  } do
+    w = give_world(store, trusted_ctx, recipients: ["bob"], in_room: ["bob"])
+
+    f =
+      lc_facade(
+        trusted_ctx,
+        obj_uuid,
+        [],
+        %{inventory_uuid: w.giver_inv, current_room_uuid: w.room, root_uuid: w.root, player_name: "alice"},
+        store
+      )
+
+    {:ok, _} = Facade.give_to_actor(f, "coin")
+
+    # Blank recipient fails closed.
+    assert {:error, :recipient_not_here} = Facade.give_from_inventory(f, "coin", "")
+    assert {:error, :recipient_not_here} = Facade.give_from_inventory(f, "coin", "   ")
+    # Not carrying the named item.
+    assert {:error, :not_carrying} = Facade.give_from_inventory(f, "ghost", "bob")
+
+    # No inventory at all → :no_inventory.
+    f_no_inv =
+      lc_facade(
+        trusted_ctx,
+        obj_uuid,
+        [],
+        %{current_room_uuid: w.room, root_uuid: w.root, player_name: "alice"},
+        store
+      )
+
+    assert {:error, :no_inventory} = Facade.give_from_inventory(f_no_inv, "coin", "bob")
+  end
+
   test "pin 7: no effect surface leak — the facade is the only capability-bearing value; it exposes no raw store accessor" do
     facade = Facade.new(%{}, "obj", [], nil, :some_store)
 

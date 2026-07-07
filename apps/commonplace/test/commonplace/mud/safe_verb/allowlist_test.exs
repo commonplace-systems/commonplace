@@ -86,6 +86,14 @@ defmodule Commonplace.MUD.SafeVerb.AllowlistTest do
       assert_rejected(~s|:rand.uniform(6)|)
     end
 
+    # CX-5u5j — own-inventory quest/gift verbs admitted (plan #6171).
+    test "(f8) Facade.consume_from_inventory/2 + give_from_inventory/3 pass" do
+      assert :ok == Allowlist.check(~s|Commonplace.MUD.World.Facade.consume_from_inventory(world, "apple")|)
+
+      assert :ok ==
+               Allowlist.check(~s|Commonplace.MUD.World.Facade.give_from_inventory(world, "coin", "bob")|)
+    end
+
     test "(f3) the qualified facade form is refused when the first arg isn't the literal world binding" do
       assert_rejected(~s|other = world\nCommonplace.MUD.World.Facade.set_attr(other, "k", "v")|)
       assert_rejected(~s|Commonplace.MUD.World.Facade.set_attr(args, "k", "v")|)

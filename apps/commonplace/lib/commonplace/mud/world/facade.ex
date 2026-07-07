@@ -659,6 +659,256 @@ defmodule Commonplace.MUD.World.Facade do
     end
   end
 
+  # ---- own-inventory quest/gift verbs (CX-5u5j, plan-blessed #6171) ----
+  #
+  # Two own-inventory-authorized effect methods, distinct from the
+  # bound-object `consume/1`/`give_to_actor/2` above:
+  #
+  #   * `consume_from_inventory/2` — "eat a held item" (quest turn-in).
+  #     Own-inventory authority ONLY (same basis as give_to_actor and the
+  #     invoker-own branch of consume/1): resolves a name in the invoker's
+  #     OWN `inventory_uuid`, NO `write_guarded`, NO owner_grant — the
+  #     invoker can always write their own inventory, so it's invoker-signed
+  #     via `write_opts(f)` alone. DISTINCT from `consume/1` (which is a
+  #     bound-object owner-scope INTERSECTION); do not merge them.
+  #
+  #   * `give_from_inventory/3` — push a held item into a SAME-ROOM
+  #     recipient's inventory mailbox. Authority basis: the invoker acts
+  #     with their OWN item-authority and deposits ADDITIVELY into the
+  #     recipient's inbox — it is NOT setuid (never borrows the recipient's
+  #     authority; the recipient-container write is signed by the INVOKER).
+  #
+  # ENFORCE-ANCHOR (comment only — not gated on here): give_from_inventory's
+  # DEPOSIT writes the RECIPIENT'S inventory doc, which the invoker does not
+  # own. In permissive dogfood this just works. Under `:enforce` it would be
+  # rejected by the local-write gate exactly like any other cross-owner
+  # write and would need an inbox-write-policy cert — the SAME permissive-
+  # now/enforce-later shape as mint (CX-nyj9), and the same anchor the
+  # existing `give_to_actor`/facade cross-owner writes already inherit. This
+  # module does NOT implement that policy and makes NO enforce-correctness
+  # claim; the property preserved TODAY is the least-authority shape
+  # (own-item basis + same-room gate + additive-only + server-stamped
+  # attribution), matching the module's honesty boundary.
+
+  @doc """
+  CX-5u5j — consume (UNLINK) a named item from the invoker's OWN inventory
+  (`f.ctx.inventory_uuid`): the quest-turn-in "eat a held item". OWN-
+  INVENTORY AUTHORITY ONLY — resolves `name` in the invoker's own inventory
+  (via `World.find_entry_by_name/3`), and DELIBERATELY skips `write_guarded`
+  / owner_grant (the invoker can always write their own inventory), staying
+  invoker-signed via `write_opts(f)` — the SAME basis as `give_to_actor/2`
+  and the invoker-own branch of `consume/1`. DISTINCT from `consume/1`,
+  which is a bound-object owner-scope intersection; keep them separate.
+
+  Destroy = UNLINK (the append-only store keeps history; no hard delete, no
+  live orphan). Bounded by the per-invocation lifecycle op cap (N=8).
+  Returns BARE STATUS only — `:ok`, `{:error, :not_carrying}` (blank name,
+  non-binary name, or no matching held item), `{:error, :no_inventory}`
+  (no `inventory_uuid`), or `{:error, :spawn_limit}` (op cap). NEVER echoes
+  the item's uuid/internals (returns-axis: no data leak).
+  """
+  @spec consume_from_inventory(t(), String.t()) :: :ok | {:error, term()}
+  def consume_from_inventory(%__MODULE__{} = f, name) when is_binary(name) do
+    cond do
+      # nil inventory → fail closed, before charging or any lookup.
+      f.ctx[:inventory_uuid] == nil ->
+        {:error, :no_inventory}
+
+      # FOOTGUN GUARD (mirrors actor_carries?): a blank/whitespace name
+      # would substring-match ANY held item — fail CLOSED before any lookup.
+      String.trim(name) == "" ->
+        {:error, :not_carrying}
+
+      true ->
+        with :ok <- charge_lifecycle_op() do
+          inv = f.ctx[:inventory_uuid]
+
+          case World.find_entry_by_name(inv, name, f.store) do
+            # Own-inventory authority: NO write_guarded, invoker-signed only.
+            {:ok, entry} -> unlink_child(inv, entry.name, f)
+            :error -> {:error, :not_carrying}
+          end
+        end
+    end
+  end
+
+  # name not a binary → fail closed (returns-axis: bare status, no leak).
+  def consume_from_inventory(%__MODULE__{}, _name), do: {:error, :not_carrying}
+
+  @doc """
+  CX-5u5j — push a named item from the invoker's OWN inventory into a
+  SAME-ROOM recipient's inventory (a gift into their mailbox). Own-item
+  authority: the invoker acts with their own item-authority and deposits
+  ADDITIVELY into the recipient's inbox — NOT setuid (never borrows the
+  recipient's authority). Invoker-signed via `write_opts(f)`.
+
+  SECURITY-CRITICAL ORDERING (no-global-oracle, load-bearing — mirrors
+  `whisper/3`): the SAME-ROOM gate runs BEFORE any global players-dir
+  lookup. The recipient is verified present in the invoker's CURRENT room
+  by exact-matching `recipient_name <> ".usr"` against
+  `World.list_players_in(current_room)` — ONLY THEN is the recipient's
+  inventory resolved by walking `root → "players" → recipient_name →
+  "inventory"`. An off-room name fails IDENTICALLY (`:recipient_not_here`)
+  whether or not that player exists elsewhere in the world; a resolution
+  step missing anywhere in the walk ALSO fails closed as
+  `:recipient_not_here` (never a distinct error that would leak
+  in-room-but-no-inventory).
+
+  The DEPOSIT uses an INSTANCE-UNIQUE dest entry key (CX-lfo3 style,
+  derived from the item's own uuid) so it is ADDITIVE — it can NEVER
+  overwrite or collide with a recipient's existing same-named item, and it
+  can NOT remove or alter any other recipient item. Bounded by the
+  per-invocation op cap (N=8) and the recipient container cap (M=128 →
+  `:container_full`). NARRATION `who` is SERVER-STAMPED from
+  `f.ctx[:player_name]` (never author-supplied), mirroring
+  `emit_action/3`/`whisper/3`.
+
+  Returns BARE STATUS only — `:ok`, `{:error, :not_carrying}`,
+  `{:error, :recipient_not_here}`, `{:error, :container_full}`,
+  `{:error, :no_inventory}`, or `{:error, :spawn_limit}`. NEVER echoes the
+  recipient's inventory contents or updated state (returns-axis: the
+  recipient inventory must not leak to the invoker's verb).
+  """
+  @spec give_from_inventory(t(), String.t(), String.t()) :: :ok | {:error, term()}
+  def give_from_inventory(%__MODULE__{} = f, name, recipient_name)
+      when is_binary(name) and is_binary(recipient_name) do
+    with :ok <- charge_lifecycle_op(),
+         {:ok, inv} <- own_inventory(f),
+         {:ok, entry, display} <- resolve_own_item(f, inv, name),
+         # no-global-oracle: same-room gate BEFORE any global players-dir walk.
+         :ok <- same_room_recipient_gate(f, recipient_name),
+         {:ok, recipient_inv} <- resolve_recipient_inventory(f, recipient_name) do
+      deposit_gift(f, inv, entry, display, recipient_inv, recipient_name)
+    end
+  end
+
+  # non-binary name/recipient → fail closed.
+  def give_from_inventory(%__MODULE__{}, _name, _recipient_name), do: {:error, :not_carrying}
+
+  defp own_inventory(%__MODULE__{} = f) do
+    case f.ctx[:inventory_uuid] do
+      nil -> {:error, :no_inventory}
+      inv -> {:ok, inv}
+    end
+  end
+
+  # Resolve `name` in the invoker's OWN inventory only — a local lookup,
+  # never a global one, so it reveals nothing about the recipient and is
+  # safe to run before the same-room gate. Blank/whitespace name fails
+  # closed (would substring-match any held item). Returns
+  # `{:ok, entry, display_name}` or `{:error, :not_carrying}`.
+  defp resolve_own_item(%__MODULE__{} = f, inv, name) do
+    if String.trim(name) == "" do
+      {:error, :not_carrying}
+    else
+      case World.find_entry_by_name(inv, name, f.store) do
+        {:ok, entry} -> {:ok, entry, item_display_name(f, entry)}
+        :error -> {:error, :not_carrying}
+      end
+    end
+  end
+
+  # The item's clean display name (meta "name"), used for the instance-
+  # unique dest key and the narration. Falls back to the entry's own name
+  # if the object meta can't be read.
+  defp item_display_name(%__MODULE__{} = f, entry) do
+    case World.get_object(entry.node_id, f.store) do
+      {:ok, %{name: name}} when is_binary(name) and name != "" -> name
+      _ -> entry.name
+    end
+  end
+
+  # no-global-oracle gate (property 1, mirrors whisper/3): the recipient
+  # must be PRESENT in the invoker's CURRENT room. Exact-match on
+  # `recipient_name <> ".usr"` among the room's `.usr` presence entries —
+  # NO global player lookup here. Blank recipient fails closed. An off-room
+  # (or nonexistent) name is `:recipient_not_here` indistinguishably.
+  defp same_room_recipient_gate(%__MODULE__{} = f, recipient_name) do
+    cond do
+      String.trim(recipient_name) == "" ->
+        {:error, :recipient_not_here}
+
+      true ->
+        presence = recipient_name <> ".usr"
+
+        names =
+          f.ctx[:current_room_uuid]
+          |> case do
+            nil -> []
+            room -> World.list_players_in(room, f.store) |> Enum.map(& &1.name)
+          end
+
+        if presence in names, do: :ok, else: {:error, :recipient_not_here}
+    end
+  end
+
+  # Resolve the recipient's inventory ONLY AFTER the same-room gate: walk
+  # `root → "players" → recipient_name → "inventory"`. Any missing step →
+  # `:recipient_not_here` (fail closed; do not leak a distinct
+  # in-room-but-no-inventory error).
+  defp resolve_recipient_inventory(%__MODULE__{} = f, recipient_name) do
+    with root when is_binary(root) <- f.ctx[:root_uuid],
+         {:ok, players} <- child_dir(root, "players", f.store),
+         {:ok, player_dir} <- child_dir(players, recipient_name, f.store),
+         {:ok, inv} <- child_dir(player_dir, "inventory", f.store) do
+      {:ok, inv}
+    else
+      _ -> {:error, :recipient_not_here}
+    end
+  end
+
+  defp child_dir(parent_uuid, name, store) do
+    case Schemas.load_dir_schema(parent_uuid, store) do
+      {:ok, schema} ->
+        case Schema.get_entry(schema, name) do
+          {:ok, entry} -> {:ok, entry.node_id}
+          :error -> :error
+        end
+
+      _ ->
+        :error
+    end
+  end
+
+  # ADDITIVE deposit: add the item to the recipient inventory under an
+  # INSTANCE-UNIQUE key (never clobbers/collides with an existing recipient
+  # item), THEN unlink it from the invoker's own inventory. Dest-add FIRST
+  # (a mid-op failure leaves the item in BOTH inventories, recoverable —
+  # never in neither, silently lost), mirroring Move's ordering. Recipient
+  # container cap (M=128) is enforced before the add. Narrates a server-
+  # stamped give action.
+  defp deposit_gift(%__MODULE__{} = f, source_inv, entry, display, recipient_inv, recipient_name) do
+    case Schemas.load_dir_schema(recipient_inv, f.store) do
+      {:ok, schema} ->
+        if length(Schema.list_entries(schema)) >= @container_max_entries do
+          {:error, :container_full}
+        else
+          dest_key = instance_entry_name(display, entry.node_id)
+
+          with :ok <- add_child_entry(recipient_inv, dest_key, entry.node_id, f),
+               :ok <- unlink_child(source_inv, entry.name, f) do
+            narrate_give(f, display, recipient_name)
+            :ok
+          end
+        end
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  # SERVER-STAMPED attribution (mirrors emit_action/3): `who` is filled from
+  # the bound ctx, never author-supplied. Cosmetic room broadcast (PubSub,
+  # no doc write, no authority input).
+  defp narrate_give(%__MODULE__{} = f, display, recipient_name) do
+    World.broadcast_room(f.ctx.current_room_uuid, %{
+      kind: :action,
+      who: f.ctx[:player_name],
+      first_person: "give #{display} to #{recipient_name}",
+      third_person: "gives #{display} to #{recipient_name}"
+    })
+  end
+
   # ---- configure a freshly-minted object (CX-nyj9, plan-blessed #6028) ----
   #
   # THE OWN-CREATION EXCEPTION (plan #6028, ruling a): operating on an
