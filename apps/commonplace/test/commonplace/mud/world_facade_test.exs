@@ -455,6 +455,32 @@ defmodule Commonplace.MUD.World.FacadeTest do
     assert pfile in lc_entry_names(store, dest)
   end
 
+  test "CX-v6j4: a ROOM-host verb persists state (bind) but is DENIED the object-only methods (setuid guard)", %{
+    store: store,
+    trusted_ctx: trusted_ctx
+  } do
+    room = lc_dir(store, trusted_ctx, "room")
+
+    # A room-hosted verb: object_uuid = the room, host_kind = :room.
+    f = %{
+      lc_facade(trusted_ctx, room, [room], %{current_room_uuid: room, inventory_uuid: "inv"}, store)
+      | host_kind: :room
+    }
+
+    # THE FIX: state/attr/create_child now persist on the room.
+    assert :ok = Facade.put_state(f, "lit", true)
+    assert Facade.get_state(f, "lit") == true
+    assert :ok = Facade.set_attr(f, "note", "hi")
+    assert {:ok, _} = Facade.create_child(f, "torch")
+
+    # THE RESTRICTION: object-only methods are refused on a room host —
+    # a room's children are shared/mixed-ownership, and destroy_child/consume
+    # guard only the parent (cross-owner setuid, deferred).
+    assert {:error, :requires_object_host} = Facade.consume(f)
+    assert {:error, :requires_object_host} = Facade.destroy_child(f, "torch")
+    assert {:error, :requires_object_host} = Facade.move_object(f, lc_dir(store, trusted_ctx, "dest"))
+  end
+
   test "CX-cj3t.9: move_object STILL grant-checks (empty grant → :owner_grant_exceeded — the intersection is intact)", %{
     store: store,
     obj_uuid: obj_uuid,

@@ -208,12 +208,21 @@ defmodule Commonplace.MUD.Verbs do
   # A crafted body that names some OTHER uuid as text/a string literal
   # has no way to reach this function's arguments at all.
   defp run_safe_user_verb(host_kind, host_uuid, host_name, verb_name, source_uuid, cmd, ctx) do
-    object_uuid = if host_kind == :object, do: host_uuid, else: nil
+    # CX-v6j4 — a verb's "self" (object_uuid, MOO `this`) is the HOST it's
+    # authored on, ROOM or object. Binding the room (was nil) lets ROOM verbs
+    # persist state / set_attr / create_child on the room (the state-loss fix).
+    # `host_kind` gates the OBJECT-ONLY methods (consume/destroy_child/
+    # move_object) so they stay OFF room hosts: a room's children are a
+    # SHARED, mixed-ownership set (visitors' dropped objects, .usr presence),
+    # and destroy_child guards only the PARENT — binding rooms fully would let
+    # a room verb destroy a visitor's property on {room} authority alone
+    # (cross-owner setuid, deferred). Plan-ruled #6135.
+    object_uuid = host_uuid
     section_scope = [host_uuid]
     owner_grant = owner_grant_for(host_uuid, ctx.store)
     via_verb = {source_uuid, host_name}
 
-    facade = Facade.new(ctx, object_uuid, owner_grant, via_verb, ctx.store)
+    facade = %{Facade.new(ctx, object_uuid, owner_grant, via_verb, ctx.store) | host_kind: host_kind}
 
     # CX-9plf: `rest`/`rest_argv` = the argv with the leading target-noun
     # words dropped, so a parameterized verb ("play box a waltz") can read

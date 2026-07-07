@@ -95,14 +95,15 @@ defmodule Commonplace.MUD.World.Facade do
   alias Yelixer.Encoding
 
   @enforce_keys [:store, :ctx, :owner_grant, :via_verb]
-  defstruct store: nil, ctx: nil, object_uuid: nil, owner_grant: MapSet.new(), via_verb: nil
+  defstruct store: nil, ctx: nil, object_uuid: nil, owner_grant: MapSet.new(), via_verb: nil, host_kind: :object
 
   @type t :: %__MODULE__{
           store: GenServer.server(),
           ctx: map(),
           object_uuid: String.t() | nil,
           owner_grant: MapSet.t(),
-          via_verb: term()
+          via_verb: term(),
+          host_kind: :object | :room
         }
 
   @doc """
@@ -255,6 +256,8 @@ defmodule Commonplace.MUD.World.Facade do
   """
   @spec move_object(t(), String.t()) :: :ok | {:error, term()}
   def move_object(%__MODULE__{object_uuid: nil}, _dest_room_uuid), do: {:error, :no_bound_object}
+  # CX-v6j4 (plan #6135) — OBJECT-host only: a room is not a movable object.
+  def move_object(%__MODULE__{host_kind: :room}, _dest_room_uuid), do: {:error, :requires_object_host}
 
   def move_object(%__MODULE__{} = f, dest_room_uuid) when is_binary(dest_room_uuid) do
     write_guarded(f, [f.object_uuid, f.ctx.current_room_uuid, dest_room_uuid], fn ->
@@ -534,6 +537,10 @@ defmodule Commonplace.MUD.World.Facade do
   """
   @spec consume(t()) :: :ok | {:error, term()}
   def consume(%__MODULE__{object_uuid: nil}), do: {:error, :no_bound_object}
+  # CX-v6j4 (plan #6135) — OBJECT-host only: a room's children are shared/
+  # mixed-ownership, and consume/destroy_child guard only the parent, so
+  # they must not fire on room hosts (cross-owner setuid).
+  def consume(%__MODULE__{host_kind: :room}), do: {:error, :requires_object_host}
 
   def consume(%__MODULE__{} = f) do
     with :ok <- charge_lifecycle_op() do
@@ -562,6 +569,8 @@ defmodule Commonplace.MUD.World.Facade do
   """
   @spec destroy_child(t(), String.t()) :: :ok | {:error, term()}
   def destroy_child(%__MODULE__{object_uuid: nil}, _name), do: {:error, :no_bound_object}
+  # CX-v6j4 (plan #6135) — OBJECT-host only (see consume).
+  def destroy_child(%__MODULE__{host_kind: :room}, _name), do: {:error, :requires_object_host}
 
   def destroy_child(%__MODULE__{} = f, name) when is_binary(name) do
     with :ok <- charge_lifecycle_op() do
