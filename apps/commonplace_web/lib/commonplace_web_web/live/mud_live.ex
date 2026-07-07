@@ -174,7 +174,11 @@ defmodule CommonplaceWebWeb.MudLive do
 
     socket =
       if pid do
-        :ok = PlayerSession.input_sync(pid, "look")
+        # PlayerSession's own `:greet` (sent from its init) already renders
+        # the spawn room. Just DRAIN it — a drain call is mailbox-ordered
+        # AFTER `:greet` in the session, so it reliably captures that render
+        # with no race. Sending our own "look" here rendered the room a
+        # SECOND time (the double-description bug).
         append_scrollback(socket, drain(pid))
       else
         socket

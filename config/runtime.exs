@@ -27,8 +27,17 @@ end
 # that identifies Mode B: PHX_SERVER (this boot runs the server) AND
 # COMMONPLACE_DATA_DIR (pointed at a real workspace, not the "data"
 # default used by `mix test`/`mix phx.server` without a workspace).
+#
+# CX-gjpi: Mode B is a serve, so it must ALSO start the Green.Bursar —
+# the cluster's move-lock authority. `commonplace_cli serve` sets
+# `:bursar_on_boot` for exactly this; a Mode-B serve that omitted it
+# locked the workspace but left EVERY MUD/tree move failing with
+# `{:error, :bursar_unavailable}` (World.move → do_go → "You can't go
+# <dir>"). A Mode-B serve is single-owner just like the CLI serve, so it
+# is the correct node to own the Bursar.
 if System.get_env("PHX_SERVER") && System.get_env("COMMONPLACE_DATA_DIR") do
   config :commonplace, workspace_lock_on_boot: true
+  config :commonplace, bursar_on_boot: true
 end
 
 # CX-qat5.7: the local-write gate knob is otherwise Application-env only
