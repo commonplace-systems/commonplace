@@ -46,6 +46,7 @@ defmodule Commonplace.MUD.Schemas do
               aliases: [],
               description: "",
               fixed: false,
+              container?: false,
               tick_interval_ms: nil,
               tick_message: nil
 
@@ -54,6 +55,7 @@ defmodule Commonplace.MUD.Schemas do
             aliases: [String.t()],
             description: String.t(),
             fixed: boolean(),
+            container?: boolean(),
             tick_interval_ms: pos_integer() | nil,
             tick_message: String.t() | nil
           }
@@ -96,6 +98,7 @@ defmodule Commonplace.MUD.Schemas do
       "aliases" => o.aliases,
       "description" => o.description,
       "fixed" => o.fixed,
+      "container" => o.container?,
       "tick_interval_ms" => o.tick_interval_ms,
       "tick_message" => o.tick_message
     })
@@ -138,6 +141,7 @@ defmodule Commonplace.MUD.Schemas do
            aliases: Map.get(m, "aliases", []),
            description: Map.get(m, "description", ""),
            fixed: Map.get(m, "fixed", false),
+           container?: Map.get(m, "container", false),
            tick_interval_ms: Map.get(m, "tick_interval_ms"),
            tick_message: Map.get(m, "tick_message")
          }}

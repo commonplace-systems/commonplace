@@ -37,7 +37,7 @@ defmodule Commonplace.MUD.Verbs do
   # locked out of core commands. The explicit `@builtin take` escape
   # syntax (for a builder who WANTS the builtin despite an override) is
   # plan's Phase 2, not this bead.
-  @builtins ~w(look say emote take get drop give inventory who quit help go) ++
+  @builtins ~w(look say emote take get drop give put inventory who quit help go) ++
               ~w(north south east west up down in out)
 
   @doc "Dispatch a parsed command. Returns one of the verb-result tuples."
@@ -434,6 +434,7 @@ defmodule Commonplace.MUD.Verbs do
   defp dispatch_builtin("get", cmd, ctx), do: do_take(cmd, ctx)
   defp dispatch_builtin("drop", cmd, ctx), do: do_drop(cmd, ctx)
   defp dispatch_builtin("give", cmd, ctx), do: do_give(cmd, ctx)
+  defp dispatch_builtin("put", cmd, ctx), do: do_put(cmd, ctx)
   defp dispatch_builtin("inventory", _cmd, ctx), do: do_inventory(ctx)
   defp dispatch_builtin("who", _cmd, ctx), do: do_who(ctx)
   defp dispatch_builtin("quit", _cmd, _ctx), do: {:reply, :quit}
@@ -467,10 +468,34 @@ defmodule Commonplace.MUD.Verbs do
     end
   end
 
+  # CX-cj3t.1.1: "look in <container>" is the explicit form for
+  # container contents — split the leading "in" off and resolve the
+  # rest as a container (room/inventory), same resolver `put`/`get
+  # ... from` use.
+  defp do_look(%Parser.Command{argv: ["in" | rest]}, ctx) when rest != [] do
+    do_look_in_container(rest, ctx)
+  end
+
   defp do_look(%Parser.Command{argv: argv}, ctx) do
     phrase_label = Enum.join(argv, " ")
 
-    case find_in_scope(argv, ctx) do
+    case greedy_match_entry([ctx.inventory_uuid, ctx.current_room_uuid], argv, ctx.store) do
+      {:ok, entry, _phrase, _remainder} ->
+        render_looked_at_entry(entry, phrase_label, ctx)
+
+      :not_found ->
+        {:error, "You don't see \"#{phrase_label}\" here."}
+    end
+  end
+
+  # CX-cj3t.1.1: plain "look <obj>" on a container renders its contents
+  # instead of the description; a non-container object keeps the old
+  # name+description behavior unchanged.
+  defp render_looked_at_entry(entry, phrase_label, ctx) do
+    case resolve_entry(entry, ctx) do
+      {:ok, :object, %Object{container?: true} = obj} ->
+        {:reply, render_container_contents(entry.node_id, obj.name, ctx)}
+
       {:ok, :object, %Object{} = obj} ->
         {:reply, "#{obj.name}\n#{obj.description}"}
 
@@ -480,6 +505,56 @@ defmodule Commonplace.MUD.Verbs do
 
       :not_found ->
         {:error, "You don't see \"#{phrase_label}\" here."}
+    end
+  end
+
+  defp do_look_in_container(argv, ctx) do
+    container_phrase = Enum.join(argv, " ")
+
+    case resolve_container(container_phrase, [ctx.inventory_uuid, ctx.current_room_uuid], ctx) do
+      {:ok, container_entry, %Object{} = container_obj} ->
+        {:reply, render_container_contents(container_entry.node_id, container_obj.name, ctx)}
+
+      {:error, {:not_a_container, name}} ->
+        {:error, "You can't look inside the #{name}."}
+
+      {:error, :not_found} ->
+        {:error, "You don't see \"#{container_phrase}\" here."}
+    end
+  end
+
+  defp render_container_contents(container_uuid, container_name, ctx) do
+    items =
+      World.list_objects_in(container_uuid, ctx.store)
+      |> Enum.map(fn e ->
+        case Schemas.load_object(e.node_id, ctx.store) do
+          {:ok, %Object{name: name}} -> name
+          _ -> e.name |> String.replace_suffix(".obj", "")
+        end
+      end)
+
+    case items do
+      [] -> "The #{container_name} is empty."
+      _ -> "The #{container_name} contains: #{Enum.join(items, ", ")}."
+    end
+  end
+
+  # CX-cj3t.1.1: shared container resolver for `put`/`get ... from`/
+  # `look in` — finds `phrase` in `dirs` (in order) and requires the
+  # matched `.obj` to have `container?: true`; a non-container match
+  # returns its name so callers can give a precise "not a container"
+  # error rather than a generic not-found.
+  defp resolve_container(phrase, dirs, ctx) do
+    case find_entry_in_dirs(phrase, dirs, ctx.store) do
+      {:ok, entry} ->
+        case Schemas.load_object(entry.node_id, ctx.store) do
+          {:ok, %Object{container?: true} = obj} -> {:ok, entry, obj}
+          {:ok, %Object{name: name}} -> {:error, {:not_a_container, name}}
+          _ -> {:error, :not_found}
+        end
+
+      :error ->
+        {:error, :not_found}
     end
   end
 
@@ -541,11 +616,61 @@ defmodule Commonplace.MUD.Verbs do
 
   defp do_take(%Parser.Command{argv: []}, _ctx), do: {:error, "Take what?"}
 
+  # CX-cj3t.1.1: "take/get <item> from <container>" routes to the
+  # container-aware path; plain "take <item>" (no "from") keeps the
+  # existing room-only behavior below untouched.
+  defp do_take(%Parser.Command{argv: argv}, ctx) do
+    case split_on_from(argv) do
+      {item_words, container_words} when item_words != [] and container_words != [] ->
+        do_get_from(item_words, container_words, ctx)
+
+      _ ->
+        do_take_plain(argv, ctx)
+    end
+  end
+
+  defp split_on_from(argv) do
+    case Enum.split_while(argv, fn w -> String.downcase(w) != "from" end) do
+      {item_words, [_from | rest]} -> {item_words, rest}
+      {_all, []} -> {argv, []}
+    end
+  end
+
+  defp do_get_from(item_words, container_words, ctx) do
+    item_phrase_label = Enum.join(item_words, " ")
+    container_phrase = Enum.join(container_words, " ")
+
+    with {:ok, container_entry, %Object{} = container_obj} <-
+           resolve_container(container_phrase, [ctx.current_room_uuid, ctx.inventory_uuid], ctx),
+         {:ok, entry, _phrase, _remainder} <-
+           greedy_match_entry([container_entry.node_id], item_words, ctx.store),
+         {:ok, %Object{} = obj} <- Schemas.load_object(entry.node_id, ctx.store),
+         :ok <-
+           World.move(entry.node_id, entry.name, container_entry.node_id, ctx.inventory_uuid, write_opts(ctx)) do
+      World.broadcast_room(ctx.current_room_uuid, %{
+        kind: :get_from,
+        who: ctx.player_name,
+        what: obj.name,
+        from: container_obj.name
+      })
+
+      {:reply, "You get #{obj.name} from #{container_obj.name}."}
+    else
+      {:error, {:not_a_container, name}} -> {:error, "You can't get things from the #{name}."}
+      {:error, :not_found} -> {:error, "You don't see \"#{container_phrase}\" here."}
+      :not_found -> {:error, "You don't see \"#{item_phrase_label}\" in #{container_phrase}."}
+      {:error, :gone} -> {:error, "It slipped from your grasp."}
+      {:error, :collision} -> {:error, "You're already carrying one of those."}
+      {:error, {:trust_rejected, _}} -> {:error, "You don't have permission to take that."}
+      _ -> {:error, "You can't take that."}
+    end
+  end
+
   # CX-8iyv: greedy-match the full remaining phrase against room entries
   # (names + aliases) so multi-word object names/aliases resolve
   # ('take silver coin' matches an object named/aliased "silver coin"),
   # not just the first word.
-  defp do_take(%Parser.Command{argv: argv}, ctx) do
+  defp do_take_plain(argv, ctx) do
     phrase_label = Enum.join(argv, " ")
 
     with {:ok, entry, _phrase, _remainder} <- greedy_match_entry([ctx.current_room_uuid], argv, ctx.store),
@@ -696,6 +821,154 @@ defmodule Commonplace.MUD.Verbs do
     |> case do
       {:ok, uuid} -> {:ok, uuid}
       _ -> {:error, :no_such_player}
+    end
+  end
+
+  # ---- put / get-from (nested containers, CX-cj3t.1.1) ----
+
+  defp do_put(%Parser.Command{argv: argv}, _ctx) when length(argv) < 2 do
+    {:error, "Put what in what? Try: put <item> in <container>"}
+  end
+
+  # CX-8iyv-style syntax rule, mirrored from `give`'s "to" splitter: the
+  # word "in" is the disambiguator between the item phrase and the
+  # container phrase, so both may be multi-word ('put silver coin in
+  # wooden chest').
+  defp do_put(%Parser.Command{argv: argv}, ctx) do
+    case split_on_in(argv) do
+      {item_words, container_words} when item_words != [] and container_words != [] ->
+        put_item_in(item_words, container_words, ctx)
+
+      _ ->
+        {:error, "Put what in what? Try: put <item> in <container>"}
+    end
+  end
+
+  defp split_on_in(argv) do
+    case Enum.split_while(argv, fn w -> String.downcase(w) != "in" end) do
+      {item_words, [_in | rest]} -> {item_words, rest}
+      {_all, []} -> {argv, []}
+    end
+  end
+
+  defp put_item_in(item_words, container_words, ctx) do
+    item_phrase_label = Enum.join(item_words, " ")
+    container_phrase = Enum.join(container_words, " ")
+
+    with {:ok, source_dir, item_entry} <- locate_item_for_put(item_words, ctx),
+         {:ok, %Object{} = obj} <- Schemas.load_object(item_entry.node_id, ctx.store),
+         {:ok, container_entry, %Object{} = container_obj} <-
+           resolve_container(container_phrase, [ctx.current_room_uuid, ctx.inventory_uuid], ctx),
+         move_opts <-
+           Keyword.put(write_opts(ctx), :precheck, fn ->
+             cycle_guard(item_entry.node_id, container_entry.node_id, ctx.store)
+           end),
+         :ok <-
+           World.move(item_entry.node_id, item_entry.name, source_dir, container_entry.node_id, move_opts) do
+      World.broadcast_room(ctx.current_room_uuid, %{
+        kind: :put,
+        who: ctx.player_name,
+        what: obj.name,
+        where: container_obj.name
+      })
+
+      {:reply, "You put #{obj.name} in #{container_obj.name}."}
+    else
+      :not_found -> {:error, "You don't see \"#{item_phrase_label}\" here."}
+      {:error, {:not_a_container, name}} -> {:error, "You can't put things in the #{name}."}
+      {:error, :not_found} -> {:error, "You don't see \"#{container_phrase}\" here."}
+      {:error, :container_cycle} -> {:error, "You can't put #{item_phrase_label} inside itself."}
+      {:error, :collision} -> {:error, "There's already one of those in there."}
+      {:error, :gone} -> {:error, "It slipped from your grasp."}
+      {:error, {:trust_rejected, _}} -> {:error, "You don't have permission to do that."}
+      _ -> {:error, "You can't put that there."}
+    end
+  end
+
+  # Item resolution order for `put`: inventory first, then the current
+  # room (spec-specified order) — mirrors `find_in_scope`'s dir order
+  # but also reports WHICH dir matched, since `put` needs the source dir
+  # to move from (unlike `look`, which only needs the entry).
+  defp locate_item_for_put(item_words, ctx) do
+    case greedy_match_entry([ctx.inventory_uuid], item_words, ctx.store) do
+      {:ok, entry, _phrase, _remainder} ->
+        {:ok, ctx.inventory_uuid, entry}
+
+      :not_found ->
+        case greedy_match_entry([ctx.current_room_uuid], item_words, ctx.store) do
+          {:ok, entry, _phrase, _remainder} -> {:ok, ctx.current_room_uuid, entry}
+          :not_found -> :not_found
+        end
+    end
+  end
+
+  # CX-cj3t.1.1: atomic move-cycle guard for `put`, run as
+  # `Move.move/5`'s `opts[:precheck]` — INSIDE the bursar lock the move
+  # already takes on `{source_dir, container_dir}`, so a concurrent
+  # `put` racing this one cannot open the cycle in the gap between a
+  # check and a write (there is no gap; the check runs under the same
+  # lock as the write).
+  #
+  # DEVIATION FLAGGED FOR PLAN: plan's preferred guard shape was an
+  # ancestor-walk (walk the container's ancestors looking for the
+  # item). This MUD's dir schema is CHILD-REFERENCED ONLY — a directory
+  # lists its children; nothing stores a parent pointer — so an
+  # ancestor-walk would require a root-down path search with no cheaper
+  # alternative than re-deriving ancestry from scratch. A bounded
+  # SUBTREE-walk of the ITEM's own contents (typically small — a bag,
+  # not the world) is the practical equivalent: putting the item inside
+  # something that already lives inside the item creates the same
+  # cycle as putting the item inside itself. Depth-capped + visited-set
+  # so it terminates even against an already-corrupt/cyclic tree.
+  #
+  # See `Commonplace.MUD.Move`'s moduledoc "Nested containers" section
+  # for the wider concurrent-cross-replica caveat this guard does NOT
+  # cover (resolved by move-serialization now, Kleppmann-move / CX-liim
+  # for the federated future).
+  @cycle_guard_max_depth 32
+
+  defp cycle_guard(item_uuid, container_uuid, _store) when item_uuid == container_uuid do
+    {:error, :container_cycle}
+  end
+
+  defp cycle_guard(item_uuid, container_uuid, store) do
+    case Schemas.load_object(item_uuid, store) do
+      {:ok, %Object{container?: true}} ->
+        if subtree_contains?(item_uuid, container_uuid, store) do
+          {:error, :container_cycle}
+        else
+          :ok
+        end
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp subtree_contains?(root_uuid, target_uuid, store) do
+    bfs_contains?([root_uuid], MapSet.new([root_uuid]), target_uuid, store, 0)
+  end
+
+  defp bfs_contains?(_frontier, _visited, _target, _store, depth) when depth > @cycle_guard_max_depth, do: false
+  defp bfs_contains?([], _visited, _target, _store, _depth), do: false
+
+  defp bfs_contains?(frontier, visited, target_uuid, store, depth) do
+    children =
+      frontier
+      |> Enum.flat_map(fn uuid -> World.list_objects_in(uuid, store) end)
+      |> Enum.map(& &1.node_id)
+      |> Enum.uniq()
+      |> Enum.reject(&MapSet.member?(visited, &1))
+
+    cond do
+      target_uuid in children ->
+        true
+
+      children == [] ->
+        false
+
+      true ->
+        bfs_contains?(children, Enum.reduce(children, visited, &MapSet.put(&2, &1)), target_uuid, store, depth + 1)
     end
   end
 
@@ -1421,6 +1694,9 @@ defmodule Commonplace.MUD.Verbs do
       say <text>  ('<text>)            speak in the room
       emote <text>                     act out
       take <obj> / drop <obj>          pick up / drop an object
+      take/get <obj> from <container>  get something out of a container
+      put <obj> in <container>         put something into a container
+      look in <container>              see what's inside a container
       give <obj> <player>              give an object to someone here
       i / inventory                    list what you carry
       who                              list players online

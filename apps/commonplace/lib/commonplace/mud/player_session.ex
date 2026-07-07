@@ -476,6 +476,22 @@ defmodule Commonplace.MUD.PlayerSession do
   # `who` is server-supplied (the facade's bound ctx), so it cannot be
   # forged by author code; the name is composed per-recipient here, like
   # `:say`. Actor reads "You <first_person>", observers "<who> <third_person>".
+  defp render_event(%{kind: :put, who: who, what: what, where: where}, state) do
+    if who == state.player_name do
+      state.output_fn.("You put #{what} in #{where}.")
+    else
+      state.output_fn.("#{who} puts #{what} in #{where}.")
+    end
+  end
+
+  defp render_event(%{kind: :get_from, who: who, what: what, from: from}, state) do
+    if who == state.player_name do
+      state.output_fn.("You get #{what} from #{from}.")
+    else
+      state.output_fn.("#{who} gets #{what} from #{from}.")
+    end
+  end
+
   defp render_event(%{kind: :action, who: who, first_person: fp, third_person: tp}, state) do
     if who == state.player_name do
       state.output_fn.("You #{fp}")

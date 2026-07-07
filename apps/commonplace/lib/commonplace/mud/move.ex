@@ -30,6 +30,17 @@ defmodule Commonplace.MUD.Move do
   then source-remove. A crash between the two writes leaves the entry in
   both rooms (recoverable: reaper / manual scrub) rather than nowhere
   (silently lost). See spec §2.4.
+
+  ## Nested containers (CX-cj3t.1.1)
+
+  v1 containers (bags/chests — an `.obj` that can itself hold `.obj`
+  children) inherit the tree's concurrent-cross-replica move-cycle
+  limitation: `put A in B` on node1 racing `put B in A` on node2 can
+  still merge into a self-containing cycle, the same limitation the
+  outliner has. Single-replica/single-writer is resolved today by move
+  serialization (the bursar move-lock this module already takes, plus
+  the `:precheck` cycle-guard hook above); the federated
+  multi-replica case is deferred to Kleppmann-move (CX-liim).
   """
 
   alias Commonplace.Green.{Bursar, BursarClient}
@@ -54,6 +65,18 @@ defmodule Commonplace.MUD.Move do
   is, `{:error, :collision}` on a dest name clash, `{:error, :busy}` if
   the dir tokens stayed contended through the retry budget, or
   `{:error, :bursar_unavailable}` when no lock authority is reachable.
+
+  `opts[:precheck]` (CX-cj3t.1.1, nested containers): an optional
+  0-arity fun run INSIDE the locked section — after both dir tokens are
+  acquired, before `do_move` touches anything. Returning `{:error,
+  reason}` aborts the move (no writes happen; tokens still release via
+  the existing `after`) and that reason is returned to the caller.
+  Absent (the default) preserves prior behavior exactly. This is how
+  the container cycle-guard (`Verbs.cycle_guard/3`) gets to run
+  atomically under the same bursar lock the move already takes on
+  `{source, dest}` — a check-then-move outside the lock would leave a
+  TOCTOU window for a concurrent `put` to open a cycle between the
+  check and the write.
   """
   def move(thing_uuid, name, source_dir_uuid, dest_dir_uuid, opts \\ [])
 
@@ -65,6 +88,7 @@ defmodule Commonplace.MUD.Move do
     ttl = Keyword.get(opts, :ttl, @move_ttl_ms)
     retries = Keyword.get(opts, :retries, @retries)
     retry_ms = Keyword.get(opts, :retry_ms, @retry_ms)
+    precheck = Keyword.get(opts, :precheck, fn -> :ok end)
 
     # CX-lg06: :signing_context / :cert_cids / :signer_id ride along in
     # `opts` (already accepted, previously unused) so both writes below
@@ -82,7 +106,10 @@ defmodule Commonplace.MUD.Move do
     case acquire_all(paths, holder, bursar, ttl, retries, retry_ms) do
       :ok ->
         try do
-          do_move(thing_uuid, name, source_dir_uuid, dest_dir_uuid, store, write_opts)
+          case precheck.() do
+            :ok -> do_move(thing_uuid, name, source_dir_uuid, dest_dir_uuid, store, write_opts)
+            {:error, _} = err -> err
+          end
         after
           release_all(paths, holder, bursar)
         end
