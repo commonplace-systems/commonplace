@@ -263,22 +263,14 @@ defmodule Commonplace.MUD.Verbs do
   # after `find_safe_source` already returned `{:ok, _}`).
   defp map_safe_result(result, verb_name, ctx) do
     case result do
-      # CX-qexv — the verb's TAIL expression was a facade STATE write that
-      # returned {:error, :state_bounds} (an over-budget or non-JSON value).
-      # The generic {:ok, _} arm below would SWALLOW it — the CX-v6j4
-      # silent-loss shape (verb returns the error, dispatch drops it). Surface
-      # it to the author as their reply instead of losing the write silently.
-      {:ok, {:error, :state_bounds}} ->
-        {:error,
-         "(verb #{verb_name}: state value rejected — must be a JSON value " <>
-           "(string / number / boolean / list / string-keyed map), nested ≤ 8 deep and ≤ 1024 bytes)"}
-
-      # CX-a3rq — a ROOM-hosted verb called an object-only effect
-      # (consume/destroy_child/move_object); the facade refused with
-      # :requires_object_host. Same swallow shape as above — surface it as a
-      # player-facing "won't work here" instead of a silent no-op.
-      {:ok, {:error, :requires_object_host}} ->
-        {:error, "(verb #{verb_name} can't do that here — it needs an object to act on, not a room)"}
+      # CX-3x5a — the dedicated `{:ok, {:error, :state_bounds}}` (CX-qexv) and
+      # `{:ok, {:error, :requires_object_host}}` (CX-a3rq) tail arms are GONE:
+      # they were the DENYLIST shape ("surface the drops we thought of"). Those
+      # errors now flow through the structural drop-accumulator
+      # (`Facade.__accumulate__/2`) and surface as DIM author-diagnostics to
+      # the invoker — correctly dim (they are AUTHOR errors), and caught BY
+      # CONSTRUCTION whether they land in the tail or an ignored intermediate
+      # call. A NEW facade error is visible automatically, no new arm needed.
 
       # CX-oh5k — a safe verb may have called `Facade.move_self`, which
       # relocates the invoker's `.usr` presence WITHOUT emitting a

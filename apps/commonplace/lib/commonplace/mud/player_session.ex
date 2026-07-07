@@ -529,6 +529,16 @@ defmodule Commonplace.MUD.PlayerSession do
     state.output_fn.("(verb #{verb} crashed: #{reason})")
   end
 
+  # CX-3x5a — a DIM author-diagnostic: a facade method returned {:error, _}
+  # that the verb SILENTLY DROPPED (ignored the return). Delivered via
+  # `World.tell/2` to the INVOKER only (same actor-only tell topic as
+  # :whisper), so only the verb's caller sees it. The text already arrives
+  # pre-framed as a parenthetical "(verb note: …)" note — clearly a
+  # diagnostic, not gameplay narration.
+  defp render_event(%{kind: :verb_diagnostic, text: text}, state) do
+    state.output_fn.(text)
+  end
+
   defp render_event(%{kind: :custom, text: text}, state) do
     state.output_fn.(text)
   end

@@ -1257,4 +1257,86 @@ defmodule Commonplace.MUD.World.FacadeTest do
       assert thin.host_kind == full.host_kind
     end
   end
+
+  # CX-3x5a — the drop accumulator. (A) unit behavior of the choke point;
+  # (B) REFLECTIVE COVERAGE proving the `AccumDef` `def`-override actually
+  # wrapped every public method (the completeness backstop — belt with the
+  # macro's suspenders).
+  describe "CX-3x5a: drop accumulator" do
+    test "(A) __accumulate__ records only {:error,_}, passes everything else through; drain reverses + clears" do
+      # start clean (the accumulator is process-local)
+      Facade.drain_errors()
+
+      assert Facade.__accumulate__(:m1, {:error, :r1}) == {:error, :r1}
+      assert Facade.__accumulate__(:m2, :ok) == :ok
+      assert Facade.__accumulate__(:m3, {:ok, 7}) == {:ok, 7}
+      assert Facade.__accumulate__(:m4, nil) == nil
+      assert Facade.__accumulate__(:m5, false) == false
+      assert Facade.__accumulate__(:m6, "a string") == "a string"
+      assert Facade.__accumulate__(:m7, 42) == 42
+      assert Facade.__accumulate__(:m8, {:error, {:trust_rejected, :x}}) == {:error, {:trust_rejected, :x}}
+
+      # drain returns ONLY the two errors, in call order (reversed from the
+      # internal prepend), and clears the accumulator.
+      assert Facade.drain_errors() == [m1: :r1, m8: {:trust_rejected, :x}]
+      assert Facade.drain_errors() == []
+    end
+
+    test "(B) REFLECTIVE COVERAGE: a representative set of facade methods each accumulate their {:error} (the macro wrapped them)",
+         %{store: store, obj_uuid: obj_uuid, trusted_ctx: trusted_ctx} do
+      # Fresh per-run counters so lifecycle charges never interfere.
+      Process.delete(:cp_safe_verb_lifecycle_ops)
+      Facade.drain_errors()
+
+      # EMPTY owner_grant → grant-gated writes fail :owner_grant_exceeded
+      # (checked BEFORE any store write); ctx carries arbitrary uuids and a
+      # nil inventory so the non-grant methods hit their own error triggers.
+      ctx = %{
+        signing_context: trusted_ctx,
+        cert_cids: [],
+        signer_id: nil,
+        current_room_uuid: "room-does-not-exist",
+        inventory_uuid: nil
+      }
+
+      fobj = %{Facade.new(ctx, obj_uuid, [], {"v.safe.elx", "o"}, store) | host_kind: :object}
+
+      # {method_atom, invocation} — one per public method, inducing an error:
+      #  * grant-gated writes → :owner_grant_exceeded (empty grant)
+      #  * lifecycle/inventory → their own per-method trigger (nil inventory,
+      #    bad arg, not-minted, blank name)
+      #  * reads → :not_found (bogus uuid)
+      invocations = [
+        set_attr: fn -> Facade.set_attr(fobj, "k", "v") end,
+        put_state: fn -> Facade.put_state(fobj, "k", "v") end,
+        move_object: fn -> Facade.move_object(fobj, "dest-uuid") end,
+        create_child: fn -> Facade.create_child(fobj, "child") end,
+        destroy_child: fn -> Facade.destroy_child(fobj, "child") end,
+        spawn: fn -> Facade.spawn(fobj, "rock") end,
+        transfer: fn -> Facade.transfer(fobj, "item-uuid", "dest-uuid") end,
+        random: fn -> Facade.random(fobj, -1) end,
+        give_to_actor: fn -> Facade.give_to_actor(fobj, "reward") end,
+        consume_from_inventory: fn -> Facade.consume_from_inventory(fobj, "   ") end,
+        give_from_inventory: fn -> Facade.give_from_inventory(fobj, "a", "b") end,
+        configure_attr: fn -> Facade.configure_attr(fobj, "not-minted-uuid", "k", "v") end,
+        configure_state: fn -> Facade.configure_state(fobj, "not-minted-uuid", "k", "v") end,
+        describe: fn -> Facade.describe(fobj, "bogus-uuid") end,
+        get_attr: fn -> Facade.get_attr(fobj, "bogus-uuid") end,
+        look: fn -> Facade.look(fobj) end
+      ]
+
+      for {method, fun} <- invocations do
+        Facade.drain_errors()
+        result = fun.()
+
+        assert match?({:error, _}, result),
+               "#{method} must return an {:error, _} to induce a drop, got: #{inspect(result)}"
+
+        drained = Facade.drain_errors()
+
+        assert Keyword.has_key?(drained, method),
+               "#{method} did NOT accumulate — the def-override failed to wrap it (drained=#{inspect(drained)})"
+      end
+    end
+  end
 end

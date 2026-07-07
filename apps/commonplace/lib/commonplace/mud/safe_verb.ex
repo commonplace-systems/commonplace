@@ -142,7 +142,17 @@ defmodule Commonplace.MUD.SafeVerb do
       # is captured in THIS closure, not in anything the verb receives.
       Bounds.run(fn ->
         Facade.install_backing(facade)
-        invoke(module, Facade.to_verb_facing(facade), args)
+        result = invoke(module, Facade.to_verb_facing(facade), args)
+        # CX-3x5a — drain the run's accumulated facade drops and, if any,
+        # emit a DIM author-diagnostic to the invoker. MUST run INSIDE the
+        # Bounds child: the accumulator lives in this child's process dict
+        # and dies with it. `invoke/3` already traps a verb's own rescue/
+        # catch into `result`, so a mid-run crash still reaches this line
+        # with whatever accumulated before it (its runtime_error covers the
+        # crash itself); only a Bounds heap-kill/timeout skips this, and that
+        # verb's whole run is discarded anyway.
+        Facade.emit_verb_drops(facade, module)
+        result
       end)
       |> normalize()
     else

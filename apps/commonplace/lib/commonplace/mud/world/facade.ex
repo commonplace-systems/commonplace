@@ -106,6 +106,13 @@ defmodule Commonplace.MUD.World.Facade do
           host_kind: :object | :room
         }
 
+  # CX-3x5a — override `def` so every PUBLIC method below has its return
+  # post-processed through the drop-accumulator (`__accumulate__/2`), by
+  # construction. Placed AFTER `defstruct`/`@type` (so the struct's generated
+  # `__struct__` functions compile with normal `Kernel.def`) but BEFORE the
+  # first real `def`, so every facade method is wrapped. See `AccumDef`.
+  use Commonplace.MUD.World.Facade.AccumDef
+
   @doc """
   Build a facade. `owner_grant` is any enumerable of uuids (converted to
   a `MapSet`). `via_verb` is the `{verb_doc_ref, owner}` audit tag
@@ -1302,6 +1309,75 @@ defmodule Commonplace.MUD.World.Facade do
   # they keep working unchanged.
   @facade_backing_key :cp_safe_verb_facade_backing
 
+  # CX-3x5a — the per-run drop accumulator. Every PUBLIC facade method's
+  # return flows through `__accumulate__/2` (wired by the `AccumDef` `def`
+  # override — see the `use` near the top). Any `{:error, reason}` a verb
+  # SILENTLY DROPS (ignores the return and continues) is recorded here and
+  # later surfaced to the invoker as a DIM author-diagnostic by
+  # `emit_verb_drops/2`. Lives in THIS run's process dict (the safe-verb's
+  # own `Bounds` child), same pattern as the lifecycle/whisper counters — no
+  # cross-run leakage, dies with the child.
+  @facade_errors_key :cp_safe_verb_facade_errors
+
+  # NOTE: `__accumulate__/2` MUST be defined with `Kernel.def`, NOT the
+  # `AccumDef` override — wrapping the accumulator through itself would
+  # recurse infinitely. `drain_errors/0`/`emit_verb_drops/2` likewise use
+  # `Kernel.def` so the accumulator infrastructure never accumulates on
+  # itself. (SCOPE N3: only `{:error, _}` records; every other return —
+  # `:ok`, `{:ok, _}`, `nil`, `false`, integers, strings, structs — is a pure
+  # pass-through, so `get_state(nil)` / `actor_carries?(false)` / `pick([])`
+  # do NOT accumulate.)
+  @doc false
+  Kernel.def __accumulate__(method, result) do
+    case result do
+      {:error, reason} ->
+        Process.put(@facade_errors_key, [{method, reason} | Process.get(@facade_errors_key, [])])
+
+      _ ->
+        :ok
+    end
+
+    result
+  end
+
+  @doc false
+  Kernel.def drain_errors do
+    errs = Process.get(@facade_errors_key, []) |> Enum.reverse()
+    Process.delete(@facade_errors_key)
+    errs
+  end
+
+  @doc """
+  CX-3x5a — drain the run's accumulated facade-method drops and, if any,
+  emit ONE dim author-diagnostic to the INVOKER only (never the room).
+
+  `full_facade` is the FULL facade captured in `SafeVerb.run`'s Bounds-child
+  closure (it still carries `ctx.player_uuid`) — NOT the thin verb-facing
+  handle. N1 precedence: show the FIRST drop (earliest failure = likely root
+  cause) with a `(+N more)` suffix if several. Delivered via `World.tell/2`
+  (the invoker's own actor-only tell topic) as a `:verb_diagnostic` event —
+  a dim, clearly-a-diagnostic line, distinct from gameplay narration (N2:
+  a handled error degrades to a tolerable dim note; a truly-silent drop
+  becomes VISIBLE to the author).
+  """
+  Kernel.def emit_verb_drops(%__MODULE__{} = full_facade, _module) do
+    case drain_errors() do
+      [] ->
+        :ok
+
+      [{method, reason} | rest] ->
+        suffix = if rest == [], do: "", else: " (+#{length(rest)} more)"
+        line = "(verb note: #{method} → #{format_drop_reason(reason)}#{suffix})"
+        World.tell(full_facade.ctx.player_uuid, %{kind: :verb_diagnostic, text: line})
+        :ok
+    end
+  end
+
+  # A bare atom reason renders cleanly (`not_carrying`); a compound reason
+  # (`{:trust_rejected, _}`) falls back to `inspect/1`.
+  defp format_drop_reason(reason) when is_atom(reason), do: Atom.to_string(reason)
+  defp format_drop_reason(reason), do: inspect(reason)
+
   @doc false
   def install_backing(%__MODULE__{} = f), do: Process.put(@facade_backing_key, f)
 
@@ -1489,6 +1565,15 @@ defmodule Commonplace.MUD.World.Facade do
 end
 
 defimpl Inspect, for: Commonplace.MUD.World.Facade do
+  # CX-3x5a — DEFIMPL-LEAK GUARD (verified): the `AccumDef` `def` override is
+  # imported only within the `Commonplace.MUD.World.Facade` module body above.
+  # This `defimpl` expands to a SIBLING top-level module
+  # (`Inspect.Commonplace.MUD.World.Facade`), not lexically nested inside
+  # Facade, so it does NOT inherit that import — `def` here is normal
+  # `Kernel.def` and `Inspect.inspect/2` is never wrapped through the
+  # accumulator. (A blanket `import Kernel, only: [def: 2]` would be WRONG: it
+  # narrows Kernel to ONLY `def/2`, dropping `&&`/`||`/`is_map` used below.)
+
   # CX-<p0-keyleak> — OPAQUE render (defense-in-depth, plan #6107 part 3):
   # never dump the struct's object graph (store handle, ctx, owner_grant) so
   # `inspect(world)` inside a verb discloses no internals even if a field

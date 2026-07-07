@@ -459,7 +459,7 @@ defmodule Commonplace.MUD.OutputTest do
       PlayerSession.stop(alice)
     end
 
-    test "CX-qexv: a verb whose tail put_state is over-budget surfaces :state_bounds to the actor (not silent)",
+    test "CX-qexv/CX-3x5a: a verb whose tail put_state is over-budget surfaces a DIM :verb_diagnostic to the actor (not silent)",
          ctx do
       alice = start_player("alice", ctx)
       drain("alice")
@@ -474,8 +474,10 @@ defmodule Commonplace.MUD.OutputTest do
 
       # The verb's TAIL expression is a put_state with a >1024-byte value —
       # a literal big string in the body, so it saves fine but the write
-      # returns {:error, :state_bounds}. Pre-CX-qexv the {:ok, _} dispatch
-      # arm swallowed it; now it must reach the actor.
+      # returns {:error, :state_bounds}. CX-3x5a retired the dedicated
+      # {:ok, {:error, :state_bounds}} arm: the drop now flows through the
+      # facade accumulator and reaches the actor as a DIM author-diagnostic
+      # ("(verb note: put_state → state_bounds)") instead of a loud reply.
       big = String.duplicate("z", 1100)
 
       :ok =
@@ -489,7 +491,9 @@ defmodule Commonplace.MUD.OutputTest do
 
       send_input(alice, "overflow gizmo")
       out = drain("alice") |> Enum.join("\n")
-      assert out =~ "state value rejected"
+      assert out =~ "verb note"
+      assert out =~ "put_state"
+      assert out =~ "state_bounds"
 
       PlayerSession.stop(alice)
     end
@@ -652,7 +656,7 @@ defmodule Commonplace.MUD.OutputTest do
       PlayerSession.stop(alice)
     end
 
-    test "CX-a3rq: a room verb calling an object-only effect surfaces :requires_object_host to the actor", ctx do
+    test "CX-a3rq/CX-3x5a: a room verb calling an object-only effect surfaces a DIM :verb_diagnostic to the actor", ctx do
       alice = start_player("alice", ctx)
       drain("alice")
       send_input(alice, "east")
@@ -661,7 +665,10 @@ defmodule Commonplace.MUD.OutputTest do
       room = clearing_uuid(ctx)
 
       # consume/2 is object-host only; on a ROOM host the facade refuses with
-      # :requires_object_host. Pre-CX-a3rq that was a silent no-op.
+      # :requires_object_host. Pre-CX-a3rq that was a silent no-op; CX-3x5a
+      # retired the dedicated {:ok, {:error, :requires_object_host}} arm and
+      # the drop now reaches the actor as a DIM author-diagnostic
+      # ("(verb note: consume → requires_object_host)").
       :ok =
         VerbSource.save_safe_verb(
           room,
@@ -673,7 +680,89 @@ defmodule Commonplace.MUD.OutputTest do
 
       send_input(alice, "vanish")
       out = drain("alice") |> Enum.join("\n")
-      assert out =~ "needs an object to act on"
+      assert out =~ "verb note"
+      assert out =~ "consume"
+      assert out =~ "requires_object_host"
+
+      PlayerSession.stop(alice)
+    end
+  end
+
+  # CX-3x5a — the drop accumulator's END-TO-END guarantee: a facade
+  # {:error, _} that a verb SILENTLY DROPS (ignores the return and keeps
+  # going) becomes VISIBLE to the invoker as a DIM :verb_diagnostic line —
+  # NOT a loud gameplay reply, and only reaching the caller. And N3: a pure
+  # read returning nil/false is normal control flow, NOT a drop, so it emits
+  # NOTHING.
+  describe "CX-3x5a: silent-drop author diagnostics" do
+    test "a verb that IGNORES a failing put_state (non-tail) then says → invoker sees the dim diagnostic", ctx do
+      alice = start_player("alice", ctx)
+      drain("alice")
+      send_input(alice, "east")
+      drain("alice")
+
+      send_input(alice, "@create object widget")
+      drain("alice")
+
+      {:ok, entry} = Commonplace.MUD.World.find_entry_by_name(clearing_uuid(ctx), "widget", ctx.store)
+      dir = entry.node_id
+
+      # The put_state over-budget error is DROPPED (its return ignored); the
+      # verb continues to say something and returns the say's :ok. Pre-3x5a
+      # the intermediate error vanished entirely (map_safe_result only ever
+      # saw the TAIL). Now the accumulator surfaces it as a dim note to the
+      # invoker, ALONGSIDE the normal gameplay say.
+      big = String.duplicate("z", 1100)
+
+      :ok =
+        VerbSource.save_safe_verb(
+          dir,
+          "leak",
+          ~s|Commonplace.MUD.World.Facade.put_state(world, "blob", "#{big}")\n  Commonplace.MUD.World.Facade.say(world, "hello there")|,
+          [dir],
+          ctx.store
+        )
+
+      send_input(alice, "leak widget")
+      out = drain("alice") |> Enum.join("\n")
+      # The gameplay say still happens...
+      assert out =~ "hello there"
+      # ...AND the dropped error is now visible as a dim author-diagnostic.
+      assert out =~ "verb note"
+      assert out =~ "put_state"
+      assert out =~ "state_bounds"
+
+      PlayerSession.stop(alice)
+    end
+
+    test "N3: a verb whose get_state is nil / actor_carries? is false emits NO diagnostic (normal control flow)", ctx do
+      alice = start_player("alice", ctx)
+      drain("alice")
+      send_input(alice, "east")
+      drain("alice")
+
+      send_input(alice, "@create object doohickey")
+      drain("alice")
+
+      {:ok, entry} = Commonplace.MUD.World.find_entry_by_name(clearing_uuid(ctx), "doohickey", ctx.store)
+      dir = entry.node_id
+
+      # get_state on a missing key returns nil; actor_carries? on a not-held
+      # item returns false — BOTH are normal reads, NOT {:error, _}, so the
+      # accumulator records nothing and no diagnostic is emitted.
+      :ok =
+        VerbSource.save_safe_verb(
+          dir,
+          "peek",
+          ~s|_ = Commonplace.MUD.World.Facade.get_state(world, "never-set")\n  _ = Commonplace.MUD.World.Facade.actor_carries?(world, "nonexistent-thing")\n  Commonplace.MUD.World.Facade.say(world, "all clear")|,
+          [dir],
+          ctx.store
+        )
+
+      send_input(alice, "peek doohickey")
+      out = drain("alice") |> Enum.join("\n")
+      assert out =~ "all clear"
+      refute out =~ "verb note"
 
       PlayerSession.stop(alice)
     end
