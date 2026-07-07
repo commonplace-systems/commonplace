@@ -370,10 +370,15 @@ defmodule Commonplace.MUD.PlayerSession do
       state.output_fn.(
         "(new verb — type lines, '.' to save, '@abort' to cancel)\n" <>
           "type a bare run/2 BODY (no defmodule). In scope: `world` (this " <>
-          "room/object) and `args` — a MAP %{target, argv, args, rest} " <>
-          "(args.target = object noun; args.rest = the rest after it, e.g. " <>
-          "'play box a waltz' → args.rest is \"a waltz\"). " <>
-          "e.g. Commonplace.MUD.World.Facade.say(world, \"hi\")"
+          "room/object) and `args` = %{target, argv, args, rest}.\n" <>
+          "  args.target = the FIRST noun word — so 'chant spark' → " <>
+          "args.target is \"spark\", args.rest is \"\" (CX-hmmc).\n" <>
+          "  args.rest = the text AFTER the first noun — 'play box a waltz' " <>
+          "→ args.rest is \"a waltz\".\n" <>
+          "Common calls (always Commonplace.MUD.World.Facade.<fn>(world, ...)):\n" <>
+          "  say(world, text)  ·  emit_action(world, \"lift the lid\", \"lifts the lid\")  [attributed: You / <name>]\n" <>
+          "  random(world, n) [1..n]  ·  pick(world, list)  ·  actor_carries?(world, name)\n" <>
+          "  get_state(world, key)  ·  put_state(world, key, value)"
       )
     end
 
