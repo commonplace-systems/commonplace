@@ -309,7 +309,7 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
     # `{object_uuid, current_room_uuid, dest_dir_uuid}`. `current_room_uuid`
     # (the room) is NOT in the default grant, so the facade denies BEFORE
     # attempting any commit.
-    body = ~s|Commonplace.MUD.World.Facade.move(world, "#{elsewhere_uuid}")|
+    body = ~s|Commonplace.MUD.World.Facade.move_object(world, "#{elsewhere_uuid}")|
     assert :ok = VerbSource.save_safe_verb(box_uuid, "shove", body, [box_uuid], store)
 
     ctx = base_ctx(store, room_uuid, inventory_uuid)
@@ -401,7 +401,7 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
     # `chest_uuid`, so `SignedWrite`'s cert-selection picks it) — this is
     # exactly the discovery signal `owner_grant_for/2` walks for, mirrored
     # from `Sections.auto_extend_for_new_room/3`.
-    body = ~s|Commonplace.MUD.World.Facade.move(world, "#{dest_uuid}")|
+    body = ~s|Commonplace.MUD.World.Facade.move_object(world, "#{dest_uuid}")|
 
     assert :ok =
              VerbSource.save_safe_verb(chest_uuid, "shove", body, [chest_uuid], store,

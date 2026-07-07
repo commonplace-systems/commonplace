@@ -391,6 +391,80 @@ defmodule Commonplace.MUD.World.FacadeTest do
     assert {:error, :not_minted_here} = Facade.configure_attr(f, {:ok, obj_uuid}, "description", "hax")
   end
 
+  test "CX-cj3t.9: move_self moves the invoker's presence with an EMPTY grant (presence-self, NOT room-write)", %{
+    store: store,
+    obj_uuid: obj_uuid,
+    trusted_ctx: trusted_ctx
+  } do
+    # move_self routes through World.move, which serializes via the Green
+    # Bursar (same as the builtin go/take) — start one under its default name.
+    case GenServer.whereis(Commonplace.Green.Bursar) do
+      nil -> :ok
+      p -> GenServer.stop(p)
+    end
+
+    {:ok, bursar} =
+      Commonplace.Green.Bursar.start_link(root_uuid: UUID.uuid4(), store: store, sweep_interval: 60_000)
+
+    on_exit(fn -> if Process.alive?(bursar), do: GenServer.stop(bursar) end)
+
+    room = lc_dir(store, trusted_ctx, "room")
+    dest = lc_dir(store, trusted_ctx, "dest")
+    player_uuid = UUID.uuid4()
+    pfile = "alice.usr"
+
+    # Place the invoker's .usr presence in `room`.
+    {:ok, schema} = Schemas.load_dir_schema(room, store)
+    schema = Commonplace.Tree.Schema.add_directory(schema, pfile, player_uuid)
+
+    {meta, opts} =
+      Commonplace.MUD.SignedWrite.opts_for(room,
+        store: store,
+        signing_context: trusted_ctx,
+        cert_cids: [],
+        signer_id: nil,
+        via_verb: nil
+      )
+
+    Commonplace.Store.CommitStoreClient.create_chained_commit(
+      store,
+      room,
+      Yelixer.Encoding.encode_update(schema),
+      meta,
+      opts
+    )
+
+    # EMPTY grant: move_self must NOT owner_grant-check (it's presence-self,
+    # never write_guarded) — this is the whole point of the split.
+    f =
+      lc_facade(
+        trusted_ctx,
+        obj_uuid,
+        [],
+        %{current_room_uuid: room, player_uuid: player_uuid, presence_filename: pfile},
+        store
+      )
+
+    assert :ok = Facade.move_self(f, dest)
+    refute pfile in lc_entry_names(store, room)
+    assert pfile in lc_entry_names(store, dest)
+  end
+
+  test "CX-cj3t.9: move_object STILL grant-checks (empty grant → :owner_grant_exceeded — the intersection is intact)", %{
+    store: store,
+    obj_uuid: obj_uuid,
+    trusted_ctx: trusted_ctx
+  } do
+    room = lc_dir(store, trusted_ctx, "room")
+    dest = lc_dir(store, trusted_ctx, "dest")
+
+    # EMPTY grant + bound object: move_object write_guards [object, room,
+    # dest], so an empty grant denies BEFORE any write — proving move_object
+    # (unlike move_self) stays a room-write intersection.
+    f = lc_facade(trusted_ctx, obj_uuid, [], %{current_room_uuid: room}, store)
+    assert {:error, :owner_grant_exceeded} = Facade.move_object(f, dest)
+  end
+
   test "destroy_child: happy path — create then unlink a named child of the bound object", %{
     store: store,
     obj_uuid: obj_uuid,

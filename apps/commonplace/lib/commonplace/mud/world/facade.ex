@@ -183,20 +183,74 @@ defmodule Commonplace.MUD.World.Facade do
 
   # ---- writes (intersection-checked) ----
 
-  @doc """
-  Move this facade's bound object (`object_uuid`) from the invoker's
-  current room into `dest_dir_uuid`. Grant-checked against
-  `{object_uuid, current_room_uuid, dest_dir_uuid}` — all three uuids
-  the move touches must be in `owner_grant`.
-  """
-  @spec move(t(), String.t()) :: :ok | {:error, term()}
-  def move(%__MODULE__{object_uuid: nil}, _dest_dir_uuid), do: {:error, :no_bound_object}
+  # CX-cj3t.9 (plan-blessed #6069) — THE MOVE SPLIT. The old single `move/2`
+  # was room-write intersection on [object, source, dest] and so ALWAYS
+  # errored `:owner_grant_exceeded` for gameplay (the default grant {object}
+  # covers no rooms) — the case people actually wanted was moving the ACTOR
+  # (portals/teleport pads), which is presence-self-authority, NOT a
+  # room-write. Split into two methods with SEPARATE authority and NO shared
+  # path: `move_self` (presence, never write_guarded) and `move_object`
+  # (room-write intersection on BOTH rooms). `move/2` is RETIRED from the
+  # allowlist — it never worked, so nothing depends on it, and two explicit
+  # names make the authority split legible at the admit-set level.
+  #
+  # DESIGN RULING (plan #6069, load-bearing): spatial position is
+  # NAVIGATION, not access-control. Teleport-to-any-room is CORRECT —
+  # presence ≠ authority; you were always allowed to place your presence
+  # anywhere (that's what walking is). So content protection MUST be
+  # read-scoping or write-gating, NEVER "they can't reach the room." Do not
+  # build a security boundary on spatial reachability.
 
-  def move(%__MODULE__{} = f, dest_dir_uuid) when is_binary(dest_dir_uuid) do
-    write_guarded(f, [f.object_uuid, f.ctx.current_room_uuid, dest_dir_uuid], fn ->
+  @doc """
+  CX-cj3t.9 — move the INVOKER'S OWN presence into `dest_room_uuid`
+  (portals / teleport pads / trapdoors). PRESENCE-SELF-AUTHORITY: mirrors
+  the `go` builtin exactly (`World.move` of the invoker's `.usr` presence,
+  invoker-signed) and deliberately does NOT call `write_guarded` — moving
+  your own presence is not a room-write authority question, it's the same
+  thing walking already does. SERVER-FIXED to the invoker (no target-player
+  param) — a verb can NEVER move another player. Teleports past exits by
+  design (a raw room uuid); the exits-respecting variant is a separate
+  future `move_self/exit-name` power, not sugar over this.
+
+  ENFORCE NOTE: `.usr`-into-a-room is a normal schema write and there is no
+  presence-authority carve in the write gate today, so `move_self` is
+  honest PERMISSIVE-PARITY with the `go` builtin — it surfaces the
+  pre-existing enforce-walking gap, does not widen it. Enforce-correct
+  movement rides a presence-authority carve OR subtree-scopes (CX-tdkq.23).
+  The carve, WHEN designed, MUST key on identity + presence-schema (own
+  `.usr`, presence-kind content), NOT on the `.usr` EXTENSION — an
+  extension-keyed carve is forgeable, the same filename-trust class as the
+  `.safe.elx` bug (plan #6069).
+  """
+  @spec move_self(t(), String.t()) :: :ok | {:error, term()}
+  def move_self(%__MODULE__{} = f, dest_room_uuid) when is_binary(dest_room_uuid) do
+    World.move(
+      f.ctx.player_uuid,
+      f.ctx.presence_filename,
+      f.ctx.current_room_uuid,
+      dest_room_uuid,
+      write_opts(f)
+    )
+  end
+
+  @doc """
+  CX-cj3t.9 — move this facade's bound object (`object_uuid`) from the
+  invoker's current room into `dest_room_uuid`. ROOM-WRITE INTERSECTION:
+  grant-checked against `{object_uuid, current_room_uuid, dest_room_uuid}`
+  — ALL THREE must be in `owner_grant` AND the invoker must be able to
+  write both rooms. Placing an object into a room modifies that room's
+  contents beyond your own presence, so it correctly stays a BUILDER
+  capability (room-scoped cert), NOT loosened to gameplay — loosening it
+  would let a visitor rearrange a room they don't own.
+  """
+  @spec move_object(t(), String.t()) :: :ok | {:error, term()}
+  def move_object(%__MODULE__{object_uuid: nil}, _dest_room_uuid), do: {:error, :no_bound_object}
+
+  def move_object(%__MODULE__{} = f, dest_room_uuid) when is_binary(dest_room_uuid) do
+    write_guarded(f, [f.object_uuid, f.ctx.current_room_uuid, dest_room_uuid], fn ->
       case entry_name(f.ctx.current_room_uuid, f.object_uuid, f.store) do
         {:ok, name} ->
-          Move.move(f.object_uuid, name, f.ctx.current_room_uuid, dest_dir_uuid, write_opts(f))
+          Move.move(f.object_uuid, name, f.ctx.current_room_uuid, dest_room_uuid, write_opts(f))
 
         :error ->
           {:error, :not_found}

@@ -55,7 +55,11 @@ defmodule Commonplace.MUD.SafeVerb.AllowlistTest do
     # extends to it, ONLY when `world` is the literal first argument.
     test "(f2) Commonplace.MUD.World.Facade.<fun>(world, ...) passes when world is the literal first arg" do
       assert :ok == Allowlist.check(~s|Commonplace.MUD.World.Facade.set_attr(world, "k", "v")|)
-      assert :ok == Allowlist.check(~s|Commonplace.MUD.World.Facade.move(world, "dest-uuid")|)
+      # CX-cj3t.9 — the move SPLIT: move_object + move_self are admitted...
+      assert :ok == Allowlist.check(~s|Commonplace.MUD.World.Facade.move_object(world, "dest-uuid")|)
+      assert :ok == Allowlist.check(~s|Commonplace.MUD.World.Facade.move_self(world, "dest-uuid")|)
+      # ...and the retired ambiguous {:move,2} now FAILS CLOSED (unknown verb).
+      assert {:error, _} = Allowlist.check(~s|Commonplace.MUD.World.Facade.move(world, "dest-uuid")|)
     end
 
     # CX-aw4r — the attributed-action primitive is admitted (plan #5955).

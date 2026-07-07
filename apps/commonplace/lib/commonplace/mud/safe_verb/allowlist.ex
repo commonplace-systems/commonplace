@@ -430,7 +430,13 @@ defmodule Commonplace.MUD.SafeVerb.Allowlist do
                     {:look, 1},
                     {:describe, 2},
                     {:get_attr, 2},
-                    {:move, 2},
+                    # CX-cj3t.9 (plan #6069) — the move SPLIT, replacing the
+                    # retired ambiguous {:move,2} (which always errored for
+                    # gameplay, so nothing depends on it). Two explicit names
+                    # make the authority split legible: move_self = presence-
+                    # self (no room-write), move_object = both-rooms intersection.
+                    {:move_self, 2},
+                    {:move_object, 2},
                     {:set_attr, 3},
                     {:create_child, 2},
                     {:transfer, 3},
