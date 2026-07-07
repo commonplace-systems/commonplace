@@ -345,6 +345,26 @@ defmodule Commonplace.MUD.World.FacadeTest do
     assert "lever.obj" in lc_entry_names(store, room)
   end
 
+  test "orphan check (plan #5993): a gate-rejected spawn lands NO doc — rejection is at the first write", %{
+    store: store,
+    uncapped_ctx: uncapped_ctx
+  } do
+    # create_object_in creates the object's meta doc FIRST (create_meta_doc
+    # → a signed, NON-genesis commit), then the dir doc, then links. Under
+    # :enforce an unauthorized invoker is rejected at that FIRST write, so
+    # the with-chain short-circuits before any doc is committed — no orphan
+    # meta/dir doc, not just no link. Prove it directly on the primitive
+    # `spawn` uses: create-then-link is atomic-or-nothing because the very
+    # first sub-write is the one the gate refuses.
+    assert {:error, {:trust_rejected, _}} =
+             Schemas.create_dir_with_meta(
+               Schemas.object_filename(),
+               Schemas.encode_object(%Schemas.Object{name: "orphan", description: "d"}),
+               store,
+               signing_context: uncapped_ctx
+             )
+  end
+
   test "bounds: per-container cap (M=128) → :container_full, fail-visible", %{
     store: store,
     obj_uuid: obj_uuid,
