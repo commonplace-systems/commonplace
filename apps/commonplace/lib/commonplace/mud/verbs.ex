@@ -1185,16 +1185,48 @@ defmodule Commonplace.MUD.Verbs do
     {:error, "Try: @verb <target>:<verbname>"}
   end
 
-  defp do_verb_edit(%Parser.Command{argv: [spec | _]}, ctx) do
-    case String.split(spec, ":", parts: 2) do
-      [target, verb_name] when verb_name != "" ->
-        cond do
-          target in ["here", "room"] ->
-            current = read_current_source(ctx.current_room_uuid, verb_name, ctx)
-            {:enter_editor, %{target_uuid: ctx.current_room_uuid, target_label: "here", verb_name: verb_name, current: current}}
+  # CX-cj3t.11 — join the FULL argv before splitting on ":" so a multi-word
+  # object name resolves ("@verb warded vault:swing" → target "warded vault",
+  # verb "swing"). Previously only argv[0] was used, so any object whose name
+  # had a space broke. The verb name is the FIRST token after ":" (verb names
+  # are single words; trailing words are ignored, as before).
+  defp do_verb_edit(%Parser.Command{argv: argv}, ctx) do
+    spec = Enum.join(argv, " ")
 
-          true ->
-            case World.find_entry_by_name(ctx.current_room_uuid, target, ctx.store) do
+    case String.split(spec, ":", parts: 2) do
+      [target_raw, rest] ->
+        target = String.trim(target_raw)
+        verb_name = rest |> String.trim() |> String.split() |> List.first()
+
+        if target != "" and verb_name not in [nil, ""] do
+          do_verb_edit_resolved(target, verb_name, ctx)
+        else
+          {:error, "Try: @verb <target>:<verbname>"}
+        end
+
+      _ ->
+        {:error, "Try: @verb <target>:<verbname>"}
+    end
+  end
+
+  defp do_verb_edit_resolved(target, verb_name, ctx) do
+    cond do
+      target in ["here", "room"] ->
+        current = read_current_source(ctx.current_room_uuid, verb_name, ctx)
+        {:enter_editor, %{target_uuid: ctx.current_room_uuid, target_label: "here", verb_name: verb_name, current: current}}
+
+      true ->
+        case World.find_entry_by_name(ctx.current_room_uuid, target, ctx.store) do
+          {:ok, %Schema.Entry{type: :dir, name: name, node_id: uuid}} ->
+            if String.ends_with?(name, ".obj") do
+              current = read_current_source(uuid, verb_name, ctx)
+              {:enter_editor, %{target_uuid: uuid, target_label: target, verb_name: verb_name, current: current}}
+            else
+              {:error, "Can only edit verbs on objects (or here/room)."}
+            end
+
+          _ ->
+            case World.find_entry_by_name(ctx.inventory_uuid, target, ctx.store) do
               {:ok, %Schema.Entry{type: :dir, name: name, node_id: uuid}} ->
                 if String.ends_with?(name, ".obj") do
                   current = read_current_source(uuid, verb_name, ctx)
@@ -1204,23 +1236,9 @@ defmodule Commonplace.MUD.Verbs do
                 end
 
               _ ->
-                case World.find_entry_by_name(ctx.inventory_uuid, target, ctx.store) do
-                  {:ok, %Schema.Entry{type: :dir, name: name, node_id: uuid}} ->
-                    if String.ends_with?(name, ".obj") do
-                      current = read_current_source(uuid, verb_name, ctx)
-                      {:enter_editor, %{target_uuid: uuid, target_label: target, verb_name: verb_name, current: current}}
-                    else
-                      {:error, "Can only edit verbs on objects (or here/room)."}
-                    end
-
-                  _ ->
-                    {:error, "You don't see \"#{target}\" here or in inventory."}
-                end
+                {:error, "You don't see \"#{target}\" here or in inventory."}
             end
         end
-
-      _ ->
-        {:error, "Try: @verb <target>:<verbname>"}
     end
   end
 
