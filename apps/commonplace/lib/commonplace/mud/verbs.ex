@@ -1798,7 +1798,9 @@ defmodule Commonplace.MUD.Verbs do
                                        (repoint/recovery; see @dump for uuids)
       @unlink <dir>                    remove the exit in <dir>
       @teleport <room-uuid> (@go)      jump directly to a room by uuid
-      @create object|room <name>       create here
+      @create object|container|room <name>  create here (a container holds
+                                       other objects)
+      @container <object>              make an existing object a container
       @desc <target> <text>            set description (target: here, or obj name)
       @name <target> <new name>        rename
       @verb <target>:<verbname>        edit a verb on a room/object (line editor;

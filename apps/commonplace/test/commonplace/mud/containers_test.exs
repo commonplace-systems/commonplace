@@ -340,6 +340,24 @@ defmodule Commonplace.MUD.ContainersTest do
     assert look =~ "cloak"
   end
 
+  # boss #5979 nit a: the actor got the put/get line TWICE (verb {:reply}
+  # + the room broadcast rendering first-person to the actor too).
+  test "put/get success line reaches the actor exactly once (no double)", ctx do
+    alice = start_player("alice", ctx)
+    send_input(alice, "@create container Chest")
+    drain("alice")
+    send_input(alice, "take cloak")
+    drain("alice")
+
+    send_input(alice, "put cloak in Chest")
+    put_lines = drain("alice")
+    assert Enum.count(put_lines, &(&1 =~ "You put cloak in Chest.")) == 1
+
+    send_input(alice, "get cloak from Chest")
+    get_lines = drain("alice")
+    assert Enum.count(get_lines, &(&1 =~ "You get cloak from Chest.")) == 1
+  end
+
   test "@container converts an existing object into a container", ctx do
     alice = start_player("alice", ctx)
 
