@@ -90,11 +90,20 @@ defmodule Commonplace.MUD.World.Facade do
 
   require Logger
 
+  alias Commonplace.Crypto.{NodeIdentity, Signing}
   alias Commonplace.MUD.{Move, Schemas, SignedWrite, World}
   alias Commonplace.MUD.Schemas.Object
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.Schema
   alias Yelixer.Encoding
+
+  # CX-gjpi (C)/(2) — process-dict key holding the object-owner SigningContext
+  # for an IN-PROGRESS elevated guarded write. Set INSIDE `write_guarded`
+  # (after the reach check) for exactly the `fun.()` call, read by
+  # `write_opts/1`, always cleared in an `after`. So owner (node v1)
+  # authority NEVER exists outside a reach-checked guarded write, and
+  # write_guarded-SKIP ops never see it.
+  @elevate_key :cp_facade_owner_authority
 
   @enforce_keys [:store, :ctx, :owner_grant, :via_verb]
   defstruct store: nil, ctx: nil, object_uuid: nil, owner_grant: MapSet.new(), via_verb: nil, host_kind: :object
@@ -1310,9 +1319,93 @@ defmodule Commonplace.MUD.World.Facade do
 
   defp write_guarded(f, scope_uuids, fun) do
     if Enum.all?(scope_uuids, &(&1 in f.owner_grant)) do
-      fun.()
+      # CX-gjpi (C)/(2) — reach check passed: this write touches ONLY docs
+      # in owner_grant. Now decide AUTHORITY. If the INVOKER themselves
+      # could make this write (owner/self/pinned — the common case), run it
+      # invoker-signed, UNCHANGED. Only when the invoker lacks authority
+      # over ANY target (a genuine non-owner visitor triggering the object's
+      # own constrained verb-effect) do we ELEVATE the write to the OBJECT-
+      # OWNER's authority (node, v1 curated). The elevation is injected HERE,
+      # inside write_guarded AFTER the reach check — never ambiently — so
+      # owner authority can only ever exist for a target already ⊆
+      # owner_grant. Escaping it needs a TWO-part future mistake (skip
+      # write_guarded AND inject the flag), not a one-part omission; the
+      # write_guarded-SKIP ops (move_self, own-inventory) never reach here so
+      # they stay invoker-signed by construction (the §4a split).
+      if invoker_can_write_all?(f, scope_uuids) do
+        fun.()
+      else
+        case object_owner_authority(f, scope_uuids) do
+          {:ok, owner_ctx} -> with_owner_authority(owner_ctx, fun)
+          # No resolvable object-owner authority (v1: the targets aren't all
+          # node-owned — e.g. a player-owned interactable, deferred to (b)).
+          # Run invoker-signed → it fails closed at the gate → graceful
+          # refusal. NEVER node-elevate a non-node-owned doc.
+          :none -> fun.()
+        end
+      end
     else
       {:error, :owner_grant_exceeded}
+    end
+  end
+
+  # (2) full-target-set pre-check (condition A): the invoker can make this
+  # write iff they're authorized over EVERY target — the same all-targets
+  # shape as the owner_grant reach check. Uses `Trust.writer_authorized?`,
+  # the commitless mirror of the write-gate's own predicate (condition B:
+  # same predicate, same synchronous store snapshot the actual write will
+  # gate against — state is stable within the frame, no TOCTOU).
+  defp invoker_can_write_all?(f, scope_uuids) do
+    cfg = Commonplace.Trust.config()
+    ctx = f.ctx || %{}
+    sc = ctx[:signing_context]
+    identity = sc && sc.identity_uuid
+    pub = sc && sc.public_key
+    certs = ctx[:cert_cids] || []
+    Enum.all?(scope_uuids, &Commonplace.Trust.writer_authorized?(identity, pub, certs, &1, cfg, f.store))
+  end
+
+  # (C) the object-owner authority to elevate to. STRUCTURED as "resolve the
+  # owner-authority for THIS object" even though v1 only handles the curated
+  # case: elevate to NODE iff EVERY target is node-owned (its latest commit
+  # is node-signed — the migrated/curated world is node-signed throughout).
+  # A non-node-owned target (a player-authored interactable) resolves to
+  # `:none` → no elevation → graceful refusal, until (b) resolves the actual
+  # player-owner (the frame-cap path). This keeps v1 safe BY CONSTRUCTION —
+  # a visitor can never node-god-write a player's object — rather than
+  # relying only on the "no player interactables yet" precondition.
+  defp object_owner_authority(f, scope_uuids) do
+    with {:ok, node_ctx} <- NodeIdentity.signing_context(),
+         {:ok, node_identity} <- NodeIdentity.identity(),
+         true <- Enum.all?(scope_uuids, &node_owned?(&1, node_identity, f.store)) do
+      {:ok, node_ctx}
+    else
+      _ -> :none
+    end
+  end
+
+  defp node_owned?(uuid, node_identity, store) do
+    case CommitStoreClient.latest_commit(store, uuid) do
+      {:ok, commit} ->
+        match?({:ok, ^node_identity, _}, Signing.parse_signer_id(commit.signer_id || ""))
+
+      _ ->
+        false
+    end
+  end
+
+  # Run `fun` (a guarded write closure) with `owner_ctx` installed as the
+  # process-dict elevation authority `write_opts/1` reads. Scoped to exactly
+  # this `fun.()`; the `after` clears it (covering the raise path too) and
+  # restores any outer frame's value so nested guarded writes compose.
+  defp with_owner_authority(owner_ctx, fun) do
+    prev = Process.get(@elevate_key)
+    Process.put(@elevate_key, owner_ctx)
+
+    try do
+      fun.()
+    after
+      if prev == nil, do: Process.delete(@elevate_key), else: Process.put(@elevate_key, prev)
     end
   end
 
@@ -1477,13 +1570,31 @@ defmodule Commonplace.MUD.World.Facade do
   # Callers have all unwrapped `f` (it is the full backing), so read the
   # signer directly from `f.ctx` — no separate signer pdict entry.
   defp write_opts(f) do
-    [
-      store: f.store,
-      signing_context: f.ctx[:signing_context],
-      cert_cids: f.ctx[:cert_cids] || [],
-      signer_id: f.ctx[:signer_id],
-      via_verb: f.via_verb
-    ]
+    case Process.get(@elevate_key) do
+      %Commonplace.Crypto.SigningContext{} = owner_ctx ->
+        # CX-gjpi (C) — ELEVATED guarded write: sign as the object-owner
+        # (node, v1) instead of the invoker. NO invoker cert_cids — the
+        # node identity is auto-trusted (with_local_node_trust), so the
+        # already-reach-checked + pre-checked write is authorized. Set only
+        # inside `write_guarded`'s elevation branch, so it can never leak
+        # onto an unguarded / skip-set write.
+        [
+          store: f.store,
+          signing_context: owner_ctx,
+          cert_cids: [],
+          signer_id: nil,
+          via_verb: f.via_verb
+        ]
+
+      _ ->
+        [
+          store: f.store,
+          signing_context: f.ctx[:signing_context],
+          cert_cids: f.ctx[:cert_cids] || [],
+          signer_id: f.ctx[:signer_id],
+          via_verb: f.via_verb
+        ]
+    end
   end
 
   # CX-lfo3 — instance-unique child entry key: the entry is

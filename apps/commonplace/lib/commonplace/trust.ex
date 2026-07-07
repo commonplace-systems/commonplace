@@ -118,6 +118,56 @@ defmodule Commonplace.Trust do
     end
   end
 
+  @doc """
+  CX-gjpi — the COMMITLESS mirror of `authorized?/5` for the safe-verb
+  object-owner-authority ELEVATION pre-check (`Commonplace.MUD.World.Facade`,
+  option (2) "elevate only when the invoker lacks authority"): would a
+  `:write` to `target_uuid` by `identity_uuid` (public key `pub`, holding
+  `cert_cids`) be authorized under `cfg`, using the SAME predicate the
+  write-gate applies to the resulting signed commit — minus the
+  signature-validity check, which holds by construction when that identity
+  actually signs?
+
+  Mirrors `authorized?/5`'s object-write branches exactly:
+    * `accept_unsigned` (permissive) → `true` (any write lands; no elevation).
+    * identity pinned in `trusted_identities` → `true` (root authority).
+    * else `true` iff a held cert is (i) addressed to THIS identity's key
+      (the `author_binding/2` mirror — a cert for another audience can't
+      authorize this writer) and (ii) its verified chain grants `:write`
+      over `target_uuid` in a `{:docs, _}` scope. A `{:presence, _}` cert
+      never authorizes an object-STATE write (its content-gate refuses
+      anything but the signer's own presence entry), so it's correctly
+      ignored here.
+  """
+  @spec writer_authorized?(
+          String.t() | nil,
+          binary() | nil,
+          [binary()],
+          String.t(),
+          config(),
+          GenServer.server()
+        ) :: boolean()
+  def writer_authorized?(identity_uuid, pub, cert_cids, target_uuid, cfg, store) do
+    cond do
+      cfg.accept_unsigned -> true
+      not is_binary(identity_uuid) -> false
+      Map.has_key?(cfg.trusted_identities, identity_uuid) -> true
+      true -> Enum.any?(cert_cids, &cert_grants_write?(&1, pub, target_uuid, cfg, store))
+    end
+  end
+
+  defp cert_grants_write?(cid, pub, target_uuid, cfg, store) do
+    with {:ok, leaf} <- fetch_cap(store, cid),
+         {_uuid, audience_pub} <- leaf.audience,
+         true <- pub != nil and audience_pub == pub,
+         {:ok, %{verbs: verbs, scope: {:docs, docs}}} <-
+           Commonplace.Trust.VerifyChain.verify_chain(cid, anchor_keys(cfg), store) do
+      :write in verbs and target_uuid in docs
+    else
+      _ -> false
+    end
+  end
+
   # Phase-3 capability path (CX-tdkq.22d). The chain authorizes the
   # commit only if (1) the commit was signed by the LEAF cert's audience
   # key — the ⭐ commit-author binding that prevents attaching someone
