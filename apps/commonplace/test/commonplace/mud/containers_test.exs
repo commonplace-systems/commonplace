@@ -318,4 +318,48 @@ defmodule Commonplace.MUD.ContainersTest do
     look = drain("alice") |> Enum.join("\n")
     refute look =~ "Box A"
   end
+
+  # CX-cj3t.1.1 in-world reachability: containers must be MAKEABLE via MUD
+  # commands, not only the schema flag (else the feature is untestable /
+  # unusable by a player).
+  test "@create container makes a usable container in-world", ctx do
+    alice = start_player("alice", ctx)
+
+    send_input(alice, "@create container Wooden Chest")
+    out = drain("alice") |> Enum.join("\n")
+    assert out =~ "container"
+
+    send_input(alice, "take cloak")
+    drain("alice")
+    send_input(alice, "put cloak in Wooden Chest")
+    put = drain("alice") |> Enum.join("\n")
+    assert put =~ "You put cloak in Wooden Chest."
+
+    send_input(alice, "look in Wooden Chest")
+    look = drain("alice") |> Enum.join("\n")
+    assert look =~ "cloak"
+  end
+
+  test "@container converts an existing object into a container", ctx do
+    alice = start_player("alice", ctx)
+
+    send_input(alice, "@create object Barrel")
+    drain("alice")
+    send_input(alice, "take cloak")
+    drain("alice")
+
+    # Not a container yet — put is refused.
+    send_input(alice, "put cloak in Barrel")
+    before = drain("alice") |> Enum.join("\n")
+    refute before =~ "You put cloak in Barrel."
+
+    send_input(alice, "@container Barrel")
+    mark = drain("alice") |> Enum.join("\n")
+    assert mark =~ "is now a container"
+
+    # Now it works.
+    send_input(alice, "put cloak in Barrel")
+    after_mark = drain("alice") |> Enum.join("\n")
+    assert after_mark =~ "You put cloak in Barrel."
+  end
 end

@@ -25,7 +25,7 @@ defmodule Commonplace.MUD.Verbs do
 
   require Logger
 
-  @builders ~w(@dig @create @desc @name @alias @listen @dump @verb @link @unlink @teleport @go)
+  @builders ~w(@dig @create @desc @name @alias @listen @dump @verb @link @unlink @teleport @go @container)
 
   # CX-cj3t.5 §1a (CX-66ca) — single source of truth for "is this verb
   # word a builtin" at DISPATCH TIME (not define-time reservation — a
@@ -1100,6 +1100,7 @@ defmodule Commonplace.MUD.Verbs do
   defp dispatch_builder("@unlink", cmd, ctx), do: do_unlink(cmd, ctx)
   defp dispatch_builder("@teleport", cmd, ctx), do: do_teleport(cmd, ctx)
   defp dispatch_builder("@go", cmd, ctx), do: do_teleport(cmd, ctx)
+  defp dispatch_builder("@container", cmd, ctx), do: do_mark_container(cmd, ctx)
 
   defp dispatch_builder("@dump", cmd, ctx) do
     cond do
@@ -1386,15 +1387,16 @@ defmodule Commonplace.MUD.Verbs do
   # `@create room The Silver Fountain` used to mint a disconnected room
   # literally named "The").
   defp do_create(%Parser.Command{argv: ["object" | name_parts]}, ctx) do
-    name = Enum.join(name_parts, " ")
-    obj_json = Schemas.encode_object(%Object{name: name, description: "(no description yet)"})
+    create_object(name_parts, false, ctx)
+  end
 
-    with {:ok, new_obj_uuid} <- Schemas.create_dir_with_meta(Schemas.object_filename(), obj_json, ctx.store, write_opts(ctx)),
-         :ok <- add_dir_entry(ctx.current_room_uuid, "#{name}.obj", new_obj_uuid, ctx) do
-      {:reply, "You create a #{name}."}
-    else
-      {:error, reason} -> {:error, commit_error_reply(reason)}
-    end
+  # CX-cj3t.1.1: `@create container <name>` makes an object that can hold
+  # other objects (`put <item> in <name>` / `look in <name>`). It's an
+  # ordinary object with `container?: true`, so this is the in-world way
+  # to designate a container (there was no builder command to set the
+  # flag otherwise — only the schema field).
+  defp do_create(%Parser.Command{argv: ["container" | name_parts]}, ctx) do
+    create_object(name_parts, true, ctx)
   end
 
   defp do_create(%Parser.Command{argv: ["room" | name_parts]}, ctx) do
@@ -1419,7 +1421,68 @@ defmodule Commonplace.MUD.Verbs do
   end
 
   defp do_create(%Parser.Command{argv: [other | _]}, _ctx) do
-    {:error, "Unknown kind: #{other} (try object or room)"}
+    {:error, "Unknown kind: #{other} (try object, container, or room)"}
+  end
+
+  defp create_object([], _container?, _ctx), do: {:error, "Create what? Try: @create object <name>"}
+
+  defp create_object(name_parts, container?, ctx) do
+    name = Enum.join(name_parts, " ")
+
+    obj_json =
+      Schemas.encode_object(%Object{
+        name: name,
+        description: "(no description yet)",
+        container?: container?
+      })
+
+    with {:ok, new_obj_uuid} <- Schemas.create_dir_with_meta(Schemas.object_filename(), obj_json, ctx.store, write_opts(ctx)),
+         :ok <- add_dir_entry(ctx.current_room_uuid, "#{name}.obj", new_obj_uuid, ctx) do
+      article = if container?, do: "a container (#{name})", else: "a #{name}"
+      {:reply, "You create #{article}."}
+    else
+      {:error, reason} -> {:error, commit_error_reply(reason)}
+    end
+  end
+
+  # CX-cj3t.1.1: `@container <object>` converts an EXISTING object (in the
+  # room or your inventory) into a container — the in-world way to mark
+  # something you already built as able to hold things.
+  defp do_mark_container(%Parser.Command{argv: []}, _ctx),
+    do: {:error, "Try: @container <object>"}
+
+  defp do_mark_container(%Parser.Command{argv: argv}, ctx) do
+    target = Enum.join(argv, " ")
+
+    case find_object_entry(target, ctx) do
+      {:ok, entry} ->
+        case World.set_meta(entry.node_id, Schemas.object_filename(), "container", true, ctx.store, write_opts(ctx)) do
+          :ok -> {:reply, "#{target} is now a container — you can put things in it."}
+          {:error, reason} -> {:error, commit_error_reply(reason)}
+        end
+
+      :error ->
+        {:error, "You don't see \"#{target}\" here or in your inventory."}
+    end
+  end
+
+  # Resolve an .obj entry by name in the current room or the player's
+  # inventory (room first). Returns {:ok, entry} or :error.
+  defp find_object_entry(target, ctx) do
+    with :error <- object_entry_in(ctx.current_room_uuid, target, ctx.store),
+         :error <- object_entry_in(ctx.inventory_uuid, target, ctx.store) do
+      :error
+    end
+  end
+
+  defp object_entry_in(dir_uuid, target, store) do
+    case World.find_entry_by_name(dir_uuid, target, store) do
+      {:ok, %Schema.Entry{name: name} = entry} ->
+        if String.ends_with?(name, ".obj"), do: {:ok, entry}, else: :error
+
+      _ ->
+        :error
+    end
   end
 
   defp do_desc(%Parser.Command{argv: argv}, _ctx) when length(argv) < 2, do: {:error, "Try: @desc <target> <text>"}
