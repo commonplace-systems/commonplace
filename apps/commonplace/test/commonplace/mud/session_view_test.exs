@@ -162,4 +162,170 @@ defmodule Commonplace.MUD.SessionViewTest do
 
     assert turn_ns == Enum.to_list(1..8)
   end
+
+  # --- Increment 2: live <room> + ambient coalescing buffer ---
+
+  @room %{
+    name: "The Orrery Hall",
+    desc: "A vaulted hall of brass gears turning overhead.",
+    exits: "north, down",
+    contents: "a brass orrery",
+    occupants: "Grunk"
+  }
+
+  test "region-isolation (a): a room-replace's delta does NOT grow with scrollback length", %{
+    store: store
+  } do
+    # Large scrollback, THEN replace_room — capture that replace's delta.
+    big = SessionView.new("sess-room-big", store)
+
+    big =
+      Enum.reduce(1..30, big, fn i, view ->
+        SessionView.append_command_turn(view, "cmd-#{i}", "out-#{i}")
+      end)
+
+    big_sv = Yelixer.BlockStore.state_vector(big.doc.store)
+    big = SessionView.replace_room(big, @room)
+    big_delta = byte_size(Encoding.encode_diff(big.doc, big_sv))
+
+    # Fresh (empty scrollback) view — same replace_room.
+    fresh = SessionView.new("sess-room-fresh", store)
+    fresh_sv = Yelixer.BlockStore.state_vector(fresh.doc.store)
+    fresh = SessionView.replace_room(fresh, @room)
+    fresh_delta = byte_size(Encoding.encode_diff(fresh.doc, fresh_sv))
+
+    assert big_delta <= fresh_delta * 2,
+           "a room-replace's delta (#{big_delta}b after 30 turns) should stay within ~2x " <>
+             "the fresh replace (#{fresh_delta}b) — room-updates must NOT be O(scrollback length)"
+  end
+
+  test "region-isolation (b): a scrollback append's delta does NOT include live room content", %{
+    store: store
+  } do
+    # Baseline: append with an EMPTY room.
+    empty_room = SessionView.new("sess-append-emptyroom", store)
+    base_sv = Yelixer.BlockStore.state_vector(empty_room.doc.store)
+    empty_room = SessionView.append_command_turn(empty_room, "spin orrery", "You spin the orrery.")
+    baseline_delta = byte_size(Encoding.encode_diff(empty_room.doc, base_sv))
+
+    # Live room, then append — the append delta must not carry room ops.
+    live = SessionView.new("sess-append-liveroom", store)
+    live = SessionView.replace_room(live, @room)
+    assert Yelixer.Types.XMLElement.child_count(live.doc, live.room_name) == 5
+
+    live_sv = Yelixer.BlockStore.state_vector(live.doc.store)
+    live = SessionView.append_command_turn(live, "spin orrery", "You spin the orrery.")
+    live_delta = byte_size(Encoding.encode_diff(live.doc, live_sv))
+
+    assert live_delta <= baseline_delta * 2,
+           "a scrollback append's delta (#{live_delta}b with a live room) should stay within ~2x " <>
+             "the empty-room baseline (#{baseline_delta}b) — the append must not include room content"
+  end
+
+  test "replace_room does NOT advance the turn counter n", %{store: store} do
+    view = SessionView.new("sess-room-n", store)
+    view = SessionView.append_command_turn(view, "look", "ok")
+    n_before = view.n
+    view = SessionView.replace_room(view, @room)
+    assert view.n == n_before, "a room-replace must not renumber turns"
+
+    # A subsequent turn still numbers from where the scrollback left off.
+    view = SessionView.append_command_turn(view, "wait", "time passes")
+
+    [_, {:element, "turn", turn_name}] =
+      Yelixer.Types.XMLElement.children(view.doc, view.scrollback_name)
+
+    assert Yelixer.Types.XMLElement.get_attribute(view.doc, turn_name, "n") == to_string(n_before)
+  end
+
+  test "ambient buffer: M adds → ONE flush → ONE commit with M lines in order", %{store: store} do
+    view = SessionView.new("sess-ambient", store)
+
+    before_count = length(CommitStore.commit_log(store, view.uuid, limit: 10_000))
+
+    buffer = SessionView.buffer_new()
+    lines = ["Grunk says: hello", "Grunk waves.", "A bell tolls.", "The wind rises."]
+    buffer = Enum.reduce(lines, buffer, fn line, buf -> SessionView.buffer_add(buf, line) end)
+
+    # buffer_add committed nothing.
+    assert length(CommitStore.commit_log(store, view.uuid, limit: 10_000)) == before_count
+
+    {view, buffer} = SessionView.buffer_flush(view, buffer)
+
+    after_count = length(CommitStore.commit_log(store, view.uuid, limit: 10_000))
+    assert after_count == before_count + 1, "M ambient events must coalesce into exactly ONE commit"
+
+    # The flushed turn carries all 4 <line> children in order.
+    {:element, "turn", turn_name} =
+      Yelixer.Types.XMLElement.children(view.doc, view.scrollback_name) |> List.last()
+
+    line_texts =
+      Yelixer.Types.XMLElement.children(view.doc, turn_name)
+      |> Enum.map(fn {:element, "line", line_name} ->
+        [{:text, text_name}] = Yelixer.Types.XMLElement.children(view.doc, line_name)
+        Yelixer.Types.XMLText.to_string(view.doc, text_name)
+      end)
+
+    assert line_texts == lines
+
+    # Flushing an EMPTY buffer commits nothing and returns unchanged.
+    count_before_empty = length(CommitStore.commit_log(store, view.uuid, limit: 10_000))
+    {^view, ^buffer} = SessionView.buffer_flush(view, buffer)
+    assert length(CommitStore.commit_log(store, view.uuid, limit: 10_000)) == count_before_empty
+  end
+
+  test "every commit in the chain is node-signed (not just the latest)", %{
+    store: store,
+    node_identity: node_identity
+  } do
+    view = SessionView.new("sess-allsigned", store)
+    view = SessionView.append_command_turn(view, "look", "You see a hall.")
+    view = SessionView.replace_room(view, @room)
+    view = SessionView.append_ambient_turn(view, ["Grunk waves."])
+
+    {buffer, view} = {SessionView.buffer_new(), view}
+    buffer = SessionView.buffer_add(buffer, "A bell tolls.")
+    buffer = SessionView.buffer_add(buffer, "The wind rises.")
+    {view, _buffer} = SessionView.buffer_flush(view, buffer)
+
+    log = CommitStore.commit_log(store, view.uuid, limit: 10_000)
+
+    # The chain's synthetic root is the deterministic-genesis stamp
+    # (CX-m3x): `create_commit(parent_id: nil)` materializes an unsigned
+    # `parent_id: nil` row and chains our (signed) `new/3` commit onto
+    # it. That stamp "stays as-is" (infrastructure, not one of our
+    # writes); every REAL commit we author — new/3 + every chained
+    # append/replace — must be node-signed.
+    real_commits = Enum.reject(log, fn c -> is_nil(c.parent_id) end)
+    assert length(real_commits) >= 5
+
+    for commit <- real_commits do
+      assert {:ok, ^node_identity, _fp} = Signing.parse_signer_id(commit.signer_id),
+             "commit #{inspect(commit.id)} is not node-signed"
+    end
+  end
+
+  test "replace_room round-trip: to_html carries room + scrollback, and load/2 replays faithfully",
+       %{store: store} do
+    view = SessionView.new("sess-room-roundtrip", store)
+    view = SessionView.append_command_turn(view, "spin orrery", "You spin the orrery slowly.")
+    view = SessionView.replace_room(view, @room)
+    view = SessionView.append_ambient_turn(view, ["Grunk says: hello"])
+
+    html = SessionView.to_html(view)
+
+    # Room section texts present...
+    assert html =~ "The Orrery Hall"
+    assert html =~ "A vaulted hall of brass gears turning overhead."
+    assert html =~ "north, down"
+    assert html =~ "a brass orrery"
+    assert html =~ ~s(<occupants>Grunk</occupants>)
+    # ...alongside the scrollback.
+    assert html =~ "spin orrery"
+    assert html =~ "You spin the orrery slowly."
+    assert html =~ "Grunk says: hello"
+
+    {:ok, loaded} = SessionView.load(view.uuid, store)
+    assert SessionView.to_html(loaded) == html
+  end
 end

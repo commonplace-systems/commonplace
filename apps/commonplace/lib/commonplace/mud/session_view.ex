@@ -11,13 +11,18 @@ defmodule Commonplace.MUD.SessionView do
           <turn n="1" ts="T" kind="command"><cmd>spin orrery</cmd><out>You spin the orrery...</out></turn>
           <turn n="2" ts="T" kind="ambient"><line>Grunk says: hello</line><line>Grunk waves.</line></turn>
         </scrollback>
-        <room></room>                          <!-- REPLACE-subtree; Inc-1 leaves it an EMPTY stub -->
+        <room>                                 <!-- REPLACE-subtree; live as of Inc-1 increment 2 -->
+          <name>..</name><desc>..</desc><exits>..</exits><contents>..</contents><occupants>..</occupants>
+        </room>
       </view>
 
-  Rendered on demand to XHTML via `to_html/1`. `<room>` is scaffolded
-  here as an empty stub — a later increment will make it a
-  replace-whole-subtree region driven by the player's current location;
-  Inc-1's job is only to prove the scrollback/commit/render loop.
+  Rendered on demand to XHTML via `to_html/1`. `<room>` is a
+  REPLACE-whole-subtree region: `replace_room/2` tombstones its current
+  children and re-inserts a fresh five-section snapshot in ONE delta
+  commit, independent of the append-only `<scrollback>`. Ambient lines
+  can be coalesced M→1 through `Commonplace.MUD.SessionView.AmbientBuffer`
+  (a pure, timer-free buffer) so a burst of ambient events lands as a
+  single `append_ambient_turn/2` commit rather than one per line.
 
   ## THE FOUR INVARIANTS
 
@@ -49,22 +54,38 @@ defmodule Commonplace.MUD.SessionView do
   key with ops under the other). An append under `<scrollback>` mints
   Items parented to the scrollback subtree only; `<room>` is untouched,
   so its state vector contribution is unchanged and a scrollback
-  append's delta carries no `<room>`-parented ops. This is what will
-  let a later increment replace `<room>` wholesale (a `<room>` swap)
-  without re-touching (or re-committing) any scrollback history, and
-  vice versa: growing the scrollback never bloats a room-replace delta.
+  append's delta carries no `<room>`-parented ops. This lets
+  `replace_room/2` swap `<room>` wholesale without re-touching (or
+  re-committing) any scrollback history, and vice versa: growing the
+  scrollback never bloats a room-replace delta. `session_view_test.exs`
+  asserts BOTH directions directly — a room-replace's delta stays flat
+  as scrollback grows, and a scrollback append's delta stays flat when
+  `<room>` is non-empty.
 
   ### 3. Node-signed
 
-  Every commit — genesis via `Commonplace.Store.CommitStore.create_commit/6`
-  and every append via
-  `Commonplace.Store.CommitStoreClient.create_chained_commit/5` — passes
-  `signing_context: node_ctx` sourced from
+  Every commit this module AUTHORS — the `new/3` content commit (via
+  `Commonplace.Store.CommitStore.create_commit/6`) and every
+  append/replace (via
+  `Commonplace.Store.CommitStoreClient.create_chained_commit/5`) —
+  passes `signing_context: node_ctx` sourced from
   `Commonplace.Crypto.NodeIdentity.signing_context/0`. Under
   `:enforce` local-write-gate mode, an unsigned write is denied outright;
   view-doc writes are infrastructure (the session's own transcript, not
   a player-authored artifact), so they're signed with the node's own
   identity rather than any particular player's.
+
+  ONE precise exception: `create_commit(parent_id: nil)` for the very
+  first write triggers the deterministic-genesis stamp (CX-m3x), which
+  materializes an UNSIGNED synthetic root row (`parent_id: nil`,
+  `signer_id: nil`) and chains our signed `new/3` content commit onto it.
+  That stamp is a contentless, system-generated, deterministic marker (the
+  same one every commonplace doc gets), NOT a SessionView write — it
+  carries none of the transcript. So the audit property holds: every
+  commit that carries transcript content is node-signed; only the empty
+  synthetic root is unsigned. `session_view_test.exs` asserts exactly
+  this — every chain commit with a non-nil `parent_id` parses to the node
+  identity.
 
   ### 4. Append-only scrollback
 
@@ -84,6 +105,11 @@ defmodule Commonplace.MUD.SessionView do
       out text), delta-commit, chained.
     - `append_ambient_turn/2` — append a `kind="ambient"` turn (N
       `<line>` children), delta-commit, chained.
+    - `replace_room/2` — REPLACE the `<room>` subtree with a fresh
+      five-section snapshot in one delta commit (does NOT advance `n`).
+    - `buffer_new/0` / `buffer_add/2` / `buffer_flush/2` — pure ambient
+      coalescing buffer: M `buffer_add`s → one `buffer_flush` → one
+      `append_ambient_turn/2` commit.
     - `to_html/1` — render the live `<view>` element as an XHTML string.
     - `load/2` — reconstruct a `SessionView` from the commit chain
       (replay fidelity: `to_html/1` of a loaded view matches the live
@@ -110,6 +136,28 @@ defmodule Commonplace.MUD.SessionView do
   alias Commonplace.Store.{CommitStore, CommitStoreClient}
   alias Commonplace.Crypto.NodeIdentity
   alias Commonplace.Tree.DocBuilder
+
+  defmodule AmbientBuffer do
+    @moduledoc """
+    A pure (timer-free) coalescing buffer for ambient lines. Callers
+    accumulate lines with `add/2` (no commit) and materialize them into a
+    single `Commonplace.MUD.SessionView.append_ambient_turn/2` commit via
+    `Commonplace.MUD.SessionView.buffer_flush/2`. The SHAPE invariant: M
+    added lines → ONE flush → ONE commit; NO per-line commit.
+    """
+    defstruct lines: []
+
+    @type t :: %__MODULE__{lines: [String.t()]}
+
+    @doc "An empty buffer."
+    @spec new() :: t()
+    def new, do: %__MODULE__{}
+
+    @doc "Append `line` to the buffer (order-preserving). No commit."
+    @spec add(t(), String.t()) :: t()
+    def add(%__MODULE__{lines: lines} = buffer, line) when is_binary(line),
+      do: %{buffer | lines: lines ++ [line]}
+  end
 
   @view_name "view"
 
@@ -217,6 +265,92 @@ defmodule Commonplace.MUD.SessionView do
     commit_delta!(view, doc, sv_before)
   end
 
+  @section_order [:name, :desc, :exits, :contents, :occupants]
+
+  @doc """
+  REPLACE the entire `<room>` subtree's children with a fresh set of
+  section elements — `<name>..</name><desc>..</desc><exits>..</exits><contents>..</contents><occupants>..</occupants>` —
+  in ONE delta commit.
+
+  `sections` is a map whose keys are drawn from
+  `#{inspect(@section_order)}` with string values; any missing key is
+  treated as an empty string. The current `<room>` children (if any) are
+  tombstoned wholesale via `Yelixer.Types.XMLElement.delete_child/4` and
+  the five sections are re-inserted in `@section_order`.
+
+  This is a REPLACE-subtree region, NOT a scrollback turn, so it does
+  NOT advance the turn counter `n` (see `commit_delta_no_turn!/3`).
+
+  Because `<room>` is an independent CRDT subtree (invariant 2), the
+  committed delta touches ONLY `<room>`-parented ops: its size is a
+  function of the section text, NOT of how long `<scrollback>` has
+  grown. A room-replace therefore stays flat regardless of transcript
+  length — the load-bearing region-isolation property. Chained +
+  node-signed (invariant 3). Returns the updated `%SessionView{}`.
+  """
+  @spec replace_room(t(), map()) :: t()
+  def replace_room(%__MODULE__{} = view, sections) when is_map(sections) do
+    sv_before = BlockStore.state_vector(view.doc.store)
+
+    doc = view.doc
+    child_count = XMLElement.child_count(doc, view.room_name)
+
+    # Clear the whole subtree. `delete_child/4` requires length > 0, so
+    # guard the empty-room (fresh view) case.
+    doc =
+      if child_count > 0 do
+        XMLElement.delete_child(doc, view.room_name, 0, child_count)
+      else
+        doc
+      end
+
+    doc =
+      @section_order
+      |> Enum.with_index()
+      |> Enum.reduce(doc, fn {key, index}, doc ->
+        text = Map.get(sections, key, "")
+        {doc, _} = insert_text_element(doc, view.room_name, index, Atom.to_string(key), to_string(text))
+        doc
+      end)
+
+    commit_delta_no_turn!(view, doc, sv_before)
+  end
+
+  @doc """
+  A new, empty ambient coalescing buffer.
+
+  The buffer is a PURE MODEL abstraction (no timer): callers accumulate
+  ambient lines with `buffer_add/2` and materialize them into exactly
+  ONE `append_ambient_turn/2` commit via `buffer_flush/2`. The
+  timer/when-to-flush policy is a later increment's concern — this is
+  only the M-events → 1-commit coalescing shape.
+  """
+  @spec buffer_new() :: AmbientBuffer.t()
+  def buffer_new, do: AmbientBuffer.new()
+
+  @doc """
+  Accumulate one ambient `line` into `buffer`. Does NOT commit — returns
+  the updated buffer only.
+  """
+  @spec buffer_add(AmbientBuffer.t(), String.t()) :: AmbientBuffer.t()
+  def buffer_add(%AmbientBuffer{} = buffer, line) when is_binary(line),
+    do: AmbientBuffer.add(buffer, line)
+
+  @doc """
+  Flush `buffer` into `view`. If the buffer holds M ≥ 1 lines, appends
+  them as ONE `append_ambient_turn/2` (a single commit carrying all M
+  `<line>` children in order) and returns `{updated_view,
+  empty_buffer}`. If the buffer is empty, commits NOTHING and returns
+  `{view, buffer}` unchanged.
+  """
+  @spec buffer_flush(t(), AmbientBuffer.t()) :: {t(), AmbientBuffer.t()}
+  def buffer_flush(%__MODULE__{} = view, %AmbientBuffer{lines: []} = buffer),
+    do: {view, buffer}
+
+  def buffer_flush(%__MODULE__{} = view, %AmbientBuffer{lines: lines}) do
+    {append_ambient_turn(view, lines), AmbientBuffer.new()}
+  end
+
   @doc "Render the entire `<view>` element as an XHTML string."
   @spec to_html(t()) :: String.t()
   def to_html(%__MODULE__{doc: doc, view_name: view_name}) do
@@ -307,15 +441,23 @@ defmodule Commonplace.MUD.SessionView do
   end
 
   # Insert `<tag>text</tag>` as child `index` of `parent_name`. Returns
-  # `{doc, element_type_name}`.
+  # `{doc, element_type_name}`. An empty `text` yields a bare
+  # `<tag></tag>` (no text child): `Yelixer.Types.XMLText.insert/4`
+  # rejects zero-length inserts, and a `replace_room/2` section can
+  # legitimately be an empty string (missing key).
   defp insert_text_element(doc, parent_name, index, tag, text) do
     doc = XMLElement.insert_child(doc, parent_name, index, {:element, tag})
     {:element, ^tag, elem_name} = Enum.at(XMLElement.children(doc, parent_name), index)
 
-    doc = XMLElement.insert_child(doc, elem_name, 0, :text)
-    [{:text, text_name}] = XMLElement.children(doc, elem_name)
+    doc =
+      if text == "" do
+        doc
+      else
+        doc = XMLElement.insert_child(doc, elem_name, 0, :text)
+        [{:text, text_name}] = XMLElement.children(doc, elem_name)
+        XMLText.insert(doc, text_name, 0, text)
+      end
 
-    doc = XMLText.insert(doc, text_name, 0, text)
     {doc, elem_name}
   end
 
@@ -335,7 +477,20 @@ defmodule Commonplace.MUD.SessionView do
     end
   end
 
+  # Delta-commit a scrollback turn: advances the turn counter `n`.
   defp commit_delta!(%__MODULE__{} = view, doc, sv_before) do
+    commit_and_refresh!(view, doc, sv_before, view.n + 1)
+  end
+
+  # Delta-commit a NON-turn mutation (e.g. a `<room>` replace): commits
+  # the delta + refreshes `doc`/`sv` but does NOT advance the turn
+  # counter `n`. A room-replace is not a scrollback turn, so it must not
+  # renumber future turns.
+  defp commit_delta_no_turn!(%__MODULE__{} = view, doc, sv_before) do
+    commit_and_refresh!(view, doc, sv_before, view.n)
+  end
+
+  defp commit_and_refresh!(%__MODULE__{} = view, doc, sv_before, new_n) do
     delta = Encoding.encode_diff(doc, sv_before)
     node_ctx = signing_context!([])
 
@@ -346,7 +501,7 @@ defmodule Commonplace.MUD.SessionView do
 
     ensure_committed!(commit, :append)
 
-    %{view | doc: doc, n: view.n + 1, sv: BlockStore.state_vector(doc.store)}
+    %{view | doc: doc, n: new_n, sv: BlockStore.state_vector(doc.store)}
   end
 
   defp ensure_committed!(commit, stage) do
