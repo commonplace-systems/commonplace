@@ -64,6 +64,11 @@ defmodule CommonplaceWebWeb.Router do
 
       # CX-k8tn: Workflowy-style outliner on the flat-bag-of-xml-items model.
       live "/outline/:name", OutlineLive
+
+      # CX-gjpi: browser MUD client — the curated MUD world, played
+      # under strict+enforce trust via a per-session PlayerSession.
+      live "/mud", MudLive
+      live "/play", MudLive
     end
   end
 

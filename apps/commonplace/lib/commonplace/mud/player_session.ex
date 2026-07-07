@@ -126,7 +126,19 @@ defmodule Commonplace.MUD.PlayerSession do
     owner_pid = Keyword.get(opts, :owner_pid)
     cert_cids = Keyword.get(opts, :cert_cids, [])
     {signing_context, signer_id} = resolve_identity(opts)
-    write_opts = [signing_context: signing_context, cert_cids: cert_cids, signer_id: signer_id, store: store]
+
+    write_opts = [
+      signing_context: signing_context,
+      cert_cids: cert_cids,
+      signer_id: signer_id,
+      store: store,
+      # CX-gjpi: spawn-in-home — a browser player is placed in the room
+      # they OWN (their `players/<name>/` home, provisioned by
+      # `Commonplace.MUD.Citizenship`) on first appearance, not the shared
+      # `start` room. `nil` (bots, CLI) reproduces the prior start-room
+      # spawn exactly (see `ensure_player_in_world/3`).
+      spawn_room_uuid: Keyword.get(opts, :spawn_room_uuid)
+    ]
 
     case bootstrap_player(name, root_uuid, write_opts) do
       {:ok, ids} ->
@@ -664,10 +676,31 @@ defmodule Commonplace.MUD.PlayerSession do
         {:ok, room_uuid, presence_uuid}
 
       :not_found ->
-        with {:ok, start_room_uuid} <- ensure_start_room(root_uuid, store),
-             {:ok, presence_uuid} <- Presence.create(name, :usr, start_room_uuid, store, write_opts) do
-          {:ok, start_room_uuid, presence_uuid}
+        # CX-gjpi: spawn in the player's own home room when one was
+        # provisioned + passed (`:spawn_room_uuid`, a browser citizen's
+        # `players/<name>/` home). Falls back to the shared `start` room
+        # for bots / CLI / anyone who didn't pass one — unchanged behavior.
+        with {:ok, spawn_room_uuid} <- resolve_spawn_room(root_uuid, store, write_opts),
+             {:ok, presence_uuid} <- Presence.create(name, :usr, spawn_room_uuid, store, write_opts) do
+          {:ok, spawn_room_uuid, presence_uuid}
         end
+    end
+  end
+
+  # The room a first-appearing player is placed in: their own home
+  # (`:spawn_room_uuid`, if provisioned + it actually resolves to a room)
+  # else the shared start room. Verifying the passed uuid is a real room
+  # keeps a stale/garbage opt from stranding the player in a non-room.
+  defp resolve_spawn_room(root_uuid, store, write_opts) do
+    case Keyword.get(write_opts, :spawn_room_uuid) do
+      uuid when is_binary(uuid) ->
+        case World.get_room(uuid, store) do
+          {:ok, _room} -> {:ok, uuid}
+          _ -> ensure_start_room(root_uuid, store)
+        end
+
+      _ ->
+        ensure_start_room(root_uuid, store)
     end
   end
 
