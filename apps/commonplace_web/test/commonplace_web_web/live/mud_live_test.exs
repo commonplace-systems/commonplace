@@ -88,7 +88,7 @@ defmodule CommonplaceWebWeb.MudLiveTest do
 
       {conn, _identity_uuid, _nonce} = login_conn(Phoenix.ConnTest.build_conn(), root_uuid)
 
-      %{conn: conn}
+      %{conn: conn, root: root_uuid}
     end
 
     test "submitting a command renders a command turn with cmd + output visible", %{conn: conn} do
@@ -164,6 +164,46 @@ defmodule CommonplaceWebWeb.MudLiveTest do
       html = render(view)
       assert html =~ "&lt;script&gt;alert(1)&lt;/script&gt;"
       refute html =~ "<script>alert(1)</script>"
+    end
+
+    test "a second mount for the SAME identity restores the prior transcript via SessionViewRegistry",
+         %{conn: conn} do
+      {:ok, view1, _html} = live_isolated(conn, MudLive, session: get_session(conn))
+
+      # A distinctive command text landed by the FIRST mount.
+      view1
+      |> form("form[phx-submit=command]", %{"line" => "xyzzy-marker-one"})
+      |> render_submit()
+
+      html1 = render(view1)
+      assert html1 =~ "xyzzy-marker-one"
+
+      # Same identity (same underlying session cookie values) — a fresh
+      # LiveView process simulating a reconnect/remount.
+      {:ok, view2, _html2} = live_isolated(conn, MudLive, session: get_session(conn))
+      html2 = render(view2)
+
+      assert html2 =~ "xyzzy-marker-one",
+             "reconnect for the same identity must restore the prior transcript via SessionView.load/2"
+    end
+
+    test "a DIFFERENT identity mounting gets its own fresh transcript, not the other identity's turns",
+         %{conn: conn, root: root} do
+      {:ok, view_x, _html} = live_isolated(conn, MudLive, session: get_session(conn))
+
+      view_x
+      |> form("form[phx-submit=command]", %{"line" => "xyzzy-only-for-x"})
+      |> render_submit()
+
+      html_x = render(view_x)
+      assert html_x =~ "xyzzy-only-for-x"
+
+      {conn_y, _identity_y, _nonce_y} = login_conn(Phoenix.ConnTest.build_conn(), root)
+      {:ok, view_y, _html} = live_isolated(conn_y, MudLive, session: get_session(conn_y))
+      html_y = render(view_y)
+
+      refute html_y =~ "xyzzy-only-for-x",
+             "a different identity's mount must not see identity X's transcript"
     end
   end
 

@@ -41,7 +41,7 @@ defmodule CommonplaceWebWeb.MudLive do
 
   use CommonplaceWebWeb, :live_view
 
-  alias Commonplace.MUD.{Citizenship, PlayerSession, SessionView}
+  alias Commonplace.MUD.{Citizenship, PlayerSession, SessionView, SessionViewRegistry}
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.{DocBuilder, Walk}
   alias CommonplaceWebWeb.SessionIdentity
@@ -75,16 +75,21 @@ defmodule CommonplaceWebWeb.MudLive do
     name = player_name(resolved.presence_path)
     store = CommitStoreClient
 
-    # CX-i9j3 (UI Inc-1 increment 3): the transcript is now a committed
-    # `SessionView` (one Yjs-XML view-doc per mount), not a transient
-    # `@scrollback` assign list. `session_id` = the player's stable
-    # identity uuid (already resolved once per mount above) — reconnect
-    # PERSISTENCE (loading a prior transcript by remembered view uuid) is
-    # explicitly out of scope here (increment 4); a fresh per-mount view
-    # is correct for this increment. Uses the same `store`
-    # (CommitStoreClient) as the rest of MudLive — SessionView routes its
-    # genesis + appends through the client layer.
-    view = SessionView.new(resolved.identity_uuid, store)
+    # CX-i9j3 (UI Inc-1 increment 4): the transcript is a committed
+    # `SessionView` (one Yjs-XML view-doc), and now it SURVIVES reconnect —
+    # `SessionViewRegistry` remembers this identity's current view_uuid
+    # across LiveView remounts (in-memory, serve-lifetime; see the
+    # registry's moduledoc). A remembered uuid is reloaded via
+    # `SessionView.load/2` — NEVER a raw
+    # `Commonplace.Tree.DocBuilder.reconstruct_doc` (load-bearing: load/2
+    # applies the root-tag fixup a raw reconstruct doesn't, see
+    # `SessionView`'s `reregister_root_tag/1`; skipping it yields a corrupt
+    # nil-root doc). A missing/stale pointer (nothing registered yet, or a
+    # `load/2` failure) falls back to a fresh `SessionView.new/3`, which is
+    # then (re-)registered. Uses the same `store` (CommitStoreClient) as the
+    # rest of MudLive — SessionView routes its genesis + appends through the
+    # client layer.
+    view = load_or_new_view(resolved.identity_uuid, store)
 
     socket =
       socket
@@ -125,6 +130,31 @@ defmodule CommonplaceWebWeb.MudLive do
 
       {:error, reason} ->
         {:ok, assign(socket, :error, "The MUD world isn't available right now (#{inspect(reason)}).")}
+    end
+  end
+
+  # CX-i9j3 (UI Inc-1 increment 4): reconnect-persistence lookup. A
+  # registered view_uuid is reloaded via `SessionView.load/2` (the ONLY
+  # sanctioned reconstruction path — see the call site's comment). A
+  # `load/2` failure (`{:error, _}`, e.g. a stale/garbage-collected uuid)
+  # falls back to minting a fresh view rather than crashing the mount.
+  defp load_or_new_view(identity_uuid, store) do
+    case SessionViewRegistry.get(identity_uuid) do
+      nil ->
+        view = SessionView.new(identity_uuid, store)
+        SessionViewRegistry.put(identity_uuid, view.uuid)
+        view
+
+      view_uuid ->
+        case SessionView.load(view_uuid, store) do
+          {:ok, view} ->
+            view
+
+          {:error, _reason} ->
+            view = SessionView.new(identity_uuid, store)
+            SessionViewRegistry.put(identity_uuid, view.uuid)
+            view
+        end
     end
   end
 

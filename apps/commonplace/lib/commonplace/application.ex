@@ -73,7 +73,13 @@ defmodule Commonplace.Application do
         # serializing through a :global singleton. TickBot remains an
         # unconditional child but only ticks while holding the green tick
         # lease — on nodes with no Bursar route it idles, fail-closed.
-        Commonplace.MUD.TickBot
+        Commonplace.MUD.TickBot,
+        # CX-i9j3 (UI Inc-1 increment 4): identity_uuid -> SessionView
+        # view_uuid pointer, so a browser reconnect can `SessionView.load/2`
+        # its prior transcript instead of minting a fresh one. In-memory
+        # only (see its moduledoc) — no deps beyond being a plain Agent, so
+        # it's safe to start unconditionally on every boot (dev/prod/test).
+        Commonplace.MUD.SessionViewRegistry
       ] ++
         snapshot_sweeper_children() ++
         presence_reaper_children() ++
