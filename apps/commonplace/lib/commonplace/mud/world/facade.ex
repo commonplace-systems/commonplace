@@ -1082,6 +1082,12 @@ defmodule Commonplace.MUD.World.Facade do
     end
   end
 
+  # CX-ssi6 — mistyped args (a non-binary key, or a minted ref that's neither
+  # {:ok, uuid} nor a bare uuid string) → a clean {:error, :bad_arg} instead of
+  # a FunctionClauseError crash. Surfaced as a dim author-diagnostic (CX-3x5a),
+  # so the author sees the type mistake — fail-visible, not fail-crash.
+  def configure_attr(%__MODULE__{}, _minted, _key, _value), do: {:error, :bad_arg}
+
   @doc """
   CX-nyj9 — write freeform per-object state (`key`/`value`, same dedicated
   `meta["state"]` submap + bounds as `put_state/3`) on an object THIS RUN
@@ -1109,6 +1115,10 @@ defmodule Commonplace.MUD.World.Facade do
       end
     end
   end
+
+  # CX-ssi6 — see configure_attr's catch-all: mistyped args → clean {:error,
+  # :bad_arg} (dim author-note via CX-3x5a) instead of a FunctionClauseError.
+  def configure_state(%__MODULE__{}, _minted, _key, _value), do: {:error, :bad_arg}
 
   # ---- broadcasts (no doc write — no intersection check) ----
 

@@ -350,6 +350,24 @@ defmodule Commonplace.MUD.World.FacadeTest do
     assert :ok = Facade.configure_attr(f, sword, "description", "real")
   end
 
+  test "CX-ssi6: configure_attr/configure_state with a mistyped arg → {:error, :bad_arg}, NOT a function-clause crash", %{
+    store: store,
+    obj_uuid: obj_uuid,
+    trusted_ctx: trusted_ctx
+  } do
+    f = lc_facade(trusted_ctx, obj_uuid, [obj_uuid], %{}, store)
+
+    # A non-binary KEY (the agent's real bug — passed an integer where a
+    # string key was needed) previously FunctionClauseError-crashed; now it's
+    # a clean {:error, :bad_arg} (surfaced as a dim author-diagnostic via the
+    # CX-3x5a accumulator, not a runtime_error crash).
+    assert {:error, :bad_arg} = Facade.configure_attr(f, "some-uuid", 123, "v")
+    assert {:error, :bad_arg} = Facade.configure_state(f, "some-uuid", 123, "v")
+    # A minted ref that's neither {:ok, uuid} nor a bare uuid string.
+    assert {:error, :bad_arg} = Facade.configure_attr(f, :not_a_uuid, "k", "v")
+    assert {:error, :bad_arg} = Facade.configure_state(f, {:error, :nope}, "k", "v")
+  end
+
   test "CX-hbua: actor_carries? checks the invoker's OWN inventory (by name, substring, and uuid)", %{
     store: store,
     obj_uuid: obj_uuid,
