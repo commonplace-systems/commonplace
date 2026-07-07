@@ -296,6 +296,37 @@ defmodule Commonplace.MUD.PlayerSession do
 
   def handle_info(_other, state), do: {:noreply, state}
 
+  # CX-3xwu: retract the player's `.usr` presence on session teardown, so
+  # `quit` ({:stop, :normal, state}) and `PlayerSession.stop/1`
+  # (GenServer.stop :normal) don't leave a ghost in `who`/room rosters.
+  # Presence does NOT relocate on room moves (it stays where it was
+  # created), so LOCATE it via `find_presence/3` rather than trusting
+  # `current_room_uuid`. Best-effort: teardown must never crash a
+  # supervised session, and a missing presence (already reaped, never
+  # created) is a no-op. Only the online marker is retracted — the
+  # persistent player record (`/players/<name>/` + inventory) is a
+  # separate doc and is intentionally left intact so items/character
+  # survive a reconnect. (Removal is unsigned, matching the current
+  # unsigned-presence write model — see `ensure_player_in_world/3`'s note;
+  # under `:enforce` a player without write to the presence's room would
+  # not retract, which is the same follow-up the create path carries.)
+  @impl true
+  def terminate(_reason, %__MODULE__{presence_filename: fname, root_uuid: root, store: store})
+      when is_binary(fname) and is_binary(root) do
+    case find_presence(root, fname, store) do
+      {:ok, room_uuid, _presence_uuid} -> Presence.remove(fname, room_uuid, store)
+      _ -> :ok
+    end
+
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  def terminate(_reason, _state), do: :ok
+
   ## Verb result handling
 
   defp handle_verb_result(:ok, state), do: {:noreply, state}

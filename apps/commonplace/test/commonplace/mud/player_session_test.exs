@@ -86,6 +86,33 @@ defmodule Commonplace.MUD.PlayerSessionTest do
     assert output =~ "east"
   end
 
+  test "CX-3xwu: stopping a session retracts the player's presence — no ghost in the room roster", ctx do
+    alice = start_player("alice", ctx)
+    room = :sys.get_state(alice).current_room_uuid
+    fname = Commonplace.Presence.filename("alice", :usr)
+
+    # Present while the session is alive.
+    assert presence_in_room?(room, fname, ctx.store)
+
+    # GenServer.stop(:normal) runs terminate/2 synchronously before returning.
+    PlayerSession.stop(alice)
+
+    # Retracted on teardown — no lingering ghost. The persistent player
+    # record under /players/alice/ is NOT touched (only the online marker).
+    refute presence_in_room?(room, fname, ctx.store)
+
+    {:ok, players_schema} =
+      Commonplace.MUD.Schemas.load_dir_schema(ctx.root, ctx.store)
+
+    assert match?({:ok, _}, Schema.get_entry(players_schema, "players")),
+           "persistent /players record must survive a quit"
+  end
+
+  defp presence_in_room?(room_uuid, fname, store) do
+    {:ok, schema} = Commonplace.MUD.Schemas.load_dir_schema(room_uuid, store)
+    match?({:ok, _}, Schema.get_entry(schema, fname))
+  end
+
   test "two players in the same room see each other on say", ctx do
     alice = start_player("alice", ctx)
     bob = start_player("bob", ctx)
