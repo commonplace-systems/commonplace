@@ -247,3 +247,40 @@ same shape all the way down (no bespoke ACLs):
 > (per-container M=128 + per-invocation N=8, fail-visible); total-world /
 > per-principal object budget is broader-tier (CX-n2j2 class), not an
 > invited blocker.
+
+### THE FRESH-MINTED-DOC ENFORCE BOUNDARY (plan #6032/#6034) — CX-tdkq.23 is the single convergence keystone
+
+A structural boundary the mint-with-behavior work named, worth recording
+because it converges the whole enforce-mode world-building tier onto ONE
+dependency:
+
+  * Explicit `{:docs, uuids}` certs gate operations on **existing/known**
+    docs — rooms, inventory. These are ENFORCE-CORRECT TODAY (a visitor's
+    cert doesn't cover the owner's room → the setuid-refusal holds under
+    enforce; own-inventory works because inventory IS in the invoker's
+    cert).
+  * Operations on a **fresh-minted** doc (configure/define a just-created
+    uuid) CANNOT be enforce-authorized by explicit certs — a brand-new
+    uuid can't be in a pre-existing `{:docs, uuids}` list. The facade's
+    per-run minted-set is a FACADE-level re-gate only (it stops author
+    code touching an *arbitrary* uuid); it is NOT gate-level authorization,
+    structurally — the local-write gate runs inside the CommitStore
+    GenServer, a different process with no channel to the safe-verb child's
+    process-dict minted-set (`Commonplace.MUD.World.Facade`'s configure_*
+    "CASE B" note).
+
+So ANY create-then-configure/define-a-fresh-doc-under-enforce needs
+**subtree-scopes** (CX-tdkq.23 Wrinkle-H: a `{:subtree, section_root}`
+cert covers any doc reachable under the section, minted-or-not). That makes
+CX-tdkq.23 the SINGLE CONVERGENCE KEYSTONE for the enforce-mode
+world-building tier: `define_on` (verbs on minted objects), configure_*
+-under-enforce, zone-ownership (players build in their own sections), and
+new-room-coverage (the enforce-correct replacement for `auto_extend`, which
+must NOT be extended per-uuid before CX-rmuk closes its cert-laundering
+hole) ALL depend on it. Object-level auto-extend is the WRONG stopgap
+(inherits CX-rmuk); subtree-scopes supersede it.
+
+CURRENT STATUS: `configure_*` ships PERMISSIVE-DOGFOOD-CORRECT (crafting
+richness, honestly labeled Case B); the SECURITY-critical setuid-refusal is
+enforce-correct independently (explicit-uuid room certs). The expressiveness
+tier (mint config + behavior) becomes enforce-correct when CX-tdkq.23 lands.
