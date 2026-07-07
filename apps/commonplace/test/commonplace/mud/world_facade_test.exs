@@ -197,6 +197,13 @@ defmodule Commonplace.MUD.World.FacadeTest do
     schema |> Commonplace.Tree.Schema.list_entries() |> Enum.map(& &1.name)
   end
 
+  # CX-lfo3 — Facade creators now key children by an instance-unique
+  # "<name>-<short-uuid>.obj", so match by display-name prefix, not an
+  # exact "<name>.obj".
+  defp has_item?(store, dir, name) do
+    Enum.any?(lc_entry_names(store, dir), &String.starts_with?(&1, name <> "-"))
+  end
+
   test "spawn: DEFAULT-safe — a plain object cannot spawn into the room (room not in owner_grant)", %{
     store: store,
     obj_uuid: obj_uuid,
@@ -207,7 +214,7 @@ defmodule Commonplace.MUD.World.FacadeTest do
     f = lc_facade(trusted_ctx, obj_uuid, [obj_uuid], %{current_room_uuid: room}, store)
 
     assert {:error, :owner_grant_exceeded} = Facade.spawn(f, "rock")
-    refute "rock.obj" in lc_entry_names(store, room)
+    refute has_item?(store, room, "rock")
   end
 
   test "spawn: happy path — room in grant AND invoker write-authorized → lands", %{
@@ -220,7 +227,7 @@ defmodule Commonplace.MUD.World.FacadeTest do
 
     assert {:ok, new_uuid} = Facade.spawn(f, "rock")
     assert is_binary(new_uuid)
-    assert "rock.obj" in lc_entry_names(store, room)
+    assert has_item?(store, room, "rock")
   end
 
   test "spawn: THE KEYSTONE — owner_grant covers the room but the INVOKER can't write it → BLOCKED (not setuid)", %{
@@ -237,7 +244,7 @@ defmodule Commonplace.MUD.World.FacadeTest do
     f = lc_facade(uncapped_ctx, obj_uuid, [room], %{current_room_uuid: room}, store)
 
     assert {:error, {:trust_rejected, _}} = Facade.spawn(f, "rock")
-    refute "rock.obj" in lc_entry_names(store, room)
+    refute has_item?(store, room, "rock")
   end
 
   test "give_to_actor: happy path — writes the invoker's OWN inventory with an EMPTY owner_grant (the exception)", %{
@@ -250,7 +257,7 @@ defmodule Commonplace.MUD.World.FacadeTest do
     f = lc_facade(trusted_ctx, obj_uuid, [], %{inventory_uuid: inv}, store)
 
     assert {:ok, _uuid} = Facade.give_to_actor(f, "coin")
-    assert "coin.obj" in lc_entry_names(store, inv)
+    assert has_item?(store, inv, "coin")
   end
 
   test "give_to_actor: still gated by INVOKER-authority (drops owner_grant, not the write gate)", %{
@@ -269,6 +276,26 @@ defmodule Commonplace.MUD.World.FacadeTest do
     assert {:error, {:trust_rejected, _}} = Facade.give_to_actor(f, "coin")
   end
 
+  test "CX-lfo3: same-named mints get instance-unique keys — N creates never overwrite one entry", %{
+    store: store,
+    obj_uuid: obj_uuid,
+    trusted_ctx: trusted_ctx
+  } do
+    inv = lc_dir(store, trusted_ctx, "inv")
+    f = lc_facade(trusted_ctx, obj_uuid, [], %{inventory_uuid: inv}, store)
+
+    {:ok, u1} = Facade.give_to_actor(f, "coin")
+    {:ok, u2} = Facade.give_to_actor(f, "coin")
+    {:ok, u3} = Facade.give_to_actor(f, "coin")
+
+    # Three DISTINCT objects and three DISTINCT entries — not one entry
+    # overwritten twice (the pre-fix data-loss bug: a raider couldn't give
+    # a 2nd identical coin because the "<name>.obj" key collided).
+    assert u1 != u2 and u2 != u3 and u1 != u3
+    coin_entries = Enum.filter(lc_entry_names(store, inv), &String.starts_with?(&1, "coin-"))
+    assert length(coin_entries) == 3
+  end
+
   test "destroy_child: happy path — create then unlink a named child of the bound object", %{
     store: store,
     obj_uuid: obj_uuid,
@@ -277,10 +304,10 @@ defmodule Commonplace.MUD.World.FacadeTest do
     f = lc_facade(trusted_ctx, obj_uuid, [obj_uuid], %{}, store)
 
     assert {:ok, _} = Facade.create_child(f, "gear")
-    assert "gear.obj" in lc_entry_names(store, obj_uuid)
+    assert has_item?(store, obj_uuid, "gear")
 
     assert :ok = Facade.destroy_child(f, "gear")
-    refute "gear.obj" in lc_entry_names(store, obj_uuid)
+    refute has_item?(store, obj_uuid, "gear")
   end
 
   test "destroy_child: unknown name → :not_found (fail-visible, never a silent no-op)", %{
@@ -300,13 +327,13 @@ defmodule Commonplace.MUD.World.FacadeTest do
     inv = lc_dir(store, trusted_ctx, "inv")
     giver = lc_facade(trusted_ctx, obj_uuid, [], %{inventory_uuid: inv}, store)
     {:ok, item_uuid} = Facade.give_to_actor(giver, "potion")
-    assert "potion.obj" in lc_entry_names(store, inv)
+    assert has_item?(store, inv, "potion")
 
     # Bind the verb to the carried item; EMPTY grant. locate_parent finds
     # it in the invoker's inventory → invoker-own exception → unlink.
     consumer = lc_facade(trusted_ctx, item_uuid, [], %{inventory_uuid: inv}, store)
     assert :ok = Facade.consume(consumer)
-    refute "potion.obj" in lc_entry_names(store, inv)
+    refute has_item?(store, inv, "potion")
   end
 
   test "consume: room-fixed object needs INTERSECTION — EMPTY grant → :owner_grant_exceeded", %{

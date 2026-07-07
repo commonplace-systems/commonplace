@@ -461,7 +461,14 @@ defmodule Commonplace.MUD.World.Facade do
   def destroy_child(%__MODULE__{} = f, name) when is_binary(name) do
     with :ok <- charge_lifecycle_op() do
       write_guarded(f, [f.object_uuid], fn ->
-        unlink_child(f.object_uuid, "#{name}.obj", f)
+        # CX-lfo3 — children now carry instance-unique entry keys
+        # ("<name>-<short-uuid>.obj"), so resolve the child by DISPLAY name
+        # (the same substring/alias matcher the MUD's get/take use) rather
+        # than a literal "<name>.obj" key. Destroys ONE match (like `get`).
+        case World.find_entry_by_name(f.object_uuid, name, f.store) do
+          {:ok, entry} -> unlink_child(f.object_uuid, entry.name, f)
+          :error -> {:error, :not_found}
+        end
       end)
     end
   end
@@ -535,6 +542,21 @@ defmodule Commonplace.MUD.World.Facade do
     ]
   end
 
+  # CX-lfo3 — instance-unique child entry key: the entry is
+  # "<name>-<short-uuid>.obj", so N same-named mints never overwrite one
+  # entry (the data-loss bug) or collide on move (a raider CAN give a 2nd
+  # identical sword). The DISPLAY name stays "<name>" (from meta), and
+  # resolution substring-matches "<name>" (World.find_entry_by_name strips
+  # the extension then substring-checks the base), so "get grain" still
+  # finds each instance one at a time. CRDT-safe: the suffix is derived
+  # from the object's own uuid — no cross-replica counter coordination.
+  # (Stack-COUNTS for fungibles — "grain x136" under one entry, lifting the
+  # M=128 per-container cap — is the deferred layer-2 of CX-lfo3.)
+  defp instance_entry_name(name, uuid) do
+    short = uuid |> String.replace("-", "") |> String.slice(0, 8)
+    "#{name}-#{short}.obj"
+  end
+
   defp add_child_entry(parent_uuid, name, child_uuid, f) do
     {:ok, schema} = Schemas.load_dir_schema(parent_uuid, f.store)
     schema = Schema.add_directory(schema, name, child_uuid)
@@ -557,7 +579,7 @@ defmodule Commonplace.MUD.World.Facade do
 
           with {:ok, new_uuid} <-
                  Schemas.create_dir_with_meta(Schemas.object_filename(), obj_json, f.store, write_opts(f)),
-               :ok <- add_child_entry(parent_uuid, "#{name}.obj", new_uuid, f) do
+               :ok <- add_child_entry(parent_uuid, instance_entry_name(name, new_uuid), new_uuid, f) do
             {:ok, new_uuid}
           end
         end
