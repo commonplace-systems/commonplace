@@ -204,3 +204,46 @@ who CAN reach view/compute worlds), NOT invited blockers: **CX-6g0j**
 execution). Both P2. **CX-n6fv** (OS-level sandbox) remains the phase-4
 horizon for genuine hostile-code containment — the allowlist is
 "demo-grade safe for untrusted," not a formal sandbox.
+
+### THE OBJECT-ECONOMY TRUST PARTITION (CX-cj3t.7, plan #5991/#5993)
+
+Every effect a safe-verb Facade write can cause falls into exactly one of
+three cases — this is the WHOLE object-economy trust story, one line, the
+same shape all the way down (no bespoke ACLs):
+
+1. **Own-inventory → INVOKER-AUTHORIZED (owner_grant N/A).** Operating on
+   an object in the invoker's OWN inventory is within their own authority
+   (it's their property — acquired through gated take/give). `owner_grant`
+   does NOT apply, because a stranger's inventory is never in the verb
+   owner's grant, so requiring it would wrongly block the intended case.
+   Instances: `give_to_actor` (CREATE into own inventory) and the
+   inventory arm of `consume` (DESTROY a carried item). Code: the write is
+   invoker-signed but SKIPS `write_guarded`; the recipient/target is
+   server-fixed to the invoker (never a victim-targeting param).
+
+2. **Owner-scope → FULL INTERSECTION.** Operating on a room / bound object
+   / other owner-controlled scope requires BOTH (a) invoker-authority (the
+   commit is signed as the invoker → enforced at the local-write gate) AND
+   (b) `scope ⊆ owner_grant` (`write_guarded`). Grant-checking ONLY (b) is
+   setuid-by-accident. Instances: `spawn` (room), `destroy_child` (bound
+   object), the non-inventory arm of `consume`, plus the pre-existing
+   `move`/`set_attr`/`create_child`/`transfer`.
+
+3. **Cross-owner-on-a-stranger's-behalf → DEFERRED (phase-3 setuid).** A
+   visitor triggering the owner's effect that reaches the owner's property
+   (public dispenser, shared workbench, a lever that self-destructs) is
+   rights-amplification — correctly BLOCKED today by (a) (the visitor
+   holds no `:write` there), and deferred to a per-verb identity + owner
+   cert with its own security review. Do NOT let `owner_grant`-only
+   smuggle it in early.
+
+> **REVIEW TRIGGER:** any NEW object-effect Facade primitive must be
+> classified into one of these three BEFORE it ships. An own-inventory
+> primitive drops `owner_grant` but MUST keep the invoker-signed write +
+> server-fixed target; an owner-scope primitive MUST route through
+> `write_guarded` AND stay invoker-signed (never an ambient/system
+> signer — that is the single line where case 2 collapses into setuid).
+> Bounds: every object-CREATING path shares the capped creator
+> (per-container M=128 + per-invocation N=8, fail-visible); total-world /
+> per-principal object budget is broader-tier (CX-n2j2 class), not an
+> invited blocker.
