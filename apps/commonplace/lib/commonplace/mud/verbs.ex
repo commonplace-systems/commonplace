@@ -25,7 +25,7 @@ defmodule Commonplace.MUD.Verbs do
 
   require Logger
 
-  @builders ~w(@dig @create @desc @name @alias @listen @dump @verb @unverb @link @unlink @teleport @go @container)
+  @builders ~w(@dig @create @destroy @desc @name @alias @listen @dump @verb @unverb @link @unlink @teleport @go @container)
 
   # CX-cj3t.5 §1a (CX-66ca) — single source of truth for "is this verb
   # word a builtin" at DISPATCH TIME (not define-time reservation — a
@@ -1273,6 +1273,7 @@ defmodule Commonplace.MUD.Verbs do
 
   defp dispatch_builder("@dig", cmd, ctx), do: do_dig(cmd, ctx)
   defp dispatch_builder("@create", cmd, ctx), do: do_create(cmd, ctx)
+  defp dispatch_builder("@destroy", cmd, ctx), do: do_destroy(cmd, ctx)
   defp dispatch_builder("@desc", cmd, ctx), do: do_desc(cmd, ctx)
   defp dispatch_builder("@name", cmd, ctx), do: do_rename(cmd, ctx)
   defp dispatch_builder("@alias", cmd, ctx), do: do_alias(cmd, ctx)
@@ -1646,6 +1647,49 @@ defmodule Commonplace.MUD.Verbs do
     end
   end
 
+  # CX-avgu — builder cleanup: unlink a stray/mis-created OBJECT from the
+  # current room (the inverse of @create). Authority MIRRORS @create exactly:
+  # the write is signed via `write_opts(ctx)`, so it's enforce-gated on the
+  # room schema (invoker needs a cert covering the room) and permissive-lands
+  # for any builder — no new authority class. Unlink only, NOT a hard delete:
+  # the object doc persists in the append-only history and is re-linkable by
+  # uuid until GC — but there is NO one-command undo yet, so this is a
+  # manual-recovery-window, not "oops-proof" (plan #6260). Guards (CX-avgu
+  # plan-touch #6260): OBJECT-only — keyed on `.obj`, the SYSTEM-ASSIGNED
+  # stable ENTRY suffix (a builder can't forge it, and @name only touches the
+  # display meta, not the entry key), so `.usr`/verbs/any future entry type
+  # are whitelisted OUT fail-closed and rooms are structurally excluded (not
+  # room-entries). REFUSE a non-empty container — counting CONTAINED OBJECTS
+  # (`list_objects_in` = `.obj` only), NOT its own verbs/state/meta children
+  # (those correctly die with it); refuse-over-orphan is the fail-toward-no-
+  # loss default (cascade `-r` stays an explicit opt-in for later). Room-
+  # scoped v1 (inventory items are the gameplay consume path).
+  defp do_destroy(%Parser.Command{argv: []}, _ctx), do: {:error, "Destroy what? Try: @destroy <object>"}
+
+  defp do_destroy(%Parser.Command{argv: name_parts}, ctx) do
+    name = Enum.join(name_parts, " ")
+
+    case World.find_entry_by_name(ctx.current_room_uuid, name, ctx.store) do
+      {:ok, entry} ->
+        cond do
+          not String.ends_with?(entry.name, ".obj") ->
+            {:error, "You can only @destroy objects, not \"#{name}\"."}
+
+          World.list_objects_in(entry.node_id, ctx.store) != [] ->
+            {:error, "The #{name} isn't empty — empty it before you @destroy it."}
+
+          true ->
+            case remove_dir_entry(ctx.current_room_uuid, entry.name, ctx) do
+              :ok -> {:reply, "You destroy the #{name}."}
+              {:error, reason} -> {:error, commit_error_reply(reason)}
+            end
+        end
+
+      :error ->
+        {:error, "There's no \"#{name}\" here to destroy."}
+    end
+  end
+
   # CX-9plf: `@unverb <target>:<verbname>` removes a verb (both safe +
   # legacy entries) from a room/object — @verb only creates/edits, so
   # throwaway/diagnostic verbs were stuck permanently.
@@ -1878,6 +1922,23 @@ defmodule Commonplace.MUD.Verbs do
     store = ctx.store
     {:ok, schema} = Schemas.load_dir_schema(parent_uuid, store)
     schema = Schema.add_directory(schema, name, child_uuid)
+    update = Yelixer.Encoding.encode_update(schema)
+
+    {metadata, commit_opts} =
+      SignedWrite.opts_for(parent_uuid, Keyword.put(write_opts(ctx), :store, store))
+
+    case CommitStoreClient.create_chained_commit(store, parent_uuid, update, metadata, commit_opts) do
+      {:error, _} = err -> err
+      _commit -> :ok
+    end
+  end
+
+  # CX-avgu — the inverse of add_dir_entry: unlink `entry_name` from
+  # `parent_uuid`'s schema, signed (SAME enforce-gate as the add).
+  defp remove_dir_entry(parent_uuid, entry_name, ctx) do
+    store = ctx.store
+    {:ok, schema} = Schemas.load_dir_schema(parent_uuid, store)
+    schema = Schema.remove_entry(schema, entry_name)
     update = Yelixer.Encoding.encode_update(schema)
 
     {metadata, commit_opts} =

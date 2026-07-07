@@ -768,6 +768,69 @@ defmodule Commonplace.MUD.OutputTest do
     end
   end
 
+  describe "CX-avgu: @destroy builder cleanup" do
+    test "@destroy unlinks a stray object from the room", ctx do
+      alice = start_player("alice", ctx)
+      drain("alice")
+      send_input(alice, "east")
+      drain("alice")
+
+      send_input(alice, "@create object liratest")
+      drain("alice")
+      assert {:ok, _} = Commonplace.MUD.World.find_entry_by_name(clearing_uuid(ctx), "liratest", ctx.store)
+
+      send_input(alice, "@destroy liratest")
+      out = drain("alice") |> Enum.join("\n")
+      assert out =~ "You destroy the liratest"
+      assert :error = Commonplace.MUD.World.find_entry_by_name(clearing_uuid(ctx), "liratest", ctx.store)
+
+      PlayerSession.stop(alice)
+    end
+
+    test "@destroy a nonexistent object → clean 'nothing here' error", ctx do
+      alice = start_player("alice", ctx)
+      drain("alice")
+      send_input(alice, "east")
+      drain("alice")
+
+      send_input(alice, "@destroy phantom")
+      out = drain("alice") |> Enum.join("\n")
+      assert out =~ "no \"phantom\" here"
+
+      PlayerSession.stop(alice)
+    end
+
+    test "@destroy refuses a NON-EMPTY container (would orphan its contents)", ctx do
+      alice = start_player("alice", ctx)
+      drain("alice")
+      send_input(alice, "east")
+      drain("alice")
+
+      send_input(alice, "@create container crate")
+      drain("alice")
+      send_input(alice, "@create object apple")
+      drain("alice")
+      send_input(alice, "put apple in crate")
+      drain("alice")
+
+      send_input(alice, "@destroy crate")
+      refused = drain("alice") |> Enum.join("\n")
+      assert refused =~ "isn't empty"
+      # crate still there.
+      assert {:ok, _} = Commonplace.MUD.World.find_entry_by_name(clearing_uuid(ctx), "crate", ctx.store)
+
+      # empty it, then it destroys.
+      send_input(alice, "get apple from crate")
+      drain("alice")
+      send_input(alice, "@destroy crate")
+      ok = drain("alice") |> Enum.join("\n")
+      assert ok =~ "You destroy the crate"
+      assert :error = Commonplace.MUD.World.find_entry_by_name(clearing_uuid(ctx), "crate", ctx.store)
+
+      PlayerSession.stop(alice)
+    end
+  end
+
   # CX-cj3t.10 — directed private messaging (plan #6050). Three trust
   # properties under test: same-room-only resolution (privacy — a
   # bystander never sees a whisper), server-stamped attribution (the
