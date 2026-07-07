@@ -402,7 +402,8 @@ defmodule Commonplace.MUD.OutputTest do
 
       send_input(alice, "look in box")
       look_out = drain("alice") |> Enum.join("\n")
-      assert look_out =~ "is locked"
+      # CX-hbbi — look on a sealed (locked/key-gated) container now reads "sealed".
+      assert look_out =~ "is sealed"
       refute look_out =~ "contains"
 
       PlayerSession.stop(alice)
@@ -480,6 +481,63 @@ defmodule Commonplace.MUD.OutputTest do
       send_input(alice, "get apple from crate")
       get_out = drain("alice") |> Enum.join("\n")
       assert get_out =~ "You get apple from crate."
+
+      PlayerSession.stop(alice)
+    end
+
+    # CX-uwam — declarative lock_key: the builtin take-from is gated on the
+    # TAKER holding a matching item (per-player), airtight against the greedy
+    # take-from path (the "lock is theater" fix). CX-hbbi — a sealed container
+    # hides contents on plain `look`.
+    test "CX-uwam/CX-hbbi: lock_key gates take-from per-player; sealed container hides contents on look", ctx do
+      alice = start_player("alice", ctx)
+      drain("alice")
+      send_input(alice, "east")
+      drain("alice")
+
+      send_input(alice, "@create container vault")
+      drain("alice")
+      send_input(alice, "@create object gold")
+      drain("alice")
+      send_input(alice, "put gold in vault")
+      drain("alice")
+
+      # Seal the vault with lock_key = "brass key" via a verb on it.
+      {:ok, vault_entry} = Commonplace.MUD.World.find_entry_by_name(clearing_uuid(ctx), "vault", ctx.store)
+
+      :ok =
+        VerbSource.save_safe_verb(
+          vault_entry.node_id,
+          "seal",
+          ~s|Commonplace.MUD.World.Facade.put_state(world, "lock_key", "brass key")|,
+          [vault_entry.node_id],
+          ctx.store
+        )
+
+      send_input(alice, "seal vault")
+      drain("alice")
+
+      # CX-hbbi — plain look on the sealed vault hides contents.
+      send_input(alice, "look vault")
+      look_out = drain("alice") |> Enum.join("\n")
+      assert look_out =~ "is sealed"
+      refute look_out =~ "contains"
+
+      # No key held → take-from refused (the greedy path is now closed).
+      send_input(alice, "get gold from vault")
+      refused = drain("alice") |> Enum.join("\n")
+      assert refused =~ "you need the brass key"
+      refute refused =~ "You get gold"
+
+      # Acquire the key, then take-from succeeds (per-player gate opens).
+      send_input(alice, "@create object brass key")
+      drain("alice")
+      send_input(alice, "take brass key")
+      drain("alice")
+
+      send_input(alice, "get gold from vault")
+      allowed = drain("alice") |> Enum.join("\n")
+      assert allowed =~ "You get gold from vault."
 
       PlayerSession.stop(alice)
     end

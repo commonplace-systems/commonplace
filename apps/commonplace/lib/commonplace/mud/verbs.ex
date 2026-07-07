@@ -519,7 +519,13 @@ defmodule Commonplace.MUD.Verbs do
   defp render_looked_at_entry(entry, phrase_label, ctx) do
     case resolve_entry(entry, ctx) do
       {:ok, :object, %Object{container?: true} = obj} ->
-        {:reply, render_container_contents(entry.node_id, obj.name, ctx)}
+        # CX-hbbi — a sealed container hides its contents on plain `look`
+        # too (not just `look in`) — no spoiling the box through the door.
+        if container_sealed?(entry.node_id, ctx.store) do
+          {:reply, "The #{obj.name} is sealed."}
+        else
+          {:reply, render_container_contents(entry.node_id, obj.name, ctx)}
+        end
 
       {:ok, :object, %Object{} = obj} ->
         {:reply, "#{obj.name}\n#{obj.description}"}
@@ -538,8 +544,9 @@ defmodule Commonplace.MUD.Verbs do
 
     case resolve_container(container_phrase, [ctx.inventory_uuid, ctx.current_room_uuid], ctx) do
       {:ok, container_entry, %Object{} = container_obj} ->
-        if container_locked?(container_entry.node_id, ctx.store) do
-          {:error, "The #{container_obj.name} is locked."}
+        # CX-hbbi — sealed (locked OR key-gated) hides contents on look.
+        if container_sealed?(container_entry.node_id, ctx.store) do
+          {:error, "The #{container_obj.name} is sealed."}
         else
           {:reply, render_container_contents(container_entry.node_id, container_obj.name, ctx)}
         end
@@ -613,6 +620,45 @@ defmodule Commonplace.MUD.Verbs do
 
   defp ensure_unlocked(container_uuid, name, store) do
     if container_locked?(container_uuid, store), do: {:error, {:locked, name}}, else: :ok
+  end
+
+  # CX-uwam — a container may declare state["lock_key"] = "<item name>". The
+  # builtin get/put-from-container then requires the TAKER to HOLD a matching
+  # item, evaluated against THEIR OWN inventory — a PER-PLAYER key gate
+  # (unlike the global `locked` flag). AIRTIGHT: do_get_from is the sole
+  # container-extract path (plan #6087 verified — transfer/3 is put-only,
+  # source server-fixed to the invoker), so there's no verb-authoring bypass.
+  # HONESTY LIMIT: NAME-matched, so a player who can mint+name an item forges
+  # the key — this closes the BYPASS (the theater bug), it is NOT tamper-proof
+  # (unforgeable/provenance keys ride the before_get-hook tier). Low-trust:
+  # declarative attr + a builtin actor-inventory check, no author code, same
+  # class as the `locked` flag.
+  defp container_lock_key(container_uuid, store) do
+    case World.get_meta_map(container_uuid, Schemas.object_filename(), store) do
+      {:ok, %{"state" => %{"lock_key" => key}}} when is_binary(key) and key != "" -> {:ok, key}
+      _ -> :none
+    end
+  end
+
+  defp ensure_has_key(container_uuid, name, ctx) do
+    case container_lock_key(container_uuid, ctx.store) do
+      {:ok, key} ->
+        if match?({:ok, _}, World.find_entry_by_name(ctx.inventory_uuid, key, ctx.store)),
+          do: :ok,
+          else: {:error, {:need_key, name, key}}
+
+      :none ->
+        :ok
+    end
+  end
+
+  # CX-hbbi — a container reads as SEALED (contents hidden on look) when the
+  # `locked` flag is set OR it declares a lock_key. Command-layer gameplay
+  # hiding only (plan #6087) — NOT confidentiality; the doc stays readable
+  # directly (real read-secrecy = read-scoping, absent today). Good for a
+  # puzzle, do not imply secrecy.
+  defp container_sealed?(container_uuid, store) do
+    container_locked?(container_uuid, store) or match?({:ok, _}, container_lock_key(container_uuid, store))
   end
 
   defp render_room(ctx) do
@@ -700,6 +746,7 @@ defmodule Commonplace.MUD.Verbs do
     with {:ok, container_entry, %Object{} = container_obj} <-
            resolve_container(container_phrase, [ctx.current_room_uuid, ctx.inventory_uuid], ctx),
          :ok <- ensure_unlocked(container_entry.node_id, container_obj.name, ctx.store),
+         :ok <- ensure_has_key(container_entry.node_id, container_obj.name, ctx),
          {:ok, entry, _phrase, _remainder} <-
            greedy_match_entry([container_entry.node_id], item_words, ctx.store),
          {:ok, %Object{} = obj} <- Schemas.load_object(entry.node_id, ctx.store),
@@ -716,6 +763,7 @@ defmodule Commonplace.MUD.Verbs do
     else
       {:error, {:not_a_container, name}} -> {:error, "You can't get things from the #{name}."}
       {:error, {:locked, name}} -> {:error, "The #{name} is locked."}
+      {:error, {:need_key, name, key}} -> {:error, "The #{name} won't open — you need the #{key}."}
       {:error, :not_found} -> {:error, "You don't see \"#{container_phrase}\" here."}
       :not_found -> {:error, "You don't see \"#{item_phrase_label}\" in #{container_phrase}."}
       {:error, :gone} -> {:error, "It slipped from your grasp."}
@@ -919,6 +967,7 @@ defmodule Commonplace.MUD.Verbs do
          {:ok, container_entry, %Object{} = container_obj} <-
            resolve_container(container_phrase, [ctx.current_room_uuid, ctx.inventory_uuid], ctx),
          :ok <- ensure_unlocked(container_entry.node_id, container_obj.name, ctx.store),
+         :ok <- ensure_has_key(container_entry.node_id, container_obj.name, ctx),
          move_opts <-
            Keyword.put(write_opts(ctx), :precheck, fn ->
              cycle_guard(item_entry.node_id, container_entry.node_id, ctx.store)
@@ -937,6 +986,7 @@ defmodule Commonplace.MUD.Verbs do
       :not_found -> {:error, "You don't see \"#{item_phrase_label}\" here."}
       {:error, {:not_a_container, name}} -> {:error, "You can't put things in the #{name}."}
       {:error, {:locked, name}} -> {:error, "The #{name} is locked."}
+      {:error, {:need_key, name, key}} -> {:error, "The #{name} won't open — you need the #{key}."}
       {:error, :not_found} -> {:error, "You don't see \"#{container_phrase}\" here."}
       {:error, :container_cycle} -> {:error, "You can't put #{item_phrase_label} inside itself."}
       {:error, :collision} -> {:error, "There's already one of those in there."}
