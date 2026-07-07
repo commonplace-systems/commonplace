@@ -65,6 +65,7 @@ defmodule Commonplace.MUD.Bot do
   alias Commonplace.Crypto.NodeIdentity
   alias Commonplace.MUD.{Bootstrap, Citizenship, PlayerSession}
   alias Commonplace.Presence.Identity
+  alias Commonplace.Store.CommitStoreClient
 
   @type event :: %{optional(atom) => any}
 
@@ -147,7 +148,7 @@ defmodule Commonplace.MUD.Bot do
 
   defp spawn_session(name, opts) do
     store = Keyword.get(opts, :store, CommitStoreClient)
-    root_uuid = Keyword.get_lazy(opts, :root_uuid, &resolve_root/0)
+    root_uuid = Keyword.get_lazy(opts, :root_uuid, fn -> resolve_root(store) end)
 
     case root_uuid do
       nil ->
@@ -299,9 +300,9 @@ defmodule Commonplace.MUD.Bot do
     end
   end
 
-  defp resolve_root do
+  defp resolve_root(store) do
     case Commonplace.Workspace.root_uuid() do
-      {:ok, root} -> if full_citizenship?(), do: mud_world_root(root), else: root
+      {:ok, root} -> if full_citizenship?(), do: mud_world_root(root, store), else: root
       _ -> nil
     end
   end
@@ -311,9 +312,9 @@ defmodule Commonplace.MUD.Bot do
   # web players whose `MudLive` is rooted there too. A workspace with no
   # "mud" entry (e.g. a standalone dogfood world that IS the MUD) roots at
   # its own root, unchanged. Callers can still override with `:root_uuid`.
-  defp mud_world_root(workspace_root) do
+  defp mud_world_root(workspace_root, store) do
     loader = fn uuid ->
-      case Commonplace.Tree.DocBuilder.reconstruct_doc(CommitStoreClient, uuid) do
+      case Commonplace.Tree.DocBuilder.reconstruct_doc(store, uuid) do
         {:ok, doc} -> doc
         _ -> Yelixer.Doc.new()
       end
