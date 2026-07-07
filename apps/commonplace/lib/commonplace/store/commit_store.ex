@@ -1750,7 +1750,8 @@ defmodule Commonplace.Store.CommitStore do
   defp handle_local_write_denial(:dry_run, commit, reason) do
     Logger.warning(
       "CommitStore: local write would be DENIED by trust gate (dry_run — write still lands) " <>
-        "doc_uuid=#{commit.doc_uuid} commit_id=#{commit.id} reason=#{inspect(reason)}"
+        "doc_uuid=#{commit.doc_uuid} commit_id=#{Base.encode16(commit.id, case: :lower)} " <>
+        "reason=#{inspect(reason)}"
     )
 
     :telemetry.execute(
@@ -1765,7 +1766,8 @@ defmodule Commonplace.Store.CommitStore do
   defp handle_local_write_denial(:enforce, commit, reason) do
     Logger.warning(
       "CommitStore: local write DENIED by trust gate (enforce) " <>
-        "doc_uuid=#{commit.doc_uuid} commit_id=#{commit.id} reason=#{inspect(reason)}"
+        "doc_uuid=#{commit.doc_uuid} commit_id=#{Base.encode16(commit.id, case: :lower)} " <>
+        "reason=#{inspect(reason)}"
     )
 
     :telemetry.execute(
