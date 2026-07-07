@@ -236,6 +236,29 @@ defmodule Commonplace.MUD.SafeVerb.AllowlistTest do
     end
   end
 
+  # Playtest regression: `[h | t]` cons destructuring/construction is
+  # pure list structure (parses to {:|, _, [head, tail]}) — it was wrongly
+  # rejected as "|/2 is not allowed", blocking normal list patterns.
+  describe "cons cells [h | t] (over-rejection regression)" do
+    test "cons in case/fn patterns and destructuring assign pass" do
+      assert :ok ==
+               Allowlist.check("""
+               case args.argv do
+                 [h | _t] -> h
+                 _ -> "none"
+               end
+               """)
+
+      assert :ok == Allowlist.check("[first | _rest] = args.argv\nfirst")
+      assert :ok == Allowlist.check("Enum.map([[1, 2]], fn [a | _] -> a end)")
+      assert :ok == Allowlist.check("[0 | args.argv]")
+    end
+
+    test "a disallowed call embedded in a cons is still rejected" do
+      assert_rejected("[System.cmd(\"id\", []) | args.argv]")
+    end
+  end
+
   # Review regression (Fable): 3+ element tuple literals parse to the
   # call-shaped `{:{}, meta, elems}` AST, which was wrongly rejected as
   # `{}/N` by the generic local-call fallback. Pure data must pass; an

@@ -680,6 +680,15 @@ defmodule Commonplace.MUD.SafeVerb.Allowlist do
     ["reference to module #{alias_name(parts)} is not allowed outside an allowlisted call"]
   end
 
+  # ---- cons cell `[h | t]` (list destructure/construct) — pure structure -
+  # `[h | t]` in a pattern or expression parses to `{:|, _, [head, tail]}`.
+  # It's ordinary list cons — no code execution — so recurse into both
+  # sides. Without this it hit the generic local-call fallback and was
+  # wrongly rejected as `|/2` (fail-closed, but it blocks normal list
+  # destructuring authors need). (Map update `%{m | ..}` has its own
+  # clause; this is the bare-list cons.)
+  defp scan({:|, _, [head, tail]}), do: scan(head) ++ scan(tail)
+
   # ---- N-element tuple literal ({:{}, _, elems}, i.e. 3+ elements) --------
   # Pure data. 2-tuples are the literal `{a, b}` form (handled in the
   # plain-data section below); tuples of 3+ elements use this call-SHAPED
