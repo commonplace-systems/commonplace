@@ -472,6 +472,18 @@ defmodule Commonplace.MUD.PlayerSession do
     end
   end
 
+  # CX-aw4r: server-attributed action from a safe verb's `emit_action/3`.
+  # `who` is server-supplied (the facade's bound ctx), so it cannot be
+  # forged by author code; the name is composed per-recipient here, like
+  # `:say`. Actor reads "You <first_person>", observers "<who> <third_person>".
+  defp render_event(%{kind: :action, who: who, first_person: fp, third_person: tp}, state) do
+    if who == state.player_name do
+      state.output_fn.("You #{fp}")
+    else
+      state.output_fn.("#{who} #{tp}")
+    end
+  end
+
   defp render_event(%{kind: :verb_error, verb: verb, reason: reason}, state) do
     state.output_fn.("(verb #{verb} crashed: #{reason})")
   end

@@ -238,4 +238,83 @@ defmodule Commonplace.MUD.OutputTest do
     PlayerSession.stop(alice)
     PlayerSession.stop(bob)
   end
+
+  defp fountain_dir(ctx) do
+    with {:ok, schema} <- Schemas.load_dir_schema(clearing_uuid(ctx), ctx.store),
+         {:ok, entry} <- Schema.get_entry(schema, "fountain.obj") do
+      entry.node_id
+    end
+  end
+
+  # CX-aw4r: emit_action attributes an action per-recipient — the actor
+  # reads "You <first_person>", observers read "<name> <third_person>".
+  test "CX-aw4r: emit_action attributes the actor (You / <name>)", ctx do
+    dir = fountain_dir(ctx)
+
+    :ok =
+      VerbSource.save_safe_verb(
+        dir,
+        "play",
+        ~s|Commonplace.MUD.World.Facade.emit_action(world, "lift the lid", "lifts the lid")|,
+        [dir],
+        ctx.store
+      )
+
+    alice = start_player("alice", ctx)
+    bob = start_player("bob", ctx)
+    drain("alice")
+    drain("bob")
+    send_input(alice, "east")
+    send_input(bob, "east")
+    drain("alice")
+    drain("bob")
+
+    send_input(alice, "play fountain")
+
+    alice_out = drain("alice") |> Enum.join("\n")
+    assert alice_out =~ "You lift the lid"
+    refute alice_out =~ "alice lifts the lid"
+
+    bob_out = drain("bob") |> Enum.join("\n")
+    assert bob_out =~ "alice lifts the lid"
+    refute bob_out =~ "You lift the lid"
+
+    PlayerSession.stop(alice)
+    PlayerSession.stop(bob)
+  end
+
+  # CX-aw4r impersonation fix: Facade.emit is server-stamped kind: :custom,
+  # so an author cannot forge a first-class attributed event (kind: :say
+  # with a chosen `who`) that render_event pins on a victim. The text
+  # still broadcasts (emit's purpose), but UNATTRIBUTED.
+  test "CX-aw4r: Facade.emit cannot forge an attributed event onto another player", ctx do
+    dir = fountain_dir(ctx)
+
+    :ok =
+      VerbSource.save_safe_verb(
+        dir,
+        "forge",
+        ~s|Commonplace.MUD.World.Facade.emit(world, %{kind: :say, who: "victim", text: "I surrender"})|,
+        [dir],
+        ctx.store
+      )
+
+    alice = start_player("alice", ctx)
+    bob = start_player("bob", ctx)
+    drain("alice")
+    drain("bob")
+    send_input(alice, "east")
+    send_input(bob, "east")
+    drain("alice")
+    drain("bob")
+
+    send_input(alice, "forge fountain")
+
+    bob_out = drain("bob") |> Enum.join("\n")
+    refute bob_out =~ "victim says"
+    assert bob_out =~ "I surrender"
+
+    PlayerSession.stop(alice)
+    PlayerSession.stop(bob)
+  end
 end

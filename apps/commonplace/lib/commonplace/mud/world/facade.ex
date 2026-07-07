@@ -232,10 +232,45 @@ defmodule Commonplace.MUD.World.Facade do
     World.broadcast_room(f.ctx.current_room_uuid, %{kind: :say, who: f.ctx[:player_name], text: text})
   end
 
-  @doc "Broadcast a custom event (text or event map) to the invoker's current room."
+  @doc """
+  Broadcast a custom, UNATTRIBUTED text event to the invoker's current
+  room. The author supplies only text (or a map carrying a `:text`); the
+  event is server-stamped `kind: :custom` so an author CANNOT forge a
+  first-class attributed event — `%{kind: :say | :take | :give | ...,
+  who: "<victim>"}` — that `PlayerSession.render_event` would attribute
+  to another player (CX-aw4r impersonation fix). For ATTRIBUTED actions
+  ("You lift the lid" / "toby lifts the lid") use `emit_action/3`, which
+  fills the actor name server-side.
+  """
   @spec emit(t(), String.t() | map()) :: :ok
   def emit(%__MODULE__{} = f, event) do
-    World.broadcast_room(f.ctx.current_room_uuid, event)
+    World.broadcast_room(f.ctx.current_room_uuid, %{kind: :custom, text: coerce_text(event)})
+  end
+
+  defp coerce_text(text) when is_binary(text), do: text
+  defp coerce_text(%{text: text}) when is_binary(text), do: text
+  defp coerce_text(other), do: inspect(other)
+
+  @doc """
+  Broadcast an ATTRIBUTED action to the invoker's current room. The
+  author passes only templates — a first-person form (`"lift the lid"`)
+  and a third-person form (`"lifts the lid"`); the actor's name is filled
+  SERVER-SIDE from the bound ctx (the author never sees or sets it — raw
+  actor-name access stays banned by the allowlist). The actor reads
+  `"You <first_person>"`, every observer reads `"<name> <third_person>"`
+  — composed per-recipient at render time, exactly like the builtin
+  `say`. Cosmetic render-only attribution: no doc write, no effect, so
+  `who` is display metadata, never an authorization input.
+  """
+  @spec emit_action(t(), String.t(), String.t()) :: :ok
+  def emit_action(%__MODULE__{} = f, first_person, third_person)
+      when is_binary(first_person) and is_binary(third_person) do
+    World.broadcast_room(f.ctx.current_room_uuid, %{
+      kind: :action,
+      who: f.ctx[:player_name],
+      first_person: first_person,
+      third_person: third_person
+    })
   end
 
   # --- private ---
