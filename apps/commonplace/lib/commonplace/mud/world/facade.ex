@@ -186,6 +186,88 @@ defmodule Commonplace.MUD.World.Facade do
     end)
   end
 
+  # CX-hqk5 — freeform per-object state bounds (plan #5968). State lives in
+  # __object.json which is a CRDT doc that SYNCS, so bloat = sync/storage
+  # cost across every replica — bound it (size only; write-frequency is
+  # bounded by the session rate-limit + exec bounds, not here).
+  @state_key_max_bytes 64
+  @state_value_max_bytes 1024
+  @state_max_keys 64
+
+  @doc """
+  CX-hqk5 — read freeform per-object state written by `put_state/3`.
+  Reads the BOUND object's own `meta["state"][key]`; returns the value or
+  `nil` (missing key / object). Read-only, bound-object only: there is no
+  target-uuid param, so a verb can only read its OWN object's state — NOT
+  another object's (cross-object read is a separate, bigger capability by
+  design, not smuggled in here).
+  """
+  @spec get_state(t(), String.t()) :: term()
+  def get_state(%__MODULE__{object_uuid: nil}, _key), do: nil
+
+  def get_state(%__MODULE__{} = f, key) when is_binary(key) do
+    case World.get_meta_map(f.object_uuid, Schemas.object_filename(), f.store) do
+      {:ok, %{"state" => state}} when is_map(state) -> Map.get(state, key)
+      _ -> nil
+    end
+  end
+
+  def get_state(%__MODULE__{}, _key), do: nil
+
+  @doc """
+  CX-hqk5 — write freeform per-object state. Owner-scoped (`write_guarded`
+  on the bound object, the SAME intersection as `set_attr`) into a
+  DEDICATED `meta["state"]` submap, so it can NEVER clobber typed fields
+  (name/fixed/container). Bounds (plan #5968): key ≤ 64 bytes; value a
+  JSON SCALAR only — string (≤ 1024 bytes) / number / boolean / nil, NOT
+  a list or map; ≤ 64 keys per object. Over-limit → `{:error,
+  :state_bounds}` (fail-visible, never truncates). One verb `put_state`s,
+  another (or a later run) `get_state`s — the whole stateful-mechanic
+  class (lit/unlit, unlocked, score, already-solved).
+  """
+  @spec put_state(t(), String.t(), term()) :: :ok | {:error, term()}
+  def put_state(%__MODULE__{object_uuid: nil}, _key, _value), do: {:error, :no_bound_object}
+
+  def put_state(%__MODULE__{} = f, key, value) when is_binary(key) do
+    with :ok <- validate_state_key(key),
+         :ok <- validate_state_value(value) do
+      write_guarded(f, [f.object_uuid], fn ->
+        state = read_state(f)
+
+        if Map.has_key?(state, key) or map_size(state) < @state_max_keys do
+          new_state = Map.put(state, key, value)
+          World.set_meta(f.object_uuid, Schemas.object_filename(), "state", new_state, f.store, write_opts(f))
+        else
+          {:error, :state_bounds}
+        end
+      end)
+    end
+  end
+
+  def put_state(%__MODULE__{}, _key, _value), do: {:error, :state_bounds}
+
+  defp read_state(f) do
+    case World.get_meta_map(f.object_uuid, Schemas.object_filename(), f.store) do
+      {:ok, %{"state" => state}} when is_map(state) -> state
+      _ -> %{}
+    end
+  end
+
+  defp validate_state_key(key) when is_binary(key) do
+    if byte_size(key) > 0 and byte_size(key) <= @state_key_max_bytes,
+      do: :ok,
+      else: {:error, :state_bounds}
+  end
+
+  defp validate_state_value(v) when is_boolean(v) or is_nil(v) or is_number(v), do: :ok
+
+  defp validate_state_value(v) when is_binary(v) do
+    if byte_size(v) <= @state_value_max_bytes, do: :ok, else: {:error, :state_bounds}
+  end
+
+  # Reject list/map/tuple/other — JSON scalars only.
+  defp validate_state_value(_), do: {:error, :state_bounds}
+
   @doc """
   Create a new child object named `name` under this facade's bound
   object. Grant-checked against `{object_uuid}` (the parent). Returns

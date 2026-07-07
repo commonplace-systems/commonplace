@@ -68,6 +68,12 @@ defmodule Commonplace.MUD.SafeVerb.AllowlistTest do
       assert_rejected(~s|Commonplace.MUD.World.Facade.actor_name(world)|)
     end
 
+    # CX-hqk5 — the stateful-verb primitives are admitted (plan #5968).
+    test "(f6) Facade.get_state/2 + put_state/3 pass" do
+      assert :ok == Allowlist.check(~s|Commonplace.MUD.World.Facade.get_state(world, "lit")|)
+      assert :ok == Allowlist.check(~s|Commonplace.MUD.World.Facade.put_state(world, "lit", true)|)
+    end
+
     test "(f3) the qualified facade form is refused when the first arg isn't the literal world binding" do
       assert_rejected(~s|other = world\nCommonplace.MUD.World.Facade.set_attr(other, "k", "v")|)
       assert_rejected(~s|Commonplace.MUD.World.Facade.set_attr(args, "k", "v")|)

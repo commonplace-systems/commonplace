@@ -95,6 +95,28 @@ defmodule Commonplace.MUD.World do
   end
 
   @doc """
+  Read a dir's meta doc (`filename`) as its RAW decoded JSON map —
+  including keys the typed structs drop (e.g. the `"state"` submap
+  freeform verb state lives in, CX-hqk5). Returns `{:ok, map}`,
+  `{:error, :no_meta_entry}`, `{:error, :no_doc}`, or a decode error.
+  """
+  def get_meta_map(dir_uuid, filename, store \\ CommitStoreClient) do
+    with {:ok, schema} <- Schemas.load_dir_schema(dir_uuid, store),
+         {:ok, entry} <- Schema.get_entry(schema, filename),
+         {:ok, doc} <- DocBuilder.reconstruct_doc(store, entry.node_id),
+         json when is_binary(json) <- ContentType.get_content(doc),
+         {:ok, parsed} when is_map(parsed) <- Jason.decode(json) do
+      {:ok, parsed}
+    else
+      :error -> {:error, :no_meta_entry}
+      :none -> {:error, :no_doc}
+      nil -> {:error, :empty_doc}
+      {:error, _} = err -> err
+      other -> {:error, other}
+    end
+  end
+
+  @doc """
   List entries in a directory (objects, players, sub-dirs). Returns
   `[%Schema.Entry{}]`.
   """

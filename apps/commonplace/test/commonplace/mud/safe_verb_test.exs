@@ -255,6 +255,64 @@ defmodule Commonplace.MUD.SafeVerbTest do
     end
   end
 
+  describe "CX-hqk5 stateful verbs — get_state / put_state" do
+    test "put_state then get_state round-trips a scalar; missing key is nil", %{
+      store: store,
+      target_dir_uuid: dir
+    } do
+      f = Facade.new(%{}, dir, [dir], nil, store)
+
+      assert :ok = Facade.put_state(f, "lit", true)
+      assert Facade.get_state(f, "lit") == true
+
+      assert :ok = Facade.put_state(f, "score", 7)
+      assert Facade.get_state(f, "score") == 7
+
+      assert Facade.get_state(f, "never_set") == nil
+    end
+
+    test "state lives in a dedicated submap and does NOT clobber typed fields", %{
+      store: store,
+      target_dir_uuid: dir
+    } do
+      f = Facade.new(%{}, dir, [dir], nil, store)
+      {:ok, before} = Commonplace.MUD.World.get_object(dir, store)
+
+      # A state key literally named "name" must not touch the typed name.
+      assert :ok = Facade.put_state(f, "name", "hacked")
+
+      {:ok, after_put} = Commonplace.MUD.World.get_object(dir, store)
+      assert after_put.name == before.name
+      assert Facade.get_state(f, "name") == "hacked"
+    end
+
+    test "bounds: oversized value, non-scalar, oversized key, and >64 keys → :state_bounds", %{
+      store: store,
+      target_dir_uuid: dir
+    } do
+      f = Facade.new(%{}, dir, [dir], nil, store)
+
+      assert {:error, :state_bounds} = Facade.put_state(f, "big", String.duplicate("x", 1025))
+      assert {:error, :state_bounds} = Facade.put_state(f, "list", [1, 2, 3])
+      assert {:error, :state_bounds} = Facade.put_state(f, "map", %{"a" => 1})
+      assert {:error, :state_bounds} = Facade.put_state(f, String.duplicate("k", 65), "v")
+
+      # Fill exactly 64 keys, then a 65th NEW key is refused...
+      Enum.each(1..64, fn i -> assert :ok = Facade.put_state(f, "k#{i}", i) end)
+      assert {:error, :state_bounds} = Facade.put_state(f, "k65", 1)
+      # ...but UPDATING an existing key still works (no new key).
+      assert :ok = Facade.put_state(f, "k1", 999)
+    end
+
+    test "put_state is owner-scoped (write outside the grant is denied)", %{
+      store: store,
+      target_dir_uuid: dir
+    } do
+      f = Facade.new(%{}, dir, [], nil, store)
+      assert {:error, :owner_grant_exceeded} = Facade.put_state(f, "lit", true)
+    end
+  end
+
   describe "legacy vs. safe authoring boundary (pin 8)" do
     test "the legacy full-defmodule path still compiles+runs unchanged (no regression)", %{
       store: store,
