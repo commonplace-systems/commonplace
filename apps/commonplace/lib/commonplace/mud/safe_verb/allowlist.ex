@@ -460,7 +460,15 @@ defmodule Commonplace.MUD.SafeVerb.Allowlist do
                     {:spawn, 2},
                     {:give_to_actor, 2},
                     {:consume, 1},
-                    {:destroy_child, 2}
+                    {:destroy_child, 2},
+                    # CX-nyj9 — configure a FRESHLY-MINTED object (own-creation
+                    # :write exception; the uuid is re-gated against the run's
+                    # server-tracked minted-set — plan-blessed #6028/#6032).
+                    # Turns a minted husk into a real item (description/stats).
+                    # define_on (verbs on minted objects) is DEFERRED to the
+                    # zone-ownership/subtree-scopes chapter, not admitted here.
+                    {:configure_attr, 4},
+                    {:configure_state, 4}
                   ])
 
   # VECTOR 11 — reflective / capability side-channels that WEAR a

@@ -296,6 +296,60 @@ defmodule Commonplace.MUD.World.FacadeTest do
     assert length(coin_entries) == 3
   end
 
+  test "CX-nyj9: configure_attr sets a real attribute on a JUST-MINTED object (husk -> real item)", %{
+    store: store,
+    obj_uuid: obj_uuid,
+    trusted_ctx: trusted_ctx
+  } do
+    inv = lc_dir(store, trusted_ctx, "inv")
+    f = lc_facade(trusted_ctx, obj_uuid, [], %{inventory_uuid: inv}, store)
+
+    {:ok, sword} = Facade.give_to_actor(f, "sword")
+    # Fresh mint is an inert husk...
+    assert {:ok, %{description: "(no description yet)"}} = Facade.get_attr(f, sword)
+
+    # ...configure_attr on the just-minted uuid makes it real (own-creation
+    # exception: no owner_grant, uuid re-gated against the minted-set).
+    assert :ok = Facade.configure_attr(f, sword, "description", "a fine steel blade")
+    assert {:ok, %{description: "a fine steel blade"}} = Facade.get_attr(f, sword)
+  end
+
+  test "CX-nyj9: configure_state writes freeform state on a just-minted object", %{
+    store: store,
+    obj_uuid: obj_uuid,
+    trusted_ctx: trusted_ctx
+  } do
+    inv = lc_dir(store, trusted_ctx, "inv")
+    f = lc_facade(trusted_ctx, obj_uuid, [], %{inventory_uuid: inv}, store)
+
+    {:ok, sword} = Facade.give_to_actor(f, "sword")
+    assert :ok = Facade.configure_state(f, sword, "damage", 5)
+
+    assert {:ok, %{"state" => %{"damage" => 5}}} =
+             Commonplace.MUD.World.get_meta_map(sword, Schemas.object_filename(), store)
+  end
+
+  test "CX-nyj9 KEYSTONE: configure_* reject a uuid NOT minted this run (uuid is not a bearer token)", %{
+    store: store,
+    obj_uuid: obj_uuid,
+    trusted_ctx: trusted_ctx
+  } do
+    inv = lc_dir(store, trusted_ctx, "inv")
+    f = lc_facade(trusted_ctx, obj_uuid, [], %{inventory_uuid: inv}, store)
+
+    # obj_uuid (the setup widget) exists and trusted_ctx COULD write it, but
+    # it was not minted THIS run — the minted-set re-gate refuses it, so a
+    # known uuid alone never authorizes configuration.
+    assert {:error, :not_minted_here} = Facade.configure_attr(f, obj_uuid, "description", "hijacked")
+    assert {:error, :not_minted_here} = Facade.configure_state(f, obj_uuid, "damage", 99)
+    assert {:error, :not_minted_here} = Facade.configure_attr(f, UUID.uuid4(), "description", "ghost")
+
+    # And a uuid minted this run IS accepted (proving the gate is the
+    # minted-set, not something incidental).
+    {:ok, sword} = Facade.give_to_actor(f, "sword")
+    assert :ok = Facade.configure_attr(f, sword, "description", "real")
+  end
+
   test "destroy_child: happy path — create then unlink a named child of the bound object", %{
     store: store,
     obj_uuid: obj_uuid,

@@ -231,23 +231,29 @@ defmodule Commonplace.MUD.World.Facade do
   def put_state(%__MODULE__{} = f, key, value) when is_binary(key) do
     with :ok <- validate_state_key(key),
          :ok <- validate_state_value(value) do
-      write_guarded(f, [f.object_uuid], fn ->
-        state = read_state(f)
-
-        if Map.has_key?(state, key) or map_size(state) < @state_max_keys do
-          new_state = Map.put(state, key, value)
-          World.set_meta(f.object_uuid, Schemas.object_filename(), "state", new_state, f.store, write_opts(f))
-        else
-          {:error, :state_bounds}
-        end
-      end)
+      write_guarded(f, [f.object_uuid], fn -> do_put_state(f, f.object_uuid, key, value) end)
     end
   end
 
   def put_state(%__MODULE__{}, _key, _value), do: {:error, :state_bounds}
 
-  defp read_state(f) do
-    case World.get_meta_map(f.object_uuid, Schemas.object_filename(), f.store) do
+  # Shared state-write core (put_state on the bound object; configure_state
+  # on a just-minted object). The AUTHORITY decision — write_guarded vs the
+  # own-creation exception — is the CALLER's; this only applies the bounds
+  # and issues the invoker-signed write.
+  defp do_put_state(f, target_uuid, key, value) do
+    state = read_state(f, target_uuid)
+
+    if Map.has_key?(state, key) or map_size(state) < @state_max_keys do
+      new_state = Map.put(state, key, value)
+      World.set_meta(target_uuid, Schemas.object_filename(), "state", new_state, f.store, write_opts(f))
+    else
+      {:error, :state_bounds}
+    end
+  end
+
+  defp read_state(f, target_uuid) do
+    case World.get_meta_map(target_uuid, Schemas.object_filename(), f.store) do
       {:ok, %{"state" => state}} when is_map(state) -> state
       _ -> %{}
     end
@@ -378,6 +384,10 @@ defmodule Commonplace.MUD.World.Facade do
   @container_max_entries 128
   @lifecycle_ops_per_run 8
   @lifecycle_op_counter :cp_safe_verb_lifecycle_ops
+  # CX-nyj9 — the per-run minted-set (uuids created this run) backing the
+  # own-creation exception for configure_*. Server-populated only, in this
+  # run's process dict; author code can't reach it (Process is banned).
+  @minted_set_key :cp_safe_verb_minted_set
 
   @doc """
   Spawn a new object named `name` into the invoker's current room.
@@ -470,6 +480,87 @@ defmodule Commonplace.MUD.World.Facade do
           :error -> {:error, :not_found}
         end
       end)
+    end
+  end
+
+  # ---- configure a freshly-minted object (CX-nyj9, plan-blessed #6028) ----
+  #
+  # THE OWN-CREATION EXCEPTION (plan #6028, ruling a): operating on an
+  # object THIS RUN minted (spawn/give_to_actor/create_child returned its
+  # uuid) is INVOKER-AUTHORIZED — the invoker signed its creation, so
+  # writing it is within their own authority, and a fresh uuid is in
+  # nobody's owner_grant, so requiring owner_grant would wrongly block it.
+  # Same shape as the own-inventory exception (give_to_actor / consume-
+  # carried). So configure_* SKIP write_guarded but stay invoker-signed
+  # (write_opts).
+  #
+  # TWO KEYSTONE PINS (plan #6028):
+  #   1. The minted-set is SERVER-TRACKED, this-run, UN-FORGEABLE: it lives
+  #      in this run's spawn_monitor-child process dict (like the N=8
+  #      counter), populated ONLY by `create_object_in`'s own return values
+  #      (`record_minted/1`). Author code cannot touch it — `Process` is
+  #      allowlist-banned — and cannot inject a uuid: the author PASSES a
+  #      uuid, but configure_* VALIDATE it against the set.
+  #   2. A UUID IS NEVER A BEARER TOKEN: mint now returns uuids to author
+  #      code, so every uuid-taking method must RE-GATE. configure_* re-gate
+  #      via minted-set membership (a non-minted uuid → `:not_minted_here`);
+  #      `transfer/3` re-gates via `write_guarded` (owner_grant). A known
+  #      uuid alone never authorizes anything.
+  #
+  # ENFORCE-MODE STATUS = CASE B (plan #6032): PERMISSIVE-DOGFOOD-CORRECT
+  # ONLY. The minted-set is a FACADE-level re-gate (it stops author code
+  # configuring an ARBITRARY uuid) — it does NOT satisfy the local-write
+  # gate. That gate runs INSIDE the CommitStore GenServer, a different
+  # process with no access to this safe-verb child's process-dict minted-
+  # set, so minted-set membership cannot authorize the write there. A minted
+  # object is a fresh uuid absent from the invoker's explicit {:docs, uuids}
+  # :write cert, so under ENFORCE a set_meta/put_state to it is rejected by
+  # the gate for a scoped (non-root) invoker — the SAME anchor wall as
+  # define_on. Enforce-correctness for configure_* rides SUBTREE-SCOPES
+  # (CX-tdkq.23 Wrinkle-H: a {:subtree, section_root} cert covers minted
+  # objects under the section), landing WITH zone-ownership — NOT object-
+  # level auto-extend (which would inherit the CX-rmuk cert-laundering hole).
+  # SECURITY is unaffected: the setuid protection (spawn-cross-owner refused)
+  # holds under enforce because ROOMS are explicit-uuid certs; only minted-
+  # object config/behavior RICHNESS is permissive-only until subtree-scopes.
+  #
+  # (`define_on` — defining VERBS on a minted object — is the :define_verb-
+  # level sibling, held pending plan's section-anchor ruling; see CX-nyj9.)
+
+  @doc """
+  CX-nyj9 — set a metadata attribute (`key`/`value`) on an object THIS RUN
+  minted. Own-creation :write exception (see the section header): no
+  owner_grant, invoker-signed, uuid re-gated against the minted-set. Turns
+  a minted husk into a real item (description/stats). `{:error,
+  :not_minted_here}` if `minted_uuid` was not minted this run.
+  """
+  @spec configure_attr(t(), String.t(), String.t(), term()) :: :ok | {:error, term()}
+  def configure_attr(%__MODULE__{} = f, minted_uuid, key, value)
+      when is_binary(minted_uuid) and is_binary(key) do
+    if minted_this_run?(minted_uuid) do
+      World.set_meta(minted_uuid, Schemas.object_filename(), key, value, f.store, write_opts(f))
+    else
+      {:error, :not_minted_here}
+    end
+  end
+
+  @doc """
+  CX-nyj9 — write freeform per-object state (`key`/`value`, same dedicated
+  `meta["state"]` submap + bounds as `put_state/3`) on an object THIS RUN
+  minted. Own-creation :write exception (see the section header): no
+  owner_grant, invoker-signed, uuid re-gated against the minted-set.
+  `{:error, :not_minted_here}` if `minted_uuid` was not minted this run.
+  """
+  @spec configure_state(t(), String.t(), String.t(), term()) :: :ok | {:error, term()}
+  def configure_state(%__MODULE__{} = f, minted_uuid, key, value)
+      when is_binary(minted_uuid) and is_binary(key) do
+    with :ok <- validate_state_key(key),
+         :ok <- validate_state_value(value) do
+      if minted_this_run?(minted_uuid) do
+        do_put_state(f, minted_uuid, key, value)
+      else
+        {:error, :not_minted_here}
+      end
     end
   end
 
@@ -580,6 +671,10 @@ defmodule Commonplace.MUD.World.Facade do
           with {:ok, new_uuid} <-
                  Schemas.create_dir_with_meta(Schemas.object_filename(), obj_json, f.store, write_opts(f)),
                :ok <- add_child_entry(parent_uuid, instance_entry_name(name, new_uuid), new_uuid, f) do
+            # CX-nyj9 — record ONLY here (server-side, from our own return
+            # value) so configure_* can later validate an author-passed uuid
+            # against the run's minted-set.
+            record_minted(new_uuid)
             {:ok, new_uuid}
           end
         end
@@ -649,6 +744,19 @@ defmodule Commonplace.MUD.World.Facade do
       Process.put(@lifecycle_op_counter, n + 1)
       :ok
     end
+  end
+
+  # CX-nyj9 — record/query the per-run minted-set. record_minted/1 is
+  # called ONLY from create_object_in (server-side, our own return value),
+  # never from author-reachable code. minted_this_run?/1 is the re-gate
+  # configure_* apply to an author-passed uuid (uuid is not a bearer token).
+  defp record_minted(uuid) do
+    Process.put(@minted_set_key, MapSet.put(Process.get(@minted_set_key, MapSet.new()), uuid))
+    uuid
+  end
+
+  defp minted_this_run?(uuid) do
+    MapSet.member?(Process.get(@minted_set_key, MapSet.new()), uuid)
   end
 
   defp entry_name(dir_uuid, node_uuid, store) do
