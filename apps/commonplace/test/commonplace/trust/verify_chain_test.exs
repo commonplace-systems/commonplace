@@ -152,6 +152,58 @@ defmodule Commonplace.Trust.VerifyChainTest do
     assert {:error, :expired} = VerifyChain.verify_chain(cap.id, MapSet.new([root_pub]), store)
   end
 
+  describe "CX-0a9a presence-carve (W2): {:presence, id} scope combining" do
+    defp presence_claim(id, caveats \\ %{not_before: nil, not_after: nil}) do
+      %{verbs: [:write], scope: {:presence, id}, caveats: caveats}
+    end
+
+    test "single-link presence chain: effective scope is {:presence, id}", %{store: store} do
+      {_root, root_ctx, root_pub} = ident("root")
+      {bot, _, _} = ident("bot-identity")
+      {:ok, cap} = Capability.issue(root_ctx, bot, presence_claim("bot-identity"))
+      put(store, cap)
+
+      assert {:ok, eff} = VerifyChain.verify_chain(cap.id, MapSet.new([root_pub]), store)
+      assert eff.scope == {:presence, "bot-identity"}
+      assert eff.verbs == [:write]
+    end
+
+    test "a {:docs} chain still intersects correctly (byte-identical path, unaffected by the presence branch)",
+         %{store: store} do
+      {_root, root_ctx, root_pub} = ident("root")
+      {alice, alice_ctx, _} = ident("alice")
+      {bob, _, _} = ident("bob")
+
+      {:ok, parent} = Capability.issue(root_ctx, alice, claim([:write, :delegate], ["d1", "d2"]))
+      put(store, parent)
+      {:ok, child} =
+        Capability.issue(alice_ctx, bob, claim([:write], ["d1"]), parent.id, parent: parent)
+      put(store, child)
+
+      assert {:ok, eff} = VerifyChain.verify_chain(child.id, MapSet.new([root_pub]), store)
+      assert eff.scope == {:docs, ["d1"]}
+    end
+
+    test "mixed {:docs}/{:presence} chain is rejected as undefined (M1 forward-flag)", %{store: store} do
+      # Build a 2-link chain by hand where the parent is {:docs}-scoped
+      # and grants :delegate, but the child (bypassing mint-time
+      # attenuation by not passing :parent) claims a {:presence} scope —
+      # exercising the verifier's own combine-by-type guard rather than
+      # the mint-time narrowing check.
+      {_root, root_ctx, root_pub} = ident("root")
+      {alice, alice_ctx, _} = ident("alice")
+      {bob, _, _} = ident("bob")
+
+      {:ok, parent} = Capability.issue(root_ctx, alice, claim([:write, :delegate], ["d1"]))
+      put(store, parent)
+      {:ok, child} = Capability.issue(alice_ctx, bob, presence_claim("bot-identity"), parent.id)
+      put(store, child)
+
+      assert {:error, :mixed_scope_type_chain} =
+               VerifyChain.verify_chain(child.id, MapSet.new([root_pub]), store)
+    end
+  end
+
   test "rejects a forged signature", %{store: store} do
     {_root, root_ctx, root_pub} = ident("root")
     {alice, _, _} = ident("alice")

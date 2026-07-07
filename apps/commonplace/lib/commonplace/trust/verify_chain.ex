@@ -58,7 +58,7 @@ defmodule Commonplace.Trust.VerifyChain do
 
   @max_depth 64
 
-  @type effective :: %{verbs: [atom()], scope: {:docs, [String.t()]}, caveats: map()}
+  @type effective :: %{verbs: [atom()], scope: Capability.scope(), caveats: map()}
 
   @spec verify_chain(binary(), MapSet.t(), GenServer.server()) ::
           {:ok, effective()} | {:error, atom()}
@@ -67,8 +67,9 @@ defmodule Commonplace.Trust.VerifyChain do
          :ok <- check_each_cert(chain),
          :ok <- check_links(chain),
          :ok <- check_root(List.last(chain), anchor_keys),
-         :ok <- check_revocations(chain, store) do
-      {:ok, effective(chain)}
+         :ok <- check_revocations(chain, store),
+         {:ok, eff} <- effective(chain) do
+      {:ok, eff}
     end
   end
 
@@ -241,13 +242,46 @@ defmodule Commonplace.Trust.VerifyChain do
       |> Enum.reduce(&MapSet.intersection/2)
       |> Enum.sort()
 
-    docs =
-      claims
-      |> Enum.map(fn %{scope: {:docs, d}} -> MapSet.new(d) end)
-      |> Enum.reduce(&MapSet.intersection/2)
-      |> Enum.sort()
+    case combine_scope(claims) do
+      {:ok, scope} -> {:ok, %{verbs: verbs, scope: scope, caveats: tightest_window(claims)}}
+      {:error, _} = err -> err
+    end
+  end
 
-    %{verbs: verbs, scope: {:docs, docs}, caveats: tightest_window(claims)}
+  # CX-0a9a (presence-carve, W2): combine by scope TYPE, not by treating
+  # every scope as {:docs}. All-{:docs} keeps the exact prior
+  # intersection behavior (byte-identical for every existing {:docs}
+  # caller). All-{:presence, id} with a SINGLE shared id collapses to
+  # that scope unchanged — presence certs are leaf-only in M1 (admin-root
+  # -> bot direct, one link, never delegated further), so there is no
+  # narrowing to compute.
+  #
+  # FORWARD-FLAG (M2): mixed-type chain combine undefined — presence is
+  # leaf-only in M1. A chain mixing {:docs} and {:presence} links, or
+  # {:presence} links with differing identity_uuids, has no defined
+  # combination rule yet and is rejected rather than silently guessing.
+  defp combine_scope(claims) do
+    scopes = Enum.map(claims, & &1.scope)
+
+    cond do
+      Enum.all?(scopes, &match?({:docs, _}, &1)) ->
+        docs =
+          scopes
+          |> Enum.map(fn {:docs, d} -> MapSet.new(d) end)
+          |> Enum.reduce(&MapSet.intersection/2)
+          |> Enum.sort()
+
+        {:ok, {:docs, docs}}
+
+      Enum.all?(scopes, &match?({:presence, _}, &1)) ->
+        case scopes |> Enum.map(fn {:presence, id} -> id end) |> Enum.uniq() do
+          [single_id] -> {:ok, {:presence, single_id}}
+          _multiple -> {:error, :presence_scope_id_mismatch}
+        end
+
+      true ->
+        {:error, :mixed_scope_type_chain}
+    end
   end
 
   defp tightest_window(claims) do

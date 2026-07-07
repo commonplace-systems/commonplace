@@ -1,0 +1,161 @@
+defmodule Commonplace.MUD.BotPresenceCertTest do
+  @moduledoc """
+  CX-0a9a (presence-carve, W7): `Bot.spawn_session/2` auto-issues its
+  resolved identity a presence-starter capability cert (`{:write}` verbs,
+  `{:presence, identity_uuid}` scope, issued by the node) and threads the
+  cid into the `PlayerSession`'s `cert_cids`.
+
+  Separate suite from `bot_test.exs` because cert issuance needs the
+  FULL `Commonplace.Store.Supervisor` trio (`CommitStore` +
+  `TrustSideStore`, for `store_capability/2` — see
+  `Commonplace.Store.CommitStore.trust_side_store_name/1`'s moduledoc);
+  `bot_test.exs` deliberately uses a bare `CommitStore` (no companion),
+  under which `Bot`'s cert issuance degrades to `cert_cids: []` (asserted
+  separately below) rather than crashing the spawn.
+  """
+  use ExUnit.Case
+
+  alias Commonplace.Crypto.NodeIdentity
+  alias Commonplace.MUD.{Bootstrap, Bot}
+  alias Commonplace.Presence.Identity
+  alias Commonplace.Store.{CommitStore, CommitStoreClient, SecretStore, Supervisor}
+  alias Commonplace.Tree.Schema
+  alias Yelixer.Encoding
+
+  setup do
+    Application.ensure_all_started(:phoenix_pubsub)
+
+    case Phoenix.PubSub.Supervisor.start_link(name: Commonplace.PubSub) do
+      {:ok, _} -> :ok
+      {:error, {:already_started, _}} -> :ok
+    end
+
+    dir = Path.join(System.tmp_dir!(), "cp_mud_bot_cert_#{:rand.uniform(1_000_000)}")
+    File.mkdir_p!(dir)
+    n = :rand.uniform(1_000_000)
+    store = :"cp_mud_bot_cert_store_#{n}"
+
+    start_supervised!(
+      {Supervisor,
+       data_dir: dir,
+       name: :"cp_mud_bot_cert_sup_#{n}",
+       commit_store_name: store,
+       trust_side_store_name: :"cp_mud_bot_cert_tss_#{n}",
+       pending_imports_name: :"cp_mud_bot_cert_pi_#{n}"}
+    )
+
+    on_exit(fn -> File.rm_rf!(dir) end)
+
+    case GenServer.whereis(Commonplace.Green.Bursar) do
+      nil -> :ok
+      pid -> GenServer.stop(pid)
+    end
+
+    {:ok, bursar_pid} =
+      Commonplace.Green.Bursar.start_link(
+        root_uuid: UUID.uuid4(),
+        store: store,
+        sweep_interval: 60_000
+      )
+
+    on_exit(fn -> if Process.alive?(bursar_pid), do: GenServer.stop(bursar_pid) end)
+
+    root_uuid = UUID.uuid4()
+    update = Encoding.encode_update(Schema.new_schema())
+    CommitStore.create_commit(store, root_uuid, update, nil)
+    {:ok, _} = Bootstrap.seed(root_uuid, store)
+
+    secrets_dir = Path.join(System.tmp_dir!(), "cp_mud_bot_cert_secrets_#{:rand.uniform(1_000_000_000)}")
+    File.mkdir_p!(secrets_dir)
+    secrets_name = :"cp_mud_bot_cert_secrets_#{n}"
+    {:ok, secrets_pid} = SecretStore.start_link(data_dir: secrets_dir, name: secrets_name)
+
+    on_exit(fn ->
+      Bot.stop("cert-bot")
+      if Process.alive?(secrets_pid), do: GenServer.stop(secrets_pid)
+      File.rm_rf!(secrets_dir)
+    end)
+
+    %{store: store, root: root_uuid, secrets: secrets_name}
+  end
+
+  test "spawn_session issues a presence-starter cert and threads it into cert_cids", ctx do
+    {:ok, _events} =
+      Bot.send_input("cert-bot", "look", store: ctx.store, root_uuid: ctx.root, secret_store: ctx.secrets)
+
+    pid = :global.whereis_name({Bot, "cert-bot"})
+    assert is_pid(pid)
+    state = :sys.get_state(pid)
+
+    assert [cert_cid] = state.cert_cids
+    assert is_binary(cert_cid)
+
+    assert {:ok, identity_uuid} = Identity.lookup("cert-bot", :bot, ctx.root, ctx.store)
+
+    assert {:ok, cap} = CommitStoreClient.get_capability(ctx.store, cert_cid)
+    assert cap.claim.verbs == [:write]
+    assert cap.claim.scope == {:presence, identity_uuid}
+    assert {audience_uuid, _pub} = cap.audience
+    assert audience_uuid == identity_uuid
+
+    # Issued by the node.
+    assert {:ok, node_identity} = NodeIdentity.identity()
+    assert {issuer_uuid, _} = cap.issuer
+    assert issuer_uuid == node_identity
+  end
+
+  test "re-spawning the same bot name re-issues the SAME cert cid (content-addressed idempotence)", ctx do
+    {:ok, _} =
+      Bot.send_input("cert-bot", "look", store: ctx.store, root_uuid: ctx.root, secret_store: ctx.secrets)
+
+    pid1 = :global.whereis_name({Bot, "cert-bot"})
+    [cid1] = :sys.get_state(pid1).cert_cids
+
+    Bot.stop("cert-bot")
+
+    {:ok, _} =
+      Bot.send_input("cert-bot", "look", store: ctx.store, root_uuid: ctx.root, secret_store: ctx.secrets)
+
+    pid2 = :global.whereis_name({Bot, "cert-bot"})
+    assert pid2 != pid1
+    [cid2] = :sys.get_state(pid2).cert_cids
+
+    assert cid1 == cid2
+  end
+
+  test "on a store with no TrustSideStore companion, cert issuance degrades to [] without crashing the spawn" do
+    # A bare CommitStore (no :trust_side_store companion) — the shape
+    # `bot_test.exs`'s own suite uses. `store_capability/2` raises there;
+    # `Bot.resolve_signing_opts/4`'s cert-issuance step must catch that
+    # and degrade to `cert_cids: []`, exactly like the pre-existing
+    # `register_agent` failure path — never let the spawn itself fail.
+    dir = Path.join(System.tmp_dir!(), "cp_mud_bot_bare_#{:rand.uniform(1_000_000)}")
+    File.mkdir_p!(dir)
+    bare_store = :"cp_mud_bot_bare_store_#{:rand.uniform(1_000_000)}"
+    {:ok, bare_pid} = CommitStore.start_link(data_dir: dir, name: bare_store)
+
+    root_uuid = UUID.uuid4()
+    update = Encoding.encode_update(Schema.new_schema())
+    CommitStore.create_commit(bare_store, root_uuid, update, nil)
+    {:ok, _} = Bootstrap.seed(root_uuid, bare_store)
+
+    case GenServer.whereis(Commonplace.Green.Bursar) do
+      nil -> :ok
+      pid -> GenServer.stop(pid)
+    end
+
+    {:ok, bursar_pid} =
+      Commonplace.Green.Bursar.start_link(root_uuid: root_uuid, store: bare_store, sweep_interval: 60_000)
+
+    {:ok, _events} = Bot.send_input("bare-bot", "look", store: bare_store, root_uuid: root_uuid)
+
+    pid = :global.whereis_name({Bot, "bare-bot"})
+    assert is_pid(pid)
+    assert :sys.get_state(pid).cert_cids == []
+
+    Bot.stop("bare-bot")
+    if Process.alive?(bursar_pid), do: GenServer.stop(bursar_pid)
+    if Process.alive?(bare_pid), do: GenServer.stop(bare_pid)
+    File.rm_rf!(dir)
+  end
+end

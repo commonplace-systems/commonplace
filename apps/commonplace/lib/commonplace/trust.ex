@@ -52,6 +52,12 @@ defmodule Commonplace.Trust do
   alias Commonplace.Crypto.Signing
   alias Commonplace.Store.Commit
 
+  # CX-0a9a (presence-carve, W3): the content-check reconstructs and
+  # value-diffs the target doc, so it reaches for the doc/tree layer.
+  alias Commonplace.Document.ContentType
+  alias Commonplace.Tree.{DocBuilder, Schema}
+  alias Yelixer.{Doc, Encoding}
+
   require Logger
 
   @type verb :: :write | :execute
@@ -123,7 +129,7 @@ defmodule Commonplace.Trust do
          :ok <- author_binding(commit, leaf),
          {:ok, effective} <-
            Commonplace.Trust.VerifyChain.verify_chain(leaf_cid, anchor_keys(cfg), store),
-         :ok <- grants?(effective, verb, scope) do
+         :ok <- grants?(effective, verb, scope, commit, store) do
       :ok
     end
   end
@@ -142,8 +148,151 @@ defmodule Commonplace.Trust do
     end
   end
 
-  defp grants?(%{verbs: verbs, scope: {:docs, docs}}, verb, {:doc, uuid}) do
+  defp grants?(%{verbs: verbs, scope: {:docs, docs}}, verb, {:doc, uuid}, _commit, _store) do
     if verb in verbs and uuid in docs, do: :ok, else: {:error, :capability_insufficient}
+  end
+
+  # CX-0a9a (presence-carve, W3 plumbing): a {:presence, identity_uuid}
+  # capability grants `verb` at a target doc ONLY if the content-check
+  # `presence_carve_ok?/4` (the untrusted-@verb-style live gate,
+  # implemented separately — see its stub below) confirms the write is
+  # this identity's OWN presence entry. `commit` and `store` are threaded
+  # through so that check can reconstruct/inspect the target doc.
+  defp grants?(%{verbs: verbs, scope: {:presence, id}}, verb, {:doc, uuid}, commit, store) do
+    if verb in verbs and presence_carve_ok?(commit, id, uuid, store),
+      do: :ok,
+      else: {:error, :capability_insufficient}
+  end
+
+  # W3 (CX-0a9a) — the presence-carve CONTENT-CHECK. THE SECURITY CORE.
+  #
+  # Authorizes this :write to `target_uuid` IFF it touches ONLY the
+  # writer's OWN presence, where "own" = the presence doc's
+  # `bound_identity` field == `identity_uuid` (the {:presence, id} cert's
+  # subject; `author_binding/2` already proved the commit was signed by
+  # that identity's key). Complete via a VALUE set-diff over the
+  # reconstructed before/after state — the nothing-else firewall, never
+  # sampled. Fails CLOSED on any error (a security gate must never
+  # fault-open), which is why the whole body is wrapped rescue/catch.
+  defp presence_carve_ok?(commit, identity_uuid, target_uuid, store)
+       when is_binary(identity_uuid) and is_binary(target_uuid) do
+    before = reconstruct_before(store, target_uuid)
+
+    with {:ok, after_doc} <- Encoding.apply_update(before_doc(before), commit.update) do
+      case carve_branch(before) do
+        :schema ->
+          schema_carve_ok?(before_doc(before), after_doc, identity_uuid, store)
+
+        :presence ->
+          presence_doc_carve_ok?(before_doc(before), after_doc, identity_uuid)
+
+        # Fresh doc (no prior commits). The only legitimate fresh target
+        # under a presence cert is a presence-DOC create; a fresh schema
+        # (carries an "entries" type) is not something a presence cert may
+        # author, so refuse it.
+        :none ->
+          if Doc.has_type?(after_doc, "entries"),
+            do: false,
+            else: presence_doc_carve_ok?(Doc.new(), after_doc, identity_uuid)
+      end
+    else
+      _ -> false
+    end
+  rescue
+    _ -> false
+  catch
+    _, _ -> false
+  end
+
+  defp presence_carve_ok?(_commit, _identity_uuid, _target_uuid, _store), do: false
+
+  defp reconstruct_before(store, uuid) do
+    case DocBuilder.reconstruct_doc(store, uuid) do
+      {:ok, doc} -> {:ok, doc}
+      _ -> :none
+    end
+  end
+
+  defp before_doc({:ok, doc}), do: doc
+  defp before_doc(:none), do: Doc.new()
+
+  # Discriminate on the ESTABLISHED (before) type, never the after-doc: a
+  # presence-cert write to an existing presence doc stays a presence write
+  # even if the update smuggles in an "entries" type (which would
+  # otherwise flip it to the schema branch and skip the bound_identity
+  # check — a real bypass, closed here). A fresh doc has no established
+  # type → :none.
+  defp carve_branch(:none), do: :none
+  defp carve_branch({:ok, doc}), do: if(Doc.has_type?(doc, "entries"), do: :schema, else: :presence)
+
+  # --- schema branch: target is a room-dir schema (add/remove of a presence entry) ---
+  # VALUE-diff entries; EVERY changed key must be a pure add XOR remove of
+  # a presence-honorific entry whose presence doc is bound to
+  # identity_uuid. A modify (re-point / type-change of an existing entry)
+  # is never a valid presence op → refuse the whole write. A paired move
+  # is two separate commits (source-remove, dest-add), each touching one
+  # dir's own presence entry only — each passes individually.
+  defp schema_carve_ok?(before_doc, after_doc, identity_uuid, store) do
+    b = entry_map(before_doc)
+    a = entry_map(after_doc)
+
+    b
+    |> Map.keys()
+    |> Enum.concat(Map.keys(a))
+    |> Enum.uniq()
+    |> Enum.all?(fn name ->
+      case {Map.get(b, name), Map.get(a, name)} do
+        {same, same} -> true
+        {nil, {_type, node_id}} -> presence_entry_owned?(name, node_id, identity_uuid, store)
+        {{_type, node_id}, nil} -> presence_entry_owned?(name, node_id, identity_uuid, store)
+        {_from, _to} -> false
+      end
+    end)
+  end
+
+  defp entry_map(doc) do
+    doc
+    |> Schema.list_entries()
+    |> Map.new(fn %Schema.Entry{name: n, type: t, node_id: id} -> {n, {t, id}} end)
+  end
+
+  # The changed schema key must be a presence file (honorific extension —
+  # so a room/object entry can't slip in) AND the doc it points to must be
+  # bound to identity_uuid. bound_identity is THE cryptographic anchor;
+  # the honorific check is belt-and-braces defense-in-depth.
+  defp presence_entry_owned?(name, node_id, identity_uuid, store) do
+    presence_honorific?(name) and doc_bound_to?(node_id, identity_uuid, store)
+  end
+
+  defp presence_honorific?(name) do
+    match?({:ok, _root, _type}, Commonplace.Presence.parse_honorific(name))
+  end
+
+  defp doc_bound_to?(node_id, identity_uuid, store) do
+    case DocBuilder.reconstruct_doc(store, node_id) do
+      {:ok, doc} -> presence_field(doc, "bound_identity") == identity_uuid
+      _ -> false
+    end
+  end
+
+  # --- presence branch: target is the presence doc itself ---
+  # after.bound_identity == signer AND before.bound_identity ∈ {nil,
+  # signer}: blocks both binding-to-another-identity (create) and
+  # rebinding an existing presence doc to hijack it (Sharpening 2's
+  # immutability). Other fields (name/status/heartbeat/…) are advisory
+  # (D2) and unrestricted.
+  defp presence_doc_carve_ok?(before_doc, after_doc, identity_uuid) do
+    after_bid = presence_field(after_doc, "bound_identity")
+    before_bid = presence_field(before_doc, "bound_identity")
+
+    after_bid == identity_uuid and before_bid in [nil, identity_uuid]
+  end
+
+  defp presence_field(doc, key) do
+    case ContentType.get_content(doc) do
+      %{} = content -> Map.get(content, key)
+      _ -> nil
+    end
   end
 
   # The locally-pinned trusted-identity keys ARE the cert-chain root

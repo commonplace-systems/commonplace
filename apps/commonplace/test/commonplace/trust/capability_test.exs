@@ -224,6 +224,52 @@ defmodule Commonplace.Trust.CapabilityTest do
     end
   end
 
+  describe "CX-0a9a presence-carve (W1): {:presence, identity_uuid} scope" do
+    test "new/4 accepts and normalizes a presence scope (identity uuid unchanged, no list-sort)", ctx do
+      claim = %{verbs: [:write], scope: {:presence, "identity-123"}, caveats: %{}}
+      cap = Capability.new(ctx.issuer, ctx.audience, claim, nil)
+      assert cap.claim.scope == {:presence, "identity-123"}
+      assert is_binary(cap.id)
+    end
+
+    test "same {:presence, id} claim mints the same CID across independent mints", ctx do
+      claim = %{verbs: [:write], scope: {:presence, "identity-123"}, caveats: %{}}
+      c1 = Capability.new(ctx.issuer, ctx.audience, claim, nil)
+      c2 = Capability.new(ctx.issuer, ctx.audience, claim, nil)
+      assert c1.id == c2.id
+    end
+
+    test "a different presence identity_uuid changes the CID", ctx do
+      claim_a = %{verbs: [:write], scope: {:presence, "identity-a"}, caveats: %{}}
+      claim_b = %{verbs: [:write], scope: {:presence, "identity-b"}, caveats: %{}}
+      c1 = Capability.new(ctx.issuer, ctx.audience, claim_a, nil)
+      c2 = Capability.new(ctx.issuer, ctx.audience, claim_b, nil)
+      refute c1.id == c2.id
+    end
+
+    test "issue/5 mints+signs a root presence-scoped cert with no parent", ctx do
+      {audience, _} = ident_helper("bot-id")
+      claim = %{verbs: [:write], scope: {:presence, "identity-123"}, caveats: %{}}
+      assert {:ok, cap} = Capability.issue(ctx.issuer_ctx, audience, claim, nil)
+      assert cap.claim.scope == {:presence, "identity-123"}
+      assert :ok = Capability.verify_sig(cap)
+    end
+
+    test "issue/5 does NOT refuse write-without-execute on a presence scope (no code-doc risk)", ctx do
+      {audience, _} = ident_helper("bot-id")
+      claim = %{verbs: [:write], scope: {:presence, "identity-123"}, caveats: %{}}
+      # No :store passed at all — if check_no_code_doc_in_scope tried to
+      # treat this as {:docs, _}, it would crash on the pattern match
+      # rather than just failing the code-doc check.
+      assert {:ok, _cap} = Capability.issue(ctx.issuer_ctx, audience, claim, nil)
+    end
+
+    defp ident_helper(id) do
+      {pub, priv} = Signing.generate_keypair()
+      {{id, pub}, %SigningContext{identity_uuid: id, private_key: priv, public_key: pub}}
+    end
+  end
+
   defp seed_text(store, uuid, name, body) do
     doc = Yelixer.Doc.new() |> Commonplace.Document.ContentType.create(:text, name)
     doc = Commonplace.Document.ContentType.insert_text(doc, 0, body)

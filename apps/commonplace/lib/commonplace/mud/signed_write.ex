@@ -29,6 +29,11 @@ defmodule Commonplace.MUD.SignedWrite do
   (mirrors the "not worth building a scope index" call `Sections`
   already made for auto-extend).
 
+  CX-0a9a (presence-carve): if no `{:docs}` cert covers the target, a
+  `{:presence, _}` cert the session holds is attached opportunistically
+  as a second pass (see `find_presence_cert/2`) — `{:docs}` certs are
+  tried FIRST so a zone-edit still routes to the zone-cert.
+
   No cert covering the target uuid → the commit still goes out signed
   (`opts[:signing_context]` alone) but with no `capability_proof` — a
   legitimate outcome, not an error: it hits `Trust.authorized?/5`'s
@@ -123,6 +128,15 @@ defmodule Commonplace.MUD.SignedWrite do
   defp find_cert(_target_uuid, [], _store), do: nil
 
   defp find_cert(target_uuid, cert_cids, store) when is_binary(target_uuid) do
+    case find_docs_cert(target_uuid, cert_cids, store) do
+      nil -> find_presence_cert(cert_cids, store)
+      cid -> cid
+    end
+  end
+
+  defp find_cert(_target_uuid, _cert_cids, _store), do: nil
+
+  defp find_docs_cert(target_uuid, cert_cids, store) do
     Enum.find_value(cert_cids, fn cid ->
       case CommitStoreClient.get_capability(store, cid) do
         {:ok, %{claim: %{scope: {:docs, uuids}}}} ->
@@ -134,5 +148,22 @@ defmodule Commonplace.MUD.SignedWrite do
     end)
   end
 
-  defp find_cert(_target_uuid, _cert_cids, _store), do: nil
+  # CX-0a9a (presence-carve, W5): no {:docs} cert covers the target —
+  # opportunistically attach a held {:presence, _} cert instead. This is
+  # safe WITHOUT checking the target here: the presence cert is
+  # CONTENT-GATED at verify time (`Commonplace.Trust.grants?/5`'s
+  # presence clause, backed by the `presence_carve_ok?/4` check) — if
+  # the write isn't actually this identity's own presence entry, the
+  # gate refuses it there. Attaching it speculatively never over-grants;
+  # it only gives a legitimate own-presence write somewhere to prove
+  # its authority. {:docs} certs are tried FIRST (see `find_cert/3`) so
+  # a zone-edit still routes to the zone-cert, never to this fallback.
+  defp find_presence_cert(cert_cids, store) do
+    Enum.find_value(cert_cids, fn cid ->
+      case CommitStoreClient.get_capability(store, cid) do
+        {:ok, %{claim: %{scope: {:presence, _id}}}} -> cid
+        _ -> nil
+      end
+    end)
+  end
 end

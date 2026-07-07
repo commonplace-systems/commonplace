@@ -587,12 +587,10 @@ defmodule Commonplace.MUD.PlayerSession do
   # through every bootstrap write below (CX-lg06), same shape
   # `Commonplace.MUD.Verbs`' own `write_opts/1` builds from a verb ctx.
   defp bootstrap_player(name, root_uuid, write_opts) do
-    store = Keyword.fetch!(write_opts, :store)
-
     with {:ok, players_dir_uuid} <- ensure_players_dir(root_uuid, write_opts),
          {:ok, %{player_dir_uuid: pdir, inventory_uuid: inv}} <-
            ensure_player_dir(name, players_dir_uuid, write_opts),
-         {:ok, room_uuid, presence_uuid} <- ensure_player_in_world(name, root_uuid, store) do
+         {:ok, room_uuid, presence_uuid} <- ensure_player_in_world(name, root_uuid, write_opts) do
       {:ok,
        %{
          player_dir_uuid: pdir,
@@ -650,14 +648,15 @@ defmodule Commonplace.MUD.PlayerSession do
     end
   end
 
-  # Presence creation (`Presence.create/4`) is NOT threaded with signing
-  # opts in this build — it's a core module shared with chat/other
-  # surfaces, out of the MUD composition boundary this bead touches, and
-  # it fires at most once ever per player (idempotent thereafter via
-  # `find_presence/3` below). Flagged as a follow-up, not required for
-  # the acceptance path (an already-registered player's repeat logins
-  # never call it again).
-  defp ensure_player_in_world(name, root_uuid, store) do
+  # CX-0a9a (presence-carve): `Presence.create/5` now accepts signing
+  # opts (`:signing_context` / `:cert_cids` / `:signer_id`) — threaded
+  # through here from the session's bootstrap-wide `write_opts` exactly
+  # like every other bootstrap write (CX-lg06). Still fires at most once
+  # ever per player (idempotent thereafter via `find_presence/3` below);
+  # a missing/nil `:signing_context` reproduces the prior unsigned
+  # behavior exactly.
+  defp ensure_player_in_world(name, root_uuid, write_opts) do
+    store = Keyword.fetch!(write_opts, :store)
     presence_filename = Presence.filename(name, :usr)
 
     case find_presence(root_uuid, presence_filename, store) do
@@ -666,7 +665,7 @@ defmodule Commonplace.MUD.PlayerSession do
 
       :not_found ->
         with {:ok, start_room_uuid} <- ensure_start_room(root_uuid, store),
-             {:ok, presence_uuid} <- Presence.create(name, :usr, start_room_uuid, store) do
+             {:ok, presence_uuid} <- Presence.create(name, :usr, start_room_uuid, store, write_opts) do
           {:ok, start_room_uuid, presence_uuid}
         end
     end

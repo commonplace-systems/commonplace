@@ -354,6 +354,90 @@ defmodule Commonplace.PresenceTest do
     end
   end
 
+  describe "CX-0a9a presence-carve (W6): signed create/heartbeat/remove threading" do
+    alias Commonplace.Crypto.{Signing, SigningContext}
+
+    test "create/5 without opts stays unsigned and omits bound_identity (back-compat)", %{
+      store: store,
+      root: root
+    } do
+      {:ok, uuid} = Presence.create("legacy", :bot, root, store)
+
+      {:ok, commit} = CommitStore.latest_commit(store, uuid)
+      assert commit.signature == nil
+
+      content = Presence.read(uuid, store)
+      refute Map.has_key?(content, "bound_identity")
+    end
+
+    test "create/5 with a signing_context + signer_id signs both commits and sets bound_identity",
+         %{store: store, root: root} do
+      {pub, priv} = Signing.generate_keypair()
+      ctx = %SigningContext{identity_uuid: "bot-identity", private_key: priv, public_key: pub}
+      signer_id = Signing.signer_id(ctx.identity_uuid, ctx.public_key)
+
+      {:ok, uuid} =
+        Presence.create("signed-bot", :bot, root, store,
+          signing_context: ctx,
+          signer_id: signer_id
+        )
+
+      # The presence-doc commit is signed.
+      {:ok, doc_commit} = CommitStore.latest_commit(store, uuid)
+      assert doc_commit.signer_id == signer_id
+      assert doc_commit.signature != nil
+
+      # The parent-schema entry commit is ALSO signed.
+      {:ok, dir_commit} = CommitStore.latest_commit(store, root)
+      assert dir_commit.signer_id == signer_id
+
+      # bound_identity landed on the presence doc — and it is the BARE
+      # identity uuid (the {:presence, id} cert subject / W3's compare
+      # target), NOT the composite signer_id.
+      content = Presence.read(uuid, store)
+      assert content["bound_identity"] == ctx.identity_uuid
+      refute content["bound_identity"] == signer_id
+    end
+
+    test "create/5 binds bound_identity to the signing_context identity, independent of signer_id",
+         %{store: store, root: root} do
+      {pub, priv} = Signing.generate_keypair()
+      ctx = %SigningContext{identity_uuid: "bot-identity", private_key: priv, public_key: pub}
+
+      # No :signer_id supplied — bound_identity must STILL be set, from
+      # the signing context's bare identity uuid (W3's compare target).
+      {:ok, uuid} = Presence.create("signed-no-bind", :bot, root, store, signing_context: ctx)
+
+      {:ok, doc_commit} = CommitStore.latest_commit(store, uuid)
+      assert doc_commit.signature != nil
+
+      content = Presence.read(uuid, store)
+      assert content["bound_identity"] == "bot-identity"
+    end
+
+    test "heartbeat/3 without opts stays unsigned (back-compat)", %{store: store, root: root} do
+      {:ok, uuid} = Presence.create("hb-legacy", :bot, root, store)
+      commit = Presence.heartbeat(uuid, store)
+      assert commit.signature == nil
+    end
+
+    test "heartbeat/3 with a signing_context signs the commit", %{store: store, root: root} do
+      {:ok, uuid} = Presence.create("hb-signed", :bot, root, store)
+
+      {pub, priv} = Signing.generate_keypair()
+      ctx = %SigningContext{identity_uuid: "bot-identity", private_key: priv, public_key: pub}
+
+      commit = Presence.heartbeat(uuid, store, signing_context: ctx)
+      assert commit.signature != nil
+    end
+
+    test "remove/4 without opts stays unsigned (back-compat)", %{store: store, root: root} do
+      {:ok, _uuid} = Presence.create("rm-legacy", :bot, root, store)
+      commit = Presence.remove("rm-legacy.bot", root, store)
+      assert commit.signature == nil
+    end
+  end
+
   defp load_schema(uuid, store) do
     case CommitStore.latest_commit(store, uuid) do
       {:ok, commit} ->

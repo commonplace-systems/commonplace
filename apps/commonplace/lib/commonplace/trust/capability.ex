@@ -49,9 +49,10 @@ defmodule Commonplace.Trust.Capability do
   alias Commonplace.Trust.Revocation
 
   @type keyed_identity :: {String.t(), binary()}
+  @type scope :: {:docs, [String.t()]} | {:presence, String.t()}
   @type claim :: %{
           verbs: [atom()],
-          scope: {:docs, [String.t()]},
+          scope: scope(),
           caveats: %{optional(:not_before) => DateTime.t() | nil, optional(:not_after) => DateTime.t() | nil}
         }
 
@@ -201,6 +202,12 @@ defmodule Commonplace.Trust.Capability do
     end
   end
 
+  # CX-0a9a (presence-carve, W1): a {:presence, id} scope contains no doc
+  # UUIDs at all — there is nothing for the code-doc heuristic to sniff,
+  # so this is a pure no-op pass rather than a special case of the
+  # {:docs} clause above.
+  defp check_no_code_doc_in_scope({:presence, _id}, _opts), do: :ok
+
   defp check_attenuation(_claim, nil), do: :ok
 
   defp check_attenuation(claim, %__MODULE__{claim: parent_claim}) do
@@ -219,11 +226,25 @@ defmodule Commonplace.Trust.Capability do
 
   defp normalize_scope({:docs, uuids}), do: {:docs, uuids |> Enum.uniq() |> Enum.sort()}
 
+  # CX-0a9a (presence-carve, W1): a {:presence, identity_uuid} scope is a
+  # single opaque identity, not a list — no sort/de-dup applies.
+  defp normalize_scope({:presence, identity_uuid} = scope) when is_binary(identity_uuid), do: scope
+
   defp normalize_caveats(caveats) do
     %{not_before: Map.get(caveats, :not_before), not_after: Map.get(caveats, :not_after)}
   end
 
   defp scope_set({:docs, uuids}), do: MapSet.new(uuids)
+
+  # CX-0a9a (presence-carve, W1): presence scopes never go through
+  # {:docs} subset/intersection math — a presence cert is leaf-only in
+  # M1 (admin-root -> bot direct, single link, never delegated further),
+  # so `attenuates?`'s scope_ok check is not the mechanism that gates it
+  # (the identity-match itself is W3's job, at verify time). An empty set
+  # is a safe placeholder: it never widens a {:docs} intersection because
+  # a presence scope is never mixed with a {:docs} scope in the same
+  # chain (see VerifyChain.effective/1's type-homogeneity requirement).
+  defp scope_set({:presence, _id}), do: MapSet.new([])
 
   # The child window must sit inside the parent window: child can only
   # start later (not_before ≥ parent) and end earlier (not_after ≤ parent).
@@ -263,7 +284,6 @@ defmodule Commonplace.Trust.Capability do
   # Claim canonicalized to sorted lists (already normalized at new/4, but
   # re-applied so verify_id is robust against a hand-built struct).
   defp canonical_claim(claim) do
-    {:docs, uuids} = normalize_scope(claim.scope)
-    {Enum.sort(Enum.uniq(claim.verbs)), {:docs, uuids}, normalize_caveats(claim.caveats)}
+    {Enum.sort(Enum.uniq(claim.verbs)), normalize_scope(claim.scope), normalize_caveats(claim.caveats)}
   end
 end

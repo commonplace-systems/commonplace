@@ -66,6 +66,7 @@ defmodule Commonplace.MUD.Bot do
   alias Commonplace.MUD.{Bootstrap, PlayerSession}
   alias Commonplace.Presence.Identity
   alias Commonplace.Store.CommitStoreClient
+  alias Commonplace.Trust.Capability
 
   @type event :: %{optional(atom) => any}
 
@@ -190,17 +191,59 @@ defmodule Commonplace.MUD.Bot do
   # thread it through the CX-lg06 seam. `[]` (unsigned, legacy
   # behavior) on any resolution failure — a bot that can't be signed
   # is still better than no bot at all.
+  #
+  # CX-0a9a (presence-carve, W7): once the identity is resolved, also
+  # auto-issue it a presence-starter capability cert — `{:presence,
+  # identity_uuid}`, `[:write]` — the "starter cert" that lets a signed
+  # bot move/act under strict+enforce before it owns any section of its
+  # own (see `Commonplace.MUD.SignedWrite`'s W5 opportunistic-attach and
+  # `Commonplace.Trust`'s W3 content-gate). Threaded into the session
+  # start opts as `cert_cids: [cid]`. Degrades gracefully (no cert →
+  # `[]`, matching the existing register_agent failure path) — never
+  # blocks a bot from spawning.
   defp resolve_signing_opts(name, root, store, opts) do
     secret_store = Keyword.get(opts, :secret_store, Commonplace.Store.SecretStore)
     registrar_opts = [secret_store: secret_store] ++ registrar_signing_opts(opts)
 
     case Identity.register_agent(name, root, store, registrar_opts) do
-      {:ok, identity_uuid, _pub} ->
-        [player_identity_uuid: identity_uuid, secret_store: secret_store]
+      {:ok, identity_uuid, pub} ->
+        cert_cids = issue_presence_starter_cert(identity_uuid, pub, store)
+        [player_identity_uuid: identity_uuid, secret_store: secret_store, cert_cids: cert_cids]
 
       {:error, _reason} ->
         []
     end
+  end
+
+  # Mints+signs+persists the presence-starter cert. `Capability.issue/5`
+  # + `CommitStoreClient.store_capability/2` are both content-addressed /
+  # idempotent (same issuer/audience/claim/proof → same signed bytes →
+  # same CID → re-storing is a no-op), so this can safely re-run on
+  # every spawn without minting a fresh cert each time — no
+  # get-before-issue guard needed. The issuer is the NODE identity (no
+  # human operator in an MCP session — the same sanctioned D9 headless
+  # branch `registrar_signing_opts/1` above already uses).
+  #
+  # Wrapped in try/catch: `store_capability/2` raises (a caught `:exit`)
+  # if `store` is a bare `CommitStore` with no `TrustSideStore` companion
+  # (see `CommitStore.trust_side_store_name/1`'s moduledoc) — a shape
+  # plenty of existing tests/embedders use when they never otherwise
+  # touch capability certs. Degrading to `[]` there matches the
+  # `register_agent` failure path exactly: a bot with no starter cert is
+  # still better than a bot that can't spawn at all.
+  defp issue_presence_starter_cert(identity_uuid, pub, store) do
+    with {:ok, node_ctx} <- NodeIdentity.signing_context(),
+         claim <- %{verbs: [:write], scope: {:presence, identity_uuid}, caveats: %{}},
+         {:ok, cap} <- Capability.issue(node_ctx, {identity_uuid, pub}, claim, nil, store: store),
+         :ok <- CommitStoreClient.store_capability(store, cap) do
+      [cap.id]
+    else
+      _ -> []
+    end
+  rescue
+    _ -> []
+  catch
+    :exit, _ -> []
   end
 
   # The principal that signs the bot's own registration commits (D9).

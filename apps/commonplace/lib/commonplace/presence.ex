@@ -43,6 +43,7 @@ defmodule Commonplace.Presence do
 
   alias Commonplace.Tree.Schema
   alias Commonplace.Document.ContentType
+  alias Commonplace.MUD.SignedWrite
   alias Commonplace.Store.CommitStoreClient
 
   @honorifics %{
@@ -81,8 +82,27 @@ defmodule Commonplace.Presence do
     "#{name}.#{Map.fetch!(@type_to_ext, type)}"
   end
 
-  @doc "Create a presence document and add it to the parent schema."
-  def create(name, type, dir_uuid, store \\ CommitStoreClient) do
+  @doc """
+  Create a presence document and add it to the parent schema.
+
+  `opts` (CX-0a9a, presence-carve plumbing — additive, defaults reproduce
+  today's unsigned behavior EXACTLY):
+
+    * `:signing_context` — a `%Commonplace.Crypto.SigningContext{}` or
+      `nil` (default). `nil` means both commits this function produces
+      (the presence-doc commit and the parent-schema entry commit) stay
+      unsigned, exactly as before.
+    * `:cert_cids` — capability CIDs the writer holds (default `[]`),
+      consulted by `Commonplace.MUD.SignedWrite.opts_for/2` to attach a
+      `capability_proof` to each commit.
+    * `:signer_id` — the writer's identity uuid. When present, ALSO
+      written into the presence doc as `"bound_identity"` — the field
+      the presence-carve content-check (W3) identity-matches against.
+      Absent (the default / anonymous path) → the field is omitted
+      entirely, not set to nil, preserving back-compat for every reader
+      that doesn't expect the key.
+  """
+  def create(name, type, dir_uuid, store \\ CommitStoreClient, opts \\ []) do
     fname = filename(name, type)
 
     # Check for collision
@@ -101,14 +121,33 @@ defmodule Commonplace.Presence do
     doc = ContentType.set_key(doc, "started_at", now)
     doc = ContentType.set_key(doc, "heartbeat", now)
 
+    # CX-0a9a (W4): bind the presence doc to the writer's BARE identity
+    # uuid (the stable cryptographic principal), taken from the signing
+    # context — NOT the composite `signer_id` (which folds in a key
+    # fingerprint). The presence-carve's `{:presence, id}` cert scope and
+    # W3 content-check both compare against this bare identity uuid, so
+    # binding to the composite signer_id would make every own-presence
+    # write fail the carve. Omitted entirely on the anonymous/unsigned
+    # path (no signing context), preserving back-compat.
+    doc =
+      case Keyword.get(opts, :signing_context) do
+        %{identity_uuid: bound_id} when is_binary(bound_id) ->
+          ContentType.set_key(doc, "bound_identity", bound_id)
+
+        _ ->
+          doc
+      end
+
     update = Yelixer.Encoding.encode_update(doc)
-    CommitStoreClient.create_commit(store, uuid, update, nil)
+    {metadata, commit_opts} = SignedWrite.opts_for(uuid, Keyword.put(opts, :store, store))
+    CommitStoreClient.create_commit(store, uuid, update, nil, metadata, commit_opts)
 
     # Add to parent schema
     dir_doc = load_schema(dir_uuid, store)
     dir_doc = Schema.add_file(dir_doc, fname, uuid)
     update = Yelixer.Encoding.encode_update(dir_doc)
-    CommitStoreClient.create_chained_commit(store, dir_uuid, update)
+    {dir_metadata, dir_commit_opts} = SignedWrite.opts_for(dir_uuid, Keyword.put(opts, :store, store))
+    CommitStoreClient.create_chained_commit(store, dir_uuid, update, dir_metadata, dir_commit_opts)
 
     {:ok, uuid}
   end
@@ -134,13 +173,19 @@ defmodule Commonplace.Presence do
     CommitStoreClient.create_chained_commit(store, uuid, update)
   end
 
-  @doc "Update the heartbeat timestamp."
-  def heartbeat(uuid, store \\ CommitStoreClient) do
+  @doc """
+  Update the heartbeat timestamp.
+
+  `opts` — same `:signing_context` / `:cert_cids` shape as `create/5`
+  (CX-0a9a plumbing); default `[]` reproduces today's unsigned behavior.
+  """
+  def heartbeat(uuid, store \\ CommitStoreClient, opts \\ []) do
     doc = load_doc(uuid, store)
     now = DateTime.utc_now() |> DateTime.to_iso8601()
     doc = ContentType.set_key(doc, "heartbeat", now)
     update = Yelixer.Encoding.encode_update(doc)
-    CommitStoreClient.create_chained_commit(store, uuid, update)
+    {metadata, commit_opts} = SignedWrite.opts_for(uuid, Keyword.put(opts, :store, store))
+    CommitStoreClient.create_chained_commit(store, uuid, update, metadata, commit_opts)
   end
 
   @doc "Discover actors by type in a schema document."
@@ -157,12 +202,18 @@ defmodule Commonplace.Presence do
     end)
   end
 
-  @doc "Remove a presence entry from the parent schema."
-  def remove(fname, dir_uuid, store \\ CommitStoreClient) do
+  @doc """
+  Remove a presence entry from the parent schema.
+
+  `opts` — same `:signing_context` / `:cert_cids` shape as `create/5`
+  (CX-0a9a plumbing); default `[]` reproduces today's unsigned behavior.
+  """
+  def remove(fname, dir_uuid, store \\ CommitStoreClient, opts \\ []) do
     dir_doc = load_schema(dir_uuid, store)
     dir_doc = Schema.remove_entry(dir_doc, fname)
     update = Yelixer.Encoding.encode_update(dir_doc)
-    CommitStoreClient.create_chained_commit(store, dir_uuid, update)
+    {metadata, commit_opts} = SignedWrite.opts_for(dir_uuid, Keyword.put(opts, :store, store))
+    CommitStoreClient.create_chained_commit(store, dir_uuid, update, metadata, commit_opts)
   end
 
   defp resolve_collision(dir_doc, fname, name, type) do
