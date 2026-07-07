@@ -538,7 +538,11 @@ defmodule Commonplace.MUD.Verbs do
 
     case resolve_container(container_phrase, [ctx.inventory_uuid, ctx.current_room_uuid], ctx) do
       {:ok, container_entry, %Object{} = container_obj} ->
-        {:reply, render_container_contents(container_entry.node_id, container_obj.name, ctx)}
+        if container_locked?(container_entry.node_id, ctx.store) do
+          {:error, "The #{container_obj.name} is locked."}
+        else
+          {:reply, render_container_contents(container_entry.node_id, container_obj.name, ctx)}
+        end
 
       {:error, {:not_a_container, name}} ->
         {:error, "You can't look inside the #{name}."}
@@ -581,6 +585,34 @@ defmodule Commonplace.MUD.Verbs do
       :error ->
         {:error, :not_found}
     end
+  end
+
+  # CX-cj3t.8 (safe half) — a container is LOCKED iff its freeform state
+  # submap has state["locked"] == true (composes with put_state: a key-verb
+  # flips it via put_state(world, "locked", false)). Strict true; any other
+  # value = unlocked (fail-open — a gameplay gate, not a security boundary;
+  # the real gate is write-access, which a non-owner lacks). No new Facade
+  # primitive, no schema change.
+  #
+  # HONESTY (plan #6009): a locked container "hides" its contents ONLY
+  # in-game (the `look in` command refuses). This is NOT confidentiality —
+  # the container's dir/contents sync as CRDT data, so a peer syncing that
+  # subtree reads the contents from the raw substrate regardless of the
+  # lock. Gameplay gate, not secrecy; do NOT build hidden-info mechanics on
+  # it. And "a key = a granted verb that put_states locked=false" works for
+  # the OWNER + co-builders granted chest-write (put_state is
+  # write_guarded([chest]) = intersection), NOT an arbitrary VISITOR —
+  # visitor-usable keys are the deferred setuid / before_get-hook tiers
+  # (CX-spyc / the high-trust hook bead).
+  defp container_locked?(container_uuid, store) do
+    case World.get_meta_map(container_uuid, Schemas.object_filename(), store) do
+      {:ok, %{"state" => %{"locked" => true}}} -> true
+      _ -> false
+    end
+  end
+
+  defp ensure_unlocked(container_uuid, name, store) do
+    if container_locked?(container_uuid, store), do: {:error, {:locked, name}}, else: :ok
   end
 
   defp render_room(ctx) do
@@ -667,6 +699,7 @@ defmodule Commonplace.MUD.Verbs do
 
     with {:ok, container_entry, %Object{} = container_obj} <-
            resolve_container(container_phrase, [ctx.current_room_uuid, ctx.inventory_uuid], ctx),
+         :ok <- ensure_unlocked(container_entry.node_id, container_obj.name, ctx.store),
          {:ok, entry, _phrase, _remainder} <-
            greedy_match_entry([container_entry.node_id], item_words, ctx.store),
          {:ok, %Object{} = obj} <- Schemas.load_object(entry.node_id, ctx.store),
@@ -682,6 +715,7 @@ defmodule Commonplace.MUD.Verbs do
       {:reply, "You get #{obj.name} from #{container_obj.name}."}
     else
       {:error, {:not_a_container, name}} -> {:error, "You can't get things from the #{name}."}
+      {:error, {:locked, name}} -> {:error, "The #{name} is locked."}
       {:error, :not_found} -> {:error, "You don't see \"#{container_phrase}\" here."}
       :not_found -> {:error, "You don't see \"#{item_phrase_label}\" in #{container_phrase}."}
       {:error, :gone} -> {:error, "It slipped from your grasp."}
@@ -884,6 +918,7 @@ defmodule Commonplace.MUD.Verbs do
          {:ok, %Object{} = obj} <- Schemas.load_object(item_entry.node_id, ctx.store),
          {:ok, container_entry, %Object{} = container_obj} <-
            resolve_container(container_phrase, [ctx.current_room_uuid, ctx.inventory_uuid], ctx),
+         :ok <- ensure_unlocked(container_entry.node_id, container_obj.name, ctx.store),
          move_opts <-
            Keyword.put(write_opts(ctx), :precheck, fn ->
              cycle_guard(item_entry.node_id, container_entry.node_id, ctx.store)
@@ -901,6 +936,7 @@ defmodule Commonplace.MUD.Verbs do
     else
       :not_found -> {:error, "You don't see \"#{item_phrase_label}\" here."}
       {:error, {:not_a_container, name}} -> {:error, "You can't put things in the #{name}."}
+      {:error, {:locked, name}} -> {:error, "The #{name} is locked."}
       {:error, :not_found} -> {:error, "You don't see \"#{container_phrase}\" here."}
       {:error, :container_cycle} -> {:error, "You can't put #{item_phrase_label} inside itself."}
       {:error, :collision} -> {:error, "There's already one of those in there."}

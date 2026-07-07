@@ -344,4 +344,143 @@ defmodule Commonplace.MUD.OutputTest do
     PlayerSession.stop(alice)
     PlayerSession.stop(bob)
   end
+
+  # CX-cj3t.8 (safe half) — mechanical locks: a container is LOCKED iff
+  # meta["state"]["locked"] == true, the SAME submap Facade.put_state/3
+  # writes. A locked container refuses get-from/put-in/look-in with a
+  # clear message; a safe verb calling put_state(world, "locked", false)
+  # is a "key" that unlocks it (the composition the design is built on).
+  describe "CX-cj3t.8: mechanical locks (safe half)" do
+    defp box_dir(ctx) do
+      {:ok, schema} = Schemas.load_dir_schema(clearing_uuid(ctx), ctx.store)
+      {:ok, entry} = Schema.get_entry(schema, "box.obj")
+      entry.node_id
+    end
+
+    defp lock_box(ctx, locked?) do
+      dir = box_dir(ctx)
+
+      :ok =
+        VerbSource.save_safe_verb(
+          dir,
+          "setlock",
+          ~s|Commonplace.MUD.World.Facade.put_state(world, "locked", #{locked?})|,
+          [dir],
+          ctx.store
+        )
+
+      dir
+    end
+
+    test "locked container refuses get-from, put-in, and look-in", ctx do
+      alice = start_player("alice", ctx)
+      drain("alice")
+      send_input(alice, "east")
+      drain("alice")
+
+      send_input(alice, "@create container box")
+      drain("alice")
+      send_input(alice, "@create object coin")
+      drain("alice")
+      send_input(alice, "put coin in box")
+      drain("alice")
+
+      lock_box(ctx, true)
+      send_input(alice, "setlock box")
+      drain("alice")
+
+      send_input(alice, "get coin from box")
+      get_out = drain("alice") |> Enum.join("\n")
+      assert get_out =~ "is locked"
+
+      send_input(alice, "@create object key")
+      drain("alice")
+      send_input(alice, "put key in box")
+      put_out = drain("alice") |> Enum.join("\n")
+      assert put_out =~ "is locked"
+
+      send_input(alice, "look in box")
+      look_out = drain("alice") |> Enum.join("\n")
+      assert look_out =~ "is locked"
+      refute look_out =~ "contains"
+
+      PlayerSession.stop(alice)
+    end
+
+    test "a safe verb calling put_state(world, \"locked\", false) unlocks the container (the key composition)",
+         ctx do
+      alice = start_player("alice", ctx)
+      drain("alice")
+      send_input(alice, "east")
+      drain("alice")
+
+      send_input(alice, "@create container box")
+      drain("alice")
+      send_input(alice, "@create object coin")
+      drain("alice")
+      send_input(alice, "put coin in box")
+      drain("alice")
+
+      dir = lock_box(ctx, true)
+      send_input(alice, "setlock box")
+      drain("alice")
+
+      send_input(alice, "get coin from box")
+      locked_out = drain("alice") |> Enum.join("\n")
+      assert locked_out =~ "is locked"
+
+      # the "key": a safe verb that calls put_state(world, "locked", false)
+      :ok =
+        VerbSource.save_safe_verb(
+          dir,
+          "unlock",
+          ~s|Commonplace.MUD.World.Facade.put_state(world, "locked", false)|,
+          [dir],
+          ctx.store
+        )
+
+      send_input(alice, "unlock box")
+      drain("alice")
+
+      send_input(alice, "get coin from box")
+      unlocked_out = drain("alice") |> Enum.join("\n")
+      assert unlocked_out =~ "You get coin from box."
+
+      send_input(alice, "put coin in box")
+      put_out = drain("alice") |> Enum.join("\n")
+      assert put_out =~ "You put coin in box."
+
+      send_input(alice, "look in box")
+      look_out = drain("alice") |> Enum.join("\n")
+      assert look_out =~ "contains: coin"
+
+      PlayerSession.stop(alice)
+    end
+
+    test "a never-locked container behaves exactly as before (regression)", ctx do
+      alice = start_player("alice", ctx)
+      drain("alice")
+      send_input(alice, "east")
+      drain("alice")
+
+      send_input(alice, "@create container crate")
+      drain("alice")
+      send_input(alice, "@create object apple")
+      drain("alice")
+
+      send_input(alice, "put apple in crate")
+      put_out = drain("alice") |> Enum.join("\n")
+      assert put_out =~ "You put apple in crate."
+
+      send_input(alice, "look in crate")
+      look_out = drain("alice") |> Enum.join("\n")
+      assert look_out =~ "contains: apple"
+
+      send_input(alice, "get apple from crate")
+      get_out = drain("alice") |> Enum.join("\n")
+      assert get_out =~ "You get apple from crate."
+
+      PlayerSession.stop(alice)
+    end
+  end
 end
