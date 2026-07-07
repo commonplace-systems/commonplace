@@ -150,6 +150,37 @@ defmodule Commonplace.MUD.World.Facade do
     load_any(target_uuid, f.store)
   end
 
+  @doc """
+  CX-hbua — does the invoker carry an item matching `name_or_uuid`? The
+  gated-content READ: a "key" verb checks `actor_carries?(world, "brass
+  key")` before unlocking; quest turn-ins, toll gates, "you need a torch".
+
+  SCOPED TO THE INVOKER'S OWN INVENTORY (`f.ctx.inventory_uuid`) — there is
+  NO target-player param BY DESIGN, so a verb can never probe another
+  player's inventory (privacy). Matches by entry uuid OR by display
+  name/alias (the same substring/alias matcher `get`/`take` use). Read-only,
+  no authority gate — same posture as `look`/`get_attr` (reading what you
+  already hold). Returns a plain boolean (missing inventory → `false`).
+  """
+  @spec actor_carries?(t(), String.t()) :: boolean()
+  def actor_carries?(%__MODULE__{} = f, name_or_uuid) when is_binary(name_or_uuid) do
+    case f.ctx[:inventory_uuid] do
+      nil ->
+        false
+
+      inv ->
+        carries_by_uuid?(inv, name_or_uuid, f.store) or
+          match?({:ok, _}, World.find_entry_by_name(inv, name_or_uuid, f.store))
+    end
+  end
+
+  defp carries_by_uuid?(inv, uuid, store) do
+    case Schemas.load_dir_schema(inv, store) do
+      {:ok, schema} -> Enum.any?(Schema.list_entries(schema), &(&1.node_id == uuid))
+      _ -> false
+    end
+  end
+
   # ---- writes (intersection-checked) ----
 
   @doc """
@@ -534,7 +565,14 @@ defmodule Commonplace.MUD.World.Facade do
   a minted husk into a real item (description/stats). `{:error,
   :not_minted_here}` if `minted_uuid` was not minted this run.
   """
-  @spec configure_attr(t(), String.t(), String.t(), term()) :: :ok | {:error, term()}
+  @spec configure_attr(t(), String.t() | {:ok, String.t()}, String.t(), term()) :: :ok | {:error, term()}
+  # CX-hbua/DX (boss #6045) — accept the mint's `{:ok, uuid}` return
+  # directly, so `configure_attr(world, give_to_actor(world, "sword"), ...)`
+  # works without the author manually destructuring. Still re-gates (unwraps
+  # then falls to the binary clause → minted_this_run? check).
+  def configure_attr(%__MODULE__{} = f, {:ok, minted_uuid}, key, value),
+    do: configure_attr(f, minted_uuid, key, value)
+
   def configure_attr(%__MODULE__{} = f, minted_uuid, key, value)
       when is_binary(minted_uuid) and is_binary(key) do
     if minted_this_run?(minted_uuid) do
@@ -551,7 +589,12 @@ defmodule Commonplace.MUD.World.Facade do
   owner_grant, invoker-signed, uuid re-gated against the minted-set.
   `{:error, :not_minted_here}` if `minted_uuid` was not minted this run.
   """
-  @spec configure_state(t(), String.t(), String.t(), term()) :: :ok | {:error, term()}
+  @spec configure_state(t(), String.t() | {:ok, String.t()}, String.t(), term()) :: :ok | {:error, term()}
+  # CX-hbua/DX — accept the mint's `{:ok, uuid}` return directly (see
+  # configure_attr). Still re-gates via the binary clause below.
+  def configure_state(%__MODULE__{} = f, {:ok, minted_uuid}, key, value),
+    do: configure_state(f, minted_uuid, key, value)
+
   def configure_state(%__MODULE__{} = f, minted_uuid, key, value)
       when is_binary(minted_uuid) and is_binary(key) do
     with :ok <- validate_state_key(key),

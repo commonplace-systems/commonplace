@@ -350,6 +350,47 @@ defmodule Commonplace.MUD.World.FacadeTest do
     assert :ok = Facade.configure_attr(f, sword, "description", "real")
   end
 
+  test "CX-hbua: actor_carries? checks the invoker's OWN inventory (by name, substring, and uuid)", %{
+    store: store,
+    obj_uuid: obj_uuid,
+    trusted_ctx: trusted_ctx
+  } do
+    inv = lc_dir(store, trusted_ctx, "inv")
+    f = lc_facade(trusted_ctx, obj_uuid, [], %{inventory_uuid: inv}, store)
+
+    refute Facade.actor_carries?(f, "key")
+    {:ok, key_uuid} = Facade.give_to_actor(f, "brass key")
+
+    assert Facade.actor_carries?(f, "brass key")
+    assert Facade.actor_carries?(f, "key")
+    assert Facade.actor_carries?(f, key_uuid)
+    refute Facade.actor_carries?(f, "sword")
+  end
+
+  test "CX-hbua: actor_carries? is false (no crash) when there is no inventory", %{
+    store: store,
+    obj_uuid: obj_uuid,
+    trusted_ctx: trusted_ctx
+  } do
+    f = lc_facade(trusted_ctx, obj_uuid, [], %{}, store)
+    refute Facade.actor_carries?(f, "anything")
+  end
+
+  test "CX-hbua/DX: configure_* accept the mint's {:ok, uuid} return directly, still re-gated", %{
+    store: store,
+    obj_uuid: obj_uuid,
+    trusted_ctx: trusted_ctx
+  } do
+    inv = lc_dir(store, trusted_ctx, "inv")
+    f = lc_facade(trusted_ctx, obj_uuid, [], %{inventory_uuid: inv}, store)
+
+    # Pass the {:ok, uuid} tuple straight through — no manual destructuring.
+    assert :ok = Facade.configure_attr(f, Facade.give_to_actor(f, "gem"), "description", "a ruby")
+    # The minted-set re-gate survives the coercion: a non-minted {:ok, uuid}
+    # is still refused.
+    assert {:error, :not_minted_here} = Facade.configure_attr(f, {:ok, obj_uuid}, "description", "hax")
+  end
+
   test "destroy_child: happy path — create then unlink a named child of the bound object", %{
     store: store,
     obj_uuid: obj_uuid,

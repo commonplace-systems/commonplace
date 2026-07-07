@@ -468,7 +468,13 @@ defmodule Commonplace.MUD.SafeVerb.Allowlist do
                     # define_on (verbs on minted objects) is DEFERRED to the
                     # zone-ownership/subtree-scopes chapter, not admitted here.
                     {:configure_attr, 4},
-                    {:configure_state, 4}
+                    {:configure_state, 4},
+                    # CX-hbua — inventory introspection: does the invoker
+                    # carry X? Read-only, scoped to the invoker's OWN
+                    # inventory (no target-player param — no cross-player
+                    # probing). The gated-content primitive (keys/quests/
+                    # toll gates). Low-trust read, same posture as look.
+                    {:actor_carries?, 2}
                   ])
 
   # VECTOR 11 — reflective / capability side-channels that WEAR a
