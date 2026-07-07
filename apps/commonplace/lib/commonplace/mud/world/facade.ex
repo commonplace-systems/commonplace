@@ -280,7 +280,7 @@ defmodule Commonplace.MUD.World.Facade do
 
   def set_attr(%__MODULE__{} = f, key, value) when is_binary(key) do
     write_guarded(f, [f.object_uuid], fn ->
-      World.set_meta(f.object_uuid, Schemas.object_filename(), key, value, f.store, write_opts(f))
+      World.set_meta(f.object_uuid, meta_filename(f), key, value, f.store, write_opts(f))
     end)
   end
 
@@ -304,7 +304,7 @@ defmodule Commonplace.MUD.World.Facade do
   def get_state(%__MODULE__{object_uuid: nil}, _key), do: nil
 
   def get_state(%__MODULE__{} = f, key) when is_binary(key) do
-    case World.get_meta_map(f.object_uuid, Schemas.object_filename(), f.store) do
+    case World.get_meta_map(f.object_uuid, meta_filename(f), f.store) do
       {:ok, %{"state" => state}} when is_map(state) -> Map.get(state, key)
       _ -> nil
     end
@@ -329,33 +329,44 @@ defmodule Commonplace.MUD.World.Facade do
   def put_state(%__MODULE__{} = f, key, value) when is_binary(key) do
     with :ok <- validate_state_key(key),
          :ok <- validate_state_value(value) do
-      write_guarded(f, [f.object_uuid], fn -> do_put_state(f, f.object_uuid, key, value) end)
+      # CX-v6j4 — the BOUND host's own meta file (room_filename for a room
+      # host, object_filename for an object host). A room's meta is
+      # __room.json, NOT __object.json — writing the wrong file failed with
+      # :no_meta_entry, so room state never persisted.
+      write_guarded(f, [f.object_uuid], fn ->
+        do_put_state(f, f.object_uuid, meta_filename(f), key, value)
+      end)
     end
   end
 
   def put_state(%__MODULE__{}, _key, _value), do: {:error, :state_bounds}
 
-  # Shared state-write core (put_state on the bound object; configure_state
-  # on a just-minted object). The AUTHORITY decision — write_guarded vs the
-  # own-creation exception — is the CALLER's; this only applies the bounds
-  # and issues the invoker-signed write.
-  defp do_put_state(f, target_uuid, key, value) do
-    state = read_state(f, target_uuid)
+  # Shared state-write core (put_state on the bound host; configure_state
+  # on a just-minted OBJECT). `meta_file` is the target's meta filename —
+  # meta_filename(f) for the bound host (room or object), object_filename
+  # for a minted object. The AUTHORITY decision is the CALLER's.
+  defp do_put_state(f, target_uuid, meta_file, key, value) do
+    state = read_state(f, target_uuid, meta_file)
 
     if Map.has_key?(state, key) or map_size(state) < @state_max_keys do
       new_state = Map.put(state, key, value)
-      World.set_meta(target_uuid, Schemas.object_filename(), "state", new_state, f.store, write_opts(f))
+      World.set_meta(target_uuid, meta_file, "state", new_state, f.store, write_opts(f))
     else
       {:error, :state_bounds}
     end
   end
 
-  defp read_state(f, target_uuid) do
-    case World.get_meta_map(target_uuid, Schemas.object_filename(), f.store) do
+  defp read_state(f, target_uuid, meta_file) do
+    case World.get_meta_map(target_uuid, meta_file, f.store) do
       {:ok, %{"state" => state}} when is_map(state) -> state
       _ -> %{}
     end
   end
+
+  # CX-v6j4 — the bound host's own meta filename. Room hosts keep state in
+  # __room.json (the room's meta), object hosts in __object.json.
+  defp meta_filename(%__MODULE__{host_kind: :room}), do: Schemas.room_filename()
+  defp meta_filename(%__MODULE__{}), do: Schemas.object_filename()
 
   defp validate_state_key(key) when is_binary(key) do
     if byte_size(key) > 0 and byte_size(key) <= @state_key_max_bytes,
@@ -673,7 +684,8 @@ defmodule Commonplace.MUD.World.Facade do
     with :ok <- validate_state_key(key),
          :ok <- validate_state_value(value) do
       if minted_this_run?(minted_uuid) do
-        do_put_state(f, minted_uuid, key, value)
+        # A minted object is always an OBJECT — its meta is __object.json.
+        do_put_state(f, minted_uuid, Schemas.object_filename(), key, value)
       else
         {:error, :not_minted_here}
       end

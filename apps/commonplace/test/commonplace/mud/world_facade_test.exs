@@ -459,7 +459,16 @@ defmodule Commonplace.MUD.World.FacadeTest do
     store: store,
     trusted_ctx: trusted_ctx
   } do
-    room = lc_dir(store, trusted_ctx, "room")
+    # CX-v6j4 — a REAL room (room_filename meta = __room.json), NOT an
+    # object-meta dir; the bug was writing state to __object.json which a
+    # room lacks. Build the room via its room meta.
+    {:ok, room} =
+      Schemas.create_dir_with_meta(
+        Schemas.room_filename(),
+        Schemas.encode_room(%Commonplace.MUD.Schemas.Room{name: "room", description: "d"}),
+        store,
+        signing_context: trusted_ctx
+      )
 
     # A room-hosted verb: object_uuid = the room, host_kind = :room.
     f = %{
@@ -467,9 +476,17 @@ defmodule Commonplace.MUD.World.FacadeTest do
       | host_kind: :room
     }
 
-    # THE FIX: state/attr/create_child now persist on the room.
+    # THE FIX: state persists ACROSS CALLS on the room — write with one
+    # facade, read back with a FRESH one (the real dispatch scenario, and
+    # exactly what the object-meta test missed).
     assert :ok = Facade.put_state(f, "lit", true)
-    assert Facade.get_state(f, "lit") == true
+
+    f_fresh = %{
+      lc_facade(trusted_ctx, room, [room], %{current_room_uuid: room, inventory_uuid: "inv"}, store)
+      | host_kind: :room
+    }
+
+    assert Facade.get_state(f_fresh, "lit") == true
     assert :ok = Facade.set_attr(f, "note", "hi")
     assert {:ok, _} = Facade.create_child(f, "torch")
 
