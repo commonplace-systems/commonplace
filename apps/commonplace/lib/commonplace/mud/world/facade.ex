@@ -88,6 +88,8 @@ defmodule Commonplace.MUD.World.Facade do
   built-in `say`/`emote` verbs).
   """
 
+  require Logger
+
   alias Commonplace.MUD.{Move, Schemas, SignedWrite, World}
   alias Commonplace.MUD.Schemas.Object
   alias Commonplace.Store.CommitStoreClient
@@ -1393,13 +1395,64 @@ defmodule Commonplace.MUD.World.Facade do
       [] ->
         :ok
 
-      [{method, reason} | rest] ->
-        suffix = if rest == [], do: "", else: " (+#{length(rest)} more)"
-        line = "(verb note: #{method} → #{format_drop_reason(reason)}#{suffix})"
-        World.tell(full_facade.ctx.player_uuid, %{kind: :verb_diagnostic, text: line})
+      drops ->
+        {permission_drops, author_drops} =
+          Enum.split_with(drops, fn {_method, reason} -> permission_class?(reason) end)
+
+        emit_permission_refusal(full_facade, permission_drops)
+        emit_author_diagnostic(full_facade, author_drops)
         :ok
     end
   end
+
+  # CX-gjpi (graceful-refusal) — a PERMISSION-class facade drop is the
+  # player lacking STANDING to affect the object (they don't own it, and
+  # — until the object-owner-authority elevation lands — a verb write on
+  # it is refused), NOT an author bug. Surface it as a plain player-facing
+  # refusal (`:notice`, invoker-only gameplay feedback), never the raw
+  # `{:trust_rejected, _}` tuple as a dim author-diagnostic. Mirrors the
+  # builder verbs' "You don't have permission to …" (verbs.ex). Empty ->
+  # no-op.
+  #
+  # `:owner_grant_exceeded` gets the player-flavor refusal too, but ALSO
+  # stays OPERATOR-VISIBLE (plan carve): it means the verb tried to write
+  # BEYOND its `owner_grant` reach bound — author overreach or an
+  # attack-probe — and the reach bound FIRING must never be silently
+  # downgraded to pure flavor (loud-not-silent, the accumulator's own
+  # spine).
+  defp emit_permission_refusal(_full_facade, []), do: :ok
+
+  defp emit_permission_refusal(full_facade, permission_drops) do
+    Enum.each(permission_drops, fn
+      {method, :owner_grant_exceeded} ->
+        Logger.warning(
+          "safe-verb reach bound fired: #{method} → :owner_grant_exceeded " <>
+            "(via_verb=#{inspect(full_facade.via_verb)})"
+        )
+
+      _ ->
+        :ok
+    end)
+
+    World.tell(full_facade.ctx.player_uuid, %{
+      kind: :notice,
+      text: "Nothing happens — it doesn't respond to you."
+    })
+  end
+
+  # AUTHOR-class drops keep the existing dim `:verb_diagnostic` (N1
+  # precedence: FIRST drop = likely root cause, with a `(+N more)` suffix).
+  defp emit_author_diagnostic(_full_facade, []), do: :ok
+
+  defp emit_author_diagnostic(full_facade, [{method, reason} | rest]) do
+    suffix = if rest == [], do: "", else: " (+#{length(rest)} more)"
+    line = "(verb note: #{method} → #{format_drop_reason(reason)}#{suffix})"
+    World.tell(full_facade.ctx.player_uuid, %{kind: :verb_diagnostic, text: line})
+  end
+
+  defp permission_class?({:trust_rejected, _}), do: true
+  defp permission_class?(:owner_grant_exceeded), do: true
+  defp permission_class?(_), do: false
 
   # A bare atom reason renders cleanly (`not_carrying`); a compound reason
   # (`{:trust_rejected, _}`) falls back to `inspect/1`.
