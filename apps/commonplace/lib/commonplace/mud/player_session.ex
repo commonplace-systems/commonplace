@@ -443,6 +443,13 @@ defmodule Commonplace.MUD.PlayerSession do
     state.output_fn.("#{prefix} #{text}")
   end
 
+  # CX-cj3t.10 — directed private messaging. Delivered via `World.tell/2`
+  # (the recipient's own actor-only tell topic), so only the recipient's
+  # session ever renders this — no actor-vs-observer split needed.
+  defp render_event(%{kind: :whisper, who: who, text: text}, state) do
+    state.output_fn.("#{who} whispers: #{text}")
+  end
+
   defp render_event(%{kind: :arrive, who: who, from: from}, state) do
     if who != state.player_name do
       state.output_fn.("#{who} arrives from the #{from}.")

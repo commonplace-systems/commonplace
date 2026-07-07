@@ -474,7 +474,10 @@ defmodule Commonplace.MUD.SafeVerb.Allowlist do
                     # inventory (no target-player param — no cross-player
                     # probing). The gated-content primitive (keys/quests/
                     # toll gates). Low-trust read, same posture as look.
-                    {:actor_carries?, 2}
+                    {:actor_carries?, 2},
+                    # CX-cj3t.10 — directed private messaging (same-room-scoped
+                    # + server-attributed + per-target rate cap).
+                    {:whisper, 3}
                   ])
 
   # VECTOR 11 — reflective / capability side-channels that WEAR a

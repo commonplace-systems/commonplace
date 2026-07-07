@@ -483,4 +483,97 @@ defmodule Commonplace.MUD.OutputTest do
       PlayerSession.stop(alice)
     end
   end
+
+  # CX-cj3t.10 — directed private messaging (plan #6050). Three trust
+  # properties under test: same-room-only resolution (privacy — a
+  # bystander never sees a whisper), server-stamped attribution (the
+  # recipient sees the INVOKER's name, never author-supplied), and the
+  # per-target rate cap (harassment bound without breaking legit
+  # one-to-many).
+  describe "CX-cj3t.10: directed messaging (whisper)" do
+    test "whisper reaches the target but not a bystander in the same room", ctx do
+      dir = fountain_dir(ctx)
+
+      :ok =
+        VerbSource.save_safe_verb(
+          dir,
+          "psst",
+          ~s|Commonplace.MUD.World.Facade.whisper(world, "bob", "psst")|,
+          [dir],
+          ctx.store
+        )
+
+      alice = start_player("alice", ctx)
+      bob = start_player("bob", ctx)
+      carol = start_player("carol", ctx)
+      drain("alice")
+      drain("bob")
+      drain("carol")
+
+      send_input(alice, "east")
+      send_input(bob, "east")
+      send_input(carol, "east")
+      drain("alice")
+      drain("bob")
+      drain("carol")
+
+      send_input(alice, "psst fountain")
+
+      bob_out = drain("bob") |> Enum.join("\n")
+      assert bob_out =~ "psst"
+      assert bob_out =~ "alice whispers"
+
+      carol_out = drain("carol") |> Enum.join("\n")
+      refute carol_out =~ "psst"
+
+      PlayerSession.stop(alice)
+      PlayerSession.stop(bob)
+      PlayerSession.stop(carol)
+    end
+
+    test "property 1: whispering a name not in the room returns :not_here (never a global oracle)", ctx do
+      alice = start_player("alice", ctx)
+      drain("alice")
+      send_input(alice, "east")
+      drain("alice")
+
+      alice_state = :sys.get_state(alice)
+      facade_ctx = %{current_room_uuid: alice_state.current_room_uuid, player_name: "alice"}
+      facade = Commonplace.MUD.World.Facade.new(facade_ctx, nil, [], nil, ctx.store)
+
+      assert {:error, :not_here} = Commonplace.MUD.World.Facade.whisper(facade, "nobody", "hello?")
+
+      PlayerSession.stop(alice)
+    end
+
+    test "property 3: per-target rate cap allows 3 whispers to one target then rate-limits the 4th", ctx do
+      alice = start_player("alice", ctx)
+      bob = start_player("bob", ctx)
+      drain("alice")
+      drain("bob")
+
+      send_input(alice, "east")
+      send_input(bob, "east")
+      drain("alice")
+      drain("bob")
+
+      alice_state = :sys.get_state(alice)
+      facade_ctx = %{current_room_uuid: alice_state.current_room_uuid, player_name: "alice"}
+      facade = Commonplace.MUD.World.Facade.new(facade_ctx, nil, [], nil, ctx.store)
+
+      assert :ok = Commonplace.MUD.World.Facade.whisper(facade, "bob", "msg-1")
+      assert :ok = Commonplace.MUD.World.Facade.whisper(facade, "bob", "msg-2")
+      assert :ok = Commonplace.MUD.World.Facade.whisper(facade, "bob", "msg-3")
+
+      assert {:error, :rate_limited} = Commonplace.MUD.World.Facade.whisper(facade, "bob", "msg-4")
+
+      Process.sleep(60)
+      bob_lines = drain("bob")
+      delivered = Enum.count(bob_lines, &(&1 =~ "whispers"))
+      assert delivered == 3, "expected exactly 3 delivered whispers, got: #{inspect(bob_lines)}"
+
+      PlayerSession.stop(alice)
+      PlayerSession.stop(bob)
+    end
+  end
 end

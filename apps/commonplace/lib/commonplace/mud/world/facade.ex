@@ -656,6 +656,117 @@ defmodule Commonplace.MUD.World.Facade do
     })
   end
 
+  # CX-cj3t.10 — the per-target rate cap (harassment bound, plan #6050).
+  @whisper_per_target_per_run 3
+  # CX-cj3t.10 — a generous global-per-run ceiling: a pure runaway-loop
+  # DoS floor, NOT the harassment bound (that's the per-target cap above —
+  # do not conflate the two; this one exists so a broken loop can't spam
+  # arbitrarily many distinct targets either).
+  @whisper_per_run_ceiling 256
+  @whisper_target_counts_key :cp_safe_verb_whisper_target_counts
+  @whisper_total_counter :cp_safe_verb_whisper_total
+
+  @doc """
+  CX-cj3t.10 — send a private directed message to `target_name` (a
+  PLAYER in the invoker's CURRENT ROOM). Returns `:ok`,
+  `{:error, :not_here}` (no such player in this room), or
+  `{:error, :rate_limited}` (per-target or global-per-run cap hit).
+
+  THREE TRUST PROPERTIES (load-bearing — do not weaken, plan #6050):
+
+    1. SAME-ROOM-ONLY RESOLUTION (also a privacy bound): `target_name`
+       is resolved ONLY among players in `f.ctx.current_room_uuid` (via
+       `World.list_players_in/2`) — NEVER a global player lookup. This
+       means whisper can never be used as a global player-existence
+       oracle: an off-room name always comes back `:not_here`, whether
+       or not that player exists elsewhere in the world.
+    2. SERVER-STAMPED ATTRIBUTION: the delivered event's `who` is the
+       INVOKER, taken from `f.ctx[:player_name]` server-side (the SAME
+       discipline as `emit_action/3`/`say/2`) — NEVER author-supplied.
+       The author passes only `text`.
+    3. PER-TARGET PER-RUN RATE CAP: `@whisper_per_target_per_run` (3)
+       whispers to any ONE target per run (the harassment bound) WITHOUT
+       breaking legitimate one-to-many (whisper each room player once —
+       the deal-cards / private-result-per-player pattern). This is a
+       DEDICATED counter, deliberately NOT the object-lifecycle N=8
+       counter (that would break one-to-many the moment a room has more
+       than 8 players — a different concern entirely). A separate,
+       generous `@whisper_per_run_ceiling` (256) is a pure runaway-loop
+       DoS floor. Both counters live in THIS run's process dict (the
+       safe-verb's own `spawn_monitor` child), same pattern as the
+       existing `@lifecycle_op_counter`.
+
+  Delivery is `World.tell/2` (the actor-only tell topic, PubSub-only) —
+  no doc write, no authority gate, same posture as `emit_action/3`.
+  Self-whisper (target resolves to the invoker's own presence) is
+  ALLOWED — it's the valid "private result to the actor" pattern.
+
+  NAMED RESIDUAL (plan #6050): unlike public `say`/`emit` (witnessed by
+  the room, so socially self-moderating), whisper is a PRIVATE/UNWITNESSED
+  channel — there is no bystander to observe abuse. A recipient-side
+  IGNORE-LIST is its designed eventual mitigation (the named prerequisite
+  for a wider/adversarial tier, same posture as the OS-sandbox horizon —
+  not a v1 blocker). For invited-friends, the coherent interim bound is
+  exactly the triad above: same-room scoping + server attribution +
+  per-target rate. Do not ship whisper to an adversarial tier without the
+  ignore-list.
+  """
+  @spec whisper(t(), String.t(), String.t()) ::
+          :ok | {:error, :not_here} | {:error, :rate_limited}
+  def whisper(%__MODULE__{} = f, target_name, text)
+      when is_binary(target_name) and is_binary(text) do
+    with {:ok, target_uuid} <- resolve_room_player(f, target_name),
+         :ok <- charge_whisper(target_uuid) do
+      World.tell(target_uuid, %{kind: :whisper, who: f.ctx[:player_name], text: text})
+    end
+  end
+
+  # CX-cj3t.10 — property 1: resolve target_name ONLY among players
+  # present in the invoker's CURRENT room. `World.list_players_in/2`
+  # returns `.usr` presence entries; each entry's `.node_id` IS the
+  # target's player_uuid (presence_uuid == player_uuid). Strip the
+  # ".usr" suffix from each entry's name and match case-insensitively —
+  # prefer an exact match, else the first prefix/substring match. No
+  # match -> `:not_here`.
+  defp resolve_room_player(f, target_name) do
+    needle = String.downcase(target_name)
+
+    players =
+      World.list_players_in(f.ctx.current_room_uuid, f.store)
+      |> Enum.map(fn entry -> {String.trim_trailing(entry.name, ".usr"), entry.node_id} end)
+
+    match =
+      Enum.find(players, fn {name, _uuid} -> String.downcase(name) == needle end) ||
+        Enum.find(players, fn {name, _uuid} -> String.contains?(String.downcase(name), needle) end)
+
+    case match do
+      {_name, uuid} -> {:ok, uuid}
+      nil -> {:error, :not_here}
+    end
+  end
+
+  # CX-cj3t.10 — property 3: charge the per-target + global-per-run
+  # whisper budgets. Fresh per run (process dict of this safe-verb's own
+  # spawn_monitor child) — no cross-run leakage, no reset bookkeeping.
+  defp charge_whisper(target_uuid) do
+    total = Process.get(@whisper_total_counter, 0)
+    counts = Process.get(@whisper_target_counts_key, %{})
+    target_count = Map.get(counts, target_uuid, 0)
+
+    cond do
+      total >= @whisper_per_run_ceiling ->
+        {:error, :rate_limited}
+
+      target_count >= @whisper_per_target_per_run ->
+        {:error, :rate_limited}
+
+      true ->
+        Process.put(@whisper_total_counter, total + 1)
+        Process.put(@whisper_target_counts_key, Map.put(counts, target_uuid, target_count + 1))
+        :ok
+    end
+  end
+
   # --- private ---
 
   defp write_guarded(f, scope_uuids, fun) do
