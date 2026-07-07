@@ -396,9 +396,15 @@ defmodule Commonplace.MUD.SafeVerb.AllowlistTest do
             ~s|Process.get(:cp_safe_verb_signer)|,
             ~s|Process.get_keys()|,
             ~s|Process.info(self())|,
+            ~s|Process.info(self(), :dictionary)|,
             ~s|:erlang.get()|,
             ~s|:erlang.get(:cp_safe_verb_signer)|,
             ~s|:erlang.get_keys()|,
+            # black-box sweep (probe7) surfaced these — a direct process-dict
+            # read via process_info, and apply/:erlang.apply dynamic dispatch.
+            ~s|:erlang.process_info(self(), :dictionary)|,
+            ~s|apply(:erlang, :get, [:cp_safe_verb_signer])|,
+            ~s|:erlang.apply(:erlang, :get, [])|,
             ~s|self()|
           ] do
         assert {:error, _} = Allowlist.check(src), "expected REJECT for: #{src}"
