@@ -365,6 +365,11 @@ defmodule Commonplace.MUD.World.FacadeTest do
     assert Facade.actor_carries?(f, "key")
     assert Facade.actor_carries?(f, key_uuid)
     refute Facade.actor_carries?(f, "sword")
+
+    # FOOTGUN (playtest #6074): a blank/whitespace name must FAIL CLOSED
+    # even while carrying items — it must NOT match "anything held".
+    refute Facade.actor_carries?(f, "")
+    refute Facade.actor_carries?(f, "   ")
   end
 
   test "CX-hbua: actor_carries? is false (no crash) when there is no inventory", %{

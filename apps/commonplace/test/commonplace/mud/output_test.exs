@@ -352,8 +352,9 @@ defmodule Commonplace.MUD.OutputTest do
   # is a "key" that unlocks it (the composition the design is built on).
   describe "CX-cj3t.8: mechanical locks (safe half)" do
     defp box_dir(ctx) do
-      {:ok, schema} = Schemas.load_dir_schema(clearing_uuid(ctx), ctx.store)
-      {:ok, entry} = Schema.get_entry(schema, "box.obj")
+      # CX-3hii — @create now keys objects "box-<short-uuid>.obj" (instance-
+      # unique), so resolve by display name rather than an exact "box.obj".
+      {:ok, entry} = Commonplace.MUD.World.find_entry_by_name(clearing_uuid(ctx), "box", ctx.store)
       entry.node_id
     end
 

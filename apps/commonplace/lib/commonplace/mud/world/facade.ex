@@ -164,11 +164,21 @@ defmodule Commonplace.MUD.World.Facade do
   """
   @spec actor_carries?(t(), String.t()) :: boolean()
   def actor_carries?(%__MODULE__{} = f, name_or_uuid) when is_binary(name_or_uuid) do
-    case f.ctx[:inventory_uuid] do
-      nil ->
+    cond do
+      # FOOTGUN GUARD (playtest #6074): a blank/whitespace-only name would
+      # substring-match ANY held item (find_entry_by_name's empty needle is
+      # in every name), turning a verb that forgot/mis-passed the name into
+      # an OPEN gate ("hold anything" → unlock). Fail CLOSED — a real key
+      # check must name a real item.
+      String.trim(name_or_uuid) == "" ->
         false
 
-      inv ->
+      f.ctx[:inventory_uuid] == nil ->
+        false
+
+      true ->
+        inv = f.ctx[:inventory_uuid]
+
         carries_by_uuid?(inv, name_or_uuid, f.store) or
           match?({:ok, _}, World.find_entry_by_name(inv, name_or_uuid, f.store))
     end

@@ -1499,7 +1499,7 @@ defmodule Commonplace.MUD.Verbs do
       })
 
     with {:ok, new_obj_uuid} <- Schemas.create_dir_with_meta(Schemas.object_filename(), obj_json, ctx.store, write_opts(ctx)),
-         :ok <- add_dir_entry(ctx.current_room_uuid, "#{name}.obj", new_obj_uuid, ctx) do
+         :ok <- add_dir_entry(ctx.current_room_uuid, instance_obj_entry(name, new_obj_uuid), new_obj_uuid, ctx) do
       article = if container?, do: "a container (#{name})", else: "a #{name}"
       {:reply, "You create #{article}."}
     else
@@ -1724,6 +1724,17 @@ defmodule Commonplace.MUD.Verbs do
   # the commit result was thrown away, so a trust-gate denial under
   # `:enforce` still reported `:ok` up to every builder verb call site.
   # Now checked and propagated.
+  # CX-3hii — instance-unique object entry key (mirrors Facade's
+  # `create_object_in`, CX-lfo3): so `@create` can make two same-named
+  # objects without the "<name>.obj" key colliding (only the Facade minters
+  # stacked before). Display name stays "<name>" (from meta); resolution
+  # substring-matches "<name>" (find_entry_by_name strips the ext then
+  # substring-checks). uuid-derived suffix → collision-proof, CRDT-safe.
+  defp instance_obj_entry(name, uuid) do
+    short = uuid |> String.replace("-", "") |> String.slice(0, 8)
+    "#{name}-#{short}.obj"
+  end
+
   defp add_dir_entry(parent_uuid, name, child_uuid, ctx) do
     store = ctx.store
     {:ok, schema} = Schemas.load_dir_schema(parent_uuid, store)
