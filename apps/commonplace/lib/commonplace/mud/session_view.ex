@@ -65,7 +65,7 @@ defmodule Commonplace.MUD.SessionView do
   ### 3. Node-signed
 
   Every commit this module AUTHORS — the `new/3` content commit (via
-  `Commonplace.Store.CommitStore.create_commit/6`) and every
+  `Commonplace.Store.CommitStoreClient.create_commit/6`) and every
   append/replace (via
   `Commonplace.Store.CommitStoreClient.create_chained_commit/5`) —
   passes `signing_context: node_ctx` sourced from
@@ -133,7 +133,7 @@ defmodule Commonplace.MUD.SessionView do
 
   alias Yelixer.{Doc, Encoding, BlockStore}
   alias Yelixer.Types.{XMLElement, XMLText}
-  alias Commonplace.Store.{CommitStore, CommitStoreClient}
+  alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Crypto.NodeIdentity
   alias Commonplace.Tree.DocBuilder
 
@@ -183,7 +183,7 @@ defmodule Commonplace.MUD.SessionView do
   `Yelixer.Encoding.encode_update/1` of the freshly-built doc (there is
   no prior state to diff against, so this is the one legitimate
   full-encode in this module) — node-signed via
-  `Commonplace.Store.CommitStore.create_commit/6`.
+  `Commonplace.Store.CommitStoreClient.create_commit/6`.
 
   `opts`:
     - `:signing_context` — override the node signing context (defaults
@@ -206,7 +206,12 @@ defmodule Commonplace.MUD.SessionView do
     node_ctx = signing_context!(opts)
     update = Encoding.encode_update(doc)
 
-    commit = CommitStore.create_commit(store, uuid, update, nil, %{}, signing_context: node_ctx)
+    # Route the genesis through CommitStoreClient (like the appends and the
+    # rest of the codebase) so callers pass the SAME store handle for both —
+    # notably CommitStoreClient itself, which a raw CommitStore.create_commit
+    # would choke on (GenServer.call to the unregistered client module). Local
+    # mode normalizes back to CommitStore; remote mode routes to the serve.
+    commit = CommitStoreClient.create_commit(store, uuid, update, nil, %{}, signing_context: node_ctx)
     ensure_committed!(commit, :genesis)
 
     %__MODULE__{

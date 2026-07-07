@@ -41,10 +41,11 @@ defmodule CommonplaceWebWeb.MudLive do
 
   use CommonplaceWebWeb, :live_view
 
-  alias Commonplace.MUD.{Citizenship, PlayerSession}
+  alias Commonplace.MUD.{Citizenship, PlayerSession, SessionView}
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.{DocBuilder, Walk}
   alias CommonplaceWebWeb.SessionIdentity
+  alias Yelixer.Types.{XMLElement, XMLText}
 
   # Fallback if the "mud" entry can't be resolved by walking the
   # workspace schema (matches the bead's documented world root).
@@ -59,7 +60,8 @@ defmodule CommonplaceWebWeb.MudLive do
          socket
          |> assign(:authed, false)
          |> assign(:error, nil)
-         |> assign(:scrollback, [])
+         |> assign(:view, nil)
+         |> assign(:ambient_buffer, nil)
          |> assign(:session_pid, nil)
          |> assign(:input_key, 0)
          |> assign(:home_room_uuid, nil)}
@@ -73,11 +75,23 @@ defmodule CommonplaceWebWeb.MudLive do
     name = player_name(resolved.presence_path)
     store = CommitStoreClient
 
+    # CX-i9j3 (UI Inc-1 increment 3): the transcript is now a committed
+    # `SessionView` (one Yjs-XML view-doc per mount), not a transient
+    # `@scrollback` assign list. `session_id` = the player's stable
+    # identity uuid (already resolved once per mount above) — reconnect
+    # PERSISTENCE (loading a prior transcript by remembered view uuid) is
+    # explicitly out of scope here (increment 4); a fresh per-mount view
+    # is correct for this increment. Uses the same `store`
+    # (CommitStoreClient) as the rest of MudLive — SessionView routes its
+    # genesis + appends through the client layer.
+    view = SessionView.new(resolved.identity_uuid, store)
+
     socket =
       socket
       |> assign(:authed, true)
       |> assign(:error, nil)
-      |> assign(:scrollback, [])
+      |> assign(:view, view)
+      |> assign(:ambient_buffer, SessionView.buffer_new())
       |> assign(:session_pid, nil)
       |> assign(:input_key, 0)
       |> assign(:home_room_uuid, nil)
@@ -155,17 +169,24 @@ defmodule CommonplaceWebWeb.MudLive do
       :ok = PlayerSession.input_sync(pid, command)
       events = drain(pid)
 
+      # ORDERING GATE (load-bearing): flush any pending ambient FIRST, so
+      # ambient that arrived before this command lands in scrollback
+      # BEFORE the command's own turn.
+      {view, buffer} = SessionView.buffer_flush(socket.assigns.view, socket.assigns.ambient_buffer)
+      view = SessionView.append_command_turn(view, line, Enum.join(events, "\n"))
+
       socket =
         socket
-        |> append_scrollback(["> " <> line])
-        |> append_scrollback(events)
+        |> assign(:view, view)
+        |> assign(:ambient_buffer, buffer)
         |> update(:input_key, &(&1 + 1))
 
       {:noreply, socket}
     end
   catch
     :exit, _ ->
-      {:noreply, append_scrollback(socket, ["(session ended)"])}
+      view = SessionView.append_ambient_turn(socket.assigns.view, ["(session ended)"])
+      {:noreply, assign(socket, :view, view)}
   end
 
   @impl true
@@ -179,7 +200,20 @@ defmodule CommonplaceWebWeb.MudLive do
         # AFTER `:greet` in the session, so it reliably captures that render
         # with no race. Sending our own "look" here rendered the room a
         # SECOND time (the double-description bug).
-        append_scrollback(socket, drain(pid))
+        #
+        # The spawn-room render lands as the FIRST turn in the view-doc, a
+        # command-style turn (cmd = "look", the implicit look a spawn is)
+        # rather than an ambient turn — it reads cleanly as "here's what
+        # you see" and keeps the ambient buffer reserved for genuinely
+        # unprompted world events.
+        case drain(pid) do
+          [] ->
+            socket
+
+          events ->
+            view = SessionView.append_command_turn(socket.assigns.view, "look", Enum.join(events, "\n"))
+            assign(socket, :view, view)
+        end
       else
         socket
       end
@@ -193,7 +227,19 @@ defmodule CommonplaceWebWeb.MudLive do
     socket =
       if pid && Process.alive?(pid) do
         Process.send_after(self(), :tick, @tick_ms)
-        append_scrollback(socket, drain(pid))
+
+        # Ambient path (this poll IS the debounce window): route drained
+        # events through the coalescing buffer so a burst since the last
+        # tick lands as ONE ambient turn (M events -> 1 commit), never one
+        # `append_ambient_turn` per event.
+        buffer =
+          Enum.reduce(drain(pid), socket.assigns.ambient_buffer, &SessionView.buffer_add(&2, &1))
+
+        {view, buffer} = SessionView.buffer_flush(socket.assigns.view, buffer)
+
+        socket
+        |> assign(:view, view)
+        |> assign(:ambient_buffer, buffer)
       else
         socket
       end
@@ -228,12 +274,32 @@ defmodule CommonplaceWebWeb.MudLive do
             <div class="alert alert-error text-sm mb-2"><%= @error %></div>
           <% end %>
 
+          <style>
+            #mud-scrollback .turn { margin-bottom: 0.5rem; }
+            #mud-scrollback .cmd { color: #9ca3af; }
+            #mud-scrollback .cmd::before { content: "> "; }
+            #mud-scrollback .out { white-space: pre-wrap; }
+            #mud-scrollback .ambient .line { opacity: 0.85; }
+          </style>
+
           <div
             id="mud-scrollback"
             class="flex-1 overflow-y-auto bg-black text-green-400 font-mono text-sm p-4 rounded whitespace-pre-wrap"
           >
-            <%= for line <- @scrollback do %>
-              <div><%= line %></div>
+            <%= for turn <- render_turns(@view) do %>
+              <%= case turn do %>
+                <% {:command, cmd, out} -> %>
+                  <div class="turn command">
+                    <div class="cmd"><%= cmd %></div>
+                    <div class="out"><%= out %></div>
+                  </div>
+                <% {:ambient, lines} -> %>
+                  <div class="turn ambient">
+                    <%= for line <- lines do %>
+                      <div class="line"><%= line %></div>
+                    <% end %>
+                  </div>
+              <% end %>
             <% end %>
           </div>
 
@@ -277,10 +343,45 @@ defmodule CommonplaceWebWeb.MudLive do
   defp render_line(%{text: text}), do: text
   defp render_line(other), do: inspect(other)
 
-  defp append_scrollback(socket, []), do: socket
+  # SECURITY (CX-i9j3 increment 3): `SessionView.to_html/1` (and the
+  # `Yelixer.Types.XMLElement.to_string/2` it's built on) does NOT
+  # HTML-escape attribute values or text content — it's a raw XML
+  # serializer, not a safe-render helper. Piping that string through
+  # `Phoenix.HTML.raw/1` would let a player-typed command or game-output
+  # line containing `<script>`/`&`/etc. inject live markup into every
+  # other viewer's page (this is a public-IP live web app). So instead of
+  # rendering the XHTML blob, we walk the view-doc's own `<scrollback>`
+  # children with Yelixer's public accessors and hand each turn's text
+  # fields to the `~H` template as ordinary interpolated values —
+  # `Phoenix.HTML` auto-escapes those, so `<`, `>`, `&` in user input
+  # render as literal text, never as tags. This still satisfies "render
+  # FROM the committed view-doc" — it just doesn't trust `to_html`'s
+  # unescaped serialization for a viewer-facing surface.
+  defp render_turns(%SessionView{doc: doc, scrollback_name: scrollback_name}) do
+    doc
+    |> XMLElement.children(scrollback_name)
+    |> Enum.map(fn {:element, "turn", turn_name} ->
+      case XMLElement.get_attribute(doc, turn_name, "kind") do
+        "ambient" ->
+          lines =
+            doc
+            |> XMLElement.children(turn_name)
+            |> Enum.map(&child_text(doc, &1))
 
-  defp append_scrollback(socket, lines) when is_list(lines) do
-    assign(socket, :scrollback, socket.assigns.scrollback ++ lines)
+          {:ambient, lines}
+
+        _command_or_other ->
+          [cmd_child, out_child] = XMLElement.children(doc, turn_name)
+          {:command, child_text(doc, cmd_child), child_text(doc, out_child)}
+      end
+    end)
+  end
+
+  defp child_text(doc, {:element, _tag, elem_name}) do
+    case XMLElement.children(doc, elem_name) do
+      [{:text, text_name}] -> XMLText.to_string(doc, text_name)
+      _ -> ""
+    end
   end
 
   defp player_name(presence_path) when is_binary(presence_path) do
