@@ -1041,6 +1041,48 @@ defmodule Commonplace.MUD.World.FacadeTest do
     assert {:error, :no_inventory} = Facade.give_from_inventory(f_no_inv, "coin", "bob")
   end
 
+  describe "CX-a2gd: invoker identity accessors" do
+    test "actor_name returns the SERVER-SET invoker display name; actor_ref returns the stable player-dir ref", %{
+      store: store,
+      obj_uuid: obj_uuid,
+      trusted_ctx: trusted_ctx
+    } do
+      f =
+        lc_facade(
+          trusted_ctx,
+          obj_uuid,
+          [obj_uuid],
+          %{player_name: "alice", player_dir_uuid: "player-dir-abc"},
+          store
+        )
+
+      assert Facade.actor_name(f) == "alice"
+      assert Facade.actor_ref(f) == "player-dir-abc"
+    end
+
+    test "the accessors read ONLY the bound ctx — a different invoker's facade yields THAT invoker (invoker-only, no cross-read)", %{
+      store: store,
+      obj_uuid: obj_uuid,
+      trusted_ctx: trusted_ctx
+    } do
+      # There is no parameter to name another player — each facade can only
+      # ever surface its OWN bound invoker. Two facades, two identities.
+      alice = lc_facade(trusted_ctx, obj_uuid, [obj_uuid], %{player_name: "alice", player_dir_uuid: "pd-alice"}, store)
+      bob = lc_facade(trusted_ctx, obj_uuid, [obj_uuid], %{player_name: "bob", player_dir_uuid: "pd-bob"}, store)
+
+      assert Facade.actor_name(alice) == "alice"
+      assert Facade.actor_ref(alice) == "pd-alice"
+      assert Facade.actor_name(bob) == "bob"
+      assert Facade.actor_ref(bob) == "pd-bob"
+    end
+
+    test "missing identity fields → nil (no crash)", %{store: store, obj_uuid: obj_uuid, trusted_ctx: trusted_ctx} do
+      f = lc_facade(trusted_ctx, obj_uuid, [obj_uuid], %{}, store)
+      assert Facade.actor_name(f) == nil
+      assert Facade.actor_ref(f) == nil
+    end
+  end
+
   test "pin 7: no effect surface leak — the facade is the only capability-bearing value; it exposes no raw store accessor" do
     facade = Facade.new(%{}, "obj", [], nil, :some_store)
 

@@ -476,6 +476,42 @@ defmodule Commonplace.MUD.World.Facade do
   def pick(%__MODULE__{}, list) when is_list(list), do: Enum.random(list)
   def pick(%__MODULE__{}, _), do: nil
 
+  # ---- invoker identity (CX-a2gd, plan-blessed #6189/#6193) ----
+  #
+  # THE SPOOF-FIX: a safe verb could not read WHO invoked it, so per-player
+  # state forced players to self-TYPE their name as a command arg
+  # (spoofable). These expose the SERVER-SET invoker identity from the bound
+  # ctx (the SAME value `emit_action/3`/`whisper/3` stamp) — read-only, no
+  # effect, no authority (random/2/pick/2 posture). INVOKER-ONLY is
+  # STRUCTURAL: there is no parameter to name another player; the ctx is the
+  # invoking session's own, so a verb can only ever read ITS OWN caller
+  # (same scope discipline as `actor_carries?/2`). Non-secret: the invoker's
+  # name/dir are already public (room presence, Players dir, emit
+  # attribution) — exposing them to the invoker's OWN verb is no new leak.
+  #
+  # NOTE (plan #6193): these are the spoof-fix, NOT yet "the secure/opaque
+  # interface" — until CX-r8vp closes the verb-facing data surface, the same
+  # values remain reachable via `Map.get(world.ctx, ...)`. The spoof-fix is
+  # real regardless (the value is server-set); the opacity lands with r8vp.
+
+  @doc """
+  CX-a2gd — the invoker's DISPLAY name (server-set, the value `emit_action`
+  stamps). Use for narration / display. For a DURABLE per-player state KEY
+  use `actor_ref/1` instead — a display name ORPHANS state on an `@name`
+  rename and INHERITS it on name-reuse; `actor_ref` is stable.
+  """
+  @spec actor_name(t()) :: String.t() | nil
+  def actor_name(%__MODULE__{} = f), do: f.ctx[:player_name]
+
+  @doc """
+  CX-a2gd — a STABLE opaque reference to the invoker (their player-dir uuid),
+  for keying durable per-player state: `put_state(world, "score:" <>
+  actor_ref(world), n)`. Stable across `@name` renames (unlike
+  `actor_name/1`). Opaque — treat it as a key, not a display string.
+  """
+  @spec actor_ref(t()) :: String.t() | nil
+  def actor_ref(%__MODULE__{} = f), do: f.ctx[:player_dir_uuid]
+
   @doc """
   Create a new child object named `name` under this facade's bound
   object. Grant-checked against `{object_uuid}` (the parent). Returns

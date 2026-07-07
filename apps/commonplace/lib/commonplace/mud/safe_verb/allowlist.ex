@@ -492,7 +492,14 @@ defmodule Commonplace.MUD.SafeVerb.Allowlist do
                     # BEFORE any global lookup (no-oracle), additive-only
                     # deposit, server-stamped narration. Both bounded (N=8).
                     {:consume_from_inventory, 2},
-                    {:give_from_inventory, 3}
+                    {:give_from_inventory, 3},
+                    # CX-a2gd — read the SERVER-SET invoker identity (plan
+                    # #6189/#6193). actor_name = display, actor_ref = stable
+                    # per-player state key. Read-only, invoker-only (no param
+                    # names another player), no authority — the spoof-fix for
+                    # per-player state.
+                    {:actor_name, 1},
+                    {:actor_ref, 1}
                   ])
 
   # VECTOR 11 — reflective / capability side-channels that WEAR a

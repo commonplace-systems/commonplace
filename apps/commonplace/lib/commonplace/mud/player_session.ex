@@ -378,7 +378,10 @@ defmodule Commonplace.MUD.PlayerSession do
           "Common calls (always Commonplace.MUD.World.Facade.<fn>(world, ...)):\n" <>
           "  say(world, text)  ·  emit_action(world, \"lift the lid\", \"lifts the lid\")  [attributed: You / <name>]\n" <>
           "  random(world, n) [1..n]  ·  pick(world, list)  ·  actor_carries?(world, name)\n" <>
+          "  actor_name(world) [display] · actor_ref(world) [stable per-player KEY]\n" <>
           "  get_state(world, key)  ·  put_state(world, key, value)\n" <>
+          "Per-player state: KEY on actor_ref (stable across rename), DISPLAY with actor_name — " <>
+          "e.g. put_state(world, \"score:\" <> actor_ref(world), n).\n" <>
           "State rules (CX-drp2): put_state writes IMMEDIATELY and persists at ANY position — " <>
           "many per verb all stick; it need NOT be the last line.\n" <>
           "  value may be a string / number / boolean OR a list / string-keyed map (≤1024 bytes, CX-qexv).\n" <>

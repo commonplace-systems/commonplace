@@ -69,7 +69,10 @@ defmodule Commonplace.MUD.SafeVerb.AllowlistTest do
                  ~s|Commonplace.MUD.World.Facade.emit_action(world, "lift the lid", "lifts the lid")|
                )
 
-      assert_rejected(~s|Commonplace.MUD.World.Facade.actor_name(world)|)
+      # actor_name/actor_ref are NOW admitted (CX-a2gd, pinned in (f9)); the
+      # constructor and any genuinely-unlisted fn still reject.
+      assert_rejected(~s|Commonplace.MUD.World.Facade.new(world, "x", [], nil, world)|)
+      assert_rejected(~s|Commonplace.MUD.World.Facade.signer_material(world)|)
     end
 
     # CX-hqk5 — the stateful-verb primitives are admitted (plan #5968).
@@ -92,6 +95,12 @@ defmodule Commonplace.MUD.SafeVerb.AllowlistTest do
 
       assert :ok ==
                Allowlist.check(~s|Commonplace.MUD.World.Facade.give_from_inventory(world, "coin", "bob")|)
+    end
+
+    # CX-a2gd — invoker identity accessors admitted (plan #6189/#6193).
+    test "(f9) Facade.actor_name/1 + actor_ref/1 pass" do
+      assert :ok == Allowlist.check(~s|Commonplace.MUD.World.Facade.actor_name(world)|)
+      assert :ok == Allowlist.check(~s|Commonplace.MUD.World.Facade.actor_ref(world)|)
     end
 
     test "(f3) the qualified facade form is refused when the first arg isn't the literal world binding" do
