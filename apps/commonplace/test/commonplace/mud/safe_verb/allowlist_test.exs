@@ -383,4 +383,31 @@ defmodule Commonplace.MUD.SafeVerb.AllowlistTest do
       assert {:error, {:unsafe_verb, {:syntax_error, _}}} = Allowlist.check_wrapped("defmodule Foo do")
     end
   end
+
+  # P0 key-leak fix (data-reachability): the signing material lives in the
+  # sandbox child's PROCESS DICT, so the fix's LOAD-BEARING dependency is that
+  # verb code cannot read the process dict OR call the facade's signer
+  # helpers. Pin it explicitly (plan's "test the load-bearing invariant, not
+  # incidental" — the original miss was incidentally-closed-but-unaudited).
+  describe "P0 fix dependency: process-dict + signer helpers are unreachable" do
+    test "process-dict / reflection reads are all REJECTED" do
+      for src <- [
+            ~s|Process.get()|,
+            ~s|Process.get(:cp_safe_verb_signer)|,
+            ~s|Process.get_keys()|,
+            ~s|Process.info(self())|,
+            ~s|:erlang.get()|,
+            ~s|:erlang.get(:cp_safe_verb_signer)|,
+            ~s|:erlang.get_keys()|,
+            ~s|self()|
+          ] do
+        assert {:error, _} = Allowlist.check(src), "expected REJECT for: #{src}"
+      end
+    end
+
+    test "the facade's signer helpers are NOT admitted (verb can't extract the material)" do
+      assert {:error, _} = Allowlist.check(~s|Commonplace.MUD.World.Facade.signer_material(world)|)
+      assert {:error, _} = Allowlist.check(~s|Commonplace.MUD.World.Facade.install_signer(%{})|)
+    end
+  end
 end
