@@ -1127,27 +1127,25 @@ defmodule Commonplace.MUD.World.FacadeTest do
       %{facade: facade}
     end
 
-    test "PIN 1: scrub_signer removes all signing material; inspect(world) surfaces no key bytes", %{
-      facade: facade,
-      trusted_ctx: trusted_ctx
-    } do
-      scrubbed = Facade.scrub_signer(facade)
+    test "PIN 1 (CX-r8vp STRENGTHENED): the thin verb-facing facade drops the WHOLE ctx; inspect surfaces no key bytes",
+         %{
+           facade: facade,
+           trusted_ctx: trusted_ctx
+         } do
+      thin = Facade.to_verb_facing(facade)
 
-      # The scrubbed ctx (what the verb sees) carries no signing material.
-      assert Map.get(scrubbed.ctx, :signing_context) == nil
-      assert Map.get(scrubbed.ctx, :cert_cids) == nil
-      assert Map.get(scrubbed.ctx, :signer_id) == nil
+      # STRONGER than the old scrub (which left a scrubbed-but-present ctx):
+      # the entire ctx is gone, so signing_context/private_key are wholly
+      # unreachable via world.ctx.* / Map.get / destructure.
+      assert thin.ctx == nil
 
-      # inspect(world) AND world.ctx.* surface no private-key bytes.
+      # inspect(world) AND world.ctx surface no private-key bytes.
       key_bytes = inspect(trusted_ctx.private_key)
-      refute String.contains?(inspect(scrubbed, limit: :infinity), key_bytes)
-      refute String.contains?(inspect(scrubbed.ctx, limit: :infinity), key_bytes)
+      refute String.contains?(inspect(thin, limit: :infinity), key_bytes)
+      refute String.contains?(inspect(thin.ctx, limit: :infinity), key_bytes)
 
-      # Opaque Inspect render (belt) shows only the non-secret player name.
-      assert inspect(scrubbed) == "#MUD.World.Facade<player: alice>"
-
-      # Post-scrub remainder is all non-secret (identity + location + provenance).
-      assert scrubbed.ctx == %{player_name: "alice", current_room_uuid: "room1", inventory_uuid: "inv1", player_uuid: "p1"}
+      # Opaque Inspect render (belt) — no ctx, so no player name to show.
+      assert inspect(thin) == "#MUD.World.Facade<player: ?>"
     end
 
     test "PIN 2: the verb-facing facade (via the real SafeVerb.run path) exposes no key; signing still works", %{
@@ -1201,6 +1199,62 @@ defmodule Commonplace.MUD.World.FacadeTest do
         {:error, _} ->
           :ok
       end
+    end
+  end
+
+  # ---- CX-r8vp: thin-handle data surface (asserted, not incidental) ----
+  # The verb-facing facade must carry ONLY inert display data. Every
+  # capability/identity/store field is structurally ABSENT (nil/empty) — the
+  # data-axis close that generalizes the P0 signer-material move.
+
+  describe "CX-r8vp: thin-handle data surface" do
+    setup %{store: store, trusted_ctx: trusted_ctx, obj_uuid: obj_uuid} do
+      full =
+        Facade.new(
+          %{
+            signing_context: trusted_ctx,
+            cert_cids: [],
+            signer_id: nil,
+            player_name: "alice",
+            current_room_uuid: "room1",
+            inventory_uuid: "inv1",
+            player_uuid: "p1"
+          },
+          obj_uuid,
+          [obj_uuid],
+          {"verbs/x.safe.elx", "owner"},
+          store
+        )
+
+      %{full: full}
+    end
+
+    test "every capability/identity/store field is nil/empty on the thin handle", %{full: full} do
+      thin = Facade.to_verb_facing(full)
+
+      assert thin.store == nil
+      assert thin.ctx == nil
+      assert thin.owner_grant == MapSet.new()
+      assert thin.via_verb == nil
+      assert thin.object_uuid == nil
+    end
+
+    test "Map.get and destructure paths reach nothing sensitive", %{full: full} do
+      thin = Facade.to_verb_facing(full)
+
+      # Map.get (a field-read bypass) yields nil.
+      assert Map.get(thin, :ctx) == nil
+      assert Map.get(thin, :store) == nil
+
+      # destructure yields nil.
+      assert match?(%{ctx: nil}, thin)
+      %{ctx: c} = thin
+      assert c == nil
+    end
+
+    test "host_kind (inert display data) is preserved on the thin handle", %{full: full} do
+      thin = Facade.to_verb_facing(full)
+      assert thin.host_kind == full.host_kind
     end
   end
 end

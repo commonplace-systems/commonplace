@@ -127,6 +127,8 @@ defmodule Commonplace.MUD.World.Facade do
   @doc "Render the current room (name/description/exits) as a plain map."
   @spec look(t()) :: {:ok, map()} | {:error, term()}
   def look(%__MODULE__{} = f) do
+    f = unwrap(f)
+
     case World.get_room(f.ctx.current_room_uuid, f.store) do
       {:ok, room} ->
         {:ok, %{name: room.name, description: room.description, exits: Map.keys(room.exits)}}
@@ -139,6 +141,8 @@ defmodule Commonplace.MUD.World.Facade do
   @doc "Name + description text for any room/object/player uuid."
   @spec describe(t(), String.t()) :: {:ok, String.t()} | {:error, term()}
   def describe(%__MODULE__{} = f, target_uuid) when is_binary(target_uuid) do
+    f = unwrap(f)
+
     case load_any(target_uuid, f.store) do
       {:ok, %{name: name, description: description}} -> {:ok, "#{name}\n#{description}"}
       {:error, _} = err -> err
@@ -148,6 +152,7 @@ defmodule Commonplace.MUD.World.Facade do
   @doc "Raw attribute map (room/object/player metadata) for any target uuid."
   @spec get_attr(t(), String.t()) :: {:ok, map()} | {:error, term()}
   def get_attr(%__MODULE__{} = f, target_uuid) when is_binary(target_uuid) do
+    f = unwrap(f)
     load_any(target_uuid, f.store)
   end
 
@@ -165,6 +170,8 @@ defmodule Commonplace.MUD.World.Facade do
   """
   @spec actor_carries?(t(), String.t()) :: boolean()
   def actor_carries?(%__MODULE__{} = f, name_or_uuid) when is_binary(name_or_uuid) do
+    f = unwrap(f)
+
     cond do
       # FOOTGUN GUARD (playtest #6074): a blank/whitespace-only name would
       # substring-match ANY held item (find_entry_by_name's empty needle is
@@ -235,6 +242,8 @@ defmodule Commonplace.MUD.World.Facade do
   """
   @spec move_self(t(), String.t()) :: :ok | {:error, term()}
   def move_self(%__MODULE__{} = f, dest_room_uuid) when is_binary(dest_room_uuid) do
+    f = unwrap(f)
+
     World.move(
       f.ctx.player_uuid,
       f.ctx.presence_filename,
@@ -255,20 +264,27 @@ defmodule Commonplace.MUD.World.Facade do
   would let a visitor rearrange a room they don't own.
   """
   @spec move_object(t(), String.t()) :: :ok | {:error, term()}
-  def move_object(%__MODULE__{object_uuid: nil}, _dest_room_uuid), do: {:error, :no_bound_object}
   # CX-v6j4 (plan #6135) — OBJECT-host only: a room is not a movable object.
+  # (host_kind is preserved on the thin verb-facing facade, so this head guard
+  # still fires correctly in a verb run — CX-r8vp.)
   def move_object(%__MODULE__{host_kind: :room}, _dest_room_uuid), do: {:error, :requires_object_host}
 
   def move_object(%__MODULE__{} = f, dest_room_uuid) when is_binary(dest_room_uuid) do
-    write_guarded(f, [f.object_uuid, f.ctx.current_room_uuid, dest_room_uuid], fn ->
-      case entry_name(f.ctx.current_room_uuid, f.object_uuid, f.store) do
-        {:ok, name} ->
-          Move.move(f.object_uuid, name, f.ctx.current_room_uuid, dest_room_uuid, write_opts(f))
+    f = unwrap(f)
 
-        :error ->
-          {:error, :not_found}
-      end
-    end)
+    if f.object_uuid == nil do
+      {:error, :no_bound_object}
+    else
+      write_guarded(f, [f.object_uuid, f.ctx.current_room_uuid, dest_room_uuid], fn ->
+        case entry_name(f.ctx.current_room_uuid, f.object_uuid, f.store) do
+          {:ok, name} ->
+            Move.move(f.object_uuid, name, f.ctx.current_room_uuid, dest_room_uuid, write_opts(f))
+
+          :error ->
+            {:error, :not_found}
+        end
+      end)
+    end
   end
 
   @doc """
@@ -276,12 +292,16 @@ defmodule Commonplace.MUD.World.Facade do
   object. Grant-checked against `{object_uuid}`.
   """
   @spec set_attr(t(), String.t(), term()) :: :ok | {:error, term()}
-  def set_attr(%__MODULE__{object_uuid: nil}, _key, _value), do: {:error, :no_bound_object}
-
   def set_attr(%__MODULE__{} = f, key, value) when is_binary(key) do
-    write_guarded(f, [f.object_uuid], fn ->
-      World.set_meta(f.object_uuid, meta_filename(f), key, value, f.store, write_opts(f))
-    end)
+    f = unwrap(f)
+
+    if f.object_uuid == nil do
+      {:error, :no_bound_object}
+    else
+      write_guarded(f, [f.object_uuid], fn ->
+        World.set_meta(f.object_uuid, meta_filename(f), key, value, f.store, write_opts(f))
+      end)
+    end
   end
 
   # CX-hqk5 — freeform per-object state bounds (plan #5968). State lives in
@@ -302,12 +322,16 @@ defmodule Commonplace.MUD.World.Facade do
   design, not smuggled in here).
   """
   @spec get_state(t(), String.t()) :: term()
-  def get_state(%__MODULE__{object_uuid: nil}, _key), do: nil
-
   def get_state(%__MODULE__{} = f, key) when is_binary(key) do
-    case World.get_meta_map(f.object_uuid, meta_filename(f), f.store) do
-      {:ok, %{"state" => state}} when is_map(state) -> Map.get(state, key)
-      _ -> nil
+    f = unwrap(f)
+
+    if f.object_uuid == nil do
+      nil
+    else
+      case World.get_meta_map(f.object_uuid, meta_filename(f), f.store) do
+        {:ok, %{"state" => state}} when is_map(state) -> Map.get(state, key)
+        _ -> nil
+      end
     end
   end
 
@@ -328,18 +352,22 @@ defmodule Commonplace.MUD.World.Facade do
   quest progress).
   """
   @spec put_state(t(), String.t(), term()) :: :ok | {:error, term()}
-  def put_state(%__MODULE__{object_uuid: nil}, _key, _value), do: {:error, :no_bound_object}
-
   def put_state(%__MODULE__{} = f, key, value) when is_binary(key) do
-    with :ok <- validate_state_key(key),
-         :ok <- validate_state_value(value) do
-      # CX-v6j4 — the BOUND host's own meta file (room_filename for a room
-      # host, object_filename for an object host). A room's meta is
-      # __room.json, NOT __object.json — writing the wrong file failed with
-      # :no_meta_entry, so room state never persisted.
-      write_guarded(f, [f.object_uuid], fn ->
-        do_put_state(f, f.object_uuid, meta_filename(f), key, value)
-      end)
+    f = unwrap(f)
+
+    if f.object_uuid == nil do
+      {:error, :no_bound_object}
+    else
+      with :ok <- validate_state_key(key),
+           :ok <- validate_state_value(value) do
+        # CX-v6j4 — the BOUND host's own meta file (room_filename for a room
+        # host, object_filename for an object host). A room's meta is
+        # __room.json, NOT __object.json — writing the wrong file failed with
+        # :no_meta_entry, so room state never persisted.
+        write_guarded(f, [f.object_uuid], fn ->
+          do_put_state(f, f.object_uuid, meta_filename(f), key, value)
+        end)
+      end
     end
   end
 
@@ -501,7 +529,10 @@ defmodule Commonplace.MUD.World.Facade do
   rename and INHERITS it on name-reuse; `actor_ref` is stable.
   """
   @spec actor_name(t()) :: String.t() | nil
-  def actor_name(%__MODULE__{} = f), do: f.ctx[:player_name]
+  def actor_name(%__MODULE__{} = f) do
+    f = unwrap(f)
+    f.ctx[:player_name]
+  end
 
   @doc """
   CX-a2gd — a STABLE opaque reference to the invoker (their player-dir uuid),
@@ -510,7 +541,10 @@ defmodule Commonplace.MUD.World.Facade do
   `actor_name/1`). Opaque — treat it as a key, not a display string.
   """
   @spec actor_ref(t()) :: String.t() | nil
-  def actor_ref(%__MODULE__{} = f), do: f.ctx[:player_dir_uuid]
+  def actor_ref(%__MODULE__{} = f) do
+    f = unwrap(f)
+    f.ctx[:player_dir_uuid]
+  end
 
   @doc """
   Create a new child object named `name` under this facade's bound
@@ -518,16 +552,20 @@ defmodule Commonplace.MUD.World.Facade do
   `{:ok, new_uuid}` on success.
   """
   @spec create_child(t(), String.t()) :: {:ok, String.t()} | {:error, term()}
-  def create_child(%__MODULE__{object_uuid: nil}, _name), do: {:error, :no_bound_object}
-
   def create_child(%__MODULE__{} = f, name) when is_binary(name) do
-    # CX-cj3t.1.1 — now shares the capped/charged creator with `spawn`, so
-    # create_child is subject to the SAME per-container (M=128) and
-    # per-invocation (N=8) bounds (it was previously uncapped — a latent
-    # object-spam DoS). Authority is unchanged: strict intersection on the
-    # bound object.
-    with :ok <- charge_lifecycle_op() do
-      write_guarded(f, [f.object_uuid], fn -> create_object_in(f, f.object_uuid, name) end)
+    f = unwrap(f)
+
+    if f.object_uuid == nil do
+      {:error, :no_bound_object}
+    else
+      # CX-cj3t.1.1 — now shares the capped/charged creator with `spawn`, so
+      # create_child is subject to the SAME per-container (M=128) and
+      # per-invocation (N=8) bounds (it was previously uncapped — a latent
+      # object-spam DoS). Authority is unchanged: strict intersection on the
+      # bound object.
+      with :ok <- charge_lifecycle_op() do
+        write_guarded(f, [f.object_uuid], fn -> create_object_in(f, f.object_uuid, name) end)
+      end
     end
   end
 
@@ -539,6 +577,8 @@ defmodule Commonplace.MUD.World.Facade do
   @spec transfer(t(), String.t(), String.t()) :: :ok | {:error, term()}
   def transfer(%__MODULE__{} = f, item_uuid, dest_container_uuid)
       when is_binary(item_uuid) and is_binary(dest_container_uuid) do
+    f = unwrap(f)
+
     write_guarded(f, [item_uuid, f.ctx.inventory_uuid, dest_container_uuid], fn ->
       case entry_name(f.ctx.inventory_uuid, item_uuid, f.store) do
         {:ok, name} ->
@@ -604,6 +644,8 @@ defmodule Commonplace.MUD.World.Facade do
   """
   @spec spawn(t(), String.t()) :: {:ok, String.t()} | {:error, term()}
   def spawn(%__MODULE__{} = f, name) when is_binary(name) do
+    f = unwrap(f)
+
     with :ok <- charge_lifecycle_op() do
       room = f.ctx[:current_room_uuid]
       write_guarded(f, [room], fn -> create_object_in(f, room, name) end)
@@ -619,6 +661,8 @@ defmodule Commonplace.MUD.World.Facade do
   """
   @spec give_to_actor(t(), String.t()) :: {:ok, String.t()} | {:error, term()}
   def give_to_actor(%__MODULE__{} = f, name) when is_binary(name) do
+    f = unwrap(f)
+
     with :ok <- charge_lifecycle_op() do
       case f.ctx[:inventory_uuid] do
         nil ->
@@ -644,27 +688,33 @@ defmodule Commonplace.MUD.World.Facade do
   the deferred setuid case). Bounded (per-invocation cap).
   """
   @spec consume(t()) :: :ok | {:error, term()}
-  def consume(%__MODULE__{object_uuid: nil}), do: {:error, :no_bound_object}
   # CX-v6j4 (plan #6135) — OBJECT-host only: a room's children are shared/
   # mixed-ownership, and consume/destroy_child guard only the parent, so
-  # they must not fire on room hosts (cross-owner setuid).
+  # they must not fire on room hosts (cross-owner setuid). host_kind is
+  # preserved on the thin verb-facing facade, so this head guard still fires.
   def consume(%__MODULE__{host_kind: :room}), do: {:error, :requires_object_host}
 
   def consume(%__MODULE__{} = f) do
-    with :ok <- charge_lifecycle_op() do
-      case locate_parent(f, f.object_uuid) do
-        {:ok, parent_uuid, entry} ->
-          if parent_uuid == f.ctx[:inventory_uuid] do
-            # Invoker-own-inventory: consume what you carry (see header).
-            unlink_child(parent_uuid, entry, f)
-          else
-            write_guarded(f, [parent_uuid, f.object_uuid], fn ->
-              unlink_child(parent_uuid, entry, f)
-            end)
-          end
+    f = unwrap(f)
 
-        :error ->
-          {:error, :not_found}
+    if f.object_uuid == nil do
+      {:error, :no_bound_object}
+    else
+      with :ok <- charge_lifecycle_op() do
+        case locate_parent(f, f.object_uuid) do
+          {:ok, parent_uuid, entry} ->
+            if parent_uuid == f.ctx[:inventory_uuid] do
+              # Invoker-own-inventory: consume what you carry (see header).
+              unlink_child(parent_uuid, entry, f)
+            else
+              write_guarded(f, [parent_uuid, f.object_uuid], fn ->
+                unlink_child(parent_uuid, entry, f)
+              end)
+            end
+
+          :error ->
+            {:error, :not_found}
+        end
       end
     end
   end
@@ -676,22 +726,28 @@ defmodule Commonplace.MUD.World.Facade do
   Bounded (per-invocation cap).
   """
   @spec destroy_child(t(), String.t()) :: :ok | {:error, term()}
-  def destroy_child(%__MODULE__{object_uuid: nil}, _name), do: {:error, :no_bound_object}
-  # CX-v6j4 (plan #6135) — OBJECT-host only (see consume).
+  # CX-v6j4 (plan #6135) — OBJECT-host only (see consume). host_kind is
+  # preserved on the thin verb-facing facade, so this head guard still fires.
   def destroy_child(%__MODULE__{host_kind: :room}, _name), do: {:error, :requires_object_host}
 
   def destroy_child(%__MODULE__{} = f, name) when is_binary(name) do
-    with :ok <- charge_lifecycle_op() do
-      write_guarded(f, [f.object_uuid], fn ->
-        # CX-lfo3 — children now carry instance-unique entry keys
-        # ("<name>-<short-uuid>.obj"), so resolve the child by DISPLAY name
-        # (the same substring/alias matcher the MUD's get/take use) rather
-        # than a literal "<name>.obj" key. Destroys ONE match (like `get`).
-        case World.find_entry_by_name(f.object_uuid, name, f.store) do
-          {:ok, entry} -> unlink_child(f.object_uuid, entry.name, f)
-          :error -> {:error, :not_found}
-        end
-      end)
+    f = unwrap(f)
+
+    if f.object_uuid == nil do
+      {:error, :no_bound_object}
+    else
+      with :ok <- charge_lifecycle_op() do
+        write_guarded(f, [f.object_uuid], fn ->
+          # CX-lfo3 — children now carry instance-unique entry keys
+          # ("<name>-<short-uuid>.obj"), so resolve the child by DISPLAY name
+          # (the same substring/alias matcher the MUD's get/take use) rather
+          # than a literal "<name>.obj" key. Destroys ONE match (like `get`).
+          case World.find_entry_by_name(f.object_uuid, name, f.store) do
+            {:ok, entry} -> unlink_child(f.object_uuid, entry.name, f)
+            :error -> {:error, :not_found}
+          end
+        end)
+      end
     end
   end
 
@@ -745,6 +801,8 @@ defmodule Commonplace.MUD.World.Facade do
   """
   @spec consume_from_inventory(t(), String.t()) :: :ok | {:error, term()}
   def consume_from_inventory(%__MODULE__{} = f, name) when is_binary(name) do
+    f = unwrap(f)
+
     cond do
       # nil inventory → fail closed, before charging or any lookup.
       f.ctx[:inventory_uuid] == nil ->
@@ -808,6 +866,8 @@ defmodule Commonplace.MUD.World.Facade do
   @spec give_from_inventory(t(), String.t(), String.t()) :: :ok | {:error, term()}
   def give_from_inventory(%__MODULE__{} = f, name, recipient_name)
       when is_binary(name) and is_binary(recipient_name) do
+    f = unwrap(f)
+
     with :ok <- charge_lifecycle_op(),
          {:ok, inv} <- own_inventory(f),
          {:ok, entry, display} <- resolve_own_item(f, inv, name),
@@ -1006,6 +1066,8 @@ defmodule Commonplace.MUD.World.Facade do
 
   def configure_attr(%__MODULE__{} = f, minted_uuid, key, value)
       when is_binary(minted_uuid) and is_binary(key) do
+    f = unwrap(f)
+
     if minted_this_run?(minted_uuid) do
       World.set_meta(minted_uuid, Schemas.object_filename(), key, value, f.store, write_opts(f))
     else
@@ -1028,6 +1090,8 @@ defmodule Commonplace.MUD.World.Facade do
 
   def configure_state(%__MODULE__{} = f, minted_uuid, key, value)
       when is_binary(minted_uuid) and is_binary(key) do
+    f = unwrap(f)
+
     with :ok <- validate_state_key(key),
          :ok <- validate_state_value(value) do
       if minted_this_run?(minted_uuid) do
@@ -1044,6 +1108,7 @@ defmodule Commonplace.MUD.World.Facade do
   @doc "Say `text` aloud in the invoker's current room."
   @spec say(t(), String.t()) :: :ok
   def say(%__MODULE__{} = f, text) when is_binary(text) do
+    f = unwrap(f)
     World.broadcast_room(f.ctx.current_room_uuid, %{kind: :say, who: f.ctx[:player_name], text: text})
   end
 
@@ -1059,6 +1124,7 @@ defmodule Commonplace.MUD.World.Facade do
   """
   @spec emit(t(), String.t() | map()) :: :ok
   def emit(%__MODULE__{} = f, event) do
+    f = unwrap(f)
     World.broadcast_room(f.ctx.current_room_uuid, %{kind: :custom, text: coerce_text(event)})
   end
 
@@ -1080,6 +1146,8 @@ defmodule Commonplace.MUD.World.Facade do
   @spec emit_action(t(), String.t(), String.t()) :: :ok
   def emit_action(%__MODULE__{} = f, first_person, third_person)
       when is_binary(first_person) and is_binary(third_person) do
+    f = unwrap(f)
+
     World.broadcast_room(f.ctx.current_room_uuid, %{
       kind: :action,
       who: f.ctx[:player_name],
@@ -1147,6 +1215,8 @@ defmodule Commonplace.MUD.World.Facade do
           :ok | {:error, :not_here} | {:error, :rate_limited}
   def whisper(%__MODULE__{} = f, target_name, text)
       when is_binary(target_name) and is_binary(text) do
+    f = unwrap(f)
+
     with {:ok, target_uuid} <- resolve_room_player(f, target_name),
          :ok <- charge_whisper(target_uuid) do
       World.tell(target_uuid, %{kind: :whisper, who: f.ctx[:player_name], text: text})
@@ -1209,46 +1279,52 @@ defmodule Commonplace.MUD.World.Facade do
     end
   end
 
-  # CX-<p0-keyleak> — SIGNING MATERIAL IS NOT VERB-REACHABLE. A safe verb
-  # holds the `%Facade{}` and the allowlist permits `inspect/1` and
-  # `world.<field>` reads, so ANY secret in the struct's object graph leaks
-  # (`world.ctx.signing_context.private_key` by direct field access;
-  # `inspect(world)` renders it). So the SIGNING MATERIAL
-  # (`signing_context`/`cert_cids`/`signer_id` — the private key) is
-  # SCRUBBED from the ctx the verb sees (`scrub_signer/1`, applied in
-  # `Commonplace.MUD.SafeVerb.run/3` BEFORE the verb is handed the facade)
-  # and stashed in the invocation process's dict (`install_signer/1`), which
-  # verb code cannot read (`Process.*`/`self`/`receive` are allowlist-banned).
-  # `write_opts/1` (module code, not verb code) reads it back from the dict,
-  # falling back to `f.ctx` for TRUSTED direct callers (dispatcher/tests)
-  # that never expose the facade to author code. Data-reachability axis, not
-  # execution — see the standing review note.
-  @signer_keys [:signing_context, :cert_cids, :signer_id]
-  @signer_pdict_key :cp_safe_verb_signer
+  # CX-r8vp — THE THIN-HANDLE BACKING (generalizes the P0 signer-material
+  # move to the WHOLE facade). A safe verb holds the verb-facing `%Facade{}`
+  # and the allowlist permits `inspect/1`, `world.<field>` reads, `Map.get`,
+  # destructure, and comprehensions over `world.ctx` — so EVERY capability/
+  # identity/store field in the struct's object graph is verb-reachable by
+  # the DATA axis, not just the private key the P0 fix scrubbed. So the value
+  # the verb receives is a THIN HANDLE (`to_verb_facing/1`): `store`, `ctx`,
+  # `object_uuid`, `owner_grant`, and `via_verb` are all nil/empty, leaving
+  # only inert `host_kind`. The FULL facade (its `ctx` still carrying
+  # `signing_context`/`cert_cids`/`signer_id` — the private key) is installed
+  # PROCESS-SIDE (`install_backing/1`, in the Bounds child's process dict,
+  # which verb code cannot read — `Process.*`/`self`/`receive` are allowlist-
+  # banned) and every method recovers it via `unwrap/1` as its first line.
+  # This SUBSUMES the separate signer pdict entry (the signer keys are just
+  # part of the backing ctx). Because the thin facade's sensitive fields are
+  # nil, a missed unwrap FAILS LOUD (nil store → crash), never leaks.
+  #
+  # Direct/trusted callers (the dispatcher and the ~270 facade tests) pass the
+  # FULL facade with NO pdict installed → `unwrap/1` returns `f` (the OR-`f`
+  # fallback, exactly the shape the old `write_opts` signer read used), so
+  # they keep working unchanged.
+  @facade_backing_key :cp_safe_verb_facade_backing
 
   @doc false
-  def signer_material(%__MODULE__{ctx: ctx}) do
-    %{
-      signing_context: Map.get(ctx, :signing_context),
-      cert_cids: Map.get(ctx, :cert_cids, []),
-      signer_id: Map.get(ctx, :signer_id)
-    }
+  def install_backing(%__MODULE__{} = f), do: Process.put(@facade_backing_key, f)
+
+  # The verb-facing THIN handle: only inert display data (host_kind) survives;
+  # every capability/identity/store field is nil'd. Still a `%__MODULE__{}` so
+  # method dispatch and the allowlist `facade_receiver?` are unchanged.
+  @doc false
+  def to_verb_facing(%__MODULE__{} = f) do
+    %{f | store: nil, ctx: nil, object_uuid: nil, owner_grant: MapSet.new(), via_verb: nil}
   end
 
-  @doc false
-  def scrub_signer(%__MODULE__{ctx: ctx} = f), do: %{f | ctx: Map.drop(ctx, @signer_keys)}
+  # pdict-OR-`f` fallback. Verb run: the full backing is installed → returns
+  # it (the thin `f` is ignored). Direct/test call (no pdict): returns `f`.
+  defp unwrap(%__MODULE__{} = f), do: Process.get(@facade_backing_key) || f
 
-  @doc false
-  def install_signer(material), do: Process.put(@signer_pdict_key, material)
-
+  # Callers have all unwrapped `f` (it is the full backing), so read the
+  # signer directly from `f.ctx` — no separate signer pdict entry.
   defp write_opts(f) do
-    m = Process.get(@signer_pdict_key) || signer_material(f)
-
     [
       store: f.store,
-      signing_context: m.signing_context,
-      cert_cids: m.cert_cids || [],
-      signer_id: m.signer_id,
+      signing_context: f.ctx[:signing_context],
+      cert_cids: f.ctx[:cert_cids] || [],
+      signer_id: f.ctx[:signer_id],
       via_verb: f.via_verb
     ]
   end

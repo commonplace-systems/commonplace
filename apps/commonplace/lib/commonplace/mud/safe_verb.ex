@@ -132,18 +132,17 @@ defmodule Commonplace.MUD.SafeVerb do
           {:ok, term()} | {:error, term()}
   def run(module, %Facade{} = facade, args \\ %{}) when is_atom(module) do
     if function_exported?(module, :run, 2) do
-      # CX-<p0-keyleak> — the verb must NEVER see signing material. Extract it
-      # HERE (trusted code) and hand the verb a SCRUBBED facade; install the
-      # material in the Bounds child's process dict (which verb code can't
-      # read — `Process.*` is allowlist-banned), where the facade's own
-      # `write_opts` reads it back. `material` is captured in THIS closure,
-      # not in anything the verb receives.
-      material = Facade.signer_material(facade)
-      scrubbed = Facade.scrub_signer(facade)
-
+      # CX-r8vp — the verb must NEVER reach signing material OR any other
+      # capability/identity/store field. Install the FULL facade as the
+      # process-side BACKING in the Bounds child's process dict (which verb
+      # code can't read — `Process.*` is allowlist-banned) and hand the verb a
+      # THIN HANDLE (`to_verb_facing/1`) whose sensitive fields are all nil.
+      # The facade's own methods recover the backing via `unwrap/1`. This
+      # generalizes the P0 signer-material move to the whole facade. `facade`
+      # is captured in THIS closure, not in anything the verb receives.
       Bounds.run(fn ->
-        Facade.install_signer(material)
-        invoke(module, scrubbed, args)
+        Facade.install_backing(facade)
+        invoke(module, Facade.to_verb_facing(facade), args)
       end)
       |> normalize()
     else
