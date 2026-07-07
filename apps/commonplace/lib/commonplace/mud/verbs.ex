@@ -247,6 +247,16 @@ defmodule Commonplace.MUD.Verbs do
   # after `find_safe_source` already returned `{:ok, _}`).
   defp map_safe_result(result, verb_name, ctx) do
     case result do
+      # CX-qexv — the verb's TAIL expression was a facade STATE write that
+      # returned {:error, :state_bounds} (an over-budget or non-JSON value).
+      # The generic {:ok, _} arm below would SWALLOW it — the CX-v6j4
+      # silent-loss shape (verb returns the error, dispatch drops it). Surface
+      # it to the author as their reply instead of losing the write silently.
+      {:ok, {:error, :state_bounds}} ->
+        {:error,
+         "(verb #{verb_name}: state value rejected — must be a JSON value " <>
+           "(string / number / boolean / list / string-keyed map), nested ≤ 8 deep and ≤ 1024 bytes)"}
+
       {:ok, _} ->
         :ok
 

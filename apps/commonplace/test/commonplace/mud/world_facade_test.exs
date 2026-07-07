@@ -498,6 +498,113 @@ defmodule Commonplace.MUD.World.FacadeTest do
     assert {:error, :requires_object_host} = Facade.move_object(f, lc_dir(store, trusted_ctx, "dest"))
   end
 
+  test "CX-gs9e REPRO: two sequential put_state calls in one verb run BOTH persist (no read-after-write clobber)", %{
+    store: store,
+    obj_uuid: obj_uuid,
+    trusted_ctx: trusted_ctx
+  } do
+    # The suspected bug: within ONE verb run, put_state(a) chains a commit,
+    # then put_state(b)'s read_state re-reads the meta — if that read is
+    # STALE (doesn't see the a-commit), new_state = %{b} drops a. Reproduce
+    # with two sequential writes on the SAME facade, then read both back via
+    # a FRESH facade (the real cross-call read path).
+    f = lc_facade(trusted_ctx, obj_uuid, [obj_uuid], %{}, store)
+
+    assert :ok = Facade.put_state(f, "a", 1)
+    assert :ok = Facade.put_state(f, "b", 2)
+
+    f_fresh = lc_facade(trusted_ctx, obj_uuid, [obj_uuid], %{}, store)
+    assert Facade.get_state(f_fresh, "a") == 1, "first write clobbered by second (read-after-write stale)"
+    assert Facade.get_state(f_fresh, "b") == 2
+  end
+
+  describe "CX-qexv: structured state values (plan #6163)" do
+    test "a LIST value persists and round-trips via a fresh facade", %{
+      store: store,
+      obj_uuid: obj_uuid,
+      trusted_ctx: trusted_ctx
+    } do
+      f = lc_facade(trusted_ctx, obj_uuid, [obj_uuid], %{}, store)
+      assert :ok = Facade.put_state(f, "chord", ["c", "e", "g"])
+
+      f_fresh = lc_facade(trusted_ctx, obj_uuid, [obj_uuid], %{}, store)
+      assert Facade.get_state(f_fresh, "chord") == ["c", "e", "g"]
+    end
+
+    test "a string-keyed MAP persists and round-trips with STRING keys (gotcha #3 pin)", %{
+      store: store,
+      obj_uuid: obj_uuid,
+      trusted_ctx: trusted_ctx
+    } do
+      f = lc_facade(trusted_ctx, obj_uuid, [obj_uuid], %{}, store)
+      assert :ok = Facade.put_state(f, "prog", %{"secret" => "rose", "step" => 2})
+
+      f_fresh = lc_facade(trusted_ctx, obj_uuid, [obj_uuid], %{}, store)
+      got = Facade.get_state(f_fresh, "prog")
+      assert got == %{"secret" => "rose", "step" => 2}
+      # Keys come back as STRINGS (Jason.decode default), NOT atoms — the
+      # atom-table-exhaustion guard the plan flagged. Assert the invariant
+      # directly, don't rely on it incidentally.
+      assert Enum.all?(Map.keys(got), &is_binary/1)
+    end
+
+    test "nested list-of-maps round-trips (real puzzle shape)", %{
+      store: store,
+      obj_uuid: obj_uuid,
+      trusted_ctx: trusted_ctx
+    } do
+      f = lc_facade(trusted_ctx, obj_uuid, [obj_uuid], %{}, store)
+      val = [%{"pos" => 1, "on" => true}, %{"pos" => 2, "on" => false}]
+      assert :ok = Facade.put_state(f, "dials", val)
+
+      f_fresh = lc_facade(trusted_ctx, obj_uuid, [obj_uuid], %{}, store)
+      assert Facade.get_state(f_fresh, "dials") == val
+    end
+
+    test "HOSTILE non-JSON inputs are rejected CLEANLY (validator never raises — gotcha #1)", %{
+      store: store,
+      obj_uuid: obj_uuid,
+      trusted_ctx: trusted_ctx
+    } do
+      f = lc_facade(trusted_ctx, obj_uuid, [obj_uuid], %{}, store)
+
+      # Each of these reaches validate_state_value; the shape-first ordering
+      # (or non-raising encode) means we get a clean {:error, :state_bounds},
+      # NOT a Jason.encode! raise inside the validator.
+      assert {:error, :state_bounds} = Facade.put_state(f, "k", {:a, :b})
+      assert {:error, :state_bounds} = Facade.put_state(f, "k", :some_atom)
+      assert {:error, :state_bounds} = Facade.put_state(f, "k", [1, {:nested, :tuple}])
+      assert {:error, :state_bounds} = Facade.put_state(f, "k", %{"ok" => :atom_value})
+      assert {:error, :state_bounds} = Facade.put_state(f, "k", %{atom_key: 1})
+      assert {:error, :state_bounds} = Facade.put_state(f, "k", %{"nested" => {:t}})
+
+      # And nothing hostile persisted.
+      f_fresh = lc_facade(trusted_ctx, obj_uuid, [obj_uuid], %{}, store)
+      assert Facade.get_state(f_fresh, "k") == nil
+    end
+
+    test "over-1024-byte structured value → :state_bounds (identical ceiling)", %{
+      store: store,
+      obj_uuid: obj_uuid,
+      trusted_ctx: trusted_ctx
+    } do
+      f = lc_facade(trusted_ctx, obj_uuid, [obj_uuid], %{}, store)
+      big = List.duplicate("xxxxxxxx", 200)
+      assert {:error, :state_bounds} = Facade.put_state(f, "k", big)
+    end
+
+    test "nesting deeper than @state_max_depth → :state_bounds", %{
+      store: store,
+      obj_uuid: obj_uuid,
+      trusted_ctx: trusted_ctx
+    } do
+      f = lc_facade(trusted_ctx, obj_uuid, [obj_uuid], %{}, store)
+      # 12 levels of list nesting, well past the depth 8 bound.
+      deep = Enum.reduce(1..12, 0, fn _, acc -> [acc] end)
+      assert {:error, :state_bounds} = Facade.put_state(f, "k", deep)
+    end
+  end
+
   test "CX-cj3t.9: move_object STILL grant-checks (empty grant → :owner_grant_exceeded — the intersection is intact)", %{
     store: store,
     obj_uuid: obj_uuid,

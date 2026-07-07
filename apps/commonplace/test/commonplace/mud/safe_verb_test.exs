@@ -286,20 +286,30 @@ defmodule Commonplace.MUD.SafeVerbTest do
       assert Facade.get_state(f, "name") == "hacked"
     end
 
-    test "bounds: oversized value, non-scalar, oversized key, and >64 keys → :state_bounds", %{
+    test "bounds (CX-qexv): structured values OK; oversize/non-JSON/oversized-key/>64-keys → :state_bounds", %{
       store: store,
       target_dir_uuid: dir
     } do
       f = Facade.new(%{}, dir, [dir], nil, store)
 
+      # CX-qexv — lists and string-keyed maps of JSON values now PERSIST.
+      assert :ok = Facade.put_state(f, "list", [1, 2, 3])
+      assert Facade.get_state(f, "list") == [1, 2, 3]
+      assert :ok = Facade.put_state(f, "map", %{"a" => 1})
+      assert Facade.get_state(f, "map") == %{"a" => 1}
+
+      # ...but the total serialized value still can't exceed 1024 bytes,
+      # and non-JSON shapes (tuple/atom/atom-keyed map) fail closed.
       assert {:error, :state_bounds} = Facade.put_state(f, "big", String.duplicate("x", 1025))
-      assert {:error, :state_bounds} = Facade.put_state(f, "list", [1, 2, 3])
-      assert {:error, :state_bounds} = Facade.put_state(f, "map", %{"a" => 1})
+      assert {:error, :state_bounds} = Facade.put_state(f, "biglist", List.duplicate("xxxxxxxx", 200))
+      assert {:error, :state_bounds} = Facade.put_state(f, "tuple", {1, 2})
+      assert {:error, :state_bounds} = Facade.put_state(f, "atom", :nope)
+      assert {:error, :state_bounds} = Facade.put_state(f, "atomkey", %{a: 1})
       assert {:error, :state_bounds} = Facade.put_state(f, String.duplicate("k", 65), "v")
 
       # Fill exactly 64 keys, then a 65th NEW key is refused...
-      Enum.each(1..64, fn i -> assert :ok = Facade.put_state(f, "k#{i}", i) end)
-      assert {:error, :state_bounds} = Facade.put_state(f, "k65", 1)
+      Enum.each(1..62, fn i -> assert :ok = Facade.put_state(f, "k#{i}", i) end)
+      assert {:error, :state_bounds} = Facade.put_state(f, "k63", 1)
       # ...but UPDATING an existing key still works (no new key).
       assert :ok = Facade.put_state(f, "k1", 999)
     end

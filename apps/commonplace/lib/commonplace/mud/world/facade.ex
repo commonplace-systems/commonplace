@@ -291,6 +291,7 @@ defmodule Commonplace.MUD.World.Facade do
   @state_key_max_bytes 64
   @state_value_max_bytes 1024
   @state_max_keys 64
+  @state_max_depth 8
 
   @doc """
   CX-hqk5 — read freeform per-object state written by `put_state/3`.
@@ -316,12 +317,15 @@ defmodule Commonplace.MUD.World.Facade do
   CX-hqk5 — write freeform per-object state. Owner-scoped (`write_guarded`
   on the bound object, the SAME intersection as `set_attr`) into a
   DEDICATED `meta["state"]` submap, so it can NEVER clobber typed fields
-  (name/fixed/container). Bounds (plan #5968): key ≤ 64 bytes; value a
-  JSON SCALAR only — string (≤ 1024 bytes) / number / boolean / nil, NOT
-  a list or map; ≤ 64 keys per object. Over-limit → `{:error,
-  :state_bounds}` (fail-visible, never truncates). One verb `put_state`s,
-  another (or a later run) `get_state`s — the whole stateful-mechanic
-  class (lit/unlit, unlocked, score, already-solved).
+  (name/fixed/container). Bounds (plan #5968 + #6163): key ≤ 64 bytes;
+  value any JSON DATA-MODEL term — nil / boolean / number / string / list /
+  string-keyed map (NOT atoms-except-true/false/nil, tuples, or structs) —
+  nested ≤ 8 deep, whose FULL `Jason.encode` fits ≤ 1024 bytes; ≤ 64 keys
+  per object. Over-limit / wrong-shape → `{:error, :state_bounds}`
+  (fail-visible, never truncates). One verb `put_state`s, another (or a
+  later run) `get_state`s — the whole stateful-mechanic class (lit/unlit,
+  unlocked, score, already-solved) plus lists/maps (chords, inventories,
+  quest progress).
   """
   @spec put_state(t(), String.t(), term()) :: :ok | {:error, term()}
   def put_state(%__MODULE__{object_uuid: nil}, _key, _value), do: {:error, :no_bound_object}
@@ -374,14 +378,71 @@ defmodule Commonplace.MUD.World.Facade do
       else: {:error, :state_bounds}
   end
 
-  defp validate_state_value(v) when is_boolean(v) or is_nil(v) or is_number(v), do: :ok
-
-  defp validate_state_value(v) when is_binary(v) do
-    if byte_size(v) <= @state_value_max_bytes, do: :ok, else: {:error, :state_bounds}
+  # CX-qexv (plan #6163 BLESSED) — a state value may be any JSON DATA-MODEL
+  # term: nil | boolean | number | string | list-of-valid | map with STRING
+  # keys of valid values. The SHAPE is checked first (rejecting atoms except
+  # true/false/nil, tuples, structs, atom-keyed maps, pids/funs/refs, and
+  # anything nested deeper than @state_max_depth), THEN the value's FULL
+  # `Jason.encode` byte size must fit @state_value_max_bytes.
+  #
+  # Two invariants this closes (plan gotchas):
+  #  1. ORDERING/no-raise — shape runs BEFORE size, and size uses the
+  #     NON-raising `Jason.encode/1`. So the validator itself never raises on
+  #     the hostile non-JSON input it exists to reject cleanly.
+  #  2. Type-change + encode-raise — rejecting atoms/tuples/structs prevents
+  #     both the store's `Jason.encode!` raise (World.set_meta) and the
+  #     write-`:foo`/read-`"foo"` footgun (get_state decodes to STRING keys).
+  #
+  # Structure is spent WITHIN the same 1024-byte per-value budget as the old
+  # scalar-only rule — richer shape at IDENTICAL sync-cost ceiling, so
+  # plan-#5968's per-object bound is unchanged (≤64 keys × ≤1024 B).
+  defp validate_state_value(value) do
+    with :ok <- validate_state_shape(value, @state_max_depth) do
+      validate_state_size(value)
+    end
   end
 
-  # Reject list/map/tuple/other — JSON scalars only.
-  defp validate_state_value(_), do: {:error, :state_bounds}
+  defp validate_state_shape(_v, depth) when depth < 0, do: {:error, :state_bounds}
+  defp validate_state_shape(v, _d) when is_boolean(v) or is_nil(v) or is_number(v), do: :ok
+  defp validate_state_shape(v, _d) when is_binary(v), do: :ok
+
+  defp validate_state_shape(list, depth) when is_list(list) do
+    Enum.reduce_while(list, :ok, fn el, :ok ->
+      case validate_state_shape(el, depth - 1) do
+        :ok -> {:cont, :ok}
+        err -> {:halt, err}
+      end
+    end)
+  end
+
+  defp validate_state_shape(map, depth) when is_map(map) do
+    # Structs are maps with an atom `__struct__` key → caught by the
+    # string-key guard and rejected fail-closed (no struct ever persists).
+    Enum.reduce_while(map, :ok, fn {k, v}, :ok ->
+      if is_binary(k) do
+        case validate_state_shape(v, depth - 1) do
+          :ok -> {:cont, :ok}
+          err -> {:halt, err}
+        end
+      else
+        {:halt, {:error, :state_bounds}}
+      end
+    end)
+  end
+
+  # atoms (other than the true/false/nil handled above), tuples, pids, funs,
+  # refs, ports — not JSON data, fail closed.
+  defp validate_state_shape(_other, _depth), do: {:error, :state_bounds}
+
+  # Non-raising by design: the shape check already guarantees encodability,
+  # but `Jason.encode/1` ({:ok|:error}) is used — never `encode!/1` — so this
+  # measure can't raise even if shape validation and Jason ever disagree.
+  defp validate_state_size(value) do
+    case Jason.encode(value) do
+      {:ok, json} when byte_size(json) <= @state_value_max_bytes -> :ok
+      _ -> {:error, :state_bounds}
+    end
+  end
 
   # ---- randomness (CX-9plf) — no effect, no authority: just RNG ----
   #

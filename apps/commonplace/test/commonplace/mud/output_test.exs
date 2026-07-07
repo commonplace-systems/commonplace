@@ -459,6 +459,41 @@ defmodule Commonplace.MUD.OutputTest do
       PlayerSession.stop(alice)
     end
 
+    test "CX-qexv: a verb whose tail put_state is over-budget surfaces :state_bounds to the actor (not silent)",
+         ctx do
+      alice = start_player("alice", ctx)
+      drain("alice")
+      send_input(alice, "east")
+      drain("alice")
+
+      send_input(alice, "@create object gizmo")
+      drain("alice")
+
+      {:ok, entry} = Commonplace.MUD.World.find_entry_by_name(clearing_uuid(ctx), "gizmo", ctx.store)
+      dir = entry.node_id
+
+      # The verb's TAIL expression is a put_state with a >1024-byte value —
+      # a literal big string in the body, so it saves fine but the write
+      # returns {:error, :state_bounds}. Pre-CX-qexv the {:ok, _} dispatch
+      # arm swallowed it; now it must reach the actor.
+      big = String.duplicate("z", 1100)
+
+      :ok =
+        VerbSource.save_safe_verb(
+          dir,
+          "overflow",
+          ~s|Commonplace.MUD.World.Facade.put_state(world, "blob", "#{big}")|,
+          [dir],
+          ctx.store
+        )
+
+      send_input(alice, "overflow gizmo")
+      out = drain("alice") |> Enum.join("\n")
+      assert out =~ "state value rejected"
+
+      PlayerSession.stop(alice)
+    end
+
     test "a never-locked container behaves exactly as before (regression)", ctx do
       alice = start_player("alice", ctx)
       drain("alice")
