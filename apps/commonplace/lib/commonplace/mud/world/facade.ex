@@ -1130,6 +1130,24 @@ defmodule Commonplace.MUD.World.Facade do
   end
 
   @doc """
+  CX-<notify> — deliver `text` PRIVATELY to the INVOKER only (not the room)
+  as plain, non-speech feedback. This is the puzzle-feedback channel: verb
+  STATUS / self-directed results ("The gong resonates. Charge 3/5.") that
+  would otherwise leak as `say` ("You say, ...") — mechanics shouted into the
+  room + spamming co-present players. Delivered on the invoker's own actor-
+  only tell topic (the SAME channel `whisper/3` + the CX-3x5a author-
+  diagnostic use), rendered `kind: :notice` (plain text, NOT `:say`/
+  `:whisper`). INVOKER-ONLY is structural: no target parameter, so a verb can
+  only ever notify ITS OWN caller. Low-trust: no doc write, no authority, no
+  rate cap (self-feedback) — strictly weaker than `whisper/3`.
+  """
+  @spec notify(t(), String.t()) :: :ok
+  def notify(%__MODULE__{} = f, text) when is_binary(text) do
+    f = unwrap(f)
+    World.tell(f.ctx[:player_uuid], %{kind: :notice, text: text})
+  end
+
+  @doc """
   Broadcast a custom, UNATTRIBUTED text event to the invoker's current
   room. The author supplies only text (or a map carrying a `:text`); the
   event is server-stamped `kind: :custom` so an author CANNOT forge a

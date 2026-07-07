@@ -103,6 +103,11 @@ defmodule Commonplace.MUD.SafeVerb.AllowlistTest do
       assert :ok == Allowlist.check(~s|Commonplace.MUD.World.Facade.actor_ref(world)|)
     end
 
+    # CX-<notify> — invoker-private feedback primitive admitted.
+    test "(f10) Facade.notify/2 passes" do
+      assert :ok == Allowlist.check(~s|Commonplace.MUD.World.Facade.notify(world, "STATUS: charged 3/5")|)
+    end
+
     test "(f3) the qualified facade form is refused when the first arg isn't the literal world binding" do
       assert_rejected(~s|other = world\nCommonplace.MUD.World.Facade.set_attr(other, "k", "v")|)
       assert_rejected(~s|Commonplace.MUD.World.Facade.set_attr(args, "k", "v")|)

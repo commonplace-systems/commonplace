@@ -831,6 +831,47 @@ defmodule Commonplace.MUD.OutputTest do
     end
   end
 
+  describe "CX-<notify>: private verb feedback" do
+    test "notify reaches the INVOKER as plain text, NOT the co-present player and NOT as speech", ctx do
+      alice = start_player("alice", ctx)
+      bob = start_player("bob", ctx)
+      drain("alice")
+      drain("bob")
+
+      send_input(alice, "east")
+      send_input(bob, "east")
+      drain("alice")
+      drain("bob")
+
+      send_input(alice, "@create object gong")
+      drain("alice")
+
+      {:ok, entry} = Commonplace.MUD.World.find_entry_by_name(clearing_uuid(ctx), "gong", ctx.store)
+
+      :ok =
+        VerbSource.save_safe_verb(
+          entry.node_id,
+          "ring",
+          ~s|Commonplace.MUD.World.Facade.notify(world, "STATUS-XYZZY charge 3/5")|,
+          [entry.node_id],
+          ctx.store
+        )
+
+      send_input(alice, "ring gong")
+      alice_out = drain("alice") |> Enum.join("\n")
+      bob_out = drain("bob") |> Enum.join("\n")
+
+      # Invoker sees the status PLAIN (not "You say, ...").
+      assert alice_out =~ "STATUS-XYZZY charge 3/5"
+      refute alice_out =~ "You say"
+      # Co-present player sees NOTHING — private, not room speech.
+      refute bob_out =~ "STATUS-XYZZY"
+
+      PlayerSession.stop(alice)
+      PlayerSession.stop(bob)
+    end
+  end
+
   # CX-cj3t.10 — directed private messaging (plan #6050). Three trust
   # properties under test: same-room-only resolution (privacy — a
   # bystander never sees a whisper), server-stamped attribution (the

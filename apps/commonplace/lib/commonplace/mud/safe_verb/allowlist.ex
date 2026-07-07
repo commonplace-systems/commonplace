@@ -499,7 +499,12 @@ defmodule Commonplace.MUD.SafeVerb.Allowlist do
                     # names another player), no authority — the spoof-fix for
                     # per-player state.
                     {:actor_name, 1},
-                    {:actor_ref, 1}
+                    {:actor_ref, 1},
+                    # CX-<notify> — invoker-PRIVATE non-speech feedback (the
+                    # puzzle-feedback channel). Invoker-only (no target param),
+                    # no authority, no doc write — strictly weaker than
+                    # whisper/3. Fixes verb output leaking as 'You say'.
+                    {:notify, 2}
                   ])
 
   # VECTOR 11 — reflective / capability side-channels that WEAR a

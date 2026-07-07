@@ -378,7 +378,7 @@ defmodule Commonplace.MUD.PlayerSession do
           "  On an OBJECT verb the first noun IS the object it runs on, so your " <>
           "free args start at args.rest — 'bestow handoff mira' (NOT 'bestow mira').\n" <>
           "Common calls (always Commonplace.MUD.World.Facade.<fn>(world, ...)):\n" <>
-          "  say(world, text)  ·  emit_action(world, \"lift the lid\", \"lifts the lid\")  [attributed: You / <name>]\n" <>
+          "  say(world, text) [ALOUD in room] · notify(world, text) [PRIVATE to the actor — use for puzzle STATUS/feedback, not say] · emit_action(world, \"lift the lid\", \"lifts the lid\")  [attributed: You / <name>]\n" <>
           "  random(world, n) [1..n]  ·  pick(world, list)  ·  actor_carries?(world, name)\n" <>
           "  actor_name(world) [display] · actor_ref(world) [stable per-player KEY]\n" <>
           "  get_state(world, key)  ·  put_state(world, key, value)\n" <>
@@ -536,6 +536,13 @@ defmodule Commonplace.MUD.PlayerSession do
   # pre-framed as a parenthetical "(verb note: …)" note — clearly a
   # diagnostic, not gameplay narration.
   defp render_event(%{kind: :verb_diagnostic, text: text}, state) do
+    state.output_fn.(text)
+  end
+
+  # CX-<notify> — invoker-private, non-speech verb feedback (the puzzle-
+  # feedback channel). Plain text, no "You say"/"X whispers" framing — it's
+  # the verb's own status/result to the actor.
+  defp render_event(%{kind: :notice, text: text}, state) do
     state.output_fn.(text)
   end
 
