@@ -60,7 +60,7 @@ defmodule Commonplace.MUD.PlayerSession do
   require Logger
 
   alias Commonplace.Crypto.{AgentKeys, Signing}
-  alias Commonplace.MUD.{Parser, Schemas, SignedWrite, Topics, Verbs, VerbSource}
+  alias Commonplace.MUD.{Parser, Schemas, SignedWrite, Topics, Verbs, VerbSource, World}
   alias Commonplace.MUD.Schemas.{Player, Room}
   alias Commonplace.Presence
   alias Commonplace.Store.{CommitStoreClient, SecretStore}
@@ -650,39 +650,11 @@ defmodule Commonplace.MUD.PlayerSession do
     end
   end
 
+  # Delegates to the shared locator in `Commonplace.MUD.World` (the walk
+  # itself lives there now, used by both this teardown path and verb
+  # dispatch's post-move_self room reconciliation — CX-oh5k).
   defp find_presence(root_uuid, filename, store) do
-    walk_for_presence(root_uuid, filename, store, MapSet.new())
-  end
-
-  defp walk_for_presence(uuid, filename, store, seen) do
-    if MapSet.member?(seen, uuid) do
-      :not_found
-    else
-      seen = MapSet.put(seen, uuid)
-
-      case Schemas.load_dir_schema(uuid, store) do
-        {:ok, schema} ->
-          entries = Schema.list_entries(schema)
-
-          case Enum.find(entries, fn e -> e.name == filename end) do
-            %Schema.Entry{node_id: presence_uuid} ->
-              {:ok, uuid, presence_uuid}
-
-            nil ->
-              entries
-              |> Enum.filter(&(&1.type == :dir))
-              |> Enum.find_value(:not_found, fn entry ->
-                case walk_for_presence(entry.node_id, filename, store, seen) do
-                  :not_found -> nil
-                  result -> result
-                end
-              end)
-          end
-
-        _ ->
-          :not_found
-      end
-    end
+    World.find_presence(root_uuid, filename, store)
   end
 
   # Unsigned on purpose (see `ensure_player_in_world/3` note above) — the

@@ -771,4 +771,45 @@ defmodule Commonplace.MUD.OutputTest do
       PlayerSession.stop(bob)
     end
   end
+
+  describe "CX-oh5k: move_self session sync" do
+    test "CX-oh5k: move_self in a verb moves the session room, not just presence (no ghost)", ctx do
+      alice = start_player("alice", ctx)
+      drain("alice")
+      send_input(alice, "east")
+      drain("alice")
+
+      clearing = clearing_uuid(ctx)
+      {:ok, root_schema} = Schemas.load_dir_schema(ctx.root, ctx.store)
+      {:ok, start_entry} = Schema.get_entry(root_schema, "start")
+      start = start_entry.node_id
+
+      :ok =
+        VerbSource.save_safe_verb(
+          clearing,
+          "teleport",
+          ~s|Commonplace.MUD.World.Facade.move_self(world, "#{start}")|,
+          [clearing],
+          ctx.store
+        )
+
+      send_input(alice, "teleport")
+      drain("alice")
+
+      s = :sys.get_state(alice)
+      # THE FIX: session followed the presence to the dest room.
+      assert s.current_room_uuid == start, "session room did NOT follow move_self (ghost)"
+
+      # And the presence really is in start, not clearing.
+      names = fn dir ->
+        {:ok, sch} = Schemas.load_dir_schema(dir, ctx.store)
+        sch |> Schema.list_entries() |> Enum.map(& &1.name)
+      end
+
+      assert s.presence_filename in names.(start)
+      refute s.presence_filename in names.(clearing)
+
+      PlayerSession.stop(alice)
+    end
+  end
 end

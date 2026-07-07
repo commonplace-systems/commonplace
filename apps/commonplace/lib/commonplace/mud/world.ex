@@ -194,6 +194,62 @@ defmodule Commonplace.MUD.World do
   @doc "Read a presence doc map (name/type/status/heartbeat)."
   def read_presence(uuid, store \\ CommitStoreClient), do: Presence.read(uuid, store)
 
+  @doc """
+  Locate the room a `.usr` presence file currently lives in by walking
+  the tree from `root_uuid`. Presence does NOT relocate with
+  `current_room_uuid` bookkeeping — it physically moves in the schema
+  tree — so this is the authoritative locator. Returns
+  `{:ok, room_uuid, presence_uuid}` or `:not_found`. Cycle-safe via a
+  visited set.
+  """
+  def find_presence(root_uuid, presence_filename, store \\ CommitStoreClient)
+      when is_binary(root_uuid) and is_binary(presence_filename) do
+    walk_for_presence(root_uuid, presence_filename, store, MapSet.new())
+  end
+
+  @doc """
+  Like `find_presence/3` but returns only `{:ok, room_uuid}` (drops the
+  presence UUID). Used by verb dispatch to reconcile a session's room
+  after a `move_self` (CX-oh5k).
+  """
+  def find_presence_room(root_uuid, presence_filename, store \\ CommitStoreClient) do
+    case find_presence(root_uuid, presence_filename, store) do
+      {:ok, room_uuid, _presence_uuid} -> {:ok, room_uuid}
+      :not_found -> :not_found
+    end
+  end
+
+  defp walk_for_presence(uuid, filename, store, seen) do
+    if MapSet.member?(seen, uuid) do
+      :not_found
+    else
+      seen = MapSet.put(seen, uuid)
+
+      case Schemas.load_dir_schema(uuid, store) do
+        {:ok, schema} ->
+          entries = Schema.list_entries(schema)
+
+          case Enum.find(entries, fn e -> e.name == filename end) do
+            %Schema.Entry{node_id: presence_uuid} ->
+              {:ok, uuid, presence_uuid}
+
+            nil ->
+              entries
+              |> Enum.filter(&(&1.type == :dir))
+              |> Enum.find_value(:not_found, fn entry ->
+                case walk_for_presence(entry.node_id, filename, store, seen) do
+                  :not_found -> nil
+                  result -> result
+                end
+              end)
+          end
+
+        _ ->
+          :not_found
+      end
+    end
+  end
+
   defp normalize_event(text) when is_binary(text), do: %{kind: :custom, text: text}
   defp normalize_event(%{} = map), do: map
 end

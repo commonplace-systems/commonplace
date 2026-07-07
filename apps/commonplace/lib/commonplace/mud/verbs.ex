@@ -280,8 +280,14 @@ defmodule Commonplace.MUD.Verbs do
       {:ok, {:error, :requires_object_host}} ->
         {:error, "(verb #{verb_name} can't do that here — it needs an object to act on, not a room)"}
 
+      # CX-oh5k — a safe verb may have called `Facade.move_self`, which
+      # relocates the invoker's `.usr` presence WITHOUT emitting a
+      # `{:moved}` signal (unlike the builtin `go`). Reconcile the
+      # session's room with the AUTHORITATIVE presence location so the
+      # session follows the move instead of ghosting (presence in dest,
+      # session stuck in the old room).
       {:ok, _} ->
-        :ok
+        reconcile_session_room(ctx)
 
       {:error, {:compile_error, msg}} ->
         emit_verb_error(verb_name, "compile error: #{msg}", ctx)
@@ -314,6 +320,37 @@ defmodule Commonplace.MUD.Verbs do
 
       _ ->
         :unhandled
+    end
+  end
+
+  # CX-oh5k — pure session-state-sync after a successful safe verb.
+  # CHEAP PATH FIRST: if the invoker's presence is still an entry in the
+  # session's current room, no move happened → `:ok` (one schema read,
+  # the common case). Only when the presence is gone from the current
+  # room do we walk the tree to locate its new room and emit `{:moved,
+  # new_room}` so `PlayerSession.handle_verb_result` re-subscribes and
+  # re-renders. If it can't be located (presence gone entirely) → `:ok`
+  # (never crash). This writes NOTHING and does not gate the move.
+  defp reconcile_session_room(ctx) do
+    if presence_in_room?(ctx.current_room_uuid, ctx.presence_filename, ctx.store) do
+      :ok
+    else
+      case World.find_presence_room(ctx.root_uuid, ctx.presence_filename, ctx.store) do
+        {:ok, new_room_uuid} -> {:moved, new_room_uuid}
+        :not_found -> :ok
+      end
+    end
+  end
+
+  # A read failure defaults to `true` ("still here") so a transient
+  # store blip never triggers a spurious relocation.
+  defp presence_in_room?(room_uuid, presence_filename, store) do
+    case Schemas.load_dir_schema(room_uuid, store) do
+      {:ok, schema} ->
+        Enum.any?(Schema.list_entries(schema), fn e -> e.name == presence_filename end)
+
+      _ ->
+        true
     end
   end
 
