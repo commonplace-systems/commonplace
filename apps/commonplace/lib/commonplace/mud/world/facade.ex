@@ -841,12 +841,46 @@ defmodule Commonplace.MUD.World.Facade do
     end
   end
 
+  # CX-<p0-keyleak> — SIGNING MATERIAL IS NOT VERB-REACHABLE. A safe verb
+  # holds the `%Facade{}` and the allowlist permits `inspect/1` and
+  # `world.<field>` reads, so ANY secret in the struct's object graph leaks
+  # (`world.ctx.signing_context.private_key` by direct field access;
+  # `inspect(world)` renders it). So the SIGNING MATERIAL
+  # (`signing_context`/`cert_cids`/`signer_id` — the private key) is
+  # SCRUBBED from the ctx the verb sees (`scrub_signer/1`, applied in
+  # `Commonplace.MUD.SafeVerb.run/3` BEFORE the verb is handed the facade)
+  # and stashed in the invocation process's dict (`install_signer/1`), which
+  # verb code cannot read (`Process.*`/`self`/`receive` are allowlist-banned).
+  # `write_opts/1` (module code, not verb code) reads it back from the dict,
+  # falling back to `f.ctx` for TRUSTED direct callers (dispatcher/tests)
+  # that never expose the facade to author code. Data-reachability axis, not
+  # execution — see the standing review note.
+  @signer_keys [:signing_context, :cert_cids, :signer_id]
+  @signer_pdict_key :cp_safe_verb_signer
+
+  @doc false
+  def signer_material(%__MODULE__{ctx: ctx}) do
+    %{
+      signing_context: Map.get(ctx, :signing_context),
+      cert_cids: Map.get(ctx, :cert_cids, []),
+      signer_id: Map.get(ctx, :signer_id)
+    }
+  end
+
+  @doc false
+  def scrub_signer(%__MODULE__{ctx: ctx} = f), do: %{f | ctx: Map.drop(ctx, @signer_keys)}
+
+  @doc false
+  def install_signer(material), do: Process.put(@signer_pdict_key, material)
+
   defp write_opts(f) do
+    m = Process.get(@signer_pdict_key) || signer_material(f)
+
     [
       store: f.store,
-      signing_context: Map.get(f.ctx, :signing_context),
-      cert_cids: Map.get(f.ctx, :cert_cids, []),
-      signer_id: Map.get(f.ctx, :signer_id),
+      signing_context: m.signing_context,
+      cert_cids: m.cert_cids || [],
+      signer_id: m.signer_id,
       via_verb: f.via_verb
     ]
   end
@@ -1007,5 +1041,18 @@ defmodule Commonplace.MUD.World.Facade do
             end
         end
     end
+  end
+end
+
+defimpl Inspect, for: Commonplace.MUD.World.Facade do
+  # CX-<p0-keyleak> — OPAQUE render (defense-in-depth, plan #6107 part 3):
+  # never dump the struct's object graph (store handle, ctx, owner_grant) so
+  # `inspect(world)` inside a verb discloses no internals even if a field
+  # were to regress. The scrub is the load-bearing fix; this neuters the
+  # inspect symptom specifically and hides the store handle. Shows only the
+  # non-secret player name for debuggability.
+  def inspect(facade, _opts) do
+    name = (is_map(facade.ctx) && Map.get(facade.ctx, :player_name)) || "?"
+    "#MUD.World.Facade<player: #{name}>"
   end
 end

@@ -132,7 +132,20 @@ defmodule Commonplace.MUD.SafeVerb do
           {:ok, term()} | {:error, term()}
   def run(module, %Facade{} = facade, args \\ %{}) when is_atom(module) do
     if function_exported?(module, :run, 2) do
-      Bounds.run(fn -> invoke(module, facade, args) end) |> normalize()
+      # CX-<p0-keyleak> — the verb must NEVER see signing material. Extract it
+      # HERE (trusted code) and hand the verb a SCRUBBED facade; install the
+      # material in the Bounds child's process dict (which verb code can't
+      # read — `Process.*` is allowlist-banned), where the facade's own
+      # `write_opts` reads it back. `material` is captured in THIS closure,
+      # not in anything the verb receives.
+      material = Facade.signer_material(facade)
+      scrubbed = Facade.scrub_signer(facade)
+
+      Bounds.run(fn ->
+        Facade.install_signer(material)
+        invoke(module, scrubbed, args)
+      end)
+      |> normalize()
     else
       {:error, {:no_run_export, module}}
     end

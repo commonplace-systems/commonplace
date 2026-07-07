@@ -634,4 +634,108 @@ defmodule Commonplace.MUD.World.FacadeTest do
     refute function_exported?(Facade, :store, 1)
     refute function_exported?(Facade, :raw_store, 1)
   end
+
+  # ---- P0 KEY-LEAK regression (data-reachability axis, plan #6107) ----
+  # A verb holds the %Facade{}, and the allowlist permits inspect/1 +
+  # world.<field> reads, so ANY signing material in the struct's object
+  # graph leaks. These pin that the VERB-FACING facade carries none.
+
+  describe "P0: signing material is not verb-reachable" do
+    setup %{store: store, trusted_ctx: trusted_ctx, obj_uuid: obj_uuid} do
+      facade =
+        Facade.new(
+          %{
+            signing_context: trusted_ctx,
+            cert_cids: [],
+            signer_id: nil,
+            player_name: "alice",
+            current_room_uuid: "room1",
+            inventory_uuid: "inv1",
+            player_uuid: "p1"
+          },
+          obj_uuid,
+          [obj_uuid],
+          {"verbs/x.safe.elx", "owner"},
+          store
+        )
+
+      %{facade: facade}
+    end
+
+    test "PIN 1: scrub_signer removes all signing material; inspect(world) surfaces no key bytes", %{
+      facade: facade,
+      trusted_ctx: trusted_ctx
+    } do
+      scrubbed = Facade.scrub_signer(facade)
+
+      # The scrubbed ctx (what the verb sees) carries no signing material.
+      assert Map.get(scrubbed.ctx, :signing_context) == nil
+      assert Map.get(scrubbed.ctx, :cert_cids) == nil
+      assert Map.get(scrubbed.ctx, :signer_id) == nil
+
+      # inspect(world) AND world.ctx.* surface no private-key bytes.
+      key_bytes = inspect(trusted_ctx.private_key)
+      refute String.contains?(inspect(scrubbed, limit: :infinity), key_bytes)
+      refute String.contains?(inspect(scrubbed.ctx, limit: :infinity), key_bytes)
+
+      # Opaque Inspect render (belt) shows only the non-secret player name.
+      assert inspect(scrubbed) == "#MUD.World.Facade<player: alice>"
+
+      # Post-scrub remainder is all non-secret (identity + location + provenance).
+      assert scrubbed.ctx == %{player_name: "alice", current_room_uuid: "room1", inventory_uuid: "inv1", player_uuid: "p1"}
+    end
+
+    test "PIN 2: the verb-facing facade (via the real SafeVerb.run path) exposes no key; signing still works", %{
+      store: store,
+      trusted_ctx: trusted_ctx,
+      obj_uuid: obj_uuid,
+      facade: facade
+    } do
+      # A hostile verb tries to exfil: return inspect of world AND world.ctx.
+      :ok =
+        Commonplace.MUD.VerbSource.save_safe_verb(
+          obj_uuid,
+          "exfil",
+          ~s|inspect({world, world.ctx})|,
+          [obj_uuid],
+          store,
+          signing_context: trusted_ctx
+        )
+
+      {:ok, rendered} =
+        Commonplace.MUD.VerbSource.run_safe_verb(obj_uuid, "exfil", [obj_uuid], facade, %{}, store)
+
+      # The verb ran with the SCRUBBED facade — no key bytes anywhere in what
+      # it could see/render.
+      refute String.contains?(rendered, inspect(trusted_ctx.private_key))
+      refute rendered =~ "signing_context"
+
+      # And write_opts still recovers the signer (process-dict path) so a
+      # facade WRITE from a verb still signs — prove set_attr lands.
+      :ok =
+        Commonplace.MUD.VerbSource.save_safe_verb(
+          obj_uuid,
+          "poke",
+          ~s|Commonplace.MUD.World.Facade.set_attr(world, "note", "hi")|,
+          [obj_uuid],
+          store,
+          signing_context: trusted_ctx
+        )
+
+      assert {:ok, :ok} =
+               Commonplace.MUD.VerbSource.run_safe_verb(obj_uuid, "poke", [obj_uuid], facade, %{}, store)
+    end
+
+    test "PIN 3: a representative RETURN value (get_attr) carries no signing material", %{facade: facade} do
+      # get_attr returns object metadata — assert it never carries a signer.
+      case Facade.get_attr(facade, facade.object_uuid) do
+        {:ok, attrs} ->
+          refute Map.has_key?(attrs, :signing_context)
+          refute Map.has_key?(attrs, :private_key)
+
+        {:error, _} ->
+          :ok
+      end
+    end
+  end
 end
