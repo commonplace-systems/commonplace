@@ -449,7 +449,18 @@ defmodule Commonplace.MUD.SafeVerb.Allowlist do
                     # CX-9plf — sanctioned RNG (no effect/authority; just a
                     # number/element). random(world, n) = 1..n; pick a list.
                     {:random, 2},
-                    {:pick, 2}
+                    {:pick, 2},
+                    # CX-cj3t.1.1 — object lifecycle (plan-blessed #5991).
+                    # spawn/consume/destroy_child are STRICT-INTERSECTION
+                    # (invoker-authority AND owner_grant — NOT owner_grant-only;
+                    # that would be setuid-by-accident). give_to_actor is the
+                    # ONE named exception: invoker's OWN inventory, server-fixed
+                    # recipient, no owner_grant (see Facade docs). Bounded by a
+                    # per-container cap (M=128) + per-invocation cap (N=8).
+                    {:spawn, 2},
+                    {:give_to_actor, 2},
+                    {:consume, 1},
+                    {:destroy_child, 2}
                   ])
 
   # VECTOR 11 — reflective / capability side-channels that WEAR a

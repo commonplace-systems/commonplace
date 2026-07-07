@@ -309,14 +309,14 @@ defmodule Commonplace.MUD.World.Facade do
   def create_child(%__MODULE__{object_uuid: nil}, _name), do: {:error, :no_bound_object}
 
   def create_child(%__MODULE__{} = f, name) when is_binary(name) do
-    write_guarded(f, [f.object_uuid], fn ->
-      obj_json = Schemas.encode_object(%Object{name: name, description: "(no description yet)"})
-
-      with {:ok, new_uuid} <- Schemas.create_dir_with_meta(Schemas.object_filename(), obj_json, f.store, write_opts(f)),
-           :ok <- add_child_entry(f.object_uuid, "#{name}.obj", new_uuid, f) do
-        {:ok, new_uuid}
-      end
-    end)
+    # CX-cj3t.1.1 — now shares the capped/charged creator with `spawn`, so
+    # create_child is subject to the SAME per-container (M=128) and
+    # per-invocation (N=8) bounds (it was previously uncapped — a latent
+    # object-spam DoS). Authority is unchanged: strict intersection on the
+    # bound object.
+    with :ok <- charge_lifecycle_op() do
+      write_guarded(f, [f.object_uuid], fn -> create_object_in(f, f.object_uuid, name) end)
+    end
   end
 
   @doc """
@@ -336,6 +336,134 @@ defmodule Commonplace.MUD.World.Facade do
           {:error, :not_found}
       end
     end)
+  end
+
+  # ---- object lifecycle (CX-cj3t.1.1, plan-blessed #5991) ----
+  #
+  # THE KEYSTONE (plan #5991, the setuid trap): spawn/consume/destroy_child
+  # touch OWNER-controlled scope (a room / the bound object). They MUST pass
+  # the FULL intersection — invoker-authority (check (a), via signing the
+  # commit as the invoker in `write_opts/1`, enforced downstream by the
+  # local-write gate) AND `owner_grant` (check (b), via `write_guarded/3`).
+  # Grant-checking ONLY `owner_grant` would be SETUID-BY-ACCIDENT: a visitor
+  # invoking the owner's verb would spawn/destroy with the OWNER's authority
+  # the visitor doesn't hold — rights-amplification, the confused-deputy
+  # class DEFERRED to phase-3 with its own security review. So spawn into
+  # room R needs the invoker to be able to write R; consuming a room-fixed
+  # object needs invoker room-write (a VISITOR is correctly BLOCKED by
+  # check (a) — that's the deferred setuid case, not smuggled in here).
+  #
+  # `give_to_actor/2` is THE ONE EXCEPTION (named distinctly so nobody
+  # "fixes" it to intersect and breaks rewards): it writes the INVOKER's
+  # OWN inventory, which `owner_grant` does not cover (the invoker's
+  # inventory is not the owner's property to grant) — so it deliberately
+  # SKIPS `write_guarded` and relies on invoker-authority alone (the
+  # invoker can always write their own inventory) plus a SERVER-FIXED
+  # recipient (the invoker; no victim-targeting param). Not setuid (the
+  # invoker exercises only their own authority), not intersected (nothing
+  # of the owner's is touched).
+  #
+  # BOUNDS (two-tier, plan #5991): a PER-CONTAINER child cap
+  # (`@container_max_entries`, M=128 — objects are synced CRDT docs, so an
+  # uncapped container is a cross-replica sync/storage DoS) fail-visible as
+  # `{:error, :container_full}`; a PER-INVOCATION op cap
+  # (`@lifecycle_ops_per_run`, N=8 — a verb legitimately makes 1-3 objects)
+  # fail-visible as `{:error, :spawn_limit}`. Total-world / per-principal
+  # object budget is DEFERRED to broader-tier hardening (an author can
+  # spawn→drop→spawn to grow total objects over time; contained for INVITED
+  # by the session rate-limit + per-container cap + snapshot-compaction, but
+  # an OPEN-adversarial tier would need a per-principal budget — CX-n2j2
+  # class, not an invited blocker).
+
+  @container_max_entries 128
+  @lifecycle_ops_per_run 8
+  @lifecycle_op_counter :cp_safe_verb_lifecycle_ops
+
+  @doc """
+  Spawn a new object named `name` into the invoker's current room.
+  STRICT INTERSECTION on the room (`write_guarded` + invoker-signed) —
+  the invoker must be able to write the room AND the room must be in
+  `owner_grant` (a room-scoped cert on the bound object). Returns
+  `{:ok, new_uuid}`. Bounded (see the lifecycle header).
+  """
+  @spec spawn(t(), String.t()) :: {:ok, String.t()} | {:error, term()}
+  def spawn(%__MODULE__{} = f, name) when is_binary(name) do
+    with :ok <- charge_lifecycle_op() do
+      room = f.ctx[:current_room_uuid]
+      write_guarded(f, [room], fn -> create_object_in(f, room, name) end)
+    end
+  end
+
+  @doc """
+  Create a new object named `name` directly into the INVOKER's own
+  inventory (the reward/give-out primitive). THE ONE EXCEPTION to
+  intersection (see the lifecycle header): invoker-authority only
+  (their own inventory), server-fixed recipient, NO `owner_grant` check.
+  Returns `{:ok, new_uuid}`. Bounded (see the lifecycle header).
+  """
+  @spec give_to_actor(t(), String.t()) :: {:ok, String.t()} | {:error, term()}
+  def give_to_actor(%__MODULE__{} = f, name) when is_binary(name) do
+    with :ok <- charge_lifecycle_op() do
+      case f.ctx[:inventory_uuid] do
+        nil ->
+          {:error, :no_inventory}
+
+        inv ->
+          # DELIBERATELY no write_guarded — see the header. Still
+          # invoker-signed via write_opts/1 (check (a) applies).
+          create_object_in(f, inv, name)
+      end
+    end
+  end
+
+  @doc """
+  Destroy (UNLINK — not hard-delete; the doc stays in history, the entry
+  drops, GC-reachability handles liveness) the invoker's BOUND object.
+  Locates the object's parent container (inventory first, then the current
+  room — mirroring dispatch's own resolution order). If the parent is the
+  invoker's OWN inventory, this is the invoker-own-container case (consume
+  a thing you CARRY — invoker-authority only, same reasoning as
+  `give_to_actor`); otherwise FULL INTERSECTION on `[parent, object]` (a
+  visitor consuming a room-fixed object is blocked by invoker-authority —
+  the deferred setuid case). Bounded (per-invocation cap).
+  """
+  @spec consume(t()) :: :ok | {:error, term()}
+  def consume(%__MODULE__{object_uuid: nil}), do: {:error, :no_bound_object}
+
+  def consume(%__MODULE__{} = f) do
+    with :ok <- charge_lifecycle_op() do
+      case locate_parent(f, f.object_uuid) do
+        {:ok, parent_uuid, entry} ->
+          if parent_uuid == f.ctx[:inventory_uuid] do
+            # Invoker-own-inventory: consume what you carry (see header).
+            unlink_child(parent_uuid, entry, f)
+          else
+            write_guarded(f, [parent_uuid, f.object_uuid], fn ->
+              unlink_child(parent_uuid, entry, f)
+            end)
+          end
+
+        :error ->
+          {:error, :not_found}
+      end
+    end
+  end
+
+  @doc """
+  Destroy (UNLINK) a named child object of the invoker's BOUND object.
+  STRICT INTERSECTION on the bound object (`write_guarded` + invoker-
+  signed) — symmetric with `create_child/2`, which the child lives under.
+  Bounded (per-invocation cap).
+  """
+  @spec destroy_child(t(), String.t()) :: :ok | {:error, term()}
+  def destroy_child(%__MODULE__{object_uuid: nil}, _name), do: {:error, :no_bound_object}
+
+  def destroy_child(%__MODULE__{} = f, name) when is_binary(name) do
+    with :ok <- charge_lifecycle_op() do
+      write_guarded(f, [f.object_uuid], fn ->
+        unlink_child(f.object_uuid, "#{name}.obj", f)
+      end)
+    end
   end
 
   # ---- broadcasts (no doc write — no intersection check) ----
@@ -410,12 +538,94 @@ defmodule Commonplace.MUD.World.Facade do
   defp add_child_entry(parent_uuid, name, child_uuid, f) do
     {:ok, schema} = Schemas.load_dir_schema(parent_uuid, f.store)
     schema = Schema.add_directory(schema, name, child_uuid)
-    update = Encoding.encode_update(schema)
-    {metadata, commit_opts} = SignedWrite.opts_for(parent_uuid, Keyword.put(write_opts(f), :store, f.store))
+    commit_schema(parent_uuid, schema, f)
+  end
 
-    case CommitStoreClient.create_chained_commit(f.store, parent_uuid, update, metadata, commit_opts) do
+  # CX-cj3t.1.1 — the shared, BOUNDED object creator behind both
+  # `create_child` (into the bound object) and `spawn`/`give_to_actor`
+  # (into a room / the invoker's inventory). Enforces the per-container
+  # cap HERE so every creation path is bounded uniformly. The AUTHORITY
+  # check (write_guarded / the invoker-own exception) is the CALLER's
+  # responsibility — this helper only creates + links + counts.
+  defp create_object_in(f, parent_uuid, name) do
+    case Schemas.load_dir_schema(parent_uuid, f.store) do
+      {:ok, schema} ->
+        if length(Schema.list_entries(schema)) >= @container_max_entries do
+          {:error, :container_full}
+        else
+          obj_json = Schemas.encode_object(%Object{name: name, description: "(no description yet)"})
+
+          with {:ok, new_uuid} <-
+                 Schemas.create_dir_with_meta(Schemas.object_filename(), obj_json, f.store, write_opts(f)),
+               :ok <- add_child_entry(parent_uuid, "#{name}.obj", new_uuid, f) do
+            {:ok, new_uuid}
+          end
+        end
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  # CX-cj3t.1.1 — locate the bound object's parent container the SAME way
+  # dispatch resolves a target noun: inventory first, then the current
+  # room. Returns `{:ok, parent_uuid, entry_name}` or `:error`. The
+  # inventory-first order is load-bearing for `consume`'s authority split
+  # (a carried object → invoker-own-container exception).
+  defp locate_parent(f, obj_uuid) do
+    [f.ctx[:inventory_uuid], f.ctx[:current_room_uuid]]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.find_value(:error, fn dir ->
+      case entry_name(dir, obj_uuid, f.store) do
+        {:ok, name} -> {:ok, dir, name}
+        :error -> nil
+      end
+    end)
+  end
+
+  # CX-cj3t.1.1 — UNLINK a named entry from a parent schema (drop the
+  # entry; the child doc stays in history, GC-reachability handles
+  # liveness). `:not_found` if the entry isn't present (fail-visible,
+  # never a silent no-op). No authority check here — the CALLER guards.
+  defp unlink_child(parent_uuid, entry, f) do
+    case Schemas.load_dir_schema(parent_uuid, f.store) do
+      {:ok, schema} ->
+        case Schema.get_entry(schema, entry) do
+          {:ok, _} -> commit_schema(parent_uuid, Schema.remove_entry(schema, entry), f)
+          _ -> {:error, :not_found}
+        end
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  # CX-cj3t.1.1 — chained, invoker-signed commit of a mutated dir schema
+  # (shared by add_child_entry / unlink_child).
+  defp commit_schema(uuid, schema, f) do
+    update = Encoding.encode_update(schema)
+    {metadata, commit_opts} = SignedWrite.opts_for(uuid, Keyword.put(write_opts(f), :store, f.store))
+
+    case CommitStoreClient.create_chained_commit(f.store, uuid, update, metadata, commit_opts) do
       {:error, _} = err -> err
       _commit -> :ok
+    end
+  end
+
+  # CX-cj3t.1.1 — the per-INVOCATION lifecycle-op budget (N=8). The
+  # counter lives in the process dictionary of the safe-verb's OWN
+  # `spawn_monitor` child (see `Commonplace.MUD.SafeVerb.Bounds`), so it
+  # is naturally per-run and discarded when the child dies — no cross-run
+  # leakage, no reset bookkeeping. Every object-lifecycle method charges
+  # ONE op up front; over budget → `{:error, :spawn_limit}` (fail-visible).
+  defp charge_lifecycle_op do
+    n = Process.get(@lifecycle_op_counter, 0)
+
+    if n >= @lifecycle_ops_per_run do
+      {:error, :spawn_limit}
+    else
+      Process.put(@lifecycle_op_counter, n + 1)
+      :ok
     end
   end
 
