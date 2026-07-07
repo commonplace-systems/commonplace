@@ -370,8 +370,9 @@ defmodule Commonplace.MUD.PlayerSession do
       state.output_fn.(
         "(new verb — type lines, '.' to save, '@abort' to cancel)\n" <>
           "type a bare run/2 BODY (no defmodule). In scope: `world` (this " <>
-          "room/object) and `args` — a MAP %{target, argv, args} (e.g. " <>
-          "args.argv is the word list, args.target the object noun). " <>
+          "room/object) and `args` — a MAP %{target, argv, args, rest} " <>
+          "(args.target = object noun; args.rest = the rest after it, e.g. " <>
+          "'play box a waltz' → args.rest is \"a waltz\"). " <>
           "e.g. Commonplace.MUD.World.Facade.say(world, \"hi\")"
       )
     end

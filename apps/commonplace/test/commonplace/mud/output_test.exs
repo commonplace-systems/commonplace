@@ -246,6 +246,33 @@ defmodule Commonplace.MUD.OutputTest do
     end
   end
 
+  # CX-9plf: args.rest is the command tail with the object noun stripped,
+  # so a parameterized verb reads its param without re-stripping the noun.
+  test "CX-9plf: args.rest is the command tail after the object noun", ctx do
+    dir = fountain_dir(ctx)
+
+    :ok =
+      VerbSource.save_safe_verb(
+        dir,
+        "echo",
+        ~s|Commonplace.MUD.World.Facade.say(world, args.rest)|,
+        [dir],
+        ctx.store
+      )
+
+    alice = start_player("alice", ctx)
+    drain("alice")
+    send_input(alice, "east")
+    drain("alice")
+
+    send_input(alice, "echo fountain hello there")
+    out = drain("alice") |> Enum.join("\n")
+    assert out =~ "hello there"
+    refute out =~ "fountain hello there"
+
+    PlayerSession.stop(alice)
+  end
+
   # CX-aw4r: emit_action attributes an action per-recipient — the actor
   # reads "You <first_person>", observers read "<name> <third_person>".
   test "CX-aw4r: emit_action attributes the actor (You / <name>)", ctx do

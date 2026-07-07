@@ -283,6 +283,28 @@ defmodule Commonplace.MUD.VerbSourceTest do
     refute_receive {"red:" <> _, %{kind: :custom, text: "The fountain burbles softly."}}, 50
   end
 
+  # CX-9plf: @unverb's backing — remove a verb so it no longer resolves.
+  test "delete_verb removes the verb entry; missing verb is :not_found", ctx do
+    dir = fountain_dir(ctx)
+
+    :ok =
+      VerbSource.save_safe_verb(
+        dir,
+        "temp",
+        ~s|Commonplace.MUD.World.Facade.say(world, "hi")|,
+        [dir],
+        ctx.store
+      )
+
+    assert {:ok, _} = VerbSource.find_safe_source(dir, "temp", ctx.store)
+
+    assert :ok = VerbSource.delete_verb(dir, "temp", ctx.store)
+    assert :not_found = VerbSource.find_safe_source(dir, "temp", ctx.store)
+
+    # Removing a verb that isn't there is a clean :not_found.
+    assert :not_found = VerbSource.delete_verb(dir, "nope", ctx.store)
+  end
+
   describe "CX-9f62: unique per-verb module naming (kills the global compile collision)" do
     test "two verbs authored under the SAME defmodule name on DIFFERENT objects compile to distinct modules and both run correctly",
          ctx do

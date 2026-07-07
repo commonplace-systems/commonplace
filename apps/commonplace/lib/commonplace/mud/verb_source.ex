@@ -283,6 +283,43 @@ defmodule Commonplace.MUD.VerbSource do
     end
   end
 
+  @doc """
+  CX-9plf — remove a verb from `target_dir_uuid` (drops BOTH the safe
+  `<name>.safe.elx` and legacy `<name>.elx` verbs-dir entries, whichever
+  exist). Returns `:ok` if at least one was removed, `:not_found` if
+  neither exists / there's no verbs dir, or `{:error, reason}` on a write
+  failure. Append-only store: the source docs stay in history; only the
+  directory entry is dropped so the verb no longer resolves/dispatches.
+  """
+  @spec delete_verb(String.t(), String.t(), GenServer.server(), keyword()) ::
+          :ok | :not_found | {:error, term()}
+  def delete_verb(target_dir_uuid, verb_name, store \\ CommitStoreClient, opts \\ []) do
+    with {:ok, schema} <- Schemas.load_dir_schema(target_dir_uuid, store),
+         {:ok, %Schema.Entry{node_id: verbs_uuid}} <- Schema.get_entry(schema, @verbs_dir),
+         {:ok, verbs_schema} <- Schemas.load_dir_schema(verbs_uuid, store) do
+      present =
+        ["#{verb_name}.safe.elx", "#{verb_name}.elx"]
+        |> Enum.filter(fn f -> match?({:ok, _}, Schema.get_entry(verbs_schema, f)) end)
+
+      if present == [] do
+        :not_found
+      else
+        new_schema = Enum.reduce(present, verbs_schema, fn f, acc -> Schema.remove_entry(acc, f) end)
+        update = Encoding.encode_update(new_schema)
+        {metadata, commit_opts} = SignedWrite.opts_for(verbs_uuid, Keyword.put(opts, :store, store))
+
+        case CommitStoreClient.create_chained_commit(store, verbs_uuid, update, metadata, commit_opts) do
+          {:error, _} = err -> err
+          _commit -> :ok
+        end
+      end
+    else
+      :error -> :not_found
+      {:error, _} = err -> err
+      _ -> :not_found
+    end
+  end
+
   defp save_source(verbs_uuid, verbs_schema, file, source_text, store, opts) do
     case Schema.get_entry(verbs_schema, file) do
       {:ok, %Schema.Entry{node_id: uuid}} ->

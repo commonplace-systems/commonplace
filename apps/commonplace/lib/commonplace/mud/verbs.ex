@@ -25,7 +25,7 @@ defmodule Commonplace.MUD.Verbs do
 
   require Logger
 
-  @builders ~w(@dig @create @desc @name @alias @listen @dump @verb @link @unlink @teleport @go @container)
+  @builders ~w(@dig @create @desc @name @alias @listen @dump @verb @unverb @link @unlink @teleport @go @container)
 
   # CX-cj3t.5 §1a (CX-66ca) — single source of truth for "is this verb
   # word a builtin" at DISPATCH TIME (not define-time reservation — a
@@ -154,6 +154,24 @@ defmodule Commonplace.MUD.Verbs do
     end
   end
 
+  # CX-9plf: drop the leading target-noun words from argv → {rest_argv,
+  # rest_string}. Multi-word targets ("silver coin") drop all their words.
+  # If argv doesn't start with the target (nil target, or a non-prefix
+  # match), rest is the full argv/args unchanged.
+  defp verb_rest(%Parser.Command{target: target, argv: argv, args: args}) do
+    target_words = String.split(target || "")
+
+    rest_argv =
+      if target_words != [] and Enum.take(argv, length(target_words)) == target_words do
+        Enum.drop(argv, length(target_words))
+      else
+        argv
+      end
+
+    rest = if rest_argv == argv, do: args, else: Enum.join(rest_argv, " ")
+    {rest_argv, rest}
+  end
+
   # CX-cj3t.5 FLAG A / plan pre-merge FIX 1 (SECURITY-CRITICAL) — the
   # safe-vs-legacy SELECTION, factored out so the security-relevant
   # branch decision is directly testable (see the FLAG-A pin in
@@ -196,7 +214,14 @@ defmodule Commonplace.MUD.Verbs do
     via_verb = {source_uuid, host_name}
 
     facade = Facade.new(ctx, object_uuid, owner_grant, via_verb, ctx.store)
-    args = %{target: cmd.target, argv: cmd.argv, args: cmd.args}
+
+    # CX-9plf: `rest`/`rest_argv` = the argv with the leading target-noun
+    # words dropped, so a parameterized verb ("play box a waltz") can read
+    # its trailing parameter as args.rest ("a waltz") without re-stripping
+    # the object noun itself (which was awkward boilerplate every verb
+    # repeated). `target`/`argv`/`args` are unchanged.
+    {rest_argv, rest} = verb_rest(cmd)
+    args = %{target: cmd.target, argv: cmd.argv, args: cmd.args, rest: rest, rest_argv: rest_argv}
 
     host_uuid
     |> VerbSource.run_safe_verb(verb_name, section_scope, facade, args, ctx.store)
@@ -1096,6 +1121,7 @@ defmodule Commonplace.MUD.Verbs do
   defp dispatch_builder("@alias", cmd, ctx), do: do_alias(cmd, ctx)
   defp dispatch_builder("@listen", _cmd, ctx), do: {:reply, "Now listening to room #{ctx.current_room_uuid}. (Debug: red events will appear inline.)"}
   defp dispatch_builder("@verb", cmd, ctx), do: do_verb_edit(cmd, ctx)
+  defp dispatch_builder("@unverb", cmd, ctx), do: do_unverb(cmd, ctx)
   defp dispatch_builder("@link", cmd, ctx), do: do_link(cmd, ctx)
   defp dispatch_builder("@unlink", cmd, ctx), do: do_unlink(cmd, ctx)
   defp dispatch_builder("@teleport", cmd, ctx), do: do_teleport(cmd, ctx)
@@ -1442,6 +1468,44 @@ defmodule Commonplace.MUD.Verbs do
       {:reply, "You create #{article}."}
     else
       {:error, reason} -> {:error, commit_error_reply(reason)}
+    end
+  end
+
+  # CX-9plf: `@unverb <target>:<verbname>` removes a verb (both safe +
+  # legacy entries) from a room/object — @verb only creates/edits, so
+  # throwaway/diagnostic verbs were stuck permanently.
+  defp do_unverb(%Parser.Command{argv: [spec | _]}, ctx) do
+    case String.split(spec, ":", parts: 2) do
+      [target, verb_name] when verb_name != "" ->
+        case resolve_unverb_target(target, ctx) do
+          {:ok, target_uuid, label} ->
+            case VerbSource.delete_verb(target_uuid, verb_name, ctx.store, write_opts(ctx)) do
+              :ok -> {:reply, "Removed #{label}:#{verb_name}."}
+              :not_found -> {:error, "No verb \"#{verb_name}\" on #{label}."}
+              {:error, reason} -> {:error, commit_error_reply(reason)}
+            end
+
+          {:error, msg} ->
+            {:error, msg}
+        end
+
+      _ ->
+        {:error, "Try: @unverb <target>:<verbname>"}
+    end
+  end
+
+  defp do_unverb(_cmd, _ctx), do: {:error, "Try: @unverb <target>:<verbname>"}
+
+  defp resolve_unverb_target(target, ctx) when target in ["here", "room"],
+    do: {:ok, ctx.current_room_uuid, "here"}
+
+  defp resolve_unverb_target(target, ctx) do
+    case find_object_entry(target, ctx) do
+      {:ok, %Schema.Entry{node_id: uuid, name: name}} ->
+        {:ok, uuid, String.replace_suffix(name, ".obj", "")}
+
+      :error ->
+        {:error, "You don't see \"#{target}\" here or in your inventory."}
     end
   end
 
@@ -1806,6 +1870,7 @@ defmodule Commonplace.MUD.Verbs do
       @verb <target>:<verbname>        edit a verb on a room/object (line editor;
                                        finish with '.' on its own line, '@abort'
                                        cancels)
+      @unverb <target>:<verbname>      remove a verb from a room/object
       @listen                          subscribe to debug events
       @dump [target]                   dump raw struct
     """
