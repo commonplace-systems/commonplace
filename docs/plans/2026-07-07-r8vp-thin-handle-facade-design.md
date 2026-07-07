@@ -55,12 +55,29 @@ pattern to the whole backing.
    dispatch and the allowlist `facade_receiver?` (literal-`world` first arg) are
    unchanged.
 
-3. **Methods read the backing.** Replace every internal `f.ctx` / `f.store` /
-   `f.object_uuid` / `f.owner_grant` / `f.via_verb` with a private `backing/0`
-   (pdict read). The verb still passes `world` as the first arg (for dispatch +
-   the allowlist gate), but methods ignore its (nil) sensitive fields and use the
-   backing. `write_opts/1`, the accessors (`actor_name`/`actor_ref` read
-   `backing().ctx[...]`), `write_guarded`, `owner_grant`, etc. all reroute.
+3. **Methods read the backing, with a pdict-OR-`f` fallback.** A private
+   `backing(f) = Process.get(@facade_backing_key) || f` — **exactly the shape
+   `write_opts/1` already uses** for the signer (`Process.get(@signer_pdict_key)
+   || signer_material(f)`). Replace every internal `f.ctx` / `f.store` /
+   `f.object_uuid` / `f.owner_grant` / `f.via_verb` with `backing(f).<field>`.
+   `host_kind` stays read as `f.host_kind` (it's on the thin struct, inert).
+   - **In a verb run:** the pdict backing (the FULL facade) is installed, `f` is
+     the thin facade → `backing(f)` returns the full backing; the thin `f`'s nil
+     sensitive fields are never read.
+   - **In a direct/trusted/test call** (e.g. `Facade.set_attr(full_facade, …)` in
+     `world_facade_test`): no pdict entry → `backing(f)` returns `f` (the full
+     facade passed directly). This is the load-bearing detail that keeps the
+     ~270 existing facade tests and any direct callers working unchanged — the
+     methods don't require a verb harness.
+
+   **Signer consolidation:** since the backing is the full facade (its `ctx` still
+   carries `signing_context`/`cert_cids`/`signer_id`), `write_opts/1` reads the
+   signer from `backing(f).ctx` — so the separate `@signer_pdict_key`,
+   `install_signer/1`, `signer_material/1`, and `scrub_signer/1` are REMOVED and
+   subsumed by the one backing. `SafeVerb.run/3` changes from
+   `install_signer(material) → invoke(scrubbed, …)` to
+   `install_backing(full) → invoke(to_verb_facing(full), …)`, where
+   `to_verb_facing/1` nils the sensitive fields (keeping `host_kind`).
 
 ### Fail-safe direction
 
