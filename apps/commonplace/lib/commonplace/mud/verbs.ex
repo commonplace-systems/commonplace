@@ -2016,7 +2016,9 @@ defmodule Commonplace.MUD.Verbs do
   # item's owner) — in which case the move runs invoker-signed, UNCHANGED
   # from before — and, only for the genuine enforce visitor who is not, it
   # ignores the invoker signing and builds its own node context to elevate.
-  defp take_opts(ctx), do: write_opts(ctx)
+  # CX-1mz7: TAKE needs the world root so its zone-gate can classify the
+  # source room (shared-curated vs the taker's own home vs another's home).
+  defp take_opts(ctx), do: Keyword.put(write_opts(ctx), :root_uuid, Map.get(ctx, :root_uuid))
 
   # ---- Scope resolution ----
 

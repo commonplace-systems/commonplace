@@ -47,6 +47,10 @@ defmodule Commonplace.MUD.Take do
   alias Commonplace.Green.{Bursar, BursarClient}
   alias Commonplace.MUD.{Move, Schemas}
   alias Commonplace.Store.CommitStoreClient
+  alias Commonplace.Tree.Schema
+
+  @players_dir "players"
+  @inventory_name "inventory"
 
   @doc """
   Take `item_uuid` (entry `name`) from `room_uuid` into `inventory_uuid`
@@ -57,8 +61,10 @@ defmodule Commonplace.MUD.Take do
   `:retry_ms` are passed through to `Move.move`.
 
   Returns `:ok` or `{:error, reason}` — `:bad_arg` (no/invalid taker
-  identity), `:not_takeable_here` (room or inventory dir is not
-  node-owned — no elevation, no writes), `:item_unavailable` (someone
+  identity), `:not_takeable_here` (the item or inventory dir is not
+  node-owned, OR the source room fails the CX-1mz7 zone-gate — not
+  shared-curated and not the taker's own home; no elevation, no writes),
+  `:item_unavailable` (someone
   else already holds the item's possession token), `:taken` (lost a
   concurrent race for the token after the node held it), or whatever
   `Move.move/5` returns for the elevated tree-move (`:gone`,
@@ -115,10 +121,135 @@ defmodule Commonplace.MUD.Take do
     with {:ok, node_ctx} <- NodeIdentity.signing_context(),
          {:ok, node_identity} <- NodeIdentity.identity(),
          true <- node_owned?(item_uuid, node_identity, store),
-         true <- node_owned?(inventory_uuid, node_identity, store) do
+         true <- node_owned?(inventory_uuid, node_identity, store),
+         true <- takeable_from_here?(room_uuid, inventory_uuid, opts, store) do
       do_take(item_uuid, name, room_uuid, inventory_uuid, taker_identity, node_ctx, node_identity, store, bursar, opts)
     else
       _ -> {:error, :not_takeable_here}
+    end
+  end
+
+  # ---- CX-1mz7 TAKE-zone-gate (plan #6744/#6748): fail-closed positive allowlist ----
+  #
+  # The DROP/GIVE hard prereq. The item-keyed node-ownership gate above is
+  # safe only by WORLD-STATE ASSUMPTION (node-owned takeables live only in
+  # shared curated rooms). The moment DROP lands, a player can place a
+  # node-owned item into a home — so a visitor standing in that home could
+  # take it (both node-ownership checks pass). This gate closes that
+  # home-raid: an item is takeable-from-here IFF the source room is
+  # POSITIVELY one of:
+  #
+  #   (a) SHARED-CURATED — reachable from the world root via directory
+  #       containment WITHOUT descending into the `players/` subtree; or
+  #   (b) the TAKER'S OWN home zone — reachable from the taker's own player
+  #       home dir (the `players/<taker>/` dir whose `inventory` entry IS
+  #       this taker's `inventory_uuid` — a structural, unspoofable match).
+  #
+  # ANY other location — another player's home, an unrecognized/unreachable
+  # dir, or a world with no resolvable root — REFUSES (fail-closed). This is
+  # deliberately a POSITIVE allowlist, never a negative "not-under-another's-
+  # home" test (which would be fail-OPEN for unclassified locations —
+  # plan #6748). Mechanism is tree-location, which is presence-robust:
+  # containment edges are dir entries, and presence `.usr` writes never
+  # restructure them. It converges on the M2 zone-stamp (CX-4u03), which
+  # will replace this O(curated-tree) reachability walk with an O(1) stamp
+  # read.
+  defp takeable_from_here?(room_uuid, inventory_uuid, opts, store) do
+    case Keyword.get(opts, :root_uuid) do
+      root when is_binary(root) ->
+        own_zone_takeable?(room_uuid, inventory_uuid, root, store) or
+          shared_curated_takeable?(room_uuid, root, store)
+
+      _ ->
+        # No resolvable world root — cannot POSITIVELY classify. Fail closed.
+        false
+    end
+  end
+
+  # (b) The source room is within the TAKER's OWN home subtree. The taker is
+  # identified structurally by their node-owned inventory dir: their home is
+  # the `players/` child dir whose own `inventory` entry is exactly this
+  # `inventory_uuid` (no spoofable player-name needed).
+  defp own_zone_takeable?(room_uuid, inventory_uuid, root, store) do
+    case taker_home_dir(inventory_uuid, root, store) do
+      nil -> false
+      home -> reachable_contains?(home, room_uuid, nil, store)
+    end
+  end
+
+  # (a) Shared-curated: reachable from the world root via dir containment,
+  # with the `players/` subtree PRUNED so no home room ever counts as
+  # shared. Positive reachability from the known curated root.
+  defp shared_curated_takeable?(room_uuid, root, store) do
+    reachable_contains?(root, room_uuid, players_dir_uuid(root, store), store)
+  end
+
+  defp taker_home_dir(inventory_uuid, root, store) do
+    with players when is_binary(players) <- players_dir_uuid(root, store),
+         {:ok, schema} <- Schemas.load_dir_schema(players, store) do
+      schema
+      |> Schema.list_entries()
+      |> Enum.filter(&(&1.type == :dir))
+      |> Enum.find_value(nil, fn home ->
+        if home_inventory_uuid(home.node_id, store) == inventory_uuid, do: home.node_id, else: nil
+      end)
+    else
+      _ -> nil
+    end
+  end
+
+  defp home_inventory_uuid(home_uuid, store) do
+    with {:ok, schema} <- Schemas.load_dir_schema(home_uuid, store),
+         {:ok, entry} <- Schema.get_entry(schema, @inventory_name) do
+      entry.node_id
+    else
+      _ -> nil
+    end
+  end
+
+  defp players_dir_uuid(root, store) do
+    with {:ok, schema} <- Schemas.load_dir_schema(root, store),
+         {:ok, entry} <- Schema.get_entry(schema, @players_dir) do
+      entry.node_id
+    else
+      _ -> nil
+    end
+  end
+
+  # DFS over directory containment from `start`, returning true as soon as
+  # `target` is found. Never descends into `prune` (the `players/` subtree
+  # for the shared check; `nil` for the own-home check). Cycle-guarded. Only
+  # `:dir` entries are containment edges — presence `.usr` file entries are
+  # ignored, so occupancy never changes the result.
+  defp reachable_contains?(start, target, prune, store) do
+    do_reach([start], target, prune, MapSet.new(), store)
+  end
+
+  defp do_reach([], _target, _prune, _seen, _store), do: false
+
+  defp do_reach([uuid | rest], target, prune, seen, store) do
+    cond do
+      uuid == target ->
+        true
+
+      uuid == prune ->
+        do_reach(rest, target, prune, seen, store)
+
+      MapSet.member?(seen, uuid) ->
+        do_reach(rest, target, prune, seen, store)
+
+      true ->
+        seen = MapSet.put(seen, uuid)
+        children =
+          case Schemas.load_dir_schema(uuid, store) do
+            {:ok, schema} ->
+              schema |> Schema.list_entries() |> Enum.filter(&(&1.type == :dir)) |> Enum.map(& &1.node_id)
+
+            _ ->
+              []
+          end
+
+        do_reach(children ++ rest, target, prune, seen, store)
     end
   end
 

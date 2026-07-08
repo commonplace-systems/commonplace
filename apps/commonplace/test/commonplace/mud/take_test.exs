@@ -71,10 +71,50 @@ defmodule Commonplace.MUD.TakeTest do
     {:ok, node_ctx} = NodeIdentity.signing_context()
     {:ok, node_identity} = NodeIdentity.identity()
 
-    %{store: store, node_ctx: node_ctx, node_identity: node_identity}
+    # CX-1mz7 zone-gate: a real world root with a `players/` dir, so the
+    # source room can be POSITIVELY classified (shared-curated vs own home).
+    # Rooms linked under `root` (not under `players/`) are shared-curated.
+    root = mk_dir!(store, node_ctx)
+    players = mk_dir!(store, node_ctx)
+    add_dir_entry!(store, root, "players", players, node_ctx)
+
+    %{
+      store: store,
+      node_ctx: node_ctx,
+      node_identity: node_identity,
+      root: root,
+      players: players
+    }
   end
 
   # ---- seed helpers ----
+
+  # A bare dir (no meta) — used for the world root, the players dir, and
+  # inventories.
+  defp mk_dir!(store, signing_ctx) do
+    {:ok, uuid} = Schemas.create_dir_with_meta(nil, nil, store, signing_context: signing_ctx)
+    uuid
+  end
+
+  # Link `room_uuid` as a SHARED-CURATED room: a direct dir child of the
+  # world `root` (i.e. reachable from root NOT via `players/`).
+  defp share!(store, root, room_uuid, signing_ctx) do
+    add_dir_entry!(store, root, "room-#{String.slice(room_uuid, 0, 8)}", room_uuid, signing_ctx)
+    room_uuid
+  end
+
+  # Provision `players/<name>/` as an OWNED HOME ROOM (a dir carrying a room
+  # meta) with an `inventory/` subdir, mirroring Citizenship.ensure's shape.
+  # Returns %{home: home_room_uuid, inventory: inventory_uuid}. The home dir
+  # IS the player's home room; its `inventory` entry is what the zone-gate
+  # matches to identify the taker structurally.
+  defp mk_home!(store, players_uuid, name, signing_ctx) do
+    home = mk_room!(store, signing_ctx, "#{name}'s Home")
+    inv = mk_dir!(store, signing_ctx)
+    add_dir_entry!(store, home, "inventory", inv, signing_ctx)
+    add_dir_entry!(store, players_uuid, name, home, signing_ctx)
+    %{home: home, inventory: inv}
+  end
 
   defp mk_room!(store, signing_ctx, name \\ "The Yard") do
     {:ok, uuid} =
@@ -164,16 +204,17 @@ defmodule Commonplace.MUD.TakeTest do
 
   test "under enforce, a taker with no authority over the dirs takes a node-owned item", %{
     store: store,
-    node_ctx: node_ctx
+    node_ctx: node_ctx,
+    root: root
   } do
-    room = mk_room!(store, node_ctx)
+    room = share!(store, root, mk_room!(store, node_ctx), node_ctx)
     inventory = mk_inventory!(store, node_ctx)
     item = mk_object!(store, node_ctx, name: "widget.obj")
     add_dir_entry!(store, room, "widget.obj", item, node_ctx)
 
     {taker_id, _taker_ctx} = fresh_identity()
 
-    assert :ok = Take.take(item, "widget.obj", room, inventory, taker_id, store: store)
+    assert :ok = Take.take(item, "widget.obj", room, inventory, taker_id, store: store, root_uuid: root)
 
     refute "widget.obj" in entry_names(store, room)
     assert "widget.obj" in entry_names(store, inventory)
@@ -214,9 +255,10 @@ defmodule Commonplace.MUD.TakeTest do
 
   test "two concurrent takes of the same item: exactly one wins, the other is refused", %{
     store: store,
-    node_ctx: node_ctx
+    node_ctx: node_ctx,
+    root: root
   } do
-    room = mk_room!(store, node_ctx)
+    room = share!(store, root, mk_room!(store, node_ctx), node_ctx)
     inv_a = mk_inventory!(store, node_ctx)
     inv_b = mk_inventory!(store, node_ctx)
     item = mk_object!(store, node_ctx, name: "gem")
@@ -225,8 +267,8 @@ defmodule Commonplace.MUD.TakeTest do
     {id_a, _} = fresh_identity()
     {id_b, _} = fresh_identity()
 
-    task_a = Task.async(fn -> Take.take(item, "gem", room, inv_a, id_a, store: store) end)
-    task_b = Task.async(fn -> Take.take(item, "gem", room, inv_b, id_b, store: store) end)
+    task_a = Task.async(fn -> Take.take(item, "gem", room, inv_a, id_a, store: store, root_uuid: root) end)
+    task_b = Task.async(fn -> Take.take(item, "gem", room, inv_b, id_b, store: store, root_uuid: root) end)
 
     result_a = Task.await(task_a)
     result_b = Task.await(task_b)
@@ -252,9 +294,10 @@ defmodule Commonplace.MUD.TakeTest do
 
   test "after A takes, B cannot forge a transfer claiming to be the holder", %{
     store: store,
-    node_ctx: node_ctx
+    node_ctx: node_ctx,
+    root: root
   } do
-    room = mk_room!(store, node_ctx)
+    room = share!(store, root, mk_room!(store, node_ctx), node_ctx)
     inv_a = mk_inventory!(store, node_ctx)
     item = mk_object!(store, node_ctx, name: "ring")
     add_dir_entry!(store, room, "ring", item, node_ctx)
@@ -262,7 +305,7 @@ defmodule Commonplace.MUD.TakeTest do
     {id_a, _} = fresh_identity()
     {id_b, _} = fresh_identity()
 
-    assert :ok = Take.take(item, "ring", room, inv_a, id_a, store: store)
+    assert :ok = Take.take(item, "ring", room, inv_a, id_a, store: store, root_uuid: root)
 
     # B claims to be the holder (impersonating A as authenticated_as B —
     # the from_holder param doesn't match the authenticated caller).
@@ -277,9 +320,10 @@ defmodule Commonplace.MUD.TakeTest do
   test "move failure after token transfer rolls the token back to the node", %{
     store: store,
     node_ctx: node_ctx,
-    node_identity: node_identity
+    node_identity: node_identity,
+    root: root
   } do
-    room = mk_room!(store, node_ctx)
+    room = share!(store, root, mk_room!(store, node_ctx), node_ctx)
     inventory = mk_inventory!(store, node_ctx)
     item = mk_object!(store, node_ctx, name: "coin")
     add_dir_entry!(store, room, "coin", item, node_ctx)
@@ -290,7 +334,7 @@ defmodule Commonplace.MUD.TakeTest do
 
     {taker_id, _} = fresh_identity()
 
-    assert {:error, :collision} = Take.take(item, "coin", room, inventory, taker_id, store: store)
+    assert {:error, :collision} = Take.take(item, "coin", room, inventory, taker_id, store: store, root_uuid: root)
 
     # item entry unchanged in the room.
     assert "coin" in entry_names(store, room)
@@ -328,9 +372,10 @@ defmodule Commonplace.MUD.TakeTest do
 
   test "container-take under enforce: get item from an unlocked node-owned container", %{
     store: store,
-    node_ctx: node_ctx
+    node_ctx: node_ctx,
+    root: root
   } do
-    room = mk_room!(store, node_ctx)
+    room = share!(store, root, mk_room!(store, node_ctx), node_ctx)
     inventory = mk_inventory!(store, node_ctx)
     container = mk_container!(store, node_ctx, name: "wooden box")
     add_dir_entry!(store, room, "wooden box", container, node_ctx)
@@ -343,6 +388,7 @@ defmodule Commonplace.MUD.TakeTest do
       player_name: "taker",
       current_room_uuid: room,
       inventory_uuid: inventory,
+      root_uuid: root,
       store: store,
       signing_context: taker_sc,
       cert_cids: [],
@@ -422,9 +468,10 @@ defmodule Commonplace.MUD.TakeTest do
   # inventories are never presence-re-chained, so they are the reliable oracle.
   test "take elevates even when the room schema was re-chained by a non-node presence write", %{
     store: store,
-    node_ctx: node_ctx
+    node_ctx: node_ctx,
+    root: root
   } do
-    room = mk_room!(store, node_ctx)
+    room = share!(store, root, mk_room!(store, node_ctx), node_ctx)
     inventory = mk_inventory!(store, node_ctx)
     item = mk_object!(store, node_ctx, name: "vault key.obj")
     add_dir_entry!(store, room, "vault key.obj", item, node_ctx)
@@ -449,7 +496,7 @@ defmodule Commonplace.MUD.TakeTest do
     {taker_id, _} = fresh_identity()
 
     # Pre-fix this refused (:not_takeable_here); the item-keyed gate elevates.
-    assert :ok = Take.take(item, "vault key.obj", room, inventory, taker_id, store: store)
+    assert :ok = Take.take(item, "vault key.obj", room, inventory, taker_id, store: store, root_uuid: root)
     refute "vault key.obj" in entry_names(store, room)
     assert "vault key.obj" in entry_names(store, inventory)
     assert {:held, %{holder: ^taker_id}} = BursarClient.query(Bursar, item)
@@ -463,9 +510,10 @@ defmodule Commonplace.MUD.TakeTest do
   # container is still takeable.
   test "container-take elevates even when the container schema was re-chained by a non-node write", %{
     store: store,
-    node_ctx: node_ctx
+    node_ctx: node_ctx,
+    root: root
   } do
-    room = mk_room!(store, node_ctx)
+    room = share!(store, root, mk_room!(store, node_ctx), node_ctx)
     inventory = mk_inventory!(store, node_ctx)
     container = mk_container!(store, node_ctx, name: "wooden box")
     add_dir_entry!(store, room, "wooden box", container, node_ctx)
@@ -490,6 +538,7 @@ defmodule Commonplace.MUD.TakeTest do
       player_name: "taker",
       current_room_uuid: room,
       inventory_uuid: inventory,
+      root_uuid: root,
       store: store,
       signing_context: taker_sc,
       cert_cids: [],
@@ -502,5 +551,94 @@ defmodule Commonplace.MUD.TakeTest do
     refute "crown.obj" in entry_names(store, container)
     assert "crown.obj" in entry_names(store, inventory)
     assert {:held, %{holder: ^taker_id}} = BursarClient.query(Bursar, item)
+  end
+
+  # ---- 9. CX-1mz7 TAKE-zone-gate: the anti-home-raid allowlist ----
+  #
+  # The DROP/GIVE hard prereq. Once DROP lands, a player can place a
+  # node-owned item into a home; without this gate a visitor could then
+  # take it. The gate is a fail-closed POSITIVE allowlist: takeable IFF the
+  # source room is shared-curated OR the taker's own home; anything else
+  # (another's home, an unreachable/unrecognized room, no world root) is
+  # refused BEFORE any elevation or token movement.
+
+  test "zone-gate: a visitor CANNOT take a node-owned item from ANOTHER player's home", %{
+    store: store,
+    node_ctx: node_ctx,
+    root: root,
+    players: players
+  } do
+    # Alice's home holds a node-owned item (as if she dropped it there).
+    alice = mk_home!(store, players, "alice", node_ctx)
+    item = mk_object!(store, node_ctx, name: "sword")
+    add_dir_entry!(store, alice.home, "sword", item, node_ctx)
+
+    # Bob (a distinct player, with his own home) stands in Alice's home and
+    # tries to take. node-ownership of item + Bob's inventory both pass — the
+    # ZONE-gate is what refuses (Alice's home is neither shared nor Bob's).
+    bob = mk_home!(store, players, "bob", node_ctx)
+    {bob_id, _} = fresh_identity()
+
+    assert {:error, :not_takeable_here} =
+             Take.take(item, "sword", alice.home, bob.inventory, bob_id, store: store, root_uuid: root)
+
+    assert "sword" in entry_names(store, alice.home)
+    assert :available = BursarClient.query(Bursar, item)
+  end
+
+  test "zone-gate: a player CAN take a node-owned item from their OWN home", %{
+    store: store,
+    node_ctx: node_ctx,
+    root: root,
+    players: players
+  } do
+    alice = mk_home!(store, players, "alice", node_ctx)
+    item = mk_object!(store, node_ctx, name: "trinket")
+    add_dir_entry!(store, alice.home, "trinket", item, node_ctx)
+    {alice_id, _} = fresh_identity()
+
+    assert :ok =
+             Take.take(item, "trinket", alice.home, alice.inventory, alice_id, store: store, root_uuid: root)
+
+    refute "trinket" in entry_names(store, alice.home)
+    assert "trinket" in entry_names(store, alice.inventory)
+    assert {:held, %{holder: ^alice_id}} = BursarClient.query(Bursar, item)
+  end
+
+  test "zone-gate: fail-closed — a take with NO world root is refused even from a shared room", %{
+    store: store,
+    node_ctx: node_ctx,
+    root: root
+  } do
+    room = share!(store, root, mk_room!(store, node_ctx), node_ctx)
+    inventory = mk_inventory!(store, node_ctx)
+    item = mk_object!(store, node_ctx, name: "orb")
+    add_dir_entry!(store, room, "orb", item, node_ctx)
+    {taker_id, _} = fresh_identity()
+
+    # No :root_uuid opt -> the location cannot be POSITIVELY classified -> refuse.
+    assert {:error, :not_takeable_here} = Take.take(item, "orb", room, inventory, taker_id, store: store)
+    assert "orb" in entry_names(store, room)
+    assert :available = BursarClient.query(Bursar, item)
+  end
+
+  test "zone-gate: fail-closed — a room not reachable from the world root is refused", %{
+    store: store,
+    node_ctx: node_ctx,
+    root: root
+  } do
+    # An orphan room that exists but was NEVER linked under the world root,
+    # and an inventory that belongs to no registered player home.
+    room = mk_room!(store, node_ctx)
+    inventory = mk_inventory!(store, node_ctx)
+    item = mk_object!(store, node_ctx, name: "relic")
+    add_dir_entry!(store, room, "relic", item, node_ctx)
+    {taker_id, _} = fresh_identity()
+
+    assert {:error, :not_takeable_here} =
+             Take.take(item, "relic", room, inventory, taker_id, store: store, root_uuid: root)
+
+    assert "relic" in entry_names(store, room)
+    assert :available = BursarClient.query(Bursar, item)
   end
 end
