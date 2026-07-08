@@ -79,7 +79,12 @@ defmodule Commonplace.Application do
         # its prior transcript instead of minting a fresh one. In-memory
         # only (see its moduledoc) — no deps beyond being a plain Agent, so
         # it's safe to start unconditionally on every boot (dev/prod/test).
-        Commonplace.MUD.SessionViewRegistry
+        Commonplace.MUD.SessionViewRegistry,
+        # CX-z0v7 (condition 2): unified web+bot serve-side session cap
+        # (concurrent-total + per-principal backstop). Generous defaults,
+        # in-memory/restart-not-durable — see its moduledoc. Safe to start
+        # unconditionally alongside SessionViewRegistry above.
+        Commonplace.MUD.SessionLimit
       ] ++
         snapshot_sweeper_children() ++
         presence_reaper_children() ++

@@ -266,6 +266,26 @@ defmodule Commonplace.MUD.BotTest do
     end
   end
 
+  describe "CX-z0v7: unified session cap" do
+    test "a bot spawn is refused once the cap is exhausted, and no session is registered", ctx do
+      prior = Application.get_env(:commonplace, :mud_session_limit, [])
+      Application.put_env(:commonplace, :mud_session_limit, max_total: 0, max_per_principal: 0)
+
+      on_exit(fn ->
+        if prior == [] do
+          Application.delete_env(:commonplace, :mud_session_limit)
+        else
+          Application.put_env(:commonplace, :mud_session_limit, prior)
+        end
+      end)
+
+      assert {:error, :session_limit} =
+               Bot.send_input("capped", "look", store: ctx.store, root_uuid: ctx.root)
+
+      assert :undefined = :global.whereis_name({Bot, "capped"})
+    end
+  end
+
   defp wait_until(fun, tries \\ 50)
   defp wait_until(_fun, 0), do: flunk("condition never became true")
 

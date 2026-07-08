@@ -43,7 +43,14 @@ defmodule CommonplaceWebWeb.MudLive do
 
   require Logger
 
-  alias Commonplace.MUD.{Citizenship, PlayerSession, SessionView, SessionViewLink, SessionViewRegistry}
+  alias Commonplace.MUD.{
+    Citizenship,
+    PlayerSession,
+    SessionLimit,
+    SessionView,
+    SessionViewLink,
+    SessionViewRegistry
+  }
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.{DocBuilder, Walk}
   alias CommonplaceWebWeb.SessionIdentity
@@ -236,14 +243,38 @@ defmodule CommonplaceWebWeb.MudLive do
       spawn_room_uuid: home_room_uuid
     ]
 
-    case GenServer.start(PlayerSession, opts, []) do
-      {:ok, pid} ->
-        send(self(), :enter)
-        Process.send_after(self(), :tick, @tick_ms)
-        assign(socket, :session_pid, pid)
+    # CX-z0v7 (condition 2): reserve a slot under the UNIFIED web+bot
+    # session cap BEFORE spawning — `resolved.identity_uuid` is the
+    # stable per-player principal (the same identity `Citizenship.ensure/5`
+    # just provisioned a home for above). On `{:error, :session_limit}`
+    # the mount must NOT crash — render a graceful capacity message into
+    # the scrollback (mirroring the `(session ended)` ambient-turn
+    # pattern `handle_event("command", ...)`'s `catch` clause uses below)
+    # and simply never spawn a session; the player can still see the
+    # transcript, just can't act.
+    case SessionLimit.admit(resolved.identity_uuid) do
+      {:ok, limit_ref} ->
+        case GenServer.start(PlayerSession, opts, []) do
+          {:ok, pid} ->
+            SessionLimit.attach(limit_ref, pid)
+            send(self(), :enter)
+            Process.send_after(self(), :tick, @tick_ms)
+            assign(socket, :session_pid, pid)
 
-      {:error, reason} ->
-        assign(socket, :error, "Could not start your MUD session: #{inspect(reason)}")
+          {:error, reason} ->
+            SessionLimit.release(limit_ref)
+            assign(socket, :error, "Could not start your MUD session: #{inspect(reason)}")
+        end
+
+      {:error, :session_limit} ->
+        view =
+          SessionView.append_ambient_turn(socket.assigns.view, [
+            "(the world is at capacity, try again shortly)"
+          ])
+
+        socket
+        |> assign(:view, view)
+        |> assign(:error, "The world is at capacity right now — try again shortly.")
     end
   end
 

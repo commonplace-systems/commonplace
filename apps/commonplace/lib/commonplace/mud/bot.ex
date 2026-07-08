@@ -63,7 +63,7 @@ defmodule Commonplace.MUD.Bot do
   """
 
   alias Commonplace.Crypto.NodeIdentity
-  alias Commonplace.MUD.{Bootstrap, Citizenship, PlayerSession}
+  alias Commonplace.MUD.{Bootstrap, Citizenship, PlayerSession, SessionLimit}
   alias Commonplace.Presence.Identity
   alias Commonplace.Store.CommitStoreClient
 
@@ -162,25 +162,47 @@ defmodule Commonplace.MUD.Bot do
 
         identity_opts = resolve_signing_opts(name, root, store, opts)
 
-        # The PlayerSession globally registers itself by name.
-        global_name = {:global, {__MODULE__, name}}
+        # CX-z0v7 (condition 2): the identity resolved just above (when
+        # available) is the stable per-bot principal for the UNIFIED
+        # web+bot session cap; a bot whose identity resolution degraded
+        # to `[]` (see `resolve_signing_opts/4`'s moduledoc note) falls
+        # back to keying the cap on the bot's own `name` — still stable
+        # per bot, acceptable for v1 (a name and its identity_uuid never
+        # both admit sessions for the "same" bot, since name-keying only
+        # happens when no identity_uuid was ever resolved).
+        principal = Keyword.get(identity_opts, :player_identity_uuid, name)
 
-        result =
-          GenServer.start(
-            PlayerSession,
-            [
-              player_name: name,
-              root_uuid: root,
-              store: store,
-              buffered: true
-            ] ++ identity_opts,
-            name: global_name
-          )
+        with {:ok, limit_ref} <- SessionLimit.admit(principal) do
+          # The PlayerSession globally registers itself by name.
+          global_name = {:global, {__MODULE__, name}}
 
-        case result do
-          {:ok, pid} -> {:ok, pid}
-          {:error, {:already_started, pid}} -> {:ok, pid}
-          err -> err
+          result =
+            GenServer.start(
+              PlayerSession,
+              [
+                player_name: name,
+                root_uuid: root,
+                store: store,
+                buffered: true
+              ] ++ identity_opts,
+              name: global_name
+            )
+
+          case result do
+            {:ok, pid} ->
+              SessionLimit.attach(limit_ref, pid)
+              {:ok, pid}
+
+            {:error, {:already_started, pid}} ->
+              # Someone else won the registration race — this reservation
+              # never spawned a session of its own, release it.
+              SessionLimit.release(limit_ref)
+              {:ok, pid}
+
+            err ->
+              SessionLimit.release(limit_ref)
+              err
+          end
         end
     end
   end
