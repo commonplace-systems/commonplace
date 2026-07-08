@@ -45,20 +45,13 @@ defmodule Commonplace.Sync.SyncLoopTest do
       # Write a file
       File.write!(Path.join(dir, "hello.txt"), "world")
 
-      # Wait for sync cycle
-      Process.sleep(200)
+      # Wait for the sync cycle to carry it into the CRDT.
+      assert "world" == wait_until(fn -> latest_content(store, root, "hello.txt") end)
 
-      # Verify CRDT has the document
+      # Verify CRDT has the document as a doc entry.
       root_doc = load_schema(root, store)
       {:ok, entry} = Schema.get_entry(root_doc, "hello.txt")
       assert entry.type == :doc
-
-      # Verify content
-      {:ok, commit} = CommitStore.latest_commit(store, entry.node_id)
-      doc = Yelixer.Doc.new()
-      {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
-      content = ContentType.get_content(doc)
-      assert content == "world"
 
       GenServer.stop(pid)
     end
@@ -71,19 +64,19 @@ defmodule Commonplace.Sync.SyncLoopTest do
         interval: 50
       )
 
+      # Let v1 land first so v2 is observed as a MODIFICATION (the point of
+      # this test), not coalesced into the initial add.
       File.write!(Path.join(dir, "doc.txt"), "version 1")
-      Process.sleep(200)
+      assert "version 1" == wait_until(fn -> latest_content(store, root, "doc.txt") end)
 
       File.write!(Path.join(dir, "doc.txt"), "version 2")
-      Process.sleep(200)
-
-      root_doc = load_schema(root, store)
-      {:ok, entry} = Schema.get_entry(root_doc, "doc.txt")
-      {:ok, commit} = CommitStore.latest_commit(store, entry.node_id)
-      doc = Yelixer.Doc.new()
-      {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
-      content = ContentType.get_content(doc)
-      assert content == "version 2"
+      assert "version 2" ==
+               wait_until(fn ->
+                 case latest_content(store, root, "doc.txt") do
+                   "version 2" -> "version 2"
+                   _ -> nil
+                 end
+               end)
 
       GenServer.stop(pid)
     end
@@ -113,10 +106,10 @@ defmodule Commonplace.Sync.SyncLoopTest do
         interval: 50
       )
 
-      Process.sleep(200)
-
-      # File should appear on disk
-      assert File.read!(Path.join(dir, "from_crdt.txt")) == "hello from crdt"
+      # File should appear on disk once the inbound cycle exports it.
+      path = Path.join(dir, "from_crdt.txt")
+      assert "hello from crdt" ==
+               wait_until(fn -> File.exists?(path) && File.read!(path) end)
 
       GenServer.stop(pid)
     end
@@ -133,11 +126,11 @@ defmodule Commonplace.Sync.SyncLoopTest do
 
       # Write a file on disk
       File.write!(Path.join(dir, "roundtrip.txt"), "original")
-      Process.sleep(200)
 
-      # Verify it's in CRDT
-      root_doc = load_schema(root, store)
-      assert {:ok, _entry} = Schema.get_entry(root_doc, "roundtrip.txt")
+      # Verify it flows into the CRDT.
+      assert wait_until(fn ->
+               match?({:ok, _}, Schema.get_entry(load_schema(root, store), "roundtrip.txt"))
+             end)
 
       # File should still be on disk (not deleted by inbound sync)
       assert File.read!(Path.join(dir, "roundtrip.txt")) == "original"
@@ -181,6 +174,41 @@ defmodule Commonplace.Sync.SyncLoopTest do
 
       :none ->
         Schema.new_schema()
+    end
+  end
+
+  # Poll `fun` until it returns a truthy value or the bounded window elapses,
+  # then return that value. The sync cycle is periodic (50ms) and its latency
+  # is unbounded under full-suite CPU load — a fixed `Process.sleep` before an
+  # assert races it (CX-60wl "never reached v2"). Detection is deterministic
+  # (content-hash based), so the expected state DOES land; poll until it does.
+  defp wait_until(fun, timeout_ms \\ 5_000, step_ms \\ 25) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    do_wait(fun, deadline, step_ms)
+  end
+
+  defp do_wait(fun, deadline, step_ms) do
+    val = fun.()
+
+    cond do
+      val -> val
+      System.monotonic_time(:millisecond) >= deadline -> val
+      true ->
+        Process.sleep(step_ms)
+        do_wait(fun, deadline, step_ms)
+    end
+  end
+
+  # Latest committed content of the `name` entry under `root`, or nil if it
+  # hasn't synced into the CRDT yet.
+  defp latest_content(store, root, name) do
+    with {:ok, entry} <- Schema.get_entry(load_schema(root, store), name),
+         {:ok, commit} <- CommitStore.latest_commit(store, entry.node_id) do
+      doc = Yelixer.Doc.new()
+      {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
+      ContentType.get_content(doc)
+    else
+      _ -> nil
     end
   end
 

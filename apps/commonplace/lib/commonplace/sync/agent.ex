@@ -40,6 +40,30 @@ defmodule Commonplace.Sync.Agent do
   3. **Rescan** — re-read disk state into `known_paths` / `known_hashes`
      so the next cycle starts from ground truth.
 
+  ## Cycle consistency & the inbound-clobber guard (CX-60wl)
+
+  Two invariants keep concurrent disk edits from being silently lost:
+
+    * `known_hashes` records only content the agent OBSERVED-AND-RECONCILED
+      this cycle — the *pre-outbound* disk snapshot overlaid with the exact
+      bytes inbound wrote — never a blind post-outbound rescan (which would
+      absorb a mid-cycle write outbound never committed).
+    * Inbound (`maybe_write_doc/8`) never overwrites disk content it hasn't
+      reconciled: if `disk_hash != known_hashes[rel]` the file holds an
+      unreconciled edit, so inbound SKIPS and lets outbound commit it next
+      cycle (the CRDT then catches up / merges). This also elides the
+      redundant write-back of content outbound just read from disk.
+
+  RESIDUAL (not fully closed): the guard reads `disk_hash` and then writes in
+  a separate step, so an edit landing in that read→atomic-write window still
+  clobbers. This shrinks the loss window from the original cross-phase (~ms,
+  clobbered on *any* concurrent edit) to a μs read→write TOCTOU. Full closure
+  requires either shadow-tracking ON (below — it detects the post-write stale
+  edit and recommits) or a CAS-style conditional write (write only if disk
+  still hashes to what was read). Acceptable at single-writer MUD/dev-sync
+  scale; default shadow-tracking ON is tracked as a pre-widening item
+  (see CX-60wl).
+
   ## Stale-write detection (shadow tracking)
 
   Enabled by `shadow_tracking: true`. When inbound writes a file it also
@@ -50,7 +74,8 @@ defmodule Commonplace.Sync.Agent do
   would otherwise be lost. The agent recovers it by diffing the stale
   content against the shadow's commit and committing the delta
   (`check_shadows/1`). This closes the narrow window between one
-  `sync_once` returning and the next one scanning.
+  `sync_once` returning and the next one scanning — and is the REACTIVE
+  backstop that fully closes the inbound-guard's μs TOCTOU residual above.
 
   ## State-vector hygiene
 
@@ -195,84 +220,135 @@ defmodule Commonplace.Sync.Agent do
       check_shadows(state)
     end
 
+    # Snapshot disk BEFORE outbound — the state outbound reconciles against.
+    # Using this (not a fresh post-outbound rescan) as the basis for the next
+    # cycle's known_hashes is the fix for CX-60wl: a write landing mid-cycle
+    # (after outbound's read) is NOT silently absorbed into known_hashes
+    # uncommitted — it stays divergent and is re-detected + committed next
+    # cycle. known_hashes must record only content this cycle
+    # OBSERVED-AND-RECONCILED: the pre-outbound disk snapshot (untouched +
+    # uncommitted-write files) overlaid with the exact bytes inbound wrote.
+    {_pre_paths, pre_hashes} = scan_disk_state(state.sync_dir, "")
+
     # Phase 1: Outbound — disk → CRDT
     sync_outbound_recursive(state.root_uuid, state.sync_dir, state.store, state.known_paths, state.known_hashes, state.inode_registry)
 
-    # Phase 2: Inbound — CRDT → disk, using commit ancestry
-    written = export_with_ancestry(state.root_uuid, state.sync_dir, state.store, state.written_commits, state.inode_registry)
+    # Phase 2: Inbound — CRDT → disk, using commit ancestry. Returns the
+    # commit map AND {rel_path => md5(bytes it wrote)} for the files it wrote
+    # this cycle (loop prevention: content just written matches the CRDT, so
+    # outbound must not push it back — hashing the EXACT written buffer makes
+    # this byte-match by construction, no CRDT-extract-vs-disk risk).
+    {written, inbound_hashes} =
+      export_with_ancestry(
+        state.root_uuid,
+        state.sync_dir,
+        state.store,
+        state.written_commits,
+        state.inode_registry,
+        state.known_hashes
+      )
 
-    # Phase 3: Update known state from current disk
-    {known, hashes} = scan_disk_state(state.sync_dir, "")
-    %{state | known_paths: known, known_hashes: hashes, written_commits: written}
+    # Phase 3: known_paths from current disk (delete detection is path-based,
+    # not part of the hash race); known_hashes = pre-outbound snapshot overlaid
+    # with inbound-written hashes.
+    {known_paths, _post_hashes} = scan_disk_state(state.sync_dir, "")
+    known_hashes = Map.merge(pre_hashes, inbound_hashes)
+    %{state | known_paths: known_paths, known_hashes: known_hashes, written_commits: written}
   end
 
   @doc false
-  # Export CRDT to disk, tracking which commit IDs we write.
+  # Export CRDT to disk, tracking which commit IDs we write AND the on-disk
+  # hash of the bytes we wrote (keyed by rel-path, IDENTICAL scheme to
+  # `scan_disk_state`, so the `Map.merge` into known_hashes aligns).
   # Only writes when the latest commit differs from what we last wrote.
   # When registry is provided, creates shadow hardlinks before atomic writes.
-  defp export_with_ancestry(root_uuid, dir, store, written_commits, registry) do
+  # Returns `{written_commits, inbound_hashes}`. `known_hashes` (last cycle's
+  # reconciled disk hashes) gates the write so inbound never clobbers an
+  # unreconciled disk edit (CX-60wl clobber race).
+  defp export_with_ancestry(root_uuid, dir, store, written_commits, registry, known_hashes) do
     File.mkdir_p!(dir)
-    shadow_dir = Path.join(dir, ".commonplace-shadow")
     schema_doc = load_schema(root_uuid, store)
+    export_schema(schema_doc, dir, "", store, {written_commits, %{}}, registry, known_hashes)
+  end
+
+  # Rel-path is built the SAME way `scan_disk_state/2` builds its keys:
+  # top-level entries are their bare name; nested entries are
+  # "#{prefix}/#{name}". Any drift here misaligns the known_hashes merge →
+  # a spurious "changed" next cycle → re-commit loop, so the two must match
+  # exactly (guarded by the "inbound-written file is a no-op next cycle" test).
+  defp export_schema(schema_doc, dir, prefix, store, acc, registry, known_hashes) do
+    shadow_dir = Path.join(dir, ".commonplace-shadow")
 
     Schema.list_entries(schema_doc)
-    |> Enum.reduce(written_commits, fn entry, written ->
+    |> Enum.reduce(acc, fn entry, {written, hashes} ->
       path = Path.join(dir, entry.name)
+      rel = if prefix == "", do: entry.name, else: "#{prefix}/#{entry.name}"
 
       case entry.type do
         :dir ->
           File.mkdir_p!(path)
           sub_schema = load_schema(entry.node_id, store)
-          export_entries_with_ancestry(sub_schema, path, store, written, registry)
+          export_schema(sub_schema, path, rel, store, {written, hashes}, registry, known_hashes)
 
         :doc ->
-          maybe_write_doc(entry, path, store, written, registry, shadow_dir)
+          maybe_write_doc(entry, path, rel, store, {written, hashes}, registry, shadow_dir, known_hashes)
       end
     end)
   end
 
-  defp export_entries_with_ancestry(schema_doc, dir, store, written_commits, registry) do
-    Schema.list_entries(schema_doc)
-    |> Enum.reduce(written_commits, fn entry, written ->
-      path = Path.join(dir, entry.name)
-
-      case entry.type do
-        :dir ->
-          File.mkdir_p!(path)
-          sub_schema = load_schema(entry.node_id, store)
-          export_entries_with_ancestry(sub_schema, path, store, written, registry)
-
-        :doc ->
-          maybe_write_doc(entry, path, store, written, registry, Path.join(dir, ".commonplace-shadow"))
-      end
-    end)
-  end
-
-  defp maybe_write_doc(entry, path, store, written, registry, shadow_dir) do
+  defp maybe_write_doc(entry, path, rel, store, {written, hashes}, registry, shadow_dir, known_hashes) do
     case CommitStoreClient.latest_commit(store, entry.node_id) do
       {:ok, commit} ->
         last_written = Map.get(written, entry.node_id)
+        content = extract_content(commit)
+        content_hash = :erlang.md5(content)
+
+        disk_hash =
+          case File.read(path) do
+            {:ok, disk} -> :erlang.md5(disk)
+            _ -> nil
+          end
 
         cond do
-          # Same commit — nothing changed, skip write
+          # Same commit — nothing written this cycle. Do NOT record a hash
+          # here: leave known_hashes[rel] to the pre-outbound disk snapshot
+          # (the Map.merge base), which correctly reflects either the
+          # reconciled disk content OR an uncommitted mid-cycle user edit
+          # (kept divergent → retried next cycle).
           last_written == commit.id ->
-            written
+            {written, hashes}
 
-          # New or updated — write to disk
+          # Disk already holds exactly the CRDT content — record it as
+          # reconciled but DON'T rewrite. This kills the redundant write-back
+          # (outbound just committed what it read from disk) that would
+          # otherwise clobber a concurrent edit, and avoids pointless churn.
+          disk_hash == content_hash ->
+            {Map.put(written, entry.node_id, commit.id), Map.put(hashes, rel, content_hash)}
+
+          # Disk holds an edit we have NOT reconciled (differs from both the
+          # CRDT and the last content we synced) — do NOT clobber it. Leave it
+          # for outbound to commit next cycle; the CRDT then catches up. Without
+          # shadow-tracking this is the guard that keeps inbound from
+          # overwriting a concurrent disk edit (CX-60wl clobber race).
+          disk_hash != nil and disk_hash != Map.get(known_hashes, rel) ->
+            {written, hashes}
+
+          # Disk is stale (absent, or equals what we last reconciled) and the
+          # CRDT is ahead → write the CRDT content out. Record the md5 of the
+          # EXACT bytes we wrote (byte-match by construction → next-cycle
+          # outbound sees disk == known and won't push it back).
           true ->
-            content = extract_content(commit)
-
             if registry do
               InodeTracker.atomic_write_with_shadow(path, content, shadow_dir, registry, commit.id, entry.node_id)
             else
               Export.atomic_write(path, content)
             end
 
-            Map.put(written, entry.node_id, commit.id)
+            {Map.put(written, entry.node_id, commit.id), Map.put(hashes, rel, content_hash)}
         end
 
       :none ->
-        written
+        {written, hashes}
     end
   end
 

@@ -78,12 +78,11 @@ defmodule Commonplace.Sync.VersionTrackingTest do
       )
 
       await = fn path, expected ->
-        Enum.reduce_while(1..100, nil, fn _, _ ->
-          case File.read(path) do
-            {:ok, ^expected} -> {:halt, :ok}
-            _ -> Process.sleep(100) && {:cont, nil}
-          end
-        end) || flunk("#{path} never reached #{inspect(expected)}")
+        wait_until(fn -> File.read(path) == {:ok, expected} end) ||
+          flunk(
+            "#{path} never reached #{inspect(expected)} — disk=#{inspect(File.read(path))} " <>
+              "crdt=#{inspect(dbg_crdt(store, root, "doc.txt"))}"
+          )
       end
 
       await.(Path.join(dir_b, "doc.txt"), "v1")
@@ -132,15 +131,50 @@ defmodule Commonplace.Sync.VersionTrackingTest do
       # Both peers modify simultaneously
       File.write!(Path.join(dir_a, "shared.txt"), "from A")
       File.write!(Path.join(dir_b, "shared.txt"), "from B")
-      Process.sleep(800)
 
-      # After sync settles, both peers should converge to the same content
-      content_a = File.read!(Path.join(dir_a, "shared.txt"))
-      content_b = File.read!(Path.join(dir_b, "shared.txt"))
-      assert content_a == content_b
+      # Poll until both disks converge to the same content rather than
+      # asserting after a fixed settle sleep — convergence takes an unbounded
+      # number of cycles under full-suite load (CX-60wl).
+      assert wait_until(fn ->
+               a = File.read!(Path.join(dir_a, "shared.txt"))
+               b = File.read!(Path.join(dir_b, "shared.txt"))
+               a == b && a
+             end)
 
       GenServer.stop(loop_a)
       GenServer.stop(loop_b)
+    end
+  end
+
+  # Poll `fun` until it returns a truthy value or the bounded window elapses,
+  # then return that value. Sync propagation is periodic and its latency is
+  # unbounded under load — a fixed settle-sleep before an assert races it
+  # (CX-60wl).
+  defp wait_until(fun, timeout_ms \\ 10_000, step_ms \\ 50) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    do_wait(fun, deadline, step_ms)
+  end
+
+  defp do_wait(fun, deadline, step_ms) do
+    val = fun.()
+
+    cond do
+      val -> val
+      System.monotonic_time(:millisecond) >= deadline -> val
+      true ->
+        Process.sleep(step_ms)
+        do_wait(fun, deadline, step_ms)
+    end
+  end
+
+  defp dbg_crdt(store, root, name) do
+    with {:ok, entry} <- Schema.get_entry(load_schema(root, store), name),
+         {:ok, commit} <- CommitStore.latest_commit(store, entry.node_id) do
+      doc = Yelixer.Doc.new()
+      {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
+      {ContentType.get_content(doc), commit.id}
+    else
+      other -> {:no_entry, other}
     end
   end
 

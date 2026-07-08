@@ -216,4 +216,116 @@ defmodule Commonplace.Sync.AgentTest do
       assert File.read!(Path.join(dir, "stable.txt")) == "stable"
     end
   end
+
+  # CX-60wl: the sync cycle's end-of-cycle known_hashes must record only
+  # content the agent OBSERVED-AND-RECONCILED this cycle (the pre-outbound
+  # disk snapshot overlaid with the exact bytes inbound wrote) — never a blind
+  # post-outbound disk rescan, which would absorb a mid-cycle write that
+  # outbound never committed → silent data loss.
+  describe "CX-60wl: snapshot-consistent known_hashes" do
+    test "an inbound-written file is a strict NO-OP on the next cycle (rel-path key + byte-match align)",
+         %{store: store, sync_dir: dir, root: root} do
+      # Seed a top-level doc AND a NESTED doc (exercises the prefix/name
+      # rel-path key scheme) purely in the CRDT — inbound must export both.
+      top = make_doc(store, "top.txt", "top content")
+      nested = make_doc(store, "b.txt", "nested content")
+
+      sub = UUID.uuid4()
+      sub_schema = Schema.new_schema() |> Schema.add_file("b.txt", nested)
+      CommitStore.create_commit(store, sub, Yelixer.Encoding.encode_update(sub_schema), nil)
+
+      root_doc =
+        loader(store).(root)
+        |> Schema.add_file("top.txt", top)
+        |> Schema.add_directory("sub", sub)
+
+      CommitStore.create_commit(store, root, Yelixer.Encoding.encode_update(root_doc), nil)
+
+      {:ok, pid} = Agent.start_link(root_uuid: root, sync_dir: dir, store: store)
+
+      # Cycle 1: inbound exports both to disk and records them as reconciled.
+      Agent.sync_once(pid)
+      assert File.read!(Path.join(dir, "top.txt")) == "top content"
+      assert File.read!(Path.join([dir, "sub", "b.txt"])) == "nested content"
+
+      top_before = latest_id(store, top)
+      nested_before = latest_id(store, nested)
+
+      # Cycle 2: no disk change. If the inbound-written hash sits under a
+      # rel-path key that doesn't match scan_disk_state's key — or the stored
+      # bytes don't match the on-disk bytes — outbound sees the file as
+      # "changed" and spuriously re-commits (a loop through the KEY door).
+      # Correct alignment ⇒ zero new commits.
+      Agent.sync_once(pid)
+
+      assert latest_id(store, top) == top_before,
+             "top-level inbound file re-committed on a no-op cycle (key/byte misalign)"
+
+      assert latest_id(store, nested) == nested_before,
+             "nested inbound file re-committed on a no-op cycle (rel-path key misalign)"
+    end
+
+    test "every edit reaches the CRDT — no modification is absorbed unbuilt",
+         %{store: store, sync_dir: dir, root: root} do
+      {:ok, pid} = Agent.start_link(root_uuid: root, sync_dir: dir, store: store)
+
+      File.write!(Path.join(dir, "doc.txt"), "v0")
+      Agent.sync_once(pid)
+      {:ok, uuid} = Walk.resolve_path(root, "doc.txt", loader(store))
+
+      # Each modification, cycle after cycle, must land in the CRDT — none may
+      # be silently swallowed by the known_hashes update.
+      for i <- 1..25 do
+        File.write!(Path.join(dir, "doc.txt"), "v#{i}")
+        Agent.sync_once(pid)
+        assert read_content(uuid, store) == "v#{i}", "edit v#{i} was lost"
+      end
+    end
+
+    test "shadow-tracking closes the inbound-guard's read→write TOCTOU residual",
+         %{store: store, sync_dir: dir, root: root} do
+      # The inbound guard shrinks the clobber window to a μs read→write TOCTOU
+      # but doesn't fully close it. Shadow-tracking is the REACTIVE backstop:
+      # an out-of-band edit that lands after an inbound write (the residual's
+      # worst case) is detected via the shadow fingerprint and recommitted, so
+      # it is NOT lost.
+      f = make_doc(store, "f.txt", "v1")
+
+      root_doc = loader(store).(root) |> Schema.add_file("f.txt", f)
+      CommitStore.create_commit(store, root, Yelixer.Encoding.encode_update(root_doc), nil)
+
+      {:ok, pid} =
+        Agent.start_link(root_uuid: root, sync_dir: dir, store: store, shadow_tracking: true)
+
+      # Cycle 1: inbound writes v1 to disk and hardlinks its shadow.
+      Agent.sync_once(pid)
+      assert File.read!(Path.join(dir, "f.txt")) == "v1"
+
+      # An out-of-band edit lands (the residual's clobbered write). Disk now
+      # diverges from the shadow.
+      File.write!(Path.join(dir, "f.txt"), "v2-edit")
+
+      # Cycle 2: Phase-0 check_shadows sees disk != shadow → recovers the edit
+      # into the CRDT rather than losing it.
+      Agent.sync_once(pid)
+      assert read_content(f, store) == "v2-edit", "shadow-tracking failed to recover the edit"
+    end
+  end
+
+  defp make_doc(store, name, content) do
+    uuid = UUID.uuid4()
+
+    doc =
+      Yelixer.Doc.new()
+      |> ContentType.create(:text, name)
+      |> ContentType.insert_text(0, content)
+
+    CommitStore.create_commit(store, uuid, Yelixer.Encoding.encode_update(doc), nil)
+    uuid
+  end
+
+  defp latest_id(store, uuid) do
+    {:ok, commit} = CommitStore.latest_commit(store, uuid)
+    commit.id
+  end
 end
