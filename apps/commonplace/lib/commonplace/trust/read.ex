@@ -39,6 +39,19 @@ defmodule Commonplace.Trust.Read do
   the reader's `reader_pub`. 🔒 The caller MUST pass the reader's
   SERVER-RESOLVED identity key (session `SigningContext`), never a
   client-claimed value — otherwise the binding is meaningless.
+
+  ## Two load-bearing CALLER contracts (self-containment holds only if honored)
+
+  1. **`reader_pub` = the reader's SERVER-RESOLVED key** (above). Inc-5's
+     cap-path caller must honor it; P1's live self-vs-owner path doesn't
+     exercise the cap path yet.
+  2. **`visibility`/`owner` = the TARGET's ACTUAL protected fields**, read from
+     the doc's node-signed meta (`SessionView.read_meta/2` / `meta/1`), NEVER
+     a client-influenced value. The verifier is only as self-contained as its
+     inputs: feeding it a client-claimed `visibility: :public` would forge an
+     allow. Every caller (MudLive today; Inc-5 + the P3 surfaces — MCP `cat`,
+     GitBridge, wiki — later) MUST source these from the target's node-signed
+     state.
   """
 
   alias Commonplace.Crypto.SigningContext
