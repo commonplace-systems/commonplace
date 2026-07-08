@@ -201,6 +201,28 @@ defmodule Commonplace.MUD.DropGiveTest do
     uuid
   end
 
+  # Seed a presence doc with NO `bound_identity` (anonymous / legacy) —
+  # `resolve_recipient_identity/2` will read nil for it, exercising the
+  # GIVE fail-closed path (plan #6764 Q2).
+  defp seed_presence_no_identity!(store, room_uuid, name, node_ctx) do
+    fname = "#{name}.usr"
+    uuid = UUID.uuid4()
+    doc = Yelixer.Doc.new()
+    doc = ContentType.create(doc, :map, fname)
+    doc = ContentType.set_key(doc, "name", name)
+    doc = ContentType.set_key(doc, "type", "usr")
+    update = Encoding.encode_update(doc)
+    {metadata, commit_opts} = Commonplace.MUD.SignedWrite.opts_for(uuid, store: store, signing_context: node_ctx)
+
+    case CommitStoreClient.create_commit(store, uuid, update, nil, metadata, commit_opts) do
+      {:error, _} = err -> raise "seed write failed: #{inspect(err)}"
+      _commit -> :ok
+    end
+
+    add_file_entry!(store, room_uuid, fname, uuid, node_ctx)
+    uuid
+  end
+
   # ---- 1. DROP happy path ----
 
   test "drop: an item held via prior take can be dropped into the current room", %{
@@ -413,6 +435,51 @@ defmodule Commonplace.MUD.DropGiveTest do
 
     refute "gem.obj" in entry_names(store, alice.home)
     assert "gem.obj" in entry_names(store, alice.inventory)
+    assert {:held, %{holder: ^alice_id}} = BursarClient.query(Bursar, item)
+  end
+
+  # ---- 8. CX-1mz7 Q2 (plan #6764): GIVE fails closed on an unresolvable
+  # recipient identity — never transfer the possession token to a nil/void
+  # holder. The giver keeps BOTH the item and its token. ----
+
+  test "give: fails closed when the recipient's presence has no bound_identity", %{
+    store: store,
+    node_ctx: node_ctx,
+    root: root,
+    players: players
+  } do
+    room = share!(store, root, mk_room!(store, node_ctx), node_ctx)
+    bob = mk_home!(store, players, "bob", node_ctx)
+    alice_inv = mk_inventory!(store, node_ctx)
+    item = mk_object!(store, node_ctx, name: "amulet.obj")
+    add_dir_entry!(store, room, "amulet.obj", item, node_ctx)
+
+    {alice_id, alice_sc} = fresh_identity()
+    assert :ok = Take.take(item, "amulet.obj", room, alice_inv, alice_id, store: store, root_uuid: root)
+
+    # Bob is present, but his presence doc carries NO bound_identity ->
+    # resolve_recipient_identity/2 returns nil -> the enforce push guard
+    # refuses BEFORE any token transfer or tree write.
+    seed_presence_no_identity!(store, room, "bob", node_ctx)
+
+    ctx = %{
+      player_name: "alice",
+      current_room_uuid: room,
+      inventory_uuid: alice_inv,
+      root_uuid: root,
+      store: store,
+      signing_context: alice_sc,
+      cert_cids: [],
+      signer_id: Signing.signer_id(alice_id, alice_sc.public_key)
+    }
+
+    cmd = %Parser.Command{verb: "give", args: "amulet to bob", argv: ["amulet", "to", "bob"]}
+    assert {:error, _msg} = Verbs.dispatch(cmd, ctx)
+
+    # Fail-closed: item stays with the giver; the token was NEVER moved
+    # (Alice still holds it — nothing lost to the void).
+    assert "amulet.obj" in entry_names(store, alice_inv)
+    refute "amulet.obj" in entry_names(store, bob.inventory)
     assert {:held, %{holder: ^alice_id}} = BursarClient.query(Bursar, item)
   end
 end
