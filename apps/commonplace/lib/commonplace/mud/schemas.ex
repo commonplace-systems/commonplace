@@ -22,6 +22,7 @@ defmodule Commonplace.MUD.Schemas do
   @room_file "__room.json"
   @obj_file "__obj.json"
   @player_file "__player.json"
+  @recipe_file "__recipe.json"
 
   defmodule Room do
     @enforce_keys [:name, :description]
@@ -95,9 +96,30 @@ defmodule Commonplace.MUD.Schemas do
           }
   end
 
+  # CX-cj3t (items epic phase 2, SMITH) — a Recipe is a CURATED,
+  # node-signed DOC (not a verb attr): it DEFINES the output type
+  # (mint-authority, anti-forgery — a player who could author one could
+  # mint anything, so authorship is curation/write-gated). `inputs` are
+  # `%{"type" => name, "qty" => n}`; `output` is an object template
+  # (name/aliases/description) minted node-signed; `station` is an
+  # optional required-object gate (unused in v1, reserved). Inspectable
+  # pre-craft (the `recipes` read verb) = informed consent.
+  defmodule Recipe do
+    @enforce_keys [:name]
+    defstruct name: "", inputs: [], output: %{}, station: nil
+
+    @type t :: %__MODULE__{
+            name: String.t(),
+            inputs: [map()],
+            output: map(),
+            station: String.t() | nil
+          }
+  end
+
   def room_filename, do: @room_file
   def object_filename, do: @obj_file
   def player_filename, do: @player_file
+  def recipe_filename, do: @recipe_file
 
   # ---- Encoding ----
 
@@ -206,6 +228,33 @@ defmodule Commonplace.MUD.Schemas do
   success, `{:error, reason}` otherwise.
   """
   def load_room(dir_uuid, store \\ CommitStoreClient), do: load_meta(dir_uuid, @room_file, &decode_room/1, store)
+  def load_recipe(dir_uuid, store \\ CommitStoreClient), do: load_meta(dir_uuid, @recipe_file, &decode_recipe/1, store)
+
+  def encode_recipe(%Recipe{} = r) do
+    Jason.encode!(%{
+      "kind" => "recipe",
+      "name" => r.name,
+      "inputs" => r.inputs,
+      "output" => r.output,
+      "station" => r.station
+    })
+  end
+
+  def decode_recipe(json) when is_binary(json) do
+    case Jason.decode(json) do
+      {:ok, m} ->
+        {:ok,
+         %Recipe{
+           name: Map.get(m, "name", ""),
+           inputs: Map.get(m, "inputs", []),
+           output: Map.get(m, "output", %{}),
+           station: Map.get(m, "station")
+         }}
+
+      {:error, _} = err ->
+        err
+    end
+  end
   def load_object(dir_uuid, store \\ CommitStoreClient), do: load_meta(dir_uuid, @obj_file, &decode_object/1, store)
   def load_player(dir_uuid, store \\ CommitStoreClient), do: load_meta(dir_uuid, @player_file, &decode_player/1, store)
 

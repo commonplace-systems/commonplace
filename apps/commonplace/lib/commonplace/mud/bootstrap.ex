@@ -42,7 +42,7 @@ defmodule Commonplace.MUD.Bootstrap do
 
   alias Commonplace.Crypto.NodeIdentity
   alias Commonplace.MUD.Schemas
-  alias Commonplace.MUD.Schemas.{Object, Room}
+  alias Commonplace.MUD.Schemas.{Object, Recipe, Room}
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.Schema
   alias Yelixer.Encoding
@@ -103,7 +103,8 @@ defmodule Commonplace.MUD.Bootstrap do
          :ok <- merge_exits(forest_uuid, %{"south" => start_uuid}, store),
          :ok <- merge_exits(clearing_uuid, %{"west" => start_uuid}, store),
          :ok <- ensure_movable_objects_once(root_uuid, start_uuid, clearing_uuid, store),
-         :ok <- ensure_vein(forest_uuid, "iron-vein.obj", iron_vein(), store) do
+         :ok <- ensure_vein(forest_uuid, "iron-vein.obj", iron_vein(), store),
+         :ok <- ensure_recipes(root_uuid, store) do
       {:ok, :ready}
     end
   end
@@ -260,6 +261,69 @@ defmodule Commonplace.MUD.Bootstrap do
                  node_opts
                ) do
           add_dir_entry(parent_uuid, filename, vein_uuid, store, node_opts)
+        end
+    end
+  end
+
+  # CX-cj3t (items epic phase 2, SMITH) — the seed recipe, node-signed at
+  # creation so it plays under `:enforce` (a player can't author one — its
+  # authorship is the anti-forgery root). "iron ingot" ← 2× "iron ore"
+  # (the iron vein's yield). Lives under `root/__recipes/` where
+  # `Mint.smith`/`recipes` resolve it.
+  @iron_ingot_template %{
+    "name" => "iron ingot",
+    "aliases" => ["ingot"],
+    "description" => "A sturdy bar of smelted iron."
+  }
+
+  defp iron_ingot_recipe do
+    %Recipe{
+      name: "iron ingot",
+      inputs: [%{"type" => "iron ore", "qty" => 2}],
+      output: @iron_ingot_template,
+      station: nil
+    }
+  end
+
+  defp ensure_recipes(root_uuid, store) do
+    with {:ok, node_ctx} <- NodeIdentity.signing_context(),
+         node_opts = [signing_context: node_ctx, cert_cids: []],
+         {:ok, recipes_dir} <- ensure_child_dir(root_uuid, "__recipes", store, node_opts) do
+      ensure_recipe(recipes_dir, "iron-ingot", iron_ingot_recipe(), store, node_opts)
+    end
+  end
+
+  defp ensure_child_dir(parent_uuid, name, store, node_opts) do
+    {:ok, schema} = Schemas.load_dir_schema(parent_uuid, store)
+
+    case Schema.get_entry(schema, name) do
+      {:ok, entry} ->
+        {:ok, entry.node_id}
+
+      :error ->
+        with {:ok, dir_uuid} <- Schemas.create_dir_with_meta(nil, nil, store, node_opts),
+             :ok <- add_dir_entry(parent_uuid, name, dir_uuid, store, node_opts) do
+          {:ok, dir_uuid}
+        end
+    end
+  end
+
+  defp ensure_recipe(parent_uuid, filename, %Recipe{} = recipe, store, node_opts) do
+    {:ok, schema} = Schemas.load_dir_schema(parent_uuid, store)
+
+    case Schema.get_entry(schema, filename) do
+      {:ok, _} ->
+        :ok
+
+      :error ->
+        with {:ok, recipe_uuid} <-
+               Schemas.create_dir_with_meta(
+                 Schemas.recipe_filename(),
+                 Schemas.encode_recipe(recipe),
+                 store,
+                 node_opts
+               ) do
+          add_dir_entry(parent_uuid, filename, recipe_uuid, store, node_opts)
         end
     end
   end

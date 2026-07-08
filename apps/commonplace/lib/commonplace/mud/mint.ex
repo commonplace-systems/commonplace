@@ -61,8 +61,8 @@ defmodule Commonplace.MUD.Mint do
 
   alias Commonplace.Crypto.NodeIdentity
   alias Commonplace.Green.Bursar
-  alias Commonplace.MUD.{Schemas, SignedWrite}
-  alias Commonplace.MUD.Schemas.Object
+  alias Commonplace.MUD.{Move, Schemas, SignedWrite}
+  alias Commonplace.MUD.Schemas.{Object, Recipe}
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.Schema
   alias Yelixer.Encoding
@@ -70,6 +70,8 @@ defmodule Commonplace.MUD.Mint do
   @vein_lock_ttl_ms 5_000
   @vein_lock_retries 20
   @vein_lock_retry_ms 50
+
+  @recipes_dir "__recipes"
 
   # ---- MINT ----
 
@@ -170,6 +172,219 @@ defmodule Commonplace.MUD.Mint do
 
       :error ->
         :ok
+    end
+  end
+
+  # ---- SMITH: the mint-before-consume saga ----
+
+  @doc """
+  Craft `recipe_name` for `crafter_identity`: consume the recipe's
+  declared inputs from `crafter_inventory_uuid` and mint its output there.
+
+  The ATOMICITY spine (design §2c): the entire saga runs under ONE
+  `Move.with_lock` over the crafter's inventory dir (the same lock point
+  GIVE/DROP/TAKE take via `Move.move`, so no concurrent op can move an
+  input out mid-craft — attack S4), held across validate → mint → consume
+  as a single critical section (a crash mid-craft is released by the lock
+  TTL, so it can't wedge the inventory). Inside the lock:
+
+    1. VALIDATE (no mutation): every declared input is a matching item in
+       the crafter's inventory whose possession token the crafter holds.
+       Any shortfall → refuse, nothing touched.
+    2. MINT the output FIRST (§0). A mint failure aborts with the inputs
+       UNTOUCHED — "never consume if the craft fails" is structural, not
+       runtime-checked (mint precedes consume).
+    3. CONSUME each declared input (release token + unlink — §2b).
+    4. COMPENSATE a mid-consume failure: tombstone the minted output +
+       re-acquire/re-link the already-consumed inputs. The output is
+       minted exactly once, so this can never duplicate it (§3.7 / S6).
+
+  Only `Commonplace.MUD.Verbs.do_smith` calls this (availability-bound).
+  Returns `{:ok, output_name}`, `{:error, :no_recipe}`,
+  `{:error, {:missing_input, type}}`, `{:error, :bad_arg}`,
+  `{:error, :busy}` (lost the inventory lock), or a mint/store error.
+  """
+  @spec smith(String.t(), String.t(), String.t() | nil, keyword()) ::
+          {:ok, String.t()} | {:error, term()}
+  def smith(recipe_name, crafter_inventory_uuid, crafter_identity, opts \\ [])
+
+  def smith(_recipe_name, _crafter_inventory_uuid, crafter_identity, _opts)
+      when not is_binary(crafter_identity) or crafter_identity == "" do
+    {:error, :bad_arg}
+  end
+
+  def smith(recipe_name, crafter_inventory_uuid, crafter_identity, opts) do
+    store = Keyword.get(opts, :store, CommitStoreClient)
+    bursar = Keyword.get(opts, :bursar, Bursar)
+    root = Keyword.get(opts, :root_uuid)
+
+    with {:ok, recipe} <- resolve_recipe(recipe_name, root, store) do
+      Move.with_lock(
+        [crafter_inventory_uuid],
+        fn -> do_smith_saga(recipe, crafter_inventory_uuid, crafter_identity, store, bursar) end,
+        bursar: bursar
+      )
+    end
+  end
+
+  # Recipes are curated node-signed DOCs under `root/__recipes/` (§2a).
+  # Resolve by matching the requested name against each recipe's OWN
+  # `name` field (case-insensitive) — robust to entry-name formatting.
+  defp resolve_recipe(_name, nil, _store), do: {:error, :no_recipe}
+
+  defp resolve_recipe(name, root, store) do
+    needle = String.downcase(String.trim(name))
+
+    with {:ok, root_schema} <- Schemas.load_dir_schema(root, store),
+         {:ok, entry} <- Schema.get_entry(root_schema, @recipes_dir),
+         {:ok, recipes_schema} <- Schemas.load_dir_schema(entry.node_id, store) do
+      recipes_schema
+      |> Schema.list_entries()
+      |> Enum.filter(&(&1.type == :dir))
+      |> Enum.find_value({:error, :no_recipe}, fn e ->
+        case Schemas.load_recipe(e.node_id, store) do
+          {:ok, %Recipe{name: rname} = recipe} ->
+            if String.downcase(String.trim(rname)) == needle, do: {:ok, recipe}, else: false
+
+          _ ->
+            false
+        end
+      end)
+    else
+      _ -> {:error, :no_recipe}
+    end
+  end
+
+  defp do_smith_saga(recipe, crafter_inv, crafter_identity, store, bursar) do
+    with {:ok, input_uuids} <- validate_inputs(recipe, crafter_inv, crafter_identity, store, bursar) do
+      # MINT OUTPUT FIRST — a failure here leaves the inputs UNTOUCHED (S2).
+      case mint_item(recipe.output, crafter_inv, crafter_identity, store: store, bursar: bursar) do
+        {:ok, output_uuid} ->
+          case consume_all(input_uuids, crafter_identity, crafter_inv, store, bursar, []) do
+            :ok ->
+              {:ok, template_name(recipe.output, "item")}
+
+            {:error, reason, consumed} ->
+              compensate(output_uuid, consumed, crafter_inv, crafter_identity, store, bursar)
+              {:error, reason}
+          end
+
+        {:error, _} = err ->
+          err
+      end
+    end
+  end
+
+  # VALIDATE (no mutation): resolve, for each declared input, `qty`
+  # DISTINCT items in the crafter's inventory whose Object name == the
+  # declared type AND whose possession token the crafter currently holds.
+  # `consume ⊆ declared+visible inputs` (S3): only recipe-declared types
+  # are ever collected; the saga never reaches a general inventory-remove.
+  defp validate_inputs(recipe, crafter_inv, crafter_identity, store, bursar) do
+    case Schemas.load_dir_schema(crafter_inv, store) do
+      {:ok, schema} ->
+        item_entries = schema |> Schema.list_entries() |> Enum.filter(&(&1.type == :dir))
+
+        Enum.reduce_while(recipe.inputs, {:ok, []}, fn input, {:ok, allocated} ->
+          type = Map.get(input, "type")
+          qty = Map.get(input, "qty", 1)
+
+          matches =
+            held_matches(item_entries, type, crafter_identity, store, bursar, allocated)
+
+          if length(matches) >= qty do
+            {:cont, {:ok, allocated ++ Enum.take(matches, qty)}}
+          else
+            {:halt, {:error, {:missing_input, type}}}
+          end
+        end)
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  # Item uuids in `entries` whose Object name matches `type`, held by
+  # `crafter`, excluding any already `allocated` to a prior input.
+  defp held_matches(entries, type, crafter, store, bursar, allocated) do
+    entries
+    |> Enum.map(& &1.node_id)
+    |> Enum.reject(&(&1 in allocated))
+    |> Enum.filter(fn uuid ->
+      matches_type?(uuid, type, store) and held_by?(uuid, crafter, bursar)
+    end)
+  end
+
+  defp matches_type?(uuid, type, store) do
+    case Schemas.load_object(uuid, store) do
+      {:ok, %Object{name: name}} -> String.downcase(name) == String.downcase(to_string(type))
+      _ -> false
+    end
+  end
+
+  defp held_by?(uuid, crafter, bursar) do
+    match?({:held, %{holder: ^crafter}}, Bursar.query(bursar, uuid))
+  end
+
+  defp consume_all([], _crafter, _inv, _store, _bursar, _consumed), do: :ok
+
+  defp consume_all([uuid | rest], crafter, inv, store, bursar, consumed) do
+    case consume_item(uuid, crafter, inventory_uuid: inv, store: store, bursar: bursar) do
+      :ok -> consume_all(rest, crafter, inv, store, bursar, [uuid | consumed])
+      {:error, reason} -> {:error, reason, consumed}
+    end
+  end
+
+  # COMPENSATION (§2c / S6): output minted exactly once, so tombstoning it
+  # can never leave a duplicate; re-acquire + re-link the inputs already
+  # consumed before the failure. The inventory lock is still held, so
+  # nobody raced these meanwhile.
+  defp compensate(output_uuid, consumed, crafter_inv, crafter, store, bursar) do
+    consume_item(output_uuid, crafter, inventory_uuid: crafter_inv, store: store, bursar: bursar)
+    Enum.each(consumed, &restore_input(&1, crafter_inv, crafter, store, bursar))
+    :ok
+  end
+
+  defp restore_input(uuid, crafter_inv, crafter, store, bursar) do
+    Bursar.acquire(bursar, uuid, crafter, authenticated_as: crafter, ttl: nil)
+
+    with {:ok, %Object{name: name}} <- Schemas.load_object(uuid, store),
+         {:ok, node_ctx} <- NodeIdentity.signing_context() do
+      link_into_parent(crafter_inv, instance_entry_name(name, uuid), uuid,
+        store: store,
+        signing_context: node_ctx,
+        cert_cids: []
+      )
+    else
+      _ -> :ok
+    end
+  end
+
+  defp template_name(template, default), do: tf(template, :name, default)
+
+  @doc """
+  List the curated recipes under `root/__recipes/` (read-only) — backs
+  the `recipes` verb so a player can inspect inputs BEFORE crafting
+  (informed consent, §2c / attack S3). Returns `[%Recipe{}]`.
+  """
+  @spec list_recipes(String.t() | nil, GenServer.server()) :: [Recipe.t()]
+  def list_recipes(nil, _store), do: []
+
+  def list_recipes(root, store) do
+    with {:ok, root_schema} <- Schemas.load_dir_schema(root, store),
+         {:ok, entry} <- Schema.get_entry(root_schema, @recipes_dir),
+         {:ok, recipes_schema} <- Schemas.load_dir_schema(entry.node_id, store) do
+      recipes_schema
+      |> Schema.list_entries()
+      |> Enum.filter(&(&1.type == :dir))
+      |> Enum.flat_map(fn e ->
+        case Schemas.load_recipe(e.node_id, store) do
+          {:ok, recipe} -> [recipe]
+          _ -> []
+        end
+      end)
+    else
+      _ -> []
     end
   end
 

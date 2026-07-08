@@ -119,6 +119,46 @@ defmodule Commonplace.MUD.Move do
     end
   end
 
+  @doc """
+  Run `fun` while holding the canonical (sorted) bursar move-lock over
+  `paths` — the SAME ephemeral, TTL-crash-net, retry-with-backoff lock
+  `move/5` takes over its source+dest dirs. Returns `fun`'s result, or
+  `{:error, :busy}` if the lock can't be acquired within the retry
+  budget.
+
+  This is the SMITH saga's serialization primitive (CX-cj3t items phase
+  2): the craft holds ONE lock over the crafter's inventory dir across
+  its ENTIRE critical section (validate → mint → consume), so a
+  concurrent `move`-backed op on that dir (GIVE/DROP/TAKE, which all lock
+  the same dir via `move/5`) cannot slip an input out mid-craft (attack
+  S4). The lock is released in an `after` on normal completion; a crash
+  mid-craft is released by the TTL crash-net (`:ttl`, default
+  `#{@move_ttl_ms}ms`) so a crashed craft never wedges the crafter's
+  inventory. Keep the saga well under the TTL (it's a handful of commits).
+  """
+  @spec with_lock([String.t()], (-> result), keyword()) :: result | {:error, :busy} when result: term()
+  def with_lock(paths, fun, opts \\ []) when is_list(paths) and is_function(fun, 0) do
+    bursar = Keyword.get(opts, :bursar, Bursar)
+    ttl = Keyword.get(opts, :ttl, @move_ttl_ms)
+    retries = Keyword.get(opts, :retries, @retries)
+    retry_ms = Keyword.get(opts, :retry_ms, @retry_ms)
+
+    holder = default_holder()
+    sorted = paths |> Enum.uniq() |> Enum.sort()
+
+    case acquire_all(sorted, holder, bursar, ttl, retries, retry_ms) do
+      :ok ->
+        try do
+          fun.()
+        after
+          release_all(sorted, holder, bursar)
+        end
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
   # CX-tdkq.32: the default holder is a NAMED principal, never a free
   # string — prefixed with the node identity so the Bursar's
   # `authenticated_as` binding ties this ephemeral per-move holder to

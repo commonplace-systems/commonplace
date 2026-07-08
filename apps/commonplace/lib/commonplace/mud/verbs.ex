@@ -37,7 +37,7 @@ defmodule Commonplace.MUD.Verbs do
   # locked out of core commands. The explicit `@builtin take` escape
   # syntax (for a builder who WANTS the builtin despite an override) is
   # plan's Phase 2, not this bead.
-  @builtins ~w(look say emote take get drop give put inventory who home quit help go mine) ++
+  @builtins ~w(look say emote take get drop give put inventory who home quit help go mine smith recipes) ++
               ~w(north south east west up down in out)
 
   @doc "Dispatch a parsed command. Returns one of the verb-result tuples."
@@ -532,6 +532,8 @@ defmodule Commonplace.MUD.Verbs do
   defp dispatch_builtin("give", cmd, ctx), do: do_give(cmd, ctx)
   defp dispatch_builtin("put", cmd, ctx), do: do_put(cmd, ctx)
   defp dispatch_builtin("mine", cmd, ctx), do: do_mine(cmd, ctx)
+  defp dispatch_builtin("smith", cmd, ctx), do: do_smith(cmd, ctx)
+  defp dispatch_builtin("recipes", _cmd, ctx), do: do_recipes(ctx)
   defp dispatch_builtin("inventory", _cmd, ctx), do: do_inventory(ctx)
   defp dispatch_builtin("who", _cmd, ctx), do: do_who(ctx)
   defp dispatch_builtin("home", _cmd, ctx), do: do_home(ctx)
@@ -921,6 +923,69 @@ defmodule Commonplace.MUD.Verbs do
       {:error, :bad_arg} -> {:error, "You can't mine that."}
       {:error, :busy} -> {:error, "Someone else is mining that right now."}
       {:error, _} -> {:error, "You can't mine that right now."}
+    end
+  end
+
+  # CX-cj3t items phase 2 — SMITH: consume a recipe's declared inputs, mint
+  # its output. The saga (mint-before-consume under an inventory-dir lock)
+  # lives in `Commonplace.MUD.Mint.smith/4`; this is the thin verb face.
+  defp do_smith(%Parser.Command{argv: []}, _ctx) do
+    {:error, "Smith what? Try: smith <recipe>  (see 'recipes')."}
+  end
+
+  defp do_smith(%Parser.Command{argv: argv}, ctx) do
+    recipe_name = Enum.join(argv, " ")
+
+    case Mint.smith(recipe_name, ctx.inventory_uuid, taker_identity(ctx),
+           root_uuid: ctx.root_uuid,
+           store: ctx.store
+         ) do
+      {:ok, output_name} ->
+        World.broadcast_room(ctx.current_room_uuid, %{
+          kind: :smith,
+          who: ctx.player_name,
+          what: output_name
+        })
+
+        {:reply, "You craft #{output_name}."}
+
+      {:error, :no_recipe} ->
+        {:error, "You don't know how to make \"#{recipe_name}\"."}
+
+      {:error, {:missing_input, type}} ->
+        {:error, "You don't have the #{type} you need for that."}
+
+      {:error, :bad_arg} ->
+        {:error, "You can't craft that."}
+
+      {:error, :busy} ->
+        {:error, "Your hands are too full right now — try again."}
+
+      _ ->
+        {:error, "The crafting fails."}
+    end
+  end
+
+  # `recipes` — list the curated recipes + their inputs so a player can
+  # see what a craft will consume BEFORE committing (informed consent).
+  defp do_recipes(ctx) do
+    case Mint.list_recipes(ctx.root_uuid, ctx.store) do
+      [] ->
+        {:reply, "No recipes are known here."}
+
+      recipes ->
+        lines =
+          Enum.map(recipes, fn r ->
+            inputs =
+              r.inputs
+              |> Enum.map(fn i -> "#{Map.get(i, "qty", 1)}× #{Map.get(i, "type", "?")}" end)
+              |> Enum.join(", ")
+
+            out = Map.get(r.output, "name", Map.get(r.output, :name, "item"))
+            "  #{r.name}: #{inputs} → #{out}"
+          end)
+
+        {:reply, "Recipes:\n" <> Enum.join(lines, "\n")}
     end
   end
 
@@ -2214,6 +2279,8 @@ defmodule Commonplace.MUD.Verbs do
       look in <container>              see what's inside a container
       give <obj> <player>              give an object to someone here
       mine <vein>                      extract ore from a vein here
+      recipes                          list what you can craft + inputs
+      smith <recipe>                   craft a recipe from inputs you carry
       i / inventory                    list what you carry
       who                              list players online
       home                             return to your own home room
