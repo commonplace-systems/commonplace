@@ -319,7 +319,7 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
     # default the dispatcher computes when no cert covers the host).
     facade = Commonplace.MUD.World.Facade.new(ctx, box_uuid, [box_uuid], {"verbs/shove.safe.elx", "box.obj"}, store)
 
-    assert {:ok, {:error, :owner_grant_exceeded}} =
+    assert {:ok, {:error, :refused}} =
              VerbSource.run_safe_verb(box_uuid, "shove", [box_uuid], facade, %{}, store)
 
     # Through full dispatch: no crash, and the box never left the room.
@@ -440,7 +440,7 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
         store
       )
 
-    assert {:ok, {:error, :owner_grant_exceeded}} =
+    assert {:ok, {:error, :refused}} =
              VerbSource.run_safe_verb(chest_uuid, "shove", [chest_uuid], facade, %{}, store)
 
     assert :ok = Verbs.dispatch(Parser.parse("shove chest"), ctx2)

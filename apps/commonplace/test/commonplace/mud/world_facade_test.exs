@@ -133,7 +133,7 @@ defmodule Commonplace.MUD.World.FacadeTest do
         store
       )
 
-    assert {:error, {:trust_rejected, {:untrusted_signer, _}}} = Facade.set_attr(facade, "note", "poked")
+    assert {:error, :refused} = Facade.set_attr(facade, "note", "poked")
 
     # Nothing landed — the meta file's head is still the setup write,
     # no via_verb tag anywhere.
@@ -163,7 +163,7 @@ defmodule Commonplace.MUD.World.FacadeTest do
         store
       )
 
-    assert {:error, :owner_grant_exceeded} = Facade.set_attr(facade, "note", "poked")
+    assert {:error, :refused} = Facade.set_attr(facade, "note", "poked")
   end
 
   # ---- CX-cj3t.1.1: object lifecycle (spawn/give_to_actor/consume/
@@ -215,7 +215,7 @@ defmodule Commonplace.MUD.World.FacadeTest do
     # owner_grant is the default {object}, which does NOT cover the room.
     f = lc_facade(trusted_ctx, obj_uuid, [obj_uuid], %{current_room_uuid: room}, store)
 
-    assert {:error, :owner_grant_exceeded} = Facade.spawn(f, "rock")
+    assert {:error, :refused} = Facade.spawn(f, "rock")
     refute has_item?(store, room, "rock")
   end
 
@@ -245,7 +245,7 @@ defmodule Commonplace.MUD.World.FacadeTest do
     room = lc_dir(store, trusted_ctx, "room")
     f = lc_facade(uncapped_ctx, obj_uuid, [room], %{current_room_uuid: room}, store)
 
-    assert {:error, {:trust_rejected, _}} = Facade.spawn(f, "rock")
+    assert {:error, :refused} = Facade.spawn(f, "rock")
     refute has_item?(store, room, "rock")
   end
 
@@ -275,7 +275,7 @@ defmodule Commonplace.MUD.World.FacadeTest do
 
     # uncapped can't write even its own inventory under :enforce — proves
     # give_to_actor is not a total authority bypass, only a grant bypass.
-    assert {:error, {:trust_rejected, _}} = Facade.give_to_actor(f, "coin")
+    assert {:error, :refused} = Facade.give_to_actor(f, "coin")
   end
 
   test "CX-lfo3: same-named mints get instance-unique keys — N creates never overwrite one entry", %{
@@ -342,9 +342,9 @@ defmodule Commonplace.MUD.World.FacadeTest do
     # obj_uuid (the setup widget) exists and trusted_ctx COULD write it, but
     # it was not minted THIS run — the minted-set re-gate refuses it, so a
     # known uuid alone never authorizes configuration.
-    assert {:error, :not_minted_here} = Facade.configure_attr(f, obj_uuid, "description", "hijacked")
-    assert {:error, :not_minted_here} = Facade.configure_state(f, obj_uuid, "damage", 99)
-    assert {:error, :not_minted_here} = Facade.configure_attr(f, UUID.uuid4(), "description", "ghost")
+    assert {:error, :refused} = Facade.configure_attr(f, obj_uuid, "description", "hijacked")
+    assert {:error, :refused} = Facade.configure_state(f, obj_uuid, "damage", 99)
+    assert {:error, :refused} = Facade.configure_attr(f, UUID.uuid4(), "description", "ghost")
 
     # And a uuid minted this run IS accepted (proving the gate is the
     # minted-set, not something incidental).
@@ -413,7 +413,7 @@ defmodule Commonplace.MUD.World.FacadeTest do
     assert :ok = Facade.configure_attr(f, Facade.give_to_actor(f, "gem"), "description", "a ruby")
     # The minted-set re-gate survives the coercion: a non-minted {:ok, uuid}
     # is still refused.
-    assert {:error, :not_minted_here} = Facade.configure_attr(f, {:ok, obj_uuid}, "description", "hax")
+    assert {:error, :refused} = Facade.configure_attr(f, {:ok, obj_uuid}, "description", "hax")
   end
 
   test "CX-cj3t.9: move_self moves the invoker's presence with an EMPTY grant (presence-self, NOT room-write)", %{
@@ -513,9 +513,9 @@ defmodule Commonplace.MUD.World.FacadeTest do
     # THE RESTRICTION: object-only methods are refused on a room host —
     # a room's children are shared/mixed-ownership, and destroy_child/consume
     # guard only the parent (cross-owner setuid, deferred).
-    assert {:error, :requires_object_host} = Facade.consume(f)
-    assert {:error, :requires_object_host} = Facade.destroy_child(f, "torch")
-    assert {:error, :requires_object_host} = Facade.move_object(f, lc_dir(store, trusted_ctx, "dest"))
+    assert {:error, :refused} = Facade.consume(f)
+    assert {:error, :refused} = Facade.destroy_child(f, "torch")
+    assert {:error, :refused} = Facade.move_object(f, lc_dir(store, trusted_ctx, "dest"))
   end
 
   test "CX-gs9e REPRO: two sequential put_state calls in one verb run BOTH persist (no read-after-write clobber)", %{
@@ -591,12 +591,12 @@ defmodule Commonplace.MUD.World.FacadeTest do
       # Each of these reaches validate_state_value; the shape-first ordering
       # (or non-raising encode) means we get a clean {:error, :state_bounds},
       # NOT a Jason.encode! raise inside the validator.
-      assert {:error, :state_bounds} = Facade.put_state(f, "k", {:a, :b})
-      assert {:error, :state_bounds} = Facade.put_state(f, "k", :some_atom)
-      assert {:error, :state_bounds} = Facade.put_state(f, "k", [1, {:nested, :tuple}])
-      assert {:error, :state_bounds} = Facade.put_state(f, "k", %{"ok" => :atom_value})
-      assert {:error, :state_bounds} = Facade.put_state(f, "k", %{atom_key: 1})
-      assert {:error, :state_bounds} = Facade.put_state(f, "k", %{"nested" => {:t}})
+      assert {:error, :too_large} = Facade.put_state(f, "k", {:a, :b})
+      assert {:error, :too_large} = Facade.put_state(f, "k", :some_atom)
+      assert {:error, :too_large} = Facade.put_state(f, "k", [1, {:nested, :tuple}])
+      assert {:error, :too_large} = Facade.put_state(f, "k", %{"ok" => :atom_value})
+      assert {:error, :too_large} = Facade.put_state(f, "k", %{atom_key: 1})
+      assert {:error, :too_large} = Facade.put_state(f, "k", %{"nested" => {:t}})
 
       # And nothing hostile persisted.
       f_fresh = lc_facade(trusted_ctx, obj_uuid, [obj_uuid], %{}, store)
@@ -610,7 +610,7 @@ defmodule Commonplace.MUD.World.FacadeTest do
     } do
       f = lc_facade(trusted_ctx, obj_uuid, [obj_uuid], %{}, store)
       big = List.duplicate("xxxxxxxx", 200)
-      assert {:error, :state_bounds} = Facade.put_state(f, "k", big)
+      assert {:error, :too_large} = Facade.put_state(f, "k", big)
     end
 
     test "nesting deeper than @state_max_depth → :state_bounds", %{
@@ -621,7 +621,7 @@ defmodule Commonplace.MUD.World.FacadeTest do
       f = lc_facade(trusted_ctx, obj_uuid, [obj_uuid], %{}, store)
       # 12 levels of list nesting, well past the depth 8 bound.
       deep = Enum.reduce(1..12, 0, fn _, acc -> [acc] end)
-      assert {:error, :state_bounds} = Facade.put_state(f, "k", deep)
+      assert {:error, :too_large} = Facade.put_state(f, "k", deep)
     end
   end
 
@@ -637,7 +637,7 @@ defmodule Commonplace.MUD.World.FacadeTest do
     # dest], so an empty grant denies BEFORE any write — proving move_object
     # (unlike move_self) stays a room-write intersection.
     f = lc_facade(trusted_ctx, obj_uuid, [], %{current_room_uuid: room}, store)
-    assert {:error, :owner_grant_exceeded} = Facade.move_object(f, dest)
+    assert {:error, :refused} = Facade.move_object(f, dest)
   end
 
   test "destroy_child: happy path — create then unlink a named child of the bound object", %{
@@ -712,7 +712,7 @@ defmodule Commonplace.MUD.World.FacadeTest do
     # → locate_parent falls through to the room → intersection → grant
     # doesn't cover the room → denied before any write.
     f = lc_facade(trusted_ctx, item, [], %{inventory_uuid: inv, current_room_uuid: room}, store)
-    assert {:error, :owner_grant_exceeded} = Facade.consume(f)
+    assert {:error, :refused} = Facade.consume(f)
     assert "lever.obj" in lc_entry_names(store, room)
   end
 
@@ -770,7 +770,7 @@ defmodule Commonplace.MUD.World.FacadeTest do
     assert length(lc_entry_names(store, box)) == 128
 
     f = lc_facade(trusted_ctx, obj_uuid, [box], %{current_room_uuid: box}, store)
-    assert {:error, :container_full} = Facade.spawn(f, "overflow")
+    assert {:error, :full} = Facade.spawn(f, "overflow")
   end
 
   test "bounds: per-invocation op cap (N=8) → :spawn_limit on the 9th op", %{
@@ -785,7 +785,7 @@ defmodule Commonplace.MUD.World.FacadeTest do
     # child in a unit test); ExUnit gives each test its own process, so
     # it starts at 0. 8 succeed, the 9th is charged over budget.
     for _ <- 1..8, do: assert({:ok, _} = Facade.give_to_actor(f, "coin"))
-    assert {:error, :spawn_limit} = Facade.give_to_actor(f, "coin")
+    assert {:error, :refused} = Facade.give_to_actor(f, "coin")
   end
 
   # ---- CX-5u5j: own-inventory quest/gift verbs (plan-blessed #6171) ----
@@ -862,7 +862,7 @@ defmodule Commonplace.MUD.World.FacadeTest do
     trusted_ctx: trusted_ctx
   } do
     f = lc_facade(trusted_ctx, obj_uuid, [], %{}, store)
-    assert {:error, :no_inventory} = Facade.consume_from_inventory(f, "anything")
+    assert {:error, :refused} = Facade.consume_from_inventory(f, "anything")
   end
 
   test "consume_from_inventory: charged against the N=8 op cap → :spawn_limit on the 9th", %{
@@ -878,7 +878,7 @@ defmodule Commonplace.MUD.World.FacadeTest do
     f = lc_facade(trusted_ctx, obj_uuid, [], %{inventory_uuid: inv}, store)
 
     for i <- 1..8, do: assert(:ok === Facade.consume_from_inventory(f, "item#{i}"))
-    assert {:error, :spawn_limit} = Facade.consume_from_inventory(f, "item9")
+    assert {:error, :refused} = Facade.consume_from_inventory(f, "item9")
   end
 
   # give_from_inventory harness: builds root → "players" → <name> →
@@ -1058,7 +1058,7 @@ defmodule Commonplace.MUD.World.FacadeTest do
         store
       )
 
-    assert {:error, :no_inventory} = Facade.give_from_inventory(f_no_inv, "coin", "bob")
+    assert {:error, :refused} = Facade.give_from_inventory(f_no_inv, "coin", "bob")
   end
 
   describe "CX-a2gd: invoker identity accessors" do
@@ -1467,19 +1467,68 @@ defmodule Commonplace.MUD.World.FacadeTest do
       # start clean (the accumulator is process-local)
       Facade.drain_errors()
 
-      assert Facade.__accumulate__(:m1, {:error, :r1}) == {:error, :r1}
+      # Non-error returns are a pure pass-through, unchanged.
       assert Facade.__accumulate__(:m2, :ok) == :ok
       assert Facade.__accumulate__(:m3, {:ok, 7}) == {:ok, 7}
       assert Facade.__accumulate__(:m4, nil) == nil
       assert Facade.__accumulate__(:m5, false) == false
       assert Facade.__accumulate__(:m6, "a string") == "a string"
       assert Facade.__accumulate__(:m7, 42) == 42
-      assert Facade.__accumulate__(:m8, {:error, {:trust_rejected, :x}}) == {:error, {:trust_rejected, :x}}
 
-      # drain returns ONLY the two errors, in call order (reversed from the
-      # internal prepend), and clears the accumulator.
+      # CX-3x5a RETURN sanitization: an UNMAPPED reason is closed-by-default
+      # (→ :refused) on the RETURNED value...
+      assert Facade.__accumulate__(:m1, {:error, :r1}) == {:error, :refused}
+      # ...and a nested/compound internal reason NEVER reaches the caller —
+      # also :refused, never the raw tuple.
+      assert Facade.__accumulate__(:m8, {:error, {:trust_rejected, :x}}) == {:error, :refused}
+
+      # drain still yields the RAW reasons, unchanged — the accumulator/ops
+      # path (drain_errors/permission_class?/author diagnostics) must keep
+      # seeing the truth even though the caller only ever saw :refused.
       assert Facade.drain_errors() == [m1: :r1, m8: {:trust_rejected, :x}]
       assert Facade.drain_errors() == []
+    end
+
+    test "(A2) CX-3x5a RETURN sanitization end-to-end through a REAL public method — verb sees :refused, accumulator/ops still sees RAW, permission_class? routing intact",
+         %{store: store, obj_uuid: obj_uuid, uncapped_ctx: uncapped_ctx} do
+      Facade.drain_errors()
+
+      facade =
+        Facade.new(
+          %{signing_context: uncapped_ctx, cert_cids: [], signer_id: nil},
+          obj_uuid,
+          [obj_uuid],
+          {"verbs/poke.safe.elx", "owner-x"},
+          store
+        )
+
+      # The VERB BODY (here: this test, calling the facade method the same
+      # way a verb body would) sees ONLY the sanitized atom — never the raw
+      # {:trust_rejected, _} tuple.
+      assert {:error, :refused} = Facade.set_attr(facade, "note", "poked")
+
+      # The SAME failure is still RAW in the accumulator — drain_errors
+      # (the ops/author path) is completely unaffected by the RETURN-side
+      # sanitization; `permission_class?/1`'s routing on this exact raw
+      # shape ({:trust_rejected, _}) is covered by the "permission-class
+      # drops ... still route to the player-notice unchanged" test below,
+      # which drives the SAME raw reason through `emit_verb_drops/2`.
+      assert [{:set_attr, {:trust_rejected, _}}] = Facade.drain_errors()
+    end
+
+    test "CX-3x5a: an UNMAPPED/unknown internal reason is closed-by-default → the verb body sees :refused, never the raw reason" do
+      Facade.drain_errors()
+
+      assert Facade.__accumulate__(:some_method, {:error, :some_brand_new_internal_reason}) ==
+               {:error, :refused}
+
+      assert Facade.drain_errors() == [some_method: :some_brand_new_internal_reason]
+    end
+
+    test "CX-3x5a: a clean domain reason (:not_found) passes through UNCHANGED to the verb body" do
+      Facade.drain_errors()
+      assert Facade.__accumulate__(:describe, {:error, :not_found}) == {:error, :not_found}
+      assert Facade.drain_errors() == [describe: :not_found]
     end
 
     test "(B) REFLECTIVE COVERAGE: a representative set of facade methods each accumulate their {:error} (the macro wrapped them)",

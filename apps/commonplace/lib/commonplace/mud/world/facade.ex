@@ -77,6 +77,24 @@ defmodule Commonplace.MUD.World.Facade do
     * `via_verb` — `{verb_doc_ref, owner}` audit tag, attached to every
       write this facade issues.
 
+  ## Three thin channels (CX-3x5a)
+
+  Every surface a verb body touches on this module is deliberately THIN —
+  closed-by-default, with an explicit allowlist for what's safe to cross:
+
+    * **DO** (allowlist) — the `AccumDef` `def`-override wraps every
+      PUBLIC method, by construction; there is no un-wrapped side door a
+      new method could accidentally open.
+    * **SEE** (thin-handle) — the verb-facing facade value itself is a
+      thin handle (`unwrap/1`'s counterpart shape), never the full
+      struct with process-dict-installed owner authority.
+    * **RETURN** (sanitized) — `__accumulate__/2` (below) never hands a
+      verb body a raw internal error tuple. It still records the RAW
+      reason for the accumulator/ops/author path (unchanged — that path
+      needs the truth), but the VALUE RETURNED to the verb is passed
+      through `sanitize_reason/1` first: a closed, player-safe domain
+      vocabulary, never engine internals.
+
   ## The nine locked methods (jes #5764)
 
   `look/1`, `describe/2`, `get_attr/2` — reads, unrestricted (same
@@ -1450,18 +1468,71 @@ defmodule Commonplace.MUD.World.Facade do
   # `:ok`, `{:ok, _}`, `nil`, `false`, integers, strings, structs — is a pure
   # pass-through, so `get_state(nil)` / `actor_carries?(false)` / `pick([])`
   # do NOT accumulate.)
+  # CX-3x5a RETURN sanitization — the boundary between what the
+  # accumulator/ops/author path sees and what the VERB BODY sees. On
+  # `{:error, reason}`:
+  #
+  #   * the RAW `reason` is still recorded into the accumulator, unchanged
+  #     — `drain_errors/0`, `permission_class?/1`, and the author/ops
+  #     diagnostics all keep seeing the real internal reason, exactly as
+  #     before this bead;
+  #   * the VALUE RETURNED to the caller (the verb body, in production —
+  #     this same `def` boundary, in tests calling a facade method
+  #     directly) is `{:error, sanitize_reason(reason)}` — a closed
+  #     player-safe domain atom, never the raw tuple.
+  #
+  # Any other return (`:ok`, `{:ok, _}`, `nil`, `false`, a bare value) is a
+  # pure pass-through on BOTH channels, unchanged.
   @doc false
   Kernel.def __accumulate__(method, result) do
     case result do
       {:error, reason} ->
         Process.put(@facade_errors_key, [{method, reason} | Process.get(@facade_errors_key, [])])
+        {:error, sanitize_reason(reason)}
 
       _ ->
-        :ok
+        result
     end
-
-    result
   end
+
+  # CX-3x5a — the CLOSED domain vocabulary a verb body is allowed to see.
+  # This is an ALLOWLIST, not a denylist: every internal reason this
+  # facade can produce is enumerated below, mapped to a clean, jargon-free
+  # atom that carries no engine detail (no trust-model names, no grant
+  # model names, no nested/compound internals). A verb can branch on the
+  # result for in-world flavor ("The vein is spent.") but can never learn
+  # WHY in engine terms.
+  #
+  # CLOSED-BY-DEFAULT (load-bearing): any reason NOT explicitly listed
+  # here — including every nested/compound tuple shape, present or
+  # future — falls through the catch-all to `:refused`, the safe
+  # generic. Adding a new facade failure mode that should stay silent
+  # requires NO action here (it's `:refused` by default); surfacing a
+  # NEW clean domain reason to verbs requires an explicit new clause,
+  # never the reverse. A nested/compound internal tuple (e.g.
+  # `{:trust_rejected, reason}`) must NEVER reach the verb body — the
+  # catch-all guarantees that even if this list is incomplete.
+  @spec sanitize_reason(term()) :: atom()
+  defp sanitize_reason({:trust_rejected, _}), do: :refused
+  defp sanitize_reason(:owner_grant_exceeded), do: :refused
+  defp sanitize_reason(:requires_object_host), do: :refused
+  defp sanitize_reason(:no_bound_object), do: :refused
+  defp sanitize_reason(:not_minted_here), do: :refused
+  defp sanitize_reason(:no_inventory), do: :refused
+  defp sanitize_reason(:spawn_limit), do: :refused
+  defp sanitize_reason(:state_bounds), do: :too_large
+  defp sanitize_reason(:container_full), do: :full
+  # Already clean, jargon-free domain vocabulary — safe to pass through
+  # unchanged; a verb can legitimately branch on these.
+  defp sanitize_reason(:not_found), do: :not_found
+  defp sanitize_reason(:bad_arg), do: :bad_arg
+  defp sanitize_reason(:not_carrying), do: :not_carrying
+  defp sanitize_reason(:recipient_not_here), do: :recipient_not_here
+  defp sanitize_reason(:not_here), do: :not_here
+  defp sanitize_reason(:rate_limited), do: :rate_limited
+  # Closed-by-default catch-all — every other reason (unknown atom,
+  # string, nested/compound tuple, anything future) → the safe generic.
+  defp sanitize_reason(_other), do: :refused
 
   @doc false
   Kernel.def drain_errors do
