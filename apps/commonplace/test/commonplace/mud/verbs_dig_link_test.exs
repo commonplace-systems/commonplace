@@ -20,7 +20,8 @@ defmodule Commonplace.MUD.VerbsDigLinkTest do
 
   use ExUnit.Case
 
-  alias Commonplace.MUD.{Bootstrap, PlayerSession}
+  alias Commonplace.MUD.{Bootstrap, PlayerSession, Schemas}
+  alias Commonplace.MUD.Schemas.Room
   alias Commonplace.Store.CommitStore
   alias Commonplace.Tree.Schema
   alias Yelixer.Encoding
@@ -229,5 +230,50 @@ defmodule Commonplace.MUD.VerbsDigLinkTest do
     send_input(alice, "@unlink down")
     noop_out = drain("alice") |> Enum.join("\n")
     assert noop_out =~ "no exit down"
+  end
+
+  # CX-z0v7 bundle (P3): the `home` verb returns the player to their own
+  # players/<name> home room (the one Citizenship provisions + they own).
+  test "home teleports the player to their own players/<name> home room", ctx do
+    provision_home!(ctx.store, ctx.root, "alice")
+    alice = start_player("alice", ctx)
+
+    send_input(alice, "home")
+    out = drain("alice") |> Enum.join("\n")
+
+    assert out =~ "alice's Home"
+  end
+
+  test "home with no provisioned home gives a graceful message, not a crash", ctx do
+    bob = start_player("bob", ctx)
+
+    send_input(bob, "home")
+    out = drain("bob") |> Enum.join("\n")
+
+    assert out =~ "don't seem to have a home"
+  end
+
+  # Provision `players/<name>/` as an owned home ROOM (dir + __room.json),
+  # mirroring Citizenship.ensure's shape, so `home` has somewhere to land.
+  defp provision_home!(store, root, name) do
+    {:ok, players} = Schemas.create_dir_with_meta(nil, nil, store, [])
+    add_dir_child!(store, root, "players", players)
+
+    {:ok, home} =
+      Schemas.create_dir_with_meta(
+        Schemas.room_filename(),
+        Schemas.encode_room(%Room{name: "#{name}'s Home", description: "your quiet corner"}),
+        store,
+        []
+      )
+
+    add_dir_child!(store, players, name, home)
+    home
+  end
+
+  defp add_dir_child!(store, parent, name, child) do
+    {:ok, doc} = Schemas.load_dir_schema(parent, store)
+    update = Encoding.encode_update(Schema.add_directory(doc, name, child))
+    CommitStore.create_chained_commit(store, parent, update, %{})
   end
 end

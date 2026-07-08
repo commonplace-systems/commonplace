@@ -37,7 +37,7 @@ defmodule Commonplace.MUD.Verbs do
   # locked out of core commands. The explicit `@builtin take` escape
   # syntax (for a builder who WANTS the builtin despite an override) is
   # plan's Phase 2, not this bead.
-  @builtins ~w(look say emote take get drop give put inventory who quit help go) ++
+  @builtins ~w(look say emote take get drop give put inventory who home quit help go) ++
               ~w(north south east west up down in out)
 
   @doc "Dispatch a parsed command. Returns one of the verb-result tuples."
@@ -533,6 +533,7 @@ defmodule Commonplace.MUD.Verbs do
   defp dispatch_builtin("put", cmd, ctx), do: do_put(cmd, ctx)
   defp dispatch_builtin("inventory", _cmd, ctx), do: do_inventory(ctx)
   defp dispatch_builtin("who", _cmd, ctx), do: do_who(ctx)
+  defp dispatch_builtin("home", _cmd, ctx), do: do_home(ctx)
   defp dispatch_builtin("quit", _cmd, _ctx), do: {:reply, :quit}
   defp dispatch_builtin("help", _cmd, _ctx), do: {:reply, help_text()}
   defp dispatch_builtin("go", cmd, ctx), do: do_go(List.first(cmd.argv), ctx)
@@ -1563,6 +1564,24 @@ defmodule Commonplace.MUD.Verbs do
     end
   end
 
+  # CX-z0v7 bundle (P3 polish): `home` — teleport to your own home room
+  # (`players/<name>/`, the room Citizenship provisions + you own). A
+  # convenience over `@teleport <home-uuid>`; the web client (MudLive)
+  # already offers this, the escript/Bot path didn't. Delegates to
+  # `do_teleport` (own-presence move only, no shared-tree write).
+  defp do_home(ctx) do
+    # A full citizen's `players/<name>/` IS a room (Citizenship provisions
+    # it with a `__room.json`); a bare non-citizen session only has a plain
+    # player dir there. Require an actual room before teleporting so `home`
+    # gives a clean message rather than `@teleport`'s "No such room".
+    with {:ok, home_uuid} <- World.resolve_path("players/#{ctx.player_name}", ctx.root_uuid, ctx.store),
+         {:ok, %Room{}} <- World.get_room(home_uuid, ctx.store) do
+      do_teleport(%Parser.Command{argv: [home_uuid]}, ctx)
+    else
+      _ -> {:error, "You don't seem to have a home to return to yet."}
+    end
+  end
+
   defp do_teleport(%Parser.Command{argv: []}, _ctx) do
     {:error, "Try: @teleport <room-uuid>"}
   end
@@ -2160,6 +2179,7 @@ defmodule Commonplace.MUD.Verbs do
       give <obj> <player>              give an object to someone here
       i / inventory                    list what you carry
       who                              list players online
+      home                             return to your own home room
       help                             this help
       quit                             disconnect
 
