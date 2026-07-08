@@ -16,7 +16,7 @@ defmodule Commonplace.MUD.Verbs do
   side effects go through `Commonplace.MUD.World`.
   """
 
-  alias Commonplace.MUD.{Parser, Schemas, Sections, SignedWrite, VerbSource, World}
+  alias Commonplace.MUD.{Mint, Parser, Schemas, Sections, SignedWrite, VerbSource, World}
   alias Commonplace.MUD.Schemas.{Object, Player, Room}
   alias Commonplace.MUD.World.Facade
   alias Commonplace.Tree.Schema
@@ -37,7 +37,7 @@ defmodule Commonplace.MUD.Verbs do
   # locked out of core commands. The explicit `@builtin take` escape
   # syntax (for a builder who WANTS the builtin despite an override) is
   # plan's Phase 2, not this bead.
-  @builtins ~w(look say emote take get drop give put inventory who home quit help go) ++
+  @builtins ~w(look say emote take get drop give put inventory who home quit help go mine) ++
               ~w(north south east west up down in out)
 
   @doc "Dispatch a parsed command. Returns one of the verb-result tuples."
@@ -531,6 +531,7 @@ defmodule Commonplace.MUD.Verbs do
   defp dispatch_builtin("drop", cmd, ctx), do: do_drop(cmd, ctx)
   defp dispatch_builtin("give", cmd, ctx), do: do_give(cmd, ctx)
   defp dispatch_builtin("put", cmd, ctx), do: do_put(cmd, ctx)
+  defp dispatch_builtin("mine", cmd, ctx), do: do_mine(cmd, ctx)
   defp dispatch_builtin("inventory", _cmd, ctx), do: do_inventory(ctx)
   defp dispatch_builtin("who", _cmd, ctx), do: do_who(ctx)
   defp dispatch_builtin("home", _cmd, ctx), do: do_home(ctx)
@@ -887,6 +888,41 @@ defmodule Commonplace.MUD.Verbs do
 
   defp takable_entry?(%Schema.Entry{type: :dir, name: name}), do: String.ends_with?(name, ".obj")
   defp takable_entry?(_), do: false
+
+  # ---- mine (CX-cj3t items epic phase 2) ----
+  #
+  # MINE resolves a vein in the current room, then runs the lazy-regen
+  # decrement + mint ELEVATED (node authority — the vein meta is
+  # node-owned, the miner has no write authority over it) via
+  # `Commonplace.MUD.Mint.extract_from_vein/4`. See that module's
+  # moduledoc for the vein-lock + structural decrement-only guard.
+  defp do_mine(%Parser.Command{argv: []}, _ctx), do: {:error, "Mine what?"}
+
+  defp do_mine(%Parser.Command{argv: argv}, ctx) do
+    phrase_label = Enum.join(argv, " ")
+
+    with {:ok, entry, _phrase, _remainder} <- greedy_match_entry([ctx.current_room_uuid], argv, ctx.store),
+         {:ok, %Object{kind: "vein"} = vein} <- Schemas.load_object(entry.node_id, ctx.store),
+         {:ok, _item_uuid, item_name} <-
+           Mint.extract_from_vein(entry.node_id, ctx.inventory_uuid, taker_identity(ctx), take_opts(ctx)) do
+      World.broadcast_room(ctx.current_room_uuid, %{
+        kind: :mine,
+        who: ctx.player_name,
+        what: item_name,
+        from: vein.name
+      })
+
+      {:reply, "You extract #{item_name} from the #{vein.name}."}
+    else
+      :not_found -> {:error, "You don't see \"#{phrase_label}\" here."}
+      {:ok, %Object{}} -> {:error, "There's nothing to mine there."}
+      {:error, :not_a_vein} -> {:error, "There's nothing to mine there."}
+      {:error, :depleted} -> {:error, "The vein is spent."}
+      {:error, :bad_arg} -> {:error, "You can't mine that."}
+      {:error, :busy} -> {:error, "Someone else is mining that right now."}
+      {:error, _} -> {:error, "You can't mine that right now."}
+    end
+  end
 
   defp ensure_not_fixed(%Object{fixed: true, name: name}), do: {:error, "#{name} is fixed in place."}
   defp ensure_not_fixed(_), do: :ok
@@ -2177,6 +2213,7 @@ defmodule Commonplace.MUD.Verbs do
       put <obj> in <container>         put something into a container
       look in <container>              see what's inside a container
       give <obj> <player>              give an object to someone here
+      mine <vein>                      extract ore from a vein here
       i / inventory                    list what you carry
       who                              list players online
       home                             return to your own home room

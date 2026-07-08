@@ -48,7 +48,22 @@ defmodule Commonplace.MUD.Schemas do
               fixed: false,
               container?: false,
               tick_interval_ms: nil,
-              tick_message: nil
+              tick_message: nil,
+              # CX-cj3t (items epic phase 2, MINE) — the vein yield-spec.
+              # `kind: "vein"` marks an Object as a mineable resource node
+              # rather than a plain takeable item. `yield_type` /
+              # `yield_max` / `regen_per_ms` are PROTECTED (node-signed,
+              # verb-immutable — the anti-forgery root, see
+              # `Commonplace.MUD.Mint` moduledoc); `yield_remaining` /
+              # `last_regen_at` are the elevated-mutable pair (decrement +
+              # advance-clock ONLY — never written up). A plain `Object`
+              # (`kind: "object"`, the default) leaves all five nil.
+              kind: "object",
+              yield_type: nil,
+              yield_max: nil,
+              regen_per_ms: nil,
+              yield_remaining: nil,
+              last_regen_at: nil
 
     @type t :: %__MODULE__{
             name: String.t(),
@@ -57,7 +72,13 @@ defmodule Commonplace.MUD.Schemas do
             fixed: boolean(),
             container?: boolean(),
             tick_interval_ms: pos_integer() | nil,
-            tick_message: String.t() | nil
+            tick_message: String.t() | nil,
+            kind: String.t(),
+            yield_type: map() | nil,
+            yield_max: non_neg_integer() | nil,
+            regen_per_ms: number() | nil,
+            yield_remaining: number() | nil,
+            last_regen_at: integer() | nil
           }
   end
 
@@ -93,14 +114,19 @@ defmodule Commonplace.MUD.Schemas do
 
   def encode_object(%Object{} = o) do
     Jason.encode!(%{
-      "kind" => "object",
+      "kind" => o.kind,
       "name" => o.name,
       "aliases" => o.aliases,
       "description" => o.description,
       "fixed" => o.fixed,
       "container" => o.container?,
       "tick_interval_ms" => o.tick_interval_ms,
-      "tick_message" => o.tick_message
+      "tick_message" => o.tick_message,
+      "yield_type" => o.yield_type,
+      "yield_max" => o.yield_max,
+      "regen_per_ms" => o.regen_per_ms,
+      "yield_remaining" => o.yield_remaining,
+      "last_regen_at" => o.last_regen_at
     })
   end
 
@@ -143,7 +169,13 @@ defmodule Commonplace.MUD.Schemas do
            fixed: Map.get(m, "fixed", false),
            container?: Map.get(m, "container", false),
            tick_interval_ms: Map.get(m, "tick_interval_ms"),
-           tick_message: Map.get(m, "tick_message")
+           tick_message: Map.get(m, "tick_message"),
+           kind: Map.get(m, "kind", "object"),
+           yield_type: Map.get(m, "yield_type"),
+           yield_max: Map.get(m, "yield_max"),
+           regen_per_ms: Map.get(m, "regen_per_ms"),
+           yield_remaining: Map.get(m, "yield_remaining"),
+           last_regen_at: Map.get(m, "last_regen_at")
          }}
 
       err ->

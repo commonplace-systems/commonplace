@@ -40,11 +40,22 @@ defmodule Commonplace.MUD.Bootstrap do
   since wandered.
   """
 
+  alias Commonplace.Crypto.NodeIdentity
   alias Commonplace.MUD.Schemas
   alias Commonplace.MUD.Schemas.{Object, Room}
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.Schema
   alias Yelixer.Encoding
+
+  # CX-cj3t (items epic phase 2, MINE) — the seed vein's yield-spec
+  # template. Node-signed at creation (see `ensure_vein/4`) so it plays
+  # under `local_write_gate: :enforce` the same way the cloak/fountain
+  # bootstrap objects do for TAKE.
+  @iron_ore_template %{
+    "name" => "iron ore",
+    "aliases" => ["ore"],
+    "description" => "A rough chunk of iron ore."
+  }
 
   @stub_descriptions [
     "A featureless white room. The world has not been built out yet."
@@ -91,7 +102,8 @@ defmodule Commonplace.MUD.Bootstrap do
          :ok <- merge_exits(start_uuid, %{"north" => forest_uuid, "east" => clearing_uuid}, store),
          :ok <- merge_exits(forest_uuid, %{"south" => start_uuid}, store),
          :ok <- merge_exits(clearing_uuid, %{"west" => start_uuid}, store),
-         :ok <- ensure_movable_objects_once(root_uuid, start_uuid, clearing_uuid, store) do
+         :ok <- ensure_movable_objects_once(root_uuid, start_uuid, clearing_uuid, store),
+         :ok <- ensure_vein(forest_uuid, "iron-vein.obj", iron_vein(), store) do
       {:ok, :ready}
     end
   end
@@ -204,6 +216,54 @@ defmodule Commonplace.MUD.Bootstrap do
     end
   end
 
+  # CX-cj3t (items epic phase 2) — the seed vein, node-signed at creation
+  # (see `ensure_vein/4`) so a mine plays under `local_write_gate:
+  # :enforce`, mirroring how the cloak/fountain are node-signed for TAKE.
+  # `fixed: true` so the vein itself can never be TAKEn — only MINEd.
+  defp iron_vein do
+    %Object{
+      name: "iron vein",
+      aliases: ["vein", "iron"],
+      description: "A vein of raw iron runs through the rock here.",
+      fixed: true,
+      kind: "vein",
+      yield_type: @iron_ore_template,
+      yield_max: 5,
+      regen_per_ms: 0,
+      yield_remaining: 5,
+      last_regen_at: 0
+    }
+  end
+
+  # A vein is room-structural like a room itself (never wanders — it is
+  # `fixed: true`, un-takeable), so it's gated on simple presence-under-
+  # name, not the seed-once marker `ensure_movable_objects_once` uses for
+  # movable bootstrap objects. NODE-SIGNED (unlike `ensure_object/4`'s
+  # unsigned bootstrap writes) so the vein plays under `:enforce` — a
+  # player's `mine` runs the vein-write ELEVATED against this doc, which
+  # only succeeds if the doc is genuinely node-owned.
+  defp ensure_vein(parent_uuid, filename, %Object{} = canonical, store) do
+    {:ok, parent_schema} = Schemas.load_dir_schema(parent_uuid, store)
+
+    case Schema.get_entry(parent_schema, filename) do
+      {:ok, _} ->
+        :ok
+
+      :error ->
+        with {:ok, node_ctx} <- NodeIdentity.signing_context(),
+             node_opts = [signing_context: node_ctx, cert_cids: []],
+             {:ok, vein_uuid} <-
+               Schemas.create_dir_with_meta(
+                 Schemas.object_filename(),
+                 Schemas.encode_object(canonical),
+                 store,
+                 node_opts
+               ) do
+          add_dir_entry(parent_uuid, filename, vein_uuid, store, node_opts)
+        end
+    end
+  end
+
   defp merge_exits(room_uuid, exits, store) do
     case Schemas.load_room(room_uuid, store) do
       {:ok, %Room{} = room} ->
@@ -221,12 +281,13 @@ defmodule Commonplace.MUD.Bootstrap do
     Schemas.write_meta_doc(entry.node_id, Schemas.encode_room(room), store)
   end
 
-  defp add_dir_entry(parent_uuid, name, child_uuid, store) do
+  defp add_dir_entry(parent_uuid, name, child_uuid, store, opts \\ []) do
     {:ok, schema} = Schemas.load_dir_schema(parent_uuid, store)
     schema = Schema.add_directory(schema, name, child_uuid)
     update = Encoding.encode_update(schema)
+    {metadata, commit_opts} = Commonplace.MUD.SignedWrite.opts_for(parent_uuid, Keyword.put(opts, :store, store))
 
-    case CommitStoreClient.create_chained_commit(store, parent_uuid, update) do
+    case CommitStoreClient.create_chained_commit(store, parent_uuid, update, metadata, commit_opts) do
       {:error, _} = err -> err
       _commit -> :ok
     end
