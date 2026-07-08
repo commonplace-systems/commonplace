@@ -40,12 +40,14 @@ defmodule Commonplace.MUD.Bootstrap do
   since wandered.
   """
 
+  alias Commonplace.Code.SourceDoc
   alias Commonplace.Crypto.NodeIdentity
+  alias Commonplace.Document.ContentType
   alias Commonplace.MUD.Schemas
   alias Commonplace.MUD.Schemas.{Object, Recipe, Room}
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.Schema
-  alias Yelixer.Encoding
+  alias Yelixer.{Doc, Encoding}
 
   # CX-cj3t (items epic phase 2, MINE) — the seed vein's yield-spec
   # template. Node-signed at creation (see `ensure_vein/4`) so it plays
@@ -70,6 +72,65 @@ defmodule Commonplace.MUD.Bootstrap do
   # contents/players.
   @seed_marker ".mud-seeded"
 
+  # CX-2xez (MUD-as-documents Inc-1): the doc-hosted command parser. A FIXED
+  # uuid so the seed is idempotent across boots and the manifest (trust root)
+  # is stable. The source is node-signed at seed time so `SourceDoc.compile`'s
+  # Gate B grants `:execute`. It is a DISTINCT module name from the compiled-in
+  # floor (`Commonplace.MUD.Parser`) so a doc compile never purges the floor.
+  # Behaviour mirrors `Parser.parse/1` exactly (the floor) and RETURNS the
+  # kernel-defined `%Commonplace.MUD.Parser.Command{}` (a data contract it
+  # references, not owns). Editing this doc hot-reloads the grammar live.
+  @engine_parser_uuid "aa11bb22-cc33-4d44-8e55-ff6677889900"
+
+  @engine_parser_source ~S'''
+  defmodule Commonplace.MUD.EngineParser do
+    @moduledoc "Doc-hosted MUD command parser (CX-2xez Inc-1). Hot-editable."
+
+    @direction_aliases %{
+      "n" => "north",
+      "s" => "south",
+      "e" => "east",
+      "w" => "west",
+      "u" => "up",
+      "d" => "down"
+    }
+
+    @verb_aliases Map.merge(@direction_aliases, %{
+                    "i" => "inventory",
+                    "inv" => "inventory",
+                    "l" => "look",
+                    "'" => "say",
+                    "\"" => "say"
+                  })
+
+    def parse(line) when is_binary(line) do
+      line = String.trim(line)
+
+      case line do
+        "" ->
+          %Commonplace.MUD.Parser.Command{}
+
+        <<"'", rest::binary>> when rest != "" ->
+          %Commonplace.MUD.Parser.Command{verb: "say", args: rest, argv: [rest], target: nil}
+
+        _ ->
+          {verb_word, args} = split_first(line)
+          verb = Map.get(@verb_aliases, String.downcase(verb_word), String.downcase(verb_word))
+          argv = if args == "", do: [], else: String.split(args, ~r/\s+/, trim: true)
+          target = List.first(argv)
+          %Commonplace.MUD.Parser.Command{verb: verb, args: args, argv: argv, target: target}
+      end
+    end
+
+    defp split_first(line) do
+      case String.split(line, ~r/\s+/, parts: 2) do
+        [verb] -> {verb, ""}
+        [verb, rest] -> {verb, rest}
+      end
+    end
+  end
+  '''
+
   def seed(root_uuid, store \\ CommitStoreClient), do: repair(root_uuid, store)
 
   # CX-93ea: every step is a `with` link now — a rejected write (trust
@@ -81,6 +142,13 @@ defmodule Commonplace.MUD.Bootstrap do
   # rooms/objects created and others not; re-running `repair/2` is
   # idempotent and will pick up where it left off.
   def repair(root_uuid, store \\ CommitStoreClient) do
+    # CX-2xez: seed the doc-hosted parser + point the engine manifest at it
+    # FIRST and independently — it's node-signed + standalone (no tree
+    # linkage), and best-effort (always returns :ok), so it can never block or
+    # be blocked by the room-seed chain, and a failure just leaves
+    # `EngineModule` on its compiled-in floor (never bricks).
+    :ok = ensure_engine_parser(store)
+
     with {:ok, start_uuid} <-
            ensure_room(root_uuid, "start", %Room{
              name: "The Start Room",
@@ -110,6 +178,46 @@ defmodule Commonplace.MUD.Bootstrap do
   end
 
   ## Private
+
+  # CX-2xez (MUD-as-documents Inc-1): idempotently seed the node-signed parser
+  # source doc at the fixed uuid + set the engine manifest (the trust root) to
+  # point at it. Best-effort by construction: any failure (no node identity,
+  # write refused, whatever) just returns :ok and leaves EngineModule on its
+  # compiled-in floor — the doc-hosted path is strictly additive and must
+  # never brick or block seeding.
+  @doc false
+  def ensure_engine_parser(store \\ CommitStoreClient) do
+    with {:ok, node_ctx} <- NodeIdentity.signing_context() do
+      unless source_doc_present?(@engine_parser_uuid, store) do
+        seed_source_doc(@engine_parser_uuid, @engine_parser_source, node_ctx, store)
+      end
+
+      # The manifest is a TRUST ROOT — node-controlled app-env, never player
+      # input. Pointing it here is what says "THIS doc is the parser".
+      manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
+      Application.put_env(:commonplace, :mud_engine_manifest, Map.put(manifest, :parser, @engine_parser_uuid))
+    end
+
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  defp source_doc_present?(uuid, store) do
+    match?({:ok, _source, _hash}, SourceDoc.read(uuid, store))
+  end
+
+  defp seed_source_doc(uuid, source, node_ctx, store) do
+    doc =
+      Doc.new()
+      |> ContentType.create(:text, "_engine_parser.ex")
+      |> ContentType.insert_text(0, source)
+
+    update = Encoding.encode_update(doc)
+    CommitStoreClient.create_commit(store, uuid, update, nil, %{}, signing_context: node_ctx)
+  end
 
   # CX-k8lq: place the seed-once movable objects (cloak, fountain) IFF
   # the world has never been seeded before. Checked against a marker

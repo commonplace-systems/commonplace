@@ -60,7 +60,7 @@ defmodule Commonplace.MUD.PlayerSession do
   require Logger
 
   alias Commonplace.Crypto.{AgentKeys, Signing}
-  alias Commonplace.MUD.{Parser, Schemas, SignedWrite, Topics, Verbs, VerbSource, World}
+  alias Commonplace.MUD.{EngineModule, Parser, Schemas, SignedWrite, Topics, Verbs, VerbSource, World}
   alias Commonplace.MUD.Schemas.{Player, Room}
   alias Commonplace.Presence
   alias Commonplace.Store.{CommitStoreClient, SecretStore}
@@ -210,7 +210,11 @@ defmodule Commonplace.MUD.PlayerSession do
   end
 
   defp process_input(line, %__MODULE__{mode: :normal} = state) do
-    cmd = Parser.parse(line)
+    # CX-2xez (MUD-as-documents Inc-1): the ONE behavioral call site routes
+    # through the doc-hosted parser (with last-good/floor fallback + crash
+    # containment); `Parser.Command`/`Parser.opposite_direction` etc. stay
+    # kernel and are used directly elsewhere.
+    cmd = EngineModule.parse(line, state.store)
 
     if cmd.verb == "" do
       {:noreply, state}
