@@ -7,7 +7,7 @@ defmodule Commonplace.MUD.World do
   """
 
   alias Commonplace.Document.ContentType
-  alias Commonplace.MUD.{Move, Schemas, Topics}
+  alias Commonplace.MUD.{Move, Schemas, Take, Topics}
   alias Commonplace.Presence
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.{DocBuilder, Schema, Walk}
@@ -58,6 +58,17 @@ defmodule Commonplace.MUD.World do
   def move(thing_uuid, name, source_dir_uuid, dest_dir_uuid, opts \\ [])
       when is_binary(thing_uuid) and is_binary(name) and is_binary(source_dir_uuid) and is_binary(dest_dir_uuid) do
     Move.move(thing_uuid, name, source_dir_uuid, dest_dir_uuid, opts)
+  end
+
+  @doc """
+  Take `item_uuid` (entry `name`) from `room_uuid` into `inventory_uuid`
+  for the player identified by `taker_identity`, under enforce — the
+  push-not-pull elevated node transfer (see `Commonplace.MUD.Take`).
+  """
+  def take_item(item_uuid, name, room_uuid, inventory_uuid, taker_identity, opts \\ [])
+      when is_binary(item_uuid) and is_binary(name) and is_binary(room_uuid) and
+             is_binary(inventory_uuid) do
+    Take.take(item_uuid, name, room_uuid, inventory_uuid, taker_identity, opts)
   end
 
   @doc "Read a metadata struct out of a directory doc."

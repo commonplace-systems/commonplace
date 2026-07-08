@@ -855,7 +855,8 @@ defmodule Commonplace.MUD.Verbs do
          true <- takable_entry?(entry) || {:error, "You can't take that."},
          {:ok, %Object{} = obj} <- Schemas.load_object(entry.node_id, ctx.store),
          :ok <- ensure_not_fixed(obj),
-         :ok <- World.move(entry.node_id, entry.name, ctx.current_room_uuid, ctx.inventory_uuid, write_opts(ctx)) do
+         :ok <- World.take_item(entry.node_id, entry.name, ctx.current_room_uuid,
+                  ctx.inventory_uuid, taker_identity(ctx), take_opts(ctx)) do
       World.broadcast_room(ctx.current_room_uuid, %{
         kind: :take,
         who: ctx.player_name,
@@ -868,6 +869,10 @@ defmodule Commonplace.MUD.Verbs do
       {:error, :gone} -> {:error, "Someone else grabbed it first."}
       {:error, :collision} -> {:error, "You're already carrying one of those."}
       {:error, {:trust_rejected, _}} -> {:error, "You don't have permission to take that."}
+      {:error, :taken} -> {:error, "Someone else grabbed it first."}
+      {:error, :item_unavailable} -> {:error, "Someone else grabbed it first."}
+      {:error, :not_takeable_here} -> {:error, "You can't take that."}
+      {:error, :bad_arg} -> {:error, "You can't take that."}
       {:error, msg} when is_binary(msg) -> {:error, msg}
       _ -> {:error, "You can't take that."}
     end
@@ -1986,6 +1991,26 @@ defmodule Commonplace.MUD.Verbs do
       signer_id: Map.get(ctx, :signer_id)
     ]
   end
+
+  # CX-ix9n: TAKE is push-not-pull — the node elevates and pushes the
+  # item to the taker (see `Commonplace.MUD.Take`), so the taker's own
+  # signing context never rides the write. Only their bare identity_uuid
+  # (the possession-token holder) is needed.
+  defp taker_identity(ctx) do
+    case ctx[:signing_context] do
+      %{identity_uuid: id} when is_binary(id) -> id
+      # no signed identity -> Take returns {:error, :bad_arg}, refused gracefully
+      _ -> nil
+    end
+  end
+
+  # CX-ix9n: thread the invoker's OWN write context (store + signing_context
+  # + cert_cids + signer_id). `Take` uses it two ways: to test whether the
+  # invoker is already authorized over both dirs (permissive mode, or the
+  # item's owner) — in which case the move runs invoker-signed, UNCHANGED
+  # from before — and, only for the genuine enforce visitor who is not, it
+  # ignores the invoker signing and builds its own node context to elevate.
+  defp take_opts(ctx), do: write_opts(ctx)
 
   # ---- Scope resolution ----
 
