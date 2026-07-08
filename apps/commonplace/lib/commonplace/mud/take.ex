@@ -26,10 +26,21 @@ defmodule Commonplace.MUD.Take do
        (both dirs are node-owned). This is the durable ownership
        record for v1.
 
-  Safety-by-construction: elevation only ever fires when BOTH the
-  source and dest dirs are independently confirmed node-owned (mirrors
-  `Commonplace.MUD.World.Facade.object_owner_authority/2` /
-  `node_owned?/3`) — a non-node-owned dir never gets node-elevated.
+  Safety-by-construction: elevation only ever fires when the ITEM being
+  taken AND the taker's dest inventory are independently confirmed
+  node-owned (mirrors `Commonplace.MUD.World.Facade.node_owned?/3`) — the
+  item's node-ownership is the presence-robust "this is curated loot"
+  signal, and the node-elevated source-remove is structurally bounded to
+  removing that one item's entry (`Move` re-checks it is still there and
+  removes it by name).
+
+  NOTE (CX-ix9n live-fix): the gate deliberately checks the ITEM, NOT the
+  source ROOM schema. A room schema's latest commit is re-chained by
+  player PRESENCE writes (each `.usr` add/remove is signed by the
+  entering/leaving player), so `node_owned?(room_schema)` flips false the
+  moment anyone occupies the room — which wrongly refused every take in a
+  populated room. Items and inventories are never presence-re-chained, so
+  they are the reliable node-ownership oracle.
   """
 
   alias Commonplace.Crypto.{NodeIdentity, Signing}
@@ -103,7 +114,7 @@ defmodule Commonplace.MUD.Take do
   defp elevated_take(item_uuid, name, room_uuid, inventory_uuid, taker_identity, store, bursar, opts) do
     with {:ok, node_ctx} <- NodeIdentity.signing_context(),
          {:ok, node_identity} <- NodeIdentity.identity(),
-         true <- node_owned?(room_uuid, node_identity, store),
+         true <- node_owned?(item_uuid, node_identity, store),
          true <- node_owned?(inventory_uuid, node_identity, store) do
       do_take(item_uuid, name, room_uuid, inventory_uuid, taker_identity, node_ctx, node_identity, store, bursar, opts)
     else

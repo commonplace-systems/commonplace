@@ -413,4 +413,94 @@ defmodule Commonplace.MUD.TakeTest do
     refute "statue2.obj" in entry_names(store, inventory)
     assert :available = BursarClient.query(Bursar, item)
   end
+
+  # ---- 8. CX-ix9n LIVE-FIX regression: elevation keys on the ITEM's
+  # node-ownership, NOT the source room schema's. A room schema is re-chained
+  # by player PRESENCE writes (a `.usr` add signed by the entering player), so
+  # its latest-commit signer flips to that player when occupied — which
+  # (pre-fix) wrongly refused every take in a populated room. Items and
+  # inventories are never presence-re-chained, so they are the reliable oracle.
+  test "take elevates even when the room schema was re-chained by a non-node presence write", %{
+    store: store,
+    node_ctx: node_ctx
+  } do
+    room = mk_room!(store, node_ctx)
+    inventory = mk_inventory!(store, node_ctx)
+    item = mk_object!(store, node_ctx, name: "vault key.obj")
+    add_dir_entry!(store, room, "vault key.obj", item, node_ctx)
+
+    # A player walks in: their presence `.usr` add re-chains the ROOM schema
+    # signed by THEM (not the node). Pin that identity so the write lands under
+    # enforce, exactly as a presence-carve-authorized write does live.
+    {pres_id, pres_sc} = fresh_identity()
+
+    Application.put_env(:commonplace, :trust, %{
+      accept_unsigned: false,
+      trusted_identities: %{pres_id => Signing.encode_key(pres_sc.public_key)}
+    })
+
+    add_file_entry!(store, room, "#{pres_id}.usr", UUID.uuid4(), pres_sc)
+
+    # The room schema's latest commit is now the PLAYER's, not the node — the
+    # exact condition that (pre-fix) flipped node_owned?(room) to false.
+    {:ok, room_commit} = CommitStoreClient.latest_commit(store, room)
+    assert {:ok, ^pres_id, _} = Signing.parse_signer_id(room_commit.signer_id)
+
+    {taker_id, _} = fresh_identity()
+
+    # Pre-fix this refused (:not_takeable_here); the item-keyed gate elevates.
+    assert :ok = Take.take(item, "vault key.obj", room, inventory, taker_id, store: store)
+    refute "vault key.obj" in entry_names(store, room)
+    assert "vault key.obj" in entry_names(store, inventory)
+    assert {:held, %{holder: ^taker_id}} = BursarClient.query(Bursar, item)
+  end
+
+  # CX-ix9n LIVE-FIX regression, CONTAINER variant: the same item-keyed gate
+  # must make container-take (`get X from Y`) work when the SOURCE container's
+  # schema is not node-owned (re-chained by a non-node write — a prior put/get,
+  # or occupancy of its room). The item-keyed elevation ignores the source
+  # container's chain state entirely, so a node-owned item in a re-chained
+  # container is still takeable.
+  test "container-take elevates even when the container schema was re-chained by a non-node write", %{
+    store: store,
+    node_ctx: node_ctx
+  } do
+    room = mk_room!(store, node_ctx)
+    inventory = mk_inventory!(store, node_ctx)
+    container = mk_container!(store, node_ctx, name: "wooden box")
+    add_dir_entry!(store, room, "wooden box", container, node_ctx)
+    item = mk_object!(store, node_ctx, name: "crown")
+    add_dir_entry!(store, container, "crown.obj", item, node_ctx)
+
+    # Re-chain the CONTAINER schema with a non-node signer (as a put/get would).
+    {other_id, other_sc} = fresh_identity()
+
+    Application.put_env(:commonplace, :trust, %{
+      accept_unsigned: false,
+      trusted_identities: %{other_id => Signing.encode_key(other_sc.public_key)}
+    })
+
+    add_file_entry!(store, container, "marker", UUID.uuid4(), other_sc)
+    {:ok, cc} = CommitStoreClient.latest_commit(store, container)
+    assert {:ok, ^other_id, _} = Signing.parse_signer_id(cc.signer_id)
+
+    {taker_id, taker_sc} = fresh_identity()
+
+    ctx = %{
+      player_name: "taker",
+      current_room_uuid: room,
+      inventory_uuid: inventory,
+      store: store,
+      signing_context: taker_sc,
+      cert_cids: [],
+      signer_id: Signing.signer_id(taker_id, taker_sc.public_key)
+    }
+
+    cmd = %Parser.Command{verb: "get", args: "crown from wooden box", argv: ["crown", "from", "wooden", "box"]}
+    assert {:reply, msg} = Verbs.dispatch(cmd, ctx)
+    assert msg =~ "You get crown from wooden box."
+    refute "crown.obj" in entry_names(store, container)
+    assert "crown.obj" in entry_names(store, inventory)
+    assert {:held, %{holder: ^taker_id}} = BursarClient.query(Bursar, item)
+  end
 end
