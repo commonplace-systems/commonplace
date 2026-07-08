@@ -60,7 +60,7 @@ defmodule Commonplace.Trust do
 
   require Logger
 
-  @type verb :: :write | :execute
+  @type verb :: :write | :execute | :read
   @type scope :: {:doc, String.t()}
   @type config :: %{
           accept_unsigned: boolean(),
@@ -163,6 +163,62 @@ defmodule Commonplace.Trust do
          {:ok, %{verbs: verbs, scope: {:docs, docs}}} <-
            Commonplace.Trust.VerifyChain.verify_chain(cid, anchor_keys(cfg), store) do
       :write in verbs and target_uuid in docs
+    else
+      _ -> false
+    end
+  end
+
+  @doc """
+  CX-sqb6 (read-scoping P1): the COMMITLESS reader-authorization predicate —
+  the `:read` mirror of `writer_authorized?/6`. Would a `:read` of
+  `target_uuid` by the live principal `identity_uuid` (authenticated public
+  key `pub`, presenting `cert_cids`) be authorized under `cfg`?
+
+  A read has NO commit to sign, so — unlike the commit path's `author_binding`
+  (which binds the leaf cert's audience to the COMMIT SIGNER) — the audience
+  is bound to the **reader's own authenticated key** (`pub`): `cert_grants_read?`
+  accepts a cert ONLY when its audience pubkey `== pub`. This is the
+  anti-capability-theft guarantee: presenting a cert issued to SOMEONE ELSE's
+  key (audience ≠ pub) never authorizes THIS reader.
+
+  🔒 LOAD-BEARING CALL-SITE CONTRACT: `pub` MUST be the reader's
+  SERVER-RESOLVED authenticated key (their `SigningContext`/session identity —
+  the same unspoofable identity SessionLimit / possession-tokens use), NEVER a
+  client-claimed value. If a caller passes an attacker-controlled `pub`, the
+  audience binding is meaningless. Callers pass the session-resolved identity.
+
+  Mirrors the write path's short-circuits exactly: `accept_unsigned`
+  (permissive) → true; a `trusted_identities`-pinned identity → true;
+  otherwise a held, chain-verified, unrevoked `:read` cap over `target_uuid`.
+  Revocation (CX-bepn) is enforced inside `verify_chain`, verify-time.
+  """
+  @spec reader_authorized?(
+          String.t() | nil,
+          binary() | nil,
+          [binary()],
+          String.t(),
+          config(),
+          GenServer.server()
+        ) :: boolean()
+  def reader_authorized?(identity_uuid, pub, cert_cids, target_uuid, cfg, store) do
+    cond do
+      cfg.accept_unsigned -> true
+      not is_binary(identity_uuid) -> false
+      Map.has_key?(cfg.trusted_identities, identity_uuid) -> true
+      true -> Enum.any?(cert_cids, &cert_grants_read?(&1, pub, target_uuid, cfg, store))
+    end
+  end
+
+  # The `:read` mirror of `cert_grants_write?/5`. The audience-binding
+  # (`audience_pub == pub`) binds the cap to the READER's key — a cert for
+  # another audience can't authorize this reader (no capability theft).
+  defp cert_grants_read?(cid, pub, target_uuid, cfg, store) do
+    with {:ok, leaf} <- fetch_cap(store, cid),
+         {_uuid, audience_pub} <- leaf.audience,
+         true <- pub != nil and audience_pub == pub,
+         {:ok, %{verbs: verbs, scope: {:docs, docs}}} <-
+           Commonplace.Trust.VerifyChain.verify_chain(cid, anchor_keys(cfg), store) do
+      :read in verbs and target_uuid in docs
     else
       _ -> false
     end

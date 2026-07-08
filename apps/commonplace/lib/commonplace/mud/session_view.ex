@@ -197,6 +197,17 @@ defmodule Commonplace.MUD.SessionView do
     doc = XMLElement.new_element(doc, @view_name, "view")
     doc = XMLElement.set_attribute(doc, @view_name, "session", to_string(session_id))
 
+    # CX-sqb6 (read-scoping P1): PROTECTED read-visibility fields. A view-doc
+    # is a per-observer transcript — minted `capability_gated`, owned by the
+    # identity it was minted for. These live in the view-doc's node-signed
+    # state (the whole doc is node-signed — SessionView invariant 3), so a
+    # reader can't flip `visibility`→`public` (that's a write to a node-signed
+    # doc, refused under enforce). Every OTHER doc class stays default public
+    # ⇒ no read-regression. `Commonplace.Trust.Read.authorized?/3` reads these
+    # via `read_meta/2`.
+    doc = XMLElement.set_attribute(doc, @view_name, "owner", to_string(session_id))
+    doc = XMLElement.set_attribute(doc, @view_name, "visibility", "capability_gated")
+
     doc = XMLElement.insert_child(doc, @view_name, 0, {:element, "scrollback"})
     doc = XMLElement.insert_child(doc, @view_name, 1, {:element, "room"})
 
@@ -408,6 +419,56 @@ defmodule Commonplace.MUD.SessionView do
         err
     end
   end
+
+  @doc """
+  CX-sqb6 (read-scoping P1): read the view-doc's PROTECTED read-visibility
+  fields (`owner` + `visibility`) — the CARRIED inputs to
+  `Commonplace.Trust.Read.authorized?/3`. Reconstructs the full chain (the
+  fields live in the genesis and never change — they're protected/node-signed
+  — so this reads their immutable value). `visibility` parses to
+  `:public | :capability_gated`, defaulting `:public` when absent (a legacy
+  view-doc minted before P1 → public = its pre-P1 behavior = no regression).
+
+  Returns `{:ok, %{owner: owner_uuid | nil, visibility: atom}}` or
+  `{:error, reason}`.
+  """
+  @spec read_meta(String.t(), term()) :: {:ok, %{owner: String.t() | nil, visibility: atom()}} | {:error, term()}
+  def read_meta(uuid, store) do
+    case DocBuilder.reconstruct_doc(store, uuid) do
+      {:ok, doc} ->
+        doc = reregister_root_tag(doc)
+
+        {:ok,
+         %{
+           owner: XMLElement.get_attribute(doc, @view_name, "owner"),
+           visibility: parse_visibility(XMLElement.get_attribute(doc, @view_name, "visibility"))
+         }}
+
+      :none ->
+        {:error, :not_found}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  @doc """
+  CX-sqb6: the read-visibility fields (`owner` + `visibility`) read from an
+  ALREADY-LOADED `%SessionView{}` — no extra reconstruct (the loaded doc
+  already carries them). For the self-reload gate where the view is loaded
+  anyway; `read_meta/2` is the by-uuid variant for gating BEFORE a load.
+  """
+  @spec meta(t()) :: %{owner: String.t() | nil, visibility: atom()}
+  def meta(%__MODULE__{doc: doc, view_name: view_name}) do
+    %{
+      owner: XMLElement.get_attribute(doc, view_name, "owner"),
+      visibility: parse_visibility(XMLElement.get_attribute(doc, view_name, "visibility"))
+    }
+  end
+
+  defp parse_visibility("capability_gated"), do: :capability_gated
+  defp parse_visibility("public"), do: :public
+  defp parse_visibility(_absent_or_unknown), do: :public
 
   # --- Private helpers ---
 

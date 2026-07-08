@@ -53,6 +53,7 @@ defmodule CommonplaceWebWeb.MudLive do
     SessionViewRegistry
   }
   alias Commonplace.Store.CommitStoreClient
+  alias Commonplace.Trust.Read
   alias Commonplace.Tree.{DocBuilder, Walk}
   alias CommonplaceWebWeb.SessionIdentity
   alias Yelixer.Types.{XMLElement, XMLText}
@@ -195,7 +196,25 @@ defmodule CommonplaceWebWeb.MudLive do
       view_uuid ->
         case SessionView.load(view_uuid, store) do
           {:ok, view} ->
-            view
+            # CX-sqb6 (read-scoping P1): gate the principal-facing view-doc
+            # read at the boundary. This is the SELF-reload path — the view is
+            # keyed by (and owned by) `identity_uuid` — so it passes via the
+            # self-read branch (principal == owner). The gate is real (it reads
+            # the loaded doc's actual owner/visibility, not an assumption), so
+            # a view that somehow isn't this principal's would be refused and
+            # a fresh own view minted instead of serving another's transcript.
+            # The cross-principal (spectator) enforcement is the same
+            # `Read.authorized?` verifier, driven by Inc-5's spectate caller.
+            meta = SessionView.meta(view)
+
+            case Read.authorized?(identity_uuid, view_uuid,
+                   visibility: meta.visibility,
+                   owner: meta.owner,
+                   store: store
+                 ) do
+              :ok -> view
+              {:error, _denied} -> mint_and_link(identity_uuid, store, home_room_uuid)
+            end
 
           {:error, _reason} ->
             mint_and_link(identity_uuid, store, home_room_uuid)
