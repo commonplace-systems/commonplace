@@ -129,15 +129,43 @@ defmodule Commonplace.Dataflow.RedLog do
   end
 
   def handle_info(:auto_commit, state) do
-    log = commit(state.log)
-    {:noreply, %{state | log: log, commit_ref: nil}}
+    case safe_commit(state.log) do
+      {:ok, log} ->
+        {:noreply, %{state | log: log, commit_ref: nil}}
+
+      # The store GenServer is gone (e.g. a supervised CommitStore torn down
+      # in tests while this debounced onramp still holds a pending flush, or
+      # a store shutting down under it). An onramp with no store to persist
+      # to is orphaned — stop cleanly rather than crash on the dead-store
+      # GenServer.call, which would spew a crash report and (linked into a
+      # neighbor's tree) contaminate later tests → seed-dependent CI red
+      # (CX-6hxa).
+      :store_gone ->
+        {:stop, :normal, %{state | commit_ref: nil}}
+    end
   end
 
   @impl true
   def handle_call(:commit, _from, state) do
-    log = commit(state.log)
-    state = cancel_auto_commit(%{state | log: log})
-    {:reply, :ok, state}
+    case safe_commit(state.log) do
+      {:ok, log} ->
+        state = cancel_auto_commit(%{state | log: log})
+        {:reply, :ok, state}
+
+      :store_gone ->
+        {:stop, :normal, {:error, :store_unavailable}, cancel_auto_commit(state)}
+    end
+  end
+
+  # Commit, tolerating a store whose GenServer has already stopped: a
+  # persistence attempt against a dead store raises an `:exit` from the
+  # underlying `GenServer.call` (CubDB `{:snapshot, …}`), not an `{:error,
+  # …}` tuple. Distinguish that (`:store_gone`) from a normal commit so the
+  # onramp can stop cleanly instead of propagating the crash.
+  defp safe_commit(log) do
+    {:ok, commit(log)}
+  catch
+    :exit, _ -> :store_gone
   end
 
   defp schedule_auto_commit(%{commit_ref: ref} = state) when is_reference(ref) do

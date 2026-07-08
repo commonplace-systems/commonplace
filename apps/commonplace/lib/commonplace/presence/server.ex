@@ -70,12 +70,31 @@ defmodule Commonplace.Presence.Server do
 
   @impl true
   def terminate(_reason, state) do
-    fname = Presence.filename(state.name, state.type)
-    Presence.remove(fname, state.dir_uuid, state.store)
+    # A terminate/2 callback must never crash on an already-stopped
+    # dependency. During shutdown (and in tests, where a supervised
+    # CommitStore may be torn down while this heartbeat GenServer is still
+    # trapping its own exit), the store's GenServer can already be gone —
+    # any call into it then raises `{:noproc, …}` / `:noproc`, which would
+    # propagate as an abnormal exit and fail the whole run (CX-6hxa: the CI
+    # teardown crash, non-zero exit despite green tests). Best-effort the
+    # cleanup and swallow a dead-store failure.
+    with_live_store(fn ->
+      fname = Presence.filename(state.name, state.type)
+      Presence.remove(fname, state.dir_uuid, state.store)
 
-    # Update cold identity last_seen on shutdown
-    Identity.touch_last_seen(state.identity_uuid, state.store)
+      # Update cold identity last_seen on shutdown
+      Identity.touch_last_seen(state.identity_uuid, state.store)
+    end)
+
     :ok
+  end
+
+  defp with_live_store(fun) do
+    fun.()
+  rescue
+    _ -> :ok
+  catch
+    :exit, _ -> :ok
   end
 
   defp schedule_heartbeat(state) do

@@ -70,9 +70,13 @@ defmodule Commonplace.MUD.BotFullCitizenshipTest do
     # `Workspace.root_uuid/0` reads `<:data_dir>/root`; point it at the
     # workspace root so `resolve_root/1` finds it, and flip on full
     # citizenship so `resolve_root/1` walks to the "mud" child.
+    # Save under the REAL app-env keys — the restore loop feeds these map
+    # keys straight to Application.put_env/delete_env, so a shorthand key
+    # (e.g. `:full`) would restore the WRONG key and leak
+    # `:mud_full_citizenship = true` into every later test file (CX-6hxa).
     old = %{
       data_dir: Application.get_env(:commonplace, :data_dir),
-      full: Application.get_env(:commonplace, :mud_full_citizenship)
+      mud_full_citizenship: Application.get_env(:commonplace, :mud_full_citizenship)
     }
 
     File.write!(Path.join(dir, "root"), workspace_root)

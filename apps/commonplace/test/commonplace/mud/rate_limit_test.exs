@@ -217,10 +217,28 @@ defmodule Commonplace.MUD.RateLimitTest do
     assert [{_, _}] = :ets.lookup(RateLimit.table(), {:drops, session})
 
     Process.exit(session, :kill)
-    # Sync barrier: get_state forces the limiter to process the cast + DOWN.
-    _ = :sys.get_state(RateLimit)
 
-    assert [] = :ets.lookup(RateLimit.table(), {:session, session})
-    assert [] = :ets.lookup(RateLimit.table(), {:drops, session})
+    # The reap runs in the limiter's `:DOWN` handler — delivered
+    # asynchronously to the kill. A single `:sys.get_state` barrier races
+    # that delivery (the DOWN may not be in the mailbox yet when get_state
+    # is processed → seed-dependent flake, CX-6hxa), so poll until the reap
+    # actually lands.
+    assert eventually(fn ->
+             :ets.lookup(RateLimit.table(), {:session, session}) == [] and
+               :ets.lookup(RateLimit.table(), {:drops, session}) == []
+           end)
+  end
+
+  # Retry `fun` (a boolean predicate) until it holds or the bounded window
+  # elapses (~1s). For observing eventually-consistent async state without a
+  # fixed, racy sleep.
+  defp eventually(fun, retries \\ 100) do
+    cond do
+      fun.() -> true
+      retries == 0 -> false
+      true ->
+        Process.sleep(10)
+        eventually(fun, retries - 1)
+    end
   end
 end
