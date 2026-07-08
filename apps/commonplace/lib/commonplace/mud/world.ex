@@ -244,6 +244,13 @@ defmodule Commonplace.MUD.World do
   `{:ok, %{name, desc, exits: [{dir, to_label}], contents: [name],
   occupants: [name]}}`, or `{:error, reason}` when the room can't be
   loaded. This is self-view of already-visible state — no new disclosure.
+
+  Exits carry only the DIRECTION, never the destination room's name: the
+  live `look` shows directions only, and labelling an exit with the
+  adjacent room's name would read that neighbour's meta and disclose a
+  room the observer hasn't traversed — the adjacent-room-visibility
+  question deferred to read-scoping (#13). Keeping exits direction-only
+  preserves Inc-2's zero-new-disclosure invariant (plan #6868).
   """
   @spec room_snapshot(String.t(), String.t(), term()) :: {:ok, map()} | {:error, term()}
   def room_snapshot(room_uuid, self_filename, store \\ CommitStoreClient) do
@@ -253,7 +260,7 @@ defmodule Commonplace.MUD.World do
          %{
            name: room.name,
            desc: room.description,
-           exits: snapshot_exits(room.exits, store),
+           exits: snapshot_exits(room.exits),
            contents: snapshot_contents(room_uuid, store),
            occupants: snapshot_occupants(room_uuid, self_filename, store)
          }}
@@ -263,21 +270,15 @@ defmodule Commonplace.MUD.World do
     end
   end
 
-  # Exit destinations labelled by the destination room's NAME (design §1's
-  # `<exit dir to>`), sorted by direction; falls back to the direction when
-  # the destination can't be resolved.
-  defp snapshot_exits(exits, store) do
+  # Direction-only exits (sorted). `to` is left empty — NO adjacent-room
+  # meta read — so the pane never discloses a neighbouring room's name to
+  # an observer who hasn't traversed there (plan #6868; the `<exit dir to>`
+  # schema still carries a `to` slot for a future read-scoped version).
+  defp snapshot_exits(exits) do
     exits
-    |> Enum.sort_by(fn {dir, _dest} -> dir end)
-    |> Enum.map(fn {dir, dest_uuid} ->
-      label =
-        case get_room(dest_uuid, store) do
-          {:ok, %Schemas.Room{name: n}} when is_binary(n) and n != "" -> n
-          _ -> dir
-        end
-
-      {dir, label}
-    end)
+    |> Map.keys()
+    |> Enum.sort()
+    |> Enum.map(fn dir -> {dir, ""} end)
   end
 
   defp snapshot_contents(room_uuid, store) do
