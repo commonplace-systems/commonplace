@@ -7,7 +7,7 @@ defmodule Commonplace.MUD.World do
   """
 
   alias Commonplace.Document.ContentType
-  alias Commonplace.MUD.{Move, Schemas, Take, Topics}
+  alias Commonplace.MUD.{HolderMove, Move, Schemas, Take, Topics}
   alias Commonplace.Presence
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.{DocBuilder, Schema, Walk}
@@ -69,6 +69,37 @@ defmodule Commonplace.MUD.World do
       when is_binary(item_uuid) and is_binary(name) and is_binary(room_uuid) and
              is_binary(inventory_uuid) do
     Take.take(item_uuid, name, room_uuid, inventory_uuid, taker_identity, opts)
+  end
+
+  @doc """
+  Drop `item_uuid` (entry `name`) from `inventory_uuid` into `room_uuid`
+  for the player identified by `dropper_identity` — the invoker-holder
+  push to the node (see `Commonplace.MUD.HolderMove`). After a successful
+  drop the NODE holds the item's possession token, so it becomes
+  takeable again (subject to the TAKE-zone-gate).
+  """
+  def drop_item(item_uuid, name, inventory_uuid, room_uuid, dropper_identity, opts \\ [])
+      when is_binary(item_uuid) and is_binary(name) and is_binary(inventory_uuid) and
+             is_binary(room_uuid) do
+    node_identity =
+      case Commonplace.Crypto.NodeIdentity.identity() do
+        {:ok, id} -> id
+        _ -> nil
+      end
+
+    HolderMove.push(item_uuid, name, inventory_uuid, room_uuid, dropper_identity, node_identity, opts)
+  end
+
+  @doc """
+  Give `item_uuid` (entry `name`) from `inventory_uuid` to
+  `recipient_inv_uuid`, transferring possession from `giver_identity` to
+  `recipient_identity` — the invoker-holder push to the recipient (see
+  `Commonplace.MUD.HolderMove`).
+  """
+  def give_item(item_uuid, name, inventory_uuid, recipient_inv_uuid, giver_identity, recipient_identity, opts \\ [])
+      when is_binary(item_uuid) and is_binary(name) and is_binary(inventory_uuid) and
+             is_binary(recipient_inv_uuid) do
+    HolderMove.push(item_uuid, name, inventory_uuid, recipient_inv_uuid, giver_identity, recipient_identity, opts)
   end
 
   @doc "Read a metadata struct out of a directory doc."

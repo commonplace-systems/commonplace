@@ -899,7 +899,8 @@ defmodule Commonplace.MUD.Verbs do
 
     with {:ok, entry, _phrase, _remainder} <- greedy_match_entry([ctx.inventory_uuid], argv, ctx.store),
          {:ok, %Object{} = obj} <- Schemas.load_object(entry.node_id, ctx.store),
-         :ok <- World.move(entry.node_id, entry.name, ctx.inventory_uuid, ctx.current_room_uuid, write_opts(ctx)) do
+         :ok <-
+           World.drop_item(entry.node_id, entry.name, ctx.inventory_uuid, ctx.current_room_uuid, taker_identity(ctx), write_opts(ctx)) do
       World.broadcast_room(ctx.current_room_uuid, %{
         kind: :drop,
         who: ctx.player_name,
@@ -912,6 +913,8 @@ defmodule Commonplace.MUD.Verbs do
       {:error, :collision} -> {:error, "There's already one of those here."}
       {:error, :gone} -> {:error, "It slipped from your grasp."}
       {:error, {:trust_rejected, _}} -> {:error, "You don't have permission to drop that here."}
+      {:error, :not_holder} -> {:error, "You aren't carrying that."}
+      {:error, :bad_arg} -> {:error, "You can't drop that."}
       _ -> {:error, "You can't drop that."}
     end
   end
@@ -958,8 +961,18 @@ defmodule Commonplace.MUD.Verbs do
   defp give_item_to(item_phrase, target_phrase, ctx) do
     with {:ok, obj_entry} <- World.find_entry_by_name(ctx.inventory_uuid, item_phrase, ctx.store),
          {:ok, %Object{} = obj} <- Schemas.load_object(obj_entry.node_id, ctx.store),
-         {:ok, target_inv_uuid, target_player_name} <- find_player_inventory(target_phrase, ctx),
-         :ok <- World.move(obj_entry.node_id, obj_entry.name, ctx.inventory_uuid, target_inv_uuid, write_opts(ctx)) do
+         {:ok, target_inv_uuid, target_player_name, target_presence_uuid} <- find_player_inventory(target_phrase, ctx),
+         recipient_identity <- resolve_recipient_identity(target_presence_uuid, ctx),
+         :ok <-
+           World.give_item(
+             obj_entry.node_id,
+             obj_entry.name,
+             ctx.inventory_uuid,
+             target_inv_uuid,
+             taker_identity(ctx),
+             recipient_identity,
+             write_opts(ctx)
+           ) do
       World.broadcast_room(ctx.current_room_uuid, %{
         kind: :give,
         who: ctx.player_name,
@@ -974,7 +987,22 @@ defmodule Commonplace.MUD.Verbs do
       {:error, :collision} -> {:error, "#{target_phrase} is already carrying one of those."}
       {:error, :gone} -> {:error, "It slipped from your grasp."}
       {:error, {:trust_rejected, _}} -> {:error, "You don't have permission to give that away."}
+      {:error, :not_holder} -> {:error, "You aren't holding that."}
+      {:error, :bad_arg} -> {:error, "You can't give that right now."}
       _ -> {:error, "You can't give that."}
+    end
+  end
+
+  # CX-cj3t.2: resolve the recipient's bound identity uuid from their
+  # presence doc, so `give`'s node-elevated push (`World.give_item/7`)
+  # can transfer the item's possession token TO the actual recipient,
+  # not just move the tree entry. Anonymous/unsigned presence docs (no
+  # `bound_identity` written) yield `nil` — `HolderMove.push/7`'s
+  # enforce path refuses that gracefully with `{:error, :bad_arg}`.
+  defp resolve_recipient_identity(presence_uuid, ctx) do
+    case Commonplace.Presence.read(presence_uuid, ctx.store) do
+      %{"bound_identity" => id} when is_binary(id) -> id
+      _ -> nil
     end
   end
 
@@ -992,7 +1020,7 @@ defmodule Commonplace.MUD.Verbs do
       [entry] ->
         bare = entry.name |> String.replace_suffix(".usr", "")
         case lookup_player_inventory(bare, ctx) do
-          {:ok, inv_uuid} -> {:ok, inv_uuid, bare}
+          {:ok, inv_uuid} -> {:ok, inv_uuid, bare, entry.node_id}
           err -> err
         end
 
