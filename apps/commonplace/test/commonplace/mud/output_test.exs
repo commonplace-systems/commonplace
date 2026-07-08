@@ -1,11 +1,21 @@
 defmodule Commonplace.MUD.OutputTest do
   use ExUnit.Case
+  import ExUnit.CaptureLog
 
   alias Commonplace.Code.SourceDoc
+  alias Commonplace.Crypto.{Signing, SigningContext}
   alias Commonplace.MUD.{Bootstrap, Output, PlayerSession, Schemas, VerbSource}
   alias Commonplace.Store.CommitStore
   alias Commonplace.Tree.Schema
   alias Yelixer.Encoding
+
+  # CX-3x5a output-hygiene — a throwaway signed identity, for tests that
+  # need a real (non-nil) `identity_uuid` to exercise the author-match /
+  # non-author-suppress split on the `:verb_diagnostic` player tell.
+  defp fresh_identity(tag) do
+    {pub, priv} = Signing.generate_keypair()
+    %SigningContext{identity_uuid: "#{tag}-#{:rand.uniform(999_999_999_999)}", private_key: priv, public_key: pub}
+  end
 
   setup do
     Application.ensure_all_started(:phoenix_pubsub)
@@ -52,16 +62,21 @@ defmodule Commonplace.MUD.OutputTest do
     %{store: store, root: root_uuid}
   end
 
-  defp start_player(name, ctx, parent \\ self()) do
+  defp start_player(name, ctx, parent \\ self(), opts \\ []) do
     output_fn = fn text -> send(parent, {:out, name, text}) end
 
     {:ok, session} =
       PlayerSession.start_link(
-        player_name: name,
-        root_uuid: ctx.root,
-        store: ctx.store,
-        output_fn: output_fn,
-        owner_pid: parent
+        Keyword.merge(
+          [
+            player_name: name,
+            root_uuid: ctx.root,
+            store: ctx.store,
+            output_fn: output_fn,
+            owner_pid: parent
+          ],
+          opts
+        )
       )
 
     drain(name)
@@ -461,7 +476,13 @@ defmodule Commonplace.MUD.OutputTest do
 
     test "CX-qexv/CX-3x5a: a verb whose tail put_state is over-budget surfaces a DIM :verb_diagnostic to the actor (not silent)",
          ctx do
-      alice = start_player("alice", ctx)
+      # CX-3x5a output-hygiene: the player tell is now author-scoped, so
+      # alice must be the verb's AUTHOR (same signing identity on both the
+      # player session and the saved verb source) for the diagnostic to
+      # reach her — see the "non-author invoker" test below for the
+      # suppressed case.
+      alice_ctx = fresh_identity("alice")
+      alice = start_player("alice", ctx, self(), signing_context: alice_ctx)
       drain("alice")
       send_input(alice, "east")
       drain("alice")
@@ -486,7 +507,8 @@ defmodule Commonplace.MUD.OutputTest do
           "overflow",
           ~s|Commonplace.MUD.World.Facade.put_state(world, "blob", "#{big}")|,
           [dir],
-          ctx.store
+          ctx.store,
+          signing_context: alice_ctx
         )
 
       send_input(alice, "overflow gizmo")
@@ -657,7 +679,10 @@ defmodule Commonplace.MUD.OutputTest do
     end
 
     test "CX-a3rq/CX-3x5a: a room verb calling an object-only effect surfaces a DIM :verb_diagnostic to the actor", ctx do
-      alice = start_player("alice", ctx)
+      # CX-3x5a output-hygiene: author-scoped player tell, so alice must be
+      # the verb's author here too (see fresh_identity/1 note above).
+      alice_ctx = fresh_identity("alice")
+      alice = start_player("alice", ctx, self(), signing_context: alice_ctx)
       drain("alice")
       send_input(alice, "east")
       drain("alice")
@@ -675,7 +700,8 @@ defmodule Commonplace.MUD.OutputTest do
           "vanish",
           ~s|Commonplace.MUD.World.Facade.consume(world)|,
           [room],
-          ctx.store
+          ctx.store,
+          signing_context: alice_ctx
         )
 
       send_input(alice, "vanish")
@@ -696,7 +722,10 @@ defmodule Commonplace.MUD.OutputTest do
   # NOTHING.
   describe "CX-3x5a: silent-drop author diagnostics" do
     test "a verb that IGNORES a failing put_state (non-tail) then says → invoker sees the dim diagnostic", ctx do
-      alice = start_player("alice", ctx)
+      # CX-3x5a output-hygiene: author-scoped player tell, so alice must be
+      # the verb's author here too (see fresh_identity/1 note above).
+      alice_ctx = fresh_identity("alice")
+      alice = start_player("alice", ctx, self(), signing_context: alice_ctx)
       drain("alice")
       send_input(alice, "east")
       drain("alice")
@@ -720,7 +749,8 @@ defmodule Commonplace.MUD.OutputTest do
           "leak",
           ~s|Commonplace.MUD.World.Facade.put_state(world, "blob", "#{big}")\n  Commonplace.MUD.World.Facade.say(world, "hello there")|,
           [dir],
-          ctx.store
+          ctx.store,
+          signing_context: alice_ctx
         )
 
       send_input(alice, "leak widget")
@@ -766,6 +796,96 @@ defmodule Commonplace.MUD.OutputTest do
 
       PlayerSession.stop(alice)
     end
+  end
+
+  # CX-3x5a output-hygiene fix — `emit_author_diagnostic/2`'s player tell is
+  # now scoped to "is the invoker the verb's author": a non-author invoker
+  # (the common case for a shared/curated verb) can't act on verb-debug
+  # jargon like "(verb note: consume → requires_object_host)", so it must
+  # be suppressed FROM THE PLAYER while staying loud on the ops side
+  # (`Logger.warning`, unconditional — the CX-3x5a guarantee this bead is
+  # about is ops visibility, not player visibility).
+  describe "CX-3x5a output-hygiene: author-scoped :verb_diagnostic player tell" do
+    test "NON-AUTHOR invoker + author-class drop → no player tell, but the drop IS logged", ctx do
+      author_ctx = fresh_identity("author")
+      alice_ctx = fresh_identity("alice")
+      alice = start_player("alice", ctx, self(), signing_context: alice_ctx)
+      drain("alice")
+      send_input(alice, "east")
+      drain("alice")
+
+      room = clearing_uuid(ctx)
+
+      # consume/2 on a ROOM host always drops :requires_object_host — same
+      # deterministic author-class drop the CX-a3rq test above exercises,
+      # but here the verb source is authored by a DIFFERENT identity than
+      # the invoker.
+      :ok =
+        VerbSource.save_safe_verb(
+          room,
+          "vanish2",
+          ~s|Commonplace.MUD.World.Facade.consume(world)|,
+          [room],
+          ctx.store,
+          signing_context: author_ctx
+        )
+
+      out =
+        capture_log(fn ->
+          send_input(alice, "vanish2")
+          send(self(), {:captured, drain("alice") |> Enum.join("\n")})
+        end)
+
+      assert_received {:captured, player_out}
+      refute player_out =~ "verb note"
+      refute player_out =~ "requires_object_host"
+
+      assert out =~ "safe-verb author diagnostic"
+      assert out =~ "consume"
+      assert out =~ "requires_object_host"
+
+      PlayerSession.stop(alice)
+    end
+
+    test "unresolvable verb author (unsigned source doc) → no player tell, but the drop IS logged (fail-closed)", ctx do
+      alice_ctx = fresh_identity("alice")
+      alice = start_player("alice", ctx, self(), signing_context: alice_ctx)
+      drain("alice")
+      send_input(alice, "east")
+      drain("alice")
+
+      room = clearing_uuid(ctx)
+
+      # No `signing_context` opt → the verb source doc's commit is unsigned
+      # (signer_id nil), so the author identity is unresolvable — same
+      # shape as a store/read failure. Fail CLOSED: no player leak, but
+      # still ops-visible. (This also models the curated-verb case: a
+      # curated verb's source is signed by the NODE identity, which no
+      # human invoker's `identity_uuid` ever matches either.)
+      :ok =
+        VerbSource.save_safe_verb(
+          room,
+          "vanish3",
+          ~s|Commonplace.MUD.World.Facade.consume(world)|,
+          [room],
+          ctx.store
+        )
+
+      out =
+        capture_log(fn ->
+          send_input(alice, "vanish3")
+          send(self(), {:captured, drain("alice") |> Enum.join("\n")})
+        end)
+
+      assert_received {:captured, player_out}
+      refute player_out =~ "verb note"
+
+      assert out =~ "safe-verb author diagnostic"
+      assert out =~ "requires_object_host"
+
+      PlayerSession.stop(alice)
+    end
+
   end
 
   describe "CX-avgu: @destroy builder cleanup" do

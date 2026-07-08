@@ -12,11 +12,13 @@ defmodule Commonplace.MUD.World.FacadeTest do
   strict-trust + `:enforce`-gate pattern.
   """
   use ExUnit.Case, async: false
+  import ExUnit.CaptureLog
 
   alias Commonplace.Crypto.{Signing, SigningContext}
   alias Commonplace.MUD.Schemas
   alias Commonplace.MUD.World.Facade
   alias Commonplace.Store.CommitStore
+  alias Yelixer.Encoding
 
   setup do
     dir = Path.join(System.tmp_dir!(), "cp_facade_#{:rand.uniform(1_000_000_000)}")
@@ -1274,6 +1276,186 @@ defmodule Commonplace.MUD.World.FacadeTest do
       thin = Facade.to_verb_facing(full)
       assert thin.host_kind == full.host_kind
     end
+  end
+
+  # CX-3x5a output-hygiene fix — `emit_author_diagnostic/2`'s player tell
+  # (the dim "(verb note: ...)" line) is now scoped to "is the invoker the
+  # verb's author": a non-author invoker (the common case for a
+  # shared/curated verb) can't act on verb-debug jargon like "(verb note:
+  # consume → requires_object_host)", so the tell must be suppressed FROM
+  # THE PLAYER while staying loud on the ops side (unconditional
+  # `Logger.warning` — the CX-3x5a guarantee is ops visibility, not player
+  # visibility). These are direct-call unit tests of `emit_verb_drops/2`
+  # (bypassing full player-session dispatch, mirroring the pin tests above).
+  describe "CX-3x5a output-hygiene: author-scoped :verb_diagnostic player tell" do
+    setup %{store: store, trusted_ctx: trusted_ctx, uncapped_ctx: uncapped_ctx} do
+      case Phoenix.PubSub.Supervisor.start_link(name: Commonplace.PubSub) do
+        {:ok, _} -> :ok
+        {:error, {:already_started, _}} -> :ok
+      end
+
+      # These fixture docs only need a resolvable (or absent) SIGNER on
+      # their latest commit — the local-write trust gate itself isn't
+      # under test here, so relax it to :dry_run just for fixture setup
+      # (an untrusted/unsigned signer would otherwise be REJECTED, not
+      # merely distrusted) and restore :enforce (this file's standing
+      # config) before the actual test body runs.
+      Application.put_env(:commonplace, :local_write_gate, :dry_run)
+      author_source_uuid = create_signed_source_doc(store, trusted_ctx)
+      stranger_source_uuid = create_signed_source_doc(store, uncapped_ctx)
+      unsigned_source_uuid = create_signed_source_doc(store, nil)
+      Application.put_env(:commonplace, :local_write_gate, :enforce)
+
+      %{
+        author_source_uuid: author_source_uuid,
+        stranger_source_uuid: stranger_source_uuid,
+        unsigned_source_uuid: unsigned_source_uuid
+      }
+    end
+
+    test "AUTHOR invoker (identity matches the verb source's signer) → the :verb_diagnostic tell IS delivered",
+         %{store: store, trusted_ctx: trusted_ctx, author_source_uuid: author_source_uuid} do
+      player_uuid = "player-#{:rand.uniform(999_999_999_999)}"
+      Commonplace.MUD.Topics.subscribe_player_tell(player_uuid)
+
+      full =
+        Facade.new(
+          %{signing_context: trusted_ctx, cert_cids: [], signer_id: nil, player_uuid: player_uuid},
+          nil,
+          [],
+          {author_source_uuid, "some-host"},
+          store
+        )
+
+      log =
+        capture_log(fn ->
+          Facade.__accumulate__(:destroy_child, {:error, :not_found})
+          assert :ok = Facade.emit_verb_drops(full, __MODULE__)
+        end)
+
+      assert_receive {"red:" <> ^player_uuid, %{kind: :verb_diagnostic, text: text}}
+      assert text =~ "destroy_child"
+      assert text =~ "not_found"
+
+      assert log =~ "safe-verb author diagnostic"
+      assert log =~ "destroy_child"
+    end
+
+    test "NON-AUTHOR invoker (a different identity than the verb source's signer) → no player tell, but the drop IS logged",
+         %{store: store, uncapped_ctx: stranger_invoker_ctx, author_source_uuid: author_source_uuid} do
+      player_uuid = "player-#{:rand.uniform(999_999_999_999)}"
+      Commonplace.MUD.Topics.subscribe_player_tell(player_uuid)
+
+      full =
+        Facade.new(
+          %{signing_context: stranger_invoker_ctx, cert_cids: [], signer_id: nil, player_uuid: player_uuid},
+          nil,
+          [],
+          {author_source_uuid, "some-host"},
+          store
+        )
+
+      log =
+        capture_log(fn ->
+          Facade.__accumulate__(:destroy_child, {:error, :not_found})
+          assert :ok = Facade.emit_verb_drops(full, __MODULE__)
+        end)
+
+      refute_receive {"red:" <> ^player_uuid, %{kind: :verb_diagnostic}}, 100
+
+      assert log =~ "safe-verb author diagnostic"
+      assert log =~ "destroy_child"
+      assert log =~ "not_found"
+    end
+
+    test "unresolvable verb author (unsigned source doc) → no player tell, but the drop IS logged (fail-closed)",
+         %{store: store, trusted_ctx: trusted_ctx, unsigned_source_uuid: unsigned_source_uuid} do
+      player_uuid = "player-#{:rand.uniform(999_999_999_999)}"
+      Commonplace.MUD.Topics.subscribe_player_tell(player_uuid)
+
+      full =
+        Facade.new(
+          %{signing_context: trusted_ctx, cert_cids: [], signer_id: nil, player_uuid: player_uuid},
+          nil,
+          [],
+          {unsigned_source_uuid, "some-host"},
+          store
+        )
+
+      log =
+        capture_log(fn ->
+          Facade.__accumulate__(:destroy_child, {:error, :not_found})
+          assert :ok = Facade.emit_verb_drops(full, __MODULE__)
+        end)
+
+      refute_receive {"red:" <> ^player_uuid, %{kind: :verb_diagnostic}}, 100
+      assert log =~ "safe-verb author diagnostic"
+    end
+
+    test "curated-verb shape (via_verb source uuid does not resolve at all) → no player tell, still logged (fail-closed)",
+         %{store: store, trusted_ctx: trusted_ctx} do
+      player_uuid = "player-#{:rand.uniform(999_999_999_999)}"
+      Commonplace.MUD.Topics.subscribe_player_tell(player_uuid)
+
+      full =
+        Facade.new(
+          %{signing_context: trusted_ctx, cert_cids: [], signer_id: nil, player_uuid: player_uuid},
+          nil,
+          [],
+          {"never-created-uuid", "curated-host"},
+          store
+        )
+
+      log =
+        capture_log(fn ->
+          Facade.__accumulate__(:destroy_child, {:error, :not_found})
+          assert :ok = Facade.emit_verb_drops(full, __MODULE__)
+        end)
+
+      refute_receive {"red:" <> ^player_uuid, %{kind: :verb_diagnostic}}, 100
+      assert log =~ "safe-verb author diagnostic"
+    end
+
+    test "permission-class drops ({:owner_grant_exceeded}) still route to the player-notice unchanged (regression guard)",
+         %{store: store, trusted_ctx: trusted_ctx, author_source_uuid: author_source_uuid} do
+      player_uuid = "player-#{:rand.uniform(999_999_999_999)}"
+      Commonplace.MUD.Topics.subscribe_player_tell(player_uuid)
+
+      # emit_permission_refusal is untouched by this fix — only the
+      # AUTHOR-class branch (emit_author_diagnostic) got audience scoping.
+      full =
+        Facade.new(
+          %{signing_context: trusted_ctx, cert_cids: [], signer_id: nil, player_uuid: player_uuid},
+          nil,
+          [],
+          {author_source_uuid, "some-host"},
+          store
+        )
+
+      Facade.__accumulate__(:set_attr, {:error, :owner_grant_exceeded})
+      assert :ok = Facade.emit_verb_drops(full, __MODULE__)
+
+      assert_receive {"red:" <> ^player_uuid, %{kind: :notice, text: text}}
+      assert text =~ "Nothing happens"
+    end
+  end
+
+  defp create_signed_source_doc(store, nil) do
+    uuid = UUID.uuid4()
+    update = Encoding.encode_update(Yelixer.Doc.new())
+    %Commonplace.Store.Commit{} = CommitStore.create_commit(store, uuid, update, nil)
+    uuid
+  end
+
+  defp create_signed_source_doc(store, %SigningContext{} = signing_context) do
+    uuid = UUID.uuid4()
+    update = Encoding.encode_update(Yelixer.Doc.new())
+
+    {metadata, commit_opts} =
+      Commonplace.MUD.SignedWrite.opts_for(uuid, signing_context: signing_context, store: store)
+
+    %Commonplace.Store.Commit{} = CommitStore.create_commit(store, uuid, update, nil, metadata, commit_opts)
+    uuid
   end
 
   # CX-3x5a — the drop accumulator. (A) unit behavior of the choke point;

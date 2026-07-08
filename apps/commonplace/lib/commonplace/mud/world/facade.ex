@@ -1472,7 +1472,15 @@ defmodule Commonplace.MUD.World.Facade do
 
   @doc """
   CX-3x5a — drain the run's accumulated facade-method drops and, if any,
-  emit ONE dim author-diagnostic to the INVOKER only (never the room).
+  emit ONE dim author-diagnostic to the INVOKER only (never the room) —
+  but ONLY when that invoker IS the verb's author (output-hygiene fix,
+  same bead). AUTHOR-class drops are ALWAYS `Logger`-ed (ops-visible,
+  unconditional — see `emit_author_diagnostic/2`'s `invoker_is_author?/1`
+  gate) regardless of audience; the `:verb_diagnostic` player tell is the
+  part that's audience-scoped. A non-author invoker (the common case for
+  a curated/shared verb) never sees verb-debug jargon like "(verb note:
+  destroy_child → not_found)" they have no way to act on — they see
+  nothing, and the drop is still loud on the ops side.
 
   `full_facade` is the FULL facade captured in `SafeVerb.run`'s Bounds-child
   closure (it still carries `ctx.player_uuid`) — NOT the thin verb-facing
@@ -1533,15 +1541,84 @@ defmodule Commonplace.MUD.World.Facade do
     })
   end
 
-  # AUTHOR-class drops keep the existing dim `:verb_diagnostic` (N1
-  # precedence: FIRST drop = likely root cause, with a `(+N more)` suffix).
+  # AUTHOR-class drops keep the existing dim `:verb_diagnostic` — but ONLY
+  # for the verb's AUTHOR (CX-3x5a output-hygiene fix). A non-author
+  # invoker (the common case: a curated verb fired by an ordinary player)
+  # can't act on "(verb note: destroy_child → not_found)" — it's verb-debug
+  # jargon, not gameplay feedback, and leaking it to a random player is a
+  # hygiene bug, not a feature. So the drop is ALWAYS `Logger` (ops-visible,
+  # unconditional — the loud-not-silent guarantee CX-3x5a exists for is
+  # about OPS visibility, not player visibility) and the player-facing tell
+  # is scoped to "can this invoker actually fix it" (N1 precedence: FIRST
+  # drop = likely root cause, with a `(+N more)` suffix, unchanged for the
+  # author case).
   defp emit_author_diagnostic(_full_facade, []), do: :ok
 
-  defp emit_author_diagnostic(full_facade, [{method, reason} | rest]) do
-    suffix = if rest == [], do: "", else: " (+#{length(rest)} more)"
-    line = "(verb note: #{method} → #{format_drop_reason(reason)}#{suffix})"
-    World.tell(full_facade.ctx.player_uuid, %{kind: :verb_diagnostic, text: line})
+  defp emit_author_diagnostic(full_facade, [{method, reason} | rest] = drops) do
+    Enum.each(drops, fn {m, r} ->
+      Logger.warning(
+        "safe-verb author diagnostic (drop): #{m} → #{format_drop_reason(r)} " <>
+          "(via_verb=#{inspect(full_facade.via_verb)})"
+      )
+    end)
+
+    if invoker_is_author?(full_facade) do
+      suffix = if rest == [], do: "", else: " (+#{length(rest)} more)"
+      line = "(verb note: #{method} → #{format_drop_reason(reason)}#{suffix})"
+      World.tell(full_facade.ctx.player_uuid, %{kind: :verb_diagnostic, text: line})
+    else
+      :ok
+    end
   end
+
+  # CX-3x5a output-hygiene — is the INVOKER the verb's AUTHOR? Compares
+  # bare PRINCIPAL identity_uuid on both sides (never a composite
+  # signer_id — a rekey/hand-change must not break author-match):
+  #
+  #   * invoker principal — `full_facade.ctx[:signing_context].identity_uuid`
+  #   * author principal  — the signer of the verb SOURCE doc's latest
+  #     commit (`via_verb`'s first element), resolved the same way
+  #     `object_owner_authority/2`'s `node_owned?/3` resolves a doc's
+  #     signer above: `latest_commit` → `commit.signer_id` →
+  #     `Signing.parse_signer_id/1`.
+  #
+  # Any failure to resolve either side (missing via_verb, unreadable
+  # source doc, unparseable/unsigned signer, unsigned invoker) → `false`
+  # — fail CLOSED to no-leak. A diagnostic is non-critical; never leak on
+  # uncertainty. For a CURATED verb the source doc is signed by the NODE
+  # identity, which no human invoker ever matches, so players correctly
+  # see nothing while ops still gets the `Logger.warning` above.
+  defp invoker_is_author?(%__MODULE__{} = f) do
+    with invoker_identity when is_binary(invoker_identity) <- invoker_identity_uuid(f),
+         author_identity when is_binary(author_identity) <- verb_author_identity_uuid(f) do
+      invoker_identity == author_identity
+    else
+      _ -> false
+    end
+  end
+
+  defp invoker_identity_uuid(%__MODULE__{ctx: ctx}) do
+    case ctx && ctx[:signing_context] do
+      %Commonplace.Crypto.SigningContext{identity_uuid: identity_uuid} -> identity_uuid
+      _ -> nil
+    end
+  end
+
+  defp verb_author_identity_uuid(%__MODULE__{via_verb: {source_uuid, _} = _via_verb, store: store})
+       when is_binary(source_uuid) do
+    case CommitStoreClient.latest_commit(store, source_uuid) do
+      {:ok, commit} ->
+        case Signing.parse_signer_id(commit.signer_id || "") do
+          {:ok, identity_uuid, _fingerprint} -> identity_uuid
+          {:error, _} -> nil
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp verb_author_identity_uuid(%__MODULE__{}), do: nil
 
   defp permission_class?({:trust_rejected, _}), do: true
   defp permission_class?(:owner_grant_exceeded), do: true
