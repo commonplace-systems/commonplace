@@ -278,10 +278,25 @@ defmodule Commonplace.MUD.SessionView do
   in ONE delta commit.
 
   `sections` is a map whose keys are drawn from
-  `#{inspect(@section_order)}` with string values; any missing key is
-  treated as an empty string. The current `<room>` children (if any) are
-  tombstoned wholesale via `Yelixer.Types.XMLElement.delete_child/4` and
-  the five sections are re-inserted in `@section_order`.
+  `#{inspect(@section_order)}`. Values may be:
+
+    * a **string** (`:name`/`:desc`, or any flat section) → a single text
+      child, e.g. `<name>The Orrery Hall</name>`;
+    * a **list** for the structured sections (design §1's nested schema):
+      `:exits` = `[{dir, to_label}]` → `<exit dir=".." to=".."/>` children;
+      `:contents` = `[item_name]` → `<item>..</item>` children;
+      `:occupants` = `[who_name]` → `<who>..</who>` children.
+
+  Any missing key is treated as an empty string. The current `<room>`
+  children (if any) are tombstoned wholesale via
+  `Yelixer.Types.XMLElement.delete_child/4` and the five section
+  containers are re-inserted in `@section_order`.
+
+  This module stores the text VERBATIM — HTML-escaping of the
+  player-supplied `<item>`/`<who>`/`<name>`/`<desc>`/`<exit @to>` fields is
+  the RENDER layer's job (`CommonplaceWebWeb.MudLive` walks these
+  structurally and hands each field to `~H`, which auto-escapes), never a
+  raw `to_html`.
 
   This is a REPLACE-subtree region, NOT a scrollback turn, so it does
   NOT advance the turn counter `n` (see `commit_delta_no_turn!/3`).
@@ -313,9 +328,7 @@ defmodule Commonplace.MUD.SessionView do
       @section_order
       |> Enum.with_index()
       |> Enum.reduce(doc, fn {key, index}, doc ->
-        text = Map.get(sections, key, "")
-        {doc, _} = insert_text_element(doc, view.room_name, index, Atom.to_string(key), to_string(text))
-        doc
+        build_section(doc, view.room_name, index, key, Map.get(sections, key, ""))
       end)
 
     commit_delta_no_turn!(view, doc, sv_before)
@@ -445,14 +458,21 @@ defmodule Commonplace.MUD.SessionView do
     {doc, turn_name}
   end
 
+  # Insert an empty `<tag>` element as child `index` of `parent_name`.
+  # Returns `{doc, element_type_name}`.
+  defp insert_container(doc, parent_name, index, tag) do
+    doc = XMLElement.insert_child(doc, parent_name, index, {:element, tag})
+    {:element, ^tag, elem_name} = Enum.at(XMLElement.children(doc, parent_name), index)
+    {doc, elem_name}
+  end
+
   # Insert `<tag>text</tag>` as child `index` of `parent_name`. Returns
   # `{doc, element_type_name}`. An empty `text` yields a bare
   # `<tag></tag>` (no text child): `Yelixer.Types.XMLText.insert/4`
   # rejects zero-length inserts, and a `replace_room/2` section can
   # legitimately be an empty string (missing key).
   defp insert_text_element(doc, parent_name, index, tag, text) do
-    doc = XMLElement.insert_child(doc, parent_name, index, {:element, tag})
-    {:element, ^tag, elem_name} = Enum.at(XMLElement.children(doc, parent_name), index)
+    {doc, elem_name} = insert_container(doc, parent_name, index, tag)
 
     doc =
       if text == "" do
@@ -464,6 +484,48 @@ defmodule Commonplace.MUD.SessionView do
       end
 
     {doc, elem_name}
+  end
+
+  # Build one `<room>` section container at `index` (design §1). List-valued
+  # structured sections nest their children; a binary value (name/desc, or a
+  # back-compat flat string) becomes a single text child.
+  defp build_section(doc, room_name, index, :exits, exits) when is_list(exits) do
+    {doc, exits_name} = insert_container(doc, room_name, index, "exits")
+
+    exits
+    |> Enum.with_index()
+    |> Enum.reduce(doc, fn {{dir, to}, i}, doc ->
+      doc = XMLElement.insert_child(doc, exits_name, i, {:element, "exit"})
+      {:element, "exit", exit_name} = Enum.at(XMLElement.children(doc, exits_name), i)
+
+      doc
+      |> XMLElement.set_attribute(exit_name, "dir", to_string(dir))
+      |> XMLElement.set_attribute(exit_name, "to", to_string(to))
+    end)
+  end
+
+  defp build_section(doc, room_name, index, :contents, items) when is_list(items),
+    do: build_text_list(doc, room_name, index, "contents", "item", items)
+
+  defp build_section(doc, room_name, index, :occupants, whos) when is_list(whos),
+    do: build_text_list(doc, room_name, index, "occupants", "who", whos)
+
+  defp build_section(doc, room_name, index, key, value) do
+    {doc, _} = insert_text_element(doc, room_name, index, Atom.to_string(key), to_string(value))
+    doc
+  end
+
+  # A container `<container_tag>` holding one `<item_tag>text</item_tag>` per
+  # element of `items`, in order.
+  defp build_text_list(doc, room_name, index, container_tag, item_tag, items) do
+    {doc, container_name} = insert_container(doc, room_name, index, container_tag)
+
+    items
+    |> Enum.with_index()
+    |> Enum.reduce(doc, fn {text, i}, doc ->
+      {doc, _} = insert_text_element(doc, container_name, i, item_tag, to_string(text))
+      doc
+    end)
   end
 
   defp last_child_name(doc, parent_name) do

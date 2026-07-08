@@ -102,6 +102,14 @@ defmodule Commonplace.MUD.PlayerSession do
   @doc "Drain and clear the buffered output (only valid for buffered sessions)."
   def drain_buffer(pid), do: GenServer.call(pid, :drain_buffer, 5_000)
 
+  @doc """
+  CX-i9j3 (UI Inc-2): the materialized self-view room-pane sections for
+  this session's CURRENT room (name/desc/exits/contents/occupants), for
+  `Commonplace.MUD.SessionView.replace_room/2`. Read-only; returns
+  `{:ok, sections}` or `{:error, reason}`.
+  """
+  def room_snapshot(pid), do: GenServer.call(pid, :room_snapshot, 10_000)
+
   def stop(pid), do: GenServer.stop(pid, :normal)
 
   ## Server
@@ -184,6 +192,14 @@ defmodule Commonplace.MUD.PlayerSession do
   @impl true
   def handle_call(:drain_buffer, _from, state) do
     {:reply, state.buffer || [], %{state | buffer: if(is_list(state.buffer), do: [], else: nil)}}
+  end
+
+  # CX-i9j3 (UI Inc-2): re-project the CURRENT room's state into pane
+  # sections (the same data `render_room/1`'s `look` computes). Read-only —
+  # no state change.
+  def handle_call(:room_snapshot, _from, state) do
+    {:reply, World.room_snapshot(state.current_room_uuid, state.presence_filename, state.store),
+     state}
   end
 
   def handle_call({:input, line}, _from, state) do

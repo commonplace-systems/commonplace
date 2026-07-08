@@ -166,6 +166,64 @@ defmodule CommonplaceWebWeb.MudLiveTest do
       refute html =~ "<script>alert(1)</script>"
     end
 
+    # CX-i9j3 (UI Inc-2) — THE security core: the room pane's <item> (object
+    # names) and <who> (occupant names) are PLAYER-SUPPLIED. A malicious name
+    # must render as INERT ESCAPED TEXT in the committed pane, never as a live
+    # tag (the pane walks the view-doc structurally and interpolates each
+    # field via ~H — never through the unescaped `to_html`).
+    test "malicious object/occupant names in the room render ESCAPED in the pane", %{conn: conn} do
+      {:ok, view, _html} = live_isolated(conn, MudLive, session: get_session(conn))
+
+      home = :sys.get_state(view.pid).socket.assigns.home_room_uuid
+      assert is_binary(home), "the player must have a home room to seed content into"
+
+      {:ok, node_ctx} = Commonplace.Crypto.NodeIdentity.signing_context()
+      seed_object!(home, "<script>alertOBJ</script>", node_ctx)
+      seed_occupant!(home, "<img onerror=xWHO>", node_ctx)
+      Commonplace.Tree.DocCache.clear()
+
+      # A tick is the ambient refresh window — the pane re-materializes with
+      # the newly-present object + occupant and commits the replace.
+      send(view.pid, :tick)
+      html = render(view)
+
+      # Object name escaped in <item>, occupant name escaped in <who>.
+      assert html =~ "&lt;script&gt;alertOBJ&lt;/script&gt;"
+      refute html =~ "<script>alertOBJ</script>"
+      assert html =~ "&lt;img onerror=xWHO&gt;"
+      refute html =~ "<img onerror=xWHO>"
+    end
+
+    # CX-i9j3 (UI Inc-2) — commit-on-DIFF trigger: room-only CHATTER (a `say`
+    # line) does NOT change the pane (it's a scrollback event, not a state
+    # change); a real room-content change DOES update the pane.
+    test "commit-on-diff: chatter leaves the pane unchanged, a room change updates it", %{conn: conn} do
+      {:ok, view, _html} = live_isolated(conn, MudLive, session: get_session(conn))
+
+      # Force an initial pane materialize, then snapshot the committed sections.
+      send(view.pid, :tick)
+      before = :sys.get_state(view.pid).socket.assigns.room_sections
+      assert is_map(before), "the pane must materialize on the first tick"
+
+      # Chatter: an ambient line that does NOT change room state.
+      pid = :sys.get_state(view.pid).socket.assigns.session_pid
+      GenServer.cast(pid, {:buffer_append, "Grunk says: hello"})
+      send(view.pid, :tick)
+      after_chatter = :sys.get_state(view.pid).socket.assigns.room_sections
+      assert after_chatter == before, "room-only chatter must NOT change the committed pane"
+
+      # A genuine room-content change: a new object appears.
+      {:ok, node_ctx} = Commonplace.Crypto.NodeIdentity.signing_context()
+      home = :sys.get_state(view.pid).socket.assigns.home_room_uuid
+      seed_object!(home, "a brass widget", node_ctx)
+      Commonplace.Tree.DocCache.clear()
+      send(view.pid, :tick)
+      after_change = :sys.get_state(view.pid).socket.assigns.room_sections
+
+      refute after_change == before, "a room-content change MUST update the pane"
+      assert "a brass widget" in after_change.contents
+    end
+
     test "a second mount for the SAME identity restores the prior transcript via SessionViewRegistry",
          %{conn: conn} do
       {:ok, view1, _html} = live_isolated(conn, MudLive, session: get_session(conn))
@@ -272,5 +330,49 @@ defmodule CommonplaceWebWeb.MudLiveTest do
       |> Plug.Conn.put_session(:session_nonce, nonce)
 
     {conn, identity_uuid, nonce}
+  end
+
+  # --- Inc-2 room-pane seeding helpers (against the singleton CommitStore) ---
+
+  @store Commonplace.Store.CommitStore
+
+  defp seed_object!(room_uuid, name, ctx) do
+    alias Commonplace.MUD.Schemas
+    alias Commonplace.MUD.Schemas.Object
+
+    {:ok, obj_uuid} =
+      Schemas.create_dir_with_meta(
+        Schemas.object_filename(),
+        Schemas.encode_object(%Object{name: name}),
+        @store,
+        signing_context: ctx
+      )
+
+    add_child_entry!(room_uuid, "obj-#{System.unique_integer([:positive])}.obj", obj_uuid, ctx, :dir)
+    obj_uuid
+  end
+
+  defp seed_occupant!(room_uuid, name, ctx) do
+    add_child_entry!(room_uuid, "#{name}.usr", UUID.uuid4(), ctx, :file)
+  end
+
+  defp add_child_entry!(parent_uuid, name, child_uuid, ctx, kind) do
+    alias Commonplace.MUD.{Schemas, SignedWrite}
+    alias Commonplace.Store.CommitStoreClient
+    alias Commonplace.Tree.Schema
+    alias Yelixer.Encoding
+
+    {:ok, schema} = Schemas.load_dir_schema(parent_uuid, @store)
+
+    schema =
+      case kind do
+        :dir -> Schema.add_directory(schema, name, child_uuid)
+        :file -> Schema.add_file(schema, name, child_uuid)
+      end
+
+    update = Encoding.encode_update(schema)
+    {metadata, opts} = SignedWrite.opts_for(parent_uuid, store: @store, signing_context: ctx)
+
+    CommitStoreClient.create_chained_commit(@store, parent_uuid, update, metadata, opts)
   end
 end

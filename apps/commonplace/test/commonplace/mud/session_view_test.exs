@@ -238,6 +238,79 @@ defmodule Commonplace.MUD.SessionViewTest do
     assert Yelixer.Types.XMLElement.get_attribute(view.doc, turn_name, "n") == to_string(n_before)
   end
 
+  # --- Increment 2: STRUCTURED room-pane (design §1 nested schema) ---
+
+  @structured_room %{
+    name: "The Forge",
+    desc: "Heat shimmers off the anvil.",
+    exits: [{"north", "The Hall"}, {"down", "The Cellar"}],
+    contents: ["an anvil", "a glowing ingot"],
+    occupants: ["Grunk", "Ember"]
+  }
+
+  test "replace_room with STRUCTURED sections builds nested <exit>/<item>/<who> children", %{
+    store: store
+  } do
+    alias Yelixer.Types.XMLElement
+
+    view = SessionView.new("sess-structured", store)
+    view = SessionView.replace_room(view, @structured_room)
+
+    # Still exactly the 5 section containers.
+    assert XMLElement.child_count(view.doc, view.room_name) == 5
+    children = XMLElement.children(view.doc, view.room_name)
+
+    # <exits> holds two <exit dir=.. to=../>.
+    {:element, "exits", exits_name} = Enum.find(children, &match?({:element, "exits", _}, &1))
+    exits = XMLElement.children(view.doc, exits_name)
+    assert length(exits) == 2
+    {:element, "exit", ex1} = hd(exits)
+    assert XMLElement.get_attribute(view.doc, ex1, "dir") == "north"
+    assert XMLElement.get_attribute(view.doc, ex1, "to") == "The Hall"
+
+    # <contents> holds two <item> text elements.
+    {:element, "contents", contents_name} =
+      Enum.find(children, &match?({:element, "contents", _}, &1))
+
+    items = XMLElement.children(view.doc, contents_name) |> Enum.map(&text_of(view.doc, &1))
+    assert items == ["an anvil", "a glowing ingot"]
+
+    # <occupants> holds two <who> text elements.
+    {:element, "occupants", occ_name} = Enum.find(children, &match?({:element, "occupants", _}, &1))
+    whos = XMLElement.children(view.doc, occ_name) |> Enum.map(&text_of(view.doc, &1))
+    assert whos == ["Grunk", "Ember"]
+
+    # Replay fidelity: the nested pane survives a load round-trip.
+    {:ok, loaded} = SessionView.load(view.uuid, store)
+    html = SessionView.to_html(loaded)
+    assert html =~ "an anvil"
+    assert html =~ "Grunk"
+    assert html =~ "exit"
+  end
+
+  test "region-isolation with a STRUCTURED room: a nested room-replace's delta stays flat as scrollback grows",
+       %{store: store} do
+    big = SessionView.new("sess-structured-big", store)
+
+    big =
+      Enum.reduce(1..30, big, fn i, view ->
+        SessionView.append_command_turn(view, "cmd-#{i}", "out-#{i}")
+      end)
+
+    big_sv = Yelixer.BlockStore.state_vector(big.doc.store)
+    big = SessionView.replace_room(big, @structured_room)
+    big_delta = byte_size(Encoding.encode_diff(big.doc, big_sv))
+
+    fresh = SessionView.new("sess-structured-fresh", store)
+    fresh_sv = Yelixer.BlockStore.state_vector(fresh.doc.store)
+    fresh = SessionView.replace_room(fresh, @structured_room)
+    fresh_delta = byte_size(Encoding.encode_diff(fresh.doc, fresh_sv))
+
+    assert big_delta <= fresh_delta * 2,
+           "a STRUCTURED room-replace's delta (#{big_delta}b after 30 turns) must stay within ~2x " <>
+             "the fresh replace (#{fresh_delta}b) — the nested pane is still O(1) in scrollback length"
+  end
+
   test "ambient buffer: M adds → ONE flush → ONE commit with M lines in order", %{store: store} do
     view = SessionView.new("sess-ambient", store)
 
@@ -327,5 +400,12 @@ defmodule Commonplace.MUD.SessionViewTest do
 
     {:ok, loaded} = SessionView.load(view.uuid, store)
     assert SessionView.to_html(loaded) == html
+  end
+
+  defp text_of(doc, {:element, _tag, elem_name}) do
+    case Yelixer.Types.XMLElement.children(doc, elem_name) do
+      [{:text, text_name}] -> Yelixer.Types.XMLText.to_string(doc, text_name)
+      _ -> ""
+    end
   end
 end

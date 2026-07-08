@@ -233,6 +233,69 @@ defmodule Commonplace.MUD.World do
     |> Enum.filter(fn e -> e.type == :dir and String.ends_with?(e.name, ".obj") end)
   end
 
+  @doc """
+  CX-i9j3 (UI Inc-2): materialize the SELF-VIEW room-pane sections for the
+  committed view-doc — a re-projection of the SAME room-state the `look`
+  display already computes (name/desc/exits/contents/occupants), shaped for
+  `Commonplace.MUD.SessionView.replace_room/2`.
+
+  `self_filename` is the observer's own `.usr` presence filename, excluded
+  from occupants (you don't list yourself). Returns
+  `{:ok, %{name, desc, exits: [{dir, to_label}], contents: [name],
+  occupants: [name]}}`, or `{:error, reason}` when the room can't be
+  loaded. This is self-view of already-visible state — no new disclosure.
+  """
+  @spec room_snapshot(String.t(), String.t(), term()) :: {:ok, map()} | {:error, term()}
+  def room_snapshot(room_uuid, self_filename, store \\ CommitStoreClient) do
+    case get_room(room_uuid, store) do
+      {:ok, %Schemas.Room{} = room} ->
+        {:ok,
+         %{
+           name: room.name,
+           desc: room.description,
+           exits: snapshot_exits(room.exits, store),
+           contents: snapshot_contents(room_uuid, store),
+           occupants: snapshot_occupants(room_uuid, self_filename, store)
+         }}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  # Exit destinations labelled by the destination room's NAME (design §1's
+  # `<exit dir to>`), sorted by direction; falls back to the direction when
+  # the destination can't be resolved.
+  defp snapshot_exits(exits, store) do
+    exits
+    |> Enum.sort_by(fn {dir, _dest} -> dir end)
+    |> Enum.map(fn {dir, dest_uuid} ->
+      label =
+        case get_room(dest_uuid, store) do
+          {:ok, %Schemas.Room{name: n}} when is_binary(n) and n != "" -> n
+          _ -> dir
+        end
+
+      {dir, label}
+    end)
+  end
+
+  defp snapshot_contents(room_uuid, store) do
+    list_objects_in(room_uuid, store)
+    |> Enum.map(fn e ->
+      case Schemas.load_object(e.node_id, store) do
+        {:ok, %Schemas.Object{name: name}} -> name
+        _ -> String.replace_suffix(e.name, ".obj", "")
+      end
+    end)
+  end
+
+  defp snapshot_occupants(room_uuid, self_filename, store) do
+    list_players_in(room_uuid, store)
+    |> Enum.reject(fn e -> e.name == self_filename end)
+    |> Enum.map(fn e -> String.replace_suffix(e.name, ".usr", "") end)
+  end
+
   @doc "Read a presence doc map (name/type/status/heartbeat)."
   def read_presence(uuid, store \\ CommitStoreClient), do: Presence.read(uuid, store)
 

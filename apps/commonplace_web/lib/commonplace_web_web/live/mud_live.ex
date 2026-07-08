@@ -75,7 +75,8 @@ defmodule CommonplaceWebWeb.MudLive do
          |> assign(:session_pid, nil)
          |> assign(:input_key, 0)
          |> assign(:home_room_uuid, nil)
-         |> assign(:principal, nil)}
+         |> assign(:principal, nil)
+         |> assign(:room_sections, nil)}
 
       {:ok, resolved} ->
         mount_authed(resolved, socket)
@@ -130,6 +131,9 @@ defmodule CommonplaceWebWeb.MudLive do
       # client-supplied value). `handle_event("command", …)` reads it to
       # consult `RateLimit.check/2`.
       |> assign(:principal, resolved.identity_uuid)
+      # CX-i9j3 (UI Inc-2): the last room-pane sections committed to the
+      # view-doc, for commit-on-diff (nil until the first materialize).
+      |> assign(:room_sections, nil)
 
     socket =
       if connected?(socket) and is_binary(mud_root) and is_binary(home_room_uuid) do
@@ -342,6 +346,10 @@ defmodule CommonplaceWebWeb.MudLive do
       |> assign(:view, view)
       |> assign(:ambient_buffer, buffer)
       |> update(:input_key, &(&1 + 1))
+      # CX-i9j3 (UI Inc-2): own-turn is the IMMEDIATE room-pane trigger —
+      # a move changes the pane (commit); a non-move re-materializes
+      # identical sections (commit-on-diff → no commit).
+      |> refresh_room_pane()
 
     {:noreply, socket}
   end
@@ -411,7 +419,8 @@ defmodule CommonplaceWebWeb.MudLive do
         socket
       end
 
-    {:noreply, socket}
+    # CX-i9j3 (UI Inc-2): populate the room-pane on spawn (first materialize).
+    {:noreply, refresh_room_pane(socket)}
   end
 
   def handle_info(:tick, socket) do
@@ -433,6 +442,11 @@ defmodule CommonplaceWebWeb.MudLive do
         socket
         |> assign(:view, view)
         |> assign(:ambient_buffer, buffer)
+        # CX-i9j3 (UI Inc-2): this poll IS the ambient debounce window — one
+        # commit-on-diff room-pane materialize per tick (an occupant/object
+        # change commits; room-only chatter re-materializes identical → no
+        # commit), never per-event.
+        |> refresh_room_pane()
       else
         socket
       end
@@ -473,7 +487,37 @@ defmodule CommonplaceWebWeb.MudLive do
             #mud-scrollback .cmd::before { content: "> "; }
             #mud-scrollback .out { white-space: pre-wrap; }
             #mud-scrollback .ambient .line { opacity: 0.85; }
+            #mud-room .room-name { color: #fbbf24; font-weight: 700; }
+            #mud-room .room-desc { opacity: 0.85; white-space: pre-wrap; }
+            #mud-room .room-label { opacity: 0.55; }
           </style>
+
+          <%!-- CX-i9j3 (UI Inc-2): the self-view room pane, rendered FROM the
+                committed view-doc's room subtree. Every player-supplied field
+                (item/who/name/desc) is interpolated via ~H, so auto-escaped. --%>
+          <% room = render_room(@view) %>
+          <div
+            :if={room.name != "" or room.contents != [] or room.occupants != []}
+            id="mud-room"
+            class="mb-2 bg-black/60 text-green-300 font-mono text-sm p-3 rounded border border-green-900"
+          >
+            <div class="room-name"><%= room.name %></div>
+            <div :if={room.desc != ""} class="room-desc"><%= room.desc %></div>
+            <div :if={room.exits != []} class="mt-1">
+              <span class="room-label">Exits:</span>
+              <span :for={{dir, to} <- room.exits} class="mr-2">
+                <%= dir %><%= if to not in ["", dir], do: " → #{to}" %>
+              </span>
+            </div>
+            <div :if={room.contents != []}>
+              <span class="room-label">Here:</span>
+              <span :for={item <- room.contents} class="mr-2"><%= item %></span>
+            </div>
+            <div :if={room.occupants != []}>
+              <span class="room-label">Also here:</span>
+              <span :for={who <- room.occupants} class="mr-2"><%= who %></span>
+            </div>
+          </div>
 
           <div
             id="mud-scrollback"
@@ -575,6 +619,91 @@ defmodule CommonplaceWebWeb.MudLive do
       [{:text, text_name}] -> XMLText.to_string(doc, text_name)
       _ -> ""
     end
+  end
+
+  # CX-i9j3 (UI Inc-2): materialize the current room + commit-on-DIFF into
+  # the view-doc's `<room>` pane. Own-move (post-command) and ambient (per
+  # tick) both route here; commit-on-diff makes "meaningful change"
+  # structural — room-only chatter re-materializes IDENTICAL sections, so
+  # nothing is committed (chatter stays a scrollback event, never a pane
+  # commit). Best-effort: a dead/absent session leaves the pane unchanged.
+  defp refresh_room_pane(socket) do
+    pid = socket.assigns.session_pid
+
+    if pid && Process.alive?(pid) do
+      case PlayerSession.room_snapshot(pid) do
+        {:ok, sections} ->
+          if sections == socket.assigns.room_sections do
+            socket
+          else
+            view = SessionView.replace_room(socket.assigns.view, sections)
+
+            socket
+            |> assign(:view, view)
+            |> assign(:room_sections, sections)
+          end
+
+        {:error, _} ->
+          socket
+      end
+    else
+      socket
+    end
+  catch
+    :exit, _ -> socket
+  end
+
+  # SECURITY (CX-i9j3 Inc-2): like `render_turns/1`, this walks the
+  # committed `<room>` subtree with Yelixer's structural accessors and
+  # returns PLAIN Elixir values (strings / `{dir, to}` tuples) so the `~H`
+  # template can interpolate them via `Phoenix.HTML` auto-escaping. The
+  # pane's `<item>` (object names) and `<who>` (occupant names) are
+  # PLAYER-SUPPLIED — the highest XSS surface in the epic — so they MUST
+  # reach the browser as escaped text, NEVER through `to_html`'s unescaped
+  # serialization. Returns `%{name, desc, exits, contents, occupants}`.
+  defp render_room(%SessionView{doc: doc, room_name: room_name}) do
+    by_tag =
+      doc
+      |> XMLElement.children(room_name)
+      |> Map.new(fn {:element, tag, name} -> {tag, name} end)
+
+    %{
+      name: section_text(doc, by_tag["name"]),
+      desc: section_text(doc, by_tag["desc"]),
+      exits: render_exits(doc, by_tag["exits"]),
+      contents: render_named_list(doc, by_tag["contents"]),
+      occupants: render_named_list(doc, by_tag["occupants"])
+    }
+  end
+
+  defp section_text(_doc, nil), do: ""
+
+  defp section_text(doc, elem_name) do
+    case XMLElement.children(doc, elem_name) do
+      [{:text, text_name}] -> XMLText.to_string(doc, text_name)
+      _ -> ""
+    end
+  end
+
+  defp render_exits(_doc, nil), do: []
+
+  defp render_exits(doc, exits_name) do
+    doc
+    |> XMLElement.children(exits_name)
+    |> Enum.map(fn {:element, "exit", exit_name} ->
+      {XMLElement.get_attribute(doc, exit_name, "dir") || "",
+       XMLElement.get_attribute(doc, exit_name, "to") || ""}
+    end)
+  end
+
+  # `<contents>`/`<occupants>` hold `<item>`/`<who>` text children — read
+  # each back as a plain (later auto-escaped) string.
+  defp render_named_list(_doc, nil), do: []
+
+  defp render_named_list(doc, container_name) do
+    doc
+    |> XMLElement.children(container_name)
+    |> Enum.map(&child_text(doc, &1))
   end
 
   defp player_name(presence_path) when is_binary(presence_path) do
