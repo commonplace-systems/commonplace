@@ -8,8 +8,7 @@ defmodule Commonplace.MCP.Tools.MudSend do
   command (room renders, tells, broadcasts heard, etc).
   """
 
-  alias Commonplace.MCP.Tools.Response
-  alias Commonplace.MUD.Bot
+  alias Commonplace.MCP.Tools.{BotRoute, Response}
 
   def descriptor do
     %{
@@ -40,7 +39,9 @@ defmodule Commonplace.MCP.Tools.MudSend do
 
   def run(%{"name" => name, "line" => line}, _ctx)
       when is_binary(name) and is_binary(line) do
-    case Bot.send_input(name, line) do
+    # CX-z0v7: route to the serve (Bot+PlayerSession run there); one
+    # bounded rpc per turn instead of N nested cross-node store calls.
+    case BotRoute.call(:send_input, [name, line]) do
       {:ok, events} ->
         events_text = format(events)
         {:ok, Response.text(events_text, %{"events" => events})}

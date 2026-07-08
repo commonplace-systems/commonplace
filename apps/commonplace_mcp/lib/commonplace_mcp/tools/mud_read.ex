@@ -5,8 +5,7 @@ defmodule Commonplace.MCP.Tools.MudRead do
   players talking, tick verbs firing, etc).
   """
 
-  alias Commonplace.MCP.Tools.Response
-  alias Commonplace.MUD.Bot
+  alias Commonplace.MCP.Tools.{BotRoute, Response}
 
   def descriptor do
     %{
@@ -30,7 +29,8 @@ defmodule Commonplace.MCP.Tools.MudRead do
   def run(args, _context \\ %{})
 
   def run(%{"name" => name}, _ctx) when is_binary(name) do
-    case Bot.read_events(name) do
+    # CX-z0v7: route to the serve — see Commonplace.MCP.Tools.BotRoute.
+    case BotRoute.call(:read_events, [name]) do
       {:ok, events} ->
         events_text = format(events)
         {:ok, Response.text(events_text, %{"events" => events})}
