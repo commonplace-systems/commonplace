@@ -46,6 +46,7 @@ defmodule CommonplaceWebWeb.MudLive do
   alias Commonplace.MUD.{
     Citizenship,
     PlayerSession,
+    RateLimit,
     SessionLimit,
     SessionView,
     SessionViewLink,
@@ -73,7 +74,8 @@ defmodule CommonplaceWebWeb.MudLive do
          |> assign(:ambient_buffer, nil)
          |> assign(:session_pid, nil)
          |> assign(:input_key, 0)
-         |> assign(:home_room_uuid, nil)}
+         |> assign(:home_room_uuid, nil)
+         |> assign(:principal, nil)}
 
       {:ok, resolved} ->
         mount_authed(resolved, socket)
@@ -123,6 +125,11 @@ defmodule CommonplaceWebWeb.MudLive do
       |> assign(:input_key, 0)
       |> assign(:home_room_uuid, home_room_uuid)
       |> assign(:player_name, name)
+      # CX-nf8p: the server-resolved principal for rate-limiting — the SAME
+      # authenticated identity the session is spawned under (never a
+      # client-supplied value). `handle_event("command", …)` reads it to
+      # consult `RateLimit.check/2`.
+      |> assign(:principal, resolved.identity_uuid)
 
     socket =
       if connected?(socket) and is_binary(mud_root) and is_binary(home_room_uuid) do
@@ -257,6 +264,11 @@ defmodule CommonplaceWebWeb.MudLive do
         case GenServer.start(PlayerSession, opts, []) do
           {:ok, pid} ->
             SessionLimit.attach(limit_ref, pid)
+            # CX-nf8p: reap this session's rate-limit bucket + drop-counter
+            # automatically when the PlayerSession dies (crash, quit, or a
+            # rate-limit disconnect) — same monitor-per-session locus as the
+            # SessionLimit slot above.
+            RateLimit.watch(pid)
             send(self(), :enter)
             Process.send_after(self(), :tick, @tick_ms)
             assign(socket, :session_pid, pid)
@@ -286,31 +298,88 @@ defmodule CommonplaceWebWeb.MudLive do
       {:noreply, socket}
     else
       pid = socket.assigns.session_pid
-      # `home` is a browser-side convenience: teleport back to the room
-      # you own (the one-way "out" exit means there's no walk-back path
-      # yet). Rewrites to the engine's own @teleport verb.
-      command = home_command(line, socket.assigns.home_room_uuid)
-      :ok = PlayerSession.input_sync(pid, command)
-      events = drain(pid)
 
-      # ORDERING GATE (load-bearing): flush any pending ambient FIRST, so
-      # ambient that arrived before this command lands in scrollback
-      # BEFORE the command's own turn.
-      {view, buffer} = SessionView.buffer_flush(socket.assigns.view, socket.assigns.ambient_buffer)
-      view = SessionView.append_command_turn(view, line, Enum.join(events, "\n"))
+      # CX-nf8p: consult the throughput gate BEFORE handing the command to
+      # the PlayerSession — a rejected command must never enter the session
+      # mailbox (reject-before-enqueue, the never-queue anti-DoS spine).
+      # `pid` is the per-session key; `principal` is the server-resolved
+      # identity (set at mount, never from `line`).
+      case RateLimit.check(pid, socket.assigns.principal) do
+        :ok ->
+          run_command(socket, pid, line)
 
-      socket =
-        socket
-        |> assign(:view, view)
-        |> assign(:ambient_buffer, buffer)
-        |> update(:input_key, &(&1 + 1))
+        {:drop, :rate} ->
+          {:noreply, rate_limited_turn(socket, line)}
 
-      {:noreply, socket}
+        {:disconnect, :rate} ->
+          {:noreply, disconnect_for_rate(socket, pid)}
+      end
     end
   catch
     :exit, _ ->
       view = SessionView.append_ambient_turn(socket.assigns.view, ["(session ended)"])
       {:noreply, assign(socket, :view, view)}
+  end
+
+  # The allowed-command path (extracted so the rate-limit `case` in
+  # `handle_event` reads cleanly). Runs `input_sync` and renders the turn.
+  defp run_command(socket, pid, line) do
+    # `home` is a browser-side convenience: teleport back to the room
+    # you own (the one-way "out" exit means there's no walk-back path
+    # yet). Rewrites to the engine's own @teleport verb.
+    command = home_command(line, socket.assigns.home_room_uuid)
+    :ok = PlayerSession.input_sync(pid, command)
+    events = drain(pid)
+
+    # ORDERING GATE (load-bearing): flush any pending ambient FIRST, so
+    # ambient that arrived before this command lands in scrollback
+    # BEFORE the command's own turn.
+    {view, buffer} = SessionView.buffer_flush(socket.assigns.view, socket.assigns.ambient_buffer)
+    view = SessionView.append_command_turn(view, line, Enum.join(events, "\n"))
+
+    socket =
+      socket
+      |> assign(:view, view)
+      |> assign(:ambient_buffer, buffer)
+      |> update(:input_key, &(&1 + 1))
+
+    {:noreply, socket}
+  end
+
+  # CX-nf8p transient over-rate: DROP the one command (never `input_sync`),
+  # echo it with a graceful "too fast" note in the player's OWN view
+  # (invoker-only). The command is discarded, not queued.
+  defp rate_limited_turn(socket, line) do
+    {view, buffer} = SessionView.buffer_flush(socket.assigns.view, socket.assigns.ambient_buffer)
+
+    view =
+      SessionView.append_command_turn(
+        view,
+        line,
+        "(you're doing that too fast — slow down)"
+      )
+
+    socket
+    |> assign(:view, view)
+    |> assign(:ambient_buffer, buffer)
+    |> update(:input_key, &(&1 + 1))
+  end
+
+  # CX-nf8p sustained over-rate: DISCONNECT. Stop the PlayerSession (its
+  # SessionLimit slot + RateLimit bucket are reaped by their monitors) and
+  # drop the local session_pid so no further command reaches a dead session.
+  defp disconnect_for_rate(socket, pid) do
+    _ = PlayerSession.stop(pid)
+
+    view =
+      SessionView.append_ambient_turn(socket.assigns.view, [
+        "(disconnected — too many commands too fast)"
+      ])
+
+    socket
+    |> assign(:view, view)
+    |> assign(:session_pid, nil)
+    |> assign(:error, "Disconnected for exceeding the command rate limit. Reload to rejoin.")
   end
 
   @impl true

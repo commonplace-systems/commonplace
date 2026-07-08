@@ -84,7 +84,13 @@ defmodule Commonplace.Application do
         # (concurrent-total + per-principal backstop). Generous defaults,
         # in-memory/restart-not-durable — see its moduledoc. Safe to start
         # unconditionally alongside SessionViewRegistry above.
-        Commonplace.MUD.SessionLimit
+        Commonplace.MUD.SessionLimit,
+        # CX-nf8p: the THROUGHPUT sibling of SessionLimit — a serve-side
+        # ETS token-bucket (per-session + per-principal) consulted at both
+        # command entry points before the PlayerSession mailbox. Owns its
+        # public ETS table + one idle-sweep timer; same in-memory,
+        # restart-not-durable scope. Safe to start unconditionally.
+        Commonplace.MUD.RateLimit
       ] ++
         snapshot_sweeper_children() ++
         presence_reaper_children() ++

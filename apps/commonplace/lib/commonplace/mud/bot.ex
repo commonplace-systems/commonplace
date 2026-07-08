@@ -63,7 +63,7 @@ defmodule Commonplace.MUD.Bot do
   """
 
   alias Commonplace.Crypto.NodeIdentity
-  alias Commonplace.MUD.{Bootstrap, Citizenship, PlayerSession, SessionLimit}
+  alias Commonplace.MUD.{Bootstrap, Citizenship, PlayerSession, RateLimit, SessionLimit}
   alias Commonplace.Presence.Identity
   alias Commonplace.Store.CommitStoreClient
 
@@ -84,9 +84,25 @@ defmodule Commonplace.MUD.Bot do
     settle = Keyword.get(opts, :settle_ms, @default_settle_ms)
 
     with {:ok, session} <- ensure_session(name, opts) do
-      :ok = PlayerSession.input_sync(session, line)
-      Process.sleep(settle)
-      drain(session)
+      # CX-nf8p: consult the throughput gate BEFORE `input_sync` — a
+      # rejected command must never enter the PlayerSession mailbox
+      # (reject-before-enqueue). `session` (the pid) is the per-session
+      # key; the server-known bot `name` is the principal (never taken
+      # from `line`). The drop/disconnect results are reported as clean
+      # events, exactly like the clean-disconnect drain — not errors.
+      case RateLimit.check(session, name) do
+        :ok ->
+          :ok = PlayerSession.input_sync(session, line)
+          Process.sleep(settle)
+          drain(session)
+
+        {:drop, :rate} ->
+          {:ok, ["(rate limited — you're sending commands too fast, slow down)"]}
+
+        {:disconnect, :rate} ->
+          _ = PlayerSession.stop(session)
+          {:ok, ["(disconnected — command rate limit exceeded)"]}
+      end
     end
   end
 
@@ -191,6 +207,11 @@ defmodule Commonplace.MUD.Bot do
           case result do
             {:ok, pid} ->
               SessionLimit.attach(limit_ref, pid)
+              # CX-nf8p: reap this session's rate-limit bucket + drop-counter
+              # when the PlayerSession dies — same monitor-per-session locus
+              # as the SessionLimit slot. Only on a fresh spawn; the
+              # already-started branch reuses a session already watched.
+              RateLimit.watch(pid)
               {:ok, pid}
 
             {:error, {:already_started, pid}} ->

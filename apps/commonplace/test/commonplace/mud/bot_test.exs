@@ -135,6 +135,43 @@ defmodule Commonplace.MUD.BotTest do
     assert Enum.join(fresh_events, "\n") =~ "Start Room"
   end
 
+  # CX-nf8p R4 (never-queue): an over-rate command must be REJECTED at the
+  # entry point and NEVER reach the PlayerSession mailbox. We spawn + spend
+  # the (tiny) burst on a first command, then fire a distinctive command
+  # that must be dropped — proving it never executed by asserting its
+  # payload never comes back as a world event.
+  test "R4: an over-rate bot command is dropped and never reaches the session (reject-before-enqueue)",
+       ctx do
+    old = Application.get_env(:commonplace, :mud_rate_limit)
+
+    on_exit(fn ->
+      if is_nil(old),
+        do: Application.delete_env(:commonplace, :mud_rate_limit),
+        else: Application.put_env(:commonplace, :mud_rate_limit, old)
+    end)
+
+    # Burst of 1, ~no refill within the test; principal scope disabled.
+    Application.put_env(:commonplace, :mud_rate_limit,
+      session_rate: 1,
+      session_burst: 1,
+      principal_rate: 1,
+      principal_burst: 1_000_000,
+      disconnect_after_drops: 1_000
+    )
+
+    # First command spends the single burst token (spawns the session).
+    {:ok, _} = Bot.send_input("bartleby", "look", store: ctx.store, root_uuid: ctx.root)
+
+    # Second command is over-rate → dropped. Its distinctive payload must
+    # NOT be echoed back (would mean `say` ran = it reached the session).
+    {:ok, events} =
+      Bot.send_input("bartleby", "say ZZZ_NEVER_REACHED_ZZZ", store: ctx.store, root_uuid: ctx.root)
+
+    text = Enum.join(events, "\n")
+    assert text =~ "rate limited"
+    refute text =~ "ZZZ_NEVER_REACHED_ZZZ"
+  end
+
   test "bot hears human player's say", ctx do
     {:ok, _} = Bot.send_input("bartleby", "look", store: ctx.store, root_uuid: ctx.root)
     alice = human_player("alice", ctx)
