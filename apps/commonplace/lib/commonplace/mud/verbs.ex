@@ -822,7 +822,8 @@ defmodule Commonplace.MUD.Verbs do
            greedy_match_entry([container_entry.node_id], item_words, ctx.store),
          {:ok, %Object{} = obj} <- Schemas.load_object(entry.node_id, ctx.store),
          :ok <-
-           World.move(entry.node_id, entry.name, container_entry.node_id, ctx.inventory_uuid, write_opts(ctx)) do
+           World.take_item(entry.node_id, entry.name, container_entry.node_id,
+             ctx.inventory_uuid, taker_identity(ctx), take_opts(ctx)) do
       World.broadcast_room(ctx.current_room_uuid, %{
         kind: :get_from,
         who: ctx.player_name,
@@ -840,6 +841,11 @@ defmodule Commonplace.MUD.Verbs do
       {:error, :gone} -> {:error, "It slipped from your grasp."}
       {:error, :collision} -> {:error, "You're already carrying one of those."}
       {:error, {:trust_rejected, _}} -> {:error, "You don't have permission to take that."}
+      {:error, :taken} -> {:error, "Someone else grabbed it first."}
+      {:error, :item_unavailable} -> {:error, "Someone else grabbed it first."}
+      {:error, :not_takeable_here} -> {:error, "You can't take that."}
+      {:error, :bad_arg} -> {:error, "You can't take that."}
+      {:error, :fixed} -> {:error, "That's fixed in place."}
       _ -> {:error, "You can't take that."}
     end
   end

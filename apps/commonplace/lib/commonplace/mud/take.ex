@@ -34,7 +34,7 @@ defmodule Commonplace.MUD.Take do
 
   alias Commonplace.Crypto.{NodeIdentity, Signing}
   alias Commonplace.Green.{Bursar, BursarClient}
-  alias Commonplace.MUD.Move
+  alias Commonplace.MUD.{Move, Schemas}
   alias Commonplace.Store.CommitStoreClient
 
   @doc """
@@ -59,6 +59,22 @@ defmodule Commonplace.MUD.Take do
     store = Keyword.get(opts, :store, CommitStoreClient)
     bursar = Keyword.get(opts, :bursar, Bursar)
 
+    # CHOKEPOINT "can this be taken" guard (CX-ix9n, plan #6675): a fixed
+    # object is never takeable — enforce it HERE in the take primitive so it
+    # can't be bypassed by a direct or container-take (`do_get_from`) caller,
+    # not only by `do_take_plain`'s verb-layer `ensure_not_fixed`. Load
+    # failures are NOT treated as fixed — the move below surfaces its own
+    # error for a missing/non-object target.
+    case item_fixed?(item_uuid, store) do
+      true ->
+        {:error, :fixed}
+
+      false ->
+        do_take_dispatch(item_uuid, name, room_uuid, inventory_uuid, taker_identity, store, bursar, opts)
+    end
+  end
+
+  defp do_take_dispatch(item_uuid, name, room_uuid, inventory_uuid, taker_identity, store, bursar, opts) do
     # Common case — permissive mode, or an invoker who already holds write
     # authority over BOTH dirs (the item's owner). The invoker can make both
     # writes themselves, so run the move INVOKER-SIGNED, unchanged from the
@@ -161,6 +177,14 @@ defmodule Commonplace.MUD.Take do
       {:held, %{holder: _other}} ->
         {:error, :item_unavailable}
     end
+  end
+
+  # Chokepoint takeability: only a `fixed: true` object is un-takeable. A
+  # load failure (missing/non-object) returns `false` here so the move path
+  # surfaces its own (`:gone`/`:not_found`) error rather than masking it as
+  # `:fixed`.
+  defp item_fixed?(item_uuid, store) do
+    match?({:ok, %Schemas.Object{fixed: true}}, Schemas.load_object(item_uuid, store))
   end
 
   # Mirrors `Commonplace.MUD.World.Facade.node_owned?/3` — a doc is

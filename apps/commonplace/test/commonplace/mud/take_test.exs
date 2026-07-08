@@ -14,7 +14,7 @@ defmodule Commonplace.MUD.TakeTest do
 
   alias Commonplace.Crypto.{NodeIdentity, Signing, SigningContext}
   alias Commonplace.Green.{Bursar, BursarClient}
-  alias Commonplace.MUD.{Parser, SignedWrite, Schemas, Take, Verbs}
+  alias Commonplace.MUD.{Parser, SignedWrite, Schemas, Take, Verbs, World}
   alias Commonplace.MUD.Schemas.{Object, Room}
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.Schema
@@ -101,6 +101,22 @@ defmodule Commonplace.MUD.TakeTest do
       Schemas.create_dir_with_meta(
         Schemas.object_filename(),
         Schemas.encode_object(%Object{name: name, fixed: fixed}),
+        store,
+        signing_context: signing_ctx
+      )
+
+    uuid
+  end
+
+  # CX-cj3t.1.1 container-take: mirrors mk_object! but sets container?: true
+  # (the same flag containers_test.exs / output_test.exs build against).
+  defp mk_container!(store, signing_ctx, opts) do
+    name = Keyword.get(opts, :name, "box")
+
+    {:ok, uuid} =
+      Schemas.create_dir_with_meta(
+        Schemas.object_filename(),
+        Schemas.encode_object(%Object{name: name, container?: true}),
         store,
         signing_context: signing_ctx
       )
@@ -304,6 +320,97 @@ defmodule Commonplace.MUD.TakeTest do
     assert {:error, :not_takeable_here} = Take.take(item, "trinket", room, inventory, taker_id, store: store)
 
     assert "trinket" in entry_names(store, room)
+    assert :available = BursarClient.query(Bursar, item)
+  end
+
+  # ---- 7. CX-cj3t.1.1: do_get_from routed through the reviewed take
+  # primitive — the crown-from-vault beat ----
+
+  test "container-take under enforce: get item from an unlocked node-owned container", %{
+    store: store,
+    node_ctx: node_ctx
+  } do
+    room = mk_room!(store, node_ctx)
+    inventory = mk_inventory!(store, node_ctx)
+    container = mk_container!(store, node_ctx, name: "wooden box")
+    add_dir_entry!(store, room, "wooden box", container, node_ctx)
+    item = mk_object!(store, node_ctx, name: "crown")
+    add_dir_entry!(store, container, "crown.obj", item, node_ctx)
+
+    {taker_id, taker_sc} = fresh_identity()
+
+    ctx = %{
+      player_name: "taker",
+      current_room_uuid: room,
+      inventory_uuid: inventory,
+      store: store,
+      signing_context: taker_sc,
+      cert_cids: [],
+      signer_id: Signing.signer_id(taker_id, taker_sc.public_key)
+    }
+
+    cmd = %Parser.Command{verb: "get", args: "crown from wooden box", argv: ["crown", "from", "wooden", "box"]}
+    assert {:reply, msg} = Verbs.dispatch(cmd, ctx)
+    assert msg =~ "You get crown from wooden box."
+
+    refute "crown.obj" in entry_names(store, container)
+    assert "crown.obj" in entry_names(store, inventory)
+
+    assert {:held, %{holder: ^taker_id}} = BursarClient.query(Bursar, item)
+  end
+
+  test "container-take under enforce: locked container without the key still refuses", %{
+    store: store,
+    node_ctx: node_ctx
+  } do
+    room = mk_room!(store, node_ctx)
+    inventory = mk_inventory!(store, node_ctx)
+    container = mk_container!(store, node_ctx, name: "wooden box")
+    add_dir_entry!(store, room, "wooden box", container, node_ctx)
+    item = mk_object!(store, node_ctx, name: "crown")
+    add_dir_entry!(store, container, "crown.obj", item, node_ctx)
+
+    :ok =
+      World.set_meta(container, Schemas.object_filename(), "state", %{"locked" => true}, store,
+        signing_context: node_ctx
+      )
+
+    {taker_id, taker_sc} = fresh_identity()
+
+    ctx = %{
+      player_name: "taker",
+      current_room_uuid: room,
+      inventory_uuid: inventory,
+      store: store,
+      signing_context: taker_sc,
+      cert_cids: [],
+      signer_id: Signing.signer_id(taker_id, taker_sc.public_key)
+    }
+
+    cmd = %Parser.Command{verb: "get", args: "crown from wooden box", argv: ["crown", "from", "wooden", "box"]}
+    assert {:error, msg} = Verbs.dispatch(cmd, ctx)
+    assert msg =~ "is locked"
+
+    assert "crown.obj" in entry_names(store, container)
+    refute "crown.obj" in entry_names(store, inventory)
+    assert :available = BursarClient.query(Bursar, item)
+  end
+
+  test "fixed-guard chokepoint: Take.take refuses a fixed item directly, bypassing the verb layer", %{
+    store: store,
+    node_ctx: node_ctx
+  } do
+    room = mk_room!(store, node_ctx)
+    inventory = mk_inventory!(store, node_ctx)
+    item = mk_object!(store, node_ctx, name: "statue2", fixed: true)
+    add_dir_entry!(store, room, "statue2.obj", item, node_ctx)
+
+    {taker_id, _} = fresh_identity()
+
+    assert {:error, :fixed} = Take.take(item, "statue2.obj", room, inventory, taker_id, store: store)
+
+    assert "statue2.obj" in entry_names(store, room)
+    refute "statue2.obj" in entry_names(store, inventory)
     assert :available = BursarClient.query(Bursar, item)
   end
 end
