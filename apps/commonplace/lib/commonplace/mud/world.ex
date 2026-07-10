@@ -91,6 +91,38 @@ defmodule Commonplace.MUD.World do
   end
 
   @doc """
+  CX-5c78 — deposit `item_uuid` (entry `name`) from `source_dir_uuid` into
+  `container_uuid`, the PUT primitive. Structurally the `drop` push (invoker
+  holder → node) but the destination is a CONTAINER dir instead of a room:
+  the possession token moves `from_holder` → the NODE (`to_holder`), and the
+  tree move elevates to node authority when the invoker can't write the
+  (curated, node-owned) container directly under enforce — the SAME reviewed
+  `HolderMove.push` machinery `drop`/`give` use, just a different dest dir.
+  After a successful deposit the node holds the token, so the item becomes
+  takeable-from-the-container (subject to the TAKE-zone-gate) — put/take
+  symmetric.
+
+  `from_holder` is the item's CURRENT possession holder: the invoker when the
+  source is their own inventory, the node when the source is a room (a
+  room-held item). Without a node identity (`to_holder`) the elevated path
+  can't fire and a non-owner deposit fails closed — the correct enforce
+  behavior. Locked/keyed containers are gated BEFORE this by `put_item_in`'s
+  precheck (locking is the deposits-closed opt-out); a container cycle is
+  refused via the threaded `:precheck`.
+  """
+  def deposit_item(item_uuid, name, source_dir_uuid, container_uuid, from_holder, opts \\ [])
+      when is_binary(item_uuid) and is_binary(name) and is_binary(source_dir_uuid) and
+             is_binary(container_uuid) do
+    node_identity =
+      case Commonplace.Crypto.NodeIdentity.identity() do
+        {:ok, id} -> id
+        _ -> nil
+      end
+
+    HolderMove.push(item_uuid, name, source_dir_uuid, container_uuid, from_holder, node_identity, opts)
+  end
+
+  @doc """
   Give `item_uuid` (entry `name`) from `inventory_uuid` to
   `recipient_inv_uuid`, transferring possession from `giver_identity` to
   `recipient_identity` — the invoker-holder push to the recipient (see

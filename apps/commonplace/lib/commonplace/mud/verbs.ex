@@ -1185,8 +1185,24 @@ defmodule Commonplace.MUD.Verbs do
            Keyword.put(write_opts(ctx), :precheck, fn ->
              cycle_guard(item_entry.node_id, container_entry.node_id, ctx.store)
            end),
+         # CX-5c78 — route the deposit through the HolderMove push-to-node
+         # primitive (the drop/give shape) instead of the un-elevated
+         # World.move. A non-owner depositing into a curated (node-owned)
+         # container now ELEVATES to node authority (like take/drop) rather
+         # than failing invoker-signed {:trust_rejected}. The token moves to
+         # the node → the item is takeable-from-container (put/take symmetric).
+         # Locked containers still gate above (ensure_unlocked/ensure_has_key —
+         # locking IS the deposits-closed opt-out); the cycle_guard rides the
+         # threaded :precheck.
          :ok <-
-           World.move(item_entry.node_id, item_entry.name, source_dir, container_entry.node_id, move_opts) do
+           World.deposit_item(
+             item_entry.node_id,
+             item_entry.name,
+             source_dir,
+             container_entry.node_id,
+             put_from_holder(source_dir, ctx),
+             move_opts
+           ) do
       World.broadcast_room(ctx.current_room_uuid, %{
         kind: :put,
         who: ctx.player_name,
@@ -1223,6 +1239,22 @@ defmodule Commonplace.MUD.Verbs do
           {:ok, entry, _phrase, _remainder} -> {:ok, ctx.current_room_uuid, entry}
           :not_found -> :not_found
         end
+    end
+  end
+
+  # CX-5c78 — the item's CURRENT possession holder for a `put` deposit (the
+  # `from_holder` HolderMove transfers the token from): the invoker when the
+  # source is their own inventory, the node when the source is a room (a
+  # room-held item). `nil` (no signed identity / no node identity) makes the
+  # elevated deposit fail closed — the correct enforce refusal.
+  defp put_from_holder(source_dir, ctx) do
+    if source_dir == ctx.inventory_uuid do
+      taker_identity(ctx)
+    else
+      case Commonplace.Crypto.NodeIdentity.identity() do
+        {:ok, id} -> id
+        _ -> nil
+      end
     end
   end
 

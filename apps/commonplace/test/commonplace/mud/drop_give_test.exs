@@ -271,6 +271,59 @@ defmodule Commonplace.MUD.DropGiveTest do
     assert :available = BursarClient.query(Bursar, item)
   end
 
+  # ---- CX-5c78: PUT (deposit) into a curated node-owned container ----
+
+  test "deposit: a visitor can put a held item into a curated (node-owned) container — elevates (was refused loot-only)", %{
+    store: store,
+    node_ctx: node_ctx,
+    node_identity: node_identity,
+    root: root
+  } do
+    room = share!(store, root, mk_room!(store, node_ctx), node_ctx)
+    container = mk_object!(store, node_ctx, name: "reliquary.obj")
+    add_dir_entry!(store, room, "reliquary.obj", container, node_ctx)
+    inventory = mk_inventory!(store, node_ctx)
+    item = mk_object!(store, node_ctx, name: "coin.obj")
+    add_dir_entry!(store, room, "coin.obj", item, node_ctx)
+
+    # The visitor takes the coin (now holds its token), then deposits it into
+    # the node-owned reliquary. Pre-fix `put` used the un-elevated World.move →
+    # {:trust_rejected} (loot-only). Now it routes through the HolderMove
+    # push-to-node path (like drop) → elevates → lands.
+    {player_id, _} = fresh_identity()
+    assert :ok = Take.take(item, "coin.obj", room, inventory, player_id, store: store, root_uuid: root)
+
+    assert :ok = World.deposit_item(item, "coin.obj", inventory, container, player_id, store: store)
+
+    refute "coin.obj" in entry_names(store, inventory)
+    assert "coin.obj" in entry_names(store, container)
+    # token now node-held → takeable-from-container (put/take symmetric).
+    assert {:held, %{holder: ^node_identity}} = BursarClient.query(Bursar, item)
+  end
+
+  test "deposit: a visitor who never held the item cannot put it in a container (token not theirs)", %{
+    store: store,
+    node_ctx: node_ctx,
+    root: root
+  } do
+    room = share!(store, root, mk_room!(store, node_ctx), node_ctx)
+    container = mk_object!(store, node_ctx, name: "chest.obj")
+    add_dir_entry!(store, room, "chest.obj", container, node_ctx)
+    inventory = mk_inventory!(store, node_ctx)
+    item = mk_object!(store, node_ctx, name: "phantom.obj")
+    # Seeded straight into inventory, bypassing Take — token never transferred.
+    add_file_entry!(store, inventory, "phantom.obj", item, node_ctx)
+
+    {player_id, _} = fresh_identity()
+
+    assert {:error, :not_holder} =
+             World.deposit_item(item, "phantom.obj", inventory, container, player_id, store: store)
+
+    assert "phantom.obj" in entry_names(store, inventory)
+    refute "phantom.obj" in entry_names(store, container)
+    assert :available = BursarClient.query(Bursar, item)
+  end
+
   # ---- 3. GIVE happy path ----
 
   test "give: an item held via prior take can be given to a recipient present in the room", %{

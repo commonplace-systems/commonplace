@@ -86,7 +86,7 @@ defmodule Commonplace.MUD.HolderMove do
          {:ok, _} <- BursarClient.transfer(bursar, item_uuid, from_holder, to_holder, authenticated_as: from_holder) do
       elevated_opts =
         [store: store, signing_context: node_ctx, cert_cids: []]
-        |> Keyword.merge(Keyword.take(opts, [:bursar, :ttl, :retries, :retry_ms]))
+        |> Keyword.merge(Keyword.take(opts, [:bursar, :ttl, :retries, :retry_ms, :precheck]))
 
       case Move.move(item_uuid, name, from_dir, to_dir, elevated_opts) do
         :ok ->
@@ -116,7 +116,7 @@ defmodule Commonplace.MUD.HolderMove do
   defp invoker_move_opts(opts, store) do
     [store: store]
     |> Keyword.merge(
-      Keyword.take(opts, [:signing_context, :cert_cids, :signer_id, :bursar, :ttl, :retries, :retry_ms])
+      Keyword.take(opts, [:signing_context, :cert_cids, :signer_id, :bursar, :ttl, :retries, :retry_ms, :precheck])
     )
   end
 end
