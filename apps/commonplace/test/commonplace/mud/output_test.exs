@@ -167,6 +167,35 @@ defmodule Commonplace.MUD.OutputTest do
     PlayerSession.stop(bob)
   end
 
+  # CX-ydmv: emote text is author-written THIRD-person; the actor's own
+  # self-echo must render "<name> <text>" (NOT "You <text>", which would be the
+  # grammatically-broken "You sets the jar down"), matching what the room sees.
+  test "emote self-echo shows the actor's NAME, not 'You' (third-person text stays grammatical)", ctx do
+    alice = start_player("alice", ctx)
+    bob = start_player("bob", ctx)
+    drain("alice")
+    drain("bob")
+
+    send_input(alice, "east")
+    send_input(bob, "east")
+    drain("alice")
+    drain("bob")
+
+    send_input(alice, "emote sets the firefly jar down")
+
+    alice_out = drain("alice") |> Enum.join("\n")
+    bob_out = drain("bob") |> Enum.join("\n")
+
+    # The actor sees the NAME form, never the broken "You sets ...".
+    assert alice_out =~ "alice sets the firefly jar down"
+    refute alice_out =~ "You sets"
+    # And it matches exactly what the room already broadcast to observers.
+    assert bob_out =~ "alice sets the firefly jar down"
+
+    PlayerSession.stop(alice)
+    PlayerSession.stop(bob)
+  end
+
   test "@dump here renders the room (CX-vh3s)", ctx do
     alice = start_player("alice", ctx)
     drain("alice")

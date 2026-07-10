@@ -539,10 +539,16 @@ defmodule Commonplace.MUD.PlayerSession do
     end
   end
 
+  # CX-ydmv: emote text is author-written THIRD-person, meant to complete a
+  # sentence after the actor's NAME ("sets the firefly jar down"). The actor's
+  # own self-echo must therefore ALSO render "<name> <text>", not "You <text>" —
+  # the server can't conjugate "sets"->"set" for arbitrary text, so "You sets
+  # the jar down" is grammatically broken. Classic-MUD emote: everyone,
+  # including the actor, reads the name form (this matches the observer branch
+  # the room already saw). Contrast `:action`/`emit_action`, which carries a
+  # distinct author-conjugated first-person string and so keeps its "You <fp>".
   defp render_event(%{kind: :emote, who: who, text: text}, state) do
-    own = who == state.player_name
-    prefix = if own, do: "You", else: who
-    state.output_fn.("#{prefix} #{text}")
+    state.output_fn.("#{who} #{text}")
   end
 
   # CX-cj3t.10 — directed private messaging. Delivered via `World.tell/2`
