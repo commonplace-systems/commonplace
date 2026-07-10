@@ -546,9 +546,15 @@ defmodule CommonplaceWebWeb.MudLive do
             </div>
           </div>
 
+          <%!-- CX-u7kj: NO `whitespace-pre-wrap` on this CONTAINER — it made the
+                HEEx template's own indentation + newlines between the generated
+                `.turn` divs render as literal blank lines (the big vertical gaps
+                in the scrollback). The actual MUD output preserves its own line
+                breaks via `.out { white-space: pre-wrap }` (and `.room-desc`), so
+                the container must use normal whitespace collapsing. --%>
           <div
             id="mud-scrollback"
-            class="flex-1 overflow-y-auto bg-black text-green-400 font-mono text-sm p-4 rounded whitespace-pre-wrap"
+            class="flex-1 overflow-y-auto bg-black text-green-400 font-mono text-sm p-4 rounded"
           >
             <%= for turn <- render_turns(@view) do %>
               <%= case turn do %>
