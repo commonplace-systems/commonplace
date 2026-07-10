@@ -793,20 +793,57 @@ defmodule Commonplace.MUD.PlayerSession do
   defp ensure_player_in_world(name, root_uuid, write_opts) do
     store = Keyword.fetch!(write_opts, :store)
     presence_filename = Presence.filename(name, :usr)
+    my_identity = write_opts_identity(write_opts)
 
     case find_presence(root_uuid, presence_filename, store) do
       {:ok, room_uuid, presence_uuid} ->
-        {:ok, room_uuid, presence_uuid}
+        if presence_belongs_to?(presence_uuid, my_identity, store) do
+          {:ok, room_uuid, presence_uuid}
+        else
+          # CX-vhnj: a `<name>.usr` match whose bound_identity is NOT ours (a
+          # stale migration ghost with no bound_identity, or a foreign player's
+          # live presence that happens to share our name) must NOT hijack us
+          # into THEIR room. Spawn fresh in our own home instead — a name
+          # collision can never attach one identity to another's presence.
+          spawn_fresh(name, root_uuid, store, write_opts)
+        end
 
       :not_found ->
-        # CX-gjpi: spawn in the player's own home room when one was
-        # provisioned + passed (`:spawn_room_uuid`, a browser citizen's
-        # `players/<name>/` home). Falls back to the shared `start` room
-        # for bots / CLI / anyone who didn't pass one — unchanged behavior.
-        with {:ok, spawn_room_uuid} <- resolve_spawn_room(root_uuid, store, write_opts),
-             {:ok, presence_uuid} <- Presence.create(name, :usr, spawn_room_uuid, store, write_opts) do
-          {:ok, spawn_room_uuid, presence_uuid}
-        end
+        spawn_fresh(name, root_uuid, store, write_opts)
+    end
+  end
+
+  # CX-gjpi: spawn in the player's own home room when one was provisioned +
+  # passed (`:spawn_room_uuid`, a browser citizen's `players/<name>/` home).
+  # Falls back to the shared `start` room for bots / CLI / anyone who didn't
+  # pass one — unchanged behavior.
+  defp spawn_fresh(name, root_uuid, store, write_opts) do
+    with {:ok, spawn_room_uuid} <- resolve_spawn_room(root_uuid, store, write_opts),
+         {:ok, presence_uuid} <- Presence.create(name, :usr, spawn_room_uuid, store, write_opts) do
+      {:ok, spawn_room_uuid, presence_uuid}
+    end
+  end
+
+  # CX-vhnj: a found `<name>.usr` is OURS to reuse IFF its bound_identity equals
+  # this session's identity. Symmetric on both nils: a SIGNED session reuses only
+  # its OWN presence (bound == our id); an UNSIGNED/anonymous session (identity
+  # nil) reuses only an anonymous presence (bound nil == nil) and never inherits
+  # a signed player's. A stale permissive-era ghost (bound nil) is thus never
+  # reused by a signed citizen → the spawn-in-home fix.
+  defp presence_belongs_to?(presence_uuid, my_identity, store) do
+    bound =
+      case Commonplace.Presence.read(presence_uuid, store) do
+        %{"bound_identity" => id} when is_binary(id) -> id
+        _ -> nil
+      end
+
+    bound == my_identity
+  end
+
+  defp write_opts_identity(write_opts) do
+    case Keyword.get(write_opts, :signing_context) do
+      %Commonplace.Crypto.SigningContext{identity_uuid: id} -> id
+      _ -> nil
     end
   end
 

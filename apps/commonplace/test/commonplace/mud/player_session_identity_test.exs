@@ -146,8 +146,8 @@ defmodule Commonplace.MUD.PlayerSessionIdentityTest do
     add_directory(name, root_ctx, root_uuid, "room1", room1_dir)
 
     # --- presence: both x and y start in room1 ---
-    x_presence = new_map_doc(name, root_ctx, "x", "usr")
-    y_presence = new_map_doc(name, root_ctx, "y", "usr")
+    x_presence = new_map_doc(name, root_ctx, "x", "usr", x_uuid)
+    y_presence = new_map_doc(name, root_ctx, "y", "usr", y_uuid)
     add_file(name, root_ctx, room1_dir, "x.usr", x_presence)
     add_file(name, root_ctx, room1_dir, "y.usr", y_presence)
 
@@ -356,12 +356,18 @@ defmodule Commonplace.MUD.PlayerSessionIdentityTest do
     uuid
   end
 
-  defp new_map_doc(store, ctx, name, type_ext) do
+  # CX-vhnj: a realistic presence carries `bound_identity` (Presence.create
+  # stamps it from the signer). The session now reuses a `<name>.usr` only when
+  # its bound_identity matches, so a signed player's pre-seeded presence must
+  # carry their identity — else they'd (correctly) spawn fresh instead of reusing
+  # this hand-built one.
+  defp new_map_doc(store, ctx, name, type_ext, bound_identity) do
     uuid = UUID.uuid4()
     doc = Yelixer.Doc.new() |> ContentType.create(:map, "#{name}.#{type_ext}")
     doc = ContentType.set_key(doc, "name", name)
     doc = ContentType.set_key(doc, "type", type_ext)
     doc = ContentType.set_key(doc, "status", "starting")
+    doc = if bound_identity, do: ContentType.set_key(doc, "bound_identity", bound_identity), else: doc
     update = Yelixer.Encoding.encode_update(doc)
     assert %Commonplace.Store.Commit{} = CommitStore.create_commit(store, uuid, update, nil, %{}, signing_context: ctx)
     uuid
