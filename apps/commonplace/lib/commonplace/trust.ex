@@ -160,12 +160,149 @@ defmodule Commonplace.Trust do
     with {:ok, leaf} <- fetch_cap(store, cid),
          {_uuid, audience_pub} <- leaf.audience,
          true <- pub != nil and audience_pub == pub,
-         {:ok, %{verbs: verbs, scope: {:docs, docs}}} <-
+         {:ok, %{verbs: verbs, scope: scope}} <-
            Commonplace.Trust.VerifyChain.verify_chain(cid, anchor_keys(cfg), store) do
-      :write in verbs and target_uuid in docs
+      :write in verbs and write_scope_covers?(scope, target_uuid, store)
     else
       _ -> false
     end
+  end
+
+  # The COMMITLESS membership predicate for the elevation pre-check
+  # (`writer_authorized?`): does this verified scope cover a :write to
+  # `target_uuid`? A {:docs} scope covers it iff the uuid is in the frozen
+  # list (byte-identical to the prior behavior). A {:subtree, R} scope covers
+  # it iff the target's carried zone-stamp == R (the walk-free membership read;
+  # CX-4u03 / A1). Note this is the AUTHORITY question only (the A2 elevation
+  # oracle) — the field-protection + code-doc invariants live in the
+  # commit-path carve `subtree_carve_ok?`, which has the actual write to
+  # inspect; there is no commit here to check. A {:presence} scope never
+  # authorizes an object-state elevation (its own content-gate refuses
+  # anything but the signer's presence entry), so it falls to `false`.
+  defp write_scope_covers?({:docs, docs}, target_uuid, _store), do: target_uuid in docs
+
+  defp write_scope_covers?({:subtree, root}, target_uuid, store),
+    do: doc_zone(target_uuid, store) == root
+
+  defp write_scope_covers?(_other, _target_uuid, _store), do: false
+
+  # CX-4u03 / A1 — THE subtree write-carve (the security core, mirroring the
+  # presence carve `presence_carve_ok?/4`). Authorizes a {:subtree, R} write to
+  # `target_uuid` IFF all three hold, and fails CLOSED on any error (a security
+  # gate must never fault-open — hence the rescue/catch wrapping the whole body):
+  #
+  #   (1) MEMBERSHIP (nod #1, self-containment): the target's carried, frozen,
+  #       node-signed zone-stamp == R, read from the target's OWN governing meta
+  #       — ONE deterministic DOWNWARD lookup (a dir reads its meta child's
+  #       `zone`; a leaf/meta doc reads its own `zone`), never an ascent/walk, so
+  #       it is a carried-attestation read (like a cert's carried scope), not a
+  #       re-derivation from mutable tree structure. Absent/unreadable → DENY
+  #       (nod #2b, fail-closed): an un-stamped doc is un-writable by a subtree
+  #       cert (the node still owns it via the trusted-identity path).
+  #   (2) STAMP PROTECTION (nod #2a): the write must not modify the `zone` field.
+  #       Only the tree-mutation chokepoint (node-signed) sets/clears the stamp;
+  #       a subtree cert authorizes the doc's game content, never its stamp (like
+  #       the presence carve refuses a `bound_identity` MODIFY).
+  #   (3) WRITE⊥EXECUTE (the #7228/#7233 belt): a :write-WITHOUT-:execute subtree
+  #       cert may not author a CODE doc. Classify the POST-WRITE (after)
+  #       reconstruction with the SHARED `CodeDocHeuristic` (so a data→code
+  #       content-flip is caught, and the classifier can't skew from the mint
+  #       scan / Gate-B); any uncertainty resolves to DENY via the fail-closed
+  #       wrapper. Gate-B's node-signed=execute check is the STRUCTURAL suspenders
+  #       behind this heuristic belt.
+  defp subtree_carve_ok?(commit, root, target_uuid, verbs, store)
+       when is_binary(root) and is_binary(target_uuid) do
+    before = reconstruct_before(store, target_uuid)
+    before_d = before_doc(before)
+
+    with {:ok, after_d} <- Encoding.apply_update(before_d, commit.update),
+         true <- governing_zone_of(before_d, store) == root,
+         true <- zone_unchanged?(before_d, after_d),
+         true <- not authoring_code?(verbs, after_d) do
+      true
+    else
+      _ -> false
+    end
+  rescue
+    _ -> false
+  catch
+    _, _ -> false
+  end
+
+  defp subtree_carve_ok?(_commit, _root, _target_uuid, _verbs, _store), do: false
+
+  @doc """
+  CX-4u03 / A1 — the target doc's carried, node-signed zone-stamp (its subtree
+  membership), or `nil` if absent/unreadable. THE single shared zone read: the
+  commit-path carve, the elevation mirror, AND `Commonplace.MUD.SignedWrite`'s
+  subtree-cert selection all derive membership from this one predicate (no
+  classifier skew). ONE deterministic downward lookup (a dir reads its meta
+  child's `zone`; a leaf/meta doc reads its own `zone`) — never an ascent/walk.
+  Fails to `nil` on any error (fail-closed at every call site).
+  """
+  @spec doc_zone(String.t(), GenServer.server()) :: String.t() | nil
+  def doc_zone(uuid, store \\ Commonplace.Store.CommitStoreClient) do
+    case reconstruct_before(store, uuid) do
+      {:ok, doc} -> governing_zone_of(doc, store)
+      :none -> nil
+    end
+  rescue
+    _ -> nil
+  catch
+    _, _ -> nil
+  end
+
+  # The ONE deterministic downward stamp read (nod #1). A dir/schema doc keeps
+  # its `entries` YMap clean, so its stamp lives in its meta CHILD; a leaf/meta
+  # doc carries its own `zone`. Discriminate on the SAME `entries`-type tell the
+  # presence carve uses. Never ascends to a parent.
+  defp governing_zone_of(doc, store) do
+    if Doc.has_type?(doc, "entries") do
+      meta_child_zone(doc, store)
+    else
+      own_zone(doc)
+    end
+  end
+
+  # Scan the dir's OWN entries for a `__*.json` meta child and read its `zone`.
+  # Bounded to this dir's entries (a zoned dir has exactly one meta) — not a walk.
+  defp meta_child_zone(schema_doc, store) do
+    schema_doc
+    |> Schema.list_entries()
+    |> Enum.filter(fn %Schema.Entry{name: n} -> meta_file?(n) end)
+    |> Enum.find_value(fn %Schema.Entry{node_id: id} ->
+      case DocBuilder.reconstruct_doc(store, id) do
+        {:ok, meta_doc} -> own_zone(meta_doc)
+        _ -> nil
+      end
+    end)
+  end
+
+  defp meta_file?(name), do: Regex.match?(~r/^__.*\.json$/, name)
+
+  # Read the `zone` field from a meta/leaf doc's own JSON content (nil if the
+  # doc has no readable JSON content or no `zone` key — e.g. a bare schema doc,
+  # or an un-stamped meta).
+  defp own_zone(doc) do
+    with content when is_binary(content) <- ContentType.get_content(doc),
+         {:ok, map} when is_map(map) <- Jason.decode(content) do
+      Map.get(map, "zone")
+    else
+      _ -> nil
+    end
+  end
+
+  # nod #2a: the protected `zone` field must be byte-identical before/after. For
+  # a dir target the zone lives in a different doc (the meta child), so both read
+  # nil here and this trivially holds — the dir write can't touch the stamp.
+  defp zone_unchanged?(before_d, after_d), do: own_zone(before_d) == own_zone(after_d)
+
+  # The write⊥execute belt: a :write-without-:execute cert authoring code-doc
+  # content (post-write) is refused. Shares `CodeDocHeuristic.code_content?/1`
+  # with the mint scan and Gate-B (no classifier skew).
+  defp authoring_code?(verbs, after_d) do
+    :write in verbs and :execute not in verbs and
+      Commonplace.Trust.CodeDocHeuristic.code_content?(ContentType.get_content(after_d))
   end
 
   @doc """
@@ -256,6 +393,19 @@ defmodule Commonplace.Trust do
 
   defp grants?(%{verbs: verbs, scope: {:docs, docs}}, verb, {:doc, uuid}, _commit, _store) do
     if verb in verbs and uuid in docs, do: :ok, else: {:error, :capability_insufficient}
+  end
+
+  # CX-4u03 / A1 (subtree-scope): a {:subtree, R} capability grants `verb` at a
+  # target doc ONLY if the content-aware carve `subtree_carve_ok?/5` confirms
+  # (i) the target's carried, node-signed zone-stamp == R (membership, read from
+  # the target's own governing meta — never a live tree-walk), (ii) the write
+  # does NOT tamper the protected `zone` field, and (iii) a write-without-execute
+  # subtree cert isn't authoring a code doc (the write⊥execute belt). `commit`
+  # and `store` are threaded so the carve can reconstruct/inspect the target.
+  defp grants?(%{verbs: verbs, scope: {:subtree, root}}, verb, {:doc, uuid}, commit, store) do
+    if verb in verbs and subtree_carve_ok?(commit, root, uuid, verbs, store),
+      do: :ok,
+      else: {:error, :capability_insufficient}
   end
 
   # CX-0a9a (presence-carve, W3 plumbing): a {:presence, identity_uuid}

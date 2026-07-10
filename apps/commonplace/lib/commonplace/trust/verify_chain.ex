@@ -279,6 +279,19 @@ defmodule Commonplace.Trust.VerifyChain do
           _multiple -> {:error, :presence_scope_id_mismatch}
         end
 
+      # CX-4u03 / A1 (subtree-scope): like {:presence}, subtree certs are
+      # leaf-only in M2 (citizenship mints them direct, one link, never
+      # delegated), so there is no narrowing to compute — an all-{:subtree}
+      # chain with a SINGLE shared root collapses to that scope unchanged. A
+      # chain with differing roots has no defined combination rule (would be a
+      # delegated re-scoping we don't support yet) and is rejected rather than
+      # silently guessing.
+      Enum.all?(scopes, &match?({:subtree, _}, &1)) ->
+        case scopes |> Enum.map(fn {:subtree, root} -> root end) |> Enum.uniq() do
+          [single_root] -> {:ok, {:subtree, single_root}}
+          _multiple -> {:error, :subtree_scope_root_mismatch}
+        end
+
       true ->
         {:error, :mixed_scope_type_chain}
     end

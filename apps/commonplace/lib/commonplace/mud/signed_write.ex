@@ -128,9 +128,9 @@ defmodule Commonplace.MUD.SignedWrite do
   defp find_cert(_target_uuid, [], _store), do: nil
 
   defp find_cert(target_uuid, cert_cids, store) when is_binary(target_uuid) do
-    case find_docs_cert(target_uuid, cert_cids, store) do
-      nil -> find_presence_cert(cert_cids, store)
-      cid -> cid
+    with nil <- find_docs_cert(target_uuid, cert_cids, store),
+         nil <- find_subtree_cert(target_uuid, cert_cids, store) do
+      find_presence_cert(cert_cids, store)
     end
   end
 
@@ -146,6 +146,27 @@ defmodule Commonplace.MUD.SignedWrite do
           nil
       end
     end)
+  end
+
+  # CX-4u03 / A1 (subtree-scope): no {:docs} cert covers the target — try a held
+  # {:subtree, R} cert whose zone COVERS the target, i.e. R == the target's
+  # carried zone-stamp (`Trust.doc_zone/2`, the SAME membership predicate the
+  # gate's `subtree_carve_ok?` uses — no skew). This is the write-path counterpart
+  # to the gate's carve: it selects WHICH held cert to attach; the gate then
+  # re-checks membership + stamp-protection + write⊥execute at verify time.
+  # Tried AFTER {:docs} (a precise meta-cert still wins) and BEFORE the presence
+  # fallback (a zone edit routes to the zone-cert, never to presence).
+  defp find_subtree_cert(target_uuid, cert_cids, store) do
+    zone = Commonplace.Trust.doc_zone(target_uuid, store)
+
+    if is_binary(zone) do
+      Enum.find_value(cert_cids, fn cid ->
+        case CommitStoreClient.get_capability(store, cid) do
+          {:ok, %{claim: %{scope: {:subtree, ^zone}}}} -> cid
+          _ -> nil
+        end
+      end)
+    end
   end
 
   # CX-0a9a (presence-carve, W5): no {:docs} cert covers the target —

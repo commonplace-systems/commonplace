@@ -49,7 +49,7 @@ defmodule Commonplace.Trust.Capability do
   alias Commonplace.Trust.Revocation
 
   @type keyed_identity :: {String.t(), binary()}
-  @type scope :: {:docs, [String.t()]} | {:presence, String.t()}
+  @type scope :: {:docs, [String.t()]} | {:presence, String.t()} | {:subtree, String.t()}
   @type claim :: %{
           verbs: [atom()],
           scope: scope(),
@@ -208,6 +208,19 @@ defmodule Commonplace.Trust.Capability do
   # {:docs} clause above.
   defp check_no_code_doc_in_scope({:presence, _id}, _opts), do: :ok
 
+  # CX-4u03 / A1 (subtree-scope): a {:subtree, R} scope names a subtree ROOT,
+  # not an enumerable uuid list — the subtree GROWS, so there is no frozen set
+  # of targets to scan at mint time. This mint-time guard therefore CANNOT
+  # enforce the write⊥execute (no-write-without-execute-on-a-code-doc)
+  # separation for a subtree cert; it silently no-ops here (the same shape the
+  # {:presence} clause has). The real enforcement moves to VERIFY-TIME inside
+  # `Commonplace.Trust.subtree_carve_ok?`, which classifies the actual write
+  # target's post-write state with the SAME `CodeDocHeuristic` and refuses a
+  # write-without-execute subtree cert on a code doc (the belt; Gate-B's
+  # node-signed=execute check is the structural suspenders). See the
+  # mint-time-guard audit in that module — this is the enumerated silent no-op.
+  defp check_no_code_doc_in_scope({:subtree, _root}, _opts), do: :ok
+
   defp check_attenuation(_claim, nil), do: :ok
 
   defp check_attenuation(claim, %__MODULE__{claim: parent_claim}) do
@@ -230,6 +243,10 @@ defmodule Commonplace.Trust.Capability do
   # single opaque identity, not a list — no sort/de-dup applies.
   defp normalize_scope({:presence, identity_uuid} = scope) when is_binary(identity_uuid), do: scope
 
+  # CX-4u03 / A1 (subtree-scope): a {:subtree, root_uuid} scope is a single
+  # opaque subtree-root uuid, not a list — like {:presence}, no sort/de-dup.
+  defp normalize_scope({:subtree, root_uuid} = scope) when is_binary(root_uuid), do: scope
+
   defp normalize_caveats(caveats) do
     %{not_before: Map.get(caveats, :not_before), not_after: Map.get(caveats, :not_after)}
   end
@@ -245,6 +262,15 @@ defmodule Commonplace.Trust.Capability do
   # a presence scope is never mixed with a {:docs} scope in the same
   # chain (see VerifyChain.effective/1's type-homogeneity requirement).
   defp scope_set({:presence, _id}), do: MapSet.new([])
+
+  # CX-4u03 / A1 (subtree-scope): like {:presence}, a subtree cert is LEAF-ONLY
+  # in M2 (citizenship issues it root→player direct, single link, never
+  # delegated further), so it never participates in {:docs} subset/intersection
+  # attenuation math. An empty placeholder is safe by the same argument: a
+  # subtree scope is never mixed with a {:docs} scope in one chain (see
+  # VerifyChain.combine_scope's type-homogeneity requirement), and the real
+  # membership test is the verify-time zone-stamp carve, not attenuation.
+  defp scope_set({:subtree, _root}), do: MapSet.new([])
 
   # The child window must sit inside the parent window: child can only
   # start later (not_before ≥ parent) and end earlier (not_after ≤ parent).

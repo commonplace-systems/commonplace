@@ -21,10 +21,23 @@ defmodule Commonplace.Trust.CodeDocHeuristic do
   @spec code_doc?(String.t(), GenServer.server()) :: boolean()
   def code_doc?(uuid, store \\ CommitStoreClient) when is_binary(uuid) do
     case safe_reconstruct(store, uuid) do
-      {:ok, doc} -> classify(ContentType.get_content(doc))
+      {:ok, doc} -> code_content?(ContentType.get_content(doc))
       _ -> false
     end
   end
+
+  @doc """
+  CX-4u03 / A1: the SAME content-sniff as `code_doc?/2`, applied to an
+  already-in-hand content STRING rather than a stored uuid. The subtree
+  write-carve (`Commonplace.Trust.subtree_carve_ok?`) classifies the POST-WRITE
+  (after) reconstruction with this predicate, so (a) a data→code content-FLIP in
+  the same commit is caught (classify the after, not the before) and (b) the
+  verify-time write-carve belt and the mint-time scan share ONE classifier — no
+  skew where a doc is "code" to one gate and "data" to another. `nil` /
+  non-binary content → `false` (nothing to sniff).
+  """
+  @spec code_content?(term()) :: boolean()
+  def code_content?(content), do: classify(content)
 
   # Reconstruct defensively: a doc not present locally (or no running store)
   # must degrade to "can't classify", never crash the mint path.
