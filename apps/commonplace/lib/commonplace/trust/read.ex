@@ -134,4 +134,68 @@ defmodule Commonplace.Trust.Read do
       {:ok, cap}
     end
   end
+
+  @doc """
+  CX-73a3 (read-scoping P3) — the STANCE-AWARE read gate for the P3
+  read-surface cohort (TreeLive/WikiLive content + sidebar enumeration,
+  `@dump`, MCP `tail_red` / `invoke_view_action` / `tree://`, the `fork`
+  source-check). Honors the `:local_read_gate` app-env — a SEPARATE knob
+  from `:local_write_gate`, so read enforcement stages INDEPENDENTLY of the
+  already-enforcing writes:
+
+    * `:permissive` (default) — always `:ok`. Today's behavior; no-regression
+      until the operator opts in (the P3 surfaces read exactly as before).
+    * `:dry_run` — compute `authorized?/3`; on a would-deny, emit
+      `[:commonplace, :trust, :read, :would_refuse]` telemetry (`surface`,
+      `target`, `reader`, `visibility`) and RETURN `:ok` (still serve). The
+      observe mode that proves the multi-surface wiring catches NO
+      legitimate public read before the enforce flip.
+    * `:enforce` — return `authorized?/3`'s verdict.
+
+  ⚠️ This knob governs ONLY the P3 cohort. The live-proven P1/P2 gates
+  (MudLive, `World.room_snapshot`, MCP `cat`, GitBridge) call
+  `authorized?/3` DIRECTLY and are PINNED `:enforce` — the knob NEVER softens
+  them (a global dry_run would re-open P2's private homes = a regression).
+  Per-call-site stance, mirroring the write gate's `classify_verb_source`
+  pin.
+
+  `opts`: `:surface` (an atom naming the call-site, for the telemetry) plus
+  all of `authorized?/3`'s (`visibility`/`owner`/`reader_pub`/`cert_cids`/
+  `store`). The reader identity/pub MUST be SERVER-RESOLVED, never
+  client-claimed (the P1 audience-binding).
+  """
+  @spec gate(String.t() | nil, String.t(), keyword()) :: :ok | {:error, term()}
+  def gate(principal_identity, target_uuid, opts \\ []) when is_binary(target_uuid) do
+    case Application.get_env(:commonplace, :local_read_gate, :permissive) do
+      :permissive ->
+        :ok
+
+      mode when mode in [:dry_run, :enforce] ->
+        case authorized?(principal_identity, target_uuid, opts) do
+          :ok ->
+            :ok
+
+          {:error, _} = denied ->
+            if mode == :dry_run do
+              emit_would_refuse(principal_identity, target_uuid, opts)
+              :ok
+            else
+              denied
+            end
+        end
+    end
+  end
+
+  defp emit_would_refuse(principal, target, opts) do
+    :telemetry.execute(
+      [:commonplace, :trust, :read, :would_refuse],
+      %{count: 1},
+      %{
+        surface: Keyword.get(opts, :surface, :unknown),
+        target: target,
+        reader: principal,
+        visibility: Keyword.get(opts, :visibility, :public)
+      }
+    )
+  end
 end

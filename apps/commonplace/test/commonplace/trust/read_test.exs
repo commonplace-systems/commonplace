@@ -162,4 +162,57 @@ defmodule Commonplace.Trust.ReadTest do
     # …and the visibility remains capability_gated.
     assert {:ok, %{visibility: :capability_gated}} = SessionView.read_meta(ctx.view_uuid, store)
   end
+
+  # --- CX-73a3 P3: the local_read_gate stance-aware gate/3 ---
+
+  describe "gate/3 (local_read_gate stance)" do
+    setup do
+      old = Application.get_env(:commonplace, :local_read_gate)
+      on_exit(fn ->
+        if is_nil(old),
+          do: Application.delete_env(:commonplace, :local_read_gate),
+          else: Application.put_env(:commonplace, :local_read_gate, old)
+      end)
+
+      # a would-DENY situation: gated doc, stranger reader, no owner-match/caps
+      deny_opts = [surface: :test, visibility: :capability_gated, owner: "owner-x"]
+      %{deny: fn -> Read.gate("stranger", UUID.uuid4(), deny_opts) end}
+    end
+
+    test "permissive: always :ok (no-regression default)", %{deny: deny} do
+      Application.put_env(:commonplace, :local_read_gate, :permissive)
+      assert :ok = deny.()
+      # unset also defaults permissive
+      Application.delete_env(:commonplace, :local_read_gate)
+      assert :ok = deny.()
+    end
+
+    test "dry_run: would-deny still serves + emits would_refuse telemetry", %{deny: deny} do
+      Application.put_env(:commonplace, :local_read_gate, :dry_run)
+      handler = "wr-#{System.unique_integer([:positive])}"
+      test_pid = self()
+
+      :telemetry.attach(
+        handler,
+        [:commonplace, :trust, :read, :would_refuse],
+        fn _e, _m, meta, _ -> send(test_pid, {:would_refuse, meta}) end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(handler) end)
+
+      assert :ok = deny.()
+      assert_receive {:would_refuse, %{surface: :test, visibility: :capability_gated}}, 500
+    end
+
+    test "enforce: would-deny actually denies", %{deny: deny} do
+      Application.put_env(:commonplace, :local_read_gate, :enforce)
+      assert {:error, :read_denied} = deny.()
+    end
+
+    test "enforce: a PUBLIC target short-circuits to :ok (no-regression)" do
+      Application.put_env(:commonplace, :local_read_gate, :enforce)
+      assert :ok = Read.gate("stranger", UUID.uuid4(), surface: :test, visibility: :public)
+    end
+  end
 end
