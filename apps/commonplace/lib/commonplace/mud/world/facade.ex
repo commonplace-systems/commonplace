@@ -311,15 +311,23 @@ defmodule Commonplace.MUD.World.Facade do
     if f.object_uuid == nil do
       {:error, :no_bound_object}
     else
-      write_guarded(f, [f.object_uuid, f.ctx.current_room_uuid, dest_room_uuid], fn ->
-        case entry_name(f.ctx.current_room_uuid, f.object_uuid, f.store) do
-          {:ok, name} ->
-            Move.move(f.object_uuid, name, f.ctx.current_room_uuid, dest_room_uuid, write_opts(f))
+      # CX-bp2f / A2: the move writes the two ROOM DIR schemas (remove the entry
+      # from current, add to dest) — NOT the object doc. Judge elevation on the
+      # two rooms' presence-untouched META anchors, not the presence-churned dirs.
+      write_guarded(
+        f,
+        [f.object_uuid, f.ctx.current_room_uuid, dest_room_uuid],
+        [room_meta_authority(f.ctx.current_room_uuid, f), room_meta_authority(dest_room_uuid, f)],
+        fn ->
+          case entry_name(f.ctx.current_room_uuid, f.object_uuid, f.store) do
+            {:ok, name} ->
+              Move.move(f.object_uuid, name, f.ctx.current_room_uuid, dest_room_uuid, write_opts(f))
 
-          :error ->
-            {:error, :not_found}
+            :error ->
+              {:error, :not_found}
+          end
         end
-      end)
+      )
     end
   end
 
@@ -458,6 +466,21 @@ defmodule Commonplace.MUD.World.Facade do
     case World.meta_doc_uuid(f.object_uuid, meta_filename(f), f.store) do
       {:ok, child_uuid} -> [child_uuid]
       _ -> [f.object_uuid]
+    end
+  end
+
+  # CX-bp2f / A2 (plan #7270) — the presence-untouched authority ANCHOR for a
+  # ROOM dir: its `__room.json` meta child (node-owned for curated rooms, and the
+  # carrier of the A4 zone-stamp), which presence `.usr` churn never touches —
+  # unlike the room DIR schema, whose latest commit flips non-node-owned the
+  # moment a player enters. Returns the meta uuid, or `nil` when the room has no
+  # materialized meta: `nil` is UNRESOLVABLE (`node_owned?` rejects it) → the
+  # elevation fails CLOSED, and a `nil` among N anchors denies the WHOLE set
+  # (never dropped → never an all-but-one vacuous pass). NEVER returns [].
+  defp room_meta_authority(room_uuid, %__MODULE__{} = f) do
+    case World.meta_doc_uuid(room_uuid, Schemas.room_filename(), f.store) do
+      {:ok, meta_uuid} -> meta_uuid
+      _ -> nil
     end
   end
 
@@ -709,7 +732,12 @@ defmodule Commonplace.MUD.World.Facade do
 
     with :ok <- charge_lifecycle_op() do
       room = f.ctx[:current_room_uuid]
-      write_guarded(f, [room], fn -> create_object_in(f, room, name) end)
+      # CX-bp2f / A2: spawn writes the ROOM dir schema (add the new-object entry)
+      # + mints the new object under the room's elevation. Judge on the room's
+      # presence-untouched META anchor, not the churned dir. (The new object has
+      # no meta yet — it is born under [room.meta], never anchored on its own
+      # un-minted meta, so the authority set can't collapse to the empty trap.)
+      write_guarded(f, [room], [room_meta_authority(room, f)], fn -> create_object_in(f, room, name) end)
     end
   end
 
@@ -768,9 +796,19 @@ defmodule Commonplace.MUD.World.Facade do
               # Invoker-own-inventory: consume what you carry (see header).
               unlink_child(parent_uuid, entry, f)
             else
-              write_guarded(f, [parent_uuid, f.object_uuid], fn ->
-                unlink_child(parent_uuid, entry, f)
-              end)
+              # CX-bp2f / A2: consume UNLINKS the object from its parent ROOM dir
+              # (unlink-only — the object doc stays in history, per the header),
+              # so the write-target is the parent dir. Judge on the parent room's
+              # presence-untouched META anchor + the object's own meta (the
+              # conservative ownership check that keeps the setuid bound: a
+              # player-owned object's meta isn't node-owned → :none). A missing
+              # meta on either → nil → :none (never dropped).
+              write_guarded(
+                f,
+                [parent_uuid, f.object_uuid],
+                [room_meta_authority(parent_uuid, f) | meta_authority(f)],
+                fn -> unlink_child(parent_uuid, entry, f) end
+              )
             end
 
           :error ->
@@ -1434,15 +1472,28 @@ defmodule Commonplace.MUD.World.Facade do
   # player-owner (the frame-cap path). This keeps v1 safe BY CONSTRUCTION —
   # a visitor can never node-god-write a player's object — rather than
   # relying only on the "no player interactables yet" precondition.
-  defp object_owner_authority(f, scope_uuids) do
+  # CX-bp2f / A2 (plan #7270): an EMPTY authority set must DENY, never vacuously
+  # ELEVATE. `Enum.all?([], _) == true`, so an empty `authority_uuids` would
+  # elevate on NOTHING — a laundering hole. This fires when a presence-robust
+  # redirect (below) resolves to no anchor. The absent-zone/absent-meta safety
+  # condition made concrete: absent → :none, uniformly, never a default zone.
+  defp object_owner_authority(_f, []), do: :none
+
+  defp object_owner_authority(f, authority_uuids) do
     with {:ok, node_ctx} <- NodeIdentity.signing_context(),
          {:ok, node_identity} <- NodeIdentity.identity(),
-         true <- Enum.all?(scope_uuids, &node_owned?(&1, node_identity, f.store)) do
+         true <- Enum.all?(authority_uuids, &node_owned?(&1, node_identity, f.store)) do
       {:ok, node_ctx}
     else
       _ -> :none
     end
   end
+
+  # An unresolvable authority target (a `nil` from a missing meta redirect) is
+  # NOT node-owned → forces :none. This is what makes "one-of-N metas missing →
+  # :none" hold: a missing meta resolves to `nil` in the authority list rather
+  # than being dropped (which would let the remaining N-1 vacuously pass).
+  defp node_owned?(uuid, _node_identity, _store) when not is_binary(uuid), do: false
 
   defp node_owned?(uuid, node_identity, store) do
     case CommitStoreClient.latest_commit(store, uuid) do
