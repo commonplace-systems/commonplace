@@ -389,6 +389,33 @@ defmodule Commonplace.MUD.OutputTest do
     PlayerSession.stop(bob)
   end
 
+  # CX-o2hw: @name changes an object's DISPLAY name; it must then resolve by that
+  # visible name. The instance key stays "<creation-name>-<uuid>.obj", so without
+  # matching the live meta name a renamed object was addressable ONLY by a name
+  # that appears nowhere — indistinguishable from debris.
+  test "a renamed object resolves by its NEW visible name, not just the stale creation key", ctx do
+    alice = start_player("alice", ctx)
+    drain("alice")
+    send_input(alice, "east")
+    drain("alice")
+
+    send_input(alice, "@create object widget")
+    drain("alice")
+    send_input(alice, "@name widget gizmo")
+    drain("alice")
+
+    send_input(alice, "look")
+    assert (drain("alice") |> Enum.join("\n")) =~ "gizmo"
+
+    # The visible name now resolves (the bug: "You don't see gizmo here").
+    send_input(alice, "take gizmo")
+    take_out = drain("alice") |> Enum.join("\n")
+    refute take_out =~ "don't see"
+    assert take_out =~ "gizmo"
+
+    PlayerSession.stop(alice)
+  end
+
   # CX-cj3t.8 (safe half) — mechanical locks: a container is LOCKED iff
   # meta["state"]["locked"] == true, the SAME submap Facade.put_state/3
   # writes. A locked container refuses get-from/put-in/look-in with a

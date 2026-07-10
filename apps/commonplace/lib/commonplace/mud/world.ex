@@ -255,8 +255,8 @@ defmodule Commonplace.MUD.World do
 
   @doc """
   Find an entry in a room directory matching `name` (case-insensitive
-  substring on entry name OR on object aliases). Returns `{:ok, entry}`
-  or `:error`.
+  substring on entry name, the object's CURRENT display name, OR its
+  aliases). Returns `{:ok, entry}` or `:error`.
 
   v0 scope: lookup is single-room. PlayerSession layers
   inventory→room→exits scoping on top.
@@ -276,11 +276,18 @@ defmodule Commonplace.MUD.World do
         {:ok, e}
 
       nil ->
-        find_by_object_alias(entries, needle, store)
+        find_by_object_name(entries, needle, store)
     end
   end
 
-  defp find_by_object_alias(entries, needle, store) do
+  # CX-o2hw: match the object's CURRENT display name (the meta `name`) as well as
+  # its aliases — NOT just the schema entry-key. The instance key is frozen at
+  # `<creation-name>-<uuid>.obj`, so after `@name widget gizmo` the key still
+  # reads "widget" and only the meta `name` becomes "gizmo"; without matching the
+  # live display name, a renamed object was unaddressable by the ONLY name a
+  # player can see. Reading the name fresh from meta means `@name` needs no
+  # tree-key rewrite to take effect.
+  defp find_by_object_name(entries, needle, store) do
     obj_entries =
       Enum.filter(entries, fn e ->
         e.type == :dir and String.ends_with?(e.name, ".obj")
@@ -288,10 +295,12 @@ defmodule Commonplace.MUD.World do
 
     Enum.find_value(obj_entries, :error, fn e ->
       case Schemas.load_object(e.node_id, store) do
-        {:ok, %Schemas.Object{aliases: aliases}} ->
-          if Enum.any?(aliases, fn a -> String.contains?(String.downcase(a), needle) end),
-            do: {:ok, e},
-            else: nil
+        {:ok, %Schemas.Object{name: name, aliases: aliases}} ->
+          if Enum.any?([name | aliases], fn a ->
+               is_binary(a) and String.contains?(String.downcase(a), needle)
+             end),
+             do: {:ok, e},
+             else: nil
 
         _ ->
           nil
