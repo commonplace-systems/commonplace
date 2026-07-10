@@ -261,8 +261,12 @@ defmodule Commonplace.MUD.EngineModuleTest do
     # Direct proof the compile is denied:
     assert {:error, {:execution_denied, _}} = SourceDoc.compile(uuid, @store, gate: :execute)
 
-    # And the resolver keeps the TRUSTED last-good — the injected grammar never
-    # runs ("pwn" is NOT aliased to "hacked"; it parses as the literal verb).
+    # And the resolver serves the trusted compiled-in FLOOR on the authority
+    # failure (CX-aya0 revocation fix: an {:execution_denied} = revoked/tainted
+    # authority never serves a cached artifact) — the injected grammar never runs
+    # ("pwn" is NOT aliased to "hacked"; it parses as the literal verb). Here the
+    # floor is byte-identical to the trusted genesis, so this is indistinguishable
+    # from last-good; the divergent-doc test below pins that it's the FLOOR.
     assert %Parser.Command{verb: "pwn"} = EngineModule.parse("pwn orrery", @store)
     assert %Parser.Command{verb: "take", target: "orrery"} = EngineModule.parse("take orrery", @store)
     assert_receive {:engine_fallback, ^ref, %{name: :parser}}, 500
@@ -294,6 +298,349 @@ defmodule Commonplace.MUD.EngineModuleTest do
     for line <- ["take orrery", "n", "'hello there", "look", "inv"] do
       assert EngineModule.parse(line, @store) == Parser.parse(line),
              "seeded doc-hosted parse of #{inspect(line)} must match the floor"
+    end
+  end
+
+  # --- CX-aya0 (MUD-as-documents Inc-2 / B1): the doc-hosted `look` verb ---
+  #
+  # `run_verb/4` is the verb-shaped sibling of `parse/2` exercised above —
+  # same manifest/Gate-B/tiered-fallback mechanism, applied to
+  # `Commonplace.MUD.Verbs`'s FIRST doc-hosted verb. These tests cover the
+  # same load-bearing properties (doc->run parity, non-brick tiers 1-3, the
+  # RCE trust-split, the manifest trust root) for the verb path, plus the
+  # live Bootstrap seed integration.
+  describe "look verb (Inc-2 / B1)" do
+    alias Commonplace.MUD.Schemas
+    alias Commonplace.MUD.Schemas.Room
+    alias Commonplace.MUD.Verbs.LookFloor
+    alias Commonplace.Tree.Schema
+
+    # A minimal but real ctx: a seeded room (readable via World.room_snapshot)
+    # + a seeded player dir (readable via Schemas.load_player), same shape
+    # PlayerSession builds (see player_session.ex's ctx map), just hand-built
+    # here so this test doesn't need a full PlayerSession/PubSub stack.
+    defp build_ctx do
+      root_uuid = UUID.uuid4()
+      root_update = Yelixer.Encoding.encode_update(Schema.new_schema())
+      CommitStore.create_commit(CommitStore, root_uuid, root_update, nil)
+
+      {:ok, room_uuid} =
+        Schemas.create_dir_with_meta(
+          Schemas.room_filename(),
+          Schemas.encode_room(%Room{name: "The Vault", description: "A quiet stone vault."}),
+          @store
+        )
+
+      {:ok, player_uuid} =
+        Schemas.create_dir_with_meta(
+          Schemas.player_filename(),
+          Schemas.encode_player(%Schemas.Player{name: "alice", description: "A curious adventurer."}),
+          @store
+        )
+
+      %{
+        player_name: "alice",
+        player_dir_uuid: player_uuid,
+        # No separate inventory dir needed for these pure look tests — reuse
+        # the player dir (an empty, real, readable dir schema either way).
+        inventory_uuid: player_uuid,
+        current_room_uuid: room_uuid,
+        presence_filename: "alice.usr",
+        store: @store,
+        signing_context: nil
+      }
+    end
+
+    defp look_cmd(argv \\ [], target \\ nil),
+      do: %Parser.Command{verb: "look", argv: argv, target: target || List.first(argv)}
+
+    defp look_source(extra_clause \\ "") do
+      ~s'''
+      defmodule Commonplace.MUD.EngineLook do
+        alias Commonplace.MUD.Schemas
+        alias Commonplace.MUD.Schemas.Player
+        alias Commonplace.MUD.World
+
+        #{extra_clause}
+
+        def run(%Commonplace.MUD.Parser.Command{argv: []}, ctx), do: {:reply, render_room(ctx)}
+
+        def run(%Commonplace.MUD.Parser.Command{target: target}, ctx) when target in ["here", "room"] do
+          {:reply, render_room(ctx)}
+        end
+
+        def run(%Commonplace.MUD.Parser.Command{target: target}, ctx) when target in ["me", "self", "myself"] do
+          case Schemas.load_player(ctx.player_dir_uuid, ctx.store) do
+            {:ok, %Player{} = pl} ->
+              title = if pl.title == "", do: pl.name, else: pl.title
+              {:reply, "\#{title}\\n\#{pl.description}"}
+
+            _ ->
+              {:reply, ctx.player_name}
+          end
+        end
+
+        defp render_room(ctx) do
+          case World.room_snapshot(ctx.current_room_uuid, ctx.presence_filename, ctx.store, []) do
+            {:ok, %{name: name, desc: desc}} -> "== \#{name} ==\\n\#{desc}\\n"
+            _ -> "(this place has no description)"
+          end
+        end
+      end
+      '''
+    end
+
+    defp crashing_look_source do
+      ~s'''
+      defmodule Commonplace.MUD.EngineLook do
+        def run(_cmd, _ctx), do: raise("boom from a doc-hosted look verb")
+      end
+      '''
+    end
+
+    defp look_content_update(source) do
+      Yelixer.Doc.new()
+      |> ContentType.create(:text, "_engine_look.ex")
+      |> ContentType.insert_text(0, source)
+      |> Yelixer.Encoding.encode_update()
+    end
+
+    defp mint_look(source, opts) do
+      uuid = UUID.uuid4()
+      CommitStore.create_chained_commit(CommitStore, uuid, look_content_update(source), %{kind: :regular}, opts)
+      uuid
+    end
+
+    defp edit_look(uuid, source, opts) do
+      CommitStore.create_chained_commit(CommitStore, uuid, look_content_update(source), %{kind: :regular}, opts)
+      SourceDoc.reset_cache()
+      :ok
+    end
+
+    defp set_look_manifest(uuid) do
+      manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
+      Application.put_env(:commonplace, :mud_engine_manifest, Map.put(manifest, :look, uuid))
+    end
+
+    # The manifest is GLOBAL app-env (a trust root, node-set) — the running
+    # app boot (and Bootstrap.ensure_engine_look_verb) leaves a `:look`
+    # entry in it, so the "no manifest entry" tests must DELETE :look
+    # explicitly rather than assume it's absent (the parser tests clear the
+    # whole manifest via clear_manifest/0 for the same reason).
+    defp clear_look_manifest do
+      manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
+      Application.put_env(:commonplace, :mud_engine_manifest, Map.delete(manifest, :look))
+    end
+
+    test "no manifest entry -> the compiled-in floor runs (silently, no alarm)" do
+      permissive!()
+      clear_look_manifest()
+      ctx = build_ctx()
+      ref = attach_fallback_alarm()
+
+      assert {:reply, text} = EngineModule.run_verb(:look, look_cmd(), ctx, @store)
+      assert {:reply, text} == LookFloor.run(look_cmd(), ctx)
+      refute_receive {:engine_fallback, ^ref, _}, 100
+    end
+
+    test "doc->run: a trusted look doc runs bare `look` end-to-end via SourceDoc.compile + Gate B" do
+      permissive!()
+      ctx = build_ctx()
+      uuid = mint_look(look_source(), [])
+      set_look_manifest(uuid)
+
+      # Direct proof the doc actually compiled + ran (not silently on the floor):
+      assert {:ok, _module} = SourceDoc.compile(uuid, @store, gate: :execute)
+
+      assert {:reply, text} = EngineModule.run_verb(:look, look_cmd(), ctx, @store)
+      assert text =~ "The Vault"
+      assert text =~ "A quiet stone vault."
+      assert {:reply, ^text} = EngineModule.run_verb(:look, look_cmd(), ctx, @store)
+    end
+
+    test "doc->run: `look me` runs through the doc-hosted module too" do
+      permissive!()
+      ctx = build_ctx()
+      uuid = mint_look(look_source(), [])
+      set_look_manifest(uuid)
+
+      assert {:reply, text} = EngineModule.run_verb(:look, look_cmd(["me"]), ctx, @store)
+      assert text == "alice\nA curious adventurer."
+    end
+
+    test "hot-reload: editing the look doc changes the rendered room with no restart" do
+      permissive!()
+      ctx = build_ctx()
+      uuid = mint_look(look_source(), [])
+      set_look_manifest(uuid)
+
+      assert {:reply, before_text} = EngineModule.run_verb(:look, look_cmd(), ctx, @store)
+      assert before_text =~ "The Vault"
+
+      :ok =
+        edit_look(
+          uuid,
+          look_source() |> String.replace("== \#{name} ==", "*** \#{name} ***"),
+          []
+        )
+
+      assert {:reply, after_text} = EngineModule.run_verb(:look, look_cmd(), ctx, @store)
+      assert after_text =~ "*** The Vault ***"
+    end
+
+    test "non-brick: a broken EDIT falls back to last-good; the world keeps rendering + alarms" do
+      permissive!()
+      ctx = build_ctx()
+      ref = attach_fallback_alarm()
+      uuid = mint_look(look_source(), [])
+      set_look_manifest(uuid)
+
+      assert {:reply, good_text} = EngineModule.run_verb(:look, look_cmd(), ctx, @store)
+      assert good_text =~ "The Vault"
+
+      :ok = edit_look(uuid, broken_source(), [])
+
+      assert {:reply, ^good_text} = EngineModule.run_verb(:look, look_cmd(), ctx, @store)
+      assert_receive {:engine_fallback, ^ref, %{name: :look}}, 500
+    end
+
+    test "non-brick: a broken-FROM-THE-START look doc falls back to the compiled-in floor" do
+      permissive!()
+      ctx = build_ctx()
+      ref = attach_fallback_alarm()
+      uuid = mint_look(broken_source(), [])
+      set_look_manifest(uuid)
+
+      assert {:reply, text} = EngineModule.run_verb(:look, look_cmd(), ctx, @store)
+      assert {:reply, text} == LookFloor.run(look_cmd(), ctx)
+      assert_receive {:engine_fallback, ^ref, _}, 500
+    end
+
+    test "non-brick: a look doc that COMPILES but crashes at runtime is contained -> floor" do
+      permissive!()
+      ctx = build_ctx()
+      ref = attach_fallback_alarm()
+      uuid = mint_look(crashing_look_source(), [])
+      set_look_manifest(uuid)
+
+      assert {:reply, text} = EngineModule.run_verb(:look, look_cmd(), ctx, @store)
+      assert {:reply, text} == LookFloor.run(look_cmd(), ctx)
+      assert_receive {:engine_fallback, ^ref, _}, 500
+    end
+
+    test "non-brick: an UNIMPLEMENTED subcommand in a partial doc raises FunctionClauseError -> floor" do
+      # Exercises the deliberate partial-coverage design (Bootstrap's seeded
+      # look doc only implements bare/here/me) — `look <object>` has no
+      # matching clause in `look_source/1`, so it falls back per-call.
+      permissive!()
+      ctx = build_ctx()
+      ref = attach_fallback_alarm()
+      uuid = mint_look(look_source(), [])
+      set_look_manifest(uuid)
+
+      cmd = look_cmd(["orrery"])
+      assert EngineModule.run_verb(:look, cmd, ctx, @store) == LookFloor.run(cmd, ctx)
+      assert_receive {:engine_fallback, ^ref, _}, 500
+    end
+
+    test "RCE guard: a player-signed edit to the look doc is REFUSED (Gate B) -> trusted last-good survives",
+         %{trusted: trusted, trusted_id: trusted_id, trusted_pub: trusted_pub, player: player} do
+      strict!(%{trusted_id => Signing.encode_key(trusted_pub)})
+      ctx = build_ctx()
+
+      uuid = mint_look(look_source(), signing_context: trusted)
+      set_look_manifest(uuid)
+      assert {:reply, trusted_text} = EngineModule.run_verb(:look, look_cmd(), ctx, @store)
+      assert trusted_text =~ "The Vault"
+
+      ref = attach_fallback_alarm()
+
+      # A player-signed edit tries to inject a rendering that leaks something
+      # the trusted doc never would (e.g. tampering with the header).
+      :ok =
+        edit_look(
+          uuid,
+          look_source() |> String.replace("== \#{name} ==", "PWNED \#{name}"),
+          signing_context: player
+        )
+
+      assert {:error, {:execution_denied, _}} = SourceDoc.compile(uuid, @store, gate: :execute)
+
+      # The resolver serves the trusted compiled-in FLOOR on the authority failure
+      # (CX-aya0 revocation fix) — the injected render never runs. (This test's
+      # hand-written trusted doc uses a SIMPLIFIED render, so the floor differs
+      # from trusted_text — a direct demonstration that the FLOOR, not the cached
+      # last-good, is served; the divergent-doc test below pins it explicitly.)
+      assert {:reply, floor_text} = EngineModule.run_verb(:look, look_cmd(), ctx, @store)
+      assert {:reply, floor_text} == LookFloor.run(look_cmd(), ctx)
+      refute floor_text =~ "PWNED"
+      assert_receive {:engine_fallback, ^ref, %{name: :look}}, 500
+    end
+
+    test "revocation fix: on an AUTHORITY failure the resolver serves the FLOOR, NOT the (now-untrusted) last-good",
+         %{trusted: trusted, trusted_id: trusted_id, trusted_pub: trusted_pub, player: player} do
+      # The load-bearing pin for CX-aya0 (plan #7255/#7257): make last-good
+      # DIVERGE from the floor (a trusted ENHANCED doc handling `look secret`),
+      # then trigger an authority failure. Old behavior served the cached
+      # (enhanced) last-good = the cache-defeats-revocation hole; the fix serves
+      # the FLOOR. Uses a player-signed edit to produce the {:execution_denied}
+      # authority failure — the SAME branch a revocation takes (both fail Gate B),
+      # so this pins the revocation case via the shared authority-failure path.
+      strict!(%{trusted_id => Signing.encode_key(trusted_pub)})
+      ctx = build_ctx()
+
+      enhanced = ~s|def run(%Commonplace.MUD.Parser.Command{target: "secret"}, _ctx), do: {:reply, "ENHANCED-SECRET-42"}|
+
+      uuid = mint_look(look_source(enhanced), signing_context: trusted)
+      set_look_manifest(uuid)
+
+      # last-good is the ENHANCED doc — it answers `look secret` (the floor does NOT)
+      assert {:reply, "ENHANCED-SECRET-42"} =
+               EngineModule.run_verb(:look, look_cmd(["secret"]), ctx, @store)
+
+      ref = attach_fallback_alarm()
+
+      # authority failure: a player-signed edit → Gate B denies (same tag a
+      # revocation of the doc's execute authority would produce)
+      :ok = edit_look(uuid, look_source(enhanced), signing_context: player)
+      assert {:error, {:execution_denied, _}} = SourceDoc.compile(uuid, @store, gate: :execute)
+
+      # THE FIX: the enhanced last-good is NOT served — the FLOOR is. `look secret`
+      # no longer returns the enhanced answer; it matches the compiled-in floor.
+      result = EngineModule.run_verb(:look, look_cmd(["secret"]), ctx, @store)
+      refute match?({:reply, "ENHANCED-SECRET-42"}, result)
+      assert result == LookFloor.run(look_cmd(["secret"]), ctx)
+      assert_receive {:engine_fallback, ^ref, %{name: :look}}, 500
+    end
+
+    test "manifest trust root: a player-authored look doc NOT in the manifest is never resolved",
+         %{player: player} do
+      permissive!()
+      clear_look_manifest()
+      ctx = build_ctx()
+
+      _player_uuid =
+        mint_look(
+          look_source() |> String.replace("== \#{name} ==", "HIJACKED \#{name}"),
+          signing_context: player
+        )
+
+      # Manifest has no :look entry -> the resolver uses the floor.
+      assert {:reply, text} = EngineModule.run_verb(:look, look_cmd(), ctx, @store)
+      assert {:reply, text} == LookFloor.run(look_cmd(), ctx)
+      refute text =~ "HIJACKED"
+    end
+
+    test "Bootstrap.ensure_engine_look_verb seeds a node-signed look doc that runs in parity with the floor" do
+      permissive!()
+      ctx = build_ctx()
+
+      assert :ok = Commonplace.MUD.Bootstrap.ensure_engine_look_verb(@store)
+
+      for cmd <- [look_cmd(), look_cmd(["me"])] do
+        assert EngineModule.run_verb(:look, cmd, ctx, @store) == LookFloor.run(cmd, ctx),
+               "seeded doc-hosted look of #{inspect(cmd)} must match the floor"
+      end
     end
   end
 end

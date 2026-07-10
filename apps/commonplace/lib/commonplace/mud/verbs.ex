@@ -16,7 +16,7 @@ defmodule Commonplace.MUD.Verbs do
   side effects go through `Commonplace.MUD.World`.
   """
 
-  alias Commonplace.MUD.{Mint, Parser, Schemas, Sections, SignedWrite, VerbSource, World}
+  alias Commonplace.MUD.{EngineModule, Mint, Parser, Schemas, Sections, SignedWrite, VerbSource, World}
   alias Commonplace.MUD.Schemas.{Object, Player, Room}
   alias Commonplace.MUD.World.Facade
   alias Commonplace.Tree.Schema
@@ -531,7 +531,18 @@ defmodule Commonplace.MUD.Verbs do
 
   # ---- Built-in verbs ----
 
-  defp dispatch_builtin("look", cmd, ctx), do: do_look(cmd, ctx)
+  # CX-aya0 (MUD-as-documents Inc-2 / B1): `look` is the first stateless-leaf
+  # verb routed through the doc-hosted `EngineModule` resolver instead of
+  # calling `do_look/2` directly. `EngineModule.run_verb/4` resolves a
+  # node-signed verb doc (Gate B `:execute`) if the manifest names one,
+  # falling back doc-good -> last-good -> the compiled-in floor
+  # (`Commonplace.MUD.Verbs.LookFloor`, which itself just calls `do_look/2`
+  # below via the `__look_floor__/2` escape hatch) on any compile failure OR
+  # runtime crash. `do_look/2` and its private helpers are UNCHANGED and
+  # remain the single source of truth for full look behavior; the floor
+  # tier guarantees this dispatch clause never regresses even with no
+  # manifest entry set (the default today).
+  defp dispatch_builtin("look", cmd, ctx), do: EngineModule.run_verb(:look, cmd, ctx, ctx.store)
   defp dispatch_builtin("say", cmd, ctx), do: do_say(cmd, ctx)
   defp dispatch_builtin("emote", cmd, ctx), do: do_emote(cmd, ctx)
   defp dispatch_builtin("take", cmd, ctx), do: do_take(cmd, ctx)
@@ -556,6 +567,15 @@ defmodule Commonplace.MUD.Verbs do
   defp dispatch_builtin(_verb, _cmd, _ctx), do: :unhandled
 
   # ---- look ----
+
+  # CX-aya0 (B1): the ONLY external caller of `do_look/2` — used
+  # exclusively by `Commonplace.MUD.Verbs.LookFloor` (the EngineModule
+  # compiled-in floor for the doc-hosted `look` verb). `do_look/2` itself
+  # stays private; routing the floor through this one-line delegator means
+  # the floor and the "real" look behavior can never drift out of parity —
+  # there is exactly one implementation, this just exposes a call path to it.
+  @doc false
+  def __look_floor__(cmd, ctx), do: do_look(cmd, ctx)
 
   defp do_look(%Parser.Command{argv: []}, ctx) do
     {:reply, render_room(ctx)}

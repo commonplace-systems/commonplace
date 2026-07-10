@@ -131,6 +131,82 @@ defmodule Commonplace.MUD.Bootstrap do
   end
   '''
 
+  # CX-aya0 (MUD-as-documents Inc-2 / B1): the first doc-hosted MUD verb.
+  # `look` is PURE (read + format, zero tree writes) — the lowest-blast-
+  # radius verb, chosen to prove the `EngineModule.run_verb/4` mechanism
+  # before broadening to the rest of the stateless-leaf cohort (B2). Fixed
+  # uuid + node-signed at seed time, same idempotent-seed shape as
+  # `@engine_parser_uuid` above (see that constant's comment for the
+  # Gate B / distinct-module-name rationale — identical here).
+  #
+  # SCOPE (deliberately partial — not a regression): this doc implements
+  # only the two PURE-lookup cases of `look` (bare `look` / `look here` /
+  # `look room`, and `look me` / `look self` / `look myself`) — the two
+  # cases exercised by the parity test below. Every other `look` subcommand
+  # (`look <object>`, `look in <container>`) has no matching `run/2` clause
+  # in this doc, so it raises `FunctionClauseError` — which
+  # `EngineModule.run_verb/4`'s crash containment catches and falls back to
+  # the compiled-in floor (`Commonplace.MUD.Verbs.LookFloor`, full
+  # `do_look/2` parity) for THAT call. This is the non-brick tier-3 path
+  # doing real work, not a gap: broadening this doc to full parity (or
+  # replacing it) is B2 scope, not B1's "prove the mechanism" bar.
+  @engine_look_verb_uuid "100ca11b-1004-4e55-9f66-a07788990011"
+
+  @engine_look_verb_source ~S'''
+  defmodule Commonplace.MUD.EngineLook do
+    @moduledoc "Doc-hosted `look` verb (CX-aya0, MUD-as-documents Inc-2 / B1). Hot-editable."
+
+    alias Commonplace.MUD.Schemas
+    alias Commonplace.MUD.Schemas.Player
+    alias Commonplace.MUD.World
+
+    def run(%Commonplace.MUD.Parser.Command{argv: []}, ctx), do: {:reply, render_room(ctx)}
+
+    def run(%Commonplace.MUD.Parser.Command{target: target}, ctx) when target in ["here", "room"] do
+      {:reply, render_room(ctx)}
+    end
+
+    def run(%Commonplace.MUD.Parser.Command{target: target}, ctx) when target in ["me", "self", "myself"] do
+      case Schemas.load_player(ctx.player_dir_uuid, ctx.store) do
+        {:ok, %Player{} = pl} ->
+          title = if pl.title == "", do: pl.name, else: pl.title
+          {:reply, "#{title}\n#{pl.description}"}
+
+        _ ->
+          {:reply, ctx.player_name}
+      end
+    end
+
+    defp render_room(ctx) do
+      case World.room_snapshot(ctx.current_room_uuid, ctx.presence_filename, ctx.store, viewer: identity(ctx)) do
+        {:ok, %{name: name, desc: desc, exits: exits, contents: objects, occupants: players}} ->
+          exit_dirs = Enum.map(exits, fn {dir, _to} -> dir end)
+
+          IO.iodata_to_binary([
+            "== ", name, " ==\n",
+            desc, "\n",
+            if(exit_dirs == [], do: "Exits: (none)\n", else: ["Exits: ", Enum.join(exit_dirs, ", "), "\n"]),
+            if(objects == [], do: "", else: ["You see: ", Enum.join(objects, ", "), "\n"]),
+            if(players == [], do: "", else: ["Players: ", Enum.join(players, ", "), "\n"])
+          ])
+
+        {:error, :read_denied} ->
+          "That place is private."
+
+        {:error, _} ->
+          "(this place has no description)"
+      end
+    end
+
+    defp identity(ctx) do
+      case ctx[:signing_context] do
+        %{identity_uuid: id} when is_binary(id) -> id
+        _ -> nil
+      end
+    end
+  end
+  '''
+
   def seed(root_uuid, store \\ CommitStoreClient), do: repair(root_uuid, store)
 
   # CX-93ea: every step is a `with` link now — a rejected write (trust
@@ -148,6 +224,12 @@ defmodule Commonplace.MUD.Bootstrap do
     # be blocked by the room-seed chain, and a failure just leaves
     # `EngineModule` on its compiled-in floor (never bricks).
     :ok = ensure_engine_parser(store)
+
+    # CX-aya0 (B1): same best-effort, never-blocks shape as the parser
+    # seed above — seed the doc-hosted `look` verb + point the manifest at
+    # it. A failure just leaves `EngineModule.run_verb(:look, ...)` on the
+    # compiled-in floor (`Commonplace.MUD.Verbs.LookFloor`, full parity).
+    :ok = ensure_engine_look_verb(store)
 
     with {:ok, start_uuid} <-
            ensure_room(root_uuid, "start", %Room{
@@ -205,14 +287,41 @@ defmodule Commonplace.MUD.Bootstrap do
     _, _ -> :ok
   end
 
+  # CX-aya0 (B1): idempotently seed the node-signed `look` verb source doc
+  # + set the engine manifest's `:look` entry. Mirrors
+  # `ensure_engine_parser/1` exactly (best-effort, rescues/catches to `:ok`
+  # on any failure — no node identity, write refused, whatever — so the
+  # doc-hosted `look` path is strictly additive and can never brick or
+  # block seeding; `EngineModule` just stays on the compiled-in floor).
+  @doc false
+  def ensure_engine_look_verb(store \\ CommitStoreClient) do
+    with {:ok, node_ctx} <- NodeIdentity.signing_context() do
+      unless source_doc_present?(@engine_look_verb_uuid, store) do
+        seed_source_doc(@engine_look_verb_uuid, @engine_look_verb_source, node_ctx, store, "_engine_look.ex")
+      end
+
+      manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
+      Application.put_env(:commonplace, :mud_engine_manifest, Map.put(manifest, :look, @engine_look_verb_uuid))
+    end
+
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
   defp source_doc_present?(uuid, store) do
     match?({:ok, _source, _hash}, SourceDoc.read(uuid, store))
   end
 
-  defp seed_source_doc(uuid, source, node_ctx, store) do
+  # `filename` defaults to the parser doc's original hardcoded name — every
+  # pre-existing call site (just `ensure_engine_parser/1`) omits the arg and
+  # is byte-for-byte unchanged; `ensure_engine_look_verb/1` passes its own.
+  defp seed_source_doc(uuid, source, node_ctx, store, filename \\ "_engine_parser.ex") do
     doc =
       Doc.new()
-      |> ContentType.create(:text, "_engine_parser.ex")
+      |> ContentType.create(:text, filename)
       |> ContentType.insert_text(0, source)
 
     update = Encoding.encode_update(doc)

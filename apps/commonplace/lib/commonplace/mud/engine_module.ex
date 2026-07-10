@@ -65,6 +65,19 @@ defmodule Commonplace.MUD.EngineModule do
   invalidate on a doc-change notification (or hash-check on a tick). MUD
   command rates are low (a human types << a few/s; the rate-limiter bounds it)
   so per-parse resolution is fine for Inc-1. Flagged, not built.
+
+  ## Inc-2 (CX-aya0 / B1) — the generic `run_verb/4` seam
+
+  `resolve/2` was already generic over an engine NAME (only `:parser` used
+  it). Inc-2 adds `run_verb/4`, the verb-shaped sibling of `parse/2`: same
+  manifest lookup + Gate B + doc-good/last-good/floor tiers, but calling the
+  resolved module's `run(cmd, ctx)` (a MUD verb's shape — see
+  `Commonplace.MUD.Verbs`'s module doc for the `{:reply,_}` /
+  `{:error,_}` / `:ok` / `:unhandled` result contract) instead of `parse(line)`.
+  `look` (`Commonplace.MUD.Verbs.LookFloor`) is the first entry in `@floor`
+  under this path — a PURE, no-write verb, so Inc-2 debuts the mechanism on
+  the lowest-blast-radius case before broadening to the rest of the
+  stateless-leaf cohort (B2).
   """
 
   require Logger
@@ -75,7 +88,7 @@ defmodule Commonplace.MUD.EngineModule do
 
   # Compiled-in FLOOR module per engine name. DISTINCT from any doc-hosted
   # module name, so a `SourceDoc.compile` of the doc never purges it.
-  @floor %{parser: Parser}
+  @floor %{parser: Parser, look: Commonplace.MUD.Verbs.LookFloor}
 
   @doc """
   Parse `line` through the doc-hosted parser (resolving the current engine
@@ -87,6 +100,20 @@ defmodule Commonplace.MUD.EngineModule do
   def parse(line, store \\ CommitStoreClient) when is_binary(line) do
     module = resolve(:parser, store)
     safe_parse(module, line)
+  end
+
+  @doc """
+  Run a MUD verb (`cmd`, `ctx`) through the doc-hosted engine module for
+  `name` (resolving via the same doc-good -> last-good -> compiled-in-floor
+  tiers as `parse/2`), with the same crash containment. Always returns a
+  verb result (`Commonplace.MUD.Verbs`'s `{:reply,_}` / `{:error,_}` /
+  `:ok` / `:unhandled` contract) — a doc-module that compiles but raises at
+  runtime falls back to last-good/floor for THAT call, same as `parse/2`.
+  """
+  @spec run_verb(atom(), Parser.Command.t(), map(), GenServer.server()) :: term()
+  def run_verb(name, cmd, ctx, store \\ CommitStoreClient) do
+    module = resolve(name, store)
+    safe_run_verb(name, module, cmd, ctx)
   end
 
   @doc """
@@ -109,6 +136,29 @@ defmodule Commonplace.MUD.EngineModule do
             remember_last_good(uuid, module)
             module
 
+          # CX-aya0 / B1 (revocation fix, plan #7255/#7257): split the failure
+          # by CAUSE. An AUTHORITY failure ({:execution_denied} — a Gate-B
+          # rejection: the doc's execute-authority is REVOKED or a contributor is
+          # untrusted) voids the voucher that authorized EVERY cached version →
+          # we can trust NO cached artifact → serve the compiled-in FLOOR
+          # (node-authored, always trusted), NEVER last-good. Serving last-good
+          # here would execute revoked code from cache (the cache-defeats-
+          # revocation hole). Conservative by necessity: a player-taint (untrusted
+          # LATEST contributor) carries the SAME tag and is indistinguishable from
+          # revocation, so both collapse to floor — safe (W1 holds: floor is node
+          # code) and moot under enforce (a player can't append to a node-owned
+          # engine doc). ⚠️ REVOCATION-SAFETY INVARIANT: every doc-hosted engine
+          # `name` MUST have a compiled-in @floor entry, else authority-fail →
+          # floor lookup raises. A migrated verb with no floor is un-revocable-
+          # safely (a hard requirement for B2 broadening).
+          {:error, {:execution_denied, _} = reason} ->
+            alarm(name, uuid, {:authority, reason})
+            floor_module(name)
+
+          # A SOURCE failure (syntax/compile), authority INTACT: only the new edit
+          # won't compile; the doc's authority is unchanged, so the prior trusted
+          # last-good (it passed Gate-B when it compiled) is safe to serve — the
+          # non-brick continuity tier. Falls to floor if nothing ever compiled.
           {:error, reason} ->
             alarm(name, uuid, {:compile, reason})
             last_good(uuid) || floor_module(name)
@@ -147,7 +197,7 @@ defmodule Commonplace.MUD.EngineModule do
     # (Parser.parse/1) is the guaranteed terminal — compiled-in + correct.
     floor_mod = floor_module(:parser)
 
-    [last_good_for_parser(), floor_mod]
+    [last_good_for(:parser), floor_mod]
     |> Enum.reject(&(is_nil(&1) or &1 == failed_module))
     |> Enum.reduce_while(nil, fn candidate, _acc ->
       try do
@@ -164,6 +214,43 @@ defmodule Commonplace.MUD.EngineModule do
     end
   end
 
+  # Inc-2 (CX-aya0 / B1) — the verb-shaped sibling of safe_parse/2 +
+  # parse_fallback/3 above: same doc-good/last-good/floor crash-containment
+  # shape, but calling `module.run(cmd, ctx)` (a MUD verb) instead of
+  # `module.parse(line)` (the parser). Kept as a distinct pair of functions
+  # (rather than parameterizing the parser ones over an apply-fun) so each
+  # stays a straight-line read matching its call site's arity/shape — the
+  # two are siblings, not one abstraction forced over two shapes.
+  defp safe_run_verb(name, module, cmd, ctx) do
+    module.run(cmd, ctx)
+  rescue
+    e -> run_verb_fallback(name, module, cmd, ctx, {:rescue, e})
+  catch
+    kind, reason -> run_verb_fallback(name, module, cmd, ctx, {kind, reason})
+  end
+
+  defp run_verb_fallback(name, failed_module, cmd, ctx, err) do
+    alarm(name, nil, {:runtime_crash, failed_module, err})
+
+    floor_mod = floor_module(name)
+
+    [last_good_for(name), floor_mod]
+    |> Enum.reject(&(is_nil(&1) or &1 == failed_module))
+    |> Enum.reduce_while(nil, fn candidate, _acc ->
+      try do
+        {:halt, candidate.run(cmd, ctx)}
+      rescue
+        _ -> {:cont, nil}
+      catch
+        _, _ -> {:cont, nil}
+      end
+    end)
+    |> case do
+      nil -> floor_mod.run(cmd, ctx)
+      result -> result
+    end
+  end
+
   # last-good is keyed by DOC-UUID (not name): a given doc's last successfully
   # compiled module. Kept in :persistent_term (read-free hot path; written
   # only when the module actually changes, which is rare).
@@ -177,8 +264,11 @@ defmodule Commonplace.MUD.EngineModule do
 
   defp last_good(uuid), do: :persistent_term.get(last_good_key(uuid), nil)
 
-  defp last_good_for_parser do
-    case manifest_uuid(:parser) do
+  # Generalized from Inc-1's parser-only `last_good_for_parser/0`: last-good
+  # is keyed by DOC-UUID, so resolving it for any engine `name` is the same
+  # "look up this name's manifest uuid, then that uuid's last-good" walk.
+  defp last_good_for(name) do
+    case manifest_uuid(name) do
       nil -> nil
       uuid -> last_good(uuid)
     end
