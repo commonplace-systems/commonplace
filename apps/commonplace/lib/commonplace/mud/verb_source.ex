@@ -338,7 +338,18 @@ defmodule Commonplace.MUD.VerbSource do
 
   @doc "Read the current source text for a verb (for `@verb` editor pre-fill)."
   def read_source(target_dir_uuid, verb_name, store \\ CommitStoreClient) do
-    case find_source(target_dir_uuid, verb_name, store) do
+    # CX-jxqs: prefer the SAFE source (`<name>.safe.elx`) — that's what
+    # `save_safe_verb` writes and what every @verb-authored verb is today. The
+    # legacy `find_source/3` (`<name>.elx`) alone silently returned "" for every
+    # safe verb, so the editor never pre-filled (nor previewed) an existing
+    # verb's body. Fall back to legacy for any old `.elx` verb still around.
+    found =
+      case find_safe_source(target_dir_uuid, verb_name, store) do
+        :not_found -> find_source(target_dir_uuid, verb_name, store)
+        other -> other
+      end
+
+    case found do
       {:ok, uuid} ->
         case DocBuilder.reconstruct_doc(store, uuid) do
           {:ok, doc} -> {:ok, ContentType.get_content(doc) || ""}

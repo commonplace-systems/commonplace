@@ -120,4 +120,18 @@ defmodule Commonplace.MUD.VerbAuthoringBoundaryTest do
     cmd = Commonplace.MUD.Parser.parse("@verb here:tick")
     assert {:enter_editor, %{editable: true}} = Commonplace.MUD.Verbs.dispatch(cmd, verb_ctx(store, home, node_ctx, []))
   end
+
+  # CX-jxqs (fable nuance): the PREVIEW must carry the REAL existing source
+  # read-only — not just the empty-new-verb case. Node authors a verb, then the
+  # citizen's @verb open returns editable:false WITH the current source populated
+  # (which PlayerSession renders read-only).
+  test "citizen preview of an EXISTING verb carries its source read-only (editable: false + current)", %{store: store, home: home, citizen: citizen, cids: cids, node_ctx: node_ctx} do
+    :ok = VerbSource.save_safe_verb(home, "glow", "\"glimmer\"", [home], store, signing_context: node_ctx, cert_cids: [])
+
+    cmd = Commonplace.MUD.Parser.parse("@verb here:glow")
+    assert {:enter_editor, %{editable: false, current: current}} =
+             Commonplace.MUD.Verbs.dispatch(cmd, verb_ctx(store, home, citizen, cids))
+
+    assert current =~ "glimmer"
+  end
 end
