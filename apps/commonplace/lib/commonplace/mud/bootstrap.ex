@@ -207,6 +207,81 @@ defmodule Commonplace.MUD.Bootstrap do
   end
   '''
 
+  # CX-aya0 (MUD-as-documents Inc-2 / B2): the next stateless-leaf verbs
+  # doc-hosted after `look` (B1) — `inventory` (pure read + format, zero
+  # tree writes) and `say`/`emote` (pure `World.broadcast_room` PubSub
+  # broadcast, zero tree writes). Same fixed-uuid + node-signed idempotent
+  # seed shape as `@engine_look_verb_uuid` above (see that constant's
+  # comment for the Gate B / distinct-module-name rationale — identical
+  # here). Unlike `look`'s deliberately partial doc (B1 only proved the
+  # mechanism), these three doc bodies are FULL parity with their
+  # `do_*` counterparts — each verb's compiled-in logic is simple enough
+  # that mirroring it completely in the seed doc costs nothing extra.
+  @engine_inventory_verb_uuid "200da22c-2005-4f66-a077-b18899001122"
+
+  @engine_inventory_verb_source ~S'''
+  defmodule Commonplace.MUD.EngineInventory do
+    @moduledoc "Doc-hosted `inventory` verb (CX-aya0, MUD-as-documents Inc-2 / B2). Hot-editable."
+
+    alias Commonplace.MUD.Schemas
+    alias Commonplace.MUD.Schemas.Object
+    alias Commonplace.MUD.World
+
+    def run(_cmd, ctx) do
+      items =
+        World.list_objects_in(ctx.inventory_uuid, ctx.store)
+        |> Enum.map(fn e ->
+          case Schemas.load_object(e.node_id, ctx.store) do
+            {:ok, %Object{name: name}} -> name
+            _ -> e.name
+          end
+        end)
+
+      text =
+        case items do
+          [] -> "You are carrying nothing."
+          _ -> "You are carrying:\n  - " <> Enum.join(items, "\n  - ")
+        end
+
+      {:reply, text}
+    end
+  end
+  '''
+
+  @engine_emote_verb_uuid "300eb33d-3006-4a77-b188-c29900112233"
+
+  @engine_emote_verb_source ~S'''
+  defmodule Commonplace.MUD.EngineEmote do
+    @moduledoc "Doc-hosted `emote` verb (CX-aya0, MUD-as-documents Inc-2 / B2). Hot-editable."
+
+    alias Commonplace.MUD.World
+
+    def run(%Commonplace.MUD.Parser.Command{args: ""}, _ctx), do: {:error, "Emote what?"}
+
+    def run(%Commonplace.MUD.Parser.Command{args: text}, ctx) do
+      World.broadcast_room(ctx.current_room_uuid, %{kind: :emote, who: ctx.player_name, text: text})
+      :ok
+    end
+  end
+  '''
+
+  @engine_say_verb_uuid "400fc44e-4007-4b88-c299-d3a011223344"
+
+  @engine_say_verb_source ~S'''
+  defmodule Commonplace.MUD.EngineSay do
+    @moduledoc "Doc-hosted `say` verb (CX-aya0, MUD-as-documents Inc-2 / B2). Hot-editable."
+
+    alias Commonplace.MUD.World
+
+    def run(%Commonplace.MUD.Parser.Command{args: ""}, _ctx), do: {:error, "Say what?"}
+
+    def run(%Commonplace.MUD.Parser.Command{args: text}, ctx) do
+      World.broadcast_room(ctx.current_room_uuid, %{kind: :say, who: ctx.player_name, text: text})
+      :ok
+    end
+  end
+  '''
+
   def seed(root_uuid, store \\ CommitStoreClient), do: repair(root_uuid, store)
 
   # CX-93ea: every step is a `with` link now — a rejected write (trust
@@ -230,6 +305,14 @@ defmodule Commonplace.MUD.Bootstrap do
     # it. A failure just leaves `EngineModule.run_verb(:look, ...)` on the
     # compiled-in floor (`Commonplace.MUD.Verbs.LookFloor`, full parity).
     :ok = ensure_engine_look_verb(store)
+
+    # CX-aya0 (B2): same best-effort, never-blocks shape — seed the
+    # doc-hosted `inventory`/`emote`/`say` verbs + point the manifest at
+    # them. A failure just leaves `EngineModule.run_verb/4` on the
+    # respective compiled-in floor (full `do_*` parity).
+    :ok = ensure_engine_inventory_verb(store)
+    :ok = ensure_engine_emote_verb(store)
+    :ok = ensure_engine_say_verb(store)
 
     with {:ok, start_uuid} <-
            ensure_room(root_uuid, "start", %Room{
@@ -302,6 +385,73 @@ defmodule Commonplace.MUD.Bootstrap do
 
       manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
       Application.put_env(:commonplace, :mud_engine_manifest, Map.put(manifest, :look, @engine_look_verb_uuid))
+    end
+
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  # CX-aya0 (B2): idempotently seed the node-signed `inventory` verb source
+  # doc + set the engine manifest's `:inventory` entry. Mirrors
+  # `ensure_engine_look_verb/1` exactly (best-effort, rescues/catches to
+  # `:ok` on any failure — no node identity, write refused, whatever — so
+  # the doc-hosted `inventory` path is strictly additive and can never
+  # brick or block seeding; `EngineModule` just stays on the compiled-in
+  # floor).
+  @doc false
+  def ensure_engine_inventory_verb(store \\ CommitStoreClient) do
+    with {:ok, node_ctx} <- NodeIdentity.signing_context() do
+      unless source_doc_present?(@engine_inventory_verb_uuid, store) do
+        seed_source_doc(@engine_inventory_verb_uuid, @engine_inventory_verb_source, node_ctx, store, "_engine_inventory.ex")
+      end
+
+      manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
+      Application.put_env(:commonplace, :mud_engine_manifest, Map.put(manifest, :inventory, @engine_inventory_verb_uuid))
+    end
+
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  # CX-aya0 (B2): idempotently seed the node-signed `emote` verb source
+  # doc + set the engine manifest's `:emote` entry. Mirrors
+  # `ensure_engine_look_verb/1` exactly.
+  @doc false
+  def ensure_engine_emote_verb(store \\ CommitStoreClient) do
+    with {:ok, node_ctx} <- NodeIdentity.signing_context() do
+      unless source_doc_present?(@engine_emote_verb_uuid, store) do
+        seed_source_doc(@engine_emote_verb_uuid, @engine_emote_verb_source, node_ctx, store, "_engine_emote.ex")
+      end
+
+      manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
+      Application.put_env(:commonplace, :mud_engine_manifest, Map.put(manifest, :emote, @engine_emote_verb_uuid))
+    end
+
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  # CX-aya0 (B2): idempotently seed the node-signed `say` verb source
+  # doc + set the engine manifest's `:say` entry. Mirrors
+  # `ensure_engine_look_verb/1` exactly.
+  @doc false
+  def ensure_engine_say_verb(store \\ CommitStoreClient) do
+    with {:ok, node_ctx} <- NodeIdentity.signing_context() do
+      unless source_doc_present?(@engine_say_verb_uuid, store) do
+        seed_source_doc(@engine_say_verb_uuid, @engine_say_verb_source, node_ctx, store, "_engine_say.ex")
+      end
+
+      manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
+      Application.put_env(:commonplace, :mud_engine_manifest, Map.put(manifest, :say, @engine_say_verb_uuid))
     end
 
     :ok

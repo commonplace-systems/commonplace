@@ -643,4 +643,508 @@ defmodule Commonplace.MUD.EngineModuleTest do
       end
     end
   end
+
+  # ---- CX-aya0 (MUD-as-documents Inc-2 / B2): the doc-hosted `inventory` verb ----
+  #
+  # Same `run_verb/4` mechanism as `look` (B1) above, applied to the next
+  # stateless-leaf verb: `inventory` is a PURE read + format (zero tree
+  # writes — see `do_inventory/1`). Mirrors the B1 test shape exactly.
+
+  describe "inventory verb (Inc-2 / B2)" do
+    alias Commonplace.MUD.Schemas
+    alias Commonplace.MUD.Schemas.Object
+    alias Commonplace.MUD.Verbs.InventoryFloor
+    alias Commonplace.Tree.Schema
+
+    defp build_inventory_ctx(item_names \\ ["widget"]) do
+      root_uuid = UUID.uuid4()
+      root_update = Yelixer.Encoding.encode_update(Schema.new_schema())
+      CommitStore.create_commit(CommitStore, root_uuid, root_update, nil)
+
+      {:ok, inventory_uuid} = Schemas.create_dir_with_meta(nil, nil, @store)
+
+      for name <- item_names do
+        {:ok, obj_uuid} =
+          Schemas.create_dir_with_meta(
+            Schemas.object_filename(),
+            Schemas.encode_object(%Object{name: name}),
+            @store
+          )
+
+        {:ok, schema} = Schemas.load_dir_schema(inventory_uuid, @store)
+        schema = Schema.add_directory(schema, "#{name}.obj", obj_uuid)
+        update = Yelixer.Encoding.encode_update(schema)
+        CommitStore.create_chained_commit(CommitStore, inventory_uuid, update, %{kind: :regular}, [])
+      end
+
+      %{
+        player_name: "alice",
+        inventory_uuid: inventory_uuid,
+        store: @store,
+        signing_context: nil
+      }
+    end
+
+    defp inventory_cmd, do: %Parser.Command{verb: "inventory", argv: [], target: nil}
+
+    defp inventory_source do
+      ~s'''
+      defmodule Commonplace.MUD.EngineInventory do
+        alias Commonplace.MUD.Schemas
+        alias Commonplace.MUD.Schemas.Object
+        alias Commonplace.MUD.World
+
+        def run(_cmd, ctx) do
+          items =
+            World.list_objects_in(ctx.inventory_uuid, ctx.store)
+            |> Enum.map(fn e ->
+              case Schemas.load_object(e.node_id, ctx.store) do
+                {:ok, %Object{name: name}} -> name
+                _ -> e.name
+              end
+            end)
+
+          text =
+            case items do
+              [] -> "You are carrying nothing."
+              _ -> "You are carrying:\\n  - " <> Enum.join(items, "\\n  - ")
+            end
+
+          {:reply, text}
+        end
+      end
+      '''
+    end
+
+    defp crashing_inventory_source do
+      ~s'''
+      defmodule Commonplace.MUD.EngineInventory do
+        def run(_cmd, _ctx), do: raise("boom from a doc-hosted inventory verb")
+      end
+      '''
+    end
+
+    defp inventory_content_update(source) do
+      Yelixer.Doc.new()
+      |> ContentType.create(:text, "_engine_inventory.ex")
+      |> ContentType.insert_text(0, source)
+      |> Yelixer.Encoding.encode_update()
+    end
+
+    defp mint_inventory(source, opts) do
+      uuid = UUID.uuid4()
+      CommitStore.create_chained_commit(CommitStore, uuid, inventory_content_update(source), %{kind: :regular}, opts)
+      uuid
+    end
+
+    defp edit_inventory(uuid, source, opts) do
+      CommitStore.create_chained_commit(CommitStore, uuid, inventory_content_update(source), %{kind: :regular}, opts)
+      SourceDoc.reset_cache()
+      :ok
+    end
+
+    defp set_inventory_manifest(uuid) do
+      manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
+      Application.put_env(:commonplace, :mud_engine_manifest, Map.put(manifest, :inventory, uuid))
+    end
+
+    defp clear_inventory_manifest do
+      manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
+      Application.put_env(:commonplace, :mud_engine_manifest, Map.delete(manifest, :inventory))
+    end
+
+    test "no manifest entry -> the compiled-in floor runs (silently, no alarm)" do
+      permissive!()
+      clear_inventory_manifest()
+      ctx = build_inventory_ctx()
+      ref = attach_fallback_alarm()
+
+      assert {:reply, text} = EngineModule.run_verb(:inventory, inventory_cmd(), ctx, @store)
+      assert {:reply, text} == InventoryFloor.run(inventory_cmd(), ctx)
+      refute_receive {:engine_fallback, ^ref, _}, 100
+    end
+
+    test "doc->run: a trusted inventory doc lists carried items end-to-end via SourceDoc.compile + Gate B" do
+      permissive!()
+      ctx = build_inventory_ctx(["widget", "orrery"])
+      uuid = mint_inventory(inventory_source(), [])
+      set_inventory_manifest(uuid)
+
+      assert {:ok, _module} = SourceDoc.compile(uuid, @store, gate: :execute)
+
+      assert {:reply, text} = EngineModule.run_verb(:inventory, inventory_cmd(), ctx, @store)
+      assert text =~ "widget"
+      assert text =~ "orrery"
+    end
+
+    test "hot-reload: editing the inventory doc changes the rendered listing with no restart" do
+      permissive!()
+      ctx = build_inventory_ctx(["widget"])
+      uuid = mint_inventory(inventory_source(), [])
+      set_inventory_manifest(uuid)
+
+      assert {:reply, before_text} = EngineModule.run_verb(:inventory, inventory_cmd(), ctx, @store)
+      assert before_text =~ "You are carrying:"
+
+      :ok =
+        edit_inventory(
+          uuid,
+          inventory_source() |> String.replace("You are carrying:", "You clutch:"),
+          []
+        )
+
+      assert {:reply, after_text} = EngineModule.run_verb(:inventory, inventory_cmd(), ctx, @store)
+      assert after_text =~ "You clutch:"
+    end
+
+    test "non-brick: a broken EDIT falls back to last-good; the world keeps rendering + alarms" do
+      permissive!()
+      ctx = build_inventory_ctx(["widget"])
+      ref = attach_fallback_alarm()
+      uuid = mint_inventory(inventory_source(), [])
+      set_inventory_manifest(uuid)
+
+      assert {:reply, good_text} = EngineModule.run_verb(:inventory, inventory_cmd(), ctx, @store)
+
+      :ok = edit_inventory(uuid, broken_source(), [])
+
+      assert {:reply, ^good_text} = EngineModule.run_verb(:inventory, inventory_cmd(), ctx, @store)
+      assert_receive {:engine_fallback, ^ref, %{name: :inventory}}, 500
+    end
+
+    test "non-brick: a broken-FROM-THE-START inventory doc falls back to the compiled-in floor" do
+      permissive!()
+      ctx = build_inventory_ctx(["widget"])
+      ref = attach_fallback_alarm()
+      uuid = mint_inventory(broken_source(), [])
+      set_inventory_manifest(uuid)
+
+      assert {:reply, text} = EngineModule.run_verb(:inventory, inventory_cmd(), ctx, @store)
+      assert {:reply, text} == InventoryFloor.run(inventory_cmd(), ctx)
+      assert_receive {:engine_fallback, ^ref, _}, 500
+    end
+
+    test "non-brick: an inventory doc that COMPILES but crashes at runtime is contained -> floor" do
+      permissive!()
+      ctx = build_inventory_ctx(["widget"])
+      ref = attach_fallback_alarm()
+      uuid = mint_inventory(crashing_inventory_source(), [])
+      set_inventory_manifest(uuid)
+
+      assert {:reply, text} = EngineModule.run_verb(:inventory, inventory_cmd(), ctx, @store)
+      assert {:reply, text} == InventoryFloor.run(inventory_cmd(), ctx)
+      assert_receive {:engine_fallback, ^ref, _}, 500
+    end
+
+    test "RCE guard: a player-signed edit to the inventory doc is REFUSED (Gate B) -> trusted last-good survives",
+         %{trusted: trusted, trusted_id: trusted_id, trusted_pub: trusted_pub, player: player} do
+      strict!(%{trusted_id => Signing.encode_key(trusted_pub)})
+      ctx = build_inventory_ctx(["widget"])
+
+      uuid = mint_inventory(inventory_source(), signing_context: trusted)
+      set_inventory_manifest(uuid)
+      assert {:reply, trusted_text} = EngineModule.run_verb(:inventory, inventory_cmd(), ctx, @store)
+      assert trusted_text =~ "widget"
+
+      ref = attach_fallback_alarm()
+
+      :ok =
+        edit_inventory(
+          uuid,
+          inventory_source() |> String.replace("You are carrying:", "PWNED"),
+          signing_context: player
+        )
+
+      assert {:error, {:execution_denied, _}} = SourceDoc.compile(uuid, @store, gate: :execute)
+
+      # revocation-safety invariant (CX-aya0): the resolver serves the FLOOR on
+      # an authority failure, NEVER the (now-untrusted) cached last-good.
+      assert {:reply, floor_text} = EngineModule.run_verb(:inventory, inventory_cmd(), ctx, @store)
+      assert {:reply, floor_text} == InventoryFloor.run(inventory_cmd(), ctx)
+      refute floor_text =~ "PWNED"
+      assert_receive {:engine_fallback, ^ref, %{name: :inventory}}, 500
+    end
+
+    test "manifest trust root: a player-authored inventory doc NOT in the manifest is never resolved",
+         %{player: player} do
+      permissive!()
+      clear_inventory_manifest()
+      ctx = build_inventory_ctx(["widget"])
+
+      _player_uuid =
+        mint_inventory(
+          inventory_source() |> String.replace("You are carrying:", "HIJACKED"),
+          signing_context: player
+        )
+
+      assert {:reply, text} = EngineModule.run_verb(:inventory, inventory_cmd(), ctx, @store)
+      assert {:reply, text} == InventoryFloor.run(inventory_cmd(), ctx)
+      refute text =~ "HIJACKED"
+    end
+
+    test "Bootstrap.ensure_engine_inventory_verb seeds a node-signed inventory doc that runs in parity with the floor" do
+      permissive!()
+      ctx = build_inventory_ctx(["widget", "orrery"])
+
+      assert :ok = Commonplace.MUD.Bootstrap.ensure_engine_inventory_verb(@store)
+
+      assert EngineModule.run_verb(:inventory, inventory_cmd(), ctx, @store) ==
+               InventoryFloor.run(inventory_cmd(), ctx)
+    end
+  end
+
+  # ---- CX-aya0 (MUD-as-documents Inc-2 / B2): the doc-hosted `say`/`emote` verbs ----
+  #
+  # Same `run_verb/4` mechanism as `look`/`inventory` above. `say`/`emote`
+  # are PURE `World.broadcast_room` PubSub broadcasts (zero tree writes —
+  # see `do_say/2`/`do_emote/2`), so their ctx just needs a room uuid + a
+  # subscriber to observe the broadcast payload.
+
+  describe "say/emote verbs (Inc-2 / B2)" do
+    alias Commonplace.MUD.Topics
+    alias Commonplace.MUD.Verbs.{EmoteFloor, SayFloor}
+
+    setup do
+      Application.ensure_all_started(:phoenix_pubsub)
+
+      case Phoenix.PubSub.Supervisor.start_link(name: Commonplace.PubSub) do
+        {:ok, _} -> :ok
+        {:error, {:already_started, _}} -> :ok
+      end
+
+      :ok
+    end
+
+    defp build_say_ctx do
+      %{player_name: "alice", current_room_uuid: UUID.uuid4(), store: @store, signing_context: nil}
+    end
+
+    defp say_cmd(text), do: %Parser.Command{verb: "say", args: text, argv: String.split(text), target: nil}
+    defp emote_cmd(text), do: %Parser.Command{verb: "emote", args: text, argv: String.split(text), target: nil}
+
+    defp say_source do
+      ~s'''
+      defmodule Commonplace.MUD.EngineSay do
+        alias Commonplace.MUD.World
+
+        def run(%Commonplace.MUD.Parser.Command{args: ""}, _ctx), do: {:error, "Say what?"}
+
+        def run(%Commonplace.MUD.Parser.Command{args: text}, ctx) do
+          World.broadcast_room(ctx.current_room_uuid, %{kind: :say, who: ctx.player_name, text: text})
+          :ok
+        end
+      end
+      '''
+    end
+
+    defp emote_source do
+      ~s'''
+      defmodule Commonplace.MUD.EngineEmote do
+        alias Commonplace.MUD.World
+
+        def run(%Commonplace.MUD.Parser.Command{args: ""}, _ctx), do: {:error, "Emote what?"}
+
+        def run(%Commonplace.MUD.Parser.Command{args: text}, ctx) do
+          World.broadcast_room(ctx.current_room_uuid, %{kind: :emote, who: ctx.player_name, text: text})
+          :ok
+        end
+      end
+      '''
+    end
+
+    defp crashing_say_source do
+      ~s'''
+      defmodule Commonplace.MUD.EngineSay do
+        def run(_cmd, _ctx), do: raise("boom from a doc-hosted say verb")
+      end
+      '''
+    end
+
+    defp say_content_update(source, filename) do
+      Yelixer.Doc.new()
+      |> ContentType.create(:text, filename)
+      |> ContentType.insert_text(0, source)
+      |> Yelixer.Encoding.encode_update()
+    end
+
+    defp mint_say(source, opts, filename \\ "_engine_say.ex") do
+      uuid = UUID.uuid4()
+      CommitStore.create_chained_commit(CommitStore, uuid, say_content_update(source, filename), %{kind: :regular}, opts)
+      uuid
+    end
+
+    defp edit_say(uuid, source, opts, filename \\ "_engine_say.ex") do
+      CommitStore.create_chained_commit(CommitStore, uuid, say_content_update(source, filename), %{kind: :regular}, opts)
+      SourceDoc.reset_cache()
+      :ok
+    end
+
+    defp set_say_manifest(uuid), do: set_engine_manifest(:say, uuid)
+    defp set_emote_manifest(uuid), do: set_engine_manifest(:emote, uuid)
+
+    defp set_engine_manifest(name, uuid) do
+      manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
+      Application.put_env(:commonplace, :mud_engine_manifest, Map.put(manifest, name, uuid))
+    end
+
+    defp clear_engine_manifest(name) do
+      manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
+      Application.put_env(:commonplace, :mud_engine_manifest, Map.delete(manifest, name))
+    end
+
+    test "no manifest entry -> the compiled-in floor runs say (silently, no alarm)" do
+      permissive!()
+      clear_engine_manifest(:say)
+      ctx = build_say_ctx()
+      Topics.subscribe_room(ctx.current_room_uuid)
+      ref = attach_fallback_alarm()
+
+      assert :ok = EngineModule.run_verb(:say, say_cmd("hello"), ctx, @store)
+      assert_receive {"red:" <> _, %{kind: :say, who: "alice", text: "hello"}}, 500
+      refute_receive {:engine_fallback, ^ref, _}, 100
+    end
+
+    test "doc->run: a trusted say doc broadcasts end-to-end via SourceDoc.compile + Gate B" do
+      permissive!()
+      ctx = build_say_ctx()
+      Topics.subscribe_room(ctx.current_room_uuid)
+      uuid = mint_say(say_source(), [])
+      set_say_manifest(uuid)
+
+      assert {:ok, _module} = SourceDoc.compile(uuid, @store, gate: :execute)
+
+      assert :ok = EngineModule.run_verb(:say, say_cmd("hi there"), ctx, @store)
+      assert_receive {"red:" <> _, %{kind: :say, who: "alice", text: "hi there"}}, 500
+    end
+
+    test "doc->run: a trusted emote doc broadcasts end-to-end via SourceDoc.compile + Gate B" do
+      permissive!()
+      ctx = build_say_ctx()
+      Topics.subscribe_room(ctx.current_room_uuid)
+      uuid = mint_say(emote_source(), [], "_engine_emote.ex")
+      set_emote_manifest(uuid)
+
+      assert {:ok, _module} = SourceDoc.compile(uuid, @store, gate: :execute)
+
+      assert :ok = EngineModule.run_verb(:emote, emote_cmd("waves"), ctx, @store)
+      assert_receive {"red:" <> _, %{kind: :emote, who: "alice", text: "waves"}}, 500
+    end
+
+    test "hot-reload: editing the say doc changes the broadcast kind with no restart" do
+      permissive!()
+      ctx = build_say_ctx()
+      Topics.subscribe_room(ctx.current_room_uuid)
+      uuid = mint_say(say_source(), [])
+      set_say_manifest(uuid)
+
+      assert :ok = EngineModule.run_verb(:say, say_cmd("hello"), ctx, @store)
+      assert_receive {"red:" <> _, %{kind: :say}}, 500
+
+      :ok = edit_say(uuid, say_source() |> String.replace(":say", ":shout"), [])
+
+      assert :ok = EngineModule.run_verb(:say, say_cmd("hello"), ctx, @store)
+      assert_receive {"red:" <> _, %{kind: :shout}}, 500
+    end
+
+    test "non-brick: a broken EDIT to the say doc falls back to last-good; the world keeps broadcasting + alarms" do
+      permissive!()
+      ctx = build_say_ctx()
+      Topics.subscribe_room(ctx.current_room_uuid)
+      ref = attach_fallback_alarm()
+      uuid = mint_say(say_source(), [])
+      set_say_manifest(uuid)
+
+      assert :ok = EngineModule.run_verb(:say, say_cmd("hello"), ctx, @store)
+      assert_receive {"red:" <> _, %{kind: :say, text: "hello"}}, 500
+
+      :ok = edit_say(uuid, broken_source(), [])
+
+      assert :ok = EngineModule.run_verb(:say, say_cmd("still here"), ctx, @store)
+      assert_receive {"red:" <> _, %{kind: :say, text: "still here"}}, 500
+      assert_receive {:engine_fallback, ^ref, %{name: :say}}, 500
+    end
+
+    test "non-brick: a broken-FROM-THE-START say doc falls back to the compiled-in floor" do
+      permissive!()
+      ctx = build_say_ctx()
+      Topics.subscribe_room(ctx.current_room_uuid)
+      ref = attach_fallback_alarm()
+      uuid = mint_say(broken_source(), [])
+      set_say_manifest(uuid)
+
+      assert :ok = EngineModule.run_verb(:say, say_cmd("hello"), ctx, @store)
+      assert_receive {"red:" <> _, %{kind: :say, who: "alice", text: "hello"}}, 500
+      assert_receive {:engine_fallback, ^ref, _}, 500
+    end
+
+    test "non-brick: a say doc that COMPILES but crashes at runtime is contained -> floor" do
+      permissive!()
+      ctx = build_say_ctx()
+      Topics.subscribe_room(ctx.current_room_uuid)
+      ref = attach_fallback_alarm()
+      uuid = mint_say(crashing_say_source(), [])
+      set_say_manifest(uuid)
+
+      assert :ok = EngineModule.run_verb(:say, say_cmd("hello"), ctx, @store)
+      assert_receive {"red:" <> _, %{kind: :say, who: "alice", text: "hello"}}, 500
+      assert_receive {:engine_fallback, ^ref, _}, 500
+    end
+
+    test "RCE guard: a player-signed edit to the say doc is REFUSED (Gate B) -> trusted last-good survives",
+         %{trusted: trusted, trusted_id: trusted_id, trusted_pub: trusted_pub, player: player} do
+      strict!(%{trusted_id => Signing.encode_key(trusted_pub)})
+      ctx = build_say_ctx()
+      Topics.subscribe_room(ctx.current_room_uuid)
+
+      uuid = mint_say(say_source(), signing_context: trusted)
+      set_say_manifest(uuid)
+      assert :ok = EngineModule.run_verb(:say, say_cmd("hello"), ctx, @store)
+      assert_receive {"red:" <> _, %{kind: :say, who: "alice", text: "hello"}}, 500
+
+      ref = attach_fallback_alarm()
+
+      :ok = edit_say(uuid, say_source() |> String.replace(":say", ":pwned"), signing_context: player)
+
+      assert {:error, {:execution_denied, _}} = SourceDoc.compile(uuid, @store, gate: :execute)
+
+      # revocation-safety invariant (CX-aya0): authority failure -> FLOOR served,
+      # never the (now-untrusted) cached last-good.
+      assert :ok = EngineModule.run_verb(:say, say_cmd("hello again"), ctx, @store)
+      assert_receive {"red:" <> _, %{kind: :say, who: "alice", text: "hello again"}}, 500
+      refute_receive {"red:" <> _, %{kind: :pwned}}, 100
+      assert_receive {:engine_fallback, ^ref, %{name: :say}}, 500
+    end
+
+    test "manifest trust root: a player-authored say doc NOT in the manifest is never resolved",
+         %{player: player} do
+      permissive!()
+      clear_engine_manifest(:say)
+      ctx = build_say_ctx()
+      Topics.subscribe_room(ctx.current_room_uuid)
+
+      _player_uuid = mint_say(say_source() |> String.replace(":say", ":hijacked"), signing_context: player)
+
+      assert :ok = EngineModule.run_verb(:say, say_cmd("hello"), ctx, @store)
+      assert_receive {"red:" <> _, %{kind: :say, who: "alice", text: "hello"}}, 500
+    end
+
+    test "Bootstrap.ensure_engine_say_verb / ensure_engine_emote_verb seed node-signed docs in parity with the floor" do
+      permissive!()
+      ctx = build_say_ctx()
+      Topics.subscribe_room(ctx.current_room_uuid)
+
+      assert :ok = Commonplace.MUD.Bootstrap.ensure_engine_say_verb(@store)
+      assert :ok = Commonplace.MUD.Bootstrap.ensure_engine_emote_verb(@store)
+
+      assert EngineModule.run_verb(:say, say_cmd("hello"), ctx, @store) ==
+               SayFloor.run(say_cmd("hello"), ctx)
+
+      assert_receive {"red:" <> _, %{kind: :say, who: "alice", text: "hello"}}, 500
+
+      assert EngineModule.run_verb(:emote, emote_cmd("waves"), ctx, @store) ==
+               EmoteFloor.run(emote_cmd("waves"), ctx)
+
+      assert_receive {"red:" <> _, %{kind: :emote, who: "alice", text: "waves"}}, 500
+    end
+  end
 end

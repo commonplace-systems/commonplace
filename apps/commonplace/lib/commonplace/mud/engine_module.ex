@@ -88,7 +88,18 @@ defmodule Commonplace.MUD.EngineModule do
 
   # Compiled-in FLOOR module per engine name. DISTINCT from any doc-hosted
   # module name, so a `SourceDoc.compile` of the doc never purges it.
-  @floor %{parser: Parser, look: Commonplace.MUD.Verbs.LookFloor}
+  #
+  # CX-aya0 (B2): `inventory`/`emote`/`say` join `look` as doc-hosted
+  # stateless-leaf verbs — every entry here is a REVOCATION-SAFETY
+  # INVARIANT (see `resolve/2`'s authority-failure branch below): a
+  # migrated verb with no floor entry is un-revocable-safely.
+  @floor %{
+    parser: Parser,
+    look: Commonplace.MUD.Verbs.LookFloor,
+    inventory: Commonplace.MUD.Verbs.InventoryFloor,
+    emote: Commonplace.MUD.Verbs.EmoteFloor,
+    say: Commonplace.MUD.Verbs.SayFloor
+  }
 
   @doc """
   Parse `line` through the doc-hosted parser (resolving the current engine

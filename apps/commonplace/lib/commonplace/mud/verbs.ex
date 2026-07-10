@@ -543,8 +543,17 @@ defmodule Commonplace.MUD.Verbs do
   # tier guarantees this dispatch clause never regresses even with no
   # manifest entry set (the default today).
   defp dispatch_builtin("look", cmd, ctx), do: EngineModule.run_verb(:look, cmd, ctx, ctx.store)
-  defp dispatch_builtin("say", cmd, ctx), do: do_say(cmd, ctx)
-  defp dispatch_builtin("emote", cmd, ctx), do: do_emote(cmd, ctx)
+
+  # CX-aya0 (MUD-as-documents Inc-2 / B2): `say`/`emote`/`inventory` are the
+  # next stateless-leaf cohort routed through the doc-hosted `EngineModule`
+  # resolver, same shape as `look` (B1) above — `do_say/2`, `do_emote/2`,
+  # `do_inventory/1` and their private helpers are UNCHANGED and remain the
+  # single source of truth; each compiled-in floor
+  # (`Commonplace.MUD.Verbs.SayFloor`/`EmoteFloor`/`InventoryFloor`) just
+  # calls back into them via the `__say_floor__/2` / `__emote_floor__/2` /
+  # `__inventory_floor__/2` escape hatches below.
+  defp dispatch_builtin("say", cmd, ctx), do: EngineModule.run_verb(:say, cmd, ctx, ctx.store)
+  defp dispatch_builtin("emote", cmd, ctx), do: EngineModule.run_verb(:emote, cmd, ctx, ctx.store)
   defp dispatch_builtin("take", cmd, ctx), do: do_take(cmd, ctx)
   defp dispatch_builtin("get", cmd, ctx), do: do_take(cmd, ctx)
   defp dispatch_builtin("drop", cmd, ctx), do: do_drop(cmd, ctx)
@@ -553,7 +562,7 @@ defmodule Commonplace.MUD.Verbs do
   defp dispatch_builtin("mine", cmd, ctx), do: do_mine(cmd, ctx)
   defp dispatch_builtin("smith", cmd, ctx), do: do_smith(cmd, ctx)
   defp dispatch_builtin("recipes", _cmd, ctx), do: do_recipes(ctx)
-  defp dispatch_builtin("inventory", _cmd, ctx), do: do_inventory(ctx)
+  defp dispatch_builtin("inventory", cmd, ctx), do: EngineModule.run_verb(:inventory, cmd, ctx, ctx.store)
   defp dispatch_builtin("who", _cmd, ctx), do: do_who(ctx)
   defp dispatch_builtin("home", _cmd, ctx), do: do_home(ctx)
   defp dispatch_builtin("quit", _cmd, _ctx), do: {:reply, :quit}
@@ -576,6 +585,24 @@ defmodule Commonplace.MUD.Verbs do
   # there is exactly one implementation, this just exposes a call path to it.
   @doc false
   def __look_floor__(cmd, ctx), do: do_look(cmd, ctx)
+
+  # CX-aya0 (B2): the ONLY external callers of `do_say/2`, `do_emote/2`, and
+  # `do_inventory/1` — used exclusively by `Commonplace.MUD.Verbs.SayFloor`,
+  # `EmoteFloor`, and `InventoryFloor` (the `EngineModule` compiled-in floors
+  # for the doc-hosted `say`/`emote`/`inventory` verbs). Each stays private;
+  # routing the floor through these one-line delegators means the floor and
+  # the "real" verb behavior can never drift out of parity — there is
+  # exactly one implementation of each, this just exposes a call path to it.
+  # `do_inventory/1` takes only `ctx` (no `cmd`), so its hatch ignores `cmd`
+  # to match the `module.run(cmd, ctx)` shape `EngineModule` expects.
+  @doc false
+  def __say_floor__(cmd, ctx), do: do_say(cmd, ctx)
+
+  @doc false
+  def __emote_floor__(cmd, ctx), do: do_emote(cmd, ctx)
+
+  @doc false
+  def __inventory_floor__(_cmd, ctx), do: do_inventory(ctx)
 
   defp do_look(%Parser.Command{argv: []}, ctx) do
     {:reply, render_room(ctx)}
