@@ -65,27 +65,21 @@ defmodule Commonplace.Presence.Reaper do
   def reap(root_uuid, store \\ CommitStoreClient, stale_threshold \\ @default_stale_threshold) do
     stale = find_stale(root_uuid, store, stale_threshold)
 
-    # CX-i9w9 (presence-signing) — reaping is node-authority GC of ANOTHER
-    # player's abandoned presence in the node-owned dir: the reaper can't hold
-    # the departed player's key, and node is trusted, so the removal is
-    # NODE-signed. Unsigned (the old behavior) is `{:trust_rejected, :unsigned}`
-    # under `:enforce`, which silently made the reaper a no-op — stale ghosts
-    # never actually retracted. (The player's OWN clean-leave retraction is
-    # player-signed via the carve in PlayerSession/Presence.Server; this is the
-    # crash/abandon backstop.)
-    node_opts = node_creds()
-
+    # CX-i9w9 — DELIBERATELY still unsigned (a no-op under :enforce), NOT
+    # node-signed. Node-signing the reaper would make it ACTUALLY retract, but
+    # `find_stale` keys off the heartbeat timestamp — and MUD `PlayerSession`
+    # presences never heartbeat (frozen at create), so a signed reaper would
+    # reap LIVE players after `@default_stale_threshold` (30s). Enabling the
+    # reaper is therefore COUPLED to presence heartbeating (so live presences
+    # stay fresh and only truly-abandoned ones go stale). Both must land
+    # together — deferred to the heartbeat increment (CX-jiyi + a MUD-heartbeat
+    # follow-up). Clean-leave retraction is already fixed (PlayerSession
+    # terminate, player-signed via the carve); this is only the crash/abandon
+    # backstop, and leaving it a no-op is strictly safer than reaping the living.
     Enum.map(stale, fn entry ->
-      Presence.remove(entry.name, root_uuid, store, node_opts)
+      Presence.remove(entry.name, root_uuid, store)
       entry.name
     end)
-  end
-
-  defp node_creds do
-    case Commonplace.Crypto.NodeIdentity.signing_context() do
-      {:ok, node_ctx} -> [signing_context: node_ctx, cert_cids: []]
-      _ -> []
-    end
   end
 
   @impl true

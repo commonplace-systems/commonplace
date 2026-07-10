@@ -135,18 +135,22 @@ defmodule Commonplace.Presence.SigningTest do
     assert heartbeat_of(puuid, store) == hb0
   end
 
-  test "reaper's abandoned-ghost GC is NODE-signed and actually retracts under enforce", %{
+  test "reaper stays a DELIBERATE no-op under enforce (unsigned) — must not reap the frozen-heartbeat living", %{
     store: store,
     node_ctx: node_ctx,
     room: room
   } do
+    # CX-i9w9 safety: node-signing the reaper would make it retract, but
+    # `find_stale` keys off the heartbeat, and MUD presences never heartbeat
+    # (frozen at create) → a signed reaper would reap LIVE players after the
+    # stale threshold. So the reaper stays unsigned (denied under enforce = a
+    # no-op) until heartbeating lands. This test PINS that safety: the entry
+    # must SURVIVE a reap, even at stale_threshold 0 (everything "stale").
     p = player_with_presence_cert(store, node_ctx)
     {:ok, _puuid} = Presence.create("ghost", :usr, room, store, p.creds)
     assert length(usr_entries(room, store)) == 1
 
-    # stale_threshold 0 → everything is stale; reaper node-signs the removal.
-    removed = Reaper.reap(room, store, 0)
-    assert removed != []
-    assert usr_entries(room, store) == []
+    Reaper.reap(room, store, 0)
+    assert length(usr_entries(room, store)) == 1, "reaper must be a no-op under enforce (would reap living)"
   end
 end
