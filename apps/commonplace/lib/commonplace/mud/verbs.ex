@@ -459,10 +459,18 @@ defmodule Commonplace.MUD.Verbs do
       %{host_uuid: host_uuid}
     )
 
-    case verified_scopes do
-      [] -> MapSet.new([host_uuid])
-      scopes -> MapSet.new(scopes)
-    end
+    # CX-e12a — the host ALWAYS reaches its OWN meta (the base
+    # definer's-rights case: a verb hosted on X writing X's own state, e.g.
+    # the altar persisting its own offer), PLUS whatever the verified cert(s)
+    # additionally scope (the cross-doc EXTENSION — where the confused-deputy
+    # bound lives). The old `scopes -> MapSet.new(scopes)` DROPPED host_uuid
+    # whenever any cert existed, so a curated host that gained an owner cert
+    # scoped to other docs could no longer write ITSELF → put_state tripped
+    # :owner_grant_exceeded → "Nothing happens" → the Convergence went
+    # unwinnable (offers never persisted). Unifying to "always host_uuid,
+    # plus any cert scopes" restores self-write; strictly additive (the
+    # []-branch already granted host_uuid) and widens no cross-doc reach.
+    MapSet.new([host_uuid | verified_scopes])
   end
 
   defp cert_scope_uuids(%Capability{claim: %{scope: {:docs, uuids}}}), do: uuids
