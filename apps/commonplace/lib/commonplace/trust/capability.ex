@@ -121,6 +121,7 @@ defmodule Commonplace.Trust.Capability do
     claim = normalize_claim(claim)
 
     with :ok <- check_mint_policy(claim, opts),
+         :ok <- check_subtree_leaf_only(claim, opts[:parent]),
          :ok <- check_attenuation(claim, opts[:parent]) do
       cap = new(issuer, audience, claim, parent_cid) |> sign(issuer_ctx.private_key)
       {:ok, cap}
@@ -220,6 +221,26 @@ defmodule Commonplace.Trust.Capability do
   # node-signed=execute check is the structural suspenders). See the
   # mint-time-guard audit in that module — this is the enumerated silent no-op.
   defp check_no_code_doc_in_scope({:subtree, _root}, _opts), do: :ok
+
+  # CX-4u03 / A1: {:subtree, R} certs are LEAF-ONLY in M2 — citizenship mints
+  # them root→player in a single link, never delegated further. Reject any
+  # DELEGATION (a non-nil parent) that involves a subtree scope on EITHER side,
+  # fail-EARLY at mint. Root issue (parent == nil, citizenship's case) is allowed.
+  #
+  # ⚠️ This is a fail-EARLY convenience, NOT the load-bearing guard. The
+  # AUTHORITATIVE defense is VERIFY-TIME: `VerifyChain.combine_scope` rejects a
+  # subtree link mixed with any other scope type or a differing root. Do NOT
+  # mistake this mint check for the real protection — that is exactly the trap
+  # the #4 mint-guard audit exposed (a mint-time per-target scan that silently
+  # no-ops for a non-enumerable scope). A subtree scope-TYPE is knowable at mint
+  # (so this type-check does NOT silently no-op), but a future subtree-delegation
+  # feature must relax THIS *and* teach combine_scope the narrowing rule together.
+  defp check_subtree_leaf_only(_claim, nil), do: :ok
+  defp check_subtree_leaf_only(%{scope: {:subtree, _}}, _parent),
+    do: {:error, :subtree_scope_not_delegable}
+  defp check_subtree_leaf_only(_claim, %__MODULE__{claim: %{scope: {:subtree, _}}}),
+    do: {:error, :subtree_scope_not_delegable}
+  defp check_subtree_leaf_only(_claim, _parent), do: :ok
 
   defp check_attenuation(_claim, nil), do: :ok
 
