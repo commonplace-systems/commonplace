@@ -92,7 +92,7 @@ defmodule Commonplace.MUD.CitizenshipTest do
 
   test "issues the presence-starter cert and the home-zone cert as TWO SEPARATE grants (presence ⊥ ownership)",
        %{store: store, root: root, identity_uuid: identity_uuid, pub: pub} do
-    assert {:ok, %{cert_cids: cids, home_room_meta_uuid: home_meta}} =
+    assert {:ok, %{cert_cids: cids, home_room_uuid: home_uuid}} =
              Citizenship.ensure(identity_uuid, pub, "arwen", root, store)
 
     # Two distinct certs — never one merged over-broad grant.
@@ -106,11 +106,12 @@ defmodule Commonplace.MUD.CitizenshipTest do
       end)
 
     scopes = Enum.map(caps, & &1.claim.scope)
-    # One is presence-only (citizenship), the other is {:docs} over the
-    # home-room meta ONLY (ownership) — presence authority never grants
-    # zone-edit and the zone cert never grants presence.
+    # One is presence-only (citizenship), the other is {:subtree, home_dir}
+    # over the player's OWN home SUBTREE (CX-4u03 A4 — supersedes the old
+    # {:docs, [meta]}) — presence authority never grants zone-edit and the
+    # zone cert never grants presence.
     assert {:presence, identity_uuid} in scopes
-    assert {:docs, [home_meta]} in scopes
+    assert {:subtree, home_uuid} in scopes
 
     assert {:ok, node_identity} = NodeIdentity.identity()
 

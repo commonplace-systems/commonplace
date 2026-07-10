@@ -45,7 +45,7 @@ defmodule Commonplace.MUD.Citizenship do
   """
 
   alias Commonplace.Crypto.NodeIdentity
-  alias Commonplace.MUD.Schemas
+  alias Commonplace.MUD.{ChildMutation, Schemas, World}
   alias Commonplace.MUD.Schemas.Room
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.Schema
@@ -102,9 +102,13 @@ defmodule Commonplace.MUD.Citizenship do
 
     with {:ok, home} <- ensure_home(identity_uuid, name, root_uuid, store) do
       # A SEPARATE grant from the presence cert (presence⊥ownership):
-      # {:docs} over the home room's meta only, never folded into the
+      # a {:subtree, home_dir} grant over the player's OWN home SUBTREE (CX-4u03
+      # A4). This SUPERSEDES the old {:docs, [home_meta]} grant — it still covers
+      # @desc (the home meta's zone == home_dir), AND (the M2 headline) covers
+      # everything the player @digs/@creates UNDER their home, since every such
+      # child inherits the home zone via ChildMutation. Never folded into the
       # presence cert's scope.
-      zone_cids = issue_home_zone_cert(identity_uuid, pub, home.home_room_meta_uuid, store)
+      zone_cids = issue_home_zone_cert(identity_uuid, pub, home.home_room_uuid, store)
 
       {:ok,
        %{
@@ -150,19 +154,22 @@ defmodule Commonplace.MUD.Citizenship do
 
   # ---- Home-zone cert (CX-gjpi, plan #6431/#6433 sign-off) ----
 
-  # Issues the player a {:docs} zone cert over their OWN home room's
-  # `__room.json` meta doc — the "you own your room" grant that makes
-  # `@desc`-while-standing-in-your-home LAND under enforce
-  # (`write_current_room_meta` writes exactly this meta uuid; the
-  # {:docs} scope covers it). Node-issued, content-addressed/idempotent,
-  # graceful-degrade to `[]`, EXACTLY like the presence starter cert —
-  # but a SEPARATE cert with a SEPARATE ({:docs}, not {:presence}) scope.
-  # The two grants are never merged: presence authority ⊥ ownership
-  # authority (the M1 firewall, upheld here).
-  defp issue_home_zone_cert(identity_uuid, pub, home_room_meta_uuid, store)
-       when is_binary(home_room_meta_uuid) do
+  # Issues the player a {:subtree, home_dir} zone cert over their OWN home
+  # SUBTREE (CX-4u03 A4) — the "you own your home and everything you build in it"
+  # grant. `home_dir` is the home room's dir uuid, which is ALSO its zone-root
+  # (self-rooted by `ChildMutation.create_zone_root` at home genesis:
+  # home.zone == home_dir). Under the A1b subtree-carve this authorizes a write
+  # to ANY doc whose carried zone-stamp == home_dir: the home meta itself (so
+  # `@desc` still LANDS — superseding the old {:docs, [meta]} grant), AND every
+  # room/object the player @digs/@creates under their home (each inherits the
+  # home zone via ChildMutation). Node-issued, content-addressed/idempotent,
+  # graceful-degrade to `[]`, EXACTLY like the presence starter cert — a SEPARATE
+  # cert with a SEPARATE ({:subtree}, not {:presence}) scope; presence authority
+  # ⊥ ownership authority (the M1 firewall, upheld here).
+  defp issue_home_zone_cert(identity_uuid, pub, home_dir, store)
+       when is_binary(home_dir) do
     with {:ok, node_ctx} <- NodeIdentity.signing_context(),
-         claim <- %{verbs: [:write], scope: {:docs, [home_room_meta_uuid]}, caveats: %{}},
+         claim <- %{verbs: [:write], scope: {:subtree, home_dir}, caveats: %{}},
          {:ok, cap} <- Capability.issue(node_ctx, {identity_uuid, pub}, claim, nil, store: store),
          :ok <- CommitStoreClient.store_capability(store, cap) do
       [cap.id]
@@ -175,7 +182,7 @@ defmodule Commonplace.MUD.Citizenship do
     :exit, _ -> []
   end
 
-  defp issue_home_zone_cert(_identity_uuid, _pub, _meta, _store), do: []
+  defp issue_home_zone_cert(_identity_uuid, _pub, _home_dir, _store), do: []
 
   # ---- Node-signed home provision (as an OWNED ROOM) ----
 
@@ -248,21 +255,44 @@ defmodule Commonplace.MUD.Citizenship do
 
         with {:ok, meta_uuid} <-
                ensure_home_room_meta(identity_uuid, home_uuid, name, start_room_uuid, write_opts),
-             {:ok, inv_uuid} <- ensure_inventory(home_uuid, write_opts) do
+             {:ok, inv_uuid} <- ensure_inventory(home_uuid, write_opts),
+             :ok <- ensure_home_zone_stamp(home_uuid, write_opts) do
           {:ok, %{home_room_uuid: home_uuid, home_room_meta_uuid: meta_uuid, inventory_uuid: inv_uuid}}
         end
 
       :error ->
         room_json = home_room_json(identity_uuid, name, start_room_uuid)
 
+        # CX-4u03 A4: the home is a NEW zone ROOT — minted via
+        # ChildMutation.create_zone_root (self-rooted: home.zone == home_uuid,
+        # node-signed) so the player's {:subtree, home_uuid} cert covers the home
+        # AND everything they build under it. create_zone_root also links the home
+        # under players/<name> (node-signed), so no separate add_dir_entry.
         with {:ok, home_uuid} <-
-               Schemas.create_dir_with_meta(Schemas.room_filename(), room_json, store, write_opts),
+               ChildMutation.create_zone_root(players_dir_uuid, name, Schemas.room_filename(), room_json, store),
              {:ok, meta_uuid} <- room_meta_uuid(home_uuid, store),
              {:ok, inv_uuid} <- Schemas.create_dir_with_meta(nil, nil, store, write_opts),
-             :ok <- add_dir_entry(home_uuid, @inventory_dir, inv_uuid, write_opts),
-             :ok <- add_dir_entry(players_dir_uuid, name, home_uuid, write_opts) do
+             :ok <- add_dir_entry(home_uuid, @inventory_dir, inv_uuid, write_opts) do
           {:ok, %{home_room_uuid: home_uuid, home_room_meta_uuid: meta_uuid, inventory_uuid: inv_uuid}}
         end
+    end
+  end
+
+  # CX-4u03 A4 — MIGRATION: a home minted BEFORE A4 (via create_dir_with_meta)
+  # carries no zone stamp, so its owner's new {:subtree, home} cert can't
+  # authorize writes to it (the A1b carve fail-closes on the absent stamp). Stamp
+  # it once, node-signed, self-rooted (zone == home_uuid) to match a fresh A4
+  # home. New homes (create_zone_root) are already stamped → no-op for them.
+  defp ensure_home_zone_stamp(home_uuid, write_opts) do
+    store = Keyword.fetch!(write_opts, :store)
+
+    if Commonplace.Trust.doc_zone(home_uuid, store) == home_uuid do
+      :ok
+    else
+      case World.set_meta(home_uuid, Schemas.room_filename(), "zone", home_uuid, store, write_opts) do
+        :ok -> :ok
+        {:error, _} = err -> err
+      end
     end
   end
 
