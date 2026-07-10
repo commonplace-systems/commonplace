@@ -332,24 +332,29 @@ defmodule Commonplace.MUD.World.Facade do
   end
 
   @doc """
-  Set a metadata attribute (`key`/`value`) on this facade's bound
-  object. Grant-checked against `{object_uuid}`.
-  """
-  @spec set_attr(t(), String.t(), term()) :: :ok | {:error, term()}
-  def set_attr(%__MODULE__{} = f, key, value) when is_binary(key) do
-    f = unwrap(f)
+  DEPRECATED (CX-cj3t.6) — retired for authors, drops the write.
 
-    if f.object_uuid == nil do
-      {:error, :no_bound_object}
-    else
-      # CX-i9w9 / CX-e12a — set_attr writes the host's meta CHILD doc (via
-      # set_meta), exactly like put_state, so elevation-authority is judged on
-      # that node-owned child, not the (presence-churned) host dir. Completes
-      # put_state's child-redirect uniformly across the two meta-write methods.
-      write_guarded(f, [f.object_uuid], meta_authority(f), fn ->
-        World.set_meta(f.object_uuid, meta_filename(f), key, value, f.store, write_opts(f))
-      end)
-    end
+  `set_attr` merged an author-chosen key into the host's meta at the TOP LEVEL,
+  which let a verb flip TYPED behavioral fields (`fixed`/`container`/`name`/
+  `aliases`/`exits`/`tick_*`) and even the node-signed `zone` stamp through the
+  freeform path — a self-promote/unpin clobber (plan #5968). Rather than a
+  reserved-key DENY-LIST (default-open, drifts as new typed fields are added),
+  the fix is CLOSED-BY-CONSTRUCTION: freeform state lives ONLY in the isolated,
+  validated `meta[state]` submap via `put_state`; typed fields are authored by
+  builder verbs; `description` by `@desc`. The two namespaces can never collide,
+  so there is no list to maintain.
+
+  This method now DROPS every write and surfaces a dim author-diagnostic + ops
+  log (CX-3x5a) steering to the right channel. Returns `{:error, _}` always.
+  """
+  @spec set_attr(t(), String.t(), term()) :: {:error, term()}
+  def set_attr(%__MODULE__{} = f, key, value) when is_binary(key) do
+    _ = unwrap(f)
+    _ = value
+    # No write. The AccumDef return-wrap records this into the drop accumulator,
+    # so the author sees the steering note (and ops always logs it). Freeform →
+    # put_state, description → @desc, typed fields → builder verbs.
+    {:error, {:set_attr_deprecated, key}}
   end
 
   # CX-hqk5 — freeform per-object state bounds (plan #5968). State lives in
@@ -1790,6 +1795,12 @@ defmodule Commonplace.MUD.World.Facade do
 
   # A bare atom reason renders cleanly (`not_carrying`); a compound reason
   # (`{:trust_rejected, _}`) falls back to `inspect/1`.
+  # CX-cj3t.6 — the deprecation steering note (author-diagnostic + ops-log).
+  defp format_drop_reason({:set_attr_deprecated, key}),
+    do:
+      "set_attr(#{inspect(key)}) is retired — use put_state(world, key, value) for freeform " <>
+        "state, @desc for description, or a builder verb for typed fields (fixed/container/exits/name/…)"
+
   defp format_drop_reason(reason) when is_atom(reason), do: Atom.to_string(reason)
   defp format_drop_reason(reason), do: inspect(reason)
 

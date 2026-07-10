@@ -102,9 +102,9 @@ defmodule Commonplace.MUD.World.FacadeTest do
         store
       )
 
-    assert :ok = Facade.set_attr(facade, "note", "poked")
+    assert :ok = Facade.put_state(facade, "note", "poked")
 
-    # `set_attr` writes the object's __object.json META FILE (a child
+    # `put_state` writes the object's __object.json META FILE (a child
     # doc of the object directory), not the directory schema doc itself
     # — resolve that child uuid to check the actual write.
     meta_uuid = meta_file_uuid(store, obj_uuid)
@@ -133,7 +133,7 @@ defmodule Commonplace.MUD.World.FacadeTest do
         store
       )
 
-    assert {:error, :refused} = Facade.set_attr(facade, "note", "poked")
+    assert {:error, :refused} = Facade.put_state(facade, "note", "poked")
 
     # Nothing landed — the meta file's head is still the setup write,
     # no via_verb tag anywhere.
@@ -163,7 +163,43 @@ defmodule Commonplace.MUD.World.FacadeTest do
         store
       )
 
-    assert {:error, :refused} = Facade.set_attr(facade, "note", "poked")
+    assert {:error, :refused} = Facade.put_state(facade, "note", "poked")
+  end
+
+  # CX-cj3t.6: set_attr's open top-level merge is DEPRECATED (closed-by-
+  # construction) — it let a verb flip TYPED fields (fixed/container/exits/…)
+  # through the freeform path. It now DROPS every write, even for a would-be
+  # AUTHORIZED author, returns :refused to the body, and records a steering
+  # author-note (→ put_state / @desc / builder verbs). No reserved-list to drift.
+  test "CX-cj3t.6: set_attr is deprecated — drops the write (no typed-field clobber), returns :refused, accumulates a steering note", %{
+    store: store,
+    obj_uuid: obj_uuid,
+    trusted_ctx: trusted_ctx
+  } do
+    facade =
+      Facade.new(
+        %{signing_context: trusted_ctx, cert_cids: [], signer_id: nil},
+        obj_uuid,
+        [obj_uuid],
+        {"verbs/poke.safe.elx", "owner-x"},
+        store
+      )
+
+    meta_uuid = meta_file_uuid(store, obj_uuid)
+    {:ok, before} = CommitStore.latest_commit(store, meta_uuid)
+
+    Facade.drain_errors()
+    # A TYPED field, by an author who COULD write (trusted + grant covers) — still
+    # dropped: the clobber path is gone by construction, not by a key deny-list.
+    assert {:error, :refused} = Facade.set_attr(facade, "fixed", false)
+
+    # Nothing landed — "fixed" was NOT flipped on the meta doc.
+    assert {:ok, after_head} = CommitStore.latest_commit(store, meta_uuid)
+    assert after_head.id == before.id
+
+    # The drop accumulated with the deprecation reason (→ the steering
+    # author-diagnostic + ops-log via emit_verb_drops).
+    assert [{:set_attr, {:set_attr_deprecated, "fixed"}}] = Facade.drain_errors()
   end
 
   # ---- CX-cj3t.1.1: object lifecycle (spawn/give_to_actor/consume/
@@ -507,7 +543,7 @@ defmodule Commonplace.MUD.World.FacadeTest do
     }
 
     assert Facade.get_state(f_fresh, "lit") == true
-    assert :ok = Facade.set_attr(f, "note", "hi")
+    assert :ok = Facade.put_state(f, "note", "hi")
     assert {:ok, _} = Facade.create_child(f, "torch")
 
     # THE RESTRICTION: object-only methods are refused on a room host —
@@ -1194,12 +1230,12 @@ defmodule Commonplace.MUD.World.FacadeTest do
       refute rendered =~ "signing_context"
 
       # And write_opts still recovers the signer (process-dict path) so a
-      # facade WRITE from a verb still signs — prove set_attr lands.
+      # facade WRITE from a verb still signs — prove put_state lands.
       :ok =
         Commonplace.MUD.VerbSource.save_safe_verb(
           obj_uuid,
           "poke",
-          ~s|Commonplace.MUD.World.Facade.set_attr(world, "note", "hi")|,
+          ~s|Commonplace.MUD.World.Facade.put_state(world, "note", "hi")|,
           [obj_uuid],
           store,
           signing_context: trusted_ctx
@@ -1505,7 +1541,7 @@ defmodule Commonplace.MUD.World.FacadeTest do
       # The VERB BODY (here: this test, calling the facade method the same
       # way a verb body would) sees ONLY the sanitized atom — never the raw
       # {:trust_rejected, _} tuple.
-      assert {:error, :refused} = Facade.set_attr(facade, "note", "poked")
+      assert {:error, :refused} = Facade.put_state(facade, "note", "poked")
 
       # The SAME failure is still RAW in the accumulator — drain_errors
       # (the ops/author path) is completely unaffected by the RETURN-side
@@ -1513,7 +1549,7 @@ defmodule Commonplace.MUD.World.FacadeTest do
       # shape ({:trust_rejected, _}) is covered by the "permission-class
       # drops ... still route to the player-notice unchanged" test below,
       # which drives the SAME raw reason through `emit_verb_drops/2`.
-      assert [{:set_attr, {:trust_rejected, _}}] = Facade.drain_errors()
+      assert [{:put_state, {:trust_rejected, _}}] = Facade.drain_errors()
     end
 
     test "CX-3x5a: an UNMAPPED/unknown internal reason is closed-by-default → the verb body sees :refused, never the raw reason" do

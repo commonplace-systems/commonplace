@@ -142,7 +142,7 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
     bell_uuid = create_object(store, "bell")
     :ok = add_dir_entry(store, room_uuid, "bell.obj", bell_uuid)
 
-    body = ~s|Commonplace.MUD.World.Facade.set_attr(world, "verb_fired", true)|
+    body = ~s|Commonplace.MUD.World.Facade.put_state(world, "verb_fired", true)|
     assert :ok = VerbSource.save_safe_verb(bell_uuid, "take", body, [bell_uuid], store)
 
     ctx = base_ctx(store, room_uuid, inventory_uuid)
@@ -158,7 +158,7 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
     # The safe verb never ran: no `verb_fired` key landed on the bell's
     # own meta doc.
     meta = raw_meta(store, bell_uuid, Schemas.object_filename())
-    refute Map.has_key?(meta, "verb_fired")
+    refute get_in(meta, ["state", "verb_fired"])
   end
 
   # ---- pin 2: target resolution by direct-object noun (CX-mczs) ----
@@ -173,7 +173,7 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
     :ok = add_dir_entry(store, room_uuid, "rock.obj", rock_uuid)
     :ok = add_dir_entry(store, room_uuid, "stick.obj", stick_uuid)
 
-    body = ~s|Commonplace.MUD.World.Facade.set_attr(world, "poked", Map.get(args, :target))|
+    body = ~s|Commonplace.MUD.World.Facade.put_state(world, "poked", Map.get(args, :target))|
 
     assert :ok = VerbSource.save_safe_verb(rock_uuid, "poke", body, [rock_uuid], store)
     assert :ok = VerbSource.save_safe_verb(stick_uuid, "poke", body, [stick_uuid], store)
@@ -183,12 +183,12 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
     assert :ok = Verbs.dispatch(Parser.parse("poke stick"), ctx)
     stick_meta = raw_meta(store, stick_uuid, Schemas.object_filename())
     rock_meta = raw_meta(store, rock_uuid, Schemas.object_filename())
-    assert stick_meta["poked"] == "stick"
-    refute Map.has_key?(rock_meta, "poked")
+    assert get_in(stick_meta, ["state", "poked"]) == "stick"
+    refute get_in(rock_meta, ["state", "poked"])
 
     assert :ok = Verbs.dispatch(Parser.parse("poke rock"), ctx)
     rock_meta2 = raw_meta(store, rock_uuid, Schemas.object_filename())
-    assert rock_meta2["poked"] == "rock"
+    assert get_in(rock_meta2, ["state", "poked"]) == "rock"
   end
 
   # ---- pin 3: safe path wired + legacy verb refused (CX-qom0) ----
@@ -205,7 +205,7 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
     widget_uuid = create_object(store, "widget")
     :ok = add_dir_entry(store, room_uuid, "widget.obj", widget_uuid)
 
-    safe_body = ~s|Commonplace.MUD.World.Facade.set_attr(world, "poked", "yes")|
+    safe_body = ~s|Commonplace.MUD.World.Facade.put_state(world, "poked", "yes")|
     assert :ok = VerbSource.save_safe_verb(widget_uuid, "poke", safe_body, [widget_uuid], store)
 
     ctx = base_ctx(store, room_uuid, inventory_uuid, signing_context: inv_ctx)
@@ -219,7 +219,7 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
     assert {source_uuid, "widget.obj"} == head.metadata[:via_verb]
 
     meta = raw_meta(store, widget_uuid, Schemas.object_filename())
-    assert meta["poked"] == "yes"
+    assert get_in(meta, ["state", "poked"]) == "yes"
 
     # CX-qom0: a legacy (full-defmodule, ambient-reach) verb on a
     # DIFFERENT object is no longer dispatchable through
@@ -270,7 +270,7 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
     # mechanism reading it as a scope; the define-walk is anchored on
     # `[trinket_uuid]` (the real host), so an unauthorized definer is
     # STILL denied even though the body "claims" a different section.
-    body = ~s|"#{foreign_uuid}"; Commonplace.MUD.World.Facade.set_attr(world, "poked", "yes")|
+    body = ~s|"#{foreign_uuid}"; Commonplace.MUD.World.Facade.put_state(world, "poked", "yes")|
 
     assert {:error, {:execution_denied, _}} =
              VerbSource.save_safe_verb(trinket_uuid, "poke", body, [trinket_uuid], store,
@@ -343,7 +343,7 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
     lamp_uuid = create_object(store, "lamp")
     :ok = add_dir_entry(store, room_uuid, "lamp.obj", lamp_uuid)
 
-    body = ~s|Commonplace.MUD.World.Facade.set_attr(world, "on", true)|
+    body = ~s|Commonplace.MUD.World.Facade.put_state(world, "on", true)|
 
     assert {:error, {:execution_denied, _}} =
              VerbSource.save_safe_verb(lamp_uuid, "light", body, [lamp_uuid], store,
@@ -483,7 +483,7 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
     assert :legacy = Verbs.classify_verb_source(gem_uuid, "poke", store)
 
     # (b) a safe source present → {:safe, source_uuid}.
-    body = ~s|Commonplace.MUD.World.Facade.set_attr(world, "poked", "yes")|
+    body = ~s|Commonplace.MUD.World.Facade.put_state(world, "poked", "yes")|
     assert :ok = VerbSource.save_safe_verb(gem_uuid, "poke", body, [gem_uuid], store)
     assert {:ok, source_uuid} = VerbSource.find_safe_source(gem_uuid, "poke", store)
     assert {:safe, ^source_uuid} = Verbs.classify_verb_source(gem_uuid, "poke", store)

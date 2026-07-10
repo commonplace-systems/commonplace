@@ -244,7 +244,7 @@ defmodule Commonplace.MUD.SafeVerbTest do
       store: store,
       target_dir_uuid: target_dir_uuid
     } do
-      body = "Commonplace.MUD.World.Facade.set_attr(world, \"poked_by\", Map.get(args, \"who\", \"someone\"))"
+      body = "Commonplace.MUD.World.Facade.put_state(world, \"poked_by\", Map.get(args, \"who\", \"someone\"))"
 
       assert :ok = VerbSource.save_safe_verb(target_dir_uuid, "poke", body, [target_dir_uuid], store)
 
