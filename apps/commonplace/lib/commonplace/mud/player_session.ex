@@ -360,16 +360,34 @@ defmodule Commonplace.MUD.PlayerSession do
   # created) is a no-op. Only the online marker is retracted — the
   # persistent player record (`/players/<name>/` + inventory) is a
   # separate doc and is intentionally left intact so items/character
-  # survive a reconnect. (Removal is unsigned, matching the current
-  # unsigned-presence write model — see `ensure_player_in_world/3`'s note;
-  # under `:enforce` a player without write to the presence's room would
-  # not retract, which is the same follow-up the create path carries.)
+  # survive a reconnect.
+  #
+  # CX-i9w9 (presence-signing, Model A): the retraction is SIGNED with the
+  # session's own creds (`signing_context` + `cert_cids`, which include the
+  # citizenship-minted `{:presence, id}` cert). Under `:enforce`, an unsigned
+  # remove is `{:trust_rejected, :unsigned}` → the .usr entry never retracts →
+  # accumulating ghosts + a stale room "also here". Signed, the CX-0a9a carve
+  # authorizes the player's own-presence dir write (bound_identity == signer),
+  # so leave actually retracts. (The create path is already signed; this closes
+  # the matching remove path the old comment flagged as a follow-up.)
   @impl true
-  def terminate(_reason, %__MODULE__{presence_filename: fname, root_uuid: root, store: store})
+  def terminate(_reason, %__MODULE__{
+        presence_filename: fname,
+        root_uuid: root,
+        store: store,
+        signing_context: signing_context,
+        cert_cids: cert_cids
+      })
       when is_binary(fname) and is_binary(root) do
     case find_presence(root, fname, store) do
-      {:ok, room_uuid, _presence_uuid} -> Presence.remove(fname, room_uuid, store)
-      _ -> :ok
+      {:ok, room_uuid, _presence_uuid} ->
+        Presence.remove(fname, room_uuid, store,
+          signing_context: signing_context,
+          cert_cids: cert_cids
+        )
+
+      _ ->
+        :ok
     end
 
     :ok

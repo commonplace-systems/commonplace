@@ -65,10 +65,27 @@ defmodule Commonplace.Presence.Reaper do
   def reap(root_uuid, store \\ CommitStoreClient, stale_threshold \\ @default_stale_threshold) do
     stale = find_stale(root_uuid, store, stale_threshold)
 
+    # CX-i9w9 (presence-signing) — reaping is node-authority GC of ANOTHER
+    # player's abandoned presence in the node-owned dir: the reaper can't hold
+    # the departed player's key, and node is trusted, so the removal is
+    # NODE-signed. Unsigned (the old behavior) is `{:trust_rejected, :unsigned}`
+    # under `:enforce`, which silently made the reaper a no-op — stale ghosts
+    # never actually retracted. (The player's OWN clean-leave retraction is
+    # player-signed via the carve in PlayerSession/Presence.Server; this is the
+    # crash/abandon backstop.)
+    node_opts = node_creds()
+
     Enum.map(stale, fn entry ->
-      Presence.remove(entry.name, root_uuid, store)
+      Presence.remove(entry.name, root_uuid, store, node_opts)
       entry.name
     end)
+  end
+
+  defp node_creds do
+    case Commonplace.Crypto.NodeIdentity.signing_context() do
+      {:ok, node_ctx} -> [signing_context: node_ctx, cert_cids: []]
+      _ -> []
+    end
   end
 
   @impl true

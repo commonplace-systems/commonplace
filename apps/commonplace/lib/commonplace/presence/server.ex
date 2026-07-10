@@ -12,7 +12,24 @@ defmodule Commonplace.Presence.Server do
   alias Commonplace.Presence
   alias Commonplace.Presence.Identity
 
-  defstruct [:name, :type, :dir_uuid, :store, :uuid, :identity_uuid, :heartbeat_interval]
+  # CX-i9w9 (presence-signing, Model A): `signing_context` + `cert_cids` are
+  # the presence-writer's creds — the agent's SigningContext plus its
+  # citizenship-minted `{:presence, id}` cert. Threaded into every presence
+  # write (create/status/heartbeat/remove) so they land under `:enforce` via
+  # the CX-0a9a carve (bound_identity == signer). Absent (anonymous / legacy
+  # callers, e.g. a browser tree-view) → `nil`/`[]` reproduces today's
+  # best-effort unsigned write (denied under enforce, but non-fatal).
+  defstruct [
+    :name,
+    :type,
+    :dir_uuid,
+    :store,
+    :uuid,
+    :identity_uuid,
+    :heartbeat_interval,
+    :signing_context,
+    cert_cids: []
+  ]
 
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts)
@@ -28,11 +45,14 @@ defmodule Commonplace.Presence.Server do
     dir_uuid = Keyword.fetch!(opts, :dir_uuid)
     store = Keyword.get(opts, :store, Commonplace.Store.CommitStoreClient)
     interval = Keyword.get(opts, :heartbeat_interval, 10_000)
+    signing_context = Keyword.get(opts, :signing_context)
+    cert_cids = Keyword.get(opts, :cert_cids, [])
+    creds = [signing_context: signing_context, cert_cids: cert_cids]
 
     Process.flag(:trap_exit, true)
 
-    {:ok, uuid} = Presence.create(name, type, dir_uuid, store)
-    Presence.update_status(uuid, "running", store)
+    {:ok, uuid} = Presence.create(name, type, dir_uuid, store, creds)
+    Presence.update_status(uuid, "running", store, creds)
 
     # Register cold identity
     {:ok, identity_uuid} = Identity.register(name, type, dir_uuid, store)
@@ -44,7 +64,9 @@ defmodule Commonplace.Presence.Server do
       store: store,
       uuid: uuid,
       identity_uuid: identity_uuid,
-      heartbeat_interval: interval
+      heartbeat_interval: interval,
+      signing_context: signing_context,
+      cert_cids: cert_cids
     }
 
     schedule_heartbeat(state)
@@ -63,7 +85,7 @@ defmodule Commonplace.Presence.Server do
 
   @impl true
   def handle_info(:heartbeat, state) do
-    Presence.heartbeat(state.uuid, state.store)
+    Presence.heartbeat(state.uuid, state.store, creds(state))
     schedule_heartbeat(state)
     {:noreply, state}
   end
@@ -80,7 +102,7 @@ defmodule Commonplace.Presence.Server do
     # cleanup and swallow a dead-store failure.
     with_live_store(fn ->
       fname = Presence.filename(state.name, state.type)
-      Presence.remove(fname, state.dir_uuid, state.store)
+      Presence.remove(fname, state.dir_uuid, state.store, creds(state))
 
       # Update cold identity last_seen on shutdown
       Identity.touch_last_seen(state.identity_uuid, state.store)
@@ -88,6 +110,10 @@ defmodule Commonplace.Presence.Server do
 
     :ok
   end
+
+  # CX-i9w9 — the presence-writer creds threaded into every signed presence
+  # write (see the defstruct note).
+  defp creds(state), do: [signing_context: state.signing_context, cert_cids: state.cert_cids]
 
   defp with_live_store(fun) do
     fun.()

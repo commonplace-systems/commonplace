@@ -334,7 +334,11 @@ defmodule Commonplace.MUD.World.Facade do
     if f.object_uuid == nil do
       {:error, :no_bound_object}
     else
-      write_guarded(f, [f.object_uuid], fn ->
+      # CX-i9w9 / CX-e12a — set_attr writes the host's meta CHILD doc (via
+      # set_meta), exactly like put_state, so elevation-authority is judged on
+      # that node-owned child, not the (presence-churned) host dir. Completes
+      # put_state's child-redirect uniformly across the two meta-write methods.
+      write_guarded(f, [f.object_uuid], meta_authority(f), fn ->
         World.set_meta(f.object_uuid, meta_filename(f), key, value, f.store, write_opts(f))
       end)
     end

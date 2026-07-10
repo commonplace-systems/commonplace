@@ -165,12 +165,19 @@ defmodule Commonplace.Presence do
     end
   end
 
-  @doc "Update the status field of a presence document."
-  def update_status(uuid, status, store \\ CommitStoreClient) do
+  @doc """
+  Update the status field of a presence document.
+
+  `opts` — same `:signing_context` / `:cert_cids` shape as `create/5` /
+  `heartbeat/3` (CX-i9w9). Default `[]` reproduces the prior unsigned write
+  (denied under `:enforce`); a signed caller lands via the CX-0a9a carve.
+  """
+  def update_status(uuid, status, store \\ CommitStoreClient, opts \\ []) do
     doc = load_doc(uuid, store)
     doc = ContentType.set_key(doc, "status", status)
     update = Yelixer.Encoding.encode_update(doc)
-    CommitStoreClient.create_chained_commit(store, uuid, update)
+    {metadata, commit_opts} = SignedWrite.opts_for(uuid, Keyword.put(opts, :store, store))
+    CommitStoreClient.create_chained_commit(store, uuid, update, metadata, commit_opts)
   end
 
   @doc """
