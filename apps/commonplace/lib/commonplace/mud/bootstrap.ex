@@ -338,7 +338,12 @@ defmodule Commonplace.MUD.Bootstrap do
       kind: "vein",
       yield_type: @iron_ore_template,
       yield_max: 5,
-      regen_per_ms: 0,
+      # CX-znwh — regen ~1 ore / 30s (lazy, computed per-mine as
+      # floor(elapsed_ms * regen_per_ms), capped at yield_max). Was 0 =
+      # permanent depletion, which world-cumulatively starved newcomers of the
+      # 2 ore the only recipe needs (the mine→smith loop the room advertises).
+      # A slow regen keeps the resource meaningful while making it renewable.
+      regen_per_ms: 1 / 30_000,
       yield_remaining: 5,
       last_regen_at: 0
     }
