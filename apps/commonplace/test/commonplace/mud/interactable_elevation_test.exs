@@ -13,9 +13,10 @@ defmodule Commonplace.MUD.InteractableElevationTest do
   alias Commonplace.Crypto.{NodeIdentity, Signing, SigningContext}
   alias Commonplace.MUD.{Schemas, VerbSource}
   alias Commonplace.MUD.World.Facade
-  alias Commonplace.Store.CommitStore
+  alias Commonplace.Store.{CommitStore, CommitStoreClient}
   alias Commonplace.Tree.{DocBuilder, Schema}
   alias Commonplace.Document.ContentType
+  alias Yelixer.Encoding
 
   setup do
     dir = Path.join(System.tmp_dir!(), "cp_elev_#{:rand.uniform(1_000_000_000)}")
@@ -81,12 +82,35 @@ defmodule Commonplace.MUD.InteractableElevationTest do
     e.node_id
   end
 
-  defp state_value(obj_dir, store, key) do
-    {:ok, doc} = DocBuilder.reconstruct_doc(store, obj_meta_uuid(obj_dir, store))
+  defp state_value(obj_dir, store, key), do: state_value(obj_dir, store, Schemas.object_filename(), key)
+
+  defp state_value(dir, store, filename, key) do
+    {:ok, sch} = Schemas.load_dir_schema(dir, store)
+    {:ok, e} = Schema.get_entry(sch, filename)
+    {:ok, doc} = DocBuilder.reconstruct_doc(store, e.node_id)
     case Jason.decode(ContentType.get_content(doc)) do
       {:ok, %{"state" => %{^key => v}}} -> v
       _ -> nil
     end
+  end
+
+  # CX-e12a — churn `dir`'s schema with a non-node-signed presence-style entry,
+  # so its LATEST commit (and thus `node_owned?/3`) is no longer node-owned —
+  # exactly what a player entering/leaving a room does to the room DIR. The
+  # `signer_ctx` must be pinned trusted so the churn write itself lands under
+  # enforce (mirroring however presence is authorized in production).
+  defp presence_churn(dir, entry_name, signer_ctx, store) do
+    {:ok, schema} = Schemas.load_dir_schema(dir, store)
+    churned = Schema.add_file(schema, entry_name, UUID.uuid4())
+    update = Encoding.encode_update(churned)
+
+    result =
+      CommitStoreClient.create_chained_commit(store, dir, update, %{kind: :regular},
+        signing_context: signer_ctx
+      )
+
+    refute match?({:error, _}, result), "presence churn write must land: #{inspect(result)}"
+    :ok
   end
 
   test "non-owner visitor spins a NODE-OWNED object → put_state ELEVATES + lands node-signed", %{
@@ -146,5 +170,84 @@ defmodule Commonplace.MUD.InteractableElevationTest do
     VerbSource.run_safe_verb(obj_dir, "spin", [obj_dir], facade, %{}, store)
 
     assert state_value(obj_dir, store, "spun") == before
+  end
+
+  # --- CX-e12a: ROOM-host state writes survive a presence-churned dir ---
+
+  test "ROOM-verb put_state ELEVATES on the __room.json child even when the room DIR is presence-churned (non-node-owned)",
+       %{store: store, node_ctx: node_ctx, node_identity: node_identity} do
+    # a curated (NODE-OWNED) room: dir + __room.json meta, node-signed.
+    room_json = Schemas.encode_room(%Schemas.Room{name: "The Convergence", description: "A round obsidian chamber."})
+    {:ok, room_dir} = Schemas.create_dir_with_meta(Schemas.room_filename(), room_json, store, signing_context: node_ctx)
+
+    # an "offer"-style ROOM verb that put_states (the Convergence pattern).
+    body = "Commonplace.MUD.World.Facade.put_state(world, \"charge\", 1)"
+    :ok = VerbSource.save_safe_verb(room_dir, "offer", body, [room_dir], store, signing_context: node_ctx)
+
+    # A pinned "presence" identity churns the room DIR schema (player enters):
+    # the room dir's LATEST commit is now NON-node-signed → node_owned?(dir)
+    # is false — the exact live condition that dropped offers.
+    {ppub, ppriv} = Signing.generate_keypair()
+    pres_id = UUID.uuid4()
+    pres_ctx = %SigningContext{identity_uuid: pres_id, public_key: ppub, private_key: ppriv}
+
+    Application.put_env(:commonplace, :trust, %{
+      accept_unsigned: false,
+      trusted_identities: %{pres_id => Signing.encode_key(ppub)}
+    })
+
+    presence_churn(room_dir, "sable.usr", pres_ctx, store)
+
+    # sanity: the dir is now non-node-owned, but the __room.json child is not.
+    {:ok, room_commit} = CommitStore.latest_commit(store, room_dir)
+    refute match?({:ok, ^node_identity, _}, Signing.parse_signer_id(room_commit.signer_id))
+
+    assert state_value(room_dir, store, Schemas.room_filename(), "charge") == nil
+
+    # A NON-owner visitor offers. PRE-FIX: elevation was judged on the churned
+    # dir → :none → invoker-signed → {:trust_rejected} → state dropped.
+    # POST-FIX: authority is judged on the node-owned __room.json child →
+    # elevate → node writes → the offer PERSISTS.
+    v = visitor_ctx()
+    facade = %{Facade.new(v, room_dir, [room_dir], "offer", store) | host_kind: :room}
+
+    assert {:ok, _} = VerbSource.run_safe_verb(room_dir, "offer", [room_dir], facade, %{}, store)
+
+    assert state_value(room_dir, store, Schemas.room_filename(), "charge") == 1
+
+    # and the state write landed NODE-signed (owner authority), not visitor-signed.
+    {:ok, sch} = Schemas.load_dir_schema(room_dir, store)
+    {:ok, e} = Schema.get_entry(sch, Schemas.room_filename())
+    {:ok, state_commit} = CommitStore.latest_commit(store, e.node_id)
+    assert {:ok, ^node_identity, _} = Signing.parse_signer_id(state_commit.signer_id)
+  end
+
+  test "ROOM-verb put_state on a PLAYER-OWNED room is NOT elevated for a visitor (no escalation past reach)",
+       %{store: store} do
+    # A player-owned room: dir + __room.json authored by the player → the
+    # __room.json child is NOT node-owned, so a visitor gets no elevation even
+    # after the target-based fix. Confirms the fix doesn't open an escalation.
+    {ppub, ppriv} = Signing.generate_keypair()
+    pid = UUID.uuid4()
+    player_ctx = %SigningContext{identity_uuid: pid, public_key: ppub, private_key: ppriv}
+
+    Application.put_env(:commonplace, :trust, %{
+      accept_unsigned: false,
+      trusted_identities: %{pid => Signing.encode_key(ppub)}
+    })
+
+    room_json = Schemas.encode_room(%Schemas.Room{name: "Someone's Home", description: "A private room."})
+    {:ok, room_dir} = Schemas.create_dir_with_meta(Schemas.room_filename(), room_json, store, signing_context: player_ctx)
+    body = "Commonplace.MUD.World.Facade.put_state(world, \"charge\", 1)"
+    :ok = VerbSource.save_safe_verb(room_dir, "offer", body, [room_dir], store, signing_context: player_ctx)
+
+    before = state_value(room_dir, store, Schemas.room_filename(), "charge")
+
+    v = visitor_ctx()
+    facade = %{Facade.new(v, room_dir, [room_dir], "offer", store) | host_kind: :room}
+    VerbSource.run_safe_verb(room_dir, "offer", [room_dir], facade, %{}, store)
+
+    # player-owned child → no elevation → invoker-signed → refused → unchanged.
+    assert state_value(room_dir, store, Schemas.room_filename(), "charge") == before
   end
 end

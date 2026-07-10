@@ -400,7 +400,12 @@ defmodule Commonplace.MUD.World.Facade do
         # host, object_filename for an object host). A room's meta is
         # __room.json, NOT __object.json — writing the wrong file failed with
         # :no_meta_entry, so room state never persisted.
-        write_guarded(f, [f.object_uuid], fn ->
+        # CX-e12a — reach is the host dir ([f.object_uuid] ⊆ owner_grant), but
+        # the write COMMITS to the host's meta CHILD doc, so elevation must be
+        # judged there (see write_guarded/4). Without this, a ROOM host's
+        # presence-churned (non-node-owned) dir wrongly denied elevation and
+        # the state write was dropped as an untrusted-signer commit.
+        write_guarded(f, [f.object_uuid], meta_authority(f), fn ->
           do_put_state(f, f.object_uuid, meta_filename(f), key, value)
         end)
       end
@@ -435,6 +440,22 @@ defmodule Commonplace.MUD.World.Facade do
   # __room.json (the room's meta), object hosts in __object.json.
   defp meta_filename(%__MODULE__{host_kind: :room}), do: Schemas.room_filename()
   defp meta_filename(%__MODULE__{}), do: Schemas.object_filename()
+
+  # CX-e12a — the write-target AUTHORITY set for a meta write: the host's meta
+  # CHILD doc (`__room.json`/`__object.json`'s `node_id`), the doc `set_meta`
+  # actually commits to — NOT `f.object_uuid`, the containing host dir. The
+  # child is ALWAYS the meta file OF the grant-bound host (`f.object_uuid`,
+  # already ⊆ owner_grant via the reach check), so elevation can never be
+  # steered onto an attacker-chosen node-owned doc: no escalation past the
+  # reach boundary. Falls back to the dir if the child isn't materialized yet
+  # (set_meta then fails cleanly on its own `:no_meta_entry` path — no
+  # spurious elevation).
+  defp meta_authority(%__MODULE__{} = f) do
+    case World.meta_doc_uuid(f.object_uuid, meta_filename(f), f.store) do
+      {:ok, child_uuid} -> [child_uuid]
+      _ -> [f.object_uuid]
+    end
+  end
 
   defp validate_state_key(key) when is_binary(key) do
     if byte_size(key) > 0 and byte_size(key) <= @state_key_max_bytes,
@@ -1335,7 +1356,21 @@ defmodule Commonplace.MUD.World.Facade do
 
   # --- private ---
 
-  defp write_guarded(f, scope_uuids, fun) do
+  # Default: the reach scope and the actual write-target authority coincide
+  # (the common case — a write to the bound object/dir itself).
+  defp write_guarded(f, scope_uuids, fun), do: write_guarded(f, scope_uuids, scope_uuids, fun)
+
+  # CX-e12a — `scope_uuids` is the REACH set (checked ⊆ owner_grant, dir/host
+  # level — where the verb's granted reach is expressed). `authority_uuids`
+  # is the set of docs the closure ACTUALLY commits to — where invoker-vs-
+  # elevation authority (node-ownership) must be judged. They differ for a
+  # meta-write: put_state on a ROOM host reaches the room dir (owner_grant)
+  # but commits to the `__room.json` CHILD doc. Judging elevation on the dir
+  # (presence-churned to non-node-owned) wrongly denied elevation → the
+  # write ran invoker-signed → gate {:trust_rejected,:untrusted_signer} →
+  # state dropped (the Convergence went unwinnable). The child IS node-owned;
+  # judge THAT.
+  defp write_guarded(f, scope_uuids, authority_uuids, fun) do
     if Enum.all?(scope_uuids, &(&1 in f.owner_grant)) do
       # CX-gjpi (C)/(2) — reach check passed: this write touches ONLY docs
       # in owner_grant. Now decide AUTHORITY. If the INVOKER themselves
@@ -1350,10 +1385,13 @@ defmodule Commonplace.MUD.World.Facade do
       # write_guarded AND inject the flag), not a one-part omission; the
       # write_guarded-SKIP ops (move_self, own-inventory) never reach here so
       # they stay invoker-signed by construction (the §4a split).
-      if invoker_can_write_all?(f, scope_uuids) do
+      # CX-e12a — invoker-vs-elevation authority is judged on `authority_uuids`
+      # (the docs actually committed to), which for a meta-write is the host's
+      # node-owned meta child, not the presence-churned host dir.
+      if invoker_can_write_all?(f, authority_uuids) do
         fun.()
       else
-        case object_owner_authority(f, scope_uuids) do
+        case object_owner_authority(f, authority_uuids) do
           {:ok, owner_ctx} -> with_owner_authority(owner_ctx, fun)
           # No resolvable object-owner authority (v1: the targets aren't all
           # node-owned — e.g. a player-owned interactable, deferred to (b)).

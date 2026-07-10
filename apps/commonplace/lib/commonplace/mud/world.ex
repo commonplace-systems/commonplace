@@ -108,6 +108,27 @@ defmodule Commonplace.MUD.World do
   def get_player(dir_uuid, store \\ CommitStoreClient), do: Schemas.load_player(dir_uuid, store)
 
   @doc """
+  CX-e12a — resolve the UUID of a dir's meta CHILD doc: `filename`'s
+  `node_id` under the dir schema. This is the doc a meta write
+  (`set_meta/6`) actually commits to — distinct from `dir_uuid`, the
+  containing dir. The safe-verb elevation-authority (`Facade.write_guarded`)
+  must judge node-ownership of THIS doc, not the host dir: a room dir's
+  schema is churned by presence (player `.usr` entries added/removed on
+  enter/leave, non-node-signed), so `node_owned?(room_dir)` is false and
+  elevation was wrongly denied — even though the `__room.json` state child
+  IS node-owned. Returns `{:ok, uuid}` or `{:error, :no_meta_entry}`.
+  """
+  def meta_doc_uuid(dir_uuid, filename, store \\ CommitStoreClient) do
+    with {:ok, schema} <- Schemas.load_dir_schema(dir_uuid, store),
+         {:ok, entry} <- Schema.get_entry(schema, filename) do
+      {:ok, entry.node_id}
+    else
+      :error -> {:error, :no_meta_entry}
+      {:error, _} = err -> err
+    end
+  end
+
+  @doc """
   Set a top-level key on a metadata file, returning :ok or {:error, _}.
 
   CX-93ea: the underlying `Schemas.write_meta_doc/4` call is checked —
