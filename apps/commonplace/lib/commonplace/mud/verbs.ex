@@ -25,7 +25,7 @@ defmodule Commonplace.MUD.Verbs do
 
   require Logger
 
-  @builders ~w(@dig @create @destroy @desc @name @alias @listen @dump @verb @unverb @link @unlink @teleport @go @container)
+  @builders ~w(@dig @create @destroy @desc @name @alias @listen @dump @verb @unverb @link @unlink @teleport @go @container @private @public)
 
   # CX-cj3t.5 §1a (CX-66ca) — single source of truth for "is this verb
   # word a builtin" at DISPATCH TIME (not define-time reservation — a
@@ -736,43 +736,36 @@ defmodule Commonplace.MUD.Verbs do
     container_locked?(container_uuid, store) or match?({:ok, _}, container_lock_key(container_uuid, store))
   end
 
+  # CX-ivqz (read-scoping P2): the in-world `look` renderer gates through
+  # the SAME `World.room_snapshot/4` check as the UI pane (Seam 2.1) — a
+  # `capability_gated` room refused to this viewer renders "That place is
+  # private." instead of leaking name/desc/exits/contents/occupants (Z1/Z2).
+  # Field-shape kept identical to the pre-P2 rendering (exits
+  # direction-only, sorted; contents/occupants are name lists) so a
+  # PUBLIC room's `look` output is byte-for-byte unchanged (no-regression).
   defp render_room(ctx) do
-    case World.get_room(ctx.current_room_uuid, ctx.store) do
-      {:ok, %Room{} = room} ->
-        players = list_other_players(ctx)
-        objects = list_room_objects(ctx)
-        exits = room.exits |> Map.keys() |> Enum.sort()
+    case World.room_snapshot(ctx.current_room_uuid, ctx.presence_filename, ctx.store,
+           viewer: taker_identity(ctx)
+         ) do
+      {:ok, %{name: name, desc: desc, exits: exits, contents: objects, occupants: players}} ->
+        exit_dirs = exits |> Enum.map(fn {dir, _to} -> dir end)
 
         IO.iodata_to_binary([
-          "== ", room.name, " ==\n",
-          room.description, "\n",
-          if(exits == [], do: "Exits: (none)\n", else: ["Exits: ", Enum.join(exits, ", "), "\n"]),
+          "== ", name, " ==\n",
+          desc, "\n",
+          if(exit_dirs == [], do: "Exits: (none)\n", else: ["Exits: ", Enum.join(exit_dirs, ", "), "\n"]),
           if(objects == [], do: "", else: ["You see: ", Enum.join(objects, ", "), "\n"]),
           if(players == [], do: "", else: ["Players: ", Enum.join(players, ", "), "\n"])
         ])
+
+      {:error, :read_denied} ->
+        "That place is private."
 
       {:error, _} ->
         "(this place has no description)"
     end
   end
 
-  defp list_other_players(ctx) do
-    self_name = ctx.presence_filename
-
-    World.list_players_in(ctx.current_room_uuid, ctx.store)
-    |> Enum.reject(fn e -> e.name == self_name end)
-    |> Enum.map(fn e -> e.name |> String.replace_suffix(".usr", "") end)
-  end
-
-  defp list_room_objects(ctx) do
-    World.list_objects_in(ctx.current_room_uuid, ctx.store)
-    |> Enum.map(fn e ->
-      case Schemas.load_object(e.node_id, ctx.store) do
-        {:ok, %Object{name: name}} -> name
-        _ -> e.name |> String.replace_suffix(".obj", "")
-      end
-    end)
-  end
 
   # ---- say / emote ----
 
@@ -1426,6 +1419,8 @@ defmodule Commonplace.MUD.Verbs do
   defp dispatch_builder("@teleport", cmd, ctx), do: do_teleport(cmd, ctx)
   defp dispatch_builder("@go", cmd, ctx), do: do_teleport(cmd, ctx)
   defp dispatch_builder("@container", cmd, ctx), do: do_mark_container(cmd, ctx)
+  defp dispatch_builder("@private", _cmd, ctx), do: do_visibility(:capability_gated, ctx)
+  defp dispatch_builder("@public", _cmd, ctx), do: do_visibility(:public, ctx)
 
   defp dispatch_builder("@dump", cmd, ctx) do
     cond do
@@ -1657,6 +1652,49 @@ defmodule Commonplace.MUD.Verbs do
         end
     end
   end
+
+  # CX-ivqz (read-scoping P2, Seam 4): "@private"/"@public" flip the
+  # CURRENT room's read-visibility. No player-owner-grant flow ships yet
+  # (deferred) — visibility + DENY-ONLY, so a private home is private to
+  # its owner alone. The WRITE GATE is the protection, exactly like
+  # `@desc`/`@name`: this re-encodes+commits through the SAME
+  # invoker-signed `write_current_room_meta/3` path `@desc`/`@unlink` use
+  # (`write_opts(ctx)` → the session's own signing context). Under
+  # `local_write_gate: :enforce` only a principal holding a `:write` cap
+  # over the room's meta doc (the home owner, via
+  # `Citizenship.issue_home_zone_cert/4`) can land the commit — a
+  # non-owner's attempt comes back `{:trust_rejected, _}`, surfaced here
+  # as "You don't own this place." (not the generic `commit_error_reply/1`
+  # message, so the refusal reads as an ownership denial, not a random
+  # failure). On a `@private` flip, `owner` is never left blank: an
+  # UNOWNED room (legacy, minted before P2) is stamped with the invoker's
+  # identity; an already-set owner is PRESERVED (a co-writer's @private
+  # must not silently reassign read-ownership).
+  defp do_visibility(visibility, ctx) do
+    case World.get_room(ctx.current_room_uuid, ctx.store) do
+      {:ok, %Room{} = room} ->
+        # Going private: keep an ALREADY-SET owner (a co-writer's @private
+        # must not silently reassign read-ownership); only a legacy/unowned
+        # room gets stamped with the invoker. Going public: owner unchanged.
+        owner =
+          if visibility == :capability_gated,
+            do: room.owner || taker_identity(ctx),
+            else: room.owner
+        json = Schemas.encode_room(%Room{room | visibility: visibility, owner: owner})
+
+        case write_current_room_meta(ctx.current_room_uuid, json, ctx) do
+          :ok -> {:reply, visibility_reply(visibility)}
+          {:error, {:trust_rejected, _}} -> {:error, "You don't own this place."}
+          {:error, reason} -> {:error, commit_error_reply(reason)}
+        end
+
+      {:error, reason} ->
+        {:error, commit_error_reply(reason)}
+    end
+  end
+
+  defp visibility_reply(:capability_gated), do: "This place is now private."
+  defp visibility_reply(:public), do: "This place is now public."
 
   defp write_current_room_meta(room_dir_uuid, json, ctx) do
     with {:ok, schema} <- Schemas.load_dir_schema(room_dir_uuid, ctx.store),
@@ -2303,6 +2341,8 @@ defmodule Commonplace.MUD.Verbs do
                                        finish with '.' on its own line, '@abort'
                                        cancels)
       @unverb <target>:<verbname>      remove a verb from a room/object
+      @private                         make the current room read-visible to you only
+      @public                          make the current room read-visible to everyone
       @listen                          subscribe to debug events
       @dump [target]                   dump raw struct
     """

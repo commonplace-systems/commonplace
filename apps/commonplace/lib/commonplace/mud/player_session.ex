@@ -198,8 +198,10 @@ defmodule Commonplace.MUD.PlayerSession do
   # sections (the same data `render_room/1`'s `look` computes). Read-only —
   # no state change.
   def handle_call(:room_snapshot, _from, state) do
-    {:reply, World.room_snapshot(state.current_room_uuid, state.presence_filename, state.store),
-     state}
+    {:reply,
+     World.room_snapshot(state.current_room_uuid, state.presence_filename, state.store,
+       viewer: session_identity_uuid(state)
+     ), state}
   end
 
   def handle_call({:input, line}, _from, state) do
@@ -585,6 +587,15 @@ defmodule Commonplace.MUD.PlayerSession do
   defp render_event(other, state) do
     state.output_fn.("(event: #{inspect(other)})")
   end
+
+  # CX-ivqz (read-scoping P2): the session's own identity_uuid, threaded
+  # to `World.room_snapshot/4` as `:viewer` — `nil` for an unsigned
+  # session (an unauthenticated viewer, never the same as the room owner,
+  # so a gated room correctly refuses them).
+  defp session_identity_uuid(%{signing_context: %Commonplace.Crypto.SigningContext{identity_uuid: id}}),
+    do: id
+
+  defp session_identity_uuid(_state), do: nil
 
   ## Session identity resolution (CX-lg06)
 

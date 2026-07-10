@@ -30,14 +30,26 @@ defmodule Commonplace.MUD.Schemas do
               description: "",
               exits: %{},
               tick_interval_ms: nil,
-              tick_message: nil
+              tick_message: nil,
+              # CX-ivqz (read-scoping P2) — protected, node-signed read-visibility
+              # fields (design @ae8980f §4, Seam 1). `owner` is the identity_uuid
+              # that owns this room (self-read short-circuit in
+              # `Commonplace.Trust.Read`); `visibility` is `:public` (default,
+              # no-regression) or `:capability_gated`. ABSENT in the JSON for
+              # every room minted before P2 — decodes to these same defaults, so
+              # existing rooms are byte-for-byte and behavior-for-behavior
+              # unchanged (see `encode_room/1`'s omit-when-default).
+              owner: nil,
+              visibility: :public
 
     @type t :: %__MODULE__{
             name: String.t(),
             description: String.t(),
             exits: %{String.t() => String.t()},
             tick_interval_ms: pos_integer() | nil,
-            tick_message: String.t() | nil
+            tick_message: String.t() | nil,
+            owner: String.t() | nil,
+            visibility: :public | :capability_gated
           }
   end
 
@@ -124,15 +136,29 @@ defmodule Commonplace.MUD.Schemas do
   # ---- Encoding ----
 
   def encode_room(%Room{} = r) do
-    Jason.encode!(%{
+    base = %{
       "kind" => "room",
       "name" => r.name,
       "description" => r.description,
       "exits" => r.exits,
       "tick_interval_ms" => r.tick_interval_ms,
       "tick_message" => r.tick_message
-    })
+    }
+
+    # CX-ivqz: omit-when-default — `owner`/`visibility` are only written
+    # when they diverge from the no-regression default (nil / :public), so
+    # every pre-P2 room's JSON stays byte-for-byte unchanged.
+    base
+    |> maybe_put_owner(r.owner)
+    |> maybe_put_visibility(r.visibility)
+    |> Jason.encode!()
   end
+
+  defp maybe_put_owner(map, nil), do: map
+  defp maybe_put_owner(map, owner) when is_binary(owner), do: Map.put(map, "owner", owner)
+
+  defp maybe_put_visibility(map, :public), do: map
+  defp maybe_put_visibility(map, :capability_gated), do: Map.put(map, "visibility", "capability_gated")
 
   def encode_object(%Object{} = o) do
     Jason.encode!(%{
@@ -172,13 +198,22 @@ defmodule Commonplace.MUD.Schemas do
            description: Map.get(m, "description", ""),
            exits: Map.get(m, "exits", %{}),
            tick_interval_ms: Map.get(m, "tick_interval_ms"),
-           tick_message: Map.get(m, "tick_message")
+           tick_message: Map.get(m, "tick_message"),
+           owner: Map.get(m, "owner"),
+           visibility: decode_visibility(Map.get(m, "visibility"))
          }}
 
       err ->
         err
     end
   end
+
+  # CX-ivqz: absent, or any value other than the literal "capability_gated"
+  # (garbage, a typo, a future value this build doesn't know about) →
+  # :public — the safe default; never crash decoding a room on an
+  # unrecognized visibility string.
+  defp decode_visibility("capability_gated"), do: :capability_gated
+  defp decode_visibility(_), do: :public
 
   def decode_object(json) when is_binary(json) do
     case Jason.decode(json) do

@@ -251,19 +251,44 @@ defmodule Commonplace.MUD.World do
   room the observer hasn't traversed — the adjacent-room-visibility
   question deferred to read-scoping (#13). Keeping exits direction-only
   preserves Inc-2's zero-new-disclosure invariant (plan #6868).
+
+  ## Read-scoping P2 gate (CX-ivqz, Seam 1/2.1)
+
+  ALWAYS consults `Commonplace.Trust.Read.authorized?/3` with the room's
+  OWN carried, node-signed `visibility`/`owner` fields — `:public` (or
+  absent, every pre-P2 room) short-circuits inside the verifier, so this
+  is a zero-behavior-change no-op for the overwhelming majority of rooms
+  (no-regression). A `capability_gated` room refused to `opts[:viewer]`
+  returns `{:error, :read_denied}` — NEVER partial data (attack Z2: a
+  refused room must not leak name/desc/exits/contents/occupants).
+  Judged ONLY from the room's carried fields, never live
+  occupancy/presence (attack Z7 — a security gate must not consult
+  mutable world state).
   """
-  @spec room_snapshot(String.t(), String.t(), term()) :: {:ok, map()} | {:error, term()}
-  def room_snapshot(room_uuid, self_filename, store \\ CommitStoreClient) do
+  @spec room_snapshot(String.t(), String.t(), term(), keyword()) :: {:ok, map()} | {:error, term()}
+  def room_snapshot(room_uuid, self_filename, store \\ CommitStoreClient, opts \\ []) do
+    viewer = Keyword.get(opts, :viewer)
+
     case get_room(room_uuid, store) do
       {:ok, %Schemas.Room{} = room} ->
-        {:ok,
-         %{
-           name: room.name,
-           desc: room.description,
-           exits: snapshot_exits(room.exits),
-           contents: snapshot_contents(room_uuid, store),
-           occupants: snapshot_occupants(room_uuid, self_filename, store)
-         }}
+        case Commonplace.Trust.Read.authorized?(viewer, room_uuid,
+               visibility: room.visibility,
+               owner: room.owner,
+               store: store
+             ) do
+          :ok ->
+            {:ok,
+             %{
+               name: room.name,
+               desc: room.description,
+               exits: snapshot_exits(room.exits),
+               contents: snapshot_contents(room_uuid, store),
+               occupants: snapshot_occupants(room_uuid, self_filename, store)
+             }}
+
+          {:error, _} = denied ->
+            denied
+        end
 
       {:error, _} = err ->
         err

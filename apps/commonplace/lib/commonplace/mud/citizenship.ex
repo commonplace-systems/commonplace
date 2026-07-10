@@ -100,7 +100,7 @@ defmodule Commonplace.MUD.Citizenship do
       when is_binary(identity_uuid) and is_binary(pub) and is_binary(name) and is_binary(root_uuid) do
     starter_cids = issue_presence_starter_cert(identity_uuid, pub, store)
 
-    with {:ok, home} <- ensure_home(name, root_uuid, store) do
+    with {:ok, home} <- ensure_home(identity_uuid, name, root_uuid, store) do
       # A SEPARATE grant from the presence cert (presence⊥ownership):
       # {:docs} over the home room's meta only, never folded into the
       # presence cert's scope.
@@ -179,11 +179,12 @@ defmodule Commonplace.MUD.Citizenship do
 
   # ---- Node-signed home provision (as an OWNED ROOM) ----
 
-  defp ensure_home(name, root_uuid, store) do
+  defp ensure_home(identity_uuid, name, root_uuid, store) do
     with {:ok, node_ctx} <- node_write_opts(store),
          {:ok, players_dir_uuid} <- ensure_players_dir(root_uuid, node_ctx),
          start_room_uuid <- resolve_start_room(root_uuid, store),
-         {:ok, home} <- ensure_player_home(name, players_dir_uuid, start_room_uuid, node_ctx) do
+         {:ok, home} <-
+           ensure_player_home(identity_uuid, name, players_dir_uuid, start_room_uuid, node_ctx) do
       {:ok, home}
     end
   end
@@ -237,7 +238,7 @@ defmodule Commonplace.MUD.Citizenship do
   # zone cert re-issues to the same cid); a legacy player dir that lacks
   # a `__room.json` gets one added (node-signed) so ownership still
   # attaches.
-  defp ensure_player_home(name, players_dir_uuid, start_room_uuid, write_opts) do
+  defp ensure_player_home(identity_uuid, name, players_dir_uuid, start_room_uuid, write_opts) do
     store = Keyword.fetch!(write_opts, :store)
     {:ok, players_schema} = Schemas.load_dir_schema(players_dir_uuid, store)
 
@@ -245,13 +246,14 @@ defmodule Commonplace.MUD.Citizenship do
       {:ok, entry} ->
         home_uuid = entry.node_id
 
-        with {:ok, meta_uuid} <- ensure_home_room_meta(home_uuid, name, start_room_uuid, write_opts),
+        with {:ok, meta_uuid} <-
+               ensure_home_room_meta(identity_uuid, home_uuid, name, start_room_uuid, write_opts),
              {:ok, inv_uuid} <- ensure_inventory(home_uuid, write_opts) do
           {:ok, %{home_room_uuid: home_uuid, home_room_meta_uuid: meta_uuid, inventory_uuid: inv_uuid}}
         end
 
       :error ->
-        room_json = home_room_json(name, start_room_uuid)
+        room_json = home_room_json(identity_uuid, name, start_room_uuid)
 
         with {:ok, home_uuid} <-
                Schemas.create_dir_with_meta(Schemas.room_filename(), room_json, store, write_opts),
@@ -264,7 +266,7 @@ defmodule Commonplace.MUD.Citizenship do
     end
   end
 
-  defp ensure_home_room_meta(home_uuid, name, start_room_uuid, write_opts) do
+  defp ensure_home_room_meta(identity_uuid, home_uuid, name, start_room_uuid, write_opts) do
     store = Keyword.fetch!(write_opts, :store)
     {:ok, schema} = Schemas.load_dir_schema(home_uuid, store)
 
@@ -275,15 +277,15 @@ defmodule Commonplace.MUD.Citizenship do
       :error ->
         # Legacy home dir with no room meta — add one node-signed, then
         # read its uuid back.
-        with {:ok, meta_uuid} <- create_room_meta(home_uuid, name, start_room_uuid, write_opts) do
+        with {:ok, meta_uuid} <- create_room_meta(identity_uuid, home_uuid, name, start_room_uuid, write_opts) do
           {:ok, meta_uuid}
         end
     end
   end
 
-  defp create_room_meta(home_uuid, name, start_room_uuid, write_opts) do
+  defp create_room_meta(identity_uuid, home_uuid, name, start_room_uuid, write_opts) do
     store = Keyword.fetch!(write_opts, :store)
-    json = home_room_json(name, start_room_uuid)
+    json = home_room_json(identity_uuid, name, start_room_uuid)
 
     with {:ok, meta_uuid} <- Schemas.create_meta_doc(json, store, write_opts),
          :ok <- add_file_entry(home_uuid, Schemas.room_filename(), meta_uuid, write_opts) do
@@ -307,7 +309,12 @@ defmodule Commonplace.MUD.Citizenship do
     end
   end
 
-  defp home_room_json(name, start_room_uuid) do
+  # CX-ivqz (read-scoping P2, Seam 1): a freshly-minted home room is
+  # PRIVATE by default — owned by the player it's minted for, gated. This
+  # is the safe default for a personal home; the owner can flip it public
+  # later (`@public`, `Commonplace.MUD.Verbs`). node-signed at mint (same
+  # write as the rest of this doc), so a reader can't forge it open (W3).
+  defp home_room_json(identity_uuid, name, start_room_uuid) do
     exits = if is_binary(start_room_uuid), do: %{"out" => start_room_uuid}, else: %{}
 
     Schemas.encode_room(%Room{
@@ -315,7 +322,9 @@ defmodule Commonplace.MUD.Citizenship do
       description:
         "A quiet room that is yours to shape — this is your own corner of the world." <>
           if(is_binary(start_room_uuid), do: " An exit leads <out> to the rest of the demesne.", else: ""),
-      exits: exits
+      exits: exits,
+      owner: identity_uuid,
+      visibility: :capability_gated
     })
   end
 
