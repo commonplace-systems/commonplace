@@ -16,6 +16,7 @@ defmodule Commonplace.MUD.DropGiveTest do
   alias Commonplace.Document.ContentType
   alias Commonplace.Green.{Bursar, BursarClient}
   alias Commonplace.MUD.{Parser, Schemas, Take, Verbs, World}
+  alias Commonplace.MUD.World.Facade
   alias Commonplace.MUD.Schemas.{Object, Room}
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.Schema
@@ -369,6 +370,108 @@ defmodule Commonplace.MUD.DropGiveTest do
 
     assert "trinket.obj" in entry_names(store, giver_inv)
     refute "trinket.obj" in entry_names(store, recipient_inv)
+    assert :available = BursarClient.query(Bursar, item)
+  end
+
+  # ---- 4b. FACADE give_from_inventory converges on the SAME chokepoint ----
+  #
+  # CX-j2wt: the safe-verb quest/gift method `Facade.give_from_inventory/3`
+  # used to raw add_child_entry+unlink the tree entry into the recipient's
+  # inventory WITHOUT transferring the possession token — the item showed in
+  # the recipient's inventory but any drop/put said "you aren't carrying that"
+  # (jes's live bug). It now routes through `World.give_item/7`, so the token
+  # transfers giver → recipient exactly like the `give` command.
+
+  test "give_from_inventory (facade): a held gift transfers its token to the recipient — the CX-j2wt fix (droppable, not a ghost)", %{
+    store: store,
+    node_ctx: node_ctx,
+    root: root,
+    players: players
+  } do
+    room = share!(store, root, mk_room!(store, node_ctx), node_ctx)
+
+    # Giver: a fresh visitor who TAKES an item, so they hold its token.
+    {giver_id, giver_ctx} = fresh_identity()
+    giver_inv = mk_inventory!(store, node_ctx)
+    item = mk_object!(store, node_ctx, name: "coin.obj")
+    add_dir_entry!(store, room, "coin.obj", item, node_ctx)
+    assert :ok = Take.take(item, "coin.obj", room, giver_inv, giver_id, store: store, root_uuid: root)
+
+    # Recipient bob: resolvable at players/bob/inventory AND present in the
+    # room with a bound identity (so the token can transfer to them).
+    bob = mk_home!(store, players, "bob", node_ctx)
+    {bob_id, _} = fresh_identity()
+    seed_presence!(store, room, "bob", bob_id, node_ctx)
+
+    f =
+      Facade.new(
+        %{
+          signing_context: giver_ctx,
+          cert_cids: [],
+          signer_id: nil,
+          inventory_uuid: giver_inv,
+          current_room_uuid: room,
+          root_uuid: root,
+          player_name: "alice"
+        },
+        item,
+        [],
+        {"verbs/x.safe.elx", "owner-x"},
+        store
+      )
+
+    assert :ok = Facade.give_from_inventory(f, "coin", "bob")
+
+    refute "coin.obj" in entry_names(store, giver_inv)
+    assert "coin.obj" in entry_names(store, bob.inventory)
+    # THE FIX: the recipient now HOLDS the token (was left with the giver).
+    assert {:held, %{holder: ^bob_id}} = BursarClient.query(Bursar, item)
+  end
+
+  test "give_from_inventory (facade): gifting a token-less ghost is refused :not_carrying — no silent desynced deposit", %{
+    store: store,
+    node_ctx: node_ctx,
+    root: root,
+    players: players
+  } do
+    room = share!(store, root, mk_room!(store, node_ctx), node_ctx)
+
+    # A visitor whose inventory dir CONTAINS an item they never held the
+    # token for (the legacy desynced-ghost shape).
+    {_giver_id, giver_ctx} = fresh_identity()
+    giver_inv = mk_inventory!(store, node_ctx)
+    item = mk_object!(store, node_ctx, name: "ghost.obj")
+    add_file_entry!(store, giver_inv, "ghost.obj", item, node_ctx)
+
+    bob = mk_home!(store, players, "bob", node_ctx)
+    {bob_id, _} = fresh_identity()
+    seed_presence!(store, room, "bob", bob_id, node_ctx)
+
+    f =
+      Facade.new(
+        %{
+          signing_context: giver_ctx,
+          cert_cids: [],
+          signer_id: nil,
+          inventory_uuid: giver_inv,
+          current_room_uuid: room,
+          root_uuid: root,
+          player_name: "alice"
+        },
+        item,
+        [],
+        {"verbs/x.safe.elx", "owner-x"},
+        store
+      )
+
+    # Refused at the token gate (the giver never held it), mapped to the
+    # honest player-facing :not_carrying — NOT a silent ghost deposit.
+    assert {:error, :not_carrying} = Facade.give_from_inventory(f, "ghost", "bob")
+
+    # Nothing moved: the item stayed put and bob's inventory is untouched.
+    assert "ghost.obj" in entry_names(store, giver_inv)
+    refute "ghost.obj" in entry_names(store, bob.inventory)
+    # Token never existed for this item, and none was minted by the refusal.
     assert :available = BursarClient.query(Bursar, item)
   end
 

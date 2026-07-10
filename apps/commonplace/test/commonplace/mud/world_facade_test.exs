@@ -242,6 +242,23 @@ defmodule Commonplace.MUD.World.FacadeTest do
     Enum.any?(lc_entry_names(store, dir), &String.starts_with?(&1, name <> "-"))
   end
 
+  # CX-j2wt — give_from_inventory now routes through World.give_item →
+  # HolderMove.push → Move.move, which serializes on the Green Bursar's
+  # move-lock. Bring one up (default-named singleton; stop any leftover
+  # first, mirroring the move_self test) so the converged gift can run.
+  defp ensure_bursar!(store) do
+    case GenServer.whereis(Commonplace.Green.Bursar) do
+      nil -> :ok
+      p -> GenServer.stop(p)
+    end
+
+    {:ok, bursar} =
+      Commonplace.Green.Bursar.start_link(root_uuid: UUID.uuid4(), store: store, sweep_interval: 60_000)
+
+    on_exit(fn -> if Process.alive?(bursar), do: GenServer.stop(bursar) end)
+    bursar
+  end
+
   test "spawn: DEFAULT-safe — a plain object cannot spawn into the room (room not in owner_grant)", %{
     store: store,
     obj_uuid: obj_uuid,
@@ -974,6 +991,7 @@ defmodule Commonplace.MUD.World.FacadeTest do
     obj_uuid: obj_uuid,
     trusted_ctx: trusted_ctx
   } do
+    ensure_bursar!(store)
     w = give_world(store, trusted_ctx, recipients: ["bob"], in_room: ["bob"])
 
     f =
@@ -1007,6 +1025,7 @@ defmodule Commonplace.MUD.World.FacadeTest do
     obj_uuid: obj_uuid,
     trusted_ctx: trusted_ctx
   } do
+    ensure_bursar!(store)
     w = give_world(store, trusted_ctx, recipients: ["bob"], in_room: ["bob"])
     # Recipient already holds a "coin" (a plain "coin.obj" key).
     :ok = seed_entries(store, trusted_ctx, w.invs["bob"], ["coin.obj"])

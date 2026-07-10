@@ -877,17 +877,17 @@ defmodule Commonplace.MUD.World.Facade do
   #     recipient's inbox — it is NOT setuid (never borrows the recipient's
   #     authority; the recipient-container write is signed by the INVOKER).
   #
-  # ENFORCE-ANCHOR (comment only — not gated on here): give_from_inventory's
-  # DEPOSIT writes the RECIPIENT'S inventory doc, which the invoker does not
-  # own. In permissive dogfood this just works. Under `:enforce` it would be
-  # rejected by the local-write gate exactly like any other cross-owner
-  # write and would need an inbox-write-policy cert — the SAME permissive-
-  # now/enforce-later shape as mint (CX-nyj9), and the same anchor the
-  # existing `give_to_actor`/facade cross-owner writes already inherit. This
-  # module does NOT implement that policy and makes NO enforce-correctness
-  # claim; the property preserved TODAY is the least-authority shape
-  # (own-item basis + same-room gate + additive-only + server-stamped
-  # attribution), matching the module's honesty boundary.
+  # ENFORCE-ANCHOR (CX-j2wt — RESOLVED): give_from_inventory's DEPOSIT writes
+  # the RECIPIENT'S inventory doc, which the invoker does not own. This used to
+  # be a raw invoker-signed write that only "worked" in permissive dogfood and
+  # was flagged as an enforce-deferred gap. It now routes through the same
+  # `World.give_item/7` → `HolderMove.push` token-transfer chokepoint drop/give/
+  # put use: under `:enforce` the deposit ELEVATES to node authority (the
+  # invoker never signs the recipient's doc), gated by the giver actually
+  # holding the item's green possession token — closed-by-construction, not
+  # deferred. The least-authority shape is UNCHANGED and now backed by the
+  # token gate: own-item basis (you can only gift what you hold) + same-room
+  # gate + additive-only (instance-unique key) + server-stamped attribution.
 
   @doc """
   CX-5u5j — consume (UNLINK) a named item from the invoker's OWN inventory
@@ -941,7 +941,15 @@ defmodule Commonplace.MUD.World.Facade do
   SAME-ROOM recipient's inventory (a gift into their mailbox). Own-item
   authority: the invoker acts with their own item-authority and deposits
   ADDITIVELY into the recipient's inbox — NOT setuid (never borrows the
-  recipient's authority). Invoker-signed via `write_opts(f)`.
+  recipient's authority).
+
+  CX-j2wt — the deposit now routes through the `World.give_item/7` →
+  `HolderMove.push` token-transfer chokepoint (the same one drop/give/put
+  use): the item's green possession token transfers giver → recipient, so
+  the recipient becomes the REAL holder and the gift is droppable. A giver
+  who doesn't actually hold the token is refused (no more desynced ghosts).
+  Under `:enforce` the recipient-doc write ELEVATES to node authority through
+  that chokepoint rather than being invoker-signed.
 
   SECURITY-CRITICAL ORDERING (no-global-oracle, load-bearing — mirrors
   `whisper/3`): the SAME-ROOM gate runs BEFORE any global players-dir
@@ -955,18 +963,21 @@ defmodule Commonplace.MUD.World.Facade do
   `:recipient_not_here` (never a distinct error that would leak
   in-room-but-no-inventory).
 
-  The DEPOSIT uses an INSTANCE-UNIQUE dest entry key (CX-lfo3 style,
-  derived from the item's own uuid) so it is ADDITIVE — it can NEVER
-  overwrite or collide with a recipient's existing same-named item, and it
-  can NOT remove or alter any other recipient item. Bounded by the
+  The deposit is ADDITIVE — it can NEVER overwrite or collide with a
+  recipient's existing same-named item: the item's source inventory entry is
+  already instance-unique-keyed (`<name>-<uuid8>.obj`, CX-lfo3), and the move
+  carries that unique key to the recipient (a collision would need the same
+  item in two inventories — structurally impossible). Bounded by the
   per-invocation op cap (N=8) and the recipient container cap (M=128 →
   `:container_full`). NARRATION `who` is SERVER-STAMPED from
   `f.ctx[:player_name]` (never author-supplied), mirroring
   `emit_action/3`/`whisper/3`.
 
-  Returns BARE STATUS only — `:ok`, `{:error, :not_carrying}`,
+  Returns BARE STATUS only — `:ok`, `{:error, :not_carrying}` (name not held,
+  OR the giver doesn't actually hold its token — the desynced-ghost case),
   `{:error, :recipient_not_here}`, `{:error, :container_full}`,
-  `{:error, :no_inventory}`, or `{:error, :spawn_limit}`. NEVER echoes the
+  `{:error, :no_inventory}`, `{:error, :spawn_limit}`, or a sanitized
+  `{:error, :refused}` for any other chokepoint refusal. NEVER echoes the
   recipient's inventory contents or updated state (returns-axis: the
   recipient inventory must not leak to the invoker's verb).
   """
@@ -979,9 +990,12 @@ defmodule Commonplace.MUD.World.Facade do
          {:ok, inv} <- own_inventory(f),
          {:ok, entry, display} <- resolve_own_item(f, inv, name),
          # no-global-oracle: same-room gate BEFORE any global players-dir walk.
-         :ok <- same_room_recipient_gate(f, recipient_name),
+         # The gate now yields the recipient's PRESENCE uuid so we can read
+         # their bound identity for the possession-token transfer (CX-j2wt).
+         {:ok, recipient_presence} <- same_room_recipient_gate(f, recipient_name),
          {:ok, recipient_inv} <- resolve_recipient_inventory(f, recipient_name) do
-      deposit_gift(f, inv, entry, display, recipient_inv, recipient_name)
+      recipient_identity = resolve_recipient_identity(recipient_presence, f.store)
+      deposit_gift(f, inv, entry, display, recipient_inv, recipient_name, recipient_identity)
     end
   end
 
@@ -1034,14 +1048,20 @@ defmodule Commonplace.MUD.World.Facade do
       true ->
         presence = recipient_name <> ".usr"
 
-        names =
+        entries =
           f.ctx[:current_room_uuid]
           |> case do
             nil -> []
-            room -> World.list_players_in(room, f.store) |> Enum.map(& &1.name)
+            room -> World.list_players_in(room, f.store)
           end
 
-        if presence in names, do: :ok, else: {:error, :recipient_not_here}
+        # Return the matching presence's uuid (CX-j2wt) so the caller can read
+        # its bound identity for the token transfer. An off-room / nonexistent
+        # name fails IDENTICALLY (:recipient_not_here) — no existence oracle.
+        case Enum.find(entries, &(&1.name == presence)) do
+          %{node_id: presence_uuid} -> {:ok, presence_uuid}
+          _ -> {:error, :recipient_not_here}
+        end
     end
   end
 
@@ -1073,25 +1093,75 @@ defmodule Commonplace.MUD.World.Facade do
     end
   end
 
-  # ADDITIVE deposit: add the item to the recipient inventory under an
-  # INSTANCE-UNIQUE key (never clobbers/collides with an existing recipient
-  # item), THEN unlink it from the invoker's own inventory. Dest-add FIRST
-  # (a mid-op failure leaves the item in BOTH inventories, recoverable —
-  # never in neither, silently lost), mirroring Move's ordering. Recipient
-  # container cap (M=128) is enforced before the add. Narrates a server-
-  # stamped give action.
-  defp deposit_gift(%__MODULE__{} = f, source_inv, entry, display, recipient_inv, recipient_name) do
+  # CX-j2wt — resolve the recipient's bound identity uuid from their presence
+  # doc, so the converged gift routes the possession-token transfer to the
+  # ACTUAL recipient (not just the tree entry). An anonymous/unsigned presence
+  # (no `bound_identity`) yields nil — `HolderMove.push`'s enforce path then
+  # refuses gracefully (:bad_arg → sanitized :refused), never a token-less
+  # silent deposit. Mirrors `Verbs.resolve_recipient_identity/2`.
+  defp resolve_recipient_identity(presence_uuid, store) do
+    case Commonplace.Presence.read(presence_uuid, store) do
+      %{"bound_identity" => id} when is_binary(id) -> id
+      _ -> nil
+    end
+  end
+
+  # CX-j2wt CONVERGE — the gift now routes through the SAME HolderMove.push
+  # token-transfer chokepoint drop/give/put use (`World.give_item/7`), instead
+  # of a raw add_child_entry+unlink that moved the tree entry but LEFT the
+  # possession token with the giver — producing UN-DROPPABLE junk in the
+  # recipient's inventory (jes's bug: the item shows but `drop`/`put` say "you
+  # aren't carrying that"). Now the green token transfers giver → recipient
+  # atomically under the move-lock: the recipient becomes the REAL holder (the
+  # gift is droppable), and a giver who doesn't actually hold the token is
+  # refused (:not_holder) instead of minting a desynced ghost. The ENFORCE-
+  # ANCHOR in this module's header is now SATISFIED, not merely deferred — the
+  # deposit no longer signs the recipient's doc as the invoker; it elevates to
+  # node authority through the reviewed chokepoint (the enforce path only fires
+  # when the invoker can't write both dirs directly).
+  #
+  # ADDITIVE / never-clobber (the CX-5u5j quest-gift promise) is PRESERVED:
+  # the SOURCE inventory entry is already instance-unique-keyed
+  # ("<name>-<uuid8>.obj", CX-lfo3), and `give_item` carries that unique key
+  # to the recipient, so a gift can never overwrite a recipient's existing
+  # same-named item — the dest key embeds the GIFTED item's own uuid, so a
+  # collision would require the same item to be in two inventories at once
+  # (structurally impossible). The recipient container cap (M=128) is still
+  # enforced before the move, and the give action is server-stamped.
+  #
+  # Fast path (permissive/dev, invoker authorized over both dirs) still runs a
+  # plain locked Move with no token hop — matching the whole system's "tokens
+  # bind under enforce" stance; the live serve runs :enforce, so the token
+  # transfers there.
+  defp deposit_gift(%__MODULE__{} = f, source_inv, entry, display, recipient_inv, recipient_name, recipient_identity) do
     case Schemas.load_dir_schema(recipient_inv, f.store) do
       {:ok, schema} ->
         if length(Schema.list_entries(schema)) >= @container_max_entries do
           {:error, :container_full}
         else
-          dest_key = instance_entry_name(display, entry.node_id)
+          giver_identity = invoker_identity_uuid(f)
 
-          with :ok <- add_child_entry(recipient_inv, dest_key, entry.node_id, f),
-               :ok <- unlink_child(source_inv, entry.name, f) do
-            narrate_give(f, display, recipient_name)
-            :ok
+          case World.give_item(
+                 entry.node_id,
+                 entry.name,
+                 source_inv,
+                 recipient_inv,
+                 giver_identity,
+                 recipient_identity,
+                 write_opts(f)
+               ) do
+            :ok ->
+              narrate_give(f, display, recipient_name)
+              :ok
+
+            # The giver doesn't actually hold the item's token (e.g. a legacy
+            # desynced ghost) → honest "you aren't carrying that", mirroring the
+            # drop path's :not_holder handling. Every other chokepoint error
+            # (:collision — structurally unreachable for the unique key —
+            # trust_rejected, gone, busy, bursar_unavailable) closes to the safe
+            # generic via the outer sanitize_reason seam.
+            {:error, :not_holder} -> {:error, :not_carrying}
+            {:error, _reason} = err -> err
           end
         end
 
