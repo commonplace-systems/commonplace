@@ -432,6 +432,24 @@ defmodule Commonplace.MUD.PlayerSession do
     {:noreply, new_state}
   end
 
+  # CX-cj3t: the caller can't author verbs here (a {:write}-only citizen — the
+  # write⊥execute belt refuses executable code). Show a READ-ONLY PREVIEW upfront
+  # (the current source, so they can still read/learn it) rather than opening a
+  # full editor and only denying the save. Do NOT enter :editor mode — subsequent
+  # lines are normal commands, not a verb body.
+  defp handle_verb_result({:enter_editor, %{editable: false} = ed}, state) do
+    state.output_fn.("=== #{ed.target_label}:#{ed.verb_name} (preview — read-only) ===")
+    state.output_fn.("(you don't have permission to author verbs here — showing the current source)")
+
+    if ed.current != "" do
+      state.output_fn.(ed.current)
+    else
+      state.output_fn.("(no verb '#{ed.verb_name}' is defined here yet)")
+    end
+
+    {:noreply, state}
+  end
+
   defp handle_verb_result({:enter_editor, %{} = ed}, state) do
     state.output_fn.("=== editing #{ed.target_label}:#{ed.verb_name} ===")
 

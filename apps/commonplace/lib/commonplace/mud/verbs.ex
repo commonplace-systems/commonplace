@@ -1557,15 +1557,13 @@ defmodule Commonplace.MUD.Verbs do
   defp do_verb_edit_resolved(target, verb_name, ctx) do
     cond do
       target in ["here", "room"] ->
-        current = read_current_source(ctx.current_room_uuid, verb_name, ctx)
-        {:enter_editor, %{target_uuid: ctx.current_room_uuid, target_label: "here", verb_name: verb_name, current: current}}
+        enter_verb_editor(ctx.current_room_uuid, "here", verb_name, ctx)
 
       true ->
         case World.find_entry_by_name(ctx.current_room_uuid, target, ctx.store) do
           {:ok, %Schema.Entry{type: :dir, name: name, node_id: uuid}} ->
             if String.ends_with?(name, ".obj") do
-              current = read_current_source(uuid, verb_name, ctx)
-              {:enter_editor, %{target_uuid: uuid, target_label: target, verb_name: verb_name, current: current}}
+              enter_verb_editor(uuid, target, verb_name, ctx)
             else
               {:error, "Can only edit verbs on objects (or here/room)."}
             end
@@ -1574,8 +1572,7 @@ defmodule Commonplace.MUD.Verbs do
             case World.find_entry_by_name(ctx.inventory_uuid, target, ctx.store) do
               {:ok, %Schema.Entry{type: :dir, name: name, node_id: uuid}} ->
                 if String.ends_with?(name, ".obj") do
-                  current = read_current_source(uuid, verb_name, ctx)
-                  {:enter_editor, %{target_uuid: uuid, target_label: target, verb_name: verb_name, current: current}}
+                  enter_verb_editor(uuid, target, verb_name, ctx)
                 else
                   {:error, "Can only edit verbs on objects (or here/room)."}
                 end
@@ -1585,6 +1582,42 @@ defmodule Commonplace.MUD.Verbs do
             end
         end
     end
+  end
+
+  # CX-cj3t: open the @verb editor, stamping an `editable` flag from an UPFRONT
+  # authority check (`Trust.code_author_authorized?`) so the session can render
+  # read-only PREVIEW mode when the caller can't author verbs here — instead of
+  # dangling a full editor + docs and only denying the save. Authoring a verb
+  # writes an executable code doc = needs :execute authority (the node, or an
+  # :execute cert); a {:write}-only citizen is denied by the write⊥execute belt.
+  defp enter_verb_editor(target_uuid, target_label, verb_name, ctx) do
+    current = read_current_source(target_uuid, verb_name, ctx)
+
+    {:enter_editor,
+     %{
+       target_uuid: target_uuid,
+       target_label: target_label,
+       verb_name: verb_name,
+       current: current,
+       editable: can_author_verbs?(target_uuid, ctx)
+     }}
+  end
+
+  defp can_author_verbs?(target_uuid, ctx) do
+    {id, pub} =
+      case Map.get(ctx, :signing_context) do
+        %{identity_uuid: i, public_key: p} -> {i, p}
+        _ -> {nil, nil}
+      end
+
+    Commonplace.Trust.code_author_authorized?(
+      id,
+      pub,
+      Map.get(ctx, :cert_cids, []),
+      target_uuid,
+      Commonplace.Trust.config(),
+      ctx.store
+    )
   end
 
   defp read_current_source(target_uuid, verb_name, ctx) do

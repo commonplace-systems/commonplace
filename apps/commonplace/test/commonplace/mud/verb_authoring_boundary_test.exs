@@ -96,4 +96,28 @@ defmodule Commonplace.MUD.VerbAuthoringBoundaryTest do
 
     assert result == :ok
   end
+
+  # CX-jxqs: the @verb editor must signal read-only PREVIEW upfront for a caller
+  # who can't author verbs here — not open a full editor and only deny the save.
+  defp verb_ctx(store, home, sctx, cids),
+    do: %{
+      store: store,
+      player_name: "builder",
+      root_uuid: nil,
+      current_room_uuid: home,
+      inventory_uuid: nil,
+      signing_context: sctx,
+      cert_cids: cids,
+      signer_id: nil
+    }
+
+  test "a {:write}-only citizen opening @verb gets PREVIEW (editable: false), not the editor", %{store: store, home: home, citizen: citizen, cids: cids} do
+    cmd = Commonplace.MUD.Parser.parse("@verb here:tick")
+    assert {:enter_editor, %{editable: false}} = Commonplace.MUD.Verbs.dispatch(cmd, verb_ctx(store, home, citizen, cids))
+  end
+
+  test "the NODE opening @verb gets the editable editor (editable: true)", %{store: store, home: home, node_ctx: node_ctx} do
+    cmd = Commonplace.MUD.Parser.parse("@verb here:tick")
+    assert {:enter_editor, %{editable: true}} = Commonplace.MUD.Verbs.dispatch(cmd, verb_ctx(store, home, node_ctx, []))
+  end
 end

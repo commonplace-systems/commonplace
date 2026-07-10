@@ -168,6 +168,43 @@ defmodule Commonplace.Trust do
     end
   end
 
+  @doc """
+  CX-cj3t — the COMMITLESS mirror of "may this caller AUTHOR a verb (write an
+  EXECUTABLE code doc) at `target_uuid`?", for an UPFRONT UX gate: the `@verb`
+  editor uses it to open in EDIT vs read-only PREVIEW mode, instead of offering a
+  full editor and only denying the save afterward.
+
+  Authoring an executable code doc requires EXECUTE authority — a trusted
+  identity (the node), or a verified cert granting `:execute` over the target. A
+  `:write`-only cert (the citizenship `{:subtree,home}`/`{:presence}` grants a
+  player holds) is refused at commit time by the write⊥execute belt (see
+  `subtree_carve_ok?` (3)); this predicate lets the editor SAY so before opening.
+  Under `accept_unsigned` (the permissive dev gate) the save would land, so this
+  returns `true` (editor stays fully functional). Fail-closed on any error.
+  """
+  @spec code_author_authorized?(String.t() | nil, binary() | nil, [String.t()], String.t(), config(), GenServer.server()) ::
+          boolean()
+  def code_author_authorized?(identity_uuid, pub, cert_cids, target_uuid, cfg, store) do
+    cond do
+      cfg.accept_unsigned -> true
+      not is_binary(identity_uuid) -> false
+      Map.has_key?(cfg.trusted_identities, identity_uuid) -> true
+      true -> Enum.any?(cert_cids, &cert_grants_execute?(&1, pub, target_uuid, cfg, store))
+    end
+  end
+
+  defp cert_grants_execute?(cid, pub, target_uuid, cfg, store) do
+    with {:ok, leaf} <- fetch_cap(store, cid),
+         {_uuid, audience_pub} <- leaf.audience,
+         true <- pub != nil and audience_pub == pub,
+         {:ok, %{verbs: verbs, scope: scope}} <-
+           Commonplace.Trust.VerifyChain.verify_chain(cid, anchor_keys(cfg), store) do
+      :execute in verbs and write_scope_covers?(scope, target_uuid, store)
+    else
+      _ -> false
+    end
+  end
+
   # The COMMITLESS membership predicate for the elevation pre-check
   # (`writer_authorized?`): does this verified scope cover a :write to
   # `target_uuid`? A {:docs} scope covers it iff the uuid is in the frozen
