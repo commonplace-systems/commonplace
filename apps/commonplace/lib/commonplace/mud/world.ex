@@ -173,12 +173,43 @@ defmodule Commonplace.MUD.World do
   `Commonplace.MUD.SignedWrite`.
   """
   def set_meta(dir_uuid, filename, key, value, store \\ CommitStoreClient, opts \\ []) do
+    merge_meta(dir_uuid, filename, %{key => value}, store, opts)
+  end
+
+  @doc """
+  Surgically merge `updates` (a map of top-level key => value) into a meta
+  file's RAW JSON, preserving EVERY key the typed structs would silently drop
+  on a re-encode — most importantly the node-signed `zone` stamp
+  (`Commonplace.MUD.ChildMutation`), but also the freeform verb `state` submap
+  (CX-hqk5) and any field added later. A `nil` value DELETES its key (resetting
+  it to the encoder's omit-when-default form, e.g. going `:public`).
+
+  CX-cl65: this is the ONLY correct shape for a verb that MUTATES an existing
+  zoned doc. A `%Room{}`/`%Object{}` struct round-trip (`get_room` →
+  `%{room | ...}` → `encode_room`) drops `zone` (the struct has no such field),
+  and the subtree write-carve reads the resulting `zone: home → absent` as a
+  protected-field-immutability violation and DENIES the write — even for the
+  doc's rightful owner. Never round-trip a zoned doc through the typed struct on
+  the write path; merge the raw map instead.
+
+  `opts` (CX-lg06): `:signing_context`, `:cert_cids`, `:signer_id` — threaded
+  into `Schemas.write_meta_doc/4`; see `Commonplace.MUD.SignedWrite`.
+  """
+  def merge_meta(dir_uuid, filename, updates, store \\ CommitStoreClient, opts \\ [])
+      when is_map(updates) do
     with {:ok, schema} <- Schemas.load_dir_schema(dir_uuid, store),
          {:ok, entry} <- Schema.get_entry(schema, filename),
          {:ok, doc} <- DocBuilder.reconstruct_doc(store, entry.node_id),
          json when is_binary(json) <- ContentType.get_content(doc),
-         {:ok, parsed} <- Jason.decode(json) do
-      updated = Map.put(parsed, key, value) |> Jason.encode!()
+         {:ok, parsed} when is_map(parsed) <- Jason.decode(json) do
+      {deletes, sets} = Enum.split_with(updates, fn {_k, v} -> is_nil(v) end)
+
+      updated =
+        parsed
+        |> Map.merge(Map.new(sets))
+        |> Map.drop(Enum.map(deletes, fn {k, _} -> k end))
+        |> Jason.encode!()
+
       Schemas.write_meta_doc(entry.node_id, updated, store, opts)
     else
       :error -> {:error, :no_meta_entry}

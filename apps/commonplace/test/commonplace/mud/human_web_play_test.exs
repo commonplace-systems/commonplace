@@ -153,26 +153,59 @@ defmodule Commonplace.MUD.HumanWebPlayTest do
     PlayerSession.stop(p.pid)
   end
 
-  test "H3: the SAME signed player is DENIED a write BEYOND their home zone (signing != authority)", ctx do
-    p = provision_and_start("frodo", ctx)
-    _greet = PlayerSession.drain_buffer(p.pid)
+  test "H3: a signed citizen is DENIED building in a room they do NOT own (signing != authority)", ctx do
+    # CX-cl65 reframe: post-A3, `@dig` builds under the invoker's OWN home
+    # (which they're authorized for — that's the M2 feature, proven by H1's
+    # in-home `@name here` landing), and the exit-edge write lands on the
+    # CURRENT room. So a genuine beyond-zone test must put the player in a room
+    # they do NOT hold a cert for. A second citizen's home is exactly that.
+    # (This test previously stood the player in their own home and asserted
+    # @dig was refused — it was green only because the CX-cl65 zone-drop bug
+    # wrongly denied the legitimate in-home exit-write; that premise is obsolete.)
+    landlord = provision_and_start("landlord", ctx)
+    PlayerSession.stop(landlord.pid)
+    others_home = landlord.home
+    others_meta = home_meta_uuid(ctx.store, others_home)
 
-    # `@dig` links a new room under the mud ROOT schema — a doc the player
-    # holds NO cert for (their citizenship grants presence + their OWN home
-    # room, nothing wider). Signing gives them identity, not authority: the
-    # root-schema write is refused and the root head must not move. (Same
-    # beyond-zone denial `PlayerSessionIdentityTest` proves for player Y.)
-    {:ok, root_before} = CommitStore.latest_commit(ctx.store, ctx.mud_root)
+    # Start frodo STANDING IN the landlord's home — a room outside frodo's zone.
+    {:ok, id_uuid, pub} =
+      Identity.register_player("frodo", ctx.ws_root, ctx.store,
+        signing_context: ctx.node_ctx,
+        secret_store: ctx.secrets
+      )
 
-    :ok = PlayerSession.input_sync(p.pid, "@dig north Frodos-Folly")
-    out = Enum.join(PlayerSession.drain_buffer(p.pid), "\n")
+    {:ok, sctx} = AgentKeys.signing_context(id_uuid, ctx.secrets)
+    signer_id = Signing.signer_id(id_uuid, pub)
+    {:ok, %{cert_cids: cert_cids}} = Citizenship.ensure(id_uuid, pub, "frodo", ctx.mud_root, ctx.store)
+
+    {:ok, pid} =
+      PlayerSession.start_link(
+        player_name: "frodo",
+        root_uuid: ctx.mud_root,
+        store: ctx.store,
+        buffered: true,
+        signing_context: sctx,
+        signer_id: signer_id,
+        cert_cids: cert_cids,
+        spawn_room_uuid: others_home
+      )
+
+    _greet = PlayerSession.drain_buffer(pid)
+    {:ok, others_before} = CommitStore.latest_commit(ctx.store, others_meta)
+
+    # The exit-edge write targets the LANDLORD's home meta — a doc frodo holds
+    # no cert for. Signing gives identity, not authority: the exit-write is
+    # refused (the new-room genesis under frodo's OWN home may land, orphaned —
+    # the documented partial-write behavior — but the un-owned room never moves).
+    :ok = PlayerSession.input_sync(pid, "@dig north Frodos-Folly")
+    out = Enum.join(PlayerSession.drain_buffer(pid), "\n")
 
     assert out =~ "permission", "a write beyond the player's zone must be refused (H3)"
 
-    {:ok, root_after} = CommitStore.latest_commit(ctx.store, ctx.mud_root)
-    assert root_after.id == root_before.id, "the mud-root schema must NOT move (beyond-zone write denied)"
+    {:ok, others_after} = CommitStore.latest_commit(ctx.store, others_meta)
+    assert others_after.id == others_before.id, "the un-owned room's meta must NOT move (beyond-zone write denied)"
 
-    PlayerSession.stop(p.pid)
+    PlayerSession.stop(pid)
   end
 
   # ---- CX-zyee : the greet renders as the session-open turn, in order ----

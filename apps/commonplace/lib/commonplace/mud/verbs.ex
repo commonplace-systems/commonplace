@@ -1733,19 +1733,18 @@ defmodule Commonplace.MUD.Verbs do
         {:error, "Unknown direction: #{direction}"}
 
       true ->
-        case World.get_room(ctx.current_room_uuid, ctx.store) do
-          {:ok, %Room{exits: exits} = room} ->
-            if Map.has_key?(exits, direction) do
-              new_exits = Map.delete(exits, direction)
-              json = Schemas.encode_room(%Room{room | exits: new_exits})
+        # CX-cl65: surgical exits-merge, never a %Room{} round-trip (drops zone).
+        case World.get_meta_map(ctx.current_room_uuid, Schemas.room_filename(), ctx.store) do
+          {:ok, %{"exits" => exits} = _map} when is_map_key(exits, direction) ->
+            new_exits = Map.delete(exits, direction)
 
-              case write_current_room_meta(ctx.current_room_uuid, json, ctx) do
-                :ok -> {:reply, "Removed the exit #{direction}."}
-                {:error, reason} -> {:error, commit_error_reply(reason)}
-              end
-            else
-              {:reply, "There is no exit #{direction} to remove."}
+            case World.merge_meta(ctx.current_room_uuid, Schemas.room_filename(), %{"exits" => new_exits}, ctx.store, write_opts(ctx)) do
+              :ok -> {:reply, "Removed the exit #{direction}."}
+              {:error, reason} -> {:error, commit_error_reply(reason)}
             end
+
+          {:ok, _map} ->
+            {:reply, "There is no exit #{direction} to remove."}
 
           {:error, reason} ->
             {:error, commit_error_reply(reason)}
@@ -1757,9 +1756,10 @@ defmodule Commonplace.MUD.Verbs do
   # CURRENT room's read-visibility. No player-owner-grant flow ships yet
   # (deferred) — visibility + DENY-ONLY, so a private home is private to
   # its owner alone. The WRITE GATE is the protection, exactly like
-  # `@desc`/`@name`: this re-encodes+commits through the SAME
-  # invoker-signed `write_current_room_meta/3` path `@desc`/`@unlink` use
-  # (`write_opts(ctx)` → the session's own signing context). Under
+  # `@desc`/`@name`: this commits through the SAME invoker-signed
+  # surgical-merge path `@desc`/`@unlink` use (`World.merge_meta` +
+  # `write_opts(ctx)` → the session's own signing context; CX-cl65 — never a
+  # zone-dropping %Room{} round-trip). Under
   # `local_write_gate: :enforce` only a principal holding a `:write` cap
   # over the room's meta doc (the home owner, via
   # `Citizenship.issue_home_zone_cert/4`) can land the commit — a
@@ -1780,9 +1780,16 @@ defmodule Commonplace.MUD.Verbs do
           if visibility == :capability_gated,
             do: room.owner || taker_identity(ctx),
             else: room.owner
-        json = Schemas.encode_room(%Room{room | visibility: visibility, owner: owner})
 
-        case write_current_room_meta(ctx.current_room_uuid, json, ctx) do
+        # CX-cl65: surgical merge (preserves the zone stamp + verb state), never a
+        # %Room{} round-trip. Match encode_room's omit-when-default wire form —
+        # :public omits "visibility" (nil ⇒ delete key), owner omitted when nil.
+        updates = %{
+          "visibility" => if(visibility == :capability_gated, do: "capability_gated", else: nil),
+          "owner" => owner
+        }
+
+        case World.merge_meta(ctx.current_room_uuid, Schemas.room_filename(), updates, ctx.store, write_opts(ctx)) do
           :ok -> {:reply, visibility_reply(visibility)}
           {:error, {:trust_rejected, _}} -> {:error, "You don't own this place."}
           {:error, reason} -> {:error, commit_error_reply(reason)}
@@ -1795,13 +1802,6 @@ defmodule Commonplace.MUD.Verbs do
 
   defp visibility_reply(:capability_gated), do: "This place is now private."
   defp visibility_reply(:public), do: "This place is now public."
-
-  defp write_current_room_meta(room_dir_uuid, json, ctx) do
-    with {:ok, schema} <- Schemas.load_dir_schema(room_dir_uuid, ctx.store),
-         {:ok, entry} <- Schema.get_entry(schema, Schemas.room_filename()) do
-      Schemas.write_meta_doc(entry.node_id, json, ctx.store, write_opts(ctx))
-    end
-  end
 
   # CX-z0v7 bundle (P3 polish): `home` — teleport to your own home room
   # (`players/<name>/`, the room Citizenship provisions + you own). A
@@ -2248,16 +2248,18 @@ defmodule Commonplace.MUD.Verbs do
     end
   end
 
+  # CX-cl65: exit-writes MUST be surgical (merge only the "exits" key on the raw
+  # meta JSON), NOT a %Room{} round-trip — the struct has no `zone` field, so a
+  # round-trip drops the node-signed zone stamp and the subtree carve then DENIES
+  # the owner's own write (protected-field-immutability: zone home→absent). Merge
+  # preserves zone (and the freeform verb `state` submap) untouched.
   defp update_room_exit(room_dir_uuid, direction, dest_uuid, ctx) do
     store = ctx.store
 
-    case World.get_room(room_dir_uuid, store) do
-      {:ok, %Room{} = room} ->
-        new_exits = Map.put(room.exits, direction, dest_uuid)
-        json = Schemas.encode_room(%Room{room | exits: new_exits})
-        {:ok, schema} = Schemas.load_dir_schema(room_dir_uuid, store)
-        {:ok, entry} = Schema.get_entry(schema, Schemas.room_filename())
-        Schemas.write_meta_doc(entry.node_id, json, store, write_opts(ctx))
+    case World.get_meta_map(room_dir_uuid, Schemas.room_filename(), store) do
+      {:ok, map} ->
+        new_exits = Map.put(Map.get(map, "exits", %{}), direction, dest_uuid)
+        World.merge_meta(room_dir_uuid, Schemas.room_filename(), %{"exits" => new_exits}, store, write_opts(ctx))
 
       err ->
         err

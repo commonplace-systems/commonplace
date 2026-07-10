@@ -243,6 +243,17 @@ defmodule Commonplace.MUD.Sections do
       cap.proof != nil ->
         {:skipped, cap.id, :delegation}
 
+      # CX-cl65: auto-extend concerns ONLY node-issued `{:docs, uuids}` section
+      # certs (the room-enumerating kind — see `build_claim`). A `{:subtree, R}`
+      # cert (e.g. a player's home-zone cert, now riding as `capability_proof` on
+      # the room-meta commit log a @dig walks) ALREADY auto-covers any zoned child
+      # via its stamp, so it needs no per-room extension — and must not be fed to
+      # `scope_uuids/1` (which is `{:docs}`-only and would crash). `{:presence, _}`
+      # likewise grants no room writes. Skip both quietly, BEFORE the issuer check
+      # (they're legitimately present, not a mis-issued section cert to red-flag).
+      not section_cert?(cap) ->
+        {:skipped, cap.id, :not_section_cert}
+
       cap.issuer != node_issuer ->
         emit_extend_skipped(context_room_uuid, cap, new_room_uuid)
         {:skipped, cap.id, :non_node_issuer}
@@ -254,6 +265,11 @@ defmodule Commonplace.MUD.Sections do
         reissue(cap, new_room_uuid, store)
     end
   end
+
+  # A section cert is BY CONSTRUCTION a `{:docs, uuids}` cert (see `build_claim`);
+  # `scope_uuids/1` below is `{:docs}`-only and is reached ONLY after this guard.
+  defp section_cert?(%Capability{claim: %{scope: {:docs, _}}}), do: true
+  defp section_cert?(%Capability{}), do: false
 
   defp scope_uuids(%Capability{claim: %{scope: {:docs, uuids}}}), do: uuids
 
