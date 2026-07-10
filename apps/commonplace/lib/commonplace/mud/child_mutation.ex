@@ -117,10 +117,36 @@ defmodule Commonplace.MUD.ChildMutation do
   defp mint_and_link(parent_dir, entry_name, child_uuid, meta_filename, base_json, zone, node_ctx, store, entry_opts) do
     stamped_json = stamp(base_json, zone)
 
-    with {:ok, meta_uuid} <- Schemas.create_meta_doc(stamped_json, store, signing_context: node_ctx),
+    # Hygiene (plan #7265): pre-check the caller's link-authority against the
+    # parent BEFORE minting, so an UNAUTHORIZED @create doesn't strand an orphan
+    # child (mint→mint→fail-link would leave 2 orphan commits). The parent's zone
+    # exists pre-mint, so this is a cheap commitless check with the SAME predicate
+    # the write-gate applies to the link commit. Not security (the link commit is
+    # still gate-checked); it just avoids orphan-litter on the rejected path.
+    with :ok <- precheck_link(parent_dir, entry_opts, store),
+         {:ok, meta_uuid} <- Schemas.create_meta_doc(stamped_json, store, signing_context: node_ctx),
          :ok <- mint_dir(child_uuid, meta_filename, meta_uuid, node_ctx, store),
          :ok <- link_entry(parent_dir, entry_name, child_uuid, store, entry_opts) do
       {:ok, child_uuid}
+    end
+  end
+
+  # Would the caller's creds authorize the entry-add to `parent_dir`? Uses the
+  # commitless mirror (`Trust.writer_authorized?`, the SAME predicate the gate
+  # applies to the resulting commit). A node/unsigned entry_opts (no
+  # signing_context) → :ok here and lets the write itself gate.
+  defp precheck_link(parent_dir, entry_opts, store) do
+    case Keyword.get(entry_opts, :signing_context) do
+      %{identity_uuid: id, public_key: pub} when is_binary(id) ->
+        cfg = Commonplace.Trust.config()
+        certs = Keyword.get(entry_opts, :cert_cids, [])
+
+        if Commonplace.Trust.writer_authorized?(id, pub, certs, parent_dir, cfg, store),
+          do: :ok,
+          else: {:error, :link_unauthorized}
+
+      _ ->
+        :ok
     end
   end
 
