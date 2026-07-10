@@ -7,10 +7,13 @@ defmodule Commonplace.MCP.Tools.Cat do
   string; map/array come back as JSON-friendly structures.
   """
 
+  alias Commonplace.Crypto.SigningContext
   alias Commonplace.Document.ContentType
   alias Commonplace.MCP.Tools.Response
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.DocBuilder
+  alias Commonplace.Trust.Read
+  alias Commonplace.Trust.ReadMeta
 
   # CX-re6b round 16: cap content carried in the structured-payload.
   # Cat-of-fork-of-fork was killing the BEAM mid-`IO.write` — most
@@ -40,7 +43,54 @@ defmodule Commonplace.MCP.Tools.Cat do
     }
   end
 
-  def run(%{"uuid" => uuid}) when is_binary(uuid) do
+  # CX-ivqz (read-scoping P2, Seam 2.2): `cat` is a DIRECT-by-uuid read
+  # surface — the bypass of the in-world room gate — so it consults
+  # `Trust.Read.authorized?` before serving. Two load-bearing rules:
+  #
+  #   * Identity is SERVER-RESOLVED from the session context's
+  #     `SigningContext` (assigned by AnubisServer.init/2), NEVER from the
+  #     client-supplied `arguments` map — a client-claimed identity is
+  #     attack Z6 (spoof-to-read-anything).
+  #   * On :read_denied we return the EXACT not-found shape a truly
+  #     nonexistent uuid returns, so a denied stranger cannot even learn
+  #     the uuid is real (existence-hiding).
+  #
+  # This is run/2 only (no run/1 for the map-args shape): `Tools.dispatch_static`
+  # prefers run/2 when exported (CX-k320), so context is ALWAYS received.
+  # Public/absent-visibility docs short-circuit to :ok in the verifier and
+  # behave byte-identically to pre-P2 (no read-regression).
+  def run(%{"uuid" => uuid}, context) when is_binary(uuid) and is_map(context) do
+    {identity, reader_pub} = reader_identity(context)
+    meta = ReadMeta.resolve(uuid, CommitStoreClient)
+
+    case Read.authorized?(identity, uuid,
+           visibility: meta.visibility,
+           owner: meta.owner,
+           reader_pub: reader_pub,
+           store: CommitStoreClient
+         ) do
+      :ok ->
+        cat_content(uuid)
+
+      {:error, :read_denied} ->
+        # Existence-hiding: indistinguishable from a nonexistent doc.
+        {:error, "not found: #{uuid}"}
+    end
+  end
+
+  def run(_args, _context), do: {:error, :invalid_params, "uuid (string) is required"}
+
+  # The reader's identity + public key come ONLY from the session's
+  # server-assigned SigningContext (AnubisServer.assign_signing_context/2).
+  # An unsigned/keyless session → {nil, nil} = unauthenticated, which can
+  # read only public docs. We NEVER source identity from `arguments`.
+  defp reader_identity(%{signing_context: %SigningContext{identity_uuid: id, public_key: pub}}) do
+    {id, pub}
+  end
+
+  defp reader_identity(_no_signing_context), do: {nil, nil}
+
+  defp cat_content(uuid) do
     case DocBuilder.reconstruct_snapshot(CommitStoreClient, uuid) do
       {:ok, doc} ->
         type = ContentType.get_type(doc)
@@ -55,8 +105,6 @@ defmodule Commonplace.MCP.Tools.Cat do
         {:error, "not found: #{uuid}"}
     end
   end
-
-  def run(_args), do: {:error, :invalid_params, "uuid (string) is required"}
 
   defp build_structured(uuid, name, type, content) do
     base = %{"uuid" => uuid, "name" => name, "type" => type_to_string(type)}

@@ -71,12 +71,16 @@ defmodule Commonplace.GitBridge.Exporter do
   though the manifest's own keys should never point there.
   """
 
+  require Logger
+
   alias Commonplace.Tree.{Schema, DocBuilder}
   alias Commonplace.Document.ContentType
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Presence
   alias Commonplace.GitBridge.{CanonicalJson, CanonicalXml}
+  alias Commonplace.MUD.Schemas
   alias Commonplace.Sync.Export
+  alias Commonplace.Trust.ReadMeta
 
   @protected_prefixes [".git", ".commonplace"]
 
@@ -121,11 +125,27 @@ defmodule Commonplace.GitBridge.Exporter do
 
         case entry.type do
           :dir ->
-            sub_dir = Path.join(dir_path, entry.name)
-            File.mkdir_p!(sub_dir)
+            # CX-ivqz (read-scoping P2, Seam 5): GitBridge mirrors the
+            # workspace to a PUBLIC repo. A `capability_gated` zone's WHOLE
+            # SUBTREE must be excluded — otherwise a private home lands on
+            # the public internet. Load the sub-schema FIRST and check its
+            # own `__room.json` meta: only skip a dir whose OWN room doc is
+            # gated. Every default-public entry exports EXACTLY as before
+            # (same manifest, same bytes) — the load-bearing no-regression
+            # invariant. A dir with no room meta, or a public one, is
+            # untouched. (prune/3 retroactively removes a newly-private
+            # zone's previously-exported files via manifest-diff.)
             sub_schema = load_schema(entry.node_id, store)
-            schema_uuids = MapSet.put(schema_uuids, entry.node_id)
-            walk(sub_schema, sub_dir, rel_path, store, manifest, authors, warnings, schema_uuids)
+
+            if capability_gated_zone?(sub_schema, store) do
+              Logger.info("GitBridge: skipping capability_gated zone #{rel_path}")
+              {manifest, authors, warnings, schema_uuids}
+            else
+              sub_dir = Path.join(dir_path, entry.name)
+              File.mkdir_p!(sub_dir)
+              schema_uuids = MapSet.put(schema_uuids, entry.node_id)
+              walk(sub_schema, sub_dir, rel_path, store, manifest, authors, warnings, schema_uuids)
+            end
 
           :doc ->
             {manifest, authors, warnings} =
@@ -138,6 +158,21 @@ defmodule Commonplace.GitBridge.Exporter do
              schema_uuids}
         end
     end)
+  end
+
+  # CX-ivqz: a dir is a gated zone iff its OWN schema carries a
+  # `__room.json` room-meta entry whose carried visibility resolves to
+  # `:capability_gated`. No room meta, or a public one, → not gated (export
+  # normally). Read straight from the room doc's node-signed state via
+  # ReadMeta (default-public on any unparseable/absent meta).
+  defp capability_gated_zone?(sub_schema, store) do
+    case Schema.get_entry(sub_schema, Schemas.room_filename()) do
+      {:ok, %{node_id: node_id}} when is_binary(node_id) ->
+        ReadMeta.resolve(node_id, store).visibility == :capability_gated
+
+      _no_room_meta ->
+        false
+    end
   end
 
   defp eligible?(entry) do
