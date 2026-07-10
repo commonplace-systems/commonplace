@@ -53,6 +53,18 @@ defmodule Commonplace.MUD.PlayerSessionIdentityTest do
     secrets_name = :"mi_secrets_#{n}"
     {:ok, secrets_pid} = SecretStore.start_link(data_dir: secrets_dir, name: secrets_name)
 
+    # CX-el97: the move path (`Move.move`) takes a bursar move-lock; without a
+    # running Bursar the lock acquire fails and masks EVERY move as a generic
+    # failure. Start one (default name) so the denied-move test exercises the
+    # real trust-denial path, not a bursar-unavailable artifact.
+    case GenServer.whereis(Commonplace.Green.Bursar) do
+      nil -> :ok
+      pid -> GenServer.stop(pid)
+    end
+
+    {:ok, bursar_pid} =
+      Commonplace.Green.Bursar.start_link(root_uuid: UUID.uuid4(), store: name, sweep_interval: 60_000)
+
     old_trust = Application.get_env(:commonplace, :trust)
     old_knob = Application.get_env(:commonplace, :local_write_gate)
 
@@ -68,6 +80,7 @@ defmodule Commonplace.MUD.PlayerSessionIdentityTest do
       end
 
       if Process.alive?(secrets_pid), do: GenServer.stop(secrets_pid)
+      if Process.alive?(bursar_pid), do: GenServer.stop(bursar_pid)
       File.rm_rf!(dir)
       File.rm_rf!(secrets_dir)
     end)
@@ -118,8 +131,16 @@ defmodule Commonplace.MUD.PlayerSessionIdentityTest do
     add_directory(name, root_ctx, players_dir, "y", y_dir)
     add_directory(name, root_ctx, root_uuid, "players", players_dir)
 
-    # --- room1 (dir + __room.json meta doc), no exits needed for this test ---
-    room1_meta = new_text_doc(name, root_ctx, room_json("Room One", %{}))
+    # --- room2 (the destination for the CX-el97 denied-move test) ---
+    room2_meta = new_text_doc(name, root_ctx, room_json("Room Two", %{}))
+    room2_dir = new_dir(name, root_ctx)
+    add_file(name, root_ctx, room2_dir, Commonplace.MUD.Schemas.room_filename(), room2_meta)
+    add_directory(name, root_ctx, root_uuid, "room2", room2_dir)
+
+    # --- room1 (dir + __room.json meta doc). A real EAST exit to room2 (CX-el97:
+    # a denied move on a REAL exit must report permission, not a fake dead-end).
+    # NORTH is deliberately left exit-free — the @dig-denied test digs north. ---
+    room1_meta = new_text_doc(name, root_ctx, room_json("Room One", %{"east" => room2_dir}))
     room1_dir = new_dir(name, root_ctx)
     add_file(name, root_ctx, room1_dir, Commonplace.MUD.Schemas.room_filename(), room1_meta)
     add_directory(name, root_ctx, root_uuid, "room1", room1_dir)
@@ -143,6 +164,7 @@ defmodule Commonplace.MUD.PlayerSessionIdentityTest do
       root_uuid: root_uuid,
       room1_dir: room1_dir,
       room1_meta: room1_meta,
+      room2_dir: room2_dir,
       x_uuid: x_uuid,
       x_pub: x_pub,
       x_ctx: x_ctx,
@@ -262,6 +284,47 @@ defmodule Commonplace.MUD.PlayerSessionIdentityTest do
     # add-entry write (the second of three) is what got denied.
     assert {:ok, root_head_after} = CommitStore.latest_commit(store, root_uuid)
     assert root_head_after.id == root_head_before.id
+  end
+
+  # CX-el97: a move DENIED by the trust gate (Y holds no cert, so the presence
+  # write to the destination room is refused under enforce) must report a
+  # PERMISSION denial — not a fake dead-end ("You can't go east") that masks a
+  # real exit as a navigation failure. And a move onto a NON-exit must still
+  # report the honest dead-end, so the player can tell the two apart.
+  test "a denied move on a REAL exit reports permission, not a fake dead-end (and a non-exit still reads as a dead-end)",
+       %{store: store, root_uuid: root_uuid, secrets: secrets, y_uuid: y_uuid, room2_dir: room2_dir} do
+    {:ok, y_pid} =
+      PlayerSession.start_link(
+        player_name: "y",
+        root_uuid: root_uuid,
+        store: store,
+        buffered: true,
+        player_identity_uuid: y_uuid,
+        secret_store: secrets,
+        cert_cids: []
+      )
+
+    _ = PlayerSession.drain_buffer(y_pid)
+
+    # EAST is a real exit — but Y can't write its presence into room2, so the
+    # move is trust-denied. The reply must say PERMISSION, not "can't go".
+    :ok = PlayerSession.input_sync(y_pid, "east")
+    east_out = PlayerSession.drain_buffer(y_pid)
+
+    assert Enum.any?(east_out, &String.contains?(&1, "permission")),
+           "a trust-denied move on a real exit must report permission, got: #{inspect(east_out)}"
+
+    refute Enum.any?(east_out, &String.contains?(&1, "can't go"))
+
+    # Y never actually moved — the destination write was denied.
+    assert :sys.get_state(y_pid).current_room_uuid != room2_dir
+
+    # SOUTH is not an exit at all — the honest dead-end message still stands.
+    :ok = PlayerSession.input_sync(y_pid, "south")
+    south_out = PlayerSession.drain_buffer(y_pid)
+    assert Enum.any?(south_out, &String.contains?(&1, "can't go south"))
+
+    PlayerSession.stop(y_pid)
   end
 
   ## ---- low-level, root-signed world-building helpers ----
