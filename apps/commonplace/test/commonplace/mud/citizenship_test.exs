@@ -122,6 +122,44 @@ defmodule Commonplace.MUD.CitizenshipTest do
     end
   end
 
+  test "the issued {:subtree,home} cert authorizes BUILDING a room under the home (A3/A4 end-to-end)", %{
+    store: store,
+    root: root
+  } do
+    # a real citizen with their real issued cert (the deployable path)
+    {pub, priv} = Signing.generate_keypair()
+    pid = UUID.uuid4()
+    citizen = %SigningContext{identity_uuid: pid, public_key: pub, private_key: priv}
+
+    assert {:ok, %{cert_cids: cids, home_room_uuid: home}} =
+             Citizenship.ensure(pid, pub, "builder", root, store)
+
+    json =
+      Commonplace.MUD.Schemas.encode_room(%Commonplace.MUD.Schemas.Room{
+        name: "Study",
+        description: "a quiet study"
+      })
+
+    # the citizen builds a room UNDER their home using their OWN {:subtree,home}
+    # cert: the entry-add is player-signed + carve-authorized (home.zone==home),
+    # the child is node-stamped zone=home by ChildMutation. "Build in your home."
+    assert {:ok, study} =
+             Commonplace.MUD.ChildMutation.create_zoned_child(
+               home,
+               "study",
+               Commonplace.MUD.Schemas.room_filename(),
+               json,
+               store,
+               signing_context: citizen,
+               cert_cids: cids
+             )
+
+    # the built room INHERITED the home zone → the same cert now covers it too
+    assert Commonplace.Trust.doc_zone(study, store) == home
+    {:ok, sch} = Commonplace.MUD.Schemas.load_dir_schema(home, store)
+    assert {:ok, _} = Schema.get_entry(sch, "study")
+  end
+
   test "provisions players/<name>/ as an OWNED home ROOM (__room.json + inventory), node-signed", %{
     store: store,
     root: root,

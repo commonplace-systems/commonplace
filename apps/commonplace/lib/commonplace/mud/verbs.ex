@@ -16,7 +16,7 @@ defmodule Commonplace.MUD.Verbs do
   side effects go through `Commonplace.MUD.World`.
   """
 
-  alias Commonplace.MUD.{EngineModule, Mint, Parser, Schemas, Sections, SignedWrite, VerbSource, World}
+  alias Commonplace.MUD.{ChildMutation, EngineModule, Mint, Parser, Schemas, Sections, SignedWrite, VerbSource, World}
   alias Commonplace.MUD.Schemas.{Object, Player, Room}
   alias Commonplace.MUD.World.Facade
   alias Commonplace.Tree.Schema
@@ -1658,19 +1658,32 @@ defmodule Commonplace.MUD.Verbs do
   defp do_dig_write_new_room(direction, opposite, name, ctx) do
     json = Schemas.encode_room(%Room{name: name, description: "(no description yet)", exits: %{opposite => ctx.current_room_uuid}})
 
-    with {:ok, new_room_uuid} <- Schemas.create_dir_with_meta(Schemas.room_filename(), json, ctx.store, write_opts(ctx)),
-         :ok <- add_dir_entry(ctx.root_uuid, name, new_room_uuid, ctx),
+    # CX-4u03 A3: the new room is minted UNDER the player's HOME subtree (never
+    # the global root) via ChildMutation, so it INHERITS the home zone-stamp and
+    # is covered by the player's {:subtree, home} cert (the entry-add is
+    # player-signed + carve-authorized; the stamp is node-signed by-construction).
+    # bound (2) attach-under-subtree; bound (1) no-bypass (every build routes here).
+    with {:ok, home} <- resolve_home(ctx),
+         {:ok, new_room_uuid} <-
+           ChildMutation.create_zoned_child(home, name, Schemas.room_filename(), json, ctx.store, write_opts(ctx)),
          :ok <- update_room_exit(ctx.current_room_uuid, direction, new_room_uuid, ctx) do
-      # CX-qat5.5: the new room is dug FROM ctx.current_room_uuid, so
-      # that's the section context — any node-issued root section cert
-      # covering it gets reissued to also cover new_room_uuid. See
-      # `Sections.auto_extend_for_new_room/3` for the full rules.
+      # CX-qat5.5: the new room is dug FROM ctx.current_room_uuid, so that's the
+      # section context — any node-issued root section cert covering it gets
+      # reissued to also cover new_room_uuid.
       auto_extend_section(new_room_uuid, ctx.current_room_uuid, ctx.store)
 
       {:reply, "You carve out a new room (#{name}). #{String.capitalize(direction)} leads there."}
     else
       {:error, reason} -> {:error, commit_error_reply(reason)}
     end
+  end
+
+  # CX-4u03 A3 — resolve the invoker's OWN home dir (the root of their build
+  # zone) so @dig/@create attach new content UNDER it (bound (2): never the
+  # global root). The home is `players/<name>`; a player who can't resolve a home
+  # simply can't build (graceful {:error}).
+  defp resolve_home(ctx) do
+    World.resolve_path("players/#{ctx.player_name}", ctx.root_uuid, ctx.store)
   end
 
   # ---- @link / @unlink / @teleport (CX-p0wx: the deliberate-repoint and
@@ -1889,18 +1902,16 @@ defmodule Commonplace.MUD.Verbs do
     name = Enum.join(name_parts, " ")
     json = Schemas.encode_room(%Room{name: name, description: "(no description yet)"})
 
-    with {:ok, new_uuid} <- Schemas.create_dir_with_meta(Schemas.room_filename(), json, ctx.store, write_opts(ctx)),
-         :ok <- add_dir_entry(ctx.root_uuid, name, new_uuid, ctx) do
-      # CX-qat5.5: `@create room` always builds a DISCONNECTED room (no
-      # exit links it to `ctx.current_room_uuid`) — there is no section
-      # context to anchor a cert-extend inference to, so this passes `nil`
-      # and `auto_extend_for_new_room/3` is a documented no-op
-      # (`{:ok, :no_context}`). If `@create` ever grows a variant that
-      # attaches the new room to the current section, thread that room's
-      # uuid through here instead of `nil`.
+    # CX-4u03 A3: minted UNDER the player's HOME subtree (bound (2), never the
+    # global root) via ChildMutation → inherits the home zone, covered by the
+    # {:subtree, home} cert. Disconnected (no exit) but OWNED — the player can
+    # @dig/@link it into their map.
+    with {:ok, home} <- resolve_home(ctx),
+         {:ok, new_uuid} <-
+           ChildMutation.create_zoned_child(home, name, Schemas.room_filename(), json, ctx.store, write_opts(ctx)) do
       auto_extend_section(new_uuid, nil, ctx.store)
 
-      {:reply, "You create a new disconnected room (#{name})."}
+      {:reply, "You create a new room (#{name}) in your home."}
     else
       {:error, reason} -> {:error, commit_error_reply(reason)}
     end
@@ -1922,8 +1933,20 @@ defmodule Commonplace.MUD.Verbs do
         container?: container?
       })
 
-    with {:ok, new_obj_uuid} <- Schemas.create_dir_with_meta(Schemas.object_filename(), obj_json, ctx.store, write_opts(ctx)),
-         :ok <- add_dir_entry(ctx.current_room_uuid, instance_obj_entry(name, new_obj_uuid), new_obj_uuid, ctx) do
+    # CX-4u03 A3: minted UNDER the current room via ChildMutation → inherits the
+    # room's zone, so creating an object in a room you OWN (your home subtree) is
+    # authorized by the {:subtree} cert; in a room you don't own the carve
+    # fail-closes (graceful refusal). The instance-unique entry key needs the
+    # minted uuid, so entry_name is a (uuid -> name) fun.
+    with {:ok, _new_obj_uuid} <-
+           ChildMutation.create_zoned_child(
+             ctx.current_room_uuid,
+             fn uuid -> instance_obj_entry(name, uuid) end,
+             Schemas.object_filename(),
+             obj_json,
+             ctx.store,
+             write_opts(ctx)
+           ) do
       article = if container?, do: "a container (#{name})", else: "a #{name}"
       {:reply, "You create #{article}."}
     else
@@ -2202,22 +2225,13 @@ defmodule Commonplace.MUD.Verbs do
     "#{name}-#{short}.obj"
   end
 
-  defp add_dir_entry(parent_uuid, name, child_uuid, ctx) do
-    store = ctx.store
-    {:ok, schema} = Schemas.load_dir_schema(parent_uuid, store)
-    schema = Schema.add_directory(schema, name, child_uuid)
-    update = Yelixer.Encoding.encode_update(schema)
+  # CX-4u03 A3: the former `add_dir_entry/4` (raw player-signed schema add to an
+  # arbitrary parent — used by @dig/@create to attach under the GLOBAL root) is
+  # GONE. Every builder create now routes through `ChildMutation.create_zoned_child`
+  # (attach under the player's home subtree, node-signed zone-stamp) — no
+  # un-stamped/root-attached build path survives (bound (1) no-bypass).
 
-    {metadata, commit_opts} =
-      SignedWrite.opts_for(parent_uuid, Keyword.put(write_opts(ctx), :store, store))
-
-    case CommitStoreClient.create_chained_commit(store, parent_uuid, update, metadata, commit_opts) do
-      {:error, _} = err -> err
-      _commit -> :ok
-    end
-  end
-
-  # CX-avgu — the inverse of add_dir_entry: unlink `entry_name` from
+  # CX-avgu — the inverse of the old add_dir_entry: unlink `entry_name` from
   # `parent_uuid`'s schema, signed (SAME enforce-gate as the add).
   defp remove_dir_entry(parent_uuid, entry_name, ctx) do
     store = ctx.store
@@ -2256,6 +2270,10 @@ defmodule Commonplace.MUD.Verbs do
   # else (namespace rejection, store errors, etc.) gets a generic
   # failure message — never silence, never false success.
   defp commit_error_reply({:trust_rejected, _reason}), do: "You don't have permission to build here."
+  # CX-4u03 A3: the ChildMutation link pre-check denies an unauthorized build
+  # (a player building outside their home subtree, or with no build cert) with
+  # :link_unauthorized — the same "you can't build here" class as a gate reject.
+  defp commit_error_reply(:link_unauthorized), do: "You don't have permission to build here."
   defp commit_error_reply(_other), do: "Something went wrong and that change didn't take effect."
 
   # CX-lg06: the ctx -> {store, signing_context, cert_cids, signer_id}

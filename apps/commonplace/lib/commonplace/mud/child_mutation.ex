@@ -178,8 +178,13 @@ defmodule Commonplace.MUD.ChildMutation do
   # Link the child under the parent (caller-signed via SignedWrite — a player's
   # {:subtree,R} cert authorizes this when parent.zone==R; the A1b carve checks it).
   defp link_entry(parent_dir, entry_name, child_uuid, store, entry_opts) do
+    # entry_name may be a plain string (rooms use the display name) OR a
+    # `(child_uuid -> name)` function (objects derive an instance-unique
+    # "<name>-<short-uuid>.obj" key, CX-lfo3, which needs the minted uuid).
+    name = if is_function(entry_name, 1), do: entry_name.(child_uuid), else: entry_name
+
     with {:ok, schema} <- Schemas.load_dir_schema(parent_dir, store) do
-      update = Encoding.encode_update(Schema.add_directory(schema, entry_name, child_uuid))
+      update = Encoding.encode_update(Schema.add_directory(schema, name, child_uuid))
       {metadata, commit_opts} = SignedWrite.opts_for(parent_dir, Keyword.put(entry_opts, :store, store))
 
       case CommitStoreClient.create_chained_commit(store, parent_dir, update, metadata, commit_opts) do
