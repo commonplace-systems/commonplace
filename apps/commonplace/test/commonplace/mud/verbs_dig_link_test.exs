@@ -212,6 +212,42 @@ defmodule Commonplace.MUD.VerbsDigLinkTest do
     assert go_out =~ "The Start Room"
   end
 
+  test "CX-82wi: 'where' and '@dump here' surface the room's own uuid, and it's a usable @teleport address", ctx do
+    alice = start_player("alice", ctx)
+
+    # `where` reports the current room's name AND its own uuid — the address a
+    # no-inbound-exit room (a home) otherwise can't reveal.
+    send_input(alice, "where")
+    where_out = drain("alice") |> Enum.join("\n")
+    assert where_out =~ "You are in The Start Room."
+    self_uuid =
+      case Regex.run(~r/uuid: ([0-9a-fA-F-]{36})/, where_out) do
+        [_, u] -> u
+        _ -> nil
+      end
+
+    assert self_uuid != nil
+
+    # `@dump here` now LEADS with the same own-uuid (was previously absent —
+    # inspect/1 never showed it because it isn't a Room struct field).
+    send_input(alice, "@dump here")
+    dump_out = drain("alice") |> Enum.join("\n")
+    assert dump_out =~ "uuid: #{self_uuid}"
+
+    # Prove it's a REAL address: walk away, then @teleport back USING the
+    # where-reported uuid (not an exit-derived one) → lands in The Start Room.
+    send_input(alice, "@dig up The Tower")
+    drain("alice")
+    send_input(alice, "up")
+    tower_out = drain("alice") |> Enum.join("\n")
+    assert tower_out =~ "The Tower"
+
+    send_input(alice, "@teleport #{self_uuid}")
+    tp_out = drain("alice") |> Enum.join("\n")
+    assert tp_out =~ "The Start Room"
+    refute tp_out =~ "The Tower"
+  end
+
   test "@unlink removes an exit if you built it", ctx do
     alice = start_player("alice", ctx)
 

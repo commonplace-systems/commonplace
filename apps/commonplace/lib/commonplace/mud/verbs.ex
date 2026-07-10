@@ -37,7 +37,7 @@ defmodule Commonplace.MUD.Verbs do
   # locked out of core commands. The explicit `@builtin take` escape
   # syntax (for a builder who WANTS the builtin despite an override) is
   # plan's Phase 2, not this bead.
-  @builtins ~w(look say emote take get drop give put inventory who home quit help go mine smith recipes) ++
+  @builtins ~w(look say emote take get drop give put inventory who home quit help go where mine smith recipes) ++
               ~w(north south east west up down in out)
 
   @doc "Dispatch a parsed command. Returns one of the verb-result tuples."
@@ -568,6 +568,7 @@ defmodule Commonplace.MUD.Verbs do
   defp dispatch_builtin("quit", _cmd, _ctx), do: {:reply, :quit}
   defp dispatch_builtin("help", _cmd, _ctx), do: {:reply, help_text()}
   defp dispatch_builtin("go", cmd, ctx), do: do_go(List.first(cmd.argv), ctx)
+  defp dispatch_builtin("where", _cmd, ctx), do: do_where(ctx)
 
   defp dispatch_builtin(dir, _cmd, ctx) when dir in ~w(north south east west up down in out) do
     do_go(dir, ctx)
@@ -603,6 +604,25 @@ defmodule Commonplace.MUD.Verbs do
 
   @doc false
   def __inventory_floor__(_cmd, ctx), do: do_inventory(ctx)
+
+  # CX-82wi — `where`: a non-builder QoL that surfaces the CURRENT room's own
+  # uuid (its address). A room with no inbound exits — every player's home! —
+  # otherwise has an UNLEARNABLE uuid: @dump only printed exit-target + owner
+  # uuids, never the room's own, so you could not @link anything to your home,
+  # @teleport back to it, or hand its address to a friend. `where` (and the
+  # self-uuid now added to `@dump here`) close that gap. Read-only, no auth.
+  defp do_where(ctx) do
+    name =
+      case World.get_room(ctx.current_room_uuid, ctx.store) do
+        {:ok, %Room{name: n}} when is_binary(n) and n != "" -> n
+        _ -> "here"
+      end
+
+    {:reply,
+     "You are in #{name}.\n" <>
+       "uuid: #{ctx.current_room_uuid}\n" <>
+       "(use this with @link <dir> <uuid> / @teleport <uuid>, or share it so others can link here)"}
+  end
 
   defp do_look(%Parser.Command{argv: []}, ctx) do
     {:reply, render_room(ctx)}
@@ -1513,8 +1533,14 @@ defmodule Commonplace.MUD.Verbs do
     cond do
       cmd.target in [nil, "here", "room"] ->
         case World.get_room(ctx.current_room_uuid, ctx.store) do
-          {:ok, room} -> {:reply, inspect(room, pretty: true)}
-          _ -> {:error, "no room"}
+          # CX-82wi — lead with the room's OWN uuid (its address). It is not a
+          # Room struct field, so inspect/1 alone never surfaced it, leaving a
+          # no-inbound-exit room (every home!) unaddressable for @link/@teleport.
+          {:ok, room} ->
+            {:reply, "uuid: #{ctx.current_room_uuid}\n" <> inspect(room, pretty: true)}
+
+          _ ->
+            {:error, "no room"}
         end
 
       true ->
@@ -2461,6 +2487,7 @@ defmodule Commonplace.MUD.Verbs do
       smith <recipe>                   craft a recipe from inputs you carry
       i / inventory                    list what you carry
       who                              list players online
+      where                            show THIS room's name + uuid (its address)
       home                             return to your own home room
       help                             this help
       quit                             disconnect
@@ -2484,7 +2511,8 @@ defmodule Commonplace.MUD.Verbs do
       @private                         make the current room read-visible to you only
       @public                          make the current room read-visible to everyone
       @listen                          subscribe to debug events
-      @dump [target]                   dump raw struct
+      @dump [target]                   dump raw struct (a room dump leads with
+                                       its own uuid; or use 'where')
     """
   end
 end
