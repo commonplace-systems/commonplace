@@ -60,6 +60,12 @@ defmodule Commonplace.MUD.MoveTest do
     schema
   end
 
+  # CX-j2wt — the actual bursar path Move locks a dir under (a dedicated
+  # "move-lock:" namespace, DISJOINT from the durable possession-token path
+  # keyed on the bare uuid). Tests that simulate contention or assert
+  # lock-release must seed/query THIS path, not the bare uuid.
+  defp move_lock(uuid), do: "move-lock:" <> uuid
+
   describe "move semantics (preserved from MoveServer v0)" do
     test "successful move adds to dest and removes from source", %{store: store, opts: opts} do
       {source, obj_dir} = make_dir_with_object(store, "cloak")
@@ -109,8 +115,8 @@ defmodule Commonplace.MUD.MoveTest do
 
       :ok = Move.move(obj_dir, "cloak.obj", source, dest, ctx.opts)
 
-      assert :available = Bursar.query(ctx.bursar, source)
-      assert :available = Bursar.query(ctx.bursar, dest)
+      assert :available = Bursar.query(ctx.bursar, move_lock(source))
+      assert :available = Bursar.query(ctx.bursar, move_lock(dest))
     end
 
     test "tokens are released on the error path", ctx do
@@ -119,8 +125,8 @@ defmodule Commonplace.MUD.MoveTest do
 
       {:error, :gone} = Move.move(UUID.uuid4(), "ghost.obj", source, dest, ctx.opts)
 
-      assert :available = Bursar.query(ctx.bursar, source)
-      assert :available = Bursar.query(ctx.bursar, dest)
+      assert :available = Bursar.query(ctx.bursar, move_lock(source))
+      assert :available = Bursar.query(ctx.bursar, move_lock(dest))
     end
 
     test "tokens are released when the move crashes mid-flight", ctx do
@@ -134,24 +140,24 @@ defmodule Commonplace.MUD.MoveTest do
           store: :no_such_store, bursar: ctx.bursar)
       )
 
-      assert :available = Bursar.query(ctx.bursar, source)
-      assert :available = Bursar.query(ctx.bursar, dest)
+      assert :available = Bursar.query(ctx.bursar, move_lock(source))
+      assert :available = Bursar.query(ctx.bursar, move_lock(dest))
     end
 
     test "contended dir → bounded retry → {:error, :busy}, nothing left held", ctx do
       {source, obj_dir} = make_dir_with_object(ctx.store, "sword")
       dest = empty_dir(ctx.store)
 
-      # Another holder owns the dest dir's token.
-      {:ok, _} = Bursar.acquire(ctx.bursar, dest, "someone-else")
+      # Another holder owns the dest dir's move-lock.
+      {:ok, _} = Bursar.acquire(ctx.bursar, move_lock(dest), "someone-else")
 
       assert {:error, :busy} =
                Move.move(obj_dir, "sword.obj", source, dest,
                  ctx.opts ++ [retries: 2, retry_ms: 10])
 
       # The loser must not leave its partial acquisition behind.
-      assert :available = Bursar.query(ctx.bursar, source)
-      assert {:held, %{holder: "someone-else"}} = Bursar.query(ctx.bursar, dest)
+      assert :available = Bursar.query(ctx.bursar, move_lock(source))
+      assert {:held, %{holder: "someone-else"}} = Bursar.query(ctx.bursar, move_lock(dest))
 
       # And the move must NOT have happened.
       {:ok, entry} = Schema.get_entry(load(source, ctx.store), "sword.obj")
@@ -181,8 +187,8 @@ defmodule Commonplace.MUD.MoveTest do
       {source, obj_dir} = make_dir_with_object(ctx.store, "ring")
       dest = empty_dir(ctx.store)
 
-      {:ok, _} = Bursar.acquire(ctx.bursar, source, "occupier")
-      {:ok, _} = Bursar.acquire(ctx.bursar, dest, "occupier")
+      {:ok, _} = Bursar.acquire(ctx.bursar, move_lock(source), "occupier")
+      {:ok, _} = Bursar.acquire(ctx.bursar, move_lock(dest), "occupier")
 
       assert {:error, :busy} =
                Move.move(obj_dir, "ring.obj", source, dest, ctx.opts ++ [retries: 0, retry_ms: 1])

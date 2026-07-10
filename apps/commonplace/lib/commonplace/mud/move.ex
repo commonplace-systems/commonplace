@@ -13,10 +13,18 @@ defmodule Commonplace.MUD.Move do
 
   ## Locking discipline
 
-    * Token names are the source/dest dir-schema UUIDs, acquired in
-      CANONICAL (sorted) order. Deny-on-contention cannot deadlock, but
-      two overlapping moves each holding one token could livelock
-      retrying; canonical order makes one of them win both.
+    * Token names are the source/dest dir-schema UUIDs under a dedicated
+      `"move-lock:"` PREFIX (CX-j2wt), acquired in CANONICAL (sorted)
+      order. The prefix keeps this EPHEMERAL move-lock in a namespace
+      DISJOINT from the DURABLE possession token (`Take`/`HolderMove`
+      key those on the bare object uuid, ttl:nil). Without the prefix a
+      CONTAINER's own possession token — an `.obj` that both holds a
+      permanent token AND is a move endpoint when you `put`/`get ...
+      from` it — would squat on the move-lock path at the same uuid, so
+      every deposit/withdrawal from a token-holding container would
+      `:busy` forever. Deny-on-contention cannot deadlock, but two
+      overlapping moves each holding one token could livelock retrying;
+      canonical order makes one of them win both.
     * On deny: release whatever was acquired, retry bounded
       (`retries:` × `retry_ms:`), then `{:error, :busy}`.
     * Tokens are released on EVERY exit path — success, `:gone`,
@@ -101,7 +109,7 @@ defmodule Commonplace.MUD.Move do
     write_opts = Keyword.take(opts, [:signing_context, :cert_cids, :signer_id, :via_verb])
 
     holder = default_holder()
-    paths = Enum.sort([source_dir_uuid, dest_dir_uuid])
+    paths = Enum.sort([lock_path(source_dir_uuid), lock_path(dest_dir_uuid)])
 
     case acquire_all(paths, holder, bursar, ttl, retries, retry_ms) do
       :ok ->
@@ -144,7 +152,7 @@ defmodule Commonplace.MUD.Move do
     retry_ms = Keyword.get(opts, :retry_ms, @retry_ms)
 
     holder = default_holder()
-    sorted = paths |> Enum.uniq() |> Enum.sort()
+    sorted = paths |> Enum.map(&lock_path/1) |> Enum.uniq() |> Enum.sort()
 
     case acquire_all(sorted, holder, bursar, ttl, retries, retry_ms) do
       :ok ->
@@ -173,6 +181,14 @@ defmodule Commonplace.MUD.Move do
       {:error, _} -> "move:#{inspect(self())}@#{node()}"
     end
   end
+
+  # CX-j2wt — the ephemeral move-lock lives under a dedicated prefix, DISJOINT
+  # from the durable possession-token namespace (bare object uuid). This is what
+  # lets a CONTAINER hold a permanent possession token (mint-at-create) AND still
+  # accept `put`/`get ... from` deposits: the deposit's move-lock on the
+  # container dir no longer collides with the container's own possession token.
+  # Mirrors Mint's `"vein-lock:"` prefix precedent.
+  defp lock_path(uuid), do: "move-lock:" <> uuid
 
   # --- Token discipline ---
 

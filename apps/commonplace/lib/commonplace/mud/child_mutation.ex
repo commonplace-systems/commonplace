@@ -47,6 +47,7 @@ defmodule Commonplace.MUD.ChildMutation do
 
   alias Commonplace.MUD.{Schemas, SignedWrite}
   alias Commonplace.Crypto.NodeIdentity
+  alias Commonplace.Green.{Bursar, BursarClient}
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.Schema
   alias Yelixer.Encoding
@@ -83,8 +84,16 @@ defmodule Commonplace.MUD.ChildMutation do
       # itself un-zoned, e.g. curated/global node content → an un-stamped child,
       # which is unwritable by any subtree cert = fail-closed-safe).
       zone = Commonplace.Trust.doc_zone(parent_dir, store)
-      mint_and_link(parent_dir, entry_name, child_uuid, meta_filename, base_json,
-        zone, node_ctx, store, entry_opts)
+
+      with {:ok, ^child_uuid} <-
+             mint_and_link(parent_dir, entry_name, child_uuid, meta_filename, base_json,
+               zone, node_ctx, store, entry_opts) do
+        # CX-j2wt MINT-AT-CREATE: an ITEM-object is born already holding a
+        # NODE-held possession token, so it can never enter play token-less (the
+        # un-droppable-gift bug). See `maybe_mint_possession_token/2`.
+        maybe_mint_possession_token(meta_filename, child_uuid)
+        {:ok, child_uuid}
+      end
     end
   end
 
@@ -102,6 +111,54 @@ defmodule Commonplace.MUD.ChildMutation do
         {:error, _} = err -> err
         _commit -> :ok
       end
+    end
+  end
+
+  # --- CX-j2wt MINT-AT-CREATE (possession axis only) ---
+  #
+  # An ITEM-object born under the tree gets a NODE-held possession token
+  # (`Bursar.acquire`, ttl:nil = permanent) at genesis, mirroring
+  # `Take.ensure_node_holds`. ROOMS are token-EXEMPT (they use zone-ownership,
+  # not possession tokens) — so this fires ONLY when the child's meta file is the
+  # OBJECT meta (`Schemas.object_filename()`), never the room meta. The token is
+  # what `Take`/`HolderMove` transfer node→player, so a `@create`-d object is
+  # takeable/droppable by construction rather than depending on `Take`'s lazy
+  # acquire.
+  #
+  # Two-axis orthogonality: this writes ONLY the Bursar possession token; it
+  # NEVER touches the object meta doc (name/description/availability/reward).
+  #
+  # Best-effort + idempotent: a fresh uuid is never-held, so `acquire` grants it
+  # atomically (the never-held reject is the concurrency guard). A re-entry sees
+  # it node-held and no-ops. No reachable Bursar (permissive dogfood / most
+  # tests) → skip cleanly: permissive DROP rides `HolderMove`'s fast path, where
+  # tokens are moot, so a token-less object there is harmless.
+  defp maybe_mint_possession_token(meta_filename, child_uuid) do
+    if meta_filename == Schemas.object_filename() do
+      case NodeIdentity.identity() do
+        {:ok, node_identity} -> mint_node_token(child_uuid, node_identity)
+        _ -> :ok
+      end
+    end
+
+    :ok
+  end
+
+  defp mint_node_token(item_uuid, node_identity) do
+    case BursarClient.query(Bursar, item_uuid) do
+      :available ->
+        BursarClient.acquire(Bursar, item_uuid, node_identity, authenticated_as: node_identity, ttl: nil)
+        :ok
+
+      # already node-held (idempotent re-entry) — nothing to do.
+      {:held, %{holder: ^node_identity}} ->
+        :ok
+
+      # held-by-other (impossible for a fresh uuid) or bursar unavailable →
+      # best-effort no-op; the absolute token-gate in HolderMove.push surfaces
+      # any real anomaly rather than papering over it.
+      _ ->
+        :ok
     end
   end
 

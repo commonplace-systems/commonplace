@@ -109,6 +109,7 @@ defmodule Commonplace.MUD.World.Facade do
   require Logger
 
   alias Commonplace.Crypto.{NodeIdentity, Signing}
+  alias Commonplace.Green.{Bursar, BursarClient}
   alias Commonplace.MUD.{Move, Schemas, SignedWrite, World}
   alias Commonplace.MUD.Schemas.Object
   alias Commonplace.Store.CommitStoreClient
@@ -653,7 +654,7 @@ defmodule Commonplace.MUD.World.Facade do
       # object-spam DoS). Authority is unchanged: strict intersection on the
       # bound object.
       with :ok <- charge_lifecycle_op() do
-        write_guarded(f, [f.object_uuid], fn -> create_object_in(f, f.object_uuid, name) end)
+        write_guarded(f, [f.object_uuid], fn -> create_object_in(f, f.object_uuid, name, node_holder()) end)
       end
     end
   end
@@ -742,7 +743,7 @@ defmodule Commonplace.MUD.World.Facade do
       # presence-untouched META anchor, not the churned dir. (The new object has
       # no meta yet — it is born under [room.meta], never anchored on its own
       # un-minted meta, so the authority set can't collapse to the empty trap.)
-      write_guarded(f, [room], [room_meta_authority(room, f)], fn -> create_object_in(f, room, name) end)
+      write_guarded(f, [room], [room_meta_authority(room, f)], fn -> create_object_in(f, room, name, node_holder()) end)
     end
   end
 
@@ -765,7 +766,9 @@ defmodule Commonplace.MUD.World.Facade do
         inv ->
           # DELIBERATELY no write_guarded — see the header. Still
           # invoker-signed via write_opts/1 (check (a) applies).
-          create_object_in(f, inv, name)
+          # CX-j2wt: born into the INVOKER's own hand → the INVOKER holds the
+          # fresh possession token (a REAL, droppable token), not the node.
+          create_object_in(f, inv, name, invoker_holder(f))
       end
     end
   end
@@ -1876,7 +1879,7 @@ defmodule Commonplace.MUD.World.Facade do
   # cap HERE so every creation path is bounded uniformly. The AUTHORITY
   # check (write_guarded / the invoker-own exception) is the CALLER's
   # responsibility — this helper only creates + links + counts.
-  defp create_object_in(f, parent_uuid, name) do
+  defp create_object_in(f, parent_uuid, name, holder_identity) do
     case Schemas.load_dir_schema(parent_uuid, f.store) do
       {:ok, schema} ->
         if length(Schema.list_entries(schema)) >= @container_max_entries do
@@ -1891,12 +1894,62 @@ defmodule Commonplace.MUD.World.Facade do
             # value) so configure_* can later validate an author-passed uuid
             # against the run's minted-set.
             record_minted(new_uuid)
+            # CX-j2wt MINT-AT-CREATE: born already holding a real possession
+            # token so it can never enter play token-less. `holder_identity` is
+            # the NODE for world objects (spawn/create_child — the player then
+            # TAKEs it, node→taker), the INVOKER for give_to_actor (born in the
+            # invoker's hand). See `mint_possession_token/2`.
+            mint_possession_token(new_uuid, holder_identity)
             {:ok, new_uuid}
           end
         end
 
       {:error, _} = err ->
         err
+    end
+  end
+
+  # CX-j2wt — the node's own identity, the token holder for a world object
+  # (spawn/create_child): the object lives in a room / another object and is
+  # TAKEn (node→taker) to be carried. nil if unavailable → mint skipped.
+  defp node_holder do
+    case NodeIdentity.identity() do
+      {:ok, id} -> id
+      _ -> nil
+    end
+  end
+
+  # CX-j2wt — the invoker's bare identity_uuid (the give_to_actor token holder).
+  # nil for an unsigned/permissive session → mint skipped (permissive DROP rides
+  # HolderMove's fast path, where tokens are moot).
+  defp invoker_holder(%__MODULE__{} = f) do
+    case f.ctx[:signing_context] do
+      %{identity_uuid: id} when is_binary(id) -> id
+      _ -> nil
+    end
+  end
+
+  # CX-j2wt — best-effort possession-token mint at object birth (possession
+  # axis ONLY — never touches the object meta / availability / reward). Mirrors
+  # `Take.ensure_node_holds`: fresh uuid is never-held → `acquire` grants
+  # atomically (the never-held reject is the concurrency guard); already
+  # held-by-`holder` → idempotent no-op. A nil/blank holder (unsigned session)
+  # or an unreachable Bursar (permissive dogfood / most facade tests) → skip
+  # cleanly, so a token-less object there stays harmless (permissive DROP is
+  # fast-path, token-independent).
+  defp mint_possession_token(_uuid, holder) when not is_binary(holder) or holder == "", do: :ok
+
+  defp mint_possession_token(uuid, holder) do
+    case BursarClient.query(Bursar, uuid) do
+      :available ->
+        BursarClient.acquire(Bursar, uuid, holder, authenticated_as: holder, ttl: nil)
+        :ok
+
+      {:held, %{holder: ^holder}} ->
+        :ok
+
+      _ ->
+        :ok
     end
   end
 
