@@ -41,6 +41,23 @@ window.addEventListener("phx:page-loading-stop", _info => topbar.hide())
 // connect if there are any LiveViews on the page
 liveSocket.connect()
 
+// MUD scrollback auto-scroll (CX play-quality): keep #mud-scrollback pinned
+// to the bottom as new command output / ambient events stream in (LiveView
+// re-renders the turn list on each update). A body-level MutationObserver
+// avoids a per-element phx-hook, so it works regardless of when the MUD
+// LiveView mounts the container and survives live-nav. Always-bottom matches
+// MUD convention (a live feed) — the fix for "it doesn't scroll to new output".
+function mudScrollToBottom() {
+  const el = document.getElementById("mud-scrollback")
+  if (el) el.scrollTop = el.scrollHeight
+}
+new MutationObserver(mudScrollToBottom).observe(document.body, {
+  childList: true,
+  subtree: true,
+  characterData: true,
+})
+window.addEventListener("phx:page-loading-stop", mudScrollToBottom)
+
 // expose liveSocket on window for web console debug logs and latency simulation:
 // >> liveSocket.enableDebug()
 // >> liveSocket.enableLatencySim(1000)  // enabled for duration of browser session
