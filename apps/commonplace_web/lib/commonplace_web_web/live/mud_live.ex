@@ -528,13 +528,21 @@ defmodule CommonplaceWebWeb.MudLive do
                 <%= dir %><%= if to not in ["", dir], do: " → #{to}" %>
               </span>
             </div>
+            <%!-- CX-zyee: render item/occupant lists as a single
+                  comma-joined string, not bare per-item spans. The old
+                  `:for` spans had no text delimiter (the `mr-2` margin
+                  collapses on copy / overflow, and multi-word names like
+                  "brass bell" ran together illegibly — "brass belllantern…").
+                  A comma-joined string reads cleanly, copies faithfully, and
+                  wraps naturally in the flex row. Each name is still an
+                  interpolated `~H` value, so auto-escaped (the XSS gate holds). --%>
             <div :if={room.contents != []}>
               <span class="room-label">Here:</span>
-              <span :for={item <- room.contents} class="mr-2"><%= item %></span>
+              <span><%= Enum.join(room.contents, ", ") %></span>
             </div>
             <div :if={room.occupants != []}>
               <span class="room-label">Also here:</span>
-              <span :for={who <- room.occupants} class="mr-2"><%= who %></span>
+              <span><%= Enum.join(room.occupants, ", ") %></span>
             </div>
           </div>
 

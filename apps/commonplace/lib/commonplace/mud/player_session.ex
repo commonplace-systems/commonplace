@@ -318,8 +318,28 @@ defmodule Commonplace.MUD.PlayerSession do
 
   @impl true
   def handle_info(:greet, state) do
-    state.output_fn.("Welcome, #{state.player_name}.\n")
-    render_room(state)
+    # CX-zyee: a buffered session (browser / bot) must have its greeting —
+    # the Welcome banner AND the spawn-room render — land in the output
+    # buffer SYNCHRONOUSLY in this handler, so the mount's paired drain
+    # (MudLive's `:enter`, Bot's settle-then-drain) reliably captures it as
+    # the session-open turn. Emitting through `output_fn` (a cast-to-self
+    # for buffered sessions) enqueued the render as `{:buffer_append, ...}`
+    # messages AFTER an already-queued `:drain_buffer` call, so a fresh
+    # `look` returned only the stale "Welcome" banner and the actual room
+    # render slipped into a later (dimmed AMBIENT) turn. Composing the
+    # lines and appending them to the buffer HERE removes that race. An
+    # unbuffered (CLI, `IO.puts`) session keeps writing straight through
+    # `output_fn`, exactly as before.
+    lines = greet_lines(state)
+
+    state =
+      if is_list(state.buffer) do
+        %{state | buffer: state.buffer ++ lines}
+      else
+        Enum.each(lines, state.output_fn)
+        state
+      end
+
     {:noreply, state}
   end
 
@@ -462,6 +482,20 @@ defmodule Commonplace.MUD.PlayerSession do
     ]
   end
 
+  # The greet turn's lines: the Welcome banner followed by the spawn-room
+  # render (the same `look` projection `render_room/1` emits), as plain
+  # values so `handle_info(:greet, ...)` can place them in the buffer
+  # synchronously (CX-zyee). A `look` that doesn't render (unexpected)
+  # degrades to just the banner rather than crashing the greet.
+  defp greet_lines(state) do
+    welcome = "Welcome, #{state.player_name}.\n"
+
+    case Verbs.dispatch(%Parser.Command{verb: "look"}, build_ctx(state, %Parser.Command{})) do
+      {:reply, room} when is_binary(room) -> [welcome, room]
+      _ -> [welcome]
+    end
+  end
+
   defp render_room(state) do
     ctx = build_ctx(state, %Parser.Command{})
 
@@ -583,6 +617,22 @@ defmodule Commonplace.MUD.PlayerSession do
   defp render_event(%{kind: :custom, text: text}, state) do
     state.output_fn.(text)
   end
+
+  # CX-jicn.2 (output-hygiene): a raw trust event — `{:trust,
+  # :local_write_denied, meta}` (a write rejected by the local-write gate
+  # under `:enforce`) or `{:trust, :section_extend_skipped, meta}` —
+  # reaches this session via the `red:` PubSub broadcast, delivered to the
+  # writer AND every co-present observer subscribed to the room topic. It
+  # is an INTERNAL trust-engine signal, never gameplay: the writer already
+  # received a graceful synchronous verb reply ("You don't have permission
+  # …", CX-93ea) at the denied verb, and an observer must never see another
+  # player's write-denial at all. So it is DROPPED SILENTLY here — never
+  # `inspect/1`-ed into anyone's pane (the raw `{:trust, :local_write_denied,
+  # %{reason:, doc_uuid:, signer_id:}}` leak this fix closes). Same
+  # never-surface-raw-internals spine as the safe-verb graceful-refusal
+  # discipline (`Commonplace.MUD.World.Facade`). Must precede the
+  # `inspect/1` catch-all below.
+  defp render_event({:trust, _event, _meta}, _state), do: :ok
 
   defp render_event(other, state) do
     state.output_fn.("(event: #{inspect(other)})")
