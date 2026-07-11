@@ -38,6 +38,19 @@ end
 if System.get_env("PHX_SERVER") && System.get_env("COMMONPLACE_DATA_DIR") do
   config :commonplace, workspace_lock_on_boot: true
   config :commonplace, bursar_on_boot: true
+
+  # CX-i9ca-adjacent (2026-07-11): a Mode-B serve must also make the
+  # GitBridge find its mount mapping, or the workspace→git mirror silently
+  # stays down (the supervisor boots with zero bridge children). The mapping
+  # lives at `<COMMONPLACE_DATA_DIR>/git_bridges/git_bridges.json`, so DERIVE
+  # git_bridge_data_dir from the already-set COMMONPLACE_DATA_DIR — no new
+  # launch var needed, and every Mode-B serve auto-loads the bridge on boot.
+  # Overridable via COMMONPLACE_GIT_BRIDGE_DATA_DIR for a non-default layout.
+  # (Regression fix: a 2026-07-11 restart dropped a hand-set put_env and the
+  # jes5199/commonplace-data mirror sat inactive for ~5 days.)
+  config :commonplace, :git_bridge_data_dir,
+    System.get_env("COMMONPLACE_GIT_BRIDGE_DATA_DIR") ||
+      Path.join(System.get_env("COMMONPLACE_DATA_DIR"), "git_bridges")
 end
 
 # CX-qat5.7: the local-write gate knob is otherwise Application-env only
