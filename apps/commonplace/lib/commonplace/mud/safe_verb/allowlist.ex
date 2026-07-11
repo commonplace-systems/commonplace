@@ -755,6 +755,16 @@ defmodule Commonplace.MUD.SafeVerb.Allowlist do
 
   # ---- variable read -----------------------------------------------------
 
+  # GAP-2 (plan #7573): the compile-time reflection pseudo-vars parse as
+  # `{name, _, nil}` — the SAME shape as a variable read — so the var-read clause
+  # below would silently ALLOW them, slipping the closed-by-default posture.
+  # `__ENV__` leaks compile-time internals (file path, module, imported fn/macro
+  # lists); reject the reserved set explicitly (a cheap belt) BEFORE the var-read.
+  defp scan({name, _, ctx})
+       when name in [:__ENV__, :__CALLER__, :__MODULE__, :__DIR__, :__STACKTRACE__, :super] and
+              not is_list(ctx),
+       do: ["reserved pseudo-variable #{name} is not allowed (compile-time reflection)"]
+
   defp scan({name, _, ctx}) when is_atom(name) and not is_list(ctx), do: []
 
   # ---- generic local call fallback (closed by default) -------------------
@@ -797,8 +807,33 @@ defmodule Commonplace.MUD.SafeVerb.Allowlist do
     end)
   end
 
-  defp scan_bitstring_part({:"::", _, [expr, _type_spec]}), do: scan(expr)
+  # GAP-1 (plan #7573): a bitstring segment's type-spec can EMBED an executable
+  # expression — `<<x::size(evil_call())>>` runs `evil_call()` at runtime before
+  # any type error — but the old code scanned only `expr` and IGNORED the
+  # type-spec, an allowlist ESCAPE. Now walk the type-spec too.
+  defp scan_bitstring_part({:"::", _, [expr, type_spec]}),
+    do: scan(expr) ++ scan_bitstring_typespec(type_spec)
+
   defp scan_bitstring_part(other), do: scan(other)
+
+  # A type-spec may contain ONLY: type atoms (`integer` == `{:integer,_,nil}`,
+  # `:utf8`, ...), literal size ints, `-`/`*` combinators, and `size(_)`/`unit(_)`
+  # whose argument is re-scanned with the FULL allowlist (so `size(8)` / `size(n)`
+  # [a var] pass, but `size(evil())` [a call] is rejected). Anything else →
+  # closed-by-default reject. Closing the one construct-level RCE hole plan found.
+  defp scan_bitstring_typespec({op, _, [a, b]}) when op in [:-, :*],
+    do: scan_bitstring_typespec(a) ++ scan_bitstring_typespec(b)
+
+  defp scan_bitstring_typespec({fun, _, [arg]}) when fun in [:size, :unit], do: scan(arg)
+
+  defp scan_bitstring_typespec({name, _, ctx}) when is_atom(name) and not is_list(ctx), do: []
+
+  defp scan_bitstring_typespec(spec) when is_integer(spec) or is_atom(spec), do: []
+
+  defp scan_bitstring_typespec(_other),
+    do: [
+      "disallowed bitstring type-spec (only type atoms, literal sizes, `-`/`*` combinators, and size/unit with allowlisted args)"
+    ]
 
   # `when`-guarded pattern lists are wrapped as a single `{:when, _, args}`
   # element whose LAST element is the guard expression and whose preceding
