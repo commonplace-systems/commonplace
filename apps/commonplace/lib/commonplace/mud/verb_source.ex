@@ -284,6 +284,7 @@ defmodule Commonplace.MUD.VerbSource do
     # write gate reads to anchor :define_verb coverage on the host. See
     # `Commonplace.MUD.SignedWrite.opts_for`.
     with {:ok, wrapped} <- SafeVerb.wrap_and_lint(body_text),
+         :ok <- precheck_author(target_dir_uuid, store, opts),
          {:ok, verbs_uuid} <- ensure_verbs_dir(target_dir_uuid, store, opts),
          {:ok, verbs_schema} <- Schemas.load_dir_schema(verbs_uuid, store),
          {:ok, source_uuid} <-
@@ -383,6 +384,31 @@ defmodule Commonplace.MUD.VerbSource do
   end
 
   ## Private
+
+  # CX-fogy (plan #7618b) — ORPHAN-RESIDUAL hygiene: a safe-verb save does TWO
+  # writes (the source doc + the verbs/-dir entry-add). If the source-doc write
+  # could land but the entry-add would be carve-denied (a caller who can't :write
+  # the host's zone), the source doc is left an unreachable orphan (benign, never
+  # dispatches — but litter). Pre-check the caller's :write authority over the HOST
+  # zone (the SAME zone the verbs/ dir carries, so this is the entry-add's carve
+  # asked commitlessly — mirrors `ChildMutation.precheck_link`) and bail BEFORE any
+  # write. NOT the security boundary (the write commits are still gate-checked); it
+  # just avoids orphan litter on the rejected path. A node/unsigned caller (no
+  # signing_context) → `:ok` here and lets the write itself gate.
+  defp precheck_author(host_uuid, store, opts) do
+    case Keyword.get(opts, :signing_context) do
+      %{identity_uuid: id, public_key: pub} when is_binary(id) ->
+        cfg = Commonplace.Trust.config()
+        certs = Keyword.get(opts, :cert_cids, [])
+
+        if Commonplace.Trust.writer_authorized?(id, pub, certs, host_uuid, cfg, store),
+          do: :ok,
+          else: {:error, {:trust_rejected, :not_authorized_to_author}}
+
+      _ ->
+        :ok
+    end
+  end
 
   # CX-fogy L3 (OPTION 2): the verbs/ dir is created as a ZONED child of the host
   # (`ChildMutation.create_zoned_child` DERIVES the stamp from the host's zone,

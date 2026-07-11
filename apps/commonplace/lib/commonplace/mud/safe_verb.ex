@@ -112,7 +112,11 @@ defmodule Commonplace.MUD.SafeVerb do
     SourceDoc.compile(source_uuid, store,
       unique_module: source_uuid,
       gate: {:verb, section_scope},
-      require_safe_wrapper: true
+      require_safe_wrapper: true,
+      # CX-fogy (c) — inject the MUD allowlist PROFILE (facade action-set +
+      # wrapper shape, DATA) so the core `Commonplace.Code.Allowlist` runs the
+      # run-boundary re-check without SourceDoc referencing this domain module.
+      safe_wrapper_profile: Commonplace.MUD.SafeVerb.Allowlist.profile()
     )
   end
 

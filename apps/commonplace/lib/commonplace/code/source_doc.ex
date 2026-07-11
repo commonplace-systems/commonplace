@@ -167,11 +167,14 @@ defmodule Commonplace.Code.SourceDoc do
   below them; only the WHICH-check differs.
 
   `:require_safe_wrapper` (CX-fhz4, default `false`) — when `true`, runs
-  `Commonplace.MUD.SafeVerb.Allowlist.check_wrapped/1` against the
-  STORED source, before the cache lookup (and so on cache hits too),
-  re-verifying both the exact substrate wrapper shape and the body
-  allowlist independent of the `.safe.elx` filename. Set only by
-  `Commonplace.MUD.SafeVerb.compile/3`; every other caller omits it and
+  the CORE `Commonplace.Code.Allowlist.check_wrapped/2` against the STORED
+  source, before the cache lookup (and so on cache hits too), re-verifying
+  both the exact substrate wrapper shape and the body allowlist
+  independent of the `.safe.elx` filename. The domain caller injects its
+  own `%Commonplace.Code.Allowlist.Profile{}` via `:safe_wrapper_profile`
+  (CX-fogy (c) — so this core module references no domain allowlist).
+  Fail-closed: `require_safe_wrapper` with no profile → refuse. Set only by
+  the domain's safe-verb compile path; every other caller omits it and
   sees no behavior change.
   """
   @spec compile(binary(), GenServer.server(), keyword()) ::
@@ -232,7 +235,13 @@ defmodule Commonplace.Code.SourceDoc do
   # byte-identical to pre-CX-fhz4 behavior.
   defp check_safe_wrapper(uuid, source, opts) do
     if Keyword.get(opts, :require_safe_wrapper, false) do
-      case Commonplace.MUD.SafeVerb.Allowlist.check_wrapped(source) do
+      # CX-fogy (c) — the wrapper/allowlist bar lives in the CORE, domain-agnostic
+      # `Commonplace.Code.Allowlist`; the DOMAIN caller injects its own
+      # `%Allowlist.Profile{}` (facade action-set + wrapper shape) via
+      # `:safe_wrapper_profile` in opts. So this core module no longer references
+      # any domain allowlist. Fail-closed: `require_safe_wrapper` with no profile
+      # → refuse (can't verify the wrapper without the domain's shape).
+      case wrapper_check(source, Keyword.get(opts, :safe_wrapper_profile)) do
         :ok ->
           :ok
 
@@ -249,6 +258,12 @@ defmodule Commonplace.Code.SourceDoc do
       :ok
     end
   end
+
+  defp wrapper_check(source, %Commonplace.Code.Allowlist.Profile{} = profile),
+    do: Commonplace.Code.Allowlist.check_wrapped(source, profile)
+
+  defp wrapper_check(_source, _no_profile),
+    do: {:error, {:unsafe_verb, :no_safe_wrapper_profile}}
 
   @doc """
   Resolve a DocRef to a compiled module. Reads the source-doc reachable

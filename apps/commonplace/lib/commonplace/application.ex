@@ -11,6 +11,20 @@ defmodule Commonplace.Application do
     # dep is first added.
     _ = Application.ensure_all_started(:xmerl)
 
+    # CX-fogy (c) — composition-root injection of the MUD safe-verb allowlist
+    # PROFILE (the facade action-set + wrapper shape, as DATA) into the app env.
+    # `Commonplace.Trust`'s write-fork classifier reads this to run the CORE,
+    # domain-agnostic `Commonplace.Code.Allowlist` — so Trust never references the
+    # MUD domain, and the RCE-ban wall stays core-owned. Fail-closed: if this is
+    # unset, the classifier can't recognize a sandboxed safe-verb and every code
+    # write falls to `:execute` (node-only). Set here (the composition root, which
+    # is allowed to know both layers) so it's live before any write is gated.
+    Application.put_env(
+      :commonplace,
+      :safe_verb_profile,
+      Commonplace.MUD.SafeVerb.Allowlist.profile()
+    )
+
     # CX-o8tx: feed reflog amortization's dirty-set from local commit
     # creates. Idempotent attach — re-attach on app restart is harmless
     # because telemetry treats handler_id as a primary key.

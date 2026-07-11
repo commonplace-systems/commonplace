@@ -232,15 +232,16 @@ defmodule Commonplace.Trust do
   (i) classify the AFTER-state, (ii) one shared validator commit+compile,
   (iii) fail-closed to :execute, (iv) Gate-B untouched for raw.
 
-  ⚠️ INTERIM WIRING (plan #7548 — destination is (c)-refined). The classifier is a
-  DIRECT reference to the MUD-domain `SafeVerb.Allowlist` below — a core->domain
-  layering inversion plan ruled must be fixed: MOVE the structural RCE-bans to a
-  CORE module (sibling of `CodeDocHeuristic`) and pass the MUD FACADE allow-set DOWN
-  as DATA, so the RCE wall is core-owned and a MUD change can never weaken it. This
-  interim is SAFE (fail-closed, identical classification behavior), suitable for
-  dogfood MECHANISM-verify — but the (c)-refined core-move AND plan's allowlist-
-  COMPLETENESS review are REQUIRED before this ships to real citizens. The classifier
-  is isolated to `safe_verb_code?/1` so the (c) swap is a one-function change.
+  LAYERING (plan #7548 — the (c)-refined core-move, DONE). The classifier runs the
+  CORE, domain-agnostic `Commonplace.Code.Allowlist` (which owns the structural
+  RCE-bans — kernel/stdlib tables, dynamic-dispatch/macro-surface/atom-construction
+  rejections, closed-by-default) with a DATA profile (the MUD facade action-set +
+  wrapper shape) injected at the composition root (`Commonplace.Application` →
+  `:safe_verb_profile`). So Trust no longer references the MUD domain, and a MUD
+  change can only ADD-within-safety (a facade allow-set), never weaken the core
+  wall. FAIL-CLOSED: an absent/invalid profile → the write classifies `:execute`
+  (node-only), never `:define_verb`. The classifier is isolated to
+  `safe_verb_code?/1`.
   """
   @spec authorized_to_write?(Commit.t(), {:doc, String.t()}, config(), GenServer.server()) ::
           :ok | {:error, term()}
@@ -355,12 +356,26 @@ defmodule Commonplace.Trust do
     end
   end
 
-  # THE classifier == THE safety validator (plan #7537 crux; interim wiring per the
-  # `authorized_to_write?` note). Returns true IFF the content parses, is the
-  # substrate safe-verb wrapper shape, AND is allowlist-clean — the same
-  # `SafeVerb.compile` bar. Anything else (raw code, unparseable) is NOT safe.
+  # THE classifier == THE safety validator (plan #7537 crux). Returns true IFF the
+  # content parses, is the substrate safe-verb wrapper shape, AND is allowlist-
+  # clean — the same bar `SafeVerb.compile` runs. Anything else (raw code,
+  # unparseable) is NOT safe.
+  #
+  # CX-fogy (c) — the RCE-ban wall now lives in the CORE, domain-agnostic
+  # `Commonplace.Code.Allowlist`; Trust runs it with a DATA profile (the MUD's
+  # facade action-set + wrapper shape) injected at the composition root
+  # (`Commonplace.Application`) into `:safe_verb_profile`. So Trust no longer
+  # references the MUD domain — the pre-(c) interim direct-ref is gone. FAIL-
+  # CLOSED: an absent/invalid profile → `false` → the write classifies `:execute`
+  # (node-only), never silently `:define_verb`.
   defp safe_verb_code?(content) do
-    Commonplace.MUD.SafeVerb.Allowlist.check_wrapped(content) == :ok
+    case Application.get_env(:commonplace, :safe_verb_profile) do
+      %Commonplace.Code.Allowlist.Profile{} = profile ->
+        Commonplace.Code.Allowlist.check_wrapped(content, profile) == :ok
+
+      _ ->
+        false
+    end
   rescue
     _ -> false
   catch
