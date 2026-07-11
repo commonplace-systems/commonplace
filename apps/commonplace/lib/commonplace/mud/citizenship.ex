@@ -110,9 +110,14 @@ defmodule Commonplace.MUD.Citizenship do
       # presence cert's scope.
       zone_cids = issue_home_zone_cert(identity_uuid, pub, home.home_room_uuid, store)
 
+      # CX-fogy: a THIRD, separate grant — {:subtree,home}[:define_verb] — so the
+      # citizen may AUTHOR sandboxed verbs anywhere in their home (design §2). Same
+      # zone as the write cert, distinct capability; presence⊥ownership⊥authoring.
+      authoring_cids = issue_define_verb_cert(identity_uuid, pub, home.home_room_uuid, store)
+
       {:ok,
        %{
-         cert_cids: Enum.uniq(Enum.reject(starter_cids ++ zone_cids, &is_nil/1)),
+         cert_cids: Enum.uniq(Enum.reject(starter_cids ++ zone_cids ++ authoring_cids, &is_nil/1)),
          home_room_uuid: home.home_room_uuid,
          home_room_meta_uuid: home.home_room_meta_uuid
        }}
@@ -183,6 +188,39 @@ defmodule Commonplace.MUD.Citizenship do
   end
 
   defp issue_home_zone_cert(_identity_uuid, _pub, _home_dir, _store), do: []
+
+  # ---- Verb-authoring cert (CX-fogy / design @9398646 §2 — the "execute-safe"
+  # grant) ----
+
+  # Issues the player a {:subtree, home_dir} cert carrying the `:define_verb`
+  # capability — the "you may author SANDBOXED verbs on anything in your home"
+  # grant, the creative-payoff half of citizenship. This is the SAME zone as the
+  # {:subtree,home} WRITE cert above (so it covers every room/object the player
+  # @digs/@creates), but a SEPARATE cert on a SEPARATE capability: `:define_verb`
+  # satisfies `DefineVerbGate` (safe-verb authoring, lint + AST-allowlist +
+  # facade-bound) for verb docs in the player's zone. It does NOT carry `:execute`
+  # and so does NOT satisfy Gate-B — raw engine code stays node-signed-only
+  # (write⊥execute for RAW code preserved; the sandbox is the RCE containment).
+  # A THIRD grant, never merged: presence⊥ownership⊥authoring, each independently
+  # scoped/revocable. Node-issued, content-addressed/idempotent, graceful-degrade
+  # to `[]`, exactly like the write-zone + presence certs.
+  defp issue_define_verb_cert(identity_uuid, pub, home_dir, store)
+       when is_binary(home_dir) do
+    with {:ok, node_ctx} <- NodeIdentity.signing_context(),
+         claim <- %{verbs: [:define_verb], scope: {:subtree, home_dir}, caveats: %{}},
+         {:ok, cap} <- Capability.issue(node_ctx, {identity_uuid, pub}, claim, nil, store: store),
+         :ok <- CommitStoreClient.store_capability(store, cap) do
+      [cap.id]
+    else
+      _ -> []
+    end
+  rescue
+    _ -> []
+  catch
+    :exit, _ -> []
+  end
+
+  defp issue_define_verb_cert(_identity_uuid, _pub, _home_dir, _store), do: []
 
   # ---- Node-signed home provision (as an OWNED ROOM) ----
 

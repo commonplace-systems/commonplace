@@ -1,26 +1,33 @@
 defmodule Commonplace.MUD.VerbAuthoringBoundaryTest do
   @moduledoc """
-  SECURITY-BOUNDARY GUARD: a real citizen holding only a `{:subtree,home}`
-  `[:write]` cert CANNOT author (save) executable verb code, even in their OWN
-  home — while the NODE (execute authority) can. This is the write⊥execute /
-  Gate-B boundary = RCE protection: a player who can build rooms must never be
-  able to inject executable code that later runs with execute privileges.
+  The verb-authoring trust boundary UNDER :enforce (CX-fogy — the "build your own
+  world" creative payoff, design @9398646 §2).
 
-  Characterized the live @verb save-denial fable's playtest hit (2026-07-10): the
-  denial is `{:trust_rejected, :capability_insufficient}` — a WRITE-GATE authority
-  refusal, NOT a broken path (the same save NODE-signed returns `:ok`). This pin
-  guards the boundary: if a future change ever lets a `[:write]` citizen save a
-  verb, test 1 goes green-on-save and fails here — surfacing an RCE regression.
-  If product intent later adds player-authored zone-scoped verbs, that's a NEW
-  cert grammar (execute-scoped subtree cert / node-mediated review) + a deliberate
-  update to this guard, never a silent one.
+  As of CX-fogy, citizenship grants a THIRD cert — `{:subtree,home}[:define_verb]`
+  — so a citizen CAN author SANDBOXED safe-verbs anywhere in their own home. The
+  guard this pins is the (still load-bearing) boundary AROUND that grant:
+
+    1. A citizen holding `{:subtree,home}[:define_verb]` CAN save a sandboxed
+       verb in their own home (the feature).
+    2. A principal holding only `{:subtree,home}[:write]` (NO `:define_verb`)
+       CANNOT — `:write` alone does not authorize verb-authoring (the grant is a
+       distinct, separately-scoped capability; this is the regression guard that
+       CX-fogy did NOT widen `:write` into authoring authority).
+    3. RAW engine code (`:execute` / Gate-B) stays node-only: the citizen's
+       `:define_verb` cert does NOT satisfy `:execute`, so raw `.elx` authoring is
+       still denied — the sandbox is the RCE containment, Gate-B is untouched.
+
+  If a future change ever lets a `:write`-only principal author (test 2 goes
+  green-on-save) or lets a citizen's `:define_verb` mint raw executable code
+  (test 3 flips), it fails here — surfacing an RCE-boundary regression.
   """
   use ExUnit.Case, async: false
 
   alias Commonplace.Crypto.{NodeIdentity, Signing, SigningContext}
-  alias Commonplace.Store.CommitStore
+  alias Commonplace.Store.{CommitStore, CommitStoreClient}
   alias Commonplace.MUD.{Citizenship, VerbSource}
   alias Commonplace.Tree.Schema
+  alias Commonplace.Trust.Capability
 
   setup do
     dir = Path.join(System.tmp_dir!(), "cp_verbchar_#{:rand.uniform(1_000_000_000)}")
@@ -59,20 +66,33 @@ defmodule Commonplace.MUD.VerbAuthoringBoundaryTest do
     root = UUID.uuid4()
     CommitStore.create_commit(store, root, Yelixer.Encoding.encode_update(Schema.new_schema()), nil, %{}, signing_context: node_ctx)
 
+    # A full CITIZEN — Citizenship.ensure now grants the {:subtree,home}[:define_verb]
+    # authoring cert (CX-fogy) alongside the [:write] + {:presence} certs.
     {pub, priv} = Signing.generate_keypair()
     pid = UUID.uuid4()
     citizen = %SigningContext{identity_uuid: pid, public_key: pub, private_key: priv}
     {:ok, %{cert_cids: cids, home_room_uuid: home}} = Citizenship.ensure(pid, pub, "builder", root, store)
 
-    %{store: store, home: home, citizen: citizen, cids: cids, node_ctx: node_ctx}
+    # A SECOND principal holding ONLY a {:subtree,home}[:write] cert over the same
+    # home — NO :define_verb. The regression guard: :write alone must NOT authorize
+    # verb-authoring (CX-fogy is a distinct grant, not a widening of :write).
+    {wpub, wpriv} = Signing.generate_keypair()
+    wid = UUID.uuid4()
+    writer = %SigningContext{identity_uuid: wid, public_key: wpub, private_key: wpriv}
+    {:ok, wcap} =
+      Capability.issue(node_ctx, {wid, wpub}, %{verbs: [:write], scope: {:subtree, home}, caveats: %{}}, nil, store: store)
+    :ok = CommitStoreClient.store_capability(store, wcap)
+
+    %{store: store, home: home, citizen: citizen, cids: cids,
+      writer: writer, writer_cids: [wcap.id], node_ctx: node_ctx}
   end
 
-  # bare-literal body: passes the safe-verb lint (no calls) so BOTH tests isolate
-  # the AUTHORITY axis (node vs player), not the allowlist. (The lint runs BEFORE
-  # the write, so a disallowed call would mask the trust result.)
+  # bare-literal body: passes the safe-verb lint (no calls) so the tests isolate
+  # the AUTHORITY axis (define_verb vs write vs node), not the allowlist. (The lint
+  # runs BEFORE the write, so a disallowed call would mask the trust result.)
   @body "\"tick\""
 
-  test "a {:write}-only citizen CANNOT save a verb in their OWN home — denied at the write-gate", %{store: store, home: home, citizen: citizen, cids: cids} do
+  test "CX-fogy: a citizen holding {:subtree,home}[:define_verb] CAN save a sandboxed verb in their OWN home", %{store: store, home: home, citizen: citizen, cids: cids} do
     result =
       VerbSource.save_safe_verb(home, "tick", @body, [home], store,
         signing_context: citizen,
@@ -80,14 +100,23 @@ defmodule Commonplace.MUD.VerbAuthoringBoundaryTest do
         signer_id: nil
       )
 
-    # The write-gate refuses the code-doc write: the citizen's {:subtree,home}
-    # cert grants [:write], not the authority to author executable verb code.
+    assert result == :ok
+  end
+
+  test "BOUNDARY: a {:write}-only principal (no :define_verb) CANNOT save a verb — :write alone is insufficient", %{store: store, home: home, writer: writer, writer_cids: writer_cids} do
+    result =
+      VerbSource.save_safe_verb(home, "tick", @body, [home], store,
+        signing_context: writer,
+        cert_cids: writer_cids,
+        signer_id: nil
+      )
+
     # Pin the SHAPE — a bare {:error, _} would also match a lint/compile fault,
     # which is NOT the boundary we're guarding.
     assert {:error, {:trust_rejected, _}} = result
   end
 
-  test "the NODE (execute authority) CAN save the same verb in that home — proving it's authority, not a broken path", %{store: store, home: home, node_ctx: node_ctx} do
+  test "the NODE (execute authority) CAN save the same verb — authority, not a broken path", %{store: store, home: home, node_ctx: node_ctx} do
     result =
       VerbSource.save_safe_verb(home, "tick", @body, [home], store,
         signing_context: node_ctx,
@@ -97,8 +126,21 @@ defmodule Commonplace.MUD.VerbAuthoringBoundaryTest do
     assert result == :ok
   end
 
-  # CX-jxqs: the @verb editor must signal read-only PREVIEW upfront for a caller
-  # who can't author verbs here — not open a full editor and only deny the save.
+  test "BOUNDARY (Gate-B untouched): a citizen's :define_verb cert does NOT authorize RAW .elx code", %{store: store, home: home, citizen: citizen, cids: cids} do
+    # The RAW-code lane (VerbSource.save_verb → <name>.elx, unsandboxed) is gated on
+    # :execute / Gate-B. A citizen holds :define_verb (sandboxed lane) but NOT
+    # :execute, so raw-code authoring stays denied — the RCE wall is untouched.
+    result =
+      VerbSource.save_verb(home, "rawtick", @body, store,
+        signing_context: citizen,
+        cert_cids: cids,
+        signer_id: nil
+      )
+
+    assert {:error, {:trust_rejected, _}} = result
+  end
+
+  # ---- the @verb editor's upfront editable/PREVIEW flag reflects the same gate ----
   defp verb_ctx(store, home, sctx, cids),
     do: %{
       store: store,
@@ -111,9 +153,9 @@ defmodule Commonplace.MUD.VerbAuthoringBoundaryTest do
       signer_id: nil
     }
 
-  test "a {:write}-only citizen opening @verb gets PREVIEW (editable: false), not the editor", %{store: store, home: home, citizen: citizen, cids: cids} do
+  test "CX-fogy: a citizen with :define_verb opening @verb gets the EDITABLE editor (editable: true)", %{store: store, home: home, citizen: citizen, cids: cids} do
     cmd = Commonplace.MUD.Parser.parse("@verb here:tick")
-    assert {:enter_editor, %{editable: false}} = Commonplace.MUD.Verbs.dispatch(cmd, verb_ctx(store, home, citizen, cids))
+    assert {:enter_editor, %{editable: true}} = Commonplace.MUD.Verbs.dispatch(cmd, verb_ctx(store, home, citizen, cids))
   end
 
   test "the NODE opening @verb gets the editable editor (editable: true)", %{store: store, home: home, node_ctx: node_ctx} do
@@ -121,16 +163,20 @@ defmodule Commonplace.MUD.VerbAuthoringBoundaryTest do
     assert {:enter_editor, %{editable: true}} = Commonplace.MUD.Verbs.dispatch(cmd, verb_ctx(store, home, node_ctx, []))
   end
 
-  # CX-jxqs (fable nuance): the PREVIEW must carry the REAL existing source
-  # read-only — not just the empty-new-verb case. Node authors a verb, then the
-  # citizen's @verb open returns editable:false WITH the current source populated
-  # (which PlayerSession renders read-only).
-  test "citizen preview of an EXISTING verb carries its source read-only (editable: false + current)", %{store: store, home: home, citizen: citizen, cids: cids, node_ctx: node_ctx} do
+  test "BOUNDARY: a {:write}-only principal opening @verb gets PREVIEW (editable: false)", %{store: store, home: home, writer: writer, writer_cids: writer_cids} do
+    cmd = Commonplace.MUD.Parser.parse("@verb here:tick")
+    assert {:enter_editor, %{editable: false}} = Commonplace.MUD.Verbs.dispatch(cmd, verb_ctx(store, home, writer, writer_cids))
+  end
+
+  # The PREVIEW must carry the REAL existing source read-only for a caller who
+  # can't author: node authors a verb, then the {:write}-only principal's @verb
+  # open returns editable:false WITH the current source populated.
+  test "a {:write}-only principal's preview of an EXISTING verb carries its source read-only", %{store: store, home: home, writer: writer, writer_cids: writer_cids, node_ctx: node_ctx} do
     :ok = VerbSource.save_safe_verb(home, "glow", "\"glimmer\"", [home], store, signing_context: node_ctx, cert_cids: [])
 
     cmd = Commonplace.MUD.Parser.parse("@verb here:glow")
     assert {:enter_editor, %{editable: false, current: current}} =
-             Commonplace.MUD.Verbs.dispatch(cmd, verb_ctx(store, home, citizen, cids))
+             Commonplace.MUD.Verbs.dispatch(cmd, verb_ctx(store, home, writer, writer_cids))
 
     assert current =~ "glimmer"
   end

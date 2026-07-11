@@ -169,40 +169,122 @@ defmodule Commonplace.Trust do
   end
 
   @doc """
-  CX-cj3t — the COMMITLESS mirror of "may this caller AUTHOR a verb (write an
-  EXECUTABLE code doc) at `target_uuid`?", for an UPFRONT UX gate: the `@verb`
+  CX-cj3t / CX-fogy — the COMMITLESS mirror of "may this caller AUTHOR a
+  SANDBOXED safe-verb at `target_uuid`?", for an UPFRONT UX gate: the `@verb`
   editor uses it to open in EDIT vs read-only PREVIEW mode, instead of offering a
   full editor and only denying the save afterward.
 
-  Authoring an executable code doc requires EXECUTE authority — a trusted
-  identity (the node), or a verified cert granting `:execute` over the target. A
-  `:write`-only cert (the citizenship `{:subtree,home}`/`{:presence}` grants a
-  player holds) is refused at commit time by the write⊥execute belt (see
-  `subtree_carve_ok?` (3)); this predicate lets the editor SAY so before opening.
-  Under `accept_unsigned` (the permissive dev gate) the save would land, so this
-  returns `true` (editor stays fully functional). Fail-closed on any error.
+  The `@verb` editor writes ONLY sandboxed safe-verbs (`save_safe_verb`: lint +
+  AST-allowlist + facade-bound), whose commit-time gate is `DefineVerbGate`
+  (`:define_verb` over the verb's section) — NOT the raw-code `:execute` / Gate-B
+  lane, which a citizen never holds and which the editor never reaches. So this
+  pre-check mirrors THAT gate: authorized iff a trusted identity (the node), or a
+  verified cert granting `:define_verb` over the target's zone — exactly the
+  citizenship `{:subtree,home}[:define_verb]` grant (CX-fogy). This is the
+  sandboxed-authoring lane; raw executable engine code stays node-signed-only
+  (Gate-B, `authorized_to_execute?`) and is untouched by this cert. Under
+  `accept_unsigned` (the permissive dev gate) the save would land, so this returns
+  `true` (editor stays fully functional). Fail-closed on any error.
+
+  (Historically this checked `:execute` — the write⊥execute belt for RAW code —
+  which is the wrong lane for a sandboxed safe-verb and is why a `:write`-only
+  citizen was wrongly shown read-only PREVIEW on their own home. CX-fogy points it
+  at the real safe-verb gate, `:define_verb`.)
   """
-  @spec code_author_authorized?(String.t() | nil, binary() | nil, [String.t()], String.t(), config(), GenServer.server()) ::
+  @spec safe_verb_author_authorized?(String.t() | nil, binary() | nil, [String.t()], String.t(), config(), GenServer.server()) ::
           boolean()
-  def code_author_authorized?(identity_uuid, pub, cert_cids, target_uuid, cfg, store) do
+  def safe_verb_author_authorized?(identity_uuid, pub, cert_cids, target_uuid, cfg, store) do
     cond do
       cfg.accept_unsigned -> true
       not is_binary(identity_uuid) -> false
       Map.has_key?(cfg.trusted_identities, identity_uuid) -> true
-      true -> Enum.any?(cert_cids, &cert_grants_execute?(&1, pub, target_uuid, cfg, store))
+      true -> Enum.any?(cert_cids, &cert_grants_define_verb?(&1, pub, target_uuid, cfg, store))
     end
   end
 
-  defp cert_grants_execute?(cid, pub, target_uuid, cfg, store) do
+  defp cert_grants_define_verb?(cid, pub, target_uuid, cfg, store) do
     with {:ok, leaf} <- fetch_cap(store, cid),
          {_uuid, audience_pub} <- leaf.audience,
          true <- pub != nil and audience_pub == pub,
          {:ok, %{verbs: verbs, scope: scope}} <-
            Commonplace.Trust.VerifyChain.verify_chain(cid, anchor_keys(cfg), store) do
-      :execute in verbs and write_scope_covers?(scope, target_uuid, store)
+      :define_verb in verbs and write_scope_covers?(scope, target_uuid, store)
     else
       _ -> false
     end
+  end
+
+  @doc """
+  CX-fogy — the LOCAL-write commit gate's authorization WITH the safe-verb CODE
+  fork (plan ruling #7537). The commit gate for a code-content write must FORK the
+  required capability by RE-RUNNING the safe-verb AST-allowlist validator on the
+  target's AFTER-STATE content:
+
+    * non-code (data)                              -> `:write`
+    * a valid SANDBOXED safe-verb (allowlist-clean, wrapper-shaped) -> `:define_verb`
+    * raw / unparseable / unsafe code              -> `:execute` (Gate-B, node-only)
+
+  The classifier IS the safety validator (the SAME `check_wrapped` `SafeVerb.compile`
+  runs — no skew), so "classified safe" == "sandboxed by construction": a raw RCE
+  payload cannot pass the facade-bound allowlist, so it is forced to `:execute` ->
+  node-only -> denied for a citizen. FAIL-CLOSED: any error/uncertainty resolves to
+  `:execute` (the highest bar). The four load-bearing conditions (plan #7537):
+  (i) classify the AFTER-state, (ii) one shared validator commit+compile,
+  (iii) fail-closed to :execute, (iv) Gate-B untouched for raw.
+
+  ⚠️ INTERIM WIRING (plan #7548 — destination is (c)-refined). The classifier is a
+  DIRECT reference to the MUD-domain `SafeVerb.Allowlist` below — a core->domain
+  layering inversion plan ruled must be fixed: MOVE the structural RCE-bans to a
+  CORE module (sibling of `CodeDocHeuristic`) and pass the MUD FACADE allow-set DOWN
+  as DATA, so the RCE wall is core-owned and a MUD change can never weaken it. This
+  interim is SAFE (fail-closed, identical classification behavior), suitable for
+  dogfood MECHANISM-verify — but the (c)-refined core-move AND plan's allowlist-
+  COMPLETENESS review are REQUIRED before this ships to real citizens. The classifier
+  is isolated to `safe_verb_code?/1` so the (c) swap is a one-function change.
+  """
+  @spec authorized_to_write?(Commit.t(), {:doc, String.t()}, config(), GenServer.server()) ::
+          :ok | {:error, term()}
+  def authorized_to_write?(%Commit{} = commit, {:doc, uuid} = scope, cfg, store) do
+    authorized?(commit, required_write_verb(commit, uuid, store), scope, cfg, store)
+  end
+
+  defp required_write_verb(commit, uuid, store) do
+    after_content = write_after_content(commit, uuid, store)
+
+    cond do
+      not is_binary(after_content) -> :write
+      not Commonplace.Trust.CodeDocHeuristic.code_content?(after_content) -> :write
+      safe_verb_code?(after_content) -> :define_verb
+      true -> :execute
+    end
+  rescue
+    _ -> :execute
+  catch
+    _, _ -> :execute
+  end
+
+  # Reconstruct the target's content AFTER applying this commit — plan condition (i)
+  # (classify the RESULT, so a mutate-data-into-code write is re-checked). Mirrors
+  # `subtree_carve_ok?`'s before+apply. `nil` on any non-content/unreadable target.
+  defp write_after_content(commit, uuid, store) do
+    before_d = before_doc(reconstruct_before(store, uuid))
+
+    case Encoding.apply_update(before_d, commit.update) do
+      {:ok, after_d} -> ContentType.get_content(after_d)
+      _ -> nil
+    end
+  end
+
+  # THE classifier == THE safety validator (plan #7537 crux; interim wiring per the
+  # `authorized_to_write?` note). Returns true IFF the content parses, is the
+  # substrate safe-verb wrapper shape, AND is allowlist-clean — the same
+  # `SafeVerb.compile` bar. Anything else (raw code, unparseable) is NOT safe.
+  defp safe_verb_code?(content) do
+    Commonplace.MUD.SafeVerb.Allowlist.check_wrapped(content) == :ok
+  rescue
+    _ -> false
+  catch
+    _, _ -> false
   end
 
   # The COMMITLESS membership predicate for the elevation pre-check

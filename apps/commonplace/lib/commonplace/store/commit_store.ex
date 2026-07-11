@@ -1734,9 +1734,15 @@ defmodule Commonplace.Store.CommitStore do
         :ok
 
       mode when mode in [:dry_run, :enforce] ->
-        case Commonplace.Trust.authorized?(
+        # CX-fogy: use `authorized_to_write?` (not a fixed `:write`) so a
+        # CODE-content write FORKS the required capability by re-running the
+        # safe-verb allowlist on the after-state — a valid sandboxed safe-verb
+        # needs `:define_verb` (the citizen's home grant), raw/unsafe code needs
+        # `:execute` (Gate-B, node-only), data needs `:write`. Fail-closed to
+        # `:execute`. See `Trust.authorized_to_write?` for the interim layering
+        # note + the (c)-refined destination.
+        case Commonplace.Trust.authorized_to_write?(
                commit,
-               :write,
                {:doc, commit.doc_uuid},
                Commonplace.Trust.config(),
                state.name

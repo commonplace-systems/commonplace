@@ -1610,12 +1610,14 @@ defmodule Commonplace.MUD.Verbs do
     end
   end
 
-  # CX-cj3t: open the @verb editor, stamping an `editable` flag from an UPFRONT
-  # authority check (`Trust.code_author_authorized?`) so the session can render
-  # read-only PREVIEW mode when the caller can't author verbs here — instead of
-  # dangling a full editor + docs and only denying the save. Authoring a verb
-  # writes an executable code doc = needs :execute authority (the node, or an
-  # :execute cert); a {:write}-only citizen is denied by the write⊥execute belt.
+  # CX-cj3t / CX-fogy: open the @verb editor, stamping an `editable` flag from an
+  # UPFRONT authority check (`Trust.safe_verb_author_authorized?`) so the session
+  # can render read-only PREVIEW mode when the caller can't author verbs here —
+  # instead of dangling a full editor + docs and only denying the save. The @verb
+  # editor writes a SANDBOXED safe-verb, gated by DefineVerbGate (:define_verb
+  # over the target's zone) — so a citizen holding the {:subtree,home}[:define_verb]
+  # grant (CX-fogy) CAN author in their own home. Raw executable code is a separate
+  # lane (:execute / Gate-B, node-only) the editor never reaches.
   defp enter_verb_editor(target_uuid, target_label, verb_name, ctx) do
     current = read_current_source(target_uuid, verb_name, ctx)
 
@@ -1636,7 +1638,7 @@ defmodule Commonplace.MUD.Verbs do
         _ -> {nil, nil}
       end
 
-    Commonplace.Trust.code_author_authorized?(
+    Commonplace.Trust.safe_verb_author_authorized?(
       id,
       pub,
       Map.get(ctx, :cert_cids, []),
