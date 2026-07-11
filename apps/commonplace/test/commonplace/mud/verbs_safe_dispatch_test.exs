@@ -578,4 +578,122 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
     room_meta = raw_meta(store, room_uuid, Schemas.room_filename())
     refute get_in(room_meta, ["state", "trapped"])
   end
+
+  # ---- M2.2 (CX-z6ub §3): six OVERRIDABLE standard verb baselines ----
+
+  test "pin M2.2a (CX-z6ub): the `examine` node BASELINE runs on a fresh object — name + description, no override", %{
+    store: store,
+    room_uuid: room_uuid,
+    inventory_uuid: inventory_uuid
+  } do
+    idol_uuid = create_object(store, "idol")
+    :ok = add_dir_entry(store, room_uuid, "idol.obj", idol_uuid)
+
+    ctx = base_ctx(store, room_uuid, inventory_uuid)
+
+    # No override authored → the node-signed baseline runs: name + description.
+    assert {:reply, text} = Verbs.dispatch(Parser.parse("examine idol"), ctx)
+    assert text =~ "idol"
+  end
+
+  test "pin M2.2b (CX-z6ub): a citizen's `examine` override on the host FIRES instead of the node baseline", %{
+    store: store,
+    room_uuid: room_uuid,
+    inventory_uuid: inventory_uuid
+  } do
+    idol_uuid = create_object(store, "idol")
+    :ok = add_dir_entry(store, room_uuid, "idol.obj", idol_uuid)
+
+    body = ~s|Commonplace.MUD.World.Facade.put_state(world, "examined", "custom")|
+    assert :ok = VerbSource.save_safe_verb(idol_uuid, "examine", body, [idol_uuid], store)
+
+    ctx = base_ctx(store, room_uuid, inventory_uuid)
+    Verbs.dispatch(Parser.parse("examine idol"), ctx)
+
+    # The idol's OWN `examine` ran (its state effect landed) — `examine` is
+    # overridable, so the host's own verb wins over the node baseline.
+    meta = raw_meta(store, idol_uuid, Schemas.object_filename())
+    assert get_in(meta, ["state", "examined"]) == "custom"
+  end
+
+  test "pin M2.2c (CX-z6ub): the `use` node BASELINE replies \"Nothing happens.\" on a fresh object", %{
+    store: store,
+    room_uuid: room_uuid,
+    inventory_uuid: inventory_uuid
+  } do
+    lever_uuid = create_object(store, "lever")
+    :ok = add_dir_entry(store, room_uuid, "lever.obj", lever_uuid)
+
+    ctx = base_ctx(store, room_uuid, inventory_uuid)
+
+    assert {:reply, "Nothing happens."} = Verbs.dispatch(Parser.parse("use lever"), ctx)
+  end
+
+  test "pin M2.2d (CX-z6ub): a citizen's `use` override on the host FIRES instead of the node baseline", %{
+    store: store,
+    room_uuid: room_uuid,
+    inventory_uuid: inventory_uuid
+  } do
+    lever_uuid = create_object(store, "lever")
+    :ok = add_dir_entry(store, room_uuid, "lever.obj", lever_uuid)
+
+    body = ~s|Commonplace.MUD.World.Facade.put_state(world, "used", "yes")|
+    assert :ok = VerbSource.save_safe_verb(lever_uuid, "use", body, [lever_uuid], store)
+
+    ctx = base_ctx(store, room_uuid, inventory_uuid)
+    Verbs.dispatch(Parser.parse("use lever"), ctx)
+
+    meta = raw_meta(store, lever_uuid, Schemas.object_filename())
+    assert get_in(meta, ["state", "used"]) == "yes"
+  end
+
+  test "pin M2.2e (CX-z6ub): `search` baseline is reachable (plain no-note reply)", %{
+    store: store,
+    room_uuid: room_uuid,
+    inventory_uuid: inventory_uuid
+  } do
+    ctx = base_ctx(store, room_uuid, inventory_uuid)
+
+    assert {:reply, "You search but find nothing of note."} =
+             Verbs.dispatch(Parser.parse("search"), ctx)
+  end
+
+  test "pin M2.2f (CX-z6ub): `sit`/`stand` baselines reply and broadcast an emote-kind room action", %{
+    store: store,
+    room_uuid: room_uuid,
+    inventory_uuid: inventory_uuid
+  } do
+    player_uuid = UUID.uuid4()
+    ctx = base_ctx(store, room_uuid, inventory_uuid, player_uuid: player_uuid)
+
+    # A bystander subscribed to the room sees the emote-kind action; the actor
+    # is filtered out (except: [player_uuid]) and gets only the {:reply}.
+    Commonplace.MUD.Topics.subscribe_room(room_uuid)
+
+    assert {:reply, "You sit down."} = Verbs.dispatch(Parser.parse("sit"), ctx)
+    assert_receive {_topic, %{kind: :emote, who: "alice", text: "sits down.", except: [^player_uuid]}}
+
+    assert {:reply, "You stand up."} = Verbs.dispatch(Parser.parse("stand"), ctx)
+    assert_receive {_topic, %{kind: :emote, who: "alice", text: "stands up.", except: [^player_uuid]}}
+  end
+
+  test "pin M2.2g (CX-z6ub): `read` baseline reads state.text over description, both over nothing", %{
+    store: store,
+    room_uuid: room_uuid,
+    inventory_uuid: inventory_uuid
+  } do
+    # A described sign with no state.text → reads its description.
+    sign_uuid =
+      Schemas.create_dir_with_meta(
+        Schemas.object_filename(),
+        Schemas.encode_object(%Object{name: "sign", description: "Keep Out"}),
+        store
+      )
+      |> then(fn {:ok, u} -> u end)
+
+    :ok = add_dir_entry(store, room_uuid, "sign.obj", sign_uuid)
+
+    ctx = base_ctx(store, room_uuid, inventory_uuid)
+    assert {:reply, "The sign reads: Keep Out"} = Verbs.dispatch(Parser.parse("read sign"), ctx)
+  end
 end

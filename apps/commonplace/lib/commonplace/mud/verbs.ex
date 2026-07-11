@@ -38,6 +38,7 @@ defmodule Commonplace.MUD.Verbs do
   # syntax (for a builder who WANTS the builtin despite an override) is
   # plan's Phase 2, not this bead.
   @builtins ~w(look say emote take get drop give put inventory who home quit help go where mine smith recipes) ++
+              ~w(examine search read use sit stand) ++
               ~w(north south east west up down in out)
 
   # CX-z6ub (M2 §3) — the OVERRIDABLE subset of the standard verb set: a
@@ -52,7 +53,13 @@ defmodule Commonplace.MUD.Verbs do
   # host; the standard fall-through stays node-trusted. M2.1 seeds the set with
   # the doc-hosted perception/social trio; M2.2 grows it (examine/search/whisper/
   # use/read/open/close/sit/stand/enter/leave) as node prototype verbs.
-  @overridable ~w(look say emote)
+  #
+  # CX-z6ub M2.2 — six standard verb baselines join the overridable set:
+  # `examine`/`search`/`read`/`use`/`sit`/`stand`. Each is a node-signed,
+  # player-facing baseline (see `do_examine/2`..`do_stand/2`) that a room/object
+  # may override with its own sandboxed same-named verb (own-verb → baseline).
+  # Deliberately NOT grown here: enter/leave/open/close/whisper (deferred/locked).
+  @overridable ~w(look say emote examine search read use sit stand)
 
   @doc "Dispatch a parsed command. Returns one of the verb-result tuples."
   def dispatch(%Parser.Command{verb: ""}, _ctx), do: :ok
@@ -621,6 +628,17 @@ defmodule Commonplace.MUD.Verbs do
   defp dispatch_builtin("go", cmd, ctx), do: do_go(List.first(cmd.argv), ctx)
   defp dispatch_builtin("where", _cmd, ctx), do: do_where(ctx)
 
+  # CX-z6ub M2.2 — the six OVERRIDABLE standard verb baselines. Reached only
+  # when the host has no own-verb override (dispatch's `overridable?` branch
+  # falls through to here); a citizen's same-named safe verb runs INSTEAD when
+  # present. Kept simple and node-owned — the creative surface is the override.
+  defp dispatch_builtin("examine", cmd, ctx), do: do_examine(cmd, ctx)
+  defp dispatch_builtin("search", cmd, ctx), do: do_search(cmd, ctx)
+  defp dispatch_builtin("read", cmd, ctx), do: do_read(cmd, ctx)
+  defp dispatch_builtin("use", cmd, ctx), do: do_use(cmd, ctx)
+  defp dispatch_builtin("sit", cmd, ctx), do: do_sit(cmd, ctx)
+  defp dispatch_builtin("stand", cmd, ctx), do: do_stand(cmd, ctx)
+
   defp dispatch_builtin(dir, _cmd, ctx) when dir in ~w(north south east west up down in out) do
     do_go(dir, ctx)
   end
@@ -892,6 +910,139 @@ defmodule Commonplace.MUD.Verbs do
     end
   end
 
+
+  # ---- examine / search / read / use / sit / stand (CX-z6ub M2.2) ----
+  #
+  # Six OVERRIDABLE standard verb baselines: node-signed, player-facing, and
+  # deliberately minimal — a room/object overrides them with its own sandboxed
+  # verb to add world-specific behavior. All reuse the existing target
+  # resolution (`greedy_match_entry`/`resolve_entry`) and return the same
+  # `{:reply, _}` / `{:error, _}` / `:ok` shapes the neighboring builtins do.
+
+  # examine <obj>: a detailed look — name + full description + any notable
+  # `meta["state"]`. Models on `do_look`'s object path; players/objects only.
+  defp do_examine(%Parser.Command{argv: []}, _ctx), do: {:error, "Examine what?"}
+
+  defp do_examine(%Parser.Command{argv: argv}, ctx) do
+    phrase_label = Enum.join(argv, " ")
+
+    case greedy_match_entry([ctx.inventory_uuid, ctx.current_room_uuid], argv, ctx.store) do
+      {:ok, entry, _phrase, _remainder} ->
+        render_examined_entry(entry, phrase_label, ctx)
+
+      :not_found ->
+        {:error, "You don't see \"#{phrase_label}\" here."}
+    end
+  end
+
+  defp render_examined_entry(entry, phrase_label, ctx) do
+    case resolve_entry(entry, ctx) do
+      {:ok, :object, %Object{} = obj} ->
+        {:reply, examine_object_text(entry.node_id, obj, ctx)}
+
+      {:ok, :player, %Player{} = pl} ->
+        title = if pl.title == "", do: pl.name, else: pl.title
+        {:reply, "#{title}\n#{pl.description}"}
+
+      :not_found ->
+        {:error, "You don't see \"#{phrase_label}\" here."}
+    end
+  end
+
+  defp examine_object_text(uuid, %Object{} = obj, ctx) do
+    base = "#{obj.name}\n#{obj.description}"
+
+    case notable_state(uuid, ctx.store) do
+      "" -> base
+      state_text -> base <> "\n" <> state_text
+    end
+  end
+
+  # Render the object's freeform `meta["state"]` submap (CX-hqk5 — dropped by
+  # the typed `Object` struct, so read the raw meta map) as a short block, or
+  # "" when there's nothing notable.
+  defp notable_state(uuid, store) do
+    case World.get_meta_map(uuid, Schemas.object_filename(), store) do
+      {:ok, %{"state" => state}} when is_map(state) and map_size(state) > 0 ->
+        lines =
+          state
+          |> Enum.map(fn {k, v} -> "  #{k}: #{format_state_value(v)}" end)
+          |> Enum.join("\n")
+
+        "State:\n" <> lines
+
+      _ ->
+        ""
+    end
+  end
+
+  defp format_state_value(v) when is_binary(v), do: v
+  defp format_state_value(v), do: inspect(v)
+
+  # read <obj>: reads `meta["state"]["text"]` if present, else the object's
+  # description, else a nothing-to-read note.
+  defp do_read(%Parser.Command{argv: []}, _ctx), do: {:error, "Read what?"}
+
+  defp do_read(%Parser.Command{argv: argv}, ctx) do
+    phrase_label = Enum.join(argv, " ")
+
+    case greedy_match_entry([ctx.inventory_uuid, ctx.current_room_uuid], argv, ctx.store) do
+      {:ok, entry, _phrase, _remainder} ->
+        case resolve_entry(entry, ctx) do
+          {:ok, :object, %Object{} = obj} -> {:reply, read_object_text(entry.node_id, obj, ctx)}
+          _ -> {:reply, "There's nothing to read on #{phrase_label}."}
+        end
+
+      :not_found ->
+        {:error, "You don't see \"#{phrase_label}\" here."}
+    end
+  end
+
+  defp read_object_text(uuid, %Object{} = obj, ctx) do
+    case World.get_meta_map(uuid, Schemas.object_filename(), ctx.store) do
+      {:ok, %{"state" => %{"text" => text}}} when is_binary(text) and text != "" ->
+        "The #{obj.name} reads: #{text}"
+
+      _ ->
+        if is_binary(obj.description) and obj.description != "" do
+          "The #{obj.name} reads: #{obj.description}"
+        else
+          "There's nothing to read on #{obj.name}."
+        end
+    end
+  end
+
+  # search: a plain baseline — authors override to reveal hidden things.
+  # Works bare or with a target.
+  defp do_search(_cmd, _ctx), do: {:reply, "You search but find nothing of note."}
+
+  # use <obj>: the creative hook — the node baseline does nothing; authors
+  # override to make an object do something.
+  defp do_use(%Parser.Command{argv: []}, _ctx), do: {:error, "Use what?"}
+  defp do_use(%Parser.Command{argv: _argv}, _ctx), do: {:reply, "Nothing happens."}
+
+  # sit / stand: a reply to the actor plus a room action broadcast to
+  # bystanders — reuses the SAME `emote` broadcast mechanism
+  # (`World.broadcast_room` + `kind: :emote`, third-person text). `except:
+  # [player_uuid]` suppresses the actor's own emote echo so they see only the
+  # first-person reply (the emote render otherwise echoes to the actor too).
+  defp do_sit(_cmd, ctx) do
+    broadcast_self_action("sits down.", ctx)
+    {:reply, "You sit down."}
+  end
+
+  defp do_stand(_cmd, ctx) do
+    broadcast_self_action("stands up.", ctx)
+    {:reply, "You stand up."}
+  end
+
+  defp broadcast_self_action(text, ctx) do
+    World.broadcast_room(
+      ctx.current_room_uuid,
+      %{kind: :emote, who: ctx.player_name, text: text},
+      except: [ctx.player_uuid]
+    )
+  end
 
   # ---- say / emote ----
 
