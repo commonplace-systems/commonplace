@@ -55,7 +55,7 @@ defmodule Commonplace.MUD.VerbSource do
 
   alias Commonplace.Code.SourceDoc
   alias Commonplace.Document.ContentType
-  alias Commonplace.MUD.{SafeVerb, Schemas, SignedWrite}
+  alias Commonplace.MUD.{ChildMutation, SafeVerb, Schemas, SignedWrite}
   alias Commonplace.MUD.World.Facade
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.{DocBuilder, Schema}
@@ -63,6 +63,12 @@ defmodule Commonplace.MUD.VerbSource do
   alias Yelixer.Encoding
 
   @verbs_dir "verbs"
+  # CX-fogy L3 (OPTION 2): the verbs/ dir is a ZONED child (stamped with its
+  # host's zone via `ChildMutation.create_zoned_child`), so a citizen's
+  # {:subtree,home} cert carves the verb entry-add. The stamp lives in this
+  # `__`-prefixed meta child, which — being `__…json` — is inert to verb
+  # resolution (`find_named_source` looks up `<name>.safe.elx` by exact name).
+  @verbs_meta_filename "__verbs.json"
 
   @doc """
   Find the source doc UUID for `verb_name` on `target_dir_uuid`. Returns
@@ -180,7 +186,7 @@ defmodule Commonplace.MUD.VerbSource do
 
     with {:ok, verbs_uuid} <- ensure_verbs_dir(target_dir_uuid, store, opts),
          {:ok, verbs_schema} <- Schemas.load_dir_schema(verbs_uuid, store),
-         {:ok, source_uuid} <- save_source(verbs_uuid, verbs_schema, file, source_text, store, opts) do
+         {:ok, source_uuid} <- save_source(verbs_uuid, verbs_schema, file, source_text, nil, store, opts) do
       case SourceDoc.compile(source_uuid, store, unique_module: source_uuid) do
         {:ok, module} ->
           if function_exported?(module, :run, 1), do: :ok, else: {:error, {:no_run_export, module}}
@@ -269,10 +275,19 @@ defmodule Commonplace.MUD.VerbSource do
       when is_binary(body_text) and is_list(section_scope) do
     file = "#{verb_name}.safe.elx"
 
+    # CX-fogy L3 (OPTION 2): the HOST (`target_dir_uuid`) is threaded ONLY onto the
+    # source-doc write (via `save_source`'s `verb_section` param) — NOT the shared
+    # `opts`, so the verbs/-dir entry-adds keep selecting the citizen's :write cert
+    # (a :define_verb-scoped cert would fail their :write gate). On the source-doc
+    # write it drives BOTH the capability-proof selection (the :define_verb cert
+    # covering the host's zone) and the `:verb_section` metadata stamp the local
+    # write gate reads to anchor :define_verb coverage on the host. See
+    # `Commonplace.MUD.SignedWrite.opts_for`.
     with {:ok, wrapped} <- SafeVerb.wrap_and_lint(body_text),
          {:ok, verbs_uuid} <- ensure_verbs_dir(target_dir_uuid, store, opts),
          {:ok, verbs_schema} <- Schemas.load_dir_schema(verbs_uuid, store),
-         {:ok, source_uuid} <- save_source(verbs_uuid, verbs_schema, file, wrapped, store, opts) do
+         {:ok, source_uuid} <-
+           save_source(verbs_uuid, verbs_schema, file, wrapped, target_dir_uuid, store, opts) do
       case SafeVerb.compile(source_uuid, section_scope, store) do
         {:ok, module} ->
           if function_exported?(module, :run, 2), do: :ok, else: {:error, {:no_run_export, module}}
@@ -320,16 +335,19 @@ defmodule Commonplace.MUD.VerbSource do
     end
   end
 
-  defp save_source(verbs_uuid, verbs_schema, file, source_text, store, opts) do
+  # `verb_section` is the HOST uuid for a safe-verb write (CX-fogy L3), `nil` for
+  # the legacy raw path. It flows ONLY to the source-doc write (create/replace),
+  # never to `add_file_entry` (the entry-add uses the caller's :write cert).
+  defp save_source(verbs_uuid, verbs_schema, file, source_text, verb_section, store, opts) do
     case Schema.get_entry(verbs_schema, file) do
       {:ok, %Schema.Entry{node_id: uuid}} ->
-        case replace_source_doc(uuid, source_text, store, opts) do
+        case replace_source_doc(uuid, source_text, verb_section, store, opts) do
           :ok -> {:ok, uuid}
           {:error, _} = err -> err
         end
 
       :error ->
-        with {:ok, uuid} <- create_source_doc(source_text, store, opts),
+        with {:ok, uuid} <- create_source_doc(source_text, verb_section, store, opts),
              :ok <- add_file_entry(verbs_uuid, file, uuid, store, opts) do
           {:ok, uuid}
         end
@@ -366,6 +384,15 @@ defmodule Commonplace.MUD.VerbSource do
 
   ## Private
 
+  # CX-fogy L3 (OPTION 2): the verbs/ dir is created as a ZONED child of the host
+  # (`ChildMutation.create_zoned_child` DERIVES the stamp from the host's zone,
+  # node-signs the mint, and links it under the host with the CALLER's creds). So
+  # the verbs/ dir carries the host's zone → a citizen's {:subtree,home}[:write]
+  # cert carves both this link AND the later `<name>.safe.elx` entry-add — the
+  # cross-verifier that binds a verb to a host the author could legitimately write
+  # (a bogus host fails the carve). Replaces the old un-zoned
+  # `create_dir_with_meta(nil, nil)` + `add_directory_entry`, which produced a
+  # zone-less verbs/ dir that no subtree cert could write.
   defp ensure_verbs_dir(target_dir_uuid, store, opts) do
     {:ok, schema} = Schemas.load_dir_schema(target_dir_uuid, store)
 
@@ -374,20 +401,24 @@ defmodule Commonplace.MUD.VerbSource do
         {:ok, uuid}
 
       :error ->
-        with {:ok, uuid} <- Schemas.create_dir_with_meta(nil, nil, store, opts),
-             :ok <- add_directory_entry(target_dir_uuid, @verbs_dir, uuid, store, opts) do
-          {:ok, uuid}
-        end
+        ChildMutation.create_zoned_child(
+          target_dir_uuid,
+          @verbs_dir,
+          @verbs_meta_filename,
+          "{}",
+          store,
+          opts
+        )
     end
   end
 
-  defp create_source_doc(text, store, opts) do
+  defp create_source_doc(text, verb_section, store, opts) do
     uuid = UUID.uuid4()
     doc = YDoc.new()
     doc = ContentType.create(doc, :text, "verb")
     doc = ContentType.insert_text(doc, 0, text)
     update = Encoding.encode_update(doc)
-    {metadata, commit_opts} = SignedWrite.opts_for(uuid, Keyword.put(opts, :store, store))
+    {metadata, commit_opts} = SignedWrite.opts_for(uuid, source_doc_opts(verb_section, opts, store))
 
     case CommitStoreClient.create_commit(store, uuid, update, nil, metadata, commit_opts) do
       {:error, _} = err -> err
@@ -395,19 +426,29 @@ defmodule Commonplace.MUD.VerbSource do
     end
   end
 
-  defp replace_source_doc(uuid, text, store, opts) do
+  defp replace_source_doc(uuid, text, verb_section, store, opts) do
     hand = SignedWrite.hand_for(uuid, opts)
     {:ok, doc} = DocBuilder.reconstruct_doc(store, uuid, client_id: hand)
     current = ContentType.get_content(doc) || ""
     doc = if current != "", do: ContentType.delete_text(doc, 0, String.length(current)), else: doc
     doc = ContentType.insert_text(doc, 0, text)
     update = Encoding.encode_update(doc)
-    {metadata, commit_opts} = SignedWrite.opts_for(uuid, Keyword.put(opts, :store, store))
+    {metadata, commit_opts} = SignedWrite.opts_for(uuid, source_doc_opts(verb_section, opts, store))
 
     case CommitStoreClient.create_chained_commit(store, uuid, update, metadata, commit_opts) do
       {:error, _} = err -> err
       _commit -> :ok
     end
+  end
+
+  # CX-fogy L3 (OPTION 2): a safe-verb source-doc write carries `:verb_section`
+  # (the HOST uuid) so `SignedWrite.opts_for` selects the :define_verb cert
+  # covering the host's zone AND stamps `:verb_section` into the commit metadata
+  # for the local write gate. Absent (`nil`) for the legacy raw path → plain
+  # `opts_for` (classifies :execute / Gate-B, host irrelevant).
+  defp source_doc_opts(verb_section, opts, store) do
+    opts = Keyword.put(opts, :store, store)
+    if is_binary(verb_section), do: Keyword.put(opts, :verb_section, verb_section), else: opts
   end
 
   defp add_file_entry(parent_uuid, name, child_uuid, store, opts) do
@@ -422,15 +463,4 @@ defmodule Commonplace.MUD.VerbSource do
     end
   end
 
-  defp add_directory_entry(parent_uuid, name, child_uuid, store, opts) do
-    {:ok, schema} = Schemas.load_dir_schema(parent_uuid, store)
-    schema = Schema.add_directory(schema, name, child_uuid)
-    update = Encoding.encode_update(schema)
-    {metadata, commit_opts} = SignedWrite.opts_for(parent_uuid, Keyword.put(opts, :store, store))
-
-    case CommitStoreClient.create_chained_commit(store, parent_uuid, update, metadata, commit_opts) do
-      {:error, _} = err -> err
-      _commit -> :ok
-    end
-  end
 end

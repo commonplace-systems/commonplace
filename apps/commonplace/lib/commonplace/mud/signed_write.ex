@@ -83,12 +83,62 @@ defmodule Commonplace.MUD.SignedWrite do
         commit_opts = [signing_context: signing_context]
 
         metadata =
-          case find_cert(target_uuid, cert_cids, store) do
+          case select_cert(target_uuid, cert_cids, opts, store) do
             nil -> %{}
             cap_id -> %{kind: :regular, capability_proof: cap_id}
           end
 
-        {via_verb_metadata(metadata, opts), commit_opts}
+        {metadata |> stamp_verb_section(opts) |> via_verb_metadata(opts), commit_opts}
+    end
+  end
+
+  # CX-fogy L3 (OPTION 2): for a safe-verb SOURCE-doc write (`:verb_section` = the
+  # HOST uuid), the capability-proof must be the :define_verb cert covering the
+  # HOST's zone — NOT whatever `find_cert` would pick for the (unzoned, bare-source)
+  # verb doc itself, which would fall through to the caller's presence/{:write}
+  # cert and fail the write gate's :define_verb check. Falls back to the normal
+  # selection when there is no such cert (e.g. a NODE write, cert_cids == []).
+  defp select_cert(target_uuid, cert_cids, opts, store) do
+    case Keyword.get(opts, :verb_section) do
+      host when is_binary(host) ->
+        find_define_verb_cert(host, cert_cids, store) || find_cert(target_uuid, cert_cids, store)
+
+      _ ->
+        find_cert(target_uuid, cert_cids, store)
+    end
+  end
+
+  # A held cert granting `:define_verb` with a `{:subtree, R}` scope whose R ==
+  # the HOST's carried zone-stamp (`Trust.doc_zone` — the same membership predicate
+  # the write gate's `define_verb_authorized?` re-checks). Selection only; the gate
+  # re-verifies the chain + host coverage at write time.
+  defp find_define_verb_cert(host_uuid, cert_cids, store) do
+    zone = Commonplace.Trust.doc_zone(host_uuid, store)
+
+    if is_binary(zone) do
+      Enum.find_value(cert_cids, fn cid ->
+        case CommitStoreClient.get_capability(store, cid) do
+          {:ok, %{claim: %{scope: {:subtree, ^zone}, verbs: verbs}}} ->
+            if :define_verb in verbs, do: cid, else: nil
+
+          _ ->
+            nil
+        end
+      end)
+    end
+  end
+
+  # CX-fogy L3 (OPTION 2): carry the HOST uuid in the source-doc commit metadata
+  # so the local write gate anchors :define_verb coverage on the host's zone.
+  # `Map.put_new` of `:kind` keeps a (possibly cert-less, node-signed) metadata
+  # map valid — a non-empty metadata map requires a `:kind` tag (`Store.Commit`).
+  defp stamp_verb_section(metadata, opts) do
+    case Keyword.get(opts, :verb_section) do
+      host when is_binary(host) ->
+        metadata |> Map.put(:verb_section, host) |> Map.put_new(:kind, :regular)
+
+      _ ->
+        metadata
     end
   end
 

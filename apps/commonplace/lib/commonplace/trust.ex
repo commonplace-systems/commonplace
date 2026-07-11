@@ -245,7 +245,87 @@ defmodule Commonplace.Trust do
   @spec authorized_to_write?(Commit.t(), {:doc, String.t()}, config(), GenServer.server()) ::
           :ok | {:error, term()}
   def authorized_to_write?(%Commit{} = commit, {:doc, uuid} = scope, cfg, store) do
-    authorized?(commit, required_write_verb(commit, uuid, store), scope, cfg, store)
+    case required_write_verb(commit, uuid, store) do
+      # CX-fogy L3 (OPTION 2): a sandboxed safe-verb's :define_verb coverage is
+      # anchored on its HOST (the room/object it's authored under, carried in
+      # `metadata.verb_section`), NOT the verb doc's own fresh uuid — a bare-source
+      # verb doc has no leaf zone-stamp (`own_zone` reads JSON `zone`; verb content
+      # is Elixir source), so a self-scoped carve would never match. The host IS
+      # zoned (rooms are M2-zoned), so the citizen's {:subtree,home}[:define_verb]
+      # covers it. This CANNOT reuse `authorized?(commit, :define_verb, {:doc, host})`:
+      # `subtree_carve_ok?` would apply THIS commit's update (which targets the verb
+      # doc) to the HOST doc — the wrong doc. So `define_verb_authorized?` is a
+      # COMMITLESS MEMBERSHIP check (mirrors the signer/cert resolution, but the
+      # final test is cert-grants-:define_verb-over-host, no commit-carve). The
+      # verb-doc↔host binding is cross-verified separately: the entry-add that links
+      # the verb under the host's (now-zoned) `verbs/` dir is itself :write-carve-
+      # gated on the host's zone, so a verb only ever DISPATCHES from a host the
+      # author could legitimately write.
+      :define_verb ->
+        define_verb_authorized?(commit, Map.get(commit.metadata, :verb_section), cfg, store)
+
+      verb ->
+        authorized?(commit, verb, scope, cfg, store)
+    end
+  end
+
+  # CX-fogy L3 — the COMMITLESS host-membership predicate for a safe-verb CODE
+  # write (see `authorized_to_write?`). Mirrors `authorized?/5`'s signer/cert
+  # resolution EXACTLY, but the terminal check is host-zone membership of the
+  # verified cert's scope rather than a commit-applying carve (the commit targets
+  # the verb doc, not the host). Fail-CLOSED: an un-signed/untrusted write with no
+  # host, or a cert that does not grant :define_verb over the host's zone, is
+  # DENIED — there is NO fall-through to `:write` (plan verify iii).
+  defp define_verb_authorized?(%Commit{signature: nil}, _host, cfg, _store) do
+    if cfg.accept_unsigned, do: :ok, else: {:error, :unsigned}
+  end
+
+  defp define_verb_authorized?(%Commit{} = commit, host_uuid, cfg, store) do
+    case Signing.parse_signer_id(commit.signer_id || "") do
+      {:ok, identity_uuid, _fingerprint} ->
+        case Map.fetch(cfg.trusted_identities, identity_uuid) do
+          # NODE / pinned root: authorized regardless of host (host may be nil for
+          # a node-authored verb) — the node holds unattenuated authority, exactly
+          # as in `authorized?/5`.
+          {:ok, pinned} ->
+            verify_against_pinned(commit, pinned)
+
+          :error ->
+            case Map.get(commit.metadata, :capability_proof) do
+              nil ->
+                if cfg.accept_unsigned, do: :ok, else: {:error, {:untrusted_signer, identity_uuid}}
+
+              leaf_cid ->
+                define_verb_capability_path(commit, host_uuid, leaf_cid, cfg, store)
+            end
+        end
+
+      {:error, :invalid_signer_id} ->
+        if cfg.accept_unsigned, do: :ok, else: {:error, :invalid_signer_id}
+    end
+  end
+
+  # A citizen's cert grants this safe-verb write IFF (1) a host is actually
+  # carried (fail-closed: no host → deny, never fall to :write), (2) the leaf cert
+  # is addressed to the commit's signer key (the `author_binding` anti-theft
+  # bind), (3) its chain verifies against the local anchors, and (4) the effective
+  # cap grants :define_verb with a scope covering the HOST's own zone
+  # (`write_scope_covers?` → `doc_zone(host) == root` for a {:subtree,root} cert).
+  defp define_verb_capability_path(_commit, host_uuid, _leaf_cid, _cfg, _store)
+       when not is_binary(host_uuid),
+       do: {:error, :capability_insufficient}
+
+  defp define_verb_capability_path(commit, host_uuid, leaf_cid, cfg, store) do
+    with {:ok, leaf} <- fetch_cap(store, leaf_cid),
+         :ok <- author_binding(commit, leaf),
+         {:ok, %{verbs: verbs, scope: scope}} <-
+           Commonplace.Trust.VerifyChain.verify_chain(leaf_cid, anchor_keys(cfg), store),
+         true <- :define_verb in verbs and write_scope_covers?(scope, host_uuid, store) do
+      :ok
+    else
+      {:error, _} = err -> err
+      _ -> {:error, :capability_insufficient}
+    end
   end
 
   defp required_write_verb(commit, uuid, store) do

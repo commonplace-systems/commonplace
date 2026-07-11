@@ -90,13 +90,16 @@ defmodule Commonplace.MUD.CitizenshipTest do
     {UUID.uuid4(), pub}
   end
 
-  test "issues the presence-starter cert and the home-zone cert as TWO SEPARATE grants (presence ⊥ ownership)",
+  test "issues the presence-starter, home-zone, and verb-authoring certs as SEPARATE grants (presence ⊥ ownership ⊥ authoring)",
        %{store: store, root: root, identity_uuid: identity_uuid, pub: pub} do
     assert {:ok, %{cert_cids: cids, home_room_uuid: home_uuid}} =
              Citizenship.ensure(identity_uuid, pub, "arwen", root, store)
 
-    # Two distinct certs — never one merged over-broad grant.
-    assert length(cids) == 2
+    # Three distinct certs — never one merged over-broad grant. CX-fogy adds the
+    # third: a {:subtree,home}[:define_verb] authoring grant, kept SEPARATE from
+    # the {:subtree,home}[:write] ownership grant (authoring ⊥ ownership — a
+    # :write cert alone must not confer verb-authoring authority).
+    assert length(cids) == 3
     assert Enum.uniq(cids) == cids
 
     caps =
@@ -105,18 +108,18 @@ defmodule Commonplace.MUD.CitizenshipTest do
         cap
       end)
 
-    scopes = Enum.map(caps, & &1.claim.scope)
-    # One is presence-only (citizenship), the other is {:subtree, home_dir}
-    # over the player's OWN home SUBTREE (CX-4u03 A4 — supersedes the old
-    # {:docs, [meta]}) — presence authority never grants zone-edit and the
-    # zone cert never grants presence.
-    assert {:presence, identity_uuid} in scopes
-    assert {:subtree, home_uuid} in scopes
+    # The scope×verbs pairs, as {scope, verbs} — presence-only (citizenship),
+    # {:subtree,home}[:write] (ownership, CX-4u03 A4), and {:subtree,home}
+    # [:define_verb] (CX-fogy authoring). Presence never grants zone-edit; the
+    # zone cert never grants presence; the write cert never grants authoring.
+    pairs = Enum.map(caps, &{&1.claim.scope, &1.claim.verbs})
+    assert {{:presence, identity_uuid}, [:write]} in pairs
+    assert {{:subtree, home_uuid}, [:write]} in pairs
+    assert {{:subtree, home_uuid}, [:define_verb]} in pairs
 
     assert {:ok, node_identity} = NodeIdentity.identity()
 
     for cap <- caps do
-      assert cap.claim.verbs == [:write]
       assert {^identity_uuid, _pub} = cap.audience
       assert {^node_identity, _} = cap.issuer
     end

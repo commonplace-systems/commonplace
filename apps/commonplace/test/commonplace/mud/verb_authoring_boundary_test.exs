@@ -83,7 +83,7 @@ defmodule Commonplace.MUD.VerbAuthoringBoundaryTest do
       Capability.issue(node_ctx, {wid, wpub}, %{verbs: [:write], scope: {:subtree, home}, caveats: %{}}, nil, store: store)
     :ok = CommitStoreClient.store_capability(store, wcap)
 
-    %{store: store, home: home, citizen: citizen, cids: cids,
+    %{store: store, root: root, home: home, citizen: citizen, cids: cids,
       writer: writer, writer_cids: [wcap.id], node_ctx: node_ctx}
   end
 
@@ -179,5 +179,55 @@ defmodule Commonplace.MUD.VerbAuthoringBoundaryTest do
              Commonplace.MUD.Verbs.dispatch(cmd, verb_ctx(store, home, writer, writer_cids))
 
     assert current =~ "glimmer"
+  end
+
+  # ---- CX-fogy L3 (OPTION 2): the verb still DISPATCHES + the cross-verify ----
+
+  test "CX-fogy L3: a citizen-saved verb still RESOLVES + COMPILES, and its verbs/ dir is zoned to the host (despite the __verbs.json meta child)", %{store: store, home: home, citizen: citizen, cids: cids} do
+    :ok =
+      VerbSource.save_safe_verb(home, "tick", @body, [home], store,
+        signing_context: citizen,
+        cert_cids: cids,
+        signer_id: nil
+      )
+
+    # The verbs/ dir is now a ZONED child (`ChildMutation.create_zoned_child`)
+    # carrying a `__verbs.json` zone-meta child. That `__`-prefixed meta must be
+    # INERT to verb resolution — the verb still resolves + compiles (dispatch is
+    # unaffected). If a future change let the meta child shadow the lookup, this
+    # goes :not_found.
+    assert {:ok, source_uuid} = VerbSource.find_safe_source(home, "tick", store)
+    assert is_binary(source_uuid)
+    assert {:ok, _module} = VerbSource.compile_safe_verb(home, "tick", [home], store)
+
+    # The cross-verify anchor: the verbs/ dir carries the host's OWN zone, so a
+    # citizen's {:subtree,home} cert carves both the dir link AND the verb
+    # entry-add. This is what binds a verb to a host the author could write.
+    {:ok, home_schema} = Commonplace.MUD.Schemas.load_dir_schema(home, store)
+    {:ok, %Schema.Entry{node_id: verbs_uuid}} = Schema.get_entry(home_schema, "verbs")
+    assert Commonplace.Trust.doc_zone(verbs_uuid, store) == Commonplace.Trust.doc_zone(home, store)
+    refute is_nil(Commonplace.Trust.doc_zone(verbs_uuid, store))
+  end
+
+  test "BOUNDARY (cross-verify): a citizen CANNOT author a verb on a FOREIGN host — the verbs/ entry-add fails the :write carve", %{store: store, root: root, citizen: citizen, cids: cids} do
+    # A SECOND citizen's home — a distinct zone the first citizen's
+    # {:subtree,home1} cert does NOT cover.
+    {vpub, _vpriv} = Signing.generate_keypair()
+    vid = UUID.uuid4()
+    {:ok, %{home_room_uuid: victim_home}} = Citizenship.ensure(vid, vpub, "victim", root, store)
+
+    # citizen (holding only {:subtree, home1}) tries to author into victim_home.
+    # The verbs/ dir link (and, were it to exist, the verb entry-add) is a :write
+    # to a dir zoned to victim_home — a zone the citizen's cert can't carve → deny.
+    result =
+      VerbSource.save_safe_verb(victim_home, "sneak", @body, [victim_home], store,
+        signing_context: citizen,
+        cert_cids: cids,
+        signer_id: nil
+      )
+
+    assert {:error, _} = result
+    # Nothing landed: the foreign host has no such verb.
+    assert :not_found = VerbSource.find_safe_source(victim_home, "sneak", store)
   end
 end

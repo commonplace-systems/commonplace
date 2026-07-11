@@ -272,23 +272,27 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
     # STILL denied even though the body "claims" a different section.
     body = ~s|"#{foreign_uuid}"; Commonplace.MUD.World.Facade.put_state(world, "poked", "yes")|
 
-    assert {:error, {:execution_denied, _}} =
+    # The body's CONTENT names a foreign uuid, but there is no mechanism that
+    # reads it as a scope: authoring authority is anchored on the real host
+    # (`trinket_uuid`), never on anything the body claims. The unauthorized
+    # definer is refused (body lints clean, so `{:error, _}` is an authority
+    # refusal). CX-fogy L3 refuses at AUTHORING (the zoned verbs/ dir's :write
+    # carve, anchored on trinket's zone) rather than the pre-L3 compile define-
+    # gate — either way the body's foreign-section content can NEVER widen scope.
+    assert {:error, _} =
              VerbSource.save_safe_verb(trinket_uuid, "poke", body, [trinket_uuid], store,
                signing_context: definer_ctx
              )
 
-    # Unlike a lint violation, a define-gate denial happens at COMPILE
-    # time (after the source doc is already persisted, so the author can
-    # keep editing) — the source is there, but every dispatch re-checks
-    # the gate at verify time.
-    assert {:ok, _source_uuid} = VerbSource.find_safe_source(trinket_uuid, "poke", store)
+    # Nothing persisted — the author lacked host authority, so the write never
+    # landed (strictly stronger than the pre-L3 persist-then-deny-at-dispatch).
+    assert :not_found = VerbSource.find_safe_source(trinket_uuid, "poke", store)
 
-    # Dispatch re-compiles under the SAME `[trinket_uuid]` gate (never
-    # `[foreign_uuid]` — the body's content has no channel to reach
-    # `section_scope` at all) and is denied again: a clean player-facing
-    # error, never a crash, never a fallback to some other verb/builtin.
+    # And dispatch finds no such verb: `:unhandled` (nothing persisted), never a
+    # crash, never a fallback to some other verb/builtin — and NEVER a scope
+    # widened by the body's foreign-uuid content.
     ctx = base_ctx(store, room_uuid, inventory_uuid)
-    assert {:error, _msg} = Verbs.dispatch(Parser.parse("poke trinket"), ctx)
+    assert :unhandled = Verbs.dispatch(Parser.parse("poke trinket"), ctx)
   end
 
   # ---- pin 5: intersection denial (owner_grant ceiling, default no-cert case) ----
@@ -345,13 +349,21 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
 
     body = ~s|Commonplace.MUD.World.Facade.put_state(world, "on", true)|
 
-    assert {:error, {:execution_denied, _}} =
+    # The stranger holds no authority over the lamp's zone. CX-fogy L3 refuses
+    # this at AUTHORING (the zoned verbs/ dir's :write carve) rather than the
+    # pre-L3 compile-time define-gate — strictly stronger, and the "never
+    # dispatches" guarantee below is unchanged (body lints clean, so `{:error, _}`
+    # is an authority refusal, not a lint fault). Nothing lands.
+    assert {:error, _} =
              VerbSource.save_safe_verb(lamp_uuid, "light", body, [lamp_uuid], store,
                signing_context: stranger_ctx
              )
 
+    assert :not_found = VerbSource.find_safe_source(lamp_uuid, "light", store)
+
+    # Nothing persisted → dispatch finds no such verb: `:unhandled`, no crash.
     ctx = base_ctx(store, room_uuid, inventory_uuid)
-    assert {:error, _msg} = Verbs.dispatch(Parser.parse("light lamp"), ctx)
+    assert :unhandled = Verbs.dispatch(Parser.parse("light lamp"), ctx)
   end
 
   # ---- pin 6b (RIDER 1): verified-chains-only owner ceiling ----

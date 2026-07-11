@@ -397,7 +397,15 @@ defmodule Commonplace.MUD.SafeVerbTest do
       identity = "sv-#{:rand.uniform(999_999_999_999)}"
       ctx = %SigningContext{identity_uuid: identity, private_key: priv, public_key: pub}
 
-      assert {:error, {:execution_denied, _}} =
+      # A stranger holding NO authoring authority is refused (body `:ok` lints
+      # clean, so this `{:error, _}` is an AUTHORITY refusal, not a lint/compile
+      # fault). CX-fogy L3 refuses earlier than the pre-L3 compile-time define-gate:
+      # the verbs/ dir is now a ZONED child, so the stranger's very first verb
+      # write can't even link a verbs/ dir into a host they don't govern (the
+      # :write carve on the zoned verbs/ dir) — strictly stronger than the old
+      # persist-then-deny-at-dispatch. Either way the define-denied author's verb
+      # is refused and never dispatches.
+      assert {:error, _} =
                VerbSource.save_safe_verb(target_dir_uuid, "denied", ":ok", [target_dir_uuid], store,
                  signing_context: ctx
                )
