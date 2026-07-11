@@ -35,9 +35,17 @@ defmodule Commonplace.Green.Bursar do
   `released` event with `reason: "expired"`. TTL is the safety net
   against a holder that crashes without releasing.
 
-  **Ephemeral liveness vs durable ownership (move #4, CX-tdkq.7).**
-  Ownership changes — acquire / release / transfer / expiry — are
-  persisted and logged. `renew` is **memory-only**: it re-clocks
+  **Ephemeral liveness vs durable ownership (move #4, CX-tdkq.7;
+  CX-i9ca).** Only **permanent** (`ttl_ms == nil`) tokens are persisted
+  to `__bursar.json` — these are the durable OWNERSHIP tokens that must
+  survive a restart. **Ephemeral** (`ttl`'d) tokens — move-locks, the
+  tick-lease, craft-locks — are memory-only transient coordination:
+  losing them on a crash is correct (no in-flight move survives, the
+  lease is re-elected), and persisting them churned the doc until
+  `persist_state` wedged the serve (CX-i9ca). Every ownership change to a
+  permanent token (acquire / release / transfer) is persisted and logged;
+  the same op on a ttl'd token is logged but not committed. `renew` is
+  **memory-only**: it re-clocks
   `acquired_at` in the token table and broadcasts, but never commits
   (a lease heartbeat at TTL/3 would otherwise write ~17k commits/day
   into an append-only store). The restart story compensates:
@@ -66,9 +74,11 @@ defmodule Commonplace.Green.Bursar do
       (~86k commits/day) until the log doc kills the Bursar.
 
   (See `Commonplace.Dataflow.Channel` for the blue/red distinction.)
-  Writes to `__bursar.json` use the stable-client_id + incremental-diff
-  pattern (CX-pyi) so the Yjs state vector stays bounded across many
-  custody changes.
+  Writes to `__bursar.json` (CX-i9ca) persist only the permanent-token
+  subset and write a fresh full SNAPSHOT doc per persist, so each
+  commit's op-log stays O(table) rather than accumulating O(history) —
+  safe because the doc has a single writer and is read latest-only (see
+  `persist_state/1`).
 
   ## Command transports
 
@@ -125,7 +135,7 @@ defmodule Commonplace.Green.Bursar do
 
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.{Schema, DocBuilder}
-  alias Commonplace.Document.{ContentType, Diff}
+  alias Commonplace.Document.ContentType
   alias Commonplace.Dataflow.{Magenta, RedLog}
 
   @state_doc "__bursar.json"
@@ -148,7 +158,14 @@ defmodule Commonplace.Green.Bursar do
     # whenever that path's custody changes, so post-transition denials
     # log again. Denied REPLIES/broadcasts are unaffected — only the
     # persisted audit trail is deduplicated.
-    denied_memo: %{}
+    denied_memo: %{},
+    # CX-i9ca: the last durable-token JSON written to __bursar.json. A
+    # mutation that leaves the permanent (ttl:nil) subset unchanged —
+    # every ephemeral acquire/release/expiry: the tick-lease/1s, move-locks
+    # — persists nothing (the fresh snapshot would be byte-identical). This
+    # is what makes ephemeral churn stop touching the store entirely, not
+    # merely stop bloating a single doc. `nil` until the first load/persist.
+    persisted_content: nil
   ]
 
   # --- Client API ---
@@ -656,14 +673,15 @@ defmodule Commonplace.Green.Bursar do
               json_str = ContentType.get_content(doc) || "{}"
               case Jason.decode(json_str) do
                 {:ok, map} when is_map(map) ->
-                  # RE-CLOCK on load (move #4): renews are memory-only, so a
-                  # stored acquired_at understates liveness. Every loaded token
-                  # gets a fresh full TTL from load time. INVARIANT: re-clock
-                  # can only EXTEND a lease, never release it early — acquire
-                  # denies while any unexpired token exists, so the worst case
-                  # of a dead holder's lingering lease is failover LATENCY
-                  # (≤ one extra TTL after a restart), never two holders. The
-                  # stored acquired_at remains in __bursar.json for audit only.
+                  # CX-i9ca: only permanent (ttl_ms == nil) tokens are ever
+                  # persisted now, so every loaded token is permanent and the
+                  # re-clock below is a formality — a permanent token never
+                  # expires, so its acquired_at is audit-only. (Historically
+                  # (move #4) this re-clock granted loaded ttl'd leases a fresh
+                  # full TTL; ephemeral leases are no longer persisted at all —
+                  # they re-acquire after a restart, guarded from concurrency by
+                  # the single-writer Bursar, not by lease survival.) Kept as a
+                  # defensive uniform load for any legacy ttl_ms found on disk.
                   now = DateTime.utc_now()
 
                   tokens = Map.new(map, fn {path, info} ->
@@ -691,41 +709,90 @@ defmodule Commonplace.Green.Bursar do
 
     log = RedLog.load(log_uuid, state.store)
 
-    %{state | state_uuid: state_uuid, log_uuid: log_uuid, log: log, tokens: tokens}
+    # CX-i9ca: seed the persisted_content cache with the durable serialization
+    # of the loaded tokens, so the first post-load mutation that leaves the
+    # permanent subset unchanged (an ephemeral acquire) writes nothing, and the
+    # first genuine durable change writes exactly once. Uses durable_content so
+    # the seed is byte-identical to what persist_state would compare against.
+    %{
+      state
+      | state_uuid: state_uuid,
+        log_uuid: log_uuid,
+        log: log,
+        tokens: tokens,
+        persisted_content: durable_content(tokens)
+    }
+  end
+
+  # CX-i9ca: serialize ONLY permanent (ttl_ms == nil) possession tokens.
+  # Ephemeral (ttl'd) tokens — move-locks, the tick-lease, craft-locks — are
+  # transient COORDINATION that is harmless (indeed CORRECT) to drop on a
+  # crash: no in-flight move survives a restart, the tick lease is re-elected,
+  # a craft saga died with its process. Persisting them churned __bursar.json
+  # on every move (2 locks) and every tick (1 lease/sec), bloating the doc
+  # until persist_state's re-encode wedged the serve (11.5 GB OOM,
+  # 2026-07-10). Anti-raid/anti-dupe still enforce on the IN-MEMORY
+  # authoritative state.tokens; only durable OWNERSHIP must survive a restart,
+  # and that is exactly the ttl_ms == nil set. Shared by persist_state (write)
+  # and load_state (seed the persisted_content cache) so the byte-for-byte
+  # serialization is identical — the skip-if-unchanged compare depends on it.
+  defp durable_content(tokens) do
+    durable =
+      for {path, %{ttl_ms: nil} = info} <- tokens, into: %{} do
+        {path, info}
+      end
+
+    json =
+      Map.new(durable, fn {path, %{holder: holder, acquired_at: at}} ->
+        {path, %{"holder" => holder, "acquired_at" => DateTime.to_iso8601(at)}}
+      end)
+
+    Jason.encode!(json, pretty: true)
   end
 
   defp persist_state(state) do
-    # Serialize tokens to JSON
-    json = Map.new(state.tokens, fn {path, %{holder: holder, acquired_at: at} = info} ->
-      entry = %{"holder" => holder, "acquired_at" => DateTime.to_iso8601(at)}
-      entry = if info[:ttl_ms], do: Map.put(entry, "ttl_ms", info.ttl_ms), else: entry
-      {path, entry}
-    end)
+    new_content = durable_content(state.tokens)
 
-    new_content = Jason.encode!(json, pretty: true)
+    # CX-i9ca: SKIP an unchanged durable set. Ephemeral acquire/release/expiry
+    # (the tick-lease every second, a move-lock per move) leave the permanent
+    # subset untouched, so the fresh snapshot would be byte-identical to the
+    # last one written — committing it would append ~86k no-op commits/day to
+    # the append-only store (the same failure mode CX-sqyc fixed for the red
+    # log). Only a real durable change writes.
+    if new_content == state.persisted_content do
+      state
+    else
+      persist_snapshot(state, new_content)
+    end
+  end
 
-    # CX-pyi: load + mutate. Reconstruct existing state under a stable
-    # client_id and apply the JSON-content diff incrementally so the
-    # SV stays at one slot across many persist_state calls.
-    doc =
-      case CommitStoreClient.latest_commit(state.store, state.state_uuid) do
-        {:ok, commit} ->
-          d = Yelixer.Doc.new(client_id: stable_client_id(state.state_uuid))
-          {:ok, d} = Yelixer.Encoding.apply_update(d, commit.update)
-          d
-
-        :none ->
-          d = Yelixer.Doc.new(client_id: stable_client_id(state.state_uuid))
-          ContentType.create(d, :text, @state_doc)
-      end
-
-    old_content = ContentType.get_content(doc) || ""
-    doc = Diff.apply_diff(doc, old_content, new_content)
+  defp persist_snapshot(state, new_content) do
+    # CX-i9ca: FRESH-DOC-PER-PERSIST. Each persist writes a self-contained full
+    # SNAPSHOT of the durable table into a brand-new doc, rather than
+    # reconstructing the prior doc and diffing onto it (the CX-pyi pattern,
+    # now retired). Diff-onto-previous accumulated the Yjs op-log without
+    # bound, so encode_update's cost grew O(history) per op; a fresh doc keeps
+    # each commit's op-log O(table).
+    #
+    # SAFETY (confirmed with plan #7461): full-snapshot commits are safe here
+    # because the state doc has exactly ONE writer and is read latest-only —
+    #   (1) reconstruct_snapshot applies ONLY the latest commit to a fresh doc
+    #       (doc_builder.ex), never merging the chain; and
+    #   (2) __bursar.json is NEVER CRDT-synced across replicas — the Bursar is
+    #       a :global singleton (one writer; moduledoc "written only by the
+    #       bursar"), GitBridge exporter/inbound skip "__"-prefixed entries,
+    #       and Sync.Agent filters them from the filesystem.
+    # With a single writer and latest-only reads there is no second branch to
+    # merge, so a full snapshot cannot double-count. stable_client_id is kept
+    # for a bounded SV slot but is not load-bearing for correctness here.
+    doc = Yelixer.Doc.new(client_id: stable_client_id(state.state_uuid))
+    doc = ContentType.create(doc, :text, @state_doc)
+    doc = ContentType.insert_text(doc, 0, new_content)
 
     update = Yelixer.Encoding.encode_update(doc)
     CommitStoreClient.create_chained_commit(state.store, state.state_uuid, update)
 
-    state
+    %{state | persisted_content: new_content}
   end
 
   defp log_event(state, event_type, path, holder, extra \\ %{}) do

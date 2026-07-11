@@ -321,14 +321,18 @@ defmodule Commonplace.Green.BursarTest do
     end
   end
 
-  # Move #4 (CX-tdkq.7) lease semantics: liveness is EPHEMERAL, ownership
-  # is DURABLE. Renewals never touch the store; a Bursar restart re-clocks
-  # every loaded token to load time (full-TTL grace). The load-bearing
-  # safety invariant: re-clock can only EXTEND a lease, never release it
-  # early — so a stale acquire can never win while an old lease might
-  # still have a live holder. Worst case is failover LATENCY (≤ one extra
-  # TTL after a restart), never two concurrent holders.
-  describe "lease semantics (move #4)" do
+  # Lease semantics (move #4 CX-tdkq.7, REVISED by CX-i9ca): liveness is
+  # EPHEMERAL, ownership is DURABLE. Renewals never touch the store. As of
+  # CX-i9ca, ephemeral (ttl'd) tokens are NOT persisted at all — a Bursar
+  # restart drops every lease, and holders RE-ACQUIRE (re-election) rather
+  # than inherit a re-clocked lease. The never-two-concurrent-holders
+  # invariant is now guaranteed by the single-writer Bursar (only one acquire
+  # can win against the authoritative in-memory table), not by lease survival:
+  # every leader (e.g. TickBot) re-validates via `acquire` before each act, so
+  # a restarted Bursar with an empty ephemeral table hands leadership to
+  # exactly one contender. (Persisting ttl'd leases + re-clocking them on load
+  # was the CX-i9ca churn source that wedged the serve.)
+  describe "lease semantics (move #4, CX-i9ca)" do
     defp latest_commit_ids(ctx) do
       {:ok, schema} = DocBuilder.reconstruct_snapshot(ctx.store, ctx.root)
       {:ok, state_entry} = Schema.get_entry(schema, "__bursar.json")
@@ -370,36 +374,59 @@ defmodule Commonplace.Green.BursarTest do
       assert latest_commit_ids(ctx) == before_ids
     end
 
-    test "restart re-clocks loaded tokens: held token does NOT expire on stored acquired_at", ctx do
-      {pid, _name} = start_bursar(ctx, :reclock_src, sweep_interval: 60_000)
+    test "CX-i9ca: an ephemeral (ttl'd) token does NOT survive a Bursar restart", ctx do
+      {pid, _name} = start_bursar(ctx, :ephem_src, sweep_interval: 60_000)
 
-      assert {:ok, _} = Bursar.acquire(:reclock_src, "lease.txt", "alice", ttl: 200)
+      # A ttl'd lease held by a live holder — before CX-i9ca this was
+      # persisted and re-clocked on load so it survived a restart. Now
+      # ephemeral tokens are memory-only: a restart drops them entirely.
+      assert {:ok, _} = Bursar.acquire(:ephem_src, "lease.txt", "alice", ttl: 200)
+      assert {:held, %{holder: "alice"}} = Bursar.query(:ephem_src, "lease.txt")
       GenServer.stop(pid)
-
-      # Sleep PAST the original expiry, then restart. Without re-clock the
-      # loaded token would be instantly sweepable; with re-clock it gets a
-      # fresh full TTL from load time.
-      Process.sleep(300)
 
       {:ok, pid2} =
         Bursar.start_link(root_uuid: ctx.root, store: ctx.store,
-          name: :reclock_dst, sweep_interval: 60_000)
+          name: :ephem_dst, sweep_interval: 60_000)
       on_exit(fn -> if Process.alive?(pid2), do: GenServer.stop(pid2) end)
 
-      send(pid2, :sweep_ttl)
-      _ = :sys.get_state(pid2)
-
-      assert {:held, %{holder: "alice"}} = Bursar.query(:reclock_dst, "lease.txt")
+      # The lease is GONE after reload (not carried across, not re-clocked) —
+      # and immediately re-acquirable by anyone (re-election), no TTL wait.
+      assert :available = Bursar.query(:ephem_dst, "lease.txt")
+      assert {:ok, %{holder: "bob"}} =
+               Bursar.acquire(:ephem_dst, "lease.txt", "bob", ttl: 200)
     end
 
-    test "INVARIANT: dead holder + bursar restart → new holder within 2×TTL, never concurrent", ctx do
+    test "CX-i9ca: a PERMANENT (ttl:nil) possession token DOES survive a Bursar restart", ctx do
+      {pid, _name} = start_bursar(ctx, :perm_src, sweep_interval: 60_000)
+
+      # No ttl → a durable OWNERSHIP token. This is the flip side of the
+      # ephemeral case and the invariant jes cares about: possession (hence
+      # droppability of the held item) must survive a Bursar restart.
+      assert {:ok, _} = Bursar.acquire(:perm_src, "sword-abcd1234.obj", "alice")
+      GenServer.stop(pid)
+
+      {:ok, pid2} =
+        Bursar.start_link(root_uuid: ctx.root, store: ctx.store,
+          name: :perm_dst, sweep_interval: 60_000)
+      on_exit(fn -> if Process.alive?(pid2), do: GenServer.stop(pid2) end)
+
+      assert {:held, %{holder: "alice"}} =
+               Bursar.query(:perm_dst, "sword-abcd1234.obj")
+      # A contender is still denied post-restart — ownership is intact.
+      assert {:denied, %{holder: "alice"}} =
+               Bursar.acquire(:perm_dst, "sword-abcd1234.obj", "bob")
+    end
+
+    test "INVARIANT (CX-i9ca): dead holder + bursar restart → immediate re-election, single holder", ctx do
       ttl = 300
       {pid, _name} = start_bursar(ctx, :invariant_src, sweep_interval: 60_000)
 
-      # "alice" acquires, then dies (never renews again).
+      # "alice" acquires an ephemeral lease, then dies (the Bursar OOM-restart
+      # scenario). Under the pre-CX-i9ca re-clock model bob had to wait out the
+      # re-clocked TTL; now the lease is not persisted, so the restarted Bursar
+      # boots with an empty ephemeral table and bob is elected IMMEDIATELY.
       assert {:ok, _} = Bursar.acquire(:invariant_src, "lease.txt", "alice", ttl: ttl)
 
-      # Bursar restarts BEFORE the lease expires.
       GenServer.stop(pid)
 
       {:ok, pid2} =
@@ -408,25 +435,104 @@ defmodule Commonplace.Green.BursarTest do
       on_exit(fn -> if Process.alive?(pid2), do: GenServer.stop(pid2) end)
       restarted_at = System.monotonic_time(:millisecond)
 
-      # Immediately post-restart the dead lease is still live (re-clock
-      # EXTENDED it) — a competing acquire must be DENIED, not granted.
-      assert {:denied, %{holder: "alice"}} =
+      assert {:ok, %{holder: "bob"}} =
                Bursar.acquire(:invariant_dst, "lease.txt", "bob", ttl: ttl)
-
-      # Failover: bob acquires once the re-clocked lease expires — within
-      # 2×TTL of the restart, and never while alice's lease is unexpired.
-      result =
-        Enum.reduce_while(1..100, :timeout, fn _, _ ->
-          case Bursar.acquire(:invariant_dst, "lease.txt", "bob", ttl: ttl) do
-            {:ok, _} -> {:halt, :acquired}
-            {:denied, _} -> Process.sleep(25) && {:cont, :timeout}
-          end
-        end)
-
       elapsed = System.monotonic_time(:millisecond) - restarted_at
-      assert result == :acquired
-      assert elapsed >= ttl, "bob acquired at #{elapsed}ms — before the re-clocked TTL elapsed"
-      assert elapsed <= 2 * ttl + 200, "failover took #{elapsed}ms (> 2×TTL + slack)"
+      assert elapsed < ttl,
+             "re-election took #{elapsed}ms — should be immediate, no 2×TTL wait"
+
+      # The never-two-concurrent-holders invariant still holds: bob is now the
+      # SOLE holder, and a third contender against the single-writer Bursar is
+      # denied — leadership is exclusive whether inherited or re-elected.
+      assert {:held, %{holder: "bob"}} = Bursar.query(:invariant_dst, "lease.txt")
+      assert {:denied, %{holder: "bob"}} =
+               Bursar.acquire(:invariant_dst, "lease.txt", "carol", ttl: ttl)
+    end
+  end
+
+  # CX-i9ca persist-path fix. Two obligations: (1) ephemeral churn must not
+  # touch the store at ALL (the tick-lease/1s + move-locks/move that bloated
+  # the doc), and (2) each durable persist must stay O(table), never
+  # O(history) — the retired CX-pyi diff-onto-previous pattern re-encoded an
+  # ever-growing op-log every op and wedged the live serve at 11.5 GB
+  # (2026-07-10). These would have caught the wedge.
+  describe "bounded persistence (CX-i9ca)" do
+    defp bursar_state_uuid(ctx) do
+      {:ok, schema} = DocBuilder.reconstruct_snapshot(ctx.store, ctx.root)
+      {:ok, entry} = Schema.get_entry(schema, "__bursar.json")
+      entry.node_id
+    end
+
+    defp state_commit_count(ctx) do
+      CommitStore.commit_log(ctx.store, bursar_state_uuid(ctx)) |> length()
+    end
+
+    defp state_latest_update_size(ctx) do
+      {:ok, commit} = CommitStore.latest_commit(ctx.store, bursar_state_uuid(ctx))
+      byte_size(commit.update)
+    end
+
+    test "ephemeral churn writes ZERO new commits (tick-lease / move-lock storm)", ctx do
+      {_pid, name} = start_bursar(ctx, nil, sweep_interval: 60_000)
+
+      before = state_commit_count(ctx)
+
+      # 500 acquire/release cycles of a ttl'd lease — the tick-lease's 1Hz
+      # churn, or a move-lock per move. None changes the permanent (ttl:nil)
+      # subset, so the skip-if-unchanged guard writes nothing.
+      for _ <- 1..500 do
+        assert {:ok, _} = Bursar.acquire(name, "__singletons/tick", "leader", ttl: 5_000)
+        assert :ok = Bursar.release(name, "__singletons/tick", "leader")
+      end
+
+      assert state_commit_count(ctx) == before,
+             "ephemeral churn appended commits to __bursar.json (should be zero)"
+    end
+
+    test "each durable persist stays O(table), not O(history)", ctx do
+      {_pid, name} = start_bursar(ctx, nil, sweep_interval: 60_000)
+
+      # Acquire+release the SAME permanent token 200 times. Every op IS a
+      # durable change (adds/removes the token) so every op commits — the
+      # churn this fix does NOT skip. Invariant under test: because each
+      # commit is a FRESH full snapshot (not a diff onto an ever-growing
+      # op-log), the latest commit's encoded size stays ~constant. Under the
+      # retired diff-onto-previous code it grew ~linearly with the op count.
+      assert {:ok, _} = Bursar.acquire(name, "p-00000001.obj", "alice")
+      baseline = state_latest_update_size(ctx)
+
+      for _ <- 1..200 do
+        assert :ok = Bursar.release(name, "p-00000001.obj", "alice")
+        assert {:ok, _} = Bursar.acquire(name, "p-00000001.obj", "alice")
+      end
+
+      final = state_latest_update_size(ctx)
+
+      assert final <= baseline * 2,
+             "latest __bursar.json commit grew #{baseline}B -> #{final}B over 200 " <>
+               "cycles — the op-log is accumulating (O(history), not O(table))"
+    end
+
+    test "a large permanent table stays bounded and survives restart at scale", ctx do
+      {pid, name} = start_bursar(ctx, nil, sweep_interval: 60_000)
+
+      # 200 DISTINCT permanent acquires — the bulk re-anchor shape that
+      # OOM-wedged the live serve pre-fix. The run must complete promptly and
+      # the final snapshot is O(200 tokens), not O(sum of prior op-logs).
+      for i <- 1..200 do
+        path = "item-#{String.pad_leading(Integer.to_string(i), 8, "0")}.obj"
+        assert {:ok, _} = Bursar.acquire(name, path, "owner-#{i}")
+      end
+
+      GenServer.stop(pid)
+
+      # All 200 durable tokens reload after a restart (ownership at scale).
+      {:ok, pid2} =
+        Bursar.start_link(root_uuid: ctx.root, store: ctx.store,
+          name: :"scale_dst_#{:rand.uniform(1_000_000)}")
+      on_exit(fn -> if Process.alive?(pid2), do: GenServer.stop(pid2) end)
+
+      assert map_size(Bursar.list_tokens(pid2)) == 200
     end
   end
 
