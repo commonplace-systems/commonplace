@@ -40,6 +40,20 @@ defmodule Commonplace.MUD.Verbs do
   @builtins ~w(look say emote take get drop give put inventory who home quit help go where mine smith recipes) ++
               ~w(north south east west up down in out)
 
+  # CX-z6ub (M2 §3) — the OVERRIDABLE subset of the standard verb set: a
+  # room/object may author its OWN sandboxed verb of this name to override the
+  # node-signed standard baseline (dispatch = own-verb → standard prototype).
+  # Everything else in `@builtins` is LOCKED (builtins-first, un-overridable) —
+  # the theft/integrity boundary: `take get drop give put go` (+ directions) can
+  # never be shadowed by a citizen verb (so a sandboxed "take" can't intercept
+  # possession-transfer), and the system/crafting commands
+  # (`who home quit help where inventory mine smith recipes`) stay engine-owned.
+  # An override runs SANDBOXED (facade-bound, zone-scoped, no RCE) on its own
+  # host; the standard fall-through stays node-trusted. M2.1 seeds the set with
+  # the doc-hosted perception/social trio; M2.2 grows it (examine/search/whisper/
+  # use/read/open/close/sit/stand/enter/leave) as node prototype verbs.
+  @overridable ~w(look say emote)
+
   @doc "Dispatch a parsed command. Returns one of the verb-result tuples."
   def dispatch(%Parser.Command{verb: ""}, _ctx), do: :ok
 
@@ -47,6 +61,20 @@ defmodule Commonplace.MUD.Verbs do
     cond do
       verb in @builders ->
         dispatch_builder(verb, cmd, ctx)
+
+      # CX-z6ub (M2 §3) — OVERRIDABLE standard verb: resolve the host's OWN verb
+      # FIRST (a sandboxed override), falling through to the node-signed standard
+      # baseline (`dispatch_builtin`) when the host has none. Bare invocations
+      # resolve on the ROOM host only (not an object scope-scan), so a bare `look`
+      # is the room's look/standard — never hijacked by some object's `look` verb.
+      overridable?(verb) ->
+        case find_override_host(verb, cmd, ctx) do
+          {:ok, host_kind, host_uuid, host_name} ->
+            run_user_verb(host_kind, host_uuid, host_name, verb, cmd, ctx)
+
+          :not_found ->
+            dispatch_builtin(verb, cmd, ctx)
+        end
 
       builtin?(verb) ->
         dispatch_builtin(verb, cmd, ctx)
@@ -60,6 +88,29 @@ defmodule Commonplace.MUD.Verbs do
   end
 
   defp builtin?(verb), do: verb in @builtins
+
+  # CX-z6ub — the OVERRIDABLE subset (⊂ @builtins; checked BEFORE `builtin?` in
+  # dispatch so an override is reachable, while LOCKED builtins never are).
+  defp overridable?(verb), do: verb in @overridable
+
+  # CX-z6ub — host resolution for an OVERRIDABLE verb: a named, visible target
+  # object's OWN verb wins; otherwise (bare, or the target has no such verb) the
+  # ROOM host's own verb. Deliberately does NOT scope-scan other objects (unlike
+  # `find_verb_by_scope_scan`) — a bare `look`/`say`/`emote` must be the room's,
+  # never a stray object's same-named verb. `:not_found` → the standard baseline.
+  defp find_override_host(verb_name, cmd, ctx) do
+    case resolve_target_object(cmd, ctx) do
+      {:ok, uuid, name} ->
+        if verb_source_exists?(uuid, verb_name, ctx.store) do
+          {:ok, :object, uuid, name}
+        else
+          room_host_verb(verb_name, ctx)
+        end
+
+      :none ->
+        room_host_verb(verb_name, ctx)
+    end
+  end
 
   # ---- User-authored verbs (P3, CX-ndvi/CX-cj3t.5) ----
 

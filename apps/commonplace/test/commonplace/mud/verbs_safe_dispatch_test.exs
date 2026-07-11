@@ -522,4 +522,60 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
     assert :ok = Verbs.dispatch(Parser.parse("say hello"), ctx)
     assert {:error, "Take what?"} = Verbs.dispatch(Parser.parse("take"), ctx)
   end
+
+  # ---- M2 (CX-z6ub §3): OVERRIDABLE standard verbs (own-verb → node baseline) ----
+
+  test "pin M2.1a (CX-z6ub): a `look` override on the room FIRES — an OVERRIDABLE standard verb resolves the host's own verb first", %{
+    store: store,
+    room_uuid: room_uuid,
+    inventory_uuid: inventory_uuid
+  } do
+    body = ~s|Commonplace.MUD.World.Facade.put_state(world, "looked", "custom")|
+    assert :ok = VerbSource.save_safe_verb(room_uuid, "look", body, [room_uuid], store)
+
+    ctx = base_ctx(store, room_uuid, inventory_uuid)
+    Verbs.dispatch(Parser.parse("look"), ctx)
+
+    # The room's OWN `look` ran (its state effect landed) — pre-M2, builtins-first
+    # meant this override was structurally unreachable; M2 makes `look` overridable.
+    room_meta = raw_meta(store, room_uuid, Schemas.room_filename())
+    assert get_in(room_meta, ["state", "looked"]) == "custom"
+  end
+
+  test "pin M2.1b (CX-z6ub): a bare `look` is the ROOM's — an OBJECT's `look` verb never hijacks a bare look", %{
+    store: store,
+    room_uuid: room_uuid,
+    inventory_uuid: inventory_uuid
+  } do
+    gizmo_uuid = create_object(store, "gizmo")
+    :ok = add_dir_entry(store, room_uuid, "gizmo.obj", gizmo_uuid)
+    body = ~s|Commonplace.MUD.World.Facade.put_state(world, "peeked", "yes")|
+    assert :ok = VerbSource.save_safe_verb(gizmo_uuid, "look", body, [gizmo_uuid], store)
+
+    ctx = base_ctx(store, room_uuid, inventory_uuid)
+    Verbs.dispatch(Parser.parse("look"), ctx)
+
+    # Bare `look` resolves on the ROOM host only (never an object scope-scan), so
+    # the gizmo's `look` verb did NOT fire — its state effect never landed.
+    gizmo_meta = raw_meta(store, gizmo_uuid, Schemas.object_filename())
+    refute get_in(gizmo_meta, ["state", "peeked"])
+  end
+
+  test "pin M2.1c (CX-z6ub): a `go` override never fires — `go` is LOCKED (visitor anti-trap), the builtin runs", %{
+    store: store,
+    room_uuid: room_uuid,
+    inventory_uuid: inventory_uuid
+  } do
+    # `go` is NOT in @overridable → builtins-first → a citizen's same-named safe
+    # verb is structurally unreachable (a room owner can't trap a visitor by
+    # overriding movement). Same guarantee pin 1 proves for `take` (anti-theft).
+    body = ~s|Commonplace.MUD.World.Facade.put_state(world, "trapped", "yes")|
+    assert :ok = VerbSource.save_safe_verb(room_uuid, "go", body, [room_uuid], store)
+
+    ctx = base_ctx(store, room_uuid, inventory_uuid)
+    Verbs.dispatch(Parser.parse("go north"), ctx)
+
+    room_meta = raw_meta(store, room_uuid, Schemas.room_filename())
+    refute get_in(room_meta, ["state", "trapped"])
+  end
 end
