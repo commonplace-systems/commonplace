@@ -438,4 +438,40 @@ defmodule Commonplace.MUD.SafeVerb.AllowlistTest do
       assert {:error, _} = Allowlist.check(~s|Commonplace.MUD.World.Facade.install_signer(%{})|)
     end
   end
+
+  # plan #7573 allowlist-completeness review — two concrete gaps closed.
+  describe "GAP-1: bitstring type-spec is scanned (RCE escape)" do
+    test "an executable call embedded in a size type-spec is REJECTED" do
+      # <<x::size(evil())>> would RUN the call at runtime before any type error;
+      # the type-spec used to be ignored entirely — the escape.
+      assert_rejected(~s|<<x::size(System.cmd("id", []))>>|)
+      assert_rejected(~s|<<x::size(:erlang.system_time())>>|)
+    end
+
+    test "a disallowed call in a unit()/chained type-spec is rejected" do
+      assert_rejected(~s|<<x::unit(File.read!("/x"))-size(8)>>|)
+    end
+
+    test "legit bitstring type-specs still pass (atoms, literal sizes, -/*, var sizes)" do
+      assert :ok == Allowlist.check("<<x::size(8)>>")
+      assert :ok == Allowlist.check("<<x::integer-size(16)>>")
+      assert :ok == Allowlist.check("<<x::utf8>>")
+      assert :ok == Allowlist.check("<<x::binary>>")
+      assert :ok == Allowlist.check("<<x::size(n)>>")
+    end
+  end
+
+  describe "GAP-2: compile-time reflection pseudo-vars rejected" do
+    test "__ENV__ and friends are NOT treated as variable reads" do
+      for pv <- ~w(__ENV__ __CALLER__ __MODULE__ __DIR__ __STACKTRACE__) do
+        reasons = assert_rejected(pv)
+        assert Enum.any?(reasons, &String.contains?(&1, "reserved pseudo-variable"))
+      end
+    end
+
+    test "an ordinary variable read is still allowed" do
+      assert :ok == Allowlist.check("x")
+      assert :ok == Allowlist.check("world.object_uuid")
+    end
+  end
 end
