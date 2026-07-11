@@ -21,7 +21,6 @@ defmodule Commonplace.Store.LocalWriteGateTest do
   alias Commonplace.Crypto.{NodeIdentity, Signing, SigningContext}
   alias Commonplace.Document.ContentType
   alias Commonplace.Store.{Commit, CommitStore, CommitStoreClient}
-  alias Commonplace.Trust
   alias Commonplace.Trust.Capability
 
   # Full trio (Store.Supervisor) so the phase-3 capability path (fence pin)
@@ -367,7 +366,7 @@ defmodule Commonplace.Store.LocalWriteGateTest do
   # test's named non-default store — the intended call surface that the
   # pre-fix defect forced this pin to avoid.
   describe "pin 7: write/execute fence" do
-    test "a player-signed :write-only commit lands (via the local-write gate) but the same signer's capability denies :execute",
+    test "the local-write gate forks on content: a :write-only signer's DATA write lands but their RAW-CODE write is denied (needs :execute)",
          %{store: store} do
       {root_pub, root_priv} = Signing.generate_keypair()
 
@@ -405,12 +404,11 @@ defmodule Commonplace.Store.LocalWriteGateTest do
 
       :ok = CommitStore.store_capability(store, leaf)
 
-      # The local write gate only checks :write — alice's cap grants it, so
-      # BOTH writes land through the REAL gated seam
-      # (`CommitStore.create_commit` → `do_write_commit` →
-      # `local_write_gate_check/2`), including onto the "code" doc (the
-      # gate doesn't know or care what the bytes look like; that's Gate
-      # B's job).
+      # CX-fogy: the local-write gate now FORKS on content (the RCE write-fork,
+      # `Trust.authorized_to_write?`). A DATA write needs only `:write` — alice's
+      # cap grants it, so this lands through the REAL gated seam
+      # (`CommitStore.create_commit` → `do_write_commit` → `local_write_gate_
+      # check/2`).
       text_commit =
         CommitStore.create_commit(
           store,
@@ -428,36 +426,43 @@ defmodule Commonplace.Store.LocalWriteGateTest do
       code_doc = ContentType.insert_text(code_doc, 0, "defmodule Evil do\n  def run, do: :rm_rf\nend")
       code_update = Yelixer.Encoding.encode_update(code_doc)
 
-      code_commit =
+      # The SAME :write-only signer writing RAW CODE is now DENIED at the local-
+      # write gate itself: CX-fogy classifies a raw-code after-state as requiring
+      # `:execute` (Gate-B, node-only), and alice's cap grants only `:write`. This
+      # is the write/execute fence, enforced at the WRITE seam (a strengthening
+      # over the pre-CX-fogy content-blind gate that let raw code land and relied
+      # on Gate-B at read time) — a `:write` cap can never mint raw executable
+      # code. (A valid SANDBOXED safe-verb would instead fork to `:define_verb`;
+      # this raw `defmodule` is neither data nor a safe-verb → `:execute`.)
+      assert {:error, {:trust_rejected, :capability_insufficient}} =
+               CommitStore.create_commit(
+                 store,
+                 code_uuid,
+                 code_update,
+                 nil,
+                 %{kind: :regular, capability_proof: leaf.id},
+                 signing_context: alice_ctx
+               )
+
+      # Nothing landed on the code doc — the gate refused the write outright.
+      assert :none = CommitStore.latest_commit(store, code_uuid)
+
+      # It is an AUTHORITY fence, not a blanket content ban: the NODE / an
+      # execute-authority signer (root, pinned in `trusted_identities`) CAN write
+      # the identical raw code — the trusted-identity path authorizes it
+      # regardless of the content fork.
+      root_code_commit =
         CommitStore.create_commit(
           store,
           code_uuid,
           code_update,
           nil,
-          %{kind: :regular, capability_proof: leaf.id},
-          signing_context: alice_ctx
+          %{kind: :regular},
+          signing_context: root_ctx
         )
 
-      assert %Commit{} = code_commit
-      assert {:ok, _} = CommitStore.get_commit(store, code_commit.id)
-
-      # Gate A / the local-write gate let both land (write-authorized).
-      # Gate B's own verifier call — `Trust.authorized?/5` with
-      # `verb: :execute` — independently denies alice on the SAME
-      # code_commit: the write/execute fence is enforced at a DIFFERENT
-      # seam, never by the local-write gate itself.
-      assert :ok =
-               Trust.authorized?(code_commit, :write, {:doc, code_uuid}, cfg, store)
-
-      assert {:error, :capability_insufficient} =
-               Trust.authorized?(code_commit, :execute, {:doc, code_uuid}, cfg, store)
-
-      # End-to-end: the same fence via the Gate-B walk itself
-      # (`authorized_to_execute?/3`) on this NAMED non-default store —
-      # denied for the capability-insufficiency reason, not crashed
-      # (CX-ziye).
-      assert {:error, {:untrusted_contributor, _, :capability_insufficient}} =
-               Trust.authorized_to_execute?(store, code_uuid, cfg)
+      assert %Commit{} = root_code_commit
+      assert {:ok, _} = CommitStore.get_commit(store, root_code_commit.id)
     end
   end
 
