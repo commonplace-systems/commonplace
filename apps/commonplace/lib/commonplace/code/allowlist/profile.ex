@@ -16,8 +16,8 @@ defmodule Commonplace.Code.Allowlist.Profile do
   ## Fields
 
     * `:domain_module` — the fully-qualified module name (a STRING, e.g.
-      `"Commonplace.MUD.World.Facade"`) whose functions are the domain's
-      least-authority surface. A remote call `<domain_module>.<fun>(<recv>, …)`
+      `"MyApp.Facade"`) whose functions are the domain's least-authority surface.
+      A remote call `<domain_module>.<fun>(<recv>, …)`
       is admitted iff `<recv>` is the literal `:receiver_var` param AND
       `{fun, arity}` is in `:domain_allowed`. NOTHING else about this module is
       special — it's matched by its literal alias, same as any allow-table.
@@ -32,9 +32,9 @@ defmodule Commonplace.Code.Allowlist.Profile do
       carve's safety depends on `:receiver_var` still holding the original handle
       where it is passed as the first argument, so every rebinding site is
       rejected.
-    * `:wrapper_placeholder` — the module name (a STRING, e.g.
-      `"Commonplace.MUD.SafeVerbBody"`, compared against the dotted alias) the
-      stored, wrapped source uses at its single top-level `defmodule` (see
+    * `:wrapper_placeholder` — the module name (a STRING, e.g. `"MyApp.VerbBody"`,
+      compared against the dotted alias) the stored, wrapped source uses at its
+      single top-level `defmodule` (see
       `check_wrapped/2`). A stored doc whose wrapper names a different module is
       rejected as not-substrate-wrapped.
     * `:wrapper_fun` / `:wrapper_params` — the wrapped entry function's name

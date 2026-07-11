@@ -472,6 +472,15 @@ defmodule Commonplace.Green.BursarTest do
       byte_size(commit.update)
     end
 
+    # 500 acquire/release CYCLES = 1000 GenServer ops. Uncontended this runs in
+    # <1s (~0.7ms/op), but each op runs the durable skip-guard (an O(table)
+    # encode+hash to detect no-change), which contends on CubDB I/O — so under a
+    # loaded parallel suite run it can blow the 60s default. Raise the per-test
+    # timeout for a stable check of the ZERO-commit invariant, not a wall-clock
+    # race. This does NOT mask an unboundedness regression: that would show as a
+    # failing SIZE assertion in the "stays O(table)" sibling test (persistence is
+    # bounded per that pin), not merely as a timeout.
+    @tag timeout: 180_000
     test "ephemeral churn writes ZERO new commits (tick-lease / move-lock storm)", ctx do
       {_pid, name} = start_bursar(ctx, nil, sweep_interval: 60_000)
 
