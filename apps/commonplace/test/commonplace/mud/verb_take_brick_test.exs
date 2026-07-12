@@ -208,9 +208,11 @@ defmodule Commonplace.MUD.VerbTakeBrickTest do
 
   # ---- PIN 3: fork-transplant — a deep-copy fork carries NO token ----
 
-  test "PIN 3 (FORK-TRANSPLANT): forking a node-held item yields a fresh uuid with NO token", %{
-    store: store, node_ctx: node_ctx
+  test "PIN 3 (FORK-TRANSPLANT): a fork of a node-held item is NOT node-owned through EITHER the token OR the schema-signer fallback", %{
+    store: store, node_ctx: node_ctx, root: root
   } do
+    room = share!(store, root, mk_room!(store, node_ctx, "Gallery"), node_ctx)
+    inventory = mk_dir!(store, node_ctx)
     item = mk_object!(store, node_ctx, "relic")
     {:ok, node_identity} = NodeIdentity.identity()
     {:ok, _} = BursarClient.acquire(Bursar, item, node_identity, authenticated_as: node_identity, ttl: nil)
@@ -220,9 +222,36 @@ defmodule Commonplace.MUD.VerbTakeBrickTest do
     fork_uuid = Fork.fork_directory(item, store)
     refute fork_uuid == item
 
-    # The token is Bursar-external + uuid-bound → it does NOT follow the copy.
-    # The fork is therefore not node-held → not node-owned → not elevate-takeable.
+    # (A) TOKEN doesn't transplant — the token is Bursar-external + uuid-bound,
+    # so the fresh-uuid copy is unheld.
     assert :available = BursarClient.query(Bursar, fork_uuid)
+
+    # (FALLBACK safety) the :available branch falls back to the schema-signer
+    # check — so the fork must ALSO fail THAT. Fork creates fresh commits with NO
+    # node signing context, so the fork's own schema commit does NOT parse to the
+    # node identity. (node_owned? reads signer_id; the enforce gate guarantees a
+    # stored signer_id is authentic, and a fork carries none.) This is the exact
+    # condition plan #7709 required proven-by-test, not argued.
+    # (mirror node_owned?'s exact logic: :none OR non-node signer → false)
+    fork_node_signed? =
+      case CommitStoreClient.latest_commit(store, fork_uuid) do
+        {:ok, c} -> match?({:ok, ^node_identity, _}, Signing.parse_signer_id(c.signer_id || ""))
+        _ -> false
+      end
+
+    refute fork_node_signed?
+
+    # (B) END-TO-END: taking the fork from a VALID shared-curated room (zone-gate
+    # + node-owned inventory both pass, so the ONLY gate that can refuse is
+    # node_owns_item?) is refused — the fork inherits node-ownership through
+    # NEITHER the token NOR the fallback.
+    add_dir_entry!(store, room, "relic.obj", fork_uuid, node_ctx)
+    {taker_id, _} = fresh()
+
+    assert {:error, :not_takeable_here} =
+             Take.take(fork_uuid, "relic.obj", room, inventory, taker_id, store: store, root_uuid: root)
+
+    assert "relic.obj" in entry_names(store, room)
   end
 
   # ---- PIN 4: mint-site — a doc that merely appears gets NO node-held token ----

@@ -351,11 +351,17 @@ defmodule Commonplace.MUD.Take do
   #     item can never be node-elevate-taken out of someone's hand.
   #   * token :available     -> fall back to the schema-signer check. This ONLY
   #     serves UN-MINTED node items (legacy/test seeds via create_dir_with_meta);
-  #     in the live minted world the token is always held so this never fires.
-  #     It is FORGE-SAFE: it checks THIS node's OWN signature, which a citizen
-  #     cannot forge (no node private key), and a fork/import produces a fresh
-  #     uuid / non-this-node signer, so neither yields a false node-ownership
-  #     (the fork-transplant + mint-site guardrails, plan #7701/#7702).
+  #     in the live minted world the token is always held so this never fires
+  #     (plan #7709 keeps it guarded rather than force-mint every test seed; the
+  #     pure-token cleanup that drops it is CX-qph8). FORGE-SAFE: node_owned?
+  #     READS the stored signer_id (it does not re-verify the sig), but the
+  #     enforce write-gate already VERIFIED that signer_id's signature at write
+  #     time, so a citizen cannot land a commit stamped with the node's id (no
+  #     node key). A fork/import never yields a false node-ownership either: Fork
+  #     mints fresh commits with NO node signing context (so the copy's signer_id
+  #     does not parse to the node — proven in verb_take_brick_test PIN 3), and
+  #     import/raw-write births are non-this-node-signed. See the fork-transplant
+  #     + mint-site guardrails (plan #7701/#7702).
   defp node_owns_item?(item_uuid, node_identity, bursar, store) do
     case BursarClient.query(bursar, item_uuid) do
       {:held, %{holder: ^node_identity}} -> true
