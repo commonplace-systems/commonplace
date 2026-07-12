@@ -124,6 +124,12 @@ defmodule Commonplace.MUD.World.Facade do
   # write_guarded-SKIP ops never see it.
   @elevate_key :cp_facade_owner_authority
 
+  # CX-orlm — how far back to walk a meta child's commit log to find its GENESIS
+  # (earliest authored) signer. Meta docs carry a handful of commits (create +
+  # @desc/@name/state edits); this is an ample ceiling that still reaches the
+  # root, and `commit_log` walks parent-ids past any snapshot to the true root.
+  @genesis_scan_limit 10_000
+
   @enforce_keys [:store, :ctx, :owner_grant, :via_verb]
   defstruct store: nil, ctx: nil, object_uuid: nil, owner_grant: MapSet.new(), via_verb: nil, host_kind: :object
 
@@ -1560,23 +1566,85 @@ defmodule Commonplace.MUD.World.Facade do
   defp object_owner_authority(f, authority_uuids) do
     with {:ok, node_ctx} <- NodeIdentity.signing_context(),
          {:ok, node_identity} <- NodeIdentity.identity(),
-         true <- Enum.all?(authority_uuids, &node_owned?(&1, node_identity, f.store)) do
+         true <- Enum.all?(authority_uuids, &node_owned?(&1, node_identity, f)) do
       {:ok, node_ctx}
     else
       _ -> :none
     end
   end
 
-  # An unresolvable authority target (a `nil` from a missing meta redirect) is
-  # NOT node-owned → forces :none. This is what makes "one-of-N metas missing →
-  # :none" hold: a missing meta resolves to `nil` in the authority list rather
-  # than being dropped (which would let the remaining N-1 vacuously pass).
-  defp node_owned?(uuid, _node_identity, _store) when not is_binary(uuid), do: false
+  # CX-orlm — TWO-AXIS node-ownership of a meta-write authority target (the
+  # host's meta CHILD), replacing the CX-55o3-class FRAGILE latest-commit-signer
+  # proxy. The old proxy flipped the moment an @desc/@name edit (or a co-curator
+  # write) re-chained the meta child non-node-signed → elevation lost → the
+  # curated interactable bricked for every visitor though still curated. Both
+  # axes fail toward UNDER-elevation, so a miss is a functionality glitch (never
+  # a security hole — plan #7739).
+  #
+  #   AXIS 1 (robust node-ownership, fail-CLOSED): the meta child's GENESIS
+  #     signer is the node. Frozen/content-addressed — @desc/@name append LATER
+  #     commits but never rewrite genesis (the meta-child analogue of CX-55o3's
+  #     durable possession token). Unreadable / non-node genesis → NOT owned.
+  #   AXIS 2 (zone-appropriate anti-over-elevation, fail-OPEN): the object is
+  #     NOT positively in a player-owned zone (`Take.player_zone?`, the shared
+  #     `players/` notion — ONE zone-ownership concept). AXIS 1 is the AUTHORITY
+  #     gate (fail-CLOSED — absence of proof ≠ authority); AXIS 2 is an EXCLUSION
+  #     VETO that fires ONLY on POSITIVE placement under `players/` (fail-OPEN —
+  #     absence of a positive player-zone ≠ evidence of player-ownership, plan
+  #     #7743). Today's curated interactables are UNZONED (nil) →
+  #     not-positively-player → allowed; AXIS 1 is what excludes today's player
+  #     objects (invoker genesis). AXIS 2 forward-proofs CX-8yzt (node-genesis
+  #     meta on a player-OWNED ZONED object, non-nil `players/` zone) so a
+  #     visitor can never node-god-write a player's object. Fail-OPEN is safe by
+  #     AXIS-1 primacy and preserves the CX-gjpi contract (unzoned curated
+  #     objects elevate).
+  #
+  # LOAD-BEARING FORWARD-INVARIANT (what makes AXIS 2's nil→allow safe): a
+  # player-owned node-genesis object MUST ALWAYS be zoned under `players/` (never
+  # nil-zoned). It holds today (a player's facade signs invoker-ctx — a player
+  # can't forge a node meta-genesis; CX-8yzt player-owned objects are ZONED). If
+  # CX-8yzt ever mints a node-genesis + UNZONED player object, fail-open-on-nil
+  # becomes a hole and AXIS 2's nil-handling MUST be revisited.
+  #
+  # NOTE-AND-DEFER (plan #7743): distinguish ABSENCE from a WALK-ERROR. nil zone
+  # / no root / structurally-unzoned → fail-OPEN now and forever (definitionally
+  # a curated interactable). A `reachable_contains?` WALK-ERROR on a NON-nil zone
+  # currently also fails open — SAFE while no player-zoned objects exist — but
+  # once CX-8yzt makes them real, a non-nil-zone walk-error is a genuine
+  # ambiguity and MUST fail-CLOSED. Revisit at CX-8yzt (absence→open,
+  # ambiguity→closed).
+  #
+  # An unresolvable target (`nil` from a missing meta redirect) is not binary →
+  # NOT owned → forces :none (the "one-of-N metas missing → :none" laundering
+  # catch, with the empty-set guard above).
+  defp node_owned?(uuid, _node_identity, _f) when not is_binary(uuid), do: false
 
-  defp node_owned?(uuid, node_identity, store) do
-    case CommitStoreClient.latest_commit(store, uuid) do
-      {:ok, commit} ->
-        match?({:ok, ^node_identity, _}, Signing.parse_signer_id(commit.signer_id || ""))
+  defp node_owned?(uuid, node_identity, f) do
+    meta_genesis_node_signed?(uuid, node_identity, f.store) and
+      not Commonplace.MUD.Take.player_zone?(
+        Commonplace.Trust.doc_zone(uuid, f.store),
+        (f.ctx || %{})[:root_uuid],
+        f.store
+      )
+  end
+
+  # AXIS 1 — the meta child's GENESIS (earliest AUTHORED) commit is node-signed.
+  # `commit_log` is latest-first; drop the synthetic `:genesis` DAG root, then
+  # the LAST remaining entry is the create_meta_doc commit — frozen against any
+  # later re-chain. Fail-CLOSED: empty / unreadable / non-node genesis → false.
+  defp meta_genesis_node_signed?(uuid, node_identity, store) do
+    case CommitStoreClient.commit_log(store, uuid, limit: @genesis_scan_limit) do
+      [_ | _] = commits ->
+        commits
+        |> Enum.reject(&match?(%{kind: :genesis}, Map.get(&1, :metadata)))
+        |> List.last()
+        |> case do
+          %{signer_id: signer_id} ->
+            match?({:ok, ^node_identity, _}, Signing.parse_signer_id(signer_id || ""))
+
+          _ ->
+            false
+        end
 
       _ ->
         false
