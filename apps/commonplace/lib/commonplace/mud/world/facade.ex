@@ -912,21 +912,12 @@ defmodule Commonplace.MUD.World.Facade do
             with :ok <- charge_lifecycle_op() do
               with_owner_authority(node_ctx, fn ->
                 # Under node elevation: create_object_in signs the mint + inventory
-                # entry via write_opts/1 (reads @elevate_key), and the zone stamp is
-                # a SURGICAL merge (set_meta), never a typed-struct re-encode that
-                # would drop `zone` (reference: CX-cl65). INVOKER holds the token.
-                with {:ok, new_uuid} <- create_object_in(f, inv, name, invoker_holder(f)),
-                     :ok <-
-                       World.set_meta(
-                         new_uuid,
-                         Schemas.object_filename(),
-                         "zone",
-                         zone,
-                         f.store,
-                         write_opts(f)
-                       ) do
-                  {:ok, new_uuid}
-                end
+                # entry via write_opts/1 (reads @elevate_key). The players/-zone is
+                # baked into the GENESIS meta (`zone:`), so the reward is node-genesis
+                # AND player-zoned in ONE atomic commit — no unzoned window, so a
+                # partial write can never leave a live unzoned node-genesis object
+                # (the forge). INVOKER holds the token.
+                create_object_in(f, inv, name, invoker_holder(f), zone: zone)
               end)
             end
 
@@ -2174,13 +2165,22 @@ defmodule Commonplace.MUD.World.Facade do
   # cap HERE so every creation path is bounded uniformly. The AUTHORITY
   # check (write_guarded / the invoker-own exception) is the CALLER's
   # responsibility — this helper only creates + links + counts.
-  defp create_object_in(f, parent_uuid, name, holder_identity) do
+  defp create_object_in(f, parent_uuid, name, holder_identity, opts \\ []) do
     case Schemas.load_dir_schema(parent_uuid, f.store) do
       {:ok, schema} ->
         if length(Schema.list_entries(schema)) >= @container_max_entries do
           {:error, :container_full}
         else
-          obj_json = Schemas.encode_object(%Object{name: name, description: "(no description yet)"})
+          # CX-coo8 — an optional `:zone` is baked into the GENESIS meta JSON
+          # HERE (not a second `set_meta` commit) so a zoned mint (`grant/2`) is
+          # ATOMIC: the object is node-genesis AND player-zoned in the SAME
+          # single node-signed commit — there is no unzoned window, so a partial
+          # write can NEVER leave a live unzoned node-genesis object (the forge
+          # `node_owned?` would read TRUE on). Merged into the RAW encoded map,
+          # not a typed-struct round-trip (the `%Object{}` struct has no `zone`
+          # field and would drop it — CX-cl65). A nil zone → unzoned, exactly as
+          # before (spawn/create_child/give_to_actor are unchanged).
+          obj_json = encode_object_json(name, opts[:zone])
 
           with {:ok, new_uuid} <-
                  Schemas.create_dir_with_meta(Schemas.object_filename(), obj_json, f.store, write_opts(f)),
@@ -2201,6 +2201,22 @@ defmodule Commonplace.MUD.World.Facade do
 
       {:error, _} = err ->
         err
+    end
+  end
+
+  # CX-coo8 — the object's genesis meta JSON, optionally carrying a `zone`
+  # stamp baked in at creation (see `create_object_in`'s atomic-zoned-mint note).
+  # Merges `zone` into the RAW encoded map so the typed `%Object{}` round-trip
+  # can't drop it (CX-cl65). A nil/blank zone yields the plain unzoned encoding.
+  defp encode_object_json(name, zone) do
+    base = Schemas.encode_object(%Object{name: name, description: "(no description yet)"})
+
+    case zone do
+      z when is_binary(z) and z != "" ->
+        base |> Jason.decode!() |> Map.put("zone", z) |> Jason.encode!()
+
+      _ ->
+        base
     end
   end
 

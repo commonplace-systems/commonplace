@@ -378,4 +378,27 @@ defmodule Commonplace.MUD.CxCoo8GrantRewardTest do
     assert zone == player_dir
     assert Take.player_zone?(zone, root, store) == true
   end
+
+  # ---- PIN 6: zoned AT GENESIS — atomic, no unzoned partial-write window ----
+
+  test "PIN 6: the reward is zoned in its SINGLE authored (genesis) commit — no unzoned-forge window",
+       %{store: store, node_host: node_host, player_dir: player_dir} = ctx do
+    facade = grant_facade(grant_ctx(ctx), node_host, store)
+
+    assert {:ok, reward} = Facade.grant(facade, "gold ingot")
+
+    # The reward's meta child carries `zone` in its SINGLE authored (mint)
+    # commit — there is NO separate later stamp commit. So the mint and the
+    # zoning are ONE atomic node-signed write: a partial write / crash can never
+    # land the mint WITHOUT the zone, i.e. can never leave a live unzoned
+    # node-genesis object (node_owned?=TRUE = the forge the design rules out).
+    {:ok, child} = World.meta_doc_uuid(reward, Schemas.object_filename(), store)
+
+    authored =
+      CommitStoreClient.commit_log(store, child, limit: 10_000)
+      |> Enum.reject(&match?(%{kind: :genesis}, Map.get(&1, :metadata)))
+
+    assert length(authored) == 1
+    assert reward_zone(store, reward) == player_dir
+  end
 end
