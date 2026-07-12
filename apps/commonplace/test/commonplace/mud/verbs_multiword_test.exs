@@ -236,8 +236,11 @@ defmodule Commonplace.MUD.VerbsMultiwordTest do
   test "single-word names/targets still work (no regression)", ctx do
     alice = start_player("alice", ctx)
 
-    # @desc/@name target entries in the current ROOM (not inventory), so
-    # exercise them before taking the cloak.
+    # CX-df64: @desc/@name now target entries in BOTH the inventory and
+    # the current room, so ordering (desc-then-take vs take-then-desc)
+    # no longer matters — kept doing desc-before-take here as the
+    # pre-existing no-regression shape; the carried-object case is
+    # covered separately below.
     send_input(alice, "@desc cloak A freshly re-described cloak")
     desc_out = drain("alice") |> Enum.join("\n")
     assert desc_out =~ "Updated cloak description."
@@ -245,5 +248,51 @@ defmodule Commonplace.MUD.VerbsMultiwordTest do
     send_input(alice, "take cloak")
     take_out = drain("alice") |> Enum.join("\n")
     assert take_out =~ "You take cloak"
+  end
+
+  # CX-df64 — repro: @desc on a CARRIED object (already in inventory, not
+  # in the room) previously fell through to the generic "Try: @desc
+  # <target> <text>" usage hint, because `split_target_and_rest`/
+  # `update_meta` (shared by @desc/@name) only searched the current room
+  # — @verb's own target resolution already searched inventory too, so
+  # this was a real @desc-specific gap, not a general design limit. Fix:
+  # both helpers now search [inventory, room], mirroring
+  # `resolve_target_object`'s precedence.
+  test "@desc resolves an object the player is CARRYING, not just one in the room (CX-df64)", ctx do
+    alice = start_player("alice", ctx)
+
+    send_input(alice, "@create object glowbug")
+    drain("alice")
+    send_input(alice, "take glowbug")
+    drain("alice")
+
+    send_input(alice, "@desc glowbug A tiny insect that pulses with soft green light.")
+    desc_out = drain("alice") |> Enum.join("\n")
+    refute desc_out =~ "Try: @desc"
+    assert desc_out =~ "Updated glowbug description."
+
+    send_input(alice, "look glowbug")
+    look_out = drain("alice") |> Enum.join("\n")
+    assert look_out =~ "A tiny insect that pulses with soft green light."
+  end
+
+  # CX-df64 — @name shares the same `update_meta` helper as @desc; pin the
+  # same fix for the renamed-while-carried path.
+  test "@name resolves an object the player is CARRYING (CX-df64)", ctx do
+    alice = start_player("alice", ctx)
+
+    send_input(alice, "@create object glowbug")
+    drain("alice")
+    send_input(alice, "take glowbug")
+    drain("alice")
+
+    send_input(alice, "@name glowbug Firefly")
+    name_out = drain("alice") |> Enum.join("\n")
+    refute name_out =~ "Try: @name"
+    assert name_out =~ "Updated glowbug name."
+
+    send_input(alice, "inventory")
+    inv_out = drain("alice") |> Enum.join("\n")
+    assert inv_out =~ "Firefly"
   end
 end

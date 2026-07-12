@@ -2426,7 +2426,14 @@ defmodule Commonplace.MUD.Verbs do
         end
 
       true ->
-        case World.find_entry_by_name(ctx.current_room_uuid, target, ctx.store) do
+        # CX-df64 — search the actor's INVENTORY too, not just the room:
+        # `@desc`/`@name`/`@alias` must reach an object you're CARRYING,
+        # not only one lying in the room (mirrors `resolve_target_object`'s
+        # [inventory, room] precedence and the `split_target_and_rest` fix
+        # above — the target label this function receives may itself have
+        # resolved via inventory, so re-resolving room-only here would
+        # silently re-lose it).
+        case find_entry_in_dirs(target, [ctx.inventory_uuid, ctx.current_room_uuid], ctx.store) do
           {:ok, entry} ->
             filename =
               cond do
@@ -2633,13 +2640,24 @@ defmodule Commonplace.MUD.Verbs do
   # least one argv word left over for the text/new-name/new-alias that
   # follows it. "here"/"room" stay single-word literals (never part of a
   # greedy phrase match) so they keep addressing the room itself.
+  #
+  # CX-df64: also search the actor's INVENTORY (same [inventory, room]
+  # precedence `find_verb_in_scope`'s `resolve_target_object` and the
+  # other `greedy_match_entry([ctx.inventory_uuid, ctx.current_room_uuid],
+  # ...)` call sites use, and the same set `@verb`'s target resolution
+  # already searches via its own two-step room-then-inventory fallback in
+  # `do_verb_edit_resolved/3`). Previously this only searched the room, so
+  # `@desc <carried-object> <text>` on an object you own but are HOLDING
+  # (not yet dropped) fell through to the generic "Try: @desc <target>
+  # <text>" usage hint as if the syntax itself were wrong, rather than
+  # resolving (or refusing) the target.
   defp split_target_and_rest(argv, ctx) do
     case argv do
       [kw | rest] when kw in ["here", "room"] and rest != [] ->
         {:ok, kw, Enum.join(rest, " ")}
 
       _ ->
-        case greedy_match_entry([ctx.current_room_uuid], argv, ctx.store, min_remainder: 1) do
+        case greedy_match_entry([ctx.inventory_uuid, ctx.current_room_uuid], argv, ctx.store, min_remainder: 1) do
           {:ok, _entry, phrase, remainder} -> {:ok, phrase, Enum.join(remainder, " ")}
           :not_found -> :not_found
         end
