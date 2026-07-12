@@ -26,9 +26,28 @@ defmodule Commonplace.MUD.PlayerSession do
       :not_found}` (no keypair minted for this identity) falls back to
       the anonymous/unsigned behavior — never crashes the session.
 
-  Neither opt given → `signing_context: nil`, and every write this
-  session's verbs make stays exactly as unsigned as it is today
-  (permissive workspaces must keep working logged-out).
+  Neither opt given → under `:enforce` the node provisions a server-generated
+  EPHEMERAL identity + `{:presence}` cert (a presence-only visitor — CX-sfj8);
+  under permissive/off, `signing_context: nil` and every write stays as unsigned
+  as it is today (permissive workspaces must keep working logged-out).
+
+  ### 🔑 STANDING CRUX FORWARD-GUARD (CX-sfj8, plan #7820)
+
+  `player_identity_uuid` is honored by resolving the node-held key
+  (`AgentKeys` signs on the user's behalf — the web user does NOT hold their own
+  private key), so the chokepoint MUST honor a node-backed uuid and CANNOT demand
+  proof-of-possession without breaking the web model. Therefore the impersonation
+  defense is NOT inside `provision_session_creds` — it is at the ENTRYPOINT:
+
+  > **INVARIANT: no entrypoint may pass a CLIENT-SUPPLIED `player_identity_uuid`
+  > to this session. It MUST be SERVER-RESOLVED from authenticated session state.**
+
+  Audited entrypoints: the web door resolves from the authenticated `live_session`
+  (never client params); bots resolve on the serve via `register`. The local-stdio
+  MCP `name` path is CX-3ab7 (operator-trust today; PROMOTES to a must-fix blocker
+  if MCP is ever exposed on a remote transport). **Any NEW session entrypoint MUST
+  be audited for where its identity originates before it ships** — a
+  client-settable `player_identity_uuid` is total impersonation.
 
   **Hand model (FLAG):** unlike the browser door's `WriterHand.for_session/2`
   (which needs a nonce persisted across LiveView remounts), a
