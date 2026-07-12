@@ -23,7 +23,9 @@ defmodule Commonplace.MUD.CxSfj8PresenceCertReproTest do
   alias Commonplace.Crypto.{NodeIdentity, Signing, SigningContext}
   alias Commonplace.MUD.{Citizenship, Schemas}
   alias Commonplace.Presence
+  alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.Schema
+  alias Yelixer.Encoding
 
   setup do
     dir = Path.join(System.tmp_dir!(), "cp_sfj8_#{:rand.uniform(1_000_000_000)}")
@@ -103,5 +105,55 @@ defmodule Commonplace.MUD.CxSfj8PresenceCertReproTest do
     removed = Presence.remove(fname, room, store, signing_context: ctx, cert_cids: cids)
     refute match?({:error, _}, removed), "certified presence remove must not be trust-rejected"
     refute present?(store, room, fname), "certified presence remove must retract (no ghost)"
+  end
+
+  # PIN 2 (LEAST-PRIVILEGE) — the {:presence} cert grants ONLY presence writes.
+  test "PIN 2 (LEAST-PRIVILEGE): a session's presence cert authorizes presence, NOTHING else",
+       %{store: store, room: room} do
+    {id, pub, ctx} = session_identity()
+    cids = Citizenship.issue_presence_starter_cert(id, pub, store)
+    assert cids != []
+
+    # A NON-presence write (mutate the curated room's OWN schema — add an entry)
+    # signed with the presence-only creds → refused. {:presence} grants no zone
+    # / structural / other-doc write.
+    {:ok, schema} = Schemas.load_dir_schema(room, store)
+    update = Encoding.encode_update(Schema.add_directory(schema, "loot.obj", UUID.uuid4()))
+
+    result =
+      CommitStoreClient.create_chained_commit(store, room, update, %{kind: :regular},
+        signing_context: ctx,
+        cert_cids: cids
+      )
+
+    assert match?({:error, {:trust_rejected, _}}, result),
+           "presence-only cert must NOT authorize a non-presence write: #{inspect(result)}"
+  end
+
+  # PIN 3 (CROSS-SESSION SPOOF) — the carve (bound_identity==signer) stops A from
+  # retracting B's presence. Closes the quit-retraction-forgery vector.
+  test "PIN 3 (CROSS-SESSION SPOOF): session A cannot retract session B's presence",
+       %{store: store, room: room} do
+    {id_b, pub_b, ctx_b} = session_identity()
+    cids_b = Citizenship.issue_presence_starter_cert(id_b, pub_b, store)
+    fname_b = Presence.filename("victim", :usr)
+
+    # B appears (its own presence, bound_identity == B).
+    assert {:ok, _} = Presence.create("victim", :usr, room, store, signing_context: ctx_b, cert_cids: cids_b)
+    assert present?(store, room, fname_b)
+
+    # A (a DIFFERENT ephemeral identity + its own presence cert) tries to retract
+    # B's presence → the carve refuses (A's {:presence,A} cert can't touch a doc
+    # whose bound_identity is B).
+    {id_a, pub_a, ctx_a} = session_identity()
+    cids_a = Citizenship.issue_presence_starter_cert(id_a, pub_a, store)
+    refute id_a == id_b
+
+    result = Presence.remove(fname_b, room, store, signing_context: ctx_a, cert_cids: cids_a)
+
+    assert match?({:error, {:trust_rejected, _}}, result),
+           "A must NOT be able to retract B's presence: #{inspect(result)}"
+
+    assert present?(store, room, fname_b), "B's presence must survive A's spoofed retract"
   end
 end
