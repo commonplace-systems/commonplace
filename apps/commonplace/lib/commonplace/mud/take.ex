@@ -120,7 +120,18 @@ defmodule Commonplace.MUD.Take do
   defp elevated_take(item_uuid, name, room_uuid, inventory_uuid, taker_identity, store, bursar, opts) do
     with {:ok, node_ctx} <- NodeIdentity.signing_context(),
          {:ok, node_identity} <- NodeIdentity.identity(),
-         true <- node_owned?(item_uuid, node_identity, store),
+         # CX-55o3 — judge the ITEM's node-ownership by the ACTUAL ownership
+         # RECORD (the node-held possession token), NOT the fragile
+         # schema-latest-signer proxy. The proxy flips FALSE the moment ANYTHING
+         # re-chains the object dir schema — @verb (the verbs/ entry-add is
+         # author-signed), @desc, presence — bricking take of a verb-bearing
+         # object (same class as the CX-ix9n presence re-chain). The token is
+         # immune: mint-at-create makes a @created/curated object node-held, and
+         # verb-authoring/@desc NEVER touch the token. See `node_owns_item?/4`.
+         true <- node_owns_item?(item_uuid, node_identity, bursar, store),
+         # The dest inventory is a token-LESS dir; its node-ownership stays the
+         # schema-signer check (node-elevated moves always node-sign it, so it
+         # does not spuriously flip — dirs are not verb/@desc re-chained).
          true <- node_owned?(inventory_uuid, node_identity, store),
          true <- takeable_from_here?(room_uuid, inventory_uuid, opts, store) do
       do_take(item_uuid, name, room_uuid, inventory_uuid, taker_identity, node_ctx, node_identity, store, bursar, opts)
@@ -327,6 +338,36 @@ defmodule Commonplace.MUD.Take do
   # `:fixed`.
   defp item_fixed?(item_uuid, store) do
     match?({:ok, %Schemas.Object{fixed: true}}, Schemas.load_object(item_uuid, store))
+  end
+
+  # CX-55o3 — the ITEM node-ownership oracle, keyed on the POSSESSION TOKEN (the
+  # durable, identity-bound ownership RECORD) instead of the schema-latest-signer
+  # PROXY. Robust to schema re-chaining by construction (verb-authoring, @desc,
+  # presence re-chain the schema but NEVER the token):
+  #
+  #   * token node-held      -> node-owned (the live case: mint-at-create makes
+  #     every @created/curated object node-held; @verb/@desc can't flip it).
+  #   * token held-by-OTHER  -> NOT node-owned. THE ANTI-THEFT PIN: a player-held
+  #     item can never be node-elevate-taken out of someone's hand.
+  #   * token :available     -> fall back to the schema-signer check. This ONLY
+  #     serves UN-MINTED node items (legacy/test seeds via create_dir_with_meta);
+  #     in the live minted world the token is always held so this never fires
+  #     (plan #7709 keeps it guarded rather than force-mint every test seed; the
+  #     pure-token cleanup that drops it is CX-qph8). FORGE-SAFE: node_owned?
+  #     READS the stored signer_id (it does not re-verify the sig), but the
+  #     enforce write-gate already VERIFIED that signer_id's signature at write
+  #     time, so a citizen cannot land a commit stamped with the node's id (no
+  #     node key). A fork/import never yields a false node-ownership either: Fork
+  #     mints fresh commits with NO node signing context (so the copy's signer_id
+  #     does not parse to the node — proven in verb_take_brick_test PIN 3), and
+  #     import/raw-write births are non-this-node-signed. See the fork-transplant
+  #     + mint-site guardrails (plan #7701/#7702).
+  defp node_owns_item?(item_uuid, node_identity, bursar, store) do
+    case BursarClient.query(bursar, item_uuid) do
+      {:held, %{holder: ^node_identity}} -> true
+      {:held, %{holder: _other}} -> false
+      _ -> node_owned?(item_uuid, node_identity, store)
+    end
   end
 
   # Mirrors `Commonplace.MUD.World.Facade.node_owned?/3` — a doc is
