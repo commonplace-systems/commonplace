@@ -361,6 +361,14 @@ defmodule Commonplace.MUD.Take do
 
       {:held, %{holder: _other}} ->
         {:error, :item_unavailable}
+
+      # CX-sfj8/incident: a DOWN or unreachable Bursar (`{:error,
+      # :bursar_unavailable}`, or any other query error) must surface a GRACEFUL
+      # refusal — never `case_clause`-CRASH the player session. Without this
+      # clause a Bursar outage took the whole session down mid-`take` instead of
+      # a "you can't take that right now" reply.
+      {:error, _reason} ->
+        {:error, :item_unavailable}
     end
   end
 

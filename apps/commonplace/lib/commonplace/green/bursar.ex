@@ -165,7 +165,15 @@ defmodule Commonplace.Green.Bursar do
     # — persists nothing (the fresh snapshot would be byte-identical). This
     # is what makes ephemeral churn stop touching the store entirely, not
     # merely stop bloating a single doc. `nil` until the first load/persist.
-    persisted_content: nil
+    persisted_content: nil,
+    # CX-sfj8/incident (2026-07-12): the node signing context, resolved once at
+    # init. Under `local_write_gate: :enforce` the Bursar's OWN writes to
+    # `__bursar.json` / `__bursar.log` were UNSIGNED → `{:trust_rejected,
+    # :unsigned}` → a retry-loop of denials + durable tokens never persisting.
+    # The Bursar is the serve's single-owner authority, so it signs as the NODE
+    # (auto-trusted regardless of host). `nil` in embedders/tests with no node
+    # identity → falls back to the prior unsigned best-effort behavior.
+    node_ctx: nil
   ]
 
   # --- Client API ---
@@ -322,8 +330,15 @@ defmodule Commonplace.Green.Bursar do
     # Subscribe to magenta commands
     Magenta.subscribe(@magenta_topic)
 
-    # Load or create state
-    state = %__MODULE__{root_uuid: root_uuid, store: store}
+    # Load or create state. Resolve the node signing context BEFORE load_state so
+    # a first-boot seed (create_state_doc / create_log_doc) is signed under enforce.
+    node_ctx =
+      case Commonplace.Crypto.NodeIdentity.signing_context() do
+        {:ok, ctx} -> ctx
+        _ -> nil
+      end
+
+    state = %__MODULE__{root_uuid: root_uuid, store: store, node_ctx: node_ctx}
     state = load_state(state)
 
     # Expiry detection lags a dead lease by up to one sweep; embedders
@@ -790,10 +805,15 @@ defmodule Commonplace.Green.Bursar do
     doc = ContentType.insert_text(doc, 0, new_content)
 
     update = Yelixer.Encoding.encode_update(doc)
-    CommitStoreClient.create_chained_commit(state.store, state.state_uuid, update)
+    CommitStoreClient.create_chained_commit(state.store, state.state_uuid, update, %{}, sign_opts(state))
 
     %{state | persisted_content: new_content}
   end
+
+  # CX-sfj8/incident: sign the Bursar's own durable writes as the NODE under
+  # enforce (`[]` when no node identity → prior unsigned best-effort).
+  defp sign_opts(%__MODULE__{node_ctx: nil}), do: []
+  defp sign_opts(%__MODULE__{node_ctx: ctx}), do: [signing_context: ctx]
 
   defp log_event(state, event_type, path, holder, extra \\ %{}) do
     event = Map.merge(extra, %{
@@ -850,12 +870,12 @@ defmodule Commonplace.Green.Bursar do
     doc = ContentType.create(doc, :text, @state_doc)
     doc = ContentType.insert_text(doc, 0, "{}")
     update = Yelixer.Encoding.encode_update(doc)
-    CommitStoreClient.create_commit(state.store, uuid, update, nil)
+    CommitStoreClient.create_commit(state.store, uuid, update, nil, %{}, sign_opts(state))
 
     # Add to schema
     schema = Schema.add_file(schema, @state_doc, uuid)
     schema_update = Yelixer.Encoding.encode_update(schema)
-    CommitStoreClient.create_chained_commit(state.store, state.root_uuid, schema_update)
+    CommitStoreClient.create_chained_commit(state.store, state.root_uuid, schema_update, %{}, sign_opts(state))
 
     uuid
   end
@@ -869,7 +889,7 @@ defmodule Commonplace.Green.Bursar do
     schema = load_root_schema(state)
     schema = Schema.add_file(schema, @log_doc, uuid)
     schema_update = Yelixer.Encoding.encode_update(schema)
-    CommitStoreClient.create_chained_commit(state.store, state.root_uuid, schema_update)
+    CommitStoreClient.create_chained_commit(state.store, state.root_uuid, schema_update, %{}, sign_opts(state))
 
     uuid
   end
