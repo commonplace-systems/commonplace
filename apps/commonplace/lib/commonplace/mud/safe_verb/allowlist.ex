@@ -65,6 +65,11 @@ defmodule Commonplace.MUD.SafeVerb.Allowlist do
                     # recipient). Bounded (per-container M=128, per-invocation N=8).
                     {:spawn, 2},
                     {:give_to_actor, 2},
+                    # CX-coo8 — WORLD REWARD GRANT (plan #7895): node-signed mint into
+                    # the invoker's inventory, gated by object_owner_authority(host)→node
+                    # (anti-farm: only a node-owned/curated host fires) + stamped the
+                    # recipient's players/-zone (anti-forge: node_owned?(reward)=false).
+                    {:grant, 2},
                     {:consume, 1},
                     {:destroy_child, 2},
                     # CX-nyj9 — configure a FRESHLY-MINTED object (plan #6028/#6032).
