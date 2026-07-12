@@ -853,6 +853,90 @@ defmodule Commonplace.MUD.World.Facade do
   end
 
   @doc """
+  CX-coo8 — WORLD REWARD GRANT: mint a new object `name` into the INVOKER's own
+  inventory as an authoritative "the world grants you this" reward. Distinct from
+  `give_to_actor/2` (which is invoker-signed and so is DENIED under enforce for a
+  player who holds no general inventory-write authority — the coo8 silent-failure);
+  `grant` is NODE-signed so the reward actually lands, and STAMPED into the
+  recipient's `players/`-zone so it is genuinely the player's item.
+
+  TWO ORTHOGONAL GUARDS (plan #7887 + #7888 + #7894), both load-bearing:
+
+    * ANTI-FORGE (zone-stamp): a node-genesis object with no zone would read
+      `node_owned? = node_genesis(T) ∧ ¬player_zone?(nil→false via AXIS-2
+      fail-open) = TRUE` — a forge (curated-in-hand). Stamping the recipient's
+      `players/`-zone forces `player_zone?(doc_zone)==TRUE` → `node_owned?==FALSE`,
+      structurally: the reward is the PLAYER's, never curated. FAIL-CLOSED: if
+      there is no valid recipient `players/`-zone to stamp (nil inventory / nil
+      `player_dir` / `player_dir` not `players/`-reachable — an ephemeral or any
+      future zoneless session), REFUSE with no mint. Minting an UNZONED
+      node-genesis object would reopen the forge; never do it.
+
+    * ANTI-FARM (host-authority gate): node-sign ONLY when the CALLING VERB'S
+      HOST is node-owned (definer's-rights — a curated host like the Warded
+      Vault), the SAME `object_owner_authority` gate `spawn` uses, keyed on the
+      host's node-GENESIS (write-authority axis), NOT possession (a mere holder
+      must not grant — CX-e8xj). A citizen's own (non-node-owned) host resolves
+      `:none` → REFUSE, so a citizen can't author a `gimme` verb to node-mint
+      free items into their own hand (`give_to_actor`'s under-enforce denial was
+      the load-bearing anti-farm this preserves in BOTH enforce and permissive).
+
+  The INVOKER holds the possession token (two axes: node AUTHORSHIP "the world
+  authored it" + player POSSESSION "you hold it" — CX-e8xj/CX-55o3). Bounded
+  (lifecycle cap).
+  """
+  @spec grant(t(), String.t()) :: {:ok, String.t()} | {:error, term()}
+  def grant(%__MODULE__{} = f, name) when is_binary(name) do
+    f = unwrap(f)
+    inv = f.ctx[:inventory_uuid]
+    zone = f.ctx[:player_dir_uuid]
+    root = f.ctx[:root_uuid]
+
+    cond do
+      # ANTI-FORGE fail-closed: no valid recipient players/-zone → never mint an
+      # unzoned node-genesis object (that would flip node_owned? back to TRUE).
+      not is_binary(inv) ->
+        {:error, :no_inventory}
+
+      not is_binary(zone) ->
+        {:error, :no_recipient_zone}
+
+      not Commonplace.MUD.Take.player_zone?(zone, root, f.store) ->
+        {:error, :recipient_not_zoned}
+
+      true ->
+        # ANTI-FARM host-gate: elevate to node ONLY for a node-owned (curated)
+        # host; a citizen's own host → :none → REFUSE (no free node-mints).
+        case object_owner_authority(f, meta_authority(f)) do
+          {:ok, node_ctx} ->
+            with :ok <- charge_lifecycle_op() do
+              with_owner_authority(node_ctx, fn ->
+                # Under node elevation: create_object_in signs the mint + inventory
+                # entry via write_opts/1 (reads @elevate_key), and the zone stamp is
+                # a SURGICAL merge (set_meta), never a typed-struct re-encode that
+                # would drop `zone` (reference: CX-cl65). INVOKER holds the token.
+                with {:ok, new_uuid} <- create_object_in(f, inv, name, invoker_holder(f)),
+                     :ok <-
+                       World.set_meta(
+                         new_uuid,
+                         Schemas.object_filename(),
+                         "zone",
+                         zone,
+                         f.store,
+                         write_opts(f)
+                       ) do
+                  {:ok, new_uuid}
+                end
+              end)
+            end
+
+          :none ->
+            {:error, :not_grantable_host}
+        end
+    end
+  end
+
+  @doc """
   Destroy (UNLINK — not hard-delete; the doc stays in history, the entry
   drops, GC-reachability handles liveness) the invoker's BOUND object.
   Locates the object's parent container (inventory first, then the current
