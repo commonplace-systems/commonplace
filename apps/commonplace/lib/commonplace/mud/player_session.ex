@@ -61,7 +61,7 @@ defmodule Commonplace.MUD.PlayerSession do
 
   alias Commonplace.Crypto.{AgentKeys, Signing}
   alias Commonplace.MUD.{EngineModule, Parser, Schemas, SignedWrite, Topics, Verbs, VerbSource, World}
-  alias Commonplace.MUD.Schemas.{Player, Room}
+  alias Commonplace.MUD.Schemas.{Object, Player, Room}
   alias Commonplace.Presence
   alias Commonplace.Store.{CommitStoreClient, SecretStore}
   alias Commonplace.Tree.{DocBuilder, Schema}
@@ -225,8 +225,11 @@ defmodule Commonplace.MUD.PlayerSession do
       {:noreply, state}
     else
       ctx = build_ctx(state, cmd)
-      result = Verbs.dispatch(cmd, ctx)
-      handle_verb_result(result, state)
+
+      case Verbs.dispatch(cmd, ctx) do
+        :unhandled -> handle_unhandled(cmd, ctx, state)
+        result -> handle_verb_result(result, state)
+      end
     end
   end
 
@@ -406,11 +409,6 @@ defmodule Commonplace.MUD.PlayerSession do
 
   defp handle_verb_result(:ok, state), do: {:noreply, state}
 
-  defp handle_verb_result(:unhandled, state) do
-    state.output_fn.("I don't understand that.")
-    {:noreply, state}
-  end
-
   defp handle_verb_result({:reply, :quit}, state) do
     state.output_fn.("Goodbye.")
     if pid = state.owner_pid, do: send(pid, {:player_session_quit, self()})
@@ -487,6 +485,54 @@ defmodule Commonplace.MUD.PlayerSession do
     end
 
     {:noreply, %{state | mode: {:editor, Map.put(ed, :lines, [])}}}
+  end
+
+  # CX-wnof — `Verbs.dispatch` returning bare `:unhandled` is a deliberate
+  # trust-boundary contract (see `verbs_safe_dispatch_test.exs` pins 4/6):
+  # it never says WHY a verb didn't run — a target with no verb defined on
+  # it and a target whose verb was refused/never-persisted at authoring
+  # both collapse to the same opaque `:unhandled`, so no authorization
+  # reasoning ever leaks through the message. This is a pure DISPLAY layer
+  # on top of that unchanged contract: if the player's typed target
+  # resolves to a real, visible object (the SAME read-only substring
+  # matcher `take`/`give`/`unlock` dispatch itself uses — nothing the
+  # player couldn't already see via `look`), say "You can't <verb>
+  # <name>." instead of the blanket "I don't understand that." A newcomer
+  # typing `unlock vault` at a container named "Warded Vault" (partial-
+  # name match) now gets a targeted reply instead of a raw parser error,
+  # without changing what ran or widening what the message reveals.
+  defp handle_unhandled(%Parser.Command{verb: verb, target: target}, ctx, state) when is_binary(target) do
+    case resolved_target_display_name(target, ctx, state) do
+      {:ok, name} -> state.output_fn.("You can't #{verb} #{name}.")
+      :error -> state.output_fn.("I don't understand that.")
+    end
+
+    {:noreply, state}
+  end
+
+  defp handle_unhandled(_cmd, _ctx, state) do
+    state.output_fn.("I don't understand that.")
+    {:noreply, state}
+  end
+
+  defp resolved_target_display_name(target, ctx, state) do
+    case World.find_entry_by_name(ctx.inventory_uuid, target, state.store) do
+      {:ok, entry} ->
+        {:ok, object_display_name(entry, state.store)}
+
+      :error ->
+        case World.find_entry_by_name(ctx.current_room_uuid, target, state.store) do
+          {:ok, entry} -> {:ok, object_display_name(entry, state.store)}
+          :error -> :error
+        end
+    end
+  end
+
+  defp object_display_name(entry, store) do
+    case Schemas.load_object(entry.node_id, store) do
+      {:ok, %Object{name: name}} when is_binary(name) and name != "" -> name
+      _ -> entry.name
+    end
   end
 
   ## Rendering

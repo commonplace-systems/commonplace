@@ -567,6 +567,73 @@ defmodule Commonplace.MUD.OutputTest do
       PlayerSession.stop(alice)
     end
 
+    # CX-wnof — a newcomer's natural `unlock vault` against a container
+    # named "Warded Vault" (only a PARTIAL match on the typed word) must
+    # not die as the generic, misleading "I don't understand that." — the
+    # game DID resolve "vault" to the container (same substring matcher
+    # `take`/`give` use, verified below by the successful `unlock` once a
+    # verb exists), it just has nothing called "unlock" on it yet in the
+    # miss case. That should read as a targeted "you can't unlock <name>",
+    # not a raw parser error.
+    test "unlock resolves a container by PARTIAL name, and a miss gets a targeted error, not a raw parser error (CX-wnof)",
+         ctx do
+      alice = start_player("alice", ctx)
+      drain("alice")
+      send_input(alice, "east")
+      drain("alice")
+
+      send_input(alice, "@create container Warded Vault")
+      drain("alice")
+      send_input(alice, "@create object coin")
+      drain("alice")
+      send_input(alice, "put coin in Warded Vault")
+      drain("alice")
+
+      {:ok, entry} = Commonplace.MUD.World.find_entry_by_name(clearing_uuid(ctx), "vault", ctx.store)
+      dir = entry.node_id
+
+      :ok =
+        VerbSource.save_safe_verb(
+          dir,
+          "setlock",
+          ~s|Commonplace.MUD.World.Facade.put_state(world, "locked", true)|,
+          [dir],
+          ctx.store
+        )
+
+      send_input(alice, "setlock vault")
+      drain("alice")
+
+      # No "unlock" verb defined yet — the miss case. Must be a targeted
+      # error naming the RESOLVED object, never the blanket parser error.
+      send_input(alice, "unlock vault")
+      miss_out = drain("alice") |> Enum.join("\n")
+      refute miss_out =~ "don't understand"
+      assert miss_out =~ "can't unlock Warded Vault"
+
+      # Now author the "unlock" verb (the key composition, mirroring the
+      # test above) and confirm the SAME partial-name target ("vault")
+      # resolves and fires it — partial-name resolution was never broken,
+      # only the miss-case error was.
+      :ok =
+        VerbSource.save_safe_verb(
+          dir,
+          "unlock",
+          ~s|Commonplace.MUD.World.Facade.put_state(world, "locked", false)|,
+          [dir],
+          ctx.store
+        )
+
+      send_input(alice, "unlock vault")
+      drain("alice")
+
+      send_input(alice, "get coin from vault")
+      get_out = drain("alice") |> Enum.join("\n")
+      assert get_out =~ "You get coin from Warded Vault."
+
+      PlayerSession.stop(alice)
+    end
+
     test "CX-qexv/CX-3x5a: a verb whose tail put_state is over-budget surfaces a DIM :verb_diagnostic to the actor (not silent)",
          ctx do
       # CX-3x5a output-hygiene: the player tell is now author-scoped, so
