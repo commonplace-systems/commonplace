@@ -227,6 +227,38 @@ defmodule Commonplace.MUD.Take do
     end
   end
 
+  @doc """
+  CX-orlm — is `zone_uuid` a PLAYER-owned zone (rooted under `players/`)?
+
+  The Facade elevation guard (AXIS 2) uses this to refuse node-elevating a
+  visitor's write onto a player-owned zoned object. It reuses THIS module's
+  `players/`-subtree reachability so possession (`Take`) and write-authority
+  (`Facade.object_owner_authority`) share ONE zone-ownership notion — a player
+  can't relocate their home out of `players/` without node authority, so
+  `players/`-placement is the node-controlled structural proxy for "this zone is
+  player-delegated".
+
+  POSITIVE test, fail-OPEN: returns `true` ONLY when `zone_uuid` is provably
+  inside the `players/` subtree. A `nil`/unresolvable zone, a missing
+  `players/`, or a non-binary root returns `false` (NOT positively a player
+  zone). This is deliberate — today's curated interactables are UNZONED
+  (`doc_zone == nil`), and the primary elevation gate is the meta GENESIS signer
+  (`node_owned?` on the write-authority axis); AXIS 2 only needs to exclude the
+  FUTURE (CX-8yzt) player-OWNED ZONED objects, which carry a non-nil `players/`
+  zone stamp. Fail-open here can never elevate a player object that AXIS 1
+  hasn't already admitted (a player object gets invoker/unsigned meta genesis).
+  """
+  @spec player_zone?(String.t() | nil, String.t() | nil, GenServer.server()) :: boolean()
+  def player_zone?(zone_uuid, root_uuid, store)
+      when is_binary(zone_uuid) and is_binary(root_uuid) do
+    case players_dir_uuid(root_uuid, store) do
+      players when is_binary(players) -> reachable_contains?(players, zone_uuid, nil, store)
+      _ -> false
+    end
+  end
+
+  def player_zone?(_zone_uuid, _root_uuid, _store), do: false
+
   # DFS over directory containment from `start`, returning true as soon as
   # `target` is found. Never descends into `prune` (the `players/` subtree
   # for the shared check; `nil` for the own-home check). Cycle-guarded. Only
