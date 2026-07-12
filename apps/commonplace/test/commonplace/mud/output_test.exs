@@ -4,7 +4,7 @@ defmodule Commonplace.MUD.OutputTest do
 
   alias Commonplace.Code.SourceDoc
   alias Commonplace.Crypto.{Signing, SigningContext}
-  alias Commonplace.MUD.{Bootstrap, Output, PlayerSession, Schemas, VerbSource}
+  alias Commonplace.MUD.{Bootstrap, Output, PlayerSession, Schemas, VerbSource, World}
   alias Commonplace.Store.CommitStore
   alias Commonplace.Tree.Schema
   alias Yelixer.Encoding
@@ -191,6 +191,43 @@ defmodule Commonplace.MUD.OutputTest do
     refute alice_out =~ "You sets"
     # And it matches exactly what the room already broadcast to observers.
     assert bob_out =~ "alice sets the firefly jar down"
+
+    PlayerSession.stop(alice)
+    PlayerSession.stop(bob)
+  end
+
+  # CX-5ujj — mining had no render_event clause for `%{kind: :mine, ...}`,
+  # so it fell through to the `inspect/1` catch-all and leaked the raw
+  # event map, e.g. "(event: %{kind: :mine, who: ..., what: ..., ...})",
+  # to bystanders in the room. Drives the exact broadcast shape `do_mine`
+  # sends (see `Commonplace.MUD.Verbs.do_mine/2`) straight through
+  # `World.broadcast_room/2` and asserts the observer sees clean
+  # player-facing text, never the raw event struct.
+  test "mine broadcast renders clean text, never the raw event map (CX-5ujj)", ctx do
+    alice = start_player("alice", ctx)
+    bob = start_player("bob", ctx)
+    drain("alice")
+    drain("bob")
+
+    send_input(alice, "east")
+    send_input(bob, "east")
+    drain("alice")
+    drain("bob")
+
+    alice_state = :sys.get_state(alice)
+
+    World.broadcast_room(
+      alice_state.current_room_uuid,
+      %{kind: :mine, who: "alice", what: "iron ore", from: "iron vein"},
+      except: []
+    )
+
+    Process.sleep(60)
+
+    bob_out = drain("bob") |> Enum.join("\n")
+    assert bob_out =~ "alice extracts iron ore from the iron vein."
+    refute bob_out =~ "kind:"
+    refute bob_out =~ "(event:"
 
     PlayerSession.stop(alice)
     PlayerSession.stop(bob)

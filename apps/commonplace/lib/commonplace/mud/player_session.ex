@@ -597,6 +597,17 @@ defmodule Commonplace.MUD.PlayerSession do
     end
   end
 
+  # CX-5ujj — mine (items epic phase 2) had no render_event clause, so
+  # the raw `%{kind: :mine, who:, what:, from:}` broadcast fell through
+  # to the `inspect/1` catch-all and leaked to bystanders. Mirrors
+  # :take's shape (actor already got their own first-person "You extract
+  # ..." line from the verb's {:reply}; this is observers only).
+  defp render_event(%{kind: :mine, who: who, what: what, from: from}, state) do
+    if who != state.player_name do
+      state.output_fn.("#{who} extracts #{what} from the #{from}.")
+    end
+  end
+
   defp render_event(%{kind: :drop, who: who, what: what}, state) do
     if who != state.player_name do
       state.output_fn.("#{who} drops #{what}.")
