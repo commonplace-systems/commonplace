@@ -106,16 +106,9 @@ defmodule Commonplace.MUD.Verbs do
   # `find_verb_by_scope_scan`) — a bare `look`/`say`/`emote` must be the room's,
   # never a stray object's same-named verb. `:not_found` → the standard baseline.
   defp find_override_host(verb_name, cmd, ctx) do
-    case resolve_target_object(cmd, ctx) do
-      {:ok, uuid, name} ->
-        if verb_source_exists?(uuid, verb_name, ctx.store) do
-          {:ok, :object, uuid, name}
-        else
-          room_host_verb(verb_name, ctx)
-        end
-
-      :none ->
-        room_host_verb(verb_name, ctx)
+    case verb_target_candidates(cmd, ctx) do
+      [] -> room_host_verb(verb_name, ctx)
+      candidates -> first_host_with_verb(candidates, verb_name, ctx) || room_host_verb(verb_name, ctx)
     end
   end
 
@@ -139,23 +132,19 @@ defmodule Commonplace.MUD.Verbs do
   # nil/unmatched target falls back to the old scope scan (object >
   # section-room > world/"here"), unchanged.
   defp find_verb_in_scope(verb_name, cmd, ctx) do
-    case resolve_target_object(cmd, ctx) do
-      {:ok, uuid, name} ->
-        if verb_source_exists?(uuid, verb_name, ctx.store) do
-          {:ok, :object, uuid, name}
-        else
-          # CX-ylge — the named object exists but has no such verb; fall back
-          # to the ROOM host so a room ("here:") verb can still take an object
-          # NAME as its argument (e.g. `push statue` where statue is in the
-          # room). Without this the object-name shadowed the room verb and the
-          # command died as "I don't understand that." We fall back ONLY to the
-          # room host, NOT to other objects' verb tables — CX-mczs's intent
-          # (a verb on a DIFFERENT object must not fire) is preserved.
-          room_host_verb(verb_name, ctx)
-        end
-
-      :none ->
+    case verb_target_candidates(cmd, ctx) do
+      [] ->
+        # No named target (or nothing visible matches it): the old scope scan
+        # (object > section-room > world/"here"), unchanged.
         find_verb_by_scope_scan(verb_name, ctx)
+
+      candidates ->
+        # A named target resolved to visible object(s). Run the verb on the
+        # noun-matching object that HAS it (room-first — CX-bi84). If none of the
+        # named objects hosts the verb, fall back to the ROOM host so a room
+        # ("here:") verb can still take the object NAME as its argument (CX-ylge);
+        # never scan OTHER objects' verb tables (CX-mczs).
+        first_host_with_verb(candidates, verb_name, ctx) || room_host_verb(verb_name, ctx)
     end
   end
 
@@ -168,19 +157,34 @@ defmodule Commonplace.MUD.Verbs do
     end
   end
 
-  defp resolve_target_object(%Parser.Command{target: nil}, _ctx), do: :none
+  # CX-bi84 — candidate hosts whose NAME matches the command's direct-object
+  # noun, ROOM objects BEFORE inventory. A carried item that merely name-matches
+  # (often via an alias) must NOT shadow the room object that actually owns the
+  # verb — e.g. `unlock vault` while carrying a "vault"-aliased brass key must
+  # still reach the room's Warded Vault. `[]` when there is no target noun (a
+  # bare verb) or nothing visible matches it.
+  defp verb_target_candidates(%Parser.Command{target: nil}, _ctx), do: []
 
-  defp resolve_target_object(%Parser.Command{target: target}, ctx) do
-    case World.find_entry_by_name(ctx.inventory_uuid, target, ctx.store) do
-      {:ok, entry} ->
-        {:ok, entry.node_id, entry.name}
+  defp verb_target_candidates(%Parser.Command{target: target}, ctx) do
+    [ctx.current_room_uuid, ctx.inventory_uuid]
+    |> Enum.flat_map(fn dir ->
+      case World.find_entry_by_name(dir, target, ctx.store) do
+        {:ok, entry} -> [{entry.node_id, entry.name}]
+        :error -> []
+      end
+    end)
+  end
 
-      :error ->
-        case World.find_entry_by_name(ctx.current_room_uuid, target, ctx.store) do
-          {:ok, entry} -> {:ok, entry.node_id, entry.name}
-          :error -> :none
-        end
-    end
+  # CX-bi84 — among the noun-matching candidates (room-first), the FIRST that
+  # actually hosts `verb_name`. This is what makes resolution verb-aware: a
+  # name-match that lacks the verb can't win over one that has it. `nil` if none
+  # host the verb (the caller supplies the fallback).
+  defp first_host_with_verb(candidates, verb_name, ctx) do
+    Enum.find_value(candidates, fn {uuid, name} ->
+      if verb_source_exists?(uuid, verb_name, ctx.store),
+        do: {:ok, :object, uuid, name},
+        else: nil
+    end)
   end
 
   defp find_verb_by_scope_scan(verb_name, ctx) do
