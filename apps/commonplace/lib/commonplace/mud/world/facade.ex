@@ -429,25 +429,98 @@ defmodule Commonplace.MUD.World.Facade do
         # judged there (see write_guarded/4). Without this, a ROOM host's
         # presence-churned (non-node-owned) dir wrongly denied elevation and
         # the state write was dropped as an untrusted-signer commit.
-        write_guarded(f, [f.object_uuid], meta_authority(f), fn ->
-          do_put_state(f, f.object_uuid, meta_filename(f), key, value)
-        end)
+        guarded_state_write(f, key, value)
       end
     end
   end
 
   def put_state(%__MODULE__{}, _key, _value), do: {:error, :state_bounds}
 
+  # CX-e8xj — put_state's OWN authority ladder, SEPARATE from the generic
+  # `write_guarded`. Keeping the possession-token branch here (and NOT in
+  # `write_guarded`) makes it STRUCTURALLY unreachable by move_object /
+  # create_object_in / set_attr / transfer — those keep the token-blind
+  # `write_guarded`, so a holder can never possession-elevate a non-state write.
+  # The ladder mirrors write_guarded (reach → invoker → object-owner) and appends
+  # the holder branch in the :none case:
+  #   1. reach: the write touches only the bound object (⊆ owner_grant).
+  #   2. invoker can write the meta child (author / in-zone) → invoker-signed.
+  #   3. node-ownership resolves (curated, CX-orlm AXIS 1+2) → node-elevate.
+  #   4. :none → holder branch (possession → state authority), else refused.
+  defp guarded_state_write(f, key, value) do
+    authority = meta_authority(f)
+
+    if f.object_uuid in f.owner_grant do
+      if invoker_can_write_all?(f, authority) do
+        do_put_state(f, f.object_uuid, meta_filename(f), key, value)
+      else
+        case object_owner_authority(f, authority) do
+          {:ok, owner_ctx} ->
+            with_owner_authority(owner_ctx, fn ->
+              do_put_state(f, f.object_uuid, meta_filename(f), key, value)
+            end)
+
+          :none ->
+            holder_state_write(f, key, value)
+        end
+      end
+    else
+      {:error, :owner_grant_exceeded}
+    end
+  end
+
+  # CX-e8xj — possession → runtime-STATE authority. Reached ONLY when
+  # node-ownership is :none (a gifted, player-zoned object) — purely ADDITIVE to
+  # the CX-orlm curated path (a curated object resolves via
+  # `object_owner_authority` and never gets here; its non-holder visitors don't
+  # hold the token anyway). When the invoker HOLDS the object's possession token,
+  # node-elevate the state write BEHIND the state-only firewall (`do_put_state`'s
+  # `firewall?`). This elevation OVERRIDES the AXIS-2 zone veto (that is the whole
+  # point — B drives state on an object still zoned under A's home), so the
+  # firewall is load-bearing: the write can touch ONLY `meta["state"]`, never the
+  # `zone` stamp/protected fields (no re-homing to escape the veto). A non-holder
+  # → invoker-signed → refused at the gate (anti-grief: no standing).
+  defp holder_state_write(f, key, value) do
+    with true <- holds_token?(f),
+         {:ok, node_ctx} <- NodeIdentity.signing_context() do
+      with_owner_authority(node_ctx, fn ->
+        do_put_state(f, f.object_uuid, meta_filename(f), key, value, true)
+      end)
+    else
+      _ -> do_put_state(f, f.object_uuid, meta_filename(f), key, value)
+    end
+  end
+
+  # The invoker holds the bound object's possession token RIGHT NOW. Keyed on the
+  # object-dir uuid (the CX-55o3 possession record), queried at write-time —
+  # possession is LIVE authority (who holds it now), like owner_grant cert
+  # resolution, not the carried-content axis. Narrow TOCTOU (a transfer between
+  # query and commit) is a bounded v1 residual: state-only, non-destructive.
+  defp holds_token?(f) do
+    sc = (f.ctx || %{})[:signing_context]
+    invoker = sc && sc.identity_uuid
+
+    is_binary(invoker) and is_binary(f.object_uuid) and
+      match?({:held, %{holder: ^invoker}}, BursarClient.query(Bursar, f.object_uuid))
+  end
+
   # Shared state-write core (put_state on the bound host; configure_state
   # on a just-minted OBJECT). `meta_file` is the target's meta filename —
   # meta_filename(f) for the bound host (room or object), object_filename
   # for a minted object. The AUTHORITY decision is the CALLER's.
-  defp do_put_state(f, target_uuid, meta_file, key, value) do
+  defp do_put_state(f, target_uuid, meta_file, key, value, firewall? \\ false) do
     state = read_state(f, target_uuid, meta_file)
 
     if Map.has_key?(state, key) or map_size(state) < @state_max_keys do
       new_state = Map.put(state, key, value)
-      World.set_meta(target_uuid, meta_file, "state", new_state, f.store, write_opts(f))
+      # CX-e8xj — under possession-elevation, tag the write `:state_only` so
+      # `World.merge_meta`'s firewall rejects any change beyond `meta["state"]`
+      # (belt-and-suspenders: put_state nests everything under "state" already, so
+      # the zone stamp is structurally untouchable — this makes it enforced, not
+      # merely conventional).
+      opts = write_opts(f)
+      opts = if firewall?, do: Keyword.put(opts, :state_only, true), else: opts
+      World.set_meta(target_uuid, meta_file, "state", new_state, f.store, opts)
     else
       {:error, :state_bounds}
     end

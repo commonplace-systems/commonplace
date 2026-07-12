@@ -204,13 +204,31 @@ defmodule Commonplace.MUD.World do
          {:ok, parsed} when is_map(parsed) <- Jason.decode(json) do
       {deletes, sets} = Enum.split_with(updates, fn {_k, v} -> is_nil(v) end)
 
-      updated =
+      updated_map =
         parsed
         |> Map.merge(Map.new(sets))
         |> Map.drop(Enum.map(deletes, fn {k, _} -> k end))
-        |> Jason.encode!()
 
-      Schemas.write_meta_doc(entry.node_id, updated, store, opts)
+      # CX-e8xj STATE FIREWALL: a token-elevated (possession→state) write MUST
+      # touch ONLY the `"state"` submap — every other key (the node-signed `zone`
+      # stamp + all typed/protected fields) byte-identical before/after. This is
+      # the load-bearing guard that makes possession-elevation safe to OVERRIDE
+      # the CX-orlm AXIS-2 zone veto: a holder can drive an object's runtime state
+      # but can NEVER re-stamp/re-home it to escape that veto. Fail-closed,
+      # pre-commit. Only the holder-state path sets `:state_only` (see
+      # `Facade.holder_state_write`); it is stripped before the signing opts flow
+      # on. A no-op change trivially passes (everything-except-state equal).
+      if Keyword.get(opts, :state_only, false) and
+           Map.delete(parsed, "state") != Map.delete(updated_map, "state") do
+        {:error, :state_firewall}
+      else
+        Schemas.write_meta_doc(
+          entry.node_id,
+          Jason.encode!(updated_map),
+          store,
+          Keyword.delete(opts, :state_only)
+        )
+      end
     else
       :error -> {:error, :no_meta_entry}
       :none -> {:error, :no_doc}
