@@ -39,6 +39,28 @@ defmodule Commonplace.MUD.Move do
   both rooms (recoverable: reaper / manual scrub) rather than nowhere
   (silently lost). See spec §2.4.
 
+  ## Verbs follow objects for free (CX-eqdr)
+
+  A move rewrites ONLY the two PARENT dir schemas (`add_to_dest`,
+  `remove_from_source`); it NEVER rewrites the moved node's own doc. So a
+  moved object's own zone-stamp (`Trust.doc_zone/2`) is INVARIANT under a
+  move. Consequence: a node-authored (curated) object verb — the only
+  object-hosted verb kind that exists today — keeps dispatching after the
+  object is carried to a new room/zone, for free, needing nothing (a node
+  signer is "authorized regardless of host", `Trust.define_verb_authorized?`
+  → `verify_against_pinned`). "Verbs follow objects" is already true at
+  dispatch; the forward-guard `VerbFollowsObjectTest` pins it.
+
+  This is DELIBERATE — do NOT wire a re-stamp of the moved node into the
+  move path. Re-stamping the moved object to the destination zone would
+  (a) break free-dispatch (the existing authorship walk is anchored on the
+  frozen origin stamp; flipping the stamp invalidates it) and (b) violate
+  possession ≠ write-authority (CX-55o3: the possession token moves with the
+  object via `HolderMove`; the zone-stamp / authorship does NOT). Authorship
+  TRANSFER — a new holder taking over a picked-up object's verbs — is a
+  SEPARATE, explicit, node-mediated, consented future `@adopt` (CX-eqdr (b),
+  parked), never an automatic side-effect of a move.
+
   ## Nested containers (CX-cj3t.1.1)
 
   v1 containers (bags/chests — an `.obj` that can itself hold `.obj`
