@@ -191,6 +191,44 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
     assert get_in(rock_meta2, ["state", "poked"]) == "rock"
   end
 
+  # ---- pin CX-bi84: room-first, verb-aware target resolution ----
+
+  test "pin CX-bi84: object-verb noun resolution prefers the ROOM object that owns the verb over a carried name-match that lacks it",
+       %{
+         store: store,
+         room_uuid: room_uuid,
+         inventory_uuid: inventory_uuid
+       } do
+    vault_uuid = create_object(store, "Warded Vault")
+    :ok = add_dir_entry(store, room_uuid, "warded vault.obj", vault_uuid)
+
+    unlock_body = ~s|Commonplace.MUD.World.Facade.put_state(world, "unlocked", true)|
+    assert :ok = VerbSource.save_safe_verb(vault_uuid, "unlock", unlock_body, [vault_uuid], store)
+
+    {:ok, key_uuid} =
+      Schemas.create_dir_with_meta(
+        Schemas.object_filename(),
+        Schemas.encode_object(%Object{name: "brass key", aliases: ["vault key"]}),
+        store
+      )
+
+    :ok = add_dir_entry(store, inventory_uuid, "brass key.obj", key_uuid)
+
+    # Sanity check: the carried key really does answer to "vault" (via its
+    # alias) — this is the precondition that made pre-fix resolution pick it.
+    assert {:ok, entry} = World.find_entry_by_name(inventory_uuid, "vault", store)
+    assert entry.node_id == key_uuid
+
+    ctx = base_ctx(store, room_uuid, inventory_uuid)
+    assert :ok = Verbs.dispatch(Parser.parse("unlock vault"), ctx)
+
+    vault_meta = raw_meta(store, vault_uuid, Schemas.object_filename())
+    assert get_in(vault_meta, ["state", "unlocked"]) == true
+
+    key_meta = raw_meta(store, key_uuid, Schemas.object_filename())
+    refute get_in(key_meta, ["state", "unlocked"])
+  end
+
   # ---- pin 3: safe path wired + legacy verb refused (CX-qom0) ----
 
   test "pin 3: a safe verb runs through the Facade (invoker-signed, via_verb tagged); a legacy verb on a different object is refused", %{
