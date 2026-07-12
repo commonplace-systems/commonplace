@@ -26,9 +26,28 @@ defmodule Commonplace.MUD.PlayerSession do
       :not_found}` (no keypair minted for this identity) falls back to
       the anonymous/unsigned behavior — never crashes the session.
 
-  Neither opt given → `signing_context: nil`, and every write this
-  session's verbs make stays exactly as unsigned as it is today
-  (permissive workspaces must keep working logged-out).
+  Neither opt given → under `:enforce` the node provisions a server-generated
+  EPHEMERAL identity + `{:presence}` cert (a presence-only visitor — CX-sfj8);
+  under permissive/off, `signing_context: nil` and every write stays as unsigned
+  as it is today (permissive workspaces must keep working logged-out).
+
+  ### 🔑 STANDING CRUX FORWARD-GUARD (CX-sfj8, plan #7820)
+
+  `player_identity_uuid` is honored by resolving the node-held key
+  (`AgentKeys` signs on the user's behalf — the web user does NOT hold their own
+  private key), so the chokepoint MUST honor a node-backed uuid and CANNOT demand
+  proof-of-possession without breaking the web model. Therefore the impersonation
+  defense is NOT inside `provision_session_creds` — it is at the ENTRYPOINT:
+
+  > **INVARIANT: no entrypoint may pass a CLIENT-SUPPLIED `player_identity_uuid`
+  > to this session. It MUST be SERVER-RESOLVED from authenticated session state.**
+
+  Audited entrypoints: the web door resolves from the authenticated `live_session`
+  (never client params); bots resolve on the serve via `register`. The local-stdio
+  MCP `name` path is CX-3ab7 (operator-trust today; PROMOTES to a must-fix blocker
+  if MCP is ever exposed on a remote transport). **Any NEW session entrypoint MUST
+  be audited for where its identity originates before it ships** — a
+  client-settable `player_identity_uuid` is total impersonation.
 
   **Hand model (FLAG):** unlike the browser door's `WriterHand.for_session/2`
   (which needs a nonce persisted across LiveView remounts), a
@@ -61,7 +80,7 @@ defmodule Commonplace.MUD.PlayerSession do
 
   alias Commonplace.Crypto.{AgentKeys, Signing}
   alias Commonplace.MUD.{EngineModule, Parser, Schemas, SignedWrite, Topics, Verbs, VerbSource, World}
-  alias Commonplace.MUD.Schemas.{Player, Room}
+  alias Commonplace.MUD.Schemas.{Object, Player, Room}
   alias Commonplace.Presence
   alias Commonplace.Store.{CommitStoreClient, SecretStore}
   alias Commonplace.Tree.{DocBuilder, Schema}
@@ -132,8 +151,11 @@ defmodule Commonplace.MUD.PlayerSession do
       end
 
     owner_pid = Keyword.get(opts, :owner_pid)
-    cert_cids = Keyword.get(opts, :cert_cids, [])
-    {signing_context, signer_id} = resolve_identity(opts)
+    # CX-sfj8/CX-jicn — THE session-identity chokepoint (plan #7808 LBD-1): every
+    # session gets a resolved identity AND a GUARANTEED {:presence} cert, so no
+    # entrypoint and no partial-provision failure can produce an uncertified
+    # session (that bypass/failure is exactly the ghost + trust-flood gap).
+    {signing_context, signer_id, cert_cids, session_kind} = provision_session_creds(opts, store)
 
     write_opts = [
       signing_context: signing_context,
@@ -148,7 +170,7 @@ defmodule Commonplace.MUD.PlayerSession do
       spawn_room_uuid: Keyword.get(opts, :spawn_room_uuid)
     ]
 
-    case bootstrap_player(name, root_uuid, write_opts) do
+    case bootstrap_for(session_kind, name, root_uuid, write_opts) do
       {:ok, ids} ->
         state = %__MODULE__{
           player_name: name,
@@ -222,8 +244,11 @@ defmodule Commonplace.MUD.PlayerSession do
       {:noreply, state}
     else
       ctx = build_ctx(state, cmd)
-      result = Verbs.dispatch(cmd, ctx)
-      handle_verb_result(result, state)
+
+      case Verbs.dispatch(cmd, ctx) do
+        :unhandled -> handle_unhandled(cmd, ctx, state)
+        result -> handle_verb_result(result, state)
+      end
     end
   end
 
@@ -403,11 +428,6 @@ defmodule Commonplace.MUD.PlayerSession do
 
   defp handle_verb_result(:ok, state), do: {:noreply, state}
 
-  defp handle_verb_result(:unhandled, state) do
-    state.output_fn.("I don't understand that.")
-    {:noreply, state}
-  end
-
   defp handle_verb_result({:reply, :quit}, state) do
     state.output_fn.("Goodbye.")
     if pid = state.owner_pid, do: send(pid, {:player_session_quit, self()})
@@ -484,6 +504,54 @@ defmodule Commonplace.MUD.PlayerSession do
     end
 
     {:noreply, %{state | mode: {:editor, Map.put(ed, :lines, [])}}}
+  end
+
+  # CX-wnof — `Verbs.dispatch` returning bare `:unhandled` is a deliberate
+  # trust-boundary contract (see `verbs_safe_dispatch_test.exs` pins 4/6):
+  # it never says WHY a verb didn't run — a target with no verb defined on
+  # it and a target whose verb was refused/never-persisted at authoring
+  # both collapse to the same opaque `:unhandled`, so no authorization
+  # reasoning ever leaks through the message. This is a pure DISPLAY layer
+  # on top of that unchanged contract: if the player's typed target
+  # resolves to a real, visible object (the SAME read-only substring
+  # matcher `take`/`give`/`unlock` dispatch itself uses — nothing the
+  # player couldn't already see via `look`), say "You can't <verb>
+  # <name>." instead of the blanket "I don't understand that." A newcomer
+  # typing `unlock vault` at a container named "Warded Vault" (partial-
+  # name match) now gets a targeted reply instead of a raw parser error,
+  # without changing what ran or widening what the message reveals.
+  defp handle_unhandled(%Parser.Command{verb: verb, target: target}, ctx, state) when is_binary(target) do
+    case resolved_target_display_name(target, ctx, state) do
+      {:ok, name} -> state.output_fn.("You can't #{verb} #{name}.")
+      :error -> state.output_fn.("I don't understand that.")
+    end
+
+    {:noreply, state}
+  end
+
+  defp handle_unhandled(_cmd, _ctx, state) do
+    state.output_fn.("I don't understand that.")
+    {:noreply, state}
+  end
+
+  defp resolved_target_display_name(target, ctx, state) do
+    case World.find_entry_by_name(ctx.inventory_uuid, target, state.store) do
+      {:ok, entry} ->
+        {:ok, object_display_name(entry, state.store)}
+
+      :error ->
+        case World.find_entry_by_name(ctx.current_room_uuid, target, state.store) do
+          {:ok, entry} -> {:ok, object_display_name(entry, state.store)}
+          :error -> :error
+        end
+    end
+  end
+
+  defp object_display_name(entry, store) do
+    case Schemas.load_object(entry.node_id, store) do
+      {:ok, %Object{name: name}} when is_binary(name) and name != "" -> name
+      _ -> entry.name
+    end
   end
 
   ## Rendering
@@ -591,6 +659,17 @@ defmodule Commonplace.MUD.PlayerSession do
   defp render_event(%{kind: :take, who: who, what: what}, state) do
     if who != state.player_name do
       state.output_fn.("#{who} takes #{what}.")
+    end
+  end
+
+  # CX-5ujj — mine (items epic phase 2) had no render_event clause, so
+  # the raw `%{kind: :mine, who:, what:, from:}` broadcast fell through
+  # to the `inspect/1` catch-all and leaked to bystanders. Mirrors
+  # :take's shape (actor already got their own first-person "You extract
+  # ..." line from the verb's {:reply}; this is observers only).
+  defp render_event(%{kind: :mine, who: who, what: what, from: from}, state) do
+    if who != state.player_name do
+      state.output_fn.("#{who} extracts #{what} from the #{from}.")
     end
   end
 
@@ -715,12 +794,107 @@ defmodule Commonplace.MUD.PlayerSession do
     end
   end
 
+  # CX-sfj8/CX-jicn — provision the session's creds at bootstrap (plan #7808):
+  # resolve a DURABLE identity first (a server-resolved signing_context, or a
+  # node-key-backed player_identity_uuid), ELSE provision a NODE-GENERATED
+  # EPHEMERAL keypair. In BOTH cases GUARANTEE a node-signed {:presence, id} cert
+  # for the resolved identity, so the session can sign its own presence add
+  # (appear) and remove (retract on quit) under :enforce — no ghost, no
+  # trust-flood. Returns {signing_context, signer_id, cert_cids, kind}.
+  #
+  # CRUX (plan's #1 review item): a durable identity is honored ONLY when the
+  # caller supplied the private key (signing_context = proof of possession) or
+  # the NODE holds its key (AgentKeys). A bare, node-unbacked player_identity_uuid
+  # is NOT fabricated into an identity — it falls to an ephemeral one. Entrypoints
+  # MUST server-resolve player_identity_uuid from authenticated session state (web
+  # door: authenticated live_session; bot: the serve's own register) — never a
+  # client-claimed value (audited; the local-stdio MCP name path is CX-3ab7,
+  # tracked separately with a remote-exposure promotion gate).
+  #
+  # EPHEMERAL KEY CUSTODY (LBD-2): server-side only, held in the session state's
+  # signing_context (scrubbed from the verb-facing facade by CX-r8vp, same as any
+  # session key), NEVER persisted or client-claimed; it lapses at session-end and
+  # a reconnect re-provisions (presence needs no continuity).
+  defp provision_session_creds(opts, store) do
+    case resolve_identity(opts) do
+      {%Commonplace.Crypto.SigningContext{} = ctx, signer_id} ->
+        # Durable identity → full player, cert_cids threaded AS-PASSED. Production
+        # durable sessions already provision their presence cert upstream (a bot's
+        # `Bot.resolve_signing_opts`, a web citizen's `Citizenship.ensure`), so the
+        # ghost/flood gap is the IDENTITY-LESS branch below. Extending the
+        # chokepoint GUARANTEE to also back-fill a cert for a durable session that
+        # arrived cert-less (folding in the upstream provisioning) is a deliberate
+        # authority change — deferred to the convergence bead (plan LBD-6) so it
+        # doesn't silently flip a cert-less-durable session's authority here.
+        {ctx, signer_id, Keyword.get(opts, :cert_cids, []), :durable}
+
+      {nil, nil} ->
+        # Identity-less. The ephemeral presence-only path applies ONLY under
+        # :enforce, where an unsigned session can't write anything (that's the
+        # ghost/flood gap). In permissive/off the LEGACY unsigned full-player
+        # bootstrap is preserved unchanged (CLI / dogfood / tests) — an
+        # identity-less full player is fine there because unsigned writes land.
+        if enforce?() do
+          provision_ephemeral(store)
+        else
+          {nil, nil, Keyword.get(opts, :cert_cids, []), :durable}
+        end
+    end
+  end
+
+  defp enforce?, do: Application.get_env(:commonplace, :local_write_gate) == :enforce
+
+  # A node-generated, server-assigned ephemeral session identity + its presence
+  # cert. `[]` cert on provisioning failure → cert_cids stays empty → the presence
+  # write is refused under :enforce → the session does NOT appear (FAIL-CLOSED, no
+  # ambient-authority ghost, plan LBD-4) and it is LOGGED (observable).
+  defp provision_ephemeral(store) do
+    {pub, priv} = Signing.generate_keypair()
+    id = "session:" <> UUID.uuid4()
+    ctx = %Commonplace.Crypto.SigningContext{identity_uuid: id, public_key: pub, private_key: priv}
+
+    case Commonplace.MUD.Citizenship.issue_presence_starter_cert(id, pub, store) do
+      [] = cids ->
+        Logger.warning(
+          "PlayerSession: ephemeral presence-cert provisioning FAILED (id=#{id}) — session fails closed (no presence)"
+        )
+
+        {ctx, Signing.signer_id(id, pub), cids, :ephemeral}
+
+      cids ->
+        {ctx, Signing.signer_id(id, pub), cids, :ephemeral}
+    end
+  end
+
   ## Bootstrap player
 
   # `write_opts` is the keyword list `[store:, signing_context:,
   # cert_cids:, signer_id:]` resolved once in `init/1` — threaded
   # through every bootstrap write below (CX-lg06), same shape
   # `Commonplace.MUD.Verbs`' own `write_opts/1` builds from a verb ctx.
+  # CX-sfj8 SCOPE FORK (plan LBD-3): a DURABLE identity gets the full bootstrap
+  # (persistent players/<name>/ home + inventory). An EPHEMERAL throwaway is
+  # PRESENCE-ONLY — it appears + can be seen/talk, but has NO durable home or
+  # inventory (a home per throwaway = orphan-litter, and it can't be authored
+  # under a {:presence}-only cert anyway). Item-holding/building requires
+  # upgrading to a durable identity (Citizenship.ensure) — the clean
+  # visitor→citizen line.
+  defp bootstrap_for(:ephemeral, name, root_uuid, write_opts),
+    do: bootstrap_presence_only(name, root_uuid, write_opts)
+
+  defp bootstrap_for(_durable, name, root_uuid, write_opts),
+    do: bootstrap_player(name, root_uuid, write_opts)
+
+  # Presence-ONLY bootstrap: just the online marker in the shared start room,
+  # signed by the ephemeral identity + its {:presence} cert. No players/ dir, no
+  # home, no inventory (nil) — a visitor. `ensure_player_in_world` already does a
+  # home-free presence add (spawn_fresh → Presence.create), so reuse it.
+  defp bootstrap_presence_only(name, root_uuid, write_opts) do
+    with {:ok, room_uuid, presence_uuid} <- ensure_player_in_world(name, root_uuid, write_opts) do
+      {:ok, %{player_dir_uuid: nil, inventory_uuid: nil, room_uuid: room_uuid, presence_uuid: presence_uuid}}
+    end
+  end
+
   defp bootstrap_player(name, root_uuid, write_opts) do
     with {:ok, players_dir_uuid} <- ensure_players_dir(root_uuid, write_opts),
          {:ok, %{player_dir_uuid: pdir, inventory_uuid: inv}} <-
