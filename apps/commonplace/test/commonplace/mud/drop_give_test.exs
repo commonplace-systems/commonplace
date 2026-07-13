@@ -638,4 +638,176 @@ defmodule Commonplace.MUD.DropGiveTest do
     refute "amulet.obj" in entry_names(store, bob.inventory)
     assert {:held, %{holder: ^alice_id}} = BursarClient.query(Bursar, item)
   end
+
+  # ---- 9. CX-j2wt — OWN-INVENTORY :available RE-ANCHOR (the phantom-unwedge) ----
+  #
+  # A "phantom" is an item structurally in a player's inventory whose possession
+  # token is :available (UNHELD) — e.g. a permanent token evaporated across a
+  # Bursar restart (CX-6567). cogd's acquire-on-:available only fired for
+  # from_holder==node OR invoker_can_write(from_dir); a player's inventory is
+  # NODE-owned so invoker_can_write(own-inventory)=false → the rescue never fired
+  # for a real player (cogd's re-verify only hit a HELD item, missing this). The
+  # THIRD disjunct — from_dir == the invoker's SERVER-RESOLVED inventory_uuid —
+  # re-derives the orphaned possession for the structural owner. Plan-nod #8108.
+  #
+  # NOTE: the re-anchor is OPT-GATED — it only fires when the caller passes the
+  # server-resolved `:invoker_inventory_uuid` (the verb dispatch's `possession_opts`
+  # does; direct callers like test #2 above do NOT, which is why that still refuses).
+
+  test "CX-j2wt pin 1a (DROP): an :available item in the invoker's OWN inventory re-anchors → drops", %{
+    store: store,
+    node_ctx: node_ctx,
+    node_identity: node_identity,
+    root: root
+  } do
+    room = share!(store, root, mk_room!(store, node_ctx), node_ctx)
+    inventory = mk_inventory!(store, node_ctx)
+    item = mk_object!(store, node_ctx, name: "orphan.obj")
+    # seeded straight in, no token → :available (the phantom shape)
+    add_file_entry!(store, inventory, "orphan.obj", item, node_ctx)
+    {player_id, _} = fresh_identity()
+    assert :available = BursarClient.query(Bursar, item)
+
+    # WITH the server-resolved own-inventory uuid → re-anchor fires.
+    assert :ok =
+             World.drop_item(item, "orphan.obj", inventory, room, player_id,
+               store: store,
+               invoker_inventory_uuid: inventory
+             )
+
+    refute "orphan.obj" in entry_names(store, inventory)
+    assert "orphan.obj" in entry_names(store, room)
+    # re-anchored to the player, then dropped to the node (drop lands node-held).
+    assert {:held, %{holder: ^node_identity}} = BursarClient.query(Bursar, item)
+  end
+
+  test "CX-j2wt pin 1b (GIVE): an :available item in the giver's OWN inventory re-anchors → gives", %{
+    store: store,
+    node_ctx: node_ctx
+  } do
+    giver_inv = mk_inventory!(store, node_ctx)
+    recipient_inv = mk_inventory!(store, node_ctx)
+    item = mk_object!(store, node_ctx, name: "orphan-coin.obj")
+    add_file_entry!(store, giver_inv, "orphan-coin.obj", item, node_ctx)
+    {giver_id, _} = fresh_identity()
+    {recipient_id, _} = fresh_identity()
+    assert :available = BursarClient.query(Bursar, item)
+
+    assert :ok =
+             World.give_item(item, "orphan-coin.obj", giver_inv, recipient_inv, giver_id, recipient_id,
+               store: store,
+               invoker_inventory_uuid: giver_inv
+             )
+
+    refute "orphan-coin.obj" in entry_names(store, giver_inv)
+    assert "orphan-coin.obj" in entry_names(store, recipient_inv)
+    assert {:held, %{holder: ^recipient_id}} = BursarClient.query(Bursar, item)
+  end
+
+  test "CX-j2wt pin 1c (PUT): an :available item in the invoker's OWN inventory re-anchors → deposits into a curated container", %{
+    store: store,
+    node_ctx: node_ctx,
+    node_identity: node_identity,
+    root: root
+  } do
+    room = share!(store, root, mk_room!(store, node_ctx), node_ctx)
+    container = mk_object!(store, node_ctx, name: "reliquary.obj")
+    add_dir_entry!(store, room, "reliquary.obj", container, node_ctx)
+    inventory = mk_inventory!(store, node_ctx)
+    item = mk_object!(store, node_ctx, name: "orphan-gem.obj")
+    add_file_entry!(store, inventory, "orphan-gem.obj", item, node_ctx)
+    {player_id, _} = fresh_identity()
+    assert :available = BursarClient.query(Bursar, item)
+
+    assert :ok =
+             World.deposit_item(item, "orphan-gem.obj", inventory, container, player_id,
+               store: store,
+               root_uuid: root,
+               invoker_inventory_uuid: inventory
+             )
+
+    refute "orphan-gem.obj" in entry_names(store, inventory)
+    assert "orphan-gem.obj" in entry_names(store, container)
+    assert {:held, %{holder: ^node_identity}} = BursarClient.query(Bursar, item)
+  end
+
+  test "CX-j2wt pin 2 (ADVERSARIAL ISOLATION): an :available item in ANOTHER player's inventory does NOT re-anchor — self-inventory only", %{
+    store: store,
+    node_ctx: node_ctx,
+    root: root
+  } do
+    room = share!(store, root, mk_room!(store, node_ctx), node_ctx)
+    victim_inv = mk_inventory!(store, node_ctx)
+    attacker_inv = mk_inventory!(store, node_ctx)
+    item = mk_object!(store, node_ctx, name: "loot.obj")
+    # the victim's :available phantom, sitting in the VICTIM's inventory
+    add_file_entry!(store, victim_inv, "loot.obj", item, node_ctx)
+    {attacker_id, _} = fresh_identity()
+
+    # The attacker references the victim's item but passes THEIR OWN (server-
+    # resolved) inventory uuid. from_dir (victim_inv) != invoker_inventory_uuid
+    # (attacker_inv) → the re-anchor guard is false → refused. The raid is
+    # structurally blocked (the attacker can't stage the victim's item into
+    # their own inventory either — they can't write the victim's node-owned dir).
+    assert {:error, :not_holder} =
+             World.drop_item(item, "loot.obj", victim_inv, room, attacker_id,
+               store: store,
+               invoker_inventory_uuid: attacker_inv
+             )
+
+    assert "loot.obj" in entry_names(store, victim_inv)
+    refute "loot.obj" in entry_names(store, room)
+    assert :available = BursarClient.query(Bursar, item)
+  end
+
+  test "CX-j2wt pin 3 (ANTI-RAID intact): a token HELD BY ANOTHER still refuses, even with the own-inventory opt (re-anchor is :available-only)", %{
+    store: store,
+    node_ctx: node_ctx,
+    root: root
+  } do
+    room = share!(store, root, mk_room!(store, node_ctx), node_ctx)
+    attacker_inv = mk_inventory!(store, node_ctx)
+    item = mk_object!(store, node_ctx, name: "held.obj")
+    add_file_entry!(store, attacker_inv, "held.obj", item, node_ctx)
+    {attacker_id, _} = fresh_identity()
+    {victim_id, _} = fresh_identity()
+    # the token is genuinely HELD by the victim (not :available)
+    assert {:ok, _} = BursarClient.acquire(Bursar, item, victim_id, authenticated_as: victim_id, ttl: nil)
+
+    # Even though the item sits in the attacker's own inventory + they pass the
+    # own-inventory opt, the token is held-by-OTHER → the :available branch is
+    # never entered → transfer refuses :not_holder (CX-e8xj anti-raid untouched).
+    assert {:error, :not_holder} =
+             World.drop_item(item, "held.obj", attacker_inv, room, attacker_id,
+               store: store,
+               invoker_inventory_uuid: attacker_inv
+             )
+
+    assert "held.obj" in entry_names(store, attacker_inv)
+    assert {:held, %{holder: ^victim_id}} = BursarClient.query(Bursar, item)
+  end
+
+  test "CX-j2wt pin 4 (FAIL-CLOSED): a non-durable session (nil inventory_uuid) does NOT re-anchor — no cert check needed", %{
+    store: store,
+    node_ctx: node_ctx,
+    root: root
+  } do
+    room = share!(store, root, mk_room!(store, node_ctx), node_ctx)
+    inventory = mk_inventory!(store, node_ctx)
+    item = mk_object!(store, node_ctx, name: "orphan.obj")
+    add_file_entry!(store, inventory, "orphan.obj", item, node_ctx)
+    {player_id, _} = fresh_identity()
+
+    # An ephemeral/presence-only session has NO durable inventory → nil →
+    # is_binary(nil) is false → the guard can't match → normal refusal. This is
+    # the citizenship gate made implicit (no durable inventory = not a citizen).
+    assert {:error, :not_holder} =
+             World.drop_item(item, "orphan.obj", inventory, room, player_id,
+               store: store,
+               invoker_inventory_uuid: nil
+             )
+
+    assert "orphan.obj" in entry_names(store, inventory)
+    assert :available = BursarClient.query(Bursar, item)
+  end
 end

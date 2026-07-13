@@ -147,7 +147,8 @@ defmodule Commonplace.MUD.HolderMove do
         {:ok, false}
 
       :available ->
-        if from_holder == node_identity or invoker_can_write_all?(opts, [from_dir], store) do
+        if from_holder == node_identity or own_inventory_reanchor?(from_dir, opts) or
+             invoker_can_write_all?(opts, [from_dir], store) do
           case BursarClient.acquire(bursar, item_uuid, from_holder, authenticated_as: from_holder) do
             {:ok, _} -> {:ok, true}
             {:denied, _} -> {:error, :not_holder}
@@ -160,6 +161,42 @@ defmodule Commonplace.MUD.HolderMove do
       {:error, _} ->
         {:error, :not_holder}
     end
+  end
+
+  # CX-j2wt — the THIRD :available acquire disjunct (plan-ruled, report-before-code
+  # #8108): RE-DERIVE an orphaned possession for the item's structural owner when
+  # it sits in the INVOKER'S OWN inventory. This does NOT create possession — every
+  # path that inserts an item into a player's node-owned inventory is SEPARATELY
+  # gated (a move-in needs write-authority-or-token-hold, `give` is a consented
+  # push, mint/take/reward are separately authorized), so "structurally in MY
+  # inventory" is a valid OWNERSHIP signal; an `:available` (orphaned) token there
+  # — e.g. a permanent token evaporated across a Bursar restart (CX-6567) — just
+  # needs RE-ANCHORING to that structural owner (the CX-66v6 recovery layer, applied
+  # here at drop/give/put time). It is a RECOVERY signal for orphans, NOT a new
+  # authority axis: it fires ONLY on `:available` (a held-by-OTHER token still
+  # refuses `:not_holder` — the CX-e8xj anti-raid guard is UNTOUCHED), and the token
+  # remains THE possession authority after re-anchor (membership never overrides a
+  # live token). It is NOT a substitute for fixing token durability (CX-6567) — it
+  # heals inventory orphans; shared-space held tokens lost on restart need the
+  # Bursar persistence fix.
+  #
+  # 🔑 LOAD-BEARING (sound-or-not hinges here): `invoker_inventory_uuid` MUST be the
+  # SERVER-RESOLVED durable inventory of the authenticated principal (threaded from
+  # the session ctx, resolved at session bootstrap — NEVER a client param, never
+  # name-derived). The `from_dir == it` guard is only as strong as that resolution:
+  # a client-claimed value would let a caller name ANOTHER player's inventory and
+  # launder their items (the CX-sfj8 impersonation seam). Both sides are
+  # server-authoritative here — `from_dir` is the item's real tree location. A
+  # non-durable/ephemeral session has NO durable inventory (`nil`) → the guard
+  # can't match → the rule fails CLOSED (no separate citizenship check needed;
+  # citizenship is implicit in owning a durable inventory). Cross-player raid is
+  # structurally blocked: to reach this branch the item must ALREADY sit in
+  # `from_dir == my inventory`, and I cannot move A's phantom out of A's node-owned
+  # inventory into mine (I can't write A's inventory), so I can never stage
+  # another's item into the trigger.
+  defp own_inventory_reanchor?(from_dir, opts) do
+    inv = Keyword.get(opts, :invoker_inventory_uuid)
+    is_binary(inv) and from_dir == inv
   end
 
   defp do_transfer_and_move(item_uuid, name, from_dir, to_dir, from_holder, to_holder, acquired?, node_ctx, store, bursar, opts) do

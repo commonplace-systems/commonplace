@@ -1282,7 +1282,7 @@ defmodule Commonplace.MUD.Verbs do
     with {:ok, entry, _phrase, _remainder} <- greedy_match_entry([ctx.inventory_uuid], argv, ctx.store),
          {:ok, %Object{} = obj} <- Schemas.load_object(entry.node_id, ctx.store),
          :ok <-
-           World.drop_item(entry.node_id, entry.name, ctx.inventory_uuid, ctx.current_room_uuid, taker_identity(ctx), write_opts(ctx)) do
+           World.drop_item(entry.node_id, entry.name, ctx.inventory_uuid, ctx.current_room_uuid, taker_identity(ctx), possession_opts(ctx)) do
       World.broadcast_room(ctx.current_room_uuid, %{
         kind: :drop,
         who: ctx.player_name,
@@ -1353,7 +1353,7 @@ defmodule Commonplace.MUD.Verbs do
              target_inv_uuid,
              taker_identity(ctx),
              recipient_identity,
-             write_opts(ctx)
+             possession_opts(ctx)
            ) do
       World.broadcast_room(ctx.current_room_uuid, %{
         kind: :give,
@@ -1474,6 +1474,10 @@ defmodule Commonplace.MUD.Verbs do
            # feeds the extraction gate. Without it the gate fails closed and
            # denies legitimate curated-container deposits.
            |> Keyword.put(:root_uuid, Map.get(ctx, :root_uuid))
+           # CX-j2wt — carry the invoker's own inventory uuid so a `put` FROM the
+           # invoker's inventory can re-anchor an orphaned :available token
+           # (`source_dir == invoker inventory` → HolderMove own-inventory rescue).
+           |> Keyword.put(:invoker_inventory_uuid, Map.get(ctx, :inventory_uuid))
            |> Keyword.put(:precheck, fn ->
              cycle_guard(item_entry.node_id, container_entry.node_id, ctx.store)
            end),
@@ -2661,6 +2665,15 @@ defmodule Commonplace.MUD.Verbs do
   # CX-1mz7: TAKE needs the world root so its zone-gate can classify the
   # source room (shared-curated vs the taker's own home vs another's home).
   defp take_opts(ctx), do: Keyword.put(write_opts(ctx), :root_uuid, Map.get(ctx, :root_uuid))
+
+  # CX-j2wt — possession-move opts: `write_opts` PLUS the invoker's
+  # SERVER-RESOLVED durable inventory uuid, so `HolderMove.ensure_mover_holds`
+  # can re-anchor an orphaned `:available` token that sits in the invoker's OWN
+  # inventory (the drop/give/put phantom-unwedge). `ctx.inventory_uuid` is
+  # resolved at session bootstrap (nil for a non-durable session → the re-anchor
+  # guard fails closed). NEVER a client-supplied value — see
+  # `HolderMove.own_inventory_reanchor?`'s load-bearing note.
+  defp possession_opts(ctx), do: Keyword.put(write_opts(ctx), :invoker_inventory_uuid, Map.get(ctx, :inventory_uuid))
 
   # ---- Scope resolution ----
 
