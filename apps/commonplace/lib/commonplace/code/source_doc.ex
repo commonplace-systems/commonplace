@@ -403,30 +403,77 @@ defmodule Commonplace.Code.SourceDoc do
   defp do_compile(uuid, source, hash, opts) do
     filename = "docref://" <> uuid
 
-    try do
-      [{module, _bin} | _] =
-        case Keyword.get(opts, :unique_module) do
-          nil ->
-            Code.compile_string(source, filename)
+    # CX-2o9o — capture the compiler's DIAGNOSTICS around the compile. A raw
+    # `CompileError` message is the opaque "cannot compile module ... (errors
+    # have been logged)"; the actual reason (undefined variable, arity, syntax)
+    # + line is emitted to the diagnostics channel, NOT the exception message.
+    # `Code.with_diagnostics/1` collects it so a verb author sees "line N:
+    # undefined variable \"argv\"" instead of a pointer to a log they can't read.
+    {result, diagnostics} =
+      Code.with_diagnostics(fn ->
+        try do
+          [{module, _bin} | _] =
+            case Keyword.get(opts, :unique_module) do
+              nil ->
+                Code.compile_string(source, filename)
 
-          key ->
-            ast = Code.string_to_quoted!(source, file: filename, line: 1)
-            new_ast = rewrite_module_name(ast, derive_module_atom(key))
-            Code.compile_quoted(new_ast, filename)
+              key ->
+                ast = Code.string_to_quoted!(source, file: filename, line: 1)
+                new_ast = rewrite_module_name(ast, derive_module_atom(key))
+                Code.compile_quoted(new_ast, filename)
+            end
+
+          {:ok, module}
+        rescue
+          e -> {:error, {:compile_error, Exception.message(e)}}
+        catch
+          kind, reason -> {:error, {kind, reason}}
         end
+      end)
 
-      cache_key = cache_key(hash, opts)
-      :ets.insert(@index_table, {uuid, hash, cache_key, now_ms()})
-      :ets.insert(@cache_table, {cache_key, module})
-      evict_over_cap()
+    case result do
+      {:ok, module} ->
+        cache_key = cache_key(hash, opts)
+        :ets.insert(@index_table, {uuid, hash, cache_key, now_ms()})
+        :ets.insert(@cache_table, {cache_key, module})
+        evict_over_cap()
 
-      {:ok, module}
-    rescue
-      e -> {:error, {:compile_error, Exception.message(e)}}
-    catch
-      kind, reason -> {:error, {kind, reason}}
+        {:ok, module}
+
+      {:error, {:compile_error, base}} ->
+        {:error, {:compile_error, enrich_compile_error(base, diagnostics)}}
+
+      other ->
+        other
     end
   end
+
+  # CX-2o9o — replace the opaque "errors have been logged" CompileError text
+  # with the captured error diagnostics (message + line), so the verb author
+  # sees the real cause. Falls back to the raw message when no error diagnostic
+  # was captured (e.g. a non-CompileError failure).
+  defp enrich_compile_error(base, diagnostics) do
+    lines =
+      diagnostics
+      |> Enum.filter(&(&1.severity == :error))
+      |> Enum.map(&format_diagnostic/1)
+
+    case lines do
+      [] -> base
+      _ -> Enum.join(lines, "; ")
+    end
+  end
+
+  defp format_diagnostic(%{message: msg} = diag) do
+    case diagnostic_line(Map.get(diag, :position)) do
+      nil -> msg
+      line -> "line #{line}: #{msg}"
+    end
+  end
+
+  defp diagnostic_line(line) when is_integer(line) and line > 0, do: line
+  defp diagnostic_line({line, _col}) when is_integer(line) and line > 0, do: line
+  defp diagnostic_line(_), do: nil
 
   # Deterministic, collision-free module name derived from an arbitrary key
   # (the verb source doc's own uuid). Same key always derives the same

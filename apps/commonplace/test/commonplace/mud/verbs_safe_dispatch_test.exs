@@ -703,6 +703,25 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
     assert text =~ "spark"
   end
 
+  # ---- CX-2o9o: compile errors surface the real diagnostic ----
+
+  test "CX-2o9o: a compile error surfaces the real diagnostic (undefined variable), not 'errors have been logged'", %{
+    store: store,
+    room_uuid: room_uuid
+  } do
+    idol_uuid = create_object(store, "idol")
+    :ok = add_dir_entry(store, room_uuid, "idol.obj", idol_uuid)
+
+    # Passes the allowlist (no disallowed CALL — it's a bare identifier), then
+    # fails to COMPILE: mystery_variable is not in scope. Pre-fix the author got
+    # only "cannot compile module ... (errors have been logged)".
+    body = ~s|Commonplace.MUD.World.Facade.emit(world, mystery_variable)|
+    assert {:error, {:compile_error, msg}} = VerbSource.save_safe_verb(idol_uuid, "boom", body, [idol_uuid], store)
+
+    assert msg =~ "mystery_variable", "the real cause should name the undefined variable: #{msg}"
+    refute msg =~ "errors have been logged", "the opaque log-pointer should be gone: #{msg}"
+  end
+
   test "pin M2.2c (CX-z6ub): the `use` node BASELINE replies \"Nothing happens.\" on a fresh object", %{
     store: store,
     room_uuid: room_uuid,
