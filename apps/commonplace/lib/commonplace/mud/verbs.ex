@@ -2721,7 +2721,13 @@ defmodule Commonplace.MUD.Verbs do
          {:ok, player} <- Schemas.load_player(player_dir_uuid, ctx.store) do
       {:ok, :player, player}
     else
-      _ -> :not_found
+      # CX-xe0r — the presence `.usr` is right here in the resolved scope, so a
+      # player by this name IS present (the room render lists them). An
+      # ephemeral / homeless session provisions no `players/<name>` home + Player
+      # doc (player_session line ~902), so the home lookup fails — but `look`/
+      # `examine` must NOT then lie "you don't see them here". Fall back to a
+      # name-only render derived from the presence entry.
+      _ -> {:ok, :player, %Player{name: bare, description: "A fellow traveler."}}
     end
   end
 
