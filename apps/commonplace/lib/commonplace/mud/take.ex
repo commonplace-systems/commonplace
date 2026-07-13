@@ -165,6 +165,26 @@ defmodule Commonplace.MUD.Take do
   # restructure them. It converges on the M2 zone-stamp (CX-4u03), which
   # will replace this O(curated-tree) reachability walk with an O(1) stamp
   # read.
+  @doc """
+  CX-2cmq — whether a NON-owner deposit of an item (currently in `from_dir`)
+  into `container_uuid` may node-elevate under enforce. TRUE iff the invoker can
+  already write the container themselves (their own zone → the invoker-signed
+  path fires, no elevation needed) OR the container is a node-owned/curated zone
+  by the SAME reachability gate extraction uses (`takeable_from_here?`).
+
+  This is the deposit-side MIRROR of the extraction gate: a container a visitor
+  cannot TAKE from, they also cannot DEPOSIT into. Without it, `deposit_item`'s
+  `HolderMove.push` node-signs the container-add UNCONDITIONALLY, so a visitor
+  over-elevates a write into ANY container — including a citizen's private home —
+  which extraction then correctly refuses → the item is stranded (the CX-2cmq
+  roach-motel). Gating deposit here makes both sides gate identically: curated →
+  both open, citizen → both closed.
+  """
+  def deposit_elevation_allowed?(container_uuid, from_dir, opts, store \\ CommitStoreClient) do
+    invoker_can_write_all?(opts, [container_uuid], store) or
+      takeable_from_here?(container_uuid, from_dir, opts, store)
+  end
+
   defp takeable_from_here?(room_uuid, inventory_uuid, opts, store) do
     case Keyword.get(opts, :root_uuid) do
       root when is_binary(root) ->

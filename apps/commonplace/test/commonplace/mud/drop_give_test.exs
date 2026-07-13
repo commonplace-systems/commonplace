@@ -294,7 +294,7 @@ defmodule Commonplace.MUD.DropGiveTest do
     {player_id, _} = fresh_identity()
     assert :ok = Take.take(item, "coin.obj", room, inventory, player_id, store: store, root_uuid: root)
 
-    assert :ok = World.deposit_item(item, "coin.obj", inventory, container, player_id, store: store)
+    assert :ok = World.deposit_item(item, "coin.obj", inventory, container, player_id, store: store, root_uuid: root)
 
     refute "coin.obj" in entry_names(store, inventory)
     assert "coin.obj" in entry_names(store, container)
@@ -318,7 +318,7 @@ defmodule Commonplace.MUD.DropGiveTest do
     {player_id, _} = fresh_identity()
 
     assert {:error, :not_holder} =
-             World.deposit_item(item, "phantom.obj", inventory, container, player_id, store: store)
+             World.deposit_item(item, "phantom.obj", inventory, container, player_id, store: store, root_uuid: root)
 
     assert "phantom.obj" in entry_names(store, inventory)
     refute "phantom.obj" in entry_names(store, container)

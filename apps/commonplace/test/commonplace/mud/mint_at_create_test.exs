@@ -301,7 +301,7 @@ defmodule Commonplace.MUD.MintAtCreateTest do
 
     # PUT the gem INTO the container: the deposit move-locks the container dir.
     # Pre-fix this raced its own permanent possession token → :busy forever.
-    assert :ok = World.deposit_item(item, "gem.obj", inv, container, player_id, store: store)
+    assert :ok = World.deposit_item(item, "gem.obj", inv, container, player_id, store: store, root_uuid: root)
     assert "gem.obj" in entry_names(store, container)
 
     # GET it back OUT of the container: the take move-locks the container as the

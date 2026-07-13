@@ -113,13 +113,27 @@ defmodule Commonplace.MUD.World do
   def deposit_item(item_uuid, name, source_dir_uuid, container_uuid, from_holder, opts \\ [])
       when is_binary(item_uuid) and is_binary(name) and is_binary(source_dir_uuid) and
              is_binary(container_uuid) do
-    node_identity =
-      case Commonplace.Crypto.NodeIdentity.identity() do
-        {:ok, id} -> id
-        _ -> nil
-      end
+    store = Keyword.get(opts, :store, CommitStoreClient)
 
-    HolderMove.push(item_uuid, name, source_dir_uuid, container_uuid, from_holder, node_identity, opts)
+    # CX-2cmq — SYMMETRIC with extraction: a non-owner deposit may node-elevate
+    # ONLY into a node-owned/curated container (the same reachability gate
+    # `Take` applies to extraction). `HolderMove.push` would otherwise node-sign
+    # the container-add UNCONDITIONALLY, so a visitor over-elevated a write into
+    # ANY container incl. a citizen's private home — deposit landed but
+    # extraction correctly refused → the item was stranded (the roach-motel).
+    # Gate here so both sides gate identically: curated → both open, citizen →
+    # both closed (an honest "you can't put that there" instead of eating items).
+    if Take.deposit_elevation_allowed?(container_uuid, source_dir_uuid, opts, store) do
+      node_identity =
+        case Commonplace.Crypto.NodeIdentity.identity() do
+          {:ok, id} -> id
+          _ -> nil
+        end
+
+      HolderMove.push(item_uuid, name, source_dir_uuid, container_uuid, from_holder, node_identity, opts)
+    else
+      {:error, {:trust_rejected, :not_node_owned_container}}
+    end
   end
 
   @doc """

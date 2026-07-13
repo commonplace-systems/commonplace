@@ -1463,7 +1463,14 @@ defmodule Commonplace.MUD.Verbs do
          :ok <- ensure_unlocked(container_entry.node_id, container_obj.name, ctx.store),
          :ok <- ensure_has_key(container_entry.node_id, container_obj.name, ctx),
          move_opts <-
-           Keyword.put(write_opts(ctx), :precheck, fn ->
+           write_opts(ctx)
+           # CX-2cmq — the deposit gate (World.deposit_item → Take
+           # .deposit_elevation_allowed?) needs the world root to classify the
+           # container's zone (curated vs citizen-home), EXACTLY like take_opts
+           # feeds the extraction gate. Without it the gate fails closed and
+           # denies legitimate curated-container deposits.
+           |> Keyword.put(:root_uuid, Map.get(ctx, :root_uuid))
+           |> Keyword.put(:precheck, fn ->
              cycle_guard(item_entry.node_id, container_entry.node_id, ctx.store)
            end),
          # CX-5c78 — route the deposit through the HolderMove push-to-node
