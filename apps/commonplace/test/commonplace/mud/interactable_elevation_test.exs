@@ -172,6 +172,48 @@ defmodule Commonplace.MUD.InteractableElevationTest do
     assert state_value(obj_dir, store, "spun") == before
   end
 
+  # --- CX-morj: actor_ref keys per-player state for EPHEMERAL visitors ---
+
+  # A per-player-counter verb keyed by actor_ref — the canonical pattern from
+  # Facade.actor_ref's own moduledoc (`put_state(world, "score:" <> actor_ref, n)`).
+  @per_player_verb "me = Commonplace.MUD.World.Facade.actor_ref(world)\n" <>
+                     "Commonplace.MUD.World.Facade.put_state(world, \"strums:\" <> me, 1)"
+
+  test "EPHEMERAL visitor (no player_dir_uuid) can drive per-player state — actor_ref falls back to identity_uuid, no crash",
+       %{store: store, node_ctx: node_ctx} do
+    obj_json = Schemas.encode_object(%Schemas.Object{name: "cloud-harp", description: "A per-player interactable."})
+    {:ok, obj_dir} = Schemas.create_dir_with_meta(Schemas.object_filename(), obj_json, store, signing_context: node_ctx)
+    :ok = VerbSource.save_safe_verb(obj_dir, "strum", @per_player_verb, [obj_dir], store, signing_context: node_ctx)
+
+    # An ephemeral visitor: SIGNED (has identity_uuid) but NO :player_dir_uuid,
+    # exactly PlayerSession.bootstrap_presence_only. PRE-FIX: actor_ref = nil →
+    # "strums:" <> nil crashes ({:runtime_error, "construction of binary failed"}).
+    v = visitor_ctx()
+    refute Map.has_key?(v, :player_dir_uuid)
+    id = v.signing_context.identity_uuid
+    facade = %{Facade.new(v, obj_dir, [obj_dir], "strum", store) | host_kind: :object}
+
+    assert {:ok, _} = VerbSource.run_safe_verb(obj_dir, "strum", [obj_dir], facade, %{}, store)
+    # POST-FIX: state persisted under the identity_uuid fallback key.
+    assert state_value(obj_dir, store, "strums:" <> id) == 1
+  end
+
+  test "HOMED citizen keys per-player state by the DURABLE player_dir_uuid (unchanged), not identity_uuid",
+       %{store: store, node_ctx: node_ctx} do
+    obj_json = Schemas.encode_object(%Schemas.Object{name: "cloud-harp", description: "A per-player interactable."})
+    {:ok, obj_dir} = Schemas.create_dir_with_meta(Schemas.object_filename(), obj_json, store, signing_context: node_ctx)
+    :ok = VerbSource.save_safe_verb(obj_dir, "strum", @per_player_verb, [obj_dir], store, signing_context: node_ctx)
+
+    pdir = UUID.uuid4()
+    v = Map.put(visitor_ctx(), :player_dir_uuid, pdir)
+    facade = %{Facade.new(v, obj_dir, [obj_dir], "strum", store) | host_kind: :object}
+
+    assert {:ok, _} = VerbSource.run_safe_verb(obj_dir, "strum", [obj_dir], facade, %{}, store)
+    # keyed by the durable player-dir uuid — the identity_uuid key is NOT used.
+    assert state_value(obj_dir, store, "strums:" <> pdir) == 1
+    assert state_value(obj_dir, store, "strums:" <> v.signing_context.identity_uuid) == nil
+  end
+
   # --- CX-e12a: ROOM-host state writes survive a presence-churned dir ---
 
   test "ROOM-verb put_state ELEVATES on the __room.json child even when the room DIR is presence-churned (non-node-owned)",

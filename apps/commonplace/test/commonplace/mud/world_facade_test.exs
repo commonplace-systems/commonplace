@@ -1151,8 +1151,24 @@ defmodule Commonplace.MUD.World.FacadeTest do
       assert Facade.actor_ref(bob) == "pd-bob"
     end
 
-    test "missing identity fields → nil (no crash)", %{store: store, obj_uuid: obj_uuid, trusted_ctx: trusted_ctx} do
+    test "no player-dir but SIGNED (ephemeral visitor) → actor_ref falls back to identity_uuid; actor_name stays nil (CX-morj)",
+         %{store: store, obj_uuid: obj_uuid, trusted_ctx: trusted_ctx} do
+      # An ephemeral/visitor session: signed, but no player_dir_uuid/player_name
+      # (PlayerSession.bootstrap_presence_only). actor_name has no non-identity
+      # source → nil; actor_ref falls back to the server-resolved identity_uuid
+      # so the canonical `"key:" <> actor_ref` per-player-state pattern no longer
+      # crashes on nil for visitors.
       f = lc_facade(trusted_ctx, obj_uuid, [obj_uuid], %{}, store)
+      assert Facade.actor_name(f) == nil
+      assert Facade.actor_ref(f) == trusted_ctx.identity_uuid
+    end
+
+    test "actor_ref is nil ONLY for a truly-anonymous UNSIGNED ctx (no fallback source)",
+         %{store: store, obj_uuid: obj_uuid} do
+      # No signing_context at all (permissive-dev unsigned) → no identity to
+      # fall back to → nil (and no crash). The `<>`-keyed pattern remains an
+      # author's-responsibility footgun only in this unsigned case.
+      f = lc_facade(nil, obj_uuid, [obj_uuid], %{}, store)
       assert Facade.actor_name(f) == nil
       assert Facade.actor_ref(f) == nil
     end

@@ -714,15 +714,37 @@ defmodule Commonplace.MUD.World.Facade do
   end
 
   @doc """
-  CX-a2gd — a STABLE opaque reference to the invoker (their player-dir uuid),
-  for keying durable per-player state: `put_state(world, "score:" <>
-  actor_ref(world), n)`. Stable across `@name` renames (unlike
-  `actor_name/1`). Opaque — treat it as a key, not a display string.
+  CX-a2gd — a STABLE opaque reference to the invoker, for keying per-player
+  state: `put_state(world, "score:" <> actor_ref(world), n)`. Stable across
+  `@name` renames (unlike `actor_name/1`). Opaque — treat it as a key, not a
+  display string.
+
+  CX-morj — falls back to the invoker's server-resolved `identity_uuid` when
+  the session has no `player_dir_uuid`. An EPHEMERAL/visitor session (no
+  durable citizenship) is provisioned presence-only with `player_dir_uuid: nil`
+  (`PlayerSession.bootstrap_presence_only/3`), so the bare
+  `ctx[:player_dir_uuid]` returned `nil` — and the canonical pattern above
+  (`"score:" <> actor_ref`) then CRASHED with a binary-construction error for
+  every visitor who touched a per-player interactable. The `identity_uuid`
+  fallback is also server-resolved (spoof-proof, CX-a2gd) and session-stable
+  for an ephemeral identity (CX-sfj8). Semantics of the ref this yields:
+
+    * A durable citizen → their `player_dir_uuid`: stable ACROSS sessions
+      (durable per-player state), unchanged from before.
+    * An ephemeral visitor → their session `identity_uuid`: stable WITHIN the
+      session (per-session per-player state) — matching the visitor model (no
+      durable home = no durable state; upgrade via `Citizenship.ensure`), and
+      a strict improvement over crashing.
+
+  Under `:enforce` every session is signed, so this is never `nil` there; it
+  is `nil` only for a truly-anonymous unsigned session (permissive dev), where
+  the documented `<>`-keyed pattern remains an author's-responsibility footgun.
   """
   @spec actor_ref(t()) :: String.t() | nil
   def actor_ref(%__MODULE__{} = f) do
     f = unwrap(f)
-    f.ctx[:player_dir_uuid]
+    sc = f.ctx[:signing_context]
+    f.ctx[:player_dir_uuid] || (sc && sc.identity_uuid)
   end
 
   @doc """
