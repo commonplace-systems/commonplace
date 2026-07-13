@@ -42,6 +42,29 @@ defmodule Commonplace.MUD.HolderMove do
 
   Nobody ever pulls: every write in this module is a PUSH by whichever
   party already holds the thing being moved.
+
+  ## CX-cogd — acquire-on-`:available`
+
+  An item legitimately in the mover's own source dir may carry an
+  `:available` (UNHELD) possession token — e.g. a node-minted economy
+  item whose token was released (see CX-6567 for WHY that happens). The
+  token-transfer-first gate above would refuse it `:not_holder`, so
+  `ensure_mover_holds/7` ACQUIRES the unheld token for the mover first
+  (the deposit/drop/give mirror of `Take.ensure_node_holds`), gated so
+  the acquire is never a raid: only on the `:available` branch (no
+  holder = no victim), and only when the mover is the node (node
+  authority) OR the invoker can write the SOURCE dir (own-inventory
+  pull). A token HELD BY ANOTHER party still falls through to the
+  transfer and is refused `:not_holder` — the anti-raid guard is
+  keyed on the durable token, never on tree location (CX-e8xj).
+
+  RESIDUAL (non-atomic-CRDT class, plan-acknowledged, self-healing): a
+  hard CRASH (process death, not an error return) BETWEEN the acquire
+  and the move can orphan the freshly-acquired token to `:available` —
+  a possession-LEAK, not a raid (no held token is lost, no unauthorized
+  acquire occurs). It is the same non-atomicity `Move`'s cross-doc
+  moves already live with, and it self-heals: the next handler
+  re-acquires the `:available` token. Not gated on.
   """
 
   alias Commonplace.Crypto.NodeIdentity
