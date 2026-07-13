@@ -534,16 +534,17 @@ defmodule Commonplace.MUD.PlayerSession do
     {:noreply, state}
   end
 
+  # CX-c6ph — rank by match QUALITY across inventory + room (exact-name
+  # beats an alias/partial match in the other dir), inventory-first order
+  # breaking ties (mirrors `Verbs.find_entry_in_dirs/3`).
   defp resolved_target_display_name(target, ctx, state) do
-    case World.find_entry_by_name(ctx.inventory_uuid, target, state.store) do
-      {:ok, entry} ->
-        {:ok, object_display_name(entry, state.store)}
-
-      :error ->
-        case World.find_entry_by_name(ctx.current_room_uuid, target, state.store) do
-          {:ok, entry} -> {:ok, object_display_name(entry, state.store)}
-          :error -> :error
-        end
+    [ctx.inventory_uuid, ctx.current_room_uuid]
+    |> Enum.map(fn dir -> World.find_entry_ranked(dir, target, state.store) end)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.max_by(fn {s, _} -> s end, fn -> nil end)
+    |> case do
+      {_score, entry} -> {:ok, object_display_name(entry, state.store)}
+      nil -> :error
     end
   end
 
