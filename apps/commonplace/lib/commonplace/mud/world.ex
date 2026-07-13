@@ -326,6 +326,58 @@ defmodule Commonplace.MUD.World do
     end)
   end
 
+  @doc """
+  CX-c6ph — best match for `name` in `dir_uuid` WITH a quality score, so callers
+  resolving across multiple dirs can prefer an EXACT-name match in one dir over an
+  ALIAS/partial match in another. Returns `{score, entry}` (higher = better) or nil.
+  Scoring: exact entry-key base OR exact object display-name = 4; exact alias = 3;
+  partial (substring) name = 2; partial alias = 1. Mirrors `find_entry_by_name/3`'s
+  matching surface (entry-key base via strip_extension, plus object meta name+aliases).
+  """
+  def find_entry_ranked(dir_uuid, name, store \\ CommitStoreClient) when is_binary(name) do
+    needle = String.downcase(name)
+
+    list_entries(dir_uuid, store)
+    |> Enum.map(fn e -> {entry_match_score(e, needle, store), e} end)
+    |> Enum.filter(fn {s, _} -> s > 0 end)
+    |> Enum.max_by(fn {s, _} -> s end, fn -> nil end)
+  end
+
+  defp entry_match_score(e, needle, store) do
+    base = e.name |> String.downcase() |> strip_extension()
+
+    name_score =
+      cond do
+        base == needle -> 4
+        String.contains?(base, needle) -> 2
+        true -> 0
+      end
+
+    obj_score =
+      if e.type == :dir and String.ends_with?(e.name, ".obj") do
+        case Schemas.load_object(e.node_id, store) do
+          {:ok, %Schemas.Object{name: dname, aliases: aliases}} ->
+            dn = String.downcase(dname || "")
+            aliases = Enum.filter(aliases, &is_binary/1) |> Enum.map(&String.downcase/1)
+
+            cond do
+              dn == needle -> 4
+              Enum.any?(aliases, &(&1 == needle)) -> 3
+              dn != "" and String.contains?(dn, needle) -> 2
+              Enum.any?(aliases, &String.contains?(&1, needle)) -> 1
+              true -> 0
+            end
+
+          _ ->
+            0
+        end
+      else
+        0
+      end
+
+    max(name_score, obj_score)
+  end
+
   defp strip_extension(name) do
     case Path.extname(name) do
       "" -> name

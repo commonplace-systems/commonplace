@@ -2630,13 +2630,19 @@ defmodule Commonplace.MUD.Verbs do
     end
   end
 
+  # CX-c6ph — rank by match QUALITY across all dirs (exact-name beats an
+  # alias/partial match in an earlier dir), dir order breaking ties
+  # (Enum.max_by keeps the first max element, so [inventory, room] still
+  # tie-breaks to inventory for equal-quality matches).
   defp find_entry_in_dirs(phrase, dirs, store) do
-    Enum.find_value(dirs, :error, fn dir ->
-      case World.find_entry_by_name(dir, phrase, store) do
-        {:ok, entry} -> {:ok, entry}
-        :error -> nil
-      end
-    end)
+    dirs
+    |> Enum.map(fn dir -> World.find_entry_ranked(dir, phrase, store) end)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.max_by(fn {s, _} -> s end, fn -> nil end)
+    |> case do
+      {_score, entry} -> {:ok, entry}
+      nil -> :error
+    end
   end
 
   # CX-8iyv: shared helper for @desc/@name/@alias — greedy-match a
