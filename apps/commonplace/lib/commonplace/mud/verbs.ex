@@ -953,13 +953,15 @@ defmodule Commonplace.MUD.Verbs do
     end
   end
 
-  defp examine_object_text(uuid, %Object{} = obj, ctx) do
-    base = "#{obj.name}\n#{obj.description}"
-
-    case notable_state(uuid, ctx.store) do
-      "" -> base
-      state_text -> base <> "\n" <> state_text
-    end
+  # CX-mxxe / CX-hh70 — casual, player-facing `examine` is name + description
+  # ONLY. It deliberately does NOT append the object's freeform `meta["state"]`:
+  # that block leaked puzzle answer keys (altar `expect: spark` / `solved: yes`,
+  # orrery `charge: N`) to any newcomer just reading a description, and broadcast
+  # the per-player actor_ref→name mapping the @verb editor tells builders to key
+  # private state on (score:<ref>, forecast:<ref>). Raw state now lives on the
+  # builder/debug `@dump <obj>` path (the raw-internals command) instead.
+  defp examine_object_text(_uuid, %Object{} = obj, _ctx) do
+    "#{obj.name}\n#{obj.description}"
   end
 
   # Render the object's freeform `meta["state"]` submap (CX-hqk5 — dropped by
@@ -1763,10 +1765,30 @@ defmodule Commonplace.MUD.Verbs do
         end
 
       true ->
-        case find_in_scope(cmd.argv, ctx) do
-          {:ok, :object, obj} -> {:reply, inspect(obj, pretty: true)}
-          {:ok, :player, pl} -> {:reply, inspect(pl, pretty: true)}
-          _ -> {:error, "Can't find \"#{Enum.join(cmd.argv, " ")}\"."}
+        # CX-mxxe / CX-hh70 — `@dump` is the raw-internals command, so it (not
+        # casual `examine`) is where the object's freeform `meta["state"]` block
+        # belongs. The typed `Object` struct drops `state` (CX-hqk5), so append
+        # `notable_state/2` (raw meta) after the struct dump for builders/debug.
+        case greedy_match_entry([ctx.inventory_uuid, ctx.current_room_uuid], cmd.argv, ctx.store) do
+          {:ok, entry, _phrase, _remainder} ->
+            case resolve_entry(entry, ctx) do
+              {:ok, :object, obj} ->
+                struct_text = inspect(obj, pretty: true)
+
+                case notable_state(entry.node_id, ctx.store) do
+                  "" -> {:reply, struct_text}
+                  state_text -> {:reply, struct_text <> "\n" <> state_text}
+                end
+
+              {:ok, :player, pl} ->
+                {:reply, inspect(pl, pretty: true)}
+
+              _ ->
+                {:error, "Can't find \"#{Enum.join(cmd.argv, " ")}\"."}
+            end
+
+          :not_found ->
+            {:error, "Can't find \"#{Enum.join(cmd.argv, " ")}\"."}
         end
     end
   end
@@ -2601,18 +2623,6 @@ defmodule Commonplace.MUD.Verbs do
   defp take_opts(ctx), do: Keyword.put(write_opts(ctx), :root_uuid, Map.get(ctx, :root_uuid))
 
   # ---- Scope resolution ----
-
-  # CX-8iyv: multi-word targets — greedy-match the longest prefix of
-  # `argv` against inventory first, then the current room (names +
-  # aliases via `World.find_entry_by_name/3`), so 'look silver coin'
-  # resolves an object named/aliased "silver coin" instead of just
-  # matching the word "silver".
-  defp find_in_scope(argv, ctx) do
-    case greedy_match_entry([ctx.inventory_uuid, ctx.current_room_uuid], argv, ctx.store) do
-      {:ok, entry, _phrase, _remainder} -> resolve_entry(entry, ctx)
-      :not_found -> :not_found
-    end
-  end
 
   # CX-8iyv: shared greedy phrase matcher for target-taking verbs
   # (take/drop/look/@dump/@desc/@name/@alias). Tries the longest prefix

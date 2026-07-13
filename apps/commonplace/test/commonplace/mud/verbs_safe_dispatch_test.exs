@@ -654,6 +654,55 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
     assert get_in(meta, ["state", "examined"]) == "custom"
   end
 
+  # ---- CX-mxxe / CX-hh70: casual examine hides freeform state; @dump shows it ----
+
+  test "CX-hh70: `examine` does NOT leak the object's freeform state (puzzle answer key stays hidden)", %{
+    store: store,
+    room_uuid: room_uuid,
+    inventory_uuid: inventory_uuid
+  } do
+    altar_uuid = create_object(store, "altar")
+    :ok = add_dir_entry(store, room_uuid, "altar.obj", altar_uuid)
+
+    # Land a spoiler-y state key the way an interactable would (put_state).
+    body = ~s|Commonplace.MUD.World.Facade.put_state(world, "expect", "spark")|
+    assert :ok = VerbSource.save_safe_verb(altar_uuid, "prime", body, [altar_uuid], store)
+    ctx = base_ctx(store, room_uuid, inventory_uuid)
+    assert :ok = Verbs.dispatch(Parser.parse("prime altar"), ctx)
+
+    # Sanity: the state key really landed.
+    assert get_in(raw_meta(store, altar_uuid, Schemas.object_filename()), ["state", "expect"]) ==
+             "spark"
+
+    # Casual examine shows the name but NOT the raw state block / answer key.
+    assert {:reply, text} = Verbs.dispatch(Parser.parse("examine altar"), ctx)
+    assert text =~ "altar"
+    refute text =~ "State:"
+    refute text =~ "expect"
+    refute text =~ "spark"
+  end
+
+  test "CX-mxxe: `@dump <obj>` still surfaces freeform state for builders/debug", %{
+    store: store,
+    room_uuid: room_uuid,
+    inventory_uuid: inventory_uuid
+  } do
+    altar_uuid = create_object(store, "altar")
+    :ok = add_dir_entry(store, room_uuid, "altar.obj", altar_uuid)
+
+    body = ~s|Commonplace.MUD.World.Facade.put_state(world, "expect", "spark")|
+    assert :ok = VerbSource.save_safe_verb(altar_uuid, "prime", body, [altar_uuid], store)
+    ctx = base_ctx(store, room_uuid, inventory_uuid)
+    assert :ok = Verbs.dispatch(Parser.parse("prime altar"), ctx)
+
+    # The raw-internals command DOES show state (the struct dump drops it — CX-hqk5 —
+    # so this is the ONLY in-world inspection path once examine stops leaking it).
+    assert {:reply, text} = Verbs.dispatch(Parser.parse("@dump altar"), ctx)
+    assert text =~ "State:"
+    assert text =~ "expect"
+    assert text =~ "spark"
+  end
+
   test "pin M2.2c (CX-z6ub): the `use` node BASELINE replies \"Nothing happens.\" on a fresh object", %{
     store: store,
     room_uuid: room_uuid,
