@@ -1123,7 +1123,11 @@ defmodule Commonplace.MUD.Verbs do
       {:error, {:trust_rejected, _}} -> {:error, "You don't have permission to take that."}
       {:error, :taken} -> {:error, "Someone else grabbed it first."}
       {:error, :item_unavailable} -> {:error, "Someone else grabbed it first."}
-      {:error, :not_takeable_here} -> {:error, "You can't take that."}
+      # CX-cogd — an HONEST deny that matches the put path's permission language,
+      # not the vague "You can't take that": a container in a zone you can't
+      # write refuses extraction (the citizen-home private-container case). The
+      # {:trust_rejected, _} clause below already speaks the same language.
+      {:error, :not_takeable_here} -> {:error, "You don't have permission to take that."}
       {:error, :bad_arg} -> {:error, "You can't take that."}
       {:error, :fixed} -> {:error, "That's fixed in place."}
       _ -> {:error, "You can't take that."}

@@ -12,8 +12,8 @@ defmodule Commonplace.MUD.Cx2cmqContainerTakeTest do
   use ExUnit.Case, async: false
 
   alias Commonplace.Crypto.{NodeIdentity, Signing, SigningContext}
-  alias Commonplace.Green.Bursar
-  alias Commonplace.MUD.{Schemas, Take, World}
+  alias Commonplace.Green.{Bursar, BursarClient}
+  alias Commonplace.MUD.{Citizenship, Schemas, Take, World}
   alias Commonplace.MUD.Schemas.{Object, Room}
   alias Commonplace.Tree.Schema
   alias Yelixer.Encoding
@@ -60,12 +60,13 @@ defmodule Commonplace.MUD.Cx2cmqContainerTakeTest do
     on_exit(fn -> if Process.alive?(bursar_pid), do: GenServer.stop(bursar_pid) end)
 
     {:ok, node_ctx} = NodeIdentity.signing_context()
+    {:ok, node_id} = NodeIdentity.identity()
 
     root = mk_dir!(store, node_ctx)
     players = mk_dir!(store, node_ctx)
     add_dir_entry!(store, root, "players", players, node_ctx)
 
-    %{store: store, node_ctx: node_ctx, root: root, players: players}
+    %{store: store, node_ctx: node_ctx, node_id: node_id, root: root, players: players}
   end
 
   test "CURATED container: a visitor can withdraw an item they deposited (symmetric, no roach-motel)", %{
@@ -159,7 +160,86 @@ defmodule Commonplace.MUD.Cx2cmqContainerTakeTest do
     assert "key.obj" in entry_names(store, visitor_inv), "the item stays with the visitor (not eaten)"
   end
 
+  test "CX-cogd (FIX): a citizen deposits/drops/gives an :available economy item from their OWN home — acquire-on-:available", %{
+    store: store,
+    node_ctx: node_ctx,
+    node_id: node_id,
+    root: root
+  } do
+    # A curated container the citizen does NOT own (forces the elevated path).
+    room = share!(store, root, mk_room!(store, node_ctx), node_ctx)
+    shelf = mk_container!(store, node_ctx, "shelf")
+    add_dir_entry!(store, room, "shelf.obj", shelf, node_ctx)
+
+    # A real citizen: home + {:subtree,home}[:write] cert (the live provisioning).
+    {owner_id, owner_ctx} = fresh_identity()
+    {:ok, %{cert_cids: cids, home_room_uuid: home}} =
+      Citizenship.ensure(owner_id, owner_ctx.public_key, "owner", root, store)
+
+    owner_opts = [store: store, root_uuid: root, signing_context: owner_ctx, cert_cids: cids]
+
+    # Node-minted economy items (sig=NODE) with NO token (tok=:available) sitting
+    # in the citizen's own writable home — the exact live shape of fable's ingots.
+    ingot = mk_object!(store, node_ctx, "iron ingot")
+    add_file_entry!(store, home, "iron ingot.obj", ingot, node_ctx)
+    ore = mk_object!(store, node_ctx, "iron ore")
+    add_file_entry!(store, home, "iron ore.obj", ore, node_ctx)
+    coin = mk_object!(store, node_ctx, "tarnished-coin")
+    add_file_entry!(store, home, "tarnished-coin.obj", coin, node_ctx)
+
+    # DEPOSIT into the curated shelf → succeeds, item ends NODE-held (extractable).
+    assert :ok = World.deposit_item(ingot, "iron ingot.obj", home, shelf, owner_id, owner_opts)
+    assert "iron ingot.obj" in entry_names(store, shelf)
+    assert {:held, %{holder: ^node_id}} = BursarClient.query(Bursar, ingot)
+
+    # DROP into the room → succeeds.
+    assert :ok = World.drop_item(ore, "iron ore.obj", home, room, owner_id, owner_opts)
+    assert "iron ore.obj" in entry_names(store, room)
+
+    # GIVE to a recipient → succeeds, ends RECIPIENT-held.
+    {recipient_id, _} = fresh_identity()
+    recipient_inv = mk_dir!(store, node_ctx)
+    assert :ok = World.give_item(coin, "tarnished-coin.obj", home, recipient_inv, owner_id, recipient_id, owner_opts)
+    assert "tarnished-coin.obj" in entry_names(store, recipient_inv)
+    assert {:held, %{holder: ^recipient_id}} = BursarClient.query(Bursar, coin)
+  end
+
+  test "CX-cogd (ANTI-RAID): an item HELD BY ANOTHER player is still refused :not_holder — never acquired out from under its holder", %{
+    store: store,
+    node_ctx: node_ctx,
+    root: root
+  } do
+    room = share!(store, root, mk_room!(store, node_ctx), node_ctx)
+    shelf = mk_container!(store, node_ctx, "shelf")
+    add_dir_entry!(store, room, "shelf.obj", shelf, node_ctx)
+
+    {raider_id, _} = fresh_identity()
+    inv = mk_inventory!(store, node_ctx)
+
+    # An item whose token is HELD BY SOMEONE ELSE, sitting in the raider's inv
+    # (the desynced-ghost shape). Acquiring it would be a raid — must refuse.
+    {victim_id, _} = fresh_identity()
+    item = mk_object!(store, node_ctx, "stolen gem")
+    add_file_entry!(store, inv, "stolen gem.obj", item, node_ctx)
+    {:ok, _} = BursarClient.acquire(Bursar, item, victim_id, authenticated_as: victim_id)
+
+    result = World.deposit_item(item, "stolen gem.obj", inv, shelf, raider_id, store: store, root_uuid: root)
+    assert result == {:error, :not_holder}, "a token held by another player must NOT be acquirable: #{inspect(result)}"
+    assert {:held, %{holder: ^victim_id}} = BursarClient.query(Bursar, item), "victim keeps the token"
+  end
+
   # ---- helpers ----
+
+  defp add_file_entry!(store, parent_uuid, name, child_uuid, ctx) do
+    {:ok, schema} = Schemas.load_dir_schema(parent_uuid, store)
+    schema = Schema.add_file(schema, name, child_uuid)
+    {metadata, commit_opts} = Commonplace.MUD.SignedWrite.opts_for(parent_uuid, store: store, signing_context: ctx)
+
+    case Commonplace.Store.CommitStoreClient.create_chained_commit(store, parent_uuid, Encoding.encode_update(schema), metadata, commit_opts) do
+      {:error, _} = err -> raise "seed write failed: #{inspect(err)}"
+      _ -> :ok
+    end
+  end
 
   defp mk_dir!(store, ctx) do
     {:ok, uuid} = Schemas.create_dir_with_meta(nil, nil, store, signing_context: ctx)

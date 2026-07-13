@@ -83,19 +83,18 @@ defmodule Commonplace.MUD.HolderMove do
 
   defp elevated_push(item_uuid, name, from_dir, to_dir, from_holder, to_holder, store, bursar, opts) do
     with {:ok, node_ctx} <- NodeIdentity.signing_context(),
-         {:ok, _} <- BursarClient.transfer(bursar, item_uuid, from_holder, to_holder, authenticated_as: from_holder) do
-      elevated_opts =
-        [store: store, signing_context: node_ctx, cert_cids: []]
-        |> Keyword.merge(Keyword.take(opts, [:bursar, :ttl, :retries, :retry_ms, :precheck]))
-
-      case Move.move(item_uuid, name, from_dir, to_dir, elevated_opts) do
-        :ok ->
-          :ok
-
-        {:error, reason} ->
-          BursarClient.transfer(bursar, item_uuid, to_holder, from_holder, authenticated_as: to_holder)
-          {:error, reason}
-      end
+         {:ok, node_identity} <- NodeIdentity.identity(),
+         # CX-cogd — an item legitimately in the mover's own source dir may carry
+         # an :available (UNHELD) possession token (e.g. a node-minted economy
+         # item whose token was released). The transfer below needs `from_holder`
+         # to actually hold the token, so acquire it first — the deposit/drop/give
+         # mirror of Take's `ensure_node_holds` acquiring an :available room item.
+         # Returns `acquired?` so a downstream failure releases the acquire.
+         {:ok, acquired?} <-
+           ensure_mover_holds(item_uuid, from_holder, from_dir, node_identity, store, bursar, opts) do
+      do_transfer_and_move(
+        item_uuid, name, from_dir, to_dir, from_holder, to_holder, acquired?, node_ctx, store, bursar, opts
+      )
     else
       {:error, {:not_holder, _}} -> {:error, :not_holder}
       {:error, :holder_mismatch} -> {:error, :not_holder}
@@ -103,6 +102,74 @@ defmodule Commonplace.MUD.HolderMove do
       {:error, _} = err -> err
     end
   end
+
+  # CX-cogd — ensure `from_holder` holds the item's possession token so the
+  # elevated transfer can proceed. Three-way, keyed on the TOKEN (not tree
+  # location) so the anti-raid guard is exact:
+  #   * held-by-`from_holder` → nothing to do (`{:ok, false}`).
+  #   * held-by-OTHER → leave it; the transfer below refuses `:not_holder`
+  #     (THE anti-raid guard — never pull a token out from under another holder).
+  #   * :available (unheld) → ACQUIRE it for `from_holder`, but ONLY when that is
+  #     the node (node authority, exactly like Take acquiring a public room item)
+  #     OR the invoker owns the SOURCE dir (own-inventory pull). Never acquire an
+  #     unheld token out of a dir the invoker can't write.
+  # An :available token has no holder = no victim, so acquiring it is not a raid;
+  # the write-authority gate is what keeps it scoped to your own goods.
+  defp ensure_mover_holds(item_uuid, from_holder, from_dir, node_identity, store, bursar, opts) do
+    case BursarClient.query(bursar, item_uuid) do
+      {:held, %{holder: ^from_holder}} ->
+        {:ok, false}
+
+      {:held, %{holder: _other}} ->
+        {:ok, false}
+
+      :available ->
+        if from_holder == node_identity or invoker_can_write_all?(opts, [from_dir], store) do
+          case BursarClient.acquire(bursar, item_uuid, from_holder, authenticated_as: from_holder) do
+            {:ok, _} -> {:ok, true}
+            {:denied, _} -> {:error, :not_holder}
+            {:error, _} = err -> err
+          end
+        else
+          {:error, :not_holder}
+        end
+
+      {:error, _} ->
+        {:error, :not_holder}
+    end
+  end
+
+  defp do_transfer_and_move(item_uuid, name, from_dir, to_dir, from_holder, to_holder, acquired?, node_ctx, store, bursar, opts) do
+    case BursarClient.transfer(bursar, item_uuid, from_holder, to_holder, authenticated_as: from_holder) do
+      {:ok, _} ->
+        elevated_opts =
+          [store: store, signing_context: node_ctx, cert_cids: []]
+          |> Keyword.merge(Keyword.take(opts, [:bursar, :ttl, :retries, :retry_ms, :precheck]))
+
+        case Move.move(item_uuid, name, from_dir, to_dir, elevated_opts) do
+          :ok ->
+            :ok
+
+          {:error, reason} ->
+            # Move failed after the token moved to `to_holder` — roll BOTH back:
+            # transfer the token back, then release the acquire if we made one
+            # (net: the item stays put and the token returns to :available).
+            BursarClient.transfer(bursar, item_uuid, to_holder, from_holder, authenticated_as: to_holder)
+            if acquired?, do: BursarClient.release(bursar, item_uuid, from_holder, authenticated_as: from_holder)
+            {:error, reason}
+        end
+
+      {:error, terr} ->
+        # Transfer failed after a fresh acquire — release it so no token leaks.
+        if acquired?, do: BursarClient.release(bursar, item_uuid, from_holder, authenticated_as: from_holder)
+        normalize_holder_error(terr)
+    end
+  end
+
+  defp normalize_holder_error({:not_holder, _}), do: {:error, :not_holder}
+  defp normalize_holder_error(:holder_mismatch), do: {:error, :not_holder}
+  defp normalize_holder_error(:not_held), do: {:error, :not_holder}
+  defp normalize_holder_error(other), do: {:error, other}
 
   defp invoker_can_write_all?(opts, uuids, store) do
     cfg = Commonplace.Trust.config()
