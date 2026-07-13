@@ -1720,7 +1720,18 @@ defmodule Commonplace.MUD.Verbs do
   defp do_go(direction, ctx) do
     with {:ok, %Room{} = room} <- World.get_room(ctx.current_room_uuid, ctx.store),
          {:ok, dest_uuid} <- Map.fetch(room.exits, direction) |> wrap_fetch(),
-         :ok <- World.move(ctx.player_uuid, ctx.presence_filename, ctx.current_room_uuid, dest_uuid, write_opts(ctx)) do
+         # CX-avzp — route the presence move through the read-gated chokepoint:
+         # entering a room subscribes you to its event stream, so a private dest
+         # denies the move ATOMICALLY (no presence write, no subscribe, no
+         # eavesdrop) rather than only suppressing the later render.
+         :ok <-
+           World.move_presence(
+             ctx.player_uuid,
+             ctx.presence_filename,
+             ctx.current_room_uuid,
+             dest_uuid,
+             Keyword.put(write_opts(ctx), :viewer, taker_identity(ctx))
+           ) do
       World.broadcast_room(ctx.current_room_uuid, %{
         kind: :depart,
         who: ctx.player_name,
@@ -1740,6 +1751,7 @@ defmodule Commonplace.MUD.Verbs do
       :error -> {:error, "You can't go #{direction}."}
       {:error, :gone} -> {:error, "The way #{direction} closed behind you."}
       {:error, :collision} -> {:error, "Something blocks the way #{direction}."}
+      {:error, :read_denied} -> {:error, "That place is private."}
       {:error, {:trust_rejected, _}} -> {:error, "You don't have permission to go #{direction}."}
       _ -> {:error, "You can't go #{direction}."}
     end
@@ -2161,7 +2173,15 @@ defmodule Commonplace.MUD.Verbs do
   defp do_teleport(%Parser.Command{argv: [room_uuid | _]}, ctx) do
     case World.get_room(room_uuid, ctx.store) do
       {:ok, %Room{}} ->
-        case World.move(ctx.player_uuid, ctx.presence_filename, ctx.current_room_uuid, room_uuid, write_opts(ctx)) do
+        # CX-avzp — same read-gated chokepoint as `do_go`/`move_self`: teleport
+        # relocates presence (→ subscribe), so a private dest denies atomically.
+        case World.move_presence(
+               ctx.player_uuid,
+               ctx.presence_filename,
+               ctx.current_room_uuid,
+               room_uuid,
+               Keyword.put(write_opts(ctx), :viewer, taker_identity(ctx))
+             ) do
           :ok ->
             World.broadcast_room(ctx.current_room_uuid, %{
               kind: :depart,
@@ -2182,6 +2202,9 @@ defmodule Commonplace.MUD.Verbs do
 
           {:error, :collision} ->
             {:error, "Something blocks your arrival there."}
+
+          {:error, :read_denied} ->
+            {:error, "That place is private."}
 
           {:error, {:trust_rejected, _}} ->
             {:error, "You don't have permission to teleport there."}

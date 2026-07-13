@@ -287,12 +287,22 @@ defmodule Commonplace.MUD.World.Facade do
   def move_self(%__MODULE__{} = f, dest_room_uuid) when is_binary(dest_room_uuid) do
     f = unwrap(f)
 
-    World.move(
+    # CX-avzp — `move_self` is the THIRD presence-move vector (the plan's
+    # "future 3rd mover"; portal/trapdoor verbs): route it through the SAME
+    # read-gated chokepoint as `do_go`/`do_teleport` so a citizen-authored
+    # verb can't relocate the invoker's presence into a private room and
+    # subscribe them to its event stream. This is READ-scoping the presence
+    # channel, NOT a spatial-reachability boundary — teleport-to-any-PUBLIC-
+    # room (plan #6069) is untouched; only :capability_gated dests gate.
+    sc = (f.ctx || %{})[:signing_context]
+    viewer = sc && sc.identity_uuid
+
+    World.move_presence(
       f.ctx.player_uuid,
       f.ctx.presence_filename,
       f.ctx.current_room_uuid,
       dest_room_uuid,
-      write_opts(f)
+      Keyword.put(write_opts(f), :viewer, viewer)
     )
   end
 

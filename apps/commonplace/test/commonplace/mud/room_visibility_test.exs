@@ -349,16 +349,19 @@ defmodule Commonplace.MUD.RoomVisibilityTest do
       Process.sleep(50)
     end
 
-    test "a stranger's look on the gated room renders 'That place is private.' with no leak", ctx do
+    test "a stranger is refused ENTRY to the gated room (CX-avzp) — denied at the door, no leak", ctx do
       stranger_ctx = fresh_signing_context_look()
 
       stranger =
         start_look_player("stranger", ctx, signing_context: stranger_ctx)
 
+      # CX-avzp — the private-room denial now fires ATOMICALLY at the MOVE
+      # (@teleport routes through `World.move_presence`), not merely in the
+      # later `look` render: the stranger never enters, so the presence +
+      # eavesdrop leak is closed at the door. (The render gate itself — a
+      # viewer standing in a room they can't read — is covered directly by the
+      # `World.room_snapshot/4 gate` unit block above.)
       send_input_look(stranger, "@teleport #{ctx.private_room_uuid}")
-      drain_look("stranger")
-
-      send_input_look(stranger, "look")
       out = drain_look("stranger") |> Enum.join("\n")
 
       assert out =~ "That place is private."

@@ -61,6 +61,70 @@ defmodule Commonplace.MUD.World do
   end
 
   @doc """
+  CX-avzp — THE guarded presence-move chokepoint. Relocate a player's OWN
+  `.usr` presence into `dest_dir_uuid`, but ONLY after the destination's
+  read-visibility admits `opts[:viewer]`. Every path that moves a presence
+  — `do_go`, `do_teleport`, and the citizen-verb `Facade.move_self` —
+  MUST route through here so the gate is closed-by-construction against a
+  future 4th mover (a bare `move/5` is generic and shared with OBJECT moves
+  via `Facade.move_object`, so it is NOT gated directly).
+
+  ## Why gate a MOVE on a READ (nav ⟂ access-control coherence)
+
+  Placing presence in a room SUBSCRIBES the session to that room's live
+  event stream (`PlayerSession.handle_verb_result({:moved})` →
+  `Topics.subscribe_room`) and lists the player in its occupancy. A
+  private room's event-stream + occupancy IS read-scoped content, so
+  entering = subscribing = a READ. Gating the move on
+  `Trust.Read.authorized?` is therefore read-scoping the presence/event
+  channel — NOT a spatial-reachability security boundary (which plan
+  #6069 correctly forbids). Public rooms short-circuit `:ok` inside the
+  verifier, so this is a zero-behavior-change no-op for the overwhelming
+  majority of moves (no-regression).
+
+  Deny is ATOMIC: on `{:error, :read_denied}` NO presence write happens,
+  so no depart/arrive broadcast fires and — because the subscribe is
+  structurally downstream of the `{:moved}` result the callers only emit
+  on `:ok` — the denied player is NEVER subscribed (the eavesdrop leak is
+  closed by construction, not by suppressing the render after the fact).
+
+  Judged ONLY from the dest room's OWN carried, node-signed
+  `visibility`/`owner` fields (mirrors `room_snapshot/4` exactly), never
+  live occupancy/presence. A dest whose room meta does not load is — by
+  construction — NOT `:capability_gated` (privacy is DEFINED by the
+  readable visibility field), so the gate fails OPEN there: preserves
+  `do_go`'s no-regression for meta-less/legacy exit targets and is
+  provably never a privacy bypass.
+  """
+  def move_presence(player_uuid, presence_filename, source_dir_uuid, dest_dir_uuid, opts \\ [])
+      when is_binary(player_uuid) and is_binary(presence_filename) and
+             is_binary(source_dir_uuid) and is_binary(dest_dir_uuid) do
+    store = Keyword.get(opts, :store, CommitStoreClient)
+    viewer = Keyword.get(opts, :viewer)
+    move_opts = Keyword.delete(opts, :viewer)
+
+    case presence_read_gate(viewer, dest_dir_uuid, store) do
+      :ok -> move(player_uuid, presence_filename, source_dir_uuid, dest_dir_uuid, move_opts)
+      {:error, _} = denied -> denied
+    end
+  end
+
+  defp presence_read_gate(viewer, dest_dir_uuid, store) do
+    case get_room(dest_dir_uuid, store) do
+      {:ok, %Schemas.Room{} = room} ->
+        Commonplace.Trust.Read.authorized?(viewer, dest_dir_uuid,
+          visibility: room.visibility,
+          owner: room.owner,
+          store: store
+        )
+
+      # No loadable room meta ⇒ not a gated room (see moduledoc). Fail open.
+      {:error, _} ->
+        :ok
+    end
+  end
+
+  @doc """
   Take `item_uuid` (entry `name`) from `room_uuid` into `inventory_uuid`
   for the player identified by `taker_identity`, under enforce — the
   push-not-pull elevated node transfer (see `Commonplace.MUD.Take`).
