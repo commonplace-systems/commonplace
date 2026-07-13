@@ -722,6 +722,25 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
     refute msg =~ "errors have been logged", "the opaque log-pointer should be gone: #{msg}"
   end
 
+  # ---- CX-cj3t.11: @verb resolves a multi-word object name ----
+
+  test "CX-cj3t.11: `@verb <multi-word obj>:<verb>` resolves the multi-word target (enters the editor)", %{
+    store: store,
+    room_uuid: room_uuid,
+    inventory_uuid: inventory_uuid
+  } do
+    box_uuid = create_object(store, "brass strongbox")
+    :ok = add_dir_entry(store, room_uuid, "brass strongbox.obj", box_uuid)
+
+    ctx = base_ctx(store, room_uuid, inventory_uuid)
+
+    # Pre-fix, `@verb` resolved <target> as a single token so a spaced name
+    # ("brass strongbox") never matched — it errored instead of opening.
+    result = Verbs.dispatch(Parser.parse("@verb brass strongbox:swing"), ctx)
+    assert match?({:enter_editor, %{verb_name: "swing"}}, result),
+           "multi-word @verb target should open the editor, got: #{inspect(result)}"
+  end
+
   test "pin M2.2c (CX-z6ub): the `use` node BASELINE replies \"Nothing happens.\" on a fresh object", %{
     store: store,
     room_uuid: room_uuid,
