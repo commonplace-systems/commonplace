@@ -90,11 +90,31 @@ defmodule Commonplace.MUD.World do
 
   Judged ONLY from the dest room's OWN carried, node-signed
   `visibility`/`owner` fields (mirrors `room_snapshot/4` exactly), never
-  live occupancy/presence. A dest whose room meta does not load is — by
-  construction — NOT `:capability_gated` (privacy is DEFINED by the
-  readable visibility field), so the gate fails OPEN there: preserves
-  `do_go`'s no-regression for meta-less/legacy exit targets and is
-  provably never a privacy bypass.
+  live occupancy/presence.
+
+  ## Fail-direction (CX-orlm absence-vs-transient — plan-ruled)
+
+  The read can fail two structurally different ways, and they fail in
+  OPPOSITE directions:
+
+    * TRUE STRUCTURAL ABSENCE — the dir carries no `__room.json` entry at
+      all (`{:no_meta_entry, _}`), or the dest dir itself does not resolve.
+      By the P2 default-public model a dir with no visibility field is not
+      a gated room, and an absent dest makes the underlying `move` fail
+      cleanly on its own (no presence lands, no leak). Fail OPEN — this is
+      the no-regression case for meta-less/legacy exit targets.
+
+    * PRESENT-BUT-UNREADABLE — the `__room.json` entry EXISTS but its doc
+      could not be resolved or decoded (a `:capability_gated` room whose
+      meta-child commits have not replicated yet under catch-up sync, or a
+      corrupt body). The entry proves intent-to-carry-room-meta, so we
+      MUST NOT assume public in the read-error window. Fail CLOSED (deny)
+      — a known-private room must never leak just because its visibility
+      momentarily could not be read.
+
+  Distinguished by re-checking the dir schema: if the DIR resolves but the
+  meta child does not, the private-meta child is the unreadable part → deny;
+  if the dir itself is absent, let the move proceed and fail cleanly.
   """
   def move_presence(player_uuid, presence_filename, source_dir_uuid, dest_dir_uuid, opts \\ [])
       when is_binary(player_uuid) and is_binary(presence_filename) and
@@ -118,9 +138,21 @@ defmodule Commonplace.MUD.World do
           store: store
         )
 
-      # No loadable room meta ⇒ not a gated room (see moduledoc). Fail open.
-      {:error, _} ->
+      # STRUCTURAL ABSENCE — dir present, no __room.json entry: not a gated
+      # room (P2 default-public). Fail OPEN (no-regression for meta-less exits).
+      {:error, {:no_meta_entry, _}} ->
         :ok
+
+      # PRESENT-BUT-UNREADABLE vs DIR-ABSENT — see moduledoc fail-direction.
+      # Re-check the dir: dir resolves ⇒ the __room.json meta child is the
+      # unreadable part ⇒ can't read a known-private room's visibility ⇒ fail
+      # CLOSED. Dir itself absent ⇒ the move fails cleanly on its own ⇒ let it
+      # through (fail open) so callers keep their real "can't go there" error.
+      {:error, _} ->
+        case Schemas.load_dir_schema(dest_dir_uuid, store) do
+          {:ok, _} -> {:error, :read_denied}
+          _ -> :ok
+        end
     end
   end
 

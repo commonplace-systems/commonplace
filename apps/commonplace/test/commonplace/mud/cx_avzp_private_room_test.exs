@@ -134,13 +134,34 @@ defmodule Commonplace.MUD.CxAvzpPrivateRoomTest do
       refute World.move_presence("p", "x.usr", src, dest, store: store, viewer: nil) == {:error, :read_denied}
     end
 
-    test "an UNREADABLE dest (no room meta) fails OPEN — never a privacy bypass, preserves do_go",
+    test "a DIR-ABSENT dest (structural absence) fails OPEN — move fails cleanly on its own",
          %{store: store} do
       src = mint_room(store, %Room{name: "Src", description: "."})
-      # A random uuid with no room doc: privacy is DEFINED by readable meta, so
-      # this cannot be :capability_gated → the gate must not deny.
+      # A random uuid with no dir doc at all: true structural absence → the gate
+      # must not deny (the underlying move fails cleanly instead).
       refute World.move_presence("p", "x.usr", src, UUID.uuid4(), store: store, viewer: "stranger-id") ==
                {:error, :read_denied}
+    end
+
+    test "PRESENT-BUT-UNREADABLE meta fails CLOSED (CX-orlm absence-vs-transient): dir resolves, __room.json child missing",
+         %{store: store} do
+      src = mint_room(store, %Room{name: "Src", description: "."})
+
+      # A dir whose schema carries a __room.json ENTRY, but the meta child doc
+      # was never committed (models a :capability_gated room whose meta-child
+      # commits haven't replicated yet under catch-up sync). get_room returns
+      # {:no_doc, ...}, NOT {:no_meta_entry, ...} — so the gate must NOT assume
+      # public: it fails CLOSED (never leak a room whose visibility can't be read).
+      dir_uuid = UUID.uuid4()
+      dangling_meta_uuid = UUID.uuid4()
+      dir_doc = Schema.new_schema() |> Schema.add_file("__room.json", dangling_meta_uuid)
+      CommitStore.create_commit(store, dir_uuid, Encoding.encode_update(dir_doc), nil)
+
+      # sanity: the entry exists but its doc does not resolve
+      assert {:error, {:no_doc, _}} = Commonplace.MUD.Schemas.load_room(dir_uuid, store)
+
+      assert {:error, :read_denied} =
+               World.move_presence("p", "x.usr", src, dir_uuid, store: store, viewer: "stranger-id")
     end
   end
 
