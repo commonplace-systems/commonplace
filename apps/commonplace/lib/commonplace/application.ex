@@ -94,6 +94,16 @@ defmodule Commonplace.Application do
         # only (see its moduledoc) — no deps beyond being a plain Agent, so
         # it's safe to start unconditionally on every boot (dev/prod/test).
         Commonplace.MUD.SessionViewRegistry,
+        # CX-3xwu: filename-keyed presence registry — a PlayerSession
+        # registers its `.usr` presence_filename here on init and is
+        # auto-unregistered on process death (crash or clean-quit alike).
+        # `who` filters the tree-walk's `.usr` collection by membership
+        # here so stale presence ghosts (dead session, tree entry still
+        # present) don't render. Keys on live-session existence, NOT
+        # heartbeat recency. :duplicate because multiple pids may
+        # transiently share a key during handoff; any registration = live.
+        # Safe to start unconditionally alongside SessionViewRegistry above.
+        {Registry, keys: :duplicate, name: Commonplace.MUD.PresenceRegistry},
         # CX-z0v7 (condition 2): unified web+bot serve-side session cap
         # (concurrent-total + per-principal backstop). Generous defaults,
         # in-memory/restart-not-durable — see its moduledoc. Safe to start
