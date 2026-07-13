@@ -121,7 +121,8 @@ defmodule Commonplace.Application do
         compute_rehydrator_children() ++
         federation_pull_children() ++
         orchestrator_children() ++
-        bursar_children() ++ git_bridge_children() ++ workspace_lock_children(data_dir)
+        bursar_children() ++
+        ghost_reaper_children() ++ git_bridge_children() ++ workspace_lock_children(data_dir)
 
     opts = [strategy: :one_for_one, name: Commonplace.Supervisor]
 
@@ -233,6 +234,35 @@ defmodule Commonplace.Application do
             start:
               {Commonplace.Green.Bursar, :start_link,
                [[root_uuid: root_uuid, name: Commonplace.Green.Bursar]]},
+            restart: :permanent
+          }
+        ]
+
+      _ ->
+        []
+    end
+  end
+
+  @doc false
+  # CX-3xwu (A): the continuous ghost-reaper (Commonplace.MUD.GhostReaper).
+  # DOUBLE-GATED like bursar_children/0 — explicit opt-in
+  # (`:ghost_reaper_on_boot`, default false) AND a resolvable workspace root.
+  # Only the serve node (Mode B: COMMONPLACE_DATA_DIR + PHX_SERVER, see
+  # config/runtime.exs) opts in; web/MCP/tests/bare-`mix run` never start a
+  # reaper. The reaper is node-elevated (it GCs presences as world-owner) and is
+  # the highest-hazard component in the presence system, so it is gated behind an
+  # explicit flag AND runs ONLY where a node identity + workspace root exist.
+  def ghost_reaper_children do
+    enabled = Application.get_env(:commonplace, :ghost_reaper_on_boot, false)
+
+    case {enabled, Commonplace.Workspace.root_uuid()} do
+      {true, {:ok, root_uuid}} ->
+        [
+          %{
+            id: Commonplace.MUD.GhostReaper,
+            start:
+              {Commonplace.MUD.GhostReaper, :start_link,
+               [[root_uuid: root_uuid, name: Commonplace.MUD.GhostReaper]]},
             restart: :permanent
           }
         ]

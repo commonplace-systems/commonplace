@@ -107,6 +107,19 @@ defmodule Commonplace.MUD.SessionLimit do
     GenServer.call(__MODULE__, :count)
   end
 
+  @doc """
+  The pids of ATTACHED (`:live`) sessions — every live session of every kind
+  (web/bot/MCP/ephemeral all `admit+attach`). The authoritative liveness tracker
+  the `GhostReaper` reads (with `PresenceRegistry`) to build its fail-closed
+  dead-in-both live-set. Reserved-but-not-yet-attached slots are excluded (no pid
+  yet). Raises/exits if the limiter isn't running — the reaper treats that as
+  live-set incompleteness and aborts the run (fail-closed).
+  """
+  @spec live_pids() :: [pid()]
+  def live_pids do
+    GenServer.call(__MODULE__, :live_pids)
+  end
+
   ## Server
 
   # Slots are keyed by `ref` (a fresh `make_ref/0` per reservation):
@@ -186,6 +199,12 @@ defmodule Commonplace.MUD.SessionLimit do
       end)
 
     {:reply, %{total: map_size(state.slots), by_principal: by_principal}, state}
+  end
+
+  @impl true
+  def handle_call(:live_pids, _from, state) do
+    pids = for {_ref, {_principal, :live, pid, _monitor_ref}} <- state.slots, do: pid
+    {:reply, pids, state}
   end
 
   @impl true

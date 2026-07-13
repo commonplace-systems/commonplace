@@ -38,6 +38,11 @@ end
 if System.get_env("PHX_SERVER") && System.get_env("COMMONPLACE_DATA_DIR") do
   config :commonplace, workspace_lock_on_boot: true
   config :commonplace, bursar_on_boot: true
+  # CX-3xwu (A): the continuous ghost-reaper runs on the Mode-B serve (it needs
+  # the node identity + workspace root + the live SessionLimit/PresenceRegistry
+  # trackers). Explicit-flag gated in application.ex; can be disabled by omitting
+  # this (the reaper is node-elevated + the highest-hazard presence component).
+  config :commonplace, ghost_reaper_on_boot: true
 
   # CX-i9ca-adjacent (2026-07-11): a Mode-B serve must also make the
   # GitBridge find its mount mapping, or the workspace→git mirror silently
