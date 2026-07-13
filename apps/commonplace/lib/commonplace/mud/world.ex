@@ -349,7 +349,7 @@ defmodule Commonplace.MUD.World do
     name_score =
       cond do
         base == needle -> 4
-        String.contains?(base, needle) -> 2
+        word_prefix_match?(base, needle) -> 2
         true -> 0
       end
 
@@ -363,8 +363,8 @@ defmodule Commonplace.MUD.World do
             cond do
               dn == needle -> 4
               Enum.any?(aliases, &(&1 == needle)) -> 3
-              dn != "" and String.contains?(dn, needle) -> 2
-              Enum.any?(aliases, &String.contains?(&1, needle)) -> 1
+              dn != "" and word_prefix_match?(dn, needle) -> 2
+              Enum.any?(aliases, &word_prefix_match?(&1, needle)) -> 1
               true -> 0
             end
 
@@ -376,6 +376,18 @@ defmodule Commonplace.MUD.World do
       end
 
     max(name_score, obj_score)
+  end
+
+  # CX-ypgf — a partial (non-exact) noun match must anchor at a WORD boundary:
+  # the needle matches iff `haystack`, or one of its whitespace-separated words,
+  # STARTS WITH it. Prevents a short token / preposition matching mid-word
+  # ('on' → 'ir**on** ingot', so 'step on warppad' wrongly resolved the carried
+  # iron ingot). Prefix (not just whole-word) matching keeps the MUD convention
+  # that you can type the start of a noun ('ingot' → 'iron ingot', 'warp' →
+  # 'warppad').
+  defp word_prefix_match?(haystack, needle) do
+    String.starts_with?(haystack, needle) or
+      haystack |> String.split() |> Enum.any?(&String.starts_with?(&1, needle))
   end
 
   defp strip_extension(name) do

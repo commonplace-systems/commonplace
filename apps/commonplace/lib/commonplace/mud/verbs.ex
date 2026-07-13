@@ -1439,9 +1439,15 @@ defmodule Commonplace.MUD.Verbs do
     end
   end
 
+  # CX-ypgf (jes comment) — accept surface-flavored prepositions as aliases of
+  # "in" so `put brass key on tithe-plate` / `put ingot into forge` work like
+  # `put ... in ...` (a plate/altar/pedestal begs for "on"). Splits on the FIRST
+  # preposition token; both item and container phrases may still be multi-word.
+  @put_prepositions ~w(in into on onto)
+
   defp split_on_in(argv) do
-    case Enum.split_while(argv, fn w -> String.downcase(w) != "in" end) do
-      {item_words, [_in | rest]} -> {item_words, rest}
+    case Enum.split_while(argv, fn w -> String.downcase(w) not in @put_prepositions end) do
+      {item_words, [_prep | rest]} -> {item_words, rest}
       {_all, []} -> {argv, []}
     end
   end
