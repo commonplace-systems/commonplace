@@ -192,6 +192,18 @@ defmodule Commonplace.MUD.PlayerSession do
         Topics.subscribe_room(state.current_room_uuid)
         Topics.subscribe_player_tell(state.player_uuid)
 
+        # CX-3xwu: register this live session under its `.usr` presence
+        # filename so `who` can filter out stale presence ghosts (a
+        # tree-walk `.usr` entry with no live process behind it). The
+        # registration lives exactly as long as this process — died,
+        # crashed, or clean-quit, Registry auto-unregisters. Guarded so a
+        # missing registry (e.g. a test that starts PlayerSession without
+        # booting the full app) never crashes session startup.
+        if is_binary(state.presence_filename) and
+             Process.whereis(Commonplace.MUD.PresenceRegistry) do
+          Registry.register(Commonplace.MUD.PresenceRegistry, state.presence_filename, nil)
+        end
+
         send(self(), :greet)
         {:ok, state}
 

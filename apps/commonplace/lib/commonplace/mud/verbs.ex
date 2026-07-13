@@ -1648,7 +1648,11 @@ defmodule Commonplace.MUD.Verbs do
   end
 
   defp do_who(ctx) do
-    names = walk_collect_players(ctx.root_uuid, ctx.store) |> Enum.sort() |> Enum.uniq()
+    names =
+      walk_collect_players(ctx.root_uuid, ctx.store)
+      |> Enum.filter(&live_presence?/1)
+      |> Enum.sort()
+      |> Enum.uniq()
 
     text =
       case names do
@@ -1657,6 +1661,15 @@ defmodule Commonplace.MUD.Verbs do
       end
 
     {:reply, text}
+  end
+
+  # CX-3xwu: a collected `.usr` name renders in `who` IFF a live session is
+  # registered for it in PresenceRegistry. Keys purely on live-session
+  # registration (auto-removed on process death), NOT heartbeat recency —
+  # a live-but-slow player still shows; a dead session's stale `.usr` tree
+  # entry doesn't.
+  defp live_presence?(name) do
+    Registry.lookup(Commonplace.MUD.PresenceRegistry, "#{name}.usr") != []
   end
 
   defp walk_collect_players(dir_uuid, store) do
