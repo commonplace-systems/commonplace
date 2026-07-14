@@ -71,13 +71,12 @@ defmodule Commonplace.MUD.CxK20zSandboxReproTest do
 
   @fixture Path.join([__DIR__, "..", "..", "fixtures", "cx_k20z_start_meta_precorruption.bin"])
 
-  @tag skip: "CX-k20z: RED reproduction of the write_meta_doc CRDT corruption — un-skip when fixed"
-  test "DETERMINISTIC REPRO (fixture): the live 'start' pre-corruption CRDT state + one write_meta_doc → EMPTY", ctx do
+  test "REGRESSION (fixture): the live 'start' pre-corruption CRDT state + write_meta_doc reconstructs INTACT (CX-k20z fix)", ctx do
     # The captured 1973-byte CRDT state of the live 'start' room's __room.json
-    # (valid 903-char content) — reconstructing it + a single write_meta_doc
-    # (delete-all-reinsert) empties the doc on RECONSTRUCT (the in-memory doc is
-    # correct; the encode_update/reconstruct round-trip is where it corrupts).
-    # NOT client-id (funnel and distinct both empty), NOT sandbox, NOT multi-byte.
+    # (valid 903-char content). PRE-FIX: a single write_meta_doc (delete-all-
+    # reinsert) emptied the doc on reconstruct (delete-set over-cover tombstoned
+    # the fresh insert). POST-FIX (minimal-diff + pre-commit round-trip verify):
+    # the write reconstructs INTACT. The permanent regression pin for the fix.
     state_bin = File.read!(@fixture)
     meta = UUID.uuid4()
     CommitStore.create_commit(ctx.store, meta, state_bin, nil, %{}, signing_context: ctx.node_ctx)
@@ -176,5 +175,20 @@ defmodule Commonplace.MUD.CxK20zSandboxReproTest do
     IO.puts("[k20z fresh] get_room after sandbox open_exit => #{inspect(gr) |> String.slice(0, 140)}")
     assert {:ok, %Room{exits: exits}} = gr
     assert exits["north"] == ctx.commons
+  end
+
+  test "NON-DEGENERACY GUARD: a write with NO shared prefix/suffix anchor is REFUSED, never full-deletes", ctx do
+    # write_meta_doc's safety rests on a live prefix/suffix anchor (JSON always
+    # shares {"…"}). If a future content shape shares NOTHING with the current on
+    # a non-empty doc, the minimal-diff would degenerate to delete_text(0,len) =
+    # the CX-k20z bug — so it must REFUSE loudly, not silently full-delete.
+    {:ok, meta} = Schemas.create_meta_doc("aaa-first-content-here", ctx.store, signing_context: ctx.node_ctx)
+    # a replacement sharing no prefix (a≠z) and no suffix (e≠!) with the current:
+    assert {:error, :meta_write_no_anchor} =
+             Schemas.write_meta_doc(meta, "zzz-totally-different!", ctx.store, signing_context: ctx.node_ctx)
+
+    # the original content is UNTOUCHED (refused before any write).
+    {:ok, doc} = Commonplace.Tree.DocBuilder.reconstruct_doc(ctx.store, meta)
+    assert Commonplace.Document.ContentType.get_content(doc) == "aaa-first-content-here"
   end
 end

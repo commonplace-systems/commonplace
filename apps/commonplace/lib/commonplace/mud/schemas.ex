@@ -370,15 +370,88 @@ defmodule Commonplace.MUD.Schemas do
     hand = SignedWrite.hand_for(uuid, opts)
     {:ok, doc} = DocBuilder.reconstruct_doc(store, uuid, client_id: hand)
     current = ContentType.get_content(doc) || ""
-    doc = if current != "", do: ContentType.delete_text(doc, 0, String.length(current)), else: doc
-    doc = ContentType.insert_text(doc, 0, json)
-    update = Encoding.encode_update(doc)
-    {metadata, commit_opts} = SignedWrite.opts_for(uuid, Keyword.put(opts, :store, store))
 
-    case CommitStoreClient.create_chained_commit(store, uuid, update, metadata, commit_opts) do
-      {:error, _} = err -> err
-      _commit -> :ok
+    with {:ok, edited} <- replace_text_minimal(doc, current, json),
+         update = Encoding.encode_update(edited),
+         :ok <- verify_meta_roundtrip(store, uuid, update, json) do
+      {metadata, commit_opts} = SignedWrite.opts_for(uuid, Keyword.put(opts, :store, store))
+
+      case CommitStoreClient.create_chained_commit(store, uuid, update, metadata, commit_opts) do
+        {:error, _} = err -> err
+        _commit -> :ok
+      end
     end
+  end
+
+  # CX-k20z — MINIMAL-DIFF text replace, replacing the OLD delete-all(0,len) +
+  # insert-all(0,json). The delete-all-reinsert re-tombstones the WHOLE doc; on a
+  # chained-commit reconstruct (each commit is a full-state snapshot re-folded via
+  # apply_update — doc_builder.ex:125-126 warns this), that whole-doc delete_set
+  # OVER-COVERS the new insert's fresh clock range → the insert integrates but is
+  # born-TOMBSTONED → the doc reconstructs EMPTY (the live "start" room data-loss;
+  # fixture cx_k20z_start_meta_precorruption.bin). Replacing ONLY the changed
+  # MIDDLE span keeps the common prefix/suffix items LIVE (JSON meta always shares
+  # the `{"kind":"…"}` scaffolding → always ≥1 anchor), so it NEVER emits a
+  # full-doc delete. Grapheme-indexed to match `delete_text`/`insert_text`.
+  # Idempotent (equal content → no-op edit). Verified on the real fixture across
+  # tiny/big/total-replace diffs.
+  #
+  # NON-DEGENERACY GUARD (plan #8157): if there is NO shared prefix/suffix anchor
+  # on a non-empty doc, a minimal-diff would degenerate to the exact
+  # delete_text(0,len) that reintroduces the bug — so REFUSE it loudly
+  # (`:meta_write_no_anchor`) rather than silently full-delete. The structural
+  # safety rests on a non-empty anchor; this makes that invariant explicit +
+  # enforced, not incidental. (Unreachable for JSON meta; defensive for any
+  # future content shape.)
+  defp replace_text_minimal(doc, current, new) do
+    cur_g = String.graphemes(current)
+    new_g = String.graphemes(new)
+    p = common_run(cur_g, new_g)
+    s = common_run(Enum.reverse(cur_g), Enum.reverse(new_g), min(length(cur_g), length(new_g)) - p)
+
+    cond do
+      current == "" ->
+        # fresh doc — a pure insert, no delete (not a degenerate full-replace).
+        {:ok, if(new == "", do: doc, else: ContentType.insert_text(doc, 0, new))}
+
+      p == 0 and s == 0 ->
+        {:error, :meta_write_no_anchor}
+
+      true ->
+        del_len = length(cur_g) - p - s
+        ins = new_g |> Enum.slice(p, length(new_g) - p - s) |> Enum.join()
+        doc = if del_len > 0, do: ContentType.delete_text(doc, p, del_len), else: doc
+        {:ok, if(ins != "", do: ContentType.insert_text(doc, p, ins), else: doc)}
+    end
+  end
+
+  # CX-k20z (plan #8157) — PRE-COMMIT round-trip verify: the write_meta_doc write
+  # is a full-state snapshot re-folded on reconstruct (doc_builder.ex:125); a bad
+  # fold empties/garbles the doc with NO error (the CX-k20z silent-loss). Simulate
+  # the commit fold — apply the prospective `update` onto the CURRENT committed
+  # state (= what reconstruct-after-commit will do) — and assert the reconstructed
+  # content == the intended json BEFORE committing. On mismatch, ABORT the write
+  # fail-CLOSED (`:meta_write_roundtrip_failed`) rather than commit an emptying
+  # write. Turns the whole silent-loss class into loud, pre-commit rejection.
+  # Meta writes are infrequent → the extra reconstruct is negligible.
+  defp verify_meta_roundtrip(store, uuid, update, intended) do
+    with {:ok, base} <- DocBuilder.reconstruct_doc(store, uuid),
+         {:ok, merged} <- Encoding.apply_update(base, update),
+         ^intended <- ContentType.get_content(merged) do
+      :ok
+    else
+      _ -> {:error, :meta_write_roundtrip_failed}
+    end
+  end
+
+  # length of the leading run of equal graphemes, capped at `limit` (default: no cap).
+  defp common_run(a, b, limit \\ nil) do
+    n =
+      Enum.zip(a, b)
+      |> Enum.take_while(fn {x, y} -> x == y end)
+      |> length()
+
+    if is_integer(limit), do: min(n, max(limit, 0)), else: n
   end
 
   @doc """
