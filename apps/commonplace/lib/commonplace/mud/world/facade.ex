@@ -349,6 +349,110 @@ defmodule Commonplace.MUD.World.Facade do
   end
 
   @doc """
+  CX-open_exit (plan design-doc 2026-07-13; CX-9tbi/CX-f0od "puzzle-reward-
+  unreachable") — open a navigation exit `dir => dest_uuid` on the invoker's
+  CURRENT room. The sandboxed-safe-verb, trust-gated analogue of the builder's
+  surgical exit-add (the CX-cl65 `merge_meta("exits")`): a citizen puzzle-reward
+  verb can make a passage appear ("the floor-seal grinds open"). It is a DATA
+  write to the room's navigation graph, NOT code — write ⟂ execute holds (it
+  creates/modifies no verb doc, reaches no `:execute`/`:define_verb`).
+
+  SOURCE is SERVER-RESOLVED (`f.ctx.current_room_uuid`) — never caller-supplied,
+  so a verb can't restructure an arbitrary room. Three gates:
+
+    * Gate A (SOURCE authority) — the write runs through `write_guarded([source],
+      [room_meta_authority(source)])`, the EXISTING room-`:write`/host-gate: a
+      citizen may open exits only in a zone they hold `:write` over (own home); a
+      node-authored verb on a CURATED (node-owned) room elevates via
+      `object_owner_authority` (definer's-rights — the coo8/CX-2cmq host-gate); a
+      visitor in a room they don't own → denied. NO new cert — it is a `:write` on
+      the `exits` field, done safely.
+    * Gate B (DEST scope, anti-intrusion) — `dest_uuid` must be a valid ROOM whose
+      zone is either the invoker's OWN (they can `:write` it) OR curated/public
+      (`Take.curated_public_room?`, the CX-2cmq reachable-from-root-excluding-
+      `players/` discriminator). A dest in ANOTHER principal's private `players/…`
+      zone → `{:error, :dest_forbidden}`. Judged on the INVOKER's authority (never
+      the elevated node), so a curated verb ALSO can't wire a passage into a
+      stranger's home. navigation ⟂ access-control: the exit grants only WALK-
+      access; the dest's content stays protected by read-scoping/write-gating.
+    * Gate C (idempotent + non-clobbering) — `dir` free or already `=> dest_uuid`
+      → add / no-op (re-running the reward verb never dups or errors); `dir` taken
+      by a DIFFERENT dest → `{:error, :exit_exists}` (NEVER silently reroute — that
+      is the trap/misdirection vector; open_exit is ADD-ONLY). close/reroute is a
+      deferred, higher-gated primitive.
+
+  Gate B + Gate C run INSIDE `write_guarded`'s closure, so Gate A (reach +
+  authority) refuses an unauthorized opener BEFORE any dest classification (no
+  info leak) or write. The write is SURGICAL — `merge_meta(%{"exits" => new})`
+  replaces only the `exits` key, leaving the node-signed `zone` stamp and every
+  other protected field byte-identical (CX-cl65). Returns `:ok | {:error, _}`.
+  """
+  @spec open_exit(t(), String.t(), String.t()) :: :ok | {:error, term()}
+  def open_exit(%__MODULE__{} = f, dir, dest_uuid) when is_binary(dir) and is_binary(dest_uuid) do
+    f = unwrap(f)
+    source = f.ctx[:current_room_uuid]
+
+    if not is_binary(source) or dir == "" do
+      {:error, :bad_arg}
+    else
+      write_guarded(f, [source], [room_meta_authority(source, f)], fn ->
+        # Gate B (dest-scope) judged on the INVOKER even under node elevation, then
+        # Gate C (idempotent/non-clobber) via the source room's current exits.
+        with :ok <- dest_allowed?(f, dest_uuid) do
+          add_exit_surgically(f, source, dir, dest_uuid)
+        end
+      end)
+    end
+  end
+
+  def open_exit(%__MODULE__{}, _dir, _dest_uuid), do: {:error, :bad_arg}
+
+  # Gate B — the dest must be a valid ROOM whose zone the INVOKER may point at:
+  # their OWN (writable) zone, or a curated/public room (CX-2cmq reachability,
+  # players/-pruned). Judged on `f.ctx` (the invoker) — NEVER the elevated node —
+  # so a node-authored curated verb can't wire a passage into a stranger's home.
+  defp dest_allowed?(f, dest_uuid) do
+    case World.get_room(dest_uuid, f.store) do
+      {:ok, _room} ->
+        if invoker_can_write_all?(f, [room_meta_authority(dest_uuid, f)]) or
+             Commonplace.MUD.Take.curated_public_room?(dest_uuid, f.ctx[:root_uuid], f.store) do
+          :ok
+        else
+          {:error, :dest_forbidden}
+        end
+
+      {:error, _} ->
+        {:error, :no_such_dest}
+    end
+  end
+
+  # Gate C + the surgical write — add-only, non-clobbering, idempotent. Only the
+  # `exits` key is written (merge_meta preserves zone stamp + every other field).
+  defp add_exit_surgically(f, source, dir, dest_uuid) do
+    case World.get_room(source, f.store) do
+      {:ok, room} ->
+        exits = room.exits || %{}
+
+        case Map.get(exits, dir) do
+          ^dest_uuid ->
+            # already points there — idempotent no-op (re-run safe), no write.
+            :ok
+
+          nil ->
+            new_exits = Map.put(exits, dir, dest_uuid)
+            World.merge_meta(source, Schemas.room_filename(), %{"exits" => new_exits}, f.store, write_opts(f))
+
+          _other ->
+            # dir taken by a DIFFERENT dest — refuse, never silently reroute.
+            {:error, :exit_exists}
+        end
+
+      {:error, _} ->
+        {:error, :no_source_room}
+    end
+  end
+
+  @doc """
   DEPRECATED (CX-cj3t.6) — retired for authors, drops the write.
 
   `set_attr` merged an author-chosen key into the host's meta at the TOP LEVEL,
@@ -1949,6 +2053,14 @@ defmodule Commonplace.MUD.World.Facade do
   defp sanitize_reason(:recipient_not_here), do: :recipient_not_here
   defp sanitize_reason(:not_here), do: :not_here
   defp sanitize_reason(:rate_limited), do: :rate_limited
+  # CX-open_exit — clean, author-branchable outcomes (like :not_carrying): the
+  # reward verb legitimately distinguishes "dir already taken by a different
+  # dest" / "that dest is out of bounds" / "dest isn't a room" from a generic
+  # refusal. Permission-class denials (owner_grant_exceeded/trust_rejected) still
+  # sanitize to :refused above.
+  defp sanitize_reason(:exit_exists), do: :exit_exists
+  defp sanitize_reason(:dest_forbidden), do: :dest_forbidden
+  defp sanitize_reason(:no_such_dest), do: :no_such_dest
   # Closed-by-default catch-all — every other reason (unknown atom,
   # string, nested/compound tuple, anything future) → the safe generic.
   defp sanitize_reason(_other), do: :refused

@@ -279,6 +279,25 @@ defmodule Commonplace.MUD.Take do
 
   def player_zone?(_zone_uuid, _root_uuid, _store), do: false
 
+  @doc """
+  CX-open_exit / CX-2cmq — is `room_uuid` a CURATED/PUBLIC room: reachable from
+  the world `root` via dir containment with the `players/` subtree PRUNED (so no
+  player home room ever counts as public)? This is the EXACT reachability
+  discriminator the deposit/extraction gate uses (`shared_curated_takeable?`),
+  exposed for `Facade.open_exit`'s Gate B (dest-scope): a citizen may point a new
+  exit at a curated/public room OR their own zone, but NEVER into another
+  principal's private (`players/…`) zone. Fail-CLOSED on a non-binary/unresolvable
+  root (can't POSITIVELY classify → not curated).
+  """
+  @spec curated_public_room?(String.t() | nil, String.t() | nil, GenServer.server()) :: boolean()
+  def curated_public_room?(room_uuid, root, store \\ CommitStoreClient)
+
+  def curated_public_room?(room_uuid, root, store) when is_binary(room_uuid) and is_binary(root) do
+    shared_curated_takeable?(room_uuid, root, store)
+  end
+
+  def curated_public_room?(_room_uuid, _root, _store), do: false
+
   # DFS over directory containment from `start`, returning true as soon as
   # `target` is found. Never descends into `prune` (the `players/` subtree
   # for the shared check; `nil` for the own-home check). Cycle-guarded. Only

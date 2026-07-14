@@ -86,7 +86,13 @@ defmodule Commonplace.MUD.SafeVerb.Allowlist do
                     {:actor_name, 1},
                     {:actor_ref, 1},
                     # CX-<notify> — invoker-PRIVATE non-speech feedback.
-                    {:notify, 2}
+                    {:notify, 2},
+                    # CX-open_exit (plan design-doc 2026-07-13) — trust-gated
+                    # exit-mutation: a DATA write to the source room's `exits` map
+                    # (write ⟂ execute; no new cert). Gate A (source room-:write /
+                    # curated host-gate), Gate B (dest self-or-public, anti-
+                    # intrusion, judged on the invoker), Gate C (idempotent/add-only).
+                    {:open_exit, 3}
                   ])
 
   @profile %Profile{
