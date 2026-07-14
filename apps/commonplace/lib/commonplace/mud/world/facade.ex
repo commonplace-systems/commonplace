@@ -386,6 +386,22 @@ defmodule Commonplace.MUD.World.Facade do
   info leak) or write. The write is SURGICAL — `merge_meta(%{"exits" => new})`
   replaces only the `exits` key, leaving the node-signed `zone` stamp and every
   other protected field byte-identical (CX-cl65). Returns `:ok | {:error, _}`.
+
+  ## Residuals (plan-named #8127, non-blocking)
+
+  1. **Existence-oracle.** `:dest_forbidden` vs `:no_such_dest` lets an opener who
+     already holds Gate-A authority on their OWN source distinguish "a private/
+     player room exists at `dest`" from "no room at `dest`." Acceptable: reaching
+     Gate B needs source authority, room uuids are unguessable/non-enumerable, and
+     the disclosure is minimal (you can neither wire to it nor reach it). IF dest
+     uuids ever become enumerable, collapse both reasons to one.
+  2. **Gate-C is best-effort, not a lock.** The read-exits-then-write is not
+     atomic: two concurrent opens of the SAME free `dir` to DIFFERENT dests both
+     pass the `:exit_exists` read, then CRDT-merge to a last-writer-wins single
+     dest. Not a hole (both openers had source authority; add-only never reroutes
+     an EXISTING exit) — the same non-atomic-CRDT class every cross-doc op lives
+     with. The guard defends against sequential re-runs (the reward-verb case),
+     not concurrent contention on a brand-new dir.
   """
   @spec open_exit(t(), String.t(), String.t()) :: :ok | {:error, term()}
   def open_exit(%__MODULE__{} = f, dir, dest_uuid) when is_binary(dir) and is_binary(dest_uuid) do
