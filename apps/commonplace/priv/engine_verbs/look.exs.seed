@@ -1,0 +1,52 @@
+defmodule Commonplace.MUD.EngineLook do
+  @moduledoc "Doc-hosted `look` verb (CX-aya0, MUD-as-documents Inc-2 / B1). Hot-editable."
+
+  alias Commonplace.MUD.Schemas
+  alias Commonplace.MUD.Schemas.Player
+  alias Commonplace.MUD.World
+
+  def run(%Commonplace.MUD.Parser.Command{argv: []}, ctx), do: {:reply, render_room(ctx)}
+
+  def run(%Commonplace.MUD.Parser.Command{target: target}, ctx) when target in ["here", "room"] do
+    {:reply, render_room(ctx)}
+  end
+
+  def run(%Commonplace.MUD.Parser.Command{target: target}, ctx) when target in ["me", "self", "myself"] do
+    case Schemas.load_player(ctx.player_dir_uuid, ctx.store) do
+      {:ok, %Player{} = pl} ->
+        title = if pl.title == "", do: pl.name, else: pl.title
+        {:reply, "#{title}\n#{pl.description}"}
+
+      _ ->
+        {:reply, ctx.player_name}
+    end
+  end
+
+  defp render_room(ctx) do
+    case World.room_snapshot(ctx.current_room_uuid, ctx.presence_filename, ctx.store, viewer: identity(ctx)) do
+      {:ok, %{name: name, desc: desc, exits: exits, contents: objects, occupants: players}} ->
+        exit_dirs = Enum.map(exits, fn {dir, _to} -> dir end)
+
+        IO.iodata_to_binary([
+          "== ", name, " ==\n",
+          desc, "\n",
+          if(exit_dirs == [], do: "Exits: (none)\n", else: ["Exits: ", Enum.join(exit_dirs, ", "), "\n"]),
+          if(objects == [], do: "", else: ["You see: ", Enum.join(objects, ", "), "\n"]),
+          if(players == [], do: "", else: ["Players: ", Enum.join(players, ", "), "\n"])
+        ])
+
+      {:error, :read_denied} ->
+        "That place is private."
+
+      {:error, _} ->
+        "(this place has no description)"
+    end
+  end
+
+  defp identity(ctx) do
+    case ctx[:signing_context] do
+      %{identity_uuid: id} when is_binary(id) -> id
+      _ -> nil
+    end
+  end
+end

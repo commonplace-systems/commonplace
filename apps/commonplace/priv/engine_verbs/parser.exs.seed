@@ -1,0 +1,46 @@
+defmodule Commonplace.MUD.EngineParser do
+  @moduledoc "Doc-hosted MUD command parser (CX-2xez Inc-1). Hot-editable."
+
+  @direction_aliases %{
+    "n" => "north",
+    "s" => "south",
+    "e" => "east",
+    "w" => "west",
+    "u" => "up",
+    "d" => "down"
+  }
+
+  @verb_aliases Map.merge(@direction_aliases, %{
+                  "i" => "inventory",
+                  "inv" => "inventory",
+                  "l" => "look",
+                  "'" => "say",
+                  "\"" => "say"
+                })
+
+  def parse(line) when is_binary(line) do
+    line = String.trim(line)
+
+    case line do
+      "" ->
+        %Commonplace.MUD.Parser.Command{}
+
+      <<"'", rest::binary>> when rest != "" ->
+        %Commonplace.MUD.Parser.Command{verb: "say", args: rest, argv: [rest], target: nil}
+
+      _ ->
+        {verb_word, args} = split_first(line)
+        verb = Map.get(@verb_aliases, String.downcase(verb_word), String.downcase(verb_word))
+        argv = if args == "", do: [], else: String.split(args, ~r/\s+/, trim: true)
+        target = List.first(argv)
+        %Commonplace.MUD.Parser.Command{verb: verb, args: args, argv: argv, target: target}
+    end
+  end
+
+  defp split_first(line) do
+    case String.split(line, ~r/\s+/, parts: 2) do
+      [verb] -> {verb, ""}
+      [verb, rest] -> {verb, rest}
+    end
+  end
+end

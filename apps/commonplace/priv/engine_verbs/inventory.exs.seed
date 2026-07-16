@@ -1,0 +1,26 @@
+defmodule Commonplace.MUD.EngineInventory do
+  @moduledoc "Doc-hosted `inventory` verb (CX-aya0, MUD-as-documents Inc-2 / B2). Hot-editable."
+
+  alias Commonplace.MUD.Schemas
+  alias Commonplace.MUD.Schemas.Object
+  alias Commonplace.MUD.World
+
+  def run(_cmd, ctx) do
+    items =
+      World.list_objects_in(ctx.inventory_uuid, ctx.store)
+      |> Enum.map(fn e ->
+        case Schemas.load_object(e.node_id, ctx.store) do
+          {:ok, %Object{name: name}} -> name
+          _ -> e.name
+        end
+      end)
+
+    text =
+      case items do
+        [] -> "You are carrying nothing."
+        _ -> "You are carrying:\n  - " <> Enum.join(items, "\n  - ")
+      end
+
+    {:reply, text}
+  end
+end

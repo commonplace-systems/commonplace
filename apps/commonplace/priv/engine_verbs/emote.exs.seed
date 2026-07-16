@@ -1,0 +1,12 @@
+defmodule Commonplace.MUD.EngineEmote do
+  @moduledoc "Doc-hosted `emote` verb (CX-aya0, MUD-as-documents Inc-2 / B2). Hot-editable."
+
+  alias Commonplace.MUD.World
+
+  def run(%Commonplace.MUD.Parser.Command{args: ""}, _ctx), do: {:error, "Emote what?"}
+
+  def run(%Commonplace.MUD.Parser.Command{args: text}, ctx) do
+    World.broadcast_room(ctx.current_room_uuid, %{kind: :emote, who: ctx.player_name, text: text})
+    :ok
+  end
+end

@@ -58,21 +58,14 @@ defmodule Commonplace.Chat.TemplateBootstrap do
   # share one source-of-truth string. Public accessor at
   # `chat_compute_source/0` lets `Chat.Rooms.upgrade_compute_to_m7/3`
   # reuse the same string for per-room migration.
-  @chat_compute_source ~S"""
-  defmodule Commonplace.UserCode.Chat.Compute do
-    alias Commonplace.Compute
-
-    def compute(raw, ctx) do
-      raw
-      |> Compute.decode_json_array()
-      |> Compute.materialize(chains: [
-        {:edit_of, :latest_replaces},
-        {:tombstone_of, :marks_deleted}
-      ])
-      |> Commonplace.Chat.ChatViewBuilder.build_view_xml(ctx.room_name)
-    end
-  end
-  """
+  # CX-6pbu (self-hosting slice 3): the source body itself now lives in
+  # `priv/chat/compute.exs.seed`, loaded at COMPILE time (same
+  # `@external_resource` + `File.read!` pattern as
+  # `Commonplace.MUD.SeedWorld`'s bundle) — the beam carries the content,
+  # no runtime priv lookup. Zero behavior change.
+  chat_compute_path = Path.join([__DIR__, "..", "..", "..", "priv", "chat", "compute.exs.seed"])
+  @external_resource chat_compute_path
+  @chat_compute_source File.read!(chat_compute_path)
 
   @doc """
   Public accessor for the canonical chat compute source. Used by

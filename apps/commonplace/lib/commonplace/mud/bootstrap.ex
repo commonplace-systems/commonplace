@@ -55,54 +55,15 @@ defmodule Commonplace.MUD.Bootstrap do
   # references, not owns). Editing this doc hot-reloads the grammar live.
   @engine_parser_uuid "aa11bb22-cc33-4d44-8e55-ff6677889900"
 
-  @engine_parser_source ~S'''
-  defmodule Commonplace.MUD.EngineParser do
-    @moduledoc "Doc-hosted MUD command parser (CX-2xez Inc-1). Hot-editable."
-
-    @direction_aliases %{
-      "n" => "north",
-      "s" => "south",
-      "e" => "east",
-      "w" => "west",
-      "u" => "up",
-      "d" => "down"
-    }
-
-    @verb_aliases Map.merge(@direction_aliases, %{
-                    "i" => "inventory",
-                    "inv" => "inventory",
-                    "l" => "look",
-                    "'" => "say",
-                    "\"" => "say"
-                  })
-
-    def parse(line) when is_binary(line) do
-      line = String.trim(line)
-
-      case line do
-        "" ->
-          %Commonplace.MUD.Parser.Command{}
-
-        <<"'", rest::binary>> when rest != "" ->
-          %Commonplace.MUD.Parser.Command{verb: "say", args: rest, argv: [rest], target: nil}
-
-        _ ->
-          {verb_word, args} = split_first(line)
-          verb = Map.get(@verb_aliases, String.downcase(verb_word), String.downcase(verb_word))
-          argv = if args == "", do: [], else: String.split(args, ~r/\s+/, trim: true)
-          target = List.first(argv)
-          %Commonplace.MUD.Parser.Command{verb: verb, args: args, argv: argv, target: target}
-      end
-    end
-
-    defp split_first(line) do
-      case String.split(line, ~r/\s+/, parts: 2) do
-        [verb] -> {verb, ""}
-        [verb, rest] -> {verb, rest}
-      end
-    end
-  end
-  '''
+  # CX-6pbu (self-hosting slice 3): the source body itself now lives in
+  # `priv/engine_verbs/parser.exs.seed`, loaded at COMPILE time (same
+  # `@external_resource` + `File.read!` pattern as
+  # `Commonplace.MUD.SeedWorld`'s bundle) — the beam carries the content,
+  # no runtime priv lookup. Zero behavior change: this is still the
+  # doc-hosted parser source seeded (once) into the tree at boot.
+  engine_parser_path = Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "parser.exs.seed"])
+  @external_resource engine_parser_path
+  @engine_parser_source File.read!(engine_parser_path)
 
   # CX-aya0 (MUD-as-documents Inc-2 / B1): the first doc-hosted MUD verb.
   # `look` is PURE (read + format, zero tree writes) — the lowest-blast-
@@ -125,60 +86,12 @@ defmodule Commonplace.MUD.Bootstrap do
   # replacing it) is B2 scope, not B1's "prove the mechanism" bar.
   @engine_look_verb_uuid "100ca11b-1004-4e55-9f66-a07788990011"
 
-  @engine_look_verb_source ~S'''
-  defmodule Commonplace.MUD.EngineLook do
-    @moduledoc "Doc-hosted `look` verb (CX-aya0, MUD-as-documents Inc-2 / B1). Hot-editable."
-
-    alias Commonplace.MUD.Schemas
-    alias Commonplace.MUD.Schemas.Player
-    alias Commonplace.MUD.World
-
-    def run(%Commonplace.MUD.Parser.Command{argv: []}, ctx), do: {:reply, render_room(ctx)}
-
-    def run(%Commonplace.MUD.Parser.Command{target: target}, ctx) when target in ["here", "room"] do
-      {:reply, render_room(ctx)}
-    end
-
-    def run(%Commonplace.MUD.Parser.Command{target: target}, ctx) when target in ["me", "self", "myself"] do
-      case Schemas.load_player(ctx.player_dir_uuid, ctx.store) do
-        {:ok, %Player{} = pl} ->
-          title = if pl.title == "", do: pl.name, else: pl.title
-          {:reply, "#{title}\n#{pl.description}"}
-
-        _ ->
-          {:reply, ctx.player_name}
-      end
-    end
-
-    defp render_room(ctx) do
-      case World.room_snapshot(ctx.current_room_uuid, ctx.presence_filename, ctx.store, viewer: identity(ctx)) do
-        {:ok, %{name: name, desc: desc, exits: exits, contents: objects, occupants: players}} ->
-          exit_dirs = Enum.map(exits, fn {dir, _to} -> dir end)
-
-          IO.iodata_to_binary([
-            "== ", name, " ==\n",
-            desc, "\n",
-            if(exit_dirs == [], do: "Exits: (none)\n", else: ["Exits: ", Enum.join(exit_dirs, ", "), "\n"]),
-            if(objects == [], do: "", else: ["You see: ", Enum.join(objects, ", "), "\n"]),
-            if(players == [], do: "", else: ["Players: ", Enum.join(players, ", "), "\n"])
-          ])
-
-        {:error, :read_denied} ->
-          "That place is private."
-
-        {:error, _} ->
-          "(this place has no description)"
-      end
-    end
-
-    defp identity(ctx) do
-      case ctx[:signing_context] do
-        %{identity_uuid: id} when is_binary(id) -> id
-        _ -> nil
-      end
-    end
-  end
-  '''
+  # CX-6pbu (self-hosting slice 3): source body moved to
+  # `priv/engine_verbs/look.exs.seed` — see the comment on
+  # `@engine_parser_source` above for the pattern/rationale.
+  engine_look_verb_path = Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "look.exs.seed"])
+  @external_resource engine_look_verb_path
+  @engine_look_verb_source File.read!(engine_look_verb_path)
 
   # CX-aya0 (MUD-as-documents Inc-2 / B2): the next stateless-leaf verbs
   # doc-hosted after `look` (B1) — `inventory` (pure read + format, zero
@@ -192,68 +105,30 @@ defmodule Commonplace.MUD.Bootstrap do
   # that mirroring it completely in the seed doc costs nothing extra.
   @engine_inventory_verb_uuid "200da22c-2005-4f66-a077-b18899001122"
 
-  @engine_inventory_verb_source ~S'''
-  defmodule Commonplace.MUD.EngineInventory do
-    @moduledoc "Doc-hosted `inventory` verb (CX-aya0, MUD-as-documents Inc-2 / B2). Hot-editable."
-
-    alias Commonplace.MUD.Schemas
-    alias Commonplace.MUD.Schemas.Object
-    alias Commonplace.MUD.World
-
-    def run(_cmd, ctx) do
-      items =
-        World.list_objects_in(ctx.inventory_uuid, ctx.store)
-        |> Enum.map(fn e ->
-          case Schemas.load_object(e.node_id, ctx.store) do
-            {:ok, %Object{name: name}} -> name
-            _ -> e.name
-          end
-        end)
-
-      text =
-        case items do
-          [] -> "You are carrying nothing."
-          _ -> "You are carrying:\n  - " <> Enum.join(items, "\n  - ")
-        end
-
-      {:reply, text}
-    end
-  end
-  '''
+  # CX-6pbu (self-hosting slice 3): source body moved to
+  # `priv/engine_verbs/inventory.exs.seed` — see the comment on
+  # `@engine_parser_source` above for the pattern/rationale.
+  engine_inventory_verb_path = Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "inventory.exs.seed"])
+  @external_resource engine_inventory_verb_path
+  @engine_inventory_verb_source File.read!(engine_inventory_verb_path)
 
   @engine_emote_verb_uuid "300eb33d-3006-4a77-b188-c29900112233"
 
-  @engine_emote_verb_source ~S'''
-  defmodule Commonplace.MUD.EngineEmote do
-    @moduledoc "Doc-hosted `emote` verb (CX-aya0, MUD-as-documents Inc-2 / B2). Hot-editable."
-
-    alias Commonplace.MUD.World
-
-    def run(%Commonplace.MUD.Parser.Command{args: ""}, _ctx), do: {:error, "Emote what?"}
-
-    def run(%Commonplace.MUD.Parser.Command{args: text}, ctx) do
-      World.broadcast_room(ctx.current_room_uuid, %{kind: :emote, who: ctx.player_name, text: text})
-      :ok
-    end
-  end
-  '''
+  # CX-6pbu (self-hosting slice 3): source body moved to
+  # `priv/engine_verbs/emote.exs.seed` — see the comment on
+  # `@engine_parser_source` above for the pattern/rationale.
+  engine_emote_verb_path = Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "emote.exs.seed"])
+  @external_resource engine_emote_verb_path
+  @engine_emote_verb_source File.read!(engine_emote_verb_path)
 
   @engine_say_verb_uuid "400fc44e-4007-4b88-c299-d3a011223344"
 
-  @engine_say_verb_source ~S'''
-  defmodule Commonplace.MUD.EngineSay do
-    @moduledoc "Doc-hosted `say` verb (CX-aya0, MUD-as-documents Inc-2 / B2). Hot-editable."
-
-    alias Commonplace.MUD.World
-
-    def run(%Commonplace.MUD.Parser.Command{args: ""}, _ctx), do: {:error, "Say what?"}
-
-    def run(%Commonplace.MUD.Parser.Command{args: text}, ctx) do
-      World.broadcast_room(ctx.current_room_uuid, %{kind: :say, who: ctx.player_name, text: text})
-      :ok
-    end
-  end
-  '''
+  # CX-6pbu (self-hosting slice 3): source body moved to
+  # `priv/engine_verbs/say.exs.seed` — see the comment on
+  # `@engine_parser_source` above for the pattern/rationale.
+  engine_say_verb_path = Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "say.exs.seed"])
+  @external_resource engine_say_verb_path
+  @engine_say_verb_source File.read!(engine_say_verb_path)
 
   # CX-hbb2 (self-hosting slice A): the in-world `help` text as a node-signed
   # doc, editable without redeploy. Fixed uuid, same idempotent-seed shape as
@@ -285,6 +160,21 @@ defmodule Commonplace.MUD.Bootstrap do
   @world_meta_uuid "d9dc8e1f-d6ef-47b8-ac5e-8e454888bbcb"
 
   def seed(root_uuid, store \\ CommitStoreClient), do: repair(root_uuid, store)
+
+  # CX-6pbu: test-facing accessors for the five engine verb sources moved
+  # to `priv/engine_verbs/*.exs.seed` — mirrors the existing
+  # `TemplateBootstrap.chat_compute_source/0` accessor pattern. `@doc
+  # false` (internal, not part of the module's operational API).
+  @doc false
+  def engine_parser_source, do: @engine_parser_source
+  @doc false
+  def engine_look_verb_source, do: @engine_look_verb_source
+  @doc false
+  def engine_inventory_verb_source, do: @engine_inventory_verb_source
+  @doc false
+  def engine_emote_verb_source, do: @engine_emote_verb_source
+  @doc false
+  def engine_say_verb_source, do: @engine_say_verb_source
 
   # CX-93ea: every step is a `with` link now — a rejected write (trust
   # gate under `:enforce`, or any other create_commit error) stops the

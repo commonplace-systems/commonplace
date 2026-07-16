@@ -1,0 +1,13 @@
+defmodule Commonplace.UserCode.Chat.Compute do
+  alias Commonplace.Compute
+
+  def compute(raw, ctx) do
+    raw
+    |> Compute.decode_json_array()
+    |> Compute.materialize(chains: [
+      {:edit_of, :latest_replaces},
+      {:tombstone_of, :marks_deleted}
+    ])
+    |> Commonplace.Chat.ChatViewBuilder.build_view_xml(ctx.room_name)
+  end
+end
