@@ -50,7 +50,8 @@ defmodule CommonplaceWebWeb.MudLive do
     SessionLimit,
     SessionView,
     SessionViewLink,
-    SessionViewRegistry
+    SessionViewRegistry,
+    WorldMeta
   }
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Trust.Read
@@ -135,6 +136,10 @@ defmodule CommonplaceWebWeb.MudLive do
       # CX-i9j3 (UI Inc-2): the last room-pane sections committed to the
       # view-doc, for commit-on-diff (nil until the first materialize).
       |> assign(:room_sections, nil)
+      # CX-lr73 (self-hosting slice 2, part C): the world's own title,
+      # read from the node-signed `WorldMeta` doc (floor: "The Emberlight
+      # Vault", identical to the pre-CX-lr73 hardcoded `<h1>`).
+      |> assign(:world_title, WorldMeta.title(store))
 
     socket =
       if connected?(socket) and is_binary(mud_root) and is_binary(home_room_uuid) do
@@ -494,7 +499,7 @@ defmodule CommonplaceWebWeb.MudLive do
     <div class="flex h-screen bg-base-100 items-center justify-center">
       <%= if @authed do %>
         <div class="flex flex-col h-full w-full max-w-3xl p-4">
-          <h1 class="text-lg font-bold text-base-content/70 mb-2 font-mono">The Emberlight Vault</h1>
+          <h1 class="text-lg font-bold text-base-content/70 mb-2 font-mono"><%= @world_title %></h1>
 
           <%= if @error do %>
             <div class="alert alert-error text-sm mb-2"><%= @error %></div>

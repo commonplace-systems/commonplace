@@ -45,7 +45,7 @@ defmodule Commonplace.MUD.Citizenship do
   """
 
   alias Commonplace.Crypto.NodeIdentity
-  alias Commonplace.MUD.{ChildMutation, Schemas, World}
+  alias Commonplace.MUD.{ChildMutation, HomeTemplate, Schemas, World}
   alias Commonplace.MUD.Schemas.Room
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.Schema
@@ -299,7 +299,7 @@ defmodule Commonplace.MUD.Citizenship do
         end
 
       :error ->
-        room_json = home_room_json(identity_uuid, name, start_room_uuid)
+        room_json = home_room_json(identity_uuid, name, start_room_uuid, store)
 
         # CX-4u03 A4: the home is a NEW zone ROOT — minted via
         # ChildMutation.create_zone_root (self-rooted: home.zone == home_uuid,
@@ -353,7 +353,7 @@ defmodule Commonplace.MUD.Citizenship do
 
   defp create_room_meta(identity_uuid, home_uuid, name, start_room_uuid, write_opts) do
     store = Keyword.fetch!(write_opts, :store)
-    json = home_room_json(identity_uuid, name, start_room_uuid)
+    json = home_room_json(identity_uuid, name, start_room_uuid, store)
 
     with {:ok, meta_uuid} <- Schemas.create_meta_doc(json, store, write_opts),
          :ok <- add_file_entry(home_uuid, Schemas.room_filename(), meta_uuid, write_opts) do
@@ -382,14 +382,22 @@ defmodule Commonplace.MUD.Citizenship do
   # is the safe default for a personal home; the owner can flip it public
   # later (`@public`, `Commonplace.MUD.Verbs`). node-signed at mint (same
   # write as the rest of this doc), so a reader can't forge it open (W3).
-  defp home_room_json(identity_uuid, name, start_room_uuid) do
+  #
+  # CX-gkqk (self-hosting slice 2, part B): the NAME and DESCRIPTION come
+  # from `HomeTemplate.render/3` (a doc-hosted, node-signed template with
+  # a compiled floor — see that module's moduledoc) instead of hardcoded
+  # strings. The SECURITY FIELDS below — `owner`, `visibility`, the
+  # `"out"` exit — are built HERE, from this function's own arguments,
+  # exactly as before; the template can restyle a home's prose, it can
+  # NEVER touch ownership/visibility/exits (`HomeTemplate.render/3`'s
+  # return shape has no room for those fields at all).
+  defp home_room_json(identity_uuid, name, start_room_uuid, store) do
     exits = if is_binary(start_room_uuid), do: %{"out" => start_room_uuid}, else: %{}
+    %{name: rendered_name, description: rendered_description} = HomeTemplate.render(name, is_binary(start_room_uuid), store)
 
     Schemas.encode_room(%Room{
-      name: "#{name}'s Home",
-      description:
-        "A quiet room that is yours to shape — this is your own corner of the world." <>
-          if(is_binary(start_room_uuid), do: " An exit leads <out> to the rest of the demesne.", else: ""),
+      name: rendered_name,
+      description: rendered_description,
       exits: exits,
       owner: identity_uuid,
       visibility: :capability_gated

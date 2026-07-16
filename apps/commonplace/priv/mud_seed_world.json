@@ -1,0 +1,80 @@
+{
+  "rooms": {
+    "start": {
+      "name": "The Start Room",
+      "description": "A cozy stone chamber. Exits lead north and east.",
+      "exits": { "north": "forest-path", "east": "clearing" },
+      "refresh_if_stub": true
+    },
+    "forest-path": {
+      "name": "A Forest Path",
+      "description": "Tall oaks line a winding dirt path. The Start Room lies south.",
+      "exits": { "south": "start" },
+      "refresh_if_stub": false
+    },
+    "clearing": {
+      "name": "A Sunlit Clearing",
+      "description": "A grassy clearing dappled with sunlight. The Start Room lies west.",
+      "exits": { "west": "start" },
+      "refresh_if_stub": false
+    }
+  },
+  "objects": {
+    "start": [
+      {
+        "filename": "cloak.obj",
+        "name": "cloak",
+        "aliases": ["cape", "black cloak"],
+        "description": "A heavy black cloak. It looks warm.",
+        "fixed": false,
+        "container": false,
+        "tick_interval_ms": null,
+        "tick_message": null
+      }
+    ],
+    "clearing": [
+      {
+        "filename": "fountain.obj",
+        "name": "fountain",
+        "aliases": ["water"],
+        "description": "A stone fountain murmurs softly.",
+        "fixed": true,
+        "container": false,
+        "tick_interval_ms": 8000,
+        "tick_message": "The fountain burbles softly."
+      }
+    ]
+  },
+  "veins": {
+    "forest-path": {
+      "filename": "iron-vein.obj",
+      "name": "iron vein",
+      "aliases": ["vein", "iron"],
+      "description": "A vein of raw iron runs through the rock here.",
+      "fixed": true,
+      "kind": "vein",
+      "yield_type": {
+        "name": "iron ore",
+        "aliases": ["ore"],
+        "description": "A rough chunk of iron ore."
+      },
+      "yield_max": 5,
+      "regen_per_ms_num": 1,
+      "regen_per_ms_denom": 30000,
+      "yield_remaining": 5,
+      "last_regen_at": 0
+    }
+  },
+  "recipes": {
+    "iron-ingot": {
+      "name": "iron ingot",
+      "inputs": [{ "type": "iron ore", "qty": 2 }],
+      "output": {
+        "name": "iron ingot",
+        "aliases": ["ingot"],
+        "description": "A sturdy bar of smelted iron."
+      },
+      "station": null
+    }
+  }
+}
