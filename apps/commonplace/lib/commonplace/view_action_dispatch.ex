@@ -63,9 +63,19 @@ defmodule Commonplace.ViewActionDispatch do
   alias Commonplace.Pulls.Template
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.{DocBuilder, Lookup, Merge, Schema}
+  alias Commonplace.Trust
+  alias Commonplace.Trust.ReadMeta
   alias Commonplace.Workspace
   alias Commonplace.WriterHand
   alias Yelixer.Encoding
+
+  # CX-pr7.3b: the two preview-guard refusals, shared verbatim by
+  # `pr_refresh_preview` and `pr_accept` (one derivation path, one pair
+  # of messages). The read refusal is deliberately UNIFORM — it never
+  # says WHICH of source/target refused, nor whether the doc exists at
+  # all (thin-handle: no existence oracle).
+  @not_readable_msg "cannot preview: source or target not readable"
+  @no_ancestor_msg "cannot preview: no common ancestor — source and target are not fork-related"
 
   @type dispatch_ok ::
           {:ok, :ui_transition, map()}
@@ -260,7 +270,7 @@ defmodule Commonplace.ViewActionDispatch do
          content = ContentType.get_content(doc) || "",
          {:ok, attrs} <- parse_pr_attrs(content),
          :ok <- require_open(attrs) do
-      refresh_preview(pr_uuid, doc, content, attrs, opts)
+      refresh_preview(pr_uuid, doc, content, attrs, context, opts)
     else
       {:error, reason} -> {:error, reason}
     end
@@ -268,6 +278,118 @@ defmodule Commonplace.ViewActionDispatch do
 
   defp do_dispatch("pr_refresh_preview", _context) do
     {:error, "pr_refresh_preview requires view_uuid (the PR doc)"}
+  end
+
+  # CX-pr7.4: `pr_accept` — the TRUST-GATE verb. Design doc §6 lists six
+  # steps, IN ORDER, all server-side, all inside this handler; the
+  # numbers below are literal citations so a reviewer can check this
+  # code against that checklist line by line:
+  #
+  #   1. server-resolved source/target/base/status — `reconstruct_pr_doc/1`
+  #      + `parse_pr_attrs/1` re-read the PR doc BY UUID (`view_uuid`);
+  #      the click carries nothing else, `context.args` is never
+  #      consulted for routing.
+  #   2. status gate — `require_open/1`.
+  #   3. staleness by RE-DERIVATION — `accept_pr/5` reruns the exact
+  #      scratch-preview mechanics §7.3 already built (`derive_preview/3`,
+  #      extracted below so `pr_refresh_preview` and `pr_accept` share
+  #      ONE derivation path) and compares the fresh `result_hash`
+  #      against `extract_committed_result_hash/1`'s read of the
+  #      COMMITTED preview section — never against any doc-recorded head
+  #      CID (forgeable, §6.3). A mismatch (or no committed hash at all —
+  #      the placeholder path) auto-refreshes the section via the same
+  #      `commit_preview_section/5` §7.3 uses, then refuses.
+  #   4. authorization — `do_accept_merge/5` calls
+  #      `Trust.writer_authorized?/6` (the commitless dispatch-site
+  #      pre-check; same predicate other verbs' elevation checks use)
+  #      on the ACCEPTOR's principal (`principal_identity/1`, derived
+  #      from `context.signing_context`, never a client-asserted arg)
+  #      against the target uuid. Refusal is sanitized before it leaves
+  #      this module (CX-3x5a).
+  #   5. signed merge — `Merge.merge/4` is called with the acceptor's
+  #      own `signing_opts(context)`, so every commit the merge produces
+  #      carries the acceptor's cert and the local write-gate evaluates
+  #      the ACTUAL authority under enforce (closes the unsigned-merge
+  #      gap §3/§7.1 fixed). A `{:write_refused, _, _}` surfaces through
+  #      the 7.1b contract and is sanitized here rather than passed
+  #      through raw.
+  #   6. sanitized returns — every branch below returns a domain atom/
+  #      string, never a raw `{:error, {:untrusted_signer, _}}"`-shaped
+  #      trust tuple.
+  #
+  # On success (`finish_accept/5`): status → `:merged`, acceptor +
+  # MergeReport summary recorded in the PR doc via `Template` helpers,
+  # invoker(acceptor)-signed.
+  defp do_dispatch("pr_accept", %{view_uuid: pr_uuid} = context) when is_binary(pr_uuid) do
+    opts = signing_opts(context)
+
+    with {:ok, doc} <- reconstruct_pr_doc(pr_uuid),
+         content = ContentType.get_content(doc) || "",
+         {:ok, attrs} <- parse_pr_attrs(content),
+         :ok <- require_open(attrs) do
+      accept_pr(pr_uuid, doc, content, attrs, context, opts)
+    else
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp do_dispatch("pr_accept", _context) do
+    {:error, "pr_accept requires view_uuid (the PR doc)"}
+  end
+
+  # CX-pr7.4: `pr_decline` — allowed for a target-`:write` holder OR the
+  # PR's own opener, per designer ruling #8390-1 (cited at
+  # `opener_may_decline?/2`): the opener branch matches ONLY when BOTH
+  # the doc's recorded `opened_by` AND the current session's principal
+  # are signing-context-derived — an anonymous-opened PR (the
+  # `resolve_principal/1` fallback) confers NO opener rights, because
+  # every anonymous session would otherwise "be" every anonymous opener.
+  defp do_dispatch("pr_decline", %{view_uuid: pr_uuid} = context) when is_binary(pr_uuid) do
+    opts = signing_opts(context)
+
+    with {:ok, doc} <- reconstruct_pr_doc(pr_uuid),
+         content = ContentType.get_content(doc) || "",
+         {:ok, attrs} <- parse_pr_attrs(content),
+         :ok <- require_open(attrs) do
+      decline_pr(pr_uuid, doc, content, attrs, context, opts)
+    else
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp do_dispatch("pr_decline", _context) do
+    {:error, "pr_decline requires view_uuid (the PR doc)"}
+  end
+
+  # CX-pr7.4: `pr_comment` — any session may append a review comment
+  # (attribution is honest: an anonymous session's principal shows as
+  # the anonymous fallback, same as `pr_open`'s `opened_by`). Text comes
+  # from `args["text"]` — the existing form-render path (`args="text:
+  # string"` on the `<action>` element, same shape `post_message` etc.
+  # use).
+  defp do_dispatch("pr_comment", %{view_uuid: pr_uuid, args: args} = context)
+       when is_binary(pr_uuid) and is_map(args) do
+    opts = signing_opts(context)
+
+    with {:ok, text} <- fetch_arg(args, "text"),
+         {:ok, doc} <- reconstruct_pr_doc(pr_uuid),
+         content = ContentType.get_content(doc) || "" do
+      principal = resolve_principal(context)
+      ts = DateTime.utc_now() |> DateTime.to_iso8601()
+      new_content = Template.append_review(content, principal, ts, text)
+
+      case commit_pr_update(pr_uuid, doc, content, new_content, opts) do
+        :ok ->
+          {:ok, :tree_mutation, %{action: "pr_comment", pr_uuid: pr_uuid, principal: principal}}
+
+        {:error, reason} ->
+          {:error, "pr_comment failed: #{sanitize_write_error(reason)}"}
+      end
+    end
+  end
+
+  defp do_dispatch("pr_comment", _context) do
+    {:error, "pr_comment requires view_uuid (the PR doc) and args map with text"}
   end
 
   # CX-487i (V1+V2 of CX-p2qp): chat post_message routes through
@@ -717,16 +839,22 @@ defmodule Commonplace.ViewActionDispatch do
 
   @pr_tag_re ~r/<pr\b([^>]*?)\/>/s
 
-  # Read `source`/`target`/`status` back off the PR doc's OWN `<pr .../>`
-  # element. Per the module moduledoc's §6.3 note: fine for ROUTING
-  # (which two docs does this preview diff?), never for authorization.
+  # Read `source`/`target`/`status`/`opened_by` back off the PR doc's OWN
+  # `<pr .../>` element. Per the module moduledoc's §6.3 note: fine for
+  # ROUTING (which two docs does this preview diff? who opened it, for
+  # the §7.4 decline-opener check?), never for authorization — the
+  # opener check (`opener_may_decline?/2`) additionally requires the
+  # CURRENT session to independently prove the same signing-context
+  # identity, so a merely-recorded `opened_by` alone never grants
+  # anything.
   defp parse_pr_attrs(content) do
     case Regex.run(@pr_tag_re, content) do
       [_, attrs_str] ->
         attrs = %{
           source: pr_attr(attrs_str, "source"),
           target: pr_attr(attrs_str, "target"),
-          status: pr_attr(attrs_str, "status")
+          status: pr_attr(attrs_str, "status"),
+          opened_by: pr_attr(attrs_str, "opened_by")
         }
 
         if is_binary(attrs.source) and is_binary(attrs.target) do
@@ -759,39 +887,153 @@ defmodule Commonplace.ViewActionDispatch do
   defp require_open(_attrs), do: {:error, "PR is not open"}
 
   # The three tree-mutating/reading steps of §7.3, run only once the PR
-  # doc has confirmed `status="open"`: scratch-fork the target (NOT
-  # attached anywhere), merge source into the scratch, then render +
-  # commit the preview section. Split out of the dispatch clause so the
-  # `with`-chain above stays flat.
-  defp refresh_preview(pr_uuid, doc, content, %{source: source_uuid, target: target_uuid}, opts) do
-    case CommandRouter.fork(target_uuid) do
-      {:ok, scratch_uuid} ->
-        run_preview_merge(pr_uuid, doc, content, source_uuid, target_uuid, scratch_uuid, opts)
+  # doc has confirmed `status="open"`: derive a fresh preview (scratch-
+  # fork the target, merge source into the scratch, project + hash),
+  # then commit it into the PR doc's preview section. Split out of the
+  # dispatch clause so the `with`-chain above stays flat.
+  defp refresh_preview(
+         pr_uuid,
+         doc,
+         content,
+         %{source: source_uuid, target: target_uuid},
+         context,
+         opts
+       ) do
+    case derive_preview(source_uuid, target_uuid, context, opts) do
+      {:ok, %{preview_body: preview_body, result_hash: result_hash}} ->
+        case commit_preview_section(pr_uuid, doc, content, preview_body, opts) do
+          :ok ->
+            {:ok, :tree_mutation,
+             %{action: "pr_refresh_preview", pr_uuid: pr_uuid, result_hash: result_hash}}
 
-      {:error, reason} ->
+          {:error, reason} ->
+            {:error, "pr_refresh_preview failed to update preview: #{inspect(reason)}"}
+        end
+
+      {:error, :not_readable} ->
+        {:error, @not_readable_msg}
+
+      {:error, :no_common_ancestor} ->
+        {:error, @no_ancestor_msg}
+
+      {:error, {:preview_fork_failed, reason}} ->
         {:error, "pr_refresh_preview failed to scratch-fork target: #{inspect(reason)}"}
-    end
-  end
 
-  defp run_preview_merge(pr_uuid, doc, content, source_uuid, target_uuid, scratch_uuid, opts) do
-    # The scratch fork is throwaway (unreachable-by-construction, per
-    # `refresh_preview/4`'s comment), so signing it with the INVOKER's
-    # own context is fine — nothing downstream trusts scratch-doc
-    # authorship. `target_uuid` here is `scratch_uuid`, never the real
-    # target, which is exactly what keeps this call from ever writing a
-    # `(real_target, source)` merge-point (see merge.ex's
-    # `set_merge_point/4` call sites — always keyed off the 2nd
-    # positional `merge/4` arg).
-    case Merge.merge(source_uuid, scratch_uuid, CommitStoreClient, opts) do
-      {:ok, report} ->
-        finish_preview(pr_uuid, doc, content, source_uuid, target_uuid, scratch_uuid, report, opts)
+      {:error, {:preview_merge_failed, reason}} ->
+        {:error, "pr_refresh_preview failed to merge: #{inspect(reason)}"}
 
       {:error, reason} ->
-        {:error, "pr_refresh_preview failed to merge: #{inspect(reason)}"}
+        {:error, "pr_refresh_preview failed: #{inspect(reason)}"}
     end
   end
 
-  defp finish_preview(pr_uuid, doc, content, source_uuid, target_uuid, scratch_uuid, report, opts) do
+  # CX-pr7.4: the SHARED scratch-preview derivation §6 step 3 requires —
+  # "re-run the scratch preview machinery" must be the SAME code path
+  # `pr_refresh_preview` uses, not a re-implementation that could drift.
+  # Forks the target (NOT attached anywhere — unreachable-by-construction,
+  # reachability-GC owns cleanup), merges source into the scratch, and
+  # returns the rendered preview body + its result_hash + the
+  # `MergeReport` — WITHOUT touching the PR doc or the real target. The
+  # scratch fork is throwaway, so signing it with the INVOKER's own
+  # context is fine — nothing downstream trusts scratch-doc authorship.
+  # `target_uuid` here is always `scratch_uuid`, never the real target,
+  # which is exactly what keeps this from ever writing a
+  # `(real_target, source)` merge-point (see merge.ex's
+  # `set_merge_point/4` call sites — always keyed off the 2nd positional
+  # `merge/4` arg).
+  #
+  # CX-pr7.3b (designer review of 7.3 — read-scoping leak): the guard
+  # runs FIRST, before the scratch fork ever happens (never fork a doc
+  # the invoker can't read — the fork copies gated content). Both
+  # `pr_refresh_preview` and `pr_accept` inherit it by construction,
+  # since this is their one shared derivation path.
+  defp derive_preview(source_uuid, target_uuid, context, opts) do
+    with :ok <- preview_guard(source_uuid, target_uuid, context) do
+      # §7.3c: the scratch fork is signed with the INVOKER's context (the
+      # same `opts` the merge uses) — nothing downstream trusts scratch
+      # authorship (it's throwaway, born-unreachable), and under enforce
+      # an unsigned fork silently lands NOTHING (fork's create_commit is
+      # fire-and-forget), degenerating the preview to empty. Signing it as
+      # the requester makes the whole preview attributable and lets it
+      # actually land under `local_write_gate: :enforce`.
+      # Explicit 3-arg form — `fork/3` is `fork(server \\ __MODULE__,
+      # source_uuid, opts \\ [])`, so a 2-arg `fork(uuid, opts)` would bind
+      # uuid as the SERVER. Name the server to reach the opts arg.
+      case CommandRouter.fork(CommandRouter, target_uuid, opts) do
+        {:ok, scratch_uuid} ->
+          case Merge.merge(source_uuid, scratch_uuid, CommitStoreClient, opts) do
+            {:ok, report} -> build_preview(source_uuid, target_uuid, scratch_uuid, report)
+            {:error, reason} -> {:error, {:preview_merge_failed, reason}}
+          end
+
+        {:error, reason} ->
+          {:error, {:preview_fork_failed, reason}}
+      end
+    end
+  end
+
+  # CX-pr7.3b — THE HOLE this closes: `derive_preview` re-reads
+  # source/target uuids from the PR doc, which is an ORDINARY EDITABLE
+  # doc — anyone who can write it can stamp `<pr source="ANY-UUID">`
+  # and hit refresh/accept to project THAT doc's full text into a
+  # preview section they can read: a durable read-oracle bypassing the
+  # P2/P3 read-gating. Two re-validations, both BEFORE the fork:
+  #
+  #   1. ANCESTRY re-check on EVERY derive (refresh AND accept):
+  #      `find_common_ancestor(target, source) ≠ :none` — `pr_open`
+  #      validated this once (§7.2), but the PR doc's fields can't be
+  #      trusted to have preserved that invariant (§6.3). Checked FIRST
+  #      so an arbitrary stamped uuid — nonexistent, unrelated-public,
+  #      or unrelated-gated alike — gets the SAME ancestry refusal
+  #      (existence-hiding for the common probe: the more-specific
+  #      read-gate message below only ever appears for docs that share
+  #      fork lineage with the other endpoint).
+  #   2. INVOKER READ-GATE on BOTH uuids via
+  #      `Commonplace.Trust.Read.authorized?/3` (the P1/P2 read
+  #      verifier, pinned-enforce — NOT the `:local_read_gate`-knobbed
+  #      `gate/3`), with carried visibility/owner resolved by
+  #      `Trust.ReadMeta.resolve/2` — the SAME canonical meta-read the
+  #      other direct-by-uuid surfaces (MCP `cat`, GitBridge exporter)
+  #      use. A plain wiki/text doc with no visibility field resolves
+  #      `:public` → `:ok` (ReadMeta's documented no-regression
+  #      default), so ungated docs preview exactly as before. The
+  #      refusal is ONE uniform message for source-vs-target and
+  #      exists-vs-unauthorized alike (thin-handle: no existence
+  #      oracle).
+  defp preview_guard(source_uuid, target_uuid, context) do
+    with {:ok, _ancestor} <- validate_common_ancestor(target_uuid, source_uuid),
+         :ok <- invoker_read_gate(source_uuid, context),
+         :ok <- invoker_read_gate(target_uuid, context) do
+      :ok
+    else
+      {:error, :no_common_ancestor} -> {:error, :no_common_ancestor}
+      {:error, :read_denied} -> {:error, :not_readable}
+    end
+  end
+
+  # The invoker's read authority over one doc. Identity/pub are the
+  # SERVER-RESOLVED session signing context (`principal_identity/1` —
+  # `{nil, nil}` for an anonymous session, which can read only public
+  # docs under a strict config), never a client-claimed value — the
+  # verifier's caller contract #1. visibility/owner come from the
+  # target's own committed state via `ReadMeta.resolve/2` — caller
+  # contract #2. `cert_cids: []` — same posture as this module's write
+  # gates: the wiki/PR surface carries no cert plumbing yet.
+  defp invoker_read_gate(uuid, context) do
+    {identity, pub} = principal_identity(context)
+    meta = ReadMeta.resolve(uuid, CommitStoreClient)
+
+    Commonplace.Trust.Read.authorized?(identity, uuid,
+      visibility: meta.visibility,
+      owner: meta.owner,
+      reader_pub: pub,
+      cert_cids: [],
+      cfg: Trust.config(),
+      store: CommitStoreClient
+    )
+  end
+
+  defp build_preview(source_uuid, target_uuid, scratch_uuid, report) do
     with {:ok, base_text} <- reconstruct_base_text(target_uuid, source_uuid),
          {:ok, source_text} <- reconstruct_leaf_text(source_uuid),
          {:ok, projected_text} <- reconstruct_leaf_text(scratch_uuid),
@@ -808,16 +1050,7 @@ defmodule Commonplace.ViewActionDispatch do
           scratch_head_hex: scratch_head_hex
         })
 
-      case commit_preview_section(pr_uuid, doc, content, preview_body, opts) do
-        :ok ->
-          {:ok, :tree_mutation,
-           %{action: "pr_refresh_preview", pr_uuid: pr_uuid, result_hash: result_hash}}
-
-        {:error, reason} ->
-          {:error, "pr_refresh_preview failed to update preview: #{inspect(reason)}"}
-      end
-    else
-      {:error, reason} -> {:error, "pr_refresh_preview failed: #{inspect(reason)}"}
+      {:ok, %{preview_body: preview_body, result_hash: result_hash, report: report}}
     end
   end
 
@@ -946,18 +1179,298 @@ defmodule Commonplace.ViewActionDispatch do
     new_section = "<section id=\"preview\">" <> preview_body <> "</section>"
 
     if Regex.match?(@preview_section_re, old_content) do
-      new_content = Regex.replace(@preview_section_re, old_content, fn _whole -> new_section end, global: false)
-      doc = Diff.apply_diff(doc, old_content, new_content)
-      update = Encoding.encode_update(doc)
+      new_content =
+        Regex.replace(@preview_section_re, old_content, fn _whole -> new_section end, global: false)
 
-      case ok_commit(
-             CommitStoreClient.create_chained_commit(CommitStoreClient, pr_uuid, update, %{}, opts)
-           ) do
-        {:ok, _commit} -> :ok
-        {:error, _} = err -> err
-      end
+      commit_pr_update(pr_uuid, doc, old_content, new_content, opts)
     else
       {:error, "PR doc missing <section id=\"preview\"> region"}
+    end
+  end
+
+  # The shared low-level PR-doc committer: minimal-diff (`Diff.apply_diff/3`
+  # — CX-k20z's fix) the full old/new content strings and land a chained,
+  # invoker-signed commit. `commit_preview_section/5` (§7.3) and every
+  # §7.4 write below (`finish_accept/6`, `decline_pr/6`, `pr_comment`)
+  # share this one commit path.
+  defp commit_pr_update(pr_uuid, doc, old_content, new_content, opts) do
+    doc = Diff.apply_diff(doc, old_content, new_content)
+    update = Encoding.encode_update(doc)
+
+    case ok_commit(
+           CommitStoreClient.create_chained_commit(CommitStoreClient, pr_uuid, update, %{}, opts)
+         ) do
+      {:ok, _commit} -> :ok
+      {:error, _} = err -> err
+    end
+  end
+
+  # --- pr_accept helpers (§7.4, design doc §6) ---
+
+  @anonymous_principal "anonymous@local"
+
+  # §6 step 3 (staleness by re-derivation): re-run the SAME scratch
+  # preview `pr_refresh_preview` uses (`derive_preview/3`) and compare
+  # its fresh `result_hash` against the hash actually committed in the
+  # PR doc's preview section (`extract_committed_result_hash/1`) — NEVER
+  # against any doc-recorded head CID (forgeable, §6.3). A mismatch, or
+  # no committed hash at all (the still-a-placeholder case), takes the
+  # SAME stale path: auto-refresh the section with the fresh preview,
+  # then refuse.
+  defp accept_pr(
+         pr_uuid,
+         doc,
+         content,
+         %{source: source_uuid, target: target_uuid},
+         context,
+         opts
+       ) do
+    case derive_preview(source_uuid, target_uuid, context, opts) do
+      {:ok, %{preview_body: preview_body, result_hash: fresh_hash}} ->
+        handle_accept_staleness(
+          pr_uuid,
+          doc,
+          content,
+          source_uuid,
+          target_uuid,
+          context,
+          opts,
+          preview_body,
+          fresh_hash
+        )
+
+      # CX-pr7.3b: the shared preview guard (ancestry re-check +
+      # invoker read-gate) refuses BEFORE any fork/merge/write — a PR
+      # doc whose <pr> fields were stamped with a foreign/unreadable
+      # uuid can neither exfiltrate its text NOR reach the merge.
+      {:error, :not_readable} ->
+        {:error, @not_readable_msg}
+
+      {:error, :no_common_ancestor} ->
+        {:error, @no_ancestor_msg}
+
+      {:error, {:preview_fork_failed, reason}} ->
+        {:error, "pr_accept failed to derive fresh preview (scratch-fork): #{inspect(reason)}"}
+
+      {:error, {:preview_merge_failed, reason}} ->
+        {:error, "pr_accept failed to derive fresh preview (merge): #{inspect(reason)}"}
+
+      {:error, reason} ->
+        {:error, "pr_accept failed to derive fresh preview: #{inspect(reason)}"}
+    end
+  end
+
+  defp handle_accept_staleness(
+         pr_uuid,
+         doc,
+         content,
+         source_uuid,
+         target_uuid,
+         context,
+         opts,
+         preview_body,
+         fresh_hash
+       ) do
+    case extract_committed_result_hash(content) do
+      {:ok, ^fresh_hash} ->
+        # Fresh: the committed preview is exactly what accepting now
+        # would produce. Proceed to §6 steps 4/5 (authorize, then the
+        # REAL signed merge into target_uuid — never the scratch copy
+        # `derive_preview/3` used).
+        do_accept_merge(pr_uuid, doc, content, source_uuid, target_uuid, context, opts)
+
+      _stale_or_missing ->
+        case commit_preview_section(pr_uuid, doc, content, preview_body, opts) do
+          :ok ->
+            {:error, "preview is stale — refreshed; review and accept again"}
+
+          {:error, reason} ->
+            {:error, "pr_accept failed to auto-refresh stale preview: #{sanitize_write_error(reason)}"}
+        end
+    end
+  end
+
+  # §6.6 (sanitized returns, CX-3x5a): the local write gate's own
+  # refusal shape (`{:trust_rejected, reason}`, from
+  # `CommitStore.local_write_gate_check/2` under `local_write_gate:
+  # :enforce`) carries an internal trust-decision reason
+  # (`:unsigned` / `{:untrusted_signer, _}` / ...) that must never
+  # reach a flash message or MCP response text verbatim — every PR-doc
+  # write below (`finish_accept/6`, `decline_pr/6`, `pr_comment`, and
+  # the auto-refresh path here) that surfaces a raw commit-store error
+  # runs it through this first.
+  defp sanitize_write_error({:trust_rejected, _reason}), do: "write refused"
+  defp sanitize_write_error(other), do: inspect(other)
+
+  # Pull the `<result-hash>` value out of the CURRENTLY COMMITTED
+  # `<section id="preview">` region. `:error` covers both "no preview
+  # section" (shouldn't happen post-§7.2 template) and "still the
+  # placeholder" (`pr_refresh_preview` never ran) — both fold into the
+  # same stale path in `handle_accept_staleness/9`.
+  defp extract_committed_result_hash(content) do
+    case Regex.run(
+           ~r/<section id="preview">.*?<result-hash>([^<]*)<\/result-hash>.*?<\/section>/s,
+           content
+         ) do
+      [_, hash] -> {:ok, hash}
+      nil -> :error
+    end
+  end
+
+  # §6 step 4 (authorization at the dispatch call-site): the commitless
+  # `Trust.writer_authorized?/6` pre-check — same predicate other
+  # elevation-adjacent call sites use — on the ACCEPTOR's
+  # signing-context-derived identity (`principal_identity/1`), never a
+  # client-asserted arg. `cert_cids: []` — the wiki/PR surface has no
+  # citizenship-cert plumbing (that's a MUD-only concept), so only a
+  # locally-pinned/node-trusted identity (or full-permissive
+  # `accept_unsigned`) authorizes here; this is intentionally the SAME
+  # bar the real merge's write-gate re-checks at commit time (step 5),
+  # just checked first for a clean sanitized refusal instead of a
+  # buried write-gate error.
+  defp do_accept_merge(pr_uuid, doc, content, source_uuid, target_uuid, context, opts) do
+    {identity_uuid, pub} = principal_identity(context)
+    cfg = Trust.config()
+
+    if Trust.writer_authorized?(identity_uuid, pub, [], target_uuid, cfg, CommitStoreClient) do
+      # §6 step 5 (signed merge): the ACCEPTOR's own signing_context
+      # (already captured in `opts` by `signing_opts/1` at the top of
+      # the `pr_accept` dispatch clause) threads through, so every
+      # commit this merge produces carries the acceptor's cert and the
+      # local write-gate evaluates the acceptor's ACTUAL authority under
+      # enforce (closes the unsigned-merge-commit gap `merge/4`'s
+      # signing plumb — §7.1 — exists to fix).
+      case Merge.merge(source_uuid, target_uuid, CommitStoreClient, opts) do
+        {:ok, report} ->
+          finish_accept(pr_uuid, doc, content, report, context, opts)
+
+        # §6 step 6 (sanitized returns): the 7.1b write-refusal tuple
+        # names the doc uuid and raw trust reason — sanitize both away
+        # here (CX-3x5a) rather than let a raw `{:untrusted_signer, _}`-
+        # shaped tuple leak to a flash message or MCP response text.
+        {:error, {:write_refused, _doc_uuid, _reason}} ->
+          {:error, "pr_accept failed: write refused for target"}
+
+        {:error, reason} ->
+          {:error, "pr_accept failed to merge: #{inspect(reason)}"}
+      end
+    else
+      {:error, "you are not authorized to accept into the target"}
+    end
+  end
+
+  # On success: status -> :merged, acceptor + a MergeReport summary
+  # recorded in the PR doc via the `Template` helpers (§7.4), one
+  # invoker(acceptor)-signed commit.
+  defp finish_accept(pr_uuid, doc, content, report, context, opts) do
+    acceptor = resolve_principal(context)
+    ts = DateTime.utc_now() |> DateTime.to_iso8601()
+
+    summary =
+      "merged=#{length(report.merged_docs)} new=#{length(report.new_docs)} " <>
+        "deleted=#{length(report.deleted_docs)} conflicts=#{length(report.conflicts)}"
+
+    new_content =
+      content
+      |> Template.set_pr_attrs(%{status: "merged", merged_by: acceptor, merged_at: ts})
+      |> Template.append_review("system", ts, "Accepted by #{acceptor} — #{summary}")
+
+    case commit_pr_update(pr_uuid, doc, content, new_content, opts) do
+      :ok ->
+        {:ok, :tree_mutation, %{action: "pr_accept", pr_uuid: pr_uuid, result: :merged}}
+
+      {:error, reason} ->
+        {:error, "pr_accept failed to update PR doc after merge: #{sanitize_write_error(reason)}"}
+    end
+  end
+
+  # §6.3/§6.4 (again, for the accept/decline gates): the invoking
+  # principal's raw identity, as `{identity_uuid, public_key}`, derived
+  # ONLY from `context.signing_context` — an anonymous/unresolved
+  # session yields `{nil, nil}`, which `Trust.writer_authorized?/6`
+  # correctly refuses (`not is_binary(identity_uuid) -> false`) under
+  # enforce and correctly ignores under the permissive default
+  # (`accept_unsigned` short-circuits before ever inspecting identity).
+  defp principal_identity(context) do
+    case Map.get(context, :signing_context) do
+      %Commonplace.Crypto.SigningContext{identity_uuid: id, public_key: pub} -> {id, pub}
+      _ -> {nil, nil}
+    end
+  end
+
+  # --- pr_decline helpers (§7.4) ---
+
+  # Allowed for a target-`:write` holder OR the PR's own opener — see
+  # `opener_may_decline?/2` for designer ruling #8390-1's exact gate.
+  defp decline_pr(
+         pr_uuid,
+         doc,
+         content,
+         %{target: target_uuid, opened_by: opened_by},
+         context,
+         opts
+       ) do
+    if can_decline?(target_uuid, opened_by, context) do
+      decliner = resolve_principal(context)
+      ts = DateTime.utc_now() |> DateTime.to_iso8601()
+
+      new_content =
+        content
+        |> Template.set_pr_attrs(%{status: "declined", declined_by: decliner, declined_at: ts})
+        |> Template.append_review("system", ts, "Declined by #{decliner}")
+
+      case commit_pr_update(pr_uuid, doc, content, new_content, opts) do
+        :ok ->
+          {:ok, :tree_mutation, %{action: "pr_decline", pr_uuid: pr_uuid, result: :declined}}
+
+        {:error, reason} ->
+          {:error, "pr_decline failed to update PR doc: #{sanitize_write_error(reason)}"}
+      end
+    else
+      {:error, "you are not authorized to decline this PR"}
+    end
+  end
+
+  defp can_decline?(target_uuid, opened_by, context) do
+    writer_holds_write?(target_uuid, context) or opener_may_decline?(opened_by, context)
+  end
+
+  defp writer_holds_write?(target_uuid, context) do
+    {identity_uuid, pub} = principal_identity(context)
+
+    Trust.writer_authorized?(
+      identity_uuid,
+      pub,
+      [],
+      target_uuid,
+      Trust.config(),
+      CommitStoreClient
+    )
+  end
+
+  # Designer ruling (#8390-1): the opener-decline branch matches ONLY
+  # when BOTH the PR's recorded `opened_by` AND the CURRENT session's
+  # principal are signing-context-derived (real signer_ids) — an
+  # `opened_by` equal to the anonymous fallback (`pr_open`'s
+  # `resolve_principal/1` default, "anonymous@local") confers NO opener
+  # rights, and `session_signing_principal/1` returns `nil` (never a
+  # string, so it can never equal a recorded `opened_by`) for any
+  # session that didn't itself resolve a signing_context. Without both
+  # halves of this check, any two anonymous sessions would "be" the
+  # same opener and could decline each other's anonymously-opened PRs —
+  # such a PR is declinable only via the target-`:write` branch above.
+  defp opener_may_decline?(opened_by, context) do
+    is_binary(opened_by) and opened_by != @anonymous_principal and
+      session_signing_principal(context) == opened_by
+  end
+
+  defp session_signing_principal(context) do
+    case Map.get(context, :signing_context) do
+      %Commonplace.Crypto.SigningContext{identity_uuid: id, public_key: pub} ->
+        Signing.signer_id(id, pub)
+
+      _ ->
+        nil
     end
   end
 end

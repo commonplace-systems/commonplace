@@ -25,6 +25,22 @@ defmodule CommonplaceWebWeb.ViewRenderer do
   Either way the wiki LiveView catches the event and forwards through
   `CommonplaceWebWeb.ViewActions.dispatch/3`.
 
+  Render guard (CX-pr7.5, intra-repo-PR design doc §7.5) — an `<action>`
+  carrying `guard-write="UUID"` renders only when the VIEWING session's
+  principal passes `Commonplace.Trust.writer_authorized?/6` for a
+  `:write` at that UUID; otherwise the element is skipped entirely
+  (nothing renders in its place). This is a GENERIC mechanism (not
+  PR-specific) — `render_view/3`'s third argument is the viewer's
+  principal, `{identity_uuid, public_key} | nil`, which callers thread
+  from their own session identity resolution (e.g. `WikiLive`'s
+  `CommonplaceWebWeb.SessionIdentity.resolve/1`); `render_view/2` is
+  kept as a convenience that renders as an anonymous/unresolved viewer
+  (any `guard-write` action then only shows under a fully-permissive
+  trust config). Hiding is UX ONLY — the actual enforcement is each
+  verb's own dispatch-site gate (e.g. `pr_accept`'s §6.4 step): an MCP
+  caller with no rendered button can still invoke the verb and hits
+  that same gate.
+
   Remaining first-pass limits:
   - Transclusion (`<include>`) is expanded once at the top of
     `render_view/2` via `Commonplace.Document.ViewTransclusion.expand/2`,
@@ -55,12 +71,12 @@ defmodule CommonplaceWebWeb.ViewRenderer do
   visible error block so the wiki viewer shows a useful diagnostic
   rather than a blank page.
   """
-  @spec render_view(String.t(), String.t()) :: Phoenix.HTML.safe()
-  def render_view(content, current_path) when is_binary(content) do
+  @spec render_view(String.t(), String.t(), {String.t(), binary()} | nil) :: Phoenix.HTML.safe()
+  def render_view(content, current_path, identity \\ nil) when is_binary(content) do
     case ViewXml.parse(content) do
       {:ok, %Node{tag: :view} = view} ->
         view = Commonplace.Document.ViewTransclusion.expand(view)
-        raw(render_node(view, current_path))
+        raw(render_node(view, current_path, identity))
 
       {:ok, %Node{tag: other}} ->
         raw([
@@ -80,8 +96,8 @@ defmodule CommonplaceWebWeb.ViewRenderer do
 
   # --- Node dispatch ---
 
-  defp render_node(%Node{tag: :view} = n, path) do
-    children = render_children(n, path)
+  defp render_node(%Node{tag: :view} = n, path, identity) do
+    children = render_children(n, path, identity)
     stale_badge = if n.attrs["stale"] == "true", do: stale_indicator(n), else: ""
 
     [
@@ -92,7 +108,7 @@ defmodule CommonplaceWebWeb.ViewRenderer do
     ]
   end
 
-  defp render_node(%Node{tag: :entity} = n, path) do
+  defp render_node(%Node{tag: :entity} = n, path, identity) do
     kind = n.attrs["kind"]
 
     # CX-lok1 (M3 sub-bead iv): kind-aware CSS class so consumers
@@ -118,20 +134,20 @@ defmodule CommonplaceWebWeb.ViewRenderer do
       "</span>",
       if(name, do: [~s(<span class="font-semibold text-base-content/80">), escape(name), "</span>"], else: ""),
       "</header>",
-      render_children(n, path),
+      render_children(n, path, identity),
       "</section>"
     ]
   end
 
-  defp render_node(%Node{tag: :body} = n, path) do
+  defp render_node(%Node{tag: :body} = n, path, identity) do
     [
       ~s(<div class="cp-body space-y-3">),
-      render_children(n, path),
+      render_children(n, path, identity),
       "</div>"
     ]
   end
 
-  defp render_node(%Node{tag: :text} = n, path) do
+  defp render_node(%Node{tag: :text} = n, path, _identity) do
     format = n.attrs["format"] || "plain"
     text = ViewXml.text_content(n)
 
@@ -163,7 +179,7 @@ defmodule CommonplaceWebWeb.ViewRenderer do
     end
   end
 
-  defp render_node(%Node{tag: :field} = n, _path) do
+  defp render_node(%Node{tag: :field} = n, _path, _identity) do
     name = n.attrs["name"] || ""
     value = n.attrs["value"] || ViewXml.text_content(n)
 
@@ -178,14 +194,14 @@ defmodule CommonplaceWebWeb.ViewRenderer do
     ]
   end
 
-  defp render_node(%Node{tag: :list} = n, path) do
+  defp render_node(%Node{tag: :list} = n, path, identity) do
     children =
       n.children
       |> Enum.map(fn
         %Node{} = child ->
           [
             ~s(<li class="cp-list-item">),
-            render_node(child, path),
+            render_node(child, path, identity),
             "</li>"
           ]
 
@@ -200,24 +216,32 @@ defmodule CommonplaceWebWeb.ViewRenderer do
     ]
   end
 
-  defp render_node(%Node{tag: :action} = n, _path) do
-    name = n.attrs["name"] || "action"
-    label = n.attrs["label"] || name
-    description = n.attrs["description"]
-    args = n.attrs["args"]
-    target = n.attrs["target"]
+  defp render_node(%Node{tag: :action} = n, _path, identity) do
+    # CX-pr7.5: `guard-write="UUID"` — skip the element entirely (UX
+    # ONLY; see moduledoc) unless the viewing session's principal
+    # passes a `:write` check on UUID. No `guard-write` attribute means
+    # no guard — every pre-7.5 action keeps rendering unconditionally.
+    if guarded_out?(n.attrs["guard-write"], identity) do
+      []
+    else
+      name = n.attrs["name"] || "action"
+      label = n.attrs["label"] || name
+      description = n.attrs["description"]
+      args = n.attrs["args"]
+      target = n.attrs["target"]
 
-    # CX-lok1 (M3 sub-bead iv): branch on `args` attribute presence.
-    # With args → phx-submit FORM with one input per arg (chat MVP path).
-    # Without args → phx-click button (existing wiki path; edit/history/fork).
-    case args do
-      nil -> render_action_button(name, label, description, target)
-      "" -> render_action_button(name, label, description, target)
-      args_str -> render_action_form(name, label, description, target, args_str)
+      # CX-lok1 (M3 sub-bead iv): branch on `args` attribute presence.
+      # With args → phx-submit FORM with one input per arg (chat MVP path).
+      # Without args → phx-click button (existing wiki path; edit/history/fork).
+      case args do
+        nil -> render_action_button(name, label, description, target)
+        "" -> render_action_button(name, label, description, target)
+        args_str -> render_action_form(name, label, description, target, args_str)
+      end
     end
   end
 
-  defp render_node(%Node{tag: :include} = n, path) do
+  defp render_node(%Node{tag: :include} = n, path, identity) do
     # Content has already been expanded by
     # `Commonplace.Document.ViewTransclusion.expand/2` at the top of
     # `render_view/2` before this clause runs — any empty includes
@@ -232,12 +256,12 @@ defmodule CommonplaceWebWeb.ViewRenderer do
       escape(from),
       if(commit, do: [" @ ", escape(commit)], else: ""),
       "</div>",
-      render_children(n, path),
+      render_children(n, path, identity),
       "</aside>"
     ]
   end
 
-  defp render_node(%Node{tag: :provenance} = n, _path) do
+  defp render_node(%Node{tag: :provenance} = n, _path, _identity) do
     signer = n.attrs["signer"]
     ts = n.attrs["ts"]
     commit = n.attrs["commit"]
@@ -257,7 +281,7 @@ defmodule CommonplaceWebWeb.ViewRenderer do
     ]
   end
 
-  defp render_node(%Node{tag: :raw} = n, _path) do
+  defp render_node(%Node{tag: :raw} = n, _path, _identity) do
     target = n.attrs["target"] || "unknown"
 
     [
@@ -272,22 +296,55 @@ defmodule CommonplaceWebWeb.ViewRenderer do
     ]
   end
 
-  defp render_node(%Node{tag: :unknown} = n, path) do
+  defp render_node(%Node{tag: :unknown} = n, path, identity) do
     # Unknown elements: render their children and swallow the unknown wrapper.
     # Forward-compatible with future vocabulary additions.
-    render_children(n, path)
+    render_children(n, path, identity)
   end
 
-  defp render_node(%Node{} = n, path) do
+  defp render_node(%Node{} = n, path, identity) do
     # Catchall — shouldn't be reached given :unknown fallback, but defensive.
-    render_children(n, path)
+    render_children(n, path, identity)
   end
 
-  defp render_children(%Node{children: children}, path) do
+  defp render_children(%Node{children: children}, path, identity) do
     Enum.map(children, fn
-      %Node{} = child -> render_node(child, path)
+      %Node{} = child -> render_node(child, path, identity)
       text when is_binary(text) -> escape(text)
     end)
+  end
+
+  # CX-pr7.5: does `guard_target` (a `guard-write` attribute value)
+  # refuse `identity`? No attribute at all -> never guarded (`false`).
+  # `identity` is `{identity_uuid, public_key} | nil` — `nil` (no
+  # session / anonymous) mirrors the dispatch-side
+  # `principal_identity/1` fallback of `{nil, nil}`. `cert_cids: []`:
+  # the wiki/PR render surface has no citizenship-cert plumbing (a
+  # MUD-only concept) — only a locally-pinned/node-trusted identity (or
+  # a fully-permissive `accept_unsigned` config) authorizes here, the
+  # SAME bar the dispatch-side gate (`Commonplace.ViewActionDispatch`'s
+  # `do_accept_merge/6`) applies. Wrapped rescue/catch so a trust-layer
+  # error never crashes a page render — it just hides the guarded
+  # action (fail closed on the UX layer too).
+  defp guarded_out?(nil, _identity), do: false
+  defp guarded_out?("", _identity), do: false
+
+  defp guarded_out?(guard_target, identity) do
+    {identity_uuid, pub} = identity || {nil, nil}
+    cfg = Commonplace.Trust.config()
+
+    not Commonplace.Trust.writer_authorized?(
+      identity_uuid,
+      pub,
+      [],
+      guard_target,
+      cfg,
+      Commonplace.Store.CommitStoreClient
+    )
+  rescue
+    _ -> true
+  catch
+    _, _ -> true
   end
 
   # --- CX-lok1 (M3 sub-bead iv) action helpers ---

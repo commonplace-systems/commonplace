@@ -413,7 +413,11 @@ defmodule CommonplaceWebWeb.WikiLive do
                         </article>
                       <% ViewDetect.is_view?(@page_content) -> %>
                         <article class="max-w-none">
-                          <%= ViewRenderer.render_view(@page_content, @current_path) %>
+                          <%= ViewRenderer.render_view(
+                            @page_content,
+                            @current_path,
+                            render_guard_principal(assigns[:identity])
+                          ) %>
                         </article>
                       <% true -> %>
                         <article class="prose prose-lg max-w-none">
@@ -1050,6 +1054,23 @@ defmodule CommonplaceWebWeb.WikiLive do
   defp identity_fields(_anonymous_or_unresolved) do
     {@placeholder_signer_id, nil, nil}
   end
+
+  # CX-pr7.5: the viewing session's principal, threaded to
+  # `ViewRenderer.render_view/3` so a `guard-write` action can be
+  # hidden/shown per-viewer. `{identity_uuid, public_key} | nil` — the
+  # same shape `Commonplace.ViewActionDispatch`'s `principal_identity/1`
+  # derives on the dispatch side, so the render-time guard and the
+  # dispatch-time gate (§6.4 for `pr_accept`) agree on what "this
+  # viewer's principal" means. An anonymous/unresolved session (no
+  # signing_context) renders as `nil` — same fallback the dispatch side
+  # uses (`{nil, nil}`), which `Commonplace.Trust.writer_authorized?/6`
+  # correctly refuses under enforce and correctly ignores under the
+  # permissive default.
+  defp render_guard_principal({:ok, %{signing_context: %{identity_uuid: id, public_key: pub}}}) do
+    {id, pub}
+  end
+
+  defp render_guard_principal(_anonymous_or_unresolved), do: nil
 
   # CX-nn4y: commit opts for the current socket's resolved identity —
   # just `:signing_context` (no `:client_id` here; `create_commit`/

@@ -60,6 +60,80 @@ defmodule Commonplace.Pulls.Template do
     """
   end
 
+  @pr_tag_re ~r/<pr\b([^>]*?)\/>/s
+
+  @doc """
+  Merge `updates` (atom or string keys → values) into the PR doc's OWN
+  `<pr .../>` element, preserving every attribute not named in
+  `updates` and leaving the rest of the document untouched (§7.4:
+  `pr_accept`/`pr_decline` stamp `status`/`merged_by`/`merged_at`/
+  `declined_by`/`declined_at` this way rather than hand-rolling a
+  regex at each call site).
+
+  A doc with no `<pr .../>` element is returned unchanged — callers
+  that already validated the doc via `parse_pr_attrs`-style parsing
+  won't hit this, but it fails soft rather than raising.
+  """
+  @spec set_pr_attrs(String.t(), map()) :: String.t()
+  def set_pr_attrs(content, updates) when is_binary(content) and is_map(updates) do
+    case Regex.run(@pr_tag_re, content) do
+      [whole, attrs_str] ->
+        merged =
+          Enum.reduce(updates, parse_attr_pairs(attrs_str), fn {k, v}, acc ->
+            Map.put(acc, to_string(k), to_string(v))
+          end)
+
+        new_tag = "<pr " <> render_attr_pairs(merged) <> " />"
+        String.replace(content, whole, new_tag, global: false)
+
+      nil ->
+        content
+    end
+  end
+
+  @doc """
+  Append a `{principal, ts, text}` review comment into
+  `<section id="reviews">` — an APPEND into the region, never a
+  replace, so earlier comments (and `pr_accept`/`pr_decline`'s own
+  system notes) survive (§7.4 `pr_comment`).
+
+  A doc with no `<section id="reviews">` region is returned unchanged.
+  """
+  @spec append_review(String.t(), String.t(), String.t(), String.t()) :: String.t()
+  def append_review(content, principal, ts, text) when is_binary(content) do
+    case Regex.run(~r/<section id="reviews">(.*?)<\/section>/s, content) do
+      [whole, body] ->
+        comment =
+          ~s(<comment principal="#{esc(principal)}" ts="#{esc(ts)}">#{esc(text)}</comment>)
+
+        new_section = "<section id=\"reviews\">" <> body <> comment <> "</section>"
+        String.replace(content, whole, new_section, global: false)
+
+      nil ->
+        content
+    end
+  end
+
+  defp parse_attr_pairs(attrs_str) do
+    ~r/([a-zA-Z_][\w-]*)="([^"]*)"/
+    |> Regex.scan(attrs_str)
+    |> Map.new(fn [_, k, v] -> {k, unescape_attr(v)} end)
+  end
+
+  defp render_attr_pairs(attrs) do
+    attrs
+    |> Enum.map(fn {k, v} -> ~s(#{k}="#{esc(v)}") end)
+    |> Enum.join(" ")
+  end
+
+  defp unescape_attr(value) do
+    value
+    |> String.replace("&quot;", "\"")
+    |> String.replace("&gt;", ">")
+    |> String.replace("&lt;", "<")
+    |> String.replace("&amp;", "&")
+  end
+
   defp base_attr(nil), do: ""
   defp base_attr(base), do: "\n      base=\"#{esc(base)}\""
 
