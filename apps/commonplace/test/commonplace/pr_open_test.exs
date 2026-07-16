@@ -138,7 +138,7 @@ defmodule Commonplace.PrOpenTest do
         source: "test"
       }
 
-      assert {:error, :no_common_ancestor} = ViewActionDispatch.dispatch("pr_open", context)
+      assert {:error, "pr_open failed: no common ancestor" <> _} = ViewActionDispatch.dispatch("pr_open", context)
 
       {:ok, root_doc} = DocBuilder.reconstruct_snapshot(CommitStoreClient, root_uuid)
       assert Schema.get_entry(root_doc, "__pulls") == :error

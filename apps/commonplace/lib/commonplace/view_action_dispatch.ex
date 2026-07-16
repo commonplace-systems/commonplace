@@ -59,9 +59,10 @@ defmodule Commonplace.ViewActionDispatch do
   alias Commonplace.Crypto.Signing
   alias Commonplace.Dataflow.Magenta
   alias Commonplace.Document.ContentType
+  alias Commonplace.Document.Diff
   alias Commonplace.Pulls.Template
   alias Commonplace.Store.CommitStoreClient
-  alias Commonplace.Tree.{DocBuilder, Lookup, Schema}
+  alias Commonplace.Tree.{DocBuilder, Lookup, Merge, Schema}
   alias Commonplace.Workspace
   alias Commonplace.WriterHand
   alias Yelixer.Encoding
@@ -219,13 +220,54 @@ defmodule Commonplace.ViewActionDispatch do
         {:error, reason} -> {:error, "pr_open failed: #{inspect(reason)}"}
       end
     else
-      {:error, :no_common_ancestor} -> {:error, :no_common_ancestor}
+      # Designer ruling (#8390): stringify at the dispatch boundary — the
+      # LiveView adapter flashes reasons and MCP interpolates them; the
+      # bare atom stays internal (validate_common_ancestor) for reuse.
+      {:error, :no_common_ancestor} ->
+        {:error, "pr_open failed: no common ancestor — target is not fork-related to source"}
       {:error, reason} -> {:error, "pr_open failed: #{inspect(reason)}"}
     end
   end
 
   defp do_dispatch("pr_open", _context) do
     {:error, "pr_open requires view_uuid (source) and args map with target"}
+  end
+
+  # CX-pr7.3: `pr_refresh_preview` — the scratch-fork preview mechanic
+  # (design doc §7.3). `view_uuid` = the PR doc itself. Every step is
+  # server-side and re-derived from the PR doc's OWN recorded
+  # `<pr source=... target=... status=.../>` attributes — reading those
+  # attributes back off the doc is fine (§6.3: nothing about the PR
+  # doc is trusted for *enforcement*, but re-reading its own
+  # server-authored fields to know which two docs to diff is not an
+  # enforcement decision, just routing).
+  #
+  # Statelessness (design doc, end of §7.3): every invocation forks a
+  # BRAND NEW scratch copy of the target and merges into *that* — never
+  # into the real target. `Merge.merge/4`'s `target_uuid` positional
+  # arg is the only doc `set_merge_point/4` ever writes to (see
+  # merge.ex), so passing the scratch uuid there means the real target
+  # accumulates no `(target, source)` merge-point and takes no commit
+  # at all during a preview run. The scratch fork is never attached to
+  # any schema (§7.3: "born unreachable = scratch by construction");
+  # reachability GC (`CommandRouter.gc/2`), not this verb, owns
+  # reclaiming it.
+  defp do_dispatch("pr_refresh_preview", %{view_uuid: pr_uuid} = context)
+       when is_binary(pr_uuid) do
+    opts = signing_opts(context)
+
+    with {:ok, doc} <- reconstruct_pr_doc(pr_uuid),
+         content = ContentType.get_content(doc) || "",
+         {:ok, attrs} <- parse_pr_attrs(content),
+         :ok <- require_open(attrs) do
+      refresh_preview(pr_uuid, doc, content, attrs, opts)
+    else
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp do_dispatch("pr_refresh_preview", _context) do
+    {:error, "pr_refresh_preview requires view_uuid (the PR doc)"}
   end
 
   # CX-487i (V1+V2 of CX-p2qp): chat post_message routes through
@@ -655,4 +697,267 @@ defmodule Commonplace.ViewActionDispatch do
 
   defp ok_commit({:error, _} = err), do: err
   defp ok_commit(commit), do: {:ok, commit}
+
+  # --- pr_refresh_preview helpers (§7.3) ---
+
+  # CX-41qg.3: fetch the PR doc via the FULL-chain reconstructor
+  # (`reconstruct_doc/2`, not `reconstruct_snapshot/2` — the PR doc's
+  # commit chain isn't guaranteed to be all self-contained-snapshot
+  # commits the way `reconstruct_snapshot/2`'s "latest commit only"
+  # shortcut assumes) with a STABLE client_id, since this same `doc`
+  # gets re-diffed and re-committed below (`commit_preview_section/4`)
+  # — without a fixed hand every refresh would mint a fresh random
+  # client_id and bloat the doc's state vector one slot per refresh.
+  defp reconstruct_pr_doc(pr_uuid) do
+    case DocBuilder.reconstruct_doc(CommitStoreClient, pr_uuid, client_id: WriterHand.for_doc(pr_uuid)) do
+      {:ok, doc} -> {:ok, doc}
+      :none -> {:error, "PR doc not found: #{pr_uuid}"}
+    end
+  end
+
+  @pr_tag_re ~r/<pr\b([^>]*?)\/>/s
+
+  # Read `source`/`target`/`status` back off the PR doc's OWN `<pr .../>`
+  # element. Per the module moduledoc's §6.3 note: fine for ROUTING
+  # (which two docs does this preview diff?), never for authorization.
+  defp parse_pr_attrs(content) do
+    case Regex.run(@pr_tag_re, content) do
+      [_, attrs_str] ->
+        attrs = %{
+          source: pr_attr(attrs_str, "source"),
+          target: pr_attr(attrs_str, "target"),
+          status: pr_attr(attrs_str, "status")
+        }
+
+        if is_binary(attrs.source) and is_binary(attrs.target) do
+          {:ok, attrs}
+        else
+          {:error, "PR doc <pr> element missing source/target attributes"}
+        end
+
+      nil ->
+        {:error, "PR doc has no <pr> element"}
+    end
+  end
+
+  defp pr_attr(attrs_str, name) do
+    case Regex.run(~r/\b#{name}="([^"]*)"/, attrs_str) do
+      [_, value] -> unescape_attr(value)
+      nil -> nil
+    end
+  end
+
+  defp unescape_attr(value) do
+    value
+    |> String.replace("&quot;", "\"")
+    |> String.replace("&gt;", ">")
+    |> String.replace("&lt;", "<")
+    |> String.replace("&amp;", "&")
+  end
+
+  defp require_open(%{status: "open"}), do: :ok
+  defp require_open(_attrs), do: {:error, "PR is not open"}
+
+  # The three tree-mutating/reading steps of §7.3, run only once the PR
+  # doc has confirmed `status="open"`: scratch-fork the target (NOT
+  # attached anywhere), merge source into the scratch, then render +
+  # commit the preview section. Split out of the dispatch clause so the
+  # `with`-chain above stays flat.
+  defp refresh_preview(pr_uuid, doc, content, %{source: source_uuid, target: target_uuid}, opts) do
+    case CommandRouter.fork(target_uuid) do
+      {:ok, scratch_uuid} ->
+        run_preview_merge(pr_uuid, doc, content, source_uuid, target_uuid, scratch_uuid, opts)
+
+      {:error, reason} ->
+        {:error, "pr_refresh_preview failed to scratch-fork target: #{inspect(reason)}"}
+    end
+  end
+
+  defp run_preview_merge(pr_uuid, doc, content, source_uuid, target_uuid, scratch_uuid, opts) do
+    # The scratch fork is throwaway (unreachable-by-construction, per
+    # `refresh_preview/4`'s comment), so signing it with the INVOKER's
+    # own context is fine — nothing downstream trusts scratch-doc
+    # authorship. `target_uuid` here is `scratch_uuid`, never the real
+    # target, which is exactly what keeps this call from ever writing a
+    # `(real_target, source)` merge-point (see merge.ex's
+    # `set_merge_point/4` call sites — always keyed off the 2nd
+    # positional `merge/4` arg).
+    case Merge.merge(source_uuid, scratch_uuid, CommitStoreClient, opts) do
+      {:ok, report} ->
+        finish_preview(pr_uuid, doc, content, source_uuid, target_uuid, scratch_uuid, report, opts)
+
+      {:error, reason} ->
+        {:error, "pr_refresh_preview failed to merge: #{inspect(reason)}"}
+    end
+  end
+
+  defp finish_preview(pr_uuid, doc, content, source_uuid, target_uuid, scratch_uuid, report, opts) do
+    with {:ok, base_text} <- reconstruct_base_text(target_uuid, source_uuid),
+         {:ok, source_text} <- reconstruct_leaf_text(source_uuid),
+         {:ok, projected_text} <- reconstruct_leaf_text(scratch_uuid),
+         {:ok, scratch_head_hex} <- scratch_head_hex(scratch_uuid) do
+      result_hash = :crypto.hash(:sha256, projected_text) |> Base.encode16(case: :lower)
+
+      preview_body =
+        render_preview_body(%{
+          report: report,
+          base_text: base_text,
+          source_text: source_text,
+          projected_text: projected_text,
+          result_hash: result_hash,
+          scratch_head_hex: scratch_head_hex
+        })
+
+      case commit_preview_section(pr_uuid, doc, content, preview_body, opts) do
+        :ok ->
+          {:ok, :tree_mutation,
+           %{action: "pr_refresh_preview", pr_uuid: pr_uuid, result_hash: result_hash}}
+
+        {:error, reason} ->
+          {:error, "pr_refresh_preview failed to update preview: #{inspect(reason)}"}
+      end
+    else
+      {:error, reason} -> {:error, "pr_refresh_preview failed: #{inspect(reason)}"}
+    end
+  end
+
+  # `base` = target's content at the source/target common ancestor
+  # commit. Re-derived fresh every refresh (never cached) — same
+  # "recorded fields are informational, live derivation is truth"
+  # posture as everything else in this verb.
+  defp reconstruct_base_text(target_uuid, source_uuid) do
+    case CommitStoreClient.find_common_ancestor(target_uuid, source_uuid) do
+      {:ok, ancestor} ->
+        case DocBuilder.reconstruct_doc_at(CommitStoreClient, target_uuid, ancestor.id) do
+          {:ok, ancestor_doc} -> {:ok, leaf_text_content(ancestor_doc)}
+          :none -> {:ok, ""}
+        end
+
+      :none ->
+        {:ok, ""}
+    end
+  end
+
+  defp reconstruct_leaf_text(uuid) do
+    case DocBuilder.reconstruct_doc(CommitStoreClient, uuid) do
+      {:ok, doc} -> {:ok, leaf_text_content(doc)}
+      :none -> {:ok, ""}
+    end
+  end
+
+  # v1 is single-doc/leaf-only (design doc §7.7): the projection is
+  # just the doc's text content. Kept deliberately simple rather than
+  # reaching for a GitBridge doc->file projection helper — GitBridge's
+  # projection machinery (`git_bridge/inbound.ex`) is shaped around
+  # importing/exporting an actual git repo's working tree, not around
+  # rendering an arbitrary doc as display text, so it would be a bigger
+  # dependency for no v1 benefit. A non-text doc renders via `inspect/1`
+  # as a visible fallback rather than silently going blank.
+  defp leaf_text_content(doc) do
+    case ContentType.get_content(doc) do
+      text when is_binary(text) -> text
+      other -> inspect(other)
+    end
+  end
+
+  defp scratch_head_hex(scratch_uuid) do
+    case CommitStoreClient.latest_commit(scratch_uuid) do
+      {:ok, commit} -> {:ok, Base.encode16(commit.id, case: :lower)}
+      :none -> {:ok, nil}
+    end
+  end
+
+  defp render_preview_body(%{
+         report: report,
+         base_text: base_text,
+         source_text: source_text,
+         projected_text: projected_text,
+         result_hash: result_hash,
+         scratch_head_hex: scratch_head_hex
+       }) do
+    """
+    <merge-summary merged="#{length(report.merged_docs)}" new="#{length(report.new_docs)}" deleted="#{length(report.deleted_docs)}" conflicts="#{length(report.conflicts)}" />
+    #{render_conflicts(report.conflicts)}
+    <diff from="base" to="source">
+    #{preview_esc(line_diff(base_text, source_text))}
+    </diff>
+    <diff from="base" to="projected-result">
+    #{preview_esc(line_diff(base_text, projected_text))}
+    </diff>
+    <projected-result>
+    #{preview_esc(projected_text)}
+    </projected-result>
+    <result-hash>#{result_hash}</result-hash>
+    <scratch-head note="informational-only per design doc §6.3 — pr_accept re-derives this, never trusts it">#{scratch_head_hex || ""}</scratch-head>
+    """
+  end
+
+  defp render_conflicts([]), do: "<conflicts/>"
+
+  defp render_conflicts(conflicts) do
+    lines = Enum.map(conflicts, fn c -> "  <conflict>#{preview_esc(inspect(c))}</conflict>" end)
+    Enum.join(["<conflicts>" | lines] ++ ["</conflicts>"], "\n")
+  end
+
+  # Line-level Myers diff, rendered unified-diff-style (`  ` unchanged,
+  # `- ` removed, `+ ` added). Not the GitBridge projection helper (see
+  # `leaf_text_content/1`'s comment) — a small self-contained renderer
+  # reusing the same `List.myers_difference/2` stdlib primitive
+  # `Commonplace.Document.Diff` already uses at grapheme granularity;
+  # line granularity reads better for a human review surface.
+  defp line_diff(old_text, new_text) do
+    old_lines = String.split(old_text || "", "\n")
+    new_lines = String.split(new_text || "", "\n")
+
+    List.myers_difference(old_lines, new_lines)
+    |> Enum.flat_map(fn
+      {:eq, lines} -> Enum.map(lines, &("  " <> &1))
+      {:del, lines} -> Enum.map(lines, &("- " <> &1))
+      {:ins, lines} -> Enum.map(lines, &("+ " <> &1))
+    end)
+    |> Enum.join("\n")
+  end
+
+  defp preview_esc(value) do
+    value
+    |> to_string()
+    |> String.replace("&", "&amp;")
+    |> String.replace("<", "&lt;")
+    |> String.replace(">", "&gt;")
+  end
+
+  @preview_section_re ~r/<section id="preview">.*?<\/section>/s
+
+  # REPLACE the `<section id="preview">` region (mirrors the
+  # `SessionView.replace_room/2` REPLACE-subtree pattern's *intent* —
+  # swap one region's content wholesale without touching the rest of
+  # the doc — but the PR doc is a plain Y.Text/XML-as-text leaf, not a
+  # YXmlFragment with independently-addressable child subtrees, so
+  # there's no separate CRDT subtree to tombstone-and-reinsert. Instead
+  # this splices the new section into the full text and hands the
+  # full old/new strings to `Commonplace.Document.Diff.apply_diff/3` —
+  # the SAME minimal-diff machinery CX-k20z's write_meta_doc fix
+  # established: Myers diff finds the common prefix/suffix (everything
+  # outside `<section id="preview">`) and only the changed middle span
+  # gets delete/insert ops, so — like `replace_room/2`'s region
+  # isolation — untouched parts of the doc (the `<pr>` header, other
+  # sections, the `<action>` elements) generate no ops on this commit.
+  defp commit_preview_section(pr_uuid, doc, old_content, preview_body, opts) do
+    new_section = "<section id=\"preview\">" <> preview_body <> "</section>"
+
+    if Regex.match?(@preview_section_re, old_content) do
+      new_content = Regex.replace(@preview_section_re, old_content, fn _whole -> new_section end, global: false)
+      doc = Diff.apply_diff(doc, old_content, new_content)
+      update = Encoding.encode_update(doc)
+
+      case ok_commit(
+             CommitStoreClient.create_chained_commit(CommitStoreClient, pr_uuid, update, %{}, opts)
+           ) do
+        {:ok, _commit} -> :ok
+        {:error, _} = err -> err
+      end
+    else
+      {:error, "PR doc missing <section id=\"preview\"> region"}
+    end
+  end
 end
