@@ -1649,4 +1649,180 @@ defmodule Commonplace.MUD.EngineModuleTest do
       end
     end
   end
+
+  # `who`/`recipes`/`use` gameplay-verb baselines (CX-wkau tranche 2) ----
+  #
+  # `who` gets the FULL engine matrix — doc->run parity/hot-reload, non-brick
+  # tiers, the RCE trust-split, and the Bootstrap seed integration, same
+  # shape as `where`/`examine` above (it's the most interesting of the
+  # three: a tree walk + a `Registry` live-presence filter, versus
+  # `recipes`'s pure-formatting wrap and `use`'s constant reply). `recipes`
+  # and `use` are covered for seed<->floor parity in
+  # `engine_verbs_parity_test.exs` instead.
+
+  describe "who verb (Inc-1 tranche 2)" do
+    alias Commonplace.MUD.Verbs.WhoFloor
+    alias Commonplace.Tree.Schema
+
+    defp build_who_ctx do
+      root_uuid = UUID.uuid4()
+      root_update = Yelixer.Encoding.encode_update(Schema.new_schema())
+      CommitStore.create_commit(CommitStore, root_uuid, root_update, nil)
+
+      %{root_uuid: root_uuid, store: @store, signing_context: nil}
+    end
+
+    defp who_cmd, do: %Parser.Command{verb: "who", argv: [], target: nil}
+
+    defp who_source(no_players_override \\ nil) do
+      no_players_line =
+        if no_players_override do
+          ~s("#{no_players_override}")
+        else
+          "\"Nobody is logged in.\""
+        end
+
+      ~s'''
+      defmodule Commonplace.MUD.EngineWho do
+        alias Commonplace.MUD.Verbs
+
+        def run(_cmd, ctx) do
+          names =
+            Verbs.walk_collect_players(ctx.root_uuid, ctx.store)
+            |> Enum.filter(&live_presence?/1)
+            |> Enum.sort()
+            |> Enum.uniq()
+
+          text =
+            case names do
+              [] -> #{no_players_line}
+              _ -> "Players online:\\n  - " <> Enum.join(names, "\\n  - ")
+            end
+
+          {:reply, text}
+        end
+
+        defp live_presence?(name) do
+          Registry.lookup(Commonplace.MUD.PresenceRegistry, "\#{name}.usr") != []
+        end
+      end
+      '''
+    end
+
+    defp crashing_who_source do
+      ~s'''
+      defmodule Commonplace.MUD.EngineWho do
+        def run(_cmd, _ctx), do: raise("boom from a doc-hosted who verb")
+      end
+      '''
+    end
+
+    defp who_content_update(source) do
+      Yelixer.Doc.new()
+      |> ContentType.create(:text, "_engine_who.ex")
+      |> ContentType.insert_text(0, source)
+      |> Yelixer.Encoding.encode_update()
+    end
+
+    defp mint_who(source, opts) do
+      uuid = UUID.uuid4()
+
+      CommitStore.create_chained_commit(
+        CommitStore,
+        uuid,
+        who_content_update(source),
+        %{kind: :regular},
+        opts
+      )
+
+      uuid
+    end
+
+    defp edit_who(uuid, source, opts) do
+      CommitStore.create_chained_commit(
+        CommitStore,
+        uuid,
+        who_content_update(source),
+        %{kind: :regular},
+        opts
+      )
+
+      SourceDoc.reset_cache()
+      :ok
+    end
+
+    defp set_who_manifest(uuid), do: set_engine_manifest(:who, uuid)
+    defp clear_who_manifest, do: clear_engine_manifest(:who)
+
+    test "no manifest entry -> the compiled-in floor runs (silently, no alarm)" do
+      permissive!()
+      clear_who_manifest()
+      ctx = build_who_ctx()
+      ref = attach_fallback_alarm()
+
+      assert {:reply, text} = EngineModule.run_verb(:who, who_cmd(), ctx, @store)
+      assert {:reply, text} == WhoFloor.run(who_cmd(), ctx)
+      refute_receive {:engine_fallback, ^ref, _}, 100
+    end
+
+    test "doc->run: a node-signed edit changes who's rendered output (the self-hosting win)" do
+      permissive!()
+      ctx = build_who_ctx()
+      uuid = mint_who(who_source(), [])
+      set_who_manifest(uuid)
+
+      assert {:ok, _module} = SourceDoc.compile(uuid, @store, gate: :execute)
+
+      assert {:reply, before_text} = EngineModule.run_verb(:who, who_cmd(), ctx, @store)
+      assert before_text == "Nobody is logged in."
+
+      :ok = edit_who(uuid, who_source("The halls stand empty."), [])
+
+      assert {:reply, after_text} = EngineModule.run_verb(:who, who_cmd(), ctx, @store)
+      assert after_text == "The halls stand empty."
+    end
+
+    test "RCE guard: a player-signed edit to the who doc is REFUSED (Gate B) -> floor",
+         %{trusted: trusted, trusted_id: trusted_id, trusted_pub: trusted_pub, player: player} do
+      strict!(%{trusted_id => Signing.encode_key(trusted_pub)})
+      ctx = build_who_ctx()
+
+      uuid = mint_who(who_source(), signing_context: trusted)
+      set_who_manifest(uuid)
+      assert {:reply, trusted_text} = EngineModule.run_verb(:who, who_cmd(), ctx, @store)
+      assert trusted_text == "Nobody is logged in."
+
+      ref = attach_fallback_alarm()
+
+      :ok = edit_who(uuid, who_source("PWNED"), signing_context: player)
+
+      assert {:error, {:execution_denied, _}} = SourceDoc.compile(uuid, @store, gate: :execute)
+
+      assert {:reply, floor_text} = EngineModule.run_verb(:who, who_cmd(), ctx, @store)
+      assert {:reply, floor_text} == WhoFloor.run(who_cmd(), ctx)
+      refute floor_text =~ "PWNED"
+      assert_receive {:engine_fallback, ^ref, %{name: :who}}, 500
+    end
+
+    test "non-brick: a who doc that COMPILES but crashes at runtime is contained -> floor" do
+      permissive!()
+      ctx = build_who_ctx()
+      ref = attach_fallback_alarm()
+      uuid = mint_who(crashing_who_source(), [])
+      set_who_manifest(uuid)
+
+      assert {:reply, text} = EngineModule.run_verb(:who, who_cmd(), ctx, @store)
+      assert {:reply, text} == WhoFloor.run(who_cmd(), ctx)
+      assert_receive {:engine_fallback, ^ref, _}, 500
+    end
+
+    test "Bootstrap.ensure_engine_who_verb seeds a node-signed who doc that runs in parity with the floor" do
+      permissive!()
+      ctx = build_who_ctx()
+
+      assert :ok = Commonplace.MUD.Bootstrap.ensure_engine_who_verb(@store)
+
+      assert EngineModule.run_verb(:who, who_cmd(), ctx, @store) == WhoFloor.run(who_cmd(), ctx)
+    end
+  end
 end

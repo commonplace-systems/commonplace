@@ -623,9 +623,20 @@ defmodule Commonplace.MUD.Verbs do
   defp dispatch_builtin("put", cmd, ctx), do: do_put(cmd, ctx)
   defp dispatch_builtin("mine", cmd, ctx), do: do_mine(cmd, ctx)
   defp dispatch_builtin("smith", cmd, ctx), do: do_smith(cmd, ctx)
-  defp dispatch_builtin("recipes", _cmd, ctx), do: do_recipes(ctx)
+  # CX-wkau (MUD-as-documents Inc-1, tranche 2): `recipes` joins the
+  # doc-hosted stateless-leaf cohort, same `EngineModule.run_verb/4` shape
+  # as `where`/`examine`/etc (tranche 1) — `do_recipes/1` is UNCHANGED and
+  # remains the single source of truth; the compiled-in floor
+  # (`Commonplace.MUD.Verbs.RecipesFloor`) calls back into it via the
+  # `__recipes_floor__/2` escape hatch below.
+  defp dispatch_builtin("recipes", cmd, ctx), do: EngineModule.run_verb(:recipes, cmd, ctx, ctx.store)
   defp dispatch_builtin("inventory", cmd, ctx), do: EngineModule.run_verb(:inventory, cmd, ctx, ctx.store)
-  defp dispatch_builtin("who", _cmd, ctx), do: do_who(ctx)
+
+  # CX-wkau (MUD-as-documents Inc-1, tranche 2): `who` joins the doc-hosted
+  # cohort too — `do_who/1` is UNCHANGED and remains the single source of
+  # truth; the compiled-in floor (`Commonplace.MUD.Verbs.WhoFloor`) calls
+  # back into it via the `__who_floor__/2` escape hatch below.
+  defp dispatch_builtin("who", cmd, ctx), do: EngineModule.run_verb(:who, cmd, ctx, ctx.store)
   defp dispatch_builtin("home", _cmd, ctx), do: do_home(ctx)
   defp dispatch_builtin("quit", _cmd, _ctx), do: {:reply, :quit}
   # CX-hbb2 — self-hosted: help text is a node-signed CRDT doc (editable
@@ -656,10 +667,14 @@ defmodule Commonplace.MUD.Verbs do
   # `use` is left calling `do_use/2` directly — dispatch precedence (an
   # object-verb override reaches this clause only when absent) is UNCHANGED
   # by any of this; only the six BASELINE bodies moved behind the resolver.
+  #
+  # CX-wkau (MUD-as-documents Inc-1, tranche 2): `use` now also routes
+  # through `EngineModule`, same shape — `do_use/2` stays UNCHANGED, the
+  # compiled-in floor (`UseFloor`) calls back via `__use_floor__/2` below.
   defp dispatch_builtin("examine", cmd, ctx), do: EngineModule.run_verb(:examine, cmd, ctx, ctx.store)
   defp dispatch_builtin("search", cmd, ctx), do: EngineModule.run_verb(:search, cmd, ctx, ctx.store)
   defp dispatch_builtin("read", cmd, ctx), do: EngineModule.run_verb(:read, cmd, ctx, ctx.store)
-  defp dispatch_builtin("use", cmd, ctx), do: do_use(cmd, ctx)
+  defp dispatch_builtin("use", cmd, ctx), do: EngineModule.run_verb(:use, cmd, ctx, ctx.store)
   defp dispatch_builtin("sit", cmd, ctx), do: EngineModule.run_verb(:sit, cmd, ctx, ctx.store)
   defp dispatch_builtin("stand", cmd, ctx), do: EngineModule.run_verb(:stand, cmd, ctx, ctx.store)
 
@@ -726,6 +741,24 @@ defmodule Commonplace.MUD.Verbs do
 
   @doc false
   def __stand_floor__(cmd, ctx), do: do_stand(cmd, ctx)
+
+  # CX-wkau (MUD-as-documents Inc-1, tranche 2): the ONLY external callers of
+  # `do_use/2`, `do_recipes/1`, and `do_who/1` — used exclusively by the
+  # matching `EngineModule` compiled-in floors (`UseFloor`/`RecipesFloor`/
+  # `WhoFloor`). Each stays private; routing the floor through these
+  # one-line delegators means the floor and the "real" verb behavior can
+  # never drift out of parity — exactly one implementation of each, this
+  # just exposes a call path to it. `do_recipes/1` and `do_who/1` take only
+  # `ctx` (no `cmd`), so their hatches ignore `cmd` to match the
+  # `module.run(cmd, ctx)` shape `EngineModule` expects.
+  @doc false
+  def __use_floor__(cmd, ctx), do: do_use(cmd, ctx)
+
+  @doc false
+  def __recipes_floor__(_cmd, ctx), do: do_recipes(ctx)
+
+  @doc false
+  def __who_floor__(_cmd, ctx), do: do_who(ctx)
 
   # CX-82wi — `where`: a non-builder QoL that surfaces the CURRENT room's own
   # uuid (its address). A room with no inbound exits — every player's home! —
@@ -1744,7 +1777,16 @@ defmodule Commonplace.MUD.Verbs do
     Registry.lookup(Commonplace.MUD.PresenceRegistry, "#{name}.usr") != []
   end
 
-  defp walk_collect_players(dir_uuid, store) do
+  # CX-wkau (MUD-as-documents Inc-1, tranche 2) — PROMOTED verb-authoring
+  # surface: the read-only roster walk that `do_who/1` needs, exposed so
+  # its doc-hosted seed (`priv/engine_verbs/who.exs.seed`) can collect the
+  # `.usr` tree entries without copying the private tree-recursion logic.
+  # The names it returns are exactly what `who` already prints to every
+  # player — no new visibility is created by promoting it. Live-session
+  # filtering (`live_presence?/1`) stays private/inline in the seed itself
+  # (a one-line `Registry.lookup/2` — no private machinery to wrap).
+  @doc false
+  def walk_collect_players(dir_uuid, store) do
     case Schemas.load_dir_schema(dir_uuid, store) do
       {:ok, schema} ->
         Schema.list_entries(schema)

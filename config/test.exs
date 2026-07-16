@@ -34,6 +34,12 @@ config :commonplace,
   snapshot_sweeper_enabled: false,
   git_bridge_on_boot: false,
   reader_lazy_snapshot_enabled: false,
+  # CX-xs2d: the boot-time doc-hosting manifest ensure is off in tests —
+  # tmp/test_data persists across suite runs, so a boot ensure would make
+  # every test resolve doc-hosted verbs against whatever stale docs that
+  # store carries at the fixed engine UUIDs. Tests exercise the compiled
+  # floors unless they seed docs deliberately (engine_module_test does).
+  mud_manifest_on_boot: false,
   # CX-9hql: the CommitStoreQueuePoller ticks on its own timer and would
   # otherwise emit `[:commonplace, :commit_store, :queue_depth]` in the
   # background during every test, racing test-local telemetry attaches.

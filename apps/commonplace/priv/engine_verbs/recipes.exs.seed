@@ -1,0 +1,33 @@
+defmodule Commonplace.MUD.EngineRecipes do
+  @moduledoc """
+  Doc-hosted `recipes` verb (CX-wkau, MUD-as-documents Inc-1 / tranche 2).
+  Hot-editable.
+
+  Lists the curated recipes + their inputs (via the already-public
+  `Commonplace.MUD.Mint.list_recipes/2`) so a player can see what a craft
+  will consume BEFORE committing (informed consent).
+  """
+
+  alias Commonplace.MUD.Mint
+
+  def run(_cmd, ctx) do
+    case Mint.list_recipes(ctx.root_uuid, ctx.store) do
+      [] ->
+        {:reply, "No recipes are known here."}
+
+      recipes ->
+        lines =
+          Enum.map(recipes, fn r ->
+            inputs =
+              r.inputs
+              |> Enum.map(fn i -> "#{Map.get(i, "qty", 1)}× #{Map.get(i, "type", "?")}" end)
+              |> Enum.join(", ")
+
+            out = Map.get(r.output, "name", Map.get(r.output, :name, "item"))
+            "  #{r.name}: #{inputs} → #{out}"
+          end)
+
+        {:reply, "Recipes:\n" <> Enum.join(lines, "\n")}
+    end
+  end
+end

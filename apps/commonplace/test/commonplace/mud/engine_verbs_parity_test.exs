@@ -1,30 +1,34 @@
 defmodule Commonplace.MUD.EngineVerbsParityTest do
   @moduledoc """
-  CX-wkau (MUD-as-documents Inc-1, tranche 1) — a PARITY pin for all six
-  doc-hosted gameplay-verb baselines (`where`/`sit`/`stand`/`examine`/
-  `search`/`read`): with each verb's seed FRESHLY ensured
+  CX-wkau (MUD-as-documents Inc-1) — a PARITY pin for the doc-hosted
+  gameplay-verb baselines: tranche 1's six (`where`/`sit`/`stand`/
+  `examine`/`search`/`read`) plus tranche 2's three (`who`/`recipes`/
+  `use`). With each verb's seed FRESHLY ensured
   (`Bootstrap.ensure_engine_*_verb/1`) on a bootstrapped test world, running
   a command through `EngineModule.run_verb/4` (the doc path) must produce
   the exact same result as running it through the verb's compiled-in FLOOR
   module directly. This is the seed<->floor behavior-identity pin at seed
   time — the individual `engine_module_test.exs` describes above cover the
   doc->run/non-brick/RCE mechanics per-verb in depth; this file is the
-  breadth check across all six with representative inputs (empty argv, a
+  breadth check across all nine with representative inputs (empty argv, a
   found target, a missing target).
   """
   use ExUnit.Case, async: false
 
-  alias Commonplace.MUD.{Bootstrap, EngineModule, Parser}
+  alias Commonplace.MUD.{Bootstrap, EngineModule, Parser, SeedWorld}
   alias Commonplace.MUD.Schemas
   alias Commonplace.MUD.Schemas.{Object, Player, Room}
 
   alias Commonplace.MUD.Verbs.{
     ExamineFloor,
     ReadFloor,
+    RecipesFloor,
     SearchFloor,
     SitFloor,
     StandFloor,
-    WhereFloor
+    UseFloor,
+    WhereFloor,
+    WhoFloor
   }
 
   alias Commonplace.Store.{CommitStore, CommitStoreClient}
@@ -148,6 +152,12 @@ defmodule Commonplace.MUD.EngineVerbsParityTest do
     assert :ok = Bootstrap.ensure_engine_read_verb(@store)
   end
 
+  defp ensure_tranche_2 do
+    assert :ok = Bootstrap.ensure_engine_who_verb(@store)
+    assert :ok = Bootstrap.ensure_engine_recipes_verb(@store)
+    assert :ok = Bootstrap.ensure_engine_use_verb(@store)
+  end
+
   test "seed<->floor parity for all six tranche-1 verbs across representative inputs" do
     ctx = build_world_ctx()
     ensure_all_six()
@@ -187,6 +197,33 @@ defmodule Commonplace.MUD.EngineVerbsParityTest do
       assert EngineModule.run_verb(:read, cmd("read", argv), ctx, @store) ==
                ReadFloor.run(cmd("read", argv), ctx),
              "read #{inspect(argv)} diverged from the floor"
+    end
+  end
+
+  test "seed<->floor parity for the tranche-2 verbs (who/recipes/use) across representative inputs" do
+    ctx = build_world_ctx()
+    ensure_tranche_2()
+
+    # who: no live sessions registered anywhere — bare invocation only.
+    assert EngineModule.run_verb(:who, cmd("who"), ctx, @store) ==
+             WhoFloor.run(cmd("who"), ctx)
+
+    assert {:reply, "Nobody is logged in."} = EngineModule.run_verb(:who, cmd("who"), ctx, @store)
+
+    # recipes: the test world seeds the iron-ingot recipe via SeedWorld.
+    assert {:ok, :ready} = SeedWorld.import(ctx.root_uuid, @store)
+
+    assert EngineModule.run_verb(:recipes, cmd("recipes"), ctx, @store) ==
+             RecipesFloor.run(cmd("recipes"), ctx)
+
+    assert {:reply, text} = EngineModule.run_verb(:recipes, cmd("recipes"), ctx, @store)
+    assert text =~ "iron ingot"
+
+    # use: with and without an argv target — a constant baseline either way.
+    for argv <- [[], ["widget"]] do
+      assert EngineModule.run_verb(:use, cmd("use", argv), ctx, @store) ==
+               UseFloor.run(cmd("use", argv), ctx),
+             "use #{inspect(argv)} diverged from the floor"
     end
   end
 end

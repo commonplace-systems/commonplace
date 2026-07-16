@@ -97,6 +97,8 @@ defmodule Commonplace.MUD.EngineModule do
   # CX-wkau (MUD-as-documents Inc-1, tranche 1): `where`/`examine`/`search`/
   # `read`/`sit`/`stand` — the six PURE/stateless gameplay-verb baselines
   # (CX-z6ub M2.2) — join the doc-hosted cohort, same invariant.
+  #
+  # CX-wkau (tranche 2): `who`/`recipes`/`use` join the same cohort.
   @floor %{
     parser: Parser,
     look: Commonplace.MUD.Verbs.LookFloor,
@@ -108,7 +110,10 @@ defmodule Commonplace.MUD.EngineModule do
     search: Commonplace.MUD.Verbs.SearchFloor,
     read: Commonplace.MUD.Verbs.ReadFloor,
     sit: Commonplace.MUD.Verbs.SitFloor,
-    stand: Commonplace.MUD.Verbs.StandFloor
+    stand: Commonplace.MUD.Verbs.StandFloor,
+    who: Commonplace.MUD.Verbs.WhoFloor,
+    recipes: Commonplace.MUD.Verbs.RecipesFloor,
+    use: Commonplace.MUD.Verbs.UseFloor
   }
 
   @doc """

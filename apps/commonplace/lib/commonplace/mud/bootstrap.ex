@@ -36,6 +36,17 @@ defmodule Commonplace.MUD.Bootstrap do
   module's moduledoc for the idempotence keys (CX-k8lq's `@seed_marker`
   discipline included) and the node-signing / phase-decoupling fixes
   (CX-g5lb/CX-nd49).
+
+  CX-xs2d (boot-durable doc-hosting manifest): `ensure_doc_manifests/1`
+  is the single source of truth for the 17-entry `:mud_engine_manifest`
+  ensure sequence (previously only run inline inside `repair/2`, which
+  meant `:mud_engine_manifest` stayed empty from boot until a session
+  first fired `seed/2`/`repair/2` — every doc-hosted verb silently ran
+  on its compiled-in floor until then). `repair/2` calls it, and so does
+  `Commonplace.Application.ensure_mud_doc_manifests_if_workspace_present/0`
+  at boot (mirroring the CX-38fw chat-template boot-durability pattern),
+  so the manifest is populated immediately after supervisor start
+  whenever a workspace root exists — no session round-trip required.
   """
 
   alias Commonplace.Code.SourceDoc
@@ -171,6 +182,29 @@ defmodule Commonplace.MUD.Bootstrap do
   @external_resource engine_read_verb_path
   @engine_read_verb_source File.read!(engine_read_verb_path)
 
+  # CX-wkau (MUD-as-documents Inc-1, tranche 2): three more pure gameplay-
+  # verb baselines — `who`/`recipes`/`use` — join the doc-hosted cohort
+  # after tranche 1's six. Same fixed-uuid + node-signed idempotent seed
+  # shape as `@engine_where_verb_uuid` above; source bodies load from
+  # `priv/engine_verbs/*.exs.seed` at compile time. `who` uses the
+  # promoted `Verbs.walk_collect_players/2` surface (see that function's
+  # doc); `recipes` wraps the already-public `Mint.list_recipes/2`; `use`
+  # is a trivial constant-reply baseline.
+  @engine_who_verb_uuid "39b0c13f-26af-4b39-ae18-428fbe124d51"
+  engine_who_verb_path = Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "who.exs.seed"])
+  @external_resource engine_who_verb_path
+  @engine_who_verb_source File.read!(engine_who_verb_path)
+
+  @engine_recipes_verb_uuid "d824d05c-549d-4ba9-ada2-c2f8319f5d04"
+  engine_recipes_verb_path = Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "recipes.exs.seed"])
+  @external_resource engine_recipes_verb_path
+  @engine_recipes_verb_source File.read!(engine_recipes_verb_path)
+
+  @engine_use_verb_uuid "9f14c802-1d85-4cb1-9e16-5e6179d0997b"
+  engine_use_verb_path = Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "use.exs.seed"])
+  @external_resource engine_use_verb_path
+  @engine_use_verb_source File.read!(engine_use_verb_path)
+
   # CX-hbb2 (self-hosting slice A): the in-world `help` text as a node-signed
   # doc, editable without redeploy. Fixed uuid, same idempotent-seed shape as
   # `@engine_parser_uuid`/`@engine_look_verb_uuid` above — but this doc is
@@ -228,6 +262,12 @@ defmodule Commonplace.MUD.Bootstrap do
   def engine_search_verb_source, do: @engine_search_verb_source
   @doc false
   def engine_read_verb_source, do: @engine_read_verb_source
+  @doc false
+  def engine_who_verb_source, do: @engine_who_verb_source
+  @doc false
+  def engine_recipes_verb_source, do: @engine_recipes_verb_source
+  @doc false
+  def engine_use_verb_source, do: @engine_use_verb_source
 
   # CX-93ea: every step is a `with` link now — a rejected write (trust
   # gate under `:enforce`, or any other create_commit error) stops the
@@ -238,6 +278,46 @@ defmodule Commonplace.MUD.Bootstrap do
   # rooms/objects created and others not; re-running `repair/2` is
   # idempotent and will pick up where it left off.
   def repair(root_uuid, store \\ CommitStoreClient) do
+    # CX-xs2d: single source of truth for the doc-hosting manifest ensure
+    # set — see `ensure_doc_manifests/1` below for the ordered list and
+    # the boot-durability rationale (this same sequence now also runs
+    # from `Commonplace.Application.start/2` so a serve restart doesn't
+    # leave `:mud_engine_manifest` empty until a session fires `seed/2`).
+    :ok = ensure_doc_manifests(store)
+
+    # CX-lr73: the world CONTENT (rooms/exits, cloak/fountain, the iron
+    # vein, the iron-ingot recipe) is now an imported bundle — see
+    # `SeedWorld`'s moduledoc for the phase-decoupling + node-signing
+    # discipline that replaces this `with`-chain's old shape.
+    SeedWorld.import(root_uuid, store)
+  end
+
+  # CX-xs2d (boot-durable doc-hosting manifest): sequences the FOURTEEN
+  # pre-tranche-2 doc-hosting ensures plus tranche 2's three
+  # (`who`/`recipes`/`use`) — 17 total — that populate
+  # `:mud_engine_manifest`. Each `ensure_*` is independently best-effort
+  # (rescues/catches to `:ok`; see each one's own moduledoc comment), so
+  # this wrapper is just an ordered sequence with no additional error
+  # handling of its own — it always returns `:ok`.
+  #
+  # Mirrors the CX-38fw pattern (`Commonplace.Application`'s
+  # `ensure_chat_template_if_workspace_present/0`): a post-supervisor
+  # boot hook that primes durable app-env state so it survives a serve
+  # restart, instead of waiting for a session to trigger `seed/2`/
+  # `repair/2`. Called both from `repair/2` above (the existing
+  # session-triggered path) and from
+  # `Commonplace.Application.ensure_mud_doc_manifests_if_workspace_present/0`
+  # (the new boot path) — this function is the single source of truth
+  # for the set of 17 so the two call sites can never drift apart.
+  @doc """
+  CX-xs2d boot-durability entry point: idempotently ensure all 17
+  doc-hosted MUD manifest entries (parser, look/inventory/emote/say,
+  where/sit/stand/examine/search/read, who/recipes/use, help,
+  home_template, world_meta). Always returns `:ok` — every step is
+  independently best-effort. Safe to call at boot (before any
+  workspace-content seeding) or from `repair/2`.
+  """
+  def ensure_doc_manifests(store \\ CommitStoreClient) do
     # CX-2xez: seed the doc-hosted parser + point the engine manifest at it
     # FIRST and independently — it's node-signed + standalone (no tree
     # linkage), and best-effort (always returns :ok), so it can never block or
@@ -271,6 +351,14 @@ defmodule Commonplace.MUD.Bootstrap do
     :ok = ensure_engine_search_verb(store)
     :ok = ensure_engine_read_verb(store)
 
+    # CX-wkau (Inc-1, tranche 2): same best-effort, never-blocks shape —
+    # seed the doc-hosted `who`/`recipes`/`use` verbs + point the manifest
+    # at them. A failure just leaves `EngineModule.run_verb/4` on the
+    # respective compiled-in floor (full `do_*` parity).
+    :ok = ensure_engine_who_verb(store)
+    :ok = ensure_engine_recipes_verb(store)
+    :ok = ensure_engine_use_verb(store)
+
     # CX-hbb2: same best-effort, never-blocks shape — seed the node-signed
     # `help` text doc + point the manifest's `:help` entry at it. A failure
     # just leaves `Commonplace.MUD.HelpDoc.text/1` on the compiled-in floor.
@@ -288,11 +376,7 @@ defmodule Commonplace.MUD.Bootstrap do
     # `Commonplace.MUD.WorldMeta.title/1` on the compiled-in floor.
     :ok = ensure_world_meta(store)
 
-    # CX-lr73: the world CONTENT (rooms/exits, cloak/fountain, the iron
-    # vein, the iron-ingot recipe) is now an imported bundle — see
-    # `SeedWorld`'s moduledoc for the phase-decoupling + node-signing
-    # discipline that replaces this `with`-chain's old shape.
-    SeedWorld.import(root_uuid, store)
+    :ok
   end
 
   ## Private
@@ -531,6 +615,69 @@ defmodule Commonplace.MUD.Bootstrap do
 
       manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
       Application.put_env(:commonplace, :mud_engine_manifest, Map.put(manifest, :read, @engine_read_verb_uuid))
+    end
+
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  # CX-wkau (Inc-1, tranche 2): idempotently seed the node-signed `who`
+  # verb source doc + set the engine manifest's `:who` entry. Mirrors
+  # `ensure_engine_look_verb/1` exactly.
+  @doc false
+  def ensure_engine_who_verb(store \\ CommitStoreClient) do
+    with {:ok, node_ctx} <- NodeIdentity.signing_context() do
+      unless source_doc_present?(@engine_who_verb_uuid, store) do
+        seed_source_doc(@engine_who_verb_uuid, @engine_who_verb_source, node_ctx, store, "_engine_who.ex")
+      end
+
+      manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
+      Application.put_env(:commonplace, :mud_engine_manifest, Map.put(manifest, :who, @engine_who_verb_uuid))
+    end
+
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  # CX-wkau (Inc-1, tranche 2): idempotently seed the node-signed `recipes`
+  # verb source doc + set the engine manifest's `:recipes` entry. Mirrors
+  # `ensure_engine_look_verb/1` exactly.
+  @doc false
+  def ensure_engine_recipes_verb(store \\ CommitStoreClient) do
+    with {:ok, node_ctx} <- NodeIdentity.signing_context() do
+      unless source_doc_present?(@engine_recipes_verb_uuid, store) do
+        seed_source_doc(@engine_recipes_verb_uuid, @engine_recipes_verb_source, node_ctx, store, "_engine_recipes.ex")
+      end
+
+      manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
+      Application.put_env(:commonplace, :mud_engine_manifest, Map.put(manifest, :recipes, @engine_recipes_verb_uuid))
+    end
+
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  # CX-wkau (Inc-1, tranche 2): idempotently seed the node-signed `use`
+  # verb source doc + set the engine manifest's `:use` entry. Mirrors
+  # `ensure_engine_look_verb/1` exactly.
+  @doc false
+  def ensure_engine_use_verb(store \\ CommitStoreClient) do
+    with {:ok, node_ctx} <- NodeIdentity.signing_context() do
+      unless source_doc_present?(@engine_use_verb_uuid, store) do
+        seed_source_doc(@engine_use_verb_uuid, @engine_use_verb_source, node_ctx, store, "_engine_use.ex")
+      end
+
+      manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
+      Application.put_env(:commonplace, :mud_engine_manifest, Map.put(manifest, :use, @engine_use_verb_uuid))
     end
 
     :ok

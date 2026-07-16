@@ -153,4 +153,49 @@ defmodule Commonplace.MUD.BootstrapTest do
     assert start_again.description == "A cozy stone chamber. Exits lead north and east."
     assert map_size(start_again.exits) == 2
   end
+
+  # CX-xs2d (boot-durable doc-hosting manifest): `ensure_doc_manifests/1`
+  # is now the single source of truth for the doc-hosting manifest ensure
+  # sequence — both `repair/2` and the new `Commonplace.Application` boot
+  # hook call it. This pins the full 17-key set so a future ensure_*
+  # forgotten in the wrapper fails the count instead of silently leaving
+  # a verb on its compiled-in floor.
+  test "ensure_doc_manifests populates all 17 manifest keys", ctx do
+    old_manifest = Application.get_env(:commonplace, :mud_engine_manifest)
+    Application.delete_env(:commonplace, :mud_engine_manifest)
+
+    on_exit(fn ->
+      if is_nil(old_manifest),
+        do: Application.delete_env(:commonplace, :mud_engine_manifest),
+        else: Application.put_env(:commonplace, :mud_engine_manifest, old_manifest)
+    end)
+
+    assert :ok = Bootstrap.ensure_doc_manifests(ctx.store)
+
+    manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
+
+    expected_keys =
+      MapSet.new([
+        :parser,
+        :look,
+        :inventory,
+        :emote,
+        :say,
+        :help,
+        :home_template,
+        :world_meta,
+        :where,
+        :examine,
+        :search,
+        :read,
+        :sit,
+        :stand,
+        :who,
+        :recipes,
+        :use
+      ])
+
+    assert MapSet.new(Map.keys(manifest)) == expected_keys
+    assert Enum.all?(Map.values(manifest), &is_binary/1)
+  end
 end

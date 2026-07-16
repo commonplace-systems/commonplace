@@ -29,11 +29,12 @@ defmodule Commonplace.MUD.SeedWorld do
      `:enforce`. Falls back to unsigned (today's permissive-test
      behavior) if no node signer resolves.
 
-  2. **Phase decoupling (CX-g5lb(b)).** The four content phases — rooms
-     + exits, movable objects, the vein, the recipes — are each
-     resolved INDEPENDENTLY (by looking up a room's uuid by name under
+  2. **Phase decoupling (CX-g5lb(b)).** The content phases — rooms +
+     exits, movable objects (which now also carries the vein, see
+     "vein consolidation" below), the recipes — are each resolved
+     INDEPENDENTLY (by looking up a room's uuid by name under
      `root_uuid` fresh, never by threading a prior phase's return
-     value) and ALL FOUR RUN even if an earlier phase errored. Previously
+     value) and ALL RUN even if an earlier phase errored. Previously
      a `with`-chain meant a denied room-exit write (say) skipped vein and
      recipe seeding entirely — an exit-write denial could no longer skip
      the smith/mine loop's seeding. `import/2` still honors CX-93ea's
@@ -43,15 +44,35 @@ defmodule Commonplace.MUD.SeedWorld do
      idempotent and picks up where it left off, same as `Bootstrap.repair/2`
      always was).
 
-  ## Idempotence keys (byte-identical to pre-CX-lr73 `Bootstrap`)
+  ## Vein consolidation (jes decision, one iron vein)
+
+  The vein used to be its own standalone phase, re-checked (and
+  re-seedable) on every `import/2` call independent of the
+  `@seed_marker` once-gate. That meant a curated live world (e.g. one
+  whose vein was relocated or removed by hand into a hand-built
+  Smithy) could have a *second* vein re-minted by a later `import/2`
+  call. The vein now seeds INSIDE the movable-objects seed-once phase
+  (phase 2), alongside cloak/fountain, before `mark_seeded` writes the
+  `@seed_marker`. Consequence: on a world whose marker already exists
+  (every live/already-seeded world), veins are NEVER (re)seeded — a
+  curated world that relocates or removes its vein stays consolidated;
+  a FRESH world still gets exactly one vein (forest-path) in the same
+  import that places cloak/fountain. The per-name presence check inside
+  `ensure_vein/4` is kept (mid-failure idempotence: a phase-2 run that
+  dies after placing cloak/fountain but before the vein, or vice versa,
+  picks up cleanly on re-run since `@seed_marker` isn't written until
+  the whole phase succeeds).
+
+  ## Idempotence keys (updated for vein consolidation)
 
     * Rooms — presence of the entry-name under `root_uuid`; `start`
       additionally refreshes a STUB description (CX-93ea).
-    * Movable objects (cloak, fountain) — the `@seed_marker` once-gate
-      under `root_uuid` (CX-k8lq: a taken object must never be
-      re-minted).
-    * The vein — presence-under-name in its room (structural, `fixed:
-      true`, never wanders).
+    * Movable objects (cloak, fountain) AND the vein — the
+      `@seed_marker` once-gate under `root_uuid` (CX-k8lq: a taken
+      object must never be re-minted; the vein now shares this gate —
+      see "vein consolidation" above). The per-name presence check
+      inside `ensure_vein/4` still guards mid-failure idempotence
+      within a single (pre-marker) phase-2 run.
     * The recipe — presence-under-name in `root/__recipes/`.
   """
 
@@ -80,9 +101,12 @@ defmodule Commonplace.MUD.SeedWorld do
 
   @doc """
   Idempotently import the seed-world bundle under `root_uuid`. Runs all
-  four content phases (rooms+exits, movable objects, veins, recipes)
+  content phases (rooms+exits, movable objects + vein, recipes)
   regardless of any individual phase's outcome; returns `{:ok, :ready}`
-  iff all four were clean, else the FIRST phase's `{:error, reason}`.
+  iff all were clean, else the FIRST phase's `{:error, reason}`. The
+  vein no longer has a standalone phase — see the moduledoc's "vein
+  consolidation" section — it seeds under the movable-objects
+  `@seed_marker` once-gate now.
   """
   @spec import(String.t(), GenServer.server()) :: {:ok, :ready} | {:error, term()}
   def import(root_uuid, store \\ CommitStoreClient) do
@@ -91,7 +115,6 @@ defmodule Commonplace.MUD.SeedWorld do
     run_phases([
       fn -> ensure_rooms_and_exits(root_uuid, store, node_opts) end,
       fn -> ensure_movable_objects_once(root_uuid, store, node_opts) end,
-      fn -> ensure_veins(root_uuid, store, node_opts) end,
       fn -> ensure_recipes(root_uuid, store, node_opts) end
     ])
   end
@@ -237,7 +260,11 @@ defmodule Commonplace.MUD.SeedWorld do
     Schemas.write_meta_doc(entry.node_id, Schemas.encode_room(room), store, node_opts)
   end
 
-  ## Phase 2: movable objects (cloak, fountain) — seed-once (CX-k8lq)
+  ## Phase 2: movable objects (cloak, fountain) + the vein — seed-once
+  ## (CX-k8lq). The vein moved into this once-gated phase (jes decision,
+  ## vein consolidation — see moduledoc): it seeds together with the
+  ## movable objects, BEFORE `mark_seeded` writes the marker, so a world
+  ## whose marker already exists never gets a (re)seeded vein.
 
   defp ensure_movable_objects_once(root_uuid, store, node_opts) do
     {:ok, root_schema} = Schemas.load_dir_schema(root_uuid, store)
@@ -250,23 +277,29 @@ defmodule Commonplace.MUD.SeedWorld do
 
   defp place_movable_objects(root_uuid, store, node_opts) do
     result =
-      Enum.reduce_while(@objects, :ok, fn {room_key, objs}, :ok ->
-        case resolve_room_uuid(root_uuid, room_key, store) do
-          {:ok, room_uuid} ->
-            case place_objects_in_room(room_uuid, objs, store, node_opts) do
-              :ok -> {:cont, :ok}
-              {:error, _} = err -> {:halt, err}
-            end
-
-          {:error, _} = err ->
-            {:halt, err}
-        end
-      end)
+      with :ok <- place_all_objects(root_uuid, store, node_opts) do
+        ensure_veins(root_uuid, store, node_opts)
+      end
 
     case result do
       :ok -> mark_seeded(root_uuid, store, node_opts)
       err -> err
     end
+  end
+
+  defp place_all_objects(root_uuid, store, node_opts) do
+    Enum.reduce_while(@objects, :ok, fn {room_key, objs}, :ok ->
+      case resolve_room_uuid(root_uuid, room_key, store) do
+        {:ok, room_uuid} ->
+          case place_objects_in_room(room_uuid, objs, store, node_opts) do
+            :ok -> {:cont, :ok}
+            {:error, _} = err -> {:halt, err}
+          end
+
+        {:error, _} = err ->
+          {:halt, err}
+      end
+    end)
   end
 
   defp place_objects_in_room(room_uuid, objs, store, node_opts) do
@@ -320,9 +353,11 @@ defmodule Commonplace.MUD.SeedWorld do
     end
   end
 
-  ## Phase 3: veins — structural (fixed: true, never wanders), gated on
-  ## simple presence-under-name, node-signed so a `mine` plays under
-  ## `:enforce`.
+  ## The vein — structural (fixed: true, never wanders), gated on simple
+  ## presence-under-name (mid-failure idempotence within phase 2, see
+  ## above), node-signed so a `mine` plays under `:enforce`. Called from
+  ## `place_movable_objects/3` above — no longer a standalone phase in
+  ## `import/2`'s phase list (vein consolidation).
 
   defp ensure_veins(root_uuid, store, node_opts) do
     Enum.reduce_while(@veins, :ok, fn {room_key, spec}, :ok ->
@@ -375,7 +410,7 @@ defmodule Commonplace.MUD.SeedWorld do
     end
   end
 
-  ## Phase 4: recipes — node-signed anti-forgery root (a player can't
+  ## Phase 3: recipes — node-signed anti-forgery root (a player can't
   ## author one). Independent of the room phases (lives under
   ## `root/__recipes/`, not under any seed room).
 

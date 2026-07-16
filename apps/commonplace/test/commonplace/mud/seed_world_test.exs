@@ -178,6 +178,40 @@ defmodule Commonplace.MUD.SeedWorldTest do
       {:ok, start_schema_after} = Schemas.load_dir_schema(start_uuid, ctx.store)
       assert :error = Schema.get_entry(start_schema_after, "cloak.obj")
     end
+
+    # Vein consolidation (jes decision, one iron vein): the vein now
+    # seeds INSIDE the `@seed_marker` once-gated phase, alongside
+    # cloak/fountain. Once the marker exists (every live/already-seeded
+    # world), the vein is NEVER (re)seeded — a curated world that
+    # relocates or removes its vein (e.g. onto a hand-built Smithy)
+    # stays consolidated on re-import, exactly like a taken cloak stays
+    # taken.
+    test "marker present but forest-path has no vein -> re-import does NOT recreate it (vein consolidation)",
+         ctx do
+      assert {:ok, :ready} = SeedWorld.import(ctx.root, ctx.store)
+      forest_uuid = entry_uuid!(ctx.root, "forest-path", ctx.store)
+
+      {:ok, forest_schema_before} = Schemas.load_dir_schema(forest_uuid, ctx.store)
+      assert {:ok, _vein_entry} = Schema.get_entry(forest_schema_before, "iron-vein.obj")
+
+      # Node-signed removal of the vein entry, mirroring `simulate_take`
+      # in bootstrap_test.exs (a "curated world relocated its vein"
+      # stand-in) — the marker (`.mud-seeded`) is left untouched.
+      {:ok, forest_schema} = Schemas.load_dir_schema(forest_uuid, ctx.store)
+      schema = Schema.remove_entry(forest_schema, "iron-vein.obj")
+      update = Encoding.encode_update(schema)
+
+      %Commonplace.Store.Commit{} =
+        CommitStore.create_chained_commit(ctx.store, forest_uuid, update)
+
+      {:ok, forest_schema_after_removal} = Schemas.load_dir_schema(forest_uuid, ctx.store)
+      assert :error = Schema.get_entry(forest_schema_after_removal, "iron-vein.obj")
+
+      assert {:ok, :ready} = SeedWorld.import(ctx.root, ctx.store)
+
+      {:ok, forest_schema_after_reimport} = Schemas.load_dir_schema(forest_uuid, ctx.store)
+      assert :error = Schema.get_entry(forest_schema_after_reimport, "iron-vein.obj")
+    end
   end
 
   describe "(3) enforce" do

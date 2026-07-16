@@ -1,0 +1,41 @@
+defmodule Commonplace.MUD.EngineWho do
+  @moduledoc """
+  Doc-hosted `who` verb (CX-wkau, MUD-as-documents Inc-1 / tranche 2).
+  Hot-editable.
+
+  Roster collection goes through `Commonplace.MUD.Verbs.walk_collect_players/2`
+  — the promoted verb-authoring surface (CX-wkau tranche 2) that wraps the
+  compiled-in read-only tree walk over `.usr` entries. Names it returns are
+  exactly what `who` already prints to every player, so no new visibility is
+  created by promoting it.
+
+  # CX-3xwu: a collected `.usr` name renders in `who` IFF a live session is
+  # registered for it in PresenceRegistry. Keys purely on live-session
+  # registration (auto-removed on process death), NOT heartbeat recency —
+  # a live-but-slow player still shows; a dead session's stale `.usr` tree
+  # entry doesn't. Kept INLINE here (a one-line Registry lookup) rather than
+  # promoted — no private machinery to wrap.
+  """
+
+  alias Commonplace.MUD.Verbs
+
+  def run(_cmd, ctx) do
+    names =
+      Verbs.walk_collect_players(ctx.root_uuid, ctx.store)
+      |> Enum.filter(&live_presence?/1)
+      |> Enum.sort()
+      |> Enum.uniq()
+
+    text =
+      case names do
+        [] -> "Nobody is logged in."
+        _ -> "Players online:\n  - " <> Enum.join(names, "\n  - ")
+      end
+
+    {:reply, text}
+  end
+
+  defp live_presence?(name) do
+    Registry.lookup(Commonplace.MUD.PresenceRegistry, "#{name}.usr") != []
+  end
+end

@@ -134,6 +134,16 @@ defmodule Commonplace.Application do
         # test runs without a seeded root) — mirrors the
         # presence_reaper_children/0 pattern.
         ensure_chat_template_if_workspace_present()
+        # CX-xs2d: boot-time idempotent doc-hosting manifest ensure —
+        # mirrors ensure_chat_template_if_workspace_present/0 immediately
+        # above (CX-38fw pattern: run-if-workspace-root-resolves, no-op
+        # otherwise). Without this, `:mud_engine_manifest` stays empty
+        # after every serve restart until a session fires
+        # `Commonplace.MUD.Bootstrap.seed/2`, so every doc-hosted verb
+        # silently runs on its compiled-in floor in the meantime. Root
+        # presence is used only as the "this node has a real workspace"
+        # signal — `ensure_doc_manifests/1` itself doesn't need the root.
+        ensure_mud_doc_manifests_if_workspace_present()
         {:ok, pid}
 
       other ->
@@ -148,6 +158,24 @@ defmodule Commonplace.Application do
 
       {:error, _} ->
         :ok
+    end
+  end
+
+  # `:mud_manifest_on_boot` (default TRUE — this hook exists so a Mode-B
+  # serve restart is doc-hosting-durable) is set FALSE in config/test.exs,
+  # same pattern as `:snapshot_sweeper_enabled`: the test env's global
+  # store (`tmp/test_data`) PERSISTS across suite runs, so a boot-time
+  # ensure would populate `:mud_engine_manifest` from suite start and
+  # every test would resolve doc-hosted verbs against whatever (possibly
+  # stale, seeded-by-older-code) docs that store carries at the fixed
+  # engine UUIDs — behavior tests must exercise the compiled floors unless
+  # they seed their own docs deliberately.
+  defp ensure_mud_doc_manifests_if_workspace_present do
+    with true <- Application.get_env(:commonplace, :mud_manifest_on_boot, true),
+         {:ok, _} <- Commonplace.Workspace.root_uuid() do
+      Commonplace.MUD.Bootstrap.ensure_doc_manifests()
+    else
+      _ -> :ok
     end
   end
 

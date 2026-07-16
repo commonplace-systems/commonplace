@@ -1,0 +1,6 @@
+defmodule Commonplace.MUD.EngineUse do
+  @moduledoc "Doc-hosted `use` verb (CX-wkau, MUD-as-documents Inc-1 / tranche 2). Hot-editable."
+
+  def run(%Commonplace.MUD.Parser.Command{argv: []}, _ctx), do: {:error, "Use what?"}
+  def run(%Commonplace.MUD.Parser.Command{argv: _argv}, _ctx), do: {:reply, "Nothing happens."}
+end
