@@ -7,7 +7,8 @@ defmodule Commonplace.Tree.Merge do
   leaf by leaf. Distinct from `Commonplace.Store.Merger`, which reconciles
   divergent CRDT namespaces/epochs of a *single* document; this one walks a
   tree of separate documents related only by shared commit ancestry. Public
-  entry: `merge/3`, returning `{:ok, %MergeReport{}}`.
+  entry: `merge/4` (opts default to `[]`, so `merge/3` keeps working
+  byte-compatibly), returning `{:ok, %MergeReport{}}`.
 
   ## Provenance lives in the DAG, not a manifest
 
@@ -129,20 +130,27 @@ defmodule Commonplace.Tree.Merge do
   @doc """
   Merge changes from source branch into target branch.
   Returns {:ok, merge_report}.
+
+  `opts` (default `[]`) is threaded, untouched, to every
+  `CommitStore.create_commit/6` call this merge issues — notably
+  `:signing_context` (and optionally `:client_id`) for merges that must
+  land as signed, write-gate-evaluated commits under
+  `local_write_gate: :enforce`. The default `[]` reproduces prior
+  (unsigned) behavior, so every existing `merge/3` caller is unaffected.
   """
-  def merge(source_uuid, target_uuid, store) do
+  def merge(source_uuid, target_uuid, store, opts \\ []) do
     report = %MergeReport{}
-    merge_tree(source_uuid, target_uuid, store, report)
+    merge_tree(source_uuid, target_uuid, store, report, opts)
   end
 
   # Recursively merge a tree node (directory or leaf)
-  defp merge_tree(source_uuid, target_uuid, store, report) do
+  defp merge_tree(source_uuid, target_uuid, store, report, opts) do
     case CommitStore.find_common_ancestor(store, source_uuid, target_uuid) do
       {:ok, ancestor} ->
         if is_schema?(store, source_uuid) do
-          merge_directory(source_uuid, target_uuid, ancestor, store, report)
+          merge_directory(source_uuid, target_uuid, ancestor, store, report, opts)
         else
-          merge_leaf(source_uuid, target_uuid, ancestor, store, report)
+          merge_leaf(source_uuid, target_uuid, ancestor, store, report, opts)
         end
 
       :none ->
@@ -155,7 +163,9 @@ defmodule Commonplace.Tree.Merge do
           merge_point_id ->
             if not is_schema?(store, source_uuid) do
               # Use merge point as baseline for leaf merge
-              merge_leaf_from_merge_point(source_uuid, target_uuid, merge_point_id, store, report)
+              merge_leaf_from_merge_point(
+                source_uuid, target_uuid, merge_point_id, store, report, opts
+              )
             else
               {:ok, report}
             end
@@ -163,7 +173,7 @@ defmodule Commonplace.Tree.Merge do
     end
   end
 
-  defp merge_leaf(source_uuid, target_uuid, ancestor, store, report) do
+  defp merge_leaf(source_uuid, target_uuid, ancestor, store, report, opts) do
     # Use a stored merge point as the diff baseline if one exists (incremental merging),
     # otherwise fall back to the common ancestor.
     baseline_commit_id =
@@ -175,14 +185,14 @@ defmodule Commonplace.Tree.Merge do
     case reconstruct_doc_at(store, source_uuid, baseline_commit_id) do
       {:ok, baseline_doc} ->
         baseline_sv = BlockStore.state_vector(baseline_doc.store)
-        diff_and_apply(store, source_uuid, target_uuid, baseline_sv, report)
+        diff_and_apply(store, source_uuid, target_uuid, baseline_sv, report, opts)
 
       :none ->
         # Baseline commit not found in source chain — fall back to common ancestor
         case reconstruct_doc_at(store, source_uuid, ancestor.id) do
           {:ok, ancestor_doc} ->
             ancestor_sv = BlockStore.state_vector(ancestor_doc.store)
-            diff_and_apply(store, source_uuid, target_uuid, ancestor_sv, report)
+            diff_and_apply(store, source_uuid, target_uuid, ancestor_sv, report, opts)
 
           :none ->
             {:ok, report}
@@ -191,11 +201,11 @@ defmodule Commonplace.Tree.Merge do
   end
 
   # Merge a leaf doc using a stored merge point as baseline (for detached chains).
-  defp merge_leaf_from_merge_point(source_uuid, target_uuid, merge_point_id, store, report) do
+  defp merge_leaf_from_merge_point(source_uuid, target_uuid, merge_point_id, store, report, opts) do
     case reconstruct_doc_at(store, source_uuid, merge_point_id) do
       {:ok, baseline_doc} ->
         baseline_sv = BlockStore.state_vector(baseline_doc.store)
-        diff_and_apply(store, source_uuid, target_uuid, baseline_sv, report)
+        diff_and_apply(store, source_uuid, target_uuid, baseline_sv, report, opts)
 
       :none ->
         {:ok, report}
@@ -204,7 +214,7 @@ defmodule Commonplace.Tree.Merge do
 
   # Shared helper: compute diff from source since baseline_sv, apply to target.
   # Returns {:ok, report} on success or if diff is empty, skips on any error.
-  defp diff_and_apply(store, source_uuid, target_uuid, baseline_sv, report) do
+  defp diff_and_apply(store, source_uuid, target_uuid, baseline_sv, report, opts) do
     with {:ok, source_doc} <- reconstruct_doc(store, source_uuid),
          {:ok, source_latest} <- CommitStore.latest_commit(store, source_uuid) do
       diff = Encoding.encode_diff(source_doc, baseline_sv)
@@ -217,7 +227,9 @@ defmodule Commonplace.Tree.Merge do
              {:ok, merged_doc} <- Encoding.apply_update(target_doc, diff),
              {:ok, latest} <- CommitStore.latest_commit(store, target_uuid) do
           merged_update = Encoding.encode_update(merged_doc)
-          merge_commit = CommitStore.create_commit(store, target_uuid, merged_update, latest.id)
+
+          merge_commit =
+            CommitStore.create_commit(store, target_uuid, merged_update, latest.id, %{}, opts)
 
           CommitStore.set_merge_point(store, target_uuid, source_uuid, source_latest.id)
           CommitStore.set_last_merge_commit(store, target_uuid, source_uuid, merge_commit.id)
@@ -232,7 +244,7 @@ defmodule Commonplace.Tree.Merge do
     end
   end
 
-  defp merge_directory(source_uuid, target_uuid, ancestor, store, report) do
+  defp merge_directory(source_uuid, target_uuid, ancestor, store, report, opts) do
     case reconstruct_doc_at(store, source_uuid, ancestor.id) do
       {:ok, ancestor_schema} ->
         # Use snapshot reconstruction for schema docs — fork always stores full snapshots,
@@ -242,7 +254,7 @@ defmodule Commonplace.Tree.Merge do
              {:ok, target_schema} <- reconstruct_snapshot(store, target_uuid) do
           merge_directory_entries(
             source_uuid, target_uuid, ancestor, ancestor_schema,
-            source_schema, target_schema, store, report
+            source_schema, target_schema, store, report, opts
           )
         else
           _ -> {:ok, report}
@@ -256,7 +268,7 @@ defmodule Commonplace.Tree.Merge do
 
   defp merge_directory_entries(
     source_uuid, target_uuid, ancestor, ancestor_schema,
-    source_schema, target_schema, store, report
+    source_schema, target_schema, store, report, opts
   ) do
         ancestor_entries = Schema.entries(ancestor_schema)
         source_entries = Schema.entries(source_schema)
@@ -285,7 +297,7 @@ defmodule Commonplace.Tree.Merge do
 
                 case CommitStore.find_common_ancestor(store, source_nid, target_nid) do
                   {:ok, _} ->
-                    case merge_tree(source_nid, target_nid, store, rep) do
+                    case merge_tree(source_nid, target_nid, store, rep, opts) do
                       {:ok, rep} -> {schema, rep}
                       _ -> {schema, rep}
                     end
@@ -425,11 +437,11 @@ defmodule Commonplace.Tree.Merge do
 
         with {:ok, target_latest} <- CommitStore.latest_commit(store, target_uuid),
              {:ok, source_latest} <- CommitStore.latest_commit(store, source_uuid) do
-          CommitStore.create_commit(store, target_uuid, schema_update, target_latest.id)
+          CommitStore.create_commit(store, target_uuid, schema_update, target_latest.id, %{}, opts)
           CommitStore.set_merge_point(store, target_uuid, source_uuid, source_latest.id)
         end
 
-        maybe_filter_processes(store, target_uuid)
+        maybe_filter_processes(store, target_uuid, opts)
 
         {:ok, report}
   end
@@ -548,7 +560,7 @@ defmodule Commonplace.Tree.Merge do
   defp reconstruct_doc_at(store, uuid, target_commit_id),
     do: DocBuilder.reconstruct_doc_at(store, uuid, target_commit_id)
 
-  defp maybe_filter_processes(store, schema_uuid) do
+  defp maybe_filter_processes(store, schema_uuid, opts) do
     with {:ok, schema} <- reconstruct_snapshot(store, schema_uuid),
          {:ok, entry} <- Schema.get_entry(schema, "__processes.json"),
          {:ok, proc_doc} <- reconstruct_doc(store, entry.node_id),
@@ -562,7 +574,7 @@ defmodule Commonplace.Tree.Merge do
           new_doc = ContentType.create(new_doc, :text, "__processes.json")
           new_doc = ContentType.insert_text(new_doc, 0, Jason.encode!(filtered))
           update = Encoding.encode_update(new_doc)
-          CommitStore.create_commit(store, entry.node_id, update, latest.id)
+          CommitStore.create_commit(store, entry.node_id, update, latest.id, %{}, opts)
         end
       end
     end

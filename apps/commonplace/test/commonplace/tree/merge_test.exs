@@ -398,6 +398,107 @@ defmodule Commonplace.Tree.MergeTest do
     end
   end
 
+  describe "merge/4 signing plumb (CX-k20z-adjacent, intra-repo-PR spec §7.1)" do
+    # Mirrors `Commonplace.MUD.SeedWorldTest`'s "(3) enforce" fixture
+    # discipline (own `data_dir` so `NodeIdentity.signing_context/0`
+    # mints a fresh node key, strict trust with an EMPTY explicit
+    # `trusted_identities` — `Trust.config/0` folds the node's own
+    # identity in via `with_local_node_trust/1`, so the node key is
+    # trusted with zero pinning — and `local_write_gate: :enforce`) and
+    # `Commonplace.Store.LocalWriteGateTest`'s ordering: build the
+    # fork/edit fixture FIRST under the default permissive config, THEN
+    # flip to strict+enforce for the merge call under test, so fixture
+    # setup writes aren't themselves gated.
+    setup %{store: store} do
+      file_uuid = create_text_doc(store, "file.txt", "hello")
+      root_uuid = create_schema(store, %{"file.txt" => {:doc, file_uuid}})
+
+      fork_root = Fork.fork_directory(root_uuid, store)
+      {fork_file_uuid, _} = get_child(store, fork_root, "file.txt")
+      edit_doc(store, fork_file_uuid, " world", 5)
+
+      old_data_dir = Application.get_env(:commonplace, :data_dir)
+      old_trust = Application.get_env(:commonplace, :trust)
+      old_knob = Application.get_env(:commonplace, :local_write_gate)
+
+      node_dir =
+        Path.join(System.tmp_dir!(), "cp_merge_test_node_#{:rand.uniform(1_000_000_000)}")
+
+      File.mkdir_p!(node_dir)
+      Application.put_env(:commonplace, :data_dir, node_dir)
+
+      {:ok, node_ctx} = Commonplace.Crypto.NodeIdentity.signing_context()
+      node_signer_id = Commonplace.Crypto.Signing.signer_id(node_ctx.identity_uuid, node_ctx.public_key)
+
+      Application.put_env(:commonplace, :trust, %{
+        accept_unsigned: false,
+        trusted_identities: %{}
+      })
+
+      Application.put_env(:commonplace, :local_write_gate, :enforce)
+
+      on_exit(fn ->
+        case old_data_dir do
+          nil -> Application.delete_env(:commonplace, :data_dir)
+          v -> Application.put_env(:commonplace, :data_dir, v)
+        end
+
+        case old_trust do
+          nil -> Application.delete_env(:commonplace, :trust)
+          v -> Application.put_env(:commonplace, :trust, v)
+        end
+
+        case old_knob do
+          nil -> Application.delete_env(:commonplace, :local_write_gate)
+          v -> Application.put_env(:commonplace, :local_write_gate, v)
+        end
+
+        File.rm_rf!(node_dir)
+      end)
+
+      %{
+        store: store,
+        root_uuid: root_uuid,
+        fork_root: fork_root,
+        file_uuid: file_uuid,
+        node_ctx: node_ctx,
+        node_signer_id: node_signer_id
+      }
+    end
+
+    test "SUCCEEDS and lands a node-signed commit when merge/4 carries an authorized signing_context",
+         ctx do
+      assert {:ok, report} =
+               Merge.merge(ctx.fork_root, ctx.root_uuid, ctx.store, signing_context: ctx.node_ctx)
+
+      assert report.merged_docs != []
+
+      {:ok, doc} = reconstruct_doc(ctx.store, ctx.file_uuid)
+      assert ContentType.get_content(doc) =~ "hello world"
+
+      assert {:ok, %Commonplace.Store.Commit{signer_id: signer}} =
+               CommitStore.latest_commit(ctx.store, ctx.file_uuid)
+
+      assert signer == ctx.node_signer_id
+    end
+
+    test "is REFUSED at the write-gate when merge/3 (no opts) is used under enforce", ctx do
+      # Without a signing_context, the merge commit is unsigned and gets
+      # denied by the local-write gate (`{:error, {:untrusted_signer, ...}}` /
+      # `{:error, :unsigned}` depending on path). `Tree.Merge` doesn't
+      # itself branch on that error (out of scope for this mechanical
+      # plumb), so the denial surfaces as `merge_commit.id` raising a
+      # `KeyError` on the `{:error, _}` tuple `create_commit` returned —
+      # proof the write never landed, i.e. the gate was actually reached.
+      assert_raise KeyError, fn ->
+        Merge.merge(ctx.fork_root, ctx.root_uuid, ctx.store)
+      end
+
+      {:ok, doc} = reconstruct_doc(ctx.store, ctx.file_uuid)
+      refute ContentType.get_content(doc) =~ "world"
+    end
+  end
+
   # --- Helpers ---
 
   defp create_text_doc(store, name, content) do
