@@ -485,14 +485,15 @@ defmodule Commonplace.Tree.MergeTest do
     test "is REFUSED at the write-gate when merge/3 (no opts) is used under enforce", ctx do
       # Without a signing_context, the merge commit is unsigned and gets
       # denied by the local-write gate (`{:error, {:untrusted_signer, ...}}` /
-      # `{:error, :unsigned}` depending on path). `Tree.Merge` doesn't
-      # itself branch on that error (out of scope for this mechanical
-      # plumb), so the denial surfaces as `merge_commit.id` raising a
-      # `KeyError` on the `{:error, _}` tuple `create_commit` returned —
-      # proof the write never landed, i.e. the gate was actually reached.
-      assert_raise KeyError, fn ->
-        Merge.merge(ctx.fork_root, ctx.root_uuid, ctx.store)
-      end
+      # `{:error, :unsigned}` depending on path). Per §7.1b, `Tree.Merge` now
+      # aborts the merge walk on any such refusal and returns
+      # `{:error, {:write_refused, doc_uuid, reason}}` — no raise, no
+      # partial-rollback machinery — proof the write never landed, i.e. the
+      # gate was actually reached.
+      assert {:error, {:write_refused, doc_uuid, _reason}} =
+               Merge.merge(ctx.fork_root, ctx.root_uuid, ctx.store)
+
+      assert doc_uuid == ctx.file_uuid
 
       {:ok, doc} = reconstruct_doc(ctx.store, ctx.file_uuid)
       refute ContentType.get_content(doc) =~ "world"

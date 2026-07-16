@@ -113,6 +113,22 @@ defmodule Commonplace.Tree.Merge do
   `Yelixer.Encoding` (diff/apply/encode), `Commonplace.Tree.DocBuilder`
   (chain vs. snapshot reconstruction), and `Commonplace.Tree.Fork` (the
   deep copy `fork_into_target/3` delegates to).
+
+  ## Write-gate refusal aborts the merge (§7.1b)
+
+  Every `CommitStore.create_commit/6` call this module issues can be
+  refused by the local write gate (`local_write_gate: :enforce` with an
+  unauthorized/absent `:signing_context`). On any such refusal the merge
+  walk aborts immediately and `merge/4` returns
+  `{:error, {:write_refused, doc_uuid, reason}}` — no partial rollback,
+  no raise. For a single-doc merge this is all-or-nothing: there is
+  exactly one commit site on the path taken, so a refusal there means
+  nothing landed. A future *subtree* merge (many docs, many commit sites
+  per walk) can abort mid-walk and leave a partial merge on disk; that is
+  acceptable because CRDT re-merge is idempotent (re-running the merge
+  later picks up where it left off) and because `pr_accept` authorizes
+  the signing context *before* merging even begins — the abort-on-refusal
+  behavior here is belt-and-suspenders, not the primary safety net.
   """
 
   alias Commonplace.Store.CommitStoreClient, as: CommitStore
@@ -228,13 +244,16 @@ defmodule Commonplace.Tree.Merge do
              {:ok, latest} <- CommitStore.latest_commit(store, target_uuid) do
           merged_update = Encoding.encode_update(merged_doc)
 
-          merge_commit =
-            CommitStore.create_commit(store, target_uuid, merged_update, latest.id, %{}, opts)
+          case CommitStore.create_commit(store, target_uuid, merged_update, latest.id, %{}, opts) do
+            {:error, reason} ->
+              {:error, {:write_refused, target_uuid, reason}}
 
-          CommitStore.set_merge_point(store, target_uuid, source_uuid, source_latest.id)
-          CommitStore.set_last_merge_commit(store, target_uuid, source_uuid, merge_commit.id)
+            merge_commit ->
+              CommitStore.set_merge_point(store, target_uuid, source_uuid, source_latest.id)
+              CommitStore.set_last_merge_commit(store, target_uuid, source_uuid, merge_commit.id)
 
-          {:ok, %{report | merged_docs: [{source_uuid, target_uuid} | report.merged_docs]}}
+              {:ok, %{report | merged_docs: [{source_uuid, target_uuid} | report.merged_docs]}}
+          end
         else
           _ -> {:ok, report}
         end
@@ -284,13 +303,14 @@ defmodule Commonplace.Tree.Merge do
             MapSet.new(Map.keys(target_entries))
           )
 
-        {updated_target_schema, report} =
-          Enum.reduce(all_names, {target_schema, report}, fn name, {schema, rep} ->
+        reduce_result =
+          Enum.reduce_while(all_names, {target_schema, report}, fn name, {schema, rep} ->
             source_entry = Map.get(source_entries, name)
             target_entry = Map.get(target_entries, name)
             ancestor_entry = Map.get(ancestor_entries, name)
 
-            cond do
+            entry_result =
+              cond do
               source_entry != nil and target_entry != nil ->
                 source_nid = source_entry["node_id"]
                 target_nid = target_entry["node_id"]
@@ -298,8 +318,18 @@ defmodule Commonplace.Tree.Merge do
                 case CommitStore.find_common_ancestor(store, source_nid, target_nid) do
                   {:ok, _} ->
                     case merge_tree(source_nid, target_nid, store, rep, opts) do
-                      {:ok, rep} -> {schema, rep}
-                      _ -> {schema, rep}
+                      {:ok, rep} ->
+                        {schema, rep}
+
+                      # 7.1b: ONLY a write-gate refusal aborts the walk (the
+                      # reviewer-ruled contract). Every other child-merge error
+                      # keeps the pre-7.1b behavior — skip the entry, continue
+                      # (a child that can't merge never blocked its siblings).
+                      {:error, {:write_refused, _, _}} = refusal ->
+                        refusal
+
+                      {:error, _} ->
+                        {schema, rep}
                     end
 
                   :none ->
@@ -430,20 +460,44 @@ defmodule Commonplace.Tree.Merge do
 
               true ->
                 {schema, rep}
+              end
+
+            case entry_result do
+              {:error, _} = error -> {:halt, error}
+              ok -> {:cont, ok}
             end
           end)
 
-        schema_update = Encoding.encode_update(updated_target_schema)
+        case reduce_result do
+          {:error, _} = error ->
+            error
 
-        with {:ok, target_latest} <- CommitStore.latest_commit(store, target_uuid),
-             {:ok, source_latest} <- CommitStore.latest_commit(store, source_uuid) do
-          CommitStore.create_commit(store, target_uuid, schema_update, target_latest.id, %{}, opts)
-          CommitStore.set_merge_point(store, target_uuid, source_uuid, source_latest.id)
+          {updated_target_schema, report} ->
+            schema_update = Encoding.encode_update(updated_target_schema)
+
+            commit_result =
+              with {:ok, target_latest} <- CommitStore.latest_commit(store, target_uuid),
+                   {:ok, source_latest} <- CommitStore.latest_commit(store, source_uuid) do
+                case CommitStore.create_commit(store, target_uuid, schema_update, target_latest.id, %{}, opts) do
+                  {:error, reason} ->
+                    {:error, {:write_refused, target_uuid, reason}}
+
+                  _commit ->
+                    CommitStore.set_merge_point(store, target_uuid, source_uuid, source_latest.id)
+                    :ok
+                end
+              else
+                _ -> :ok
+              end
+
+            filter_result = maybe_filter_processes(store, target_uuid, opts)
+
+            case {commit_result, filter_result} do
+              {{:error, _} = error, _} -> error
+              {:ok, {:error, _} = error} -> error
+              _ -> {:ok, report}
+            end
         end
-
-        maybe_filter_processes(store, target_uuid, opts)
-
-        {:ok, report}
   end
 
   defp fork_into_target(source_uuid, _type, store) do
@@ -560,25 +614,44 @@ defmodule Commonplace.Tree.Merge do
   defp reconstruct_doc_at(store, uuid, target_commit_id),
     do: DocBuilder.reconstruct_doc_at(store, uuid, target_commit_id)
 
+  # Returns :ok normally, or {:error, {:write_refused, doc_uuid, reason}} if
+  # the write-gate refused the filtered-processes commit. The inner refusal
+  # is tagged as a bare {:write_refused, _, _} 3-tuple (not {:error, _}) so it
+  # can't be confused with unrelated with-chain failures below (e.g.
+  # Jason.decode/1 returning {:error, %Jason.DecodeError{}} for malformed
+  # __processes.json content) — those still resolve to a silent :ok, same as
+  # before this function grew an error path.
   defp maybe_filter_processes(store, schema_uuid, opts) do
-    with {:ok, schema} <- reconstruct_snapshot(store, schema_uuid),
-         {:ok, entry} <- Schema.get_entry(schema, "__processes.json"),
-         {:ok, proc_doc} <- reconstruct_doc(store, entry.node_id),
-         content = ContentType.get_content(proc_doc) || "{}",
-         {:ok, proc_json} <- Jason.decode(content) do
-      filtered = Config.filter_json_for_fork(proc_json)
+    result =
+      with {:ok, schema} <- reconstruct_snapshot(store, schema_uuid),
+           {:ok, entry} <- Schema.get_entry(schema, "__processes.json"),
+           {:ok, proc_doc} <- reconstruct_doc(store, entry.node_id),
+           content = ContentType.get_content(proc_doc) || "{}",
+           {:ok, proc_json} <- Jason.decode(content) do
+        filtered = Config.filter_json_for_fork(proc_json)
 
-      if filtered != proc_json do
-        with {:ok, latest} <- CommitStore.latest_commit(store, entry.node_id) do
-          new_doc = Doc.new()
-          new_doc = ContentType.create(new_doc, :text, "__processes.json")
-          new_doc = ContentType.insert_text(new_doc, 0, Jason.encode!(filtered))
-          update = Encoding.encode_update(new_doc)
-          CommitStore.create_commit(store, entry.node_id, update, latest.id, %{}, opts)
+        if filtered != proc_json do
+          with {:ok, latest} <- CommitStore.latest_commit(store, entry.node_id) do
+            new_doc = Doc.new()
+            new_doc = ContentType.create(new_doc, :text, "__processes.json")
+            new_doc = ContentType.insert_text(new_doc, 0, Jason.encode!(filtered))
+            update = Encoding.encode_update(new_doc)
+
+            case CommitStore.create_commit(store, entry.node_id, update, latest.id, %{}, opts) do
+              {:error, reason} -> {:write_refused, entry.node_id, reason}
+              _commit -> :ok
+            end
+          else
+            _ -> :ok
+          end
         end
+      else
+        _ -> :ok
       end
-    end
 
-    :ok
+    case result do
+      {:write_refused, _, _} = refusal -> {:error, refusal}
+      _ -> :ok
+    end
   end
 end
