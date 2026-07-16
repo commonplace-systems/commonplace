@@ -1,0 +1,74 @@
+defmodule Commonplace.MUD.EngineGo do
+  @moduledoc """
+  Doc-hosted `go` verb (CX-wkau, MUD-as-documents Inc-1 / tranche 3).
+  Hot-editable.
+
+  TRUST-ADJACENT: movement routes player presence through
+  `World.move_presence/5` — the CX-avzp read-gated chokepoint that denies
+  ATOMICALLY (no presence write, no subscribe, no eavesdrop) a move into a
+  `:capability_gated` room the viewer isn't authorized to enter. This doc
+  calls that kernel chokepoint exactly as the compiled-in floor does; it
+  does not, and must not, reimplement or bypass the gate.
+
+  Direction derivation mirrors `Commonplace.MUD.Verbs.__go_floor__/2`
+  EXACTLY: a bare direction word (e.g. a player typing "down") parses as
+  its OWN verb, so `cmd.verb` IS the direction; the explicit `go
+  <direction>` form carries it in `cmd.argv` instead. Both the floor and
+  this doc MUST derive the direction identically, or the doc path and the
+  floor path move different ways for the same input.
+
+  Move opts come from `Commonplace.MUD.Verbs.invoker_move_opts/1` — built
+  from the INVOKING SESSION's own signing_context/cert_cids, no
+  elevation. Worst case this doc acts as the invoker, which is the
+  contract every mover (`do_go`, `do_teleport`/`home`, the citizen-verb
+  `Facade.move_self`) already honors.
+  """
+
+  alias Commonplace.MUD.{Parser, Verbs, World}
+  alias Commonplace.MUD.Schemas.Room
+
+  @directions ~w(north south east west up down in out)
+
+  def run(cmd, ctx) do
+    direction = if cmd.verb in @directions, do: cmd.verb, else: List.first(cmd.argv)
+    do_go(direction, ctx)
+  end
+
+  defp do_go(nil, _ctx), do: {:error, "Go where?"}
+
+  defp do_go(direction, ctx) do
+    with {:ok, %Room{} = room} <- World.get_room(ctx.current_room_uuid, ctx.store),
+         {:ok, dest_uuid} <- Map.fetch(room.exits, direction),
+         :ok <-
+           World.move_presence(
+             ctx.player_uuid,
+             ctx.presence_filename,
+             ctx.current_room_uuid,
+             dest_uuid,
+             Verbs.invoker_move_opts(ctx)
+           ) do
+      World.broadcast_room(ctx.current_room_uuid, %{
+        kind: :depart,
+        who: ctx.player_name,
+        to: direction
+      })
+
+      from_dir = Parser.opposite_direction(direction) || "elsewhere"
+
+      World.broadcast_room(dest_uuid, %{
+        kind: :arrive,
+        who: ctx.player_name,
+        from: from_dir
+      })
+
+      {:moved, dest_uuid}
+    else
+      :error -> {:error, "You can't go #{direction}."}
+      {:error, :gone} -> {:error, "The way #{direction} closed behind you."}
+      {:error, :collision} -> {:error, "Something blocks the way #{direction}."}
+      {:error, :read_denied} -> {:error, "That place is private."}
+      {:error, {:trust_rejected, _}} -> {:error, "You don't have permission to go #{direction}."}
+      _ -> {:error, "You can't go #{direction}."}
+    end
+  end
+end

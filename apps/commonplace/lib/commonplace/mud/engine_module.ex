@@ -99,6 +99,12 @@ defmodule Commonplace.MUD.EngineModule do
   # (CX-z6ub M2.2) — join the doc-hosted cohort, same invariant.
   #
   # CX-wkau (tranche 2): `who`/`recipes`/`use` join the same cohort.
+  #
+  # CX-wkau (tranche 3): `go`/`home` join the cohort too — the first
+  # TRUST-ADJACENT pair (movement routes presence through the CX-avzp
+  # read-gated chokepoint, `World.move_presence/5`, which stays kernel-side
+  # and is called by the doc/floor exactly as the pre-tranche-3 compiled-in
+  # verbs called it). Same revocation-safety invariant.
   @floor %{
     parser: Parser,
     look: Commonplace.MUD.Verbs.LookFloor,
@@ -113,7 +119,9 @@ defmodule Commonplace.MUD.EngineModule do
     stand: Commonplace.MUD.Verbs.StandFloor,
     who: Commonplace.MUD.Verbs.WhoFloor,
     recipes: Commonplace.MUD.Verbs.RecipesFloor,
-    use: Commonplace.MUD.Verbs.UseFloor
+    use: Commonplace.MUD.Verbs.UseFloor,
+    go: Commonplace.MUD.Verbs.GoFloor,
+    home: Commonplace.MUD.Verbs.HomeFloor
   }
 
   @doc """

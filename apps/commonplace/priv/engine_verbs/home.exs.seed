@@ -1,0 +1,74 @@
+defmodule Commonplace.MUD.EngineHome do
+  @moduledoc """
+  Doc-hosted `home` verb (CX-wkau, MUD-as-documents Inc-1 / tranche 3).
+  Hot-editable.
+
+  TRUST-ADJACENT: same `World.move_presence/5` CX-avzp read-gated
+  chokepoint as `go` — see `go.exs.seed`'s moduledoc for the atomic-deny
+  rationale. This doc calls that kernel chokepoint exactly as the
+  compiled-in floor does; it does not, and must not, reimplement or
+  bypass the gate.
+
+  `home` teleports the player to their own `players/<name>/` room. The
+  compiled-in `do_home/1` delegates to `do_teleport/2` for the actual move
+  (the general single-room-uuid mover, shared with the `@teleport`
+  builder verb) — so THIS doc inlines that move branch's exact logic and
+  error strings (a "teleport" reply set, distinct from `go`'s "You can't
+  go <direction>" family) rather than reimplementing `do_teleport/2`
+  itself, which is not a public API. Move opts come from
+  `Commonplace.MUD.Verbs.invoker_move_opts/1` — no elevation, same
+  contract as `go`.
+  """
+
+  alias Commonplace.MUD.{Verbs, World}
+  alias Commonplace.MUD.Schemas.Room
+
+  def run(_cmd, ctx) do
+    with {:ok, home_uuid} <- World.resolve_path("players/#{ctx.player_name}", ctx.root_uuid, ctx.store),
+         {:ok, %Room{}} <- World.get_room(home_uuid, ctx.store) do
+      move_home(home_uuid, ctx)
+    else
+      _ -> {:error, "You don't seem to have a home to return to yet."}
+    end
+  end
+
+  defp move_home(home_uuid, ctx) do
+    case World.move_presence(
+           ctx.player_uuid,
+           ctx.presence_filename,
+           ctx.current_room_uuid,
+           home_uuid,
+           Verbs.invoker_move_opts(ctx)
+         ) do
+      :ok ->
+        World.broadcast_room(ctx.current_room_uuid, %{
+          kind: :depart,
+          who: ctx.player_name,
+          to: "elsewhere"
+        })
+
+        World.broadcast_room(home_uuid, %{
+          kind: :arrive,
+          who: ctx.player_name,
+          from: "elsewhere"
+        })
+
+        {:moved, home_uuid}
+
+      {:error, :gone} ->
+        {:error, "You couldn't teleport away — try again."}
+
+      {:error, :collision} ->
+        {:error, "Something blocks your arrival there."}
+
+      {:error, :read_denied} ->
+        {:error, "That place is private."}
+
+      {:error, {:trust_rejected, _}} ->
+        {:error, "You don't have permission to teleport there."}
+
+      _ ->
+        {:error, "Teleport failed."}
+    end
+  end
+end

@@ -637,14 +637,33 @@ defmodule Commonplace.MUD.Verbs do
   # truth; the compiled-in floor (`Commonplace.MUD.Verbs.WhoFloor`) calls
   # back into it via the `__who_floor__/2` escape hatch below.
   defp dispatch_builtin("who", cmd, ctx), do: EngineModule.run_verb(:who, cmd, ctx, ctx.store)
-  defp dispatch_builtin("home", _cmd, ctx), do: do_home(ctx)
+
+  # CX-wkau (MUD-as-documents Inc-1, tranche 3): `home` joins the doc-hosted
+  # cohort. TRUST-ADJACENT — `home` moves the player's presence (via
+  # `do_home/1` -> `do_teleport/2`, the SAME `World.move_presence/5`
+  # CX-avzp read-gated chokepoint `go` uses), so the doc-hosted seed
+  # (`priv/engine_verbs/home.exs.seed`) inlines that move logic exactly
+  # rather than reimplementing or bypassing the gate; `do_home/1` itself is
+  # UNCHANGED and remains the single source of truth for the compiled-in
+  # floor (`Commonplace.MUD.Verbs.HomeFloor`), reached via the
+  # `__home_floor__/2` escape hatch below.
+  defp dispatch_builtin("home", cmd, ctx), do: EngineModule.run_verb(:home, cmd, ctx, ctx.store)
   defp dispatch_builtin("quit", _cmd, _ctx), do: {:reply, :quit}
   # CX-hbb2 — self-hosted: help text is a node-signed CRDT doc (editable
   # without redeploy), read via `HelpDoc.text/1` with the compiled-in floor
   # as a non-brick fallback. See that module's moduledoc for the Gate-B
   # content-defacement defense.
   defp dispatch_builtin("help", _cmd, ctx), do: {:reply, HelpDoc.text(ctx.store)}
-  defp dispatch_builtin("go", cmd, ctx), do: do_go(List.first(cmd.argv), ctx)
+
+  # CX-wkau (MUD-as-documents Inc-1, tranche 3): `go` joins the doc-hosted
+  # cohort — the first TRUST-ADJACENT verb (movement routes presence
+  # through the CX-avzp read-gated chokepoint, `World.move_presence/5`,
+  # which STAYS kernel-side and is called by the seed exactly as `do_go/2`
+  # calls it today — see `Commonplace.MUD.Verbs.invoker_move_opts/1`'s doc).
+  # `do_go/2` is UNCHANGED and remains the single source of truth; the
+  # compiled-in floor (`Commonplace.MUD.Verbs.GoFloor`) calls back into it
+  # via the `__go_floor__/2` escape hatch below.
+  defp dispatch_builtin("go", cmd, ctx), do: EngineModule.run_verb(:go, cmd, ctx, ctx.store)
 
   # CX-wkau (MUD-as-documents Inc-1, tranche 1): `where` joins the doc-hosted
   # stateless-leaf cohort (`look`/`say`/`emote`/`inventory`), same
@@ -678,8 +697,15 @@ defmodule Commonplace.MUD.Verbs do
   defp dispatch_builtin("sit", cmd, ctx), do: EngineModule.run_verb(:sit, cmd, ctx, ctx.store)
   defp dispatch_builtin("stand", cmd, ctx), do: EngineModule.run_verb(:stand, cmd, ctx, ctx.store)
 
-  defp dispatch_builtin(dir, _cmd, ctx) when dir in ~w(north south east west up down in out) do
-    do_go(dir, ctx)
+  # CX-wkau (tranche 3): the bare-direction shorthand ("down" etc, parsed as
+  # its OWN verb — see `Parser.parse/1`) routes through the SAME doc-hosted
+  # `:go` engine name as the explicit `go <direction>` clause above, so a
+  # doc-hosted `go` verb governs BOTH invocation shapes identically. `cmd`
+  # (not `_cmd`) is threaded through so the resolved module can derive the
+  # direction itself — see `__go_floor__/2` and `priv/engine_verbs/go.exs.seed`
+  # for the (identical) direction-derivation rule.
+  defp dispatch_builtin(dir, cmd, ctx) when dir in ~w(north south east west up down in out) do
+    EngineModule.run_verb(:go, cmd, ctx, ctx.store)
   end
 
   defp dispatch_builtin(_verb, _cmd, _ctx), do: :unhandled
@@ -759,6 +785,31 @@ defmodule Commonplace.MUD.Verbs do
 
   @doc false
   def __who_floor__(_cmd, ctx), do: do_who(ctx)
+
+  # CX-wkau (MUD-as-documents Inc-1, tranche 3): the ONLY external callers of
+  # `do_go/2` and `do_home/1` — used exclusively by the matching `EngineModule`
+  # compiled-in floors (`GoFloor`/`HomeFloor`). Each stays private; routing the
+  # floor through these one-line delegators means the floor and the "real"
+  # verb behavior can never drift out of parity. `__go_floor__/2` derives the
+  # direction from `cmd` FIRST — a bare direction word (e.g. "down") parses as
+  # its OWN verb (`cmd.verb`), while the explicit `go <direction>` form carries
+  # it in `cmd.argv` — mirroring `priv/engine_verbs/go.exs.seed`'s derivation
+  # EXACTLY (both must agree, or the doc path and the floor path diverge on
+  # which direction they move).
+  @doc false
+  def __go_floor__(cmd, ctx) do
+    direction =
+      if cmd.verb in ~w(north south east west up down in out) do
+        cmd.verb
+      else
+        List.first(cmd.argv)
+      end
+
+    do_go(direction, ctx)
+  end
+
+  @doc false
+  def __home_floor__(_cmd, ctx), do: do_home(ctx)
 
   # CX-82wi — `where`: a non-builder QoL that surfaces the CURRENT room's own
   # uuid (its address). A room with no inbound exits — every player's home! —
@@ -1825,7 +1876,7 @@ defmodule Commonplace.MUD.Verbs do
              ctx.presence_filename,
              ctx.current_room_uuid,
              dest_uuid,
-             Keyword.put(write_opts(ctx), :viewer, taker_identity(ctx))
+             invoker_move_opts(ctx)
            ) do
       World.broadcast_room(ctx.current_room_uuid, %{
         kind: :depart,
@@ -2270,12 +2321,14 @@ defmodule Commonplace.MUD.Verbs do
       {:ok, %Room{}} ->
         # CX-avzp — same read-gated chokepoint as `do_go`/`move_self`: teleport
         # relocates presence (→ subscribe), so a private dest denies atomically.
+        # `do_home/1` reaches here too (its own-room teleport delegates to
+        # `do_teleport/2`), so this is also `home`'s move call.
         case World.move_presence(
                ctx.player_uuid,
                ctx.presence_filename,
                ctx.current_room_uuid,
                room_uuid,
-               Keyword.put(write_opts(ctx), :viewer, taker_identity(ctx))
+               invoker_move_opts(ctx)
              ) do
           :ok ->
             World.broadcast_room(ctx.current_room_uuid, %{
@@ -2756,6 +2809,21 @@ defmodule Commonplace.MUD.Verbs do
   # CX-1mz7: TAKE needs the world root so its zone-gate can classify the
   # source room (shared-curated vs the taker's own home vs another's home).
   defp take_opts(ctx), do: Keyword.put(write_opts(ctx), :root_uuid, Map.get(ctx, :root_uuid))
+
+  # CX-wkau (MUD-as-documents Inc-1, tranche 3) — PROMOTED verb-authoring
+  # surface: the ONE promotion this tranche needs. Returns EXACTLY what
+  # `do_go/2` (and, via `do_teleport/2`, `do_home/1`) has always passed to
+  # `World.move_presence/5` — built from the INVOKING SESSION's own
+  # `signing_context`/`cert_cids` (via `write_opts/1`) plus its bare identity
+  # as `:viewer` (via `taker_identity/1`, the CX-avzp read-gate's caller
+  # identity). NO elevation happens here: worst case a doc-hosted mover acts
+  # AS THE INVOKER (the same authority the compiled floor already carries),
+  # never as the node. `do_go/2`/`do_teleport/2` (home's mover) and the
+  # doc-hosted `go`/`home` seeds (`priv/engine_verbs/go.exs.seed` /
+  # `home.exs.seed`) all call this ONE function, so there is a single source
+  # of truth for what "the invoker's move opts" means across every mover.
+  @doc false
+  def invoker_move_opts(ctx), do: Keyword.put(write_opts(ctx), :viewer, taker_identity(ctx))
 
   # CX-j2wt — possession-move opts: `write_opts` PLUS the invoker's
   # SERVER-RESOLVED durable inventory uuid, so `HolderMove.ensure_mover_holds`

@@ -1825,4 +1825,546 @@ defmodule Commonplace.MUD.EngineModuleTest do
       assert EngineModule.run_verb(:who, who_cmd(), ctx, @store) == WhoFloor.run(who_cmd(), ctx)
     end
   end
+
+  # CX-wkau (Inc-1, tranche 3) — the first TRUST-ADJACENT verb: `go` moves
+  # player presence through `World.move_presence/5`, the CX-avzp read-gated
+  # chokepoint. That chokepoint stays kernel-side; only the orchestration
+  # (direction/exit lookup, depart/arrive broadcasts, error strings) is
+  # doc-hosted — same doc->run/non-brick/RCE/seed shape as `where`/`who`
+  # above, PLUS a real end-to-end move (requires a `Green.Bursar` — `Move`
+  # takes exclusive tokens on the source/dest dir schemas) to prove the
+  # chokepoint is honored identically on both paths. The dedicated
+  # `CxAvzpPrivateRoomTest` covers the actual eavesdrop/denial pin
+  # (duplicated onto this doc path there); this describe covers the
+  # floor/node-edit/player-signed-refused/crash-contained matrix plus
+  # valid-move / bad-direction parity.
+  describe "go verb (Inc-1 tranche 3)" do
+    alias Commonplace.Green.Bursar
+    alias Commonplace.MUD.Schemas
+    alias Commonplace.MUD.Schemas.Room
+    alias Commonplace.MUD.Verbs.GoFloor
+    alias Commonplace.Tree.Schema
+
+    setup do
+      case GenServer.whereis(Bursar) do
+        nil -> :ok
+        pid -> GenServer.stop(pid)
+      end
+
+      bursar_root = UUID.uuid4()
+      {:ok, bursar_pid} = Bursar.start_link(root_uuid: bursar_root, store: @store, sweep_interval: 60_000)
+      on_exit(fn -> if Process.alive?(bursar_pid), do: GenServer.stop(bursar_pid) end)
+      :ok
+    end
+
+    # A minimal but real ctx: a src room with a "north" exit to a dest room,
+    # and a presence entry (`presence_filename` -> `player_uuid`) seeded
+    # directly into the src room's schema — the shape `Move.move/5` requires
+    # (it moves the NAMED schema entry, checking it's still `player_uuid`).
+    defp build_go_ctx(name \\ "alice") do
+      root_uuid = UUID.uuid4()
+      CommitStore.create_commit(CommitStore, root_uuid, Yelixer.Encoding.encode_update(Schema.new_schema()), nil)
+
+      {:ok, dest_uuid} =
+        Schemas.create_dir_with_meta(
+          Schemas.room_filename(),
+          Schemas.encode_room(%Room{name: "Dest", description: "A dest room."}),
+          @store
+        )
+
+      {:ok, src_uuid} =
+        Schemas.create_dir_with_meta(
+          Schemas.room_filename(),
+          Schemas.encode_room(%Room{name: "Src", description: "A src room.", exits: %{"north" => dest_uuid}}),
+          @store
+        )
+
+      player_uuid = UUID.uuid4()
+      presence_filename = "#{name}.usr"
+
+      {:ok, src_schema} = Schemas.load_dir_schema(src_uuid, @store)
+      src_schema = Schema.add_file(src_schema, presence_filename, player_uuid)
+
+      CommitStore.create_chained_commit(
+        CommitStore,
+        src_uuid,
+        Yelixer.Encoding.encode_update(src_schema),
+        %{kind: :regular},
+        []
+      )
+
+      %{
+        player_uuid: player_uuid,
+        player_name: name,
+        presence_filename: presence_filename,
+        current_room_uuid: src_uuid,
+        dest_uuid: dest_uuid,
+        root_uuid: root_uuid,
+        store: @store,
+        signing_context: nil
+      }
+    end
+
+    defp go_cmd(argv \\ []), do: %Parser.Command{verb: "go", argv: argv, target: List.first(argv)}
+
+    defp go_source(no_direction_reply \\ nil) do
+      no_direction_line =
+        if no_direction_reply do
+          ~s("#{no_direction_reply}")
+        else
+          "\"Go where?\""
+        end
+
+      ~s'''
+      defmodule Commonplace.MUD.EngineGo do
+        alias Commonplace.MUD.{Parser, Verbs, World}
+        alias Commonplace.MUD.Schemas.Room
+
+        @directions ~w(north south east west up down in out)
+
+        def run(cmd, ctx) do
+          direction = if cmd.verb in @directions, do: cmd.verb, else: List.first(cmd.argv)
+          do_go(direction, ctx)
+        end
+
+        defp do_go(nil, _ctx), do: {:error, #{no_direction_line}}
+
+        defp do_go(direction, ctx) do
+          with {:ok, %Room{} = room} <- World.get_room(ctx.current_room_uuid, ctx.store),
+               {:ok, dest_uuid} <- Map.fetch(room.exits, direction),
+               :ok <-
+                 World.move_presence(
+                   ctx.player_uuid,
+                   ctx.presence_filename,
+                   ctx.current_room_uuid,
+                   dest_uuid,
+                   Verbs.invoker_move_opts(ctx)
+                 ) do
+            World.broadcast_room(ctx.current_room_uuid, %{kind: :depart, who: ctx.player_name, to: direction})
+            from_dir = Parser.opposite_direction(direction) || "elsewhere"
+            World.broadcast_room(dest_uuid, %{kind: :arrive, who: ctx.player_name, from: from_dir})
+            {:moved, dest_uuid}
+          else
+            :error -> {:error, "You can't go \#{direction}."}
+            {:error, :gone} -> {:error, "The way \#{direction} closed behind you."}
+            {:error, :collision} -> {:error, "Something blocks the way \#{direction}."}
+            {:error, :read_denied} -> {:error, "That place is private."}
+            {:error, {:trust_rejected, _}} -> {:error, "You don't have permission to go \#{direction}."}
+            _ -> {:error, "You can't go \#{direction}."}
+          end
+        end
+      end
+      '''
+    end
+
+    defp crashing_go_source do
+      ~s'''
+      defmodule Commonplace.MUD.EngineGo do
+        def run(_cmd, _ctx), do: raise("boom from a doc-hosted go verb")
+      end
+      '''
+    end
+
+    defp go_content_update(source) do
+      Yelixer.Doc.new()
+      |> ContentType.create(:text, "_engine_go.ex")
+      |> ContentType.insert_text(0, source)
+      |> Yelixer.Encoding.encode_update()
+    end
+
+    defp mint_go(source, opts) do
+      uuid = UUID.uuid4()
+      CommitStore.create_chained_commit(CommitStore, uuid, go_content_update(source), %{kind: :regular}, opts)
+      uuid
+    end
+
+    defp edit_go(uuid, source, opts) do
+      CommitStore.create_chained_commit(CommitStore, uuid, go_content_update(source), %{kind: :regular}, opts)
+      SourceDoc.reset_cache()
+      :ok
+    end
+
+    defp set_go_manifest(uuid), do: set_engine_manifest(:go, uuid)
+    defp clear_go_manifest, do: clear_engine_manifest(:go)
+
+    test "no manifest entry -> the compiled-in floor runs (silently, no alarm)" do
+      permissive!()
+      clear_go_manifest()
+      ctx = build_go_ctx()
+      ref = attach_fallback_alarm()
+
+      assert {:error, text} = EngineModule.run_verb(:go, go_cmd(), ctx, @store)
+      assert {:error, text} == GoFloor.run(go_cmd(), ctx)
+      assert text == "Go where?"
+      refute_receive {:engine_fallback, ^ref, _}, 100
+    end
+
+    test "doc->run: a node-signed edit changes go's error text (the self-hosting win)" do
+      permissive!()
+      ctx = build_go_ctx()
+      uuid = mint_go(go_source(), [])
+      set_go_manifest(uuid)
+
+      assert {:ok, _module} = SourceDoc.compile(uuid, @store, gate: :execute)
+
+      assert {:error, "Go where?"} = EngineModule.run_verb(:go, go_cmd(), ctx, @store)
+
+      :ok = edit_go(uuid, go_source("Which way, friend?"), [])
+
+      assert {:error, "Which way, friend?"} = EngineModule.run_verb(:go, go_cmd(), ctx, @store)
+    end
+
+    test "RCE guard: a player-signed edit to the go doc is REFUSED (Gate B) -> trusted last-good survives",
+         %{trusted: trusted, trusted_id: trusted_id, trusted_pub: trusted_pub, player: player} do
+      strict!(%{trusted_id => Signing.encode_key(trusted_pub)})
+      ctx = build_go_ctx()
+
+      uuid = mint_go(go_source(), signing_context: trusted)
+      set_go_manifest(uuid)
+      assert {:error, "Go where?"} = EngineModule.run_verb(:go, go_cmd(), ctx, @store)
+
+      ref = attach_fallback_alarm()
+
+      :ok = edit_go(uuid, go_source("PWNED"), signing_context: player)
+
+      assert {:error, {:execution_denied, _}} = SourceDoc.compile(uuid, @store, gate: :execute)
+
+      assert {:error, floor_text} = EngineModule.run_verb(:go, go_cmd(), ctx, @store)
+      assert {:error, floor_text} == GoFloor.run(go_cmd(), ctx)
+      refute floor_text =~ "PWNED"
+      assert_receive {:engine_fallback, ^ref, %{name: :go}}, 500
+    end
+
+    test "non-brick: a go doc that COMPILES but crashes at runtime is contained -> floor" do
+      permissive!()
+      ctx = build_go_ctx()
+      ref = attach_fallback_alarm()
+      uuid = mint_go(crashing_go_source(), [])
+      set_go_manifest(uuid)
+
+      assert {:error, text} = EngineModule.run_verb(:go, go_cmd(), ctx, @store)
+      assert {:error, text} == GoFloor.run(go_cmd(), ctx)
+      assert_receive {:engine_fallback, ^ref, _}, 500
+    end
+
+    test "Bootstrap.ensure_engine_go_verb: a bad direction errors identically to the floor" do
+      permissive!()
+      ctx = build_go_ctx()
+
+      assert :ok = Commonplace.MUD.Bootstrap.ensure_engine_go_verb(@store)
+
+      assert EngineModule.run_verb(:go, go_cmd(["nonexistent"]), ctx, @store) ==
+               GoFloor.run(go_cmd(["nonexistent"]), ctx)
+
+      assert {:error, "You can't go nonexistent."} = EngineModule.run_verb(:go, go_cmd(["nonexistent"]), ctx, @store)
+    end
+
+    test "Bootstrap.ensure_engine_go_verb: a valid move succeeds identically to the floor (CX-avzp chokepoint honored)" do
+      permissive!()
+      assert :ok = Commonplace.MUD.Bootstrap.ensure_engine_go_verb(@store)
+
+      # Separate ctx instances (each its own fresh src/dest pair) — the doc
+      # path is exercised against one, the floor against the other, since
+      # a real move mutates schema state (can't replay the same ctx twice).
+      doc_ctx = build_go_ctx("doc-mover")
+      floor_ctx = build_go_ctx("floor-mover")
+
+      assert {:moved, doc_dest} = EngineModule.run_verb(:go, go_cmd(["north"]), doc_ctx, @store)
+      assert doc_dest == doc_ctx.dest_uuid
+
+      assert {:moved, floor_dest} = GoFloor.run(go_cmd(["north"]), floor_ctx)
+      assert floor_dest == floor_ctx.dest_uuid
+
+      # Presence actually transferred identically on both paths.
+      {:ok, doc_dest_schema} = Schemas.load_dir_schema(doc_ctx.dest_uuid, @store)
+      assert Enum.any?(Schema.list_entries(doc_dest_schema), &(&1.name == doc_ctx.presence_filename))
+
+      {:ok, floor_dest_schema} = Schemas.load_dir_schema(floor_ctx.dest_uuid, @store)
+      assert Enum.any?(Schema.list_entries(floor_dest_schema), &(&1.name == floor_ctx.presence_filename))
+    end
+  end
+
+  # CX-wkau (Inc-1, tranche 3) — `home` is also TRUST-ADJACENT: it teleports
+  # the player to their own `players/<name>/` room via the SAME
+  # `World.move_presence/5` chokepoint `go` uses (through the compiled-in
+  # `do_home/1` -> `do_teleport/2` path). Same shape as the `go` describe
+  # above, minus direction resolution.
+  describe "home verb (Inc-1 tranche 3)" do
+    alias Commonplace.Green.Bursar
+    alias Commonplace.MUD.Schemas
+    alias Commonplace.MUD.Schemas.Room
+    alias Commonplace.MUD.Verbs.HomeFloor
+    alias Commonplace.Tree.Schema
+
+    setup do
+      case GenServer.whereis(Bursar) do
+        nil -> :ok
+        pid -> GenServer.stop(pid)
+      end
+
+      bursar_root = UUID.uuid4()
+      {:ok, bursar_pid} = Bursar.start_link(root_uuid: bursar_root, store: @store, sweep_interval: 60_000)
+      on_exit(fn -> if Process.alive?(bursar_pid), do: GenServer.stop(bursar_pid) end)
+      :ok
+    end
+
+    defp home_cmd, do: %Parser.Command{verb: "home", argv: [], target: nil}
+
+    # No `players/<name>` path at all -> the structural-absence branch
+    # (`do_home/1`'s `else` clause) — safe to reuse across doc/floor calls
+    # since nothing is written.
+    defp build_no_home_ctx(name \\ "bob") do
+      root_uuid = UUID.uuid4()
+      CommitStore.create_commit(CommitStore, root_uuid, Yelixer.Encoding.encode_update(Schema.new_schema()), nil)
+
+      {:ok, room_uuid} =
+        Schemas.create_dir_with_meta(
+          Schemas.room_filename(),
+          Schemas.encode_room(%Room{name: "Start", description: "The starting room."}),
+          @store
+        )
+
+      %{
+        player_uuid: UUID.uuid4(),
+        player_name: name,
+        presence_filename: "#{name}.usr",
+        current_room_uuid: room_uuid,
+        root_uuid: root_uuid,
+        store: @store,
+        signing_context: nil
+      }
+    end
+
+    # A full `players/<name>/` home room + a separate starting room with the
+    # player's presence seeded in it — the shape a real move needs.
+    defp build_home_ctx(name) do
+      root_uuid = UUID.uuid4()
+      CommitStore.create_commit(CommitStore, root_uuid, Yelixer.Encoding.encode_update(Schema.new_schema()), nil)
+
+      {:ok, home_uuid} =
+        Schemas.create_dir_with_meta(
+          Schemas.room_filename(),
+          Schemas.encode_room(%Room{name: "#{name}'s Home", description: "Cozy."}),
+          @store
+        )
+
+      {:ok, start_uuid} =
+        Schemas.create_dir_with_meta(
+          Schemas.room_filename(),
+          Schemas.encode_room(%Room{name: "Start", description: "The starting room."}),
+          @store
+        )
+
+      players_uuid = UUID.uuid4()
+      players_schema = Schema.add_directory(Schema.new_schema(), name, home_uuid)
+      CommitStore.create_commit(CommitStore, players_uuid, Yelixer.Encoding.encode_update(players_schema), nil)
+
+      {:ok, root_schema} = Schemas.load_dir_schema(root_uuid, @store)
+      root_schema = Schema.add_directory(root_schema, "players", players_uuid)
+
+      CommitStore.create_chained_commit(
+        CommitStore,
+        root_uuid,
+        Yelixer.Encoding.encode_update(root_schema),
+        %{kind: :regular},
+        []
+      )
+
+      player_uuid = UUID.uuid4()
+      presence_filename = "#{name}.usr"
+
+      {:ok, start_schema} = Schemas.load_dir_schema(start_uuid, @store)
+      start_schema = Schema.add_file(start_schema, presence_filename, player_uuid)
+
+      CommitStore.create_chained_commit(
+        CommitStore,
+        start_uuid,
+        Yelixer.Encoding.encode_update(start_schema),
+        %{kind: :regular},
+        []
+      )
+
+      %{
+        player_uuid: player_uuid,
+        player_name: name,
+        presence_filename: presence_filename,
+        current_room_uuid: start_uuid,
+        home_uuid: home_uuid,
+        root_uuid: root_uuid,
+        store: @store,
+        signing_context: nil
+      }
+    end
+
+    defp home_source(no_home_reply \\ nil) do
+      no_home_line =
+        if no_home_reply do
+          ~s("#{no_home_reply}")
+        else
+          "\"You don't seem to have a home to return to yet.\""
+        end
+
+      ~s'''
+      defmodule Commonplace.MUD.EngineHome do
+        alias Commonplace.MUD.{Verbs, World}
+        alias Commonplace.MUD.Schemas.Room
+
+        def run(_cmd, ctx) do
+          with {:ok, home_uuid} <- World.resolve_path("players/\#{ctx.player_name}", ctx.root_uuid, ctx.store),
+               {:ok, %Room{}} <- World.get_room(home_uuid, ctx.store) do
+            move_home(home_uuid, ctx)
+          else
+            _ -> {:error, #{no_home_line}}
+          end
+        end
+
+        defp move_home(home_uuid, ctx) do
+          case World.move_presence(
+                 ctx.player_uuid,
+                 ctx.presence_filename,
+                 ctx.current_room_uuid,
+                 home_uuid,
+                 Verbs.invoker_move_opts(ctx)
+               ) do
+            :ok ->
+              World.broadcast_room(ctx.current_room_uuid, %{kind: :depart, who: ctx.player_name, to: "elsewhere"})
+              World.broadcast_room(home_uuid, %{kind: :arrive, who: ctx.player_name, from: "elsewhere"})
+              {:moved, home_uuid}
+
+            {:error, :gone} -> {:error, "You couldn't teleport away — try again."}
+            {:error, :collision} -> {:error, "Something blocks your arrival there."}
+            {:error, :read_denied} -> {:error, "That place is private."}
+            {:error, {:trust_rejected, _}} -> {:error, "You don't have permission to teleport there."}
+            _ -> {:error, "Teleport failed."}
+          end
+        end
+      end
+      '''
+    end
+
+    defp crashing_home_source do
+      ~s'''
+      defmodule Commonplace.MUD.EngineHome do
+        def run(_cmd, _ctx), do: raise("boom from a doc-hosted home verb")
+      end
+      '''
+    end
+
+    defp home_content_update(source) do
+      Yelixer.Doc.new()
+      |> ContentType.create(:text, "_engine_home.ex")
+      |> ContentType.insert_text(0, source)
+      |> Yelixer.Encoding.encode_update()
+    end
+
+    defp mint_home(source, opts) do
+      uuid = UUID.uuid4()
+      CommitStore.create_chained_commit(CommitStore, uuid, home_content_update(source), %{kind: :regular}, opts)
+      uuid
+    end
+
+    defp edit_home(uuid, source, opts) do
+      CommitStore.create_chained_commit(CommitStore, uuid, home_content_update(source), %{kind: :regular}, opts)
+      SourceDoc.reset_cache()
+      :ok
+    end
+
+    defp set_home_manifest(uuid), do: set_engine_manifest(:home, uuid)
+    defp clear_home_manifest, do: clear_engine_manifest(:home)
+
+    test "no manifest entry -> the compiled-in floor runs (silently, no alarm)" do
+      permissive!()
+      clear_home_manifest()
+      ctx = build_no_home_ctx()
+      ref = attach_fallback_alarm()
+
+      assert {:error, text} = EngineModule.run_verb(:home, home_cmd(), ctx, @store)
+      assert {:error, text} == HomeFloor.run(home_cmd(), ctx)
+      assert text == "You don't seem to have a home to return to yet."
+      refute_receive {:engine_fallback, ^ref, _}, 100
+    end
+
+    test "doc->run: a node-signed edit changes home's no-home error text (the self-hosting win)" do
+      permissive!()
+      ctx = build_no_home_ctx()
+      uuid = mint_home(home_source(), [])
+      set_home_manifest(uuid)
+
+      assert {:ok, _module} = SourceDoc.compile(uuid, @store, gate: :execute)
+
+      assert {:error, "You don't seem to have a home to return to yet."} =
+               EngineModule.run_verb(:home, home_cmd(), ctx, @store)
+
+      :ok = edit_home(uuid, home_source("No home yet, adventurer."), [])
+
+      assert {:error, "No home yet, adventurer."} = EngineModule.run_verb(:home, home_cmd(), ctx, @store)
+    end
+
+    test "RCE guard: a player-signed edit to the home doc is REFUSED (Gate B) -> trusted last-good survives",
+         %{trusted: trusted, trusted_id: trusted_id, trusted_pub: trusted_pub, player: player} do
+      strict!(%{trusted_id => Signing.encode_key(trusted_pub)})
+      ctx = build_no_home_ctx()
+
+      uuid = mint_home(home_source(), signing_context: trusted)
+      set_home_manifest(uuid)
+
+      assert {:error, "You don't seem to have a home to return to yet."} =
+               EngineModule.run_verb(:home, home_cmd(), ctx, @store)
+
+      ref = attach_fallback_alarm()
+
+      :ok = edit_home(uuid, home_source("PWNED"), signing_context: player)
+
+      assert {:error, {:execution_denied, _}} = SourceDoc.compile(uuid, @store, gate: :execute)
+
+      assert {:error, floor_text} = EngineModule.run_verb(:home, home_cmd(), ctx, @store)
+      assert {:error, floor_text} == HomeFloor.run(home_cmd(), ctx)
+      refute floor_text =~ "PWNED"
+      assert_receive {:engine_fallback, ^ref, %{name: :home}}, 500
+    end
+
+    test "non-brick: a home doc that COMPILES but crashes at runtime is contained -> floor" do
+      permissive!()
+      ctx = build_no_home_ctx()
+      ref = attach_fallback_alarm()
+      uuid = mint_home(crashing_home_source(), [])
+      set_home_manifest(uuid)
+
+      assert {:error, text} = EngineModule.run_verb(:home, home_cmd(), ctx, @store)
+      assert {:error, text} == HomeFloor.run(home_cmd(), ctx)
+      assert_receive {:engine_fallback, ^ref, _}, 500
+    end
+
+    test "Bootstrap.ensure_engine_home_verb: the no-home-room case errors identically to the floor" do
+      permissive!()
+      ctx = build_no_home_ctx()
+
+      assert :ok = Commonplace.MUD.Bootstrap.ensure_engine_home_verb(@store)
+
+      assert EngineModule.run_verb(:home, home_cmd(), ctx, @store) == HomeFloor.run(home_cmd(), ctx)
+
+      assert {:error, "You don't seem to have a home to return to yet."} =
+               EngineModule.run_verb(:home, home_cmd(), ctx, @store)
+    end
+
+    test "Bootstrap.ensure_engine_home_verb: a valid move succeeds identically to the floor (CX-avzp chokepoint honored)" do
+      permissive!()
+      assert :ok = Commonplace.MUD.Bootstrap.ensure_engine_home_verb(@store)
+
+      doc_ctx = build_home_ctx("doc-mover")
+      floor_ctx = build_home_ctx("floor-mover")
+
+      assert {:moved, doc_home} = EngineModule.run_verb(:home, home_cmd(), doc_ctx, @store)
+      assert doc_home == doc_ctx.home_uuid
+
+      assert {:moved, floor_home} = HomeFloor.run(home_cmd(), floor_ctx)
+      assert floor_home == floor_ctx.home_uuid
+
+      {:ok, doc_home_schema} = Schemas.load_dir_schema(doc_ctx.home_uuid, @store)
+      assert Enum.any?(Schema.list_entries(doc_home_schema), &(&1.name == doc_ctx.presence_filename))
+
+      {:ok, floor_home_schema} = Schemas.load_dir_schema(floor_ctx.home_uuid, @store)
+      assert Enum.any?(Schema.list_entries(floor_home_schema), &(&1.name == floor_ctx.presence_filename))
+    end
+  end
 end

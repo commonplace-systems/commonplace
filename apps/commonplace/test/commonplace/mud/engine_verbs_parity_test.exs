@@ -21,6 +21,8 @@ defmodule Commonplace.MUD.EngineVerbsParityTest do
 
   alias Commonplace.MUD.Verbs.{
     ExamineFloor,
+    GoFloor,
+    HomeFloor,
     ReadFloor,
     RecipesFloor,
     SearchFloor,
@@ -59,6 +61,22 @@ defmodule Commonplace.MUD.EngineVerbsParityTest do
     old_manifest = Application.get_env(:commonplace, :mud_engine_manifest)
     old_trust = Application.get_env(:commonplace, :trust)
     Application.put_env(:commonplace, :trust, %{accept_unsigned: true, trusted_identities: %{}})
+
+    # CX-wkau (tranche 3): `go`/`home` actually move presence (`Move.move/5`
+    # takes exclusive green tokens on the source/dest dir schemas), so this
+    # file's Bursar-less predecessor tests (sit/stand/etc, no tree moves)
+    # now need one for the go/home parity tests below.
+    case GenServer.whereis(Commonplace.Green.Bursar) do
+      nil -> :ok
+      pid -> GenServer.stop(pid)
+    end
+
+    bursar_root = UUID.uuid4()
+
+    {:ok, bursar_pid} =
+      Commonplace.Green.Bursar.start_link(root_uuid: bursar_root, store: @store, sweep_interval: 60_000)
+
+    on_exit(fn -> if Process.alive?(bursar_pid), do: GenServer.stop(bursar_pid) end)
 
     on_exit(fn ->
       if is_nil(old_manifest),
@@ -158,6 +176,112 @@ defmodule Commonplace.MUD.EngineVerbsParityTest do
     assert :ok = Bootstrap.ensure_engine_use_verb(@store)
   end
 
+  defp ensure_tranche_3 do
+    assert :ok = Bootstrap.ensure_engine_go_verb(@store)
+    assert :ok = Bootstrap.ensure_engine_home_verb(@store)
+  end
+
+  # A src room with a "north" exit to a dest room, plus a presence entry
+  # (`presence_filename` -> `player_uuid`) seeded directly into the src
+  # room's schema — the shape `Move.move/5` requires for a real move.
+  defp build_go_ctx(name \\ "alice") do
+    root_uuid = UUID.uuid4()
+    CommitStore.create_commit(CommitStore, root_uuid, Yelixer.Encoding.encode_update(Schema.new_schema()), nil)
+
+    {:ok, dest_uuid} =
+      Schemas.create_dir_with_meta(
+        Schemas.room_filename(),
+        Schemas.encode_room(%Room{name: "Dest", description: "A dest room."}),
+        @store
+      )
+
+    {:ok, src_uuid} =
+      Schemas.create_dir_with_meta(
+        Schemas.room_filename(),
+        Schemas.encode_room(%Room{name: "Src", description: "A src room.", exits: %{"north" => dest_uuid}}),
+        @store
+      )
+
+    player_uuid = UUID.uuid4()
+    presence_filename = "#{name}.usr"
+
+    {:ok, src_schema} = Schemas.load_dir_schema(src_uuid, @store)
+    src_schema = Schema.add_file(src_schema, presence_filename, player_uuid)
+    CommitStore.create_chained_commit(CommitStore, src_uuid, Yelixer.Encoding.encode_update(src_schema), %{kind: :regular}, [])
+
+    %{
+      player_uuid: player_uuid,
+      player_name: name,
+      presence_filename: presence_filename,
+      current_room_uuid: src_uuid,
+      dest_uuid: dest_uuid,
+      root_uuid: root_uuid,
+      store: @store,
+      signing_context: nil
+    }
+  end
+
+  # A full `players/<name>/` home room + a separate starting room with the
+  # player's presence seeded in it.
+  defp build_home_ctx(name) do
+    root_uuid = UUID.uuid4()
+    CommitStore.create_commit(CommitStore, root_uuid, Yelixer.Encoding.encode_update(Schema.new_schema()), nil)
+
+    {:ok, home_uuid} =
+      Schemas.create_dir_with_meta(
+        Schemas.room_filename(),
+        Schemas.encode_room(%Room{name: "#{name}'s Home", description: "Cozy."}),
+        @store
+      )
+
+    {:ok, start_uuid} =
+      Schemas.create_dir_with_meta(
+        Schemas.room_filename(),
+        Schemas.encode_room(%Room{name: "Start", description: "The starting room."}),
+        @store
+      )
+
+    players_uuid = UUID.uuid4()
+    players_schema = Schema.add_directory(Schema.new_schema(), name, home_uuid)
+    CommitStore.create_commit(CommitStore, players_uuid, Yelixer.Encoding.encode_update(players_schema), nil)
+
+    {:ok, root_schema} = Schemas.load_dir_schema(root_uuid, @store)
+    root_schema = Schema.add_directory(root_schema, "players", players_uuid)
+
+    CommitStore.create_chained_commit(
+      CommitStore,
+      root_uuid,
+      Yelixer.Encoding.encode_update(root_schema),
+      %{kind: :regular},
+      []
+    )
+
+    player_uuid = UUID.uuid4()
+    presence_filename = "#{name}.usr"
+
+    {:ok, start_schema} = Schemas.load_dir_schema(start_uuid, @store)
+    start_schema = Schema.add_file(start_schema, presence_filename, player_uuid)
+
+    CommitStore.create_chained_commit(
+      CommitStore,
+      start_uuid,
+      Yelixer.Encoding.encode_update(start_schema),
+      %{kind: :regular},
+      []
+    )
+
+    %{
+      player_uuid: player_uuid,
+      player_name: name,
+      presence_filename: presence_filename,
+      current_room_uuid: start_uuid,
+      home_uuid: home_uuid,
+      root_uuid: root_uuid,
+      store: @store,
+      signing_context: nil
+    }
+  end
+
   test "seed<->floor parity for all six tranche-1 verbs across representative inputs" do
     ctx = build_world_ctx()
     ensure_all_six()
@@ -225,5 +349,69 @@ defmodule Commonplace.MUD.EngineVerbsParityTest do
                UseFloor.run(cmd("use", argv), ctx),
              "use #{inspect(argv)} diverged from the floor"
     end
+  end
+
+  # CX-wkau (Inc-1, tranche 3) — `go`/`home` breadth check: bad direction, no
+  # direction, and a real valid move, for `go`; the no-home-room case and a
+  # real valid move for `home`. TRUST-ADJACENT (CX-avzp): the valid-move
+  # cases exercise the SAME `World.move_presence/5` chokepoint every other
+  # mover uses — see `EngineModuleTest`'s "go verb"/"home verb" describes for
+  # the deeper floor/node-edit/player-signed-refused/crash-contained matrix,
+  # and `CxAvzpPrivateRoomTest` for the dedicated denial/eavesdrop dual-path
+  # pin.
+  test "seed<->floor parity for go/home (tranche 3) across representative inputs" do
+    ensure_tranche_3()
+
+    # go: no direction at all -> "Go where?" (no move, safe to share one ctx
+    # with the floor comparison).
+    ctx = build_go_ctx()
+
+    assert EngineModule.run_verb(:go, cmd("go", []), ctx, @store) == GoFloor.run(cmd("go", []), ctx)
+    assert {:error, "Go where?"} = EngineModule.run_verb(:go, cmd("go", []), ctx, @store)
+
+    # go: a direction with no matching exit -> "You can't go <dir>." (no
+    # move either).
+    assert EngineModule.run_verb(:go, cmd("go", ["south"]), ctx, @store) ==
+             GoFloor.run(cmd("go", ["south"]), ctx)
+
+    assert {:error, "You can't go south."} = EngineModule.run_verb(:go, cmd("go", ["south"]), ctx, @store)
+
+    # go: a valid move — a real presence relocation, so the doc path and the
+    # floor path each need their OWN fresh src/dest pair (a move mutates
+    # schema state; the same ctx can't be replayed through both).
+    doc_go_ctx = build_go_ctx("go-doc-mover")
+    floor_go_ctx = build_go_ctx("go-floor-mover")
+
+    assert {:moved, doc_dest} = EngineModule.run_verb(:go, cmd("go", ["north"]), doc_go_ctx, @store)
+    assert doc_dest == doc_go_ctx.dest_uuid
+
+    assert {:moved, floor_dest} = GoFloor.run(cmd("go", ["north"]), floor_go_ctx)
+    assert floor_dest == floor_go_ctx.dest_uuid
+
+    # the bare-direction shorthand ("north" parsed as its OWN verb) must
+    # agree with the explicit "go north" form above.
+    doc_go_ctx2 = build_go_ctx("go-doc-mover-2")
+    assert {:moved, dest2} = EngineModule.run_verb(:go, cmd("north", []), doc_go_ctx2, @store)
+    assert dest2 == doc_go_ctx2.dest_uuid
+
+    # home: no `players/<name>/` room at all -> the structural-absence
+    # error (no move, safe to share one ctx).
+    no_home_ctx = build_world_ctx()
+
+    assert EngineModule.run_verb(:home, cmd("home", []), no_home_ctx, @store) ==
+             HomeFloor.run(cmd("home", []), no_home_ctx)
+
+    assert {:error, "You don't seem to have a home to return to yet."} =
+             EngineModule.run_verb(:home, cmd("home", []), no_home_ctx, @store)
+
+    # home: a valid move — same fresh-pair-per-path discipline as go above.
+    doc_home_ctx = build_home_ctx("home-doc-mover")
+    floor_home_ctx = build_home_ctx("home-floor-mover")
+
+    assert {:moved, doc_home} = EngineModule.run_verb(:home, cmd("home", []), doc_home_ctx, @store)
+    assert doc_home == doc_home_ctx.home_uuid
+
+    assert {:moved, floor_home} = HomeFloor.run(cmd("home", []), floor_home_ctx)
+    assert floor_home == floor_home_ctx.home_uuid
   end
 end

@@ -329,5 +329,62 @@ defmodule Commonplace.MUD.CxAvzpPrivateRoomTest do
       leaked = drain("scout") |> Enum.join("\n")
       refute leaked =~ "four-four-two", "EAVESDROP LEAK: refused scout received the private room's say"
     end
+
+    # CX-wkau (MUD-as-documents Inc-1, tranche 3) — `go` is now doc-hosted
+    # (`EngineModule.run_verb(:go, ...)`, resolving a node-signed
+    # `priv/engine_verbs/go.exs.seed` doc instead of dispatching straight to
+    # the compiled-in `do_go/2`). The CX-avzp chokepoint itself
+    # (`World.move_presence/5`) is UNCHANGED and stays kernel-side — the doc
+    # only calls it, exactly as the floor does — but this is the DUAL-PATH
+    # verification the tranche-3 jes gate requires: the exact BEAD REPRO
+    # scenario above, re-run with the `go` engine manifest entry seeded so
+    # dispatch resolves through the DOC path, must produce the IDENTICAL
+    # refusal + no-presence-leak + no-eavesdrop result. Any divergence here
+    # is a STOP, not an adaptation — it would mean the doc path bypasses or
+    # weakens the read-gate the floor path enforces.
+    test "DOC PATH — BEAD REPRO (do_go) re-run through the doc-hosted `go` verb: refused + no eavesdrop, IDENTICAL to the floor",
+         ctx do
+      old_manifest = Application.get_env(:commonplace, :mud_engine_manifest)
+
+      on_exit(fn ->
+        if is_nil(old_manifest),
+          do: Application.delete_env(:commonplace, :mud_engine_manifest),
+          else: Application.put_env(:commonplace, :mud_engine_manifest, old_manifest)
+      end)
+
+      # Seed the node-signed `go` doc + point the manifest's `:go` entry at
+      # it — mirroring `engine_module_test.exs`'s seeding fixtures
+      # (`Bootstrap.ensure_engine_go_verb/1`), NOT a synthetic stub: this is
+      # the SAME doc `Commonplace.MUD.Bootstrap` seeds at real boot.
+      assert :ok = Commonplace.MUD.Bootstrap.ensure_engine_go_verb(ctx.store)
+
+      {:ok, staging_uuid} =
+        Schemas.create_dir_with_meta(
+          Schemas.room_filename(),
+          Schemas.encode_room(%Room{
+            name: "Tinker's Loft (doc path)",
+            description: "A public workshop.",
+            exits: %{"down" => ctx.private_uuid}
+          }),
+          ctx.store
+        )
+
+      owner = start_player("owner-doc", ctx, signing_context: ctx.owner_ctx, spawn_room_uuid: ctx.private_uuid)
+      stranger_ctx = fresh_ctx()
+      stranger = start_player("scout-doc", ctx, signing_context: stranger_ctx, spawn_room_uuid: staging_uuid)
+
+      send_input(stranger, "down")
+      refused = drain("scout-doc") |> Enum.join("\n")
+      assert refused =~ "That place is private."
+
+      refute presence_in_room?(ctx.private_uuid, "scout-doc.usr", ctx.store),
+             "DOC PATH PRESENCE LEAK: refused scout must NOT land in the private room via the exit"
+
+      send_input(owner, "say vault code is four-four-two")
+      leaked = drain("scout-doc") |> Enum.join("\n")
+
+      refute leaked =~ "four-four-two",
+             "DOC PATH EAVESDROP LEAK: refused scout received the private room's say"
+    end
   end
 end

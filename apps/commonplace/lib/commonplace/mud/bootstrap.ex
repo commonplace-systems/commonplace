@@ -38,8 +38,9 @@ defmodule Commonplace.MUD.Bootstrap do
   (CX-g5lb/CX-nd49).
 
   CX-xs2d (boot-durable doc-hosting manifest): `ensure_doc_manifests/1`
-  is the single source of truth for the 17-entry `:mud_engine_manifest`
-  ensure sequence (previously only run inline inside `repair/2`, which
+  is the single source of truth for the 19-entry `:mud_engine_manifest`
+  ensure sequence (17 as of CX-xs2d; CX-wkau tranche 3 grows it to 19 with
+  `go`/`home`) (previously only run inline inside `repair/2`, which
   meant `:mud_engine_manifest` stayed empty from boot until a session
   first fired `seed/2`/`repair/2` — every doc-hosted verb silently ran
   on its compiled-in floor until then). `repair/2` calls it, and so does
@@ -205,6 +206,26 @@ defmodule Commonplace.MUD.Bootstrap do
   @external_resource engine_use_verb_path
   @engine_use_verb_source File.read!(engine_use_verb_path)
 
+  # CX-wkau (MUD-as-documents Inc-1, tranche 3): `go`/`home` — the first
+  # TRUST-ADJACENT pair to join the doc-hosted cohort. Movement routes
+  # player presence through `World.move_presence/5`, the CX-avzp read-gated
+  # chokepoint — that chokepoint STAYS kernel-side; only the orchestration
+  # around it (direction/exit lookup, home-room resolution, depart/arrive
+  # broadcasts, error strings) is doc-hosted. Same fixed-uuid + node-signed
+  # idempotent seed shape as `@engine_where_verb_uuid` above; source bodies
+  # load from `priv/engine_verbs/*.exs.seed` at compile time. `go`/`home`
+  # both call the promoted `Verbs.invoker_move_opts/1` (built from the
+  # invoking session's OWN signing_context/cert_cids — no elevation).
+  @engine_go_verb_uuid "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d"
+  engine_go_verb_path = Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "go.exs.seed"])
+  @external_resource engine_go_verb_path
+  @engine_go_verb_source File.read!(engine_go_verb_path)
+
+  @engine_home_verb_uuid "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e"
+  engine_home_verb_path = Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "home.exs.seed"])
+  @external_resource engine_home_verb_path
+  @engine_home_verb_source File.read!(engine_home_verb_path)
+
   # CX-hbb2 (self-hosting slice A): the in-world `help` text as a node-signed
   # doc, editable without redeploy. Fixed uuid, same idempotent-seed shape as
   # `@engine_parser_uuid`/`@engine_look_verb_uuid` above — but this doc is
@@ -268,6 +289,10 @@ defmodule Commonplace.MUD.Bootstrap do
   def engine_recipes_verb_source, do: @engine_recipes_verb_source
   @doc false
   def engine_use_verb_source, do: @engine_use_verb_source
+  @doc false
+  def engine_go_verb_source, do: @engine_go_verb_source
+  @doc false
+  def engine_home_verb_source, do: @engine_home_verb_source
 
   # CX-93ea: every step is a `with` link now — a rejected write (trust
   # gate under `:enforce`, or any other create_commit error) stops the
@@ -294,11 +319,11 @@ defmodule Commonplace.MUD.Bootstrap do
 
   # CX-xs2d (boot-durable doc-hosting manifest): sequences the FOURTEEN
   # pre-tranche-2 doc-hosting ensures plus tranche 2's three
-  # (`who`/`recipes`/`use`) — 17 total — that populate
-  # `:mud_engine_manifest`. Each `ensure_*` is independently best-effort
-  # (rescues/catches to `:ok`; see each one's own moduledoc comment), so
-  # this wrapper is just an ordered sequence with no additional error
-  # handling of its own — it always returns `:ok`.
+  # (`who`/`recipes`/`use`) plus tranche 3's two (`go`/`home`) — 19 total —
+  # that populate `:mud_engine_manifest`. Each `ensure_*` is independently
+  # best-effort (rescues/catches to `:ok`; see each one's own moduledoc
+  # comment), so this wrapper is just an ordered sequence with no
+  # additional error handling of its own — it always returns `:ok`.
   #
   # Mirrors the CX-38fw pattern (`Commonplace.Application`'s
   # `ensure_chat_template_if_workspace_present/0`): a post-supervisor
@@ -308,11 +333,11 @@ defmodule Commonplace.MUD.Bootstrap do
   # session-triggered path) and from
   # `Commonplace.Application.ensure_mud_doc_manifests_if_workspace_present/0`
   # (the new boot path) — this function is the single source of truth
-  # for the set of 17 so the two call sites can never drift apart.
+  # for the set of 19 so the two call sites can never drift apart.
   @doc """
-  CX-xs2d boot-durability entry point: idempotently ensure all 17
+  CX-xs2d boot-durability entry point: idempotently ensure all 19
   doc-hosted MUD manifest entries (parser, look/inventory/emote/say,
-  where/sit/stand/examine/search/read, who/recipes/use, help,
+  where/sit/stand/examine/search/read, who/recipes/use, go/home, help,
   home_template, world_meta). Always returns `:ok` — every step is
   independently best-effort. Safe to call at boot (before any
   workspace-content seeding) or from `repair/2`.
@@ -358,6 +383,15 @@ defmodule Commonplace.MUD.Bootstrap do
     :ok = ensure_engine_who_verb(store)
     :ok = ensure_engine_recipes_verb(store)
     :ok = ensure_engine_use_verb(store)
+
+    # CX-wkau (Inc-1, tranche 3): same best-effort, never-blocks shape —
+    # seed the doc-hosted `go`/`home` verbs + point the manifest at them.
+    # TRUST-ADJACENT (movement routes through the CX-avzp read-gated
+    # `World.move_presence/5` chokepoint, which stays kernel-side). A
+    # failure just leaves `EngineModule.run_verb/4` on the respective
+    # compiled-in floor (full `do_go/2`/`do_home/1` parity).
+    :ok = ensure_engine_go_verb(store)
+    :ok = ensure_engine_home_verb(store)
 
     # CX-hbb2: same best-effort, never-blocks shape — seed the node-signed
     # `help` text doc + point the manifest's `:help` entry at it. A failure
@@ -678,6 +712,50 @@ defmodule Commonplace.MUD.Bootstrap do
 
       manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
       Application.put_env(:commonplace, :mud_engine_manifest, Map.put(manifest, :use, @engine_use_verb_uuid))
+    end
+
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  # CX-wkau (Inc-1, tranche 3): idempotently seed the node-signed `go`
+  # verb source doc + set the engine manifest's `:go` entry. Mirrors
+  # `ensure_engine_look_verb/1` exactly. TRUST-ADJACENT (CX-avzp) — see
+  # `@engine_go_verb_uuid`'s comment above.
+  @doc false
+  def ensure_engine_go_verb(store \\ CommitStoreClient) do
+    with {:ok, node_ctx} <- NodeIdentity.signing_context() do
+      unless source_doc_present?(@engine_go_verb_uuid, store) do
+        seed_source_doc(@engine_go_verb_uuid, @engine_go_verb_source, node_ctx, store, "_engine_go.ex")
+      end
+
+      manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
+      Application.put_env(:commonplace, :mud_engine_manifest, Map.put(manifest, :go, @engine_go_verb_uuid))
+    end
+
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  # CX-wkau (Inc-1, tranche 3): idempotently seed the node-signed `home`
+  # verb source doc + set the engine manifest's `:home` entry. Mirrors
+  # `ensure_engine_look_verb/1` exactly. TRUST-ADJACENT (CX-avzp) — see
+  # `@engine_home_verb_uuid`'s comment above.
+  @doc false
+  def ensure_engine_home_verb(store \\ CommitStoreClient) do
+    with {:ok, node_ctx} <- NodeIdentity.signing_context() do
+      unless source_doc_present?(@engine_home_verb_uuid, store) do
+        seed_source_doc(@engine_home_verb_uuid, @engine_home_verb_source, node_ctx, store, "_engine_home.ex")
+      end
+
+      manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
+      Application.put_env(:commonplace, :mud_engine_manifest, Map.put(manifest, :home, @engine_home_verb_uuid))
     end
 
     :ok

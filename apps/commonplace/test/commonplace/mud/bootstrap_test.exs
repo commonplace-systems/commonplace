@@ -157,10 +157,11 @@ defmodule Commonplace.MUD.BootstrapTest do
   # CX-xs2d (boot-durable doc-hosting manifest): `ensure_doc_manifests/1`
   # is now the single source of truth for the doc-hosting manifest ensure
   # sequence — both `repair/2` and the new `Commonplace.Application` boot
-  # hook call it. This pins the full 17-key set so a future ensure_*
-  # forgotten in the wrapper fails the count instead of silently leaving
-  # a verb on its compiled-in floor.
-  test "ensure_doc_manifests populates all 17 manifest keys", ctx do
+  # hook call it. This pins the full 19-key set (CX-wkau tranche 3 grows
+  # it from 17 to 19 with `go`/`home`) so a future ensure_* forgotten in
+  # the wrapper fails the count instead of silently leaving a verb on its
+  # compiled-in floor.
+  test "ensure_doc_manifests populates all 19 manifest keys", ctx do
     old_manifest = Application.get_env(:commonplace, :mud_engine_manifest)
     Application.delete_env(:commonplace, :mud_engine_manifest)
 
@@ -192,7 +193,9 @@ defmodule Commonplace.MUD.BootstrapTest do
         :stand,
         :who,
         :recipes,
-        :use
+        :use,
+        :go,
+        :home
       ])
 
     assert MapSet.new(Map.keys(manifest)) == expected_keys
