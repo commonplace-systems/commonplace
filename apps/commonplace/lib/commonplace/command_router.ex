@@ -252,9 +252,16 @@ defmodule Commonplace.CommandRouter do
   Returns `{:ok, new_uuid}` or `{:error, reason}`.
   Returns `{:error, :fork_in_progress}` if a fork from this source
   is already running (CX-kqz3 in-flight dedup).
+
+  `opts` (default `[]`) is threaded, untouched, to
+  `Fork.fork_directory/3` — notably `:signing_context` for forks that
+  must land as signed, write-gate-evaluated commits under
+  `local_write_gate: :enforce`. The default `[]` reproduces prior
+  (unsigned) behavior, so every existing `fork/2` caller is
+  unaffected.
   """
-  def fork(server \\ __MODULE__, source_uuid) do
-    GenServer.call(server, {:fork, source_uuid}, @fork_call_timeout)
+  def fork(server \\ __MODULE__, source_uuid, opts \\ []) do
+    GenServer.call(server, {:fork, source_uuid, opts}, @fork_call_timeout)
   end
 
   @doc """
@@ -351,7 +358,7 @@ defmodule Commonplace.CommandRouter do
   end
 
   @impl true
-  def handle_call({:fork, source_uuid}, from, state) do
+  def handle_call({:fork, source_uuid, opts}, from, state) do
     cond do
       MapSet.member?(state.in_flight_forks, source_uuid) ->
         # CX-kqz3: reject the duplicate immediately. The caller gets an
@@ -369,7 +376,7 @@ defmodule Commonplace.CommandRouter do
         Task.start(fn ->
           result =
             Events.run("fork", %{"source_uuid" => source_uuid}, fn ->
-              new_uuid = Fork.fork_directory(source_uuid, store)
+              new_uuid = Fork.fork_directory(source_uuid, store, opts)
               {:ok, new_uuid, %{"new_uuid" => new_uuid}}
             end)
 

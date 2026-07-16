@@ -124,6 +124,80 @@ defmodule Commonplace.CommandRouterTest do
     end
   end
 
+  describe "fork/3 signing plumb (CX-k20z-adjacent, intra-repo-PR spec §7.3c)" do
+    # Mirrors `Commonplace.Tree.MergeTest`'s "merge/4 signing plumb"
+    # discipline (§7.1): build the fork fixture FIRST under the default
+    # permissive config, THEN flip to strict trust +
+    # `local_write_gate: :enforce` for the fork call under test, so
+    # fixture setup writes aren't themselves gated.
+    setup ctx do
+      old_data_dir = Application.get_env(:commonplace, :data_dir)
+      old_trust = Application.get_env(:commonplace, :trust)
+      old_knob = Application.get_env(:commonplace, :local_write_gate)
+
+      node_dir =
+        Path.join(System.tmp_dir!(), "cp_cmdrouter_fork_test_node_#{:rand.uniform(1_000_000_000)}")
+
+      File.mkdir_p!(node_dir)
+      Application.put_env(:commonplace, :data_dir, node_dir)
+
+      {:ok, node_ctx} = Commonplace.Crypto.NodeIdentity.signing_context()
+
+      node_signer_id =
+        Commonplace.Crypto.Signing.signer_id(node_ctx.identity_uuid, node_ctx.public_key)
+
+      Application.put_env(:commonplace, :trust, %{
+        accept_unsigned: false,
+        trusted_identities: %{}
+      })
+
+      Application.put_env(:commonplace, :local_write_gate, :enforce)
+
+      on_exit(fn ->
+        case old_data_dir do
+          nil -> Application.delete_env(:commonplace, :data_dir)
+          v -> Application.put_env(:commonplace, :data_dir, v)
+        end
+
+        case old_trust do
+          nil -> Application.delete_env(:commonplace, :trust)
+          v -> Application.put_env(:commonplace, :trust, v)
+        end
+
+        case old_knob do
+          nil -> Application.delete_env(:commonplace, :local_write_gate)
+          v -> Application.put_env(:commonplace, :local_write_gate, v)
+        end
+
+        File.rm_rf!(node_dir)
+      end)
+
+      Map.merge(ctx, %{node_ctx: node_ctx, node_signer_id: node_signer_id})
+    end
+
+    test "fork/2 (no opts) under enforce — the forked doc does NOT land", ctx do
+      {_pid, name} = start_router(ctx)
+
+      assert {:ok, new_uuid} = CommandRouter.fork(name, ctx.root)
+
+      # Unsigned genesis-adjacent commit is gate-rejected; nothing was
+      # persisted under the new UUID.
+      assert CommitStore.latest_commit(ctx.store, new_uuid) == :none
+    end
+
+    test "fork/3 with signing_context under enforce — the forked doc LANDS, signed by the node",
+         ctx do
+      {_pid, name} = start_router(ctx)
+
+      assert {:ok, new_uuid} = CommandRouter.fork(name, ctx.root, signing_context: ctx.node_ctx)
+
+      assert {:ok, %Commonplace.Store.Commit{signer_id: signer}} =
+               CommitStore.latest_commit(ctx.store, new_uuid)
+
+      assert signer == ctx.node_signer_id
+    end
+  end
+
   describe "merge" do
     test "returns an {:ok, merge_report_summary} tuple", ctx do
       {_pid, name} = start_router(ctx)

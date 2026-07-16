@@ -220,9 +220,16 @@ defmodule Commonplace.Tree.Fork do
   at the top level. Callers that need the full remap must walk the
   resulting tree and reconstruct it from `parent_id` chains — see
   "No ForkManifest" in the moduledoc.
+
+  `opts` (default `[]`) is threaded, untouched, to every
+  `CommitStoreClient.create_commit/6` call this fork issues — notably
+  `:signing_context` for forks that must land as signed,
+  write-gate-evaluated commits under `local_write_gate: :enforce`.
+  The default `[]` reproduces prior (unsigned) behavior, so every
+  existing `fork_directory/2` caller is unaffected.
   """
-  def fork_directory(source_uuid, store \\ CommitStoreClient) do
-    {new_uuid, _uuid_map} = fork_node(source_uuid, store, %{})
+  def fork_directory(source_uuid, store \\ CommitStoreClient, opts \\ []) do
+    {new_uuid, _uuid_map} = fork_node(source_uuid, store, %{}, opts)
     new_uuid
   end
 
@@ -239,14 +246,14 @@ defmodule Commonplace.Tree.Fork do
   Returns `{:ok, new_uuid}` on success, or `{:error, reason}` if
   `target_commit_id` is not in the source's chain.
   """
-  @spec fork_directory_at(String.t(), binary(), GenServer.server()) ::
+  @spec fork_directory_at(String.t(), binary(), GenServer.server(), keyword()) ::
           {:ok, String.t()} | {:error, term()}
-  def fork_directory_at(source_uuid, target_commit_id, store \\ CommitStoreClient) do
+  def fork_directory_at(source_uuid, target_commit_id, store \\ CommitStoreClient, opts \\ []) do
     with {:ok, target_commit} <- fetch_target_commit(store, source_uuid, target_commit_id) do
       reference_time = target_commit.timestamp
 
       {new_uuid, _uuid_map} =
-        fork_node_at(source_uuid, target_commit_id, reference_time, store, %{})
+        fork_node_at(source_uuid, target_commit_id, reference_time, store, %{}, opts)
 
       {:ok, new_uuid}
     end
@@ -267,7 +274,7 @@ defmodule Commonplace.Tree.Fork do
     end
   end
 
-  defp fork_node_at(source_uuid, target_commit_id, reference_time, store, uuid_map) do
+  defp fork_node_at(source_uuid, target_commit_id, reference_time, store, uuid_map, opts) do
     case DocBuilder.reconstruct_doc_at(store, source_uuid, target_commit_id) do
       {:ok, source_doc} ->
         # source_doc might not decode as a schema cleanly for leaf nodes;
@@ -275,9 +282,9 @@ defmodule Commonplace.Tree.Fork do
         entries = Schema.list_entries(source_doc)
 
         if length(entries) > 0 do
-          fork_directory_node_at(source_uuid, source_doc, entries, reference_time, store, uuid_map, target_commit_id)
+          fork_directory_node_at(source_uuid, source_doc, entries, reference_time, store, uuid_map, target_commit_id, opts)
         else
-          fork_leaf_node_at(source_uuid, source_doc, target_commit_id, store, uuid_map)
+          fork_leaf_node_at(source_uuid, source_doc, target_commit_id, store, uuid_map, opts)
         end
 
       :none ->
@@ -287,7 +294,7 @@ defmodule Commonplace.Tree.Fork do
     end
   end
 
-  defp fork_directory_node_at(source_uuid, source_doc, entries, reference_time, store, uuid_map, target_commit_id) do
+  defp fork_directory_node_at(source_uuid, source_doc, entries, reference_time, store, uuid_map, target_commit_id, opts) do
     new_uuid = UUID.uuid4()
     uuid_map = Map.put(uuid_map, source_uuid, new_uuid)
 
@@ -299,7 +306,7 @@ defmodule Commonplace.Tree.Fork do
     {uuid_map, _} =
       Enum.reduce(entries, {uuid_map, []}, fn entry, {map, _} ->
         child_target = commit_at_or_before(store, entry.node_id, reference_time)
-        {_child_new_uuid, map} = fork_node_at(entry.node_id, child_target, reference_time, store, map)
+        {_child_new_uuid, map} = fork_node_at(entry.node_id, child_target, reference_time, store, map, opts)
         {map, []}
       end)
 
@@ -318,17 +325,17 @@ defmodule Commonplace.Tree.Fork do
     update = Encoding.encode_update(edited_doc)
     # 4th arg is parent_id: the forked node's first commit chains back to
     # the source commit it branched from (see moduledoc "DAG branch structure").
-    CommitStoreClient.create_commit(store, new_uuid, update, target_commit_id)
+    CommitStoreClient.create_commit(store, new_uuid, update, target_commit_id, %{}, opts)
 
     {new_uuid, uuid_map}
   end
 
-  defp fork_leaf_node_at(source_uuid, source_doc, target_commit_id, store, uuid_map) do
+  defp fork_leaf_node_at(source_uuid, source_doc, target_commit_id, store, uuid_map, opts) do
     new_uuid = UUID.uuid4()
     uuid_map = Map.put(uuid_map, source_uuid, new_uuid)
 
     update = Encoding.encode_update(source_doc)
-    CommitStoreClient.create_commit(store, new_uuid, update, target_commit_id)
+    CommitStoreClient.create_commit(store, new_uuid, update, target_commit_id, %{}, opts)
 
     {new_uuid, uuid_map}
   end
@@ -373,7 +380,7 @@ defmodule Commonplace.Tree.Fork do
   #     directory case; recurse into children first.
   #   - source's latest commit fails to decode as a schema, or
   #     decodes with no entries → leaf case; copy content.
-  defp fork_node(source_uuid, store, uuid_map) do
+  defp fork_node(source_uuid, store, uuid_map, opts) do
     case CommitStoreClient.latest_commit(store, source_uuid) do
       {:ok, commit} ->
         schema_doc = Schema.new_schema()
@@ -383,13 +390,13 @@ defmodule Commonplace.Tree.Fork do
             entries = Schema.list_entries(schema_doc)
 
             if length(entries) > 0 do
-              fork_directory_node(source_uuid, entries, store, uuid_map, commit)
+              fork_directory_node(source_uuid, entries, store, uuid_map, commit, opts)
             else
-              fork_leaf_node(source_uuid, store, uuid_map, commit)
+              fork_leaf_node(source_uuid, store, uuid_map, commit, opts)
             end
 
           _ ->
-            fork_leaf_node(source_uuid, store, uuid_map, commit)
+            fork_leaf_node(source_uuid, store, uuid_map, commit, opts)
         end
 
       :none ->
@@ -398,14 +405,14 @@ defmodule Commonplace.Tree.Fork do
     end
   end
 
-  defp fork_directory_node(source_uuid, entries, store, uuid_map, commit) do
+  defp fork_directory_node(source_uuid, entries, store, uuid_map, commit, opts) do
     new_uuid = UUID.uuid4()
     uuid_map = Map.put(uuid_map, source_uuid, new_uuid)
 
     # Fork all children first to build the uuid_map
     {uuid_map, _} =
       Enum.reduce(entries, {uuid_map, []}, fn entry, {map, _} ->
-        {_child_uuid, map} = fork_node(entry.node_id, store, map)
+        {_child_uuid, map} = fork_node(entry.node_id, store, map, opts)
         {map, []}
       end)
 
@@ -424,22 +431,22 @@ defmodule Commonplace.Tree.Fork do
           end)
 
         # Filter __processes.json if present
-        edited_doc = maybe_filter_processes(edited_doc, entries, store, uuid_map)
+        edited_doc = maybe_filter_processes(edited_doc, entries, store, uuid_map, opts)
 
         # Create the schema edit commit branching off the source's chain
         update = Encoding.encode_update(edited_doc)
-        CommitStoreClient.create_commit(store, new_uuid, update, commit.id)
+        CommitStoreClient.create_commit(store, new_uuid, update, commit.id, %{}, opts)
 
       :none ->
         # Source doc missing — create empty schema commit as branch point
         update = Encoding.encode_update(Schema.new_schema())
-        CommitStoreClient.create_commit(store, new_uuid, update, commit.id)
+        CommitStoreClient.create_commit(store, new_uuid, update, commit.id, %{}, opts)
     end
 
     {new_uuid, uuid_map}
   end
 
-  defp fork_leaf_node(source_uuid, store, uuid_map, commit) do
+  defp fork_leaf_node(source_uuid, store, uuid_map, commit, opts) do
     new_uuid = UUID.uuid4()
     uuid_map = Map.put(uuid_map, source_uuid, new_uuid)
 
@@ -447,12 +454,12 @@ defmodule Commonplace.Tree.Fork do
     case reconstruct_doc(store, source_uuid) do
       {:ok, doc} ->
         update = Encoding.encode_update(doc)
-        CommitStoreClient.create_commit(store, new_uuid, update, commit.id)
+        CommitStoreClient.create_commit(store, new_uuid, update, commit.id, %{}, opts)
 
       :none ->
         # Source doc missing — create minimal branch-point commit
         update = Encoding.encode_update(Doc.new())
-        CommitStoreClient.create_commit(store, new_uuid, update, commit.id)
+        CommitStoreClient.create_commit(store, new_uuid, update, commit.id, %{}, opts)
     end
 
     {new_uuid, uuid_map}
@@ -462,7 +469,7 @@ defmodule Commonplace.Tree.Fork do
     DocBuilder.reconstruct_doc(store, doc_uuid)
   end
 
-  defp maybe_filter_processes(schema_doc, entries, store, uuid_map) do
+  defp maybe_filter_processes(schema_doc, entries, store, uuid_map, opts) do
     proc_entry = Enum.find(entries, &(&1.name == "__processes.json"))
 
     if proc_entry do
@@ -484,7 +491,7 @@ defmodule Commonplace.Tree.Fork do
                     filtered_json = Jason.encode!(filtered)
                     new_doc = if filtered_json != "", do: ContentType.insert_text(new_doc, 0, filtered_json), else: new_doc
                     update = Encoding.encode_update(new_doc)
-                    CommitStoreClient.create_commit(store, new_proc_uuid, update, branch_commit.parent_id)
+                    CommitStoreClient.create_commit(store, new_proc_uuid, update, branch_commit.parent_id, %{}, opts)
 
                   :none ->
                     :ok
