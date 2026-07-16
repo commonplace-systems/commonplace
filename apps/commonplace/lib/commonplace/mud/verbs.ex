@@ -16,7 +16,7 @@ defmodule Commonplace.MUD.Verbs do
   side effects go through `Commonplace.MUD.World`.
   """
 
-  alias Commonplace.MUD.{ChildMutation, EngineModule, Mint, Parser, Schemas, Sections, SignedWrite, VerbSource, World}
+  alias Commonplace.MUD.{ChildMutation, EngineModule, HelpDoc, Mint, Parser, Schemas, Sections, SignedWrite, VerbSource, World}
   alias Commonplace.MUD.Schemas.{Object, Player, Room}
   alias Commonplace.MUD.World.Facade
   alias Commonplace.Tree.Schema
@@ -628,7 +628,11 @@ defmodule Commonplace.MUD.Verbs do
   defp dispatch_builtin("who", _cmd, ctx), do: do_who(ctx)
   defp dispatch_builtin("home", _cmd, ctx), do: do_home(ctx)
   defp dispatch_builtin("quit", _cmd, _ctx), do: {:reply, :quit}
-  defp dispatch_builtin("help", _cmd, _ctx), do: {:reply, help_text()}
+  # CX-hbb2 — self-hosted: help text is a node-signed CRDT doc (editable
+  # without redeploy), read via `HelpDoc.text/1` with the compiled-in floor
+  # as a non-brick fallback. See that module's moduledoc for the Gate-B
+  # content-defacement defense.
+  defp dispatch_builtin("help", _cmd, ctx), do: {:reply, HelpDoc.text(ctx.store)}
   defp dispatch_builtin("go", cmd, ctx), do: do_go(List.first(cmd.argv), ctx)
   defp dispatch_builtin("where", _cmd, ctx), do: do_where(ctx)
 
@@ -2784,49 +2788,4 @@ defmodule Commonplace.MUD.Verbs do
     end
   end
 
-  defp help_text do
-    """
-    Commands:
-      look [target]                    look at the room or a target
-      n/s/e/w/u/d  or  go <direction>  move
-      say <text>  ('<text>)            speak in the room
-      emote <text>                     act out
-      take <obj> / drop <obj>          pick up / drop an object
-      take/get <obj> from <container>  get something out of a container
-      put <obj> in <container>         put something into a container
-      look in <container>              see what's inside a container
-      give <obj> <player>              give an object to someone here
-      mine <vein>                      extract ore from a vein here
-      recipes                          list what you can craft + inputs
-      smith <recipe>                   craft a recipe from inputs you carry
-      i / inventory                    list what you carry
-      who                              list players online
-      where                            show THIS room's name + uuid (its address)
-      home                             return to your own home room
-      help                             this help
-      quit                             disconnect
-
-    Builders:
-      @dig <dir> <name>                carve a new room in <dir> (refuses if
-                                       <dir> already has an exit)
-      @link <dir> <room-uuid>          point <dir> at an existing room
-                                       (repoint/recovery; see @dump for uuids)
-      @unlink <dir>                    remove the exit in <dir>
-      @teleport <room-uuid> (@go)      jump directly to a room by uuid
-      @create object|container|room <name>  create here (a container holds
-                                       other objects)
-      @container <object>              make an existing object a container
-      @desc <target> <text>            set description (target: here, or obj name)
-      @name <target> <new name>        rename
-      @verb <target>:<verbname>        edit a verb on a room/object (line editor;
-                                       finish with '.' on its own line, '@abort'
-                                       cancels)
-      @unverb <target>:<verbname>      remove a verb from a room/object
-      @private                         make the current room read-visible to you only
-      @public                          make the current room read-visible to everyone
-      @listen                          subscribe to debug events
-      @dump [target]                   dump raw struct (a room dump leads with
-                                       its own uuid; or use 'where')
-    """
-  end
 end

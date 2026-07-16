@@ -282,6 +282,17 @@ defmodule Commonplace.MUD.Bootstrap do
   end
   '''
 
+  # CX-hbb2 (self-hosting slice A): the in-world `help` text as a node-signed
+  # doc, editable without redeploy. Fixed uuid, same idempotent-seed shape as
+  # `@engine_parser_uuid`/`@engine_look_verb_uuid` above — but this doc is
+  # PLAIN TEXT, not a `defmodule`, so it is read (never compiled) by
+  # `Commonplace.MUD.HelpDoc.text/1`, which applies the SAME Gate-B
+  # authority walk (`Commonplace.Trust.authorized_to_execute?/2`) as a
+  # content-defacement defense before trusting the doc's text. The source
+  # here is byte-identical to `HelpDoc.floor/0` (the compiled-in floor) so
+  # the seeded doc and the non-brick fallback start in parity.
+  @mud_help_uuid "0866de22-43ff-47a1-8215-e00f62f13c1e"
+
   def seed(root_uuid, store \\ CommitStoreClient), do: repair(root_uuid, store)
 
   # CX-93ea: every step is a `with` link now — a rejected write (trust
@@ -313,6 +324,11 @@ defmodule Commonplace.MUD.Bootstrap do
     :ok = ensure_engine_inventory_verb(store)
     :ok = ensure_engine_emote_verb(store)
     :ok = ensure_engine_say_verb(store)
+
+    # CX-hbb2: same best-effort, never-blocks shape — seed the node-signed
+    # `help` text doc + point the manifest's `:help` entry at it. A failure
+    # just leaves `Commonplace.MUD.HelpDoc.text/1` on the compiled-in floor.
+    :ok = ensure_mud_help(store)
 
     with {:ok, start_uuid} <-
            ensure_room(root_uuid, "start", %Room{
@@ -452,6 +468,34 @@ defmodule Commonplace.MUD.Bootstrap do
 
       manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
       Application.put_env(:commonplace, :mud_engine_manifest, Map.put(manifest, :say, @engine_say_verb_uuid))
+    end
+
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  # CX-hbb2: idempotently seed the node-signed `help` TEXT doc + set the
+  # engine manifest's `:help` entry. Mirrors `ensure_engine_look_verb/1`'s
+  # discipline exactly (best-effort, rescues/catches to `:ok` on any
+  # failure — no node identity, write refused, whatever — so the doc-hosted
+  # `help` path is strictly additive and can never brick or block seeding;
+  # `Commonplace.MUD.HelpDoc.text/1` just stays on the compiled-in floor).
+  # UNLIKE the engine-* seeds above, the content here is PLAIN TEXT (not a
+  # `defmodule`) — `seed_source_doc/5` is reused as-is (it only ever writes
+  # a text-content doc; it never compiles anything), so no new write path is
+  # introduced (CX-k20z class: minimal writes only).
+  @doc false
+  def ensure_mud_help(store \\ CommitStoreClient) do
+    with {:ok, node_ctx} <- NodeIdentity.signing_context() do
+      unless source_doc_present?(@mud_help_uuid, store) do
+        seed_source_doc(@mud_help_uuid, Commonplace.MUD.HelpDoc.floor(), node_ctx, store, "_mud_help.txt")
+      end
+
+      manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
+      Application.put_env(:commonplace, :mud_engine_manifest, Map.put(manifest, :help, @mud_help_uuid))
     end
 
     :ok

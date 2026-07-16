@@ -293,4 +293,32 @@ defmodule Commonplace.MUD.PlayerSessionTest do
       PlayerSession.stop(alice)
     end
   end
+
+  # CX-hbb2 — the `@verb` editor's "Common calls" banner is now GENERATED
+  # from the live safe-verb allowlist (`ApiDoc.render_calls/0`) instead of
+  # hand-maintained prose, fixing the CX-hn75 discoverability bug where the
+  # banner silently omitted open_exit/grant/spawn/consume/whisper/etc. This
+  # pins the banner actually reaching the player and actually listing calls
+  # the old hand-written text left out.
+  test "@verb editor banner lists the FULL safe-verb API (CX-hbb2, was missing open_exit/grant before)",
+       ctx do
+    alice = start_player("alice", ctx)
+    drain("alice")
+
+    send_input(alice, "@verb here:newverb")
+    out = drain("alice") |> Enum.join("\n")
+
+    # Present pre-fix (sanity — the banner still works at all).
+    assert out =~ "say("
+    assert out =~ "put_state("
+
+    # CX-hn75: these were MISSING from the old hand-written banner.
+    assert out =~ "open_exit("
+    assert out =~ "grant("
+    assert out =~ "spawn("
+    assert out =~ "consume("
+    assert out =~ "whisper("
+
+    PlayerSession.stop(alice)
+  end
 end

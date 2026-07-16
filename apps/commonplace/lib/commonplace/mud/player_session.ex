@@ -81,6 +81,7 @@ defmodule Commonplace.MUD.PlayerSession do
   alias Commonplace.Crypto.{AgentKeys, Signing}
   alias Commonplace.MUD.{EngineModule, Parser, Schemas, SignedWrite, Topics, Verbs, VerbSource, World}
   alias Commonplace.MUD.Schemas.{Object, Player, Room}
+  alias Commonplace.MUD.SafeVerb.ApiDoc
   alias Commonplace.Presence
   alias Commonplace.Store.{CommitStoreClient, SecretStore}
   alias Commonplace.Tree.{DocBuilder, Schema}
@@ -499,12 +500,10 @@ defmodule Commonplace.MUD.PlayerSession do
           "→ args.rest is \"a waltz\".\n" <>
           "  On an OBJECT verb the first noun IS the object it runs on, so your " <>
           "free args start at args.rest — 'bestow handoff mira' (NOT 'bestow mira').\n" <>
-          "Common calls (always Commonplace.MUD.World.Facade.<fn>(world, ...)):\n" <>
-          "  say(world, text) [ALOUD in room] · notify(world, text) [PRIVATE to the actor — use for puzzle STATUS/feedback, not say] · emit_action(world, \"lift the lid\", \"lifts the lid\")  [attributed: You / <name>]\n" <>
-          "  random(world, n) [1..n]  ·  pick(world, list)  ·  actor_carries?(world, name)\n" <>
-          "  actor_name(world) [display] · actor_ref(world) [stable per-player KEY]\n" <>
-          "  get_state(world, key)  ·  put_state(world, key, value)\n" <>
-          "Per-player state: KEY on actor_ref (stable across rename), DISPLAY with actor_name — " <>
+          "Common calls (always Commonplace.MUD.World.Facade.<fn>(world, ...)); GENERATED from the live " <>
+          "safe-verb allowlist so this list can never drift (CX-hbb2):\n" <>
+          ApiDoc.render_calls() <>
+          "\nPer-player state: KEY on actor_ref (stable across rename), DISPLAY with actor_name — " <>
           "e.g. put_state(world, \"score:\" <> actor_ref(world), n).\n" <>
           "State rules (CX-drp2): put_state writes IMMEDIATELY and persists at ANY position — " <>
           "many per verb all stick; it need NOT be the last line.\n" <>
