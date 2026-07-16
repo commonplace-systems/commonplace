@@ -56,9 +56,12 @@ defmodule Commonplace.ViewActionDispatch do
   """
 
   alias Commonplace.CommandRouter
+  alias Commonplace.Crypto.Signing
   alias Commonplace.Dataflow.Magenta
+  alias Commonplace.Document.ContentType
+  alias Commonplace.Pulls.Template
   alias Commonplace.Store.CommitStoreClient
-  alias Commonplace.Tree.{DocBuilder, Schema}
+  alias Commonplace.Tree.{DocBuilder, Lookup, Schema}
   alias Commonplace.Workspace
   alias Commonplace.WriterHand
   alias Yelixer.Encoding
@@ -166,6 +169,63 @@ defmodule Commonplace.ViewActionDispatch do
 
   defp do_dispatch("fork", _context) do
     {:error, "cannot fork: no view UUID in context"}
+  end
+
+  # CX-pr7.0/pr7.2: intra-repo pull request `pr_open` (design doc
+  # docs/plans/2026-07-16-intra-repo-pull-request-design.md §7.0/§7.2,
+  # commonplace-plan). `view_uuid` is the source B (the fork; the
+  # button lives in B's page chrome next to fork/edit/history).
+  #
+  # Target resolution: there is no cheap commit->doc reverse index in
+  # CommitStore (only full `all_doc_uuids` enumeration), so target is
+  # named explicitly via `args["target"]` — a uuid or a repo-root path
+  # (resolved the same way `Commonplace.Tree.Lookup.lookup_doc_by_path/3`
+  # resolves any other path). Designer ruling: regardless of how target
+  # was named, `find_common_ancestor(target, source)` must not be
+  # `:none` — one validation on every path, not just the path-form one.
+  #
+  # `opened_by` is resolved server-side from the dispatch signing
+  # plumbing (`context.signing_context`, falling back to
+  # `context.signer_id`) — never read from `args` (§6.3: no verb ever
+  # trusts PR-doc-bound fields, and by the same logic no verb trusts a
+  # client-asserted identity for a field it stamps into a doc).
+  defp do_dispatch("pr_open", %{view_uuid: source_uuid, args: args} = context)
+       when is_binary(source_uuid) and is_map(args) do
+    with {:ok, target_uuid} <- resolve_pr_target(args),
+         {:ok, ancestor_commit} <- validate_common_ancestor(target_uuid, source_uuid) do
+      opts = signing_opts(context)
+      opened_by = resolve_principal(context)
+      base_hex = Base.encode16(ancestor_commit.id, case: :lower)
+
+      with {:ok, pulls_uuid} <- ensure_pulls_dir(opts),
+           {:ok, pr_uuid} <- create_pr_doc(source_uuid, target_uuid, base_hex, opened_by, opts) do
+        attach_name = "pr-" <> String.slice(pr_uuid, 0, 8)
+
+        case attach_entry(pulls_uuid, attach_name, pr_uuid, opts) do
+          :ok ->
+            {:ok, :tree_mutation,
+             %{
+               action: "pr_open",
+               pr_uuid: pr_uuid,
+               attached_as: attach_name,
+               source_uuid: source_uuid,
+               target_uuid: target_uuid
+             }}
+
+          {:error, reason} ->
+            {:error, "pr_open failed to attach PR doc: #{inspect(reason)}"}
+        end
+      else
+        {:error, reason} -> {:error, "pr_open failed: #{inspect(reason)}"}
+      end
+    else
+      {:error, :no_common_ancestor} -> {:error, :no_common_ancestor}
+      {:error, reason} -> {:error, "pr_open failed: #{inspect(reason)}"}
+    end
+  end
+
+  defp do_dispatch("pr_open", _context) do
+    {:error, "pr_open requires view_uuid (source) and args map with target"}
   end
 
   # CX-487i (V1+V2 of CX-p2qp): chat post_message routes through
@@ -437,4 +497,162 @@ defmodule Commonplace.ViewActionDispatch do
       {:error, reason} -> {:error, reason}
     end
   end
+
+  # --- pr_open helpers (§7.0 registry + §7.2 verb) ---
+
+  @pulls_dir_name "__pulls"
+  @uuid_re ~r/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/
+
+  # `args["target"]` may be a bare uuid or a repo-root path. A path is
+  # resolved through the same tree-walk every other path-taking verb
+  # uses (`Commonplace.Tree.Lookup.lookup_doc_by_path/3`), rooted at
+  # the workspace root schema.
+  defp resolve_pr_target(args) do
+    with {:ok, target} <- fetch_arg(args, "target") do
+      if uuid_like?(target) do
+        {:ok, target}
+      else
+        with {:ok, root_uuid} <- Workspace.root_uuid(),
+             {:ok, uuid} <- Lookup.lookup_doc_by_path(root_uuid, target) do
+          {:ok, uuid}
+        else
+          {:error, :not_found} -> {:error, "target path not found: #{target}"}
+          {:error, reason} -> {:error, "target path resolution failed: #{inspect(reason)}"}
+        end
+      end
+    end
+  end
+
+  defp uuid_like?(value) when is_binary(value), do: Regex.match?(@uuid_re, value)
+  defp uuid_like?(_), do: false
+
+  # Designer ruling (§7.2): unconditional on every path, whether target
+  # arrived as a uuid or a path — `:none` is the one hard stop.
+  defp validate_common_ancestor(target_uuid, source_uuid) do
+    case CommitStoreClient.find_common_ancestor(target_uuid, source_uuid) do
+      :none -> {:error, :no_common_ancestor}
+      {:ok, commit} -> {:ok, commit}
+    end
+  end
+
+  # §6.3/§6.4: the invoking principal is derived server-side from the
+  # dispatch's signing plumbing, never from a client-supplied arg —
+  # mirrors `InvokeViewAction.derive_signer_id/1`'s pattern of reading
+  # straight off `signing_context.identity_uuid`/`public_key` rather
+  # than trusting a separately-threaded string.
+  defp resolve_principal(context) do
+    case Map.get(context, :signing_context) do
+      %Commonplace.Crypto.SigningContext{identity_uuid: id, public_key: pub} ->
+        Signing.signer_id(id, pub)
+
+      _ ->
+        Map.get(context, :signer_id) || "anonymous@local"
+    end
+  end
+
+  defp signing_opts(context) do
+    case Map.get(context, :signing_context) do
+      nil -> []
+      ctx -> [signing_context: ctx]
+    end
+  end
+
+  # `__pulls/` is a schema dir attached at the workspace root,
+  # created on first use (idempotent: entry-presence check), via the
+  # same attach move `attach_to_root_schema/2` uses for fork.
+  defp ensure_pulls_dir(opts) do
+    with {:ok, root_uuid} <- Workspace.root_uuid(),
+         {:ok, root_doc} <- load_root_schema(root_uuid) do
+      case Schema.get_entry(root_doc, @pulls_dir_name) do
+        {:ok, entry} ->
+          {:ok, entry.node_id}
+
+        :error ->
+          pulls_uuid = UUID.uuid4()
+          dir_doc = Schema.new_schema()
+          dir_update = Encoding.encode_update(dir_doc)
+
+          with {:ok, _commit} <-
+                 ok_commit(
+                   CommitStoreClient.create_commit(
+                     CommitStoreClient,
+                     pulls_uuid,
+                     dir_update,
+                     nil,
+                     %{},
+                     opts
+                   )
+                 ) do
+            updated_root = Schema.add_directory(root_doc, @pulls_dir_name, pulls_uuid)
+            root_update = Encoding.encode_update(updated_root)
+
+            case ok_commit(
+                   CommitStoreClient.create_chained_commit(
+                     CommitStoreClient,
+                     root_uuid,
+                     root_update,
+                     %{},
+                     opts
+                   )
+                 ) do
+              {:ok, _commit} -> {:ok, pulls_uuid}
+              {:error, _} = err -> err
+            end
+          end
+      end
+    end
+  end
+
+  # PR doc = a `<view>` doc per the design doc §1 template, freshly
+  # minted (never chained — every PR gets a brand new uuid).
+  defp create_pr_doc(source_uuid, target_uuid, base_hex, opened_by, opts) do
+    pr_uuid = UUID.uuid4()
+
+    content =
+      Template.render(%{
+        source: source_uuid,
+        target: target_uuid,
+        base: base_hex,
+        status: :open,
+        opened_by: opened_by
+      })
+
+    doc = ContentType.create(Yelixer.Doc.new(), :text, "pr.xml")
+    doc = ContentType.insert_text(doc, 0, content)
+    update = Encoding.encode_update(doc)
+
+    case ok_commit(
+           CommitStoreClient.create_commit(CommitStoreClient, pr_uuid, update, nil, %{}, opts)
+         ) do
+      {:ok, _commit} -> {:ok, pr_uuid}
+      {:error, _} = err -> err
+    end
+  end
+
+  # Attach `child_uuid` under `parent_uuid`'s schema as `attach_name`.
+  # Same move as `attach_to_root_schema/2`, generalized to any schema
+  # parent (here, the `__pulls/` dir rather than the workspace root)
+  # and threaded with the invoker's signing opts.
+  defp attach_entry(parent_uuid, attach_name, child_uuid, opts) do
+    with {:ok, parent_doc} <- load_root_schema(parent_uuid) do
+      updated = Schema.add_file(parent_doc, attach_name, child_uuid)
+      update_binary = Encoding.encode_update(updated)
+
+      case ok_commit(
+             CommitStoreClient.create_chained_commit(
+               CommitStoreClient,
+               parent_uuid,
+               update_binary,
+               %{},
+               opts
+             )
+           ) do
+        {:ok, _commit} -> :ok
+        {:error, _} = err -> err
+      end
+    end
+  end
+
+  defp ok_commit({:error, _} = err), do: err
+  defp ok_commit(commit), do: {:ok, commit}
 end
