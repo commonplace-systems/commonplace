@@ -1,0 +1,32 @@
+defmodule Commonplace.MUD.EngineExamine do
+  @moduledoc """
+  Doc-hosted `examine` verb (CX-wkau, MUD-as-documents Inc-1 / tranche 1).
+  Hot-editable.
+
+  Entity resolution goes through `Commonplace.MUD.Verbs.resolve_target/2` —
+  the promoted verb-authoring surface (CX-wkau) that wraps the compiled-in
+  `greedy_match_entry`/`resolve_entry` machinery so this doc doesn't need
+  to reimplement ranked target matching or visibility gating itself.
+  """
+
+  alias Commonplace.MUD.Schemas.{Object, Player}
+  alias Commonplace.MUD.Verbs
+
+  def run(%Commonplace.MUD.Parser.Command{argv: []}, _ctx), do: {:error, "Examine what?"}
+
+  def run(%Commonplace.MUD.Parser.Command{argv: argv}, ctx) do
+    phrase_label = Enum.join(argv, " ")
+
+    case Verbs.resolve_target(argv, ctx) do
+      {:ok, _node_id, :object, %Object{} = obj} ->
+        {:reply, "#{obj.name}\n#{obj.description}"}
+
+      {:ok, _node_id, :player, %Player{} = pl} ->
+        title = if pl.title == "", do: pl.name, else: pl.title
+        {:reply, "#{title}\n#{pl.description}"}
+
+      _ ->
+        {:error, "You don't see \"#{phrase_label}\" here."}
+    end
+  end
+end

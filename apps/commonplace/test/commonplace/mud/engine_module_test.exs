@@ -45,11 +45,21 @@ defmodule Commonplace.MUD.EngineModuleTest do
     # — and an unpinned "player" identity (the RCE adversary).
     {trusted_pub, trusted_priv} = Signing.generate_keypair()
     trusted_id = "eea11111-0000-0000-0000-#{:rand.uniform(999_999_999_999)}"
-    trusted = %SigningContext{identity_uuid: trusted_id, public_key: trusted_pub, private_key: trusted_priv}
+
+    trusted = %SigningContext{
+      identity_uuid: trusted_id,
+      public_key: trusted_pub,
+      private_key: trusted_priv
+    }
 
     {player_pub, player_priv} = Signing.generate_keypair()
     player_id = "b0b22222-0000-0000-0000-#{:rand.uniform(999_999_999_999)}"
-    player = %SigningContext{identity_uuid: player_id, public_key: player_pub, private_key: player_priv}
+
+    player = %SigningContext{
+      identity_uuid: player_id,
+      public_key: player_pub,
+      private_key: player_priv
+    }
 
     old_manifest = Application.get_env(:commonplace, :mud_engine_manifest)
     old_trust = Application.get_env(:commonplace, :trust)
@@ -66,7 +76,10 @@ defmodule Commonplace.MUD.EngineModuleTest do
       _ = Supervisor.terminate_child(sup, Commonplace.Store.CommitStore)
       _ = Supervisor.delete_child(sup, Commonplace.Store.CommitStore)
       Application.put_env(:commonplace, :data_dir, "tmp/test_data")
-      {:ok, _pid} = Supervisor.start_child(sup, {Commonplace.Store.CommitStore, data_dir: "tmp/test_data"})
+
+      {:ok, _pid} =
+        Supervisor.start_child(sup, {Commonplace.Store.CommitStore, data_dir: "tmp/test_data"})
+
       Commonplace.Tree.DocCache.clear()
       SourceDoc.reset_cache()
       File.rm_rf!(dir)
@@ -77,11 +90,20 @@ defmodule Commonplace.MUD.EngineModuleTest do
 
   # --- helpers ---
 
-  defp permissive!, do: Application.put_env(:commonplace, :trust, %{accept_unsigned: true, trusted_identities: %{}})
+  defp permissive!,
+    do:
+      Application.put_env(:commonplace, :trust, %{accept_unsigned: true, trusted_identities: %{}})
 
-  defp strict!(trusted), do: Application.put_env(:commonplace, :trust, %{accept_unsigned: false, trusted_identities: trusted})
+  defp strict!(trusted),
+    do:
+      Application.put_env(:commonplace, :trust, %{
+        accept_unsigned: false,
+        trusted_identities: trusted
+      })
 
-  defp set_manifest(uuid), do: Application.put_env(:commonplace, :mud_engine_manifest, %{parser: uuid})
+  defp set_manifest(uuid),
+    do: Application.put_env(:commonplace, :mud_engine_manifest, %{parser: uuid})
+
   defp clear_manifest, do: Application.put_env(:commonplace, :mud_engine_manifest, %{})
 
   # A valid doc-hosted parser. `extra` injects extra verb aliases (for the
@@ -130,12 +152,27 @@ defmodule Commonplace.MUD.EngineModuleTest do
 
   defp mint(source, opts) do
     uuid = UUID.uuid4()
-    CommitStore.create_chained_commit(CommitStore, uuid, content_update(source), %{kind: :regular}, opts)
+
+    CommitStore.create_chained_commit(
+      CommitStore,
+      uuid,
+      content_update(source),
+      %{kind: :regular},
+      opts
+    )
+
     uuid
   end
 
   defp edit(uuid, source, opts) do
-    CommitStore.create_chained_commit(CommitStore, uuid, content_update(source), %{kind: :regular}, opts)
+    CommitStore.create_chained_commit(
+      CommitStore,
+      uuid,
+      content_update(source),
+      %{kind: :regular},
+      opts
+    )
+
     SourceDoc.reset_cache()
     :ok
   end
@@ -191,7 +228,8 @@ defmodule Commonplace.MUD.EngineModuleTest do
     :ok = edit(uuid, parser_source(~s("grab" => "take")), [])
 
     # After: the next parse reflects the new grammar — no redeploy.
-    assert %Parser.Command{verb: "take", target: "orrery"} = EngineModule.parse("grab orrery", @store)
+    assert %Parser.Command{verb: "take", target: "orrery"} =
+             EngineModule.parse("grab orrery", @store)
   end
 
   # --- NON-BRICK tier 1: last-good ---
@@ -210,7 +248,9 @@ defmodule Commonplace.MUD.EngineModuleTest do
 
     # Non-vacuous: drive a real command → still a correct %Command{} (last-good),
     # and the fallback alarm fired.
-    assert %Parser.Command{verb: "take", target: "orrery"} = EngineModule.parse("take orrery", @store)
+    assert %Parser.Command{verb: "take", target: "orrery"} =
+             EngineModule.parse("take orrery", @store)
+
     assert_receive {:engine_fallback, ^ref, %{name: :parser}}, 500
   end
 
@@ -268,7 +308,10 @@ defmodule Commonplace.MUD.EngineModuleTest do
     # floor is byte-identical to the trusted genesis, so this is indistinguishable
     # from last-good; the divergent-doc test below pins that it's the FLOOR.
     assert %Parser.Command{verb: "pwn"} = EngineModule.parse("pwn orrery", @store)
-    assert %Parser.Command{verb: "take", target: "orrery"} = EngineModule.parse("take orrery", @store)
+
+    assert %Parser.Command{verb: "take", target: "orrery"} =
+             EngineModule.parse("take orrery", @store)
+
     assert_receive {:engine_fallback, ^ref, %{name: :parser}}, 500
   end
 
@@ -334,7 +377,10 @@ defmodule Commonplace.MUD.EngineModuleTest do
       {:ok, player_uuid} =
         Schemas.create_dir_with_meta(
           Schemas.player_filename(),
-          Schemas.encode_player(%Schemas.Player{name: "alice", description: "A curious adventurer."}),
+          Schemas.encode_player(%Schemas.Player{
+            name: "alice",
+            description: "A curious adventurer."
+          }),
           @store
         )
 
@@ -407,12 +453,27 @@ defmodule Commonplace.MUD.EngineModuleTest do
 
     defp mint_look(source, opts) do
       uuid = UUID.uuid4()
-      CommitStore.create_chained_commit(CommitStore, uuid, look_content_update(source), %{kind: :regular}, opts)
+
+      CommitStore.create_chained_commit(
+        CommitStore,
+        uuid,
+        look_content_update(source),
+        %{kind: :regular},
+        opts
+      )
+
       uuid
     end
 
     defp edit_look(uuid, source, opts) do
-      CommitStore.create_chained_commit(CommitStore, uuid, look_content_update(source), %{kind: :regular}, opts)
+      CommitStore.create_chained_commit(
+        CommitStore,
+        uuid,
+        look_content_update(source),
+        %{kind: :regular},
+        opts
+      )
+
       SourceDoc.reset_cache()
       :ok
     end
@@ -589,7 +650,8 @@ defmodule Commonplace.MUD.EngineModuleTest do
       strict!(%{trusted_id => Signing.encode_key(trusted_pub)})
       ctx = build_ctx()
 
-      enhanced = ~s|def run(%Commonplace.MUD.Parser.Command{target: "secret"}, _ctx), do: {:reply, "ENHANCED-SECRET-42"}|
+      enhanced =
+        ~s|def run(%Commonplace.MUD.Parser.Command{target: "secret"}, _ctx), do: {:reply, "ENHANCED-SECRET-42"}|
 
       uuid = mint_look(look_source(enhanced), signing_context: trusted)
       set_look_manifest(uuid)
@@ -674,7 +736,14 @@ defmodule Commonplace.MUD.EngineModuleTest do
         {:ok, schema} = Schemas.load_dir_schema(inventory_uuid, @store)
         schema = Schema.add_directory(schema, "#{name}.obj", obj_uuid)
         update = Yelixer.Encoding.encode_update(schema)
-        CommitStore.create_chained_commit(CommitStore, inventory_uuid, update, %{kind: :regular}, [])
+
+        CommitStore.create_chained_commit(
+          CommitStore,
+          inventory_uuid,
+          update,
+          %{kind: :regular},
+          []
+        )
       end
 
       %{
@@ -733,12 +802,27 @@ defmodule Commonplace.MUD.EngineModuleTest do
 
     defp mint_inventory(source, opts) do
       uuid = UUID.uuid4()
-      CommitStore.create_chained_commit(CommitStore, uuid, inventory_content_update(source), %{kind: :regular}, opts)
+
+      CommitStore.create_chained_commit(
+        CommitStore,
+        uuid,
+        inventory_content_update(source),
+        %{kind: :regular},
+        opts
+      )
+
       uuid
     end
 
     defp edit_inventory(uuid, source, opts) do
-      CommitStore.create_chained_commit(CommitStore, uuid, inventory_content_update(source), %{kind: :regular}, opts)
+      CommitStore.create_chained_commit(
+        CommitStore,
+        uuid,
+        inventory_content_update(source),
+        %{kind: :regular},
+        opts
+      )
+
       SourceDoc.reset_cache()
       :ok
     end
@@ -783,7 +867,9 @@ defmodule Commonplace.MUD.EngineModuleTest do
       uuid = mint_inventory(inventory_source(), [])
       set_inventory_manifest(uuid)
 
-      assert {:reply, before_text} = EngineModule.run_verb(:inventory, inventory_cmd(), ctx, @store)
+      assert {:reply, before_text} =
+               EngineModule.run_verb(:inventory, inventory_cmd(), ctx, @store)
+
       assert before_text =~ "You are carrying:"
 
       :ok =
@@ -793,7 +879,9 @@ defmodule Commonplace.MUD.EngineModuleTest do
           []
         )
 
-      assert {:reply, after_text} = EngineModule.run_verb(:inventory, inventory_cmd(), ctx, @store)
+      assert {:reply, after_text} =
+               EngineModule.run_verb(:inventory, inventory_cmd(), ctx, @store)
+
       assert after_text =~ "You clutch:"
     end
 
@@ -808,7 +896,9 @@ defmodule Commonplace.MUD.EngineModuleTest do
 
       :ok = edit_inventory(uuid, broken_source(), [])
 
-      assert {:reply, ^good_text} = EngineModule.run_verb(:inventory, inventory_cmd(), ctx, @store)
+      assert {:reply, ^good_text} =
+               EngineModule.run_verb(:inventory, inventory_cmd(), ctx, @store)
+
       assert_receive {:engine_fallback, ^ref, %{name: :inventory}}, 500
     end
 
@@ -843,7 +933,10 @@ defmodule Commonplace.MUD.EngineModuleTest do
 
       uuid = mint_inventory(inventory_source(), signing_context: trusted)
       set_inventory_manifest(uuid)
-      assert {:reply, trusted_text} = EngineModule.run_verb(:inventory, inventory_cmd(), ctx, @store)
+
+      assert {:reply, trusted_text} =
+               EngineModule.run_verb(:inventory, inventory_cmd(), ctx, @store)
+
       assert trusted_text =~ "widget"
 
       ref = attach_fallback_alarm()
@@ -859,7 +952,9 @@ defmodule Commonplace.MUD.EngineModuleTest do
 
       # revocation-safety invariant (CX-aya0): the resolver serves the FLOOR on
       # an authority failure, NEVER the (now-untrusted) cached last-good.
-      assert {:reply, floor_text} = EngineModule.run_verb(:inventory, inventory_cmd(), ctx, @store)
+      assert {:reply, floor_text} =
+               EngineModule.run_verb(:inventory, inventory_cmd(), ctx, @store)
+
       assert {:reply, floor_text} == InventoryFloor.run(inventory_cmd(), ctx)
       refute floor_text =~ "PWNED"
       assert_receive {:engine_fallback, ^ref, %{name: :inventory}}, 500
@@ -916,11 +1011,19 @@ defmodule Commonplace.MUD.EngineModuleTest do
     end
 
     defp build_say_ctx do
-      %{player_name: "alice", current_room_uuid: UUID.uuid4(), store: @store, signing_context: nil}
+      %{
+        player_name: "alice",
+        current_room_uuid: UUID.uuid4(),
+        store: @store,
+        signing_context: nil
+      }
     end
 
-    defp say_cmd(text), do: %Parser.Command{verb: "say", args: text, argv: String.split(text), target: nil}
-    defp emote_cmd(text), do: %Parser.Command{verb: "emote", args: text, argv: String.split(text), target: nil}
+    defp say_cmd(text),
+      do: %Parser.Command{verb: "say", args: text, argv: String.split(text), target: nil}
+
+    defp emote_cmd(text),
+      do: %Parser.Command{verb: "emote", args: text, argv: String.split(text), target: nil}
 
     defp say_source do
       ~s'''
@@ -969,12 +1072,27 @@ defmodule Commonplace.MUD.EngineModuleTest do
 
     defp mint_say(source, opts, filename \\ "_engine_say.ex") do
       uuid = UUID.uuid4()
-      CommitStore.create_chained_commit(CommitStore, uuid, say_content_update(source, filename), %{kind: :regular}, opts)
+
+      CommitStore.create_chained_commit(
+        CommitStore,
+        uuid,
+        say_content_update(source, filename),
+        %{kind: :regular},
+        opts
+      )
+
       uuid
     end
 
     defp edit_say(uuid, source, opts, filename \\ "_engine_say.ex") do
-      CommitStore.create_chained_commit(CommitStore, uuid, say_content_update(source, filename), %{kind: :regular}, opts)
+      CommitStore.create_chained_commit(
+        CommitStore,
+        uuid,
+        say_content_update(source, filename),
+        %{kind: :regular},
+        opts
+      )
+
       SourceDoc.reset_cache()
       :ok
     end
@@ -1103,7 +1221,8 @@ defmodule Commonplace.MUD.EngineModuleTest do
 
       ref = attach_fallback_alarm()
 
-      :ok = edit_say(uuid, say_source() |> String.replace(":say", ":pwned"), signing_context: player)
+      :ok =
+        edit_say(uuid, say_source() |> String.replace(":say", ":pwned"), signing_context: player)
 
       assert {:error, {:execution_denied, _}} = SourceDoc.compile(uuid, @store, gate: :execute)
 
@@ -1122,7 +1241,8 @@ defmodule Commonplace.MUD.EngineModuleTest do
       ctx = build_say_ctx()
       Topics.subscribe_room(ctx.current_room_uuid)
 
-      _player_uuid = mint_say(say_source() |> String.replace(":say", ":hijacked"), signing_context: player)
+      _player_uuid =
+        mint_say(say_source() |> String.replace(":say", ":hijacked"), signing_context: player)
 
       assert :ok = EngineModule.run_verb(:say, say_cmd("hello"), ctx, @store)
       assert_receive {"red:" <> _, %{kind: :say, who: "alice", text: "hello"}}, 500
@@ -1145,6 +1265,388 @@ defmodule Commonplace.MUD.EngineModuleTest do
                EmoteFloor.run(emote_cmd("waves"), ctx)
 
       assert_receive {"red:" <> _, %{kind: :emote, who: "alice", text: "waves"}}, 500
+    end
+  end
+
+  # ---- CX-wkau (MUD-as-documents Inc-1, tranche 1): the doc-hosted
+  # `where`/`examine` gameplay-verb baselines ----
+  #
+  # `where` is the TRIVIAL member of the six-verb tranche (no target
+  # resolution, just `World.get_room/2` + `ctx.current_room_uuid`) —
+  # covers doc->run parity/hot-reload, non-brick tiers, the RCE
+  # trust-split, and the Bootstrap seed integration, same shape as
+  # `look`/`inventory` above.
+
+  describe "where verb (Inc-1 tranche 1)" do
+    alias Commonplace.MUD.Schemas
+    alias Commonplace.MUD.Schemas.Room
+    alias Commonplace.MUD.Verbs.WhereFloor
+    alias Commonplace.Tree.Schema
+
+    defp build_where_ctx(room_name \\ "The Vault") do
+      root_uuid = UUID.uuid4()
+      root_update = Yelixer.Encoding.encode_update(Schema.new_schema())
+      CommitStore.create_commit(CommitStore, root_uuid, root_update, nil)
+
+      {:ok, room_uuid} =
+        Schemas.create_dir_with_meta(
+          Schemas.room_filename(),
+          Schemas.encode_room(%Room{name: room_name, description: "A quiet stone vault."}),
+          @store
+        )
+
+      %{current_room_uuid: room_uuid, store: @store, signing_context: nil}
+    end
+
+    defp where_cmd, do: %Parser.Command{verb: "where", argv: [], target: nil}
+
+    defp where_source(name_override \\ nil) do
+      name_line =
+        if name_override do
+          ~s(name = "#{name_override}")
+        else
+          """
+          name = case World.get_room(ctx.current_room_uuid, ctx.store) do
+                {:ok, %Room{name: n}} when is_binary(n) and n != "" -> n
+                _ -> "here"
+              end
+          """
+        end
+
+      ~s'''
+      defmodule Commonplace.MUD.EngineWhere do
+        alias Commonplace.MUD.Schemas.Room
+        alias Commonplace.MUD.World
+
+        def run(_cmd, ctx) do
+          #{name_line}
+
+          {:reply, "You are in \#{name}.\\nuuid: \#{ctx.current_room_uuid}\\n(use this with @link <dir> <uuid> / @teleport <uuid>, or share it so others can link here)"}
+        end
+      end
+      '''
+    end
+
+    defp crashing_where_source do
+      ~s'''
+      defmodule Commonplace.MUD.EngineWhere do
+        def run(_cmd, _ctx), do: raise("boom from a doc-hosted where verb")
+      end
+      '''
+    end
+
+    defp where_content_update(source) do
+      Yelixer.Doc.new()
+      |> ContentType.create(:text, "_engine_where.ex")
+      |> ContentType.insert_text(0, source)
+      |> Yelixer.Encoding.encode_update()
+    end
+
+    defp mint_where(source, opts) do
+      uuid = UUID.uuid4()
+
+      CommitStore.create_chained_commit(
+        CommitStore,
+        uuid,
+        where_content_update(source),
+        %{kind: :regular},
+        opts
+      )
+
+      uuid
+    end
+
+    defp edit_where(uuid, source, opts) do
+      CommitStore.create_chained_commit(
+        CommitStore,
+        uuid,
+        where_content_update(source),
+        %{kind: :regular},
+        opts
+      )
+
+      SourceDoc.reset_cache()
+      :ok
+    end
+
+    defp set_where_manifest(uuid), do: set_engine_manifest(:where, uuid)
+    defp clear_where_manifest, do: clear_engine_manifest(:where)
+
+    test "no manifest entry -> the compiled-in floor runs (silently, no alarm)" do
+      permissive!()
+      clear_where_manifest()
+      ctx = build_where_ctx()
+      ref = attach_fallback_alarm()
+
+      assert {:reply, text} = EngineModule.run_verb(:where, where_cmd(), ctx, @store)
+      assert {:reply, text} == WhereFloor.run(where_cmd(), ctx)
+      refute_receive {:engine_fallback, ^ref, _}, 100
+    end
+
+    test "doc->run: a node-signed edit changes where's rendered output (the self-hosting win)" do
+      permissive!()
+      ctx = build_where_ctx()
+      uuid = mint_where(where_source(), [])
+      set_where_manifest(uuid)
+
+      assert {:ok, _module} = SourceDoc.compile(uuid, @store, gate: :execute)
+
+      assert {:reply, before_text} = EngineModule.run_verb(:where, where_cmd(), ctx, @store)
+      assert before_text =~ "You are in The Vault."
+
+      :ok = edit_where(uuid, where_source("The Renamed Vault"), [])
+
+      assert {:reply, after_text} = EngineModule.run_verb(:where, where_cmd(), ctx, @store)
+      assert after_text =~ "You are in The Renamed Vault."
+    end
+
+    test "RCE guard: a player-signed edit to the where doc is REFUSED (Gate B) -> floor",
+         %{trusted: trusted, trusted_id: trusted_id, trusted_pub: trusted_pub, player: player} do
+      strict!(%{trusted_id => Signing.encode_key(trusted_pub)})
+      ctx = build_where_ctx()
+
+      uuid = mint_where(where_source(), signing_context: trusted)
+      set_where_manifest(uuid)
+      assert {:reply, trusted_text} = EngineModule.run_verb(:where, where_cmd(), ctx, @store)
+      assert trusted_text =~ "The Vault"
+
+      ref = attach_fallback_alarm()
+
+      :ok = edit_where(uuid, where_source("PWNED"), signing_context: player)
+
+      assert {:error, {:execution_denied, _}} = SourceDoc.compile(uuid, @store, gate: :execute)
+
+      assert {:reply, floor_text} = EngineModule.run_verb(:where, where_cmd(), ctx, @store)
+      assert {:reply, floor_text} == WhereFloor.run(where_cmd(), ctx)
+      refute floor_text =~ "PWNED"
+      assert_receive {:engine_fallback, ^ref, %{name: :where}}, 500
+    end
+
+    test "non-brick: a where doc that COMPILES but crashes at runtime is contained -> floor" do
+      permissive!()
+      ctx = build_where_ctx()
+      ref = attach_fallback_alarm()
+      uuid = mint_where(crashing_where_source(), [])
+      set_where_manifest(uuid)
+
+      assert {:reply, text} = EngineModule.run_verb(:where, where_cmd(), ctx, @store)
+      assert {:reply, text} == WhereFloor.run(where_cmd(), ctx)
+      assert_receive {:engine_fallback, ^ref, _}, 500
+    end
+
+    test "Bootstrap.ensure_engine_where_verb seeds a node-signed where doc that runs in parity with the floor" do
+      permissive!()
+      ctx = build_where_ctx()
+
+      assert :ok = Commonplace.MUD.Bootstrap.ensure_engine_where_verb(@store)
+
+      assert EngineModule.run_verb(:where, where_cmd(), ctx, @store) ==
+               WhereFloor.run(where_cmd(), ctx)
+    end
+  end
+
+  # `examine` is the RESOLUTION-HEAVY member of the tranche — it goes
+  # through `Verbs.resolve_target/2` (the promoted verb-authoring surface
+  # wrapping `greedy_match_entry`/`resolve_entry`), so these tests cover a
+  # found object AND a missing target, on top of the same doc->run/
+  # non-brick/RCE/seed shape as `where` above.
+
+  describe "examine verb (Inc-1 tranche 1)" do
+    alias Commonplace.MUD.Schemas
+    alias Commonplace.MUD.Schemas.Object
+    alias Commonplace.MUD.Verbs.ExamineFloor
+    alias Commonplace.Tree.Schema
+
+    defp build_examine_ctx(obj_name \\ "orrery") do
+      root_uuid = UUID.uuid4()
+      root_update = Yelixer.Encoding.encode_update(Schema.new_schema())
+      CommitStore.create_commit(CommitStore, root_uuid, root_update, nil)
+
+      {:ok, room_uuid} = Schemas.create_dir_with_meta(nil, nil, @store)
+      {:ok, inventory_uuid} = Schemas.create_dir_with_meta(nil, nil, @store)
+
+      {:ok, obj_uuid} =
+        Schemas.create_dir_with_meta(
+          Schemas.object_filename(),
+          Schemas.encode_object(%Object{
+            name: obj_name,
+            description: "An intricate brass device."
+          }),
+          @store
+        )
+
+      {:ok, schema} = Schemas.load_dir_schema(room_uuid, @store)
+      schema = Schema.add_directory(schema, "#{obj_name}.obj", obj_uuid)
+      update = Yelixer.Encoding.encode_update(schema)
+      CommitStore.create_chained_commit(CommitStore, room_uuid, update, %{kind: :regular}, [])
+
+      %{
+        current_room_uuid: room_uuid,
+        inventory_uuid: inventory_uuid,
+        store: @store,
+        signing_context: nil
+      }
+    end
+
+    defp examine_cmd(argv),
+      do: %Parser.Command{verb: "examine", argv: argv, target: List.first(argv)}
+
+    defp examine_source do
+      ~s'''
+      defmodule Commonplace.MUD.EngineExamine do
+        alias Commonplace.MUD.Schemas.{Object, Player}
+        alias Commonplace.MUD.Verbs
+
+        def run(%Commonplace.MUD.Parser.Command{argv: []}, _ctx), do: {:error, "Examine what?"}
+
+        def run(%Commonplace.MUD.Parser.Command{argv: argv}, ctx) do
+          phrase_label = Enum.join(argv, " ")
+
+          case Verbs.resolve_target(argv, ctx) do
+            {:ok, _node_id, :object, %Object{} = obj} ->
+              {:reply, "\#{obj.name}\\n\#{obj.description}"}
+
+            {:ok, _node_id, :player, %Player{} = pl} ->
+              title = if pl.title == "", do: pl.name, else: pl.title
+              {:reply, "\#{title}\\n\#{pl.description}"}
+
+            _ ->
+              {:error, "You don't see \\"\#{phrase_label}\\" here."}
+          end
+        end
+      end
+      '''
+    end
+
+    defp crashing_examine_source do
+      ~s'''
+      defmodule Commonplace.MUD.EngineExamine do
+        def run(_cmd, _ctx), do: raise("boom from a doc-hosted examine verb")
+      end
+      '''
+    end
+
+    defp examine_content_update(source) do
+      Yelixer.Doc.new()
+      |> ContentType.create(:text, "_engine_examine.ex")
+      |> ContentType.insert_text(0, source)
+      |> Yelixer.Encoding.encode_update()
+    end
+
+    defp mint_examine(source, opts) do
+      uuid = UUID.uuid4()
+
+      CommitStore.create_chained_commit(
+        CommitStore,
+        uuid,
+        examine_content_update(source),
+        %{kind: :regular},
+        opts
+      )
+
+      uuid
+    end
+
+    defp edit_examine(uuid, source, opts) do
+      CommitStore.create_chained_commit(
+        CommitStore,
+        uuid,
+        examine_content_update(source),
+        %{kind: :regular},
+        opts
+      )
+
+      SourceDoc.reset_cache()
+      :ok
+    end
+
+    defp set_examine_manifest(uuid), do: set_engine_manifest(:examine, uuid)
+    defp clear_examine_manifest, do: clear_engine_manifest(:examine)
+
+    test "no manifest entry -> the compiled-in floor runs (silently, no alarm)" do
+      permissive!()
+      clear_examine_manifest()
+      ctx = build_examine_ctx()
+      ref = attach_fallback_alarm()
+
+      assert {:reply, text} =
+               EngineModule.run_verb(:examine, examine_cmd(["orrery"]), ctx, @store)
+
+      assert {:reply, text} == ExamineFloor.run(examine_cmd(["orrery"]), ctx)
+      refute_receive {:engine_fallback, ^ref, _}, 100
+    end
+
+    test "doc->run: a node-signed doc examines a found target AND refuses a missing one (the self-hosting win)" do
+      permissive!()
+      ctx = build_examine_ctx()
+      uuid = mint_examine(examine_source(), [])
+      set_examine_manifest(uuid)
+
+      assert {:ok, _module} = SourceDoc.compile(uuid, @store, gate: :execute)
+
+      assert {:reply, text} =
+               EngineModule.run_verb(:examine, examine_cmd(["orrery"]), ctx, @store)
+
+      assert text == "orrery\nAn intricate brass device."
+
+      assert {:error, err} =
+               EngineModule.run_verb(:examine, examine_cmd(["nonexistent"]), ctx, @store)
+
+      assert err =~ "You don't see"
+    end
+
+    test "RCE guard: a player-signed edit to the examine doc is REFUSED (Gate B) -> floor",
+         %{trusted: trusted, trusted_id: trusted_id, trusted_pub: trusted_pub, player: player} do
+      strict!(%{trusted_id => Signing.encode_key(trusted_pub)})
+      ctx = build_examine_ctx()
+
+      uuid = mint_examine(examine_source(), signing_context: trusted)
+      set_examine_manifest(uuid)
+
+      assert {:reply, trusted_text} =
+               EngineModule.run_verb(:examine, examine_cmd(["orrery"]), ctx, @store)
+
+      assert trusted_text == "orrery\nAn intricate brass device."
+
+      ref = attach_fallback_alarm()
+
+      tampered = String.replace(examine_source(), "obj.description", ~s("PWNED"))
+      :ok = edit_examine(uuid, tampered, signing_context: player)
+
+      assert {:error, {:execution_denied, _}} = SourceDoc.compile(uuid, @store, gate: :execute)
+
+      assert {:reply, floor_text} =
+               EngineModule.run_verb(:examine, examine_cmd(["orrery"]), ctx, @store)
+
+      assert {:reply, floor_text} == ExamineFloor.run(examine_cmd(["orrery"]), ctx)
+      refute floor_text =~ "PWNED"
+      assert_receive {:engine_fallback, ^ref, %{name: :examine}}, 500
+    end
+
+    test "non-brick: an examine doc that COMPILES but crashes at runtime is contained -> floor" do
+      permissive!()
+      ctx = build_examine_ctx()
+      ref = attach_fallback_alarm()
+      uuid = mint_examine(crashing_examine_source(), [])
+      set_examine_manifest(uuid)
+
+      assert {:reply, text} =
+               EngineModule.run_verb(:examine, examine_cmd(["orrery"]), ctx, @store)
+
+      assert {:reply, text} == ExamineFloor.run(examine_cmd(["orrery"]), ctx)
+      assert_receive {:engine_fallback, ^ref, _}, 500
+    end
+
+    test "Bootstrap.ensure_engine_examine_verb seeds a node-signed examine doc that runs in parity with the floor" do
+      permissive!()
+      ctx = build_examine_ctx()
+
+      assert :ok = Commonplace.MUD.Bootstrap.ensure_engine_examine_verb(@store)
+
+      for cmd <- [examine_cmd(["orrery"]), examine_cmd(["nonexistent"]), examine_cmd([])] do
+        assert EngineModule.run_verb(:examine, cmd, ctx, @store) == ExamineFloor.run(cmd, ctx),
+               "seeded doc-hosted examine of #{inspect(cmd)} must match the floor"
+      end
     end
   end
 end

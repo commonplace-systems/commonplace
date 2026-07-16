@@ -1,0 +1,47 @@
+defmodule Commonplace.MUD.EngineRead do
+  @moduledoc """
+  Doc-hosted `read` verb (CX-wkau, MUD-as-documents Inc-1 / tranche 1).
+  Hot-editable.
+
+  Entity resolution goes through `Commonplace.MUD.Verbs.resolve_target/2` —
+  the promoted verb-authoring surface (CX-wkau) that wraps the compiled-in
+  `greedy_match_entry`/`resolve_entry` machinery so this doc doesn't need
+  to reimplement ranked target matching or visibility gating itself.
+  """
+
+  alias Commonplace.MUD.Schemas
+  alias Commonplace.MUD.Schemas.Object
+  alias Commonplace.MUD.Verbs
+  alias Commonplace.MUD.World
+
+  def run(%Commonplace.MUD.Parser.Command{argv: []}, _ctx), do: {:error, "Read what?"}
+
+  def run(%Commonplace.MUD.Parser.Command{argv: argv}, ctx) do
+    phrase_label = Enum.join(argv, " ")
+
+    case Verbs.resolve_target(argv, ctx) do
+      {:ok, node_id, :object, %Object{} = obj} ->
+        {:reply, read_object_text(node_id, obj, ctx)}
+
+      :not_found ->
+        {:error, "You don't see \"#{phrase_label}\" here."}
+
+      _ ->
+        {:reply, "There's nothing to read on #{phrase_label}."}
+    end
+  end
+
+  defp read_object_text(uuid, %Object{} = obj, ctx) do
+    case World.get_meta_map(uuid, Schemas.object_filename(), ctx.store) do
+      {:ok, %{"state" => %{"text" => text}}} when is_binary(text) and text != "" ->
+        "The #{obj.name} reads: #{text}"
+
+      _ ->
+        if is_binary(obj.description) and obj.description != "" do
+          "The #{obj.name} reads: #{obj.description}"
+        else
+          "There's nothing to read on #{obj.name}."
+        end
+    end
+  end
+end

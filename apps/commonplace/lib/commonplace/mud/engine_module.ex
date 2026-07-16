@@ -93,12 +93,22 @@ defmodule Commonplace.MUD.EngineModule do
   # stateless-leaf verbs — every entry here is a REVOCATION-SAFETY
   # INVARIANT (see `resolve/2`'s authority-failure branch below): a
   # migrated verb with no floor entry is un-revocable-safely.
+  #
+  # CX-wkau (MUD-as-documents Inc-1, tranche 1): `where`/`examine`/`search`/
+  # `read`/`sit`/`stand` — the six PURE/stateless gameplay-verb baselines
+  # (CX-z6ub M2.2) — join the doc-hosted cohort, same invariant.
   @floor %{
     parser: Parser,
     look: Commonplace.MUD.Verbs.LookFloor,
     inventory: Commonplace.MUD.Verbs.InventoryFloor,
     emote: Commonplace.MUD.Verbs.EmoteFloor,
-    say: Commonplace.MUD.Verbs.SayFloor
+    say: Commonplace.MUD.Verbs.SayFloor,
+    where: Commonplace.MUD.Verbs.WhereFloor,
+    examine: Commonplace.MUD.Verbs.ExamineFloor,
+    search: Commonplace.MUD.Verbs.SearchFloor,
+    read: Commonplace.MUD.Verbs.ReadFloor,
+    sit: Commonplace.MUD.Verbs.SitFloor,
+    stand: Commonplace.MUD.Verbs.StandFloor
   }
 
   @doc """

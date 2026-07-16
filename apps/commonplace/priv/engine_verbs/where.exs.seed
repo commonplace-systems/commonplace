@@ -1,0 +1,19 @@
+defmodule Commonplace.MUD.EngineWhere do
+  @moduledoc "Doc-hosted `where` verb (CX-wkau, MUD-as-documents Inc-1 / tranche 1). Hot-editable."
+
+  alias Commonplace.MUD.Schemas.Room
+  alias Commonplace.MUD.World
+
+  def run(_cmd, ctx) do
+    name =
+      case World.get_room(ctx.current_room_uuid, ctx.store) do
+        {:ok, %Room{name: n}} when is_binary(n) and n != "" -> n
+        _ -> "here"
+      end
+
+    {:reply,
+     "You are in #{name}.\n" <>
+       "uuid: #{ctx.current_room_uuid}\n" <>
+       "(use this with @link <dir> <uuid> / @teleport <uuid>, or share it so others can link here)"}
+  end
+end

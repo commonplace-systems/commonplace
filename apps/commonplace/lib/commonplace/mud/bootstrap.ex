@@ -130,6 +130,47 @@ defmodule Commonplace.MUD.Bootstrap do
   @external_resource engine_say_verb_path
   @engine_say_verb_source File.read!(engine_say_verb_path)
 
+  # CX-wkau (MUD-as-documents Inc-1, tranche 1): the six PURE/stateless
+  # gameplay-verb baselines (CX-z6ub M2.2) — `where`/`sit`/`stand`/
+  # `examine`/`search`/`read` — join the doc-hosted cohort after
+  # `look`/`inventory`/`emote`/`say`. Same fixed-uuid + node-signed
+  # idempotent seed shape as `@engine_look_verb_uuid` above (see that
+  # constant's comment for the Gate B / distinct-module-name rationale —
+  # identical here); source bodies load from `priv/engine_verbs/*.exs.seed`
+  # at compile time (CX-6pbu shape — see `@engine_parser_source`'s comment).
+  # `examine`/`read` are full parity with their `do_*` counterparts via the
+  # promoted `Verbs.resolve_target/2` surface (see that function's doc);
+  # `where`/`sit`/`stand`/`search` are simple enough to mirror completely.
+  @engine_where_verb_uuid "c2c16b7f-3b47-44d5-849f-7d522802a91e"
+  engine_where_verb_path = Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "where.exs.seed"])
+  @external_resource engine_where_verb_path
+  @engine_where_verb_source File.read!(engine_where_verb_path)
+
+  @engine_sit_verb_uuid "9b002b18-37e4-4a31-a869-8849f9906761"
+  engine_sit_verb_path = Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "sit.exs.seed"])
+  @external_resource engine_sit_verb_path
+  @engine_sit_verb_source File.read!(engine_sit_verb_path)
+
+  @engine_stand_verb_uuid "2b5eae29-f49e-4a85-a426-9342ac6c4b4d"
+  engine_stand_verb_path = Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "stand.exs.seed"])
+  @external_resource engine_stand_verb_path
+  @engine_stand_verb_source File.read!(engine_stand_verb_path)
+
+  @engine_examine_verb_uuid "fdcb5f1e-a0f1-4fc3-82dc-1508bdf44b12"
+  engine_examine_verb_path = Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "examine.exs.seed"])
+  @external_resource engine_examine_verb_path
+  @engine_examine_verb_source File.read!(engine_examine_verb_path)
+
+  @engine_search_verb_uuid "0521e66a-d36f-4c25-86bc-3f77c2fccdf8"
+  engine_search_verb_path = Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "search.exs.seed"])
+  @external_resource engine_search_verb_path
+  @engine_search_verb_source File.read!(engine_search_verb_path)
+
+  @engine_read_verb_uuid "61f0cb2f-3676-445e-95ae-ce8585f3ef25"
+  engine_read_verb_path = Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "read.exs.seed"])
+  @external_resource engine_read_verb_path
+  @engine_read_verb_source File.read!(engine_read_verb_path)
+
   # CX-hbb2 (self-hosting slice A): the in-world `help` text as a node-signed
   # doc, editable without redeploy. Fixed uuid, same idempotent-seed shape as
   # `@engine_parser_uuid`/`@engine_look_verb_uuid` above — but this doc is
@@ -175,6 +216,18 @@ defmodule Commonplace.MUD.Bootstrap do
   def engine_emote_verb_source, do: @engine_emote_verb_source
   @doc false
   def engine_say_verb_source, do: @engine_say_verb_source
+  @doc false
+  def engine_where_verb_source, do: @engine_where_verb_source
+  @doc false
+  def engine_sit_verb_source, do: @engine_sit_verb_source
+  @doc false
+  def engine_stand_verb_source, do: @engine_stand_verb_source
+  @doc false
+  def engine_examine_verb_source, do: @engine_examine_verb_source
+  @doc false
+  def engine_search_verb_source, do: @engine_search_verb_source
+  @doc false
+  def engine_read_verb_source, do: @engine_read_verb_source
 
   # CX-93ea: every step is a `with` link now — a rejected write (trust
   # gate under `:enforce`, or any other create_commit error) stops the
@@ -205,6 +258,18 @@ defmodule Commonplace.MUD.Bootstrap do
     :ok = ensure_engine_inventory_verb(store)
     :ok = ensure_engine_emote_verb(store)
     :ok = ensure_engine_say_verb(store)
+
+    # CX-wkau (Inc-1, tranche 1): same best-effort, never-blocks shape —
+    # seed the doc-hosted `where`/`sit`/`stand`/`examine`/`search`/`read`
+    # verbs + point the manifest at them. A failure just leaves
+    # `EngineModule.run_verb/4` on the respective compiled-in floor (full
+    # `do_*` parity).
+    :ok = ensure_engine_where_verb(store)
+    :ok = ensure_engine_sit_verb(store)
+    :ok = ensure_engine_stand_verb(store)
+    :ok = ensure_engine_examine_verb(store)
+    :ok = ensure_engine_search_verb(store)
+    :ok = ensure_engine_read_verb(store)
 
     # CX-hbb2: same best-effort, never-blocks shape — seed the node-signed
     # `help` text doc + point the manifest's `:help` entry at it. A failure
@@ -340,6 +405,132 @@ defmodule Commonplace.MUD.Bootstrap do
 
       manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
       Application.put_env(:commonplace, :mud_engine_manifest, Map.put(manifest, :say, @engine_say_verb_uuid))
+    end
+
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  # CX-wkau (Inc-1, tranche 1): idempotently seed the node-signed `where`
+  # verb source doc + set the engine manifest's `:where` entry. Mirrors
+  # `ensure_engine_look_verb/1` exactly.
+  @doc false
+  def ensure_engine_where_verb(store \\ CommitStoreClient) do
+    with {:ok, node_ctx} <- NodeIdentity.signing_context() do
+      unless source_doc_present?(@engine_where_verb_uuid, store) do
+        seed_source_doc(@engine_where_verb_uuid, @engine_where_verb_source, node_ctx, store, "_engine_where.ex")
+      end
+
+      manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
+      Application.put_env(:commonplace, :mud_engine_manifest, Map.put(manifest, :where, @engine_where_verb_uuid))
+    end
+
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  # CX-wkau (Inc-1, tranche 1): idempotently seed the node-signed `sit`
+  # verb source doc + set the engine manifest's `:sit` entry. Mirrors
+  # `ensure_engine_look_verb/1` exactly.
+  @doc false
+  def ensure_engine_sit_verb(store \\ CommitStoreClient) do
+    with {:ok, node_ctx} <- NodeIdentity.signing_context() do
+      unless source_doc_present?(@engine_sit_verb_uuid, store) do
+        seed_source_doc(@engine_sit_verb_uuid, @engine_sit_verb_source, node_ctx, store, "_engine_sit.ex")
+      end
+
+      manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
+      Application.put_env(:commonplace, :mud_engine_manifest, Map.put(manifest, :sit, @engine_sit_verb_uuid))
+    end
+
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  # CX-wkau (Inc-1, tranche 1): idempotently seed the node-signed `stand`
+  # verb source doc + set the engine manifest's `:stand` entry. Mirrors
+  # `ensure_engine_look_verb/1` exactly.
+  @doc false
+  def ensure_engine_stand_verb(store \\ CommitStoreClient) do
+    with {:ok, node_ctx} <- NodeIdentity.signing_context() do
+      unless source_doc_present?(@engine_stand_verb_uuid, store) do
+        seed_source_doc(@engine_stand_verb_uuid, @engine_stand_verb_source, node_ctx, store, "_engine_stand.ex")
+      end
+
+      manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
+      Application.put_env(:commonplace, :mud_engine_manifest, Map.put(manifest, :stand, @engine_stand_verb_uuid))
+    end
+
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  # CX-wkau (Inc-1, tranche 1): idempotently seed the node-signed `examine`
+  # verb source doc + set the engine manifest's `:examine` entry. Mirrors
+  # `ensure_engine_look_verb/1` exactly.
+  @doc false
+  def ensure_engine_examine_verb(store \\ CommitStoreClient) do
+    with {:ok, node_ctx} <- NodeIdentity.signing_context() do
+      unless source_doc_present?(@engine_examine_verb_uuid, store) do
+        seed_source_doc(@engine_examine_verb_uuid, @engine_examine_verb_source, node_ctx, store, "_engine_examine.ex")
+      end
+
+      manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
+      Application.put_env(:commonplace, :mud_engine_manifest, Map.put(manifest, :examine, @engine_examine_verb_uuid))
+    end
+
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  # CX-wkau (Inc-1, tranche 1): idempotently seed the node-signed `search`
+  # verb source doc + set the engine manifest's `:search` entry. Mirrors
+  # `ensure_engine_look_verb/1` exactly.
+  @doc false
+  def ensure_engine_search_verb(store \\ CommitStoreClient) do
+    with {:ok, node_ctx} <- NodeIdentity.signing_context() do
+      unless source_doc_present?(@engine_search_verb_uuid, store) do
+        seed_source_doc(@engine_search_verb_uuid, @engine_search_verb_source, node_ctx, store, "_engine_search.ex")
+      end
+
+      manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
+      Application.put_env(:commonplace, :mud_engine_manifest, Map.put(manifest, :search, @engine_search_verb_uuid))
+    end
+
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  # CX-wkau (Inc-1, tranche 1): idempotently seed the node-signed `read`
+  # verb source doc + set the engine manifest's `:read` entry. Mirrors
+  # `ensure_engine_look_verb/1` exactly.
+  @doc false
+  def ensure_engine_read_verb(store \\ CommitStoreClient) do
+    with {:ok, node_ctx} <- NodeIdentity.signing_context() do
+      unless source_doc_present?(@engine_read_verb_uuid, store) do
+        seed_source_doc(@engine_read_verb_uuid, @engine_read_verb_source, node_ctx, store, "_engine_read.ex")
+      end
+
+      manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
+      Application.put_env(:commonplace, :mud_engine_manifest, Map.put(manifest, :read, @engine_read_verb_uuid))
     end
 
     :ok

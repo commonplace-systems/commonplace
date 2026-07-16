@@ -1,0 +1,5 @@
+defmodule Commonplace.MUD.EngineSearch do
+  @moduledoc "Doc-hosted `search` verb (CX-wkau, MUD-as-documents Inc-1 / tranche 1). Hot-editable."
+
+  def run(_cmd, _ctx), do: {:reply, "You search but find nothing of note."}
+end

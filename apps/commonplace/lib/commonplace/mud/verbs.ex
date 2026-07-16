@@ -634,18 +634,34 @@ defmodule Commonplace.MUD.Verbs do
   # content-defacement defense.
   defp dispatch_builtin("help", _cmd, ctx), do: {:reply, HelpDoc.text(ctx.store)}
   defp dispatch_builtin("go", cmd, ctx), do: do_go(List.first(cmd.argv), ctx)
-  defp dispatch_builtin("where", _cmd, ctx), do: do_where(ctx)
+
+  # CX-wkau (MUD-as-documents Inc-1, tranche 1): `where` joins the doc-hosted
+  # stateless-leaf cohort (`look`/`say`/`emote`/`inventory`), same
+  # `EngineModule.run_verb/4` shape — `do_where/1` is UNCHANGED and remains
+  # the single source of truth; the compiled-in floor
+  # (`Commonplace.MUD.Verbs.WhereFloor`) calls back into it via the
+  # `__where_floor__/2` escape hatch below.
+  defp dispatch_builtin("where", cmd, ctx), do: EngineModule.run_verb(:where, cmd, ctx, ctx.store)
 
   # CX-z6ub M2.2 — the six OVERRIDABLE standard verb baselines. Reached only
   # when the host has no own-verb override (dispatch's `overridable?` branch
   # falls through to here); a citizen's same-named safe verb runs INSTEAD when
   # present. Kept simple and node-owned — the creative surface is the override.
-  defp dispatch_builtin("examine", cmd, ctx), do: do_examine(cmd, ctx)
-  defp dispatch_builtin("search", cmd, ctx), do: do_search(cmd, ctx)
-  defp dispatch_builtin("read", cmd, ctx), do: do_read(cmd, ctx)
+  #
+  # CX-wkau (MUD-as-documents Inc-1, tranche 1): `examine`/`search`/`read`/
+  # `sit`/`stand` (five of the six) also route through `EngineModule` now,
+  # same shape as `where` above — each `do_*/2` stays UNCHANGED, each
+  # compiled-in floor (`ExamineFloor`/`SearchFloor`/`ReadFloor`/`SitFloor`/
+  # `StandFloor`) calls back via its own `__*_floor__/2` escape hatch below.
+  # `use` is left calling `do_use/2` directly — dispatch precedence (an
+  # object-verb override reaches this clause only when absent) is UNCHANGED
+  # by any of this; only the six BASELINE bodies moved behind the resolver.
+  defp dispatch_builtin("examine", cmd, ctx), do: EngineModule.run_verb(:examine, cmd, ctx, ctx.store)
+  defp dispatch_builtin("search", cmd, ctx), do: EngineModule.run_verb(:search, cmd, ctx, ctx.store)
+  defp dispatch_builtin("read", cmd, ctx), do: EngineModule.run_verb(:read, cmd, ctx, ctx.store)
   defp dispatch_builtin("use", cmd, ctx), do: do_use(cmd, ctx)
-  defp dispatch_builtin("sit", cmd, ctx), do: do_sit(cmd, ctx)
-  defp dispatch_builtin("stand", cmd, ctx), do: do_stand(cmd, ctx)
+  defp dispatch_builtin("sit", cmd, ctx), do: EngineModule.run_verb(:sit, cmd, ctx, ctx.store)
+  defp dispatch_builtin("stand", cmd, ctx), do: EngineModule.run_verb(:stand, cmd, ctx, ctx.store)
 
   defp dispatch_builtin(dir, _cmd, ctx) when dir in ~w(north south east west up down in out) do
     do_go(dir, ctx)
@@ -681,6 +697,35 @@ defmodule Commonplace.MUD.Verbs do
 
   @doc false
   def __inventory_floor__(_cmd, ctx), do: do_inventory(ctx)
+
+  # CX-wkau (MUD-as-documents Inc-1, tranche 1): the ONLY external callers of
+  # `do_where/1`, `do_examine/2`, `do_search/2`, `do_read/2`, `do_sit/2`, and
+  # `do_stand/2` — used exclusively by the six matching `EngineModule`
+  # compiled-in floors (`WhereFloor`/`ExamineFloor`/`SearchFloor`/
+  # `ReadFloor`/`SitFloor`/`StandFloor`). Each stays private; routing the
+  # floor through these one-line delegators means the floor and the "real"
+  # verb behavior can never drift out of parity — exactly one implementation
+  # of each, this just exposes a call path to it. `do_where/1` and
+  # `do_search/2` (search ignores both args) don't need `cmd`/`ctx` in the
+  # same shape as the others; each hatch adapts to the `module.run(cmd, ctx)`
+  # shape `EngineModule` expects.
+  @doc false
+  def __where_floor__(_cmd, ctx), do: do_where(ctx)
+
+  @doc false
+  def __examine_floor__(cmd, ctx), do: do_examine(cmd, ctx)
+
+  @doc false
+  def __search_floor__(cmd, ctx), do: do_search(cmd, ctx)
+
+  @doc false
+  def __read_floor__(cmd, ctx), do: do_read(cmd, ctx)
+
+  @doc false
+  def __sit_floor__(cmd, ctx), do: do_sit(cmd, ctx)
+
+  @doc false
+  def __stand_floor__(cmd, ctx), do: do_stand(cmd, ctx)
 
   # CX-82wi — `where`: a non-builder QoL that surfaces the CURRENT room's own
   # uuid (its address). A room with no inbound exits — every player's home! —
@@ -2751,6 +2796,35 @@ defmodule Commonplace.MUD.Verbs do
           {:ok, _entry, phrase, remainder} -> {:ok, phrase, Enum.join(remainder, " ")}
           :not_found -> :not_found
         end
+    end
+  end
+
+  # CX-wkau (MUD-as-documents Inc-1, tranche 1) — PROMOTED verb-authoring
+  # surface: the minimal combined greedy-match + type-resolve glue that
+  # `do_examine/2` and `do_read/2` both need, exposed so their doc-hosted
+  # seeds (`priv/engine_verbs/examine.exs.seed` / `read.exs.seed`) can reach
+  # entity resolution WITHOUT the private `greedy_match_entry/4` /
+  # `resolve_entry/2` machinery (and its `find_entry_in_dirs/3` ranking/
+  # visibility internals) being copied into a doc or made public wholesale.
+  # Searches `[ctx.inventory_uuid, ctx.current_room_uuid]` (the fixed
+  # precedence every other target-taking builtin uses) for the longest
+  # `argv` prefix that names something, then classifies it. Three-way
+  # result so a caller can distinguish "nothing named that here at all"
+  # (`:not_found`) from "found an entry but it isn't an examinable/readable
+  # object or player" (`:unresolved`) — `do_read/2`'s baseline treats those
+  # two differently (a bare "don't see it" vs "nothing to read on it"), so
+  # collapsing them here would silently change read's behavior.
+  @doc false
+  def resolve_target(argv, ctx) do
+    case greedy_match_entry([ctx.inventory_uuid, ctx.current_room_uuid], argv, ctx.store) do
+      {:ok, entry, _phrase, _remainder} ->
+        case resolve_entry(entry, ctx) do
+          {:ok, kind, thing} -> {:ok, entry.node_id, kind, thing}
+          :not_found -> :unresolved
+        end
+
+      :not_found ->
+        :not_found
     end
   end
 

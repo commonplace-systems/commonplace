@@ -1,0 +1,15 @@
+defmodule Commonplace.MUD.EngineSit do
+  @moduledoc "Doc-hosted `sit` verb (CX-wkau, MUD-as-documents Inc-1 / tranche 1). Hot-editable."
+
+  alias Commonplace.MUD.World
+
+  def run(_cmd, ctx) do
+    World.broadcast_room(
+      ctx.current_room_uuid,
+      %{kind: :emote, who: ctx.player_name, text: "sits down."},
+      except: [ctx.player_uuid]
+    )
+
+    {:reply, "You sit down."}
+  end
+end
