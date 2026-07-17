@@ -34,6 +34,7 @@ defmodule Commonplace.Tree.DocBuilderLazySnapshotTest do
     %{store: store_name}
   end
 
+  defp restore(:data_dir, nil), do: Application.put_env(:commonplace, :data_dir, "tmp/test_data")
   defp restore(key, nil), do: Application.delete_env(:commonplace, key)
   defp restore(key, val), do: Application.put_env(:commonplace, key, val)
 

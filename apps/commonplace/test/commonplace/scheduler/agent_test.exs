@@ -45,7 +45,7 @@ defmodule Commonplace.Scheduler.AgentTest do
       )
 
     on_exit(fn ->
-      if Process.alive?(pid), do: GenServer.stop(pid)
+      if Process.alive?(pid), do: (try do GenServer.stop(pid) catch (:exit, _ -> :ok) end)
     end)
 
     {pid, agent_name}

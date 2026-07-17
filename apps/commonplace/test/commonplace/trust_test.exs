@@ -139,8 +139,7 @@ defmodule Commonplace.TrustTest do
       })
 
       on_exit(fn ->
-        if old, do: Application.put_env(:commonplace, :data_dir, old),
-          else: Application.delete_env(:commonplace, :data_dir)
+        Application.put_env(:commonplace, :data_dir, old || "tmp/test_data")
 
         Application.delete_env(:commonplace, :trust)
         File.rm_rf!(tmp)
@@ -175,8 +174,7 @@ defmodule Commonplace.TrustTest do
       Application.put_env(:commonplace, :data_dir, tmp)
 
       on_exit(fn ->
-        if old, do: Application.put_env(:commonplace, :data_dir, old),
-          else: Application.delete_env(:commonplace, :data_dir)
+        Application.put_env(:commonplace, :data_dir, old || "tmp/test_data")
 
         File.rm_rf!(tmp)
       end)

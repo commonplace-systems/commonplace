@@ -47,8 +47,8 @@ defmodule Commonplace.Sync.TwoPeerMergeE2ETest do
     {:ok, pid_b} = CommitStore.start_link(data_dir: dir_b, name: name_b)
 
     on_exit(fn ->
-      if Process.alive?(pid_a), do: GenServer.stop(pid_a)
-      if Process.alive?(pid_b), do: GenServer.stop(pid_b)
+      if Process.alive?(pid_a), do: (try do GenServer.stop(pid_a) catch (:exit, _ -> :ok) end)
+      if Process.alive?(pid_b), do: (try do GenServer.stop(pid_b) catch (:exit, _ -> :ok) end)
       File.rm_rf!(dir_a)
       File.rm_rf!(dir_b)
     end)

@@ -26,7 +26,7 @@ defmodule Commonplace.Reflog.CheckpointTimerTest do
     CommitStore.create_chained_commit(store, file_uuid, doc_update)
 
     on_exit(fn ->
-      if Process.alive?(store), do: GenServer.stop(store)
+      if Process.alive?(store), do: (try do GenServer.stop(store) catch (:exit, _ -> :ok) end)
       File.rm_rf!(dir)
     end)
 

@@ -1853,7 +1853,7 @@ defmodule Commonplace.MUD.EngineModuleTest do
 
       bursar_root = UUID.uuid4()
       {:ok, bursar_pid} = Bursar.start_link(root_uuid: bursar_root, store: @store, sweep_interval: 60_000)
-      on_exit(fn -> if Process.alive?(bursar_pid), do: GenServer.stop(bursar_pid) end)
+      on_exit(fn -> if Process.alive?(bursar_pid), do: (try do GenServer.stop(bursar_pid) catch (:exit, _ -> :ok) end) end)
       :ok
     end
 
@@ -2104,7 +2104,7 @@ defmodule Commonplace.MUD.EngineModuleTest do
 
       bursar_root = UUID.uuid4()
       {:ok, bursar_pid} = Bursar.start_link(root_uuid: bursar_root, store: @store, sweep_interval: 60_000)
-      on_exit(fn -> if Process.alive?(bursar_pid), do: GenServer.stop(bursar_pid) end)
+      on_exit(fn -> if Process.alive?(bursar_pid), do: (try do GenServer.stop(bursar_pid) catch (:exit, _ -> :ok) end) end)
       :ok
     end
 

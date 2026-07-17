@@ -64,7 +64,7 @@ defmodule Commonplace.Green.BursarEnforcePersistTest do
     end
 
     {:ok, bursar_pid} = Bursar.start_link(root_uuid: root, store: store, sweep_interval: 60_000)
-    on_exit(fn -> if Process.alive?(bursar_pid), do: GenServer.stop(bursar_pid) end)
+    on_exit(fn -> if Process.alive?(bursar_pid), do: (try do GenServer.stop(bursar_pid) catch (:exit, _ -> :ok) end) end)
 
     %{store: store, node_ctx: node_ctx, node_identity: node_identity, root: root, bursar_pid: bursar_pid}
   end

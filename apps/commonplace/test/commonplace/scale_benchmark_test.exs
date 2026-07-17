@@ -196,7 +196,7 @@ defmodule Commonplace.ScaleBenchmarkTest do
       end)
     end)
 
-    Enum.each(pids, fn {pid, _t} -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+    Enum.each(pids, fn {pid, _t} -> if Process.alive?(pid), do: (try do GenServer.stop(pid) catch (:exit, _ -> :ok) end) end)
     send(test_pid, :done)
   end
 

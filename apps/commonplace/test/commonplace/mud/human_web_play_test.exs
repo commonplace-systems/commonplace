@@ -61,7 +61,7 @@ defmodule Commonplace.MUD.HumanWebPlayTest do
       restore(:data_dir, old_data_dir)
       restore(:trust, old_trust)
       restore(:local_write_gate, old_knob)
-      if Process.alive?(secrets_pid), do: GenServer.stop(secrets_pid)
+      if Process.alive?(secrets_pid), do: (try do GenServer.stop(secrets_pid) catch (:exit, _ -> :ok) end)
       File.rm_rf!(dir)
       File.rm_rf!(secrets_dir)
     end)
@@ -77,6 +77,7 @@ defmodule Commonplace.MUD.HumanWebPlayTest do
     %{store: store, secrets: secrets, node_ctx: node_ctx, ws_root: ws_root, mud_root: mud_root}
   end
 
+  defp restore(:data_dir, nil), do: Application.put_env(:commonplace, :data_dir, "tmp/test_data")
   defp restore(key, nil), do: Application.delete_env(:commonplace, key)
   defp restore(key, v), do: Application.put_env(:commonplace, key, v)
 

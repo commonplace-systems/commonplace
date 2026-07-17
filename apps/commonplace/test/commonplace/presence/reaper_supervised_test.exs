@@ -17,10 +17,7 @@ defmodule Commonplace.Presence.ReaperSupervisedTest do
       prior = Application.get_env(:commonplace, :data_dir)
 
       on_exit(fn ->
-        case prior do
-          nil -> Application.delete_env(:commonplace, :data_dir)
-          val -> Application.put_env(:commonplace, :data_dir, val)
-        end
+        Application.put_env(:commonplace, :data_dir, prior || "tmp/test_data")
       end)
 
       :ok
@@ -60,10 +57,7 @@ defmodule Commonplace.Presence.ReaperSupervisedTest do
       start_supervised!({CommitStore, data_dir: dir, name: store_name})
 
       on_exit(fn ->
-        case prior_data_dir do
-          nil -> Application.delete_env(:commonplace, :data_dir)
-          val -> Application.put_env(:commonplace, :data_dir, val)
-        end
+        Application.put_env(:commonplace, :data_dir, prior_data_dir || "tmp/test_data")
 
         File.rm_rf!(dir)
       end)

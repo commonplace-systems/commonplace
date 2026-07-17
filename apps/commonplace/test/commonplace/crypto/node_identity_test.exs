@@ -20,8 +20,7 @@ defmodule Commonplace.Crypto.NodeIdentityTest do
     Application.put_env(:commonplace, :data_dir, dir)
 
     on_exit(fn ->
-      if old, do: Application.put_env(:commonplace, :data_dir, old),
-        else: Application.delete_env(:commonplace, :data_dir)
+      Application.put_env(:commonplace, :data_dir, old || "tmp/test_data")
 
       File.rm_rf!(dir)
     end)

@@ -79,8 +79,8 @@ defmodule Commonplace.MUD.PlayerSessionIdentityTest do
         v -> Application.put_env(:commonplace, :local_write_gate, v)
       end
 
-      if Process.alive?(secrets_pid), do: GenServer.stop(secrets_pid)
-      if Process.alive?(bursar_pid), do: GenServer.stop(bursar_pid)
+      if Process.alive?(secrets_pid), do: (try do GenServer.stop(secrets_pid) catch (:exit, _ -> :ok) end)
+      if Process.alive?(bursar_pid), do: (try do GenServer.stop(bursar_pid) catch (:exit, _ -> :ok) end)
       File.rm_rf!(dir)
       File.rm_rf!(secrets_dir)
     end)

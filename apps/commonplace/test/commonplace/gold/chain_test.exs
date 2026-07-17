@@ -28,8 +28,25 @@ defmodule Commonplace.Gold.ChainTest do
     SecretStore.set("signing_identity", "test-gold-identity")
 
     on_exit(fn ->
-      if is_pid(store) and Process.alive?(store), do: GenServer.stop(store)
-      if is_pid(secret_store) and Process.alive?(secret_store), do: GenServer.stop(secret_store)
+      # CX-c93b: the store is `start_link`'d to the test process, so when the
+      # test finishes the store already receives an EXIT `:shutdown` down the
+      # link — `on_exit` (a separate process) races that termination, so an
+      # `alive?`-then-`stop` can still catch the store mid-`:shutdown` and
+      # `GenServer.stop/1` (which expects `:normal`) re-raises it as a
+      # teardown failure. The teardown only needs the process GONE; tolerate
+      # it exiting with any reason.
+      stop_quietly = fn pid ->
+        if is_pid(pid) and Process.alive?(pid) do
+          try do
+            GenServer.stop(pid)
+          catch
+            :exit, _ -> :ok
+          end
+        end
+      end
+
+      stop_quietly.(store)
+      stop_quietly.(secret_store)
       # Clean up secrets so we don't affect other tests
       SecretStore.delete("signing_key:default")
       SecretStore.delete("signing_pub:default")

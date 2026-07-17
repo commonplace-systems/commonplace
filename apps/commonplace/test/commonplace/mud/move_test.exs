@@ -26,7 +26,7 @@ defmodule Commonplace.MUD.MoveTest do
         sweep_interval: 60_000
       )
 
-    on_exit(fn -> if Process.alive?(bpid), do: GenServer.stop(bpid) end)
+    on_exit(fn -> if Process.alive?(bpid), do: (try do GenServer.stop(bpid) catch (:exit, _ -> :ok) end) end)
 
     %{
       store: store_name,

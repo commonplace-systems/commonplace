@@ -47,14 +47,26 @@ defmodule Commonplace.GitBridge.SupervisorTest do
       File.rm_rf!(repo_dir2)
       File.rm_rf!(workspace_dir)
 
-      if prev_data_dir do
-        Application.put_env(:commonplace, :data_dir, prev_data_dir)
-      else
-        Application.delete_env(:commonplace, :data_dir)
-      end
+      Application.put_env(:commonplace, :data_dir, prev_data_dir || "tmp/test_data")
     end)
 
     %{store: store_name, data_dir: data_dir, repo_dir1: repo_dir1, repo_dir2: repo_dir2}
+  end
+
+  # CX-c93b: each `sup` is `start_link`'d to the test process, so when the
+  # test finishes the supervisor already receives EXIT `:shutdown` down the
+  # link — `on_exit` (a separate process) races that termination, and an
+  # `alive?`-then-`stop` can still catch the supervisor mid-`:shutdown`,
+  # which `Supervisor.stop/1` (expecting `:normal`) re-raises as a teardown
+  # failure. The teardown only needs it GONE; tolerate any exit reason.
+  defp stop_quietly(pid) do
+    if is_pid(pid) and Process.alive?(pid) do
+      try do
+        Supervisor.stop(pid)
+      catch
+        :exit, _ -> :ok
+      end
+    end
   end
 
   test "add_mapping writes git_bridges.json and starts a Server child", %{
@@ -63,7 +75,7 @@ defmodule Commonplace.GitBridge.SupervisorTest do
     repo_dir1: repo_dir1
   } do
     {:ok, sup} = GitBridgeSupervisor.start_link(data_dir: data_dir, store: store)
-    on_exit(fn -> if Process.alive?(sup), do: Supervisor.stop(sup) end)
+    on_exit(fn -> stop_quietly(sup) end)
 
     mapping = %{mount_uuid: "mount-uuid", repo_dir: repo_dir1, interval_ms: 3_600_000}
     assert {:ok, _} = GitBridgeSupervisor.add_mapping(sup, mapping, data_dir: data_dir, store: store)
@@ -79,7 +91,7 @@ defmodule Commonplace.GitBridge.SupervisorTest do
 
   test "duplicate repo_dir mapping is rejected", %{store: store, data_dir: data_dir, repo_dir1: repo_dir1} do
     {:ok, sup} = GitBridgeSupervisor.start_link(data_dir: data_dir, store: store)
-    on_exit(fn -> if Process.alive?(sup), do: Supervisor.stop(sup) end)
+    on_exit(fn -> stop_quietly(sup) end)
 
     mapping = %{mount_uuid: "mount-uuid", repo_dir: repo_dir1, interval_ms: 3_600_000}
     assert {:ok, _} = GitBridgeSupervisor.add_mapping(sup, mapping, data_dir: data_dir, store: store)
@@ -99,7 +111,7 @@ defmodule Commonplace.GitBridge.SupervisorTest do
     repo_dir2: repo_dir2
   } do
     {:ok, sup} = GitBridgeSupervisor.start_link(data_dir: data_dir, store: store)
-    on_exit(fn -> if Process.alive?(sup), do: Supervisor.stop(sup) end)
+    on_exit(fn -> stop_quietly(sup) end)
 
     mapping = %{
       mount_uuid: "mount-uuid",
@@ -137,7 +149,7 @@ defmodule Commonplace.GitBridge.SupervisorTest do
     :ok = Supervisor.stop(sup1)
 
     {:ok, sup2} = GitBridgeSupervisor.start_link(data_dir: data_dir, store: store)
-    on_exit(fn -> if Process.alive?(sup2), do: Supervisor.stop(sup2) end)
+    on_exit(fn -> stop_quietly(sup2) end)
 
     children = Supervisor.which_children(sup2)
     assert length(children) == 1
@@ -158,7 +170,7 @@ defmodule Commonplace.GitBridge.SupervisorTest do
     repo_dir1: repo_dir1
   } do
     {:ok, sup} = GitBridgeSupervisor.start_link(data_dir: data_dir, store: store)
-    on_exit(fn -> if Process.alive?(sup), do: Supervisor.stop(sup) end)
+    on_exit(fn -> stop_quietly(sup) end)
 
     mapping = %{mount_uuid: "mount-uuid", repo_dir: repo_dir1, interval_ms: 3_600_000}
     assert {:ok, _} = GitBridgeSupervisor.add_mapping(sup, mapping, data_dir: data_dir, store: store)

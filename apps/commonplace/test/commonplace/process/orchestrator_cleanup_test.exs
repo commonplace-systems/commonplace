@@ -10,9 +10,10 @@ defmodule Commonplace.Process.OrchestratorCleanupTest do
     File.mkdir_p!(dir)
     store_name = :"commit_store_cleanup_#{:rand.uniform(1_000_000)}"
     start_supervised!({CommitStore, data_dir: dir, name: store_name})
+    old_data_dir = Application.get_env(:commonplace, :data_dir)
     Application.put_env(:commonplace, :data_dir, dir)
     on_exit(fn ->
-      Application.delete_env(:commonplace, :data_dir)
+      Application.put_env(:commonplace, :data_dir, old_data_dir || "tmp/test_data")
       File.rm_rf!(dir)
     end)
     Process.flag(:trap_exit, true)

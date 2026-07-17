@@ -65,7 +65,7 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
         v -> Application.put_env(:commonplace, :trust, v)
       end
 
-      if Process.alive?(bursar_pid), do: GenServer.stop(bursar_pid)
+      if Process.alive?(bursar_pid), do: (try do GenServer.stop(bursar_pid) catch (:exit, _ -> :ok) end)
       File.rm_rf!(dir)
     end)
 

@@ -46,11 +46,7 @@ defmodule Commonplace.MUD.SessionViewTest do
     Application.put_env(:commonplace, :data_dir, dir)
 
     on_exit(fn ->
-      if is_nil(old_data_dir) do
-        Application.delete_env(:commonplace, :data_dir)
-      else
-        Application.put_env(:commonplace, :data_dir, old_data_dir)
-      end
+      Application.put_env(:commonplace, :data_dir, old_data_dir || "tmp/test_data")
 
       File.rm_rf!(dir)
     end)

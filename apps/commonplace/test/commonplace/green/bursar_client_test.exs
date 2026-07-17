@@ -26,7 +26,7 @@ defmodule Commonplace.Green.BursarClientTest do
         sweep_interval: 60_000
       )
 
-    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+    on_exit(fn -> if Process.alive?(pid), do: (try do GenServer.stop(pid) catch (:exit, _ -> :ok) end) end)
 
     %{bursar: name}
   end

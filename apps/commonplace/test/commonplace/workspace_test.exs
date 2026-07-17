@@ -11,10 +11,7 @@ defmodule Commonplace.WorkspaceTest do
       Application.put_env(:commonplace, :data_dir, dir)
 
       on_exit(fn ->
-        case prior do
-          nil -> Application.delete_env(:commonplace, :data_dir)
-          val -> Application.put_env(:commonplace, :data_dir, val)
-        end
+        Application.put_env(:commonplace, :data_dir, prior || "tmp/test_data")
 
         File.rm_rf!(dir)
       end)
@@ -50,10 +47,7 @@ defmodule Commonplace.WorkspaceTest do
       Application.put_env(:commonplace, :data_dir, dir)
 
       on_exit(fn ->
-        case prior do
-          nil -> Application.delete_env(:commonplace, :data_dir)
-          val -> Application.put_env(:commonplace, :data_dir, val)
-        end
+        Application.put_env(:commonplace, :data_dir, prior || "tmp/test_data")
 
         File.rm_rf!(dir)
       end)

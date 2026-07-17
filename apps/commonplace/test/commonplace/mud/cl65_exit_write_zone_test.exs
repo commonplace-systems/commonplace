@@ -60,6 +60,7 @@ defmodule Commonplace.MUD.Cl65ExitWriteZoneTest do
     %{store: store, root: root, home: home, citizen: citizen, cids: cids}
   end
 
+  defp restore(:data_dir, nil), do: Application.put_env(:commonplace, :data_dir, "tmp/test_data")
   defp restore(k, nil), do: Application.delete_env(:commonplace, k)
   defp restore(k, v), do: Application.put_env(:commonplace, k, v)
 

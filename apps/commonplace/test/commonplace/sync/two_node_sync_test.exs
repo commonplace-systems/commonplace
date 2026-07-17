@@ -14,8 +14,8 @@ defmodule Commonplace.Sync.TwoNodeSyncTest do
     {:ok, store_b} = CommitStore.start_link(data_dir: dir_b, name: :node_b_store)
 
     on_exit(fn ->
-      if Process.alive?(store_a), do: GenServer.stop(store_a)
-      if Process.alive?(store_b), do: GenServer.stop(store_b)
+      if Process.alive?(store_a), do: (try do GenServer.stop(store_a) catch (:exit, _ -> :ok) end)
+      if Process.alive?(store_b), do: (try do GenServer.stop(store_b) catch (:exit, _ -> :ok) end)
       File.rm_rf!(dir_a)
       File.rm_rf!(dir_b)
     end)

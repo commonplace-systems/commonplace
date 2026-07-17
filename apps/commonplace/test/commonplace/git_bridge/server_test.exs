@@ -29,11 +29,7 @@ defmodule Commonplace.GitBridge.ServerTest do
       File.rm_rf!(repo_dir)
       File.rm_rf!(workspace_dir)
 
-      if prev_data_dir do
-        Application.put_env(:commonplace, :data_dir, prev_data_dir)
-      else
-        Application.delete_env(:commonplace, :data_dir)
-      end
+      Application.put_env(:commonplace, :data_dir, prev_data_dir || "tmp/test_data")
     end)
 
     %{store: store_name, repo_dir: repo_dir, workspace_dir: workspace_dir}

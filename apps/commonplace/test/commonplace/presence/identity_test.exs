@@ -346,7 +346,7 @@ defmodule Commonplace.Presence.IdentityTest do
       {:ok, pid} = SecretStore.start_link(data_dir: dir, name: name)
 
       on_exit(fn ->
-        if Process.alive?(pid), do: GenServer.stop(pid)
+        if Process.alive?(pid), do: (try do GenServer.stop(pid) catch (:exit, _ -> :ok) end)
         File.rm_rf!(dir)
       end)
 
@@ -402,7 +402,7 @@ defmodule Commonplace.Presence.IdentityTest do
       {:ok, pid} = SecretStore.start_link(data_dir: dir, name: name)
 
       on_exit(fn ->
-        if Process.alive?(pid), do: GenServer.stop(pid)
+        if Process.alive?(pid), do: (try do GenServer.stop(pid) catch (:exit, _ -> :ok) end)
         File.rm_rf!(dir)
       end)
 

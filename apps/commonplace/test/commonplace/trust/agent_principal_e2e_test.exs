@@ -70,7 +70,7 @@ defmodule Commonplace.Trust.AgentPrincipalE2ETest do
 
     on_exit(fn ->
       Application.delete_env(:commonplace, :trust)
-      if Process.alive?(secrets_pid), do: GenServer.stop(secrets_pid)
+      if Process.alive?(secrets_pid), do: (try do GenServer.stop(secrets_pid) catch (:exit, _ -> :ok) end)
       File.rm_rf!(dir)
     end)
 

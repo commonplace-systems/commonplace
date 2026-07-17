@@ -85,7 +85,7 @@ defmodule Commonplace.MUD.BotFullCitizenshipTest do
 
     on_exit(fn ->
       Bot.stop("regcitizen")
-      if Process.alive?(secrets_pid), do: GenServer.stop(secrets_pid)
+      if Process.alive?(secrets_pid), do: (try do GenServer.stop(secrets_pid) catch (:exit, _ -> :ok) end)
 
       for {k, v} <- old do
         if is_nil(v),

@@ -58,7 +58,7 @@ defmodule Commonplace.MUD.BotPresenceCertTest do
         sweep_interval: 60_000
       )
 
-    on_exit(fn -> if Process.alive?(bursar_pid), do: GenServer.stop(bursar_pid) end)
+    on_exit(fn -> if Process.alive?(bursar_pid), do: (try do GenServer.stop(bursar_pid) catch (:exit, _ -> :ok) end) end)
 
     root_uuid = UUID.uuid4()
     update = Encoding.encode_update(Schema.new_schema())
@@ -72,7 +72,7 @@ defmodule Commonplace.MUD.BotPresenceCertTest do
 
     on_exit(fn ->
       Bot.stop("cert-bot")
-      if Process.alive?(secrets_pid), do: GenServer.stop(secrets_pid)
+      if Process.alive?(secrets_pid), do: (try do GenServer.stop(secrets_pid) catch (:exit, _ -> :ok) end)
       File.rm_rf!(secrets_dir)
     end)
 
@@ -154,8 +154,8 @@ defmodule Commonplace.MUD.BotPresenceCertTest do
     assert :sys.get_state(pid).cert_cids == []
 
     Bot.stop("bare-bot")
-    if Process.alive?(bursar_pid), do: GenServer.stop(bursar_pid)
-    if Process.alive?(bare_pid), do: GenServer.stop(bare_pid)
+    if Process.alive?(bursar_pid), do: (try do GenServer.stop(bursar_pid) catch (:exit, _ -> :ok) end)
+    if Process.alive?(bare_pid), do: (try do GenServer.stop(bare_pid) catch (:exit, _ -> :ok) end)
     File.rm_rf!(dir)
   end
 end

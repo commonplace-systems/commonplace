@@ -234,10 +234,7 @@ defmodule Commonplace.MUD.SeedWorldTest do
       Application.put_env(:commonplace, :local_write_gate, :enforce)
 
       on_exit(fn ->
-        case old_data_dir do
-          nil -> Application.delete_env(:commonplace, :data_dir)
-          v -> Application.put_env(:commonplace, :data_dir, v)
-        end
+        Application.put_env(:commonplace, :data_dir, old_data_dir || "tmp/test_data")
 
         case old_trust do
           nil -> Application.delete_env(:commonplace, :trust)

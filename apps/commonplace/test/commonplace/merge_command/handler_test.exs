@@ -334,7 +334,7 @@ defmodule Commonplace.MergeCommand.HandlerTest do
       store_b = :"mcmd_b_store_#{:rand.uniform(1_000_000)}"
       {:ok, pid_b} = CommitStore.start_link(data_dir: dir_b, name: store_b)
       on_exit(fn ->
-        if Process.alive?(pid_b), do: GenServer.stop(pid_b)
+        if Process.alive?(pid_b), do: (try do GenServer.stop(pid_b) catch (:exit, _ -> :ok) end)
         File.rm_rf!(dir_b)
       end)
 
@@ -355,7 +355,7 @@ defmodule Commonplace.MergeCommand.HandlerTest do
         )
 
       on_exit(fn ->
-        if Process.alive?(handler_b_pid), do: GenServer.stop(handler_b_pid)
+        if Process.alive?(handler_b_pid), do: (try do GenServer.stop(handler_b_pid) catch (:exit, _ -> :ok) end)
       end)
 
       topic_b = "commands/determ_b_doc/merge"

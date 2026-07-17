@@ -54,7 +54,7 @@ defmodule Commonplace.MUD.CXc6phAliasRankingTest do
       Commonplace.Green.Bursar.start_link(root_uuid: root_uuid, store: store, sweep_interval: 60_000)
 
     on_exit(fn ->
-      if Process.alive?(bursar_pid), do: GenServer.stop(bursar_pid)
+      if Process.alive?(bursar_pid), do: (try do GenServer.stop(bursar_pid) catch (:exit, _ -> :ok) end)
       File.rm_rf!(dir)
     end)
 

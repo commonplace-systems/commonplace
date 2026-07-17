@@ -11,7 +11,7 @@ defmodule Commonplace.Process.SecretResolutionTest do
     {:ok, store} = SecretStore.start_link(data_dir: dir, name: name)
 
     on_exit(fn ->
-      if Process.alive?(store), do: GenServer.stop(store)
+      if Process.alive?(store), do: (try do GenServer.stop(store) catch (:exit, _ -> :ok) end)
       File.rm_rf!(dir)
     end)
 

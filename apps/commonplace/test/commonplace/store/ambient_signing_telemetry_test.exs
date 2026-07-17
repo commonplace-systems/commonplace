@@ -39,8 +39,7 @@ defmodule Commonplace.Store.AmbientSigningTelemetryTest do
     start_supervised!({CommitStore, data_dir: dir, name: name})
 
     on_exit(fn ->
-      if old, do: Application.put_env(:commonplace, :data_dir, old),
-        else: Application.delete_env(:commonplace, :data_dir)
+      Application.put_env(:commonplace, :data_dir, old || "tmp/test_data")
 
       File.rm_rf!(dir)
     end)

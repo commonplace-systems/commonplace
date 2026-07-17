@@ -31,7 +31,7 @@ defmodule Commonplace.Green.BursarTest do
        name: name] ++ opts
     )
     on_exit(fn ->
-      if Process.alive?(pid), do: GenServer.stop(pid)
+      if Process.alive?(pid), do: (try do GenServer.stop(pid) catch (:exit, _ -> :ok) end)
     end)
     {pid, name}
   end
@@ -387,7 +387,7 @@ defmodule Commonplace.Green.BursarTest do
       {:ok, pid2} =
         Bursar.start_link(root_uuid: ctx.root, store: ctx.store,
           name: :ephem_dst, sweep_interval: 60_000)
-      on_exit(fn -> if Process.alive?(pid2), do: GenServer.stop(pid2) end)
+      on_exit(fn -> if Process.alive?(pid2), do: (try do GenServer.stop(pid2) catch (:exit, _ -> :ok) end) end)
 
       # The lease is GONE after reload (not carried across, not re-clocked) —
       # and immediately re-acquirable by anyone (re-election), no TTL wait.
@@ -408,7 +408,7 @@ defmodule Commonplace.Green.BursarTest do
       {:ok, pid2} =
         Bursar.start_link(root_uuid: ctx.root, store: ctx.store,
           name: :perm_dst, sweep_interval: 60_000)
-      on_exit(fn -> if Process.alive?(pid2), do: GenServer.stop(pid2) end)
+      on_exit(fn -> if Process.alive?(pid2), do: (try do GenServer.stop(pid2) catch (:exit, _ -> :ok) end) end)
 
       assert {:held, %{holder: "alice"}} =
                Bursar.query(:perm_dst, "sword-abcd1234.obj")
@@ -432,7 +432,7 @@ defmodule Commonplace.Green.BursarTest do
       {:ok, pid2} =
         Bursar.start_link(root_uuid: ctx.root, store: ctx.store,
           name: :invariant_dst, sweep_interval: 50)
-      on_exit(fn -> if Process.alive?(pid2), do: GenServer.stop(pid2) end)
+      on_exit(fn -> if Process.alive?(pid2), do: (try do GenServer.stop(pid2) catch (:exit, _ -> :ok) end) end)
       restarted_at = System.monotonic_time(:millisecond)
 
       assert {:ok, %{holder: "bob"}} =
@@ -547,7 +547,7 @@ defmodule Commonplace.Green.BursarTest do
       {:ok, pid2} =
         Bursar.start_link(root_uuid: ctx.root, store: ctx.store,
           name: :"scale_dst_#{:rand.uniform(1_000_000)}")
-      on_exit(fn -> if Process.alive?(pid2), do: GenServer.stop(pid2) end)
+      on_exit(fn -> if Process.alive?(pid2), do: (try do GenServer.stop(pid2) catch (:exit, _ -> :ok) end) end)
 
       assert map_size(Bursar.list_tokens(pid2)) == 200
     end

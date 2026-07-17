@@ -107,7 +107,7 @@ defmodule Commonplace.Store.SnapshotOpTest do
       name_b = :"det_store_#{:erlang.unique_integer([:positive])}"
       {:ok, pid_b} = CommitStore.start_link(data_dir: dir_b, name: name_b)
       on_exit(fn ->
-        if Process.alive?(pid_b), do: GenServer.stop(pid_b)
+        if Process.alive?(pid_b), do: (try do GenServer.stop(pid_b) catch (:exit, _ -> :ok) end)
         File.rm_rf!(dir_b)
       end)
 
@@ -293,7 +293,7 @@ defmodule Commonplace.Store.SnapshotOpTest do
       name2 = :"recv_store_#{:erlang.unique_integer([:positive])}"
       {:ok, pid2} = CommitStore.start_link(data_dir: dir2, name: name2)
       on_exit(fn ->
-        if Process.alive?(pid2), do: GenServer.stop(pid2)
+        if Process.alive?(pid2), do: (try do GenServer.stop(pid2) catch (:exit, _ -> :ok) end)
         File.rm_rf!(dir2)
       end)
 
