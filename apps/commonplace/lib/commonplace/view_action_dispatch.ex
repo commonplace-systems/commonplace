@@ -1225,8 +1225,30 @@ defmodule Commonplace.ViewActionDispatch do
          context,
          opts
        ) do
+    # §6 REORDER (cp-plan #8403): AUTHORIZATION (step 4) runs BEFORE the
+    # staleness re-derivation (step 3) now. Three reasons: (a) an
+    # unauthorized invoker gets the honest "not authorized" refusal
+    # instead of a downstream write-gate error; (b) we don't run a
+    # write-heavy re-derivation (scratch fork + merge) on behalf of
+    # someone who can't accept; (c) — the mandatory one — the stale path
+    # COMMITS an auto-refreshed preview, so checking authz first stops an
+    # unauthorized invoker from causing writes to the PR doc via accept.
+    # No writes happen before this gate.
+    {identity_uuid, pub} = principal_identity(context)
+
+    if Trust.writer_authorized?(identity_uuid, pub, [], target_uuid, Trust.config(), CommitStoreClient) do
+      accept_authorized(pr_uuid, doc, content, source_uuid, target_uuid, context, opts)
+    else
+      {:error, "you are not authorized to accept into the target"}
+    end
+  end
+
+  # Post-authorization (§6 steps 3→5). The invoker is authorized to write
+  # the target, so the staleness re-derivation's own writes (scratch fork,
+  # and the stale-path auto-refresh commit) are legitimate.
+  defp accept_authorized(pr_uuid, doc, content, source_uuid, target_uuid, context, opts) do
     case derive_preview(source_uuid, target_uuid, context, opts) do
-      {:ok, %{preview_body: preview_body, result_hash: fresh_hash}} ->
+      {:ok, %{preview_body: preview_body}} ->
         handle_accept_staleness(
           pr_uuid,
           doc,
@@ -1235,8 +1257,7 @@ defmodule Commonplace.ViewActionDispatch do
           target_uuid,
           context,
           opts,
-          preview_body,
-          fresh_hash
+          preview_body
         )
 
       # CX-pr7.3b: the shared preview guard (ancestry re-check +
@@ -1268,25 +1289,48 @@ defmodule Commonplace.ViewActionDispatch do
          target_uuid,
          context,
          opts,
-         preview_body,
-         fresh_hash
+         preview_body
        ) do
-    case extract_committed_result_hash(content) do
-      {:ok, ^fresh_hash} ->
-        # Fresh: the committed preview is exactly what accepting now
-        # would produce. Proceed to §6 steps 4/5 (authorize, then the
-        # REAL signed merge into target_uuid — never the scratch copy
-        # `derive_preview/3` used).
-        do_accept_merge(pr_uuid, doc, content, source_uuid, target_uuid, context, opts)
+    # §7.4b (cp-plan #8403): the staleness comparand is the reviewer-
+    # VISIBLE preview CONTENT, not the doc's self-declared <result-hash>.
+    # A hash-vs-hash check only proves the projected TEXT is fresh; it
+    # does NOT protect what the acceptor actually READ — an attacker can
+    # leave <result-hash> honest but hand-edit the displayed <diff>/
+    # <projected-result>/summary, so the reviewer approves benign text
+    # while the real merge lands malicious content (what-you-see ≠
+    # what-you-get, defeating the review-integrity property this feature
+    # exists for). Comparand = the committed preview body with the
+    # volatile/informational fields (scratch-head, result-hash) excluded,
+    # vs the freshly-rendered body with the same exclusions. Any tamper
+    # with what the reviewer saw → mismatch → the SAME stale path. The
+    # determinism pin (§7.3) guarantees the fresh render is byte-stable
+    # over exactly these non-volatile fields, so this is a comparand
+    # swap, not new machinery.
+    fresh_comparand = preview_comparand(preview_body)
+
+    case extract_committed_preview_body(content) do
+      {:ok, committed_body} when committed_body != :placeholder ->
+        if preview_comparand(committed_body) == fresh_comparand do
+          # WYSIWYG: what the acceptor reviewed IS what accepting produces.
+          # Proceed to the REAL signed merge into target_uuid (never the
+          # scratch copy derive_preview used).
+          do_accept_merge(pr_uuid, doc, content, source_uuid, target_uuid, context, opts)
+        else
+          auto_refresh_and_refuse(pr_uuid, doc, content, preview_body, opts)
+        end
 
       _stale_or_missing ->
-        case commit_preview_section(pr_uuid, doc, content, preview_body, opts) do
-          :ok ->
-            {:error, "preview is stale — refreshed; review and accept again"}
+        auto_refresh_and_refuse(pr_uuid, doc, content, preview_body, opts)
+    end
+  end
 
-          {:error, reason} ->
-            {:error, "pr_accept failed to auto-refresh stale preview: #{sanitize_write_error(reason)}"}
-        end
+  defp auto_refresh_and_refuse(pr_uuid, doc, content, preview_body, opts) do
+    case commit_preview_section(pr_uuid, doc, content, preview_body, opts) do
+      :ok ->
+        {:error, "preview is stale — refreshed; review and accept again"}
+
+      {:error, reason} ->
+        {:error, "pr_accept failed to auto-refresh stale preview: #{sanitize_write_error(reason)}"}
     end
   end
 
@@ -1302,19 +1346,37 @@ defmodule Commonplace.ViewActionDispatch do
   defp sanitize_write_error({:trust_rejected, _reason}), do: "write refused"
   defp sanitize_write_error(other), do: inspect(other)
 
-  # Pull the `<result-hash>` value out of the CURRENTLY COMMITTED
-  # `<section id="preview">` region. `:error` covers both "no preview
-  # section" (shouldn't happen post-§7.2 template) and "still the
-  # placeholder" (`pr_refresh_preview` never ran) — both fold into the
-  # same stale path in `handle_accept_staleness/9`.
-  defp extract_committed_result_hash(content) do
-    case Regex.run(
-           ~r/<section id="preview">.*?<result-hash>([^<]*)<\/result-hash>.*?<\/section>/s,
-           content
-         ) do
-      [_, hash] -> {:ok, hash}
-      nil -> :error
+  # Pull the inner body of the CURRENTLY COMMITTED `<section id="preview">`
+  # region. Returns `{:ok, :placeholder}` when the section still holds the
+  # §7.2 placeholder (`pr_refresh_preview` never ran — no real preview to
+  # compare against), and `:error` when there is no preview section at all
+  # (shouldn't happen post-§7.2 template). Both fold into the stale path.
+  defp extract_committed_preview_body(content) do
+    case Regex.run(~r/<section id="preview">(.*?)<\/section>/s, content) do
+      [_, body] ->
+        if String.contains?(body, "<result-hash>"),
+          do: {:ok, body},
+          else: {:ok, :placeholder}
+
+      nil ->
+        :error
     end
+  end
+
+  # §7.4b comparand: the reviewer-VISIBLE preview content, with the two
+  # volatile/informational fields stripped so they never move the
+  # comparison — `<scratch-head>` (a fresh scratch-fork uuid's commit id,
+  # different every derive) and `<result-hash>` (deterministic, but ruled
+  # informational-only by cp-plan #8403 — the review-integrity check is on
+  # the DISPLAYED text, not a self-declared digest). What remains is the
+  # merge summary + conflicts + diffs + projected-result — exactly what
+  # the acceptor read, and byte-stable across derives (§7.3 determinism
+  # pin). Direct string comparison (stronger than a hash — no collision
+  # surface; both bodies are already in hand).
+  defp preview_comparand(body) do
+    body
+    |> String.replace(~r/<scratch-head\b[^>]*>.*?<\/scratch-head>/s, "")
+    |> String.replace(~r/<result-hash>.*?<\/result-hash>/s, "")
   end
 
   # §6 step 4 (authorization at the dispatch call-site): the commitless
@@ -1328,34 +1390,29 @@ defmodule Commonplace.ViewActionDispatch do
   # bar the real merge's write-gate re-checks at commit time (step 5),
   # just checked first for a clean sanitized refusal instead of a
   # buried write-gate error.
+  # §6 step 5 (signed merge). Authorization (step 4) already passed in
+  # `accept_pr/6` — the write-gate re-checks it at commit time anyway
+  # (belt-and-suspenders), but running the REAL merge only after the
+  # WYSIWYG staleness check means we merge exactly the content the
+  # acceptor reviewed. The ACCEPTOR's signing_context (captured in `opts`
+  # by `signing_opts/1` at the dispatch clause) threads through, so every
+  # commit the merge produces carries the acceptor's cert and the local
+  # write-gate evaluates their ACTUAL authority under enforce (closes the
+  # unsigned-merge-commit gap §7.1's signing plumb exists to fix).
   defp do_accept_merge(pr_uuid, doc, content, source_uuid, target_uuid, context, opts) do
-    {identity_uuid, pub} = principal_identity(context)
-    cfg = Trust.config()
+    case Merge.merge(source_uuid, target_uuid, CommitStoreClient, opts) do
+      {:ok, report} ->
+        finish_accept(pr_uuid, doc, content, report, context, opts)
 
-    if Trust.writer_authorized?(identity_uuid, pub, [], target_uuid, cfg, CommitStoreClient) do
-      # §6 step 5 (signed merge): the ACCEPTOR's own signing_context
-      # (already captured in `opts` by `signing_opts/1` at the top of
-      # the `pr_accept` dispatch clause) threads through, so every
-      # commit this merge produces carries the acceptor's cert and the
-      # local write-gate evaluates the acceptor's ACTUAL authority under
-      # enforce (closes the unsigned-merge-commit gap `merge/4`'s
-      # signing plumb — §7.1 — exists to fix).
-      case Merge.merge(source_uuid, target_uuid, CommitStoreClient, opts) do
-        {:ok, report} ->
-          finish_accept(pr_uuid, doc, content, report, context, opts)
+      # §6 step 6 (sanitized returns): the 7.1b write-refusal tuple names
+      # the doc uuid and raw trust reason — sanitize both away here
+      # (CX-3x5a) rather than let a raw `{:untrusted_signer, _}`-shaped
+      # tuple leak to a flash message or MCP response text.
+      {:error, {:write_refused, _doc_uuid, _reason}} ->
+        {:error, "pr_accept failed: write refused for target"}
 
-        # §6 step 6 (sanitized returns): the 7.1b write-refusal tuple
-        # names the doc uuid and raw trust reason — sanitize both away
-        # here (CX-3x5a) rather than let a raw `{:untrusted_signer, _}`-
-        # shaped tuple leak to a flash message or MCP response text.
-        {:error, {:write_refused, _doc_uuid, _reason}} ->
-          {:error, "pr_accept failed: write refused for target"}
-
-        {:error, reason} ->
-          {:error, "pr_accept failed to merge: #{inspect(reason)}"}
-      end
-    else
-      {:error, "you are not authorized to accept into the target"}
+      {:error, reason} ->
+        {:error, "pr_accept failed to merge: #{inspect(reason)}"}
     end
   end
 

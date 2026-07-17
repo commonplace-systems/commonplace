@@ -175,7 +175,14 @@ defmodule Commonplace.PrAcceptTest do
       assert target_content(a_uuid) =~ "second edit, now stale"
     end
 
-    test "FORGED-PREVIEW (§7.7 headline test): hand-edited result_hash in the PR doc is refused, target untouched",
+    # §7.4b HEADLINE (cp-plan #8403): the WYSIWYG attack — forge what the
+    # reviewer SEES (the displayed <projected-result> text), leave
+    # <result-hash> UNTOUCHED (honest). A hash-vs-hash check would wave
+    # this through (the hash still matches a fresh derive); the comparand
+    # is the displayed content, so the tampered display ≠ fresh render →
+    # refuse. This is the property the whole feature exists for:
+    # what-you-review IS what-you-merge.
+    test "FORGED-DISPLAY (§7.4b headline): tampering the shown preview text (honest hash) is refused, target untouched",
          %{signing_context: ctx} do
       a_uuid = create_leaf_doc("original content")
       {:ok, b_uuid} = CommandRouter.fork(a_uuid)
@@ -184,10 +191,53 @@ defmodule Commonplace.PrAcceptTest do
       pr_uuid = open_pr(ctx, a_uuid, b_uuid)
       refresh_pr(pr_uuid, ctx)
 
-      # Directly hand-edit the PR doc's recorded result_hash to a
-      # valid-looking (but wrong) hex string — an attacker forging the
-      # committed preview to make a stale/different merge look reviewed.
-      forged_hash = String.duplicate("a", 64)
+      {:ok, doc} = DocBuilder.reconstruct_doc(CommitStoreClient, pr_uuid)
+      old_content = Commonplace.Document.ContentType.get_content(doc)
+
+      # Swap the DISPLAYED projected result to benign-looking text while
+      # leaving <result-hash> exactly as the honest refresh wrote it.
+      assert old_content =~ "<projected-result>"
+
+      new_content =
+        Regex.replace(
+          ~r/<projected-result>.*?<\/projected-result>/s,
+          old_content,
+          "<projected-result>\ninnocent-looking reviewed content\n</projected-result>",
+          global: false
+        )
+
+      refute new_content == old_content, "the display swap must actually change the doc"
+
+      doc = Commonplace.Document.Diff.apply_diff(doc, old_content, new_content)
+      update = Yelixer.Encoding.encode_update(doc)
+      CommitStoreClient.create_chained_commit(CommitStoreClient, pr_uuid, update)
+
+      # Accept re-derives and compares the reviewer-visible content →
+      # the forged display ≠ fresh render → refuse via the stale path.
+      assert {:error, "preview is stale — refreshed; review and accept again"} =
+               accept_pr(pr_uuid, ctx)
+
+      # REAL target untouched; auto-refresh restored the honest display
+      # (the forged text is gone).
+      assert target_content(a_uuid) == "original content"
+      refreshed_content = pr_doc_content(pr_uuid)
+      refute refreshed_content =~ "innocent-looking reviewed content"
+    end
+
+    # §7.4b COROLLARY: the <result-hash> is informational-only now, so
+    # forging it ALONE — with the displayed content honest and current —
+    # must NOT block a legitimate accept (what-you-see still equals
+    # what-you-get; the honest merge produces exactly the reviewed text).
+    # This pins that the comparand is the DISPLAY, not the digest — the
+    # inverse guarantee to the headline above.
+    test "§7.4b: a forged result_hash alone (honest, current display) does NOT block accept — hash is informational",
+         %{signing_context: ctx} do
+      a_uuid = create_leaf_doc("original content")
+      {:ok, b_uuid} = CommandRouter.fork(a_uuid)
+      {:ok, _} = CommandRouter.write(b_uuid, "edited in the fork")
+
+      pr_uuid = open_pr(ctx, a_uuid, b_uuid)
+      refresh_pr(pr_uuid, ctx)
 
       {:ok, doc} = DocBuilder.reconstruct_doc(CommitStoreClient, pr_uuid)
       old_content = Commonplace.Document.ContentType.get_content(doc)
@@ -196,29 +246,18 @@ defmodule Commonplace.PrAcceptTest do
         Regex.replace(
           ~r/<result-hash>[^<]*<\/result-hash>/,
           old_content,
-          "<result-hash>#{forged_hash}</result-hash>"
+          "<result-hash>#{String.duplicate("a", 64)}</result-hash>"
         )
 
       doc = Commonplace.Document.Diff.apply_diff(doc, old_content, new_content)
       update = Yelixer.Encoding.encode_update(doc)
       CommitStoreClient.create_chained_commit(CommitStoreClient, pr_uuid, update)
 
-      target_before = target_content(a_uuid)
-
-      # pr_accept re-derives the preview fresh and compares against the
-      # (now-forged) committed hash — mismatch, so it refuses via the
-      # stale path rather than trusting the forged value.
-      assert {:error, "preview is stale — refreshed; review and accept again"} =
-               accept_pr(pr_uuid, ctx)
-
-      # The REAL target is untouched.
-      assert target_content(a_uuid) == target_before
-      assert target_before == "original content"
-
-      # The doc no longer carries the forged hash (auto-refresh
-      # overwrote the preview section with a freshly re-derived one).
-      refreshed_content = pr_doc_content(pr_uuid)
-      refute refreshed_content =~ forged_hash
+      # The display is honest and B is unchanged since the refresh, so the
+      # WYSIWYG comparand matches → accept proceeds and merges the honest
+      # reviewed content into the target.
+      assert {:ok, :tree_mutation, %{result: :merged}} = accept_pr(pr_uuid, ctx)
+      assert target_content(a_uuid) =~ "edited in the fork"
     end
 
     test "declined PR can't be accepted", %{signing_context: ctx} do
@@ -334,26 +373,17 @@ defmodule Commonplace.PrAcceptTest do
         public_key: pub
       }
 
-      # §6 ORDERING FLAG (surfaced by §7.3c, cp-plan to rule): §6 runs
-      # staleness re-derivation (step 3) BEFORE authorization (step 4).
-      # Now that the scratch fork is signed (§7.3c), an unauthorized
-      # stranger's re-derivation writes (fork + merge scratch) are
-      # themselves gate-refused under enforce, so accept trips the
-      # staleness/auto-refresh branch and refuses THERE — before reaching
-      # the explicit authz message. Both are SAFE refusals; the security
-      # invariants below (target untouched, PR still open) hold either
-      # way. The exact message depends on whether cp-plan moves authz
-      # ahead of staleness. Assert the refusal is one of the two safe
-      # shapes, not the specific string.
-      assert {:error, msg} = accept_pr(pr_uuid, stranger_ctx)
+      # §6 REORDER (cp-plan #8403): authorization now runs BEFORE the
+      # staleness re-derivation, so an unauthorized acceptor gets the
+      # clean authz refusal deterministically — AND, the load-bearing
+      # reason, no PR-doc write (auto-refresh) can happen before the
+      # authz gate.
+      assert {:error, "you are not authorized to accept into the target"} =
+               accept_pr(pr_uuid, stranger_ctx)
 
-      assert msg in [
-               "you are not authorized to accept into the target",
-               "pr_accept failed to auto-refresh stale preview: write refused"
-             ],
-             "unauthorized accept must be a SAFE refusal, got: #{inspect(msg)}"
-
-      # The security invariants — these are the real proof, message aside.
+      # Security invariants: target untouched, PR still open, and (the
+      # reorder's point) the PR doc's preview section was NOT rewritten
+      # by an unauthorized accept.
       assert target_content(a_uuid) == "original content"
 
       content = pr_doc_content(pr_uuid)

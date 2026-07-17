@@ -253,7 +253,18 @@ defmodule Commonplace.PrPreviewReadGuardTest do
 
       accept_context = %{view_uuid: pr_uuid, signing_context: ctx, source: "test"}
 
-      assert {:error, @not_readable_msg} =
+      # §6 REORDER (cp-plan #8403): authorization now runs BEFORE the
+      # preview read-gate. Under strict trust this acceptor is not a
+      # trusted writer of the (swapped) target, so accept refuses at
+      # AUTHZ — which is a STRICTLY STRONGER outcome for the exfiltration
+      # threat than the read-gate: an unauthorized invoker never reaches
+      # derive_preview at all, so no scratch fork, no projection, no write
+      # of the foreign source's text can happen. (The preview read-gate
+      # still fires directly on the refresh path — tests (a)/(b) above —
+      # and remains the accept-path defense for an AUTHORIZED target-
+      # writer who stamps an unreadable foreign source.) The invariants
+      # below are the real proof either way: no merge, no exfiltration.
+      assert {:error, "you are not authorized to accept into the target"} =
                ViewActionDispatch.dispatch("pr_accept", accept_context)
 
       # Refused BEFORE merge: the real original target untouched, the

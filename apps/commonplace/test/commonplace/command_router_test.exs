@@ -154,10 +154,15 @@ defmodule Commonplace.CommandRouterTest do
       Application.put_env(:commonplace, :local_write_gate, :enforce)
 
       on_exit(fn ->
-        case old_data_dir do
-          nil -> Application.delete_env(:commonplace, :data_dir)
-          v -> Application.put_env(:commonplace, :data_dir, v)
-        end
+        # CX-c93b hygiene: restore :data_dir to the test-config default
+        # ("tmp/test_data") rather than delete_env when it was nil — a
+        # deleted :data_dir surfaces as literal `nil` to a later file's
+        # `Trust.config_from_file` -> `Path.join(nil, "trust.json")` crash
+        # (the seed-dependent contamination class). This fixture's own
+        # nil-safe restore keeps it from PROPAGATING an already-nil value;
+        # it doesn't fix the legacy originators (that's CX-c93b's deferred
+        # sweep), but a NEW fixture shouldn't add another propagator.
+        Application.put_env(:commonplace, :data_dir, old_data_dir || "tmp/test_data")
 
         case old_trust do
           nil -> Application.delete_env(:commonplace, :trust)
