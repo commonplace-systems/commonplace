@@ -172,6 +172,36 @@ defmodule Commonplace.Bd.Workspace do
     end
   end
 
+  # Bd P2 Slice S4: the custody-token path namespace. Bursar tokens
+  # share the document path namespace (see `Commonplace.Green.Bursar`'s
+  # moduledoc), so a claim path is prefixed under a `__`-namespaced
+  # segment to avoid ever colliding with a real doc path — the same
+  # convention `__bursar.json`/`__bursar.log` themselves use, and the
+  # one GitBridge/Sync.Agent already skip on `__`-prefix.
+  @claim_prefix "__bd_claim__"
+
+  @doc """
+  The stable custody-token path for ticket `id` — 1:1 with the ticket,
+  derived from its issue-dir uuid (not the id string) so a renamed
+  prefix or id-mint scheme can't shift custody out from under a held
+  token. Returns `{:ok, path}` or `:error` if the ticket doesn't
+  resolve to a directory.
+  """
+  def claim_path(root_uuid, id, store \\ CommitStoreClient) do
+    case issue_dir_uuid(root_uuid, id, store) do
+      {:ok, dir_uuid} -> {:ok, @claim_prefix <> "/" <> dir_uuid}
+      :error -> :error
+    end
+  end
+
+  @doc "Bang variant of `claim_path/3` — raises if the ticket doesn't resolve."
+  def claim_path!(root_uuid, id, store \\ CommitStoreClient) do
+    case claim_path(root_uuid, id, store) do
+      {:ok, path} -> path
+      :error -> raise "claim_path: no such ticket #{inspect(id)}"
+    end
+  end
+
   @doc "Looks up a label dir by name."
   def label_dir_uuid(root_uuid, name, store \\ CommitStoreClient) do
     labels = labels_dir_uuid(root_uuid, store)

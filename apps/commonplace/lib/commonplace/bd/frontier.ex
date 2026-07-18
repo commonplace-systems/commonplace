@@ -56,6 +56,8 @@ defmodule Commonplace.Bd.Frontier do
 
   alias Commonplace.Bd.Issue
   alias Commonplace.Bd.Schemas.Issue, as: IssueStruct
+  alias Commonplace.Bd.Workspace
+  alias Commonplace.Green.BursarClient
   alias Commonplace.Store.CommitStoreClient
 
   @scope "/bd/issues/**"
@@ -89,6 +91,37 @@ defmodule Commonplace.Bd.Frontier do
     issues_by_id = load_issues_by_id(root_uuid, store)
     {_ready_ids, blocked_ids} = partition(issues_by_id)
     to_sorted_issues(blocked_ids, issues_by_id)
+  end
+
+  @doc """
+  Bd P2 Slice S4 — the READY set minus tickets whose custody token is
+  currently HELD. Two axes, deliberately not conflated: `compute/2` /
+  `ready_walk/2` above answer readiness (status + `needs`, the S2
+  frontier); this answers "ready AND uncustodied" by reading the green
+  possession TOKEN via `BursarClient.query/2` — never `claimed_by`,
+  which is a display mirror only (see `Commonplace.Bd.Workspace.claim_path/3`
+  and the `ticket_claim`/`ticket_release` verbs in
+  `Commonplace.ViewActionDispatch`). The frontier itself
+  (`compute/2`/`partition/1`) is untouched, per the design ruling that
+  it must never read `claimed_by` or custody.
+
+  A ticket whose claim path doesn't resolve (shouldn't happen for a
+  ready ticket, since readiness already required the ticket to exist)
+  is treated as uncustodied rather than raising, so a transient lookup
+  race degrades to "still eligible" rather than crashing the walk.
+  """
+  def eligible(root_uuid, store \\ CommitStoreClient) do
+    ready_walk(root_uuid, store)
+    |> Enum.reject(&claimed?(root_uuid, &1.id, store))
+  end
+
+  defp claimed?(root_uuid, id, store) do
+    with {:ok, path} <- Workspace.claim_path(root_uuid, id, store),
+         {:held, _} <- BursarClient.query(path) do
+      true
+    else
+      _ -> false
+    end
   end
 
   @doc """

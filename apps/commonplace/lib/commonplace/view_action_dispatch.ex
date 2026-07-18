@@ -679,6 +679,86 @@ defmodule Commonplace.ViewActionDispatch do
     {:error, "ticket_close requires args map with ticket (+ optional witnesses)"}
   end
 
+  # Bd P2 Slice S4: `ticket_claim` / `ticket_release` — claim/release via
+  # the GREEN possession token (`Commonplace.Green.Bursar`'s exclusive
+  # custody lock), not presence. Claiming does NOT move the ticket (it
+  # stays in `/bd/issues/`); it takes the custody token keyed on the
+  # ticket's stable claim path (`Commonplace.Bd.Workspace.claim_path/3`,
+  # derived from the issue-dir uuid, 1:1 with the ticket) and mirrors the
+  # winning holder into `claimed_by` — a DISPLAY field only. The token is
+  # authoritative: `Commonplace.Bd.Frontier.eligible/2` reads the token,
+  # never `claimed_by`, and a stale `claimed_by` left over from a
+  # force-released or expired token does not block a fresh claim (see
+  # `Frontier.eligible/2`'s moduledoc).
+  #
+  # The claimer identity is resolved server-side from
+  # `context.signing_context` (`resolve_principal/1`, the same helper
+  # `pr_open`/`pr_comment` use) — NEVER a client-supplied arg, so a
+  # caller can't claim a ticket "as" someone else. `authenticated_as` is
+  # passed to the Bursar so the effective holder is bound to that
+  # authenticated principal (CX-tdkq.32) — the same spoof-proofing
+  # `Commonplace.MUD.World`/`HolderMove` rely on.
+  defp do_dispatch("ticket_claim", %{args: %{"ticket" => ticket_id}} = context)
+       when is_binary(ticket_id) do
+    claimer = resolve_principal(context)
+
+    with {:ok, root_uuid} <- Workspace.root_uuid(),
+         {:ok, _issue} <- load_bd_issue(root_uuid, ticket_id),
+         {:ok, claim_path} <- resolve_claim_path(root_uuid, ticket_id) do
+      case Commonplace.Green.BursarClient.acquire(Commonplace.Green.Bursar, claim_path, claimer,
+             authenticated_as: claimer
+           ) do
+        {:ok, _token_info} ->
+          mirror_claimed_by(root_uuid, ticket_id, claimer, context, "ticket_claim")
+
+        {:denied, %{holder: other}} ->
+          {:error, "ticket already claimed by #{other}"}
+
+        {:error, _reason} ->
+          {:error, "ticket_claim failed: could not acquire claim token"}
+      end
+    else
+      {:error, reason} when is_binary(reason) -> {:error, reason}
+      {:error, reason} -> {:error, "ticket_claim failed: #{inspect(reason)}"}
+    end
+  end
+
+  defp do_dispatch("ticket_claim", _context) do
+    {:error, "ticket_claim requires args map with ticket"}
+  end
+
+  defp do_dispatch("ticket_release", %{args: %{"ticket" => ticket_id}} = context)
+       when is_binary(ticket_id) do
+    claimer = resolve_principal(context)
+
+    with {:ok, root_uuid} <- Workspace.root_uuid(),
+         {:ok, _issue} <- load_bd_issue(root_uuid, ticket_id),
+         {:ok, claim_path} <- resolve_claim_path(root_uuid, ticket_id) do
+      case Commonplace.Green.BursarClient.release(Commonplace.Green.Bursar, claim_path, claimer,
+             authenticated_as: claimer
+           ) do
+        :ok ->
+          mirror_claimed_by(root_uuid, ticket_id, nil, context, "ticket_release")
+
+        {:error, {:not_holder, other}} ->
+          {:error, "ticket is claimed by #{other}, not you"}
+
+        {:error, :not_held} ->
+          {:error, "ticket is not claimed"}
+
+        {:error, _reason} ->
+          {:error, "ticket_release failed: could not release claim token"}
+      end
+    else
+      {:error, reason} when is_binary(reason) -> {:error, reason}
+      {:error, reason} -> {:error, "ticket_release failed: #{inspect(reason)}"}
+    end
+  end
+
+  defp do_dispatch("ticket_release", _context) do
+    {:error, "ticket_release requires args map with ticket"}
+  end
+
   # CX-2qjd: outline actions route through Commonplace.Outline.* — the
   # SAME mutation implementation OutlineLive's keybinds call directly
   # (outliner.md §5: one implementation, two entry points). The agent's
@@ -775,6 +855,44 @@ defmodule Commonplace.ViewActionDispatch do
     case Commonplace.Bd.Workspace.issue_dir_uuid(root_uuid, ticket_id) do
       {:ok, dir_uuid} -> Commonplace.Bd.Schemas.load_issue(dir_uuid)
       :error -> {:error, "ticket not found: #{ticket_id}"}
+    end
+  end
+
+  # `ticket_claim`/`ticket_release` helpers (Bd P2 S4) — resolve the
+  # ticket's stable claim path and land the guarded `claimed_by` mirror
+  # write through the same `WriteGuard.check/5` chokepoint every other
+  # protected-field write goes through (`allow: [:claimed_by]`).
+  defp resolve_claim_path(root_uuid, ticket_id) do
+    case Commonplace.Bd.Workspace.claim_path(root_uuid, ticket_id) do
+      {:ok, path} -> {:ok, path}
+      :error -> {:error, "ticket not found: #{ticket_id}"}
+    end
+  end
+
+  defp mirror_claimed_by(root_uuid, ticket_id, claimed_by, context, action) do
+    with {:ok, issue} <- load_bd_issue(root_uuid, ticket_id) do
+      changes = %{claimed_by: claimed_by}
+
+      case Commonplace.Bd.WriteGuard.check(issue, changes, root_uuid, CommitStoreClient,
+             allow: [:claimed_by]
+           ) do
+        :ok ->
+          opts = signing_opts(context)
+
+          case Commonplace.Bd.Issue.update(root_uuid, ticket_id, changes, CommitStoreClient, opts) do
+            {:ok, _updated} ->
+              {:ok, :tree_mutation, %{action: action, ticket: ticket_id, claimed_by: claimed_by}}
+
+            {:error, reason} ->
+              {:error, "#{action} failed: #{inspect(reason)}"}
+          end
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
+      {:error, reason} when is_binary(reason) -> {:error, reason}
+      {:error, reason} -> {:error, "#{action} failed: #{inspect(reason)}"}
     end
   end
 
