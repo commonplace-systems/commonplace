@@ -149,8 +149,18 @@ defmodule Commonplace.ViewActionDispatch do
     {:ok, :ui_transition, %{action: "history"}}
   end
 
-  defp do_dispatch("fork", %{view_uuid: uuid}) when is_binary(uuid) do
-    case CommandRouter.fork(uuid) do
+  # CX-ajdx: the wiki `fork` <action> must sign BOTH commits it lands — the
+  # fork's genesis (CommandRouter.fork/3, §7.3c signing plumb) AND the
+  # root-schema attach — with the invoking session's signing_context
+  # (`signing_opts(context)`, the same server-resolved plumbing pr_open uses),
+  # or under enforce both are refused `:unsigned` and web fork is broken. The
+  # signer still needs root-write authority for the attach to land (node/
+  # trusted identity in the demo); a citizen-scoped fork target is a separate
+  # concern, out of this fix.
+  defp do_dispatch("fork", %{view_uuid: uuid} = context) when is_binary(uuid) do
+    opts = signing_opts(context)
+
+    case CommandRouter.fork(CommandRouter, uuid, opts) do
       {:ok, new_uuid} when is_binary(new_uuid) ->
         short_uuid = String.slice(new_uuid, 0, 8)
         attach_name = "fork-" <> short_uuid
@@ -163,7 +173,7 @@ defmodule Commonplace.ViewActionDispatch do
         }
 
         details =
-          case attach_to_root_schema(new_uuid, attach_name) do
+          case attach_to_root_schema(new_uuid, attach_name, opts) do
             :ok ->
               Map.merge(base, %{attached: true, attached_as: attach_name})
 
@@ -931,14 +941,23 @@ defmodule Commonplace.ViewActionDispatch do
   # any failure along the way. The fork itself already landed before
   # this is called, so callers treat an error here as "forked but not
   # attached" rather than a hard failure.
-  defp attach_to_root_schema(new_uuid, attach_name) do
+  defp attach_to_root_schema(new_uuid, attach_name, opts) do
     with {:ok, root_uuid} <- Workspace.root_uuid(),
          {:ok, root_doc} <- load_root_schema(root_uuid) do
       updated = Schema.add_file(root_doc, attach_name, new_uuid)
       update_binary = Encoding.encode_update(updated)
 
       try do
-        case CommitStoreClient.create_chained_commit(root_uuid, update_binary) do
+        # CX-ajdx: signed like pr_open's attach_entry (explicit
+        # CommitStoreClient server arg + metadata + opts) so it lands under
+        # enforce; opts carries the invoker's :signing_context.
+        case CommitStoreClient.create_chained_commit(
+               CommitStoreClient,
+               root_uuid,
+               update_binary,
+               %{},
+               opts
+             ) do
           {:error, _} = err -> err
           _commit -> :ok
         end
