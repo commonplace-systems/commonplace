@@ -73,4 +73,47 @@ defmodule Commonplace.Bd.IssueTest do
     {:ok, body} = Issue.description(ctx.root, issue.id, ctx.store)
     assert body == "the body"
   end
+
+  # Slice S1 Part 2: signing_context opts-plumb, mirroring the
+  # byte-compatible pattern of Tree.Merge.merge/4 / Tree.Fork.fork/2 —
+  # default [] reproduces prior (unsigned) behavior for every existing
+  # caller (all the tests above call with 3-4 positional args and no
+  # opts), and passing signing_context: ctx lands a signed commit.
+  test "update threads signing_context through to land a signed commit", ctx do
+    {:ok, issue, dir_uuid} = Issue.create(ctx.root, %{title: "x"}, ctx.store)
+
+    {pub, priv} = Commonplace.Crypto.Signing.generate_keypair()
+
+    signing_context = %Commonplace.Crypto.SigningContext{
+      identity_uuid: "test-issue-updater",
+      private_key: priv,
+      public_key: pub
+    }
+
+    {:ok, updated} =
+      Issue.update(ctx.root, issue.id, %{status: "in_progress"}, ctx.store,
+        signing_context: signing_context
+      )
+
+    assert updated.status == "in_progress"
+
+    {:ok, schema} = Commonplace.Bd.Schemas.load_dir_schema(dir_uuid, ctx.store)
+    {:ok, entry} = Commonplace.Tree.Schema.get_entry(schema, Commonplace.Bd.Schemas.issue_filename())
+    {:ok, commit} = CommitStore.latest_commit(ctx.store, entry.node_id)
+
+    assert is_binary(commit.signature)
+    assert is_binary(commit.signer_id)
+  end
+
+  test "update with no opts stays unsigned (byte-compatible default)", ctx do
+    {:ok, issue, dir_uuid} = Issue.create(ctx.root, %{title: "x"}, ctx.store)
+    {:ok, _updated} = Issue.update(ctx.root, issue.id, %{status: "in_progress"}, ctx.store)
+
+    {:ok, schema} = Commonplace.Bd.Schemas.load_dir_schema(dir_uuid, ctx.store)
+    {:ok, entry} = Commonplace.Tree.Schema.get_entry(schema, Commonplace.Bd.Schemas.issue_filename())
+    {:ok, commit} = CommitStore.latest_commit(ctx.store, entry.node_id)
+
+    assert commit.signature == nil
+    assert commit.signer_id == nil
+  end
 end

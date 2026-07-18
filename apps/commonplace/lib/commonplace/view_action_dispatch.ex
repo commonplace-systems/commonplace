@@ -527,6 +527,96 @@ defmodule Commonplace.ViewActionDispatch do
      "delete_message requires args map with messages_uuid, room, author_path, message_id"}
   end
 
+  # Bd P2 graph-vocabulary lift, Slice S1 Part 4: ticket-mutating verbs
+  # that funnel through `Commonplace.Bd.WriteGuard` before landing a
+  # commit — same shape as `pr_open`/`pr_refresh_preview` above (read
+  # `context.signing_context`, land a signed commit via the plumbed
+  # `Commonplace.Bd.Issue.update/5` opts, return
+  # `{:ok, :tree_mutation, details}` | `{:error, reason_string}`).
+  #
+  # `Commonplace.Bd.*` has no notion of "the workspace root" the way
+  # `pr_open` does (its `root_uuid` is an explicit caller-supplied
+  # parameter in every test/CLI call), so these verbs resolve it the
+  # same way `pr_open`'s `ensure_pulls_dir/1` does: the top-level
+  # `Commonplace.Workspace.root_uuid/0` pointer file, then
+  # `Commonplace.Bd.Workspace.issue_dir_uuid/3` to resolve a ticket id
+  # to its directory.
+  #
+  # `ticket_add_needs`: dependent ticket id + prereq ref (ticket +
+  # optional repo). Exercises ref-type shape checks AND the cycle gate
+  # — `WriteGuard` walks the prereq's local-needs-ancestors to refuse
+  # an edge that would close a cycle back to the dependent.
+  defp do_dispatch("ticket_add_needs", %{args: args} = context) when is_map(args) do
+    with {:ok, ticket_id} <- fetch_arg(args, "ticket"),
+         {:ok, prereq_id} <- fetch_arg(args, "needs_ticket"),
+         {:ok, root_uuid} <- Workspace.root_uuid(),
+         {:ok, issue} <- load_bd_issue(root_uuid, ticket_id) do
+      ref = build_need_ref(prereq_id, Map.get(args, "needs_repo"))
+      new_needs = (issue.needs || []) ++ [ref]
+      changes = %{needs: new_needs}
+
+      case Commonplace.Bd.WriteGuard.check(issue, changes, root_uuid, CommitStoreClient, allow: []) do
+        :ok ->
+          opts = signing_opts(context)
+
+          case Commonplace.Bd.Issue.update(root_uuid, ticket_id, changes, CommitStoreClient, opts) do
+            {:ok, updated} ->
+              {:ok, :tree_mutation,
+               %{action: "ticket_add_needs", ticket: ticket_id, needs: updated.needs}}
+
+            {:error, reason} ->
+              {:error, "ticket_add_needs failed: #{inspect(reason)}"}
+          end
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
+      {:error, reason} when is_binary(reason) -> {:error, reason}
+      {:error, reason} -> {:error, "ticket_add_needs failed: #{inspect(reason)}"}
+    end
+  end
+
+  defp do_dispatch("ticket_add_needs", _context) do
+    {:error, "ticket_add_needs requires args map with ticket + needs_ticket"}
+  end
+
+  # `ticket_update`: ticket id + a map of field changes. `WriteGuard`
+  # is called with `allow: []` — exercises protected-field refusal
+  # (a change touching status/done_witness/claimed_by is refused) and
+  # ref-type checks on any needs/done_witness/claimed_by field in the
+  # same payload.
+  defp do_dispatch("ticket_update", %{args: %{"ticket" => ticket_id, "changes" => changes_map}} = context)
+       when is_binary(ticket_id) and is_map(changes_map) do
+    with {:ok, root_uuid} <- Workspace.root_uuid(),
+         {:ok, issue} <- load_bd_issue(root_uuid, ticket_id) do
+      changes = atomize_ticket_changes(changes_map)
+
+      case Commonplace.Bd.WriteGuard.check(issue, changes, root_uuid, CommitStoreClient, allow: []) do
+        :ok ->
+          opts = signing_opts(context)
+
+          case Commonplace.Bd.Issue.update(root_uuid, ticket_id, changes, CommitStoreClient, opts) do
+            {:ok, updated} ->
+              {:ok, :tree_mutation, %{action: "ticket_update", ticket: ticket_id, issue: updated}}
+
+            {:error, reason} ->
+              {:error, "ticket_update failed: #{inspect(reason)}"}
+          end
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
+      {:error, reason} when is_binary(reason) -> {:error, reason}
+      {:error, reason} -> {:error, "ticket_update failed: #{inspect(reason)}"}
+    end
+  end
+
+  defp do_dispatch("ticket_update", _context) do
+    {:error, "ticket_update requires args map with ticket + changes"}
+  end
+
   # CX-2qjd: outline actions route through Commonplace.Outline.* — the
   # SAME mutation implementation OutlineLive's keybinds call directly
   # (outliner.md §5: one implementation, two entry points). The agent's
@@ -608,6 +698,32 @@ defmodule Commonplace.ViewActionDispatch do
   defp run_outline_action("delete_item", store, uuid, args, opts) do
     with {:ok, id} <- fetch_arg(args, "id"),
          do: Commonplace.Outline.delete_item(store, uuid, id, opts)
+  end
+
+  # --- ticket_add_needs / ticket_update helpers (Bd P2 S1 Part 4) ---
+
+  defp load_bd_issue(root_uuid, ticket_id) do
+    case Commonplace.Bd.Workspace.issue_dir_uuid(root_uuid, ticket_id) do
+      {:ok, dir_uuid} -> Commonplace.Bd.Schemas.load_issue(dir_uuid)
+      :error -> {:error, "ticket not found: #{ticket_id}"}
+    end
+  end
+
+  defp build_need_ref(prereq_id, nil), do: %{"ticket" => prereq_id}
+  defp build_need_ref(prereq_id, ""), do: %{"ticket" => prereq_id}
+  defp build_need_ref(prereq_id, repo) when is_binary(repo), do: %{"ticket" => prereq_id, "repo" => repo}
+
+  # Whitelist of `ticket_update` field names — mirrors
+  # `Commonplace.Bd.Issue.apply_update_field/3`'s explicit clauses
+  # (everything else there falls into `extra`, which this verb
+  # deliberately does not expose). `String.to_existing_atom/1` is safe
+  # here because every name is already a `Schemas.Issue` struct field.
+  @ticket_update_fields ~w(title status priority type owner labels needs done_when done_witness claimed_by legacy_id)
+
+  defp atomize_ticket_changes(map) do
+    map
+    |> Enum.filter(fn {k, _v} -> k in @ticket_update_fields end)
+    |> Enum.into(%{}, fn {k, v} -> {String.to_existing_atom(k), v} end)
   end
 
   defp fetch_arg(args, key) do

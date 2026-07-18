@@ -23,7 +23,11 @@ defmodule Commonplace.Bd.Issue do
   /bd/issues/<id>.iss/ exists with __issue.json + description.txt,
   and stamps `created_at` / `updated_at`.
   """
-  def create(root_uuid, attrs, store \\ CommitStoreClient) do
+  # `opts` (default `[]`) threads `:signing_context` down to every
+  # commit this create issues (issue meta doc, description doc,
+  # comments dir, the issues/ schema attach) — byte-compatible default,
+  # same pattern as `update/5`.
+  def create(root_uuid, attrs, store \\ CommitStoreClient, opts \\ []) do
     {:ok, meta} = Workspace.load_meta(root_uuid, store)
 
     with {:ok, id} <- IdMint.mint_issue_id(root_uuid, meta.prefix, store) do
@@ -39,12 +43,17 @@ defmodule Commonplace.Bd.Issue do
         created_at: Map.get(attrs, :created_at, now),
         updated_at: Map.get(attrs, :updated_at, now),
         labels: Map.get(attrs, :labels, []),
+        needs: Map.get(attrs, :needs, []),
+        done_when: Map.get(attrs, :done_when, "manual"),
+        done_witness: Map.get(attrs, :done_witness, []),
+        claimed_by: Map.get(attrs, :claimed_by),
+        legacy_id: Map.get(attrs, :legacy_id),
         extra: Map.get(attrs, :extra, %{})
       }
 
       description = Map.get(attrs, :description, "")
-      dir_uuid = build_issue_dir(issue, description, store)
-      :ok = add_issue_entry(root_uuid, id, dir_uuid, store)
+      dir_uuid = build_issue_dir(issue, description, store, opts)
+      :ok = add_issue_entry(root_uuid, id, dir_uuid, store, opts)
 
       {:ok, issue, dir_uuid}
     end
@@ -85,7 +94,12 @@ defmodule Commonplace.Bd.Issue do
   semantics under concurrent writes (P3 will lift this to YMap-
   native storage when title-as-YText lands).
   """
-  def update(root_uuid, id, attrs, store \\ CommitStoreClient) do
+  # `opts` (default `[]`) is threaded, untouched, down to
+  # `Schemas.write_text_doc/4` — notably `:signing_context` for
+  # updates that must land as signed commits. Default `[]` reproduces
+  # prior (unsigned) behavior, same byte-compatible pattern as
+  # `Tree.Merge.merge/4` / `Tree.Fork.fork/2`.
+  def update(root_uuid, id, attrs, store \\ CommitStoreClient, opts \\ []) do
     with {:ok, dir_uuid} <- Workspace.issue_dir_uuid(root_uuid, id, store) |> wrap_lookup(),
          {:ok, issue} <- Schemas.load_issue(dir_uuid, store) do
       issue =
@@ -93,22 +107,30 @@ defmodule Commonplace.Bd.Issue do
 
       issue = %{issue | updated_at: now_iso8601()}
 
-      :ok = write_issue_meta(dir_uuid, issue, store)
+      :ok = write_issue_meta(dir_uuid, issue, store, opts)
 
       {:ok, issue}
     end
   end
 
-  @doc "Sets status, closed_at, and closed_reason in one update."
+  @doc """
+  Sets status, closed_at, and closed_reason in one update.
+
+  `opts` carries both `:reason` (the close reason) and
+  `:signing_context` (threaded through to `update/5` for a signed
+  commit) — same keyword list, mirroring how `Tree.Fork`/`Tree.Merge`
+  keep a single `opts` list rather than growing positional arity.
+  """
   def close(root_uuid, id, opts \\ [], store \\ CommitStoreClient) do
     reason = Keyword.get(opts, :reason)
+    signing_opts = Keyword.take(opts, [:signing_context])
     now = now_iso8601()
 
     update(root_uuid, id, %{
       status: "closed",
       closed_at: now,
       closed_reason: reason
-    }, store)
+    }, store, signing_opts)
   end
 
   @doc "Lists every issue currently in the workspace."
@@ -125,14 +147,14 @@ defmodule Commonplace.Bd.Issue do
 
   ## Private
 
-  defp build_issue_dir(%Issue{} = issue, description, store) do
+  defp build_issue_dir(%Issue{} = issue, description, store, opts) do
     dir_uuid = UUID.uuid4()
     dir_doc = Schema.new_schema()
 
     issue_json = Schemas.encode_issue(issue)
-    issue_meta_uuid = Schemas.create_text_doc(issue_json, store)
-    desc_uuid = Schemas.create_text_doc(description, store)
-    comments_uuid = Schemas.create_dir_with_meta(nil, nil, store)
+    issue_meta_uuid = Schemas.create_text_doc(issue_json, store, opts)
+    desc_uuid = Schemas.create_text_doc(description, store, opts)
+    comments_uuid = Schemas.create_dir_with_meta(nil, nil, store, opts)
 
     dir_doc =
       dir_doc
@@ -141,23 +163,23 @@ defmodule Commonplace.Bd.Issue do
       |> Schema.add_directory("comments", comments_uuid)
 
     update = Encoding.encode_update(dir_doc)
-    CommitStoreClient.create_commit(store, dir_uuid, update, nil)
+    CommitStoreClient.create_commit(store, dir_uuid, update, nil, %{}, opts)
     dir_uuid
   end
 
-  defp add_issue_entry(root_uuid, id, child_uuid, store) do
+  defp add_issue_entry(root_uuid, id, child_uuid, store, opts) do
     issues_uuid = Workspace.issues_dir_uuid(root_uuid, store)
     {:ok, schema} = Schemas.load_dir_schema(issues_uuid, store)
     schema = Schema.add_directory(schema, "#{id}.iss", child_uuid)
     update = Encoding.encode_update(schema)
-    CommitStoreClient.create_chained_commit(store, issues_uuid, update)
+    CommitStoreClient.create_chained_commit(store, issues_uuid, update, %{}, opts)
     :ok
   end
 
-  defp write_issue_meta(dir_uuid, %Issue{} = issue, store) do
+  defp write_issue_meta(dir_uuid, %Issue{} = issue, store, opts) do
     {:ok, schema} = Schemas.load_dir_schema(dir_uuid, store)
     {:ok, entry} = Schema.get_entry(schema, Schemas.issue_filename())
-    Schemas.write_text_doc(entry.node_id, Schemas.encode_issue(issue), store)
+    Schemas.write_text_doc(entry.node_id, Schemas.encode_issue(issue), store, opts)
     :ok
   end
 
@@ -169,6 +191,11 @@ defmodule Commonplace.Bd.Issue do
   defp apply_update_field(issue, :closed_at, v), do: %{issue | closed_at: v}
   defp apply_update_field(issue, :closed_reason, v), do: %{issue | closed_reason: v}
   defp apply_update_field(issue, :labels, v) when is_list(v), do: %{issue | labels: v}
+  defp apply_update_field(issue, :needs, v) when is_list(v), do: %{issue | needs: v}
+  defp apply_update_field(issue, :done_when, v), do: %{issue | done_when: v}
+  defp apply_update_field(issue, :done_witness, v) when is_list(v), do: %{issue | done_witness: v}
+  defp apply_update_field(issue, :claimed_by, v), do: %{issue | claimed_by: v}
+  defp apply_update_field(issue, :legacy_id, v), do: %{issue | legacy_id: v}
   defp apply_update_field(issue, key, v) when is_atom(key), do: %{issue | extra: Map.put(issue.extra, Atom.to_string(key), v)}
   defp apply_update_field(issue, key, v) when is_binary(key), do: %{issue | extra: Map.put(issue.extra, key, v)}
 

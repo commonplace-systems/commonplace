@@ -42,7 +42,17 @@ defmodule Commonplace.Bd.Schemas do
               closed_at: nil,
               closed_reason: nil,
               labels: [],
+              # Bd P2 graph-vocabulary lift (Slice S1 Part 1): promoted
+              # out of `extra` so they get first-class encode/decode +
+              # ref-type validation (Commonplace.Bd.WriteGuard).
+              needs: [],
+              done_when: "manual",
+              done_witness: [],
+              claimed_by: nil,
+              legacy_id: nil,
               extra: %{}
+
+    @type need_ref :: %{required(String.t()) => String.t()}
 
     @type t :: %__MODULE__{
             id: String.t(),
@@ -56,6 +66,11 @@ defmodule Commonplace.Bd.Schemas do
             closed_at: String.t() | nil,
             closed_reason: String.t() | nil,
             labels: [String.t()],
+            needs: [need_ref()],
+            done_when: String.t(),
+            done_witness: [String.t()],
+            claimed_by: String.t() | nil,
+            legacy_id: String.t() | nil,
             extra: map()
           }
   end
@@ -158,7 +173,12 @@ defmodule Commonplace.Bd.Schemas do
       "updated_at" => i.updated_at,
       "closed_at" => i.closed_at,
       "closed_reason" => i.closed_reason,
-      "labels" => i.labels
+      "labels" => i.labels,
+      "needs" => i.needs,
+      "done_when" => i.done_when,
+      "done_witness" => i.done_witness,
+      "claimed_by" => i.claimed_by,
+      "legacy_id" => i.legacy_id
     }
 
     Map.merge(base, i.extra) |> Jason.encode!()
@@ -167,7 +187,9 @@ defmodule Commonplace.Bd.Schemas do
   def decode_issue(json) when is_binary(json) do
     case Jason.decode(json) do
       {:ok, m} ->
-        known = ~w(id title status priority type owner created_at updated_at closed_at closed_reason labels)
+        known =
+          ~w(id title status priority type owner created_at updated_at closed_at closed_reason labels needs done_when done_witness claimed_by legacy_id)
+
         extra = Map.drop(m, known)
 
         {:ok,
@@ -183,6 +205,11 @@ defmodule Commonplace.Bd.Schemas do
            closed_at: Map.get(m, "closed_at"),
            closed_reason: Map.get(m, "closed_reason"),
            labels: Map.get(m, "labels", []),
+           needs: Map.get(m, "needs", []),
+           done_when: Map.get(m, "done_when", "manual"),
+           done_witness: Map.get(m, "done_witness", []),
+           claimed_by: Map.get(m, "claimed_by"),
+           legacy_id: Map.get(m, "legacy_id"),
            extra: extra
          }}
 
@@ -413,40 +440,47 @@ defmodule Commonplace.Bd.Schemas do
 
   # ---- Writing ----
 
-  def create_text_doc(json, store \\ CommitStoreClient) when is_binary(json) do
+  def create_text_doc(json, store \\ CommitStoreClient, opts \\ []) when is_binary(json) do
     uuid = UUID.uuid4()
     doc = Doc.new()
     doc = ContentType.create(doc, :text, "metadata")
     doc = if json != "", do: ContentType.insert_text(doc, 0, json), else: doc
     update = Encoding.encode_update(doc)
-    CommitStoreClient.create_commit(store, uuid, update, nil)
+    CommitStoreClient.create_commit(store, uuid, update, nil, %{}, opts)
     uuid
   end
 
-  def write_text_doc(uuid, json, store \\ CommitStoreClient) when is_binary(uuid) and is_binary(json) do
+  # `opts` (default `[]`) is threaded, untouched, to
+  # `CommitStoreClient.create_chained_commit/5` — notably
+  # `:signing_context` for writes that must land as signed commits.
+  # The default `[]` reproduces prior (unsigned) behavior, so every
+  # existing 3-arg caller is unaffected (byte-compatible, same pattern
+  # as `Tree.Merge.merge/4` / `Tree.Fork.fork/2`).
+  def write_text_doc(uuid, json, store \\ CommitStoreClient, opts \\ [])
+      when is_binary(uuid) and is_binary(json) do
     {:ok, doc} = DocBuilder.reconstruct_doc(store, uuid, client_id: WriterHand.for_doc(uuid))
     current = ContentType.get_content(doc) || ""
     doc = if current != "", do: ContentType.delete_text(doc, 0, String.length(current)), else: doc
     doc = if json != "", do: ContentType.insert_text(doc, 0, json), else: doc
     update = Encoding.encode_update(doc)
-    CommitStoreClient.create_chained_commit(store, uuid, update)
+    CommitStoreClient.create_chained_commit(store, uuid, update, %{}, opts)
     :ok
   end
 
-  def create_dir_with_meta(meta_filename, json, store \\ CommitStoreClient) do
+  def create_dir_with_meta(meta_filename, json, store \\ CommitStoreClient, opts \\ []) do
     dir_uuid = UUID.uuid4()
     dir_doc = Schema.new_schema()
 
     dir_doc =
       if json do
-        meta_uuid = create_text_doc(json, store)
+        meta_uuid = create_text_doc(json, store, opts)
         Schema.add_file(dir_doc, meta_filename, meta_uuid)
       else
         dir_doc
       end
 
     update = Encoding.encode_update(dir_doc)
-    CommitStoreClient.create_commit(store, dir_uuid, update, nil)
+    CommitStoreClient.create_commit(store, dir_uuid, update, nil, %{}, opts)
     dir_uuid
   end
 end
