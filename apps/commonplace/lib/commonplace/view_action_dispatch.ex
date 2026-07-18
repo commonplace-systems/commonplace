@@ -617,6 +617,68 @@ defmodule Commonplace.ViewActionDispatch do
     {:error, "ticket_update requires args map with ticket + changes"}
   end
 
+  # Bd P2 Slice S3: `ticket_close` — the ONE status->closed path (S1's
+  # `ticket_update` still refuses `status` unconditionally; there is no
+  # other way to close a ticket). Args: ticket id + `witnesses` (a list
+  # of CANDIDATE proof cids, hex strings — the client proposes proofs,
+  # it never gets to name requirements; the requirement is whatever
+  # `done_when` already says on the ticket).
+  #
+  # Flow: require `status == "open"` -> dispatch on the ticket's OWN
+  # `done_when` (`Commonplace.Bd.CloseGate.validate_witnesses/4`, which
+  # resolves the witness list to write or a sanitized refusal) ->
+  # `WriteGuard.check/5` with `allow: [:status, :done_witness]` (the
+  # gate-exclusivity check every protected-field write goes through) ->
+  # `Issue.close/4` writes `status: "closed"` + `done_witness` +
+  # `closed_at` in ONE commit (one field-bag JSON write — see
+  # `Issue.close/4`'s moduledoc). Close is invoker-signed like every
+  # other ticket-mutating verb (`signing_opts(context)`); v1 has no
+  # separate close-ACL — whoever can write the ticket (signed commit +
+  # enforce-mode trust evaluation) may close it WITH valid witnesses.
+  defp do_dispatch("ticket_close", %{args: %{"ticket" => ticket_id} = args} = context)
+       when is_binary(ticket_id) do
+    witnesses = Map.get(args, "witnesses", [])
+
+    with {:ok, root_uuid} <- Workspace.root_uuid(),
+         {:ok, issue} <- load_bd_issue(root_uuid, ticket_id),
+         :ok <- require_ticket_open(issue),
+         {:ok, done_witness} <-
+           Commonplace.Bd.CloseGate.validate_witnesses(issue.done_when, witnesses, root_uuid, CommitStoreClient) do
+      changes = %{status: "closed", done_witness: done_witness}
+
+      case Commonplace.Bd.WriteGuard.check(issue, changes, root_uuid, CommitStoreClient,
+             allow: [:status, :done_witness]
+           ) do
+        :ok ->
+          close_opts = signing_opts(context) ++ [done_witness: done_witness]
+
+          case Commonplace.Bd.Issue.close(root_uuid, ticket_id, close_opts, CommitStoreClient) do
+            {:ok, updated} ->
+              {:ok, :tree_mutation,
+               %{
+                 action: "ticket_close",
+                 ticket: ticket_id,
+                 status: updated.status,
+                 done_witness: updated.done_witness
+               }}
+
+            {:error, reason} ->
+              {:error, "ticket_close failed: #{inspect(reason)}"}
+          end
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
+      {:error, reason} when is_binary(reason) -> {:error, reason}
+      {:error, reason} -> {:error, "ticket_close failed: #{inspect(reason)}"}
+    end
+  end
+
+  defp do_dispatch("ticket_close", _context) do
+    {:error, "ticket_close requires args map with ticket (+ optional witnesses)"}
+  end
+
   # CX-2qjd: outline actions route through Commonplace.Outline.* — the
   # SAME mutation implementation OutlineLive's keybinds call directly
   # (outliner.md §5: one implementation, two entry points). The agent's
@@ -700,7 +762,14 @@ defmodule Commonplace.ViewActionDispatch do
          do: Commonplace.Outline.delete_item(store, uuid, id, opts)
   end
 
-  # --- ticket_add_needs / ticket_update helpers (Bd P2 S1 Part 4) ---
+  # --- ticket_add_needs / ticket_update / ticket_close helpers (Bd P2 S1 Part 4 / S3) ---
+
+  # `ticket_close`'s status precondition: only an "open" ticket may be
+  # closed (S3's close is the ONE status->closed path; there is no
+  # reopen in v1, so a "closed" or any other status is refused, not
+  # just "closed").
+  defp require_ticket_open(%Commonplace.Bd.Schemas.Issue{status: "open"}), do: :ok
+  defp require_ticket_open(%Commonplace.Bd.Schemas.Issue{}), do: {:error, "ticket is not open"}
 
   defp load_bd_issue(root_uuid, ticket_id) do
     case Commonplace.Bd.Workspace.issue_dir_uuid(root_uuid, ticket_id) do
@@ -1515,8 +1584,23 @@ defmodule Commonplace.ViewActionDispatch do
   # commit the merge produces carries the acceptor's cert and the local
   # write-gate evaluates their ACTUAL authority under enforce (closes the
   # unsigned-merge-commit gap §7.1's signing plumb exists to fix).
+  # Bd P2 Slice S3 (Part E, the pr_merge stamp): the merge commit(s)
+  # this produces are tagged with `metadata: %{kind: :regular, pr_merge:
+  # pr_uuid}` — `:kind` is REQUIRED (`Commit.new` rejects non-empty
+  # kindless metadata) and `:regular` (not `:snapshot`) because this is
+  # an ordinary delta, not a history-collapsing snapshot. Because
+  # `metadata` is content-addressed (`Commit.content_address/4`), the
+  # stamp is bound into the commit id and covered by the acceptor's
+  # signature over that id — unforgeable without the acceptor's key, and
+  # it needs no trust in the (editable) PR doc. `Commonplace.Bd.CloseGate`
+  # requires this stamp (`metadata[:pr_merge]`) before accepting a
+  # `done_when: pr_merge` witness — see its moduledoc for the semantic
+  # gap this closes (exists+on-chain+signed+authorized alone only proves
+  # "some authorized commit landed on target," not "a PR merge landed").
   defp do_accept_merge(pr_uuid, doc, content, source_uuid, target_uuid, context, opts) do
-    case Merge.merge(source_uuid, target_uuid, CommitStoreClient, opts) do
+    merge_opts = Keyword.put(opts, :metadata, %{kind: :regular, pr_merge: pr_uuid})
+
+    case Merge.merge(source_uuid, target_uuid, CommitStoreClient, merge_opts) do
       {:ok, report} ->
         finish_accept(pr_uuid, doc, content, report, context, opts)
 

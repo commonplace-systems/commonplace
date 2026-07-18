@@ -10,6 +10,15 @@ defmodule Commonplace.Tree.Merge do
   entry: `merge/4` (opts default to `[]`, so `merge/3` keeps working
   byte-compatibly), returning `{:ok, %MergeReport{}}`.
 
+  `opts[:metadata]` (Bd P2 Slice S3 pr_merge plumb) is threaded, verbatim,
+  into every merge commit's `metadata` (5th) argument at every
+  `CommitStore.create_commit/6` call site this module owns. Default (no
+  `:metadata` key) stays `%{}` — byte-compatible for every existing caller.
+  `ViewActionDispatch`'s `pr_accept` passes `metadata: %{kind: :regular,
+  pr_merge: pr_uuid}` so its merge commits carry an unforgeable (signed,
+  content-addressed) PR-provenance stamp the close-gate's `pr_merge`
+  `done_when` validator (`Commonplace.Bd.CloseGate`) requires.
+
   ## Provenance lives in the DAG, not a manifest
 
   Forking records no explicit "doc X is a copy of doc Y." The forked copy's
@@ -244,7 +253,14 @@ defmodule Commonplace.Tree.Merge do
              {:ok, latest} <- CommitStore.latest_commit(store, target_uuid) do
           merged_update = Encoding.encode_update(merged_doc)
 
-          case CommitStore.create_commit(store, target_uuid, merged_update, latest.id, %{}, opts) do
+          case CommitStore.create_commit(
+                 store,
+                 target_uuid,
+                 merged_update,
+                 latest.id,
+                 Keyword.get(opts, :metadata, %{}),
+                 opts
+               ) do
             {:error, reason} ->
               {:error, {:write_refused, target_uuid, reason}}
 
@@ -478,7 +494,14 @@ defmodule Commonplace.Tree.Merge do
             commit_result =
               with {:ok, target_latest} <- CommitStore.latest_commit(store, target_uuid),
                    {:ok, source_latest} <- CommitStore.latest_commit(store, source_uuid) do
-                case CommitStore.create_commit(store, target_uuid, schema_update, target_latest.id, %{}, opts) do
+                case CommitStore.create_commit(
+                       store,
+                       target_uuid,
+                       schema_update,
+                       target_latest.id,
+                       Keyword.get(opts, :metadata, %{}),
+                       opts
+                     ) do
                   {:error, reason} ->
                     {:error, {:write_refused, target_uuid, reason}}
 
@@ -637,7 +660,14 @@ defmodule Commonplace.Tree.Merge do
             new_doc = ContentType.insert_text(new_doc, 0, Jason.encode!(filtered))
             update = Encoding.encode_update(new_doc)
 
-            case CommitStore.create_commit(store, entry.node_id, update, latest.id, %{}, opts) do
+            case CommitStore.create_commit(
+                   store,
+                   entry.node_id,
+                   update,
+                   latest.id,
+                   Keyword.get(opts, :metadata, %{}),
+                   opts
+                 ) do
               {:error, reason} -> {:write_refused, entry.node_id, reason}
               _commit -> :ok
             end

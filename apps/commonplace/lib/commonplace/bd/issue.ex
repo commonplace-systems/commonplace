@@ -114,22 +114,38 @@ defmodule Commonplace.Bd.Issue do
   end
 
   @doc """
-  Sets status, closed_at, and closed_reason in one update.
+  Sets status, closed_at, closed_reason, and (Bd P2 Slice S3)
+  done_witness in ONE update — one field-bag JSON write, one commit,
+  so the flip from open to closed is atomic (no window where status
+  reads closed but done_witness hasn't landed yet, or vice versa).
 
-  `opts` carries both `:reason` (the close reason) and
-  `:signing_context` (threaded through to `update/5` for a signed
-  commit) — same keyword list, mirroring how `Tree.Fork`/`Tree.Merge`
-  keep a single `opts` list rather than growing positional arity.
+  `opts` carries `:reason` (the close reason), `:done_witness` (the
+  close-gate's resolved witness list — `[]` for `done_when: "manual"`,
+  `[cid_hex]` for a satisfied `pr_merge` requirement; defaults to `[]`,
+  reproducing prior behavior for every pre-S3 caller that never set
+  done_witness), and `:signing_context` (threaded through to
+  `update/5` for a signed commit) — same keyword list, mirroring how
+  `Tree.Fork`/`Tree.Merge` keep a single `opts` list rather than
+  growing positional arity.
+
+  This function does NOT enforce anything — per this module's
+  moduledoc, `Commonplace.Bd.*` is the library layer. The caller
+  (`ViewActionDispatch`'s `ticket_close` verb) is responsible for
+  calling `Commonplace.Bd.WriteGuard.check/5` with
+  `allow: [:status, :done_witness]` BEFORE calling this, and for
+  resolving `done_witness` via `Commonplace.Bd.CloseGate` first.
   """
   def close(root_uuid, id, opts \\ [], store \\ CommitStoreClient) do
     reason = Keyword.get(opts, :reason)
+    done_witness = Keyword.get(opts, :done_witness, [])
     signing_opts = Keyword.take(opts, [:signing_context])
     now = now_iso8601()
 
     update(root_uuid, id, %{
       status: "closed",
       closed_at: now,
-      closed_reason: reason
+      closed_reason: reason,
+      done_witness: done_witness
     }, store, signing_opts)
   end
 

@@ -250,4 +250,194 @@ defmodule Commonplace.Bd.WriteGuardTest do
                )
     end
   end
+
+  describe "done_when shape validation (Bd P2 S3)" do
+    test "\"manual\" is accepted", ctx do
+      {:ok, a, _} = Issue.create(ctx.root, %{title: "A"}, ctx.store)
+
+      assert :ok =
+               WriteGuard.check(a, %{done_when: "manual"}, ctx.root, ctx.store, allow: [])
+    end
+
+    test "a well-formed pr_merge map is accepted", ctx do
+      {:ok, a, _} = Issue.create(ctx.root, %{title: "A"}, ctx.store)
+
+      assert :ok =
+               WriteGuard.check(
+                 a,
+                 %{done_when: %{"type" => "pr_merge", "target" => UUID.uuid4()}},
+                 ctx.root,
+                 ctx.store,
+                 allow: []
+               )
+    end
+
+    test "a pr_merge map with extra keys is refused", ctx do
+      {:ok, a, _} = Issue.create(ctx.root, %{title: "A"}, ctx.store)
+
+      assert {:error, _} =
+               WriteGuard.check(
+                 a,
+                 %{done_when: %{"type" => "pr_merge", "target" => UUID.uuid4(), "extra" => "x"}},
+                 ctx.root,
+                 ctx.store,
+                 allow: []
+               )
+    end
+
+    test "a pr_merge map with an empty target is refused", ctx do
+      {:ok, a, _} = Issue.create(ctx.root, %{title: "A"}, ctx.store)
+
+      assert {:error, _} =
+               WriteGuard.check(
+                 a,
+                 %{done_when: %{"type" => "pr_merge", "target" => ""}},
+                 ctx.root,
+                 ctx.store,
+                 allow: []
+               )
+    end
+
+    test "an unknown done_when shape is refused", ctx do
+      {:ok, a, _} = Issue.create(ctx.root, %{title: "A"}, ctx.store)
+
+      assert {:error, _} =
+               WriteGuard.check(a, %{done_when: "auto"}, ctx.root, ctx.store, allow: [])
+
+      assert {:error, _} =
+               WriteGuard.check(
+                 a,
+                 %{done_when: %{"type" => "sign_off"}},
+                 ctx.root,
+                 ctx.store,
+                 allow: []
+               )
+    end
+  end
+
+  describe "done_when monotonicity + param-immutability (Bd P2 S3)" do
+    test "manual -> pr_merge (strengthen) is accepted", ctx do
+      {:ok, a, _} = Issue.create(ctx.root, %{title: "A"}, ctx.store)
+      target = UUID.uuid4()
+
+      assert :ok =
+               WriteGuard.check(
+                 a,
+                 %{done_when: %{"type" => "pr_merge", "target" => target}},
+                 ctx.root,
+                 ctx.store,
+                 allow: []
+               )
+    end
+
+    test "pr_merge -> manual (downgrade) is refused", ctx do
+      {:ok, a, _} =
+        Issue.create(ctx.root, %{title: "A", done_when: %{"type" => "pr_merge", "target" => UUID.uuid4()}}, ctx.store)
+
+      assert {:error, reason} =
+               WriteGuard.check(a, %{done_when: "manual"}, ctx.root, ctx.store, allow: [])
+
+      assert reason =~ "downgrad"
+    end
+
+    test "pr_merge(target A) -> pr_merge(target B) (param change) is refused", ctx do
+      target_a = UUID.uuid4()
+      target_b = UUID.uuid4()
+
+      {:ok, a, _} =
+        Issue.create(ctx.root, %{title: "A", done_when: %{"type" => "pr_merge", "target" => target_a}}, ctx.store)
+
+      assert {:error, reason} =
+               WriteGuard.check(
+                 a,
+                 %{done_when: %{"type" => "pr_merge", "target" => target_b}},
+                 ctx.root,
+                 ctx.store,
+                 allow: []
+               )
+
+      assert reason =~ "params"
+    end
+
+    test "pr_merge(target A) -> pr_merge(target A) (no-op) is accepted", ctx do
+      target = UUID.uuid4()
+
+      {:ok, a, _} =
+        Issue.create(ctx.root, %{title: "A", done_when: %{"type" => "pr_merge", "target" => target}}, ctx.store)
+
+      assert :ok =
+               WriteGuard.check(
+                 a,
+                 %{done_when: %{"type" => "pr_merge", "target" => target}},
+                 ctx.root,
+                 ctx.store,
+                 allow: []
+               )
+    end
+
+    test "manual -> manual (no-op) is accepted", ctx do
+      {:ok, a, _} = Issue.create(ctx.root, %{title: "A"}, ctx.store)
+
+      assert :ok = WriteGuard.check(a, %{done_when: "manual"}, ctx.root, ctx.store, allow: [])
+    end
+  end
+
+  describe "post-close freeze (Bd P2 S3)" do
+    test "a closed ticket refuses a done_when write even with allow", ctx do
+      {:ok, a, _} = Issue.create(ctx.root, %{title: "A"}, ctx.store)
+      closed = %{a | status: "closed"}
+
+      assert {:error, reason} =
+               WriteGuard.check(
+                 closed,
+                 %{done_when: %{"type" => "pr_merge", "target" => UUID.uuid4()}},
+                 ctx.root,
+                 ctx.store,
+                 allow: [:done_when]
+               )
+
+      assert reason =~ "frozen"
+    end
+
+    test "a closed ticket refuses a done_witness write even with allow", ctx do
+      {:ok, a, _} = Issue.create(ctx.root, %{title: "A"}, ctx.store)
+      closed = %{a | status: "closed"}
+
+      assert {:error, reason} =
+               WriteGuard.check(
+                 closed,
+                 %{done_witness: ["deadbeef"]},
+                 ctx.root,
+                 ctx.store,
+                 allow: [:done_witness]
+               )
+
+      assert reason =~ "frozen"
+    end
+
+    test "a closed ticket refuses a status write even with allow", ctx do
+      {:ok, a, _} = Issue.create(ctx.root, %{title: "A"}, ctx.store)
+      closed = %{a | status: "closed"}
+
+      assert {:error, reason} =
+               WriteGuard.check(closed, %{status: "open"}, ctx.root, ctx.store, allow: [:status])
+
+      assert reason =~ "frozen"
+    end
+
+    test "a closed ticket still accepts unrelated field writes (e.g. title)", ctx do
+      {:ok, a, _} = Issue.create(ctx.root, %{title: "A"}, ctx.store)
+      closed = %{a | status: "closed"}
+
+      assert :ok =
+               WriteGuard.check(closed, %{title: "renamed"}, ctx.root, ctx.store, allow: [])
+    end
+
+    test "an OPEN ticket is unaffected by the freeze (control)", ctx do
+      {:ok, a, _} = Issue.create(ctx.root, %{title: "A"}, ctx.store)
+
+      assert :ok =
+               WriteGuard.check(a, %{status: "closed"}, ctx.root, ctx.store, allow: [:status])
+    end
+  end
 end

@@ -35,6 +35,23 @@ defmodule Commonplace.Tree.MergeTest do
       assert report.conflicts == []
     end
 
+    test "merge commits carry empty metadata by default (byte-compatible, Bd P2 S3 pr_merge plumb)",
+         %{store: store} do
+      file_uuid = create_text_doc(store, "file.txt", "hello")
+      root_uuid = create_schema(store, %{"file.txt" => {:doc, file_uuid}})
+
+      fork_root = Fork.fork_directory(root_uuid, store)
+      {fork_file_uuid, _} = get_child(store, fork_root, "file.txt")
+      edit_doc(store, fork_file_uuid, " world", 5)
+
+      {:ok, _report} = Merge.merge(fork_root, root_uuid, store)
+
+      assert {:ok, %Commonplace.Store.Commit{metadata: metadata}} =
+               CommitStore.latest_commit(store, file_uuid)
+
+      assert metadata == %{}
+    end
+
     test "merges schema additions", %{store: store} do
       file_uuid = create_text_doc(store, "existing.txt", "existing")
       root_uuid = create_schema(store, %{"existing.txt" => {:doc, file_uuid}})
@@ -477,6 +494,22 @@ defmodule Commonplace.Tree.MergeTest do
                CommitStore.latest_commit(ctx.store, ctx.file_uuid)
 
       assert signer == ctx.node_signer_id
+    end
+
+    test "SUCCEEDS and lands a node-signed commit when merge/4 carries an authorized signing_context and a metadata stamp (Bd P2 S3 pr_merge plumb)",
+         ctx do
+      assert {:ok, report} =
+               Merge.merge(ctx.fork_root, ctx.root_uuid, ctx.store,
+                 signing_context: ctx.node_ctx,
+                 metadata: %{kind: :regular, pr_merge: "fake-pr-uuid"}
+               )
+
+      assert report.merged_docs != []
+
+      assert {:ok, %Commonplace.Store.Commit{metadata: metadata}} =
+               CommitStore.latest_commit(ctx.store, ctx.file_uuid)
+
+      assert metadata == %{kind: :regular, pr_merge: "fake-pr-uuid"}
     end
 
     test "is REFUSED at the write-gate when merge/3 (no opts) is used under enforce", ctx do

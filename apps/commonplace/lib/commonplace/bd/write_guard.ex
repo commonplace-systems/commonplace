@@ -30,6 +30,31 @@ defmodule Commonplace.Bd.WriteGuard do
       close a cycle and the write is refused. Cross-repo entries (with
       `"repo"`) are treated as unwalkable leaves — cycle prevention is
       best-effort/local per the S1 design, not a cross-repo guarantee.
+
+  Bd P2 Slice S3 (the close-gate) adds three more checks, all in THIS
+  chokepoint (never left to `ticket_close` alone), because `done_when`
+  is writable via `ticket_update` too, not just at close:
+
+    * **`done_when` shape** — `"manual"` (string) or exactly
+      `%{"type" => "pr_merge", "target" => <non-empty string>}` (no
+      extra keys). Anything else is refused. v1 has only these two
+      types; a future type extends this validator, not `ticket_close`.
+    * **`done_when` monotonicity (strengthening-only)** — a ladder,
+      `manual(0) < pr_merge(1)`. A write that downgrades (`pr_merge` ->
+      `manual`) is refused. A write that keeps the same `type` but
+      changes its params (e.g. `pr_merge` target A -> target B) is
+      refused too — params are immutable once set, not just
+      monotonic-non-decreasing (there is no total order over two
+      different pr_merge targets, so "same rank, different value" is
+      its own refusal case, not a strengthen). A byte-identical
+      no-op (same type, same params) is always accepted.
+    * **post-close freeze** — once `issue.status == "closed"`,
+      `done_when`, `done_witness`, and `status` itself are frozen:
+      refused regardless of `allow`. A ticket closes once in v1; there
+      is no reopen path. This is checked FIRST (before protected-field
+      `allow`-list enforcement) precisely because it must NOT be
+      bypassable by any caller's `allow` list, unlike the ordinary
+      protected-field gate below.
   """
 
   alias Commonplace.Bd.Schemas
@@ -58,12 +83,36 @@ defmodule Commonplace.Bd.WriteGuard do
       when is_map(changes) and is_binary(root_uuid) do
     allow = Keyword.get(opts, :allow, [])
 
-    with :ok <- check_protected(changes, allow),
+    with :ok <- check_frozen(issue, changes),
+         :ok <- check_protected(changes, allow),
          :ok <- check_ref_types(changes, root_uuid),
+         :ok <- check_done_when_monotonic(issue, changes),
          :ok <- check_cycle(issue, changes, root_uuid, store) do
       :ok
     end
   end
+
+  ## Post-close freeze (S3) — runs BEFORE protected-field enforcement so
+  ## it can never be bypassed by an `allow` list. A closed ticket never
+  ## reopens in v1: `status`, `done_when`, and `done_witness` are frozen
+  ## solid once `issue.status == "closed"`.
+
+  @frozen_after_close [:status, :done_when, :done_witness]
+
+  defp check_frozen(%Issue{status: "closed"}, changes) do
+    changes
+    |> Map.keys()
+    |> Enum.filter(&(&1 in @frozen_after_close))
+    |> case do
+      [] ->
+        :ok
+
+      [field | _] ->
+        {:error, "field #{inspect(field)} is frozen: ticket is closed (no reopen in v1)"}
+    end
+  end
+
+  defp check_frozen(%Issue{}, _changes), do: :ok
 
   ## Protected-field enforcement
 
@@ -86,6 +135,7 @@ defmodule Commonplace.Bd.WriteGuard do
 
   defp check_ref_types(changes, root_uuid) do
     with :ok <- maybe_validate(changes, :needs, &validate_needs_shape(&1, root_uuid)),
+         :ok <- maybe_validate(changes, :done_when, &validate_done_when_shape/1),
          :ok <- maybe_validate(changes, :done_witness, &validate_done_witness/1),
          :ok <- maybe_validate(changes, :claimed_by, &validate_claimed_by/1) do
       :ok
@@ -142,6 +192,31 @@ defmodule Commonplace.Bd.WriteGuard do
     {:error, "needs entry must be a map with a non-empty string \"ticket\" key"}
   end
 
+  ## done_when shape (S3): "manual" (string) or exactly
+  ## %{"type" => "pr_merge", "target" => <non-empty string>} — no extra
+  ## keys. Future done_when types extend this validator (a designer-
+  ## reviewed dispatch plug-point), not `ticket_close`.
+
+  @done_when_keys MapSet.new(["type", "target"])
+
+  defp validate_done_when_shape("manual"), do: :ok
+
+  defp validate_done_when_shape(%{"type" => "pr_merge", "target" => target} = m)
+       when is_binary(target) and target != "" do
+    keys = m |> Map.keys() |> MapSet.new()
+
+    if MapSet.equal?(keys, @done_when_keys) do
+      :ok
+    else
+      {:error, "done_when pr_merge entry must have exactly \"type\" and \"target\" keys"}
+    end
+  end
+
+  defp validate_done_when_shape(_) do
+    {:error,
+     "done_when must be \"manual\" or a map of exactly %{\"type\" => \"pr_merge\", \"target\" => <non-empty string>}"}
+  end
+
   defp validate_done_witness(list) when is_list(list) do
     if Enum.all?(list, &hex_cid?/1) do
       :ok
@@ -165,6 +240,51 @@ defmodule Commonplace.Bd.WriteGuard do
   end
 
   defp validate_claimed_by(_), do: {:error, "claimed_by must be a string or nil"}
+
+  ## done_when monotonicity (S3) — strengthening-only. Runs AFTER shape
+  ## validation (`check_ref_types`), so `new` here is already
+  ## well-formed. A ladder rank: manual(0) < pr_merge(1). A downgrade
+  ## (new rank < old rank) is refused. A same-rank change with DIFFERENT
+  ## params (e.g. pr_merge target A -> target B) is refused too — params
+  ## are immutable once set, not merely non-decreasing (there is no
+  ## meaningful order between two different pr_merge targets). A
+  ## byte-identical no-op is always accepted, checked first so it never
+  ## falls into the same-rank-different-params refusal.
+
+  defp check_done_when_monotonic(%Issue{done_when: old}, changes) do
+    case Map.fetch(changes, :done_when) do
+      {:ok, new} -> validate_done_when_transition(old, new)
+      :error -> :ok
+    end
+  end
+
+  defp validate_done_when_transition(same, same), do: :ok
+
+  defp validate_done_when_transition(old, new) do
+    old_rank = done_when_rank(old)
+    new_rank = done_when_rank(new)
+
+    cond do
+      new_rank < old_rank ->
+        {:error,
+         "done_when cannot be downgraded (#{done_when_label(old)} -> #{done_when_label(new)})"}
+
+      new_rank == old_rank ->
+        {:error,
+         "done_when params cannot be changed once set (#{done_when_label(old)} -> #{done_when_label(new)})"}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp done_when_rank("manual"), do: 0
+  defp done_when_rank(%{"type" => "pr_merge"}), do: 1
+  defp done_when_rank(_), do: -1
+
+  defp done_when_label("manual"), do: "manual"
+  defp done_when_label(%{"type" => type}), do: type
+  defp done_when_label(other), do: inspect(other)
 
   ## Cycle gate
 
