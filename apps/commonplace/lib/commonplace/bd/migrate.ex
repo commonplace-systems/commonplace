@@ -79,21 +79,28 @@ defmodule Commonplace.Bd.Migrate do
   see moduledoc for the confirmed export shape and the `type ==
   "blocks"`-only filter this applies either way.
 
+  `opts` (Bd P2 S5) is threaded down every write on this path —
+  skeleton creation (`Workspace.ensure_bd_dir/3`), each issue dir +
+  entry, and every guarded `needs` edge write — carrying
+  `:signing_context` so the whole import can be node-signed and land
+  under `local_write_gate: :enforce`. Default `[]` is unsigned
+  (permissive) and byte-compatible with every existing caller.
+
   Returns `{:ok, %{imported: n, skipped_closed: n, manifest: [...],
   edges_added: n}}`.
   """
-  def import_from_export(root_uuid, export_jsonl, store \\ CommitStoreClient, deps_jsonl \\ nil) do
+  def import_from_export(root_uuid, export_jsonl, store \\ CommitStoreClient, deps_jsonl \\ nil, opts \\ []) do
     lines =
       export_jsonl
       |> String.split("\n", trim: true)
       |> Enum.map(&Jason.decode!/1)
 
-    {imported_ids, skipped_closed} = import_issues(root_uuid, lines, store)
+    {imported_ids, skipped_closed} = import_issues(root_uuid, lines, store, opts)
 
     edges = collect_edges(lines, deps_jsonl)
     imported_set = MapSet.new(imported_ids)
 
-    {manifest, edges_added} = apply_edges(root_uuid, edges, imported_set, store)
+    {manifest, edges_added} = apply_edges(root_uuid, edges, imported_set, store, opts)
 
     {:ok,
      %{
@@ -139,7 +146,7 @@ defmodule Commonplace.Bd.Migrate do
 
   ## Private — issue import
 
-  defp import_issues(root_uuid, lines, store) do
+  defp import_issues(root_uuid, lines, store, opts) do
     Enum.reduce(lines, {[], 0}, fn raw, {imported_ids, skipped} ->
       status = Map.get(raw, "status", "open")
 
@@ -148,7 +155,7 @@ defmodule Commonplace.Bd.Migrate do
       else
         id = Map.fetch!(raw, "id")
         attrs = to_issue_attrs(raw, status)
-        {:ok, _issue, _dir_uuid} = create_with_fixed_id(root_uuid, id, attrs, store)
+        {:ok, _issue, _dir_uuid} = create_with_fixed_id(root_uuid, id, attrs, store, opts)
         {[id | imported_ids], skipped}
       end
     end)
@@ -179,7 +186,7 @@ defmodule Commonplace.Bd.Migrate do
   # Mirrors Commonplace.Bd.Issue.create/4's internals but with a
   # caller-supplied id (the bd legacy id becomes the ticket id
   # verbatim — this migration does NOT re-mint ids).
-  defp create_with_fixed_id(root_uuid, id, attrs, store) do
+  defp create_with_fixed_id(root_uuid, id, attrs, store, opts) do
     now = DateTime.utc_now() |> DateTime.to_iso8601()
 
     issue = %IssueStruct{
@@ -200,18 +207,18 @@ defmodule Commonplace.Bd.Migrate do
 
     description = Map.get(attrs, :description, "")
 
-    dir_uuid = build_issue_dir(issue, description, store)
-    :ok = add_issue_entry(root_uuid, id, dir_uuid, store)
+    dir_uuid = build_issue_dir(issue, description, store, opts)
+    :ok = add_issue_entry(root_uuid, id, dir_uuid, store, opts)
 
     {:ok, issue, dir_uuid}
   end
 
-  defp build_issue_dir(%IssueStruct{} = issue, description, store) do
+  defp build_issue_dir(%IssueStruct{} = issue, description, store, opts) do
     dir_uuid = UUID.uuid4()
     dir_doc = Schema.new_schema()
-    issue_meta_uuid = Schemas.create_text_doc(Schemas.encode_issue(issue), store)
-    desc_uuid = Schemas.create_text_doc(description, store)
-    comments_uuid = Schemas.create_dir_with_meta(nil, nil, store)
+    issue_meta_uuid = Schemas.create_text_doc(Schemas.encode_issue(issue), store, opts)
+    desc_uuid = Schemas.create_text_doc(description, store, opts)
+    comments_uuid = Schemas.create_dir_with_meta(nil, nil, store, opts)
 
     dir_doc =
       dir_doc
@@ -220,16 +227,16 @@ defmodule Commonplace.Bd.Migrate do
       |> Schema.add_directory("comments", comments_uuid)
 
     update = Yelixer.Encoding.encode_update(dir_doc)
-    CommitStoreClient.create_commit(store, dir_uuid, update, nil)
+    CommitStoreClient.create_commit(store, dir_uuid, update, nil, %{}, opts)
     dir_uuid
   end
 
-  defp add_issue_entry(root_uuid, id, child_uuid, store) do
-    issues_uuid = Workspace.issues_dir_uuid(root_uuid, store)
+  defp add_issue_entry(root_uuid, id, child_uuid, store, opts) do
+    issues_uuid = Workspace.issues_dir_uuid(root_uuid, store, opts)
     {:ok, schema} = Schemas.load_dir_schema(issues_uuid, store)
     schema = Schema.add_directory(schema, "#{id}.iss", child_uuid)
     update = Yelixer.Encoding.encode_update(schema)
-    CommitStoreClient.create_chained_commit(store, issues_uuid, update)
+    CommitStoreClient.create_chained_commit(store, issues_uuid, update, %{}, opts)
     :ok
   end
 
@@ -279,12 +286,12 @@ defmodule Commonplace.Bd.Migrate do
   # set, drop it (C-invariant). Otherwise add {ticket: X} to Y.needs
   # through WriteGuard.check/5; a guard refusal (e.g. a latent bd
   # cycle) is manifested and skipped, never forced.
-  defp apply_edges(root_uuid, edges, imported_set, store) do
+  defp apply_edges(root_uuid, edges, imported_set, store, opts) do
     {manifest, added} =
       Enum.reduce(edges, {[], 0}, fn %{from: x, to: y} = edge, {manifest, added} ->
         cond do
           Map.has_key?(edge, :repo) ->
-            add_edge_through_guard(root_uuid, x, y, store, manifest, added)
+            add_edge_through_guard(root_uuid, x, y, store, opts, manifest, added)
 
           not MapSet.member?(imported_set, x) ->
             {[%{from: x, to: y, reason: :prereq_not_imported} | manifest], added}
@@ -294,21 +301,21 @@ defmodule Commonplace.Bd.Migrate do
             {[%{from: x, to: y, reason: :prereq_not_imported} | manifest], added}
 
           true ->
-            add_edge_through_guard(root_uuid, x, y, store, manifest, added)
+            add_edge_through_guard(root_uuid, x, y, store, opts, manifest, added)
         end
       end)
 
     {Enum.reverse(manifest), added}
   end
 
-  defp add_edge_through_guard(root_uuid, x, y, store, manifest, added) do
+  defp add_edge_through_guard(root_uuid, x, y, store, opts, manifest, added) do
     with {:ok, y_issue} <- Issue.show(root_uuid, y, store) do
       new_needs = (y_issue.needs || []) ++ [%{"ticket" => x}]
       changes = %{needs: new_needs}
 
       case WriteGuard.check(y_issue, changes, root_uuid, store, allow: []) do
         :ok ->
-          {:ok, _} = Issue.update(root_uuid, y, changes, store)
+          {:ok, _} = Issue.update(root_uuid, y, changes, store, opts)
           {manifest, added + 1}
 
         {:error, reason} ->

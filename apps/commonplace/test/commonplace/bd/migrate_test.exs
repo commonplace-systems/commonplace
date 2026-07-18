@@ -2,6 +2,8 @@ defmodule Commonplace.Bd.MigrateTest do
   use ExUnit.Case
 
   alias Commonplace.Bd.{Issue, Migrate}
+  alias Commonplace.Crypto.Signing
+  alias Commonplace.Crypto.SigningContext
   alias Commonplace.Store.CommitStore
   alias Commonplace.Tree.Schema
   alias Yelixer.Encoding
@@ -259,6 +261,123 @@ defmodule Commonplace.Bd.MigrateTest do
       assert MapSet.member?(result.only_in_bd_cli, "CX-phantom")
       refute MapSet.member?(result.only_in_query, "CX-phantom")
       refute MapSet.member?(result.only_in_walk, "CX-phantom")
+    end
+  end
+
+  # Bd P2 S5 — node-signing support for the ticket-DAG migration path,
+  # so the live cutover (which writes into an enforce workspace with NO
+  # /bd/ yet) can create the skeleton + every issue doc + every guarded
+  # edge as signed commits. `root_uuid`/`store` come from the file-level
+  # setup (created BEFORE trust is tightened below, same pattern as
+  # close_gate_test.exs / local_write_gate_test.exs — the gate is only
+  # turned on inside each test, never around fixture setup).
+  describe "enforce mode (Bd P2 S5 signing plumb)" do
+    setup do
+      {pub, priv} = Signing.generate_keypair()
+      identity = "bd-migrate-test-invoker"
+
+      sc = %SigningContext{
+        identity_uuid: identity,
+        private_key: priv,
+        public_key: pub
+      }
+
+      old_trust = Application.get_env(:commonplace, :trust)
+      old_gate = Application.get_env(:commonplace, :local_write_gate)
+
+      Application.put_env(:commonplace, :trust, %{
+        accept_unsigned: false,
+        trusted_identities: %{identity => Signing.encode_key(pub)}
+      })
+
+      Application.put_env(:commonplace, :local_write_gate, :enforce)
+
+      on_exit(fn ->
+        case old_trust do
+          nil -> Application.delete_env(:commonplace, :trust)
+          v -> Application.put_env(:commonplace, :trust, v)
+        end
+
+        case old_gate do
+          nil -> Application.delete_env(:commonplace, :local_write_gate)
+          v -> Application.put_env(:commonplace, :local_write_gate, v)
+        end
+      end)
+
+      %{sc: sc}
+    end
+
+    test "a signed import lands under enforce: skeleton + tickets + edges all pass the gate", ctx do
+      export =
+        jsonl([
+          %{"id" => "CX-sr1", "title" => "ready one", "status" => "open", "priority" => 2, "issue_type" => "task"},
+          %{
+            "id" => "CX-sblocked1",
+            "title" => "blocked one",
+            "status" => "open",
+            "priority" => 2,
+            "issue_type" => "task",
+            "dependencies" => [
+              %{"issue_id" => "CX-sblocked1", "depends_on_id" => "CX-sr1", "type" => "blocks"}
+            ]
+          }
+        ])
+
+      {:ok, result} =
+        Migrate.import_from_export(ctx.root, export, ctx.store, nil, signing_context: ctx.sc)
+
+      assert result.imported == 2
+      assert result.edges_added == 1
+
+      {:ok, issue_r1} = Issue.show(ctx.root, "CX-sr1", ctx.store)
+      assert issue_r1.legacy_id == "CX-sr1"
+
+      {:ok, issue_blocked1} = Issue.show(ctx.root, "CX-sblocked1", ctx.store)
+      assert Enum.any?(issue_blocked1.needs, fn %{"ticket" => t} -> t == "CX-sr1" end)
+
+      three_way = Migrate.three_way(ctx.root, ctx.store, MapSet.new(["CX-sr1"]))
+      assert three_way.agree? == true
+    end
+
+    test "an unsigned import does NOT land under enforce (denied, not decorative)", ctx do
+      export =
+        jsonl([
+          %{"id" => "CX-un1", "title" => "unsigned one", "status" => "open", "priority" => 2, "issue_type" => "task"}
+        ])
+
+      # No signing_context -> default opts \\ [] -> unsigned. Every write
+      # on the path (skeleton creation included, since /bd/ doesn't exist
+      # yet under this fresh root) is denied by the local_write_gate.
+      # Depending on exactly which write hits the gate first, this either
+      # raises (a MatchError on a `{:ok, _} = ...` pattern upstream of the
+      # gate, or a bare `{:error, {:trust_rejected, :unsigned}}` bubbling
+      # out of Migrate itself) or returns without creating anything -- in
+      # either case the ticket must NOT exist afterward.
+      try do
+        Migrate.import_from_export(ctx.root, export, ctx.store)
+      rescue
+        _ -> :ok
+      catch
+        :exit, _ -> :ok
+      end
+
+      # Confirming the ticket never landed is itself denied here: since
+      # the unsigned import never got far enough to create /bd/, and
+      # Workspace's read-lookup path (`issues_dir_uuid` -> `ensure_bd_dir`)
+      # is a LAZY creator that also writes unsigned by default, the
+      # lookup itself now raises under enforce instead of cleanly
+      # returning "not found" -- which is itself proof nothing landed
+      # (an `{:ok, _}` from Issue.show would prove the opposite).
+      result =
+        try do
+          Issue.show(ctx.root, "CX-un1", ctx.store)
+        rescue
+          _ -> :denied
+        catch
+          :exit, _ -> :denied
+        end
+
+      refute match?({:ok, _}, result)
     end
   end
 end
