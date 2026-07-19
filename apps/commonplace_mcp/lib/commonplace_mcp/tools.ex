@@ -49,6 +49,10 @@ defmodule Commonplace.MCP.Tools do
   alias Commonplace.MCP.CrdtTools
 
   alias Commonplace.MCP.Tools.{
+    BdBlocked,
+    BdFrontier,
+    BdReady,
+    BdShow,
     CallTool,
     Cat,
     Fork,
@@ -83,7 +87,11 @@ defmodule Commonplace.MCP.Tools do
     "mud_read" => MudRead,
     "loom_send" => LoomSend,
     "loom_read" => LoomRead,
-    "list_peers" => ListPeers
+    "list_peers" => ListPeers,
+    "bd_ready" => BdReady,
+    "bd_blocked" => BdBlocked,
+    "bd_frontier" => BdFrontier,
+    "bd_show" => BdShow
   }
 
   @meta_registry %{
