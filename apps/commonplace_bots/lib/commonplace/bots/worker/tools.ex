@@ -14,11 +14,15 @@ defmodule Commonplace.Bots.Worker.Tools do
 
   ## The tools
 
-  Seven tools are live in the registry (`@tool_modules`) and
-  offered to the model on every turn — two writers and five
-  readers. All route through the substrate's ordinary read/write
-  primitives (see `Commonplace.Bots.Worker`'s "Substrate-pure I/O"
-  note); there is no staged rollout left to wire.
+  Seven tools are live in the registry (`@tool_modules`) — two
+  writers and five readers — but they are **not** ambient. As of
+  Camillo C3a the registry is DEFAULT-CLOSED per entity: `tool_defs/1`
+  offers only the tools in `state.allowlist`, and `dispatch/3` refuses
+  any name not in it. The allowlist is the entity's grantor-signed
+  charter (see `Commonplace.Bots.Allowlist`), resolved by
+  `Commonplace.Bots.Worker`. All route through the substrate's ordinary
+  read/write primitives (see `Commonplace.Bots.Worker`'s "Substrate-pure
+  I/O" note).
 
     * `post_message` — append a chat message to the room's
       `_messages` doc as the bot.
@@ -61,16 +65,47 @@ defmodule Commonplace.Bots.Worker.Tools do
     CheckTurnRemaining
   ]
 
+  @doc """
+  Tool definitions to hand the Messages API — filtered to the entity's
+  DEFAULT-CLOSED allowlist (Camillo C3a). Only tools whose `name/0` is in
+  `state.allowlist` are offered; a nil / empty / missing allowlist offers
+  the model NO tools at all. The charter that populates `state.allowlist`
+  is grantor-verified upstream (see `Commonplace.Bots.Allowlist`).
+  """
   @spec tool_defs(map()) :: [map()]
-  def tool_defs(_state) do
-    Enum.map(@tool_modules, & &1.definition())
+  def tool_defs(state) do
+    allow = allowlist(state)
+
+    @tool_modules
+    |> Enum.filter(fn m -> m.name() in allow end)
+    |> Enum.map(& &1.definition())
   end
 
+  @doc """
+  Dispatch a tool call, gated by the entity's allowlist (Camillo C3a).
+
+  A name that is NOT in `state.allowlist` is refused with a SANITIZED
+  `{:error, "not allowlisted"}` — the refusal deliberately does NOT
+  enumerate which tools ARE permitted (thin-handle discipline: an
+  untrusted model must not learn the shape of the charter from a refusal).
+  Only an allowlisted name is looked up in the registry and invoked.
+  """
   @spec dispatch(map(), String.t(), map()) :: {:ok, String.t()} | :ok | {:error, term()}
   def dispatch(state, name, input) when is_binary(name) and is_map(input) do
-    case Enum.find(@tool_modules, fn m -> m.name() == name end) do
-      nil -> {:error, "unknown tool: #{name}"}
-      mod -> mod.call(state, input)
+    if name in allowlist(state) do
+      case Enum.find(@tool_modules, fn m -> m.name() == name end) do
+        nil -> {:error, "unknown tool: #{name}"}
+        mod -> mod.call(state, input)
+      end
+    else
+      {:error, "not allowlisted"}
+    end
+  end
+
+  defp allowlist(state) do
+    case Map.get(state, :allowlist) do
+      list when is_list(list) -> list
+      _ -> []
     end
   end
 end

@@ -129,22 +129,51 @@ defmodule Commonplace.Bots.Demo do
     uuid
   end
 
+  # Camillo C3a: the tool registry is DEFAULT-CLOSED — a bot gets only the
+  # tools in its grantor-signed bot.json charter. The demo bots need the
+  # full v0 tool set, so each gets a NODE-SIGNED bot.json granting them (the
+  # node is the v1 charter grantor). If no node signing context is available
+  # the charter is written unsigned and the bot fails closed to zero tools —
+  # the correct, safe posture, even though a headless demo would then be mute.
+  @demo_tools ~w(post_message remember read_chat read_memory list_files read_file check_turn_remaining)
+
   defp mint_bot_dir(write_store, persona, trigger) do
     persona_uuid = mint_text_doc(write_store, "persona.md", persona)
     memory_uuid = mint_text_doc(write_store, "memory.jsonl", "")
     trigger_uuid = mint_text_doc(write_store, "trigger.regex", trigger)
     red_log_uuid = mint_red_log(write_store)
+    bot_json_uuid = mint_bot_json(write_store)
 
     schema =
       Schema.new_schema()
       |> Schema.add_file("persona.md", persona_uuid)
       |> Schema.add_file("memory.jsonl", memory_uuid)
       |> Schema.add_file("trigger.regex", trigger_uuid)
+      |> Schema.add_file("bot.json", bot_json_uuid)
       |> Schema.add_file("__red_log", red_log_uuid)
 
     uuid = UUID.uuid4()
     update = Yelixer.Encoding.encode_update(schema)
     CommitStore.create_commit(write_store, uuid, update, nil)
+    uuid
+  end
+
+  # A node-signed bot.json granting the demo tool set (the C3a charter).
+  defp mint_bot_json(write_store) do
+    body = Jason.encode!(%{"tools" => @demo_tools})
+    uuid = UUID.uuid4()
+    doc = Yelixer.Doc.new()
+    doc = ContentType.create(doc, :text, "bot.json")
+    doc = ContentType.insert_text(doc, 0, body)
+    update = Yelixer.Encoding.encode_update(doc)
+
+    commit_opts =
+      case Commonplace.Crypto.NodeIdentity.signing_context() do
+        {:ok, ctx} -> [signing_context: ctx]
+        _ -> []
+      end
+
+    CommitStore.create_commit(write_store, uuid, update, nil, %{}, commit_opts)
     uuid
   end
 

@@ -129,6 +129,16 @@ defmodule Commonplace.Bots.Worker do
     tools_module = Keyword.get(opts, :tools_module, Tools)
     signing_context = resolve_signing_context(entity, opts)
 
+    # Camillo C3a: resolve the entity's DEFAULT-CLOSED tool allowlist from
+    # its grantor-signed bot.json charter. Keyed on the entity's OWN
+    # identity_uuid (the sc resolved above) so "you cannot write your own
+    # charter" is enforceable; a nil sc means no identity, hence no charter,
+    # hence NO tools ([]). The allowlist is NEVER taken from `opts` — only
+    # from the grantor-verified config doc (see `Commonplace.Bots.Allowlist`).
+    store = Keyword.get(opts, :store, Commonplace.Store.CommitStoreClient)
+    entity_identity_uuid = signing_context && signing_context.identity_uuid
+    allowlist = Commonplace.Bots.Allowlist.resolve(entity, entity_identity_uuid, store, opts)
+
     :telemetry.execute(
       [:commonplace, :bots, :worker, :started],
       %{system_time: System.system_time()},
@@ -152,6 +162,7 @@ defmodule Commonplace.Bots.Worker do
           client_fn: client_fn,
           tools_module: tools_module,
           signing_context: signing_context,
+          allowlist: allowlist,
           opts: opts
         })
       after

@@ -52,30 +52,45 @@ defmodule Commonplace.Bots.WorkerTest do
     mint_doc(doc)
   end
 
+  # Camillo C3a: the tool registry is now DEFAULT-CLOSED — a bot gets only
+  # the tools in its grantor-signed bot.json charter. These loop-mechanics
+  # tests exercise real tools (post_message / remember / ...), so every test
+  # bot is given a NODE-SIGNED bot.json granting the full tool set (the node
+  # is the v1 grantor; data_dir is this test's tmp dir so NodeIdentity mints
+  # a deterministic node key here). Any `:bot_config` a test passes is merged
+  # in, defaulting the `"tools"` grant when the test doesn't override it.
+  @all_tools ~w(post_message remember read_chat read_memory list_files read_file check_turn_remaining)
+
   defp mint_bot_dir(opts) do
     persona = Keyword.get(opts, :persona, "You are alice.")
     trigger = Keyword.get(opts, :trigger, "(?i)@alice\\b")
 
-    schema =
-      Schema.new_schema()
-      |> Schema.add_file("persona.md", mint_text_doc("persona.md", persona))
-      |> Schema.add_file("memory.jsonl", mint_text_doc("memory.jsonl", ""))
-      |> Schema.add_file("trigger.regex", mint_text_doc("trigger.regex", trigger))
+    config =
+      (Keyword.get(opts, :bot_config) || %{})
+      |> Map.put_new("tools", @all_tools)
 
-    schema =
-      case Keyword.get(opts, :bot_config) do
-        nil ->
-          schema
+    Schema.new_schema()
+    |> Schema.add_file("persona.md", mint_text_doc("persona.md", persona))
+    |> Schema.add_file("memory.jsonl", mint_text_doc("memory.jsonl", ""))
+    |> Schema.add_file("trigger.regex", mint_text_doc("trigger.regex", trigger))
+    |> Schema.add_file("bot.json", mint_signed_text_doc("bot.json", Jason.encode!(config)))
+    |> mint_doc()
+  end
 
-        config ->
-          Schema.add_file(
-            schema,
-            "bot.json",
-            mint_text_doc("bot.json", Jason.encode!(config))
-          )
-      end
+  # A text doc whose commit is NODE-signed — the C3a charter grantor.
+  defp mint_signed_text_doc(name, body) do
+    {:ok, node_ctx} = Commonplace.Crypto.NodeIdentity.signing_context()
+    uuid = UUID.uuid4()
+    doc = Yelixer.Doc.new()
+    doc = ContentType.create(doc, :text, name)
+    doc = if body == "", do: doc, else: ContentType.insert_text(doc, 0, body)
+    update = Yelixer.Encoding.encode_update(doc)
 
-    mint_doc(schema)
+    CommitStore.create_commit(Commonplace.Store.CommitStore, uuid, update, nil, %{},
+      signing_context: node_ctx
+    )
+
+    uuid
   end
 
   defp mint_messages_doc do
@@ -283,6 +298,10 @@ defmodule Commonplace.Bots.WorkerTest do
     end
 
     test "remember tool appends to memory.jsonl" do
+      # C3a: the charter gate keys the allowlist on the bot's resolved
+      # identity, so a real signing fixture (root + secrets) is needed for
+      # the node-signed tools grant to take effect.
+      {root, secrets} = signing_fixture()
       bot = mint_bot_dir([])
       entity = load_entity(bot, "alice.bot")
       messages_uuid = mint_messages_doc()
@@ -295,7 +314,9 @@ defmodule Commonplace.Bots.WorkerTest do
       result =
         Worker.run("demo", entity, event("@alice remember please"),
           client_fn: stub_client(responses),
-          messages_uuid: messages_uuid
+          messages_uuid: messages_uuid,
+          root_uuid: root,
+          secret_store: secrets
         )
 
       assert result == {:ok, :end_turn}
