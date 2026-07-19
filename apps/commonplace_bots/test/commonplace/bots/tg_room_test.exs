@@ -210,12 +210,15 @@ defmodule Commonplace.Bots.TgRoomTest do
                store: ctx.store
              )
 
+    # issue_write_cert PERSISTS the cert itself now (the live-found bug —
+    # see its moduledoc) — no manual `CommitStore.store_capability/2`
+    # fixture step here; the pin below (`issue_write_cert persists ...`)
+    # proves that directly.
     assert {:ok, cap} =
              TgRoom.issue_write_cert({stranger_uuid, stranger_pub}, messages_uuid,
                store: ctx.store
              )
 
-    :ok = CommitStore.store_capability(ctx.store, cap)
     cid = cap.id
 
     assert {:ok, %{message_id: _}} =
@@ -227,5 +230,25 @@ defmodule Commonplace.Bots.TgRoomTest do
                cert_cids: [cid],
                store: ctx.store
              )
+  end
+
+  test "issue_write_cert persists the cert — resolvable by cid with NO manual store_capability step",
+       ctx do
+    assert {:ok, %{messages_uuid: messages_uuid}} =
+             TgRoom.ensure(ctx.ctx, "jes", entity_dir_uuid: ctx.entity_dir_uuid)
+
+    stranger_uuid = UUID.uuid4()
+    {stranger_pub, _stranger_priv} = Signing.generate_keypair()
+
+    # The direct pin (RED against the old, mint-only helper — see
+    # `issue_write_cert`'s moduledoc "The live-found bug this fixed"):
+    # persistence happens INSIDE issue_write_cert/3, not as a separate
+    # fixture step the caller must remember.
+    assert {:ok, cap} =
+             TgRoom.issue_write_cert({stranger_uuid, stranger_pub}, messages_uuid,
+               store: ctx.store
+             )
+
+    assert {:ok, ^cap} = Commonplace.Store.CommitStoreClient.get_capability(ctx.store, cap.id)
   end
 end

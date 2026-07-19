@@ -126,13 +126,30 @@ defmodule Commonplace.Bots.TgRoom do
   Mint a `{:docs, [messages_uuid]}` `[:write]` capability, ROOT-issued
   (`parent_cid: nil`) and NODE-signed (v1 grantor stance — see moduledoc),
   delegated to `audience` (an `{identity_uuid, public_key}` pair — the
-  bridge's or the bot's own keyed identity). Returns `{:ok, %Capability{}}`
-  or `{:error, reason}`.
+  bridge's or the bot's own keyed identity) — minted AND PERSISTED, so the
+  returned cert is resolvable by CID immediately. Returns `{:ok,
+  %Capability{}}` or `{:error, reason}`.
 
   This is the "provision time" mint the C4 brief calls for — neither
   `Commonplace.Bots.TelegramBridge` nor `Commonplace.Bots.TelegramBridge.Poller`
   ever call `Commonplace.Trust.Capability` directly; whatever wires them up
   calls this first and threads the resulting cert's CID into `opts[:cert_cids]`.
+
+  ## The live-found bug this fixed (do not regress)
+
+  `Capability.issue/5` MINTS a cert struct — it never touches the store.
+  A caller that forgets the persist step (as this function itself did,
+  pre-fix — the whole test suite stayed green only because every test
+  called `CommitStore.store_capability/2` manually as a SEPARATE fixture
+  step, completing the helper's missing half) hands back a cert whose CID
+  `Commonplace.Trust.VerifyChain`/`SignedWrite.opts_for/2` can never
+  resolve: `CommitStoreClient.get_capability/2` returns `:none`, no
+  `capability_proof` is ever attached, and the signer falls straight to
+  `Trust.authorized?/5`'s untrusted-signer branch — denied, with NO error
+  surfaced at the mint site (the mint itself "succeeds"; only a much later,
+  separately-logged write denial hints at the real cause). Persisting HERE,
+  fail-closed on a store error, means a caller holding `{:ok, cap}` can
+  trust the cert is actually usable.
   """
   @spec issue_write_cert({String.t(), binary()}, String.t(), keyword()) ::
           {:ok, Capability.t()} | {:error, term()}
@@ -140,10 +157,25 @@ defmodule Commonplace.Bots.TgRoom do
       when is_binary(messages_uuid) do
     store = Keyword.get(opts, :store, CommitStoreClient)
 
-    with {:ok, node_ctx} <- NodeIdentity.signing_context() do
-      claim = %{verbs: [:write], scope: {:docs, [messages_uuid]}}
-      Capability.issue(node_ctx, audience, claim, nil, store: store)
+    with {:ok, node_ctx} <- NodeIdentity.signing_context(),
+         {:ok, cap} <-
+           Capability.issue(node_ctx, audience, claim(messages_uuid), nil, store: store),
+         :ok <- persist(store, cap) do
+      {:ok, cap}
     end
+  end
+
+  defp claim(messages_uuid), do: %{verbs: [:write], scope: {:docs, [messages_uuid]}}
+
+  # Fail-closed: an unpersisted cert IS the bug (see the moduledoc note
+  # above), so a store error here must surface as `{:error, _}` from
+  # `issue_write_cert/3` rather than a silently-unresolvable `{:ok, cap}`.
+  defp persist(store, cap) do
+    CommitStoreClient.store_capability(store, cap)
+  rescue
+    e -> {:error, {:store_capability_failed, Exception.message(e)}}
+  catch
+    :exit, reason -> {:error, {:store_capability_failed, reason}}
   end
 
   # --- internals ---

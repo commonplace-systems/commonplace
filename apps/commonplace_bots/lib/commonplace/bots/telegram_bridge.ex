@@ -512,17 +512,41 @@ defmodule Commonplace.Bots.TelegramBridge do
     )
   end
 
+  # The live-found bug (cp-plan follow-up): this used to fire-and-forget
+  # `Actions.post_message`'s return — a DENIED write (e.g. an unresolvable
+  # capability_proof, the `issue_write_cert/3` persistence bug this same
+  # round fixed) vanished with no signal anywhere, a 30-minute hunt on the
+  # live serve for what should have been one log line. `{:ok, _}` stays
+  # silent (the happy path is not new information); `{:error, reason}`
+  # logs `reason` ONLY — never `payload.text`, which is jes's (or whoever
+  # DMed the bridge) PRIVATE message content, not something that belongs
+  # in a shared log stream — plus a telemetry event so a real deployment
+  # can alert on it instead of relying on someone grepping logs.
   defp post_inbound(state, payload) do
     case AgentKeys.signing_context_for(state.identity_uuid, state.secret_store) do
       {:ok, signing_context} ->
-        Actions.post_message(state.messages_uuid, payload.text,
-          room: state.room,
-          signer_id: state.identity_uuid,
-          author_path: attribution(payload.nick),
-          signing_context: signing_context,
-          cert_cids: state.cert_cids,
-          store: state.store
-        )
+        case Actions.post_message(state.messages_uuid, payload.text,
+               room: state.room,
+               signer_id: state.identity_uuid,
+               author_path: attribution(payload.nick),
+               signing_context: signing_context,
+               cert_cids: state.cert_cids,
+               store: state.store
+             ) do
+          {:ok, _} ->
+            :ok
+
+          {:error, reason} ->
+            Logger.warning(
+              "TelegramBridge: inbound post FAILED for room #{state.room}: #{inspect(reason)}"
+            )
+
+            :telemetry.execute(
+              [:commonplace, :bots, :telegram_bridge, :inbound_post_failed],
+              %{system_time: System.system_time()},
+              %{room: state.room, reason: reason}
+            )
+        end
 
       other ->
         Logger.warning(

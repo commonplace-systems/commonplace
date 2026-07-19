@@ -304,12 +304,13 @@ defmodule Commonplace.Bots.ChatRootTest do
           secret_store: ctx.secrets
         )
 
+      # issue_write_cert PERSISTS the cert itself (the live-found bug —
+      # see its moduledoc); no manual store_capability fixture step here.
       {:ok, cap} =
         TgRoom.issue_write_cert({sc.identity_uuid, sc.public_key}, room.messages_uuid,
           store: ctx.store
         )
 
-      :ok = CommitStore.store_capability(ctx.store, cap)
       bot_signer_id = Signing.signer_id(sc.identity_uuid, sc.public_key)
 
       :ok =
