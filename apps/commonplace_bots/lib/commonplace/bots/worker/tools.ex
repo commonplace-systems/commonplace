@@ -14,7 +14,7 @@ defmodule Commonplace.Bots.Worker.Tools do
 
   ## The tools
 
-  Seven tools are live in the registry (`@tool_modules`) — two
+  Eight tools are live in the registry (`@tool_modules`) — three
   writers and five readers — but they are **not** ambient. As of
   Camillo C3a the registry is DEFAULT-CLOSED per entity: `tool_defs/1`
   offers only the tools in `state.allowlist`, and `dispatch/3` refuses
@@ -28,6 +28,8 @@ defmodule Commonplace.Bots.Worker.Tools do
       `_messages` doc as the bot.
     * `remember` — append a JSONL line to the bot's
       `memory.jsonl` doc.
+    * `update_agenda` — append an item to the bot's `agenda.jsonl`
+      doc (the heartbeat turn's write-back).
     * `read_chat` — read recent messages from the room.
     * `read_memory` — read back the bot's own `memory.jsonl`.
     * `list_files` — list the entries under a directory in the tree.
@@ -52,12 +54,14 @@ defmodule Commonplace.Bots.Worker.Tools do
     ReadChat,
     ReadFile,
     ReadMemory,
-    Remember
+    Remember,
+    UpdateAgenda
   }
 
   @tool_modules [
     PostMessage,
     Remember,
+    UpdateAgenda,
     ReadChat,
     ReadMemory,
     ListFiles,

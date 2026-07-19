@@ -77,7 +77,9 @@ defmodule Commonplace.Bots.Worker.Loop do
   the loop owns it.
   """
 
+  alias Commonplace.Bots.Agenda
   alias Commonplace.Bots.Worker.Tools
+  alias Commonplace.Store.CommitStoreClient
 
   @type state :: %{
           room: String.t(),
@@ -261,6 +263,28 @@ defmodule Commonplace.Bots.Worker.Loop do
     ]
   end
 
+  # Camillo C3b §10: the heartbeat turn shape. When the dispatcher woke
+  # the bot on its own timer (an internally-tagged `"kind" =>
+  # "heartbeat"` event — never producible by chat), frame the turn
+  # around the bot's agenda and prompt a write-back, rather than the
+  # chat "new message" shape. The actual walking / jotting uses C3c
+  # tools; here we only SHAPE the turn to read the agenda.
+  defp build_initial_user_text(%{event: %{"kind" => "heartbeat"}} = state) do
+    items = read_agenda(state)
+    agenda_text = render_agenda(items)
+
+    thread =
+      if Map.get(state.event, "thread_quiet", true), do: "quiet", else: "active"
+
+    """
+    You woke on a heartbeat. Your agenda:
+    #{agenda_text}
+
+    The thread is #{thread}. Do one agenda item, or tidy, then update your agenda.
+    """
+    |> String.trim_trailing()
+  end
+
   defp build_initial_user_text(state) do
     author = Map.get(state.event, "author_path", "human")
     text = Map.get(state.event, "text", "")
@@ -270,6 +294,31 @@ defmodule Commonplace.Bots.Worker.Loop do
     #{author}: #{text}
     """
     |> String.trim_trailing()
+  end
+
+  defp read_agenda(state) do
+    store = Keyword.get(state.opts || [], :store, CommitStoreClient)
+
+    try do
+      Agenda.read(state.entity, store)
+    rescue
+      _ -> []
+    catch
+      _, _ -> []
+    end
+  end
+
+  defp render_agenda([]), do: "(empty)"
+
+  defp render_agenda(items) when is_list(items) do
+    items
+    |> Enum.map(fn item ->
+      case Map.get(item, "text") do
+        text when is_binary(text) -> "- #{text}"
+        _ -> "- #{Jason.encode!(item)}"
+      end
+    end)
+    |> Enum.join("\n")
   end
 
   defp wall_clock_exceeded?(state, budget) do

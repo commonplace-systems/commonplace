@@ -53,6 +53,16 @@ defmodule Commonplace.Bots.Trigger do
   @type event :: %{required(String.t()) => term()}
 
   @spec evaluate(:regex | :code, event(), Entity.t()) :: decision()
+  # Camillo C3b: a heartbeat event is dispatcher-tagged (`"kind" =>
+  # "heartbeat"`) and routes to the heartbeat adapter REGARDLESS of the
+  # entity's `trigger_kind` — it is a timer wake, not a chat match. This
+  # clause is matched on the EVENT's kind (set internally by the
+  # dispatcher, never derived from chat content), so no chat message can
+  # reach it. See `Commonplace.Bots.Trigger.Heartbeat`.
+  def evaluate(_kind, %{"kind" => "heartbeat"} = event, %Entity{} = entity) do
+    Commonplace.Bots.Trigger.Heartbeat.evaluate(event, entity)
+  end
+
   def evaluate(:regex, event, %Entity{} = entity) do
     Commonplace.Bots.Trigger.Regex.evaluate(event, entity)
   end
