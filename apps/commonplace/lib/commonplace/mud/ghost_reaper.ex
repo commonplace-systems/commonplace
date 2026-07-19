@@ -24,6 +24,18 @@ defmodule Commonplace.MUD.GhostReaper do
       spared. The mutating reaper destroys only what NO signal says is alive —
       deliberately stricter than the read-only who-filter.
 
+      cp-plan #8915: `PresenceRegistry` is no longer PLAYER-session-only.
+      `Commonplace.Bots.Dispatcher.register_autonomous_bot/5` ALSO registers
+      into it (under the dispatcher's own pid) — a registered autonomous
+      bot's mind is alive by definition, whether or not it has ticked
+      recently, so its registration counts as membership the exact same way
+      a live `PlayerSession`'s does. This needed NO change here: the union
+      above already treats `PresenceRegistry` membership as sufficient to
+      spare a `.usr`, regardless of who registered it. See that module's
+      "Registration IS liveness" moduledoc section for the full mechanism
+      (and why it must stay runtime-only, never doc-derived, once CX-5ikm
+      makes registration boot-durable).
+
     * **Per-run FAIL-CLOSED.** Every run builds the live-set fail-closed and
       ABORTS THE WHOLE RUN (reaps nothing) on ANY incompleteness — a tracker
       unavailable, or any live session's filename unreadable. Reaping against a
@@ -146,7 +158,10 @@ defmodule Commonplace.MUD.GhostReaper do
   def run_once(%__MODULE__{} = s) do
     case build_live_set(s.store) do
       {:error, reason} ->
-        Logger.warning("GhostReaper: ABORTED run (fail-closed, reaped nothing) — #{inspect(reason)}")
+        Logger.warning(
+          "GhostReaper: ABORTED run (fail-closed, reaped nothing) — #{inspect(reason)}"
+        )
+
         {:aborted, reason}
 
       {:ok, live_filenames} ->

@@ -200,6 +200,51 @@ defmodule Commonplace.Bots.Dispatcher do
   and the dispatcher's own store (registration-state values, not caller
   overrides) so the Worker resolves its signing + MUD context under the
   registered `mud_root`, never the workspace root. See `invoke_worker/4`.
+
+  ## Registration IS liveness (cp-plan #8915, `GhostReaper` P1)
+
+  A registered autonomous bot's `.usr` presence is ALIVE by definition — its
+  mind ticks whether or not anything else in the tree has touched it
+  recently — but `Commonplace.MUD.GhostReaper` only ever knew about
+  session-backed presences (`SessionLimit :live` ∪
+  `Commonplace.MUD.PresenceRegistry`). At a long autonomous cadence (e.g.
+  jes's live 3600s tick) against the reaper's much shorter default cadence
+  (300s), a registered bot's `.usr` looked exactly like an abandoned ghost
+  for most of every hour and was reaped out from under a still-registered
+  mind — chat wakes then landed bodiless (`nil` mud_ctx: perception/
+  scrollback degrade, every MUD tool refuses, the transcript goes unwritten).
+
+  THE FIX: `register_autonomous_bot/5` registers the bot's own presence
+  filename (`Commonplace.Presence.filename(name, :usr)`) into the SAME
+  `Commonplace.MUD.PresenceRegistry` a live `PlayerSession` registers
+  into — under THIS dispatcher process's own pid. `GhostReaper` already
+  unions that registry into its live-set (see its moduledoc), so this
+  needed NO reaper-side change at all: registering here is sufficient.
+  `unregister_autonomous_bot/1` unregisters it explicitly; more importantly,
+  because `Registry` entries are owned by the registering PROCESS and
+  auto-removed the instant that process exits (crash, kill, clean stop —
+  unlike a `terminate/2` callback, which a brutal kill skips entirely),
+  the dispatcher process dying is BY ITSELF sufficient to drop every
+  autonomous bot's registration-membership — "registration IS liveness"
+  cuts both ways: no live dispatcher process, no claim of liveness.
+
+  ## CX-5ikm (future boot-durable registration) — the constraint this fix
+  ## must NOT be widened to break
+
+  When autonomous registration becomes boot-durable (survives a dispatcher
+  restart by being persisted to a doc, CX-5ikm), reaper-membership must
+  continue to derive ONLY from the LIVE, re-registered-THIS-BOOT runtime
+  state — i.e. still only from an actual `Registry.register/3` call made by
+  a currently-running dispatcher process, same as today. A persisted
+  registration DOC that has not yet been re-registered this boot (e.g. the
+  node crashed and hasn't finished replaying its registrations yet) must
+  NEVER count as alive on its own. The doc is a RESUME HINT for what to
+  re-register, not a liveness fact in itself — treating it as one would let
+  a dead node's stale doc claim a bot is alive forever, exactly the
+  reap-nothing DoS `GhostReaper`'s fail-closed design already refuses to
+  create in the other direction. Whoever builds CX-5ikm: re-register into
+  `PresenceRegistry` on replay (this same call), don't add a second,
+  doc-derived liveness path to the reaper.
   """
   @spec register_autonomous_bot(String.t(), String.t(), String.t(), pos_integer(), keyword()) ::
           :ok
@@ -345,6 +390,13 @@ defmodule Commonplace.Bots.Dispatcher do
     # Re-registration cancels any prior timer first.
     state = cancel_auto_timer(state, name)
 
+    # cp-plan #8915: registration IS liveness — unregister-then-register is
+    # idempotent (safe no-op unregister on a first-ever registration; a
+    # RE-registration doesn't stack duplicate PresenceRegistry entries under
+    # this dispatcher's own pid). See moduledoc "Registration IS liveness".
+    unregister_autonomous_presence(name)
+    register_autonomous_presence(name)
+
     # (C) cache-at-register: resolve the home-agenda uuid ONCE. Best-effort —
     # if unresolvable now, the tick's skip-check self-heals later.
     home_agenda_uuid = resolve_home_agenda(name, mud_root, state.store, opts)
@@ -366,6 +418,7 @@ defmodule Commonplace.Bots.Dispatcher do
   @impl true
   def handle_call({:unregister_autonomous_bot, name}, _from, state) do
     state = cancel_auto_timer(state, name)
+    unregister_autonomous_presence(name)
     {:reply, :ok, %{state | auto: Map.delete(state.auto, name)}}
   end
 
@@ -842,6 +895,51 @@ defmodule Commonplace.Bots.Dispatcher do
   end
 
   defp beat_autonomous_presence(_name, _mud_root, _state), do: :ok
+
+  # cp-plan #8915 — registration IS liveness. Register the bot's `.usr`
+  # presence filename into the SAME `Commonplace.MUD.PresenceRegistry` a
+  # live `PlayerSession` registers into (see `Commonplace.MUD.PlayerSession`
+  # `init/1`), under THIS dispatcher process's own pid — `GhostReaper`
+  # already unions that registry into its live-set, so no reaper-side
+  # change was needed; registering here is sufficient (see moduledoc
+  # "Registration IS liveness"). Guarded exactly like `PlayerSession`'s own
+  # registration (a missing registry — e.g. a test that boots the
+  # Dispatcher without the full app — never crashes registration) and
+  # rescue/catch-wrapped so a Registry hiccup can never take a bot's
+  # autonomous registration down.
+  defp register_autonomous_presence(name) do
+    fname = Presence.filename(name, :usr)
+
+    if Process.whereis(Commonplace.MUD.PresenceRegistry) do
+      Registry.register(Commonplace.MUD.PresenceRegistry, fname, nil)
+    end
+
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  # The mirror unregister — called explicitly on `unregister_autonomous_bot/1`
+  # (re-registration also calls this first, so it never stacks duplicate
+  # entries for the same name under this dispatcher's pid). Process DEATH
+  # drops every registration automatically (Registry's own guarantee, not
+  # this function) — see moduledoc "Registration IS liveness" for why that
+  # or-death path is the one that actually matters for the invariant.
+  defp unregister_autonomous_presence(name) do
+    fname = Presence.filename(name, :usr)
+
+    if Process.whereis(Commonplace.MUD.PresenceRegistry) do
+      Registry.unregister(Commonplace.MUD.PresenceRegistry, fname)
+    end
+
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
 
   defp strip_bot_suffix(name) do
     if String.ends_with?(name, ".bot") do
