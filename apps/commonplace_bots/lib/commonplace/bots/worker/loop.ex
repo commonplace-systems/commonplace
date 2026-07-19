@@ -584,9 +584,13 @@ defmodule Commonplace.Bots.Worker.Loop do
   # urgent is competing for the hour, so it's the natural cue to file rather
   # than just defer. Silent (no line at all) when the thread is active — an
   # active thread already has its own pull on attention.
+  # C5c-iii (cp-plan #8892/#8895): the invitation now names its READ step
+  # FIRST — read_scratch before distill before describe before tidy. Filing
+  # isn't just writing forward from scratch; it's reading back what he chose
+  # to keep, THEN deciding what of it belongs distilled onto a room.
   defp filing_framing(true) do
-    "\nA quiet thread is a good hour for filing: distill your scratch notes, " <>
-      "describe the rooms they belong to, tidy your desk."
+    "\nA quiet thread is a good hour for filing: read your notes (read_scratch), " <>
+      "distill what matters, describe the rooms they belong to, tidy your desk."
   end
 
   defp filing_framing(false), do: ""

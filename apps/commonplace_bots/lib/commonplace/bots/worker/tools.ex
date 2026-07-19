@@ -14,9 +14,10 @@ defmodule Commonplace.Bots.Worker.Tools do
 
   ## The tools
 
-  Twelve tools are live in the registry (`@tool_modules`) — chat/memory
-  writers and readers plus the Camillo C3c/C5b MUD tools (`move`, `look`,
-  `scratch`, `describe`) — but they are **not** ambient. As of
+  Fourteen tools are live in the registry (`@tool_modules`) — chat/memory
+  writers and readers plus the Camillo C3c/C5b/C5c-iii MUD tools (`move`,
+  `look`, `scratch`, `describe`, `list_scratch`, `read_scratch`) — but they
+  are **not** ambient. As of
   Camillo C3a the registry is DEFAULT-CLOSED per entity: `tool_defs/1`
   offers only the tools in `state.allowlist`, and `dispatch/3` refuses
   any name not in it. The allowlist is the entity's grantor-signed
@@ -49,8 +50,14 @@ defmodule Commonplace.Bots.Worker.Tools do
     * `describe` — rewrite (REPLACE, not append) a room's description in
       the bot's own home zone — memory distilled onto a room's face
       (Camillo C5b, cp-plan #8880).
+    * `list_scratch` — list the page names under the bot's own
+      `home/scratch/` (Camillo C5c-iii, cp-plan #8892/#8895).
+    * `read_scratch` — read a scratch page's text back, size-capped
+      (Camillo C5c-iii). The filing loop's READ half: `list_scratch` +
+      `read_scratch` let a turn actually consult what it chose to keep,
+      before deciding what belongs distilled onto a room via `describe`.
 
-  The four MUD tools act through `state.mud_ctx` — a freshly-resolved
+  The six MUD tools act through `state.mud_ctx` — a freshly-resolved
   `Commonplace.Bots.MudContext` the Worker threads PER TURN — never a
   human `PlayerSession`. A nil `mud_ctx` (unprovisioned bot) makes each
   refuse gracefully.
@@ -67,12 +74,14 @@ defmodule Commonplace.Bots.Worker.Tools do
     CheckTurnRemaining,
     Describe,
     ListFiles,
+    ListScratch,
     Look,
     Move,
     PostMessage,
     ReadChat,
     ReadFile,
     ReadMemory,
+    ReadScratch,
     Remember,
     Scratch,
     UpdateAgenda
@@ -90,7 +99,9 @@ defmodule Commonplace.Bots.Worker.Tools do
     Move,
     Look,
     Scratch,
-    Describe
+    Describe,
+    ListScratch,
+    ReadScratch
   ]
 
   @doc """
