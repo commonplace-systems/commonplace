@@ -21,11 +21,28 @@ defmodule Commonplace.Chat.Actions do
 
   ## Signing
 
-  Until CX-88mw lands per-agent key minting, `:signing_context` in opts
-  is the substrate seam (CX-o3r7) — when present, the resulting commit
-  is signed with that context's key. When absent, falls back to the
-  global SecretStore or unsigned, matching the existing CommitStore
-  default-signing behavior. See `Commonplace.Crypto.SigningContext`.
+  `:signing_context` in opts is the substrate seam (CX-o3r7) — when
+  present, the resulting commit is signed with that context's key. When
+  absent, falls back to the global SecretStore or unsigned, matching the
+  existing CommitStore default-signing behavior. See
+  `Commonplace.Crypto.SigningContext`. Per-agent key minting itself lives
+  in `Commonplace.Crypto.AgentKeys` (CX-88mw, shipped) — callers that want
+  a bot/bridge-signed post resolve a `SigningContext` from there (or from
+  `Commonplace.Bots.Identity`) and pass it here; this module doesn't mint
+  keys, only threads whatever context it's handed.
+
+  ## Capability-authorized (non-node) signers (CX-cy80)
+
+  A signed commit that isn't from a locally-pinned `trusted_identities`
+  entry needs a capability proof to pass `Commonplace.Trust.authorized?/5`
+  under `local_write_gate: :enforce` — see that module's `grants?/5`
+  clauses. `:cert_cids` in opts (a list of capability CIDs the caller
+  holds) and `:signer_id` are threaded into the commit build alongside
+  `:signing_context`; `commit_entry/5` selects a covering cert (mirroring
+  `Commonplace.MUD.SignedWrite.opts_for/2`'s selection, `{:docs, [uuid]}`
+  scope) and attaches it as the commit's `capability_proof` metadata. Both
+  are additive — omitted entirely when the caller doesn't pass them, so
+  every existing unsigned/global-key/trusted-identity caller is unchanged.
 
   ## Side effects beyond the commit
 
@@ -43,6 +60,7 @@ defmodule Commonplace.Chat.Actions do
 
   alias Commonplace.Chat.Messages
   alias Commonplace.Dataflow.Magenta
+  alias Commonplace.MUD.SignedWrite
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.DocBuilder
   alias Commonplace.WriterHand
@@ -265,18 +283,41 @@ defmodule Commonplace.Chat.Actions do
   # Append the entry, encode, commit. Shared by post/edit/delete so
   # signing-context threading and chain-commit semantics live in one
   # place.
+  #
+  # CX-cy80: `SignedWrite.opts_for/2` is the SAME cert-selection helper
+  # every MUD write path uses (`find_docs_cert/3` — a `{:docs, [uuid]}`
+  # cert covering THIS `messages_uuid` wins first). When `opts` carries no
+  # `:signing_context` it degrades to exactly the prior behavior
+  # (`{%{}, []}`); when it does but carries no covering cert, metadata
+  # stays `%{}` (signed, no capability_proof — same "hits Trust's
+  # untrusted-signer branch" outcome as before this change). Only a
+  # covering `{:docs}` cert changes what lands on the wire, and only then.
   defp commit_entry(doc, store, messages_uuid, entry, opts) do
     doc = Messages.append(doc, entry)
     update = Yelixer.Encoding.encode_update(doc)
 
-    commit_opts =
-      case Keyword.get(opts, :signing_context) do
-        nil -> []
-        ctx -> [signing_context: ctx]
-      end
+    {metadata, commit_opts} =
+      SignedWrite.opts_for(messages_uuid, Keyword.put(opts, :store, store))
 
-    CommitStoreClient.create_chained_commit(store, messages_uuid, update, %{}, commit_opts)
+    commit_opts = thread_cert_opts(commit_opts, opts)
+
+    CommitStoreClient.create_chained_commit(store, messages_uuid, update, metadata, commit_opts)
   end
+
+  # Additive: echo the caller's own :cert_cids / :signer_id straight into
+  # commit_opts too (alongside the capability_proof SignedWrite.opts_for/2
+  # already resolved into metadata above) — only when the caller actually
+  # supplied them, so a caller with neither sees byte-identical commit_opts
+  # to before this change.
+  defp thread_cert_opts(commit_opts, opts) do
+    commit_opts
+    |> maybe_keyword_put(:cert_cids, Keyword.get(opts, :cert_cids))
+    |> maybe_keyword_put(:signer_id, Keyword.get(opts, :signer_id))
+  end
+
+  defp maybe_keyword_put(kw, _key, nil), do: kw
+  defp maybe_keyword_put(kw, _key, []), do: kw
+  defp maybe_keyword_put(kw, key, value), do: Keyword.put(kw, key, value)
 
   # Magenta envelope for post/edit/delete events on chat:{room}:events.
   # Verb selects the type ("post" | "edit" | "delete"); extra_payload

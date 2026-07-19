@@ -105,7 +105,8 @@ defmodule Commonplace.Bots.Dispatcher do
   @type room_info :: %{
           required(:dir_uuid) => String.t(),
           required(:messages_uuid) => String.t(),
-          required(:activity_uuid) => String.t() | nil
+          required(:activity_uuid) => String.t() | nil,
+          required(:opts) => keyword()
         }
 
   # Per-autonomous-bot registration (keyed by the bot's stripped display name).
@@ -140,11 +141,29 @@ defmodule Commonplace.Bots.Dispatcher do
   topic and remembers the room's directory + messages-doc UUIDs.
   Idempotent — re-registering with the same UUIDs is a no-op;
   with different UUIDs updates the entry in place.
+
+  cp-plan #8833 (the chat-path twin of CX-k87w): `opts` is ALSO reused
+  as (most of) the CHAT `Worker.run/4` opts on every wake fired from
+  THIS room — at minimum `:root_uuid` (the room's MUD root — WITHOUT
+  it, `Commonplace.Bots.Worker.resolve_mud_context/4` falls back to
+  `Workspace.root_uuid()`, the WRONG world, and every MUD tool the bot
+  tries refuses) and `:cert_cids` (the citizenship set this room's
+  writes are authorized under), plus test-only pass-through opts like
+  `:client_fn` / `:secret_store`. Stored verbatim in
+  `state.rooms[room_name][:opts]`; `invoke_worker_chat/4` merges it into
+  the spawned Worker's opts with `:messages_uuid`/`:store` PINNED from
+  registration state (never from the chat event map — the same
+  registration-state-authoritative discipline `register_autonomous_bot/5`
+  uses for `:root_uuid`/`:store` on the autonomous path). Omitting `opts`
+  entirely (the 3-arity call) preserves prior behavior byte-for-byte —
+  `root_uuid`/`cert_cids` simply don't get threaded, exactly as before
+  this fix.
   """
-  @spec subscribe_room(String.t(), String.t(), String.t()) :: :ok
-  def subscribe_room(room_name, room_dir_uuid, messages_uuid)
-      when is_binary(room_name) and is_binary(room_dir_uuid) and is_binary(messages_uuid) do
-    GenServer.call(__MODULE__, {:subscribe_room, room_name, room_dir_uuid, messages_uuid})
+  @spec subscribe_room(String.t(), String.t(), String.t(), keyword()) :: :ok
+  def subscribe_room(room_name, room_dir_uuid, messages_uuid, opts \\ [])
+      when is_binary(room_name) and is_binary(room_dir_uuid) and is_binary(messages_uuid) and
+             is_list(opts) do
+    GenServer.call(__MODULE__, {:subscribe_room, room_name, room_dir_uuid, messages_uuid, opts})
   end
 
   @doc "Unsubscribe from a room and forget its registration."
@@ -182,7 +201,8 @@ defmodule Commonplace.Bots.Dispatcher do
   overrides) so the Worker resolves its signing + MUD context under the
   registered `mud_root`, never the workspace root. See `invoke_worker/4`.
   """
-  @spec register_autonomous_bot(String.t(), String.t(), String.t(), pos_integer(), keyword()) :: :ok
+  @spec register_autonomous_bot(String.t(), String.t(), String.t(), pos_integer(), keyword()) ::
+          :ok
   def register_autonomous_bot(name, dir_uuid, mud_root, cadence_ms, opts \\ [])
       when is_binary(name) and is_binary(dir_uuid) and is_binary(mud_root) and
              is_integer(cadence_ms) and cadence_ms > 0 do
@@ -255,7 +275,7 @@ defmodule Commonplace.Bots.Dispatcher do
   end
 
   @impl true
-  def handle_call({:subscribe_room, room, dir_uuid, messages_uuid}, _from, state) do
+  def handle_call({:subscribe_room, room, dir_uuid, messages_uuid, opts}, _from, state) do
     case Map.get(state.rooms, room) do
       nil ->
         Phoenix.PubSub.subscribe(Commonplace.PubSub, "magenta:chat:#{room}:events")
@@ -270,7 +290,12 @@ defmodule Commonplace.Bots.Dispatcher do
         _ -> nil
       end
 
-    info = %{dir_uuid: dir_uuid, messages_uuid: messages_uuid, activity_uuid: activity_uuid}
+    info = %{
+      dir_uuid: dir_uuid,
+      messages_uuid: messages_uuid,
+      activity_uuid: activity_uuid,
+      opts: opts
+    }
 
     # CX-q8nk(3): seed RateLimit sliding-window counters from
     # recent bot posts in _messages so a dispatcher restart inside
@@ -440,7 +465,8 @@ defmodule Commonplace.Bots.Dispatcher do
   defp route_post(room, info, payload, state) do
     message_id = Map.get(payload, "message_id")
 
-    with text when is_binary(text) <- load_message_text(state.store, info.messages_uuid, message_id),
+    with text when is_binary(text) <-
+           load_message_text(state.store, info.messages_uuid, message_id),
          {:ok, bots} <- Entity.list_in_room(state.store, info.dir_uuid) do
       event =
         payload
@@ -557,13 +583,23 @@ defmodule Commonplace.Bots.Dispatcher do
     invoke_worker_chat(state, room, entity, event)
   end
 
+  # cp-plan #8833 (chat-path twin of CX-k87w): thread the ROOM-REGISTERED
+  # opts (`:root_uuid`, `:cert_cids`, test pass-throughs — see
+  # `subscribe_room/4`'s @doc) into the Worker, with `:messages_uuid` and
+  # `:store` PINNED from registration state (`Keyword.merge/2`,
+  # registration wins over anything a stored `opts` might redundantly
+  # carry) — NEVER read from `event` (chat/model-adjacent data, never a
+  # trust boundary). A room registered via the old 3-arity `subscribe_room/3`
+  # has `opts: []` here, so `root_uuid`/`cert_cids` are simply absent —
+  # byte-identical to pre-fix behavior for that caller.
   defp invoke_worker_chat(state, room, entity, event) do
-    messages_uuid = get_in(state.rooms, [room, :messages_uuid])
+    info = Map.get(state.rooms, room, %{})
+    messages_uuid = Map.get(info, :messages_uuid)
+    room_opts = Map.get(info, :opts, [])
 
-    __MODULE__.spawn_worker(room, entity, event,
-      messages_uuid: messages_uuid,
-      store: state.store
-    )
+    opts = Keyword.merge(room_opts, messages_uuid: messages_uuid, store: state.store)
+
+    __MODULE__.spawn_worker(room, entity, event, opts)
   end
 
   # CX-q8nk(3): on subscribe, walk the room's _messages doc for
@@ -578,7 +614,9 @@ defmodule Commonplace.Bots.Dispatcher do
             doc
             |> Messages.materialize()
             |> Enum.filter(fn e -> bot_authored?(Map.get(e, "author_path", "")) end)
-            |> Enum.map(fn e -> %{bot: bot_name(Map.get(e, "author_path", "")), ts: Map.get(e, "ts")} end)
+            |> Enum.map(fn e ->
+              %{bot: bot_name(Map.get(e, "author_path", "")), ts: Map.get(e, "ts")}
+            end)
 
           if posts != [] do
             RateLimit.seed_from_history(room, posts)
@@ -743,7 +781,12 @@ defmodule Commonplace.Bots.Dispatcher do
 
       :gone ->
         new_uuid =
-          resolve_home_agenda(name, Map.get(entry, :mud_root), state.store, Map.get(entry, :opts, []))
+          resolve_home_agenda(
+            name,
+            Map.get(entry, :mud_root),
+            state.store,
+            Map.get(entry, :opts, [])
+          )
 
         state = %{
           state
