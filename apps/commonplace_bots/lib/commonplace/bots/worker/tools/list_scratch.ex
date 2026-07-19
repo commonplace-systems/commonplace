@@ -2,7 +2,7 @@ defmodule Commonplace.Bots.Worker.Tools.ListScratch do
   @moduledoc """
   `list_scratch` tool (Camillo C5c-iii, cp-plan #8892/#8895) — the filing
   loop's read half, part one: list the page names under the bot's own
-  `home/scratch/`.
+  `home/<book>/`.
 
   "scrollback is what just happened; scratch is what he chose to keep;
   rooms are what he chose to KEEP keeping" — this tool (and its sibling
@@ -13,24 +13,33 @@ defmodule Commonplace.Bots.Worker.Tools.ListScratch do
   ## The container/page shape (same one `Commonplace.Bots.Worker.Tools.Scratch`
   ## writes and `Commonplace.Bots.NoteDoc` mints)
 
-  `home/scratch/` is itself a zoned note-meta dir (its OWN `__note.json`,
+  `home/<book>/` is itself a zoned note-meta dir (its OWN `__note.json`,
   currently unused content, just the container's genesis) with one child DIR
-  per page (`home/scratch/<page>/`, each ALSO carrying its own `__note.json`
+  per page (`home/<book>/<page>/`, each ALSO carrying its own `__note.json`
   whose `"text"` field is the page's content — see `Scratch`'s moduledoc).
-  Listing therefore means: read `home/scratch/`'s schema entries and keep
+  Listing therefore means: read `home/<book>/`'s schema entries and keep
   only the `:dir` ones — filtering by TYPE, not by name, cleanly excludes
   the container's own `__note.json` FILE entry (a `:doc`, never a `:dir`)
   without a name special-case that could drift out of sync with `NoteDoc`.
 
-  A bot with no scratch dir yet (never jotted anything) or no `mud_ctx`
-  reads as empty — `"(no scratch pages yet)"` — never an error tuple; an
-  empty scratchpad is not a failure.
+  A bot with no `<book>` dir yet (never jotted anything there) or no
+  `mud_ctx` reads as empty — `"(no scratch pages yet)"` /
+  `"(no wiki pages yet)"` — never an error tuple; an empty book is not a
+  failure.
+
+  ## The wiki namespace (Camillo C6, cp-plan #8949/#8952) — ZERO new authority
+
+  The SAME optional `"book"` enum (`"scratch"` default, or `"wiki"`)
+  `Scratch`/`ReadScratch` accept — see `Scratch`'s moduledoc "The wiki
+  namespace" for the full rationale. An out-of-enum book is refused
+  sanitized before any read.
   """
 
   alias Commonplace.MUD.{Schemas, World}
   alias Commonplace.Tree.Schema
 
-  @scratch_root "scratch"
+  @default_book "scratch"
+  @valid_books ~w(scratch wiki)
 
   def name, do: "list_scratch"
 
@@ -38,25 +47,25 @@ defmodule Commonplace.Bots.Worker.Tools.ListScratch do
     %{
       "name" => "list_scratch",
       "description" =>
-        "List the page names in your private scratchpad (home/scratch/). No arguments.",
-      "input_schema" => %{"type" => "object", "properties" => %{}}
+        "List the page names in your scratch pages or your wiki — the spine your rooms " <>
+          "hang from. Optional \"book\": \"scratch\" (default) or \"wiki\".",
+      "input_schema" => %{
+        "type" => "object",
+        "properties" => %{
+          "book" => %{
+            "type" => "string",
+            "enum" => @valid_books,
+            "description" => "Which book: \"scratch\" (default) or \"wiki\"."
+          }
+        }
+      }
     }
   end
 
-  def call(%{mud_ctx: ctx}, _input) when is_map(ctx) do
-    case lookup_entry(ctx.home_room_uuid, @scratch_root, ctx.store) do
-      {:ok, scratch_uuid} ->
-        pages =
-          scratch_uuid
-          |> World.list_entries(ctx.store)
-          |> Enum.filter(&(&1.type == :dir))
-          |> Enum.map(& &1.name)
-          |> Enum.sort()
-
-        {:ok, render(pages)}
-
-      :error ->
-        {:ok, render([])}
+  def call(%{mud_ctx: ctx}, input) when is_map(ctx) do
+    case safe_book(Map.get(input, "book")) do
+      {:ok, book} -> {:ok, list_book(ctx, book)}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -66,8 +75,29 @@ defmodule Commonplace.Bots.Worker.Tools.ListScratch do
   # tool like `Scratch`, its write-side sibling, refuses the same way).
   def call(_state, _input), do: {:error, "You are not in the world."}
 
-  defp render([]), do: "(no scratch pages yet)"
-  defp render(pages), do: Enum.join(pages, ", ")
+  # BOOK GUARD — identical enum to Scratch.safe_book/1.
+  defp safe_book(nil), do: {:ok, @default_book}
+  defp safe_book(book) when book in @valid_books, do: {:ok, book}
+  defp safe_book(_), do: {:error, "Bad book (use \"scratch\" or \"wiki\")."}
+
+  defp list_book(ctx, book) do
+    case lookup_entry(ctx.home_room_uuid, book, ctx.store) do
+      {:ok, book_uuid} ->
+        book_uuid
+        |> World.list_entries(ctx.store)
+        |> Enum.filter(&(&1.type == :dir))
+        |> Enum.map(& &1.name)
+        |> Enum.sort()
+        |> render(book)
+
+      :error ->
+        render([], book)
+    end
+  end
+
+  defp render([], "wiki"), do: "(no wiki pages yet)"
+  defp render([], _book), do: "(no scratch pages yet)"
+  defp render(pages, _book), do: Enum.join(pages, ", ")
 
   defp lookup_entry(parent_uuid, name, store) do
     with {:ok, schema} <- Schemas.load_dir_schema(parent_uuid, store),

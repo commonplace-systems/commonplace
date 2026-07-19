@@ -675,8 +675,10 @@ defmodule Commonplace.Bots.Worker.Loop do
   # FIRST — read_scratch before distill before describe before tidy. Filing
   # isn't just writing forward from scratch; it's reading back what he chose
   # to keep, THEN deciding what of it belongs distilled onto a room.
+  # C6 (cp-plan #8949/#8952): the invitation now names the wiki alongside
+  # scratch — read your notes, tend the index, THEN distill/describe/tidy.
   defp filing_framing(true) do
-    "\nA quiet thread is a good hour for filing: read your notes (read_scratch), " <>
+    "\nA quiet thread is a good hour for filing: read your notes, tend your wiki index, " <>
       "distill what matters, describe the rooms they belong to, tidy your desk."
   end
 

@@ -14,10 +14,10 @@ defmodule Commonplace.Bots.Worker.Tools do
 
   ## The tools
 
-  Fourteen tools are live in the registry (`@tool_modules`) — chat/memory
-  writers and readers plus the Camillo C3c/C5b/C5c-iii MUD tools (`move`,
-  `look`, `scratch`, `describe`, `list_scratch`, `read_scratch`) — but they
-  are **not** ambient. As of
+  Fifteen tools are live in the registry (`@tool_modules`) — chat/memory
+  writers and readers plus the Camillo C3c/C5b/C5c-iii/C6 MUD tools
+  (`move`, `look`, `scratch`, `describe`, `list_scratch`, `read_scratch`,
+  `dig`) — but they are **not** ambient. As of
   Camillo C3a the registry is DEFAULT-CLOSED per entity: `tool_defs/1`
   offers only the tools in `state.allowlist`, and `dispatch/3` refuses
   any name not in it. The allowlist is the entity's grantor-signed
@@ -51,13 +51,25 @@ defmodule Commonplace.Bots.Worker.Tools do
       the bot's own home zone — memory distilled onto a room's face
       (Camillo C5b, cp-plan #8880).
     * `list_scratch` — list the page names under the bot's own
-      `home/scratch/` (Camillo C5c-iii, cp-plan #8892/#8895).
-    * `read_scratch` — read a scratch page's text back, size-capped
-      (Camillo C5c-iii). The filing loop's READ half: `list_scratch` +
-      `read_scratch` let a turn actually consult what it chose to keep,
-      before deciding what belongs distilled onto a room via `describe`.
+      `home/<book>/` (Camillo C5c-iii, cp-plan #8892/#8895; `book`
+      generalized to `"scratch"`/`"wiki"` in C6, cp-plan #8949/#8952).
+    * `read_scratch` — read a page's text back, size-capped (Camillo
+      C5c-iii; same `book` generalization). The filing loop's READ half:
+      `list_scratch` + `read_scratch` let a turn actually consult what it
+      chose to keep, before deciding what belongs distilled onto a room
+      via `describe`.
+    * `dig` — carve a new room from where the bot stands, through the
+      SAME `Commonplace.MUD.Build.dig_room/4` write-core
+      `Commonplace.Bots.Citizen` uses to seed a foyer (Camillo C6,
+      cp-plan #8949/#8952). Dig -> walk in -> describe.
 
-  The six MUD tools act through `state.mud_ctx` — a freshly-resolved
+  `scratch`/`list_scratch`/`read_scratch` all take an optional `"book"`
+  (`"scratch"` default, or `"wiki"`) — the SAME zoned-note-meta mechanics,
+  just a different shelf under home. `move`'s missing-exit refusal also
+  names `dig` when it's charter-granted (`state.allowlist`) — see that
+  tool's moduledoc "The door names itself."
+
+  The seven MUD tools act through `state.mud_ctx` — a freshly-resolved
   `Commonplace.Bots.MudContext` the Worker threads PER TURN — never a
   human `PlayerSession`. A nil `mud_ctx` (unprovisioned bot) makes each
   refuse gracefully.
@@ -73,6 +85,7 @@ defmodule Commonplace.Bots.Worker.Tools do
   alias Commonplace.Bots.Worker.Tools.{
     CheckTurnRemaining,
     Describe,
+    Dig,
     ListFiles,
     ListScratch,
     Look,
@@ -101,7 +114,8 @@ defmodule Commonplace.Bots.Worker.Tools do
     Scratch,
     Describe,
     ListScratch,
-    ReadScratch
+    ReadScratch,
+    Dig
   ]
 
   @doc """

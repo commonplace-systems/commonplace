@@ -2,7 +2,7 @@ defmodule Commonplace.Bots.Worker.Tools.ReadScratch do
   @moduledoc """
   `read_scratch` tool (Camillo C5c-iii, cp-plan #8892/#8895) — the filing
   loop's read half, part two: read a page's full text back from the bot's
-  own `home/scratch/<page>/`.
+  own `home/<book>/<page>/`.
 
   "scrollback is what just happened; scratch is what he chose to keep;
   rooms are what he chose to KEEP keeping" — this is the tool that lets him
@@ -23,14 +23,21 @@ defmodule Commonplace.Bots.Worker.Tools.ReadScratch do
   so a bare `scratch` + a bare `read_scratch` round-trip through the same
   page by default.
 
+  ## The wiki namespace (Camillo C6, cp-plan #8949/#8952) — ZERO new authority
+
+  The SAME optional `"book"` enum (`"scratch"` default, or `"wiki"`)
+  `Scratch`/`ListScratch` accept — see `Scratch`'s moduledoc "The wiki
+  namespace" for the full rationale. An out-of-enum book is refused
+  sanitized before any read.
+
   ## Absent vs empty vs found (never an error tuple for "nothing to see")
 
   Matching `read_memory`'s VALUE-absent convention: a page that doesn't
-  exist yet, or a scratch dir that doesn't exist yet (never jotted to), or
+  exist yet, or a book dir that doesn't exist yet (never jotted to), or
   an existing page whose text is still `""` (created but never written) all
   render a GENTLE in-fiction message — never `{:error, _}`. An `{:error,
-  _}` is reserved for what's actually wrong (a bad page name, no `mud_ctx`)
-  — a merely-empty page is not wrong, it's just empty.
+  _}` is reserved for what's actually wrong (a bad book/page name, no
+  `mud_ctx`) — a merely-empty page is not wrong, it's just empty.
 
   ## Cap
 
@@ -43,7 +50,8 @@ defmodule Commonplace.Bots.Worker.Tools.ReadScratch do
   alias Commonplace.MUD.{Schemas, World}
   alias Commonplace.Tree.Schema
 
-  @scratch_root "scratch"
+  @default_book "scratch"
+  @valid_books ~w(scratch wiki)
   @default_page "notes"
   @max_segment 64
   @max_chars 4000
@@ -57,16 +65,22 @@ defmodule Commonplace.Bots.Worker.Tools.ReadScratch do
     %{
       "name" => "read_scratch",
       "description" =>
-        "Read a page from your private scratchpad (scratch/<page>). " <>
+        "Read a page from your scratch pages or your wiki — the spine your rooms hang " <>
+          "from (book: \"scratch\" (default) or \"wiki\"). " <>
           "Optional \"page\" picks a page (default \"notes\", the same page 'scratch' " <>
           "writes to by default).",
       "input_schema" => %{
         "type" => "object",
         "properties" => %{
+          "book" => %{
+            "type" => "string",
+            "enum" => @valid_books,
+            "description" => "Which book: \"scratch\" (default) or \"wiki\"."
+          },
           "page" => %{
             "type" => "string",
             "description" =>
-              "Optional page name within your scratchpad (a single name, no slashes). Defaults to \"notes\"."
+              "Optional page name within the book (a single name, no slashes). Defaults to \"notes\"."
           }
         }
       }
@@ -74,8 +88,10 @@ defmodule Commonplace.Bots.Worker.Tools.ReadScratch do
   end
 
   def call(%{mud_ctx: ctx}, input) when is_map(ctx) do
-    case safe_page(Map.get(input, "page")) do
-      {:ok, page} -> {:ok, read_page(ctx, page)}
+    with {:ok, book} <- safe_book(Map.get(input, "book")),
+         {:ok, page} <- safe_page(Map.get(input, "page")) do
+      {:ok, read_page(ctx, book, page)}
+    else
       {:error, reason} -> {:error, reason}
     end
   end
@@ -83,6 +99,11 @@ defmodule Commonplace.Bots.Worker.Tools.ReadScratch do
   # No MUD ctx — not in the world, no scratchpad to read. Sanitized refusal
   # (same shape as `scratch`/`list_scratch`).
   def call(_state, _input), do: {:error, "You are not in the world."}
+
+  # BOOK GUARD — identical enum to Scratch.safe_book/1.
+  defp safe_book(nil), do: {:ok, @default_book}
+  defp safe_book(book) when book in @valid_books, do: {:ok, book}
+  defp safe_book(_), do: {:error, "Bad book (use \"scratch\" or \"wiki\")."}
 
   # NAMESPACE GUARD — identical rule to Scratch.safe_page/1 (see that
   # module's moduledoc "Namespace bounding").
@@ -106,19 +127,19 @@ defmodule Commonplace.Bots.Worker.Tools.ReadScratch do
   # A PURE lookup (never mints) — reading must never have the side effect of
   # creating the page/container it's asking about, unlike the write side's
   # get-or-create `NoteDoc.ensure_zoned_dir/4`.
-  defp read_page(ctx, page) do
-    with {:ok, scratch_uuid} <- lookup_entry(ctx.home_room_uuid, @scratch_root, ctx.store),
-         {:ok, page_uuid} <- lookup_entry(scratch_uuid, page, ctx.store),
+  defp read_page(ctx, book, page) do
+    with {:ok, book_uuid} <- lookup_entry(ctx.home_room_uuid, book, ctx.store),
+         {:ok, page_uuid} <- lookup_entry(book_uuid, page, ctx.store),
          {:ok, note_map} <- World.get_meta_map(page_uuid, NoteDoc.note_filename(), ctx.store) do
-      render_text(page, Map.get(note_map, "text", ""))
+      render_text(book, page, Map.get(note_map, "text", ""))
     else
-      _ -> "(no such page: #{page})"
+      _ -> "(no such page: #{book}/#{page})"
     end
   end
 
-  defp render_text(page, ""), do: "(scratch/#{page} is empty)"
+  defp render_text(book, page, ""), do: "(#{book}/#{page} is empty)"
 
-  defp render_text(_page, text) when is_binary(text) do
+  defp render_text(_book, _page, text) when is_binary(text) do
     if String.length(text) > @max_chars do
       String.slice(text, 0, @max_chars) <> "\n" <> @truncation_note
     else

@@ -166,6 +166,26 @@ defmodule Commonplace.Bots.MudToolsTest do
              Move.call(%{mud_ctx: mud_ctx}, %{"direction" => "up"})
   end
 
+  # C6 (cp-plan #8949/#8952): "the door names itself" — pinned both branches.
+  test "PIN: a missing-exit move NAMES dig when it's charter-granted (state.allowlist)",
+       ctx do
+    {_prov, _sc, mud_ctx} = resolve_camillo(ctx)
+
+    state = %{mud_ctx: mud_ctx, allowlist: ["move", "dig"]}
+
+    assert {:error, "There is no door up — you could build one (dig)."} =
+             Move.call(state, %{"direction" => "up"})
+  end
+
+  test "PIN: without dig in the allowlist, the missing-exit refusal stays plain", ctx do
+    {_prov, _sc, mud_ctx} = resolve_camillo(ctx)
+
+    # "move" charted, "dig" deliberately NOT — the uncharted-bot branch.
+    state = %{mud_ctx: mud_ctx, allowlist: ["move"]}
+
+    assert {:error, "You can't go that way."} = Move.call(state, %{"direction" => "up"})
+  end
+
   test "move: no mud_ctx (unprovisioned) refuses gracefully", _ctx do
     assert {:error, "You are not in the world."} =
              Move.call(%{mud_ctx: nil}, %{"direction" => "north"})

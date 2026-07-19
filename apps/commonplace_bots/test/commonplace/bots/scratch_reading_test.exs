@@ -13,13 +13,24 @@ defmodule Commonplace.Bots.ScratchReadingTest do
   truncated with the honest note; (e) empty/missing — no pages ever
   written renders an honest empty message, and a page name that doesn't
   exist renders a gentle "(no such page)" message, NEVER an error tuple.
+
+  Camillo C6 (cp-plan #8949/#8952) adds the WIKI BOOK pins, spec-authored
+  the same way: write/read/list all route to `home/wiki/` (verified by a
+  DIRECT tree lookup, not just tool-reported text — the page must actually
+  hang under `home/wiki/`, not `home/scratch/`), an out-of-enum `"book"` is
+  refused sanitized before any write/read, and the default (`"book"`
+  omitted) is byte-unchanged from before this slice — the whole rest of
+  this file's pre-existing tests, which never pass `"book"` at all, are
+  themselves that regression pin.
   """
   use ExUnit.Case, async: false
 
   alias Commonplace.Bots.Identity, as: BotIdentity
   alias Commonplace.Bots.{Citizen, MudContext}
   alias Commonplace.Bots.Worker.Tools.{ListScratch, ReadScratch, Scratch}
+  alias Commonplace.MUD.Schemas, as: MudSchemas
   alias Commonplace.Store.SecretStore
+  alias Commonplace.Tree.Schema, as: TreeSchema
 
   setup do
     n = :rand.uniform(1_000_000_000)
@@ -219,6 +230,67 @@ defmodule Commonplace.Bots.ScratchReadingTest do
     assert {:ok, text} = ReadScratch.call(%{mud_ctx: mud_ctx}, %{"page" => "blank"})
     assert text =~ "is empty"
     refute text =~ "no such page"
+  end
+
+  ## --- PIN (wiki book): C6, cp-plan #8949/#8952 ---
+
+  test "PIN wiki book: write/read/list route to home/wiki/ — verified by a DIRECT tree lookup",
+       ctx do
+    {_prov, _sc, mud_ctx} = resolve_camillo(ctx)
+
+    assert {:ok, _} =
+             Scratch.call(%{mud_ctx: mud_ctx}, %{"note" => "wiki entry", "book" => "wiki"})
+
+    # DIRECT tree check: the page hangs under home/wiki/, NOT home/scratch/.
+    {:ok, home_schema} = MudSchemas.load_dir_schema(mud_ctx.home_room_uuid, ctx.store)
+    assert {:ok, wiki_entry} = TreeSchema.get_entry(home_schema, "wiki")
+    {:ok, wiki_schema} = MudSchemas.load_dir_schema(wiki_entry.node_id, ctx.store)
+    assert {:ok, _page_entry} = TreeSchema.get_entry(wiki_schema, "notes")
+
+    # scratch/ was never touched by this write.
+    assert :error = TreeSchema.get_entry(home_schema, "scratch")
+
+    # Read-back via read_scratch(book: "wiki").
+    assert {:ok, text} = ReadScratch.call(%{mud_ctx: mud_ctx}, %{"book" => "wiki"})
+    assert text =~ "wiki entry"
+
+    # List via list_scratch(book: "wiki").
+    assert {:ok, listing} = ListScratch.call(%{mud_ctx: mud_ctx}, %{"book" => "wiki"})
+    assert listing =~ "notes"
+
+    # No cross-book bleed: the default ("scratch") book still reports absent.
+    assert {:ok, scratch_text} = ReadScratch.call(%{mud_ctx: mud_ctx}, %{})
+    assert scratch_text =~ "no such page"
+
+    assert {:ok, "(no scratch pages yet)"} = ListScratch.call(%{mud_ctx: mud_ctx}, %{})
+  end
+
+  test "PIN wiki book: an out-of-enum book is refused sanitized, before any write/read/list",
+       ctx do
+    {_prov, _sc, mud_ctx} = resolve_camillo(ctx)
+
+    assert {:error, msg} = Scratch.call(%{mud_ctx: mud_ctx}, %{"note" => "x", "book" => "junk"})
+    assert msg =~ "book"
+
+    assert {:error, _} = ReadScratch.call(%{mud_ctx: mud_ctx}, %{"book" => "junk"})
+    assert {:error, _} = ListScratch.call(%{mud_ctx: mud_ctx}, %{"book" => "junk"})
+
+    # No write happened anywhere: home has neither scratch, wiki, nor "junk".
+    {:ok, home_schema} = MudSchemas.load_dir_schema(mud_ctx.home_room_uuid, ctx.store)
+    assert :error = TreeSchema.get_entry(home_schema, "scratch")
+    assert :error = TreeSchema.get_entry(home_schema, "wiki")
+    assert :error = TreeSchema.get_entry(home_schema, "junk")
+  end
+
+  test "PIN wiki book: the default (book omitted) still routes to home/scratch/, unchanged",
+       ctx do
+    {_prov, _sc, mud_ctx} = resolve_camillo(ctx)
+
+    assert {:ok, _} = Scratch.call(%{mud_ctx: mud_ctx}, %{"note" => "default book note"})
+
+    {:ok, home_schema} = MudSchemas.load_dir_schema(mud_ctx.home_room_uuid, ctx.store)
+    assert {:ok, _scratch_entry} = TreeSchema.get_entry(home_schema, "scratch")
+    assert :error = TreeSchema.get_entry(home_schema, "wiki")
   end
 
   ## --- Graceful no-ctx refusals ---

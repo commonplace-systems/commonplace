@@ -24,6 +24,19 @@ defmodule Commonplace.Bots.Worker.Tools.Move do
 
   A missing `mud_ctx` (unprovisioned bot) or an absent exit refuses with a
   SANITIZED message that never enumerates internals (thin-handle).
+
+  ## The door names itself (Camillo C6, cp-plan #8949/#8952)
+
+  A missing-exit refusal is ordinarily the plain `"You can't go that
+  way."` — but WHEN `"dig"` is in `state.allowlist` (checked directly,
+  never assumed — a bot without `dig` charter-granted never sees this),
+  it becomes `"There is no door <direction> — you could build one
+  (dig)."` The world teaches its own verbs only to those actually
+  empowered to use them; an uncharted bot gets the same plain refusal it
+  always did. This does NOT apply to an exit that exists but the move
+  itself failed (a gate denial, a busy lock) — digging another door
+  wouldn't fix a blocked one, so that case keeps the plain message
+  unconditionally (see `walk/3`'s own `{:error, _}` branch).
   """
 
   alias Commonplace.MUD.{Schemas.Room, World}
@@ -49,10 +62,10 @@ defmodule Commonplace.Bots.Worker.Tools.Move do
     }
   end
 
-  def call(%{mud_ctx: ctx}, %{"direction" => direction})
+  def call(%{mud_ctx: ctx} = state, %{"direction" => direction})
       when is_map(ctx) and is_binary(direction) and direction != "" do
     dir = String.trim(direction)
-    ctx.current_room_uuid |> World.get_room(ctx.store) |> step(dir, ctx)
+    ctx.current_room_uuid |> World.get_room(ctx.store) |> step(dir, ctx, state)
   end
 
   def call(%{mud_ctx: ctx}, _input) when is_map(ctx),
@@ -62,14 +75,35 @@ defmodule Commonplace.Bots.Worker.Tools.Move do
   # presence). Sanitized refusal, no internals.
   def call(_state, _input), do: {:error, "You are not in the world."}
 
-  defp step({:ok, %Room{exits: exits}}, dir, ctx) do
+  defp step({:ok, %Room{exits: exits}}, dir, ctx, state) do
     case Map.get(exits, dir) do
       dest when is_binary(dest) -> walk(dir, dest, ctx)
-      _ -> {:error, "You can't go that way."}
+      _ -> {:error, no_door_message(dir, state)}
     end
   end
 
-  defp step(_room_err, _dir, _ctx), do: {:error, "You can't go that way."}
+  # A read failure (can't even load the current room) — never dig-naming;
+  # there's no room to reason a "door" against.
+  defp step(_room_err, _dir, _ctx, _state), do: {:error, "You can't go that way."}
+
+  # The door-naming decision (see moduledoc "The door names itself"). The
+  # allowlist is checked directly off `state` — never assumed from
+  # anything else — so a bot without `dig` charter-granted gets the plain
+  # refusal it always has.
+  defp no_door_message(dir, state) do
+    if "dig" in allowlist(state) do
+      "There is no door #{dir} — you could build one (dig)."
+    else
+      "You can't go that way."
+    end
+  end
+
+  defp allowlist(state) do
+    case Map.get(state, :allowlist) do
+      list when is_list(list) -> list
+      _ -> []
+    end
+  end
 
   # THE single motion path: the CX-avzp gated presence-move chokepoint (pin b).
   # First arg is the PRESENCE DOC uuid (the entry `move_presence` relocates —
