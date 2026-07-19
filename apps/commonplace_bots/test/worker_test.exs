@@ -187,9 +187,7 @@ defmodule Commonplace.Bots.WorkerTest do
       entity = load_entity(bot, "alice.bot")
 
       result =
-        Worker.run("demo", entity, event("@alice ping"),
-          client_fn: stub_client([end_turn("hi")])
-        )
+        Worker.run("demo", entity, event("@alice ping"), client_fn: stub_client([end_turn("hi")]))
 
       assert result == {:ok, :end_turn}
     end
@@ -381,9 +379,7 @@ defmodule Commonplace.Bots.WorkerTest do
       ]
 
       assert {:ok, :end_turn} =
-               Worker.run("demo", entity, event("@alice"),
-                 client_fn: stub_client(responses)
-               )
+               Worker.run("demo", entity, event("@alice"), client_fn: stub_client(responses))
     end
 
     test "client failure terminates with :error" do
@@ -391,9 +387,7 @@ defmodule Commonplace.Bots.WorkerTest do
       entity = load_entity(bot, "alice.bot")
 
       result =
-        Worker.run("demo", entity, event("@alice"),
-          client_fn: fn _ -> {:error, :boom} end
-        )
+        Worker.run("demo", entity, event("@alice"), client_fn: fn _ -> {:error, :boom} end)
 
       assert {:error, {:client_failure, :boom}} = result
     end
@@ -416,6 +410,58 @@ defmodule Commonplace.Bots.WorkerTest do
         )
 
       assert result == {:cap_hit, :calls}
+    end
+
+    # C5a pin (c): budget override is per-bot-only. A bot whose bot.json
+    # carries `max_wall_ms` gets THAT ceiling; a bot with no override falls
+    # back to the module default (`@default_max_wall_ms`, 60_000ms) — same
+    # `fetch_pos_int/5` path max_calls/max_output_tokens already use.
+    test "bot.json max_wall_ms overrides default for THAT bot only; an unset bot keeps the default" do
+      overridden_bot = mint_bot_dir(bot_config: %{"max_wall_ms" => 5})
+      plain_bot = mint_bot_dir([])
+
+      overridden_entity = load_entity(overridden_bot, "alice.bot")
+      plain_entity = load_entity(plain_bot, "alice.bot")
+      messages_uuid = mint_messages_doc()
+
+      # A single tool_use response, but the client SLEEPS 20ms before
+      # returning it — long enough that the loop's SECOND wall-clock check
+      # (before the would-be next POST) reads elapsed >= 5ms for the
+      # overridden bot, but nowhere near the 60_000ms default for the plain
+      # bot. Only one queued response is needed either way: the overridden
+      # bot never gets to issue a second POST (caps first), and the plain
+      # bot's second iteration would also be a real POST — so give it an
+      # end_turn as its "second" response too, reachable only if it did NOT
+      # cap.
+      slow_client = fn _request ->
+        Process.sleep(20)
+        {:ok, tool_use("t1", "post_message", %{"text" => "first"})}
+      end
+
+      overridden_result =
+        Worker.run("demo", overridden_entity, event("@alice"),
+          client_fn: slow_client,
+          messages_uuid: messages_uuid
+        )
+
+      # With a 5ms ceiling and a 20ms-per-call client, the SECOND
+      # iteration's wall-clock check reads elapsed >= 5ms and caps out
+      # BEFORE issuing a second POST.
+      assert overridden_result == {:cap_hit, :wall_clock}
+
+      plain_result =
+        Worker.run("demo", plain_entity, event("@alice"),
+          client_fn:
+            stub_client([
+              tool_use("t1", "post_message", %{"text" => "first"}),
+              end_turn()
+            ]),
+          messages_uuid: messages_uuid
+        )
+
+      # No sleep in this one at all — proves the DEFAULT ceiling (60_000ms)
+      # applies to a bot with no override, letting it run to completion.
+      assert plain_result == {:ok, :end_turn}
     end
   end
 end

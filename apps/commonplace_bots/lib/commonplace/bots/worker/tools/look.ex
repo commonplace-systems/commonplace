@@ -12,9 +12,14 @@ defmodule Commonplace.Bots.Worker.Tools.Look do
   snapshot the player pane uses; the `viewer` is taken from the resolved ctx
   (pin c) so a capability-gated room is judged against the bot's own identity.
   A missing `mud_ctx` refuses gracefully (thin-handle).
+
+  The read itself goes through `Commonplace.Bots.Worker.Perception.fetch_snapshot/1`
+  (Camillo C5a) — the SAME call this module used to make inline — so the
+  `look` tool and the awareness-by-default wake perception block share ONE
+  room-snapshot read path, not two.
   """
 
-  alias Commonplace.MUD.World
+  alias Commonplace.Bots.Worker.Perception
 
   def name, do: "look"
 
@@ -29,9 +34,7 @@ defmodule Commonplace.Bots.Worker.Tools.Look do
   end
 
   def call(%{mud_ctx: ctx}, _input) when is_map(ctx) do
-    case World.room_snapshot(ctx.current_room_uuid, ctx.presence_filename, ctx.store,
-           viewer: ctx.signing_context.identity_uuid
-         ) do
+    case Perception.fetch_snapshot(ctx) do
       {:ok, snapshot} -> {:ok, render(snapshot)}
       {:error, _reason} -> {:error, "You can't see anything here."}
     end

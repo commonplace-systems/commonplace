@@ -78,7 +78,7 @@ defmodule Commonplace.Bots.Worker.Loop do
   """
 
   alias Commonplace.Bots.Agenda
-  alias Commonplace.Bots.Worker.Tools
+  alias Commonplace.Bots.Worker.{Perception, Tools}
 
   @type state :: %{
           room: String.t(),
@@ -230,8 +230,12 @@ defmodule Commonplace.Bots.Worker.Loop do
   end
 
   defp dispatch_tool(_state, _malformed),
-    do: %{"type" => "tool_result", "tool_use_id" => "unknown", "content" => "malformed tool_use",
-          "is_error" => true}
+    do: %{
+      "type" => "tool_result",
+      "tool_use_id" => "unknown",
+      "content" => "malformed tool_use",
+      "is_error" => true
+    }
 
   defp inspect_error(reason) when is_binary(reason), do: reason
   defp inspect_error(reason), do: inspect(reason)
@@ -263,13 +267,19 @@ defmodule Commonplace.Bots.Worker.Loop do
     ]
   end
 
-  # Camillo C3b §10: the heartbeat turn shape. When the dispatcher woke
+  # Camillo C3b §10 / C5a: the heartbeat turn shape. When the dispatcher woke
   # the bot on its own timer (an internally-tagged `"kind" =>
   # "heartbeat"` event — never producible by chat), frame the turn
   # around the bot's agenda and prompt a write-back, rather than the
   # chat "new message" shape. The actual walking / jotting uses C3c
   # tools; here we only SHAPE the turn to read the agenda.
+  #
+  # C5a: the perception block (a prose room snapshot from `state.mud_ctx`,
+  # see `Commonplace.Bots.Worker.Perception`) is now the FIRST section of
+  # every wake's text — awareness-by-default, not something the bot has to
+  # spend a tool call to ask for.
   defp build_initial_user_text(%{event: %{"kind" => "heartbeat"}} = state) do
+    perception = Perception.render(state)
     items = read_agenda(state)
     agenda_text = render_agenda(items)
 
@@ -277,21 +287,27 @@ defmodule Commonplace.Bots.Worker.Loop do
       if Map.get(state.event, "thread_quiet", true), do: "quiet", else: "active"
 
     """
+    #{perception}
+
     You woke on a heartbeat. Your agenda:
     #{agenda_text}
 
-    The thread is #{thread}. Do one agenda item, or tidy, then update your agenda.
+    The thread is #{thread}. Do one agenda item, or tidy, then update your agenda. The hour is yours.
     """
     |> String.trim_trailing()
   end
 
   defp build_initial_user_text(state) do
+    perception = Perception.render(state)
     author = Map.get(state.event, "author_path", "human")
     text = Map.get(state.event, "text", "")
 
     """
-    New message in #{state.room}:
-    #{author}: #{text}
+    #{perception}
+
+    #{author} says: "#{text}"
+
+    You may take your time: look, walk, consult your notes or agenda, write — and then speak. Or simply speak, if the moment calls for it.
     """
     |> String.trim_trailing()
   end
@@ -331,8 +347,7 @@ defmodule Commonplace.Bots.Worker.Loop do
 
     %{
       calls_remaining: budget.calls_remaining,
-      output_tokens_remaining:
-        max(state.config.max_output_tokens - budget.output_tokens_used, 0),
+      output_tokens_remaining: max(state.config.max_output_tokens - budget.output_tokens_used, 0),
       wall_ms_remaining: max(state.config.max_wall_ms - elapsed, 0)
     }
   end
