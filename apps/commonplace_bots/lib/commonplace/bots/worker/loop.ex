@@ -283,8 +283,8 @@ defmodule Commonplace.Bots.Worker.Loop do
     items = read_agenda(state)
     agenda_text = render_agenda(items)
 
-    thread =
-      if Map.get(state.event, "thread_quiet", true), do: "quiet", else: "active"
+    quiet? = Map.get(state.event, "thread_quiet", true)
+    thread = if quiet?, do: "quiet", else: "active"
 
     """
     #{perception}
@@ -293,6 +293,7 @@ defmodule Commonplace.Bots.Worker.Loop do
     #{agenda_text}
 
     The thread is #{thread}. Do one agenda item, or tidy, then update your agenda. The hour is yours.
+    #{filing_framing(quiet?)}
     """
     |> String.trim_trailing()
   end
@@ -323,6 +324,19 @@ defmodule Commonplace.Bots.Worker.Loop do
       _, _ -> []
     end
   end
+
+  # C5b (cp-plan #8880) — when the thread is quiet, the framing invites
+  # CONSOLIDATION explicitly: distill scratch notes, describe the room(s) they
+  # belong to, tidy the desk. A quiet thread is exactly the moment nothing
+  # urgent is competing for the hour, so it's the natural cue to file rather
+  # than just defer. Silent (no line at all) when the thread is active — an
+  # active thread already has its own pull on attention.
+  defp filing_framing(true) do
+    "\nA quiet thread is a good hour for filing: distill your scratch notes, " <>
+      "describe the rooms they belong to, tidy your desk."
+  end
+
+  defp filing_framing(false), do: ""
 
   defp render_agenda([]), do: "(empty)"
 

@@ -14,9 +14,9 @@ defmodule Commonplace.Bots.Worker.Tools do
 
   ## The tools
 
-  Eleven tools are live in the registry (`@tool_modules`) — chat/memory
-  writers and readers plus the Camillo C3c MUD tools (`move`, `look`,
-  `scratch`) — but they are **not** ambient. As of
+  Twelve tools are live in the registry (`@tool_modules`) — chat/memory
+  writers and readers plus the Camillo C3c/C5b MUD tools (`move`, `look`,
+  `scratch`, `describe`) — but they are **not** ambient. As of
   Camillo C3a the registry is DEFAULT-CLOSED per entity: `tool_defs/1`
   offers only the tools in `state.allowlist`, and `dispatch/3` refuses
   any name not in it. The allowlist is the entity's grantor-signed
@@ -29,8 +29,9 @@ defmodule Commonplace.Bots.Worker.Tools do
       `_messages` doc as the bot.
     * `remember` — append a JSONL line to the bot's
       `memory.jsonl` doc.
-    * `update_agenda` — append an item to the bot's `agenda.jsonl`
-      doc (the heartbeat turn's write-back).
+    * `update_agenda` — REPLACE the bot's agenda desk with the given
+      item (the heartbeat turn's write-back; C5b fixed this from
+      append to replace — see `UpdateAgenda`'s moduledoc).
     * `read_chat` — read recent messages from the room.
     * `read_memory` — read back the bot's own `memory.jsonl`.
     * `list_files` — list the entries under a directory in the tree.
@@ -45,8 +46,11 @@ defmodule Commonplace.Bots.Worker.Tools do
       in (Camillo C3c).
     * `scratch` — jot a note to the bot's own `scratch/<botname>/…`
       wiki scratchpad, bot-signed and namespace-bounded (Camillo C3c).
+    * `describe` — rewrite (REPLACE, not append) a room's description in
+      the bot's own home zone — memory distilled onto a room's face
+      (Camillo C5b, cp-plan #8880).
 
-  The three MUD tools act through `state.mud_ctx` — a freshly-resolved
+  The four MUD tools act through `state.mud_ctx` — a freshly-resolved
   `Commonplace.Bots.MudContext` the Worker threads PER TURN — never a
   human `PlayerSession`. A nil `mud_ctx` (unprovisioned bot) makes each
   refuse gracefully.
@@ -61,6 +65,7 @@ defmodule Commonplace.Bots.Worker.Tools do
 
   alias Commonplace.Bots.Worker.Tools.{
     CheckTurnRemaining,
+    Describe,
     ListFiles,
     Look,
     Move,
@@ -84,7 +89,8 @@ defmodule Commonplace.Bots.Worker.Tools do
     CheckTurnRemaining,
     Move,
     Look,
-    Scratch
+    Scratch,
+    Describe
   ]
 
   @doc """

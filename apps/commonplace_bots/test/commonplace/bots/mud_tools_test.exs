@@ -50,8 +50,15 @@ defmodule Commonplace.Bots.MudToolsTest do
     # Presence moves take green tokens (World.move -> Move.move -> Bursar), so a
     # Bursar must run under its default name for the shared motion path to work.
     case GenServer.whereis(Commonplace.Green.Bursar) do
-      nil -> :ok
-      pid -> try do GenServer.stop(pid) catch :exit, _ -> :ok end
+      nil ->
+        :ok
+
+      pid ->
+        try do
+          GenServer.stop(pid)
+        catch
+          :exit, _ -> :ok
+        end
     end
 
     {:ok, bursar_pid} =
@@ -170,7 +177,10 @@ defmodule Commonplace.Bots.MudToolsTest do
     # An EXTERNAL move of the presence (not through this ctx) — as if a summon or
     # another actor relocated the bot's .usr.
     assert :ok =
-             World.move_presence(mud_ctx1.presence_uuid, "camillo.usr", prov.foyer_uuid,
+             World.move_presence(
+               mud_ctx1.presence_uuid,
+               "camillo.usr",
+               prov.foyer_uuid,
                prov.study_uuid,
                store: ctx.store,
                signing_context: sc,
@@ -273,7 +283,8 @@ defmodule Commonplace.Bots.MudToolsTest do
     refute Enum.any?(page_names, &String.contains?(&1, ["/", ".."]))
   end
 
-  test "ENFORCE PIN: a provisioned bot's scratch write LANDS under enforce (cert covers the zoned note)", ctx do
+  test "ENFORCE PIN: a provisioned bot's scratch write LANDS under enforce (cert covers the zoned note)",
+       ctx do
     # The whole point of the C3c re-anchor: under REAL enforce + strict trust the
     # zoned note-meta is covered by the bot's {:subtree, home} cert, so the write
     # is authorized and PERSISTS — no more :capability_insufficient. This MUST
@@ -342,6 +353,7 @@ defmodule Commonplace.Bots.MudToolsTest do
              Remember.call(state, %{"text" => "the human likes coffee"})
 
     assert {:ok, json} = ReadMemory.call(state, %{})
+
     assert ["the human likes tea", "the human likes coffee"] =
              json |> Jason.decode!() |> Enum.map(& &1["text"])
 
@@ -358,7 +370,8 @@ defmodule Commonplace.Bots.MudToolsTest do
              UpdateAgenda.call(%{mud_ctx: nil}, %{"text" => "x"})
   end
 
-  test "update_agenda: appends to home/agenda; Agenda.read reads it back", ctx do
+  test "update_agenda: writes to home/agenda (REPLACE semantics, C5b); Agenda.read reads it back",
+       ctx do
     {prov, _sc, mud_ctx} = resolve_camillo(ctx)
 
     assert Agenda.read(mud_ctx) == []
@@ -372,6 +385,13 @@ defmodule Commonplace.Bots.MudToolsTest do
     items = Agenda.read(mud_ctx)
     assert Enum.map(items, & &1["text"]) == ["consolidate the pins"]
     assert Enum.all?(items, &is_binary(&1["ts"]))
+
+    # A second call REPLACES rather than accumulating (C5b fixed this from
+    # append to replace — see UpdateAgenda's moduledoc).
+    assert {:ok, "agenda updated"} =
+             UpdateAgenda.call(%{mud_ctx: mud_ctx}, %{"text" => "file the association"})
+
+    assert Enum.map(Agenda.read(mud_ctx), & &1["text"]) == ["file the association"]
   end
 
   test "ENFORCE PIN: remember LANDS under enforce (cert covers home/memory)", ctx do
@@ -407,7 +427,9 @@ defmodule Commonplace.Bots.MudToolsTest do
   test "NoteDoc.append_entry round-trip + zone SURVIVES repeated appends", ctx do
     {prov, _sc, mud_ctx} = resolve_camillo(ctx)
 
-    {:ok, dir} = NoteDoc.ensure_zoned_dir(mud_ctx.home_room_uuid, "log", ~s({"entries":[]}), mud_ctx)
+    {:ok, dir} =
+      NoteDoc.ensure_zoned_dir(mud_ctx.home_room_uuid, "log", ~s({"entries":[]}), mud_ctx)
+
     assert NoteDoc.read_entries(dir, mud_ctx) == []
 
     :ok = NoteDoc.append_entry(dir, %{"n" => 1}, mud_ctx)

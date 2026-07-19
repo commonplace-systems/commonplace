@@ -33,9 +33,30 @@ defmodule Commonplace.Bots.Agenda do
     * `ensure_dir/1` — the `home/agenda` note dir uuid (get-or-create).
     * `read/1`  — the pending items, oldest-first (`[]` if none / no ctx).
     * `append/2` — append one item (bot-signed), stamping `"ts"` if omitted.
+      Entry-keyed DEDUPE (CX-93rv): every existing entry is, in this v0
+      schema, a pending item — there is no `"done"`/status field anywhere in
+      the agenda note-meta, so "an existing PENDING entry" here just means
+      "any existing entry." Appending a `"text"` that exactly matches an
+      already-present entry's `"text"` is a no-op returning `:ok` (idempotent
+      seed) instead of stacking a duplicate line. This fixes CX-93rv: a
+      re-armed provision ceremony re-running the agenda-seed step used to
+      double the first errand every time.
+
+  ## `Agenda.replace/2` vs `Agenda.append/2`
+
+  `replace/2` overwrites the ENTIRE `"entries"` list — it's what the
+  `update_agenda` tool now calls (see that module's moduledoc for why: the
+  tool's purpose turned out to be "rewrite what's on the desk right now," not
+  "add one more line to a log that never shrinks" — the live agenda drifting
+  to 6 duplicate/stale entries with no way back down is exactly the append-only
+  shape's failure mode). `append/2` remains the log-growing primitive other
+  callers (provision seeding, tests) use.
   """
 
+  require Logger
+
   alias Commonplace.Bots.NoteDoc
+  alias Commonplace.MUD.World
 
   @agenda_dir "agenda"
   @empty_entries ~s({"entries":[]})
@@ -64,8 +85,31 @@ defmodule Commonplace.Bots.Agenda do
 
   `"ts"` is stamped here if the caller omitted it. Ensures the dir exists first
   (get-or-create) so a first-ever append is safe.
+
+  CX-93rv DEDUPE: if `item["text"]` exactly matches an existing entry's
+  `"text"`, this is a no-op — `:ok` is returned without a write (logged at
+  `:debug`). Every entry in this v0 schema is implicitly pending (there is no
+  status field to distinguish a "done" item from a live one), so "duplicate of
+  a pending entry" reduces to "duplicate of any entry." This makes a re-run
+  provision/seed ceremony idempotent instead of doubling the same errand.
   """
   @spec append(map(), map() | nil) :: :ok | {:error, term()}
+  def append(%{"text" => text} = item, %{} = ctx) when is_binary(text) do
+    with {:ok, uuid} <- ensure_dir(ctx) do
+      existing = NoteDoc.read_entries(uuid, ctx)
+
+      if Enum.any?(existing, fn e -> Map.get(e, "text") == text end) do
+        Logger.debug("Agenda.append: skipping duplicate entry #{inspect(text)}")
+        :ok
+      else
+        stamped =
+          Map.put_new_lazy(item, "ts", fn -> DateTime.utc_now() |> DateTime.to_iso8601() end)
+
+        NoteDoc.append_entry(uuid, stamped, ctx)
+      end
+    end
+  end
+
   def append(item, %{} = ctx) when is_map(item) do
     item =
       Map.put_new_lazy(item, "ts", fn -> DateTime.utc_now() |> DateTime.to_iso8601() end)
@@ -76,4 +120,33 @@ defmodule Commonplace.Bots.Agenda do
   end
 
   def append(_item, _ctx), do: {:error, :no_mud_ctx}
+
+  @doc """
+  REPLACE the entire agenda: overwrite the `"entries"` list wholesale with
+  `items` (a list of free-form maps), bot-signed, zone-preserving
+  (`World.merge_meta` — a targeted `"entries"` field overwrite, never a struct
+  round-trip; CX-cl65). Each item gets a stamped `"ts"` if it omits one.
+
+  This is what `update_agenda` (Camillo C5b) calls: the tool's purpose is
+  rewriting the desk, not growing an append-only log that never shrinks — see
+  `Commonplace.Bots.Worker.Tools.UpdateAgenda`'s moduledoc for the finding that
+  motivated the switch from `append/2`.
+  """
+  @spec replace([map()], map() | nil) :: :ok | {:error, term()}
+  def replace(items, %{home_room_uuid: _} = ctx) when is_list(items) do
+    stamped =
+      Enum.map(items, fn item ->
+        Map.put_new_lazy(item, "ts", fn -> DateTime.utc_now() |> DateTime.to_iso8601() end)
+      end)
+
+    with {:ok, uuid} <- ensure_dir(ctx) do
+      World.merge_meta(uuid, NoteDoc.note_filename(), %{"entries" => stamped}, ctx.store,
+        signing_context: ctx.signing_context,
+        cert_cids: ctx.cert_cids,
+        signer_id: ctx.signer_id
+      )
+    end
+  end
+
+  def replace(_items, _ctx), do: {:error, :no_mud_ctx}
 end

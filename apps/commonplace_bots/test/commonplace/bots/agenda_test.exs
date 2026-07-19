@@ -117,7 +117,7 @@ defmodule Commonplace.Bots.AgendaTest do
     assert head.signer_id == Signing.signer_id(sc.identity_uuid, sc.public_key)
   end
 
-  test "the update_agenda tool appends an item (via mud_ctx)", ctx do
+  test "the update_agenda tool writes an item (via mud_ctx)", ctx do
     {_prov, _sc, mud_ctx} = resolve_camillo(ctx)
 
     assert {:ok, _} = UpdateAgenda.call(%{mud_ctx: mud_ctx}, %{"text" => "from the tool"})
@@ -130,5 +130,83 @@ defmodule Commonplace.Bots.AgendaTest do
 
     assert {:error, _} = UpdateAgenda.call(%{mud_ctx: mud_ctx}, %{"text" => ""})
     assert {:error, _} = UpdateAgenda.call(%{mud_ctx: mud_ctx}, %{})
+  end
+
+  # PIN (e), REPLACE half: update_agenda's C5b finding — it used to APPEND
+  # (Agenda.append), so a desk that already had a pending item would grow a
+  # second line rather than reflect the bot's rewrite. It now calls
+  # Agenda.replace/2, so a second call REPLACES the first line, never stacks.
+  test "PIN (e): update_agenda REPLACES the desk, it does not accumulate across calls", ctx do
+    {_prov, _sc, mud_ctx} = resolve_camillo(ctx)
+
+    assert {:ok, _} = UpdateAgenda.call(%{mud_ctx: mud_ctx}, %{"text" => "first thing"})
+    assert Enum.map(Agenda.read(mud_ctx), & &1["text"]) == ["first thing"]
+
+    assert {:ok, _} = UpdateAgenda.call(%{mud_ctx: mud_ctx}, %{"text" => "second thing"})
+    # REPLACE semantics: "first thing" is GONE, not still sitting underneath.
+    assert Enum.map(Agenda.read(mud_ctx), & &1["text"]) == ["second thing"]
+  end
+
+  test "Agenda.replace overwrites the entire entries list wholesale", ctx do
+    {_prov, _sc, mud_ctx} = resolve_camillo(ctx)
+
+    :ok = Agenda.append(%{"text" => "stale pin one"}, mud_ctx)
+    :ok = Agenda.append(%{"text" => "stale pin two"}, mud_ctx)
+    assert length(Agenda.read(mud_ctx)) == 2
+
+    :ok = Agenda.replace([%{"text" => "the one true item"}], mud_ctx)
+    assert Enum.map(Agenda.read(mud_ctx), & &1["text"]) == ["the one true item"]
+
+    # A multi-item replace lands all of them, in order.
+    :ok = Agenda.replace([%{"text" => "a"}, %{"text" => "b"}], mud_ctx)
+    assert Enum.map(Agenda.read(mud_ctx), & &1["text"]) == ["a", "b"]
+
+    # An empty replace clears the desk entirely.
+    :ok = Agenda.replace([], mud_ctx)
+    assert Agenda.read(mud_ctx) == []
+  end
+
+  test "Agenda.replace is bot-signed and preserves the zone stamp (merge_meta, no round-trip)",
+       ctx do
+    {prov, sc, mud_ctx} = resolve_camillo(ctx)
+
+    :ok = Agenda.replace([%{"text" => "signed replace"}], mud_ctx)
+
+    {:ok, note_map} = World.get_meta_map(prov.agenda_uuid, "__note.json", ctx.store)
+    assert note_map["zone"] == prov.home_room_uuid
+
+    {:ok, meta_uuid} = World.meta_doc_uuid(prov.agenda_uuid, "__note.json", ctx.store)
+    {:ok, head} = CommitStore.latest_commit(ctx.store, meta_uuid)
+    assert Signing.signed?(head)
+    assert head.signer_id == Signing.signer_id(sc.identity_uuid, sc.public_key)
+  end
+
+  # PIN (e), DEDUPE half (CX-93rv): appending a "text" that exactly matches an
+  # existing entry is a no-op — fixes the re-armed-provision double-seed.
+  test "PIN (e): Agenda.append dedupes an exact-text duplicate (no-op, count stable)", ctx do
+    {_prov, _sc, mud_ctx} = resolve_camillo(ctx)
+
+    :ok = Agenda.append(%{"text" => "seed the first errand"}, mud_ctx)
+    assert length(Agenda.read(mud_ctx)) == 1
+
+    # A re-armed provision re-running the SAME seed step: exact-text duplicate.
+    :ok = Agenda.append(%{"text" => "seed the first errand"}, mud_ctx)
+    assert length(Agenda.read(mud_ctx)) == 1
+    assert Enum.map(Agenda.read(mud_ctx), & &1["text"]) == ["seed the first errand"]
+
+    # Even a third re-run stays a no-op.
+    :ok = Agenda.append(%{"text" => "seed the first errand"}, mud_ctx)
+    assert length(Agenda.read(mud_ctx)) == 1
+  end
+
+  test "PIN (e): a distinct text still lands normally alongside a dedup'd one", ctx do
+    {_prov, _sc, mud_ctx} = resolve_camillo(ctx)
+
+    :ok = Agenda.append(%{"text" => "the seed errand"}, mud_ctx)
+    :ok = Agenda.append(%{"text" => "the seed errand"}, mud_ctx)
+    :ok = Agenda.append(%{"text" => "a genuinely new item"}, mud_ctx)
+
+    items = Agenda.read(mud_ctx) |> Enum.map(& &1["text"])
+    assert items == ["the seed errand", "a genuinely new item"]
   end
 end
