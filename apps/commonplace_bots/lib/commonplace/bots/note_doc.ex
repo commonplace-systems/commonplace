@@ -1,0 +1,124 @@
+defmodule Commonplace.Bots.NoteDoc do
+  @moduledoc """
+  Camillo C3c/C3d — a bot's private working docs as ZONED NOTE-METAS.
+
+  A bot's scratchpad / memory / agenda are NOT objects (no verb surface) and NOT
+  a new leaf-zone primitive (trust-core surgery) — they are ordinary zoned child
+  dirs carrying a `__note.json` note-meta, minted through the SAME
+  `Commonplace.MUD.ChildMutation.create_zoned_child/6` chokepoint every
+  room/object goes through. Anchored UNDER the bot's HOME, the child INHERITS the
+  home zone-stamp, so the bot's `{:subtree, home}[:write]` cert covers every write
+  to it — which is exactly what makes these writes LAND under
+  `local_write_gate: :enforce` (the previous MUD-root anchor was outside the
+  bot's cert scope → `:capability_insufficient`).
+
+  ## Why this shape (the two design pins)
+
+    * **Zone-by-construction.** The caller NEVER supplies the zone;
+      `create_zoned_child` derives it from the parent (`Trust.doc_zone(parent)`)
+      and NODE-signs the stamp at genesis. Anchoring under the home makes the
+      inherited zone == home, so the subtree cert authorizes the mint's
+      entry-add AND every subsequent note write.
+
+    * **Zone-preserving append (CX-cl65).** `append_text/4` grows the note via
+      `World.merge_meta/5` — a SURGICAL raw-JSON field merge — NEVER a
+      `%Struct{}` round-trip. A typed round-trip would DROP the node-signed
+      `zone` stamp, and the subtree carve's stamp-protection rule then refuses
+      the write (the doc becomes unwritable). `merge_meta` touches only the named
+      field and leaves `zone` byte-identical.
+  """
+
+  alias Commonplace.MUD.{ChildMutation, World}
+  alias Commonplace.Tree.Schema
+
+  @note_filename "__note.json"
+
+  @doc "The note-meta filename these working docs carry."
+  def note_filename, do: @note_filename
+
+  @doc """
+  Get-or-create a zoned child dir named `name` under `parent_uuid`, carrying a
+  `__note.json` note-meta seeded with `base_json` (a JSON string). The child
+  INHERITS the parent's zone stamp via `ChildMutation.create_zoned_child/6`
+  (node-signed), and the entry-add uses the bot's creds — so anchoring under a
+  dir in the bot's home zone means the bot's `{:subtree, home}` cert authorizes
+  it. Idempotent: an existing entry `name` is reused (get-before-create).
+
+  Returns `{:ok, child_uuid}` or `{:error, reason}`.
+  """
+  @spec ensure_zoned_dir(String.t(), String.t(), String.t(), map()) ::
+          {:ok, String.t()} | {:error, term()}
+  def ensure_zoned_dir(parent_uuid, name, base_json, ctx)
+      when is_binary(parent_uuid) and is_binary(name) and is_binary(base_json) do
+    case lookup_entry(parent_uuid, name, ctx.store) do
+      {:ok, child_uuid} ->
+        {:ok, child_uuid}
+
+      :error ->
+        ChildMutation.create_zoned_child(
+          parent_uuid,
+          name,
+          @note_filename,
+          base_json,
+          ctx.store,
+          bot_opts(ctx)
+        )
+    end
+  end
+
+  @doc """
+  Append `value` to the string held in `field` of `note_dir_uuid`'s
+  `__note.json` note-meta — SURGICAL and ZONE-PRESERVING.
+
+  Reads the raw note-meta map (`World.get_meta_map/3`), concatenates `value` onto
+  the existing string in `field` (or starts it), and writes back the SINGLE field
+  via `World.merge_meta/5`. `merge_meta` never touches the `zone` stamp (it is a
+  targeted field merge, not a typed round-trip — CX-cl65), so the node-signed
+  stamp survives every append and the subtree carve keeps authorizing the write.
+
+  Returns `:ok` or `{:error, reason}`.
+  """
+  @spec append_text(String.t(), String.t(), String.t(), map()) :: :ok | {:error, term()}
+  def append_text(note_dir_uuid, field, value, ctx)
+      when is_binary(note_dir_uuid) and is_binary(field) and is_binary(value) do
+    case World.get_meta_map(note_dir_uuid, @note_filename, ctx.store) do
+      {:ok, map} ->
+        existing =
+          case Map.get(map, field) do
+            s when is_binary(s) -> s
+            _ -> ""
+          end
+
+        new_value = existing <> value
+
+        case World.merge_meta(note_dir_uuid, @note_filename, %{field => new_value}, ctx.store, bot_opts(ctx)) do
+          :ok -> :ok
+          {:error, _} = err -> err
+          other -> {:error, other}
+        end
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  # Bot-signed write opts (C1 / pin c): signing_context + cert_cids + signer_id,
+  # all from the resolved ctx. Used both for the entry-add of a minted note dir
+  # (create_zoned_child's entry_opts) and the merge_meta append.
+  defp bot_opts(ctx) do
+    [
+      signing_context: ctx.signing_context,
+      cert_cids: ctx.cert_cids,
+      signer_id: ctx.signer_id
+    ]
+  end
+
+  defp lookup_entry(parent_uuid, name, store) do
+    with {:ok, schema} <- Commonplace.MUD.Schemas.load_dir_schema(parent_uuid, store),
+         {:ok, %{node_id: node_id}} <- Schema.get_entry(schema, name) do
+      {:ok, node_id}
+    else
+      _ -> :error
+    end
+  end
+end

@@ -139,6 +139,15 @@ defmodule Commonplace.Bots.Worker do
     entity_identity_uuid = signing_context && signing_context.identity_uuid
     allowlist = Commonplace.Bots.Allowlist.resolve(entity, entity_identity_uuid, store, opts)
 
+    # Camillo C3c: resolve the bot's MUD acting ctx for THIS turn. Because
+    # `run/4` is one-per-turn (cave-diver), resolving here — and NEVER caching
+    # it in longer-lived state — is precisely what makes pin (a) "position
+    # re-read every turn" hold: an external move is honored next turn. A nil
+    # root or an unprovisioned bot yields `nil`, and the MUD tools then refuse
+    # gracefully. The ctx is assembled ONLY from the resolved signing_context +
+    # Citizenship certs + the MUD root (pin c) — never from `opts`/tool args.
+    mud_ctx = resolve_mud_context(entity, signing_context, store, opts)
+
     :telemetry.execute(
       [:commonplace, :bots, :worker, :started],
       %{system_time: System.system_time()},
@@ -163,6 +172,7 @@ defmodule Commonplace.Bots.Worker do
           tools_module: tools_module,
           signing_context: signing_context,
           allowlist: allowlist,
+          mud_ctx: mud_ctx,
           opts: opts
         })
       after
@@ -345,6 +355,36 @@ defmodule Commonplace.Bots.Worker do
     case Commonplace.Workspace.root_uuid() do
       {:ok, r} -> r
       _ -> nil
+    end
+  end
+
+  # Camillo C3c: resolve the per-turn MUD acting ctx (see
+  # `Commonplace.Bots.MudContext`). The MUD root is taken the SAME way C1
+  # takes it (`opts[:root_uuid]` or the workspace root) — never from tool /
+  # dispatcher args. A nil signing_context, nil root, or unprovisioned bot
+  # (no `.usr` presence) degrades to `nil`; the MUD tools refuse gracefully.
+  # Never raises — a bad resolve must not take the worker down.
+  defp resolve_mud_context(entity, signing_context, store, opts) do
+    root = Keyword.get(opts, :root_uuid) || workspace_root()
+
+    try do
+      case Commonplace.Bots.MudContext.resolve(entity, signing_context, root, store) do
+        {:ok, ctx} ->
+          ctx
+
+        {:error, reason} ->
+          :telemetry.execute(
+            [:commonplace, :bots, :worker, :mud_context_unresolved],
+            %{system_time: System.system_time()},
+            %{bot: entity.name, reason: inspect(reason)}
+          )
+
+          nil
+      end
+    rescue
+      _ -> nil
+    catch
+      _, _ -> nil
     end
   end
 

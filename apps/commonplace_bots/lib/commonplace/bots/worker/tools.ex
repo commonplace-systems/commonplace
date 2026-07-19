@@ -14,8 +14,9 @@ defmodule Commonplace.Bots.Worker.Tools do
 
   ## The tools
 
-  Eight tools are live in the registry (`@tool_modules`) — three
-  writers and five readers — but they are **not** ambient. As of
+  Eleven tools are live in the registry (`@tool_modules`) — chat/memory
+  writers and readers plus the Camillo C3c MUD tools (`move`, `look`,
+  `scratch`) — but they are **not** ambient. As of
   Camillo C3a the registry is DEFAULT-CLOSED per entity: `tool_defs/1`
   offers only the tools in `state.allowlist`, and `dispatch/3` refuses
   any name not in it. The allowlist is the entity's grantor-signed
@@ -38,6 +39,17 @@ defmodule Commonplace.Bots.Worker.Tools do
       (calls / output tokens / wall-clock), read from the
       `:budget_snapshot` the loop stamps into `state` before each
       dispatch.
+    * `move` — walk the bot's `.usr` presence one exit, via the
+      shared `World.move_presence/5` motion chokepoint (Camillo C3c).
+    * `look` — the bot's read-scoped snapshot of the room it stands
+      in (Camillo C3c).
+    * `scratch` — jot a note to the bot's own `scratch/<botname>/…`
+      wiki scratchpad, bot-signed and namespace-bounded (Camillo C3c).
+
+  The three MUD tools act through `state.mud_ctx` — a freshly-resolved
+  `Commonplace.Bots.MudContext` the Worker threads PER TURN — never a
+  human `PlayerSession`. A nil `mud_ctx` (unprovisioned bot) makes each
+  refuse gracefully.
 
   ## Why a registry instead of a `case`
 
@@ -50,11 +62,14 @@ defmodule Commonplace.Bots.Worker.Tools do
   alias Commonplace.Bots.Worker.Tools.{
     CheckTurnRemaining,
     ListFiles,
+    Look,
+    Move,
     PostMessage,
     ReadChat,
     ReadFile,
     ReadMemory,
     Remember,
+    Scratch,
     UpdateAgenda
   }
 
@@ -66,7 +81,10 @@ defmodule Commonplace.Bots.Worker.Tools do
     ReadMemory,
     ListFiles,
     ReadFile,
-    CheckTurnRemaining
+    CheckTurnRemaining,
+    Move,
+    Look,
+    Scratch
   ]
 
   @doc """

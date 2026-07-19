@@ -95,6 +95,7 @@ defmodule Commonplace.Bots.Worker.Loop do
           tools_module: module(),
           signing_context: Commonplace.Crypto.SigningContext.t() | nil,
           allowlist: [String.t()],
+          mud_ctx: Commonplace.Bots.MudContext.t() | nil,
           opts: keyword()
         }
 
