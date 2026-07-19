@@ -35,8 +35,10 @@ defmodule Commonplace.Bots.Citizen do
     3. dig **study** north from the foyer.
     4. create the **map** item in the foyer (a non-container object).
     5. stand the bot's `.usr` presence in the foyer and set its status.
+    6. ensure the desk: `home/memory/`, `home/agenda/`, `home/transcript/`
+       (C5c-i) — zoned note-metas, get-or-create.
 
-  Exactly foyer + study + map — nothing more.
+  Exactly foyer + study + map (plus the desk) — nothing more.
 
   ## Idempotency
 
@@ -70,6 +72,10 @@ defmodule Commonplace.Bots.Citizen do
   # enforce. The entity dir keeps ONLY the charter.
   @memory_dir "memory"
   @agenda_dir "agenda"
+  # C5c-i (cp-plan #8895) — the turn-transcript scrollback substrate, the
+  # same zoned-note-meta shape as memory/agenda (see
+  # `Commonplace.Bots.Transcript`'s moduledoc).
+  @transcript_dir "transcript"
   @empty_entries ~s({"entries":[]})
 
   @type provision_result :: %{
@@ -79,7 +85,8 @@ defmodule Commonplace.Bots.Citizen do
           study_uuid: String.t(),
           presence_uuid: String.t(),
           memory_uuid: String.t(),
-          agenda_uuid: String.t()
+          agenda_uuid: String.t(),
+          transcript_uuid: String.t()
         }
 
   @doc """
@@ -124,7 +131,11 @@ defmodule Commonplace.Bots.Citizen do
            {:ok, memory_uuid} <-
              NoteDoc.ensure_zoned_dir(home_room_uuid, @memory_dir, @empty_entries, ctx),
            {:ok, agenda_uuid} <-
-             NoteDoc.ensure_zoned_dir(home_room_uuid, @agenda_dir, @empty_entries, ctx) do
+             NoteDoc.ensure_zoned_dir(home_room_uuid, @agenda_dir, @empty_entries, ctx),
+           # C5c-i: home/transcript, the same shape as memory/agenda —
+           # idempotent get-or-create, so a re-run provision adds nothing new.
+           {:ok, transcript_uuid} <-
+             NoteDoc.ensure_zoned_dir(home_room_uuid, @transcript_dir, @empty_entries, ctx) do
         {:ok,
          %{
            identity_uuid: sc.identity_uuid,
@@ -133,7 +144,8 @@ defmodule Commonplace.Bots.Citizen do
            study_uuid: study_uuid,
            presence_uuid: presence_uuid,
            memory_uuid: memory_uuid,
-           agenda_uuid: agenda_uuid
+           agenda_uuid: agenda_uuid,
+           transcript_uuid: transcript_uuid
          }}
       end
     end

@@ -12,7 +12,7 @@ defmodule Commonplace.Bots.HeartbeatTest do
   use ExUnit.Case, async: false
 
   alias Commonplace.Bots.Identity, as: BotIdentity
-  alias Commonplace.Bots.{Agenda, Citizen, Dispatcher, MudContext}
+  alias Commonplace.Bots.{Agenda, Citizen, Dispatcher, MudContext, Transcript}
   alias Commonplace.Bots.Worker.{Loop, Tools}
   alias Commonplace.Crypto.NodeIdentity
   alias Commonplace.Document.ContentType
@@ -146,7 +146,8 @@ defmodule Commonplace.Bots.HeartbeatTest do
     {prov, mud_ctx}
   end
 
-  defp tick(name), do: send(Process.whereis(Commonplace.Bots.Dispatcher), {:autonomous_tick, name})
+  defp tick(name),
+    do: send(Process.whereis(Commonplace.Bots.Dispatcher), {:autonomous_tick, name})
 
   ## First-class chatless registration
 
@@ -156,7 +157,10 @@ defmodule Commonplace.Bots.HeartbeatTest do
     bot_dir = mint_bot_dir(ctx.store)
 
     # NO subscribe_room — the mind ticks purely on its own registration.
-    :ok = Dispatcher.register_autonomous_bot("camillo.bot", bot_dir, ctx.mud_root, 50, secret_store: ctx.secrets)
+    :ok =
+      Dispatcher.register_autonomous_bot("camillo.bot", bot_dir, ctx.mud_root, 50,
+        secret_store: ctx.secrets
+      )
 
     assert_receive {:wake, "camillo", "camillo", event}, 2_000
     assert event["kind"] == "heartbeat"
@@ -220,6 +224,29 @@ defmodule Commonplace.Bots.HeartbeatTest do
     assert ts1 != ts0, "a :skip tick must still refresh the bot's presence heartbeat"
   end
 
+  # C5c-i PIN (d): a heartbeat :skip decision never reaches Worker.run at
+  # all (the dispatcher short-circuits before spawning a worker for an
+  # empty-agenda, trivially-quiet tick) — so no turn ever happened, and the
+  # transcript must be byte-unchanged across the tick.
+  test "PIN (d): a heartbeat :skip tick produces NO transcript entry", ctx do
+    {_prov, mud_ctx} = provision_camillo(ctx)
+    bot_dir = mint_bot_dir(ctx.store)
+
+    assert Transcript.read(mud_ctx) == []
+
+    :ok =
+      Dispatcher.register_autonomous_bot("camillo.bot", bot_dir, ctx.mud_root, 60_000,
+        secret_store: ctx.secrets
+      )
+
+    tick("camillo")
+
+    refute_receive {:wake, _, _, _}, 400
+
+    Commonplace.Tree.DocCache.clear()
+    assert Transcript.read(mud_ctx) == []
+  end
+
   ## Self-heal: a cached uuid that misses is re-resolved once
 
   test "self-heals when the cached home-agenda uuid misses", ctx do
@@ -278,7 +305,8 @@ defmodule Commonplace.Bots.HeartbeatTest do
     {_prov, mud_ctx} = provision_camillo(ctx)
     :ok = Agenda.append(%{"text" => "consolidate the pins"}, mud_ctx)
 
-    {:ok, entity} = Commonplace.Bots.Entity.load(ctx.store, mint_bot_dir(ctx.store), "camillo.bot")
+    {:ok, entity} =
+      Commonplace.Bots.Entity.load(ctx.store, mint_bot_dir(ctx.store), "camillo.bot")
 
     test_pid = self()
 
@@ -306,7 +334,9 @@ defmodule Commonplace.Bots.HeartbeatTest do
     }
 
     assert {:ok, :end_turn} =
-             Loop.run(Map.put(base_state, :event, %{"kind" => "heartbeat", "thread_quiet" => true}))
+             Loop.run(
+               Map.put(base_state, :event, %{"kind" => "heartbeat", "thread_quiet" => true})
+             )
 
     assert_receive {:request, hb_request}
     hb_text = first_user_text(hb_request)
