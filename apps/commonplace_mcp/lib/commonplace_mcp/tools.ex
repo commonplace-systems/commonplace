@@ -49,10 +49,16 @@ defmodule Commonplace.MCP.Tools do
   alias Commonplace.MCP.CrdtTools
 
   alias Commonplace.MCP.Tools.{
+    BdAddNeeds,
     BdBlocked,
+    BdClaim,
+    BdClose,
+    BdCreate,
     BdFrontier,
     BdReady,
+    BdRelease,
     BdShow,
+    BdUpdate,
     CallTool,
     Cat,
     Fork,
@@ -91,7 +97,13 @@ defmodule Commonplace.MCP.Tools do
     "bd_ready" => BdReady,
     "bd_blocked" => BdBlocked,
     "bd_frontier" => BdFrontier,
-    "bd_show" => BdShow
+    "bd_show" => BdShow,
+    "bd_create" => BdCreate,
+    "bd_add_needs" => BdAddNeeds,
+    "bd_update" => BdUpdate,
+    "bd_close" => BdClose,
+    "bd_claim" => BdClaim,
+    "bd_release" => BdRelease
   }
 
   @meta_registry %{
