@@ -131,6 +131,52 @@ defmodule Commonplace.Bots.TelegramBridge do
   paused drops inbound and no-ops outbound; red events fire for `:started`,
   `:paused`, `:resumed`, `:relay_failed` (keyed on `messages_uuid`, same
   `Commonplace.Dataflow.PubSub.broadcast_red/2` channel).
+
+  ## Cursor semantics — DELIBERATELY NOT `LoomBridge`'s nil-fallback (fixed
+  ## live 2026-07-19, the "jes received the same reply 3×" incident)
+
+  `LoomBridge`'s `entries_since(materialized, nil) -> materialized` is correct
+  FOR IT: a nil cursor there means "I have never relayed to this room before,"
+  which is only ever true once, at genesis. This bridge does NOT inherit that
+  fallback, because for a Telegram bridge nil-cursor is not a rare genesis
+  event — it's the value `last_cursor` starts at on EVERY restart (it lives
+  only in `state`, this module keeps no durable cursor doc yet). Inheriting
+  the fallback verbatim meant every bridge restart re-scanned the ENTIRE
+  `_messages` history and re-relayed every historical bot-signed entry to the
+  owner's phone — one reply commit, delivered 3× across three restarts one
+  night, because there were three nil-cursor scans of the same old entry.
+
+  The fix is a semantic one: **a bridge born into a lived-in room starts DEAF
+  TO THE PAST** — the owner's phone already has that history; only what
+  arrives AFTER the bridge starts existing (or restarting) is new to it.
+  `init/1` therefore resolves the CURRENT TAIL of the materialized
+  `_messages` doc (the same `load_messages_doc/1` + `Messages.materialize/1`
+  the tick itself uses — one read path, not two) and seeds `last_cursor` to
+  the last entry's `"id"` — `nil` only when the room is genuinely EMPTY at
+  boot, which is the one case where "everything that arrives is new" is
+  simply true, not a fallback being invoked.
+
+  Two edges this creates, both pinned in `telegram_bridge_test.exs`:
+
+    * **Load fails at init** (store hiccup, doc not found yet). Rather than
+      falling through to nil-cursor-means-relay-everything (which would
+      silently reintroduce the exact bug this section describes),
+      `last_cursor` stays `nil` but `cursor_initialized` stays `false` and a
+      `Logger.warning` fires. The bridge is now "not sure where it left off."
+      The FIRST tick after that where the load actually SUCCEEDS resolves the
+      tail and sets `cursor_initialized: true` — but relays NOTHING that
+      tick; it only catches up to "now." Only the NEXT tick after that can
+      relay anything. This is the subtle half of the fix: a transient load
+      failure at boot must never silently degrade into a full-history dump
+      once the store recovers.
+    * **`opts[:resume_cursor]`** — an explicit override that WINS over
+      tail-init entirely (checked via `Keyword.has_key?/2`, so an explicitly
+      passed `nil` still counts as "override present, meaning empty room").
+      This is the seam a future DURABLE cursor (persisted across restarts,
+      not just resolved-at-boot — the CX-5ikm family) plugs into: whoever
+      wires that persistence reads the last durable cursor and passes it here
+      as `resume_cursor` rather than touching `init/1`'s tail-resolution
+      logic at all.
   """
 
   use GenServer
@@ -175,6 +221,7 @@ defmodule Commonplace.Bots.TelegramBridge do
       :outbound_limit,
       paused: false,
       last_cursor: nil,
+      cursor_initialized: false,
       inbound_hits: [],
       outbound_hits: []
     ]
@@ -204,7 +251,8 @@ defmodule Commonplace.Bots.TelegramBridge do
         inbound_limit: state.inbound_limit,
         outbound_limit: state.outbound_limit,
         paused: state.paused,
-        last_cursor: state.last_cursor
+        last_cursor: state.last_cursor,
+        cursor_initialized: state.cursor_initialized
       ]
 
       concat(["#Commonplace.Bots.TelegramBridge.State<", to_doc(fields, opts), ">"])
@@ -266,7 +314,7 @@ defmodule Commonplace.Bots.TelegramBridge do
     # is needed to establish it (see moduledoc "Owner-gated channel binding").
     bound_chat_id = owner_chat_id
 
-    state = %State{
+    base_state = %State{
       room: room,
       messages_uuid: messages_uuid,
       store: store,
@@ -284,9 +332,14 @@ defmodule Commonplace.Bots.TelegramBridge do
       outbound_limit: Keyword.get(opts, :outbound_per_minute, @default_outbound_per_minute),
       paused: false,
       last_cursor: nil,
+      cursor_initialized: false,
       inbound_hits: [],
       outbound_hits: []
     }
+
+    {last_cursor, cursor_initialized} = init_cursor(opts, base_state)
+
+    state = %{base_state | last_cursor: last_cursor, cursor_initialized: cursor_initialized}
 
     schedule_tick(interval_ms)
 
@@ -352,6 +405,25 @@ defmodule Commonplace.Bots.TelegramBridge do
 
   defp do_tick(%{paused: true} = state), do: {{:ok, :paused}, state}
 
+  # Cursor never successfully resolved (init's tail-read failed and no
+  # resume_cursor override was given — see moduledoc "Cursor semantics").
+  # The FIRST successful load from here on just catches up to "now": it sets
+  # last_cursor to the CURRENT tail and marks the cursor initialized, but
+  # relays NOTHING this tick. Falling through to the ordinary do_tick/1 below
+  # with a nil cursor would re-invoke exactly the nil-means-relay-everything
+  # behavior this whole fix exists to avoid — so this clause exists
+  # specifically to intercept that case before it can happen.
+  defp do_tick(%{cursor_initialized: false} = state) do
+    case load_messages_doc(state) do
+      {:ok, doc} ->
+        tail = tail_cursor(Messages.materialize(doc))
+        {{:ok, %{relayed: 0}}, %{state | last_cursor: tail, cursor_initialized: true}}
+
+      :none ->
+        {{:error, :not_found}, state}
+    end
+  end
+
   defp do_tick(state) do
     case load_messages_doc(state) do
       {:ok, doc} ->
@@ -376,9 +448,55 @@ defmodule Commonplace.Bots.TelegramBridge do
     DocBuilder.reconstruct_snapshot(state.store, state.messages_uuid)
   end
 
+  # Resolve the initial cursor at boot (see moduledoc "Cursor semantics"):
+  # an explicit `opts[:resume_cursor]` (even `nil`, checked via
+  # Keyword.has_key?/2 so an intentional "empty room" override isn't
+  # confused with "not provided") wins outright. Otherwise attempt the SAME
+  # load+materialize the tick uses and seed the cursor to the CURRENT TAIL —
+  # deaf to the past, not blind to it. A load failure at boot leaves the
+  # cursor uninitialized (nil, `cursor_initialized: false`) rather than
+  # falling back to the old nil-means-relay-everything behavior; the first
+  # successful tick (see the `cursor_initialized: false` do_tick/1 clause)
+  # catches up silently instead.
+  defp init_cursor(opts, state) do
+    if Keyword.has_key?(opts, :resume_cursor) do
+      {Keyword.get(opts, :resume_cursor), true}
+    else
+      case load_messages_doc(state) do
+        {:ok, doc} ->
+          {tail_cursor(Messages.materialize(doc)), true}
+
+        :none ->
+          Logger.warning(
+            "TelegramBridge: could not resolve initial cursor for #{state.room} " <>
+              "(messages doc not found) — deferring tail-init to the first successful tick"
+          )
+
+          {nil, false}
+      end
+    end
+  end
+
+  # The materialized list's last entry's id, or nil for a genuinely empty
+  # room (the one case where "everything that arrives is new" is simply
+  # true, not the old nil-cursor fallback being invoked).
+  defp tail_cursor(materialized) do
+    case List.last(materialized) do
+      nil -> nil
+      %{"id" => id} -> id
+    end
+  end
+
   # Positional cursor, same technique LoomBridge / Commonplace.MCP.Tools.LoomRead
   # use: message ids are random UUIDv4s (unorderable), ts isn't stable across
   # edits — position in the materialized list is the only safe cursor.
+  #
+  # NOTE: the `nil` clause below only ever fires from a state where
+  # `cursor_initialized` is already `true` with a `nil` last_cursor (a
+  # genuinely empty room at boot, or an explicit `resume_cursor: nil`
+  # override) — never from an unresolved boot cursor, which is intercepted
+  # by the `cursor_initialized: false` do_tick/1 clause above before this
+  # function is ever reached. See moduledoc "Cursor semantics".
   defp entries_since(materialized, nil), do: materialized
 
   defp entries_since(materialized, cursor) do

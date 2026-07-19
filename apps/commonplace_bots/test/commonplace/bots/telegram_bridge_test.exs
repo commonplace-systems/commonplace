@@ -437,4 +437,156 @@ defmodule Commonplace.Bots.TelegramBridgeTest do
       assert_received {:relayed, %{text: "while paused"}}
     end
   end
+
+  # C4 live bug (2026-07-19): the in-memory `last_cursor` starts nil on every
+  # restart, and the LoomBridge-inherited nil-fallback (`entries_since(m, nil)
+  # -> m`) re-scanned the FULL history each time — jes got the same reply 3×
+  # across three restarts one night. Fix: init/1 resolves the CURRENT TAIL of
+  # `_messages` at boot ("deaf to the past"), never falls back to a full
+  # re-scan even when that resolution fails at boot. See the moduledoc's
+  # "Cursor semantics" section for the full rationale these pins are authored
+  # from.
+  describe "cursor semantics (restart-replay fix)" do
+    test "PIN (1): a bridge born into a lived-in room does NOT re-relay old bot-signed history, across repeated restarts",
+         ctx do
+      {:ok, _} = bot_post(ctx, "old reply already delivered")
+
+      bridge1 = start_bridge(ctx, owner_chat_id: 1)
+      assert {:ok, %{relayed: 0}} = TelegramBridge.tick_now(bridge1)
+      refute_received {:relayed, _}
+      :ok = GenServer.stop(bridge1)
+
+      # Restart #2 — this is the historical incident: before the fix, THIS
+      # restart re-scanned the full history and re-relayed the old reply.
+      bridge2 = start_bridge(ctx, owner_chat_id: 1)
+      assert {:ok, %{relayed: 0}} = TelegramBridge.tick_now(bridge2)
+      refute_received {:relayed, _}
+      :ok = GenServer.stop(bridge2)
+
+      # Restart #3 (jes saw it three times).
+      bridge3 = start_bridge(ctx, owner_chat_id: 1)
+      assert {:ok, %{relayed: 0}} = TelegramBridge.tick_now(bridge3)
+      refute_received {:relayed, _}
+
+      # A genuinely NEW bot-signed entry posted after this (3rd) restart
+      # DOES relay — the fix is "deaf to the past," not "deaf entirely."
+      {:ok, _} = bot_post(ctx, "brand new reply")
+      assert {:ok, %{relayed: 1}} = TelegramBridge.tick_now(bridge3)
+      assert_received {:relayed, %{text: "brand new reply"}}
+      refute_received {:relayed, %{text: "old reply already delivered"}}
+    end
+
+    test "PIN (2): a bridge started into an EMPTY room still relays the first entry ever posted",
+         ctx do
+      bridge = start_bridge(ctx, owner_chat_id: 1)
+
+      # Room was empty at boot: tail-init resolves to nil — the ONE
+      # legitimate nil-cursor case (everything that arrives really is new),
+      # not the old fallback being invoked.
+      {:ok, _} = bot_post(ctx, "first message ever")
+      assert {:ok, %{relayed: 1}} = TelegramBridge.tick_now(bridge)
+      assert_received {:relayed, %{text: "first message ever"}}
+    end
+
+    test "PIN (3): an explicit resume_cursor override wins over tail-init", ctx do
+      {:ok, _} = bot_post(ctx, "existing before override")
+
+      # Without the override this bridge would tail-init PAST the existing
+      # entry (it's the only one in the room) and never relay it.
+      # `resume_cursor: nil` explicitly means "treat this as the very
+      # start" — the override wins over tail-init entirely.
+      bridge = start_bridge(ctx, owner_chat_id: 1, resume_cursor: nil)
+
+      assert {:ok, %{relayed: 1}} = TelegramBridge.tick_now(bridge)
+      assert_received {:relayed, %{text: "existing before override"}}
+
+      # It relays exactly once — the cursor now sits past it.
+      assert {:ok, %{relayed: 0}} = TelegramBridge.tick_now(bridge)
+      refute_received {:relayed, _}
+    end
+
+    test "PIN (4): a load failure at init leaves the cursor uninitialized; the first successful tick catches up WITHOUT relaying",
+         ctx do
+      # A messages_uuid that does NOT exist in the store yet — init's
+      # tail-resolution load fails exactly like a transient store hiccup at
+      # boot would.
+      missing_uuid = UUID.uuid4()
+
+      {:ok, bridge} =
+        TelegramBridge.start_link(
+          room: "jes",
+          messages_uuid: missing_uuid,
+          bot_identity_uuid: ctx.bot_signer_id,
+          store: ctx.store,
+          secret_store: ctx.secrets,
+          transport_mod: FakeTransport,
+          transport_state: self(),
+          interval_ms: :infinity,
+          owner_chat_id: 1
+        )
+
+      # Uninitialized, NOT silently defaulted to nil-means-relay-everything.
+      assert %{cursor_initialized: false, last_cursor: nil} = :sys.get_state(bridge)
+
+      assert {:error, :not_found} = TelegramBridge.tick_now(bridge)
+      assert %{cursor_initialized: false} = :sys.get_state(bridge)
+
+      # HEAL: the doc now exists, and — simulating history that accumulated
+      # while the bridge couldn't see it — already carries a bot-signed
+      # entry the bridge has never seen before.
+      assert %Commonplace.Store.Commit{} =
+               CommitStore.create_commit(
+                 ctx.store,
+                 missing_uuid,
+                 Encoding.encode_update(Messages.new()),
+                 nil,
+                 %{},
+                 signing_context: ctx.node_ctx
+               )
+
+      {:ok, healed_cap} =
+        Capability.issue(ctx.node_ctx, {ctx.bot_uuid, ctx.bot_sc.public_key}, %{
+          verbs: [:write],
+          scope: {:docs, [missing_uuid]}
+        })
+
+      :ok = CommitStore.store_capability(ctx.store, healed_cap)
+
+      {:ok, _} =
+        Actions.post_message(missing_uuid, "history that predates recovery",
+          room: "jes",
+          signer_id: ctx.bot_signer_id,
+          author_path: "camillo.bot",
+          signing_context: ctx.bot_sc,
+          cert_cids: [healed_cap.id],
+          store: ctx.store
+        )
+
+      # First successful tick after the heal: catches up to the tail — the
+      # subtle half of the fix — WITHOUT relaying the pre-existing history
+      # that accumulated during the outage.
+      assert {:ok, %{relayed: 0}} = TelegramBridge.tick_now(bridge)
+      refute_received {:relayed, _}
+      assert %{cursor_initialized: true} = :sys.get_state(bridge)
+
+      materialized = reload(ctx.store, missing_uuid)
+      assert %{last_cursor: last_cursor} = :sys.get_state(bridge)
+      assert last_cursor == List.last(materialized)["id"]
+
+      # A genuinely new entry posted after the catch-up tick DOES relay.
+      {:ok, _} =
+        Actions.post_message(missing_uuid, "genuinely new after recovery",
+          room: "jes",
+          signer_id: ctx.bot_signer_id,
+          author_path: "camillo.bot",
+          signing_context: ctx.bot_sc,
+          cert_cids: [healed_cap.id],
+          store: ctx.store
+        )
+
+      assert {:ok, %{relayed: 1}} = TelegramBridge.tick_now(bridge)
+      assert_received {:relayed, %{text: "genuinely new after recovery"}}
+      refute_received {:relayed, %{text: "history that predates recovery"}}
+    end
+  end
 end
