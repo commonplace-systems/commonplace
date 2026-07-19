@@ -1,26 +1,32 @@
 defmodule Commonplace.Bots.Worker.Tools.Remember do
   @moduledoc """
-  `remember` tool — append a JSON line to the bot's `memory.jsonl`.
+  `remember` tool — append one entry to the bot's memory LOG.
 
-  v0 schema for the appended line:
+  v0 schema for the appended entry:
 
       { "ts": "<iso8601>",
         "text": "<the remembered text>",
         "source_msg_id": "<id of message that triggered the turn, if any>" }
 
   `kind` is reserved (per the converged sketch's optional-keys list)
-  but not emitted by the v0 tool. Future tool calls can include it
-  via an `input.kind` field once the model is taught about it.
+  but not emitted by the v0 tool.
 
-  Storage shape: the bot's `memory.jsonl` is a text doc; the tool
-  reads its current content, computes the end-of-document index,
-  and inserts a newline + the JSON line. Concurrent appends are
-  safe under YText semantics (two end-inserts get distinct positions).
+  ## Anchored under the bot's HOME (lands under enforce — C3d)
+
+  Memory is NO LONGER a `memory.jsonl` in the entity dir (outside the bot's cert
+  scope → denied under `local_write_gate: :enforce`). It is a ZONED NOTE-META
+  dir `home/memory/` whose `__note.json` carries an `"entries"` array. Because it
+  sits in the bot's home zone, the bot's `{:subtree, home}[:write]` cert covers
+  every append, so a remember LANDS under enforce. Appends are a zone-preserving
+  RMW push onto the array (`NoteDoc.append_entry` → `World.merge_meta`, never a
+  struct round-trip — CX-cl65). Resolved from `state.mud_ctx.home_room_uuid`; a
+  bot with no `mud_ctx` (unprovisioned / not in the world) fails closed.
   """
 
-  alias Commonplace.Document.ContentType
-  alias Commonplace.Store.{CommitStore, CommitStoreClient}
-  alias Commonplace.Tree.DocBuilder
+  alias Commonplace.Bots.NoteDoc
+
+  @memory_dir "memory"
+  @empty_entries ~s({"entries":[]})
 
   def name, do: "remember"
 
@@ -28,7 +34,7 @@ defmodule Commonplace.Bots.Worker.Tools.Remember do
     %{
       "name" => "remember",
       "description" =>
-        "Append a memory line to your private memory.jsonl. Persists across turns; readable via read_memory.",
+        "Append a memory entry to your private memory log. Persists across turns; readable via read_memory.",
       "input_schema" => %{
         "type" => "object",
         "properties" => %{
@@ -42,55 +48,27 @@ defmodule Commonplace.Bots.Worker.Tools.Remember do
     }
   end
 
-  def call(state, %{"text" => text}) when is_binary(text) and text != "" do
-    memory_uuid = state.entity.memory_uuid
-
+  def call(%{mud_ctx: ctx} = state, %{"text" => text})
+      when is_map(ctx) and is_binary(text) and text != "" do
     entry = %{
       "ts" => DateTime.utc_now() |> DateTime.to_iso8601(),
       "text" => text,
-      "source_msg_id" => Map.get(state.event, "message_id")
+      "source_msg_id" => state |> Map.get(:event, %{}) |> Map.get("message_id")
     }
 
-    line = Jason.encode!(entry) <> "\n"
-
-    case append_to_memory(memory_uuid, line, state) do
-      :ok -> {:ok, "remembered"}
-      {:error, reason} -> {:error, inspect(reason)}
-    end
-  end
-
-  def call(_state, _input), do: {:error, "remember requires a non-empty 'text' field"}
-
-  defp append_to_memory(memory_uuid, line, state) do
-    store = Keyword.get(state.opts, :store, CommitStoreClient)
-    store_for_writes = Keyword.get(state.opts, :write_store, CommitStore)
-
-    with {:ok, doc} <- DocBuilder.reconstruct_snapshot(store, memory_uuid),
-         doc <- ContentType.insert_text(doc, end_index(doc), line) do
-      update = Yelixer.Encoding.encode_update(doc)
-      # Camillo C1: sign the memory append with the bot's OWN resolved key
-      # (threaded into `state.signing_context` by `Commonplace.Bots.Worker`).
-      # A nil context is treated exactly like the previous no-opts call —
-      # global-fallback / unsigned — so graceful degradation is preserved.
-      CommitStore.create_chained_commit(store_for_writes, memory_uuid, update, %{},
-        signing_context: Map.get(state, :signing_context)
-      )
-
-      :ok
+    with {:ok, mem_uuid} <-
+           NoteDoc.ensure_zoned_dir(ctx.home_room_uuid, @memory_dir, @empty_entries, ctx),
+         :ok <- NoteDoc.append_entry(mem_uuid, entry, ctx) do
+      {:ok, "remembered"}
     else
-      :none ->
-        {:error, :memory_doc_missing}
-
-      {:error, _} = err ->
-        err
+      {:error, reason} -> {:error, inspect(reason)}
+      other -> {:error, inspect(other)}
     end
   end
 
-  defp end_index(doc) do
-    case ContentType.get_content(doc) do
-      nil -> 0
-      text when is_binary(text) -> String.length(text)
-      _ -> 0
-    end
-  end
+  def call(%{mud_ctx: ctx}, _input) when is_map(ctx),
+    do: {:error, "remember requires a non-empty 'text' field"}
+
+  # No MUD ctx — not in the world, no home to remember under. Fail closed.
+  def call(_state, _input), do: {:error, "You are not in the world."}
 end

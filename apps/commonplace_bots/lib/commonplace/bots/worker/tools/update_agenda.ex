@@ -10,15 +10,13 @@ defmodule Commonplace.Bots.Worker.Tools.UpdateAgenda do
       { "ts": "<iso8601>", "text": "<the pending item>" }
 
   Like every C3a tool this is allowlisted: a bot only gets it if its
-  grantor-signed charter grants `"update_agenda"`. The append is signed
-  with the bot's OWN key via `state.signing_context` (C1 discipline) —
-  routed through `Commonplace.Bots.Agenda.append/4`, the same
-  substrate-pure text-append primitive `remember` uses. Substrate-pure:
-  no bot-only fast lane.
+  grantor-signed charter grants `"update_agenda"`. The item lands in the bot's
+  `home/agenda/` note-meta (C3d) via `Commonplace.Bots.Agenda.append/2` — the
+  same zoned, bot-signed, home-anchored primitive `remember` uses, resolved from
+  `state.mud_ctx`. A bot with no `mud_ctx` (unprovisioned) refuses gracefully.
   """
 
   alias Commonplace.Bots.Agenda
-  alias Commonplace.Store.CommitStoreClient
 
   def name, do: "update_agenda"
 
@@ -41,24 +39,17 @@ defmodule Commonplace.Bots.Worker.Tools.UpdateAgenda do
     }
   end
 
-  def call(state, %{"text" => text}) when is_binary(text) and text != "" do
-    store = Keyword.get(state.opts || [], :store, CommitStoreClient)
-
-    opts =
-      [signing_context: Map.get(state, :signing_context)]
-      |> maybe_put(:write_store, Keyword.get(state.opts || [], :write_store))
-
-    item = %{"text" => text}
-
-    case Agenda.append(state.entity, item, store, opts) do
+  def call(%{mud_ctx: ctx}, %{"text" => text})
+      when is_map(ctx) and is_binary(text) and text != "" do
+    case Agenda.append(%{"text" => text}, ctx) do
       :ok -> {:ok, "agenda updated"}
       {:error, reason} -> {:error, inspect(reason)}
     end
   end
 
-  def call(_state, _input),
+  def call(%{mud_ctx: ctx}, _input) when is_map(ctx),
     do: {:error, "update_agenda requires a non-empty 'text' field"}
 
-  defp maybe_put(opts, _key, nil), do: opts
-  defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)
+  # No MUD ctx — not in the world, no home agenda. Fail closed.
+  def call(_state, _input), do: {:error, "You are not in the world."}
 end

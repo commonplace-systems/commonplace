@@ -9,10 +9,18 @@ defmodule Commonplace.Bots.Dispatcher do
 
   ## Lifecycle
 
-  Boot: subscribes to no rooms by default. Callers (demo
-  bootstrap, future auto-discovery) register rooms via:
+  Two INDEPENDENT concerns (C3d): a bot's autonomous heartbeat (its mind
+  ticking) and chat-room subscription (reacting to messages). A bot's mind runs
+  whether or not any chat surface has subscribed its rooms — the chatless demo
+  is the honest architecture, "a mind running with its doors not yet installed".
 
-      Dispatcher.subscribe_room(room_name, room_dir_uuid, messages_uuid)
+    * `Dispatcher.register_autonomous_bot(name, dir_uuid, mud_root, cadence_ms)`
+      — schedules room-independent heartbeat ticks and caches the bot's
+      `home/agenda` uuid. `unregister_autonomous_bot/1` stops them.
+    * `Dispatcher.subscribe_room(room_name, room_dir_uuid, messages_uuid)`
+      — wires the chat plumbing only (NO heartbeat scheduling).
+
+  Boot: subscribes to no rooms and registers no autonomous bots by default.
 
   Each `subscribe_room/3` call:
 
@@ -74,23 +82,24 @@ defmodule Commonplace.Bots.Dispatcher do
   use GenServer
   require Logger
 
-  alias Commonplace.Bots.{Activity, Agenda, Entity, RateLimit, Trigger}
+  alias Commonplace.Bots.{Activity, Entity, NoteDoc, RateLimit, Trigger}
+  alias Commonplace.Bots.Identity, as: BotIdentity
   alias Commonplace.Chat.Messages
-  alias Commonplace.Crypto.NodeIdentity
+  alias Commonplace.Crypto.{NodeIdentity, Signing}
+  alias Commonplace.MUD.{Citizenship, World}
   alias Commonplace.Presence
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.DocBuilder
 
-  # Recency window for the heartbeat "thread quiet" check: a room whose
-  # newest message is older than this (or has no messages) counts as
-  # quiet. Cheap proxy for "no new message since the bot last acted".
-  @thread_quiet_window_ms 60_000
+  # The bot's home-agenda note dir carries this filename (C3d note-meta).
+  @agenda_dir "agenda"
+  @empty_entries ~s({"entries":[]})
 
   defstruct rooms: %{},
             store: CommitStoreClient,
             worker_hook: nil,
             rate_limit_enabled: true,
-            timers: %{},
+            auto: %{},
             node_ctx: nil
 
   @type room_info :: %{
@@ -99,12 +108,24 @@ defmodule Commonplace.Bots.Dispatcher do
           required(:activity_uuid) => String.t() | nil
         }
 
+  # Per-autonomous-bot registration (keyed by the bot's stripped display name).
+  # Independent of chat rooms (C3d design refinement): a bot's mind ticks
+  # whether or not any chat surface has subscribed its rooms.
+  @type auto_info :: %{
+          required(:dir_uuid) => String.t(),
+          required(:mud_root) => String.t(),
+          required(:cadence) => pos_integer(),
+          required(:ref) => reference() | nil,
+          required(:home_agenda_uuid) => String.t() | nil,
+          required(:opts) => keyword()
+        }
+
   @type t :: %__MODULE__{
           rooms: %{String.t() => room_info()},
           store: module() | atom(),
           worker_hook: (String.t(), Entity.t(), map() -> any()),
           rate_limit_enabled: boolean(),
-          timers: %{{String.t(), String.t()} => reference()},
+          auto: %{String.t() => auto_info()},
           node_ctx: term() | nil
         }
 
@@ -137,12 +158,51 @@ defmodule Commonplace.Bots.Dispatcher do
     GenServer.call(__MODULE__, :registered_rooms)
   end
 
+  @doc """
+  Register a bot for AUTONOMOUS heartbeat ticks — a FIRST-CLASS entrypoint
+  decoupled from any chat room (C3d design refinement). A bot's mind ticks
+  whether or not a chat surface has subscribed its rooms; chat-room
+  subscription (see `subscribe_room/3`) is a separate, later concern.
+
+  Resolves the bot's `home/agenda` note-dir uuid ONCE here (via
+  `Bots.Identity.resolve_signing_context` → `Citizenship.ensure` →
+  `NoteDoc.ensure_zoned_dir`) and CACHES it, then schedules the periodic tick.
+  Each tick beats the bot's presence and routes an internally-tagged heartbeat
+  event through the same evaluate/dispatch path chat uses; the skip-check reads
+  the agenda by the CACHED uuid (cheap), self-healing on a miss. `name` may be
+  the suffixed (`"alice.bot"`) or stripped form. `opts` (e.g. `:secret_store`)
+  are forwarded to identity resolution. If the home can't be resolved, the
+  bot still ticks — the skip-check just self-heals or treats the agenda as
+  empty. Re-registration cancels any prior timer first. Idempotent-ish.
+  """
+  @spec register_autonomous_bot(String.t(), String.t(), String.t(), pos_integer(), keyword()) :: :ok
+  def register_autonomous_bot(name, dir_uuid, mud_root, cadence_ms, opts \\ [])
+      when is_binary(name) and is_binary(dir_uuid) and is_binary(mud_root) and
+             is_integer(cadence_ms) and cadence_ms > 0 do
+    GenServer.call(
+      __MODULE__,
+      {:register_autonomous_bot, strip_bot_suffix(name), dir_uuid, mud_root, cadence_ms, opts}
+    )
+  end
+
+  @doc "Cancel a bot's autonomous ticks and drop its cached home-agenda uuid."
+  @spec unregister_autonomous_bot(String.t()) :: :ok
+  def unregister_autonomous_bot(name) when is_binary(name) do
+    GenServer.call(__MODULE__, {:unregister_autonomous_bot, strip_bot_suffix(name)})
+  end
+
+  @doc "Return the currently-registered autonomous bots (for inspection / tests)."
+  def registered_autonomous_bots do
+    GenServer.call(__MODULE__, :registered_autonomous_bots)
+  end
+
   ## GenServer
 
   @impl true
   def init(opts) do
     state = %__MODULE__{
       rooms: %{},
+      auto: %{},
       store: Keyword.get(opts, :store, CommitStoreClient),
       # When nil, the dispatcher defaults to production mode:
       # `Dispatcher.spawn_worker/4` supervised under WorkerSupervisor,
@@ -216,12 +276,10 @@ defmodule Commonplace.Bots.Dispatcher do
 
     state = %{state | rooms: Map.put(state.rooms, room, info)}
 
-    # Camillo C3b: opt-in heartbeat source. For each bot in the room whose
-    # bot.json declares a positive "heartbeat_ms", schedule the first
-    # self-tick. Bots without the knob get no timer (existing bots
-    # unchanged). Re-registration cancels any prior timers first.
-    state = schedule_heartbeats(room, info, state)
-
+    # C3d: heartbeat scheduling is NO LONGER coupled to chat-room subscription.
+    # A bot's autonomous ticks are registered via `register_autonomous_bot/5`
+    # (an independent entrypoint) so its mind runs with or without any chat
+    # surface. subscribe_room now only wires the chat plumbing.
     {:reply, :ok, state}
   end
 
@@ -232,7 +290,6 @@ defmodule Commonplace.Bots.Dispatcher do
     end
 
     state = %{state | rooms: Map.delete(state.rooms, room)}
-    state = cancel_room_timers(state, room)
 
     {:reply, :ok, state}
   end
@@ -240,6 +297,44 @@ defmodule Commonplace.Bots.Dispatcher do
   @impl true
   def handle_call(:registered_rooms, _from, state) do
     {:reply, state.rooms, state}
+  end
+
+  @impl true
+  def handle_call(:registered_autonomous_bots, _from, state) do
+    {:reply, state.auto, state}
+  end
+
+  @impl true
+  def handle_call(
+        {:register_autonomous_bot, name, dir_uuid, mud_root, cadence, opts},
+        _from,
+        state
+      ) do
+    # Re-registration cancels any prior timer first.
+    state = cancel_auto_timer(state, name)
+
+    # (C) cache-at-register: resolve the home-agenda uuid ONCE. Best-effort —
+    # if unresolvable now, the tick's skip-check self-heals later.
+    home_agenda_uuid = resolve_home_agenda(name, mud_root, state.store, opts)
+
+    ref = Process.send_after(self(), {:autonomous_tick, name}, cadence)
+
+    entry = %{
+      dir_uuid: dir_uuid,
+      mud_root: mud_root,
+      cadence: cadence,
+      ref: ref,
+      home_agenda_uuid: home_agenda_uuid,
+      opts: opts
+    }
+
+    {:reply, :ok, %{state | auto: Map.put(state.auto, name, entry)}}
+  end
+
+  @impl true
+  def handle_call({:unregister_autonomous_bot, name}, _from, state) do
+    state = cancel_auto_timer(state, name)
+    {:reply, :ok, %{state | auto: Map.delete(state.auto, name)}}
   end
 
   @impl true
@@ -254,50 +349,57 @@ defmodule Commonplace.Bots.Dispatcher do
     {:noreply, state}
   end
 
-  # Camillo C3b heartbeat tick. The `"kind" => "heartbeat"` tag is set
-  # HERE, internally — it is NEVER read from any chat payload — so this
-  # path is the ONLY way a heartbeat event comes into being (unspoofable
-  # by chat). Ordering is load-bearing: the bot's presence is beaten on
-  # EVERY tick, BEFORE the skip/wake decision, so a resting (:skip) bot
-  # still stays alive for the reaper.
+  # C3d AUTONOMOUS heartbeat tick — room-independent. The `"kind" =>
+  # "heartbeat"` tag is set HERE, internally, so this path is the ONLY way a
+  # heartbeat event comes into being (unspoofable by chat). Ordering is
+  # load-bearing: the bot's presence is beaten on EVERY tick, BEFORE the
+  # skip/wake decision, so a resting (:skip) bot still stays alive for the
+  # reaper.
   @impl true
-  def handle_info({:heartbeat, room, dir_uuid, name, cadence}, state) do
-    if Map.has_key?(state.rooms, room) do
-      # 1. ALWAYS beat presence first — a :skip tick still keeps the bot
-      #    alive (skip = no LLM call, NEVER no keep-alive).
-      beat_presence(room, dir_uuid, name, state)
+  def handle_info({:autonomous_tick, name}, state) do
+    case Map.get(state.auto, name) do
+      %{dir_uuid: dir_uuid, mud_root: mud_root, cadence: cadence} ->
+        # 1. ALWAYS beat presence first — a :skip tick still keeps the bot
+        #    alive (skip = no LLM call, NEVER no keep-alive).
+        beat_autonomous_presence(name, mud_root, state)
 
-      # 2-3. Construct the internally-tagged heartbeat event and route it
-      #      through the SAME evaluate_and_dispatch path chat uses.
-      maybe_dispatch_heartbeat(room, dir_uuid, name, state)
+        # 2-3. Construct the internally-tagged heartbeat event (agenda read by
+        #      the CACHED uuid, self-healing on a miss) and route it through the
+        #      SAME evaluate_and_dispatch path chat uses.
+        state = maybe_dispatch_autonomous(name, dir_uuid, state)
 
-      # 4. Reschedule the next tick so the heartbeat is periodic.
-      ref = Process.send_after(self(), {:heartbeat, room, dir_uuid, name, cadence}, cadence)
-      {:noreply, put_timer(state, room, name, ref)}
-    else
-      # Room was unsubscribed; a queued tick may still arrive. Drop it
-      # (no beat, no reschedule).
-      {:noreply, state}
+        # 4. Reschedule the next tick so the heartbeat is periodic.
+        ref = Process.send_after(self(), {:autonomous_tick, name}, cadence)
+        {:noreply, refresh_auto_ref(state, name, ref)}
+
+      _ ->
+        # Unregistered; a queued tick may still arrive. Drop it.
+        {:noreply, state}
     end
   end
 
-  defp maybe_dispatch_heartbeat(room, dir_uuid, name, state) do
+  # Build + dispatch the heartbeat event. Returns the (possibly self-healed)
+  # state so the refreshed home-agenda cache survives to the next tick.
+  defp maybe_dispatch_autonomous(name, dir_uuid, state) do
     case Entity.load(state.store, dir_uuid, name) do
       {:ok, entity} ->
-        # The "kind" is stamped HERE, internally — the unspoofable
-        # property. A chat post can NEVER produce this shape.
+        {agenda_empty, state} = autonomous_agenda_empty(name, state)
+
+        # The "kind" is stamped HERE, internally — the unspoofable property.
+        # No chat room, so the thread is trivially quiet.
         event = %{
           "verb" => "heartbeat",
           "kind" => "heartbeat",
-          "room" => room,
-          "agenda_empty" => agenda_empty?(entity, state),
-          "thread_quiet" => thread_quiet?(room, state)
+          "room" => name,
+          "agenda_empty" => agenda_empty,
+          "thread_quiet" => true
         }
 
-        evaluate_and_dispatch(room, entity, event, state)
+        evaluate_and_dispatch(name, entity, event, state)
+        state
 
       _ ->
-        :ok
+        state
     end
   end
 
@@ -541,99 +643,112 @@ defmodule Commonplace.Bots.Dispatcher do
 
   defp bot_authored?(_), do: false
 
-  ## Heartbeat source (Camillo C3b)
+  ## Autonomous heartbeat source (Camillo C3d)
 
-  # Cancel any timers for this room, then schedule the first tick for
-  # each bot whose bot.json declares a positive "heartbeat_ms".
-  defp schedule_heartbeats(room, info, state) do
-    state = cancel_room_timers(state, room)
-
-    bots =
-      case Entity.list_in_room(state.store, info.dir_uuid) do
-        {:ok, bs} -> bs
-        _ -> []
-      end
-
-    Enum.reduce(bots, state, fn %{name: name, dir_uuid: bot_dir}, acc ->
-      case Entity.load(state.store, bot_dir, name) do
-        {:ok, entity} ->
-          case heartbeat_ms(entity.bot_config) do
-            ms when is_integer(ms) and ms > 0 ->
-              ref = Process.send_after(self(), {:heartbeat, room, bot_dir, name, ms}, ms)
-              put_timer(acc, room, name, ref)
-
-            _ ->
-              acc
-          end
-
-        _ ->
-          acc
-      end
-    end)
-  end
-
-  defp heartbeat_ms(%{} = cfg) do
-    case Map.get(cfg, "heartbeat_ms") do
-      ms when is_integer(ms) -> ms
-      _ -> nil
-    end
-  end
-
-  defp heartbeat_ms(_), do: nil
-
-  defp put_timer(state, room, name, ref) do
-    key = {room, name}
-
-    case Map.get(state.timers, key) do
-      old when is_reference(old) -> Process.cancel_timer(old)
+  # Cancel a bot's autonomous timer (if any). Returns state unchanged except
+  # the timer is dead; the caller drops/refreshes the auto entry.
+  defp cancel_auto_timer(state, name) do
+    case get_in(state.auto, [name, :ref]) do
+      ref when is_reference(ref) -> Process.cancel_timer(ref)
       _ -> :ok
     end
 
-    %{state | timers: Map.put(state.timers, key, ref)}
+    state
   end
 
-  defp cancel_room_timers(state, room) do
-    timers =
-      Enum.reduce(state.timers, %{}, fn {{r, _} = key, ref}, acc ->
-        if r == room do
-          if is_reference(ref), do: Process.cancel_timer(ref)
-          acc
-        else
-          Map.put(acc, key, ref)
+  defp refresh_auto_ref(state, name, ref) do
+    case Map.get(state.auto, name) do
+      %{} = entry -> %{state | auto: Map.put(state.auto, name, Map.put(entry, :ref, ref))}
+      _ -> state
+    end
+  end
+
+  # (C) resolve the bot's home-agenda note-dir uuid ONCE (at register /
+  # self-heal). Best-effort — a nil here means the skip-check treats the agenda
+  # as empty / self-heals next tick. Assembled ONLY from the resolved signing
+  # context + Citizenship certs + the MUD root (the C1/C3a discipline).
+  defp resolve_home_agenda(name, mud_root, store, opts) do
+    try do
+      with {:ok, sc} <- BotIdentity.resolve_signing_context(name, mud_root, store, opts),
+           {:ok, %{home_room_uuid: home, cert_cids: cert_cids}} <-
+             Citizenship.ensure(sc.identity_uuid, sc.public_key, name, mud_root, store) do
+        ctx = %{
+          store: store,
+          home_room_uuid: home,
+          signing_context: sc,
+          cert_cids: cert_cids,
+          signer_id: Signing.signer_id(sc.identity_uuid, sc.public_key)
+        }
+
+        case NoteDoc.ensure_zoned_dir(home, @agenda_dir, @empty_entries, ctx) do
+          {:ok, uuid} -> uuid
+          _ -> nil
         end
-      end)
-
-    %{state | timers: timers}
+      else
+        _ -> nil
+      end
+    rescue
+      _ -> nil
+    catch
+      _, _ -> nil
+    end
   end
 
-  # Beat the bot's `.usr` presence, best-effort. Discovers by name in the
-  # room dir first, then the bot's own dir; graceful (no-op) if none.
-  # NEVER gates behavior — a failed beat is observability noise.
-  #
-  # Attribution split (cp-plan #8716, the SIGNS binding = "sign what you
-  # did"): the keep-alive beat is a RUNTIME FACT, not a Camillo turn — a
-  # `:skip` tick performs no cognition — so it is NODE-signed (every tick,
-  # every bot on the general runtime). Only status/MODE changes
-  # (resting/musing/attending) are the bot's OWN assertions and are
-  # BOT-signed during its actual turns (the C2 pattern). This keeps the
-  # presence @-shadow an honest attention audit: it attributes cognition
-  # only to real turns, never to rest. A node-warmed beat also makes a
-  # bot's liveness == its runtime's liveness — if the dispatcher dies,
-  # beats stop and the reaper takes the residents. `state.node_ctx` is
-  # resolved once at init; under enforce a node-signed presence write
-  # lands (node broadly trusted, bypasses the `{:presence}` carve).
-  defp beat_presence(room, bot_dir_uuid, name, state) do
-    stripped = strip_bot_suffix(name)
+  # The skip-check read: the agenda's `entries` by the CACHED uuid (cheap).
+  # SELF-HEALING: a `:gone` on the cached uuid (rare re-provision) re-resolves
+  # ONCE and refreshes the cache, then reads again. Returns {empty?, state}.
+  defp autonomous_agenda_empty(name, state) do
+    entry = Map.get(state.auto, name) || %{}
 
-    dirs =
-      [get_in(state.rooms, [room, :dir_uuid]), bot_dir_uuid]
-      |> Enum.filter(&is_binary/1)
-      |> Enum.uniq()
+    case read_cached_agenda(Map.get(entry, :home_agenda_uuid), state.store) do
+      {:ok, entries} ->
+        {entries == [], state}
+
+      :gone ->
+        new_uuid =
+          resolve_home_agenda(name, Map.get(entry, :mud_root), state.store, Map.get(entry, :opts, []))
+
+        state = %{
+          state
+          | auto: Map.put(state.auto, name, Map.put(entry, :home_agenda_uuid, new_uuid))
+        }
+
+        case read_cached_agenda(new_uuid, state.store) do
+          {:ok, entries} -> {entries == [], state}
+          :gone -> {true, state}
+        end
+    end
+  end
+
+  defp read_cached_agenda(uuid, store) when is_binary(uuid) do
+    case World.get_meta_map(uuid, NoteDoc.note_filename(), store) do
+      {:ok, %{"entries" => list}} when is_list(list) -> {:ok, list}
+      {:ok, _} -> {:ok, []}
+      _ -> :gone
+    end
+  rescue
+    _ -> :gone
+  catch
+    _, _ -> :gone
+  end
+
+  defp read_cached_agenda(_uuid, _store), do: :gone
+
+  # Beat the bot's `.usr` presence, best-effort, found via the MUD root (the
+  # autonomous path has no room dir to scan). NEVER gates behavior — a failed
+  # beat is observability noise.
+  #
+  # Attribution split (cp-plan #8716, the SIGNS binding = "sign what you did"):
+  # the keep-alive beat is a RUNTIME FACT, not a Camillo turn — a `:skip` tick
+  # performs no cognition — so it is NODE-signed. `state.node_ctx` is resolved
+  # once at init; under enforce a node-signed presence write lands.
+  defp beat_autonomous_presence(name, mud_root, state) when is_binary(mud_root) do
+    fname = Presence.filename(name, :usr)
 
     try do
-      case Enum.find_value(dirs, fn d -> find_usr_presence(d, stripped, state.store) end) do
-        uuid when is_binary(uuid) ->
-          Presence.heartbeat(uuid, state.store, signing_context: state.node_ctx)
+      case World.find_presence(mud_root, fname, state.store) do
+        {:ok, _room_uuid, presence_uuid} ->
+          Presence.heartbeat(presence_uuid, state.store, signing_context: state.node_ctx)
           :ok
 
         _ ->
@@ -646,22 +761,7 @@ defmodule Commonplace.Bots.Dispatcher do
     end
   end
 
-  defp find_usr_presence(dir_uuid, stripped_name, store) do
-    case DocBuilder.reconstruct_snapshot(store, dir_uuid) do
-      {:ok, doc} ->
-        doc
-        |> Presence.discover(:usr)
-        |> Enum.find_value(fn entry ->
-          case Presence.parse_honorific(entry.name) do
-            {:ok, n, :usr} -> if n == stripped_name, do: entry.node_id, else: nil
-            _ -> nil
-          end
-        end)
-
-      _ ->
-        nil
-    end
-  end
+  defp beat_autonomous_presence(_name, _mud_root, _state), do: :ok
 
   defp strip_bot_suffix(name) do
     if String.ends_with?(name, ".bot") do
@@ -688,64 +788,6 @@ defmodule Commonplace.Bots.Dispatcher do
         end
     end
   end
-
-  defp agenda_empty?(entity, state) do
-    try do
-      Agenda.read(entity, state.store) == []
-    rescue
-      _ -> true
-    catch
-      _, _ -> true
-    end
-  end
-
-  # "Thread quiet" — no new message in the room since the bot last acted,
-  # approximated cheaply as: the room's newest message ts is older than
-  # @thread_quiet_window_ms (or there are no messages at all).
-  defp thread_quiet?(room, state) do
-    case Map.get(state.rooms, room) do
-      %{messages_uuid: muid} when is_binary(muid) ->
-        case DocBuilder.reconstruct_snapshot(state.store, muid) do
-          {:ok, doc} ->
-            doc
-            |> Messages.list()
-            |> newest_ts()
-            |> quiet_by_ts?()
-
-          _ ->
-            true
-        end
-
-      _ ->
-        true
-    end
-  end
-
-  defp newest_ts(entries) do
-    tss =
-      entries
-      |> Enum.map(&Map.get(&1, "ts"))
-      |> Enum.filter(&is_binary/1)
-
-    case tss do
-      [] -> nil
-      _ -> Enum.max(tss)
-    end
-  end
-
-  defp quiet_by_ts?(nil), do: true
-
-  defp quiet_by_ts?(ts) when is_binary(ts) do
-    case DateTime.from_iso8601(ts) do
-      {:ok, dt, _} ->
-        DateTime.diff(DateTime.utc_now(), dt, :millisecond) > @thread_quiet_window_ms
-
-      _ ->
-        true
-    end
-  end
-
-  defp quiet_by_ts?(_), do: true
 
   defp infer_room(_payload, state) do
     # When only one room is registered, route the event to it.

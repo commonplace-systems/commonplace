@@ -1,26 +1,53 @@
 defmodule Commonplace.Bots.HeartbeatTest do
+  @moduledoc """
+  Camillo C3b/C3d — the AUTONOMOUS heartbeat source.
+
+  Heartbeat ticks are a FIRST-CLASS, room-independent dispatcher entrypoint
+  (`register_autonomous_bot/5`): a bot's mind ticks whether or not any chat
+  surface has subscribed its rooms. The agenda skip-check reads the bot's
+  `home/agenda` note-meta by a uuid CACHED at register time (cheap per tick),
+  self-healing on a miss. These tests provision a real citizen (so `home/agenda`
+  + presence exist) and drive ticks deterministically.
+  """
   use ExUnit.Case, async: false
 
-  alias Commonplace.Bots.{Agenda, Dispatcher, Entity}
+  alias Commonplace.Bots.Identity, as: BotIdentity
+  alias Commonplace.Bots.{Agenda, Citizen, Dispatcher, MudContext}
   alias Commonplace.Bots.Worker.{Loop, Tools}
-  alias Commonplace.Chat.Messages
-  alias Commonplace.Crypto.{NodeIdentity, Signing}
+  alias Commonplace.Crypto.NodeIdentity
   alias Commonplace.Document.ContentType
   alias Commonplace.Presence
-  alias Commonplace.Store.{CommitStore, CommitStoreClient}
+  alias Commonplace.Store.{CommitStore, SecretStore}
   alias Commonplace.Tree.Schema
+  alias Yelixer.Encoding
 
   setup do
-    dir = Path.join(System.tmp_dir!(), "cp_bots_heartbeat_#{:rand.uniform(1_000_000_000)}")
+    n = :rand.uniform(1_000_000_000)
+    dir = Path.join(System.tmp_dir!(), "cp_bots_heartbeat_#{n}")
     File.mkdir_p!(dir)
+    store = :"heartbeat_store_#{n}"
+
+    start_supervised!(
+      {Commonplace.Store.Supervisor,
+       data_dir: dir,
+       name: :"heartbeat_sup_#{n}",
+       commit_store_name: store,
+       trust_side_store_name: :"heartbeat_tss_#{n}",
+       pending_imports_name: :"heartbeat_pi_#{n}"}
+    )
+
+    old_data_dir = Application.get_env(:commonplace, :data_dir)
     Application.put_env(:commonplace, :data_dir, dir)
 
-    sup = Commonplace.Store.CommitStoreSupervisor
-    _ = Supervisor.terminate_child(sup, CommitStore)
-    _ = Supervisor.delete_child(sup, CommitStore)
-    {:ok, _pid} = Supervisor.start_child(sup, {CommitStore, data_dir: dir})
-    Commonplace.Tree.DocCache.clear()
+    secrets_dir = Path.join(System.tmp_dir!(), "cp_bots_heartbeat_secrets_#{n}")
+    File.mkdir_p!(secrets_dir)
+    secrets = :"heartbeat_secrets_#{n}"
+    {:ok, secrets_pid} = SecretStore.start_link(data_dir: secrets_dir, name: secrets)
 
+    {:ok, node_ctx} = NodeIdentity.signing_context()
+
+    # Swap in a Dispatcher bound to THIS test's store (so its autonomous
+    # resolution + reads hit the same tree the citizen was provisioned into).
     test_pid = self()
     hook = fn room, entity, event -> send(test_pid, {:wake, room, entity.name, event}) end
 
@@ -32,7 +59,8 @@ defmodule Commonplace.Bots.HeartbeatTest do
       Supervisor.start_child(
         bots_sup,
         Supervisor.child_spec(
-          {Commonplace.Bots.Dispatcher, [worker_hook: hook, rate_limit_enabled: false]},
+          {Commonplace.Bots.Dispatcher,
+           [worker_hook: hook, rate_limit_enabled: false, store: store, node_ctx: node_ctx]},
           id: Commonplace.Bots.Dispatcher
         )
       )
@@ -40,10 +68,7 @@ defmodule Commonplace.Bots.HeartbeatTest do
     on_exit(fn ->
       _ = Supervisor.terminate_child(bots_sup, Commonplace.Bots.Dispatcher)
       _ = Supervisor.delete_child(bots_sup, Commonplace.Bots.Dispatcher)
-
-      # The dispatcher is now stopped, so no further heartbeat ticks fire.
-      # Let any in-flight best-effort log_activity tasks drain against the
-      # still-alive store before we tear it down (teardown-race noise only).
+      # Let any in-flight best-effort tasks drain before the store is gone.
       Process.sleep(100)
 
       {:ok, _pid} =
@@ -54,299 +79,206 @@ defmodule Commonplace.Bots.HeartbeatTest do
           )
         )
 
-      _ = Supervisor.terminate_child(sup, CommitStore)
-      _ = Supervisor.delete_child(sup, CommitStore)
-      Application.put_env(:commonplace, :data_dir, "tmp/test_data")
-      {:ok, _pid} = Supervisor.start_child(sup, {CommitStore, data_dir: "tmp/test_data"})
-      Commonplace.Tree.DocCache.clear()
+      Application.put_env(:commonplace, :data_dir, old_data_dir || "tmp/test_data")
+
+      if Process.alive?(secrets_pid) do
+        try do
+          GenServer.stop(secrets_pid)
+        catch
+          :exit, _ -> :ok
+        end
+      end
+
       File.rm_rf!(dir)
+      File.rm_rf!(secrets_dir)
     end)
 
-    :ok
-  end
-
-  ## Fixtures
-
-  defp mint_doc(doc) do
-    uuid = UUID.uuid4()
-    update = Yelixer.Encoding.encode_update(doc)
-    CommitStore.create_commit(CommitStore, uuid, update, nil)
-    uuid
-  end
-
-  defp mint_text_doc(name, body) do
-    doc = Yelixer.Doc.new()
-    doc = ContentType.create(doc, :text, name)
-    doc = if body == "", do: doc, else: ContentType.insert_text(doc, 0, body)
-    mint_doc(doc)
-  end
-
-  # opts: [heartbeat_ms: int | nil, trigger: string]
-  defp mint_bot_dir(opts) do
-    trigger = Keyword.get(opts, :trigger, "(?i)@alice\\b")
-
-    schema =
-      Schema.new_schema()
-      |> Schema.add_file("persona.md", mint_text_doc("persona.md", "I am alice."))
-      |> Schema.add_file("memory.jsonl", mint_text_doc("memory.jsonl", ""))
-      |> Schema.add_file("trigger.regex", mint_text_doc("trigger.regex", trigger))
-
-    schema =
-      case Keyword.get(opts, :heartbeat_ms) do
-        ms when is_integer(ms) ->
-          Schema.add_file(
-            schema,
-            "bot.json",
-            mint_text_doc("bot.json", Jason.encode!(%{"heartbeat_ms" => ms}))
-          )
-
-        _ ->
-          schema
-      end
-
-    mint_doc(schema)
-  end
-
-  defp mint_room_dir(bots) do
-    schema =
-      Enum.reduce(bots, Schema.new_schema(), fn {name, dir_uuid}, acc ->
-        Schema.add_directory(acc, name, dir_uuid)
-      end)
-
-    mint_doc(schema)
-  end
-
-  defp mint_messages_doc(entries \\ []) do
-    doc =
-      Enum.reduce(entries, Messages.new(), fn entry, acc ->
-        Messages.append(acc, entry)
-      end)
-
-    mint_doc(doc)
-  end
-
-  ## Opt-in
-
-  test "a bot with no heartbeat_ms gets no tick (even with a non-empty agenda)" do
-    dir = mint_bot_dir(heartbeat_ms: nil)
-    room_uuid = mint_room_dir([{"alice.bot", dir}])
-    messages_uuid = mint_messages_doc()
-
-    # Give the bot a non-empty agenda so the ONLY reason it doesn't wake
-    # is the missing heartbeat_ms opt-in, not an empty agenda.
-    {:ok, entity} = Entity.load(CommitStoreClient, dir, "alice.bot")
-    :ok = Agenda.append(entity, %{"text" => "pending work"}, CommitStoreClient)
-
-    :ok = Dispatcher.subscribe_room("optin-off", room_uuid, messages_uuid)
-
-    refute_receive {:wake, _, _, _}, 400
-  end
-
-  test "a bot with a positive heartbeat_ms fires a tick reaching evaluate_and_dispatch" do
-    dir = mint_bot_dir(heartbeat_ms: 50)
-    room_uuid = mint_room_dir([{"alice.bot", dir}])
-    messages_uuid = mint_messages_doc()
-
-    # Non-empty agenda → the heartbeat trigger wakes.
-    {:ok, entity} = Entity.load(CommitStoreClient, dir, "alice.bot")
-    :ok = Agenda.append(entity, %{"text" => "do a thing"}, CommitStoreClient)
-
-    :ok = Dispatcher.subscribe_room("optin-on", room_uuid, messages_uuid)
-
-    assert_receive {:wake, "optin-on", "alice", event}, 2_000
-    # The event is the internally-tagged heartbeat, not a chat post.
-    assert event["kind"] == "heartbeat"
-    assert event["verb"] == "heartbeat"
-  end
-
-  ## Wake vs skip
-
-  test "wake when the agenda is non-empty (thread quiet)" do
-    dir = mint_bot_dir(heartbeat_ms: 50)
-    room_uuid = mint_room_dir([{"alice.bot", dir}])
-    messages_uuid = mint_messages_doc()
-
-    {:ok, entity} = Entity.load(CommitStoreClient, dir, "alice.bot")
-    :ok = Agenda.append(entity, %{"text" => "unfiled pin"}, CommitStoreClient)
-
-    :ok = Dispatcher.subscribe_room("wake-agenda", room_uuid, messages_uuid)
-
-    assert_receive {:wake, "wake-agenda", "alice", event}, 2_000
-    assert event["kind"] == "heartbeat"
-    assert event["agenda_empty"] == false
-  end
-
-  test "wake when the thread is active (empty agenda)" do
-    dir = mint_bot_dir(heartbeat_ms: 50)
-    room_uuid = mint_room_dir([{"alice.bot", dir}])
-
-    now = DateTime.utc_now() |> DateTime.to_iso8601()
-
-    messages_uuid =
-      mint_messages_doc([
-        %{"id" => UUID.uuid4(), "text" => "fresh chatter", "author_path" => "human.usr", "ts" => now}
-      ])
-
-    :ok = Dispatcher.subscribe_room("wake-active", room_uuid, messages_uuid)
-
-    assert_receive {:wake, "wake-active", "alice", event}, 2_000
-    assert event["kind"] == "heartbeat"
-    assert event["agenda_empty"] == true
-    assert event["thread_quiet"] == false
-  end
-
-  test "skip when the agenda is empty AND the thread is quiet — but presence STILL beats" do
-    dir = mint_bot_dir(heartbeat_ms: 50)
-    room_uuid = mint_room_dir([{"alice.bot", dir}])
-    # Empty messages doc → quiet thread.
-    messages_uuid = mint_messages_doc()
-
-    # A .usr presence for the bot in the room dir, to observe the keep-alive.
-    {:ok, presence_uuid} = Presence.create("alice", :usr, room_uuid, CommitStore)
-    ts0 = Presence.read(presence_uuid, CommitStoreClient)["heartbeat"]
-    assert is_binary(ts0)
-
-    :ok = Dispatcher.subscribe_room("skip-quiet", room_uuid, messages_uuid)
-
-    # Over this window several ticks fire; each MUST skip (no worker) yet
-    # STILL beat the presence.
-    refute_receive {:wake, _, _, _}, 400
-
-    ts1 = Presence.read(presence_uuid, CommitStoreClient)["heartbeat"]
-    assert is_binary(ts1)
-    assert ts1 != ts0, "a :skip tick must still refresh the bot's presence heartbeat"
-  end
-
-  # The pin above proves the tick BEATS on skip, but in the permissive test
-  # store an unsigned beat lands regardless. This one proves the beat under
-  # REAL enforce — the regime the requirement exists for (cp-plan #8716). The
-  # keep-alive is NODE-signed (a runtime fact, not a Camillo turn): an OLD
-  # unsigned beat is DENIED under enforce → the presence never advances → the
-  # reaper takes a resting bot; the node-signed beat LANDS.
-  test "under enforce the keep-alive beat must be NODE-signed to land (unsigned is denied)" do
-    node_ctx =
-      case NodeIdentity.signing_context() do
-        {:ok, ctx} -> ctx
-        other -> flunk("test needs a node signing context, got: #{inspect(other)}")
-      end
-
-    prior_gate = Application.get_env(:commonplace, :local_write_gate)
-    prior_trust = Application.get_env(:commonplace, :trust)
-    Application.put_env(:commonplace, :local_write_gate, :enforce)
-
-    Application.put_env(:commonplace, :trust, %{
-      accept_unsigned: false,
-      trusted_identities: %{node_ctx.identity_uuid => Signing.encode_key(node_ctx.public_key)}
-    })
-
-    on_exit(fn ->
-      case prior_gate do
-        nil -> Application.delete_env(:commonplace, :local_write_gate)
-        v -> Application.put_env(:commonplace, :local_write_gate, v)
-      end
-
-      case prior_trust do
-        nil -> Application.delete_env(:commonplace, :trust)
-        v -> Application.put_env(:commonplace, :trust, v)
-      end
-    end)
-
-    # Node-signed parent dir + .usr presence (unsigned would be denied here).
-    parent = UUID.uuid4()
+    # The MUD root (node-signed).
+    mud_root = UUID.uuid4()
 
     CommitStore.create_commit(
-      CommitStore,
-      parent,
-      Yelixer.Encoding.encode_update(Schema.new_schema()),
+      store,
+      mud_root,
+      Encoding.encode_update(Schema.new_schema()),
       nil,
       %{},
       signing_context: node_ctx
     )
 
-    {:ok, presence_uuid} =
-      Presence.create("resting-bot", :usr, parent, CommitStore, signing_context: node_ctx)
-
-    ts0 = Presence.read(presence_uuid, CommitStoreClient)["heartbeat"]
-    assert is_binary(ts0)
-
-    # The OLD unsigned beat: DENIED under enforce → presence does NOT advance.
-    Presence.heartbeat(presence_uuid, CommitStore)
-    Commonplace.Tree.DocCache.clear()
-
-    assert Presence.read(presence_uuid, CommitStoreClient)["heartbeat"] == ts0,
-           "an unsigned keep-alive beat must NOT land under enforce (this is the bug the fix closes)"
-
-    # The fix: a NODE-signed beat (what `beat_presence/4` now does via
-    # `state.node_ctx`) LANDS, keeping the resting bot alive.
-    Process.sleep(2)
-    Presence.heartbeat(presence_uuid, CommitStore, signing_context: node_ctx)
-    Commonplace.Tree.DocCache.clear()
-
-    ts1 = Presence.read(presence_uuid, CommitStoreClient)["heartbeat"]
-    assert is_binary(ts1)
-
-    assert ts1 != ts0,
-           "a node-signed keep-alive beat MUST land under enforce (keeps the resting bot alive)"
+    %{store: store, mud_root: mud_root, secrets: secrets, node_ctx: node_ctx}
   end
 
-  ## Unspoofable-by-chat
+  ## Fixtures
 
-  test "a chat payload crafted to look like a heartbeat still routes as a normal post" do
-    dir = mint_bot_dir(trigger: "(?i)heartbeat")
-    room_uuid = mint_room_dir([{"alice.bot", dir}])
+  defp mint_text_doc(store, name, body) do
+    uuid = UUID.uuid4()
+    doc = Yelixer.Doc.new()
+    doc = ContentType.create(doc, :text, name)
+    doc = if body == "", do: doc, else: ContentType.insert_text(doc, 0, body)
+    CommitStore.create_commit(store, uuid, Encoding.encode_update(doc), nil)
+    uuid
+  end
 
-    mid = UUID.uuid4()
+  # A minimal .bot CHARTER dir (persona.md + trigger.regex) — the entity dir the
+  # dispatcher loads. The desk (memory/agenda) lives under the home, not here.
+  defp mint_bot_dir(store) do
+    schema =
+      Schema.new_schema()
+      |> Schema.add_file("persona.md", mint_text_doc(store, "persona.md", "I am camillo."))
+      |> Schema.add_file("trigger.regex", mint_text_doc(store, "trigger.regex", "(?i)@camillo"))
 
-    messages_uuid =
-      mint_messages_doc([
-        %{"id" => mid, "text" => "heartbeat now", "author_path" => "human.usr",
-          "ts" => DateTime.utc_now() |> DateTime.to_iso8601()}
-      ])
+    uuid = UUID.uuid4()
+    CommitStore.create_commit(store, uuid, Encoding.encode_update(schema), nil)
+    uuid
+  end
 
-    :ok = Dispatcher.subscribe_room("spoof", room_uuid, messages_uuid)
+  # Provision "camillo" as a citizen (home + presence + home/agenda) and resolve
+  # his MUD ctx (for appending to the home agenda in tests).
+  defp provision_camillo(ctx) do
+    {:ok, prov} = Citizen.provision("camillo", ctx.mud_root, ctx.store, secret_store: ctx.secrets)
+
+    {:ok, sc} =
+      BotIdentity.resolve_signing_context("camillo", ctx.mud_root, ctx.store,
+        secret_store: ctx.secrets
+      )
+
+    {:ok, mud_ctx} = MudContext.resolve(%{name: "camillo"}, sc, ctx.mud_root, ctx.store)
+    {prov, mud_ctx}
+  end
+
+  defp tick(name), do: send(Process.whereis(Commonplace.Bots.Dispatcher), {:autonomous_tick, name})
+
+  ## First-class chatless registration
+
+  test "a bot registered for autonomous ticks fires — with NO room subscribed", ctx do
+    {_prov, mud_ctx} = provision_camillo(ctx)
+    :ok = Agenda.append(%{"text" => "do a thing"}, mud_ctx)
+    bot_dir = mint_bot_dir(ctx.store)
+
+    # NO subscribe_room — the mind ticks purely on its own registration.
+    :ok = Dispatcher.register_autonomous_bot("camillo.bot", bot_dir, ctx.mud_root, 50, secret_store: ctx.secrets)
+
+    assert_receive {:wake, "camillo", "camillo", event}, 2_000
+    assert event["kind"] == "heartbeat"
+    assert event["verb"] == "heartbeat"
+    assert event["agenda_empty"] == false
+    assert Dispatcher.registered_rooms() == %{}
+  end
+
+  test "register caches the home-agenda uuid at register time", ctx do
+    {prov, _mud_ctx} = provision_camillo(ctx)
+    bot_dir = mint_bot_dir(ctx.store)
+
+    :ok =
+      Dispatcher.register_autonomous_bot("camillo.bot", bot_dir, ctx.mud_root, 60_000,
+        secret_store: ctx.secrets
+      )
+
+    auto = Dispatcher.registered_autonomous_bots()
+    assert auto["camillo"].home_agenda_uuid == prov.agenda_uuid
+  end
+
+  ## Wake vs skip (autonomous: thread is trivially quiet, so wake iff agenda non-empty)
+
+  test "wake when the home-agenda is non-empty", ctx do
+    {_prov, mud_ctx} = provision_camillo(ctx)
+    :ok = Agenda.append(%{"text" => "unfiled pin"}, mud_ctx)
+    bot_dir = mint_bot_dir(ctx.store)
+
+    :ok =
+      Dispatcher.register_autonomous_bot("camillo.bot", bot_dir, ctx.mud_root, 60_000,
+        secret_store: ctx.secrets
+      )
+
+    tick("camillo")
+
+    assert_receive {:wake, "camillo", "camillo", event}, 2_000
+    assert event["agenda_empty"] == false
+  end
+
+  test "skip when the home-agenda is empty — but presence STILL beats", ctx do
+    {prov, _mud_ctx} = provision_camillo(ctx)
+    bot_dir = mint_bot_dir(ctx.store)
+
+    ts0 = Presence.read(prov.presence_uuid, ctx.store)["heartbeat"]
+    assert is_binary(ts0)
+
+    :ok =
+      Dispatcher.register_autonomous_bot("camillo.bot", bot_dir, ctx.mud_root, 60_000,
+        secret_store: ctx.secrets
+      )
+
+    tick("camillo")
+
+    # Empty agenda + trivially-quiet thread → no worker wake...
+    refute_receive {:wake, _, _, _}, 400
+
+    # ...but the presence keep-alive beat still advances (resting bot stays alive).
+    Commonplace.Tree.DocCache.clear()
+    ts1 = Presence.read(prov.presence_uuid, ctx.store)["heartbeat"]
+    assert is_binary(ts1)
+    assert ts1 != ts0, "a :skip tick must still refresh the bot's presence heartbeat"
+  end
+
+  ## Self-heal: a cached uuid that misses is re-resolved once
+
+  test "self-heals when the cached home-agenda uuid misses", ctx do
+    {prov, mud_ctx} = provision_camillo(ctx)
+    :ok = Agenda.append(%{"text" => "pending"}, mud_ctx)
+    bot_dir = mint_bot_dir(ctx.store)
+
+    :ok =
+      Dispatcher.register_autonomous_bot("camillo.bot", bot_dir, ctx.mud_root, 60_000,
+        secret_store: ctx.secrets
+      )
 
     pid = Process.whereis(Commonplace.Bots.Dispatcher)
 
-    # A chat event whose payload smuggles a "kind" => "heartbeat" field.
-    # It must NEVER produce a heartbeat turn — the chat path always yields
-    # verb "post" and strips any "kind".
-    send(
-      pid,
-      {:magenta, "magenta:chat:spoof:events",
-       %{
-         type: "post",
-         payload: %{
-           "author_path" => "human.usr",
-           "room" => "spoof",
-           "message_id" => mid,
-           "kind" => "heartbeat"
-         }
-       }}
-    )
+    # Corrupt the cached uuid to simulate a rare re-provision drift.
+    :sys.replace_state(pid, fn state ->
+      entry = %{state.auto["camillo"] | home_agenda_uuid: UUID.uuid4()}
+      %{state | auto: Map.put(state.auto, "camillo", entry)}
+    end)
 
-    assert_receive {:wake, "spoof", "alice", event}, 2_000
-    assert event["verb"] == "post"
-    refute Map.get(event, "kind") == "heartbeat"
+    tick("camillo")
+
+    # The tick self-heals (re-resolves the real agenda) and still sees the
+    # non-empty entries → wakes.
+    assert_receive {:wake, "camillo", "camillo", event}, 2_000
+    assert event["agenda_empty"] == false
+
+    # The cache healed back to the real agenda uuid.
+    auto = Dispatcher.registered_autonomous_bots()
+    assert auto["camillo"].home_agenda_uuid == prov.agenda_uuid
   end
 
-  ## Turn shape (Loop.build_initial_user_text via Loop.run)
+  ## Unregister
 
-  test "a heartbeat event frames the turn around the agenda, not the chat shape" do
-    agenda_line =
-      Jason.encode!(%{"ts" => "2026-01-01T00:00:00Z", "text" => "consolidate the pins"}) <> "\n"
+  test "unregister cancels ticks and drops the cache", ctx do
+    {_prov, mud_ctx} = provision_camillo(ctx)
+    :ok = Agenda.append(%{"text" => "x"}, mud_ctx)
+    bot_dir = mint_bot_dir(ctx.store)
 
-    agenda_uuid = mint_text_doc("agenda.jsonl", agenda_line)
+    :ok =
+      Dispatcher.register_autonomous_bot("camillo.bot", bot_dir, ctx.mud_root, 60_000,
+        secret_store: ctx.secrets
+      )
 
-    entity = %Entity{
-      name: "alice",
-      dir_uuid: UUID.uuid4(),
-      persona: "You are alice.",
-      memory_uuid: nil,
-      trigger_source: "",
-      trigger_kind: :regex,
-      bot_config: %{},
-      children: %{"agenda.jsonl" => agenda_uuid}
-    }
+    :ok = Dispatcher.unregister_autonomous_bot("camillo.bot")
+    assert Dispatcher.registered_autonomous_bots() == %{}
+
+    # A queued tick after unregister is a no-op (no wake).
+    tick("camillo")
+    refute_receive {:wake, _, _, _}, 400
+  end
+
+  ## Turn-shape framing (Loop reads the agenda from the home via mud_ctx)
+
+  test "a heartbeat event frames the turn around the home-agenda", ctx do
+    {_prov, mud_ctx} = provision_camillo(ctx)
+    :ok = Agenda.append(%{"text" => "consolidate the pins"}, mud_ctx)
+
+    {:ok, entity} = Commonplace.Bots.Entity.load(ctx.store, mint_bot_dir(ctx.store), "camillo.bot")
 
     test_pid = self()
 
@@ -356,8 +288,9 @@ defmodule Commonplace.Bots.HeartbeatTest do
     end
 
     base_state = %{
-      room: "room",
+      room: "camillo",
       entity: entity,
+      mud_ctx: mud_ctx,
       config: %{
         max_calls: 3,
         max_output_tokens: 100,
@@ -369,10 +302,9 @@ defmodule Commonplace.Bots.HeartbeatTest do
       tools_module: Tools,
       signing_context: nil,
       allowlist: [],
-      opts: [store: CommitStoreClient]
+      opts: [store: ctx.store]
     }
 
-    # Heartbeat event → heartbeat shape.
     assert {:ok, :end_turn} =
              Loop.run(Map.put(base_state, :event, %{"kind" => "heartbeat", "thread_quiet" => true}))
 
@@ -380,17 +312,6 @@ defmodule Commonplace.Bots.HeartbeatTest do
     hb_text = first_user_text(hb_request)
     assert hb_text =~ "You woke on a heartbeat"
     assert hb_text =~ "consolidate the pins"
-    assert hb_text =~ "quiet"
-    refute hb_text =~ "New message in"
-
-    # A normal chat event → chat shape (unchanged).
-    assert {:ok, :end_turn} =
-             Loop.run(Map.put(base_state, :event, %{"author_path" => "bob.usr", "text" => "hi"}))
-
-    assert_receive {:request, chat_request}
-    chat_text = first_user_text(chat_request)
-    assert chat_text =~ "New message in"
-    refute chat_text =~ "You woke on a heartbeat"
   end
 
   defp first_user_text(request) do

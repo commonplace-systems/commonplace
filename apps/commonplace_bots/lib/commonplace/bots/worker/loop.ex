@@ -79,7 +79,6 @@ defmodule Commonplace.Bots.Worker.Loop do
 
   alias Commonplace.Bots.Agenda
   alias Commonplace.Bots.Worker.Tools
-  alias Commonplace.Store.CommitStoreClient
 
   @type state :: %{
           room: String.t(),
@@ -297,11 +296,11 @@ defmodule Commonplace.Bots.Worker.Loop do
     |> String.trim_trailing()
   end
 
+  # C3d: the agenda lives under the bot's home (a zoned note-meta), resolved
+  # from the turn's mud_ctx. A nil mud_ctx (unprovisioned bot) reads empty.
   defp read_agenda(state) do
-    store = Keyword.get(state.opts || [], :store, CommitStoreClient)
-
     try do
-      Agenda.read(state.entity, store)
+      Agenda.read(Map.get(state, :mud_ctx))
     rescue
       _ -> []
     catch

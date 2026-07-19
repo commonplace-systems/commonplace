@@ -140,51 +140,15 @@ defmodule Commonplace.Bots.Worker.ReadToolsTest do
   end
 
   describe "read_memory" do
-    test "returns parsed JSON lines" do
-      lines =
-        Enum.map_join(
-          ["alpha", "beta", "gamma"],
-          "\n",
-          &Jason.encode!(%{"ts" => "t", "text" => &1})
-        )
-
-      uuid = mint_bot_dir(lines)
-      entity = load_entity(uuid)
-
+    # C3d: memory moved UNDER the bot's home (a zoned note-meta). The home-
+    # anchored read/append + enforce behavior is covered in MudToolsTest against
+    # a provisioned citizen. Here we only pin the graceful no-mud_ctx path: a
+    # tool state carrying no `mud_ctx` (unprovisioned bot / not in the world)
+    # reads an empty log rather than crashing.
+    test "returns an empty log gracefully when the bot has no mud_ctx" do
+      entity = load_entity(mint_bot_dir())
       {:ok, json} = ReadMemory.call(state(entity, []), %{})
-      decoded = Jason.decode!(json)
-      assert Enum.map(decoded, & &1["text"]) == ["alpha", "beta", "gamma"]
-    end
-
-    test "filters by contains substring" do
-      lines =
-        Enum.map_join(
-          ["alpha", "beta", "alpha-prime"],
-          "\n",
-          &Jason.encode!(%{"text" => &1})
-        )
-
-      uuid = mint_bot_dir(lines)
-      entity = load_entity(uuid)
-
-      {:ok, json} =
-        ReadMemory.call(state(entity, []), %{"contains" => "alpha"})
-
-      decoded = Jason.decode!(json)
-      assert Enum.map(decoded, & &1["text"]) == ["alpha", "alpha-prime"]
-    end
-
-    test "drops malformed lines silently" do
-      lines =
-        Jason.encode!(%{"text" => "good"}) <> "\nnot-json\n" <> Jason.encode!(%{"text" => "ok"})
-
-      uuid = mint_bot_dir(lines)
-      entity = load_entity(uuid)
-
-      {:ok, json} = ReadMemory.call(state(entity, []), %{})
-      decoded = Jason.decode!(json)
-      assert length(decoded) == 2
-      assert Enum.map(decoded, & &1["text"]) == ["good", "ok"]
+      assert Jason.decode!(json) == []
     end
   end
 

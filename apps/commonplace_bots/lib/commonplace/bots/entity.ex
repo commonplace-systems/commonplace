@@ -10,16 +10,21 @@ defmodule Commonplace.Bots.Entity do
 
   ## Required vs optional children
 
-  A well-formed bot directory contains, at minimum:
+  A well-formed bot directory (the CHARTER) contains, at minimum:
 
       persona.md      — text doc; the system prompt the worker reads
                         as its persona / instructions.
-      memory.jsonl    — text doc; newline-separated JSON entries that
-                        the worker can read on wake and append to via
-                        the `remember` tool. Append-by-end-insert is
-                        safe under YText concurrent semantics.
       trigger.regex   — text doc; one regex per line, ANY match → wake.
                         Anchors and flag syntax follow Erlang :re.
+
+  The bot's WORKING docs (its "desk") — memory and agenda — no longer
+  live in the entity dir. As of C3d they are zoned note-metas UNDER the
+  bot's HOME (`home/memory/`, `home/agenda/`), where the bot's
+  `{:subtree, home}` cert covers its own appends under enforce. The entity
+  dir keeps ONLY the node-owned charter. `memory_uuid` is retained (as an
+  OPTIONAL field, `nil` when absent) purely for back-compat with legacy
+  bot dirs that still carry a `memory.jsonl`; it is NOT the source of
+  truth — the `remember` / `read_memory` tools resolve `home/memory`.
 
   Optional:
 
@@ -82,24 +87,25 @@ defmodule Commonplace.Bots.Entity do
           name: String.t(),
           dir_uuid: String.t(),
           persona: String.t(),
-          memory_uuid: String.t(),
+          memory_uuid: String.t() | nil,
           trigger_source: String.t(),
           trigger_kind: :regex | :code,
           bot_config: map(),
           children: %{String.t() => String.t()}
         }
 
-  @required_children ~w(persona.md memory.jsonl trigger.regex)
+  @required_children ~w(persona.md trigger.regex)
   @bot_suffix ".bot"
 
   @doc """
   Load a bot entity from its directory UUID.
 
   Reconstructs the directory's schema, validates the required
-  children are present, reads `persona.md` and `trigger.regex` as
-  text, and packages everything as an `%Entity{}`. `memory.jsonl`'s
-  UUID is captured (not its contents — the worker reads memory
-  lazily through the `read_memory` tool).
+  charter children (`persona.md`, `trigger.regex`) are present, reads
+  them as text, and packages everything as an `%Entity{}`. A legacy
+  `memory.jsonl`'s UUID is captured if present (`nil` otherwise) for
+  back-compat only — the `remember` / `read_memory` tools read
+  `home/memory` (C3d), not this field.
 
   Returns `{:error, {:missing, name}}` for the first missing
   required child, `{:error, :not_a_directory}` if the schema can't
@@ -125,7 +131,7 @@ defmodule Commonplace.Bots.Entity do
          name: strip_suffix(display_name),
          dir_uuid: dir_uuid,
          persona: persona,
-         memory_uuid: Map.fetch!(children, "memory.jsonl"),
+         memory_uuid: Map.get(children, "memory.jsonl"),
          trigger_source: trigger_source,
          trigger_kind: :regex,
          bot_config: bot_config,

@@ -121,10 +121,16 @@ defmodule Commonplace.Bots.EntityTest do
       uuid = mint_bot_dir(skip: ["persona.md"])
       assert {:error, {:missing, "persona.md"}} =
                Entity.load(CommitStoreClient, uuid, "ed.bot")
+    end
 
+    # C3d: memory.jsonl is NO LONGER a required charter child (the desk moved
+    # under the home). A charter-only dir (persona.md + trigger.regex) loads
+    # fine and reports memory_uuid: nil.
+    test "loads a charter-only dir without memory.jsonl (memory_uuid nil)" do
       uuid = mint_bot_dir(skip: ["memory.jsonl"])
-      assert {:error, {:missing, "memory.jsonl"}} =
-               Entity.load(CommitStoreClient, uuid, "fred.bot")
+      assert {:ok, entity} = Entity.load(CommitStoreClient, uuid, "fred.bot")
+      assert entity.name == "fred"
+      assert entity.memory_uuid == nil
     end
 
     test "strips the .bot suffix from the display name" do

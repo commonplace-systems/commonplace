@@ -48,6 +48,7 @@ defmodule Commonplace.Bots.Citizen do
   """
 
   alias Commonplace.Bots.Identity, as: BotIdentity
+  alias Commonplace.Bots.NoteDoc
   alias Commonplace.Crypto.Signing
   alias Commonplace.MUD.{Build, Citizenship, Schemas, World}
   alias Commonplace.MUD.Schemas.Room
@@ -64,12 +65,21 @@ defmodule Commonplace.Bots.Citizen do
   @study_opposite "south"
   @map_name "map"
 
+  # C3d — the bot's WORKING docs (its "desk") live UNDER the home as zoned
+  # note-metas, so the bot's {:subtree, home} cert covers its own appends under
+  # enforce. The entity dir keeps ONLY the charter.
+  @memory_dir "memory"
+  @agenda_dir "agenda"
+  @empty_entries ~s({"entries":[]})
+
   @type provision_result :: %{
           identity_uuid: String.t(),
           home_room_uuid: String.t(),
           foyer_uuid: String.t(),
           study_uuid: String.t(),
-          presence_uuid: String.t()
+          presence_uuid: String.t(),
+          memory_uuid: String.t(),
+          agenda_uuid: String.t()
         }
 
   @doc """
@@ -105,14 +115,25 @@ defmodule Commonplace.Bots.Citizen do
            foyer_ctx = %{ctx | current_room_uuid: foyer_uuid},
            {:ok, study_uuid} <- ensure_dig(foyer_ctx, @study_dir, @study_opposite, "Study"),
            {:ok, _map_uuid} <- ensure_map(foyer_ctx),
-           {:ok, presence_uuid} <- ensure_presence(foyer_ctx, name) do
+           {:ok, presence_uuid} <- ensure_presence(foyer_ctx, name),
+           # C3d: the desk. home/memory + home/agenda as zoned note-metas
+           # (append LOGs), anchored under the home so the {:subtree, home}
+           # cert covers the bot's own writes under enforce. Idempotent
+           # (ensure_zoned_dir is get-or-create). `ctx` (not foyer_ctx) carries
+           # the bot's creds; the parent is passed explicitly as home.
+           {:ok, memory_uuid} <-
+             NoteDoc.ensure_zoned_dir(home_room_uuid, @memory_dir, @empty_entries, ctx),
+           {:ok, agenda_uuid} <-
+             NoteDoc.ensure_zoned_dir(home_room_uuid, @agenda_dir, @empty_entries, ctx) do
         {:ok,
          %{
            identity_uuid: sc.identity_uuid,
            home_room_uuid: home_room_uuid,
            foyer_uuid: foyer_uuid,
            study_uuid: study_uuid,
-           presence_uuid: presence_uuid
+           presence_uuid: presence_uuid,
+           memory_uuid: memory_uuid,
+           agenda_uuid: agenda_uuid
          }}
       end
     end

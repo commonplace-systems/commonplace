@@ -20,9 +20,9 @@ defmodule Commonplace.Bots.MudToolsTest do
   use ExUnit.Case, async: false
 
   alias Commonplace.Bots.Identity, as: BotIdentity
-  alias Commonplace.Bots.{Citizen, MudContext}
+  alias Commonplace.Bots.{Agenda, Citizen, MudContext, NoteDoc}
   alias Commonplace.Bots.Worker.Tools
-  alias Commonplace.Bots.Worker.Tools.{Look, Move, Scratch}
+  alias Commonplace.Bots.Worker.Tools.{Look, Move, ReadMemory, Remember, Scratch, UpdateAgenda}
   alias Commonplace.Crypto.Signing
   alias Commonplace.MUD.World
   alias Commonplace.Store.{CommitStore, SecretStore}
@@ -311,6 +311,115 @@ defmodule Commonplace.Bots.MudToolsTest do
     assert note_map["zone"] == prov.home_room_uuid
   end
 
+  # ---- C3d: the DESK (memory + agenda) moved under the home ----
+
+  test "remember: appends an entry to home/memory as a zoned note-meta, bot-signed", ctx do
+    {prov, sc, mud_ctx} = resolve_camillo(ctx)
+
+    state = %{mud_ctx: mud_ctx, event: %{"message_id" => "m1"}}
+    assert {:ok, "remembered"} = Remember.call(state, %{"text" => "the human likes tea"})
+
+    # Provision already created home/memory; the entry lands in its "entries" log.
+    {:ok, mem_uuid} = child_dir(mud_ctx.home_room_uuid, "memory", ctx.store)
+    assert mem_uuid == prov.memory_uuid
+    {:ok, note_map} = World.get_meta_map(mem_uuid, "__note.json", ctx.store)
+    [entry] = note_map["entries"]
+    assert entry["text"] == "the human likes tea"
+    assert entry["source_msg_id"] == "m1"
+    assert is_binary(entry["ts"])
+
+    # Zone inherited == home (a %Struct{} round-trip would have dropped it).
+    assert note_map["zone"] == prov.home_room_uuid
+
+    # The append is BOT-signed (the latest commit on the __note.json meta doc).
+    bot_signer = Signing.signer_id(sc.identity_uuid, sc.public_key)
+    {:ok, meta_uuid} = World.meta_doc_uuid(mem_uuid, "__note.json", ctx.store)
+    {:ok, commit} = CommitStore.latest_commit(ctx.store, meta_uuid)
+    assert commit.signer_id == bot_signer
+
+    # A second entry, then read_memory reads them back from the home.
+    assert {:ok, "remembered"} =
+             Remember.call(state, %{"text" => "the human likes coffee"})
+
+    assert {:ok, json} = ReadMemory.call(state, %{})
+    assert ["the human likes tea", "the human likes coffee"] =
+             json |> Jason.decode!() |> Enum.map(& &1["text"])
+
+    # The contains filter narrows by the "text" field.
+    assert {:ok, filtered} = ReadMemory.call(state, %{"contains" => "coffee"})
+    assert ["the human likes coffee"] = filtered |> Jason.decode!() |> Enum.map(& &1["text"])
+  end
+
+  test "remember/update_agenda without a mud_ctx fail closed (not in the world)", _ctx do
+    assert {:error, "You are not in the world."} =
+             Remember.call(%{mud_ctx: nil}, %{"text" => "x"})
+
+    assert {:error, "You are not in the world."} =
+             UpdateAgenda.call(%{mud_ctx: nil}, %{"text" => "x"})
+  end
+
+  test "update_agenda: appends to home/agenda; Agenda.read reads it back", ctx do
+    {prov, _sc, mud_ctx} = resolve_camillo(ctx)
+
+    assert Agenda.read(mud_ctx) == []
+
+    assert {:ok, "agenda updated"} =
+             UpdateAgenda.call(%{mud_ctx: mud_ctx}, %{"text" => "consolidate the pins"})
+
+    {:ok, agenda_uuid} = child_dir(mud_ctx.home_room_uuid, "agenda", ctx.store)
+    assert agenda_uuid == prov.agenda_uuid
+
+    items = Agenda.read(mud_ctx)
+    assert Enum.map(items, & &1["text"]) == ["consolidate the pins"]
+    assert Enum.all?(items, &is_binary(&1["ts"]))
+  end
+
+  test "ENFORCE PIN: remember LANDS under enforce (cert covers home/memory)", ctx do
+    with_enforce(fn ->
+      {prov, _sc, mud_ctx} = resolve_camillo(ctx)
+
+      state = %{mud_ctx: mud_ctx, event: %{"message_id" => "m9"}}
+      assert {:ok, "remembered"} = Remember.call(state, %{"text" => "landed under enforce"})
+
+      # PERSISTED (not a dry-run false-ok): read the entry + surviving zone stamp
+      # back. MUST fail if memory were still in the un-zoned entity dir (denied).
+      {:ok, mem_uuid} = child_dir(mud_ctx.home_room_uuid, "memory", ctx.store)
+      {:ok, note_map} = World.get_meta_map(mem_uuid, "__note.json", ctx.store)
+      assert [%{"text" => "landed under enforce"}] = note_map["entries"]
+      assert note_map["zone"] == prov.home_room_uuid
+    end)
+  end
+
+  test "ENFORCE PIN: update_agenda LANDS under enforce (cert covers home/agenda)", ctx do
+    with_enforce(fn ->
+      {prov, _sc, mud_ctx} = resolve_camillo(ctx)
+
+      assert {:ok, "agenda updated"} =
+               UpdateAgenda.call(%{mud_ctx: mud_ctx}, %{"text" => "file the association"})
+
+      {:ok, agenda_uuid} = child_dir(mud_ctx.home_room_uuid, "agenda", ctx.store)
+      {:ok, note_map} = World.get_meta_map(agenda_uuid, "__note.json", ctx.store)
+      assert [%{"text" => "file the association"}] = note_map["entries"]
+      assert note_map["zone"] == prov.home_room_uuid
+    end)
+  end
+
+  test "NoteDoc.append_entry round-trip + zone SURVIVES repeated appends", ctx do
+    {prov, _sc, mud_ctx} = resolve_camillo(ctx)
+
+    {:ok, dir} = NoteDoc.ensure_zoned_dir(mud_ctx.home_room_uuid, "log", ~s({"entries":[]}), mud_ctx)
+    assert NoteDoc.read_entries(dir, mud_ctx) == []
+
+    :ok = NoteDoc.append_entry(dir, %{"n" => 1}, mud_ctx)
+    :ok = NoteDoc.append_entry(dir, %{"n" => 2}, mud_ctx)
+
+    assert Enum.map(NoteDoc.read_entries(dir, mud_ctx), & &1["n"]) == [1, 2]
+
+    # The node-signed zone stamp is STILL present after two appends.
+    {:ok, note_map} = World.get_meta_map(dir, "__note.json", ctx.store)
+    assert note_map["zone"] == prov.home_room_uuid
+  end
+
   test "allowlist still governs (C3a): move refused when charter omits it", ctx do
     {_prov, _sc, mud_ctx} = resolve_camillo(ctx)
 
@@ -322,6 +431,31 @@ defmodule Commonplace.Bots.MudToolsTest do
 
     # An allowlisted MUD tool dispatches through to the tool.
     assert {:ok, _} = Tools.dispatch(state, "look", %{})
+  end
+
+  # Run `fun` under REAL local_write_gate: :enforce + strict trust, restoring
+  # the prior config afterward. The node auto-trusts from data_dir, and a
+  # provisioned bot gets its {:subtree, home} cert.
+  defp with_enforce(fun) do
+    prior_gate = Application.get_env(:commonplace, :local_write_gate)
+    prior_trust = Application.get_env(:commonplace, :trust)
+
+    Application.put_env(:commonplace, :local_write_gate, :enforce)
+    Application.put_env(:commonplace, :trust, %{accept_unsigned: false, trusted_identities: %{}})
+
+    try do
+      fun.()
+    after
+      case prior_gate do
+        nil -> Application.delete_env(:commonplace, :local_write_gate)
+        v -> Application.put_env(:commonplace, :local_write_gate, v)
+      end
+
+      case prior_trust do
+        nil -> Application.delete_env(:commonplace, :trust)
+        v -> Application.put_env(:commonplace, :trust, v)
+      end
+    end
   end
 
   defp load_schema(uuid, store), do: Commonplace.MUD.Schemas.load_dir_schema(uuid, store)

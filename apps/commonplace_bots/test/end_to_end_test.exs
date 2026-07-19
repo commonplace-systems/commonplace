@@ -29,9 +29,9 @@ defmodule Commonplace.Bots.EndToEndTest do
   """
   use ExUnit.Case, async: false
 
-  alias Commonplace.Bots.{Activity, Demo, Dispatcher}
+  alias Commonplace.Bots.{Activity, Citizen, Demo, Dispatcher}
+  alias Commonplace.MUD.World
   alias Commonplace.Chat.{Actions, Messages}
-  alias Commonplace.Document.ContentType
   alias Commonplace.Store.{CommitStore, CommitStoreClient, SecretStore}
   alias Commonplace.Tree.{DocBuilder, Schema}
 
@@ -204,14 +204,21 @@ defmodule Commonplace.Bots.EndToEndTest do
     Messages.materialize(doc)
   end
 
-  defp read_text(uuid) do
-    {:ok, doc} = DocBuilder.reconstruct_snapshot(CommitStoreClient, uuid)
-    ContentType.get_content(doc) || ""
+  # Read the "entries" array from a home/memory note-meta (C3d).
+  defp read_memory_entries(memory_dir_uuid) do
+    case World.get_meta_map(memory_dir_uuid, "__note.json", CommitStoreClient) do
+      {:ok, %{"entries" => list}} when is_list(list) -> list
+      _ -> []
+    end
   end
 
   test "ACCEPTANCE: human posts @alice → alice wakes, posts, remembers, exits", %{secrets: secrets} do
     root = mint_root()
     demo = Demo.bootstrap(root)
+
+    # C3d: `remember` lands UNDER the bot's home (home/memory note-meta), so
+    # alice must be a provisioned citizen for the tool to resolve a mud_ctx.
+    {:ok, alice_prov} = Citizen.provision("alice", root, CommitStoreClient, secret_store: secrets)
 
     scripts = %{
       "alice" => [
@@ -261,21 +268,17 @@ defmodule Commonplace.Bots.EndToEndTest do
     assert alice_msg["text"] == "hi human, what's up?"
     assert alice_msg["author_path"] == "alice.bot"
 
-    # Wait for the remember tool to settle.
-    alice_uuid = demo.bots["alice"]
-    {:ok, alice_entity} = Commonplace.Bots.Entity.load(CommitStoreClient, alice_uuid, "alice.bot")
-
+    # Wait for the remember tool to settle — the entry lands in home/memory.
     :ok =
       wait_for(fn ->
-        text = read_text(alice_entity.memory_uuid)
-        String.contains?(text, "human said hello at sundown")
+        Commonplace.Tree.DocCache.clear()
+        entries = read_memory_entries(alice_prov.memory_uuid)
+        Enum.any?(entries, fn e -> Map.get(e, "text") == "human said hello at sundown" end)
       end)
 
-    text = read_text(alice_entity.memory_uuid)
-    [line] = String.split(text, "\n", trim: true)
-    decoded = Jason.decode!(line)
-    assert decoded["text"] == "human said hello at sundown"
-    assert decoded["source_msg_id"] == human_msg_id
+    [entry] = read_memory_entries(alice_prov.memory_uuid)
+    assert entry["text"] == "human said hello at sundown"
+    assert entry["source_msg_id"] == human_msg_id
 
     # __bot_activity should have a "fired" entry for alice.
     activity_uuid = Dispatcher.registered_rooms()[demo.room].activity_uuid

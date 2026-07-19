@@ -102,6 +102,63 @@ defmodule Commonplace.Bots.NoteDoc do
     end
   end
 
+  @doc """
+  Append `entry_map` (a map) to the LIST held in the `"entries"` field of
+  `note_dir_uuid`'s `__note.json` note-meta — SURGICAL and ZONE-PRESERVING (the
+  array/LOG shape, C3d).
+
+  Reads the raw note-meta map (`World.get_meta_map/3`), appends `entry_map` onto
+  the existing `entries` list (or starts one), and writes back the SINGLE
+  `"entries"` field via `World.merge_meta/5`. As with `append_text/4`, the
+  targeted field merge never touches the node-signed `zone` stamp (CX-cl65), so
+  the subtree carve keeps authorizing the write on every append.
+
+  Returns `:ok` or `{:error, reason}`.
+  """
+  @spec append_entry(String.t(), map(), map()) :: :ok | {:error, term()}
+  def append_entry(note_dir_uuid, entry_map, ctx)
+      when is_binary(note_dir_uuid) and is_map(entry_map) do
+    case World.get_meta_map(note_dir_uuid, @note_filename, ctx.store) do
+      {:ok, map} ->
+        existing =
+          case Map.get(map, "entries") do
+            list when is_list(list) -> list
+            _ -> []
+          end
+
+        new_list = existing ++ [entry_map]
+
+        case World.merge_meta(note_dir_uuid, @note_filename, %{"entries" => new_list}, ctx.store, bot_opts(ctx)) do
+          :ok -> :ok
+          {:error, _} = err -> err
+          other -> {:error, other}
+        end
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  @doc """
+  Read the `"entries"` LIST from `note_dir_uuid`'s `__note.json` note-meta.
+
+  Returns the list, or `[]` when the note is missing / unreadable / carries no
+  `entries` array. A pure read — needs only `ctx.store`.
+  """
+  @spec read_entries(String.t(), map()) :: [map()]
+  def read_entries(note_dir_uuid, ctx) when is_binary(note_dir_uuid) do
+    case World.get_meta_map(note_dir_uuid, @note_filename, ctx.store) do
+      {:ok, map} ->
+        case Map.get(map, "entries") do
+          list when is_list(list) -> list
+          _ -> []
+        end
+
+      _ ->
+        []
+    end
+  end
+
   # Bot-signed write opts (C1 / pin c): signing_context + cert_cids + signer_id,
   # all from the resolved ctx. Used both for the entry-add of a minted note dir
   # (create_zoned_child's entry_opts) and the merge_meta append.

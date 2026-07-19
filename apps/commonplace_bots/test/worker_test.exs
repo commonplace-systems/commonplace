@@ -1,10 +1,11 @@
 defmodule Commonplace.Bots.WorkerTest do
   use ExUnit.Case, async: false
 
-  alias Commonplace.Bots.{Entity, Worker}
+  alias Commonplace.Bots.{Citizen, Entity, Worker}
   alias Commonplace.Chat.Messages
   alias Commonplace.Crypto.{AgentKeys, Signing}
   alias Commonplace.Document.ContentType
+  alias Commonplace.MUD.World
   alias Commonplace.Presence.Identity
   alias Commonplace.Store.{CommitStore, CommitStoreClient, SecretStore}
   alias Commonplace.Tree.{DocBuilder, Schema}
@@ -232,7 +233,10 @@ defmodule Commonplace.Bots.WorkerTest do
     end
 
     test "remember tool signs the memory append with the bot's own key" do
+      # C3d: memory lands UNDER the bot's home (home/memory note-meta), so the
+      # bot must be a provisioned citizen for `remember` to resolve a mud_ctx.
       {root, secrets} = signing_fixture()
+      {:ok, prov} = Citizen.provision("alice", root, CommitStoreClient, secret_store: secrets)
       bot = mint_bot_dir([])
       entity = load_entity(bot, "alice.bot")
 
@@ -250,11 +254,13 @@ defmodule Commonplace.Bots.WorkerTest do
 
       assert result == {:ok, :end_turn}
 
-      {:ok, mem_doc} = DocBuilder.reconstruct_snapshot(CommitStoreClient, entity.memory_uuid)
-      assert ContentType.get_content(mem_doc) =~ "the human likes tea"
+      Commonplace.Tree.DocCache.clear()
+      {:ok, note_map} = World.get_meta_map(prov.memory_uuid, "__note.json", CommitStoreClient)
+      assert [%{"text" => "the human likes tea"}] = note_map["entries"]
 
       # The memory-append commit carries the bot's signing context.
-      {:ok, head} = CommitStore.latest_commit(Commonplace.Store.CommitStore, entity.memory_uuid)
+      {:ok, meta_uuid} = World.meta_doc_uuid(prov.memory_uuid, "__note.json", CommitStoreClient)
+      {:ok, head} = CommitStore.latest_commit(Commonplace.Store.CommitStore, meta_uuid)
       assert Signing.signed?(head)
       assert head.signer_id == resolved_signer_id("alice", root, secrets)
     end
@@ -297,11 +303,12 @@ defmodule Commonplace.Bots.WorkerTest do
       refute id_head.signer_id == Signing.signer_id(planted.identity_uuid, planted.public_key)
     end
 
-    test "remember tool appends to memory.jsonl" do
+    test "remember tool appends an entry to home/memory" do
       # C3a: the charter gate keys the allowlist on the bot's resolved
       # identity, so a real signing fixture (root + secrets) is needed for
-      # the node-signed tools grant to take effect.
+      # the node-signed tools grant to take effect. C3d: memory is home-anchored.
       {root, secrets} = signing_fixture()
+      {:ok, prov} = Citizen.provision("alice", root, CommitStoreClient, secret_store: secrets)
       bot = mint_bot_dir([])
       entity = load_entity(bot, "alice.bot")
       messages_uuid = mint_messages_doc()
@@ -321,13 +328,11 @@ defmodule Commonplace.Bots.WorkerTest do
 
       assert result == {:ok, :end_turn}
 
-      {:ok, mem_doc} = DocBuilder.reconstruct_snapshot(CommitStoreClient, entity.memory_uuid)
-      text = ContentType.get_content(mem_doc)
-      assert text =~ "the human likes coffee"
-      [line] = String.split(text, "\n", trim: true)
-      decoded = Jason.decode!(line)
-      assert decoded["text"] == "the human likes coffee"
-      assert decoded["source_msg_id"] == "m1"
+      Commonplace.Tree.DocCache.clear()
+      {:ok, note_map} = World.get_meta_map(prov.memory_uuid, "__note.json", CommitStoreClient)
+      assert [entry] = note_map["entries"]
+      assert entry["text"] == "the human likes coffee"
+      assert entry["source_msg_id"] == "m1"
     end
 
     test "caps :calls when responses keep tool-using past the call budget" do
