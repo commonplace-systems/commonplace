@@ -145,8 +145,13 @@ defmodule Commonplace.Bots.Worker.Tools.Describe do
     end
   end
 
-  # "here" / omitted / blank -> the room the bot is standing in THIS turn
-  # (ctx.current_room_uuid, re-read fresh per MudContext's pin (a)). Anything
+  # "here" / omitted / blank -> the room the bot is standing in RIGHT NOW
+  # (ctx.current_room_uuid, read fresh by Loop.dispatch_tool/2 immediately
+  # before THIS call — CX-mpk0, cp-plan #8933/#8934 — never a turn-start
+  # snapshot that a prior move in the same turn could have made stale).
+  # KEPT as the default target deliberately (cp-plan #8934(d)): with an
+  # honestly-fresh position "here" is the right UX — the tool isn't
+  # punished for the ctx staleness that used to sit behind it. Anything
   # else is a name, resolved ONLY within the home + its directly-dug rooms.
   defp resolve_target(ctx, target) when target in [nil, ""], do: {:ok, ctx.current_room_uuid}
 

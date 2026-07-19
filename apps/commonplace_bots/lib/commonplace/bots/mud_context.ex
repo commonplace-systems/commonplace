@@ -9,15 +9,32 @@ defmodule Commonplace.Bots.MudContext do
   Worker calls it ONCE PER TURN (the cave-diver is one process per fired
   trigger), which is what makes the three design pins below hold structurally.
 
+  ## THE CURRENT INVARIANT (CX-mpk0, cp-plan #8933/#8934 — supersedes the
+  ## once-per-turn position claim this module originally shipped with)
+
+  Identity and certs resolve ONCE per turn, exactly as `resolve/4` always
+  did — nothing below changes that. POSITION does NOT stay pinned to this
+  one resolve for the rest of the turn: `Commonplace.Bots.Worker.Loop`'s
+  `dispatch_tool/2` re-reads `current_room_uuid`/`presence_uuid` fresh
+  (via this same `World.find_presence/3` primitive, called directly, not
+  a second `resolve/4`) immediately before EVERY tool dispatch within the
+  turn. `resolve/4` below is still the correct, sole ENTRY point for a
+  turn's ctx (identity/certs/home_room_uuid come from nowhere else); its
+  own position read is simply the FIRST of what may be several within the
+  turn, not the only one. See `Loop`'s moduledoc "Position is read before
+  EVERY tool dispatch" for the full mechanism and the live incident that
+  motivated it.
+
   ## The three pins (non-negotiable)
 
-    * **(a) Position is re-read every turn, never cached.** `current_room_uuid`
-      (and the presence doc uuid it moves as) is resolved FRESH here via
-      `World.find_presence/3` on every call — the bot's `.usr` presence is the
-      single source of position truth. Because the Worker resolves a new ctx
-      each turn and never stashes the room in longer-lived state, an EXTERNAL
-      move (a jes-summon, another actor relocating the bot's `.usr`) is honored
-      automatically on the next turn.
+    * **(a) Position is read fresh before every ACT, never cached across
+      acts.** `current_room_uuid` (and the presence doc uuid it moves as)
+      is resolved FRESH here via `World.find_presence/3` on every call to
+      `resolve/4` — the bot's `.usr` presence is the single source of
+      position truth — AND, as of CX-mpk0, fresh again before every
+      subsequent tool dispatch in the same turn (see above). An EXTERNAL
+      move (a jes-summon, another actor relocating the bot's `.usr`) is
+      now honored on the very next tool call, not merely the next turn.
 
     * **(b) One motion path.** This module carries only the coordinates a move
       needs; the `move` tool bottoms the actual motion out on
@@ -68,8 +85,11 @@ defmodule Commonplace.Bots.MudContext do
   canonical MUD root; `store` is the commit store. Returns `{:ok, ctx}` or a
   graceful `{:error, reason}`.
 
-  Position (`current_room_uuid` + `presence_uuid`) is re-read here from
-  `World.find_presence/3` — pin (a). Nothing is sourced from anywhere but
+  Position (`current_room_uuid` + `presence_uuid`) is read here from
+  `World.find_presence/3` — pin (a), the FIRST of what may be several
+  reads across the turn (`Commonplace.Bots.Worker.Loop.dispatch_tool/2`
+  re-reads it again before every subsequent tool dispatch — CX-mpk0; see
+  that module's moduledoc). Nothing is sourced from anywhere but
   `signing_context` + `Citizenship.ensure/5` + `root_uuid` — pin (c).
   """
   @spec resolve(Commonplace.Bots.Entity.t(), SigningContext.t() | nil, String.t() | nil, term()) ::

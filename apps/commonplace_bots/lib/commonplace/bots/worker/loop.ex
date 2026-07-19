@@ -76,6 +76,54 @@ defmodule Commonplace.Bots.Worker.Loop do
   Loop state is a plain map; not a GenServer. The Task running
   the loop owns it.
 
+  ## Position is read before EVERY tool dispatch (CX-mpk0, cp-plan #8933/#8934)
+
+  THE CURRENT INVARIANT (supersedes the C3c-era "position re-read every
+  turn" language wherever it's written — see the note at the end of this
+  section): **identity and certs resolve ONCE per turn; POSITION
+  (`current_room_uuid` / `presence_uuid`) is read fresh before EVERY tool
+  dispatch within the turn**, not once at turn start.
+
+  `dispatch_tool/2` refreshes `state.mud_ctx`'s position fields via a
+  targeted `Commonplace.MUD.World.find_presence/3` read — cheap (one tree
+  walk, no `Citizenship.ensure`/cert re-derivation) — immediately before
+  every `Commonplace.Bots.Worker.Tools.dispatch/3` call, local to
+  `dispatch_tool/2` itself (no new threading through `loop/4`'s
+  recursion — `messages`/`tools`/`budget` still thread exactly as before;
+  only the ephemeral `state` copy each `dispatch_tool/2` call builds for
+  ITS OWN `Tools.dispatch/3` invocation carries the refreshed position).
+
+  This was CX-mpk0 (live 2026-07-19): with position resolved only once per
+  turn, a `move` immediately followed by a `look` (or a `describe` with no
+  explicit target — see that tool's own moduledoc) in the SAME turn acted
+  on the room the turn STARTED in, not the room the `move` had already
+  landed in — a `look` narrated the wrong room, and (worse) an unguarded
+  `describe` silently overwrote the WRONG room's description, a genuine
+  memory-corruption-class bug, not merely a stale read. `move`-then-`move`
+  turned out to be self-protecting (`Commonplace.MUD.Move`'s
+  `check_still_there` guard fails the second hop closed rather than
+  forking), but nothing protected a read or a `describe` write.
+
+  Refreshing before every dispatch generalizes pin (a) from turn-granularity
+  to call-granularity: it heals BOTH an in-turn self-move (the CX-mpk0 case)
+  AND a position changed by an external force between two tool calls in the
+  same turn (a summon, another actor moving the bot) — previously only
+  healed on the NEXT turn. A `find_presence` miss (the `.usr` genuinely
+  gone — e.g. reaped mid-turn) or any read exception nulls `state.mud_ctx`
+  entirely rather than leaving a half-stale ctx map: every MUD tool's
+  existing `is_map(ctx)` dispatch clause then misses, falling through to
+  its existing catch-all `def call(_state, _input), do: {:error, "You are
+  not in the world."}` clause — the SAME graceful-refusal posture an
+  unprovisioned bot already gets, not a new failure mode. Never raises.
+
+  STALE-COMMENT NOTE (their lesson-#9 family): `MudContext`'s own
+  moduledoc, `Worker.resolve_mud_context/4`'s comment, `Look`/`Move`/
+  `Perception`/`Describe`'s moduledocs, and the test moduledocs that state
+  this pin were ALL updated alongside this change — the doc must say what
+  the code does the moment the code changes; grep for "pin (a)" or
+  "re-read" across `apps/commonplace_bots/` if a stale copy of the old
+  once-per-turn claim turns up anywhere this pass missed.
+
   ## Turn transcript (Camillo C5c-i, cp-plan #8895)
 
   The loop is where a turn's events are visible in one place — the initial
@@ -147,6 +195,7 @@ defmodule Commonplace.Bots.Worker.Loop do
 
   alias Commonplace.Bots.{Agenda, Transcript}
   alias Commonplace.Bots.Worker.{Perception, Scrollback, Tools}
+  alias Commonplace.MUD.World
 
   @type state :: %{
           room: String.t(),
@@ -305,6 +354,10 @@ defmodule Commonplace.Bots.Worker.Loop do
   # caller.
   defp dispatch_tool(state, %{"id" => id, "name" => name, "input" => input}) do
     normalized_input = input || %{}
+    # CX-mpk0: read position fresh, right before acting — see moduledoc
+    # "Position is read before EVERY tool dispatch". Local to this call;
+    # does not widen `loop/4`'s recursion contract.
+    state = refresh_mud_ctx_position(state)
 
     {result, is_error} =
       case Tools.dispatch(state, name, normalized_input) do
@@ -336,6 +389,40 @@ defmodule Commonplace.Bots.Worker.Loop do
 
   defp inspect_error(reason) when is_binary(reason), do: reason
   defp inspect_error(reason), do: inspect(reason)
+
+  # --- Position freshness (CX-mpk0) — see moduledoc "Position is read
+  # before EVERY tool dispatch" ---
+
+  # No `:mud_ctx` key, or already `nil` — nothing to refresh, and no key
+  # to `%{state | ...}`-update (that syntax requires the key to pre-exist).
+  defp refresh_mud_ctx_position(state) do
+    case Map.get(state, :mud_ctx) do
+      nil -> state
+      ctx -> %{state | mud_ctx: refresh_position(ctx)}
+    end
+  end
+
+  # A targeted `World.find_presence/3` read — cheap (one tree walk), NOT a
+  # full `MudContext.resolve/4` (no redundant `Citizenship.ensure`/cert
+  # re-derivation; identity/certs/home_room_uuid/etc. are stable for the
+  # bot's whole lifetime and are left untouched here). A miss or any read
+  # exception nulls the ENTIRE ctx (never a half-stale map with just the
+  # position fields nulled) so every tool's existing `is_map(ctx)` dispatch
+  # clause misses and falls through to its existing graceful "You are not
+  # in the world." refusal — never raises.
+  defp refresh_position(ctx) do
+    case World.find_presence(ctx.root_uuid, ctx.presence_filename, ctx.store) do
+      {:ok, room_uuid, presence_uuid} ->
+        %{ctx | current_room_uuid: room_uuid, presence_uuid: presence_uuid}
+
+      :not_found ->
+        nil
+    end
+  rescue
+    _ -> nil
+  catch
+    _, _ -> nil
+  end
 
   # --- Transcript event derivation (C5c-i) — see moduledoc "Event taxonomy" ---
 

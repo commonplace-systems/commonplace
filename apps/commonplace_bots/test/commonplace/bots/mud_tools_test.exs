@@ -13,9 +13,10 @@ defmodule Commonplace.Bots.MudToolsTest do
   point of the C3c re-anchor: the zoned note-meta is covered by the bot's
   `{:subtree, home}` cert, so it LANDS rather than being denied
   `:capability_insufficient`). The three pins are asserted directly:
-  position is re-read from the live `.usr` presence (a), the move bottoms out on
-  `World.move_presence/5` (b), and the ctx is assembled only from the signing
-  context + Citizenship certs + the MUD root (c).
+  position is read fresh from the live `.usr` presence (a) — before EVERY tool
+  dispatch as of CX-mpk0 (cp-plan #8933/#8934), not merely once per turn — the
+  move bottoms out on `World.move_presence/5` (b), and the ctx is assembled
+  only from the signing context + Citizenship certs + the MUD root (c).
   """
   use ExUnit.Case, async: false
 

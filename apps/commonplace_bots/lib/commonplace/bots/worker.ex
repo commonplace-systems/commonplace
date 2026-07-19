@@ -141,11 +141,18 @@ defmodule Commonplace.Bots.Worker do
 
     # Camillo C3c: resolve the bot's MUD acting ctx for THIS turn. Because
     # `run/4` is one-per-turn (cave-diver), resolving here — and NEVER caching
-    # it in longer-lived state — is precisely what makes pin (a) "position
-    # re-read every turn" hold: an external move is honored next turn. A nil
-    # root or an unprovisioned bot yields `nil`, and the MUD tools then refuse
-    # gracefully. The ctx is assembled ONLY from the resolved signing_context +
-    # Citizenship certs + the MUD root (pin c) — never from `opts`/tool args.
+    # it in longer-lived state — is what seeds pin (a): identity/certs/
+    # home_room_uuid resolve HERE, once, for the whole turn. Position does
+    # NOT stay pinned to this one resolve, though — CX-mpk0 (cp-plan
+    # #8933/#8934): `Commonplace.Bots.Worker.Loop.dispatch_tool/2` re-reads
+    # `current_room_uuid`/`presence_uuid` fresh before EVERY tool dispatch
+    # in the turn, so an external move (or the bot's own prior tool call
+    # this same turn) is honored on the very next tool call, not merely
+    # next turn. See `Loop`'s moduledoc "Position is read before EVERY
+    # tool dispatch" for the mechanism. A nil root or an unprovisioned bot
+    # yields `nil` here, and the MUD tools then refuse gracefully. The ctx
+    # is assembled ONLY from the resolved signing_context + Citizenship
+    # certs + the MUD root (pin c) — never from `opts`/tool args.
     mud_ctx = resolve_mud_context(entity, signing_context, store, opts)
 
     :telemetry.execute(

@@ -12,11 +12,17 @@ defmodule Commonplace.Bots.Worker.Perception do
 
   ## Position at assembly time
 
-  `state.mud_ctx` is resolved fresh, once per turn, by
-  `Commonplace.Bots.Worker.resolve_mud_context/4` (C3c pin (a)) — never
-  cached across turns. This module only *renders* whatever ctx it is
-  handed, so an external move made before a turn's ctx is assembled is
-  honored automatically; no re-resolution happens here.
+  `state.mud_ctx` is resolved fresh by `Commonplace.Bots.Worker
+  .resolve_mud_context/4` when the turn STARTS (C3c pin (a)) — this module
+  renders THAT position, since the perception block is built once, before
+  any tool call, as the first section of the wake text. This module never
+  re-resolves anything itself. Identity/certs are stable for the whole
+  turn regardless; position specifically is read AGAIN, fresher than this
+  block, before every tool dispatch that follows (CX-mpk0, cp-plan
+  #8933/#8934 — see `Commonplace.Bots.Worker.Loop`'s moduledoc "Position is
+  read before EVERY tool dispatch") — so a `look` called mid-turn reflects
+  the bot's CURRENT position even if this opening perception block (rendered
+  before any tool acted) does not.
 
   ## Why this is narrated text, never a tool_result
 

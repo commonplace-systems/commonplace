@@ -12,9 +12,12 @@ defmodule Commonplace.Bots.Worker.Tools.Move do
       `Commonplace.MUD.World.move_presence/5` — the CX-avzp gated presence-move
       chokepoint every player's `go` uses. No parallel move path: `presence.move`
       stays the only motion verb.
-    * **(a) position re-read.** The source room and presence doc uuid come from
-      `state.mud_ctx`, which the Worker re-resolved THIS turn from the live `.usr`
-      presence — never a cached room.
+    * **(a) position read fresh.** The source room and presence doc uuid come
+      from `state.mud_ctx`, which `Commonplace.Bots.Worker.Loop.dispatch_tool/2`
+      re-reads from the live `.usr` presence immediately before EVERY tool
+      dispatch (CX-mpk0, cp-plan #8933/#8934 — generalized from the original
+      once-per-turn resolve) — never a cached room, whether the staleness
+      would have come from a prior turn or an earlier tool call THIS turn.
     * **(c) creds from the ctx only.** `signing_context` / `cert_cids` /
       `signer_id` / the `viewer` are all taken from the resolved `mud_ctx`, never
       from the tool input (which carries only a direction).
@@ -73,7 +76,11 @@ defmodule Commonplace.Bots.Worker.Tools.Move do
   # `Move.check_still_there` matches it against the room entry's node_id), NOT
   # the identity uuid. All creds ride from the ctx (pin c).
   defp walk(dir, dest, ctx) do
-    case World.move_presence(ctx.presence_uuid, ctx.presence_filename, ctx.current_room_uuid, dest,
+    case World.move_presence(
+           ctx.presence_uuid,
+           ctx.presence_filename,
+           ctx.current_room_uuid,
+           dest,
            store: ctx.store,
            signing_context: ctx.signing_context,
            cert_cids: ctx.cert_cids,

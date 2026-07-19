@@ -4,9 +4,11 @@ defmodule Commonplace.Bots.Worker.Tools.Look do
 
   Renders the room the bot's `.usr` presence currently occupies as text: name,
   description, exits, visible objects, and other occupants. The room comes from
-  `state.mud_ctx.current_room_uuid`, which the Worker re-resolved THIS turn from
-  the live presence (pin a) — so a look always reflects where the bot actually
-  is, even after an external move.
+  `state.mud_ctx.current_room_uuid`, which `Commonplace.Bots.Worker.Loop
+  .dispatch_tool/2` re-reads from the live presence immediately before THIS
+  dispatch (pin a, CX-mpk0-generalized to per-call granularity — cp-plan
+  #8933/#8934) — so a look always reflects where the bot actually is, even
+  after an external move OR the bot's own `move` earlier in the SAME turn.
 
   Reads through `Commonplace.MUD.World.room_snapshot/4`, the SAME read-scoped
   snapshot the player pane uses; the `viewer` is taken from the resolved ctx

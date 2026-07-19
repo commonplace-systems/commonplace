@@ -275,7 +275,9 @@ defmodule Commonplace.Bots.PerceptionTest do
       Commonplace.Tree.DocCache.clear()
 
       # A fresh mud_ctx resolve (exactly what Worker.run/4 does every turn —
-      # C3c pin (a)) now reads the NEW position.
+      # C3c pin (a); as of CX-mpk0 the SAME freshness also applies WITHIN a
+      # turn, before every tool dispatch — see Loop's moduledoc) now reads
+      # the NEW position.
       {:ok, mud_ctx2} = MudContext.resolve(%{name: "camillo"}, sc, ctx.mud_root, ctx.store)
       assert mud_ctx2.current_room_uuid == prov.study_uuid
 
