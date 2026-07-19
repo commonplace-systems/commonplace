@@ -16,7 +16,7 @@ defmodule Commonplace.MUD.Verbs do
   side effects go through `Commonplace.MUD.World`.
   """
 
-  alias Commonplace.MUD.{ChildMutation, EngineModule, HelpDoc, Mint, Parser, Schemas, Sections, SignedWrite, VerbSource, World}
+  alias Commonplace.MUD.{Build, ChildMutation, EngineModule, HelpDoc, Mint, Parser, Schemas, SignedWrite, VerbSource, World}
   alias Commonplace.MUD.Schemas.{Object, Player, Room}
   alias Commonplace.MUD.World.Facade
   alias Commonplace.Tree.Schema
@@ -2132,35 +2132,18 @@ defmodule Commonplace.MUD.Verbs do
   # here and reports the failure; whatever landed before the denial
   # (e.g. the new room's genesis doc with nothing yet pointing at it)
   # stays as an orphan rather than being cleaned up.
+  # CX-Camillo-C2: the room-dig WRITE-CORE now lives in `Commonplace.MUD.Build`
+  # (one impl, two entry points — this verb AND the native-agent citizen
+  # orchestrator seed through the SAME function, bot-signed). This head keeps the
+  # verb behavior IDENTICAL: it calls the core and formats the reply as before.
   defp do_dig_write_new_room(direction, opposite, name, ctx) do
-    json = Schemas.encode_room(%Room{name: name, description: "(no description yet)", exits: %{opposite => ctx.current_room_uuid}})
+    case Build.dig_room(ctx, direction, opposite, name) do
+      {:ok, _new_room_uuid} ->
+        {:reply, "You carve out a new room (#{name}). #{String.capitalize(direction)} leads there."}
 
-    # CX-4u03 A3: the new room is minted UNDER the player's HOME subtree (never
-    # the global root) via ChildMutation, so it INHERITS the home zone-stamp and
-    # is covered by the player's {:subtree, home} cert (the entry-add is
-    # player-signed + carve-authorized; the stamp is node-signed by-construction).
-    # bound (2) attach-under-subtree; bound (1) no-bypass (every build routes here).
-    with {:ok, home} <- resolve_home(ctx),
-         {:ok, new_room_uuid} <-
-           ChildMutation.create_zoned_child(home, name, Schemas.room_filename(), json, ctx.store, write_opts(ctx)),
-         :ok <- update_room_exit(ctx.current_room_uuid, direction, new_room_uuid, ctx) do
-      # CX-qat5.5: the new room is dug FROM ctx.current_room_uuid, so that's the
-      # section context — any node-issued root section cert covering it gets
-      # reissued to also cover new_room_uuid.
-      auto_extend_section(new_room_uuid, ctx.current_room_uuid, ctx.store)
-
-      {:reply, "You carve out a new room (#{name}). #{String.capitalize(direction)} leads there."}
-    else
-      {:error, reason} -> {:error, commit_error_reply(reason)}
+      {:error, reason} ->
+        {:error, commit_error_reply(reason)}
     end
-  end
-
-  # CX-4u03 A3 — resolve the invoker's OWN home dir (the root of their build
-  # zone) so @dig/@create attach new content UNDER it (bound (2): never the
-  # global root). The home is `players/<name>`; a player who can't resolve a home
-  # simply can't build (graceful {:error}).
-  defp resolve_home(ctx) do
-    World.resolve_path("players/#{ctx.player_name}", ctx.root_uuid, ctx.store)
   end
 
   # ---- @link / @unlink / @teleport (CX-p0wx: the deliberate-repoint and
@@ -2185,7 +2168,7 @@ defmodule Commonplace.MUD.Verbs do
       true ->
         case World.get_room(room_uuid, ctx.store) do
           {:ok, %Room{} = target} ->
-            case update_room_exit(ctx.current_room_uuid, direction, room_uuid, ctx) do
+            case Build.update_room_exit(ctx.current_room_uuid, direction, room_uuid, ctx) do
               :ok -> {:reply, "Linked #{direction} to #{target.name} (#{room_uuid})."}
               {:error, reason} -> {:error, commit_error_reply(reason)}
             end
@@ -2396,10 +2379,10 @@ defmodule Commonplace.MUD.Verbs do
     # global root) via ChildMutation → inherits the home zone, covered by the
     # {:subtree, home} cert. Disconnected (no exit) but OWNED — the player can
     # @dig/@link it into their map.
-    with {:ok, home} <- resolve_home(ctx),
+    with {:ok, home} <- Build.resolve_home(ctx),
          {:ok, new_uuid} <-
            ChildMutation.create_zoned_child(home, name, Schemas.room_filename(), json, ctx.store, write_opts(ctx)) do
-      auto_extend_section(new_uuid, nil, ctx.store)
+      Build.auto_extend_section(new_uuid, nil, ctx.store)
 
       {:reply, "You create a new room (#{name}) in your home."}
     else
@@ -2413,34 +2396,20 @@ defmodule Commonplace.MUD.Verbs do
 
   defp create_object([], _container?, _ctx), do: {:error, "Create what? Try: @create object <name>"}
 
+  # CX-Camillo-C2: the object-create WRITE-CORE now lives in
+  # `Commonplace.MUD.Build` (one impl, two entry points — this verb AND the
+  # native-agent citizen orchestrator seed through the SAME function). This head
+  # keeps the verb behavior IDENTICAL: it calls the core and formats the reply.
   defp create_object(name_parts, container?, ctx) do
     name = Enum.join(name_parts, " ")
 
-    obj_json =
-      Schemas.encode_object(%Object{
-        name: name,
-        description: "(no description yet)",
-        container?: container?
-      })
+    case Build.create_object(ctx, name, container?) do
+      {:ok, _new_obj_uuid} ->
+        article = if container?, do: "a container (#{name})", else: "a #{name}"
+        {:reply, "You create #{article}."}
 
-    # CX-4u03 A3: minted UNDER the current room via ChildMutation → inherits the
-    # room's zone, so creating an object in a room you OWN (your home subtree) is
-    # authorized by the {:subtree} cert; in a room you don't own the carve
-    # fail-closes (graceful refusal). The instance-unique entry key needs the
-    # minted uuid, so entry_name is a (uuid -> name) fun.
-    with {:ok, _new_obj_uuid} <-
-           ChildMutation.create_zoned_child(
-             ctx.current_room_uuid,
-             fn uuid -> instance_obj_entry(name, uuid) end,
-             Schemas.object_filename(),
-             obj_json,
-             ctx.store,
-             write_opts(ctx)
-           ) do
-      article = if container?, do: "a container (#{name})", else: "a #{name}"
-      {:reply, "You create #{article}."}
-    else
-      {:error, reason} -> {:error, commit_error_reply(reason)}
+      {:error, reason} ->
+        {:error, commit_error_reply(reason)}
     end
   end
 
@@ -2683,44 +2652,12 @@ defmodule Commonplace.MUD.Verbs do
     end
   end
 
-  # CX-qat5.5: best-effort issuance automation, never a hard gate on room
-  # creation — a lookup/mint failure here (e.g. no node signing key yet)
-  # is logged, not surfaced as a verb error; the room was already carved
-  # successfully. See `Sections.auto_extend_for_new_room/3` moduledoc for
-  # the full policy (node-issued-only, root-certs-only, context-anchored).
-  defp auto_extend_section(new_room_uuid, context_room_uuid, store) do
-    case Sections.auto_extend_for_new_room(new_room_uuid, context_room_uuid, store: store) do
-      {:ok, _results} ->
-        :ok
-
-      {:error, reason} ->
-        Logger.warning(
-          "Commonplace.MUD.Verbs: section cert auto-extend for new room " <>
-            "#{new_room_uuid} failed: #{inspect(reason)}"
-        )
-
-        :ok
-    end
-  end
-
-  # CX-lg06: `ctx` carries the resolved session identity
-  # (`:signing_context` / `:cert_cids` / `:signer_id`, set up once at
-  # `PlayerSession` ingress) — `write_opts/1` below turns that into the
-  # keyword list `Commonplace.MUD.SignedWrite` and `World`/`Move` expect.
-  # CX-93ea: was `CommitStoreClient.create_chained_commit(...); :ok` —
-  # the commit result was thrown away, so a trust-gate denial under
-  # `:enforce` still reported `:ok` up to every builder verb call site.
-  # Now checked and propagated.
-  # CX-3hii — instance-unique object entry key (mirrors Facade's
-  # `create_object_in`, CX-lfo3): so `@create` can make two same-named
-  # objects without the "<name>.obj" key colliding (only the Facade minters
-  # stacked before). Display name stays "<name>" (from meta); resolution
-  # substring-matches "<name>" (find_entry_by_name strips the ext then
-  # substring-checks). uuid-derived suffix → collision-proof, CRDT-safe.
-  defp instance_obj_entry(name, uuid) do
-    short = uuid |> String.replace("-", "") |> String.slice(0, 8)
-    "#{name}-#{short}.obj"
-  end
+  # CX-Camillo-C2: `auto_extend_section/3`, `update_room_exit/4`,
+  # `instance_obj_entry/2`, and the room-dig/object-create write-cores moved to
+  # `Commonplace.MUD.Build` (one impl, two entry points). The @create-room and
+  # @link heads above call `Build.auto_extend_section`/`Build.update_room_exit`
+  # directly; `write_opts/1` below delegates to `Build.write_opts/1` so every
+  # existing call site in this module is unchanged.
 
   # CX-4u03 A3: the former `add_dir_entry/4` (raw player-signed schema add to an
   # arbitrary parent — used by @dig/@create to attach under the GLOBAL root) is
@@ -2745,24 +2682,6 @@ defmodule Commonplace.MUD.Verbs do
     end
   end
 
-  # CX-cl65: exit-writes MUST be surgical (merge only the "exits" key on the raw
-  # meta JSON), NOT a %Room{} round-trip — the struct has no `zone` field, so a
-  # round-trip drops the node-signed zone stamp and the subtree carve then DENIES
-  # the owner's own write (protected-field-immutability: zone home→absent). Merge
-  # preserves zone (and the freeform verb `state` submap) untouched.
-  defp update_room_exit(room_dir_uuid, direction, dest_uuid, ctx) do
-    store = ctx.store
-
-    case World.get_meta_map(room_dir_uuid, Schemas.room_filename(), store) do
-      {:ok, map} ->
-        new_exits = Map.put(Map.get(map, "exits", %{}), direction, dest_uuid)
-        World.merge_meta(room_dir_uuid, Schemas.room_filename(), %{"exits" => new_exits}, store, write_opts(ctx))
-
-      err ->
-        err
-    end
-  end
-
   # CX-93ea: shared translator from a swallowed-no-longer write error to
   # the player-visible reply text. `{:trust_rejected, _}` is the
   # expected/common case under `local_write_gate: :enforce`; everything
@@ -2779,14 +2698,10 @@ defmodule Commonplace.MUD.Verbs do
   # opts adapter every write call site in this module goes through — one
   # seam, so a session's resolved identity (see `PlayerSession`) reaches
   # every commit-producing verb without re-deriving it downstream.
-  defp write_opts(ctx) do
-    [
-      store: ctx.store,
-      signing_context: Map.get(ctx, :signing_context),
-      cert_cids: Map.get(ctx, :cert_cids, []),
-      signer_id: Map.get(ctx, :signer_id)
-    ]
-  end
+  # CX-Camillo-C2: the canonical impl now lives in `Commonplace.MUD.Build` (so
+  # the citizen orchestrator and the verb path share ONE adapter); this delegates
+  # to keep every call site in this module unchanged.
+  defp write_opts(ctx), do: Build.write_opts(ctx)
 
   # CX-ix9n: TAKE is push-not-pull — the node elevates and pushes the
   # item to the taker (see `Commonplace.MUD.Take`), so the taker's own
