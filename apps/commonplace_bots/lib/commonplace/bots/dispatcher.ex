@@ -174,6 +174,13 @@ defmodule Commonplace.Bots.Dispatcher do
   are forwarded to identity resolution. If the home can't be resolved, the
   bot still ticks — the skip-check just self-heals or treats the agenda as
   empty. Re-registration cancels any prior timer first. Idempotent-ish.
+
+  CX-k87w: `opts` is ALSO reused as (most of) the autonomous `Worker.run/4`
+  opts on every fired tick — e.g. `:secret_store`, a test's `:client_fn` —
+  with `:root_uuid` and `:store` pinned from THIS registration's `mud_root`
+  and the dispatcher's own store (registration-state values, not caller
+  overrides) so the Worker resolves its signing + MUD context under the
+  registered `mud_root`, never the workspace root. See `invoke_worker/4`.
   """
   @spec register_autonomous_bot(String.t(), String.t(), String.t(), pos_integer(), keyword()) :: :ok
   def register_autonomous_bot(name, dir_uuid, mud_root, cadence_ms, opts \\ [])
@@ -520,7 +527,37 @@ defmodule Commonplace.Bots.Dispatcher do
     hook.(room, entity, event)
   end
 
+  # CX-k87w: the autonomous path must thread the REGISTERED mud_root (as
+  # `:root_uuid`) + the registered `opts` into the Worker, not fall through to
+  # the chat-room opts (which have no root at all and would leave the Worker
+  # to default to the workspace root — the wrong world). Keyed off the
+  # dispatcher-internal `"kind" => "heartbeat"` tag (unspoofable by chat, see
+  # `handle_info({:autonomous_tick, ...})` above) AND the presence of a
+  # matching `state.auto` entry for `room` (the autonomous path uses the
+  # bot's stripped name as `room`). root_uuid/store come from the REGISTERED
+  # entry — operator-provided server state set at `register_autonomous_bot/5`
+  # — never from the event map, which is model/chat-adjacent data.
+  defp invoke_worker(state, room, entity, %{"kind" => "heartbeat"} = event) do
+    case Map.get(state.auto, room) do
+      %{} = auto_entry ->
+        opts =
+          Keyword.merge(Map.get(auto_entry, :opts, []),
+            root_uuid: Map.get(auto_entry, :mud_root),
+            store: state.store
+          )
+
+        __MODULE__.spawn_worker(room, entity, event, opts)
+
+      _ ->
+        invoke_worker_chat(state, room, entity, event)
+    end
+  end
+
   defp invoke_worker(state, room, entity, event) do
+    invoke_worker_chat(state, room, entity, event)
+  end
+
+  defp invoke_worker_chat(state, room, entity, event) do
     messages_uuid = get_in(state.rooms, [room, :messages_uuid])
 
     __MODULE__.spawn_worker(room, entity, event,
