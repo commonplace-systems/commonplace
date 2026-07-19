@@ -68,7 +68,14 @@ defmodule Commonplace.Bots.Worker.Tools.Remember do
     with {:ok, doc} <- DocBuilder.reconstruct_snapshot(store, memory_uuid),
          doc <- ContentType.insert_text(doc, end_index(doc), line) do
       update = Yelixer.Encoding.encode_update(doc)
-      CommitStore.create_chained_commit(store_for_writes, memory_uuid, update)
+      # Camillo C1: sign the memory append with the bot's OWN resolved key
+      # (threaded into `state.signing_context` by `Commonplace.Bots.Worker`).
+      # A nil context is treated exactly like the previous no-opts call —
+      # global-fallback / unsigned — so graceful degradation is preserved.
+      CommitStore.create_chained_commit(store_for_writes, memory_uuid, update, %{},
+        signing_context: Map.get(state, :signing_context)
+      )
+
       :ok
     else
       :none ->

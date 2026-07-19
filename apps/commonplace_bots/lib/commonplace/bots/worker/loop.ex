@@ -91,6 +91,7 @@ defmodule Commonplace.Bots.Worker.Loop do
           },
           client_fn: (map() -> {:ok, map()} | {:error, term()}),
           tools_module: module(),
+          signing_context: Commonplace.Crypto.SigningContext.t() | nil,
           opts: keyword()
         }
 

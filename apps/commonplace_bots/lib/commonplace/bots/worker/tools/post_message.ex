@@ -12,6 +12,7 @@ defmodule Commonplace.Bots.Worker.Tools.PostMessage do
 
   alias Commonplace.Bots.Entity
   alias Commonplace.Chat.Actions
+  alias Commonplace.Crypto.{Signing, SigningContext}
 
   def name, do: "post_message"
 
@@ -37,11 +38,10 @@ defmodule Commonplace.Bots.Worker.Tools.PostMessage do
     messages_uuid = get_messages_uuid(state)
     author_path = Entity.dir_entry_name(state.entity)
 
-    case Actions.post_message(messages_uuid, text,
-           room: state.room,
-           signer_id: signer_id_for(state.entity),
-           author_path: author_path
-         ) do
+    opts =
+      [room: state.room, author_path: author_path] ++ signing_opts(state)
+
+    case Actions.post_message(messages_uuid, text, opts) do
       {:ok, %{message_id: id, ts: ts}} ->
         record_post(state)
         {:ok, Jason.encode!(%{"message_id" => id, "ts" => ts})}
@@ -72,8 +72,16 @@ defmodule Commonplace.Bots.Worker.Tools.PostMessage do
     end
   end
 
-  # v0 stub: bots don't have ed25519 identities yet (that's gated on
-  # CX-88mw landing the per-identity signer flow). Use a deterministic
-  # bot-prefixed signer id so audit logs are scannable.
-  defp signer_id_for(%Entity{name: name}), do: "bot:#{name}"
+  # Camillo C1: sign the post with the bot's OWN resolved Ed25519 identity
+  # (threaded into `state.signing_context` by `Commonplace.Bots.Worker`).
+  # The `signer_id` is derived from that context — the same derivation the
+  # MCP `loom_send` surface uses — so the audit trail carries the bot's real
+  # principal, not a placeholder. With no context resolved we pass neither
+  # `signer_id` nor `signing_context`: the write is unsigned, an honest
+  # failure that will be denied under enforce (never a fake identity).
+  defp signing_opts(%{signing_context: %SigningContext{} = sc}) do
+    [signer_id: Signing.signer_id(sc.identity_uuid, sc.public_key), signing_context: sc]
+  end
+
+  defp signing_opts(_state), do: []
 end

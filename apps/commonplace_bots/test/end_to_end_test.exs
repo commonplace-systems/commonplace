@@ -32,7 +32,7 @@ defmodule Commonplace.Bots.EndToEndTest do
   alias Commonplace.Bots.{Activity, Demo, Dispatcher}
   alias Commonplace.Chat.{Actions, Messages}
   alias Commonplace.Document.ContentType
-  alias Commonplace.Store.{CommitStore, CommitStoreClient}
+  alias Commonplace.Store.{CommitStore, CommitStoreClient, SecretStore}
   alias Commonplace.Tree.{DocBuilder, Schema}
 
   setup do
@@ -86,7 +86,29 @@ defmodule Commonplace.Bots.EndToEndTest do
       File.rm_rf!(dir)
     end)
 
-    :ok
+    # Camillo C1: an isolated SecretStore so workers can resolve a REAL
+    # per-bot signing context (their posts/remembers are genuinely signed)
+    # without touching the app's global key custody.
+    secrets_dir =
+      Path.join(System.tmp_dir!(), "cp_bots_e2e_secrets_#{:rand.uniform(1_000_000_000)}")
+
+    File.mkdir_p!(secrets_dir)
+    secrets = :"cp_bots_e2e_secrets_#{:rand.uniform(1_000_000_000)}"
+    {:ok, secrets_pid} = SecretStore.start_link(data_dir: secrets_dir, name: secrets)
+
+    on_exit(fn ->
+      if Process.alive?(secrets_pid) do
+        try do
+          GenServer.stop(secrets_pid)
+        catch
+          :exit, _ -> :ok
+        end
+      end
+
+      File.rm_rf!(secrets_dir)
+    end)
+
+    %{secrets: secrets}
   end
 
   defp restart_dispatcher_with(opts) do
@@ -187,7 +209,7 @@ defmodule Commonplace.Bots.EndToEndTest do
     ContentType.get_content(doc) || ""
   end
 
-  test "ACCEPTANCE: human posts @alice → alice wakes, posts, remembers, exits" do
+  test "ACCEPTANCE: human posts @alice → alice wakes, posts, remembers, exits", %{secrets: secrets} do
     root = mint_root()
     demo = Demo.bootstrap(root)
 
@@ -204,7 +226,9 @@ defmodule Commonplace.Bots.EndToEndTest do
     worker_hook = fn room, entity, event ->
       Dispatcher.spawn_worker(room, entity, event,
         client_fn: client_fn,
-        messages_uuid: demo.messages_uuid
+        messages_uuid: demo.messages_uuid,
+        root_uuid: root,
+        secret_store: secrets
       )
     end
 
@@ -263,7 +287,9 @@ defmodule Commonplace.Bots.EndToEndTest do
       end)
   end
 
-  test "ACCEPTANCE: multi-bot room, both bots fire on their own mentions independently" do
+  test "ACCEPTANCE: multi-bot room, both bots fire on their own mentions independently", %{
+    secrets: secrets
+  } do
     root = mint_root()
     demo = Demo.bootstrap(root)
 
@@ -277,7 +303,9 @@ defmodule Commonplace.Bots.EndToEndTest do
     worker_hook = fn room, entity, event ->
       Dispatcher.spawn_worker(room, entity, event,
         client_fn: client_fn,
-        messages_uuid: demo.messages_uuid
+        messages_uuid: demo.messages_uuid,
+        root_uuid: root,
+        secret_store: secrets
       )
     end
 

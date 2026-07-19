@@ -127,6 +127,7 @@ defmodule Commonplace.Bots.Worker do
     config = build_config(entity, opts)
     client_fn = Keyword.get(opts, :client_fn, &Client.call/1)
     tools_module = Keyword.get(opts, :tools_module, Tools)
+    signing_context = resolve_signing_context(entity, opts)
 
     :telemetry.execute(
       [:commonplace, :bots, :worker, :started],
@@ -150,6 +151,7 @@ defmodule Commonplace.Bots.Worker do
           config: config,
           client_fn: client_fn,
           tools_module: tools_module,
+          signing_context: signing_context,
           opts: opts
         })
       after
@@ -287,6 +289,53 @@ defmodule Commonplace.Bots.Worker do
 
   defp outcome_fields(other),
     do: %{"decision" => "error", "reason" => "unexpected: #{inspect(other)}"}
+
+  # Camillo C1: resolve the bot's OWN Ed25519 signing context once per run
+  # and thread it into the loop so tool writes (`post_message`, `remember`)
+  # are genuinely signed by the bot's key. Degrades gracefully — a nil
+  # context means unsigned writes (denied under enforce, an honest failure),
+  # never a crash.
+  #
+  # SECURITY: only what the runtime legitimately needs is forwarded to
+  # `Commonplace.Bots.Identity.resolve_signing_context/4` — root_uuid, store,
+  # secret_store. The raw worker `opts` are NOT passed through, so a
+  # caller-supplied `:registrar_signing_context` in the spawn opts can NEVER
+  # steer WHO attests the identity's registration; on this runtime path the
+  # registrar always defaults to the node context. See
+  # `Commonplace.Bots.Identity`'s security contract.
+  defp resolve_signing_context(%Entity{} = entity, opts) do
+    root = Keyword.get(opts, :root_uuid) || workspace_root()
+    store = Keyword.get(opts, :store, Commonplace.Store.CommitStoreClient)
+
+    if is_binary(root) do
+      secret_store = Keyword.get(opts, :secret_store, Commonplace.Store.SecretStore)
+
+      case Commonplace.Bots.Identity.resolve_signing_context(entity.name, root, store,
+             secret_store: secret_store
+           ) do
+        {:ok, sc} ->
+          sc
+
+        {:error, reason} ->
+          :telemetry.execute(
+            [:commonplace, :bots, :worker, :signing_unresolved],
+            %{system_time: System.system_time()},
+            %{bot: entity.name, reason: inspect(reason)}
+          )
+
+          nil
+      end
+    else
+      nil
+    end
+  end
+
+  defp workspace_root do
+    case Commonplace.Workspace.root_uuid() do
+      {:ok, r} -> r
+      _ -> nil
+    end
+  end
 
   @default_fallback_model "claude-haiku-4-5-20251001"
 

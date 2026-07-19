@@ -3,8 +3,10 @@ defmodule Commonplace.Bots.WorkerTest do
 
   alias Commonplace.Bots.{Entity, Worker}
   alias Commonplace.Chat.Messages
+  alias Commonplace.Crypto.{AgentKeys, Signing}
   alias Commonplace.Document.ContentType
-  alias Commonplace.Store.{CommitStore, CommitStoreClient}
+  alias Commonplace.Presence.Identity
+  alias Commonplace.Store.{CommitStore, CommitStoreClient, SecretStore}
   alias Commonplace.Tree.{DocBuilder, Schema}
 
   setup do
@@ -83,6 +85,42 @@ defmodule Commonplace.Bots.WorkerTest do
     uuid
   end
 
+  # Camillo C1: seed a workspace root + an isolated SecretStore so a worker
+  # can resolve a REAL per-bot signing context. Returns `{root, secrets}`.
+  # The registrar defaults to the (absent) node context → unsigned
+  # registration on this permissive test node, which is fine — the bot's
+  # own key is still minted and used to sign its writes.
+  defp signing_fixture do
+    root = mint_doc(Schema.new_schema())
+
+    secrets_dir =
+      Path.join(System.tmp_dir!(), "cp_bots_worker_secrets_#{:rand.uniform(1_000_000_000)}")
+
+    File.mkdir_p!(secrets_dir)
+    secrets = :"cp_bots_worker_secrets_#{:rand.uniform(1_000_000_000)}"
+    {:ok, secrets_pid} = SecretStore.start_link(data_dir: secrets_dir, name: secrets)
+
+    on_exit(fn ->
+      if Process.alive?(secrets_pid) do
+        try do
+          GenServer.stop(secrets_pid)
+        catch
+          :exit, _ -> :ok
+        end
+      end
+
+      File.rm_rf!(secrets_dir)
+    end)
+
+    {root, secrets}
+  end
+
+  defp resolved_signer_id(name, root, secrets) do
+    {:ok, identity_uuid} = Identity.lookup(name, :bot, root, CommitStoreClient)
+    {:ok, pub} = AgentKeys.ensure(identity_uuid, secrets)
+    Signing.signer_id(identity_uuid, pub)
+  end
+
   defp load_entity(uuid, display_name) do
     {:ok, entity} = Entity.load(CommitStoreClient, uuid, display_name)
     entity
@@ -140,7 +178,8 @@ defmodule Commonplace.Bots.WorkerTest do
       assert result == {:ok, :end_turn}
     end
 
-    test "dispatches a single tool_use, then ends" do
+    test "dispatches a single tool_use, then ends — post is SIGNED by the bot's own key" do
+      {root, secrets} = signing_fixture()
       bot = mint_bot_dir([])
       entity = load_entity(bot, "alice.bot")
       messages_uuid = mint_messages_doc()
@@ -153,7 +192,9 @@ defmodule Commonplace.Bots.WorkerTest do
       result =
         Worker.run("demo", entity, event("@alice say hi"),
           client_fn: stub_client(responses),
-          messages_uuid: messages_uuid
+          messages_uuid: messages_uuid,
+          root_uuid: root,
+          secret_store: secrets
         )
 
       assert result == {:ok, :end_turn}
@@ -162,6 +203,83 @@ defmodule Commonplace.Bots.WorkerTest do
       [entry] = Messages.list(msgs_doc)
       assert entry["text"] == "hello from alice"
       assert entry["author_path"] == "alice.bot"
+
+      # Camillo C1: the worker resolved a REAL per-bot signing context and
+      # the post is signed by alice's own key — not the retired "bot:alice"
+      # placeholder.
+      expected_signer = resolved_signer_id("alice", root, secrets)
+      assert entry["author_signer_id"] == expected_signer
+      refute String.starts_with?(entry["author_signer_id"], "bot:")
+
+      {:ok, head} = CommitStore.latest_commit(Commonplace.Store.CommitStore, messages_uuid)
+      assert Signing.signed?(head)
+      assert head.signer_id == expected_signer
+    end
+
+    test "remember tool signs the memory append with the bot's own key" do
+      {root, secrets} = signing_fixture()
+      bot = mint_bot_dir([])
+      entity = load_entity(bot, "alice.bot")
+
+      responses = [
+        tool_use("t1", "remember", %{"text" => "the human likes tea"}),
+        end_turn()
+      ]
+
+      result =
+        Worker.run("demo", entity, event("@alice remember"),
+          client_fn: stub_client(responses),
+          root_uuid: root,
+          secret_store: secrets
+        )
+
+      assert result == {:ok, :end_turn}
+
+      {:ok, mem_doc} = DocBuilder.reconstruct_snapshot(CommitStoreClient, entity.memory_uuid)
+      assert ContentType.get_content(mem_doc) =~ "the human likes tea"
+
+      # The memory-append commit carries the bot's signing context.
+      {:ok, head} = CommitStore.latest_commit(Commonplace.Store.CommitStore, entity.memory_uuid)
+      assert Signing.signed?(head)
+      assert head.signer_id == resolved_signer_id("alice", root, secrets)
+    end
+
+    test "runtime path IGNORES a registrar_signing_context planted in worker opts (security)" do
+      {root, secrets} = signing_fixture()
+      bot = mint_bot_dir([])
+      entity = load_entity(bot, "alice.bot")
+      messages_uuid = mint_messages_doc()
+
+      # An attacker-shaped opt: a foreign registrar the caller does NOT
+      # control the trust of. The Worker runtime path must NOT forward it
+      # to Identity.resolve_signing_context — the registration is
+      # node-attested (defaulted), never attested by this planted key.
+      {pub, priv} = Signing.generate_keypair()
+
+      planted = %Commonplace.Crypto.SigningContext{
+        identity_uuid: "attacker-registrar",
+        private_key: priv,
+        public_key: pub
+      }
+
+      result =
+        Worker.run("demo", entity, event("@alice hi"),
+          client_fn: stub_client([tool_use("t1", "post_message", %{"text" => "hi"}), end_turn()]),
+          messages_uuid: messages_uuid,
+          root_uuid: root,
+          secret_store: secrets,
+          registrar_signing_context: planted
+        )
+
+      assert result == {:ok, :end_turn}
+
+      # The identity-doc registration commit was NOT signed by the planted
+      # registrar (the runtime path dropped it). On this permissive test
+      # node there is no node key, so it is simply unsigned — but crucially
+      # never carries the attacker's signer.
+      {:ok, identity_uuid} = Identity.lookup("alice", :bot, root, CommitStoreClient)
+      {:ok, id_head} = CommitStore.latest_commit(Commonplace.Store.CommitStore, identity_uuid)
+      refute id_head.signer_id == Signing.signer_id(planted.identity_uuid, planted.public_key)
     end
 
     test "remember tool appends to memory.jsonl" do

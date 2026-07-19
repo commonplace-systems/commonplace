@@ -36,6 +36,7 @@ defmodule Commonplace.Bots.DemoSession do
 
   alias Commonplace.Bots.{Demo, Dispatcher}
   alias Commonplace.Chat.{Actions, Messages}
+  alias Commonplace.Crypto.{NodeIdentity, Signing, SigningContext}
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.DocBuilder
 
@@ -67,11 +68,25 @@ defmodule Commonplace.Bots.DemoSession do
   def post(text, author_path \\ "workspace.usr") when is_binary(text) do
     demo = state()
 
-    Actions.post_message(demo.messages_uuid, text,
-      room: demo.room,
-      signer_id: "ws:#{author_path}",
-      author_path: author_path
-    )
+    opts =
+      [room: demo.room, author_path: author_path] ++ node_signing_opts()
+
+    Actions.post_message(demo.messages_uuid, text, opts)
+  end
+
+  # Camillo C1: the demo harness runs on the SERVE node only, so node-sign
+  # the demo post with the node's real identity (`Trust` auto-trusts it) —
+  # retiring the `"ws:#{author_path}"` placeholder signer_id. On a node with
+  # no key configured we pass neither, leaving the write to the
+  # global-fallback / unsigned path (harmless on a permissive node).
+  defp node_signing_opts do
+    case NodeIdentity.signing_context() do
+      {:ok, %SigningContext{} = ctx} ->
+        [signer_id: Signing.signer_id(ctx.identity_uuid, ctx.public_key), signing_context: ctx]
+
+      _ ->
+        []
+    end
   end
 
   @doc """
