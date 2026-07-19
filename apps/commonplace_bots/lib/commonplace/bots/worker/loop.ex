@@ -130,12 +130,23 @@ defmodule Commonplace.Bots.Worker.Loop do
   Never recorded: the perception block (derived from live state every turn,
   not an event that happened) and a heartbeat `:skip` tick (never reaches
   this module).
+
+  ## Scrollback wake injection (Camillo C5c-ii, cp-plan #8895)
+
+  The seeded `"inbound"` event above carries a `"message_id"` field
+  (additive to the C5c-i shape) — it exists so
+  `Commonplace.Bots.Worker.Scrollback`'s stimulus-dedupe can compare by
+  IDENTITY when it renders the transcript's tail back into a later wake's
+  text, never by text equality (see that module's moduledoc "Stimulus
+  dedupe" for the full reasoning and the two boundary cases it's built
+  from). `build_initial_user_text/1`'s wake text order, both clauses, is
+  `perception -> scrollback -> fresh stimulus -> invitation`.
   """
 
   require Logger
 
   alias Commonplace.Bots.{Agenda, Transcript}
-  alias Commonplace.Bots.Worker.{Perception, Tools}
+  alias Commonplace.Bots.Worker.{Perception, Scrollback, Tools}
 
   @type state :: %{
           room: String.t(),
@@ -415,7 +426,10 @@ defmodule Commonplace.Bots.Worker.Loop do
   defp seed_events(state) do
     author = Map.get(state.event, "author_path", "human")
     text = Map.get(state.event, "text", "")
-    [%{"type" => "inbound", "author" => author, "text" => text}]
+    # C5c-ii: message_id rides along so Scrollback's stimulus-dedupe can
+    # compare by IDENTITY, never by text (see that module's moduledoc).
+    message_id = Map.get(state.event, "message_id")
+    [%{"type" => "inbound", "author" => author, "text" => text, "message_id" => message_id}]
   end
 
   defp wake_kind(%{event: %{"kind" => "heartbeat"}}), do: "heartbeat"
@@ -508,6 +522,9 @@ defmodule Commonplace.Bots.Worker.Loop do
   # spend a tool call to ask for.
   defp build_initial_user_text(%{event: %{"kind" => "heartbeat"}} = state) do
     perception = Perception.render(state)
+    # C5c-ii: heartbeat wakes get scrollback too — "the hour is yours"
+    # should know what the previous hour actually did.
+    scrollback = Scrollback.render(state)
     items = read_agenda(state)
     agenda_text = render_agenda(items)
 
@@ -516,6 +533,8 @@ defmodule Commonplace.Bots.Worker.Loop do
 
     """
     #{perception}
+
+    #{scrollback}
 
     You woke on a heartbeat. Your agenda:
     #{agenda_text}
@@ -528,11 +547,17 @@ defmodule Commonplace.Bots.Worker.Loop do
 
   defp build_initial_user_text(state) do
     perception = Perception.render(state)
+    # C5c-ii: perception -> scrollback -> the fresh stimulus -> invitation.
+    # See Scrollback's moduledoc "Stimulus dedupe" for why the fresh
+    # stimulus below never double-renders against scrollback's own tail.
+    scrollback = Scrollback.render(state)
     author = Map.get(state.event, "author_path", "human")
     text = Map.get(state.event, "text", "")
 
     """
     #{perception}
+
+    #{scrollback}
 
     #{author} says: "#{text}"
 

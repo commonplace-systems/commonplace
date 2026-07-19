@@ -294,7 +294,12 @@ defmodule Commonplace.Bots.TranscriptTest do
 
       events = entry["events"]
 
-      assert %{"type" => "inbound", "author" => "jes.usr", "text" => "hi camillo"} in events
+      assert %{
+               "type" => "inbound",
+               "author" => "jes.usr",
+               "text" => "hi camillo",
+               "message_id" => "m1"
+             } in events
 
       assert Enum.any?(events, fn e ->
                e["type"] == "tool_call" and e["tool"] == "look" and is_binary(e["result"])
