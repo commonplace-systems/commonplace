@@ -52,11 +52,10 @@ defmodule Commonplace.Bots.Citizen do
   alias Commonplace.Bots.Identity, as: BotIdentity
   alias Commonplace.Bots.NoteDoc
   alias Commonplace.Crypto.Signing
-  alias Commonplace.MUD.{Build, Citizenship, Schemas, World}
+  alias Commonplace.MUD.{Build, Citizenship, World}
   alias Commonplace.MUD.Schemas.Room
   alias Commonplace.Presence
   alias Commonplace.Store.CommitStoreClient
-  alias Commonplace.Tree.Schema
 
   # The oriented layout: a hallway of one exit each. north from home reaches the
   # foyer; north from the foyer reaches the study. Reciprocal south exits are
@@ -179,16 +178,31 @@ defmodule Commonplace.Bots.Citizen do
   end
 
   # Stand the bot's `.usr` presence in the foyer, bot-signed (its OWN write, via
-  # the presence-starter cert Citizenship issued), and set its status. Guarded on
-  # the entry existing so a re-run doesn't stack a second presence.
+  # the presence-starter cert Citizenship issued), and set its status.
+  #
+  # CX-iwf5 (cp-plan ruling #8965) — the FORK-MINTER fix: this used to guard
+  # only on the presence entry EXISTING IN THE FOYER specifically
+  # (`entry(ctx.current_room_uuid, fname, ...)`, `current_room_uuid` here
+  # being the foyer). A bot standing ANYWHERE ELSE (walked to the study,
+  # externally moved) fooled that check into believing no presence existed
+  # yet and minted a SECOND `.usr` — a fork. Now searches EVERYWHERE first
+  # via `World.find_presence/3` (root-relative, not room-relative): found
+  # anywhere = reuse it, wherever he actually stands (a no-op — this
+  # function does NOT relocate him back to the foyer); mint only on a
+  # genuinely-absent presence. An AMBIGUOUS existing match (the SAME
+  # ruling's other half — `World.find_presence/3` refuses to pick one
+  # between duplicates) falls through to the SAME "mint" branch as absent —
+  # this guard can only PREVENT new forks, not repair a pre-existing one;
+  # repairing an already-forked presence is a separate, one-time cleanup,
+  # not something a get-or-create guard should attempt.
   defp ensure_presence(ctx, name) do
     fname = Presence.filename(name, :usr)
 
-    case entry(ctx.current_room_uuid, fname, ctx.store) do
-      {:ok, node_id} ->
-        {:ok, node_id}
+    case World.find_presence(ctx.root_uuid, fname, ctx.store) do
+      {:ok, _room_uuid, presence_uuid} ->
+        {:ok, presence_uuid}
 
-      :error ->
+      _not_found_or_ambiguous ->
         {:ok, presence_uuid} =
           Presence.create(name, :usr, ctx.current_room_uuid, ctx.store, presence_opts(ctx))
 
@@ -203,18 +217,5 @@ defmodule Commonplace.Bots.Citizen do
       cert_cids: ctx.cert_cids,
       signer_id: ctx.signer_id
     ]
-  end
-
-  defp entry(dir_uuid, fname, store) do
-    case Schemas.load_dir_schema(dir_uuid, store) do
-      {:ok, schema} ->
-        case Schema.get_entry(schema, fname) do
-          {:ok, %{node_id: node_id}} -> {:ok, node_id}
-          _ -> :error
-        end
-
-      _ ->
-        :error
-    end
   end
 end

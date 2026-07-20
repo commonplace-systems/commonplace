@@ -79,7 +79,18 @@ defmodule Commonplace.MUD.PlayerSession do
   require Logger
 
   alias Commonplace.Crypto.{AgentKeys, Signing}
-  alias Commonplace.MUD.{EngineModule, Parser, Schemas, SignedWrite, Topics, Verbs, VerbSource, World}
+
+  alias Commonplace.MUD.{
+    EngineModule,
+    Parser,
+    Schemas,
+    SignedWrite,
+    Topics,
+    Verbs,
+    VerbSource,
+    World
+  }
+
   alias Commonplace.MUD.Schemas.{Object, Player, Room}
   alias Commonplace.MUD.SafeVerb.ApiDoc
   alias Commonplace.Presence
@@ -292,7 +303,10 @@ defmodule Commonplace.MUD.PlayerSession do
     source_text = Enum.join(ed.lines, "\n")
 
     if String.trim(source_text) == "" do
-      state.output_fn.("(save aborted: verb body is empty — type a body before '.', or '@abort' to cancel)")
+      state.output_fn.(
+        "(save aborted: verb body is empty — type a body before '.', or '@abort' to cancel)"
+      )
+
       {:noreply, %{state | mode: :normal}}
     else
       do_save_verb(ed, source_text, state)
@@ -317,7 +331,10 @@ defmodule Commonplace.MUD.PlayerSession do
            session_write_opts(state)
          ) do
       :ok ->
-        state.output_fn.("(saved #{ed.target_label}:#{ed.verb_name} — safe verb, compiles cleanly)")
+        state.output_fn.(
+          "(saved #{ed.target_label}:#{ed.verb_name} — safe verb, compiles cleanly)"
+        )
+
         {:noreply, %{state | mode: :normal}}
 
       {:error, {:lint_violation, reasons}} ->
@@ -472,7 +489,10 @@ defmodule Commonplace.MUD.PlayerSession do
   # lines are normal commands, not a verb body.
   defp handle_verb_result({:enter_editor, %{editable: false} = ed}, state) do
     state.output_fn.("=== #{ed.target_label}:#{ed.verb_name} (preview — read-only) ===")
-    state.output_fn.("(you don't have permission to author verbs here — showing the current source)")
+
+    state.output_fn.(
+      "(you don't have permission to author verbs here — showing the current source)"
+    )
 
     if ed.current != "" do
       state.output_fn.(ed.current)
@@ -487,7 +507,10 @@ defmodule Commonplace.MUD.PlayerSession do
     state.output_fn.("=== editing #{ed.target_label}:#{ed.verb_name} ===")
 
     if ed.current != "" do
-      state.output_fn.("(current source — type new lines to replace; '.' to save, '@abort' to cancel)")
+      state.output_fn.(
+        "(current source — type new lines to replace; '.' to save, '@abort' to cancel)"
+      )
+
       state.output_fn.(ed.current)
     else
       state.output_fn.(
@@ -531,7 +554,8 @@ defmodule Commonplace.MUD.PlayerSession do
   # typing `unlock vault` at a container named "Warded Vault" (partial-
   # name match) now gets a targeted reply instead of a raw parser error,
   # without changing what ran or widening what the message reveals.
-  defp handle_unhandled(%Parser.Command{verb: verb, target: target}, ctx, state) when is_binary(target) do
+  defp handle_unhandled(%Parser.Command{verb: verb, target: target}, ctx, state)
+       when is_binary(target) do
     case resolved_target_display_name(target, ctx, state) do
       {:ok, name} -> state.output_fn.("You can't #{verb} #{name}.")
       :error -> state.output_fn.("I don't understand that.")
@@ -775,8 +799,10 @@ defmodule Commonplace.MUD.PlayerSession do
   # to `World.room_snapshot/4` as `:viewer` — `nil` for an unsigned
   # session (an unauthenticated viewer, never the same as the room owner,
   # so a gated room correctly refuses them).
-  defp session_identity_uuid(%{signing_context: %Commonplace.Crypto.SigningContext{identity_uuid: id}}),
-    do: id
+  defp session_identity_uuid(%{
+         signing_context: %Commonplace.Crypto.SigningContext{identity_uuid: id}
+       }),
+       do: id
 
   defp session_identity_uuid(_state), do: nil
 
@@ -863,7 +889,12 @@ defmodule Commonplace.MUD.PlayerSession do
   defp provision_ephemeral(store) do
     {pub, priv} = Signing.generate_keypair()
     id = "session:" <> UUID.uuid4()
-    ctx = %Commonplace.Crypto.SigningContext{identity_uuid: id, public_key: pub, private_key: priv}
+
+    ctx = %Commonplace.Crypto.SigningContext{
+      identity_uuid: id,
+      public_key: pub,
+      private_key: priv
+    }
 
     case Commonplace.MUD.Citizenship.issue_presence_starter_cert(id, pub, store) do
       [] = cids ->
@@ -903,7 +934,13 @@ defmodule Commonplace.MUD.PlayerSession do
   # home-free presence add (spawn_fresh → Presence.create), so reuse it.
   defp bootstrap_presence_only(name, root_uuid, write_opts) do
     with {:ok, room_uuid, presence_uuid} <- ensure_player_in_world(name, root_uuid, write_opts) do
-      {:ok, %{player_dir_uuid: nil, inventory_uuid: nil, room_uuid: room_uuid, presence_uuid: presence_uuid}}
+      {:ok,
+       %{
+         player_dir_uuid: nil,
+         inventory_uuid: nil,
+         room_uuid: room_uuid,
+         presence_uuid: presence_uuid
+       }}
     end
   end
 
@@ -960,7 +997,8 @@ defmodule Commonplace.MUD.PlayerSession do
       :error ->
         json = Schemas.encode_player(%Player{name: name, title: name, description: "A traveler."})
 
-        with {:ok, player_dir_uuid} <- Schemas.create_dir_with_meta(Schemas.player_filename(), json, store, write_opts),
+        with {:ok, player_dir_uuid} <-
+               Schemas.create_dir_with_meta(Schemas.player_filename(), json, store, write_opts),
              {:ok, inv_uuid} <- Schemas.create_dir_with_meta(nil, nil, store, write_opts),
              :ok <- add_dir_entry(player_dir_uuid, "inventory", inv_uuid, write_opts),
              :ok <- add_dir_entry(players_dir_uuid, name, player_dir_uuid, write_opts) do
@@ -995,6 +1033,15 @@ defmodule Commonplace.MUD.PlayerSession do
         end
 
       :not_found ->
+        spawn_fresh(name, root_uuid, store, write_opts)
+
+      # CX-iwf5: an ambiguous match (the SAME filename in >1 room) is
+      # refused-not-picked by World.find_presence/3 — this function's own
+      # philosophy already spawns fresh whenever it can't be SURE the found
+      # presence is genuinely ours (see the identity-mismatch branch above),
+      # so an ambiguous match gets the same treatment: never hijack, never
+      # crash on the unmatched shape.
+      {:error, :ambiguous_presence} ->
         spawn_fresh(name, root_uuid, store, write_opts)
     end
   end
@@ -1069,9 +1116,15 @@ defmodule Commonplace.MUD.PlayerSession do
         {:ok, entry.node_id}
 
       :error ->
-        json = Schemas.encode_room(%Room{name: "The Start Room", description: "A featureless white room. The world has not been built out yet.", exits: %{}})
+        json =
+          Schemas.encode_room(%Room{
+            name: "The Start Room",
+            description: "A featureless white room. The world has not been built out yet.",
+            exits: %{}
+          })
 
-        with {:ok, room_uuid} <- Schemas.create_dir_with_meta(Schemas.room_filename(), json, store),
+        with {:ok, room_uuid} <-
+               Schemas.create_dir_with_meta(Schemas.room_filename(), json, store),
              :ok <- add_dir_entry(root_uuid, @start_room_name, room_uuid, store: store) do
           {:ok, room_uuid}
         end
@@ -1090,7 +1143,13 @@ defmodule Commonplace.MUD.PlayerSession do
     update = Encoding.encode_update(schema)
     {metadata, commit_opts} = SignedWrite.opts_for(parent_uuid, write_opts)
 
-    case CommitStoreClient.create_chained_commit(store, parent_uuid, update, metadata, commit_opts) do
+    case CommitStoreClient.create_chained_commit(
+           store,
+           parent_uuid,
+           update,
+           metadata,
+           commit_opts
+         ) do
       {:error, _} = err -> err
       _commit -> :ok
     end

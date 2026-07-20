@@ -137,6 +137,12 @@ defmodule Commonplace.Bots.MudContext do
     case World.find_presence(root_uuid, presence_filename, store) do
       {:ok, room_uuid, presence_uuid} -> {:ok, room_uuid, presence_uuid}
       :not_found -> {:error, :no_presence}
+      # CX-iwf5: an ambiguous match (World.find_presence/3 refuses to pick
+      # one) degrades EXACTLY like a genuine absence — mud_ctx resolves to
+      # `{:error, _}`, the Worker threads `mud_ctx: nil`, and every MUD tool
+      # refuses gracefully ("You are not in the world.") rather than acting
+      # on a coin-flip-chosen room.
+      {:error, :ambiguous_presence} -> {:error, :ambiguous_presence}
     end
   end
 end

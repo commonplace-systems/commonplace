@@ -6,6 +6,8 @@ defmodule Commonplace.MUD.World do
   All ops are thin wrappers over CRDT edits + Phoenix PubSub.
   """
 
+  require Logger
+
   alias Commonplace.Document.ContentType
   alias Commonplace.MUD.{HolderMove, Move, Schemas, Take, Topics}
   alias Commonplace.Presence
@@ -56,7 +58,8 @@ defmodule Commonplace.MUD.World do
   (notably `:store`).
   """
   def move(thing_uuid, name, source_dir_uuid, dest_dir_uuid, opts \\ [])
-      when is_binary(thing_uuid) and is_binary(name) and is_binary(source_dir_uuid) and is_binary(dest_dir_uuid) do
+      when is_binary(thing_uuid) and is_binary(name) and is_binary(source_dir_uuid) and
+             is_binary(dest_dir_uuid) do
     Move.move(thing_uuid, name, source_dir_uuid, dest_dir_uuid, opts)
   end
 
@@ -183,7 +186,15 @@ defmodule Commonplace.MUD.World do
         _ -> nil
       end
 
-    HolderMove.push(item_uuid, name, inventory_uuid, room_uuid, dropper_identity, node_identity, opts)
+    HolderMove.push(
+      item_uuid,
+      name,
+      inventory_uuid,
+      room_uuid,
+      dropper_identity,
+      node_identity,
+      opts
+    )
   end
 
   @doc """
@@ -226,7 +237,15 @@ defmodule Commonplace.MUD.World do
           _ -> nil
         end
 
-      HolderMove.push(item_uuid, name, source_dir_uuid, container_uuid, from_holder, node_identity, opts)
+      HolderMove.push(
+        item_uuid,
+        name,
+        source_dir_uuid,
+        container_uuid,
+        from_holder,
+        node_identity,
+        opts
+      )
     else
       {:error, {:trust_rejected, :not_node_owned_container}}
     end
@@ -238,10 +257,26 @@ defmodule Commonplace.MUD.World do
   `recipient_identity` — the invoker-holder push to the recipient (see
   `Commonplace.MUD.HolderMove`).
   """
-  def give_item(item_uuid, name, inventory_uuid, recipient_inv_uuid, giver_identity, recipient_identity, opts \\ [])
+  def give_item(
+        item_uuid,
+        name,
+        inventory_uuid,
+        recipient_inv_uuid,
+        giver_identity,
+        recipient_identity,
+        opts \\ []
+      )
       when is_binary(item_uuid) and is_binary(name) and is_binary(inventory_uuid) and
              is_binary(recipient_inv_uuid) do
-    HolderMove.push(item_uuid, name, inventory_uuid, recipient_inv_uuid, giver_identity, recipient_identity, opts)
+    HolderMove.push(
+      item_uuid,
+      name,
+      inventory_uuid,
+      recipient_inv_uuid,
+      giver_identity,
+      recipient_identity,
+      opts
+    )
   end
 
   @doc "Read a metadata struct out of a directory doc."
@@ -550,7 +585,8 @@ defmodule Commonplace.MUD.World do
   occupancy/presence (attack Z7 — a security gate must not consult
   mutable world state).
   """
-  @spec room_snapshot(String.t(), String.t(), term(), keyword()) :: {:ok, map()} | {:error, term()}
+  @spec room_snapshot(String.t(), String.t(), term(), keyword()) ::
+          {:ok, map()} | {:error, term()}
   def room_snapshot(room_uuid, self_filename, store \\ CommitStoreClient, opts \\ []) do
     viewer = Keyword.get(opts, :viewer)
 
@@ -615,29 +651,65 @@ defmodule Commonplace.MUD.World do
   the tree from `root_uuid`. Presence does NOT relocate with
   `current_room_uuid` bookkeeping — it physically moves in the schema
   tree — so this is the authoritative locator. Returns
-  `{:ok, room_uuid, presence_uuid}` or `:not_found`. Cycle-safe via a
-  visited set.
+  `{:ok, room_uuid, presence_uuid}`, `:not_found`, or — CX-iwf5, cp-plan
+  ruling #8965 — `{:error, :ambiguous_presence}` when the SAME filename
+  is found in MORE THAN ONE room (a fork). The walk does NOT short-circuit
+  on the first hit; it visits the WHOLE tree (cycle-safe via a visited
+  set) so a duplicate is actually detected rather than silently arbitrated
+  by tree-walk order.
+
+  REFUSE-AND-DEGRADE, never silently pick one: a caller that only handles
+  `{:ok, _, _}` / `:not_found` and adds a catch-all for anything else gets
+  the SAME graceful "not found" posture for an ambiguous match as for a
+  genuinely absent one — never acts on a coin-flip-chosen room. Every
+  caller in this codebase (`Commonplace.Bots.MudContext.resolve/4`,
+  `Commonplace.MUD.PlayerSession`, `Commonplace.Bots.Worker.Loop`'s
+  CX-mpk0 position refresh, `Commonplace.Bots.Dispatcher`'s presence
+  keep-alive beat) was updated to degrade this way rather than crash on
+  an unmatched `case` clause.
   """
   def find_presence(root_uuid, presence_filename, store \\ CommitStoreClient)
       when is_binary(root_uuid) and is_binary(presence_filename) do
-    walk_for_presence(root_uuid, presence_filename, store, MapSet.new())
+    case walk_for_presence_all(root_uuid, presence_filename, store, MapSet.new()) do
+      [] ->
+        :not_found
+
+      [{room_uuid, presence_uuid}] ->
+        {:ok, room_uuid, presence_uuid}
+
+      matches when is_list(matches) ->
+        Logger.warning(
+          "World.find_presence: AMBIGUOUS presence #{presence_filename} found in " <>
+            "#{length(matches)} rooms (#{inspect(Enum.map(matches, &elem(&1, 0)))}) — refusing to pick one"
+        )
+
+        {:error, :ambiguous_presence}
+    end
   end
 
   @doc """
   Like `find_presence/3` but returns only `{:ok, room_uuid}` (drops the
   presence UUID). Used by verb dispatch to reconcile a session's room
-  after a `move_self` (CX-oh5k).
+  after a `move_self` (CX-oh5k). An ambiguous match (CX-iwf5) collapses
+  to `:not_found` here too — this function's callers already only branch
+  on `{:ok, _}` / `:not_found`, and "can't tell which room" is honestly
+  the same as "don't know the room" from this call's point of view.
   """
   def find_presence_room(root_uuid, presence_filename, store \\ CommitStoreClient) do
     case find_presence(root_uuid, presence_filename, store) do
       {:ok, room_uuid, _presence_uuid} -> {:ok, room_uuid}
       :not_found -> :not_found
+      {:error, :ambiguous_presence} -> :not_found
     end
   end
 
-  defp walk_for_presence(uuid, filename, store, seen) do
+  # Walks the WHOLE tree (never short-circuits on the first hit) and
+  # returns every `{room_uuid, presence_uuid}` match for `filename` —
+  # `find_presence/3` above decides absent/single/ambiguous from the
+  # length of this list.
+  defp walk_for_presence_all(uuid, filename, store, seen) do
     if MapSet.member?(seen, uuid) do
-      :not_found
+      []
     else
       seen = MapSet.put(seen, uuid)
 
@@ -645,23 +717,21 @@ defmodule Commonplace.MUD.World do
         {:ok, schema} ->
           entries = Schema.list_entries(schema)
 
-          case Enum.find(entries, fn e -> e.name == filename end) do
-            %Schema.Entry{node_id: presence_uuid} ->
-              {:ok, uuid, presence_uuid}
+          here =
+            case Enum.find(entries, fn e -> e.name == filename end) do
+              %Schema.Entry{node_id: presence_uuid} -> [{uuid, presence_uuid}]
+              nil -> []
+            end
 
-            nil ->
-              entries
-              |> Enum.filter(&(&1.type == :dir))
-              |> Enum.find_value(:not_found, fn entry ->
-                case walk_for_presence(entry.node_id, filename, store, seen) do
-                  :not_found -> nil
-                  result -> result
-                end
-              end)
-          end
+          nested =
+            entries
+            |> Enum.filter(&(&1.type == :dir))
+            |> Enum.flat_map(&walk_for_presence_all(&1.node_id, filename, store, seen))
+
+          here ++ nested
 
         _ ->
-          :not_found
+          []
       end
     end
   end

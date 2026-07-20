@@ -175,6 +175,13 @@ defmodule Commonplace.Bots.EndToEndTest do
     end
   end
 
+  # Camillo batch part 1 (prompt caching): `:system` is now block-form
+  # (`[%{"type" => "text", "text" => persona, "cache_control" => ...}]`),
+  # not a bare string — see `Commonplace.Bots.Worker.Loop`'s moduledoc
+  # "Prompt caching". Extract the persona text out of the block before
+  # matching, same logic either way.
+  defp which_bot([%{"text" => text} | _]) when is_binary(text), do: which_bot(text)
+
   defp which_bot(system) when is_binary(system) do
     cond do
       String.contains?(system, "Alice") -> "alice"
@@ -212,7 +219,9 @@ defmodule Commonplace.Bots.EndToEndTest do
     end
   end
 
-  test "ACCEPTANCE: human posts @alice → alice wakes, posts, remembers, exits", %{secrets: secrets} do
+  test "ACCEPTANCE: human posts @alice → alice wakes, posts, remembers, exits", %{
+    secrets: secrets
+  } do
     root = mint_root()
     demo = Demo.bootstrap(root)
 

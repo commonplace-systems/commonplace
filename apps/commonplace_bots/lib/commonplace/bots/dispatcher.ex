@@ -118,6 +118,8 @@ defmodule Commonplace.Bots.Dispatcher do
           required(:cadence) => pos_integer(),
           required(:ref) => reference() | nil,
           required(:home_agenda_uuid) => String.t() | nil,
+          required(:bot_signer_id) => String.t() | nil,
+          required(:chat_rooms) => [String.t()],
           required(:opts) => keyword()
         }
 
@@ -245,6 +247,24 @@ defmodule Commonplace.Bots.Dispatcher do
   create in the other direction. Whoever builds CX-5ikm: re-register into
   `PresenceRegistry` on replay (this same call), don't add a second,
   doc-derived liveness path to the reaper.
+
+  ## Real thread-idle + pending-chat surfacing (cp-plan batch, part 4 — the
+  ## jes gap)
+
+  `opts[:chat_rooms]` (a list of subscribed room names) is
+  REGISTRATION-STATE AUTHORITATIVE — supplied here, once, never re-derived
+  from `state.rooms` or anything else at tick time — and, like
+  `home_agenda_uuid`, the bot's OWN `signer_id` is resolved and CACHED
+  ONCE here too (the (C) pattern `resolve_home_agenda/4` already
+  established, mirrored by `resolve_bot_signer_id/4`), so the tick never
+  re-resolves signing context. Both are stored on the `auto` entry.
+
+  `handle_info({:autonomous_tick, ...})`'s `maybe_dispatch_autonomous/3`
+  uses these to compute the REAL `"thread_quiet"` (previously a hardcoded
+  `true` stub — §10's wake-source #1, "a person is waiting," never
+  actually reached the skip-check) — see `compute_thread_status/2` for
+  the mechanism, and `Commonplace.Bots.Worker.Loop`'s heartbeat framing
+  for how a `"pending"` message renders in the wake text.
   """
   @spec register_autonomous_bot(String.t(), String.t(), String.t(), pos_integer(), keyword()) ::
           :ok
@@ -401,6 +421,15 @@ defmodule Commonplace.Bots.Dispatcher do
     # if unresolvable now, the tick's skip-check self-heals later.
     home_agenda_uuid = resolve_home_agenda(name, mud_root, state.store, opts)
 
+    # Part 4 (cp-plan batch): the SAME (C) cache-at-register pattern for the
+    # bot's own signer_id — resolved ONCE here, never per-tick — so
+    # `compute_thread_status/2` can compare a room's newest entry's
+    # `author_signer_id` without re-resolving signing context on every
+    # heartbeat. `chat_rooms` is registration-state authoritative, exactly
+    # like `mud_root`/`dir_uuid` — never re-derived from `state.rooms`.
+    bot_signer_id = resolve_bot_signer_id(name, mud_root, state.store, opts)
+    chat_rooms = opts |> Keyword.get(:chat_rooms, []) |> List.wrap()
+
     ref = Process.send_after(self(), {:autonomous_tick, name}, cadence)
 
     entry = %{
@@ -409,6 +438,8 @@ defmodule Commonplace.Bots.Dispatcher do
       cadence: cadence,
       ref: ref,
       home_agenda_uuid: home_agenda_uuid,
+      bot_signer_id: bot_signer_id,
+      chat_rooms: chat_rooms,
       opts: opts
     }
 
@@ -469,16 +500,19 @@ defmodule Commonplace.Bots.Dispatcher do
     case Entity.load(state.store, dir_uuid, name) do
       {:ok, entity} ->
         {agenda_empty, state} = autonomous_agenda_empty(name, state)
+        auto_entry = Map.get(state.auto, name) || %{}
+        {thread_quiet, pending} = compute_thread_status(auto_entry, state)
 
         # The "kind" is stamped HERE, internally — the unspoofable property.
-        # No chat room, so the thread is trivially quiet.
-        event = %{
-          "verb" => "heartbeat",
-          "kind" => "heartbeat",
-          "room" => name,
-          "agenda_empty" => agenda_empty,
-          "thread_quiet" => true
-        }
+        event =
+          %{
+            "verb" => "heartbeat",
+            "kind" => "heartbeat",
+            "room" => name,
+            "agenda_empty" => agenda_empty,
+            "thread_quiet" => thread_quiet
+          }
+          |> maybe_put_pending(pending)
 
         evaluate_and_dispatch(name, entity, event, state)
         state
@@ -821,6 +855,80 @@ defmodule Commonplace.Bots.Dispatcher do
       _, _ -> nil
     end
   end
+
+  # Part 4 (cp-plan batch) — the SAME (C) cache-at-register pattern
+  # `resolve_home_agenda/4` uses, for the bot's own signer_id. Best-effort —
+  # a nil here just means `compute_thread_status/2` can't judge authorship
+  # and stays conservative (quiet), same failure posture as a nil
+  # home_agenda_uuid treating the agenda as empty.
+  defp resolve_bot_signer_id(name, mud_root, store, opts) do
+    case BotIdentity.resolve_signing_context(name, mud_root, store, opts) do
+      {:ok, sc} -> Signing.signer_id(sc.identity_uuid, sc.public_key)
+      _ -> nil
+    end
+  rescue
+    _ -> nil
+  catch
+    _, _ -> nil
+  end
+
+  # Part 4 (cp-plan batch, the jes gap) — REAL thread-idle, replacing the
+  # `"thread_quiet" => true` stub. For each of the bot's REGISTERED
+  # `chat_rooms` (registration-state authoritative), read that room's
+  # `_messages` tail via `state.rooms[room]`'s messages_uuid — a room not
+  # currently subscribed (no entry in `state.rooms`), with no messages doc
+  # yet, or genuinely empty is TOLERATED (skipped, not an error). Quiet iff
+  # EVERY watched room's newest entry is bot-authored (`author_signer_id ==`
+  # the cached `bot_signer_id`) or empty; otherwise NOT quiet, and the
+  # newest non-bot entry across every watched room becomes `"pending"`.
+  # No `bot_signer_id` resolved, or no `chat_rooms` registered at all, stays
+  # conservative — quiet, no pending (can't judge authorship without an
+  # identity to compare against; §10's #1 wake-source degrades to inert
+  # rather than a false wake).
+  defp compute_thread_status(%{chat_rooms: rooms, bot_signer_id: bot_signer_id}, state)
+       when is_list(rooms) and is_binary(bot_signer_id) do
+    candidates =
+      rooms
+      |> Enum.map(&room_pending_entry(&1, bot_signer_id, state))
+      |> Enum.reject(&is_nil/1)
+
+    case newest_entry(candidates) do
+      nil -> {true, nil}
+      entry -> {false, pending_from_entry(entry)}
+    end
+  end
+
+  defp compute_thread_status(_auto_entry, _state), do: {true, nil}
+
+  defp room_pending_entry(room_name, bot_signer_id, state) do
+    with %{messages_uuid: messages_uuid} <- Map.get(state.rooms, room_name),
+         {:ok, doc} <- DocBuilder.reconstruct_snapshot(state.store, messages_uuid),
+         [_ | _] = entries <- Messages.materialize(doc),
+         newest = List.last(entries),
+         false <- Map.get(newest, "author_signer_id") == bot_signer_id do
+      newest
+    else
+      _ -> nil
+    end
+  rescue
+    _ -> nil
+  catch
+    _, _ -> nil
+  end
+
+  defp newest_entry([]), do: nil
+  defp newest_entry(entries), do: Enum.max_by(entries, &(Map.get(&1, "ts") || ""), fn -> nil end)
+
+  defp pending_from_entry(entry) do
+    %{
+      "author" => Map.get(entry, "author_path"),
+      "text" => Map.get(entry, "text"),
+      "ts" => Map.get(entry, "ts")
+    }
+  end
+
+  defp maybe_put_pending(event, nil), do: event
+  defp maybe_put_pending(event, pending), do: Map.put(event, "pending", pending)
 
   # The skip-check read: the agenda's `entries` by the CACHED uuid (cheap).
   # SELF-HEALING: a `:gone` on the cached uuid (rare re-provision) re-resolves

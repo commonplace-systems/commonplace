@@ -189,6 +189,54 @@ defmodule Commonplace.Bots.Worker.Loop do
   dedupe" for the full reasoning and the two boundary cases it's built
   from). `build_initial_user_text/1`'s wake text order, both clauses, is
   `perception -> scrollback -> fresh stimulus -> invitation`.
+
+  ## Prompt caching (cp-plan batch, part 1)
+
+  `build_request/4` marks the STABLE prefix with Anthropic
+  `cache_control: %{"type" => "ephemeral"}` breakpoints so round 2+ of a
+  multi-round turn hits cache instead of re-billing the whole prefix:
+
+    * the LAST tool definition (`cached_tools/1`) — the tool list is fixed
+      for the whole turn (the allowlist doesn't change mid-turn);
+    * the initial user message's sole content block (`cached_messages/1`,
+      first element) — `initial_messages/1` builds this ONCE in `run/1` and
+      it is only ever appended-after, never mutated, so it's byte-stable
+      across every round of the turn;
+    * an OPTIONAL third, SLIDING breakpoint on the newest `tool_result`
+      block — the last content block of the LAST message, when there IS a
+      prior round (`length(messages) > 1`). This lets the cache boundary
+      advance each round, so round 3 can hit a cache written by round 2's
+      request, not just round 1's. Three breakpoints total, under
+      Anthropic's ≤4 limit with headroom.
+
+  `system` converts from a bare string to ONE-block form
+  (`cached_system/1`) SOLELY so it can carry `cache_control` too —
+  `Commonplace.Bots.Worker.Client.build_body/1` (client.ex:73) passes
+  `:system`/`:messages`/`:tools` through UNCHANGED (a `Map.fetch!` each,
+  no shape assumptions), so every mutation lives HERE, not there; verified
+  by reading client.ex before writing a line of this section — no
+  client.ex changes were needed.
+
+  The 5-minute Anthropic cache TTL is much longer than in-turn round
+  spacing (seconds), so within-turn rounds 2+ reliably hit; a NEW wake
+  (the next heartbeat tick, an hour later by default) re-primes the cache
+  from scratch — by design, not a gap. Tests can only pin the REQUEST
+  SHAPE (a stub client captures what `build_request/4` sends); an actual
+  server-side cache hit isn't observable in a stub — that confirmation is
+  what part 2's usage accounting (`cache_read_input_tokens` > 0 in a live
+  transcript) is for.
+
+  ## Usage accounting (cp-plan batch, part 2)
+
+  Each API response carries a `"usage"` map
+  (`input_tokens`/`cache_creation_input_tokens`/`cache_read_input_tokens`/
+  `output_tokens`). `handle_response/5` accumulates all FOUR as per-turn
+  sums on `budget` (previously only `output_tokens_used` was tracked, for
+  the cap check — that field is REUSED as the output sum, not duplicated)
+  plus a `rounds` counter. `append_transcript/2` adds an ADDITIVE
+  `"usage"` map to the turn entry — existing readers (`Scrollback`, any
+  transcript consumer) that don't know this key simply don't see it;
+  nothing that read the C5c-i shape before this needs to change.
   """
 
   require Logger
@@ -228,10 +276,14 @@ defmodule Commonplace.Bots.Worker.Loop do
         started_at: started_at,
         active_model: state.config.model,
         fell_back: false,
-        events: seed_events(state)
+        events: seed_events(state),
+        rounds: 0,
+        usage_input_tokens: 0,
+        usage_cache_creation_input_tokens: 0,
+        usage_cache_read_input_tokens: 0
       })
 
-    append_transcript(state, budget.events)
+    append_transcript(state, budget)
 
     outcome
   end
@@ -308,12 +360,21 @@ defmodule Commonplace.Bots.Worker.Loop do
   defp maybe_fall_back(_state, _budget, _reason), do: :no_fallback
 
   defp handle_response(state, messages, tools, budget, response) do
-    tokens_in = get_in(response, ["usage", "output_tokens"]) || 0
+    usage = Map.get(response, "usage", %{})
+    output_tokens = Map.get(usage, "output_tokens", 0) || 0
+    input_tokens = Map.get(usage, "input_tokens", 0) || 0
+    cache_creation_tokens = Map.get(usage, "cache_creation_input_tokens", 0) || 0
+    cache_read_tokens = Map.get(usage, "cache_read_input_tokens", 0) || 0
 
     budget = %{
       budget
       | calls_remaining: budget.calls_remaining - 1,
-        output_tokens_used: budget.output_tokens_used + tokens_in
+        output_tokens_used: budget.output_tokens_used + output_tokens,
+        rounds: budget.rounds + 1,
+        usage_input_tokens: budget.usage_input_tokens + input_tokens,
+        usage_cache_creation_input_tokens:
+          budget.usage_cache_creation_input_tokens + cache_creation_tokens,
+        usage_cache_read_input_tokens: budget.usage_cache_read_input_tokens + cache_read_tokens
     }
 
     case Map.get(response, "stop_reason") do
@@ -415,7 +476,10 @@ defmodule Commonplace.Bots.Worker.Loop do
       {:ok, room_uuid, presence_uuid} ->
         %{ctx | current_room_uuid: room_uuid, presence_uuid: presence_uuid}
 
-      :not_found ->
+      # :not_found, or CX-iwf5's {:error, :ambiguous_presence} — both null
+      # the whole ctx the same way (see moduledoc: never act on a
+      # coin-flip-chosen room).
+      _ ->
         nil
     end
   rescue
@@ -527,8 +591,18 @@ defmodule Commonplace.Bots.Worker.Loop do
   # rescue-safe so a transcript failure NEVER alters the turn's outcome or
   # crashes the worker (mirrors `Commonplace.Bots.Worker`'s presence-flicker
   # / red-log best-effort posture).
-  defp append_transcript(%{mud_ctx: ctx} = state, events) when is_map(ctx) do
-    turn = %{"wake" => wake_kind(state), "events" => Enum.reverse(events)}
+  defp append_transcript(%{mud_ctx: ctx} = state, budget) when is_map(ctx) do
+    turn = %{
+      "wake" => wake_kind(state),
+      "events" => Enum.reverse(budget.events),
+      "usage" => %{
+        "rounds" => budget.rounds,
+        "input_tokens" => budget.usage_input_tokens,
+        "cache_creation_input_tokens" => budget.usage_cache_creation_input_tokens,
+        "cache_read_input_tokens" => budget.usage_cache_read_input_tokens,
+        "output_tokens" => budget.output_tokens_used
+      }
+    }
 
     try do
       case Transcript.append_turn(turn, ctx) do
@@ -550,7 +624,7 @@ defmodule Commonplace.Bots.Worker.Loop do
     end
   end
 
-  defp append_transcript(state, _events) do
+  defp append_transcript(state, _budget) do
     Logger.debug(
       "Loop: no mud_ctx for #{inspect(Map.get(state, :room))} — skipping transcript append"
     )
@@ -575,12 +649,51 @@ defmodule Commonplace.Bots.Worker.Loop do
 
     %{
       model: budget.active_model,
-      system: state.entity.persona,
-      messages: messages,
-      tools: tools,
+      system: cached_system(state.entity.persona),
+      messages: cached_messages(messages),
+      tools: cached_tools(tools),
       max_tokens: remaining_tokens
     }
   end
+
+  # --- Prompt caching (part 1) — see moduledoc "Prompt caching" ---
+
+  @cache_control %{"type" => "ephemeral"}
+
+  defp cached_system(persona) when is_binary(persona) do
+    [%{"type" => "text", "text" => persona, "cache_control" => @cache_control}]
+  end
+
+  defp cached_system(persona), do: persona
+
+  defp cached_tools([]), do: []
+
+  defp cached_tools(tools) do
+    List.update_at(tools, -1, &Map.put(&1, "cache_control", @cache_control))
+  end
+
+  # Breakpoint (b) always lands on the initial (first) message's sole
+  # content block — byte-stable across every round of the turn. Breakpoint
+  # (c), the SLIDING one, lands on the LAST message's last content block
+  # ONLY when there's a prior round (`length(messages) > 1` — the initial
+  # message alone has length 1, and round 1 has nothing yet to slide onto).
+  defp cached_messages([_only] = messages) do
+    List.update_at(messages, 0, &cache_last_content_block/1)
+  end
+
+  defp cached_messages(messages) do
+    messages
+    |> List.update_at(0, &cache_last_content_block/1)
+    |> List.update_at(-1, &cache_last_content_block/1)
+  end
+
+  defp cache_last_content_block(%{"content" => content} = msg)
+       when is_list(content) and content != [] do
+    updated = List.update_at(content, -1, &Map.put(&1, "cache_control", @cache_control))
+    %{msg | "content" => updated}
+  end
+
+  defp cache_last_content_block(msg), do: msg
 
   defp initial_messages(state) do
     [
@@ -617,16 +730,20 @@ defmodule Commonplace.Bots.Worker.Loop do
 
     quiet? = Map.get(state.event, "thread_quiet", true)
     thread = if quiet?, do: "quiet", else: "active"
+    # Part 4 (cp-plan batch, the jes gap) — a real pending message (§10's
+    # wake-source #1) renders in STIMULUS POSITION, before the agenda
+    # block: named, with its age, never commanded.
+    pending_block = render_pending(Map.get(state.event, "pending"))
 
     """
     #{perception}
 
     #{scrollback}
 
-    You woke on a heartbeat. Your agenda:
+    #{pending_section(pending_block)}You woke on a heartbeat. Your agenda:
     #{agenda_text}
 
-    The thread is #{thread}. Do one agenda item, or tidy, then update your agenda. The hour is yours.
+    The thread is #{thread}. #{heartbeat_invitation(pending_block)}
     #{filing_framing(quiet?)}
     """
     |> String.trim_trailing()
@@ -683,6 +800,51 @@ defmodule Commonplace.Bots.Worker.Loop do
   end
 
   defp filing_framing(false), do: ""
+
+  # --- Pending-chat surfacing (Part 4, cp-plan batch — the jes gap) ---
+
+  defp render_pending(nil), do: nil
+
+  defp render_pending(%{"author" => author, "text" => text} = pending) do
+    age = pending_age_text(Map.get(pending, "ts"))
+    ~s(#{author} said: "#{text}"#{age} — you have not yet answered.)
+  end
+
+  defp render_pending(_other), do: nil
+
+  defp pending_age_text(ts) when is_binary(ts) do
+    case DateTime.from_iso8601(ts) do
+      {:ok, dt, _offset} ->
+        minutes = DateTime.utc_now() |> DateTime.diff(dt, :second) |> div(60) |> max(0)
+        " (about #{minutes} minute#{plural(minutes)} ago)"
+
+      _ ->
+        ""
+    end
+  end
+
+  defp pending_age_text(_ts), do: ""
+
+  defp plural(1), do: ""
+  defp plural(_), do: "s"
+
+  # "" (no block, nothing rendered) when there's no pending message;
+  # otherwise the rendered line plus a trailing blank line, so it sits in
+  # STIMULUS POSITION ahead of "You woke on a heartbeat" with normal
+  # paragraph spacing either way.
+  defp pending_section(nil), do: ""
+  defp pending_section(block), do: "#{block}\n\n"
+
+  # The invitation NAMES the person first without commanding — filing
+  # stays invited, never displacing them. No pending message keeps the
+  # original agenda-first invitation, byte-identical to before this slice.
+  defp heartbeat_invitation(nil) do
+    "Do one agenda item, or tidy, then update your agenda. The hour is yours."
+  end
+
+  defp heartbeat_invitation(_pending_block) do
+    "A person is waiting; your agenda can wait for them, or not — the hour is still yours."
+  end
 
   defp render_agenda([]), do: "(empty)"
 
