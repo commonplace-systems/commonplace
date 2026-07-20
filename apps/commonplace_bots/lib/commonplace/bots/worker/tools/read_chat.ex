@@ -12,6 +12,22 @@ defmodule Commonplace.Bots.Worker.Tools.ReadChat do
   Optional `before` arg = a message_id; if supplied, the result
   is the N messages whose array-position precedes that id (used
   for paging back through history).
+
+  ## No chat thread here (CX-0xt0)
+
+  `:messages_uuid` in `state.opts` is threaded on the CHAT path
+  (`Commonplace.Bots.Dispatcher.invoke_worker_chat/4`) and, since CX-0xt0,
+  on the autonomous heartbeat path too WHEN the bot has a subscribed
+  `chat_rooms` entry — but a bot with no registered/subscribed room at all
+  genuinely has no chat thread to read. This used to `Keyword.fetch!/2`
+  and CRASH THE WHOLE WORKER TASK on that absence (a real live incident:
+  a heartbeat-woken turn called `read_chat`, hit the missing key, and the
+  Task died mid-turn — no transcript, no reply). A tool must NEVER crash
+  the worker on missing context; `dispatch_tool/2`'s whole contract is
+  that a tool error becomes an `is_error` `tool_result`, not an exception.
+  Missing `:messages_uuid` now returns the SAME kind of honest,
+  in-fiction refusal every other MUD tool uses for "there's nothing here"
+  — `{:error, "(you have no chat thread here)"}` — never a raise.
   """
 
   alias Commonplace.Chat.Messages
@@ -48,24 +64,28 @@ defmodule Commonplace.Bots.Worker.Tools.ReadChat do
   end
 
   def call(state, input) do
-    limit = input |> Map.get("limit", @default_limit) |> clamp()
-    before = Map.get(input, "before")
+    case Keyword.get(state.opts, :messages_uuid) do
+      nil ->
+        {:error, "(you have no chat thread here)"}
 
-    messages_uuid = Keyword.fetch!(state.opts, :messages_uuid)
-    store = Keyword.get(state.opts, :store, CommitStoreClient)
+      messages_uuid ->
+        limit = input |> Map.get("limit", @default_limit) |> clamp()
+        before = Map.get(input, "before")
+        store = Keyword.get(state.opts, :store, CommitStoreClient)
 
-    with {:ok, doc} <- DocBuilder.reconstruct_snapshot(store, messages_uuid) do
-      entries = Messages.materialize(doc)
+        with {:ok, doc} <- DocBuilder.reconstruct_snapshot(store, messages_uuid) do
+          entries = Messages.materialize(doc)
 
-      sliced =
-        entries
-        |> filter_before(before)
-        |> Enum.take(-limit)
-        |> Enum.map(&render/1)
+          sliced =
+            entries
+            |> filter_before(before)
+            |> Enum.take(-limit)
+            |> Enum.map(&render/1)
 
-      {:ok, Jason.encode!(sliced)}
-    else
-      _ -> {:error, "messages doc unreadable"}
+          {:ok, Jason.encode!(sliced)}
+        else
+          _ -> {:error, "messages doc unreadable"}
+        end
     end
   end
 

@@ -650,14 +650,30 @@ defmodule Commonplace.Bots.Dispatcher do
   # bot's stripped name as `room`). root_uuid/store come from the REGISTERED
   # entry — operator-provided server state set at `register_autonomous_bot/5`
   # — never from the event map, which is model/chat-adjacent data.
+  #
+  # CX-0xt0 (live regression from the part-4 batch): `messages_uuid` was
+  # NEVER threaded on this path at all — pre-batch, a heartbeat turn had no
+  # reason to read chat, so the gap was latent; part 4 gave heartbeat wakes
+  # real chat context (`"pending"`) and a bot immediately reached for
+  # `read_chat`, which crashed the whole worker Task on the missing key
+  # (`Keyword.fetch!` — see that tool's own fix). Resolved the SAME way
+  # `root_uuid`/`store` are: from REGISTRATION STATE (`auto_entry.chat_rooms`
+  # cross-referenced against `state.rooms`), never from the event. v1 is
+  # single-room — the FIRST registered chat_room that's ALSO currently
+  # subscribed (has a `state.rooms` entry) wins; nil-safe when none is (the
+  # key is simply omitted, matching pre-batch behavior for a bot with no
+  # chat_rooms registered at all). A future multi-room bot would need this
+  # resolved per-tool-call against whichever room a turn is actually
+  # attending to, not a single opts-time pick — out of scope here.
   defp invoke_worker(state, room, entity, %{"kind" => "heartbeat"} = event) do
     case Map.get(state.auto, room) do
       %{} = auto_entry ->
+        messages_uuid = resolve_autonomous_messages_uuid(auto_entry, state)
+
         opts =
-          Keyword.merge(Map.get(auto_entry, :opts, []),
-            root_uuid: Map.get(auto_entry, :mud_root),
-            store: state.store
-          )
+          Map.get(auto_entry, :opts, [])
+          |> Keyword.merge(root_uuid: Map.get(auto_entry, :mud_root), store: state.store)
+          |> maybe_put_messages_uuid(messages_uuid)
 
         __MODULE__.spawn_worker(room, entity, event, opts)
 
@@ -669,6 +685,28 @@ defmodule Commonplace.Bots.Dispatcher do
   defp invoke_worker(state, room, entity, event) do
     invoke_worker_chat(state, room, entity, event)
   end
+
+  # CX-0xt0 — the FIRST of the bot's registered `chat_rooms` that's ALSO
+  # currently subscribed (present in `state.rooms`, with a resolvable
+  # `messages_uuid`) wins; `nil` when none is (an unregistered chat_rooms
+  # list, or every listed room currently unsubscribed) — tolerated by the
+  # caller, never an error.
+  defp resolve_autonomous_messages_uuid(auto_entry, state) do
+    auto_entry
+    |> Map.get(:chat_rooms, [])
+    |> List.wrap()
+    |> Enum.find_value(fn room_name ->
+      case Map.get(state.rooms, room_name) do
+        %{messages_uuid: messages_uuid} when is_binary(messages_uuid) -> messages_uuid
+        _ -> nil
+      end
+    end)
+  end
+
+  defp maybe_put_messages_uuid(opts, nil), do: opts
+
+  defp maybe_put_messages_uuid(opts, messages_uuid),
+    do: Keyword.put(opts, :messages_uuid, messages_uuid)
 
   # cp-plan #8833 (chat-path twin of CX-k87w): thread the ROOM-REGISTERED
   # opts (`:root_uuid`, `:cert_cids`, test pass-throughs — see

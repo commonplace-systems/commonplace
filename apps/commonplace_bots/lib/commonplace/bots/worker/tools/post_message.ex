@@ -42,6 +42,15 @@ defmodule Commonplace.Bots.Worker.Tools.PostMessage do
   test harness with its own named `CommitStore`, or a future multi-store
   deployment): the post would silently target the WRONG store's
   `_messages` doc and come back `{:error, :not_found}`.
+
+  ## No chat thread here (CX-0xt0)
+
+  A missing `:messages_uuid` (a bot with no registered/subscribed chat
+  room) used to `raise ArgumentError` here — the SAME crash-the-worker
+  class of bug `read_chat`'s `Keyword.fetch!/2` had (found + fixed
+  together, live). A tool must never crash the worker Task on missing
+  context; it degrades to an honest `{:error, "(you have no chat thread
+  to post to here)"}` refusal now, matching `read_chat`'s posture.
   """
 
   alias Commonplace.Bots.Entity
@@ -70,19 +79,25 @@ defmodule Commonplace.Bots.Worker.Tools.PostMessage do
   end
 
   def call(state, %{"text" => text}) when is_binary(text) and text != "" do
-    messages_uuid = get_messages_uuid(state)
-    author_path = Entity.dir_entry_name(state.entity)
-
-    opts =
-      [room: state.room, author_path: author_path, store: get_store(state)] ++ signing_opts(state)
-
-    case Actions.post_message(messages_uuid, text, opts) do
-      {:ok, %{message_id: id, ts: ts}} ->
-        record_post(state)
-        {:ok, Jason.encode!(%{"message_id" => id, "ts" => ts})}
-
+    case get_messages_uuid(state) do
       {:error, reason} ->
-        {:error, inspect(reason)}
+        {:error, reason}
+
+      {:ok, messages_uuid} ->
+        author_path = Entity.dir_entry_name(state.entity)
+
+        opts =
+          [room: state.room, author_path: author_path, store: get_store(state)] ++
+            signing_opts(state)
+
+        case Actions.post_message(messages_uuid, text, opts) do
+          {:ok, %{message_id: id, ts: ts}} ->
+            record_post(state)
+            {:ok, Jason.encode!(%{"message_id" => id, "ts" => ts})}
+
+          {:error, reason} ->
+            {:error, inspect(reason)}
+        end
     end
   end
 
@@ -102,8 +117,8 @@ defmodule Commonplace.Bots.Worker.Tools.PostMessage do
 
   defp get_messages_uuid(state) do
     case Keyword.get(state.opts, :messages_uuid) do
-      nil -> raise ArgumentError, "post_message requires :messages_uuid in worker opts"
-      uuid when is_binary(uuid) -> uuid
+      nil -> {:error, "(you have no chat thread to post to here)"}
+      uuid when is_binary(uuid) -> {:ok, uuid}
     end
   end
 
