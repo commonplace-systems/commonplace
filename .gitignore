@@ -52,3 +52,9 @@ apps/commonplace_mcp/commonplace_mcp
 .commonplace/
 .commonplace.*
 .commonplace-shadow/
+
+# workspace/ is live runtime state, not source. Synced to a private repo via
+# the commonplace/git bridge; tracking it in a PUBLIC repo is the habit that
+# leaked a Telegram bot token from commonplace-rs on 2026-01-23. This repo
+# tracked the same app directory and missed the credential only by luck.
+workspace/

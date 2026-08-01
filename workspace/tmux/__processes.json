@@ -1,8 +1,0 @@
-{
-  "file-tmux-file": {
-    "mode": "sandbox-exec",
-    "command": "/home/jes/.local/bin/uv",
-    "args": ["run", "--project", "/home/jes/file-tmux-file", "file-tmux-file"],
-    "restart": "permanent"
-  }
-}
