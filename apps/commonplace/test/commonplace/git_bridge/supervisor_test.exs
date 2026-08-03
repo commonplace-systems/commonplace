@@ -182,4 +182,53 @@ defmodule Commonplace.GitBridge.SupervisorTest do
     assert decoded == []
     assert Supervisor.which_children(sup) == []
   end
+
+  test "a mapping written then reread survives (no data loss on plain restart)", %{
+    store: store,
+    data_dir: data_dir,
+    repo_dir1: repo_dir1,
+    repo_dir2: repo_dir2
+  } do
+    {:ok, sup1} = GitBridgeSupervisor.start_link(data_dir: data_dir, store: store)
+
+    mapping1 = %{mount_uuid: "mount-uuid", repo_dir: repo_dir1, interval_ms: 3_600_000}
+    mapping2 = %{mount_uuid: "mount-uuid", repo_dir: repo_dir2, remote: nil, interval_ms: 3_600_000}
+    assert {:ok, _} = GitBridgeSupervisor.add_mapping(sup1, mapping1, data_dir: data_dir, store: store)
+    assert {:ok, _} = GitBridgeSupervisor.add_mapping(sup1, mapping2, data_dir: data_dir, store: store)
+
+    :ok = Supervisor.stop(sup1)
+
+    {:ok, sup2} = GitBridgeSupervisor.start_link(data_dir: data_dir, store: store)
+    on_exit(fn -> stop_quietly(sup2) end)
+
+    children = Supervisor.which_children(sup2)
+    assert length(children) == 2
+
+    decoded = Jason.decode!(File.read!(Path.join(data_dir, "git_bridges.json")))
+    repo_dirs = Enum.map(decoded, & &1["repo_dir"]) |> Enum.sort()
+    assert repo_dirs == Enum.sort([repo_dir1, repo_dir2])
+  end
+
+  test "a corrupt/truncated git_bridges.json is archived aside and boot proceeds with zero mappings",
+       %{store: store, data_dir: data_dir} do
+    mapping_path = Path.join(data_dir, "git_bridges.json")
+    File.write!(mapping_path, "{not valid json")
+
+    {:ok, sup} = GitBridgeSupervisor.start_link(data_dir: data_dir, store: store)
+    on_exit(fn -> stop_quietly(sup) end)
+
+    assert Supervisor.which_children(sup) == []
+
+    refute File.exists?(mapping_path)
+
+    corrupt_files =
+      data_dir
+      |> File.ls!()
+      |> Enum.filter(&String.starts_with?(&1, "git_bridges.json.corrupt."))
+
+    assert length(corrupt_files) == 1
+
+    archived_contents = File.read!(Path.join(data_dir, hd(corrupt_files)))
+    assert archived_contents == "{not valid json"
+  end
 end

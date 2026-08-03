@@ -22,6 +22,7 @@ defmodule Commonplace.GitBridge.Supervisor do
   """
 
   use Supervisor
+  require Logger
 
   alias Commonplace.GitBridge.{CanonicalJson, Server}
 
@@ -130,8 +131,17 @@ defmodule Commonplace.GitBridge.Supervisor do
     case File.read(path) do
       {:ok, contents} ->
         case Jason.decode(contents) do
-          {:ok, list} when is_list(list) -> list
-          _ -> []
+          {:ok, list} when is_list(list) ->
+            list
+
+          error ->
+            Logger.error(
+              "GitBridge.Supervisor: failed to decode #{path} (#{inspect(error)}) — " <>
+                "archiving the corrupt file and starting with zero mappings"
+            )
+
+            archive_corrupt_file(path)
+            []
         end
 
       {:error, _} ->
@@ -139,10 +149,52 @@ defmodule Commonplace.GitBridge.Supervisor do
     end
   end
 
+  defp archive_corrupt_file(path) do
+    timestamp = DateTime.utc_now() |> DateTime.to_unix()
+    archive_path = "#{path}.corrupt.#{timestamp}"
+
+    case File.rename(path, archive_path) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.error(
+          "GitBridge.Supervisor: failed to archive corrupt #{path} to #{archive_path}: #{inspect(reason)}"
+        )
+
+        :ok
+    end
+  end
+
   defp write_mappings(data_dir, mappings) do
     File.mkdir_p!(data_dir)
     json = CanonicalJson.encode(mappings)
-    File.write!(mapping_path(data_dir), json)
+    atomic_write(mapping_path(data_dir), json)
+  end
+
+  defp atomic_write(path, content) do
+    dir = Path.dirname(path)
+    File.mkdir_p!(dir)
+    tmp_path = Path.join(dir, ".#{Path.basename(path)}.tmp.#{System.pid()}")
+
+    try do
+      File.write!(tmp_path, content)
+
+      case :file.open(String.to_charlist(tmp_path), [:read]) do
+        {:ok, fd} ->
+          :file.datasync(fd)
+          :file.close(fd)
+
+        {:error, _} ->
+          :ok
+      end
+
+      File.rename!(tmp_path, path)
+    rescue
+      error ->
+        File.rm(tmp_path)
+        reraise error, __STACKTRACE__
+    end
   end
 
   defp normalize_mapping(mapping) do
