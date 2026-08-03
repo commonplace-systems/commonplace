@@ -31,6 +31,15 @@ defmodule Commonplace.CLI.Serve do
     # message) instead of both processes racing CubDB writes.
     Application.put_env(:commonplace, :workspace_lock_on_boot, true)
 
+    # CX-0t2r (recording-half revival, CX-nyvm parity): Mode A must set
+    # the SAME serve-role flag Mode B's runtime.exs sets, before the
+    # :commonplace app boots, so Commonplace.Application.reflog_children/0
+    # starts a CheckpointTimer here too. Without this, only a Phoenix-as-serve
+    # Mode-B boot would drive checkpoints and a CLI-launched serve would
+    # silently go dormant again — the exact CX-nyvm drift class (bursar_on_boot
+    # was Mode-B-only once and broke every move on that boot path).
+    Application.put_env(:commonplace, :reflog_on_boot, true)
+
     CLI.ensure_started(data_dir)
     root = CLI.root_uuid(data_dir)
 

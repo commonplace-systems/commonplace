@@ -27,7 +27,19 @@ defmodule Commonplace.Reflog.CheckpointTimer do
   def init(opts) do
     root_uuid = Keyword.fetch!(opts, :root_uuid)
     store = Keyword.get(opts, :store, Commonplace.Store.CommitStoreClient)
-    owner = Keyword.get(opts, :owner, "server")
+
+    # CX-0t2r (FRESH LINEAGE): CheckpointTimer — and only CheckpointTimer —
+    # defaults its owner to "serve" (config :reflog_owner) rather than
+    # Commonplace.Reflog.Snapshot's own @default_owner ("server"). This is
+    # deliberate: the April-era __reflog/server/ tree carries 3+ months of
+    # dormant, UNSIGNED history (CX-0t2r hunt finding) that would be
+    # trust-denied under strict+enforce if it ever fired again. Rather than
+    # resume writing into that tree, the revived timer builds a fresh
+    # __reflog/serve/ lineage under the new node-signed writer below,
+    # leaving __reflog/server/ untouched as dead data for eventual GC.
+    # checkpoint/3's own default stays "server" for callers/tests that
+    # don't pass :owner and expect the historical path.
+    owner = Keyword.get(opts, :owner, Application.get_env(:commonplace, :reflog_owner, "serve"))
     interval = Keyword.get(opts, :interval, @default_interval_ms)
 
     state = %{

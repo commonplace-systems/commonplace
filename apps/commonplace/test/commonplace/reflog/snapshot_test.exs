@@ -421,6 +421,120 @@ defmodule Commonplace.Reflog.SnapshotTest do
     end
   end
 
+  describe "node-signed checkpoints (CX-0t2r SIGNING)" do
+    setup do
+      dir =
+        Path.join(System.tmp_dir!(), "cp_reflog_signing_test_#{:rand.uniform(1_000_000)}")
+
+      File.mkdir_p!(dir)
+      prior_data_dir = Application.get_env(:commonplace, :data_dir)
+      Application.put_env(:commonplace, :data_dir, dir)
+
+      on_exit(fn ->
+        Application.put_env(:commonplace, :data_dir, prior_data_dir || "tmp/test_data")
+        File.rm_rf!(dir)
+      end)
+
+      :ok
+    end
+
+    test "checkpoint commits carry the node identity's signer_id", %{store: store} do
+      {:ok, node_identity} = Commonplace.Crypto.NodeIdentity.identity()
+      {:ok, node_pub} = Commonplace.Crypto.NodeIdentity.public_key()
+      expected_signer_id = Commonplace.Crypto.Signing.signer_id(node_identity, node_pub)
+
+      file_uuid = create_text_doc(store, "signed.txt", "hi")
+
+      root_uuid = UUID.uuid4()
+      root_doc = Schema.new_schema()
+      root_doc = Schema.add_file(root_doc, "signed.txt", file_uuid)
+      CommitStore.create_commit(store, root_uuid, Yelixer.Encoding.encode_update(root_doc), nil)
+
+      {:ok, _reflog_cid} = Snapshot.checkpoint(root_uuid, store)
+
+      {:ok, owner_uuid} = Snapshot.ensure_reflog_branch(root_uuid, "server", store)
+      owner_schema = load_schema(owner_uuid, store)
+      {:ok, snap_entry} = Schema.get_entry(owner_schema, "__snapshot")
+
+      {:ok, commit} = CommitStore.latest_commit(store, snap_entry.node_id)
+
+      assert commit.signer_id == expected_signer_id,
+             "expected the __snapshot doc's latest commit to be node-signed"
+
+      assert commit.signature != nil
+    end
+  end
+
+  describe "presence exclusion (CX-0t2r EXCLUSION, CX-dm54 precedent)" do
+    test "a .usr entry is not recorded in the snapshot map", %{store: store} do
+      Snapshot.clear_cursor()
+      Snapshot.clear_amortization_state()
+
+      file_uuid = create_text_doc(store, "foo.txt", "hello")
+      usr_uuid = create_text_doc(store, "bob.usr", "presence-blob")
+
+      root_uuid = UUID.uuid4()
+      root_doc = Schema.new_schema()
+      root_doc = Schema.add_file(root_doc, "foo.txt", file_uuid)
+      root_doc = Schema.add_file(root_doc, "bob.usr", usr_uuid)
+      CommitStore.create_commit(store, root_uuid, Yelixer.Encoding.encode_update(root_doc), nil)
+
+      {:ok, _reflog_cid} = Snapshot.checkpoint(root_uuid, store)
+
+      {:ok, owner_uuid} = Snapshot.ensure_reflog_branch(root_uuid, "server", store)
+      owner_schema = load_schema(owner_uuid, store)
+      {:ok, snap_entry} = Schema.get_entry(owner_schema, "__snapshot")
+
+      content = Snapshot.read_snapshot(snap_entry.node_id, store)
+
+      assert Map.has_key?(content, "foo.txt")
+      refute Map.has_key?(content, "bob.usr")
+    end
+
+    test "a subsequent .usr-only change produces no new reflog commit (cursor skip)",
+         %{store: store} do
+      Snapshot.clear_cursor()
+      Snapshot.clear_amortization_state()
+
+      file_uuid = create_text_doc(store, "foo.txt", "hello")
+      usr_uuid = create_text_doc(store, "bob.usr", "presence-blob-v1")
+
+      root_uuid = UUID.uuid4()
+      root_doc = Schema.new_schema()
+      root_doc = Schema.add_file(root_doc, "foo.txt", file_uuid)
+      root_doc = Schema.add_file(root_doc, "bob.usr", usr_uuid)
+      CommitStore.create_commit(store, root_uuid, Yelixer.Encoding.encode_update(root_doc), nil)
+
+      {:ok, cid1} = Snapshot.checkpoint(root_uuid, store)
+
+      {:ok, owner_uuid} = Snapshot.ensure_reflog_branch(root_uuid, "server", store)
+      owner_schema = load_schema(owner_uuid, store)
+      {:ok, snap_entry} = Schema.get_entry(owner_schema, "__snapshot")
+      log_before = CommitStore.commit_log(store, snap_entry.node_id)
+
+      # Heartbeat churn: rewrite the .usr doc only. This fires the dirty
+      # telemetry handler on bob.usr's uuid, but bob.usr was never
+      # registered in root_uuid's parent_index (it's excluded from
+      # `entries` before `populate_parent_index/2` runs), so propagation
+      # stops there and root_uuid is never (re-)marked dirty.
+      doc = Yelixer.Doc.new()
+      doc = ContentType.create(doc, :text, "bob.usr")
+      doc = ContentType.insert_text(doc, 0, "presence-blob-v2")
+      update = Yelixer.Encoding.encode_update(doc)
+      CommitStore.create_chained_commit(store, usr_uuid, update)
+
+      {:ok, cid2} = Snapshot.checkpoint(root_uuid, store)
+
+      assert cid1 == cid2,
+             "a .usr-only change should cursor-skip to the same reflog_commit_id"
+
+      log_after = CommitStore.commit_log(store, snap_entry.node_id)
+
+      assert length(log_after) == length(log_before),
+             "a .usr-only change should not have appended a new reflog commit"
+    end
+  end
+
   # --- Helpers ---
 
   defp create_text_doc(store, name, content) do

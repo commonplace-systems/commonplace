@@ -145,6 +145,7 @@ defmodule Commonplace.Application do
         federation_pull_children() ++
         orchestrator_children() ++
         bursar_children() ++
+        reflog_children() ++
         ghost_reaper_children() ++ git_bridge_children() ++ workspace_lock_children(data_dir)
 
     opts = [strategy: :one_for_one, name: Commonplace.Supervisor]
@@ -293,6 +294,49 @@ defmodule Commonplace.Application do
             start:
               {Commonplace.Green.Bursar, :start_link,
                [[root_uuid: root_uuid, name: Commonplace.Green.Bursar]]},
+            restart: :permanent
+          }
+        ]
+
+      _ ->
+        []
+    end
+  end
+
+  @doc false
+  # Reflog-on-boot (CX-0t2r, recording-half revival): DOUBLE-GATED like
+  # bursar_children/0 — explicit opt-in (`:reflog_on_boot`, default
+  # false) AND a resolvable workspace root. `Commonplace.Reflog.CheckpointTimer`
+  # has existed since the sync-agent era but was never started anywhere on the
+  # Mode-B Phoenix serve (no filesystem checkout sync loop to drive it) — see
+  # CX-0t2r's hunt finding. Same serve-role convention as bursar/orchestrator:
+  # only a deliberately-configured embedder (`commonplace serve` / the Mode-B
+  # runtime.exs block) opts in; web/MCP/tests/bare-`mix run` never start a
+  # timer. Interval defaults to 5 minutes, overridable via
+  # `:reflog_interval_ms`. Started under owner "serve" (see
+  # `CheckpointTimer`'s `:reflog_owner` default) — a FRESH lineage under
+  # `__reflog/serve/`, deliberately distinct from the dormant April-era
+  # `__reflog/server/` tree so a revival doesn't inherit that history's
+  # unsigned-write debt.
+  def reflog_children do
+    enabled = Application.get_env(:commonplace, :reflog_on_boot, false)
+
+    case {enabled, Commonplace.Workspace.root_uuid()} do
+      {true, {:ok, root_uuid}} ->
+        interval = Application.get_env(:commonplace, :reflog_interval_ms, 300_000)
+
+        [
+          %{
+            id: Commonplace.Reflog.CheckpointTimer,
+            start:
+              {Commonplace.Reflog.CheckpointTimer, :start_link,
+               [
+                 [
+                   root_uuid: root_uuid,
+                   interval: interval,
+                   name: Commonplace.Reflog.CheckpointTimer
+                 ]
+               ]},
             restart: :permanent
           }
         ]

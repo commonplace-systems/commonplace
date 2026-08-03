@@ -68,11 +68,21 @@ defmodule Commonplace.Reflog.Snapshot do
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Document.ContentType
   alias Commonplace.WriterHand
+  alias Commonplace.Crypto.NodeIdentity
 
   require Logger
 
   @reflog_branch "__reflog"
   @default_owner "server"
+
+  # CX-dm54 precedent (via CX-0t2r EXCLUSION): presence-transient entries
+  # (`.usr` files, rewritten every heartbeat) are excluded from the
+  # RECORDED entry-CID map so heartbeat churn cursor-skips to zero
+  # checkpoint writes instead of amplifying like the dormant April-era
+  # spine (19.7k-deep chains, CX-0t2r hunt finding). Configurable so a
+  # deployment can widen/narrow the excluded suffix set without a code
+  # change.
+  @default_exclude_suffixes [".usr"]
 
   # CX-71ej: per-reflog-dir idempotency cursor. ETS keyed by reflog_dir_uuid
   # (unique per (root, owner, path) by construction). Holds the schema_cid +
@@ -184,11 +194,19 @@ defmodule Commonplace.Reflog.Snapshot do
   def checkpoint(root_uuid, store \\ CommitStoreClient, owner \\ @default_owner) do
     ensure_cursor_table()
 
+    # CX-0t2r (SIGNING): resolve the node signing context ONCE per
+    # checkpoint call and thread it down through every commit-creating
+    # site in the walk, rather than re-resolving per write. Falls back to
+    # `nil` (today's unsigned behavior, unchanged) when no node identity
+    # exists — e.g. a fresh test store with no minted keypair — so
+    # permissive tests keep passing without needing a node identity.
+    signing_context = resolve_signing_context()
+
     # Ensure __reflog branch exists
-    {:ok, reflog_root} = ensure_reflog_branch(root_uuid, owner, store)
+    {:ok, reflog_root} = ensure_reflog_branch(root_uuid, owner, store, signing_context)
 
     # Walk the data tree and create reflog entries recursively
-    {:ok, reflog_commit_id} = snapshot_dir(root_uuid, reflog_root, store)
+    {:ok, reflog_commit_id} = snapshot_dir(root_uuid, reflog_root, store, signing_context)
 
     Logger.info(
       "Reflog checkpoint: #{Base.encode16(reflog_commit_id, case: :lower) |> binary_part(0, 12)}..."
@@ -197,12 +215,43 @@ defmodule Commonplace.Reflog.Snapshot do
     {:ok, reflog_commit_id}
   end
 
+  # CX-0t2r (SIGNING): node-sign every checkpoint write so it survives
+  # strict+enforce local-write posture (the DENIED-IF-FIRED half of the
+  # CX-0t2r hunt finding). `NodeIdentity.signing_context/0` mints/reads
+  # the workspace's local node keypair; `{:error, _}` (no data_dir writable,
+  # or a bare library-embedding/test context with no workspace) falls back
+  # to unsigned — logged once per checkpoint call, not once per write.
+  defp resolve_signing_context do
+    case NodeIdentity.signing_context() do
+      {:ok, sc} ->
+        sc
+
+      {:error, reason} ->
+        Logger.debug(
+          "Reflog checkpoint: no node identity (#{inspect(reason)}), writing unsigned"
+        )
+
+        nil
+    end
+  end
+
+  # CX-0t2r (SIGNING): the `{metadata, commit_opts}` pair every
+  # `create_chained_commit/5` call site below needs. `nil` reproduces the
+  # exact unsigned behavior every call site had before this change (empty
+  # metadata, empty opts). A resolved `SigningContext` attaches it as
+  # `:signing_context` with no capability_proof — same "node-signed, no
+  # cert" shape `Commonplace.MUD.Presence` writes use for node-elevated
+  # operations (e.g. `GhostReaper`), appropriate here because a checkpoint
+  # write is a node-authored system commit, not a session's own write.
+  defp signed_opts(nil), do: {%{}, []}
+  defp signed_opts(%Commonplace.Crypto.SigningContext{} = sc), do: {%{}, [signing_context: sc]}
+
   @doc """
   Snapshot a single directory, recursing into children.
 
   Returns {:ok, reflog_commit_id} — the commit_id of this dir's reflog entry.
   """
-  def snapshot_dir(data_dir_uuid, reflog_dir_uuid, store) do
+  def snapshot_dir(data_dir_uuid, reflog_dir_uuid, store, signing_context \\ nil) do
     ensure_cursor_table()
     ensure_parent_index_table()
     ensure_dirty_table()
@@ -221,7 +270,7 @@ defmodule Commonplace.Reflog.Snapshot do
         {:ok, cached_cid}
 
       :miss ->
-        do_snapshot_dir(data_dir_uuid, reflog_dir_uuid, store)
+        do_snapshot_dir(data_dir_uuid, reflog_dir_uuid, store, signing_context)
     end
   end
 
@@ -241,7 +290,7 @@ defmodule Commonplace.Reflog.Snapshot do
     end
   end
 
-  defp do_snapshot_dir(data_dir_uuid, reflog_dir_uuid, store) do
+  defp do_snapshot_dir(data_dir_uuid, reflog_dir_uuid, store, signing_context) do
     # Clear the dirty bit BEFORE doing the work. Any commit landing on this
     # dir or a descendant during our walk will re-mark it dirty and trigger
     # a re-checkpoint next round; clearing first avoids the alternate race
@@ -250,8 +299,30 @@ defmodule Commonplace.Reflog.Snapshot do
 
     # Load the data directory's schema
     data_schema = load_schema(data_dir_uuid, store)
-    entries = Schema.list_entries(data_schema)
-              |> Enum.reject(&String.starts_with?(&1.name, "__"))
+
+    # CX-0t2r (EXCLUSION, CX-dm54 precedent): entries whose name ends with
+    # a configured suffix (default `.usr` — presence-transient files
+    # rewritten every heartbeat) are excluded from the RECORDED map only.
+    # They are ALSO excluded from `populate_parent_index/2` below, which is
+    # what makes this exclusion cursor-skip to zero writes rather than just
+    # zero map entries: a commit on an excluded entry still fires
+    # `mark_dirty/1` (the telemetry hook has no knowledge of exclusion) and
+    # sets that entry's own dirty bit, but `propagate_dirty/2` looks it up
+    # in `@parent_index_table` to climb to this dir — and finds nothing,
+    # because this dir was never registered as its parent. Propagation
+    # stops at the excluded entry itself, this dir is never marked dirty
+    # by that write, and the next checkpoint's fast-path cursor hit skips
+    # the read entirely. (If the same uuid is ALSO a legitimate,
+    # non-excluded entry somewhere else in the tree, propagation still
+    # climbs through that other registration — this only silences the
+    # excluded path, not the uuid globally.)
+    exclude_suffixes =
+      Application.get_env(:commonplace, :reflog_exclude_suffixes, @default_exclude_suffixes)
+
+    entries =
+      Schema.list_entries(data_schema)
+      |> Enum.reject(&String.starts_with?(&1.name, "__"))
+      |> Enum.reject(fn entry -> Enum.any?(exclude_suffixes, &String.ends_with?(entry.name, &1)) end)
 
     # CX-o8tx: keep parent_index current so future commit telemetry can
     # propagate dirtiness through this dir.
@@ -300,12 +371,13 @@ defmodule Commonplace.Reflog.Snapshot do
                   uuid = UUID.uuid4()
                   child_schema = Schema.new_schema()
                   update = Yelixer.Encoding.encode_update(child_schema)
-                  CommitStoreClient.create_chained_commit(store, uuid, update)
+                  {meta, commit_opts} = signed_opts(signing_context)
+                  CommitStoreClient.create_chained_commit(store, uuid, update, meta, commit_opts)
                   schema = Schema.add_directory(schema, entry.name, uuid)
                   {uuid, schema, true}
               end
 
-            case snapshot_dir(entry.node_id, child_reflog_uuid, store) do
+            case snapshot_dir(entry.node_id, child_reflog_uuid, store, signing_context) do
               {:ok, child_reflog_cid} ->
                 hex = Base.encode16(child_reflog_cid, case: :lower)
                 {Map.put(acc_cids, entry.name, hex), schema, child_added or this_added?}
@@ -325,8 +397,9 @@ defmodule Commonplace.Reflog.Snapshot do
 
       _ ->
         # Cursor miss — build and write the reflog snapshot doc + schema.
+        {meta, commit_opts} = signed_opts(signing_context)
         schema_update = Yelixer.Encoding.encode_update(reflog_schema_after)
-        CommitStoreClient.create_chained_commit(store, reflog_dir_uuid, schema_update)
+        CommitStoreClient.create_chained_commit(store, reflog_dir_uuid, schema_update, meta, commit_opts)
 
         snapshot_uuid =
           case get_snapshot_doc_uuid(reflog_dir_uuid, store) do
@@ -339,7 +412,7 @@ defmodule Commonplace.Reflog.Snapshot do
               updated_schema = load_schema(reflog_dir_uuid, store)
               updated_schema = Schema.add_file(updated_schema, "__snapshot", uuid)
               update = Yelixer.Encoding.encode_update(updated_schema)
-              CommitStoreClient.create_chained_commit(store, reflog_dir_uuid, update)
+              CommitStoreClient.create_chained_commit(store, reflog_dir_uuid, update, meta, commit_opts)
               uuid
           end
 
@@ -353,7 +426,7 @@ defmodule Commonplace.Reflog.Snapshot do
         # CHECKPOINT ROUND, forever.
         reflog_doc = build_reflog_doc(snapshot_uuid, schema_cid_hex, entry_cids)
         update = Yelixer.Encoding.encode_update(reflog_doc)
-        commit = CommitStoreClient.create_chained_commit(store, snapshot_uuid, update)
+        commit = CommitStoreClient.create_chained_commit(store, snapshot_uuid, update, meta, commit_opts)
 
         store_cursor(reflog_dir_uuid, %{
           data_dir_uuid: data_dir_uuid,
@@ -462,9 +535,17 @@ defmodule Commonplace.Reflog.Snapshot do
     :ok
   end
 
-  @doc "Ensure the __reflog branch and owner subdirectory exist."
-  def ensure_reflog_branch(root_uuid, owner, store) do
+  @doc """
+  Ensure the __reflog branch and owner subdirectory exist.
+
+  `signing_context` (CX-0t2r, SIGNING) defaults to `nil` — unsigned, the
+  exact pre-existing behavior — so direct test callers that don't resolve
+  a node identity are unaffected. `checkpoint/3` resolves it once and
+  passes it through.
+  """
+  def ensure_reflog_branch(root_uuid, owner, store, signing_context \\ nil) do
     root_schema = load_schema(root_uuid, store)
+    {meta, commit_opts} = signed_opts(signing_context)
 
     # Ensure __reflog dir exists
     reflog_dir_uuid =
@@ -476,13 +557,13 @@ defmodule Commonplace.Reflog.Snapshot do
           uuid = UUID.uuid4()
           dir_schema = Schema.new_schema()
           update = Yelixer.Encoding.encode_update(dir_schema)
-          CommitStoreClient.create_chained_commit(store, uuid, update)
+          CommitStoreClient.create_chained_commit(store, uuid, update, meta, commit_opts)
 
           # Reload root schema (latest) and add the entry
           root_schema = load_schema(root_uuid, store)
           root_schema = Schema.add_directory(root_schema, @reflog_branch, uuid)
           update = Yelixer.Encoding.encode_update(root_schema)
-          CommitStoreClient.create_chained_commit(store, root_uuid, update)
+          CommitStoreClient.create_chained_commit(store, root_uuid, update, meta, commit_opts)
           uuid
       end
 
@@ -498,12 +579,12 @@ defmodule Commonplace.Reflog.Snapshot do
           uuid = UUID.uuid4()
           owner_schema = Schema.new_schema()
           update = Yelixer.Encoding.encode_update(owner_schema)
-          CommitStoreClient.create_chained_commit(store, uuid, update)
+          CommitStoreClient.create_chained_commit(store, uuid, update, meta, commit_opts)
 
           reflog_schema = load_schema(reflog_dir_uuid, store)
           reflog_schema = Schema.add_directory(reflog_schema, owner, uuid)
           update = Yelixer.Encoding.encode_update(reflog_schema)
-          CommitStoreClient.create_chained_commit(store, reflog_dir_uuid, update)
+          CommitStoreClient.create_chained_commit(store, reflog_dir_uuid, update, meta, commit_opts)
           uuid
       end
 

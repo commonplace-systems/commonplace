@@ -44,6 +44,15 @@ if System.get_env("PHX_SERVER") && System.get_env("COMMONPLACE_DATA_DIR") do
   # this (the reaper is node-elevated + the highest-hazard presence component).
   config :commonplace, ghost_reaper_on_boot: true
 
+  # CX-0t2r (recording-half revival, CX-nyvm parity): a Mode-B serve is a
+  # serve like any other — it must also drive reflog checkpoints, or the
+  # reflog goes dormant exactly like it did on the live :5199 workspace
+  # (CheckpointTimer existed, never started, since 2026-04-25). Set here
+  # AND in commonplace_cli's Serve.run/3 (Mode A) so both boot paths agree,
+  # per the CX-nyvm lesson (bursar_on_boot was Mode-B-only once and broke
+  # every move on a Phoenix-as-serve boot).
+  config :commonplace, reflog_on_boot: true
+
   # CX-i9ca-adjacent (2026-07-11): a Mode-B serve must also make the
   # GitBridge find its mount mapping, or the workspace→git mirror silently
   # stays down (the supervisor boots with zero bridge children). The mapping
