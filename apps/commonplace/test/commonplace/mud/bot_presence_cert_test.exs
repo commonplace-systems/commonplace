@@ -157,6 +157,40 @@ defmodule Commonplace.MUD.BotPresenceCertTest do
     File.rm_rf!(dir)
   end
 
+  # CX-2t8p: tight reproduction of the stale-Registry-entry race. Registry
+  # unregisters a `{:via, Registry, ...}`-named process by monitoring it and
+  # processing the resulting `:DOWN` — that happens in the Registry's OWN
+  # process, asynchronously relative to `GenServer.stop/2`'s synchronous
+  # return on the CALLER's side. So there's a window, right after
+  # `Bot.stop/1` returns, where `Registry.lookup/2` can still hand back the
+  # now-dead pid. `Bot.ensure_session/2` trusted that lookup unconditionally
+  # (`bot.ex:184-186`), so `send_input`'s `PlayerSession.input_sync` call
+  # (bot.ex:130, NOT wrapped in the `:noproc` catch that `drain/1` has) blew
+  # up with `{:EXIT, {:noproc, _}}` against the stale pid — exactly the
+  # observed CI failure. Looped tight (no sleep) to maximize the chance of
+  # landing in that window every run.
+  test "stop immediately followed by send_input never hits a dead session pid", ctx do
+    Enum.each(1..50, fn i ->
+      name = "respawn-race-bot"
+
+      {:ok, _} =
+        Bot.send_input(name, "look", store: ctx.store, root_uuid: ctx.root, secret_store: ctx.secrets)
+
+      assert {:ok, pid} = bot_pid(name)
+      Bot.stop(name)
+
+      assert {:ok, _events} =
+               Bot.send_input(name, "look",
+                 store: ctx.store,
+                 root_uuid: ctx.root,
+                 secret_store: ctx.secrets
+               ),
+             "iteration #{i}: send_input crashed against a stale/dead session pid #{inspect(pid)}"
+    end)
+
+    Bot.stop("respawn-race-bot")
+  end
+
   defp bot_pid(name) do
     case Registry.lookup(Commonplace.MUD.BotRegistry, name) do
       [{pid, _}] -> {:ok, pid}

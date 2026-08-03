@@ -117,7 +117,29 @@ defmodule Commonplace.MUD.Bot do
   @spec send_input(String.t(), String.t(), keyword()) :: {:ok, [event]} | {:error, term()}
   def send_input(name, line, opts \\ []) do
     settle = Keyword.get(opts, :settle_ms, @default_settle_ms)
+    do_send_input(name, line, opts, settle, _retry? = true)
+  end
 
+  # CX-2t8p: `ensure_session/2` can hand back a pid that's *just* died —
+  # Registry unregisters a `{:via, Registry, ...}` name by monitoring the
+  # process and processing the resulting `:DOWN` in the REGISTRY's own
+  # process, asynchronously relative to `Bot.stop/1`'s (`GenServer.stop/2`)
+  # synchronous return on the caller's side. So there's a real window,
+  # right after a session dies (stop/1, a crash, `quit`), where
+  # `Registry.lookup/2` still returns the dead pid — `lookup/1`'s
+  # `Process.alive?/1` guard below closes most of that window, but it's a
+  # check-then-act itself (the pid could die between the check and the
+  # `GenServer.call` a few lines later), so `input_sync` is additionally
+  # wrapped here and retried ONCE against a freshly re-ensured session on
+  # `:noproc` — one retry is enough because a genuinely stale Registry
+  # entry is corrected by the very next `lookup/1` (either the entry has
+  # since been cleaned and we spawn fresh, or `Process.alive?/1` now
+  # rejects it and we spawn fresh) or `spawn_session/2`'s own
+  # already-started liveness check below. If the retry ALSO hits a dead
+  # pid, that's not this race anymore (e.g. genuinely rapid concurrent
+  # teardown) — reported as a clean-disconnect event, same shape as
+  # `drain/1`'s existing noproc handling, rather than crashing the caller.
+  defp do_send_input(name, line, opts, settle, retry?) do
     with {:ok, session} <- ensure_session(name, opts) do
       # CX-nf8p: consult the throughput gate BEFORE `input_sync` — a
       # rejected command must never enter the PlayerSession mailbox
@@ -127,9 +149,23 @@ defmodule Commonplace.MUD.Bot do
       # events, exactly like the clean-disconnect drain — not errors.
       case RateLimit.check(session, name) do
         :ok ->
-          :ok = PlayerSession.input_sync(session, line)
-          Process.sleep(settle)
-          drain(session)
+          try do
+            :ok = PlayerSession.input_sync(session, line)
+            Process.sleep(settle)
+            drain(session)
+          catch
+            :exit, {:noproc, _} when retry? ->
+              do_send_input(name, line, opts, settle, false)
+
+            :exit, :noproc when retry? ->
+              do_send_input(name, line, opts, settle, false)
+
+            :exit, {:noproc, _} ->
+              {:ok, ["(session ended — clean disconnect)"]}
+
+            :exit, :noproc ->
+              {:ok, ["(session ended — clean disconnect)"]}
+          end
 
         {:drop, :rate} ->
           {:ok, ["(rate limited — you're sending commands too fast, slow down)"]}
@@ -163,7 +199,11 @@ defmodule Commonplace.MUD.Bot do
   @spec read_events(String.t(), keyword()) :: {:ok, [event]} | {:error, term()}
   def read_events(name, opts \\ []) do
     with {:ok, session} <- ensure_session(name, opts) do
-      {:ok, PlayerSession.drain_buffer(session)}
+      # CX-2t8p: route through the private `drain/1` helper (not a direct
+      # `PlayerSession.drain_buffer/1` call) so the same stale-pid /
+      # `:noproc` window `send_input` guards against degrades to a clean-
+      # disconnect event here too, instead of crashing the caller.
+      drain(session)
     end
   end
 
@@ -192,7 +232,17 @@ defmodule Commonplace.MUD.Bot do
 
   defp lookup(name) do
     case Registry.lookup(BotRegistry, name) do
-      [{pid, _}] -> {:ok, pid}
+      # CX-2t8p: a `{:via, Registry, ...}`-registered process is
+      # unregistered by Registry processing the dying process's `:DOWN` —
+      # that happens in the REGISTRY's process, not synchronously with
+      # the target's own termination, so there's a window right after a
+      # session dies (`Bot.stop/1`, a crash, `quit`) where a stale entry
+      # still resolves here. Filter it out so a caller of `ensure_session`
+      # falls through to a fresh `spawn_session` instead of handing back a
+      # pid that's already gone (see `do_send_input/5`'s moduledoc note
+      # for the remaining, narrower check-then-act window this doesn't
+      # close on its own).
+      [{pid, _}] -> if Process.alive?(pid), do: {:ok, pid}, else: :error
       [] -> :error
     end
   end
@@ -261,7 +311,7 @@ defmodule Commonplace.MUD.Bot do
                   watch_lease(pid, lease)
                   {:ok, pid}
 
-                {:error, {:already_started, pid}} ->
+                {:error, {:already_started, pid}} when is_pid(pid) ->
                   # Someone else won the local registration race — same
                   # holder (deterministic per name+node — see
                   # `lease_holder/1`), so the lease is legitimately held
@@ -269,9 +319,26 @@ defmodule Commonplace.MUD.Bot do
                   # release it out from under the winner; just watch the
                   # winner's pid instead (harmless if more than one
                   # racer ends up watching the same live pid).
-                  SessionLimit.release(limit_ref)
-                  watch_lease(pid, lease)
-                  {:ok, pid}
+                  #
+                  # CX-2t8p: `pid` here comes from the SAME Registry entry
+                  # `lookup/1` guards against being stale (the async
+                  # `:DOWN`-processing window after a session dies) — this
+                  # spawn attempt can race that window too, so re-check
+                  # liveness before trusting it. A dead `pid` means the
+                  # entry is stale, not a real winner; release what THIS
+                  # attempt acquired and retry the whole spawn once the
+                  # stale entry (usually already gone by the time the
+                  # retry's `via_name` registration runs) is out of the
+                  # way, rather than handing a dead pid up to the caller.
+                  if Process.alive?(pid) do
+                    SessionLimit.release(limit_ref)
+                    watch_lease(pid, lease)
+                    {:ok, pid}
+                  else
+                    SessionLimit.release(limit_ref)
+                    release_lease(lease)
+                    spawn_session(name, opts)
+                  end
 
                 err ->
                   SessionLimit.release(limit_ref)
