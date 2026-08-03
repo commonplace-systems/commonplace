@@ -42,6 +42,7 @@ defmodule Commonplace.Tree.DocBuilder do
 
       _ ->
         maybe_warn_truncated(commits, uuid)
+        maybe_warn_chain_incomplete(commits, uuid)
 
         commits_to_apply = commits |> trim_to_latest_snapshot() |> Enum.reject(&genesis?/1)
         doc = Doc.new(opts)
@@ -130,6 +131,41 @@ defmodule Commonplace.Tree.DocBuilder do
 
     :ok
   end
+
+  # CX-vzod: the missing-parent sibling of the cap case above. collect_log
+  # terminates silently when a parent commit is absent from the store —
+  # indistinguishable from genesis-reached. If no snapshot grounds the
+  # replay, reconstruction starts from a fresh doc mid-chain and serves
+  # silently wrong content. Loudness only (read-path availability
+  # preserved); the trust walks fail closed on this same condition
+  # (CX-klpi's {:authorization_chain_incomplete, _}).
+  defp maybe_warn_chain_incomplete([oldest | _] = commits, uuid) do
+    # A full-length page means the walk stopped at the CAP, not at a
+    # missing parent — that case is maybe_warn_truncated/2's. Only a
+    # SHORT page ending at a commit with a live parent_id pointer means
+    # the store is actually missing a commit.
+    grounded? =
+      length(commits) >= CommitStore.max_commit_log_limit() or
+        Enum.any?(commits, &snapshot?/1) or genesis?(oldest) or is_nil(oldest.parent_id)
+
+    unless grounded? do
+      Logger.warning(
+        "DocBuilder.reconstruct_doc: chain for doc #{uuid} does not reach genesis — " <>
+          "oldest fetched commit has a parent_id the store is missing; reconstruction " <>
+          "starts mid-chain and content may be silently wrong (CX-vzod)"
+      )
+
+      :telemetry.execute(
+        [:commonplace, :doc_builder, :chain_incomplete],
+        %{count: length(commits)},
+        %{uuid: uuid, oldest_commit_id: oldest.id}
+      )
+    end
+
+    :ok
+  end
+
+  defp maybe_warn_chain_incomplete([], _uuid), do: :ok
 
   defp snapshot?(commit) do
     case Map.get(commit, :metadata) do

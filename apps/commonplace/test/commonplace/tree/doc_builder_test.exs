@@ -53,6 +53,49 @@ defmodule Commonplace.Tree.DocBuilderTest do
       assert {:ok, rebuilt} = DocBuilder.reconstruct_doc(store, "doc-1")
       assert ContentType.get_content(rebuilt) == "hello world"
     end
+
+    # CX-vzod: a mid-chain commit missing from the store makes collect_log
+    # terminate silently, so reconstruction replays from a fresh doc
+    # mid-chain. Behavior is preserved (availability), but the case must
+    # be loud: telemetry [:commonplace, :doc_builder, :chain_incomplete].
+    test "emits chain_incomplete telemetry when a parent commit is missing", %{store: store} do
+      doc1 = Doc.new(client_id: 1)
+      doc1 = ContentType.create(doc1, :text, "test.txt")
+      doc1 = ContentType.insert_text(doc1, 0, "hello")
+      update1 = Encoding.encode_update(doc1)
+      c1 = CommitStore.create_commit(store, "doc-gap", update1, nil)
+
+      {:ok, doc2} = Encoding.apply_update(Doc.new(), update1)
+      doc2 = ContentType.insert_text(doc2, 5, " world")
+      diff = Encoding.encode_diff(doc2, Yelixer.BlockStore.state_vector(doc1.store))
+      CommitStore.create_chained_commit(store, "doc-gap", diff)
+
+      test_pid = self()
+      handler_id = "cx-vzod-#{inspect(self())}"
+
+      :ok =
+        :telemetry.attach(
+          handler_id,
+          [:commonplace, :doc_builder, :chain_incomplete],
+          fn _event, measurements, metadata, _cfg ->
+            send(test_pid, {:chain_incomplete, measurements, metadata})
+          end,
+          nil
+        )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      # Intact chain: no event.
+      assert {:ok, _} = DocBuilder.reconstruct_doc(store, "doc-gap")
+      refute_received {:chain_incomplete, _, _}
+
+      # Remove the root commit — the second commit's parent_id now dangles.
+      db = CommitStore.db_handle(store)
+      CubDB.delete(db, {:commit, c1.id})
+
+      assert {:ok, _} = DocBuilder.reconstruct_doc(store, "doc-gap")
+      assert_received {:chain_incomplete, %{count: 1}, %{uuid: "doc-gap"}}
+    end
   end
 
   describe "reconstruct_snapshot/2" do
