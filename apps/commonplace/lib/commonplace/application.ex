@@ -40,6 +40,16 @@ defmodule Commonplace.Application do
         nil
       )
 
+    # CX-hilo: durable trust-decision audit trail. Bridges the three
+    # trust-rejection telemetry events (rejected local write, ignored
+    # revocation, would-refuse dry-run read) into a red-log doc so a
+    # security-incident review has a data source beyond "who was
+    # tailing the live log at the time." Idempotent attach, same
+    # detach/attach idiom as the reflog dirty-tracker above. See
+    # `Commonplace.Trust.AuditLog` moduledoc for the flood guard and
+    # retention story.
+    _ = Commonplace.Trust.AuditLog.attach()
+
     data_dir = Application.get_env(:commonplace, :data_dir, "data")
 
     children =
