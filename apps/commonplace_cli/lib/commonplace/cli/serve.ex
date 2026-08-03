@@ -38,7 +38,16 @@ defmodule Commonplace.CLI.Serve do
     # Mode-B boot would drive checkpoints and a CLI-launched serve would
     # silently go dormant again — the exact CX-nyvm drift class (bursar_on_boot
     # was Mode-B-only once and broke every move on that boot path).
-    Application.put_env(:commonplace, :reflog_on_boot, true)
+    # CX-0t2r deploy lesson (2026-08-03): reads the SAME env var as the
+    # Mode-B block in config/runtime.exs (CX-nyvm parity holds — both boot
+    # paths agree), but defaults OFF: enabling checkpointing writes into
+    # the live store and must be a deliberate act, separable from
+    # deploying the code. Set COMMONPLACE_REFLOG_ON_BOOT=true to enable.
+    Application.put_env(
+      :commonplace,
+      :reflog_on_boot,
+      System.get_env("COMMONPLACE_REFLOG_ON_BOOT") in ["1", "true"]
+    )
 
     CLI.ensure_started(data_dir)
     root = CLI.root_uuid(data_dir)

@@ -51,7 +51,18 @@ if System.get_env("PHX_SERVER") && System.get_env("COMMONPLACE_DATA_DIR") do
   # AND in commonplace_cli's Serve.run/3 (Mode A) so both boot paths agree,
   # per the CX-nyvm lesson (bursar_on_boot was Mode-B-only once and broke
   # every move on a Phoenix-as-serve boot).
-  config :commonplace, reflog_on_boot: true
+  # CX-0t2r deploy lesson (2026-08-03): reflog checkpointing is NOT a
+  # serve-role detail like the bursar/lock/reaper flags around it — it
+  # starts WRITING checkpoints into the live store, so it must be a
+  # deliberate act, separately stageable from "deploy the code". Setting
+  # it unconditionally here made "ship the reflog code" and "turn
+  # checkpointing on" the same event on a Mode-B boot, which silently
+  # collapsed a deliberately staged A-then-B deploy into one step.
+  # It therefore rides its OWN env var (default OFF), unlike its
+  # neighbours — the Mode-A serve path mirrors this exactly (CX-nyvm
+  # parity still holds: both paths read the same var).
+  config :commonplace,
+         reflog_on_boot: System.get_env("COMMONPLACE_REFLOG_ON_BOOT") in ["1", "true"]
 
   # CX-i9ca-adjacent (2026-07-11): a Mode-B serve must also make the
   # GitBridge find its mount mapping, or the workspace→git mirror silently
