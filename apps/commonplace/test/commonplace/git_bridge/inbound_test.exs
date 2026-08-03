@@ -695,6 +695,46 @@ defmodule Commonplace.GitBridge.InboundTest do
     assert regenerated["uuid"] == doc_uuid
   end
 
+  test "pin 8b (CX-d029): malformed sidecar anchor hex — rejected without crashing the tick", %{
+    store: store,
+    repo_dir: repo_dir,
+    workspace_dir: workspace_dir,
+    bare_dir: bare_dir,
+    clone_dir: clone_dir
+  } do
+    %{mount_uuid: mount_uuid, doc_uuid: doc_uuid} = seed_single_doc(store, workspace_dir, "unchanged content")
+
+    name = start_bridge(mount_uuid: mount_uuid, repo_dir: repo_dir, store: store, remote: bare_dir)
+    {:ok, _} = Server.sync_now(name)
+
+    # Corrupt the BRIDGE's own local sidecar (not the git-side copy,
+    # which is never ingest-eligible per pin 8 — this simulates disk
+    # corruption / a stray edit of the bridge's on-disk state, which is
+    # what `ingest_text/4` actually reads its anchor from).
+    sidecar_path = Path.join(repo_dir, ".commonplace/a.txt.json")
+    sidecar = Jason.decode!(File.read!(sidecar_path))
+    File.write!(sidecar_path, Jason.encode!(Map.put(sidecar, "anchor", "not-valid-hex!!")))
+
+    human_clone(bare_dir, clone_dir)
+    human_edit(clone_dir, "a.txt", "human edit against a corrupted anchor")
+    human_commit_and_push(clone_dir, "human edit")
+
+    PubSub.subscribe_red(mount_uuid)
+
+    # Must not raise/crash the GenServer — malformed anchor hex is
+    # sidecar (disk-controlled) data, not trusted to be well-formed.
+    {:ok, _result} = Server.sync_now(name)
+
+    assert_receive {"red:" <> _, {:git_bridge, :conflict_preserved, %{rel_path: "a.txt", reason: :malformed_anchor}}},
+                    2_000
+
+    # The doc itself is untouched — the malformed-anchor edit never minted.
+    assert doc_content(store, doc_uuid) == "unchanged content"
+
+    # The server is still alive and answers a follow-up call.
+    assert %{halted: false} = Server.status(name)
+  end
+
   test "pin 9: echo — a cycle right after our own push ingests nothing", %{
     store: store,
     repo_dir: repo_dir,

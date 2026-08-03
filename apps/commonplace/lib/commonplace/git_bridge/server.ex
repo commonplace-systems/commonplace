@@ -19,6 +19,11 @@ defmodule Commonplace.GitBridge.Server do
        a broadcast) — the server stays alive and retries next cycle.
 
   Never crashes on git or push failure; `Logger.warning` and continue.
+  As a backstop (CX-d029), any OTHER unexpected raise/throw/exit during
+  a tick is also caught: `Logger.error`, a `[:commonplace, :git_bridge,
+  :tick_crashed]` telemetry event, and the tick is skipped (prior state
+  kept) rather than crashing this GenServer — one mount's bug can no
+  longer reset every mount's in-memory state via a shared crash-loop.
   """
 
   use GenServer
@@ -138,12 +143,51 @@ defmodule Commonplace.GitBridge.Server do
   defp do_tick(state) do
     if reachable?(state.mount_uuid, state.store) do
       state = %{state | halted: false}
-      run_cycle(state)
+      run_cycle_guarded(state)
     else
       state = %{state | halted: true}
       PubSub.broadcast_red(state.mount_uuid, {:git_bridge, :halted, %{reason: :unreachable}})
       {{:ok, :halted}, state}
     end
+  end
+
+  # CX-d029: the moduledoc promises this GenServer "never crashes on git
+  # or push failure" — but that was only true of the individual
+  # error-tuple branches inside `run_cycle/1`. Any OTHER raise/throw/exit
+  # anywhere in the cycle (Inbound.run, Exporter.export, Archive.archive,
+  # commit/push) was unrescued and would crash this GenServer. Under the
+  # supervisor's shared init, a single crash-looping mount could reset
+  # EVERY mount's in-memory state (last_manifest, last_pushed_commit,
+  # pending_conflicts), not just its own. This is a backstop, not a
+  # replacement for the existing {:error, reason} handling above: it
+  # only fires for the unexpected case those branches don't already
+  # cover, and it skips the tick (returns the PRIOR state) rather than
+  # trying to guess a safe partial result.
+  defp run_cycle_guarded(state) do
+    run_cycle(state)
+  rescue
+    error ->
+      log_and_report_tick_crash(state, error, __STACKTRACE__)
+      {{:error, {:tick_crashed, error}}, state}
+  catch
+    kind, reason ->
+      log_and_report_tick_crash(state, {kind, reason}, __STACKTRACE__)
+      {{:error, {:tick_crashed, {kind, reason}}}, state}
+  end
+
+  defp log_and_report_tick_crash(state, error, stacktrace) do
+    Logger.error(
+      "GitBridge.Server: tick crashed for mount #{state.mount_uuid} (skipping this tick): " <>
+        Exception.format(:error, error, stacktrace)
+    )
+
+    :telemetry.execute(
+      [:commonplace, :git_bridge, :tick_crashed],
+      %{system_time: System.system_time()},
+      %{mount_uuid: state.mount_uuid, repo_dir: state.repo_dir, error: error}
+    )
+
+    PubSub.broadcast_red(state.mount_uuid, {:git_bridge, :tick_crashed, %{reason: error}})
   end
 
   defp run_cycle(state) do

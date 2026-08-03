@@ -501,4 +501,61 @@ defmodule Commonplace.GitBridge.ServerTest do
     assert result2.committed == false
     assert Process.alive?(pid)
   end
+
+  test "CX-d029: an unexpected raise mid-cycle is contained — tick skipped, PRIOR state kept, server alive", %{
+    store: store,
+    repo_dir: repo_dir,
+    workspace_dir: workspace_dir
+  } do
+    %{mount_uuid: mount_uuid} = seed_tree(store, workspace_dir)
+    name = unique_name("gb_server9")
+
+    {:ok, pid} =
+      Server.start_link(
+        mount_uuid: mount_uuid,
+        repo_dir: repo_dir,
+        store: store,
+        branch: "main",
+        interval_ms: 3_600_000,
+        name: name
+      )
+
+    on_exit(fn -> if Process.whereis(name), do: GenServer.stop(name) end)
+
+    {:ok, result1} = Server.sync_now(name)
+    assert result1.committed == true
+    status_before = Server.status(name)
+
+    # Corrupt repo_dir out from under the running server: replace
+    # `.gitattributes` (a file `Exporter.export/4` just wrote) with a
+    # DIRECTORY of the same name. `Exporter.export/4` itself has its own
+    # top-level `rescue` (already covered by the pre-existing
+    # {:error, reason} handling), but `Sidecar.ensure_gitattributes/1`
+    # — called right after it in `run_cycle/1` — does not: `File.read/1`
+    # on a directory returns `{:error, :eisdir}`, which matches neither
+    # of its `case` clauses and raises `CaseClauseError`. This is
+    # exactly the class of unexpected, unrescued crash CX-d029 closes:
+    # before this change it would crash the whole GenServer (and, under
+    # the shared supervisor init, could reset every OTHER mount's
+    # in-memory state too).
+    gitattributes_path = Path.join(repo_dir, ".gitattributes")
+    File.rm_rf!(gitattributes_path)
+    File.mkdir_p!(gitattributes_path)
+
+    PubSub.subscribe_red(mount_uuid)
+
+    {:error, {:tick_crashed, _}} = Server.sync_now(name)
+    assert_receive {"red:" <> _, {:git_bridge, :tick_crashed, _}}, 1_000
+
+    # Server survived, and its in-memory state (e.g. last_manifest_size)
+    # is exactly what it was before the crashed tick — the tick was
+    # skipped, not partially applied.
+    assert Process.alive?(pid)
+    assert Server.status(name) == status_before
+
+    # Restore repo_dir and confirm the bridge recovers on the next tick.
+    File.rm_rf!(gitattributes_path)
+    {:ok, result3} = Server.sync_now(name)
+    assert result3.committed == false
+  end
 end

@@ -302,8 +302,19 @@ defmodule Commonplace.GitBridge.Inbound do
   defp ingest_one(state, _manifest, _fetched_head, _status, rel_path), do: reject(state, rel_path, :unsupported_status)
 
   defp ingest_text(state, rel_path, %{"uuid" => uuid, "anchor" => anchor_hex}, fetched_head) do
+    # Sidecar data is disk-controlled, not trusted to be well-formed: a
+    # human (or a stray editor/tool) can corrupt the sidecar manifest's
+    # anchor hex on the git side. Base.decode16! would raise and crash
+    # the whole tick; instead treat a malformed anchor as an ordinary
+    # per-file reject, same as any other ineligible/unresolvable path.
+    case Base.decode16(anchor_hex, case: :lower) do
+      {:ok, anchor} -> ingest_text_with_anchor(state, rel_path, uuid, anchor, fetched_head)
+      :error -> reject(state, rel_path, :malformed_anchor)
+    end
+  end
+
+  defp ingest_text_with_anchor(state, rel_path, uuid, anchor, fetched_head) do
     repo_dir = state.repo_dir
-    anchor = Base.decode16!(anchor_hex, case: :lower)
 
     with {:ok, base_doc} <- DocBuilder.reconstruct_doc_at(state.store, uuid, anchor) |> ok_or(:no_anchor),
          base = ContentType.get_content(base_doc) || "",
