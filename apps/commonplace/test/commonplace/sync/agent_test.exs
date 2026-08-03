@@ -385,6 +385,59 @@ defmodule Commonplace.Sync.AgentTest do
     end
   end
 
+  describe "crash containment (CX-42no)" do
+    test "permission-denied file doesn't crash sync_once; other files still sync",
+         %{store: store, sync_dir: dir, root: root} do
+      File.write!(Path.join(dir, "ok.txt"), "fine")
+      bad_path = Path.join(dir, "bad.txt")
+      File.write!(bad_path, "secret")
+      File.chmod!(bad_path, 0o000)
+      on_exit(fn -> File.chmod(bad_path, 0o644) end)
+
+      if root_bypasses_perms?(bad_path) do
+        :ok
+      else
+        {:ok, pid} = Agent.start_link(root_uuid: root, sync_dir: dir, store: store)
+
+        # Must not raise/crash even though bad.txt can't be read.
+        assert :ok = Agent.sync_once(pid)
+
+        load = loader(store)
+        assert {:ok, uuid} = Walk.resolve_path(root, "ok.txt", load)
+        assert read_content(uuid, store) == "fine"
+        assert {:error, _} = Walk.resolve_path(root, "bad.txt", load)
+      end
+    end
+
+    test "symlinked directory cycle in sync_dir does not hang or crash sync_once",
+         %{store: store, sync_dir: dir, root: root} do
+      loop_dir = Path.join(dir, "loop")
+      File.mkdir_p!(loop_dir)
+      File.write!(Path.join(loop_dir, "inside.txt"), "hi")
+      # dir/loop/self -> dir/loop : a directory symlink cycle
+      File.ln_s!(loop_dir, Path.join(loop_dir, "self"))
+
+      {:ok, pid} = Agent.start_link(root_uuid: root, sync_dir: dir, store: store)
+
+      task = Task.async(fn -> Agent.sync_once(pid) end)
+      result = Task.yield(task, 10_000) || Task.shutdown(task)
+
+      assert match?({:ok, :ok}, result),
+             "sync_once hung or crashed on a symlink cycle: #{inspect(result)}"
+
+      load = loader(store)
+      assert {:ok, uuid} = Walk.resolve_path(root, "loop/inside.txt", load)
+      assert read_content(uuid, store) == "hi"
+    end
+  end
+
+  defp root_bypasses_perms?(path) do
+    case File.read(path) do
+      {:ok, _} -> true
+      {:error, _} -> false
+    end
+  end
+
   defp make_doc(store, name, content) do
     uuid = UUID.uuid4()
 

@@ -232,6 +232,62 @@ defmodule Commonplace.Sync.WatcherTest do
     end
   end
 
+  describe "crash containment (CX-42no)" do
+    test "permission-denied file is skipped; other files still sync",
+         %{store: store, watch_dir: dir, root_uuid: root} do
+      File.write!(Path.join(dir, "ok.txt"), "fine")
+      bad_path = Path.join(dir, "bad.txt")
+      File.write!(bad_path, "secret")
+      File.chmod!(bad_path, 0o000)
+      on_exit(fn -> File.chmod(bad_path, 0o644) end)
+
+      if root_bypasses_perms?(bad_path) do
+        # Running as root (or on a filesystem that ignores the mode bits) —
+        # chmod 0o000 doesn't actually deny reads here, so this scenario
+        # can't be exercised in this environment. Nothing to assert.
+        :ok
+      else
+        changes = Watcher.detect_changes(root, dir, store)
+        assert Enum.any?(changes, &(&1.name == "ok.txt"))
+
+        # Must not raise even though bad.txt can't be read.
+        Watcher.apply_changes(changes, root, dir, store)
+
+        root_doc = load_schema(root, store)
+        assert {:ok, _entry} = Schema.get_entry(root_doc, "ok.txt")
+        assert :error = Schema.get_entry(root_doc, "bad.txt")
+      end
+    end
+
+    test "symlinked directory cycle does not hang or crash recursion",
+         %{store: store, watch_dir: dir, root_uuid: root} do
+      loop_dir = Path.join(dir, "loop")
+      File.mkdir_p!(loop_dir)
+      File.write!(Path.join(loop_dir, "inside.txt"), "hi")
+      # dir/loop/self -> dir/loop : a directory symlink cycle
+      File.ln_s!(loop_dir, Path.join(loop_dir, "self"))
+
+      task = Task.async(fn -> Watcher.sync_recursive(root, dir, store) end)
+      result = Task.yield(task, 5_000) || Task.shutdown(task)
+
+      assert match?({:ok, _}, result),
+             "sync_recursive hung or crashed on a symlink cycle: #{inspect(result)}"
+
+      # The non-cyclic content still made it in.
+      root_doc = load_schema(root, store)
+      {:ok, loop_entry} = Schema.get_entry(root_doc, "loop")
+      loop_schema = load_schema(loop_entry.node_id, store)
+      assert {:ok, _} = Schema.get_entry(loop_schema, "inside.txt")
+    end
+  end
+
+  defp root_bypasses_perms?(path) do
+    case File.read(path) do
+      {:ok, _} -> true
+      {:error, _} -> false
+    end
+  end
+
   defp load_schema(uuid, store) do
     case CommitStore.latest_commit(store, uuid) do
       {:ok, commit} ->

@@ -113,6 +113,8 @@ defmodule Commonplace.Sync.Agent do
 
   use GenServer
 
+  require Logger
+
   alias Commonplace.Sync.{Watcher, Export, InodeTracker}
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.Schema
@@ -365,52 +367,60 @@ defmodule Commonplace.Sync.Agent do
         # CX-pyi: load + mutate against the shadow's commit, applying
         # the disk-content diff under a stable client_id so repeated
         # stale-write recoveries don't bloat the SV.
-        stale_content = File.read!(shadow.shadow_path)
+        #
+        # CX-42no: File.read! here would crash the whole sync pass (and
+        # thus the whole checkout, via SyncLoop's crash-loop) if the
+        # shadow hardlink went unreadable between the fingerprint check
+        # above and this read. Skip just this shadow and retry next pass.
+        case File.read(shadow.shadow_path) do
+          {:ok, stale_content} ->
+            recover_stale_shadow(state, shadow, stale_content)
 
-        doc =
-          case CommitStoreClient.get_commit(state.store, shadow.commit_id) do
-            {:ok, commit} ->
-              d =
-                Yelixer.Doc.new(client_id: stable_client_id(shadow.doc_uuid))
-
-              {:ok, d} = Yelixer.Encoding.apply_update(d, commit.update)
-              d
-
-            _ ->
-              d =
-                Yelixer.Doc.new(client_id: stable_client_id(shadow.doc_uuid))
-
-              Commonplace.Document.ContentType.create(d, :text, Path.basename(shadow.path))
-          end
-
-        old_content = Commonplace.Document.ContentType.get_content(doc) || ""
-
-        doc =
-          Commonplace.Document.Diff.apply_diff(doc, old_content, stale_content)
-
-        update = Yelixer.Encoding.encode_update(doc)
-
-        # Create commit with the shadow's commit_id as parent
-        CommitStoreClient.create_commit(state.store, shadow.doc_uuid, update, shadow.commit_id)
-
-        # CX-k34x: the shadow hardlink shares the OLD inode's (dev, inode)
-        # pair — that's the whole point of hardlinking before the
-        # overwrite (see InodeTracker.atomic_write_with_shadow). Recompute
-        # the registry key from it BEFORE deleting the file, then evict
-        # the registry entry now that reconciliation is complete: the
-        # stale content has been folded into the CRDT, so nothing further
-        # can be learned by continuing to track this inode. Without this,
-        # Registry.track/5 (called on every write) has no matching
-        # eviction and the in-memory map grows one entry per write for
-        # the life of the BEAM.
-        old_inode_key = InodeTracker.inode_key(shadow.shadow_path)
-
-        # Clean up the shadow
-        InodeTracker.cleanup_shadow(shadow.shadow_path)
-
-        InodeTracker.Registry.remove_shadow(state.inode_registry, old_inode_key)
+          {:error, reason} ->
+            Logger.warning(
+              "Sync.Agent: skipping unreadable shadow #{shadow.shadow_path} (#{inspect(reason)})"
+            )
+        end
       end
     end)
+  end
+
+  defp recover_stale_shadow(state, shadow, stale_content) do
+    doc =
+      case CommitStoreClient.get_commit(state.store, shadow.commit_id) do
+        {:ok, commit} ->
+          d = Yelixer.Doc.new(client_id: stable_client_id(shadow.doc_uuid))
+          {:ok, d} = Yelixer.Encoding.apply_update(d, commit.update)
+          d
+
+        _ ->
+          d = Yelixer.Doc.new(client_id: stable_client_id(shadow.doc_uuid))
+          Commonplace.Document.ContentType.create(d, :text, Path.basename(shadow.path))
+      end
+
+    old_content = Commonplace.Document.ContentType.get_content(doc) || ""
+    doc = Commonplace.Document.Diff.apply_diff(doc, old_content, stale_content)
+    update = Yelixer.Encoding.encode_update(doc)
+
+    # Create commit with the shadow's commit_id as parent
+    CommitStoreClient.create_commit(state.store, shadow.doc_uuid, update, shadow.commit_id)
+
+    # CX-k34x: the shadow hardlink shares the OLD inode's (dev, inode)
+    # pair — that's the whole point of hardlinking before the
+    # overwrite (see InodeTracker.atomic_write_with_shadow). Recompute
+    # the registry key from it BEFORE deleting the file, then evict
+    # the registry entry now that reconciliation is complete: the
+    # stale content has been folded into the CRDT, so nothing further
+    # can be learned by continuing to track this inode. Without this,
+    # Registry.track/5 (called on every write) has no matching
+    # eviction and the in-memory map grows one entry per write for
+    # the life of the BEAM.
+    old_inode_key = InodeTracker.inode_key(shadow.shadow_path)
+
+    # Clean up the shadow
+    InodeTracker.cleanup_shadow(shadow.shadow_path)
+
+    InodeTracker.Registry.remove_shadow(state.inode_registry, old_inode_key)
   end
 
   # CX-pyi: stable client_id keeps the SV at one slot per doc across
@@ -444,11 +454,25 @@ defmodule Commonplace.Sync.Agent do
             # Only apply if disk content actually changed from what we last synced.
             # Content hash is a fast gate — if disk matches what we last saw,
             # the CRDT was updated remotely, let inbound handle it.
-            content = Commonplace.Sync.Flock.with_shared_lock(change.path, 30_000, fn ->
-              File.read!(change.path)
-            end)
-            disk_hash = :erlang.md5(content)
-            Map.get(known_hashes, change.name) != disk_hash
+            #
+            # CX-42no: the file was readable moments ago (Watcher.detect_changes
+            # just File.regular?/File.read!'d it to flag this as :modified), but
+            # a file can go unreadable between that check and this one (perms
+            # flip, unlink+symlink race). Reading here under rescue and treating
+            # a failure as "not confirmed changed" (drop the change, retried
+            # next tick) keeps one bad file from crash-looping the whole pass.
+            case read_locked(change.path) do
+              {:ok, content} ->
+                disk_hash = :erlang.md5(content)
+                Map.get(known_hashes, change.name) != disk_hash
+
+              {:error, reason} ->
+                Logger.warning(
+                  "Sync.Agent: skipping unreadable modified file #{change.path} (#{inspect(reason)})"
+                )
+
+                false
+            end
 
           _ ->
             true
@@ -467,24 +491,54 @@ defmodule Commonplace.Sync.Agent do
       if entry.type == :dir do
         sub_dir = Path.join(dir, entry.name)
 
-        if File.dir?(sub_dir) do
-          prefix = entry.name <> "/"
+        cond do
+          symlinked_dir?(sub_dir) ->
+            # CX-42no: never follow a symlinked directory into the outbound
+            # walk — see Watcher.symlinked_dir?/1 for the rationale (no
+            # visited-set needed, matches git/rsync default behavior, and
+            # nothing exercises following symlinked dirs today).
+            Logger.warning(
+              "Sync.Agent: skipping symlinked directory #{sub_dir} (not followed, prevents cycle)"
+            )
 
-          sub_known =
-            known_paths
-            |> Enum.filter(&String.starts_with?(&1, prefix))
-            |> Enum.map(&String.replace_leading(&1, prefix, ""))
-            |> MapSet.new()
+          File.dir?(sub_dir) ->
+            prefix = entry.name <> "/"
 
-          sub_hashes =
-            known_hashes
-            |> Enum.filter(fn {k, _} -> String.starts_with?(k, prefix) end)
-            |> Enum.map(fn {k, v} -> {String.replace_leading(k, prefix, ""), v} end)
-            |> Map.new()
+            sub_known =
+              known_paths
+              |> Enum.filter(&String.starts_with?(&1, prefix))
+              |> Enum.map(&String.replace_leading(&1, prefix, ""))
+              |> MapSet.new()
 
-          sync_outbound_recursive(entry.node_id, sub_dir, store, sub_known, sub_hashes, inode_registry)
+            sub_hashes =
+              known_hashes
+              |> Enum.filter(fn {k, _} -> String.starts_with?(k, prefix) end)
+              |> Enum.map(fn {k, v} -> {String.replace_leading(k, prefix, ""), v} end)
+              |> Map.new()
+
+            sync_outbound_recursive(entry.node_id, sub_dir, store, sub_known, sub_hashes, inode_registry)
+
+          true ->
+            :ok
         end
       end
+    end)
+  end
+
+  defp symlinked_dir?(path) do
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: :symlink}} -> true
+      _ -> false
+    end
+  end
+
+  # CX-42no: read a file under Flock's shared-lock discipline but never
+  # raise — File.read! inside with_shared_lock would crash the whole sync
+  # pass on a single unreadable file (perms, dangling symlink, mid-write
+  # unlink). Converts to a plain {:ok, _} / {:error, reason} result.
+  defp read_locked(path) do
+    Commonplace.Sync.Flock.with_shared_lock(path, 30_000, fn ->
+      File.read(path)
     end)
   end
 
@@ -497,18 +551,32 @@ defmodule Commonplace.Sync.Agent do
 
           paths = MapSet.put(paths, rel)
 
-          if File.dir?(full) do
-            {sub_paths, sub_hashes} = scan_disk_state(full, rel)
-            {MapSet.union(paths, sub_paths), Map.merge(hashes, sub_hashes)}
-          else
-            case File.read(full) do
-              {:ok, content} ->
-                hash = :erlang.md5(content)
-                {paths, Map.put(hashes, rel, hash)}
-              {:error, _} ->
-                # File disappeared or is unreadable — skip
-                {paths, hashes}
-            end
+          cond do
+            symlinked_dir?(full) ->
+              # CX-42no: don't descend into symlinked directories — see
+              # symlinked_dir?/1 above. The path itself is still recorded
+              # in `paths` (so it doesn't spuriously look "deleted"), just
+              # not walked for children.
+              Logger.warning(
+                "Sync.Agent: scan_disk_state skipping symlinked directory #{full}"
+              )
+
+              {paths, hashes}
+
+            File.dir?(full) ->
+              {sub_paths, sub_hashes} = scan_disk_state(full, rel)
+              {MapSet.union(paths, sub_paths), Map.merge(hashes, sub_hashes)}
+
+            true ->
+              case File.read(full) do
+                {:ok, content} ->
+                  hash = :erlang.md5(content)
+                  {paths, Map.put(hashes, rel, hash)}
+
+                {:error, _} ->
+                  # File disappeared or is unreadable — skip
+                  {paths, hashes}
+              end
           end
         end)
 

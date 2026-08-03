@@ -7,6 +7,8 @@ defmodule Commonplace.Sync.Watcher do
   changes that need to be synced.
   """
 
+  require Logger
+
   alias Commonplace.Tree.Schema
   alias Commonplace.Document.{ContentType, Diff}
   alias Commonplace.Store.CommitStoreClient
@@ -93,13 +95,19 @@ defmodule Commonplace.Sync.Watcher do
         entry = schema_entries[name]
 
         if entry["type"] == "doc" and File.regular?(path) do
-          disk_content = File.read!(path)
-          crdt_content = load_content(entry["node_id"], store)
+          case File.read(path) do
+            {:ok, disk_content} ->
+              crdt_content = load_content(entry["node_id"], store)
 
-          if disk_content != crdt_content do
-            [%Change{type: :modified, name: name, path: path, is_dir: false}]
-          else
-            []
+              if disk_content != crdt_content do
+                [%Change{type: :modified, name: name, path: path, is_dir: false}]
+              else
+                []
+              end
+
+            {:error, reason} ->
+              warn_unreadable(path, reason)
+              []
           end
         else
           []
@@ -144,11 +152,36 @@ defmodule Commonplace.Sync.Watcher do
       if entry.type == :dir do
         sub_dir = Path.join(dir, entry.name)
 
-        if File.dir?(sub_dir) do
-          sync_recursive(entry.node_id, sub_dir, store)
+        cond do
+          symlinked_dir?(sub_dir) ->
+            Logger.warning(
+              "Watcher: skipping symlinked directory #{sub_dir} (not followed, prevents cycle)"
+            )
+
+          File.dir?(sub_dir) ->
+            sync_recursive(entry.node_id, sub_dir, store)
+
+          true ->
+            :ok
         end
       end
     end)
+  end
+
+  # A directory reached via a symlink is never recursed into. Commonplace's
+  # sync recursion is driven by the schema tree, not raw disk traversal, so
+  # nothing today relies on symlinked directories being followed (grepped:
+  # no test exercises it) — and following one risks an unbounded cycle
+  # (dir/a -> dir) with no natural depth bound. Skipping symlinked dirs
+  # entirely, rather than threading a visited-realpaths set through the
+  # recursion, is the least-behavior-changing fix: it can't loop by
+  # construction, and it matches how tools like git/rsync default to not
+  # descending into symlinked directories.
+  defp symlinked_dir?(path) do
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: :symlink}} -> true
+      _ -> false
+    end
   end
 
   @doc """
@@ -189,8 +222,17 @@ defmodule Commonplace.Sync.Watcher do
   end
 
   defp apply_create(%Change{is_dir: false} = change, root_uuid, store) do
-    content = File.read!(change.path)
+    case File.read(change.path) do
+      {:ok, content} ->
+        do_apply_create_file(change, content, root_uuid, store)
 
+      {:error, reason} ->
+        warn_unreadable(change.path, reason)
+        :ok
+    end
+  end
+
+  defp do_apply_create_file(change, content, root_uuid, store) do
     # Create document with envelope.
     # CX-pyi: stable client_id so subsequent apply_modify writes (which
     # also use this id) share one slot in the state vector instead of
@@ -221,38 +263,47 @@ defmodule Commonplace.Sync.Watcher do
 
     case Schema.get_entry(root_doc, change.name) do
       {:ok, entry} ->
-        new_content = File.read!(change.path)
+        case File.read(change.path) do
+          {:ok, new_content} ->
+            do_apply_modify(change, entry, new_content, store)
 
-        # CX-pyi: load + mutate pattern. Reconstruct the existing doc
-        # under a stable client_id, compute the text diff between the
-        # previous content and the disk content, and apply it as
-        # incremental Yjs ops. This keeps the state vector at one slot
-        # per file regardless of how many edits land — the older
-        # "fresh Doc.new() + ContentType.create + insert" pattern
-        # both bloated the SV (one client_id per write) and would
-        # silently drop new content if naively switched to a stable id
-        # (Yjs identity collision at (cid, clock=0..N)).
-        doc =
-          case CommitStoreClient.latest_commit(store, entry.node_id) do
-            {:ok, commit} ->
-              d = Yelixer.Doc.new(client_id: stable_client_id(entry.node_id))
-              {:ok, d} = Yelixer.Encoding.apply_update(d, commit.update)
-              d
-
-            :none ->
-              d = Yelixer.Doc.new(client_id: stable_client_id(entry.node_id))
-              ContentType.create(d, :text, change.name)
-          end
-
-        old_content = ContentType.get_content(doc) || ""
-        doc = Diff.apply_diff(doc, old_content, new_content)
-
-        update = Yelixer.Encoding.encode_update(doc)
-        CommitStoreClient.create_chained_commit(store, entry.node_id, update)
+          {:error, reason} ->
+            warn_unreadable(change.path, reason)
+            :ok
+        end
 
       :error ->
         :ok
     end
+  end
+
+  defp do_apply_modify(change, entry, new_content, store) do
+    # CX-pyi: load + mutate pattern. Reconstruct the existing doc
+    # under a stable client_id, compute the text diff between the
+    # previous content and the disk content, and apply it as
+    # incremental Yjs ops. This keeps the state vector at one slot
+    # per file regardless of how many edits land — the older
+    # "fresh Doc.new() + ContentType.create + insert" pattern
+    # both bloated the SV (one client_id per write) and would
+    # silently drop new content if naively switched to a stable id
+    # (Yjs identity collision at (cid, clock=0..N)).
+    doc =
+      case CommitStoreClient.latest_commit(store, entry.node_id) do
+        {:ok, commit} ->
+          d = Yelixer.Doc.new(client_id: stable_client_id(entry.node_id))
+          {:ok, d} = Yelixer.Encoding.apply_update(d, commit.update)
+          d
+
+        :none ->
+          d = Yelixer.Doc.new(client_id: stable_client_id(entry.node_id))
+          ContentType.create(d, :text, change.name)
+      end
+
+    old_content = ContentType.get_content(doc) || ""
+    doc = Diff.apply_diff(doc, old_content, new_content)
+
+    update = Yelixer.Encoding.encode_update(doc)
+    CommitStoreClient.create_chained_commit(store, entry.node_id, update)
   end
 
   defp apply_delete(change, root_uuid, store) do
@@ -354,29 +405,36 @@ defmodule Commonplace.Sync.Watcher do
     {renames, unmatched_created, used_deleted} =
       Enum.reduce(created_files, {[], [], MapSet.new()}, fn created_change,
                                                             {renames_acc, unmatched_acc, used_acc} ->
-        disk_content = File.read!(created_change.path)
+        case File.read(created_change.path) do
+          {:ok, disk_content} ->
+            match =
+              Enum.find(deleted_with_content, fn {del_change, del_content, _entry} ->
+                del_content == disk_content and
+                  disk_content != "" and
+                  not MapSet.member?(used_acc, del_change.name)
+              end)
 
-        match =
-          Enum.find(deleted_with_content, fn {del_change, del_content, _entry} ->
-            del_content == disk_content and
-              disk_content != "" and
-              not MapSet.member?(used_acc, del_change.name)
-          end)
+            case match do
+              {del_change, _content, entry} ->
+                rename = %Change{
+                  type: :renamed,
+                  name: created_change.name,
+                  path: created_change.path,
+                  is_dir: false,
+                  old_name: del_change.name,
+                  node_id: entry["node_id"]
+                }
 
-        case match do
-          {del_change, _content, entry} ->
-            rename = %Change{
-              type: :renamed,
-              name: created_change.name,
-              path: created_change.path,
-              is_dir: false,
-              old_name: del_change.name,
-              node_id: entry["node_id"]
-            }
+                {[rename | renames_acc], unmatched_acc, MapSet.put(used_acc, del_change.name)}
 
-            {[rename | renames_acc], unmatched_acc, MapSet.put(used_acc, del_change.name)}
+              nil ->
+                {renames_acc, [created_change | unmatched_acc], used_acc}
+            end
 
-          nil ->
+          {:error, reason} ->
+            # Unreadable file can't be rename-matched by content — fall
+            # through as an ordinary :created change (not a rename).
+            warn_unreadable(created_change.path, reason)
             {renames_acc, [created_change | unmatched_acc], used_acc}
         end
       end)
@@ -426,5 +484,15 @@ defmodule Commonplace.Sync.Watcher do
   # Doc.new() because they never re-encode (no bloat possible).
   defp stable_client_id(uuid) when is_binary(uuid) do
     :erlang.phash2(uuid, 0xFFFF_FFFF)
+  end
+
+  # CX-42no: one unreadable entry (permission-denied file, dangling
+  # symlink, etc.) must not crash the sync pass — SyncLoop contains a
+  # raised crash, but that just crash-loops the *whole checkout* every
+  # tick instead of syncing everything else. Each call site here reads
+  # exactly one path once per pass, so a single warning call already
+  # satisfies "log once per path per pass" without extra dedup state.
+  defp warn_unreadable(path, reason) do
+    Logger.warning("Watcher: skipping unreadable file #{path} (#{inspect(reason)})")
   end
 end
