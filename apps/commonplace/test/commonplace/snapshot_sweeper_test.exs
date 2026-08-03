@@ -13,6 +13,7 @@ defmodule Commonplace.SnapshotSweeperTest do
   alias Commonplace.Document.ContentType
   alias Commonplace.SnapshotSweeper
   alias Commonplace.Store.CommitStore
+  alias Yelixer.{Doc, ID, Integrate, Item}
 
   setup do
     dir = Path.join(System.tmp_dir!(), "cp_sweeper_#{:rand.uniform(1_000_000)}")
@@ -37,6 +38,52 @@ defmodule Commonplace.SnapshotSweeperTest do
       else
         CommitStore.create_chained_commit(store, uuid, update)
       end
+    end
+
+    uuid
+  end
+
+  # Seeds a doc whose only commit carries a genuine nested CRDT sub-type
+  # (a `__sub:CLIENT:CLOCK` type, the kind `Yelixer.Doc.nested_subtype_names/1`
+  # flags and `Commonplace.Store.Snapshotter.build_payload/2` refuses to
+  # snapshot — the R5 guard). Unlike `Commonplace.Store.SnapshotterGuardTest`
+  # (which pokes `doc.types` directly since that's a local-only field), this
+  # needs to survive an encode/decode round trip through the CommitStore, so
+  # it builds the nesting for real: one item holding `{:type, :map}` content
+  # under a top-level named type, and a second item parented on the first
+  # item's *id* rather than a type name. `Yelixer.Encoding`'s decode path
+  # (`parent_type_key/1`) registers the `__sub:` type automatically for any
+  # item parented on another item's id — exactly what a real nested-map
+  # write would produce, if any facade minted one today (none does yet).
+  defp seed_nested_subtype_doc(store) do
+    uuid = UUID.uuid4()
+    doc = Doc.new(client_id: 3)
+    {doc, _} = Doc.get_or_create_type(doc, "top", :map)
+
+    container_id = ID.new(doc.client_id, Doc.mint_clock(doc))
+    container = Item.new(container_id, nil, nil, {:type, :map}, {:named, "top"}, "nested")
+    {:ok, doc_store} = Integrate.integrate(doc.store, container, "top")
+    doc = %{doc | store: doc_store}
+
+    nested_id = ID.new(doc.client_id, Doc.mint_clock(doc))
+    sub_key = "__sub:#{container_id.client}:#{container_id.clock}"
+    nested = Item.new(nested_id, nil, nil, {:any, ["value"]}, {:id, container_id}, "inner")
+    {:ok, doc_store} = Integrate.integrate(doc.store, nested, sub_key)
+    doc = %{doc | store: doc_store}
+
+    update = Yelixer.Encoding.encode_update(doc)
+    CommitStore.create_commit(store, uuid, update, nil)
+
+    # Chain a couple of plain edits on top so the doc's chain length
+    # crosses a small test threshold (e.g. 3) — otherwise
+    # SnapshotTrigger.maybe_snapshot/3 never gets far enough to attempt
+    # a snapshot at all, and the R5 guard (and this test) never fires.
+    for i <- 1..2 do
+      extra_doc = Yelixer.Doc.new()
+      extra_doc = ContentType.create(extra_doc, :text, "doc.txt")
+      extra_doc = ContentType.insert_text(extra_doc, 0, "v#{i}")
+      extra_update = Yelixer.Encoding.encode_update(extra_doc)
+      CommitStore.create_chained_commit(store, uuid, extra_update)
     end
 
     uuid
@@ -105,6 +152,63 @@ defmodule Commonplace.SnapshotSweeperTest do
       Supervisor.stop(sup_name)
 
       assert snapshotted?, "supervised sweeper did not snapshot the bloated doc within 5s"
+    end
+  end
+
+  describe "stuck_docs/1 (CX-inpn)" do
+    test "reports a doc stuck behind the nested-subtypes guard, and drops normal docs", %{
+      store: store
+    } do
+      stuck_uuid = seed_nested_subtype_doc(store)
+      normal_uuid = seed_chained_doc(store, 1)
+
+      name = :"sweeper_#{:rand.uniform(1_000_000)}"
+
+      {:ok, pid} =
+        SnapshotSweeper.start_link(
+          name: name,
+          store: store,
+          # Long enough that the scheduled tick from init/1 never fires
+          # during the test; the sweep below is driven manually.
+          interval: 999_000,
+          chain_length_threshold: 3
+        )
+
+      # GenServer processes their mailbox in order, so sending :sweep and
+      # then calling stuck_docs/1 sequences the read after the sweep
+      # completes without any polling/sleep.
+      send(pid, :sweep)
+
+      stuck = SnapshotSweeper.stuck_docs(name)
+
+      assert Enum.any?(stuck, fn {uuid, _names} -> uuid == stuck_uuid end),
+             "expected #{stuck_uuid} (nested sub-type doc) to appear in stuck_docs/1"
+
+      refute Enum.any?(stuck, fn {uuid, _names} -> uuid == normal_uuid end),
+             "normal doc #{normal_uuid} should not appear in stuck_docs/1"
+
+      {_uuid, names} = Enum.find(stuck, fn {uuid, _names} -> uuid == stuck_uuid end)
+      assert names == ["__sub:3:0"]
+
+      GenServer.stop(pid)
+    end
+
+    test "stuck_docs/1 is empty before any sweep has run", %{store: store} do
+      _stuck_uuid = seed_nested_subtype_doc(store)
+
+      name = :"sweeper_#{:rand.uniform(1_000_000)}"
+
+      {:ok, pid} =
+        SnapshotSweeper.start_link(
+          name: name,
+          store: store,
+          interval: 999_000,
+          chain_length_threshold: 3
+        )
+
+      assert SnapshotSweeper.stuck_docs(name) == []
+
+      GenServer.stop(pid)
     end
   end
 end

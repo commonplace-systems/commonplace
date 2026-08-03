@@ -89,7 +89,7 @@ defmodule Commonplace.SnapshotTrigger do
   @type maybe_snapshot_result ::
           {:ok, :snapshotted, Commonplace.Store.Commit.t()}
           | {:ok, :below_threshold, {:chain_length, non_neg_integer(), pos_integer()}}
-          | {:ok, :skipped, {:nested_subtypes, [String.t()]}}
+          | {:ok, :skipped, {:nested_subtypes, [String.t()], non_neg_integer()}}
 
   @doc """
   Check whether `doc_uuid` has crossed the configured snapshot
@@ -138,10 +138,10 @@ defmodule Commonplace.SnapshotTrigger do
             {:ok, :below_threshold, {:chain_length, chain_length, threshold}}
 
           chain_length >= threshold ->
-            attempt_snapshot(store, doc_uuid, latest, threshold)
+            attempt_snapshot(store, doc_uuid, latest, chain_length, threshold)
 
           heuristic_should_fire?(latest, chain_length, opts) ->
-            attempt_snapshot(store, doc_uuid, latest, threshold)
+            attempt_snapshot(store, doc_uuid, latest, chain_length, threshold)
 
           true ->
             {:ok, :below_threshold, {:chain_length, chain_length, threshold}}
@@ -168,7 +168,7 @@ defmodule Commonplace.SnapshotTrigger do
     end
   end
 
-  defp attempt_snapshot(store, doc_uuid, parent_commit, threshold) do
+  defp attempt_snapshot(store, doc_uuid, parent_commit, chain_length, threshold) do
     case Snapshotter.build_snapshot(store, doc_uuid, parent_commit) do
       {:ok, update_bytes, metadata} ->
         write_snapshot(store, doc_uuid, update_bytes, metadata, parent_commit, threshold)
@@ -184,7 +184,11 @@ defmodule Commonplace.SnapshotTrigger do
           %{doc_uuid: doc_uuid, subtypes: names}
         )
 
-        {:ok, :skipped, {:nested_subtypes, names}}
+        # `chain_length` was already computed by the caller's threshold
+        # check (CX-inpn) — carried through here at no extra cost, so
+        # callers (e.g. SnapshotSweeper) can flag docs approaching the
+        # commit_log truncation cap without an extra chain walk.
+        {:ok, :skipped, {:nested_subtypes, names, chain_length}}
     end
   end
 
