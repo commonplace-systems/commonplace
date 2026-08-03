@@ -43,7 +43,7 @@ defmodule Commonplace.Reflog.Restore do
   stage 2 refused to ship. `resolve/3`'s flat map has no place to
   carry "this directory's own historical schema commit," since it
   only ever returns file paths. `materialize_branch/5` therefore
-  performs its own recursive walk (`resolve_anchored/4`, private,
+  performs its own recursive walk (`resolve_anchored/4`, public seam,
   same checkpoint-reading discipline as `resolve/3` — reads each pin
   commit standalone, never chain-replayed) that additionally records,
   for every directory node, the source data-directory's own uuid and
@@ -430,7 +430,17 @@ defmodule Commonplace.Reflog.Restore do
   # exact historical commit `__schema_cid` pointed at, decoded once here
   # instead of being thrown away after `resolve_via_schema_cid/3` reads
   # its content).
-  defp resolve_anchored(store, snapshot_doc_uuid, checkpoint_commit_id, dir_uuid) do
+  @doc """
+  The ancestry-carrying resolver — the tree-shaped sibling of `resolve/3`.
+
+  Public because it is the SEAM for store-side materializers (CX-0t2r):
+  `materialize_branch/5` consumes it today, and a future in-place-reroot
+  materializer (stage-4 decision) must consume the SAME resolver rather
+  than growing its own walk — same rule that keeps `resolve/3` shared
+  between `materialize_dir/4` and `diff/3`. Read-only, per-commit pin
+  reads (never chain-replayed), zero writes.
+  """
+  def resolve_anchored(store, snapshot_doc_uuid, checkpoint_commit_id, dir_uuid) do
     case single_commit_doc(store, checkpoint_commit_id, snapshot_doc_uuid) do
       {:ok, doc} ->
         content = ContentType.get_content(doc) || %{}
