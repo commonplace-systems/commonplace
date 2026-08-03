@@ -675,11 +675,11 @@ defmodule Commonplace.GitBridge.Inbound do
     hand = stable_client_id(doc_uuid)
 
     with {:ok, live_doc} <- DocBuilder.reconstruct_doc(store, doc_uuid) |> ok_or(:no_doc),
-         floor = Yelixer.StateVector.get(Yelixer.BlockStore.state_vector(live_doc.store), hand),
+         floor = Yelixer.StateVector.get(Yelixer.Doc.state_vector(live_doc), hand),
          {:ok, replica} <-
            DocBuilder.reconstruct_doc_at(store, doc_uuid, anchor_commit_id, client_id: hand, clock_floor: floor)
            |> ok_or(:no_anchor) do
-      anchor_sv = Yelixer.BlockStore.state_vector(replica.store)
+      anchor_sv = Yelixer.Doc.state_vector(replica)
       replica_after = Commonplace.Document.Diff.apply_diff(replica, base_text, theirs_text)
       u_bytes = Yelixer.Encoding.encode_diff(replica_after, anchor_sv)
 

@@ -114,7 +114,7 @@ defmodule Commonplace.Store.Translator do
 
   alias Commonplace.Document.Rebase
   alias Commonplace.Store.{Commit, CommitStore, LateEditPreflight, Namespace}
-  alias Yelixer.{BlockStore, Doc, Encoding}
+  alias Yelixer.{Doc, Encoding}
 
   @type edit :: Commit.t()
   @type translated :: Commit.t()
@@ -196,7 +196,7 @@ defmodule Commonplace.Store.Translator do
          {:ok, dirty_doc} <- Encoding.apply_update(pre_doc, edit.update),
          {:ok, new_doc} <- Encoding.apply_update(Doc.new(), snapshot.update),
          {:ok, rebased} <- Rebase.rebase(pre_doc, dirty_doc, new_doc) do
-      new_sv = BlockStore.state_vector(new_doc.store)
+      new_sv = Doc.state_vector(new_doc)
       translated_update = Encoding.encode_diff(rebased, new_sv)
 
       translated =

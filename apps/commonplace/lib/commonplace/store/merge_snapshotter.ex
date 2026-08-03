@@ -297,7 +297,12 @@ defmodule Commonplace.Store.MergeSnapshotter do
     # builds its own char-granularity pair map so the inner dm is
     # discarded — the item-level pairing Doc emits doesn't fit merge-
     # snapshot's multi-source coalescence needs.
-    {update_bytes, _item_dm} = Doc.snapshot_update(deterministic)
+    #
+    # CX-oh9z: force: true — merge-snapshot sources are reconstructed
+    # merge results, not docs known to carry `__sub:` nested sub-types;
+    # force preserves the pre-guard behavior rather than crashing this
+    # match on a tagged-tuple return it doesn't expect.
+    {update_bytes, _item_dm} = Doc.snapshot_update(deterministic, force: true)
     {:ok, new_doc} = Encoding.apply_update(Doc.new(), update_bytes)
 
     pairs =

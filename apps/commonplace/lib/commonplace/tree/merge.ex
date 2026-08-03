@@ -144,7 +144,7 @@ defmodule Commonplace.Tree.Merge do
   alias Commonplace.Tree.{Schema, Fork, DocBuilder}
   alias Commonplace.Document.ContentType
   alias Commonplace.Process.Config
-  alias Yelixer.{Doc, Encoding, BlockStore}
+  alias Yelixer.{Doc, Encoding}
 
   defmodule MergeReport do
     @moduledoc "Result of a merge operation."
@@ -209,14 +209,14 @@ defmodule Commonplace.Tree.Merge do
 
     case reconstruct_doc_at(store, source_uuid, baseline_commit_id) do
       {:ok, baseline_doc} ->
-        baseline_sv = BlockStore.state_vector(baseline_doc.store)
+        baseline_sv = Doc.state_vector(baseline_doc)
         diff_and_apply(store, source_uuid, target_uuid, baseline_sv, report, opts)
 
       :none ->
         # Baseline commit not found in source chain — fall back to common ancestor
         case reconstruct_doc_at(store, source_uuid, ancestor.id) do
           {:ok, ancestor_doc} ->
-            ancestor_sv = BlockStore.state_vector(ancestor_doc.store)
+            ancestor_sv = Doc.state_vector(ancestor_doc)
             diff_and_apply(store, source_uuid, target_uuid, ancestor_sv, report, opts)
 
           :none ->
@@ -229,7 +229,7 @@ defmodule Commonplace.Tree.Merge do
   defp merge_leaf_from_merge_point(source_uuid, target_uuid, merge_point_id, store, report, opts) do
     case reconstruct_doc_at(store, source_uuid, merge_point_id) do
       {:ok, baseline_doc} ->
-        baseline_sv = BlockStore.state_vector(baseline_doc.store)
+        baseline_sv = Doc.state_vector(baseline_doc)
         diff_and_apply(store, source_uuid, target_uuid, baseline_sv, report, opts)
 
       :none ->

@@ -131,7 +131,7 @@ defmodule Commonplace.MUD.SessionView do
   beyond the uuid.
   """
 
-  alias Yelixer.{Doc, Encoding, BlockStore}
+  alias Yelixer.{Doc, Encoding}
   alias Yelixer.Types.{XMLElement, XMLText}
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Crypto.NodeIdentity
@@ -229,7 +229,7 @@ defmodule Commonplace.MUD.SessionView do
       uuid: uuid,
       doc: doc,
       store: store,
-      sv: BlockStore.state_vector(doc.store),
+      sv: Doc.state_vector(doc),
       n: 1,
       view_name: @view_name,
       scrollback_name: scrollback_name,
@@ -247,7 +247,7 @@ defmodule Commonplace.MUD.SessionView do
   @spec append_command_turn(t(), String.t(), String.t()) :: t()
   def append_command_turn(%__MODULE__{} = view, cmd_text, out_text)
       when is_binary(cmd_text) and is_binary(out_text) do
-    sv_before = BlockStore.state_vector(view.doc.store)
+    sv_before = Doc.state_vector(view.doc)
 
     {doc, turn_name} = append_turn_shell(view.doc, view.scrollback_name, view.n, "command")
     {doc, _} = insert_text_element(doc, turn_name, 0, "cmd", cmd_text)
@@ -266,7 +266,7 @@ defmodule Commonplace.MUD.SessionView do
   """
   @spec append_ambient_turn(t(), [String.t()]) :: t()
   def append_ambient_turn(%__MODULE__{} = view, lines) when is_list(lines) and lines != [] do
-    sv_before = BlockStore.state_vector(view.doc.store)
+    sv_before = Doc.state_vector(view.doc)
 
     {doc, turn_name} = append_turn_shell(view.doc, view.scrollback_name, view.n, "ambient")
 
@@ -321,7 +321,7 @@ defmodule Commonplace.MUD.SessionView do
   """
   @spec replace_room(t(), map()) :: t()
   def replace_room(%__MODULE__{} = view, sections) when is_map(sections) do
-    sv_before = BlockStore.state_vector(view.doc.store)
+    sv_before = Doc.state_vector(view.doc)
 
     doc = view.doc
     child_count = XMLElement.child_count(doc, view.room_name)
@@ -405,7 +405,7 @@ defmodule Commonplace.MUD.SessionView do
            uuid: uuid,
            doc: doc,
            store: store,
-           sv: BlockStore.state_vector(doc.store),
+           sv: Doc.state_vector(doc),
            n: n,
            view_name: @view_name,
            scrollback_name: scrollback_name,
@@ -629,7 +629,7 @@ defmodule Commonplace.MUD.SessionView do
 
     ensure_committed!(commit, :append)
 
-    %{view | doc: doc, n: new_n, sv: BlockStore.state_vector(doc.store)}
+    %{view | doc: doc, n: new_n, sv: Doc.state_vector(doc)}
   end
 
   defp ensure_committed!(commit, stage) do

@@ -43,7 +43,7 @@ defmodule Commonplace.Presence.Compactor do
 
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.DocBuilder
-  alias Yelixer.{BlockStore, Doc}
+  alias Yelixer.Doc
 
   @doc """
   Compact a doc by appending a snapshot commit.
@@ -65,7 +65,14 @@ defmodule Commonplace.Presence.Compactor do
         # CX-umz: snapshot_update now returns {bytes, dm}. Presence
         # compaction doesn't need the DM (presence docs don't flow
         # through the late-edit translator), so we discard it here.
-        {snapshot, _dm} = Doc.snapshot_update(doc)
+        #
+        # CX-oh9z: force: true — presence docs store only primitive
+        # values at top-level registered types (no `__sub:` nested
+        # sub-types are ever minted for them), so the lossy-compaction
+        # refusal can never legitimately trip here; force preserves the
+        # pre-guard behavior rather than crashing this match on a
+        # tagged-tuple return it doesn't expect.
+        {snapshot, _dm} = Doc.snapshot_update(doc, force: true)
         commit = CommitStoreClient.create_snapshot_commit(store, uuid, snapshot)
         {:ok, commit}
     end
@@ -81,7 +88,7 @@ defmodule Commonplace.Presence.Compactor do
   def state_vector_size(uuid, store \\ CommitStoreClient) when is_binary(uuid) do
     case DocBuilder.reconstruct_doc(store, uuid) do
       :none -> 0
-      {:ok, doc} -> map_size(BlockStore.state_vector(doc.store).clocks)
+      {:ok, doc} -> map_size(Doc.state_vector(doc).clocks)
     end
   end
 end

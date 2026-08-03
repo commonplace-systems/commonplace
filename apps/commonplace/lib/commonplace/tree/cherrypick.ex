@@ -28,7 +28,7 @@ defmodule Commonplace.Tree.Cherrypick do
 
   alias Commonplace.Store.{CommitStore, Commit}
   alias Commonplace.Tree.DocBuilder
-  alias Yelixer.{BlockStore, Doc, Encoding, StateVector}
+  alias Yelixer.{Doc, Encoding, StateVector}
 
   @type result ::
           {:ok, Commit.t()}
@@ -72,7 +72,7 @@ defmodule Commonplace.Tree.Cherrypick do
   defp compute_delta(store, %Commit{parent_id: parent_id} = source, source_doc) do
     parent_sv =
       case DocBuilder.reconstruct_doc_at(store, source.doc_uuid, parent_id) do
-        {:ok, parent_doc} -> BlockStore.state_vector(parent_doc.store)
+        {:ok, parent_doc} -> Doc.state_vector(parent_doc)
         :none -> StateVector.new()
       end
 
