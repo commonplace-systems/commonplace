@@ -6,9 +6,17 @@ defmodule Commonplace.Reflog.RestoreTest do
   Scope: this suite covers the BRANCH materializer
   (`materialize_branch/4`) only, exercised through the public
   `list_checkpoints/3` -> `resolve/3` -> `materialize_branch/4` pipeline.
-  A future in-place-reroot materializer (see the module's moduledoc)
-  needs its own acceptance tests; passing this suite says nothing about
-  that path.
+  `materialize_branch/4` is structurally refused unless called with
+  `unsafe_no_ancestry: true` (fresh-genesis restores have no shared
+  ancestry with their source docs — CX-0t2r stage 3 replaces this with
+  fork-anchored materialization); the round-trip/enforce tests below
+  pass that escape hatch deliberately, because they exist to exercise
+  the resolve/materialize plumbing, not to bless fresh-genesis restore
+  as production-ready. The DIRECTORY materializer
+  (`Restore.materialize_dir/4`) and `Restore.diff/3` have their own
+  suite in `checkout_test.exs`. A future in-place-reroot materializer
+  (see the module's moduledoc) needs its own acceptance tests too;
+  passing this suite says nothing about either path.
   """
 
   use ExUnit.Case, async: false
@@ -154,7 +162,7 @@ defmodule Commonplace.Reflog.RestoreTest do
     # --- restore the FIRST (oldest) checkpoint ---
     {:ok, resolved1} = Restore.resolve(store, snapshot_uuid, oldest_id)
     {:ok, %{root_entry: name1, docs: docs1}} =
-      Restore.materialize_branch(store, resolved1, ids.root, as: "restore-v1")
+      Restore.materialize_branch(store, resolved1, ids.root, as: "restore-v1", unsafe_no_ancestry: true)
 
     assert docs1 > 0
     restored1_root = restored_root_uuid(store, ids.root, name1)
@@ -169,7 +177,7 @@ defmodule Commonplace.Reflog.RestoreTest do
     {:ok, resolved2} = Restore.resolve(store, snapshot_uuid, newest_id)
 
     {:ok, %{root_entry: name2}} =
-      Restore.materialize_branch(store, resolved2, ids.root, as: "restore-v2")
+      Restore.materialize_branch(store, resolved2, ids.root, as: "restore-v2", unsafe_no_ancestry: true)
 
     restored2_root = restored_root_uuid(store, ids.root, name2)
     tree2 = read_tree(store, restored2_root)
@@ -231,7 +239,7 @@ defmodule Commonplace.Reflog.RestoreTest do
       {:ok, resolved} = Restore.resolve(store, snapshot_uuid, checkpoint_id)
 
       {:ok, %{root_entry: name, docs: docs}} =
-        Restore.materialize_branch(store, resolved, ids.root, as: "restore-enforce")
+        Restore.materialize_branch(store, resolved, ids.root, as: "restore-enforce", unsafe_no_ancestry: true)
 
       assert docs > 0
 
@@ -249,6 +257,25 @@ defmodule Commonplace.Reflog.RestoreTest do
   end
 
   # --- (c) resolve is read-only (the seam) ------------------------------
+
+  # --- (d) materialize_branch is structurally refused without the escape hatch ---
+
+  test "materialize_branch/4 refuses fresh-genesis materialization by default", %{store: store} do
+    ids = seed_tree(store)
+    {:ok, _cid} = Snapshot.checkpoint(ids.root, store)
+
+    {:ok, snapshot_uuid} = Restore.root_snapshot_uuid(store, ids.root, "server")
+    [{checkpoint_id, _ts, _signer}] = Restore.list_checkpoints(store, ids.root, "server")
+    {:ok, resolved} = Restore.resolve(store, snapshot_uuid, checkpoint_id)
+
+    before = total_commit_count(store)
+
+    assert {:error, {:awaiting_stage3_ancestry_rework, "CX-0t2r"}} =
+             Restore.materialize_branch(store, resolved, ids.root)
+
+    assert total_commit_count(store) == before,
+           "refused materialize_branch/4 must not write either"
+  end
 
   test "resolve/3 performs zero writes", %{store: store} do
     ids = seed_tree(store)

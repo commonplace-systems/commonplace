@@ -107,6 +107,7 @@ defmodule Commonplace.Reflog.Restore do
   alias Commonplace.Crypto.{NodeIdentity, SigningContext}
   alias Commonplace.WriterHand
   alias Commonplace.Reflog.Snapshot
+  alias Commonplace.Sync.{Export, CheckoutRegistry}
 
   require Logger
 
@@ -335,7 +336,26 @@ defmodule Commonplace.Reflog.Restore do
   """
   @spec materialize_branch(GenServer.server(), map(), String.t(), keyword()) ::
           {:ok, %{root_entry: String.t(), docs: non_neg_integer()}}
+          | {:error, {:awaiting_stage3_ancestry_rework, String.t()}}
   def materialize_branch(store \\ CommitStoreClient, resolved, root_uuid, opts \\ []) do
+    if Keyword.get(opts, :unsafe_no_ancestry) == true do
+      do_materialize_branch(store, resolved, root_uuid, opts)
+    else
+      # Fresh-genesis restore mints every doc under a brand-new uuid with
+      # no shared history with the source docs it was resolved from —
+      # merge-back later finds no common ancestor and silently treats the
+      # whole restored tree as unrelated content. Stage 3 (CX-0t2r)
+      # replaces this with fork-anchored materialization that preserves
+      # ancestry. Until then this path is structurally refused, not just
+      # documented-as-temporary — `opts[:unsafe_no_ancestry] == true` is
+      # an API-only escape hatch kept for the existing plumbing tests
+      # (resolve/materialize round-trip), deliberately not exposed as a
+      # CLI flag.
+      {:error, {:awaiting_stage3_ancestry_rework, "CX-0t2r"}}
+    end
+  end
+
+  defp do_materialize_branch(store, resolved, root_uuid, opts) do
     signing_opts = resolve_signing_opts(opts)
     name = Keyword.get(opts, :as) || default_branch_name()
 
@@ -444,6 +464,231 @@ defmodule Commonplace.Reflog.Restore do
 
   defp split_opts([]), do: {%{}, []}
   defp split_opts(signing_opts), do: {%{}, signing_opts}
+
+  @doc """
+  Materialize a `resolve/3` result to plain files on disk under
+  `dest_dir` — the LOCAL CHECKOUT materializer (stage 2, variant a).
+
+  Unlike `materialize_branch/4`, this issues **zero store writes**: it
+  is a pure read (reconstruct each pinned commit) fanned out to
+  ordinary file I/O, using the same atomic-write convention
+  `Commonplace.Sync.Export` uses for regular sync. There is no CRDT
+  doc minted, no schema, no commit — restoring to a directory is not a
+  commonplace tree operation at all, just a snapshot dump.
+
+  Each `{path, {:file, doc_uuid, commit_id_hex}}` in `resolved` is
+  reconstructed via `DocBuilder.reconstruct_doc_at/3` — data docs are
+  ordinary delta-chained docs (unlike the reflog/schema pin docs
+  `resolve/3` itself reads), so this is the correct reconstruction
+  path here, deliberately different from how `resolve/3` reads pins.
+
+  Refuses (returns `{:error, reason}`, writes nothing) when:
+
+    * `dest_dir` resolves inside a checkout registered in
+      `opts[:config_path]` (a `checkouts.json` path, checked via
+      `Commonplace.Sync.CheckoutRegistry.find_for_cwd/2`) — this
+      guarantees a checkout materialization never touches a live sync
+      tree. Skipped (best-effort only) if `opts[:config_path]` is
+      omitted; callers that care about this guarantee (the CLI) must
+      pass it.
+    * `dest_dir` exists and is non-empty, unless `opts[:force] == true`.
+
+  `opts[:owner]` and `opts[:at]` are carried through unchanged into
+  the returned map's `:witness` / `:at` fields purely for labeling —
+  this function has no way to derive them itself (`resolved` carries
+  no checkpoint metadata), so the caller (which has the checkpoint's
+  owner/timestamp from `list_checkpoints/3`) is responsible for
+  passing them. Output built from this function's result must be
+  labelled "as seen by witness `<owner>` at `<at>`" and must NOT be
+  presented as invariant-safe (per the CX-0t2r summit's coherence
+  bound: a checkpoint is coherent-with-what-the-witness-saw, not a
+  guarantee nothing was mid-mutation).
+
+  Returns `{:ok, %{files: count, dest: dest_dir, witness: owner, at: at}}`.
+  """
+  @spec materialize_dir(GenServer.server(), map(), String.t(), keyword()) ::
+          {:ok, %{files: non_neg_integer(), dest: String.t(), witness: String.t() | nil, at: term()}}
+          | {:error, term()}
+  def materialize_dir(store \\ CommitStoreClient, resolved, dest_dir, opts \\ []) do
+    with :ok <- check_not_inside_checkout(dest_dir, opts),
+         :ok <- check_dest_writable(dest_dir, opts) do
+      File.mkdir_p!(dest_dir)
+      files = write_files(store, resolved, dest_dir)
+
+      {:ok,
+       %{
+         files: files,
+         dest: dest_dir,
+         witness: Keyword.get(opts, :owner, @default_owner),
+         at: Keyword.get(opts, :at)
+       }}
+    end
+  end
+
+  defp check_not_inside_checkout(dest_dir, opts) do
+    case Keyword.get(opts, :config_path) do
+      nil ->
+        :ok
+
+      config_path ->
+        abs_dest = Path.expand(dest_dir)
+
+        case CheckoutRegistry.find_for_cwd(config_path, abs_dest) do
+          {:ok, checkout} -> {:error, {:dest_inside_checkout, checkout}}
+          :none -> :ok
+        end
+    end
+  end
+
+  defp check_dest_writable(dest_dir, opts) do
+    force? = Keyword.get(opts, :force, false)
+
+    case File.ls(dest_dir) do
+      {:ok, []} -> :ok
+      {:ok, _entries} when force? -> :ok
+      {:ok, _entries} -> {:error, {:dest_not_empty, dest_dir}}
+      {:error, :enoent} -> :ok
+      {:error, reason} -> {:error, {:dest_unreadable, dest_dir, reason}}
+    end
+  end
+
+  defp write_files(store, resolved, dest_dir) do
+    Enum.reduce(resolved, 0, fn {path, {:file, doc_uuid, commit_id_hex}}, count ->
+      content = reconstruct_file_content(store, doc_uuid, commit_id_hex)
+      Export.atomic_write(Path.join(dest_dir, path), content)
+      count + 1
+    end)
+  end
+
+  defp reconstruct_file_content(store, doc_uuid, commit_id_hex) do
+    commit_id = Base.decode16!(commit_id_hex, case: :lower)
+
+    case DocBuilder.reconstruct_doc_at(store, doc_uuid, commit_id) do
+      {:ok, doc} -> doc_content(doc)
+      :none -> ""
+    end
+  end
+
+  defp doc_content(doc) do
+    case ContentType.get_type(doc) do
+      :text -> ContentType.get_content(doc) || ""
+      _ -> ContentType.get_content(doc) |> inspect()
+    end
+  end
+
+  @doc """
+  Resolver-based diff — no materialization, pure reads. Compares an
+  already-`resolve/3`d checkpoint map against either:
+
+    * `{:current, root_uuid}` (the default shape a caller should pass
+      for "diff against the live tree") — walks `root_uuid`'s CURRENT
+      schema tree, reading each doc's **`:latest` commit** (not a
+      pin), and compares against `resolved`; or
+    * another `resolve/3`-shaped map, wrapped `{:checkpoint,
+      other_resolved}` — compares two checkpoints directly.
+
+  Output is `{:ok, %{added: [path], removed: [path], changed:
+  [{path, :changed | :replaced}]}}`, all lists sorted:
+
+    * `added` — paths present in `against` but not in `resolved`.
+    * `removed` — paths present in `resolved` but not in `against`.
+    * `changed` — same path in both, same `doc_uuid`, different
+      `commit_id` (`:changed`); or same path, DIFFERENT `doc_uuid`
+      (`:replaced` — the name was reused for an unrelated doc).
+
+  `resolved` is always treated as the baseline ("before") and
+  `against` as the comparand ("after") — matching how the CLI reads
+  `reflog diff <checkpoint> [<other-checkpoint>]` (checkpoint is the
+  older/base side, current heads or the other checkpoint is the newer
+  side).
+  """
+  @spec diff(GenServer.server(), map(), {:current, String.t()} | {:checkpoint, map()}) ::
+          {:ok,
+           %{
+             added: [String.t()],
+             removed: [String.t()],
+             changed: [{String.t(), :changed | :replaced}]
+           }}
+  def diff(store \\ CommitStoreClient, resolved, against) do
+    other = resolve_comparand(store, against)
+    {:ok, compute_diff(resolved, other)}
+  end
+
+  defp resolve_comparand(_store, {:checkpoint, other_resolved}) when is_map(other_resolved) do
+    other_resolved
+  end
+
+  defp resolve_comparand(store, {:current, root_uuid}) do
+    current_tree(store, root_uuid)
+  end
+
+  # Live-tree walk, structurally the same shape resolve/3 returns but
+  # reading each doc's CURRENT latest commit instead of a historical
+  # pin — this is the "current :latest heads of the same docs" side of
+  # the diff, deliberately NOT going through resolve/3 (there is no
+  # checkpoint to resolve; there is only the live schema tree).
+  defp current_tree(store, root_uuid) do
+    root_uuid
+    |> load_schema(store)
+    |> live_entries()
+    |> current_tree_entries(store, "")
+  end
+
+  defp live_entries(schema_doc) do
+    Schema.list_entries(schema_doc)
+    |> Enum.reject(&String.starts_with?(&1.name, "__"))
+  end
+
+  defp current_tree_entries(entries, store, prefix) do
+    Enum.reduce(entries, %{}, fn entry, acc ->
+      path = if prefix == "", do: entry.name, else: prefix <> "/" <> entry.name
+
+      case entry.type do
+        :doc ->
+          case CommitStoreClient.latest_commit(store, entry.node_id) do
+            {:ok, commit} ->
+              Map.put(acc, path, {:file, entry.node_id, Base.encode16(commit.id, case: :lower)})
+
+            :none ->
+              acc
+          end
+
+        :dir ->
+          sub =
+            entry.node_id
+            |> load_schema(store)
+            |> live_entries()
+            |> current_tree_entries(store, path)
+
+          Map.merge(acc, sub)
+      end
+    end)
+  end
+
+  defp compute_diff(resolved, other) do
+    old_paths = resolved |> Map.keys() |> MapSet.new()
+    new_paths = other |> Map.keys() |> MapSet.new()
+
+    added = new_paths |> MapSet.difference(old_paths) |> Enum.sort()
+    removed = old_paths |> MapSet.difference(new_paths) |> Enum.sort()
+
+    changed =
+      old_paths
+      |> MapSet.intersection(new_paths)
+      |> Enum.sort()
+      |> Enum.map(fn path -> {path, entry_change(Map.fetch!(resolved, path), Map.fetch!(other, path))} end)
+      |> Enum.reject(fn {_path, kind} -> is_nil(kind) end)
+
+    %{added: added, removed: removed, changed: changed}
+  end
+
+  defp entry_change({:file, uuid1, cid1}, {:file, uuid2, cid2}) do
+    cond do
+      uuid1 != uuid2 -> :replaced
+      cid1 != cid2 -> :changed
+      true -> nil
+    end
+  end
 
   defp load_schema(uuid, store) do
     case DocBuilder.reconstruct_snapshot(store, uuid, client_id: WriterHand.for_doc(uuid)) do
