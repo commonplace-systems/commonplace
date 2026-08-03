@@ -70,6 +70,20 @@ if gate = System.get_env("COMMONPLACE_LOCAL_WRITE_GATE") do
   config :commonplace, local_write_gate: String.to_atom(gate)
 end
 
+# CX-a7i2: the local-read gate (`Trust.Read.gate/3`, CX-73a3) has the SAME
+# activation gap the write gate had before CX-qat5.7 closed it — it is
+# otherwise Application-env only (default :permissive — the P3 read cohort
+# serves exactly as before). For an exposed workspace flipped to strict, a
+# read gate stuck at :permissive would leave private reads open regardless
+# of trust.json, because the P3 surfaces only consult `authorized?/3` when
+# this knob says to. Map an OS env → the app knob so a serve can boot
+# read-strict durably and PER NODE (a permissive dogfood node simply omits
+# this var), mirroring the write-gate bridge above exactly. Values:
+# permissive | dry_run | enforce.
+if gate = System.get_env("COMMONPLACE_LOCAL_READ_GATE") do
+  config :commonplace, local_read_gate: String.to_atom(gate)
+end
+
 # CX-gjpi — the :5199 multiplayer serve opts bots into FULL citizenship (own
 # home + spawn-in-home, co-present with human players in the grafted "mud"
 # world) via this env. Absent (dogfood, standalone) → bots keep the simpler

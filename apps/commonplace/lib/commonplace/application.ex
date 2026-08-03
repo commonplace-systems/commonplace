@@ -3,6 +3,8 @@ defmodule Commonplace.Application do
 
   use Application
 
+  require Logger
+
   @impl true
   def start(_type, _args) do
     # :xmerl is used by Commonplace.Document.ViewXml for parsing view XML
@@ -128,6 +130,14 @@ defmodule Commonplace.Application do
 
     case Supervisor.start_link(children, opts) do
       {:ok, pid} ->
+        # CX-vyrs: log the resolved effective-enforcement posture once per
+        # boot — cheap (one Application.get_env read apiece + a trust.json
+        # read), unconditional (it's just a log line), and it's the one
+        # place an operator/log-scraper can confirm which of the three
+        # independently-staged knobs (trust-anchor strictness, local-write,
+        # local-read) actually took effect on THIS node.
+        Logger.info("Commonplace.Trust posture at boot: #{inspect(Commonplace.Trust.posture())}")
+
         # CX-38fw (M4 sub-bead i): boot-time idempotent template ensure.
         # Mints /chat/__template/ on first boot; no-op on subsequent
         # boots. Skipped when no workspace root exists (fresh installs,

@@ -186,4 +186,91 @@ defmodule Commonplace.TrustTest do
       assert cfg.trusted_identities["some-uuid"] == "AAAA"
     end
   end
+
+  describe "posture/0 (CX-vyrs)" do
+    setup do
+      old_trust = Application.get_env(:commonplace, :trust)
+      old_write_gate = Application.get_env(:commonplace, :local_write_gate)
+      old_read_gate = Application.get_env(:commonplace, :local_read_gate)
+
+      on_exit(fn ->
+        if is_nil(old_trust),
+          do: Application.delete_env(:commonplace, :trust),
+          else: Application.put_env(:commonplace, :trust, old_trust)
+
+        if is_nil(old_write_gate),
+          do: Application.delete_env(:commonplace, :local_write_gate),
+          else: Application.put_env(:commonplace, :local_write_gate, old_write_gate)
+
+        if is_nil(old_read_gate),
+          do: Application.delete_env(:commonplace, :local_read_gate),
+          else: Application.put_env(:commonplace, :local_read_gate, old_read_gate)
+      end)
+
+      Application.delete_env(:commonplace, :trust)
+      Application.delete_env(:commonplace, :local_write_gate)
+      Application.delete_env(:commonplace, :local_read_gate)
+
+      :ok
+    end
+
+    test "defaults: dry_run write gate, permissive read gate, not strict" do
+      posture = Trust.posture()
+
+      assert posture.local_write_gate == :dry_run
+      assert posture.local_read_gate == :permissive
+      assert posture.strict == false
+    end
+
+    test "reflects the resolved trust config's accept_unsigned and identity count" do
+      Application.put_env(:commonplace, :trust, %{
+        accept_unsigned: false,
+        trusted_identities: %{"some-uuid" => "AAAA"}
+      })
+
+      posture = Trust.posture()
+
+      assert posture.accept_unsigned == false
+      # config/0 also folds in the local node identity (phase 2.5), so
+      # assert at-least rather than an exact count (mirrors the
+      # "config/0 falls back to trust.json" test's style above).
+      assert posture.trusted_identities_count >= 1
+    end
+
+    test "strict is true only when accept_unsigned is false AND both gates are :enforce" do
+      Application.put_env(:commonplace, :trust, %{
+        accept_unsigned: false,
+        trusted_identities: %{}
+      })
+
+      Application.put_env(:commonplace, :local_write_gate, :enforce)
+      Application.put_env(:commonplace, :local_read_gate, :enforce)
+
+      assert Trust.posture().strict == true
+    end
+
+    test "strict stays false if only one gate is :enforce" do
+      Application.put_env(:commonplace, :trust, %{
+        accept_unsigned: false,
+        trusted_identities: %{}
+      })
+
+      Application.put_env(:commonplace, :local_write_gate, :enforce)
+      Application.put_env(:commonplace, :local_read_gate, :dry_run)
+
+      assert Trust.posture().strict == false
+    end
+
+    test "strict stays false under a permissive trust config even with both gates enforced" do
+      Application.put_env(:commonplace, :trust, %{
+        accept_unsigned: true,
+        trusted_identities: %{}
+      })
+
+      Application.put_env(:commonplace, :local_write_gate, :enforce)
+      Application.put_env(:commonplace, :local_read_gate, :enforce)
+
+      assert Trust.posture().strict == false
+    end
+  end
 end

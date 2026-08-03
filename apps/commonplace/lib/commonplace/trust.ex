@@ -2,12 +2,29 @@ defmodule Commonplace.Trust do
   @moduledoc """
   The trust boundary: `authorized?(commit, verb, scope)`.
 
-  Both enforcement gates — import (`CommitStore.import_commit`, Gate A)
-  and execute (`SourceDoc.compile`, Gate B) — call **only** this function,
-  never an allowlist or capability store directly. The phase-1 body below
-  is a flat allowlist; phase-3 swaps in a capability-chain walk without
-  the gates changing. See docs/trust-and-attenuation.md (commonplace-plan)
-  §2/§4/§7.
+  The real gate topology (CX-vyrs — see `posture/0` for a one-call summary
+  of where each lane currently sits):
+
+    * **Gate A** (import, `CommitStore.import_commit`) — calls this module
+      UNCONDITIONALLY; no knob softens it.
+    * **local-write gate** (`CommitStore`'s `local_write_gate_check/2`,
+      every local commit create) — calls `authorized_to_write?/4`, staged
+      by the `:local_write_gate` knob (`:off` | `:dry_run` (default) |
+      `:enforce`; CX-qat5.7 wires an env-var activation path).
+    * **Gate B** (execute, `authorized_to_execute?/3`) and the sandboxed
+      define-verb gate — STRUCTURAL, always on; not staged by any knob.
+    * **read gates** — the P1/P2 surfaces (MudLive, `World.room_snapshot`,
+      MCP `cat`, GitBridge) call `reader_authorized?/6` DIRECTLY and are
+      PINNED `:enforce`; the P3 cohort (TreeLive/WikiLive, `@dump`, MCP
+      `tail_red`/`invoke_view_action`/`tree://`, `fork`'s source-check)
+      goes through `Trust.Read.gate/3`, staged by the SEPARATE
+      `:local_read_gate` knob (`:permissive` (default) | `:dry_run` |
+      `:enforce`; CX-a7i2 wires its env-var activation path).
+
+  Every lane bottoms out in this module's `authorized?/authorized_to_*`
+  family — never an allowlist or capability store directly — so phase-3's
+  capability-chain walk swaps in underneath without any call site
+  changing. See docs/trust-and-attenuation.md (commonplace-plan) §2/§4/§7.
 
   ## Phase-1 semantics (flat allowlist)
 
@@ -1012,6 +1029,51 @@ defmodule Commonplace.Trust do
   @spec default_config() :: config()
   def default_config do
     %{accept_unsigned: true, trusted_identities: %{}}
+  end
+
+  @doc """
+  CX-vyrs — the RESOLVED effective-enforcement posture, in one place. Three
+  independent knobs each gate a different lane (trust-anchor strictness,
+  local-write, local-read/P3), and each has its own defaulting/resolution
+  path — so "is this node actually enforcing anything" cannot be read off
+  any single config value. This reads each knob EXACTLY the way its real
+  consumer does (no separate/parallel defaulting that could drift):
+
+    * `accept_unsigned` / `trusted_identities_count` — via `config/0`, the
+      same resolution `authorized?/3` and the gates use (app env → trust.json
+      → permissive default; folds in local-node trust).
+    * `local_write_gate` — `Application.get_env(:commonplace,
+      :local_write_gate, :dry_run)`, the same default `CommitStore`'s
+      `local_write_gate_check/2` applies.
+    * `local_read_gate` — `Application.get_env(:commonplace, :local_read_gate,
+      :permissive)`, the same default `Trust.Read.gate/3` applies.
+
+  `strict` is a derived summary, true only when ALL THREE lanes are at
+  their strictest setting (`accept_unsigned: false`, both gates `:enforce`)
+  — a single true/false an operator or a boot-time log line can assert on
+  without re-deriving the three-knob conjunction each time.
+  """
+  @spec posture() :: %{
+          accept_unsigned: boolean(),
+          trusted_identities_count: non_neg_integer(),
+          local_write_gate: atom(),
+          local_read_gate: atom(),
+          strict: boolean()
+        }
+  def posture do
+    cfg = config()
+    local_write_gate = Application.get_env(:commonplace, :local_write_gate, :dry_run)
+    local_read_gate = Application.get_env(:commonplace, :local_read_gate, :permissive)
+
+    %{
+      accept_unsigned: cfg.accept_unsigned,
+      trusted_identities_count: map_size(cfg.trusted_identities),
+      local_write_gate: local_write_gate,
+      local_read_gate: local_read_gate,
+      strict:
+        cfg.accept_unsigned == false and local_write_gate == :enforce and
+          local_read_gate == :enforce
+    }
   end
 
   # `:absent` (no file — permissive default applies) is distinct from
