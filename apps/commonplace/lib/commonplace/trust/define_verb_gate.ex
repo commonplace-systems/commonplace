@@ -56,10 +56,36 @@ defmodule Commonplace.Trust.DefineVerbGate do
   cost. This module does NOT reuse that mechanism yet — the design doc
   (Axis E) explicitly buckets "define-walk caching (watermark-style)"
   under Phase 2, not MVP. Every `SourceDoc.compile/3` call with a
-  `{:verb, _}` gate re-walks the full contributor chain (bounded by the
-  same `commit_log(..., limit: CommitStore.max_commit_log_limit())`
-  ceiling Gate B uses). Correct,
-  not yet optimized — flagged in the CX-ndvi completion report.
+  `{:verb, _}` gate re-walks the full contributor chain. Correct, not
+  yet optimized — flagged in the CX-ndvi completion report.
+
+  ## Paging (CX-klpi held half)
+
+  Same paging shell as `Commonplace.Trust.authorized_to_execute?/4`
+  (see its moduledoc for the full rationale) — the walk pages through
+  the chain via `CommitStoreClient.commit_log/3` +
+  `commit_log_from/3`, `page_size` at a time (default
+  `CommitStore.max_commit_log_limit/0`, overridable via
+  `opts[:page_size]`), bounded overall by
+  `Application.get_env(:commonplace, :max_authorization_walk_commits,
+  200_000)`. Without the watermark cache above, EVERY define-walk here
+  pages through the doc's full history on every call — there is no
+  "subsequent walks halt near head" amortization for this gate (that's
+  the Phase 2 cache work referenced above), so a legitimately long verb
+  doc history is a real per-call paging cost here, not just a cold-cache
+  one.
+
+  Two new failure modes:
+
+    * `{:error, {:authorization_chain_incomplete, commit_id}}` — a page
+      came back short of `page_size` but its last commit is neither
+      `kind: :genesis` nor parent-less: the chain visibly continues but
+      the store doesn't have the next commit.
+    * `{:error, {:authorization_chain_too_long, n}}` — the total ceiling
+      was exceeded before the walk halted.
+
+  This REMOVES the CX-klpi mechanical half's truncation warning/telemetry
+  — paging makes silent truncation impossible.
   """
 
   require Logger
@@ -76,9 +102,14 @@ defmodule Commonplace.Trust.DefineVerbGate do
   convention as `authorized_to_execute?/3`; the caller's own read fails
   with `:not_found` independently.
   """
-  @spec authorized_to_define?(GenServer.server(), String.t(), [String.t()], Trust.config() | nil) ::
-          :ok | {:error, term()}
-  def authorized_to_define?(store, doc_uuid, section_scope, cfg \\ nil)
+  @spec authorized_to_define?(
+          GenServer.server(),
+          String.t(),
+          [String.t()],
+          Trust.config() | nil,
+          keyword()
+        ) :: :ok | {:error, term()}
+  def authorized_to_define?(store, doc_uuid, section_scope, cfg \\ nil, opts \\ [])
       when is_list(section_scope) do
     cfg = cfg || Trust.config()
 
@@ -88,34 +119,96 @@ defmodule Commonplace.Trust.DefineVerbGate do
       # walk entirely under the zero-config default).
       :ok
     else
-      limit = CommitStore.max_commit_log_limit()
-      log = CommitStoreClient.commit_log(store, doc_uuid, limit: limit)
+      page_size = Keyword.get(opts, :page_size, CommitStore.max_commit_log_limit())
+      total_ceiling = Application.get_env(:commonplace, :max_authorization_walk_commits, 200_000)
 
-      if length(log) >= limit do
-        # CX-klpi: walk hit the shared cap and may not have reached
-        # genesis. Whether a truncated walk should itself deny is a
-        # held decision (fail-closed behavior change out of scope here
-        # — CX-klpi's held half); this only makes the previously-silent
-        # case loud.
-        Logger.warning(
-          "DefineVerbGate.authorized_to_define?: commit_log hit the #{limit}-commit cap " <>
-            "for doc #{doc_uuid} — define-verb authorization may be evaluated against a " <>
-            "truncated contributor history (CX-klpi)"
-        )
+      first_page = CommitStoreClient.commit_log(store, doc_uuid, limit: page_size)
 
-        :telemetry.execute(
-          [:commonplace, :trust, :authorization_log_truncated],
-          %{count: length(log)},
-          %{uuid: doc_uuid}
-        )
-      end
-
-      walk(store, log, section_scope, cfg)
+      walk_pages(store, doc_uuid, first_page, nil, section_scope, cfg, page_size, total_ceiling, 0, 1)
     end
   end
 
-  defp walk(store, log, section_scope, cfg) do
-    Enum.reduce_while(log, :ok, fn commit, :ok ->
+  # CX-klpi held half: paged walk, mirroring Trust.walk_pages/11's shape
+  # (see its comment for the prev_last/empty-page reasoning) but with
+  # this module's simpler :ok-accumulator (no execute-clean cache here).
+  defp walk_pages(store, doc_uuid, page, prev_last, section_scope, cfg, page_size, total_ceiling, examined, page_number) do
+    examined_after = examined + length(page)
+
+    cond do
+      examined_after > total_ceiling ->
+        Logger.error(
+          "DefineVerbGate.authorized_to_define?: authorization walk for doc #{doc_uuid} " <>
+            "exceeded the #{total_ceiling}-commit total ceiling (CX-klpi) after " <>
+            "#{page_number} page(s) — treating as a runaway/adversarial chain"
+        )
+
+        {:error, {:authorization_chain_too_long, examined_after}}
+
+      page == [] and prev_last == nil ->
+        # No commits at all — pre-existing "empty chain -> :ok" convention.
+        :ok
+
+      page == [] ->
+        Logger.error(
+          "DefineVerbGate.authorized_to_define?: incomplete commit chain for doc " <>
+            "#{doc_uuid} — commit #{prev_last.id} names parent " <>
+            "#{prev_last.parent_id}, which the store does not have (CX-klpi)"
+        )
+
+        {:error, {:authorization_chain_incomplete, prev_last.id}}
+
+      true ->
+        case walk_page(page, section_scope, cfg, store) do
+          :ok ->
+            last_commit = List.last(page)
+
+            cond do
+              last_commit.parent_id == nil ->
+                :ok
+
+              length(page) < page_size ->
+                Logger.error(
+                  "DefineVerbGate.authorized_to_define?: incomplete commit chain for doc " <>
+                    "#{doc_uuid} — commit #{last_commit.id} names parent " <>
+                    "#{last_commit.parent_id}, which the store does not have (CX-klpi)"
+                )
+
+                {:error, {:authorization_chain_incomplete, last_commit.id}}
+
+              true ->
+                :telemetry.execute(
+                  [:commonplace, :trust, :authorization_walk_paged],
+                  %{page: page_number + 1, examined: examined_after},
+                  %{uuid: doc_uuid, commit_id: last_commit.parent_id}
+                )
+
+                next_page = CommitStoreClient.commit_log_from(store, last_commit.parent_id, limit: page_size)
+
+                walk_pages(
+                  store,
+                  doc_uuid,
+                  next_page,
+                  last_commit,
+                  section_scope,
+                  cfg,
+                  page_size,
+                  total_ceiling,
+                  examined_after,
+                  page_number + 1
+                )
+            end
+
+          {:error, _} = error ->
+            error
+        end
+    end
+  end
+
+  # Processes one page of the define-verb contributor walk. Returns `:ok`
+  # if the page was consumed without denial, or `{:error, reason}` if it
+  # halted on a commit that isn't authorized for any scope uuid.
+  defp walk_page(page, section_scope, cfg, store) do
+    Enum.reduce_while(page, :ok, fn commit, :ok ->
       cond do
         match?(%{metadata: %{kind: :genesis}}, commit) ->
           {:halt, :ok}

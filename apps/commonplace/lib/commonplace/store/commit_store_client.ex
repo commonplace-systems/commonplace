@@ -409,6 +409,19 @@ defmodule Commonplace.Store.CommitStoreClient do
     end
   end
 
+  # Paged variant of commit_log (CX-klpi held half) — same local/remote
+  # routing pattern, starting the walk at a given commit id instead of
+  # the doc's :latest.
+  def commit_log_from(server \\ CommitStore, commit_id, opts \\ []) do
+    case remote_node() do
+      {:ok, node} ->
+        GenServer.call({CommitStore, node}, {:commit_log_from, commit_id, opts})
+
+      :local ->
+        CommitStore.commit_log_from(normalize_server(server), commit_id, opts)
+    end
+  end
+
   def all_doc_uuids(server \\ CommitStore) do
     case remote_node() do
       {:ok, node} ->

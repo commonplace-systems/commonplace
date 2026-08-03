@@ -897,10 +897,43 @@ defmodule Commonplace.Trust do
 
   An empty chain returns `:ok` — there is nothing to execute, and the
   caller's read fails with `:not_found` on its own.
+
+  ## Paging (CX-klpi held half)
+
+  The walk no longer fetches a single capped page — it PAGES through the
+  full commit chain via `CommitStoreClient.commit_log/3` +
+  `commit_log_from/3`, `page_size` at a time (default
+  `CommitStore.max_commit_log_limit/0`, overridable via `opts[:page_size]`
+  for tests). A clean full walk backfills the execute-clean snapshot
+  cache (see above), so SUBSEQUENT walks against the same doc halt near
+  head on the cached snapshot — paging past the cap is the exceptional
+  first-walk/cold-cache cost, not a steady-state one. `opts[:page_size]`
+  aside, this changes nothing about the verdict logic itself, only how
+  much of the chain a single walk is willing to fetch. The walk is also
+  bounded by a TOTAL ceiling across all pages
+  (`Application.get_env(:commonplace, :max_authorization_walk_commits,
+  200_000)`) — a guard against a runaway/adversarial chain, not an
+  expected cost; see `{:authorization_chain_too_long, n}` below.
+
+  Two new failure modes fall out of paging:
+
+    * `{:error, {:authorization_chain_incomplete, commit_id}}` — a page
+      came back short of `page_size` but the last commit in it is
+      neither `kind: :genesis` nor parent-less: the chain visibly
+      continues (a non-nil `parent_id`) but the store doesn't have the
+      next commit. That's a genuinely broken/incomplete chain, not mere
+      length, and it fails closed.
+    * `{:error, {:authorization_chain_too_long, n}}` — the total ceiling
+      above was exceeded before the walk halted.
+
+  Neither replaces the CX-klpi mechanical half's truncation warning,
+  which is REMOVED here: paging makes silent truncation impossible (a
+  long-but-intact chain now costs extra page fetches instead of being
+  quietly cut short), so there is nothing left to warn about.
   """
-  @spec authorized_to_execute?(GenServer.server(), String.t(), config() | nil) ::
+  @spec authorized_to_execute?(GenServer.server(), String.t(), config() | nil, keyword()) ::
           :ok | {:error, term()}
-  def authorized_to_execute?(store, doc_uuid, cfg \\ nil) do
+  def authorized_to_execute?(store, doc_uuid, cfg \\ nil, opts \\ []) do
     cfg = cfg || config()
 
     if cfg.accept_unsigned and cfg.trusted_identities == %{} do
@@ -910,30 +943,13 @@ defmodule Commonplace.Trust do
       # default config keeps compile O(cache-hit) on hot paths.
       :ok
     else
-      limit = Commonplace.Store.CommitStore.max_commit_log_limit()
-      log = Commonplace.Store.CommitStoreClient.commit_log(store, doc_uuid, limit: limit)
+      page_size = Keyword.get(opts, :page_size, Commonplace.Store.CommitStore.max_commit_log_limit())
+      total_ceiling = Application.get_env(:commonplace, :max_authorization_walk_commits, 200_000)
+      fp = cfg_fingerprint(cfg, store)
 
-      if length(log) >= limit do
-        # CX-klpi: the walk hit the shared cap and may not have reached
-        # genesis — the verdict below could be authorizing against a
-        # partial contributor history. Whether a truncated walk should
-        # itself deny is a held decision (fail-closed behavior change is
-        # explicitly out of scope here — CX-klpi's held half); this only
-        # makes the previously-silent case loud.
-        Logger.warning(
-          "Trust.authorized_to_execute?: commit_log hit the #{limit}-commit cap for doc " <>
-            "#{doc_uuid} — Gate B authorization may be evaluated against a truncated " <>
-            "contributor history (CX-klpi)"
-        )
+      first_page = Commonplace.Store.CommitStoreClient.commit_log(store, doc_uuid, limit: page_size)
 
-        :telemetry.execute(
-          [:commonplace, :trust, :authorization_log_truncated],
-          %{count: length(log)},
-          %{uuid: doc_uuid}
-        )
-      end
-
-      walk_contributors(store, doc_uuid, log, cfg)
+      walk_pages(store, doc_uuid, cfg, fp, first_page, nil, page_size, total_ceiling, 0, 1, [])
     end
   end
 
@@ -956,33 +972,132 @@ defmodule Commonplace.Trust do
     :erlang.phash2({cfg.trusted_identities, Commonplace.Store.CommitStoreClient.revocation_set_hash(store)})
   end
 
-  defp walk_contributors(store, doc_uuid, log, cfg) do
-    fp = cfg_fingerprint(cfg, store)
+  # CX-klpi held half: the paged contributor walk. `page` is the current
+  # page's commits (newest-first); `prev_last` is the last commit of the
+  # PREVIOUS page (nil on the first page) — needed so an empty page can
+  # tell "genuinely no more chain" (prev_last was parent-less, impossible
+  # to reach here — see below) apart from "the chain visibly continues
+  # but the next commit is missing" (prev_last had a non-nil parent_id
+  # yet the store had nothing at that id).
+  defp walk_pages(store, doc_uuid, cfg, fp, page, prev_last, page_size, total_ceiling, examined, page_number, passed) do
+    examined_after = examined + length(page)
 
-    {verdict, passed} =
-      Enum.reduce_while(log, {:ok, []}, fn commit, {:ok, passed} ->
-        cond do
-          match?(%{metadata: %{kind: :genesis}}, commit) ->
-            {:halt, {:ok, passed}}
+    cond do
+      examined_after > total_ceiling ->
+        Logger.error(
+          "Trust.authorized_to_execute?: authorization walk for doc #{doc_uuid} exceeded the " <>
+            "#{total_ceiling}-commit total ceiling (CX-klpi) after #{page_number} page(s) — " <>
+            "treating as a runaway/adversarial chain"
+        )
 
-          true ->
-            case authorized?(commit, :execute, {:doc, doc_uuid}, cfg, store) do
-              {:error, reason} ->
-                {:halt, {{:error, {:untrusted_contributor, commit.id, reason}}, passed}}
+        {:error, {:authorization_chain_too_long, examined_after}}
 
-              :ok ->
-                if match?(%{metadata: %{kind: :snapshot}}, commit) do
-                  case Commonplace.Store.CommitStoreClient.get_execute_clean(store, fp, commit.id) do
-                    {:ok, true} -> {:halt, {:ok, passed}}
-                    _ -> {:cont, {:ok, [commit.id | passed]}}
-                  end
-                else
-                  {:cont, {:ok, passed}}
-                end
+      page == [] and prev_last == nil ->
+        # No commits at all — the pre-existing "empty chain -> :ok"
+        # convention (nothing to execute; caller's read fails with
+        # :not_found on its own).
+        finish_walk(store, fp, :ok, passed)
+
+      page == [] ->
+        # prev_last's chain visibly continued (non-nil parent_id, not
+        # genesis — both would have halted the previous page's process)
+        # but this page fetch came back with nothing: the store is
+        # missing prev_last's parent commit.
+        Logger.error(
+          "Trust.authorized_to_execute?: incomplete commit chain for doc #{doc_uuid} — " <>
+            "commit #{prev_last.id} names parent #{prev_last.parent_id}, which the " <>
+            "store does not have (CX-klpi)"
+        )
+
+        {:error, {:authorization_chain_incomplete, prev_last.id}}
+
+      true ->
+        case process_execute_page(page, doc_uuid, cfg, store, fp, passed) do
+          list when is_list(list) ->
+            last_commit = List.last(page)
+
+            cond do
+              last_commit.parent_id == nil ->
+                # Sound chain end: legacy pre-umbrella nil-parent doc
+                # (genesis-kind commits already halt inside
+                # process_execute_page and never reach here).
+                finish_walk(store, fp, :ok, list)
+
+              length(page) < page_size ->
+                # Short page, but the last commit's chain visibly
+                # continues — the store is missing its parent.
+                Logger.error(
+                  "Trust.authorized_to_execute?: incomplete commit chain for doc #{doc_uuid} — " <>
+                    "commit #{last_commit.id} names parent #{last_commit.parent_id}, which the " <>
+                    "store does not have (CX-klpi)"
+                )
+
+                {:error, {:authorization_chain_incomplete, last_commit.id}}
+
+              true ->
+                :telemetry.execute(
+                  [:commonplace, :trust, :authorization_walk_paged],
+                  %{page: page_number + 1, examined: examined_after},
+                  %{uuid: doc_uuid, commit_id: last_commit.parent_id}
+                )
+
+                next_page =
+                  Commonplace.Store.CommitStoreClient.commit_log_from(
+                    store,
+                    last_commit.parent_id,
+                    limit: page_size
+                  )
+
+                walk_pages(
+                  store,
+                  doc_uuid,
+                  cfg,
+                  fp,
+                  next_page,
+                  last_commit,
+                  page_size,
+                  total_ceiling,
+                  examined_after,
+                  page_number + 1,
+                  list
+                )
             end
-        end
-      end)
 
+          {verdict, passed_final} ->
+            finish_walk(store, fp, verdict, passed_final)
+        end
+    end
+  end
+
+  # Processes one page of the Gate B contributor walk. Returns the
+  # updated `passed` list (plain list) if the page was consumed without
+  # reaching a verdict, or `{verdict, passed}` if it halted.
+  defp process_execute_page(page, doc_uuid, cfg, store, fp, passed) do
+    Enum.reduce_while(page, passed, fn commit, passed ->
+      cond do
+        match?(%{metadata: %{kind: :genesis}}, commit) ->
+          {:halt, {:ok, passed}}
+
+        true ->
+          case authorized?(commit, :execute, {:doc, doc_uuid}, cfg, store) do
+            {:error, reason} ->
+              {:halt, {{:error, {:untrusted_contributor, commit.id, reason}}, passed}}
+
+            :ok ->
+              if match?(%{metadata: %{kind: :snapshot}}, commit) do
+                case Commonplace.Store.CommitStoreClient.get_execute_clean(store, fp, commit.id) do
+                  {:ok, true} -> {:halt, {:ok, passed}}
+                  _ -> {:cont, [commit.id | passed]}
+                end
+              else
+                {:cont, passed}
+              end
+          end
+      end
+    end)
+  end
+
+  defp finish_walk(store, fp, verdict, passed) do
     clean? = verdict == :ok
     Enum.each(passed, &Commonplace.Store.CommitStoreClient.put_execute_clean(store, fp, &1, clean?))
     verdict

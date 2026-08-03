@@ -861,6 +861,23 @@ defmodule Commonplace.Store.CommitStore do
   @spec max_commit_log_limit() :: pos_integer()
   def max_commit_log_limit, do: @max_commit_log_limit
 
+  @doc """
+  Paged variant of `commit_log/3` (CX-klpi held half): walk the commit
+  chain newest-first starting AT `commit_id` (inclusive) instead of at
+  the doc's `:latest`. Lets a caller that already consumed one page
+  (e.g. from `commit_log/3`) continue the walk from the last commit's
+  `parent_id` without re-fetching from the head.
+
+  Same option/return shape as `commit_log/3` — a bare list, newest-first,
+  bounded by `opts[:limit]` (default 100). A result shorter than the
+  requested limit means the walk ran out of chain (hit a missing parent
+  or `nil`), not that it was denied.
+  """
+  @spec commit_log_from(GenServer.server(), String.t() | nil, keyword()) :: [Commit.t()]
+  def commit_log_from(server \\ __MODULE__, commit_id, opts \\ []) do
+    do_commit_log_from(resolve_db(server), commit_id, opts)
+  end
+
   @doc "Return a MapSet of all document UUIDs that have a `:latest` entry."
   def all_doc_uuids(server \\ __MODULE__) do
     do_all_doc_uuids(resolve_db(server))
@@ -1462,6 +1479,11 @@ defmodule Commonplace.Store.CommitStore do
   @impl true
   def handle_call({:commit_log, doc_uuid, opts}, _from, state) do
     {:reply, do_commit_log(state.db, doc_uuid, opts), state}
+  end
+
+  @impl true
+  def handle_call({:commit_log_from, commit_id, opts}, _from, state) do
+    {:reply, do_commit_log_from(state.db, commit_id, opts), state}
   end
 
   @impl true
@@ -2069,6 +2091,11 @@ defmodule Commonplace.Store.CommitStore do
       nil -> []
       commit_id -> collect_log(db, commit_id, limit, [])
     end
+  end
+
+  defp do_commit_log_from(db, commit_id, opts) do
+    limit = Keyword.get(opts, :limit, 100)
+    collect_log(db, commit_id, limit, [])
   end
 
   defp do_all_doc_uuids(db) do
