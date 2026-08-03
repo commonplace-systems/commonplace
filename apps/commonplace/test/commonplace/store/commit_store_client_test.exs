@@ -218,4 +218,58 @@ defmodule Commonplace.Store.CommitStoreClientTest do
       assert_receive {:child_view, {:ok, :test_node@localhost}}, 1_000
     end
   end
+
+  describe "CX-6bqk: CAS attempt count is configurable + fallback telemetry" do
+    setup do
+      on_exit(fn -> Application.delete_env(:commonplace, :commit_cas_max_attempts) end)
+      :ok
+    end
+
+    test "commit_cas_max_attempts config is respected: 0 attempts goes straight to fallback",
+         %{store: store} do
+      Application.put_env(:commonplace, :commit_cas_max_attempts, 0)
+
+      test_pid = self()
+      handler_id = "cx-6bqk-#{:rand.uniform(1_000_000)}"
+
+      :telemetry.attach(
+        handler_id,
+        [:commonplace, :commit, :cas_exhausted],
+        fn _event, measurements, metadata, _config ->
+          send(test_pid, {:cas_exhausted, measurements, metadata})
+        end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      # With max_attempts=0, attempt_write/10 is invoked with attempts_left=0
+      # and must fall straight to the legacy serialized path — the write
+      # still succeeds (fallback exists precisely so a writer always makes
+      # progress), and the exhaustion telemetry fires with attempts: 0.
+      commit = CommitStoreClient.create_commit(store, "cas-cfg-doc", <<1, 2, 3>>, nil)
+      assert commit.doc_uuid == "cas-cfg-doc"
+
+      assert_receive {:cas_exhausted, %{attempts: 0}, %{uuid: "cas-cfg-doc"}}, 1_000
+    end
+
+    test "default max attempts (5) means an uncontended write never hits the fallback",
+         %{store: store} do
+      test_pid = self()
+      handler_id = "cx-6bqk-default-#{:rand.uniform(1_000_000)}"
+
+      :telemetry.attach(
+        handler_id,
+        [:commonplace, :commit, :cas_exhausted],
+        fn _event, measurements, _metadata, _config -> send(test_pid, {:cas_exhausted, measurements}) end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      CommitStoreClient.create_commit(store, "cas-default-doc", <<1>>, nil)
+
+      refute_receive {:cas_exhausted, _}, 200
+    end
+  end
 end

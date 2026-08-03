@@ -72,13 +72,23 @@ defmodule Commonplace.Store.CommitStoreClient do
   # through the legacy GenServer.call shapes below, since there's no
   # local CubDB handle to read :latest from without a round-trip anyway.
 
+  require Logger
+
   alias Commonplace.Store.{CommitStore, CommitBuilder, Commit, TrustSideStore}
 
   # Bounded optimistic-CAS retry count for the caller-side hoisted write
   # path, before falling back to the legacy serialized verb. Kept small
   # -- a handful of retries covers ordinary contention; sustained
   # contention past this is exactly what the fallback is for.
+  #
+  # CX-6bqk: configurable via :commonplace, :commit_cas_max_attempts so
+  # deployments under heavier write contention can tune it without a
+  # code change; @max_chain_attempts remains the default constant.
   @max_chain_attempts 5
+
+  defp max_chain_attempts do
+    Application.get_env(:commonplace, :commit_cas_max_attempts, @max_chain_attempts)
+  end
 
   defp normalize_server(__MODULE__), do: CommitStore
   defp normalize_server(server), do: server
@@ -172,11 +182,29 @@ defmodule Commonplace.Store.CommitStoreClient do
       opts,
       parent_fun,
       legacy_fallback,
-      @max_chain_attempts
+      max_chain_attempts()
     )
   end
 
-  defp attempt_write(_verb, _db, _server, _doc_uuid, _update, _metadata, _opts, _parent_fun, legacy_fallback, 0) do
+  defp attempt_write(verb, _db, _server, doc_uuid, _update, _metadata, _opts, _parent_fun, legacy_fallback, 0) do
+    # CX-6bqk: CAS retries exhausted — falling back to the fully-serialized
+    # legacy path. This is the one place that transition happens, so emit
+    # telemetry + a debug log here (once) rather than at each individual
+    # retry loss, so contention hot spots are observable without being
+    # spammed per-attempt.
+    attempts = max_chain_attempts()
+
+    :telemetry.execute(
+      [:commonplace, :commit, :cas_exhausted],
+      %{attempts: attempts},
+      %{uuid: doc_uuid}
+    )
+
+    Logger.debug(
+      "CommitStoreClient: CAS exhausted after #{attempts} attempts for #{inspect(doc_uuid)} " <>
+        "(verb=#{inspect(verb)}), falling back to serialized write"
+    )
+
     legacy_fallback.()
   end
 
