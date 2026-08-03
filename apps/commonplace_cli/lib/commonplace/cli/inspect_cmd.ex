@@ -4,7 +4,7 @@ defmodule Commonplace.CLI.InspectCmd do
   alias Commonplace.CLI
   alias Commonplace.Tree.Walk
   alias Commonplace.Document.ContentType
-  alias Commonplace.Store.CommitStoreClient, as: CommitStore
+  alias Commonplace.Store.CommitStoreClient
 
   import Commonplace.CLI.Helpers, only: [join_paths: 2, uuid?: 1]
 
@@ -82,7 +82,7 @@ defmodule Commonplace.CLI.InspectCmd do
   end
 
   defp inspect_document(uuid) do
-    case CommitStore.latest_commit(uuid) do
+    case CommitStoreClient.latest_commit(uuid) do
       {:ok, commit} ->
         print_inspection(uuid, commit)
 

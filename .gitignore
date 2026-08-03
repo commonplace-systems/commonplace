@@ -6,6 +6,9 @@ erl_crash.dump
 *.ez
 *.beam
 
+# elixir_make NIF build artifact (rebuilt from c_src/flock_nif.c every compile)
+apps/commonplace/priv/*.so
+
 # Generated on crash
 crash.dump
 
