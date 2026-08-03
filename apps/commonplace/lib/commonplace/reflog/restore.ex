@@ -11,11 +11,44 @@ defmodule Commonplace.Reflog.Restore do
       owner. Read-only.
     * `resolve/3` — turn one checkpoint commit into a flat
       `%{path => {:file, doc_uuid, commit_id_hex}}` map. **Pure,
-      read-only, zero writes.**
-    * `materialize_branch/4` — the ONE (so far) consumer of `resolve/3`:
-      builds a brand-new subtree of fresh docs from a resolved map and
-      grafts it onto the workspace root as a named branch. This is
-      where writes happen.
+      read-only, zero writes. Unchanged by stage 3 — kept exactly as
+      it was, including its "never chain-replay a pin doc" reader
+      discipline.**
+    * `materialize_branch/5` (CX-0t2r stage 3) — the FORK-ANCHORED
+      branch materializer. Unlike `materialize_dir/4`, which is a
+      pure consumer of `resolve/3`'s flat file map, this one needs
+      **directory-level** anchoring too (see "Why `resolve/3`'s
+      output isn't enough" below), so it walks the checkpoint itself
+      via the same two identifiers `resolve/3` takes
+      (`snapshot_doc_uuid`, `checkpoint_commit_id`) rather than
+      consuming a pre-flattened map. `resolve/3` itself is untouched
+      by this — it remains a separately-callable, pure, read-only
+      function with the exact same signature and output shape it had
+      before stage 3; `materialize_dir/4` and `diff/3` keep consuming
+      it exactly as before.
+
+  ## Why `resolve/3`'s output isn't enough for fork-anchored branches
+
+  `resolve/3` deliberately flattens to `%{path => {:file, doc_uuid,
+  commit_id}}` — file (leaf) entries only. A branch materializer that
+  wants real ancestry (CX-0t2r stage 3's whole point) needs more than
+  that for **directories**: `Commonplace.Tree.Merge.merge/4`'s very
+  first move is `CommitStore.find_common_ancestor(source_root_uuid,
+  target_root_uuid)` — a check on the two **directory schema docs'
+  own uuids**, before it ever looks at a single file. If the restored
+  root (and every restored subdirectory) doesn't carry a `parent_id`
+  reachable from the corresponding *live* directory's own commit
+  chain, `find_common_ancestor` returns `:none` at the very first
+  hop and the whole merge silently no-ops — exactly the ancestry gap
+  stage 2 refused to ship. `resolve/3`'s flat map has no place to
+  carry "this directory's own historical schema commit," since it
+  only ever returns file paths. `materialize_branch/5` therefore
+  performs its own recursive walk (`resolve_anchored/4`, private,
+  same checkpoint-reading discipline as `resolve/3` — reads each pin
+  commit standalone, never chain-replayed) that additionally records,
+  for every directory node, the source data-directory's own uuid and
+  the exact historical commit id its `__schema_cid` pointed at — the
+  commit every restored directory schema anchors its first commit to.
 
   A future in-place-reroot materializer (pointing existing paths back
   at restored content instead of branching) is a second, independent
@@ -95,10 +128,14 @@ defmodule Commonplace.Reflog.Restore do
   ## Acceptance scope (see `restore_test.exs`)
 
   The test suite for this module covers the BRANCH materializer
-  (`materialize_branch/4`) only — round-trip fidelity, enforce-mode
-  signing, and the resolve-is-read-only seam property. An in-place
-  materializer, when it exists, needs its own acceptance tests; passing
-  this suite says nothing about that path.
+  (`materialize_branch/5`) — round-trip fidelity, ancestry (every
+  restored doc's first commit chains to the checkpoint's recorded
+  source commit), merge-back (the capability ancestry buys — a branch
+  edit merges cleanly back toward the live tree via
+  `Commonplace.Tree.Merge.merge/3`), enforce-mode signing, and the
+  resolve-is-read-only seam property. An in-place materializer, when
+  it exists, needs its own acceptance tests; passing this suite says
+  nothing about that path.
   """
 
   alias Commonplace.Tree.{Schema, DocBuilder}
@@ -311,15 +348,38 @@ defmodule Commonplace.Reflog.Restore do
   defp resolve_entry(_store, _entry, _hex, acc), do: {:cont, {:ok, acc}}
 
   @doc """
-  Materialize a `resolve/3` result as a brand-new branch grafted onto
-  `root_uuid`. For every `{path, {:file, doc_uuid, commit_id_hex}}`,
-  reconstructs the doc's exact state at that commit and writes it as a
-  fresh doc under a new uuid (branch-point commit chained to the
-  source commit, mirroring `Commonplace.Tree.Fork`'s per-doc
-  materialization). Fresh directory schema docs are assembled to match
-  `path`'s structure, and the new root directory is attached to
-  `root_uuid` under `opts[:as]` (default `"restored-<ISO8601 basic
-  timestamp>"`).
+  Fork-anchored branch materializer (CX-0t2r stage 3): materialize one
+  checkpoint as a brand-new branch grafted onto `root_uuid`, with real
+  ancestry — the shared-history property `Commonplace.Tree.Fork`
+  gives its forks, so a later `Commonplace.Tree.Merge.merge/3` back
+  toward the live tree works.
+
+  `snapshot_doc_uuid` and `checkpoint_commit_id` are the exact same
+  two identifiers `resolve/3` takes (a reflog dir's own `__snapshot`
+  doc uuid, and a checkpoint commit id on its chain) — `root_uuid` is
+  the *live* directory this checkpoint was taken of (the checkpoint's
+  own top-level anchor, and where the new branch gets attached).
+
+  For every file the checkpoint recorded, mints a fresh doc under a
+  new uuid whose first commit's `parent_id` is the *exact* commit id
+  the checkpoint recorded for that path (`Commit.create_commit/6`,
+  mirroring `Commonplace.Tree.Fork`'s per-doc materialization — the
+  exact-cut upgrade of `fork_directory_at/4`'s timestamp-nearest
+  anchoring, since a checkpoint's recorded commit ids are already
+  precise). For every directory (including the new root), assembles a
+  fresh schema doc referencing the newly-minted children and anchors
+  *its* first commit to the exact historical commit id the source
+  directory's own `__schema_cid` pointed at when the checkpoint was
+  taken — see the moduledoc's "Why `resolve/3`'s output isn't enough"
+  for why this can't be derived from `resolve/3`'s flat map alone. No
+  restored doc — file or directory — starts with `parent_id: nil`
+  (mirrors `Fork`'s "no new doc starts with parent_id: nil" invariant;
+  the sole exception, matching `Fork`'s own degenerate case, is a
+  directory that genuinely had zero commits at checkpoint time — there
+  is no commit to anchor to because none ever existed).
+
+  The new root directory is attached to `root_uuid` under `opts[:as]`
+  (default `"restored-<ISO8601 basic timestamp>"`).
 
   All writes are node-signed by default via
   `Commonplace.Crypto.NodeIdentity.signing_context/0` (falls back to
@@ -332,39 +392,170 @@ defmodule Commonplace.Reflog.Restore do
 
   Returns `{:ok, %{root_entry: name, docs: count}}` where `count` is
   every fresh doc minted (files + directory schemas, including the new
-  root).
+  root), or `{:error, reason}` if the checkpoint itself can't be
+  resolved (same failure shapes `resolve/3` can return).
   """
-  @spec materialize_branch(GenServer.server(), map(), String.t(), keyword()) ::
+  @spec materialize_branch(GenServer.server(), String.t(), binary(), String.t(), keyword()) ::
           {:ok, %{root_entry: String.t(), docs: non_neg_integer()}}
-          | {:error, {:awaiting_stage3_ancestry_rework, String.t()}}
-  def materialize_branch(store \\ CommitStoreClient, resolved, root_uuid, opts \\ []) do
-    if Keyword.get(opts, :unsafe_no_ancestry) == true do
-      do_materialize_branch(store, resolved, root_uuid, opts)
-    else
-      # Fresh-genesis restore mints every doc under a brand-new uuid with
-      # no shared history with the source docs it was resolved from —
-      # merge-back later finds no common ancestor and silently treats the
-      # whole restored tree as unrelated content. Stage 3 (CX-0t2r)
-      # replaces this with fork-anchored materialization that preserves
-      # ancestry. Until then this path is structurally refused, not just
-      # documented-as-temporary — `opts[:unsafe_no_ancestry] == true` is
-      # an API-only escape hatch kept for the existing plumbing tests
-      # (resolve/materialize round-trip), deliberately not exposed as a
-      # CLI flag.
-      {:error, {:awaiting_stage3_ancestry_rework, "CX-0t2r"}}
+          | {:error, term()}
+  def materialize_branch(
+        store \\ CommitStoreClient,
+        snapshot_doc_uuid,
+        checkpoint_commit_id,
+        root_uuid,
+        opts \\ []
+      ) do
+    with {:ok, anchored} <-
+           resolve_anchored(store, snapshot_doc_uuid, checkpoint_commit_id, root_uuid) do
+      signing_opts = resolve_signing_opts(opts)
+      name = Keyword.get(opts, :as) || default_branch_name()
+
+      {new_root_uuid, docs} = materialize_anchored_tree(store, anchored, signing_opts)
+      attach_to_root(store, root_uuid, name, new_root_uuid, signing_opts)
+
+      {:ok, %{root_entry: name, docs: docs}}
     end
   end
 
-  defp do_materialize_branch(store, resolved, root_uuid, opts) do
-    signing_opts = resolve_signing_opts(opts)
-    name = Keyword.get(opts, :as) || default_branch_name()
+  # --- anchored resolution (stage 3, private — resolve/3 stays untouched) --
+  #
+  # Structurally the same recursive walk `resolve/3` performs (same
+  # `__schema_cid` / reflog-map archaeology, same "read each pin commit
+  # standalone, never chain-replay" discipline via `single_commit_doc/2,3`),
+  # but where `resolve/3` discards everything except the flat file map,
+  # this keeps the two things a directory needs to anchor its own restored
+  # schema commit: `dir_uuid` (the source data-directory's own uuid — for
+  # a `:dir` schema entry this is `entry.node_id`, the SAME live uuid
+  # Commonplace.Tree.Fork would fork from) and `schema_commit_id` (the
+  # exact historical commit `__schema_cid` pointed at, decoded once here
+  # instead of being thrown away after `resolve_via_schema_cid/3` reads
+  # its content).
+  defp resolve_anchored(store, snapshot_doc_uuid, checkpoint_commit_id, dir_uuid) do
+    case single_commit_doc(store, checkpoint_commit_id, snapshot_doc_uuid) do
+      {:ok, doc} ->
+        content = ContentType.get_content(doc) || %{}
+        resolve_anchored_from_content(store, content, dir_uuid)
 
-    tree = build_tree(resolved)
-    {new_root_uuid, docs} = materialize_tree(store, tree, signing_opts)
+      :none ->
+        {:error, {:checkpoint_not_found, checkpoint_commit_id}}
 
-    attach_to_root(store, root_uuid, name, new_root_uuid, signing_opts)
+      {:error, _} = err ->
+        err
+    end
+  end
 
-    {:ok, %{root_entry: name, docs: docs}}
+  defp resolve_anchored_from_content(store, content, dir_uuid) when is_map(content) do
+    case Map.get(content, "__schema_cid") do
+      nil ->
+        # No schema_cid recorded — the data dir had no commits yet at
+        # checkpoint time. Nothing to anchor to; this is the one case
+        # (mirroring Fork's own "source has no commits" fallback) where
+        # the eventual schema commit has no legitimate parent.
+        {:ok, %{dir_uuid: dir_uuid, schema_commit_id: nil, files: %{}, dirs: %{}}}
+
+      schema_cid_hex ->
+        resolve_anchored_via_schema_cid(store, schema_cid_hex, content, dir_uuid)
+    end
+  end
+
+  defp resolve_anchored_from_content(_store, _content, dir_uuid),
+    do: {:ok, %{dir_uuid: dir_uuid, schema_commit_id: nil, files: %{}, dirs: %{}}}
+
+  defp resolve_anchored_via_schema_cid(store, schema_cid_hex, content, dir_uuid) do
+    schema_commit_id = Base.decode16!(schema_cid_hex, case: :lower)
+
+    case single_commit_doc(store, schema_commit_id) do
+      {:ok, schema_doc} ->
+        entries =
+          Schema.list_entries(schema_doc)
+          |> Enum.reject(&String.starts_with?(&1.name, "__"))
+
+        resolve_anchored_entries(store, entries, content, dir_uuid, schema_commit_id)
+
+      :none ->
+        {:error, {:schema_commit_not_found, schema_cid_hex}}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  defp resolve_anchored_entries(store, entries, content, dir_uuid, schema_commit_id) do
+    base = %{dir_uuid: dir_uuid, schema_commit_id: schema_commit_id, files: %{}, dirs: %{}}
+
+    Enum.reduce_while(entries, {:ok, base}, fn entry, {:ok, acc} ->
+      case Map.get(content, entry.name) do
+        nil ->
+          # Not in the recorded map — excluded at write time (e.g. `.usr`)
+          # or a schema/reflog inconsistency. Skip rather than fail the
+          # whole checkpoint (same policy as resolve/3's resolve_entries/3).
+          {:cont, {:ok, acc}}
+
+        hex ->
+          resolve_anchored_entry(store, entry, hex, acc)
+      end
+    end)
+  end
+
+  defp resolve_anchored_entry(_store, %Schema.Entry{type: :doc, node_id: node_id, name: name}, hex, acc) do
+    commit_id = Base.decode16!(hex, case: :lower)
+    {:cont, {:ok, put_in(acc, [:files, name], {node_id, commit_id})}}
+  end
+
+  defp resolve_anchored_entry(store, %Schema.Entry{type: :dir, node_id: node_id, name: name}, hex, acc) do
+    commit_id = Base.decode16!(hex, case: :lower)
+
+    case CommitStoreClient.get_commit(store, commit_id) do
+      {:ok, child_commit} ->
+        case resolve_anchored(store, child_commit.doc_uuid, commit_id, node_id) do
+          {:ok, subtree} -> {:cont, {:ok, put_in(acc, [:dirs, name], subtree)}}
+          {:error, _} = err -> {:halt, err}
+        end
+
+      :none ->
+        {:halt, {:error, {:child_snapshot_commit_not_found, hex}}}
+    end
+  end
+
+  defp resolve_anchored_entry(_store, _entry, _hex, acc), do: {:cont, {:ok, acc}}
+
+  # Depth-first materialization of an anchored tree: children (files and
+  # subdirectories) materialize before the parent's schema is written, so
+  # remapped child uuids already exist in the store when the parent
+  # schema references them — same ordering Fork uses. Returns
+  # `{new_dir_uuid, doc_count}`.
+  defp materialize_anchored_tree(store, %{files: files, dirs: dirs, schema_commit_id: parent_id}, signing_opts) do
+    {schema, count} =
+      Enum.reduce(files, {Schema.new_schema(), 0}, fn {name, {doc_uuid, commit_id}}, {schema_acc, count_acc} ->
+        {new_uuid, added} = materialize_file(store, doc_uuid, commit_id, signing_opts)
+        {Schema.add_file(schema_acc, name, new_uuid), count_acc + added}
+      end)
+
+    {schema, count} =
+      Enum.reduce(dirs, {schema, count}, fn {name, subtree}, {schema_acc, count_acc} ->
+        {child_uuid, added} = materialize_anchored_tree(store, subtree, signing_opts)
+        {Schema.add_directory(schema_acc, name, child_uuid), count_acc + added}
+      end)
+
+    new_dir_uuid = UUID.uuid4()
+    update = Yelixer.Encoding.encode_update(schema)
+    {meta, commit_opts} = split_opts(signing_opts)
+
+    # Branch-point commit: the restored directory schema chains to the
+    # EXACT historical commit the checkpoint's __schema_cid recorded for
+    # this source directory — the same fork-anchoring Commonplace.Tree.Fork
+    # gives every directory it forks, and the property
+    # Commonplace.Tree.Merge.find_common_ancestor/3 needs at every
+    # directory hop for merge-back to work, not just at the root.
+    if parent_id do
+      CommitStoreClient.create_commit(store, new_dir_uuid, update, parent_id, meta, commit_opts)
+    else
+      # No historical commit ever existed for this directory (see
+      # resolve_anchored_from_content/3) — nothing to anchor to.
+      CommitStoreClient.create_chained_commit(store, new_dir_uuid, update, meta, commit_opts)
+    end
+
+    {new_dir_uuid, count + 1}
   end
 
   defp resolve_signing_opts(opts) do
@@ -391,48 +582,10 @@ defmodule Commonplace.Reflog.Restore do
     "restored-" <> DateTime.to_iso8601(DateTime.utc_now(), :basic)
   end
 
-  # Turns %{"notes/todo.md" => file_entry, ...} into a nested map keyed
-  # by path segment, leaves holding the file_entry tuple.
-  defp build_tree(resolved) do
-    Enum.reduce(resolved, %{}, fn {path, file_entry}, acc ->
-      parts = String.split(path, "/", trim: true)
-      put_in_tree(acc, parts, file_entry)
-    end)
-  end
-
-  defp put_in_tree(tree, [last], file_entry), do: Map.put(tree, last, file_entry)
-
-  defp put_in_tree(tree, [head | rest], file_entry) do
-    sub = Map.get(tree, head, %{})
-    Map.put(tree, head, put_in_tree(sub, rest, file_entry))
-  end
-
-  # Depth-first: children materialize before the parent's schema is
-  # written, mirroring Fork's ordering. Returns {new_dir_uuid, doc_count}.
-  defp materialize_tree(store, tree, signing_opts) do
-    {schema, count} =
-      Enum.reduce(tree, {Schema.new_schema(), 0}, fn {name, node}, {schema_acc, count_acc} ->
-        case node do
-          {:file, doc_uuid, commit_id_hex} ->
-            {new_uuid, added} = materialize_file(store, doc_uuid, commit_id_hex, signing_opts)
-            {Schema.add_file(schema_acc, name, new_uuid), count_acc + added}
-
-          subtree when is_map(subtree) ->
-            {child_uuid, added} = materialize_tree(store, subtree, signing_opts)
-            {Schema.add_directory(schema_acc, name, child_uuid), count_acc + added}
-        end
-      end)
-
-    new_dir_uuid = UUID.uuid4()
-    update = Yelixer.Encoding.encode_update(schema)
-    {meta, commit_opts} = split_opts(signing_opts)
-    CommitStoreClient.create_chained_commit(store, new_dir_uuid, update, meta, commit_opts)
-
-    {new_dir_uuid, count + 1}
-  end
-
-  defp materialize_file(store, source_doc_uuid, commit_id_hex, signing_opts) do
-    commit_id = Base.decode16!(commit_id_hex, case: :lower)
+  # `commit_id` is already a decoded binary here — resolve_anchored_entry/4
+  # decodes the checkpoint's recorded hex once when building the anchored
+  # tree, so materialization never re-decodes it.
+  defp materialize_file(store, source_doc_uuid, commit_id, signing_opts) do
     new_uuid = UUID.uuid4()
 
     update =
@@ -469,7 +622,7 @@ defmodule Commonplace.Reflog.Restore do
   Materialize a `resolve/3` result to plain files on disk under
   `dest_dir` — the LOCAL CHECKOUT materializer (stage 2, variant a).
 
-  Unlike `materialize_branch/4`, this issues **zero store writes**: it
+  Unlike `materialize_branch/5`, this issues **zero store writes**: it
   is a pure read (reconstruct each pinned commit) fanned out to
   ordinary file I/O, using the same atomic-write convention
   `Commonplace.Sync.Export` uses for regular sync. There is no CRDT

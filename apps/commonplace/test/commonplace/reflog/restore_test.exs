@@ -1,28 +1,27 @@
 defmodule Commonplace.Reflog.RestoreTest do
   @moduledoc """
   Acceptance tests for `Commonplace.Reflog.Restore` — the RESTORE half of
-  CX-0t2r.
+  CX-0t2r, stage 3 (fork-anchored branch materialization).
 
   Scope: this suite covers the BRANCH materializer
-  (`materialize_branch/4`) only, exercised through the public
-  `list_checkpoints/3` -> `resolve/3` -> `materialize_branch/4` pipeline.
-  `materialize_branch/4` is structurally refused unless called with
-  `unsafe_no_ancestry: true` (fresh-genesis restores have no shared
-  ancestry with their source docs — CX-0t2r stage 3 replaces this with
-  fork-anchored materialization); the round-trip/enforce tests below
-  pass that escape hatch deliberately, because they exist to exercise
-  the resolve/materialize plumbing, not to bless fresh-genesis restore
-  as production-ready. The DIRECTORY materializer
-  (`Restore.materialize_dir/4`) and `Restore.diff/3` have their own
-  suite in `checkout_test.exs`. A future in-place-reroot materializer
-  (see the module's moduledoc) needs its own acceptance tests too;
-  passing this suite says nothing about either path.
+  (`materialize_branch/5`) — round-trip fidelity (now covering the
+  FORK-ANCHORED branch materializer, alongside `materialize_dir/4`'s
+  own round-trip coverage in `checkout_test.exs`), ancestry (every
+  restored doc's first commit chains to the checkpoint's recorded
+  source commit — the point of stage 3), merge-back (the capability
+  real ancestry buys: a branch edit merges cleanly back toward the live
+  tree via `Commonplace.Tree.Merge.merge/3`), and enforce-mode signing.
+  The DIRECTORY materializer (`Restore.materialize_dir/4`) and
+  `Restore.diff/3` have their own suite in `checkout_test.exs`. A future
+  in-place-reroot materializer (see the module's moduledoc) needs its
+  own acceptance tests too; passing this suite says nothing about that
+  path.
   """
 
   use ExUnit.Case, async: false
 
   alias Commonplace.Reflog.{Snapshot, Restore}
-  alias Commonplace.Tree.Schema
+  alias Commonplace.Tree.{Schema, Merge}
   alias Commonplace.Store.CommitStore
   alias Commonplace.Document.ContentType
   alias Commonplace.Crypto.NodeIdentity
@@ -99,6 +98,41 @@ defmodule Commonplace.Reflog.RestoreTest do
     end)
   end
 
+  # Recursively read a materialized tree's UUIDs (not content) — every
+  # file path's doc uuid, and every directory path's own dir-doc uuid
+  # (root itself keyed by `""`). Used by the ancestry and merge-back
+  # tests to find the exact restored docs to inspect / edit.
+  defp read_tree_meta(store, dir_uuid, prefix \\ "") do
+    schema = load_schema(store, dir_uuid)
+    base = %{files: %{}, dirs: %{prefix => dir_uuid}}
+
+    Schema.list_entries(schema)
+    |> Enum.reduce(base, fn entry, acc ->
+      path = if prefix == "", do: entry.name, else: prefix <> "/" <> entry.name
+
+      case entry.type do
+        :doc ->
+          %{acc | files: Map.put(acc.files, path, entry.node_id)}
+
+        :dir ->
+          child = read_tree_meta(store, entry.node_id, path)
+          %{files: Map.merge(acc.files, child.files), dirs: Map.merge(acc.dirs, child.dirs)}
+      end
+    end)
+  end
+
+  # A doc's own FIRST (oldest) commit. commit_log/3 walks parent_id
+  # across doc-uuid boundaries (that's exactly how fork/restore ancestry
+  # is threaded — see Fork's moduledoc), so the raw newest-first list for
+  # a freshly-materialized doc keeps walking straight into the SOURCE
+  # doc's own history past the branch point. Filter to commits actually
+  # written under `uuid` before taking the oldest.
+  defp first_commit(store, uuid) do
+    CommitStore.commit_log(store, uuid, limit: 10_000)
+    |> Enum.filter(&(&1.doc_uuid == uuid))
+    |> List.last()
+  end
+
   defp restored_root_uuid(store, workspace_root, branch_name) do
     schema = load_schema(store, workspace_root)
     {:ok, entry} = Schema.get_entry(schema, branch_name)
@@ -137,7 +171,7 @@ defmodule Commonplace.Reflog.RestoreTest do
 
   # --- (a) round-trip --------------------------------------------------
 
-  test "round-trip: resolve+materialize reproduces tree state at each checkpoint", %{
+  test "round-trip: fork-anchored materialize_branch reproduces tree state at each checkpoint", %{
     store: store
   } do
     ids = seed_tree(store)
@@ -160,9 +194,8 @@ defmodule Commonplace.Reflog.RestoreTest do
     {:ok, snapshot_uuid} = Restore.root_snapshot_uuid(store, ids.root, "server")
 
     # --- restore the FIRST (oldest) checkpoint ---
-    {:ok, resolved1} = Restore.resolve(store, snapshot_uuid, oldest_id)
     {:ok, %{root_entry: name1, docs: docs1}} =
-      Restore.materialize_branch(store, resolved1, ids.root, as: "restore-v1", unsafe_no_ancestry: true)
+      Restore.materialize_branch(store, snapshot_uuid, oldest_id, ids.root, as: "restore-v1")
 
     assert docs1 > 0
     restored1_root = restored_root_uuid(store, ids.root, name1)
@@ -174,10 +207,8 @@ defmodule Commonplace.Reflog.RestoreTest do
     refute Map.has_key?(tree1, "added.txt")
 
     # --- restore the SECOND (newest) checkpoint ---
-    {:ok, resolved2} = Restore.resolve(store, snapshot_uuid, newest_id)
-
     {:ok, %{root_entry: name2}} =
-      Restore.materialize_branch(store, resolved2, ids.root, as: "restore-v2", unsafe_no_ancestry: true)
+      Restore.materialize_branch(store, snapshot_uuid, newest_id, ids.root, as: "restore-v2")
 
     restored2_root = restored_root_uuid(store, ids.root, name2)
     tree2 = read_tree(store, restored2_root)
@@ -188,7 +219,90 @@ defmodule Commonplace.Reflog.RestoreTest do
     assert tree2["added.txt"] == "brand new"
   end
 
-  # --- (b) enforce mode ------------------------------------------------
+  # --- (b) ancestry (the point of stage 3) ------------------------------
+
+  test "ancestry: every restored doc's first commit chains to the checkpoint's recorded source commit", %{
+    store: store
+  } do
+    ids = seed_tree(store)
+    {:ok, cid1} = Snapshot.checkpoint(ids.root, store)
+
+    {:ok, snapshot_uuid} = Restore.root_snapshot_uuid(store, ids.root, "server")
+    {:ok, resolved} = Restore.resolve(store, snapshot_uuid, cid1)
+
+    {:ok, %{root_entry: name}} =
+      Restore.materialize_branch(store, snapshot_uuid, cid1, ids.root, as: "restore-ancestry")
+
+    restored_root = restored_root_uuid(store, ids.root, name)
+    meta = read_tree_meta(store, restored_root)
+
+    # Every FILE's restored first commit chains to the EXACT commit the
+    # checkpoint recorded for that path — resolve/3's own output, so this
+    # is checked directly against the shared read-only seam.
+    for {path, {:file, _doc_uuid, commit_hex}} <- resolved do
+      expected_parent = Base.decode16!(commit_hex, case: :lower)
+      restored_uuid = Map.fetch!(meta.files, path)
+      commit = first_commit(store, restored_uuid)
+
+      assert commit.parent_id == expected_parent,
+             "#{path}: restored doc's first commit parent_id != checkpoint's recorded commit"
+    end
+
+    # No restored doc — file OR directory — starts with parent_id: nil
+    # (Fork's own invariant; the branch materializer now shares it).
+    all_restored_uuids = Map.values(meta.files) ++ Map.values(meta.dirs)
+
+    for uuid <- all_restored_uuids do
+      commit = first_commit(store, uuid)
+      assert commit.parent_id != nil, "doc #{uuid} started with parent_id: nil"
+    end
+
+    # The restored ROOT's own anchor is exactly the live root's
+    # checkpointed schema commit — recomputed here independently (reading
+    # the checkpoint's own content directly) rather than re-deriving the
+    # module's internal value, so this isn't just tautological.
+    {:ok, checkpoint_commit} = CommitStore.get_commit(store, cid1)
+    {:ok, checkpoint_doc} = Yelixer.Encoding.apply_update(Yelixer.Doc.new(), checkpoint_commit.update)
+    schema_cid_hex = ContentType.get_content(checkpoint_doc) |> Map.fetch!("__schema_cid")
+    expected_root_parent = Base.decode16!(schema_cid_hex, case: :lower)
+
+    root_commit = first_commit(store, restored_root)
+    assert root_commit.parent_id == expected_root_parent
+  end
+
+  # --- (c) merge-back (the capability ancestry buys) ---------------------
+
+  test "merge-back: an edit in the restored branch merges cleanly back toward the live tree", %{
+    store: store
+  } do
+    ids = seed_tree(store)
+    {:ok, cid1} = Snapshot.checkpoint(ids.root, store)
+
+    {:ok, snapshot_uuid} = Restore.root_snapshot_uuid(store, ids.root, "server")
+
+    {:ok, %{root_entry: name}} =
+      Restore.materialize_branch(store, snapshot_uuid, cid1, ids.root, as: "restore-mergeback")
+
+    restored_root = restored_root_uuid(store, ids.root, name)
+    meta = read_tree_meta(store, restored_root)
+    restored_notes_uuid = Map.fetch!(meta.files, "notes.txt")
+
+    # Edit a FILE IN THE BRANCH — a new signed commit chained onto the
+    # restored doc, not the live one.
+    write_text_doc(store, restored_notes_uuid, "branch edit")
+
+    # "maybe you merge later" — proven end to end.
+    {:ok, report} = Merge.merge(restored_root, ids.root, store)
+
+    assert {restored_notes_uuid, ids.notes} in report.merged_docs
+
+    assert read_text(store, ids.notes) == "branch edit"
+    # Untouched entries stay untouched by the merge.
+    assert read_text(store, ids.keep) == "never changes"
+    assert read_text(store, ids.readme) == "v1 readme"
+  end
+
+  # --- (d) enforce mode ------------------------------------------------
 
   describe "under local_write_gate: :enforce" do
     setup %{store: store} do
@@ -223,23 +337,21 @@ defmodule Commonplace.Reflog.RestoreTest do
       %{store: store, node_ctx: node_ctx}
     end
 
-    test "round-trip lands node-signed under strict/enforce (CX-cl65 lesson)", %{
+    test "fork-anchored round-trip lands node-signed under strict/enforce (CX-cl65 lesson)", %{
       store: store,
       node_ctx: node_ctx
     } do
       sign_opts = [signing_context: node_ctx]
       ids = seed_tree(store, sign_opts)
 
-      {:ok, _cid} = Snapshot.checkpoint(ids.root, store)
+      {:ok, cid} = Snapshot.checkpoint(ids.root, store)
 
       {:ok, snapshot_uuid} = Restore.root_snapshot_uuid(store, ids.root, "server")
       [{checkpoint_id, _ts, _signer}] = Restore.list_checkpoints(store, ids.root, "server")
-      assert checkpoint_id != nil
-
-      {:ok, resolved} = Restore.resolve(store, snapshot_uuid, checkpoint_id)
+      assert checkpoint_id == cid
 
       {:ok, %{root_entry: name, docs: docs}} =
-        Restore.materialize_branch(store, resolved, ids.root, as: "restore-enforce", unsafe_no_ancestry: true)
+        Restore.materialize_branch(store, snapshot_uuid, checkpoint_id, ids.root, as: "restore-enforce")
 
       assert docs > 0
 
@@ -253,29 +365,15 @@ defmodule Commonplace.Reflog.RestoreTest do
       # confirm it carries a signer_id, not an unsigned commit.
       {:ok, root_commit} = CommitStore.latest_commit(store, ids.root)
       assert root_commit.signer_id != nil
+
+      # The restored root's OWN first commit (the fork-anchored one, not
+      # the attach commit above) is also signed under enforce.
+      restored_root_first_commit = first_commit(store, restored_root)
+      assert restored_root_first_commit.signer_id != nil
     end
   end
 
-  # --- (c) resolve is read-only (the seam) ------------------------------
-
-  # --- (d) materialize_branch is structurally refused without the escape hatch ---
-
-  test "materialize_branch/4 refuses fresh-genesis materialization by default", %{store: store} do
-    ids = seed_tree(store)
-    {:ok, _cid} = Snapshot.checkpoint(ids.root, store)
-
-    {:ok, snapshot_uuid} = Restore.root_snapshot_uuid(store, ids.root, "server")
-    [{checkpoint_id, _ts, _signer}] = Restore.list_checkpoints(store, ids.root, "server")
-    {:ok, resolved} = Restore.resolve(store, snapshot_uuid, checkpoint_id)
-
-    before = total_commit_count(store)
-
-    assert {:error, {:awaiting_stage3_ancestry_rework, "CX-0t2r"}} =
-             Restore.materialize_branch(store, resolved, ids.root)
-
-    assert total_commit_count(store) == before,
-           "refused materialize_branch/4 must not write either"
-  end
+  # --- (e) resolve is read-only (the seam) ------------------------------
 
   test "resolve/3 performs zero writes", %{store: store} do
     ids = seed_tree(store)

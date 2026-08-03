@@ -4,21 +4,25 @@ defmodule Commonplace.CLI.Reflog do
 
   Usage:
     commonplace reflog list [--owner name]
-    commonplace reflog restore <checkpoint-commit-id> [--owner name] [--as name]
+    commonplace reflog fork <checkpoint-commit-id> [--owner name] [--as name]
+    commonplace reflog restore <checkpoint-commit-id> [--owner name] [--as name]  (alias for `fork`)
     commonplace reflog checkout <checkpoint-commit-id> <dest-dir> [--owner name] [--force]
     commonplace reflog diff <checkpoint-commit-id> [<other-checkpoint-id>] [--owner name]
 
   `list` enumerates checkpoints (newest first) recorded under
   `__reflog/<owner>/` for the workspace root.
 
-  `restore` resolves one checkpoint (by its commit id, as printed by
-  `list`) and materializes it as a fresh branch grafted onto the
-  workspace root — the source tree is never mutated. NOTE: `restore`
-  is currently REFUSED. Fresh-genesis branch materialization has no
-  shared ancestry with the docs it was resolved from, so a later
-  merge-back would silently find no common history. This is fixed by
-  CX-0t2r stage 3 (fork-anchored materialization); until then there is
-  no CLI bypass.
+  `fork` (CX-0t2r stage 3; `restore` is a one-line alias for the same
+  verb — this is the real restore verb) resolves one checkpoint (by
+  its commit id, as printed by `list`) and materializes it as a fresh,
+  FORK-ANCHORED branch grafted onto the workspace root — every
+  restored doc's first commit chains back to the exact source commit
+  the checkpoint recorded, the same ancestry `Commonplace.Tree.Fork`
+  gives its forks. The source tree is never mutated. Because the
+  restored branch shares real DAG ancestry with the live tree, it can
+  later be merged back with `Commonplace.Tree.Merge.merge/3` (`pin ->
+  fork -> maybe merge`, per the CX-0t2r design summit) — the CLI does
+  not drive that merge itself yet.
 
   `checkout` materializes a checkpoint to plain files on disk under
   `<dest-dir>` — zero store writes, no CRDT docs minted. Refuses to
@@ -50,6 +54,12 @@ defmodule Commonplace.CLI.Reflog do
       ["list" | rest] ->
         run_list(root, rest)
 
+      ["fork" | rest] ->
+        run_restore(root, rest)
+
+      # `restore` is a one-line alias for `fork` — the greenlit verb
+      # name (per the CX-0t2r design summit) is `reflog fork`; `restore`
+      # is kept working so the pre-stage-3 name still resolves.
       ["restore" | rest] ->
         run_restore(root, rest)
 
@@ -93,7 +103,7 @@ defmodule Commonplace.CLI.Reflog do
         do_restore(root, owner, commit_id_hex, opts)
 
       [] ->
-        IO.puts(:stderr, "Usage: commonplace reflog restore <checkpoint-commit-id> [--owner name] [--as name]")
+        IO.puts(:stderr, "Usage: commonplace reflog fork <checkpoint-commit-id> [--owner name] [--as name]")
         System.halt(1)
     end
   end
@@ -102,24 +112,12 @@ defmodule Commonplace.CLI.Reflog do
     store = CommitStoreClient
 
     with {:ok, commit_id} <- decode_commit_id(commit_id_hex),
-         {:ok, snapshot_uuid} <- Restore.root_snapshot_uuid(store, root, owner),
-         {:ok, resolved} <- Restore.resolve(store, snapshot_uuid, commit_id) do
+         {:ok, snapshot_uuid} <- Restore.root_snapshot_uuid(store, root, owner) do
       restore_opts = if opts[:as], do: [as: opts[:as]], else: []
 
-      case Restore.materialize_branch(store, resolved, root, restore_opts) do
+      case Restore.materialize_branch(store, snapshot_uuid, commit_id, root, restore_opts) do
         {:ok, %{root_entry: name, docs: count}} ->
-          IO.puts("Restored checkpoint #{commit_id_hex} as #{name} (#{count} doc(s)).")
-
-        {:error, {:awaiting_stage3_ancestry_rework, bead}} ->
-          IO.puts(:stderr,
-            "reflog restore is refused: branch materialization has no shared ancestry " <>
-              "with the source docs, so a later merge-back would silently find no common " <>
-              "history. Fixed by #{bead} stage 3 (fork-anchored materialization); no bypass " <>
-              "is available from the CLI. Use 'reflog checkout <commit-id> <dest-dir>' to " <>
-              "materialize this checkpoint to plain files instead."
-          )
-
-          System.halt(1)
+          IO.puts("Restored checkpoint #{commit_id_hex} as #{name} (#{count} doc(s)) — fork-anchored, mergeable back.")
 
         {:error, reason} ->
           IO.puts(:stderr, "Restore failed: #{inspect(reason)}")

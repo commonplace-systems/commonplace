@@ -36,7 +36,7 @@ defmodule Commonplace.CLI do
     cap <issue|delegate|show>     Issue/attenuate capability certs (phase 3)
     checkpoint [--owner name]     Create a reflog checkpoint
     reflog list [--owner name]    List reflog checkpoints
-    reflog restore <commit-id> [--owner name] [--as name]  Restore a checkpoint as a new branch (currently refused, see CX-0t2r stage 3)
+    reflog fork <commit-id> [--owner name] [--as name]  Fork a checkpoint as a new, ancestry-bearing branch ('restore' is an alias)
     reflog checkout <commit-id> <dest-dir> [--owner name] [--force]  Materialize a checkpoint to plain files (zero store writes)
     reflog diff <commit-id> [<other-commit-id>] [--owner name]  Diff a checkpoint against the current tree or another checkpoint
     snapshot [path]               Force a snapshot commit for the doc at path (or workspace root)

@@ -5,7 +5,7 @@ defmodule Commonplace.Reflog.CheckoutTest do
   resolver-based diff (`Restore.diff/3`).
 
   Scope: this suite covers `materialize_dir/4` and `diff/3` only. The
-  BRANCH materializer (`materialize_branch/4`) has its own suite in
+  BRANCH materializer (`materialize_branch/5`) has its own suite in
   `restore_test.exs`; passing this suite says nothing about that path.
   """
 
