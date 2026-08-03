@@ -383,6 +383,136 @@ defmodule Commonplace.Sync.AgentTest do
       refute Enum.any?(registry_entries, &(&1.commit_id == v1_commit_id)),
              "reconciled shadow's registry entry was not evicted (unbounded growth regression)"
     end
+
+    test "CX-wrg0: steady overwrites with no stale writers don't leak registry entries or shadow files",
+         %{store: store, sync_dir: dir, root: root} do
+      # Second growth vector: CX-k34x only evicts a shadow whose fingerprint
+      # DIVERGED (a stale fd actually wrote to it). A shadow that's created
+      # every overwrite but NEVER diverges (the common case — nothing has a
+      # stale fd open) never reached that branch, so both the registry entry
+      # and the shadow hardlink leaked once per overwrite, forever.
+      f = make_doc(store, "f.txt", "v0")
+
+      root_doc = loader(store).(root) |> Schema.add_file("f.txt", f)
+      CommitStore.create_commit(store, root, Yelixer.Encoding.encode_update(root_doc), nil)
+
+      {:ok, pid} =
+        Agent.start_link(root_uuid: root, sync_dir: dir, store: store, shadow_tracking: true)
+
+      inode_registry = :sys.get_state(pid).inode_registry
+      shadow_dir = Path.join(dir, ".commonplace-shadow")
+
+      # Cycle 1: writes v0, nothing tracked yet to shadow.
+      Agent.sync_once(pid)
+      assert File.read!(Path.join(dir, "f.txt")) == "v0"
+
+      # N further generations, each landing purely via a CRDT-side commit
+      # (so every cycle performs a real inbound atomic write — the only
+      # path that shadows/tracks — with no out-of-band disk edits at all).
+      n = 8
+
+      for i <- 1..n do
+        crdt_overwrite(store, f, "v#{i}")
+        Agent.sync_once(pid)
+        assert File.read!(Path.join(dir, "f.txt")) == "v#{i}"
+      end
+
+      registry_entries_for_path =
+        :sys.get_state(inode_registry)
+        |> Map.values()
+        |> Enum.filter(&(&1.path == Path.join(dir, "f.txt")))
+
+      shadowed_entries = Enum.filter(registry_entries_for_path, & &1.shadowed)
+
+      shadow_files =
+        case File.ls(shadow_dir) do
+          {:ok, files} -> files
+          {:error, :enoent} -> []
+        end
+
+      assert length(shadowed_entries) <= 1,
+             "expected at most one shadowed (previous-generation) registry entry after #{n + 1} overwrites, got #{length(shadowed_entries)}"
+
+      assert length(shadow_files) <= 1,
+             "expected at most one shadow hardlink on disk after #{n + 1} overwrites, got #{length(shadow_files)}: #{inspect(shadow_files)}"
+
+      # Bounded, not O(N): total tracked entries for this path never grows
+      # past "current generation" + "one pending-reconciliation previous
+      # generation" regardless of how many overwrites ran.
+      assert length(registry_entries_for_path) <= 2,
+             "registry entries for f.txt grew unboundedly: #{length(registry_entries_for_path)} entries after #{n + 1} overwrites"
+    end
+
+    test "CX-wrg0: a stale write to the previous generation is still recovered, not silently evicted",
+         %{store: store, sync_dir: dir, root: root} do
+      # CX-wrg0's fix makes clean (never-diverged) shadows evictable at
+      # supersession time. This guards against the naive version of that
+      # fix — evicting unconditionally instead of rechecking the
+      # fingerprint first — which would silently drop a genuine stale-fd
+      # write instead of routing it through the existing recovery path.
+      # It also confirms the fix keeps behaving correctly across a
+      # recover-then-overwrite-again sequence (no crash, no leak).
+      f = make_doc(store, "f.txt", "v1")
+
+      root_doc = loader(store).(root) |> Schema.add_file("f.txt", f)
+      CommitStore.create_commit(store, root, Yelixer.Encoding.encode_update(root_doc), nil)
+
+      {:ok, pid} =
+        Agent.start_link(root_uuid: root, sync_dir: dir, store: store, shadow_tracking: true)
+
+      inode_registry = :sys.get_state(pid).inode_registry
+
+      # Cycle 1: writes v1 (untracked path, nothing to shadow yet).
+      Agent.sync_once(pid)
+      assert File.read!(Path.join(dir, "f.txt")) == "v1"
+
+      # Cycle 2: a CRDT-side v2 update forces a second inbound write, which
+      # shadows the v1 inode (creates the previous-generation shadow entry).
+      crdt_overwrite(store, f, "v2")
+      Agent.sync_once(pid)
+      assert File.read!(Path.join(dir, "f.txt")) == "v2"
+
+      [shadow] = InodeTracker.Registry.list_shadows(inode_registry)
+
+      # Simulate a stale fd still holding the v1 inode: write directly onto
+      # the shadow hardlink. Nothing else changes on disk or in the CRDT —
+      # this is exactly the "never diverged... until now" case a naive
+      # supersession-cleanup (evict unconditionally, no fingerprint recheck)
+      # would silently drop.
+      File.write!(shadow.shadow_path, "stale v1 content from a lingering fd")
+
+      # Cycle 3: Phase-0 check_shadows (still evict_if_clean: false, i.e.
+      # the CX-wrg0 change did not touch this path) finds the divergence
+      # and routes it through the existing recovery path, same as CX-k34x.
+      Agent.sync_once(pid)
+
+      assert read_content(f, store) == "stale v1 content from a lingering fd",
+             "stale write to the previous generation was lost instead of recovered"
+
+      refute File.exists?(shadow.shadow_path), "reconciled v1 shadow file should have been cleaned up"
+
+      registry_entries = :sys.get_state(inode_registry) |> Map.values()
+
+      refute Enum.any?(registry_entries, &(&1.shadow_path == shadow.shadow_path)),
+             "reconciled v1 registry entry was not evicted"
+
+      # Cycle 4: confirm the fix keeps working normally AFTER a recovery —
+      # one more real generation lands, its write goes through
+      # reconcile_superseded_shadow (which finds nothing left to reconcile,
+      # since v1 was already evicted above) with no crash and no leak.
+      crdt_overwrite(store, f, "v-final")
+      Agent.sync_once(pid)
+
+      assert File.read!(Path.join(dir, "f.txt")) == "v-final"
+
+      final_entries_for_path =
+        :sys.get_state(inode_registry)
+        |> Map.values()
+        |> Enum.filter(&(&1.path == Path.join(dir, "f.txt")))
+
+      assert length(final_entries_for_path) <= 2,
+             "registry entries for f.txt grew unboundedly after a post-recovery overwrite"
+    end
   end
 
   describe "crash containment (CX-42no)" do
@@ -453,5 +583,20 @@ defmodule Commonplace.Sync.AgentTest do
   defp latest_id(store, uuid) do
     {:ok, commit} = CommitStore.latest_commit(store, uuid)
     commit.id
+  end
+
+  # Push a new CRDT-side generation for a text doc, chained onto its
+  # current latest commit — simulates a remote/CRDT-side write landing
+  # (as opposed to a disk-side edit), which is what forces the agent's
+  # NEXT inbound export to perform a real atomic_write_with_shadow call.
+  defp crdt_overwrite(store, uuid, content) do
+    {:ok, latest} = CommitStore.latest_commit(store, uuid)
+
+    doc =
+      Yelixer.Doc.new()
+      |> ContentType.create(:text, "f.txt")
+      |> ContentType.insert_text(0, content)
+
+    CommitStore.create_commit(store, uuid, Yelixer.Encoding.encode_update(doc), latest.id)
   end
 end

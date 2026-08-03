@@ -77,6 +77,17 @@ defmodule Commonplace.Sync.Agent do
   `sync_once` returning and the next one scanning — and is the REACTIVE
   backstop that fully closes the inbound-guard's μs TOCTOU residual above.
 
+  **Cleanup (CX-k34x / CX-wrg0).** A shadow entry is retired one of two
+  ways: `check_shadows/1` finds it diverged and folds the stale content
+  into the CRDT (CX-k34x), or — if a path is overwritten again before it
+  ever diverges — `reconcile_superseded_shadow/3` gives it one last
+  fingerprint check at write time and evicts it as clean (CX-wrg0). Both
+  paths funnel through `evict_shadow/2`, which unlinks the shadow file
+  and removes the registry entry. Without the second path, a
+  steadily-overwritten file with no stale writers would leak one
+  registry entry and one shadow hardlink per write for the life of the
+  BEAM.
+
   ## State-vector hygiene
 
   Write paths reconstruct docs under a **stable per-doc client id**
@@ -341,6 +352,11 @@ defmodule Commonplace.Sync.Agent do
           # outbound sees disk == known and won't push it back).
           true ->
             if registry do
+              # CX-wrg0: reconcile any shadow left over from the PREVIOUS
+              # generation at this path before minting a new one — see
+              # reconcile_superseded_shadow/3 for why this is safe and
+              # necessary (otherwise a never-diverged shadow leaks forever).
+              reconcile_superseded_shadow(store, registry, path)
               InodeTracker.atomic_write_with_shadow(path, content, shadow_dir, registry, commit.id, entry.node_id)
             else
               Export.atomic_write(path, content)
@@ -354,40 +370,97 @@ defmodule Commonplace.Sync.Agent do
     end
   end
 
-  # Check shadow hardlinks for stale writes and merge them back into CRDT
+  # Check shadow hardlinks for stale writes and merge them back into CRDT.
+  # A CLEAN shadow (never diverged) is deliberately left tracked here —
+  # its protection window stays open across cycles until either it
+  # diverges (handled below) or the path is overwritten again
+  # (`reconcile_superseded_shadow/3` closes it at that point, CX-wrg0).
   defp check_shadows(state) do
     shadows = InodeTracker.Registry.list_shadows(state.inode_registry)
 
     Enum.each(shadows, fn shadow ->
-      fingerprint = shadow.fingerprint
-      current_fingerprint = InodeTracker.file_fingerprint(shadow.shadow_path)
+      reconcile_shadow(state.store, state.inode_registry, shadow, evict_if_clean: false)
+    end)
+  end
 
-      if current_fingerprint != nil and current_fingerprint != fingerprint do
+  # CX-wrg0: at the moment a path gets overwritten AGAIN, any shadow left
+  # over from the PREVIOUS generation (tracked but not yet reconciled by
+  # `check_shadows/1`) has reached the end of its protection window — a
+  # third generation is about to exist at this path, so a stale fd still
+  # holding the first-generation inode is now writing content nobody will
+  # ever reconcile against. Give it one last look here:
+  #
+  #   - diverged  -> the existing recovery path folds the stale content
+  #                  into the CRDT (same as periodic check_shadows would).
+  #   - clean     -> nothing ever wrote to it; evict the registry entry
+  #                  and unlink the shadow file instead of leaking both
+  #                  forever (the second growth vector CX-wrg0 fixes —
+  #                  CX-k34x only evicted the diverged case; unlike
+  #                  check_shadows/1's periodic sweep, THIS caller wants
+  #                  the clean branch to evict, since a new generation is
+  #                  about to be tracked at the same path).
+  #
+  # Race window: a stale write landing between this check and the rename
+  # inside atomic_write_with_shadow (below) is not caught — the shadow
+  # file has already been judged clean and is about to be superseded.
+  # This is not a new hole: it's the same class of μs TOCTOU already
+  # documented and accepted for the inbound guard (CX-60wl/CX-axdi).
+  # Shadow-tracking narrows loss windows, it was never claimed to close
+  # them completely.
+  defp reconcile_superseded_shadow(store, registry, path) do
+    case InodeTracker.Registry.shadow_for_path(registry, path) do
+      {:ok, shadow} -> reconcile_shadow(store, registry, shadow, evict_if_clean: true)
+      :error -> :ok
+    end
+  end
+
+  # Shared by the periodic sweep (check_shadows/1) and the write-time
+  # supersession check (reconcile_superseded_shadow/3): judge one shadow
+  # entry's fingerprint and either recover its stale content (always) or
+  # evict it as clean (only when `evict_if_clean: true` — the periodic
+  # sweep leaves clean shadows tracked; supersession always retires them).
+  defp reconcile_shadow(store, registry, shadow, opts) do
+    evict_if_clean = Keyword.fetch!(opts, :evict_if_clean)
+    current_fingerprint = InodeTracker.file_fingerprint(shadow.shadow_path)
+
+    cond do
+      current_fingerprint != nil and current_fingerprint != shadow.fingerprint ->
         # Stale write detected — read content and create a commit.
-        # CX-pyi: load + mutate against the shadow's commit, applying
-        # the disk-content diff under a stable client_id so repeated
-        # stale-write recoveries don't bloat the SV.
-        #
         # CX-42no: File.read! here would crash the whole sync pass (and
         # thus the whole checkout, via SyncLoop's crash-loop) if the
         # shadow hardlink went unreadable between the fingerprint check
         # above and this read. Skip just this shadow and retry next pass.
         case File.read(shadow.shadow_path) do
           {:ok, stale_content} ->
-            recover_stale_shadow(state, shadow, stale_content)
+            recover_stale_shadow(store, registry, shadow, stale_content)
 
           {:error, reason} ->
             Logger.warning(
               "Sync.Agent: skipping unreadable shadow #{shadow.shadow_path} (#{inspect(reason)})"
             )
         end
-      end
-    end)
+
+      current_fingerprint != nil and evict_if_clean ->
+        # Fingerprint unchanged: never diverged. Called from the
+        # write-time supersession path, so this generation's window is
+        # closing regardless — evict now instead of leaking forever.
+        evict_shadow(registry, shadow)
+
+      true ->
+        # Either the shadow file is unreadable/missing right now (leave
+        # it tracked, retry next pass), or it's clean and this is the
+        # periodic sweep, which intentionally leaves clean shadows
+        # tracked — their window closes at supersession time, not here.
+        :ok
+    end
   end
 
-  defp recover_stale_shadow(state, shadow, stale_content) do
+  # CX-pyi: load + mutate against the shadow's commit, applying the
+  # disk-content diff under a stable client_id so repeated stale-write
+  # recoveries don't bloat the SV.
+  defp recover_stale_shadow(store, registry, shadow, stale_content) do
     doc =
-      case CommitStoreClient.get_commit(state.store, shadow.commit_id) do
+      case CommitStoreClient.get_commit(store, shadow.commit_id) do
         {:ok, commit} ->
           d = Yelixer.Doc.new(client_id: stable_client_id(shadow.doc_uuid))
           {:ok, d} = Yelixer.Encoding.apply_update(d, commit.update)
@@ -403,24 +476,26 @@ defmodule Commonplace.Sync.Agent do
     update = Yelixer.Encoding.encode_update(doc)
 
     # Create commit with the shadow's commit_id as parent
-    CommitStoreClient.create_commit(state.store, shadow.doc_uuid, update, shadow.commit_id)
+    CommitStoreClient.create_commit(store, shadow.doc_uuid, update, shadow.commit_id)
 
-    # CX-k34x: the shadow hardlink shares the OLD inode's (dev, inode)
-    # pair — that's the whole point of hardlinking before the
-    # overwrite (see InodeTracker.atomic_write_with_shadow). Recompute
-    # the registry key from it BEFORE deleting the file, then evict
-    # the registry entry now that reconciliation is complete: the
-    # stale content has been folded into the CRDT, so nothing further
-    # can be learned by continuing to track this inode. Without this,
-    # Registry.track/5 (called on every write) has no matching
-    # eviction and the in-memory map grows one entry per write for
-    # the life of the BEAM.
+    # CX-k34x: the stale content has been folded into the CRDT, so
+    # nothing further can be learned by continuing to track this inode —
+    # evict it now that reconciliation is complete.
+    evict_shadow(registry, shadow)
+  end
+
+  # CX-k34x/CX-wrg0: the shadow hardlink shares the OLD inode's (dev,
+  # inode) pair — that's the whole point of hardlinking before the
+  # overwrite (see InodeTracker.atomic_write_with_shadow). Recompute the
+  # registry key from it, unlink the shadow file, and remove the
+  # registry entry. Without this, Registry.track/5 (called on every
+  # write) has no matching eviction and the in-memory map — plus one
+  # shadow hardlink per entry — grows without bound for the life of the
+  # BEAM.
+  defp evict_shadow(registry, shadow) do
     old_inode_key = InodeTracker.inode_key(shadow.shadow_path)
-
-    # Clean up the shadow
     InodeTracker.cleanup_shadow(shadow.shadow_path)
-
-    InodeTracker.Registry.remove_shadow(state.inode_registry, old_inode_key)
+    InodeTracker.Registry.remove_shadow(registry, old_inode_key)
   end
 
   # CX-pyi: stable client_id keeps the SV at one slot per doc across

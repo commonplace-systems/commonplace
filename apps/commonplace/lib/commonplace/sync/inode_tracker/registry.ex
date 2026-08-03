@@ -43,6 +43,19 @@ defmodule Commonplace.Sync.InodeTracker.Registry do
     GenServer.call(server, {:remove_shadow, inode_key})
   end
 
+  @doc """
+  Find the shadowed entry for a given file path, if any.
+
+  Used for generation-supersession cleanup (CX-wrg0): at most one
+  shadowed entry should be outstanding per path at a time (the
+  previous generation's protection window, still pending reconciliation
+  by `check_shadows/1`). Callers use this to locate and reconcile that
+  leftover entry before tracking a new generation at the same path.
+  """
+  def shadow_for_path(server, path) do
+    GenServer.call(server, {:shadow_for_path, path})
+  end
+
   @impl true
   def init(_opts) do
     {:ok, %{}}
@@ -87,5 +100,20 @@ defmodule Commonplace.Sync.InodeTracker.Registry do
   @impl true
   def handle_call({:remove_shadow, inode_key}, _from, state) do
     {:reply, :ok, Map.delete(state, inode_key)}
+  end
+
+  @impl true
+  def handle_call({:shadow_for_path, path}, _from, state) do
+    result =
+      state
+      |> Enum.find(fn {_key, entry} -> entry.shadowed and entry.path == path end)
+
+    reply =
+      case result do
+        nil -> :error
+        {_key, entry} -> {:ok, entry}
+      end
+
+    {:reply, reply, state}
   end
 end
