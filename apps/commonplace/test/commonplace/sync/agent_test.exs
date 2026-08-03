@@ -8,7 +8,7 @@ defmodule Commonplace.Sync.AgentTest do
   """
   use ExUnit.Case
 
-  alias Commonplace.Sync.{Agent, Export}
+  alias Commonplace.Sync.{Agent, Export, InodeTracker}
   alias Commonplace.Tree.{Schema, Walk}
   alias Commonplace.Document.ContentType
   alias Commonplace.Store.CommitStore
@@ -309,6 +309,79 @@ defmodule Commonplace.Sync.AgentTest do
       # into the CRDT rather than losing it.
       Agent.sync_once(pid)
       assert read_content(f, store) == "v2-edit", "shadow-tracking failed to recover the edit"
+    end
+
+    test "CX-k34x: a reconciled shadow's registry entry is evicted, not leaked",
+         %{store: store, sync_dir: dir, root: root} do
+      # Regression test for unbounded InodeTracker.Registry growth:
+      # Registry.track/5 runs on every inbound write, but nothing called
+      # Registry.remove_shadow/2 after a shadow was reconciled — so the
+      # in-memory map grew one entry per write for the life of the BEAM.
+      #
+      # To exercise the actual shadowed→reconciled→evicted path (not just
+      # the ordinary outbound hash-mismatch path, which recovers disk
+      # edits independently of shadow-tracking), this drives TWO real
+      # inbound writes to the same path so the second one shadows the
+      # first's inode, then simulates a stale-fd write directly onto the
+      # shadow hardlink — exactly what check_shadows exists to detect.
+      f = make_doc(store, "f.txt", "v1")
+
+      root_doc = loader(store).(root) |> Schema.add_file("f.txt", f)
+      CommitStore.create_commit(store, root, Yelixer.Encoding.encode_update(root_doc), nil)
+
+      {:ok, pid} =
+        Agent.start_link(root_uuid: root, sync_dir: dir, store: store, shadow_tracking: true)
+
+      # Cycle 1: inbound writes v1 — Registry.track/5 records the new inode
+      # (not yet shadowed, nothing to reconcile).
+      Agent.sync_once(pid)
+      assert File.read!(Path.join(dir, "f.txt")) == "v1"
+
+      inode_registry = :sys.get_state(pid).inode_registry
+
+      # A second CRDT-side update lands (simulating a remote write), so the
+      # next inbound export performs a SECOND atomic write to the same
+      # path — this is what shadows the v1 inode (hardlinks it, marks the
+      # registry entry shadowed: true) before replacing it with v2.
+      f_doc =
+        Yelixer.Doc.new()
+        |> Commonplace.Document.ContentType.create(:text, "f.txt")
+        |> Commonplace.Document.ContentType.insert_text(0, "v2")
+
+      {:ok, latest} = CommitStore.latest_commit(store, f)
+      CommitStore.create_commit(store, f, Yelixer.Encoding.encode_update(f_doc), latest.id)
+
+      Agent.sync_once(pid)
+      assert File.read!(Path.join(dir, "f.txt")) == "v2"
+
+      shadows_after_cycle2 = InodeTracker.Registry.list_shadows(inode_registry)
+      assert [shadow] = shadows_after_cycle2, "expected exactly one shadowed (v1) entry after the second write"
+
+      # The v1 entry's commit_id uniquely identifies it. We check for
+      # eviction of THIS commit_id below rather than the (dev, inode) map
+      # key, because the reconciliation commit created in cycle 3 causes
+      # a THIRD atomic write in the same cycle (Phase 2 inbound export
+      # sees the CRDT moved again) whose temp+rename can be assigned a
+      # freed inode number by the filesystem — coincidentally reusing the
+      # very key we just evicted. That reuse is an unrelated filesystem
+      # quirk, not a leak; asserting on commit_id sidesteps it.
+      v1_commit_id = shadow.commit_id
+
+      # Simulate a stale fd: write directly onto the shadow hardlink,
+      # which still shares the v1 inode.
+      File.write!(shadow.shadow_path, "stale content from a lingering fd")
+
+      # Cycle 3: Phase-0 check_shadows detects the stale write, reconciles
+      # it into the CRDT, deletes the shadow file, and (post-fix) must
+      # evict the now-reconciled v1 registry entry too.
+      Agent.sync_once(pid)
+
+      refute File.exists?(shadow.shadow_path), "shadow file should have been cleaned up"
+
+      registry_entries = :sys.get_state(inode_registry) |> Map.values()
+
+      refute Enum.any?(registry_entries, &(&1.commit_id == v1_commit_id)),
+             "reconciled shadow's registry entry was not evicted (unbounded growth regression)"
     end
   end
 

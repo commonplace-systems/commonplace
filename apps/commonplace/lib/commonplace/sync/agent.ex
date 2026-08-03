@@ -393,8 +393,22 @@ defmodule Commonplace.Sync.Agent do
         # Create commit with the shadow's commit_id as parent
         CommitStoreClient.create_commit(state.store, shadow.doc_uuid, update, shadow.commit_id)
 
+        # CX-k34x: the shadow hardlink shares the OLD inode's (dev, inode)
+        # pair — that's the whole point of hardlinking before the
+        # overwrite (see InodeTracker.atomic_write_with_shadow). Recompute
+        # the registry key from it BEFORE deleting the file, then evict
+        # the registry entry now that reconciliation is complete: the
+        # stale content has been folded into the CRDT, so nothing further
+        # can be learned by continuing to track this inode. Without this,
+        # Registry.track/5 (called on every write) has no matching
+        # eviction and the in-memory map grows one entry per write for
+        # the life of the BEAM.
+        old_inode_key = InodeTracker.inode_key(shadow.shadow_path)
+
         # Clean up the shadow
         InodeTracker.cleanup_shadow(shadow.shadow_path)
+
+        InodeTracker.Registry.remove_shadow(state.inode_registry, old_inode_key)
       end
     end)
   end
