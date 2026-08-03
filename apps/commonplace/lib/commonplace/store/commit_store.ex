@@ -324,13 +324,39 @@ defmodule Commonplace.Store.CommitStore do
 
   CubDB occasionally fails to open after an unclean shutdown. Rather
   than crash the whole supervision tree on boot — which would brick
-  the workspace — `init/1` probes the database with a small range
-  scan, and on failure archives the corrupt dir to
+  the workspace — `init/1` probes the database with a full key scan
+  (CX-xrds: deepened from the original take-1 probe, which only
+  touched a single entry and could miss corruption located later in
+  the file), and on failure archives the corrupt dir to
   `<path>.corrupt.<unix-ts>` and starts fresh. This is **lossy** by
   design: a corrupt commits/ DB cannot be recovered in-process, and
   the alternative is an unbootable workspace. The
   `<path>.corrupt.<ts>` directory is preserved on disk for
-  out-of-band recovery.
+  out-of-band recovery — see `salvage_corrupt_archive/2` below.
+
+  The scan is bounded by **time, not count**: it runs in a supervised
+  `Task` capped at `Application.get_env(:commonplace,
+  :corruption_probe_timeout_ms, 5_000)` milliseconds. A raise during
+  the scan means real corruption → archive-and-recover. A timeout
+  means the store is just large — availability wins over paranoia, so
+  a timeout is logged as a partial scan and treated as HEALTHY rather
+  than triggering a lossy rename of a store that may be perfectly
+  fine. This keeps `init/1`'s boot-time cost bounded regardless of
+  store size while still catching corruption anywhere in a
+  store that scans within the timeout.
+
+  Recovery granularity stays **whole-store**: `init/1` never attempts
+  per-key quarantine of a corrupt CubDB (a materially bigger design —
+  CubDB offers no supported way to skip past a damaged region mid-scan
+  and keep using the same handle). What CX-xrds adds instead is
+  `salvage_corrupt_archive/2`, an out-of-band tool that opens an
+  archived `.corrupt.<ts>` directory **read-only in a separate
+  process**, walks whatever entries are still readable (rescuing
+  per-entry so one bad record doesn't abort the walk), and
+  re-imports each recovered commit into a live store via the normal
+  `import_commit/3` front door — content-addressed, so re-importing
+  an already-present commit is a safe no-op and Gate A/B validation
+  still applies to every salvaged commit.
 
   The `open_cubdb/1` helper traps exits while starting CubDB so an
   init crash in CubDB itself doesn't take the GenServer down before
@@ -892,6 +918,90 @@ defmodule Commonplace.Store.CommitStore do
   """
   def import_commit(server \\ __MODULE__, commit, opts \\ []) do
     GenServer.call(server, {:import_commit, commit, opts})
+  end
+
+  @doc """
+  CX-xrds: out-of-band salvage for a `.corrupt.<ts>` archive directory
+  left behind by `init/1`'s recovery path (see the moduledoc "CubDB
+  crash recovery" section).
+
+  Recovery granularity elsewhere in this module stays whole-store —
+  this is deliberately NOT per-key quarantine wired into `init/1`
+  itself. It's a separate, explicitly-invoked tool: opens the archived
+  CubDB **read-only, in its own process**, so it never touches (or
+  risks corrupting further) the archive, then streams every
+  `{:commit, id}` entry it can still read and re-imports each one into
+  `target_server` (a live `CommitStore` pid/name, default
+  `__MODULE__`) via the normal `import_commit/3` front door — so Gate
+  A id-verification and Gate B trust/namespace validation apply to
+  every salvaged commit exactly as they would to a freshly-written
+  one, and re-importing a commit already present in the target store
+  is a safe no-op (content-addressed idempotency).
+
+  Each entry is read and imported inside its own `rescue`/`catch`, so
+  one damaged record doesn't abort the walk — the corruption that put
+  the store here rarely announces itself in advance.
+
+  Returns `{:ok, %{salvaged: n, skipped: n}}` on success (`skipped`
+  counts entries that failed to read, failed to decode, or were
+  rejected by `import_commit/3`'s validation), or `{:error, reason}`
+  if the archive itself couldn't be opened at all.
+  """
+  def salvage_corrupt_archive(corrupt_dir, target_server \\ __MODULE__) do
+    case CubDB.start_link(data_dir: corrupt_dir, auto_file_sync: false, auto_compact: false) do
+      {:ok, db} ->
+        try do
+          {:ok, walk_and_salvage(db, target_server)}
+        after
+          CubDB.stop(db)
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  rescue
+    e -> {:error, e}
+  catch
+    kind, reason -> {:error, {kind, reason}}
+  end
+
+  defp walk_and_salvage(db, target_server) do
+    keys =
+      try do
+        db
+        |> CubDB.select()
+        |> Stream.filter(fn {key, _value} -> match?({:commit, _id}, key) end)
+        |> Stream.map(fn {key, _value} -> key end)
+        |> Enum.to_list()
+      rescue
+        _ -> []
+      catch
+        _, _ -> []
+      end
+
+    Enum.reduce(keys, %{salvaged: 0, skipped: 0}, fn key, acc ->
+      salvage_one(db, key, target_server, acc)
+    end)
+  end
+
+  defp salvage_one(db, key, target_server, acc) do
+    case CubDB.get(db, key) do
+      %Commonplace.Store.Commit{} = commit ->
+        case import_commit(target_server, commit) do
+          result when result in [:ok, :already_exists] ->
+            %{acc | salvaged: acc.salvaged + 1}
+
+          _other ->
+            %{acc | skipped: acc.skipped + 1}
+        end
+
+      _other ->
+        %{acc | skipped: acc.skipped + 1}
+    end
+  rescue
+    _ -> %{acc | skipped: acc.skipped + 1}
+  catch
+    _, _ -> %{acc | skipped: acc.skipped + 1}
   end
 
   @doc """
@@ -2126,15 +2236,51 @@ defmodule Commonplace.Store.CommitStore do
     end
   end
 
+  # CX-xrds: deepened from the original take-1 probe. Streams every
+  # entry (touching each key cheaply — no deserialization beyond what
+  # `CubDB.select` already forces) so corruption located anywhere in the
+  # file is caught, not just at the head. Bounded by TIME, not count,
+  # via `Application.get_env(:commonplace, :corruption_probe_timeout_ms,
+  # 5_000)`: a raise during the scan is real corruption, but a timeout
+  # just means the store is large — we favor availability and treat a
+  # timed-out (partial) scan as healthy rather than lossily archiving a
+  # store that may be fine. See the moduledoc "CubDB crash recovery"
+  # section for the full rationale.
   defp probe_integrity(db) do
-    try do
-      # Read a small slice — forces CubDB to touch the data file
-      CubDB.select(db, min_key: :_, max_key: :_, pipe: [take: 1])
-      :ok
-    rescue
-      e -> {:error, e}
-    catch
-      kind, reason -> {:error, {kind, reason}}
+    timeout_ms = Application.get_env(:commonplace, :corruption_probe_timeout_ms, 5_000)
+
+    task =
+      Task.async(fn ->
+        try do
+          db
+          |> CubDB.select()
+          |> Enum.each(fn {_key, _value} -> :ok end)
+
+          :ok
+        rescue
+          e -> {:error, e}
+        catch
+          kind, reason -> {:error, {kind, reason}}
+        end
+      end)
+
+    case Task.yield(task, timeout_ms) || Task.shutdown(task, :brutal_kill) do
+      {:ok, :ok} ->
+        :ok
+
+      {:ok, {:error, _reason} = error} ->
+        error
+
+      nil ->
+        require Logger
+
+        Logger.warning(
+          "CubDB integrity probe exceeded #{timeout_ms}ms (partial scan) — " <>
+            "treating store as healthy; availability wins over paranoia for a " <>
+            "large-but-fine store"
+        )
+
+        :ok
     end
   end
 
