@@ -23,6 +23,7 @@ defmodule Commonplace.MUD.Verbs do
     HelpDoc,
     Mint,
     Parser,
+    Render,
     Resolver,
     Schemas,
     SignedWrite,
@@ -763,7 +764,7 @@ defmodule Commonplace.MUD.Verbs do
   # same shape as the others; each hatch adapts to the `module.run(cmd, ctx)`
   # shape `EngineModule` expects.
   @doc false
-  def __where_floor__(_cmd, ctx), do: do_where(ctx)
+  def __where_floor__(_cmd, ctx), do: Render.do_where(ctx)
 
   @doc false
   def __examine_floor__(cmd, ctx), do: do_examine(cmd, ctx)
@@ -823,31 +824,12 @@ defmodule Commonplace.MUD.Verbs do
   @doc false
   def __home_floor__(_cmd, ctx), do: do_home(ctx)
 
-  # CX-82wi — `where`: a non-builder QoL that surfaces the CURRENT room's own
-  # uuid (its address). A room with no inbound exits — every player's home! —
-  # otherwise has an UNLEARNABLE uuid: @dump only printed exit-target + owner
-  # uuids, never the room's own, so you could not @link anything to your home,
-  # @teleport back to it, or hand its address to a friend. `where` (and the
-  # self-uuid now added to `@dump here`) close that gap. Read-only, no auth.
-  defp do_where(ctx) do
-    name =
-      case World.get_room(ctx.current_room_uuid, ctx.store) do
-        {:ok, %Room{name: n}} when is_binary(n) and n != "" -> n
-        _ -> "here"
-      end
-
-    {:reply,
-     "You are in #{name}.\n" <>
-       "uuid: #{ctx.current_room_uuid}\n" <>
-       "(use this with @link <dir> <uuid> / @teleport <uuid>, or share it so others can link here)"}
-  end
-
   defp do_look(%Parser.Command{argv: []}, ctx) do
-    {:reply, render_room(ctx)}
+    {:reply, Render.render_room(ctx)}
   end
 
   defp do_look(%Parser.Command{target: target}, ctx) when target in ["here", "room"] do
-    {:reply, render_room(ctx)}
+    {:reply, Render.render_room(ctx)}
   end
 
   defp do_look(%Parser.Command{target: target}, ctx) when target in ["me", "self", "myself"] do
@@ -866,7 +848,7 @@ defmodule Commonplace.MUD.Verbs do
   # rest as a container (room/inventory), same resolver `put`/`get
   # ... from` use.
   defp do_look(%Parser.Command{argv: ["in" | rest]}, ctx) when rest != [] do
-    do_look_in_container(rest, ctx)
+    Render.do_look_in_container(rest, ctx)
   end
 
   defp do_look(%Parser.Command{argv: argv}, ctx) do
@@ -874,72 +856,10 @@ defmodule Commonplace.MUD.Verbs do
 
     case Resolver.greedy_match_entry([ctx.inventory_uuid, ctx.current_room_uuid], argv, ctx.store) do
       {:ok, entry, _phrase, _remainder} ->
-        render_looked_at_entry(entry, phrase_label, ctx)
+        Render.render_looked_at_entry(entry, phrase_label, ctx)
 
       :not_found ->
         {:error, "You don't see \"#{phrase_label}\" here."}
-    end
-  end
-
-  # CX-cj3t.1.1: plain "look <obj>" on a container renders its contents
-  # instead of the description; a non-container object keeps the old
-  # name+description behavior unchanged.
-  defp render_looked_at_entry(entry, phrase_label, ctx) do
-    case Resolver.resolve_entry(entry, ctx) do
-      {:ok, :object, %Object{container?: true} = obj} ->
-        # CX-hbbi — a sealed container hides its contents on plain `look`
-        # too (not just `look in`) — no spoiling the box through the door.
-        if container_sealed?(entry.node_id, ctx.store) do
-          {:reply, "The #{obj.name} is sealed."}
-        else
-          {:reply, render_container_contents(entry.node_id, obj.name, ctx)}
-        end
-
-      {:ok, :object, %Object{} = obj} ->
-        {:reply, "#{obj.name}\n#{obj.description}"}
-
-      {:ok, :player, %Player{} = pl} ->
-        title = if pl.title == "", do: pl.name, else: pl.title
-        {:reply, "#{title}\n#{pl.description}"}
-
-      :not_found ->
-        {:error, "You don't see \"#{phrase_label}\" here."}
-    end
-  end
-
-  defp do_look_in_container(argv, ctx) do
-    container_phrase = Enum.join(argv, " ")
-
-    case Resolver.resolve_container(container_phrase, [ctx.inventory_uuid, ctx.current_room_uuid], ctx) do
-      {:ok, container_entry, %Object{} = container_obj} ->
-        # CX-hbbi — sealed (locked OR key-gated) hides contents on look.
-        if container_sealed?(container_entry.node_id, ctx.store) do
-          {:error, "The #{container_obj.name} is sealed."}
-        else
-          {:reply, render_container_contents(container_entry.node_id, container_obj.name, ctx)}
-        end
-
-      {:error, {:not_a_container, name}} ->
-        {:error, "You can't look inside the #{name}."}
-
-      {:error, :not_found} ->
-        {:error, "You don't see \"#{container_phrase}\" here."}
-    end
-  end
-
-  defp render_container_contents(container_uuid, container_name, ctx) do
-    items =
-      World.list_objects_in(container_uuid, ctx.store)
-      |> Enum.map(fn e ->
-        case Schemas.load_object(e.node_id, ctx.store) do
-          {:ok, %Object{name: name}} -> name
-          _ -> e.name |> String.replace_suffix(".obj", "")
-        end
-      end)
-
-    case items do
-      [] -> "The #{container_name} is empty."
-      _ -> "The #{container_name} contains: #{Enum.join(items, ", ")}."
     end
   end
 
@@ -960,37 +880,18 @@ defmodule Commonplace.MUD.Verbs do
   # write_guarded([chest]) = intersection), NOT an arbitrary VISITOR —
   # visitor-usable keys are the deferred setuid / before_get-hook tiers
   # (CX-spyc / the high-trust hook bead).
-  defp container_locked?(container_uuid, store) do
-    case World.get_meta_map(container_uuid, Schemas.object_filename(), store) do
-      {:ok, %{"state" => %{"locked" => true}}} -> true
-      _ -> false
-    end
-  end
-
+  #
+  # CX-ud1u (rendering extraction): the container-LOCKED/lock_key READS
+  # moved to `Commonplace.MUD.Render` (they back the `container_sealed?`
+  # look-hiding decision there); these two MUTATION-path gates stay here
+  # since `do_get_from`/`put_item_in` are dispatch, not rendering, and now
+  # call through to `Render`'s public reads unchanged.
   defp ensure_unlocked(container_uuid, name, store) do
-    if container_locked?(container_uuid, store), do: {:error, {:locked, name}}, else: :ok
-  end
-
-  # CX-uwam — a container may declare state["lock_key"] = "<item name>". The
-  # builtin get/put-from-container then requires the TAKER to HOLD a matching
-  # item, evaluated against THEIR OWN inventory — a PER-PLAYER key gate
-  # (unlike the global `locked` flag). AIRTIGHT: do_get_from is the sole
-  # container-extract path (plan #6087 verified — transfer/3 is put-only,
-  # source server-fixed to the invoker), so there's no verb-authoring bypass.
-  # HONESTY LIMIT: NAME-matched, so a player who can mint+name an item forges
-  # the key — this closes the BYPASS (the theater bug), it is NOT tamper-proof
-  # (unforgeable/provenance keys ride the before_get-hook tier). Low-trust:
-  # declarative attr + a builtin actor-inventory check, no author code, same
-  # class as the `locked` flag.
-  defp container_lock_key(container_uuid, store) do
-    case World.get_meta_map(container_uuid, Schemas.object_filename(), store) do
-      {:ok, %{"state" => %{"lock_key" => key}}} when is_binary(key) and key != "" -> {:ok, key}
-      _ -> :none
-    end
+    if Render.container_locked?(container_uuid, store), do: {:error, {:locked, name}}, else: :ok
   end
 
   defp ensure_has_key(container_uuid, name, ctx) do
-    case container_lock_key(container_uuid, ctx.store) do
+    case Render.container_lock_key(container_uuid, ctx.store) do
       {:ok, key} ->
         if match?({:ok, _}, World.find_entry_by_name(ctx.inventory_uuid, key, ctx.store)),
           do: :ok,
@@ -1000,46 +901,6 @@ defmodule Commonplace.MUD.Verbs do
         :ok
     end
   end
-
-  # CX-hbbi — a container reads as SEALED (contents hidden on look) when the
-  # `locked` flag is set OR it declares a lock_key. Command-layer gameplay
-  # hiding only (plan #6087) — NOT confidentiality; the doc stays readable
-  # directly (real read-secrecy = read-scoping, absent today). Good for a
-  # puzzle, do not imply secrecy.
-  defp container_sealed?(container_uuid, store) do
-    container_locked?(container_uuid, store) or match?({:ok, _}, container_lock_key(container_uuid, store))
-  end
-
-  # CX-ivqz (read-scoping P2): the in-world `look` renderer gates through
-  # the SAME `World.room_snapshot/4` check as the UI pane (Seam 2.1) — a
-  # `capability_gated` room refused to this viewer renders "That place is
-  # private." instead of leaking name/desc/exits/contents/occupants (Z1/Z2).
-  # Field-shape kept identical to the pre-P2 rendering (exits
-  # direction-only, sorted; contents/occupants are name lists) so a
-  # PUBLIC room's `look` output is byte-for-byte unchanged (no-regression).
-  defp render_room(ctx) do
-    case World.room_snapshot(ctx.current_room_uuid, ctx.presence_filename, ctx.store,
-           viewer: taker_identity(ctx)
-         ) do
-      {:ok, %{name: name, desc: desc, exits: exits, contents: objects, occupants: players}} ->
-        exit_dirs = exits |> Enum.map(fn {dir, _to} -> dir end)
-
-        IO.iodata_to_binary([
-          "== ", name, " ==\n",
-          desc, "\n",
-          if(exit_dirs == [], do: "Exits: (none)\n", else: ["Exits: ", Enum.join(exit_dirs, ", "), "\n"]),
-          if(objects == [], do: "", else: ["You see: ", Enum.join(objects, ", "), "\n"]),
-          if(players == [], do: "", else: ["Players: ", Enum.join(players, ", "), "\n"])
-        ])
-
-      {:error, :read_denied} ->
-        "That place is private."
-
-      {:error, _} ->
-        "(this place has no description)"
-    end
-  end
-
 
   # ---- examine / search / read / use / sit / stand (CX-z6ub M2.2) ----
   #
@@ -1058,58 +919,12 @@ defmodule Commonplace.MUD.Verbs do
 
     case Resolver.greedy_match_entry([ctx.inventory_uuid, ctx.current_room_uuid], argv, ctx.store) do
       {:ok, entry, _phrase, _remainder} ->
-        render_examined_entry(entry, phrase_label, ctx)
+        Render.render_examined_entry(entry, phrase_label, ctx)
 
       :not_found ->
         {:error, "You don't see \"#{phrase_label}\" here."}
     end
   end
-
-  defp render_examined_entry(entry, phrase_label, ctx) do
-    case Resolver.resolve_entry(entry, ctx) do
-      {:ok, :object, %Object{} = obj} ->
-        {:reply, examine_object_text(entry.node_id, obj, ctx)}
-
-      {:ok, :player, %Player{} = pl} ->
-        title = if pl.title == "", do: pl.name, else: pl.title
-        {:reply, "#{title}\n#{pl.description}"}
-
-      :not_found ->
-        {:error, "You don't see \"#{phrase_label}\" here."}
-    end
-  end
-
-  # CX-mxxe / CX-hh70 — casual, player-facing `examine` is name + description
-  # ONLY. It deliberately does NOT append the object's freeform `meta["state"]`:
-  # that block leaked puzzle answer keys (altar `expect: spark` / `solved: yes`,
-  # orrery `charge: N`) to any newcomer just reading a description, and broadcast
-  # the per-player actor_ref→name mapping the @verb editor tells builders to key
-  # private state on (score:<ref>, forecast:<ref>). Raw state now lives on the
-  # builder/debug `@dump <obj>` path (the raw-internals command) instead.
-  defp examine_object_text(_uuid, %Object{} = obj, _ctx) do
-    "#{obj.name}\n#{obj.description}"
-  end
-
-  # Render the object's freeform `meta["state"]` submap (CX-hqk5 — dropped by
-  # the typed `Object` struct, so read the raw meta map) as a short block, or
-  # "" when there's nothing notable.
-  defp notable_state(uuid, store) do
-    case World.get_meta_map(uuid, Schemas.object_filename(), store) do
-      {:ok, %{"state" => state}} when is_map(state) and map_size(state) > 0 ->
-        lines =
-          state
-          |> Enum.map(fn {k, v} -> "  #{k}: #{format_state_value(v)}" end)
-          |> Enum.join("\n")
-
-        "State:\n" <> lines
-
-      _ ->
-        ""
-    end
-  end
-
-  defp format_state_value(v) when is_binary(v), do: v
-  defp format_state_value(v), do: inspect(v)
 
   # read <obj>: reads `meta["state"]["text"]` if present, else the object's
   # description, else a nothing-to-read note.
@@ -1121,26 +936,12 @@ defmodule Commonplace.MUD.Verbs do
     case Resolver.greedy_match_entry([ctx.inventory_uuid, ctx.current_room_uuid], argv, ctx.store) do
       {:ok, entry, _phrase, _remainder} ->
         case Resolver.resolve_entry(entry, ctx) do
-          {:ok, :object, %Object{} = obj} -> {:reply, read_object_text(entry.node_id, obj, ctx)}
+          {:ok, :object, %Object{} = obj} -> {:reply, Render.read_object_text(entry.node_id, obj, ctx)}
           _ -> {:reply, "There's nothing to read on #{phrase_label}."}
         end
 
       :not_found ->
         {:error, "You don't see \"#{phrase_label}\" here."}
-    end
-  end
-
-  defp read_object_text(uuid, %Object{} = obj, ctx) do
-    case World.get_meta_map(uuid, Schemas.object_filename(), ctx.store) do
-      {:ok, %{"state" => %{"text" => text}}} when is_binary(text) and text != "" ->
-        "The #{obj.name} reads: #{text}"
-
-      _ ->
-        if is_binary(obj.description) and obj.description != "" do
-          "The #{obj.name} reads: #{obj.description}"
-        else
-          "There's nothing to read on #{obj.name}."
-        end
     end
   end
 
@@ -1943,7 +1744,7 @@ defmodule Commonplace.MUD.Verbs do
               {:ok, :object, obj} ->
                 struct_text = inspect(obj, pretty: true)
 
-                case notable_state(entry.node_id, ctx.store) do
+                case Render.notable_state(entry.node_id, ctx.store) do
                   "" -> {:reply, struct_text}
                   state_text -> {:reply, struct_text <> "\n" <> state_text}
                 end
@@ -2700,7 +2501,13 @@ defmodule Commonplace.MUD.Verbs do
   # item to the taker (see `Commonplace.MUD.Take`), so the taker's own
   # signing context never rides the write. Only their bare identity_uuid
   # (the possession-token holder) is needed.
-  defp taker_identity(ctx) do
+  #
+  # CX-ud1u (rendering extraction): made public (was `defp`) so
+  # `Commonplace.MUD.Render.render_room/1` — which needs the viewer
+  # identity for `World.room_snapshot/4`'s read-scoping check — can call
+  # it without duplicating the signing-context lookup.
+  @doc "The invoker's bare identity_uuid from `ctx.signing_context`, or `nil`."
+  def taker_identity(ctx) do
     case ctx[:signing_context] do
       %{identity_uuid: id} when is_binary(id) -> id
       # no signed identity -> Take returns {:error, :bad_arg}, refused gracefully
