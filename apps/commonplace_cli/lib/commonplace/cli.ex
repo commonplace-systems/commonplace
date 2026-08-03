@@ -35,6 +35,8 @@ defmodule Commonplace.CLI do
     attest [path]                 Sign the head of a document (gold chain)
     cap <issue|delegate|show>     Issue/attenuate capability certs (phase 3)
     checkpoint [--owner name]     Create a reflog checkpoint
+    reflog list [--owner name]    List reflog checkpoints
+    reflog restore <commit-id> [--owner name] [--as name]  Restore a checkpoint as a new branch
     snapshot [path]               Force a snapshot commit for the doc at path (or workspace root)
     mud connect <name>            Connect to the workspace MUD world (shares the serve daemon)
     bd <subcommand>               Beads issue tracker on commonplace (create/show/update/close/list/ready/…)
@@ -115,6 +117,7 @@ defmodule Commonplace.CLI do
       "attest" -> Commonplace.CLI.Attest.run(data_dir, relative_path, rest)
       "cap" -> Commonplace.CLI.Cap.run(data_dir, relative_path, rest)
       "checkpoint" -> Commonplace.CLI.Checkpoint.run(data_dir, relative_path, rest)
+      "reflog" -> Commonplace.CLI.Reflog.run(data_dir, relative_path, rest)
       "snapshot" -> Commonplace.CLI.Snapshot.run(data_dir, relative_path, rest)
       "mud" -> Commonplace.CLI.Mud.run(data_dir, relative_path, rest)
       "bd" -> Commonplace.CLI.Bd.run(data_dir, relative_path, rest)
