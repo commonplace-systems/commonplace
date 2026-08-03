@@ -20,7 +20,7 @@ defmodule Commonplace.MUD.Verbs do
   alias Commonplace.MUD.Schemas.{Object, Player, Room}
   alias Commonplace.MUD.World.Facade
   alias Commonplace.Tree.Schema
-  alias Commonplace.Store.CommitStoreClient
+  alias Commonplace.Store.{CommitStore, CommitStoreClient}
   alias Commonplace.Trust.{Capability, VerifyChain}
 
   require Logger
@@ -488,7 +488,7 @@ defmodule Commonplace.MUD.Verbs do
 
     certs =
       store
-      |> CommitStoreClient.commit_log(host_uuid, limit: 10_000)
+      |> CommitStoreClient.commit_log(host_uuid, limit: CommitStore.max_commit_log_limit())
       |> Enum.map(&get_in(&1.metadata, [:capability_proof]))
       |> Enum.reject(&is_nil/1)
       |> Enum.uniq()

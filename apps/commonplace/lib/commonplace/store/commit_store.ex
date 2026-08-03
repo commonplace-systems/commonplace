@@ -443,6 +443,12 @@ defmodule Commonplace.Store.CommitStore do
   alias Commonplace.Store.{Commit, CommitBuilder}
   alias Commonplace.Trust.CodeDocHeuristic
 
+  # Shared ceiling for commit_log walks (CX-klpi). Callers that hit
+  # exactly this many results should treat the log as possibly-truncated
+  # — the walk stopped because it hit the cap, not because it reached
+  # the genesis commit.
+  @max_commit_log_limit 10_000
+
   def start_link(opts) do
     name = Keyword.get(opts, :name, __MODULE__)
     GenServer.start_link(__MODULE__, opts, name: name)
@@ -819,6 +825,15 @@ defmodule Commonplace.Store.CommitStore do
   def commit_log(server \\ __MODULE__, doc_uuid, opts \\ []) do
     do_commit_log(resolve_db(server), doc_uuid, opts)
   end
+
+  @doc """
+  The shared ceiling for `commit_log/3` walks (CX-klpi). Callers that
+  pass this as `:limit` and get back exactly this many results should
+  treat the log as possibly-truncated — the walk may have stopped
+  before reaching genesis.
+  """
+  @spec max_commit_log_limit() :: pos_integer()
+  def max_commit_log_limit, do: @max_commit_log_limit
 
   @doc "Return a MapSet of all document UUIDs that have a `:latest` entry."
   def all_doc_uuids(server \\ __MODULE__) do

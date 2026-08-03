@@ -910,7 +910,29 @@ defmodule Commonplace.Trust do
       # default config keeps compile O(cache-hit) on hot paths.
       :ok
     else
-      log = Commonplace.Store.CommitStoreClient.commit_log(store, doc_uuid, limit: 10_000)
+      limit = Commonplace.Store.CommitStore.max_commit_log_limit()
+      log = Commonplace.Store.CommitStoreClient.commit_log(store, doc_uuid, limit: limit)
+
+      if length(log) >= limit do
+        # CX-klpi: the walk hit the shared cap and may not have reached
+        # genesis — the verdict below could be authorizing against a
+        # partial contributor history. Whether a truncated walk should
+        # itself deny is a held decision (fail-closed behavior change is
+        # explicitly out of scope here — CX-klpi's held half); this only
+        # makes the previously-silent case loud.
+        Logger.warning(
+          "Trust.authorized_to_execute?: commit_log hit the #{limit}-commit cap for doc " <>
+            "#{doc_uuid} — Gate B authorization may be evaluated against a truncated " <>
+            "contributor history (CX-klpi)"
+        )
+
+        :telemetry.execute(
+          [:commonplace, :trust, :authorization_log_truncated],
+          %{count: length(log)},
+          %{uuid: doc_uuid}
+        )
+      end
+
       walk_contributors(store, doc_uuid, log, cfg)
     end
   end

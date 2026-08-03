@@ -5,7 +5,9 @@ defmodule Commonplace.Tree.DocBuilder do
   Used by Fork and Merge to replay commits and build documents.
   """
 
-  alias Commonplace.Store.CommitStoreClient
+  require Logger
+
+  alias Commonplace.Store.{CommitStore, CommitStoreClient}
   alias Yelixer.{Doc, Encoding}
 
   @doc """
@@ -30,13 +32,17 @@ defmodule Commonplace.Tree.DocBuilder do
   Read-only callers can omit the option.
   """
   def reconstruct_doc(store, uuid, opts \\ []) do
-    commits = CommitStoreClient.commit_log(store, uuid, limit: 10_000) |> Enum.reverse()
+    commits =
+      CommitStoreClient.commit_log(store, uuid, limit: CommitStore.max_commit_log_limit())
+      |> Enum.reverse()
 
     case commits do
       [] ->
         :none
 
       _ ->
+        maybe_warn_truncated(commits, uuid)
+
         commits_to_apply = commits |> trim_to_latest_snapshot() |> Enum.reject(&genesis?/1)
         doc = Doc.new(opts)
 
@@ -99,6 +105,30 @@ defmodule Commonplace.Tree.DocBuilder do
         # to a position from the start, then drop everything before it.
         Enum.drop(commits, length(commits) - 1 - idx_from_end)
     end
+  end
+
+  # CX-klpi: the commit_log walk is capped at max_commit_log_limit(). If
+  # we got back exactly that many commits AND none of them is a snapshot,
+  # the walk may have stopped short of genesis with nothing to short-
+  # circuit reconstruction — make the previously-silent truncation loud.
+  # Behavior is unchanged; this only adds observability.
+  defp maybe_warn_truncated(commits, uuid) do
+    limit = CommitStore.max_commit_log_limit()
+
+    if length(commits) >= limit and not Enum.any?(commits, &snapshot?/1) do
+      Logger.warning(
+        "DocBuilder.reconstruct_doc: commit_log hit the #{limit}-commit cap for doc #{uuid} " <>
+          "with no snapshot found in the window — reconstruction may be silently truncated (CX-klpi)"
+      )
+
+      :telemetry.execute(
+        [:commonplace, :doc_builder, :truncated_no_snapshot],
+        %{count: length(commits)},
+        %{uuid: uuid}
+      )
+    end
+
+    :ok
   end
 
   defp snapshot?(commit) do
@@ -165,7 +195,9 @@ defmodule Commonplace.Tree.DocBuilder do
   later in the chain.
   """
   def reconstruct_doc_at(store, uuid, target_commit_id, opts \\ []) do
-    commits = CommitStoreClient.commit_log(store, uuid, limit: 10_000) |> Enum.reverse()
+    commits =
+      CommitStoreClient.commit_log(store, uuid, limit: CommitStore.max_commit_log_limit())
+      |> Enum.reverse()
 
     result =
       Enum.reduce_while(commits, {:not_found, []}, fn commit, {_status, acc} ->

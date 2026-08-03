@@ -30,7 +30,7 @@ defmodule Commonplace.Audit.LwwLoss do
   against a copy or disable `:reader_lazy_snapshot_enabled` first.
   """
 
-  alias Commonplace.Store.CommitStoreClient
+  alias Commonplace.Store.{CommitStore, CommitStoreClient}
   alias Commonplace.Tree.DocBuilder
   alias Yelixer.{BlockStore, DeleteSet, Doc, Encoding, Item}
 
@@ -77,7 +77,7 @@ defmodule Commonplace.Audit.LwwLoss do
   @spec audit_doc(GenServer.server(), String.t(), keyword()) :: {:ok, [finding()]}
   def audit_doc(store, uuid, opts \\ []) do
     commits =
-      CommitStoreClient.commit_log(store, uuid, limit: 10_000)
+      CommitStoreClient.commit_log(store, uuid, limit: CommitStore.max_commit_log_limit())
       |> Enum.reverse()
       |> Enum.reject(&kind?(&1, :genesis))
 

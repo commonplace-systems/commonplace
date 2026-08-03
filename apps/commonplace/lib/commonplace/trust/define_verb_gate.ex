@@ -57,11 +57,14 @@ defmodule Commonplace.Trust.DefineVerbGate do
   (Axis E) explicitly buckets "define-walk caching (watermark-style)"
   under Phase 2, not MVP. Every `SourceDoc.compile/3` call with a
   `{:verb, _}` gate re-walks the full contributor chain (bounded by the
-  same `commit_log(..., limit: 10_000)` ceiling Gate B uses). Correct,
+  same `commit_log(..., limit: CommitStore.max_commit_log_limit())`
+  ceiling Gate B uses). Correct,
   not yet optimized — flagged in the CX-ndvi completion report.
   """
 
-  alias Commonplace.Store.CommitStoreClient
+  require Logger
+
+  alias Commonplace.Store.{CommitStore, CommitStoreClient}
   alias Commonplace.Trust
 
   @doc """
@@ -85,7 +88,28 @@ defmodule Commonplace.Trust.DefineVerbGate do
       # walk entirely under the zero-config default).
       :ok
     else
-      log = CommitStoreClient.commit_log(store, doc_uuid, limit: 10_000)
+      limit = CommitStore.max_commit_log_limit()
+      log = CommitStoreClient.commit_log(store, doc_uuid, limit: limit)
+
+      if length(log) >= limit do
+        # CX-klpi: walk hit the shared cap and may not have reached
+        # genesis. Whether a truncated walk should itself deny is a
+        # held decision (fail-closed behavior change out of scope here
+        # — CX-klpi's held half); this only makes the previously-silent
+        # case loud.
+        Logger.warning(
+          "DefineVerbGate.authorized_to_define?: commit_log hit the #{limit}-commit cap " <>
+            "for doc #{doc_uuid} — define-verb authorization may be evaluated against a " <>
+            "truncated contributor history (CX-klpi)"
+        )
+
+        :telemetry.execute(
+          [:commonplace, :trust, :authorization_log_truncated],
+          %{count: length(log)},
+          %{uuid: doc_uuid}
+        )
+      end
+
       walk(store, log, section_scope, cfg)
     end
   end

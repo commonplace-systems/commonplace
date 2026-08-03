@@ -42,7 +42,7 @@ defmodule Commonplace.MUD.Sections do
 
   alias Commonplace.Crypto.NodeIdentity
   alias Commonplace.Dataflow.PubSub, as: CPPubSub
-  alias Commonplace.Store.CommitStoreClient
+  alias Commonplace.Store.{CommitStore, CommitStoreClient}
   alias Commonplace.Trust.Capability
 
   require Logger
@@ -226,7 +226,7 @@ defmodule Commonplace.MUD.Sections do
 
   defp candidate_certs(context_room_uuid, store) do
     store
-    |> CommitStoreClient.commit_log(context_room_uuid, limit: 10_000)
+    |> CommitStoreClient.commit_log(context_room_uuid, limit: CommitStore.max_commit_log_limit())
     |> Enum.map(&get_in(&1.metadata, [:capability_proof]))
     |> Enum.reject(&is_nil/1)
     |> Enum.uniq()

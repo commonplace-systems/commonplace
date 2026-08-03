@@ -356,4 +356,10 @@ defmodule Commonplace.Store.CommitStoreTest do
       assert :miss = CommitStore.get_execute_clean(store, 2, <<2>>)
     end
   end
+
+  describe "max_commit_log_limit/0 (CX-klpi)" do
+    test "returns the shared commit_log ceiling" do
+      assert CommitStore.max_commit_log_limit() == 10_000
+    end
+  end
 end

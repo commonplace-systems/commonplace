@@ -202,7 +202,7 @@ defmodule Commonplace.Tree.Fork do
   """
 
   alias Commonplace.Tree.{Schema, DocBuilder}
-  alias Commonplace.Store.CommitStoreClient
+  alias Commonplace.Store.{CommitStore, CommitStoreClient}
   alias Commonplace.Process.Config
   alias Commonplace.Document.ContentType
   alias Yelixer.{Doc, Encoding}
@@ -352,7 +352,7 @@ defmodule Commonplace.Tree.Fork do
   # across replicas. Returns a commit id (a binary), or nil for an
   # empty chain.
   defp commit_at_or_before(store, uuid, reference_time) do
-    chain = CommitStoreClient.commit_log(store, uuid, limit: 10_000)
+    chain = CommitStoreClient.commit_log(store, uuid, limit: CommitStore.max_commit_log_limit())
 
     case Enum.find(chain, fn c -> DateTime.compare(c.timestamp, reference_time) != :gt end) do
       nil ->
