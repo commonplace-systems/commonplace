@@ -38,6 +38,25 @@ defmodule Commonplace.Presence.Server do
   def uuid(pid), do: GenServer.call(pid, :uuid)
   def identity_uuid(pid), do: GenServer.call(pid, :identity_uuid)
 
+  @doc """
+  Set the `activity` field on this actor's presence doc.
+
+  CX-l5js: threads the server's own `:signing_context` / `:cert_cids`
+  (the same creds used for create/status/heartbeat/remove, CX-i9w9) so the
+  managed presence path stays signed under `:enforce` — callers no longer
+  need to (and cannot) hand-supply creds for a presence doc they don't own.
+  """
+  def set_activity(pid, activity), do: GenServer.call(pid, {:set_activity, activity})
+
+  @doc """
+  Write a batch of optional presence attributes (`:owner` / `:cwd` /
+  `:capabilities`) on this actor's presence doc.
+
+  CX-l5js: threads the server's own `:signing_context` / `:cert_cids`, same
+  as `set_activity/2`.
+  """
+  def set_attributes(pid, attrs), do: GenServer.call(pid, {:set_attributes, attrs})
+
   @impl true
   def init(opts) do
     name = Keyword.fetch!(opts, :name)
@@ -81,6 +100,18 @@ defmodule Commonplace.Presence.Server do
   @impl true
   def handle_call(:identity_uuid, _from, state) do
     {:reply, state.identity_uuid, state}
+  end
+
+  @impl true
+  def handle_call({:set_activity, activity}, _from, state) do
+    result = Presence.set_activity(state.uuid, activity, state.store, creds(state))
+    {:reply, result, state}
+  end
+
+  @impl true
+  def handle_call({:set_attributes, attrs}, _from, state) do
+    result = Presence.set_attributes(state.uuid, attrs, state.store, creds(state))
+    {:reply, result, state}
   end
 
   @impl true

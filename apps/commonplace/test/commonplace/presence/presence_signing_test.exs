@@ -135,6 +135,42 @@ defmodule Commonplace.Presence.SigningTest do
     assert heartbeat_of(puuid, store) == hb0
   end
 
+  test "SIGNED set_activity/set_attributes land via the carve (CX-l5js)", %{
+    store: store,
+    node_ctx: node_ctx,
+    room: room
+  } do
+    p = player_with_presence_cert(store, node_ctx)
+    {:ok, puuid} = Presence.create("actor-#{p.id |> String.slice(0, 6)}", :usr, room, store, p.creds)
+
+    assert %Commonplace.Store.Commit{} = Presence.set_activity(puuid, "writing tests", store, p.creds)
+    {:ok, doc} = DocBuilder.reconstruct_doc(store, puuid)
+    assert %{"activity" => "writing tests"} = ContentType.get_content(doc)
+
+    assert %Commonplace.Store.Commit{} =
+             Presence.set_attributes(puuid, %{owner: "alice"}, store, p.creds)
+
+    {:ok, doc2} = DocBuilder.reconstruct_doc(store, puuid)
+    assert %{"owner" => "alice"} = ContentType.get_content(doc2)
+  end
+
+  test "UNSIGNED set_activity/set_attributes are refused under enforce", %{
+    store: store,
+    node_ctx: node_ctx,
+    room: room
+  } do
+    p = player_with_presence_cert(store, node_ctx)
+    {:ok, puuid} = Presence.create("silent-#{p.id |> String.slice(0, 6)}", :usr, room, store, p.creds)
+
+    assert {:error, {:trust_rejected, :unsigned}} = Presence.set_activity(puuid, "sneaky", store)
+    assert {:error, {:trust_rejected, :unsigned}} = Presence.set_attributes(puuid, %{owner: "eve"}, store)
+
+    {:ok, doc} = DocBuilder.reconstruct_doc(store, puuid)
+    content = ContentType.get_content(doc)
+    refute Map.get(content, "activity") == "sneaky"
+    refute Map.get(content, "owner") == "eve"
+  end
+
   test "reaper stays a DELIBERATE no-op under enforce (unsigned) — must not reap the frozen-heartbeat living", %{
     store: store,
     node_ctx: node_ctx,

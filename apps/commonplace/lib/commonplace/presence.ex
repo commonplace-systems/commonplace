@@ -287,14 +287,19 @@ defmodule Commonplace.Presence do
   Writes a single chained commit on the presence document. Pass `nil` or
   the empty string to clear the field — both are stored as-is so callers
   can distinguish "no activity" from "never set".
+
+  `opts` — same `:signing_context` / `:cert_cids` shape as `create/5` /
+  `update_status/4` (CX-i9w9 / CX-l5js); default `[]` reproduces today's
+  unsigned behavior (denied under `:enforce`).
   """
-  def set_activity(uuid, activity, store \\ CommitStoreClient)
+  def set_activity(uuid, activity, store \\ CommitStoreClient, opts \\ [])
       when is_binary(uuid) do
     doc = load_doc(uuid, store)
     value = if is_nil(activity), do: "", else: to_string(activity)
     doc = ContentType.set_key(doc, "activity", value)
     update = Yelixer.Encoding.encode_update(doc)
-    CommitStoreClient.create_chained_commit(store, uuid, update)
+    {metadata, commit_opts} = SignedWrite.opts_for(uuid, Keyword.put(opts, :store, store))
+    CommitStoreClient.create_chained_commit(store, uuid, update, metadata, commit_opts)
   end
 
   @doc """
@@ -316,8 +321,12 @@ defmodule Commonplace.Presence do
   callers populate owner/cwd/capabilities at start-up time without
   expanding the `create/2` signature, keeping the write surface
   composable for tests and CLI harnesses.
+
+  `opts` — same `:signing_context` / `:cert_cids` shape as `create/5` /
+  `update_status/4` (CX-i9w9 / CX-l5js); default `[]` reproduces today's
+  unsigned behavior (denied under `:enforce`).
   """
-  def set_attributes(uuid, attrs, store \\ CommitStoreClient) when is_binary(uuid) do
+  def set_attributes(uuid, attrs, store \\ CommitStoreClient, opts \\ []) when is_binary(uuid) do
     attrs = if is_list(attrs), do: Enum.into(attrs, %{}), else: attrs
     doc = load_doc(uuid, store)
 
@@ -345,7 +354,8 @@ defmodule Commonplace.Presence do
       end)
 
     update = Yelixer.Encoding.encode_update(doc)
-    CommitStoreClient.create_chained_commit(store, uuid, update)
+    {metadata, commit_opts} = SignedWrite.opts_for(uuid, Keyword.put(opts, :store, store))
+    CommitStoreClient.create_chained_commit(store, uuid, update, metadata, commit_opts)
   end
 
   defp normalize_key(key) when is_atom(key), do: key
