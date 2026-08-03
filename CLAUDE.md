@@ -8,12 +8,14 @@ This is a port from a Rust version at `/home/jes/commonplace-rs/`. The Elixir ve
 
 ## Architecture
 
-Elixir umbrella with four apps:
+Elixir umbrella with six apps:
 
 - **yelixer** — Pure Elixir Y.js CRDT library. Wire-compatible with Yjs V1 binary protocol. Supports Text, Map, Array, XML types. Also maintained as a standalone repo at `jes5199/yelixer`.
 - **commonplace** — Core library: CommitStore (CubDB), document tree (Schema, Fork, Merge, DocBuilder), sync agent, inode tracking.
 - **commonplace_cli** — CLI escript for init, sync, checkout, branch, merge operations.
-- **commonplace_web** — Phoenix LiveView UI (early stage).
+- **commonplace_web** — Phoenix LiveView UI with invite-token auth (two-phase: `require_auth` plug for dead-render + `on_mount ensure_authenticated` for the websocket mount), wiki/tree/outline/chat LiveViews, a browser MUD client (`MudLive`), and a bearer-token federation endpoint.
+- **commonplace_mcp** — MCP server escript giving agents access to a live workspace over BEAM distribution; refuses to run without a running `commonplace serve` (the refuse-without-serve contract).
+- **commonplace_bots** — Agent-citizen runtime: LLM tool-use loop with call/token/wall-clock budgets, persona/charter docs, Telegram bridge.
 
 ### Key data flow
 
@@ -28,6 +30,10 @@ Elixir umbrella with four apps:
 - **CommitStore**: CubDB at `.commonplace/commits/`. Append-only — data is never deleted.
 - **Workspace**: Synced files live in the workspace directory. `.commonplace/` holds the database.
 - **Shadow tracking**: `.commonplace-shadow/` directories hold hardlinks for stale write detection.
+
+### MUD
+
+Rooms, objects, and verbs are CRDT docs under the workspace tree (`lib/commonplace/mud/`). Citizen-authored verbs run as sandboxed "safe verbs" against the Facade allowlist (closed-by-default). Largest subsystem in core (~17k lines).
 
 ## Running tests
 
@@ -47,6 +53,7 @@ CI uses `--warnings-as-errors` — fix all compiler warnings before pushing.
 - **Commits**: Use `CommitStore.create_chained_commit/3` for existing docs (chains to latest). Never create commits with `parent_id: nil` for existing documents.
 - **Doc reconstruction**: Use `DocBuilder.reconstruct_doc/2` (full chain), `reconstruct_snapshot/2` (latest commit only), or `reconstruct_doc_at/3` (up to specific commit).
 - **Merge**: `Merge.merge(source_uuid, target_uuid, store)` returns `{:ok, %MergeReport{}}`. Auto-renames on name collision (`.merge-conflict` suffix). Detects node_id replacements under unchanged filenames.
+- **Trust / enforce mode**: Commits are Ed25519-signed. Gate A (`CommitStore.import_commit`) always verifies. Local write gate is staged via `:local_write_gate` (`COMMONPLACE_LOCAL_WRITE_GATE`), local read gate via `:local_read_gate` (`COMMONPLACE_LOCAL_READ_GATE`). `Trust.posture/0` reports the resolved knobs in one call.
 
 ## Issue tracking
 
