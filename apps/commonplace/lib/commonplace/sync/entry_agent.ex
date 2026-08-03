@@ -37,6 +37,17 @@ defmodule Commonplace.Sync.EntryAgent do
   metadata-only commit, and the content hash alone can't notice CRDT-side
   history moving forward.
 
+  ## Inbound-clobber guard (CX-dvtj, porting CX-60wl)
+
+  Before writing CRDT content to disk, inbound re-checks the file's
+  CURRENT content hash rather than trusting `known_hash` alone. If disk
+  holds bytes that differ from both the CRDT content and `known_hash`,
+  that's an edit outbound hasn't reconciled into a commit yet — inbound
+  skips the write so it doesn't clobber it; outbound commits the edit on
+  a later cycle and the CRDT catches up from there. See
+  `Commonplace.Sync.Agent`'s `maybe_write_doc/8` for the sibling guard in
+  the legacy full-tree agent.
+
   ## Outbound is a diff-and-apply, not a rewrite
 
   Outbound does **not** re-encode the whole file as a brand-new document.
@@ -211,7 +222,11 @@ defmodule Commonplace.Sync.EntryAgent do
 
   # --- Inbound sync (CRDT → disk) ---
 
-  defp sync_inbound(state) do
+  # Not `defp`: the CX-60wl-style guard below is exercised directly in
+  # tests against a hand-built state struct (no GenServer needed), the
+  # same way agent_test.exs probes the legacy guard's invariants.
+  @doc false
+  def sync_inbound(state) do
     case CommitStoreClient.latest_commit(state.store, state.doc_uuid) do
       {:ok, commit} ->
         if commit.id == state.last_written_commit_id do
@@ -228,9 +243,39 @@ defmodule Commonplace.Sync.EntryAgent do
             # Update commit tracking but don't rewrite file
             %{state | last_written_commit_id: commit.id}
           else
-            # Content changed — write to disk
-            Export.atomic_write(state.file_path, content)
-            %{state | last_written_commit_id: commit.id, known_hash: content_hash}
+            # CX-60wl inbound-clobber guard (ported from Agent.maybe_write_doc/8):
+            # re-check what's on disk NOW, not just what `known_hash` says we
+            # last reconciled. `known_hash` is only updated at the END of a
+            # cycle (see sync_outbound/1 and the write branch below), so if a
+            # local edit landed on disk without outbound having folded it into
+            # a commit yet (e.g. it lands between outbound's read and this
+            # write), writing here would silently clobber it.
+            disk_hash =
+              case File.read(state.file_path) do
+                {:ok, disk} -> :erlang.md5(disk)
+                _ -> nil
+              end
+
+            cond do
+              # Disk already holds exactly the CRDT content — record it as
+              # reconciled without rewriting (avoids pointless churn).
+              disk_hash == content_hash ->
+                %{state | last_written_commit_id: commit.id, known_hash: content_hash}
+
+              # Disk holds an edit we have NOT reconciled (differs from both
+              # the CRDT content and the last content we know is mirrored) —
+              # do NOT clobber it. Leave state as-is; outbound picks up the
+              # disk edit and commits it next cycle, and the CRDT catches up
+              # from there.
+              disk_hash != nil and disk_hash != state.known_hash ->
+                state
+
+              # Disk is stale (absent, or equals what we last reconciled) and
+              # the CRDT is ahead — write the CRDT content out.
+              true ->
+                Export.atomic_write(state.file_path, content)
+                %{state | last_written_commit_id: commit.id, known_hash: content_hash}
+            end
           end
         end
 

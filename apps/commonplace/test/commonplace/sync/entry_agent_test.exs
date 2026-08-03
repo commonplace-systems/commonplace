@@ -131,6 +131,85 @@ defmodule Commonplace.Sync.EntryAgentTest do
     end
   end
 
+  describe "CX-dvtj: inbound-clobber guard (ports CX-60wl)" do
+    test "unreconciled disk edit is not clobbered by inbound; converges next cycle",
+         %{store: store, sync_dir: dir} do
+      doc_uuid = UUID.uuid4()
+      file_path = Path.join(dir, "guarded.txt")
+
+      create_text_commit(store, doc_uuid, "v1")
+
+      {:ok, pid} = EntryAgent.start_link(
+        doc_uuid: doc_uuid,
+        file_path: file_path,
+        store: store
+      )
+
+      EntryAgent.sync_once(pid)
+      assert File.read!(file_path) == "v1"
+
+      state = :sys.get_state(pid)
+
+      # Simulate the race the guard closes: a local edit lands on disk
+      # (e.g. mid-cycle, after outbound last looked) while, separately, the
+      # CRDT advances (e.g. a remote peer's commit) — WITHOUT outbound
+      # having folded the local edit into a commit yet.
+      File.write!(file_path, "local edit")
+      create_text_commit(store, doc_uuid, "remote v2")
+
+      # Exercise sync_inbound directly against the pre-race state, the way
+      # agent_test.exs exercises the legacy guard's invariants.
+      guarded_state = EntryAgent.sync_inbound(state)
+
+      # The unreconciled local edit must survive — inbound must not
+      # clobber it with the remote CRDT content.
+      assert File.read!(file_path) == "local edit"
+
+      # Left unreconciled (state untouched) so a subsequent cycle retries.
+      assert guarded_state == state
+
+      # A full sync cycle then converges: outbound picks up the local
+      # edit (disk hash differs from known_hash) and commits it; the CRDT
+      # catches up to hold the local edit.
+      EntryAgent.sync_once(pid)
+      assert read_doc_content(store, doc_uuid) == "local edit"
+      assert File.read!(file_path) == "local edit"
+
+      EntryAgent.stop(pid)
+    end
+
+    test "disk matching CRDT content is recorded as reconciled without rewriting",
+         %{store: store, sync_dir: dir} do
+      doc_uuid = UUID.uuid4()
+      file_path = Path.join(dir, "matching.txt")
+
+      create_text_commit(store, doc_uuid, "v1")
+
+      {:ok, pid} = EntryAgent.start_link(
+        doc_uuid: doc_uuid,
+        file_path: file_path,
+        store: store
+      )
+
+      EntryAgent.sync_once(pid)
+      state = :sys.get_state(pid)
+
+      # A new commit lands whose content happens to already match disk
+      # (e.g. another writer wrote the same bytes independently).
+      create_text_commit(store, doc_uuid, "v1")
+      stat_before = File.stat!(file_path)
+      Process.sleep(1100)
+
+      new_state = EntryAgent.sync_inbound(state)
+
+      assert File.stat!(file_path).mtime == stat_before.mtime
+      assert new_state.known_hash == :erlang.md5("v1")
+      refute new_state.last_written_commit_id == state.last_written_commit_id
+
+      EntryAgent.stop(pid)
+    end
+  end
+
   describe "outbound sync (disk → CRDT)" do
     test "creates commit when file changes", %{store: store, sync_dir: dir} do
       doc_uuid = UUID.uuid4()
