@@ -57,11 +57,13 @@ defmodule Commonplace.MUD.BotTest do
       Bot.stop("watcher")
       Bot.stop("scribe")
       Bot.stop("dup")
+      Bot.stop("twin")
+      Bot.stop("lonely")
       if Process.alive?(secrets_pid), do: (try do GenServer.stop(secrets_pid) catch (:exit, _ -> :ok) end)
       File.rm_rf!(secrets_dir)
     end)
 
-    %{store: store, root: root_uuid, secrets: secrets_name}
+    %{store: store, root: root_uuid, secrets: secrets_name, bursar: bursar_pid}
   end
 
   defp human_player(name, ctx) do
@@ -228,8 +230,7 @@ defmodule Commonplace.MUD.BotTest do
       {:ok, _} =
         Bot.send_input("scribe", "look", store: ctx.store, root_uuid: ctx.root, secret_store: ctx.secrets)
 
-      pid = :global.whereis_name({Bot, "scribe"})
-      assert is_pid(pid)
+      assert {:ok, pid} = bot_pid("scribe")
       state = :sys.get_state(pid)
 
       # The session resolved a real signing context (not the pre-CX-5plk
@@ -253,7 +254,7 @@ defmodule Commonplace.MUD.BotTest do
       {:ok, _} =
         Bot.send_input("dup", "look", store: ctx.store, root_uuid: ctx.root, secret_store: ctx.secrets)
 
-      pid1 = :global.whereis_name({Bot, "dup"})
+      assert {:ok, pid1} = bot_pid("dup")
       state1 = :sys.get_state(pid1)
       assert is_binary(state1.signer_id)
 
@@ -262,7 +263,7 @@ defmodule Commonplace.MUD.BotTest do
       {:ok, _} =
         Bot.send_input("dup", "look", store: ctx.store, root_uuid: ctx.root, secret_store: ctx.secrets)
 
-      assert :global.whereis_name({Bot, "dup"}) == pid1
+      assert bot_pid("dup") == {:ok, pid1}
       assert :sys.get_state(pid1).signer_id == state1.signer_id
 
       assert {:ok, identity_uuid} = Identity.lookup("dup", :bot, ctx.root, ctx.store)
@@ -272,13 +273,12 @@ defmodule Commonplace.MUD.BotTest do
       # the same name — idempotent registration must resolve the SAME
       # identity_uuid and the SAME keypair (no re-mint).
       Bot.stop("dup")
-      wait_until(fn -> :global.whereis_name({Bot, "dup"}) == :undefined end)
+      wait_until(fn -> bot_pid("dup") == :error end)
 
       {:ok, _} =
         Bot.send_input("dup", "look", store: ctx.store, root_uuid: ctx.root, secret_store: ctx.secrets)
 
-      pid2 = :global.whereis_name({Bot, "dup"})
-      assert is_pid(pid2)
+      assert {:ok, pid2} = bot_pid("dup")
       assert pid2 != pid1
 
       state2 = :sys.get_state(pid2)
@@ -319,7 +319,91 @@ defmodule Commonplace.MUD.BotTest do
       assert {:error, :session_limit} =
                Bot.send_input("capped", "look", store: ctx.store, root_uuid: ctx.root)
 
-      assert :undefined = :global.whereis_name({Bot, "capped"})
+      assert bot_pid("capped") == :error
+    end
+  end
+
+  # Move #4 (CX-vj8v): the `:global` singleton is retired. Local
+  # registration is a `:unique` Registry; cluster exclusivity is a
+  # green-token lease at `"__singletons/mud_bot/<name>"`. These tests
+  # exercise both halves of the replacement.
+  describe "CX-vj8v: local registry + green-token lease (replaces :global)" do
+    test "starting the same bot name twice returns the existing session (no crash, no dup)",
+         ctx do
+      task1 =
+        Task.async(fn ->
+          Bot.send_input("twin", "look", store: ctx.store, root_uuid: ctx.root)
+        end)
+
+      task2 =
+        Task.async(fn ->
+          Bot.send_input("twin", "look", store: ctx.store, root_uuid: ctx.root)
+        end)
+
+      assert {:ok, _} = Task.await(task1)
+      assert {:ok, _} = Task.await(task2)
+
+      # Exactly one live session is registered for the name.
+      assert {:ok, pid} = bot_pid("twin")
+      assert is_pid(pid)
+
+      # Exactly one lease is held for it, under this node's deterministic
+      # holder for the name (not two racing holders).
+      assert {:held, %{holder: holder}} =
+               Commonplace.Green.Bursar.query(ctx.bursar, "__singletons/mud_bot/twin")
+
+      assert holder =~ "mud_bot:twin@"
+
+      # A third call reuses the same pid — no duplicate spawn.
+      {:ok, _} = Bot.send_input("twin", "look", store: ctx.store, root_uuid: ctx.root)
+      assert bot_pid("twin") == {:ok, pid}
+    end
+
+    test "registry entry and lease are released when the session dies", ctx do
+      {:ok, _} = Bot.send_input("lonely", "look", store: ctx.store, root_uuid: ctx.root)
+      assert {:ok, pid} = bot_pid("lonely")
+
+      assert {:held, _} =
+               Commonplace.Green.Bursar.query(ctx.bursar, "__singletons/mud_bot/lonely")
+
+      Bot.stop("lonely")
+
+      wait_until(fn -> bot_pid("lonely") == :error end)
+      refute Process.alive?(pid)
+
+      wait_until(fn ->
+        Commonplace.Green.Bursar.query(ctx.bursar, "__singletons/mud_bot/lonely") == :available
+      end)
+    end
+
+    test "no bursar reachable → refuses to spawn (fail-closed), no session registered", ctx do
+      GenServer.stop(ctx.bursar)
+
+      assert {:error, :bursar_unavailable} =
+               Bot.send_input("unleased", "look", store: ctx.store, root_uuid: ctx.root)
+
+      assert bot_pid("unleased") == :error
+    end
+
+    test "bot already leased elsewhere in the cluster is refused, no local session spawns", ctx do
+      {:ok, _} =
+        Commonplace.Green.Bursar.acquire(
+          ctx.bursar,
+          "__singletons/mud_bot/elsewhere",
+          "some-other-node"
+        )
+
+      assert {:error, {:bot_active_elsewhere, %{holder: "some-other-node"}}} =
+               Bot.send_input("elsewhere", "look", store: ctx.store, root_uuid: ctx.root)
+
+      assert bot_pid("elsewhere") == :error
+    end
+  end
+
+  defp bot_pid(name) do
+    case Registry.lookup(Commonplace.MUD.BotRegistry, name) do
+      [{pid, _}] -> {:ok, pid}
+      [] -> :error
     end
   end
 

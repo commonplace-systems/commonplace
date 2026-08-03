@@ -12,9 +12,36 @@ defmodule Commonplace.MUD.Bot do
   returns events) and `read_events/1` (drains pending events without
   sending input — useful for ambient observation between commands).
 
-  Sessions are registered globally on `{:global, {__MODULE__, name}}`
-  so all MCP / CLI nodes in a cluster see the same bot session
-  (matches MoveServer / TickBot's clustering choice).
+  ## Registration (CX-vj8v)
+
+  Sessions used to register globally on `{:global, {__MODULE__, name}}`
+  — but `:global` name-conflict resolution on node join can kill or
+  orphan the singleton (a bare `mix run` temp node joining the cluster
+  could kill a live bot), and a netsplit lets two exist at once. That's
+  the exact hazard MoveServer and TickBot already retired (see
+  `Commonplace.MUD.Move` and `Commonplace.MUD.TickBot`'s moduledocs).
+  `Bot` now follows the same house pattern:
+
+    * the `PlayerSession` is registered LOCALLY, via `{:via, Registry,
+      {Commonplace.MUD.BotRegistry, name}}` — at most one live session
+      per bot name per node, and the registry entry is cleaned up
+      automatically when the session dies.
+    * cluster-wide exclusivity (what `:global` was buying) is a
+      green-token lease, `"__singletons/mud_bot/\#{name}"`, acquired
+      from `Commonplace.Green.Bursar` before the session spawns and
+      released (by a small monitor process) when the session dies. The
+      lease is TTL'd and periodically renewed while the session lives —
+      same "renew at TTL/3, failover bounded by TTL" shape as
+      `TickBot`'s tick lease — so a dead session's lease is reclaimable
+      within one TTL even if the release-on-death path is itself lost
+      (e.g. the whole BEAM dies).
+    * no Bursar reachable (no local, no remote serve — e.g. a bare
+      `mix run` temp node) ⇒ `spawn_session/2` refuses to start the bot
+      (`{:error, :bursar_unavailable}`) rather than starting unleased —
+      TickBot's fail-closed precedent.
+    * the lease already held by another node's holder ⇒
+      `{:error, {:bot_active_elsewhere, holder_info}}` — the bot is
+      genuinely live elsewhere in the cluster.
 
   ## Signing identity (CX-5plk)
 
@@ -63,13 +90,21 @@ defmodule Commonplace.MUD.Bot do
   """
 
   alias Commonplace.Crypto.NodeIdentity
-  alias Commonplace.MUD.{Bootstrap, Citizenship, PlayerSession, RateLimit, SessionLimit}
+  alias Commonplace.Green.{Bursar, BursarClient}
+  alias Commonplace.MUD.{BotRegistry, Bootstrap, Citizenship, PlayerSession, RateLimit, SessionLimit}
   alias Commonplace.Presence.Identity
   alias Commonplace.Store.CommitStoreClient
 
   @type event :: %{optional(atom) => any}
 
   @default_settle_ms 50
+
+  # CX-vj8v: cluster-exclusivity lease path prefix, one lease per bot
+  # name (mirrors TickBot's "__singletons/tick_bot" naming, namespaced
+  # per-name since a bot's identity IS the name, unlike TickBot's
+  # single system-wide singleton).
+  @lease_prefix "__singletons/mud_bot/"
+  @default_lease_ttl_ms 60_000
 
   @doc """
   Send `line` to bot `name`'s session. Returns
@@ -156,9 +191,9 @@ defmodule Commonplace.MUD.Bot do
   end
 
   defp lookup(name) do
-    case :global.whereis_name({__MODULE__, name}) do
-      :undefined -> :error
-      pid when is_pid(pid) -> if Process.alive?(pid), do: {:ok, pid}, else: :error
+    case Registry.lookup(BotRegistry, name) do
+      [{pid, _}] -> {:ok, pid}
+      [] -> :error
     end
   end
 
@@ -171,61 +206,157 @@ defmodule Commonplace.MUD.Bot do
         {:error, :no_workspace_root}
 
       root ->
-        # Idempotently ensure the demo world exists before any session
-        # spawns — otherwise PlayerSession's stub fallback wins and
-        # the bot lands in a featureless start room.
-        Bootstrap.seed(root, store)
+        # CX-vj8v: cluster exclusivity FIRST, before any store writes —
+        # a bot already live elsewhere in the cluster, or no Bursar
+        # reachable at all, should fail fast without touching the store
+        # (Bootstrap.seed / identity resolution below are each a commit).
+        with {:ok, lease} <- acquire_lease(name, opts) do
+          # Idempotently ensure the demo world exists before any session
+          # spawns — otherwise PlayerSession's stub fallback wins and
+          # the bot lands in a featureless start room.
+          Bootstrap.seed(root, store)
 
-        identity_opts = resolve_signing_opts(name, root, store, opts)
+          identity_opts = resolve_signing_opts(name, root, store, opts)
 
-        # CX-z0v7 (condition 2): the identity resolved just above (when
-        # available) is the stable per-bot principal for the UNIFIED
-        # web+bot session cap; a bot whose identity resolution degraded
-        # to `[]` (see `resolve_signing_opts/4`'s moduledoc note) falls
-        # back to keying the cap on the bot's own `name` — still stable
-        # per bot, acceptable for v1 (a name and its identity_uuid never
-        # both admit sessions for the "same" bot, since name-keying only
-        # happens when no identity_uuid was ever resolved).
-        principal = Keyword.get(identity_opts, :player_identity_uuid, name)
+          # CX-z0v7 (condition 2): the identity resolved just above (when
+          # available) is the stable per-bot principal for the UNIFIED
+          # web+bot session cap; a bot whose identity resolution degraded
+          # to `[]` (see `resolve_signing_opts/4`'s moduledoc note) falls
+          # back to keying the cap on the bot's own `name` — still stable
+          # per bot, acceptable for v1 (a name and its identity_uuid never
+          # both admit sessions for the "same" bot, since name-keying only
+          # happens when no identity_uuid was ever resolved).
+          principal = Keyword.get(identity_opts, :player_identity_uuid, name)
 
-        with {:ok, limit_ref} <- SessionLimit.admit(principal) do
-          # The PlayerSession globally registers itself by name.
-          global_name = {:global, {__MODULE__, name}}
+          case SessionLimit.admit(principal) do
+            {:ok, limit_ref} ->
+              # CX-vj8v: local registration replaces the retired
+              # `{:global, {__MODULE__, name}}` — see moduledoc.
+              via_name = {:via, Registry, {BotRegistry, name}}
 
-          result =
-            GenServer.start(
-              PlayerSession,
-              [
-                player_name: name,
-                root_uuid: root,
-                store: store,
-                buffered: true
-              ] ++ identity_opts,
-              name: global_name
-            )
+              result =
+                GenServer.start(
+                  PlayerSession,
+                  [
+                    player_name: name,
+                    root_uuid: root,
+                    store: store,
+                    buffered: true
+                  ] ++ identity_opts,
+                  name: via_name
+                )
 
-          case result do
-            {:ok, pid} ->
-              SessionLimit.attach(limit_ref, pid)
-              # CX-nf8p: reap this session's rate-limit bucket + drop-counter
-              # when the PlayerSession dies — same monitor-per-session locus
-              # as the SessionLimit slot. Only on a fresh spawn; the
-              # already-started branch reuses a session already watched.
-              RateLimit.watch(pid)
-              {:ok, pid}
+              case result do
+                {:ok, pid} ->
+                  SessionLimit.attach(limit_ref, pid)
+                  # CX-nf8p: reap this session's rate-limit bucket + drop-counter
+                  # when the PlayerSession dies — same monitor-per-session locus
+                  # as the SessionLimit slot. Only on a fresh spawn; the
+                  # already-started branch reuses a session already watched.
+                  RateLimit.watch(pid)
+                  # CX-vj8v: release the lease when this session dies —
+                  # the local Registry entry is auto-cleaned by Registry
+                  # itself, but the cluster-wide Bursar lease needs an
+                  # explicit release (or it rides out its TTL).
+                  watch_lease(pid, lease)
+                  {:ok, pid}
 
-            {:error, {:already_started, pid}} ->
-              # Someone else won the registration race — this reservation
-              # never spawned a session of its own, release it.
-              SessionLimit.release(limit_ref)
-              {:ok, pid}
+                {:error, {:already_started, pid}} ->
+                  # Someone else won the local registration race — same
+                  # holder (deterministic per name+node — see
+                  # `lease_holder/1`), so the lease is legitimately held
+                  # for the WINNING session, not this attempt. Don't
+                  # release it out from under the winner; just watch the
+                  # winner's pid instead (harmless if more than one
+                  # racer ends up watching the same live pid).
+                  SessionLimit.release(limit_ref)
+                  watch_lease(pid, lease)
+                  {:ok, pid}
 
-            err ->
-              SessionLimit.release(limit_ref)
+                err ->
+                  SessionLimit.release(limit_ref)
+                  release_lease(lease)
+                  err
+              end
+
+            {:error, _} = err ->
+              release_lease(lease)
               err
           end
         end
     end
+  end
+
+  # --- CX-vj8v: cluster-exclusivity lease ---
+
+  defp acquire_lease(name, opts) do
+    bursar = Keyword.get(opts, :bursar, Bursar)
+    path = lease_path(name)
+    holder = lease_holder(name)
+    ttl_ms = lease_ttl_ms(opts)
+
+    case BursarClient.acquire(bursar, path, nil, ttl: ttl_ms, authenticated_as: holder) do
+      {:ok, _token} ->
+        {:ok, %{bursar: bursar, path: path, holder: holder, ttl_ms: ttl_ms}}
+
+      {:denied, holder_info} ->
+        {:error, {:bot_active_elsewhere, holder_info}}
+
+      # :bursar_unavailable — no lock authority reachable (the
+      # bare-mix-run temp-node case). Fail-closed: never spawn a bot
+      # session that can't be leased (TickBot precedent).
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  defp release_lease(lease) do
+    _ = BursarClient.release(lease.bursar, lease.path, nil, authenticated_as: lease.holder)
+    :ok
+  end
+
+  # Spawns an unlinked watcher that renews the lease (at TTL/3, same
+  # cadence as TickBot's tick lease) while `pid` lives, and releases it
+  # as soon as `pid` dies. If this watcher itself is lost (e.g. the
+  # whole BEAM crashes), the lease is still bounded by its TTL — same
+  # failover-bounded-by-TTL property TickBot's moduledoc documents.
+  defp watch_lease(pid, lease) do
+    spawn(fn ->
+      ref = Process.monitor(pid)
+      renew_interval_ms = max(div(lease.ttl_ms, 3), 1_000)
+      lease_renew_loop(ref, lease, renew_interval_ms)
+    end)
+
+    :ok
+  end
+
+  defp lease_renew_loop(ref, lease, renew_interval_ms) do
+    receive do
+      {:DOWN, ^ref, :process, _pid, _reason} ->
+        release_lease(lease)
+    after
+      renew_interval_ms ->
+        _ = BursarClient.renew(lease.bursar, lease.path, nil, authenticated_as: lease.holder)
+        lease_renew_loop(ref, lease, renew_interval_ms)
+    end
+  end
+
+  defp lease_path(name), do: @lease_prefix <> name
+
+  # Mirrors TickBot's `default_holder/0` (CX-tdkq.32: a NAMED principal
+  # prefixed with the node identity, never a free string) — namespaced
+  # per bot name here since Bot's lease is one-per-bot, not one system-
+  # wide singleton.
+  defp lease_holder(name) do
+    case NodeIdentity.identity() do
+      {:ok, node_identity} -> "#{node_identity}/mud_bot:#{name}@#{node()}"
+      {:error, _} -> "mud_bot:#{name}@#{node()}"
+    end
+  end
+
+  defp lease_ttl_ms(opts) do
+    Keyword.get(opts, :lease_ttl_ms) ||
+      Application.get_env(:commonplace, :mud_bot_lease_ttl_ms, @default_lease_ttl_ms)
   end
 
   # CX-5plk: resolve (idempotently register, if needed) a per-bot

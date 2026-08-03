@@ -83,8 +83,7 @@ defmodule Commonplace.MUD.BotPresenceCertTest do
     {:ok, _events} =
       Bot.send_input("cert-bot", "look", store: ctx.store, root_uuid: ctx.root, secret_store: ctx.secrets)
 
-    pid = :global.whereis_name({Bot, "cert-bot"})
-    assert is_pid(pid)
+    assert {:ok, pid} = bot_pid("cert-bot")
     state = :sys.get_state(pid)
 
     assert [cert_cid] = state.cert_cids
@@ -108,7 +107,7 @@ defmodule Commonplace.MUD.BotPresenceCertTest do
     {:ok, _} =
       Bot.send_input("cert-bot", "look", store: ctx.store, root_uuid: ctx.root, secret_store: ctx.secrets)
 
-    pid1 = :global.whereis_name({Bot, "cert-bot"})
+    assert {:ok, pid1} = bot_pid("cert-bot")
     [cid1] = :sys.get_state(pid1).cert_cids
 
     Bot.stop("cert-bot")
@@ -116,7 +115,7 @@ defmodule Commonplace.MUD.BotPresenceCertTest do
     {:ok, _} =
       Bot.send_input("cert-bot", "look", store: ctx.store, root_uuid: ctx.root, secret_store: ctx.secrets)
 
-    pid2 = :global.whereis_name({Bot, "cert-bot"})
+    assert {:ok, pid2} = bot_pid("cert-bot")
     assert pid2 != pid1
     [cid2] = :sys.get_state(pid2).cert_cids
 
@@ -149,13 +148,19 @@ defmodule Commonplace.MUD.BotPresenceCertTest do
 
     {:ok, _events} = Bot.send_input("bare-bot", "look", store: bare_store, root_uuid: root_uuid)
 
-    pid = :global.whereis_name({Bot, "bare-bot"})
-    assert is_pid(pid)
+    assert {:ok, pid} = bot_pid("bare-bot")
     assert :sys.get_state(pid).cert_cids == []
 
     Bot.stop("bare-bot")
     if Process.alive?(bursar_pid), do: (try do GenServer.stop(bursar_pid) catch (:exit, _ -> :ok) end)
     if Process.alive?(bare_pid), do: (try do GenServer.stop(bare_pid) catch (:exit, _ -> :ok) end)
     File.rm_rf!(dir)
+  end
+
+  defp bot_pid(name) do
+    case Registry.lookup(Commonplace.MUD.BotRegistry, name) do
+      [{pid, _}] -> {:ok, pid}
+      [] -> :error
+    end
   end
 end

@@ -106,6 +106,17 @@ defmodule Commonplace.Application do
         # transiently share a key during handoff; any registration = live.
         # Safe to start unconditionally alongside SessionViewRegistry above.
         {Registry, keys: :duplicate, name: Commonplace.MUD.PresenceRegistry},
+        # CX-vj8v: local :unique registry for `Commonplace.MUD.Bot`
+        # PlayerSessions — replaces the retired `{:global, {Bot, name}}`
+        # registration (the same netsplit/name-conflict hazard
+        # MoveServer/TickBot already retired: `:global` name-conflict
+        # resolution on node join can kill or orphan a bot session, and a
+        # netsplit lets two exist at once). `:unique` because there is at
+        # most one live session per bot name PER NODE; cluster-wide
+        # exclusivity across nodes is a green-token lease taken by `Bot`
+        # itself (see its moduledoc), not `:global`. Safe to start
+        # unconditionally alongside PresenceRegistry above.
+        {Registry, keys: :unique, name: Commonplace.MUD.BotRegistry},
         # CX-z0v7 (condition 2): unified web+bot serve-side session cap
         # (concurrent-total + per-principal backstop). Generous defaults,
         # in-memory/restart-not-durable — see its moduledoc. Safe to start

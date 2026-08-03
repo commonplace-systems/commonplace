@@ -57,6 +57,27 @@ defmodule Commonplace.MUD.BotFullCitizenshipTest do
     secrets_name = :"fullcit_secrets_#{n}"
     {:ok, secrets_pid} = SecretStore.start_link(data_dir: secrets_dir, name: secrets_name)
 
+    # CX-vj8v: Bot.spawn_session now takes a cluster-exclusivity green
+    # token before spawning — start a Bursar under its default name so
+    # the default `bursar:` route finds it (same setup shape as
+    # bot_test.exs / bot_presence_cert_test.exs).
+    case GenServer.whereis(Commonplace.Green.Bursar) do
+      nil -> :ok
+      pid -> GenServer.stop(pid)
+    end
+
+    {:ok, bursar_pid} =
+      Commonplace.Green.Bursar.start_link(
+        root_uuid: UUID.uuid4(),
+        store: store,
+        sweep_interval: 60_000
+      )
+
+    on_exit(fn ->
+      if Process.alive?(bursar_pid),
+        do: (try do GenServer.stop(bursar_pid) catch (:exit, _ -> :ok) end)
+    end)
+
     # The migrated shape: a workspace root whose "mud" child IS the
     # curated world. Seed the world under the CHILD, then link it in.
     mud_root = UUID.uuid4()
