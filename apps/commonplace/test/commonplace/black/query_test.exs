@@ -139,7 +139,14 @@ defmodule Commonplace.Black.QueryTest do
       {:ok, result} = Query.run(root, "*.json", store: store)
       witness = Query.witness(result, query: "*.json")
 
-      assert Map.keys(witness) |> Enum.sort() == ["cut_label", "evaluator", "hits", "pin", "query"]
+      assert Map.keys(witness) |> Enum.sort() == [
+               "cut_label",
+               "evaluator",
+               "hits",
+               "pin",
+               "query",
+               "truncated"
+             ]
 
       # "query" is the pattern string itself, not resolved doc content.
       assert witness["query"] == "*.json"
@@ -199,6 +206,86 @@ defmodule Commonplace.Black.QueryTest do
 
       {:ok, commit} = CommitStore.latest_commit(store, witness_uuid)
       assert String.starts_with?(commit.signer_id, "test-witness-signer@")
+    end
+  end
+
+  describe "truncation honesty (CX-vt9l.6 — F3 seam ALWAYS reports it)" do
+    # NON-VACUOUSNESS NOTE: the limit pair and the complete case below
+    # exercise the SAME code path (`Query.run/3`) with only the cap or
+    # corpus size changed, so a hard-coded `truncated` value cannot
+    # satisfy both the positive and the negative assertion.
+
+    test "LIMIT: a corpus exceeding a small limit: reports truncated via run/3", %{store: store} do
+      root = mint_root(store)
+      for i <- 1..20, do: mint_map_file(store, root, "f#{i}.json", %{"n" => i})
+
+      {:ok, result} = Query.run(root, "*.json", store: store, limit: 5)
+
+      assert length(result.hits) == 5
+      assert %{limit: true, depth: []} = result.truncated
+    end
+
+    test "COMPLETE: the same corpus under a generous limit: reports the explicit :none, not an absent key",
+         %{store: store} do
+      root = mint_root(store)
+      for i <- 1..20, do: mint_map_file(store, root, "f#{i}.json", %{"n" => i})
+
+      {:ok, result} = Query.run(root, "*.json", store: store, limit: 1_000)
+
+      assert length(result.hits) == 20
+      assert Map.has_key?(result, :truncated)
+      assert result.truncated == :none
+    end
+
+    test "DEPTH (sharp case — hit count alone cannot reveal this): matches below a small max_depth: report depth-truncation",
+         %{store: store} do
+      root = mint_root(store)
+      sub = UUID.uuid4()
+      CommitStore.create_commit(store, sub, Yelixer.Encoding.encode_update(Schema.new_schema()), nil)
+      root_doc = load_schema(store, root) |> Schema.add_directory("sub", sub)
+      CommitStore.create_commit(store, root, Yelixer.Encoding.encode_update(root_doc), latest(store, root))
+      mint_map_file(store, sub, "inv-1.json", %{"status" => "open"})
+
+      {:ok, result} = Query.run(root, "**/*.json", store: store, max_depth: 0)
+
+      assert result.hits == []
+      assert %{limit: false, depth: depth} = result.truncated
+      assert depth != []
+    end
+
+    test "run_at/4 also always reports truncated (explicit :none on a complete replay)", %{
+      store: store
+    } do
+      root = mint_root(store)
+      mint_map_file(store, root, "inv-1.json", %{"status" => "open"})
+
+      {:ok, captured} = Query.run(root, "*.json", store: store)
+      assert captured.truncated == :none
+
+      {:ok, replay} = Query.run_at(root, "*.json", captured.pin, store: store)
+      assert replay.truncated == :none
+    end
+
+    test "witness/2 carries the truncation fact into the witness content", %{store: store} do
+      root = mint_root(store)
+      for i <- 1..20, do: mint_map_file(store, root, "f#{i}.json", %{"n" => i})
+
+      {:ok, result} = Query.run(root, "*.json", store: store, limit: 5)
+      witness = Query.witness(result, query: "*.json")
+
+      assert Map.has_key?(witness, "truncated")
+      assert %{"limit" => true, "depth" => []} = witness["truncated"]
+    end
+
+    test "witness/2 reports the explicit complete string, not an absent key, for an untruncated result",
+         %{store: store} do
+      root = mint_root(store)
+      mint_map_file(store, root, "inv-1.json", %{"status" => "open"})
+
+      {:ok, result} = Query.run(root, "*.json", store: store)
+      witness = Query.witness(result, query: "*.json")
+
+      assert witness["truncated"] == "none"
     end
   end
 

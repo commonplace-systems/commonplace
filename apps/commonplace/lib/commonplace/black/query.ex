@@ -75,6 +75,20 @@ defmodule Commonplace.Black.Query do
   `cut_label` this module writes ("as seen at cut <hash>") is that
   label; nothing produced by this module should ever be presented
   without it.
+
+  A cut label answers "as seen when" — it does NOT answer "did the
+  scan that produced this see everything below that cut". Those are
+  independent questions (CX-vt9l.6): `Black.select/3` walks under two
+  silent caps, `limit` and `max_depth`, and `run/3`/`run_at/4` always
+  report which (if either) fired via `result.truncated` — `:none` is
+  the explicit, positive "complete" answer, never an absent key.
+  `witness/2` carries that same fact into the minted content as
+  `"truncated"`, because a result-witness that labels its cut but
+  omits "this scan was capped" is exactly the dishonest-label failure
+  this module exists to avoid. A truncated result is NOT a complete
+  answer and MUST NOT be used as the basis of a count or other
+  aggregate — the epic's two-tier aggregate rule cannot be honest
+  about a cut it does not know was truncated.
   """
 
   alias Commonplace.Black
@@ -86,14 +100,24 @@ defmodule Commonplace.Black.Query do
 
   @type hit :: %{path: String.t(), uuid: String.t()}
   @type pin :: %{optional(String.t()) => binary()}
-  @type result :: %{hits: [hit()], pin: pin(), evaluator: String.t()}
+  @type truncated :: :none | %{limit: boolean(), depth: [String.t()]}
+  @type result :: %{hits: [hit()], pin: pin(), evaluator: String.t(), truncated: truncated()}
 
   @doc """
   Evaluate `pattern` against `root_uuid`'s CURRENT tree, capturing the
-  pin the walk observed. Returns `{:ok, %{hits:, pin:, evaluator:}}`.
+  pin the walk observed. Returns
+  `{:ok, %{hits:, pin:, evaluator:, truncated:}}`.
 
   `opts` accepts `:store`, `:max_depth`, `:limit` (forwarded to
   `Black.select/3` unchanged).
+
+  `truncated` is ALWAYS present (no back-compat burden — this is F3's
+  own new result shape, not `Black.select/3`'s back-compat-gated
+  return): `:none` when the walk hit neither the `limit` nor the
+  `max_depth` cap, or `%{limit: boolean(), depth: [String.t()]}`
+  otherwise — see `Black.select/3`'s `opts[:with_truncation]` doc for
+  what each field means. Absence of a key is never how "complete" is
+  spelled here; `:none` is.
   """
   @spec run(String.t(), String.t(), keyword()) :: {:ok, result()}
   def run(root_uuid, pattern, opts \\ [])
@@ -103,11 +127,12 @@ defmodule Commonplace.Black.Query do
     select_opts =
       opts
       |> Keyword.take([:max_depth, :limit])
-      |> Keyword.merge(store: store, with_pin: true)
+      |> Keyword.merge(store: store, with_pin: true, with_truncation: true)
 
-    {hits, observed_pin} = Black.select(root_uuid, pattern, select_opts)
+    %{matches: hits, pin: observed_pin, truncated: truncated} =
+      Black.select(root_uuid, pattern, select_opts)
 
-    {:ok, %{hits: hits, pin: observed_pin, evaluator: @evaluator_version}}
+    {:ok, %{hits: hits, pin: observed_pin, evaluator: @evaluator_version, truncated: truncated}}
   end
 
   @doc """
@@ -116,9 +141,11 @@ defmodule Commonplace.Black.Query do
   returned pin). Every doc read during the walk resolves via `pin`;
   see `Black.select/3`'s `opts[:at_pin]` doc for the "absent from the
   pin is NOT PRESENT, never :latest" rule this relies on for
-  determinism. Returns `{:ok, %{hits:, pin:, evaluator:}}` — the
-  returned `pin` is the (sub)set of `pin` actually touched by this
-  walk, so it composes with `witness/2` the same way `run/3`'s does.
+  determinism. Returns `{:ok, %{hits:, pin:, evaluator:, truncated:}}`
+  — the returned `pin` is the (sub)set of `pin` actually touched by
+  this walk, so it composes with `witness/2` the same way `run/3`'s
+  does. `truncated` follows the same always-present, `:none`-is-
+  explicit rule documented on `run/3`.
   """
   @spec run_at(String.t(), String.t(), pin(), keyword()) :: {:ok, result()}
   def run_at(root_uuid, pattern, pin, opts \\ [])
@@ -128,11 +155,12 @@ defmodule Commonplace.Black.Query do
     select_opts =
       opts
       |> Keyword.take([:max_depth, :limit])
-      |> Keyword.merge(store: store, with_pin: true, at_pin: pin)
+      |> Keyword.merge(store: store, with_pin: true, at_pin: pin, with_truncation: true)
 
-    {hits, observed_pin} = Black.select(root_uuid, pattern, select_opts)
+    %{matches: hits, pin: observed_pin, truncated: truncated} =
+      Black.select(root_uuid, pattern, select_opts)
 
-    {:ok, %{hits: hits, pin: observed_pin, evaluator: @evaluator_version}}
+    {:ok, %{hits: hits, pin: observed_pin, evaluator: @evaluator_version, truncated: truncated}}
   end
 
   @doc """
@@ -149,9 +177,10 @@ defmodule Commonplace.Black.Query do
   (default `CommitStoreClient`) is where the mint lands.
   """
   @spec witness(result(), keyword()) :: map() | {:ok, String.t()} | {:error, term()}
-  def witness(%{hits: hits, pin: pin, evaluator: evaluator}, opts \\ []) when is_list(opts) do
+  def witness(%{hits: hits, pin: pin, evaluator: evaluator, truncated: truncated}, opts \\ [])
+      when is_list(opts) do
     query = Keyword.fetch!(opts, :query)
-    content = build_content(query, hits, pin, evaluator)
+    content = build_content(query, hits, pin, evaluator, truncated)
 
     case Keyword.get(opts, :signing_context) do
       nil -> content
@@ -159,7 +188,7 @@ defmodule Commonplace.Black.Query do
     end
   end
 
-  defp build_content(query, hits, pin, evaluator) do
+  defp build_content(query, hits, pin, evaluator, truncated) do
     hex_pin = Map.new(pin, fn {uuid, commit_id} -> {uuid, hex(commit_id)} end)
 
     %{
@@ -167,9 +196,21 @@ defmodule Commonplace.Black.Query do
       "pin" => hex_pin,
       "hits" => Enum.map(hits, &hit_ref(&1, pin)),
       "evaluator" => evaluator,
-      "cut_label" => "as seen at cut " <> cut_hash(pin)
+      "cut_label" => "as seen at cut " <> cut_hash(pin),
+      "truncated" => truncated_content(truncated)
     }
   end
+
+  # `truncated` travels into the witness content as content-doc-safe
+  # values (strings/maps/lists/bools — no bare atoms) rather than the
+  # Elixir-side `:none` atom, but preserves the same "complete is an
+  # explicit positive value" shape: `"none"` (the string) means both
+  # axes were checked and neither was hit, never an absent key. A
+  # witness that labels its cut but omits whether the SCAN itself was
+  # capped is exactly the dishonest label this module's moduledoc
+  # warns against — see "Honest labeling" above.
+  defp truncated_content(:none), do: "none"
+  defp truncated_content(%{limit: limit, depth: depth}), do: %{"limit" => limit, "depth" => depth}
 
   defp hit_ref(%{path: path, uuid: uuid}, pin) do
     %{"path" => path, "uuid" => uuid, "commit" => hex(Map.get(pin, uuid))}

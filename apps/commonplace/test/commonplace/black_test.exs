@@ -211,6 +211,106 @@ defmodule Commonplace.BlackTest do
     end
   end
 
+  describe "with_truncation: true (CX-vt9l.6 — honest scan signal)" do
+    # NON-VACUOUSNESS NOTE: each pair below asserts BOTH the positive
+    # (a corpus that genuinely exceeds the cap reports truncated) and
+    # the complementary negative (a corpus well under the cap reports
+    # :none) against the SAME code path with only the corpus size (or
+    # cap) changed — a hard-coded `truncated: :none` would fail the
+    # positive case, and a hard-coded truncated map would fail the
+    # negative case, so no constant answer satisfies both.
+
+    test "default (no opt) return shape is byte-for-byte unchanged", %{store: store} do
+      root = mint_root(store)
+      a = mint_text_file(store, root, "a.txt", "x")
+
+      assert [%{path: "a.txt", uuid: ^a}] = Black.select(root, "a.txt", store: store)
+    end
+
+    test "LIMIT: a corpus exceeding a small limit reports truncated (limit: true)", %{
+      store: store
+    } do
+      root = mint_root(store)
+      for i <- 1..20, do: mint_text_file(store, root, "f#{i}.txt", "x")
+
+      result = Black.select(root, "*.txt", store: store, limit: 5, with_truncation: true)
+
+      assert length(result.matches) == 5
+      assert %{limit: true, depth: []} = result.truncated
+    end
+
+    test "LIMIT: the same corpus under a generous limit reports complete (:none)", %{
+      store: store
+    } do
+      root = mint_root(store)
+      for i <- 1..20, do: mint_text_file(store, root, "f#{i}.txt", "x")
+
+      result = Black.select(root, "*.txt", store: store, limit: 1_000, with_truncation: true)
+
+      assert length(result.matches) == 20
+      assert result.truncated == :none
+    end
+
+    test "DEPTH (the sharp case — hit COUNT alone cannot reveal this): matches nested deeper than a small max_depth report depth-truncation",
+         %{store: store} do
+      root = mint_root(store)
+      l1 = mint_dir(store, root, "l1")
+      l2 = mint_dir(store, l1, "l2")
+      _deep = mint_text_file(store, l2, "deep.txt", "x")
+
+      result = Black.select(root, "**/*.txt", store: store, max_depth: 1, with_truncation: true)
+
+      # The hit count is 0 either way a caller could imagine ("capped"
+      # or "genuinely nothing below root") — only `truncated` tells
+      # them a directory was skipped rather than empty.
+      assert result.matches == []
+      assert %{limit: false, depth: depth} = result.truncated
+      assert depth != []
+      assert "l1/l2" in depth
+    end
+
+    test "DEPTH: the same tree under a generous max_depth reports complete (:none)", %{
+      store: store
+    } do
+      root = mint_root(store)
+      l1 = mint_dir(store, root, "l1")
+      l2 = mint_dir(store, l1, "l2")
+      deep = mint_text_file(store, l2, "deep.txt", "x")
+
+      result = Black.select(root, "**/*.txt", store: store, max_depth: 5, with_truncation: true)
+
+      assert [%{uuid: ^deep}] = result.matches
+      assert result.truncated == :none
+    end
+
+    test "COMPLETE: a small corpus fully scanned under generous caps reports explicit :none, not merely a missing flag",
+         %{store: store} do
+      root = mint_root(store)
+      mint_text_file(store, root, "a.txt", "x")
+      mint_text_file(store, root, "b.txt", "y")
+
+      result = Black.select(root, "*.txt", store: store, with_truncation: true)
+
+      assert length(result.matches) == 2
+      assert Map.has_key?(result, :truncated)
+      assert result.truncated == :none
+    end
+
+    test "with_truncation composes with with_pin: map carries both pin and truncated", %{
+      store: store
+    } do
+      root = mint_root(store)
+      for i <- 1..5, do: mint_text_file(store, root, "f#{i}.txt", "x")
+
+      result =
+        Black.select(root, "*.txt", store: store, limit: 2, with_truncation: true, with_pin: true)
+
+      assert length(result.matches) == 2
+      assert is_map(result.pin)
+      assert %{limit: true} = result.truncated
+    end
+  end
+
   describe "json/2 and xml/2" do
     test "json/2 round-trips a map doc through canonical JSON", %{store: store} do
       root = mint_root(store)

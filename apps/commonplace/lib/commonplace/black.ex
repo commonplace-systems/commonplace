@@ -122,6 +122,47 @@ defmodule Commonplace.Black do
   directory schema, so a doc created after init under a
   previously-linked directory still triggers recomputation.
 
+  ## `opts[:with_truncation]` (CX-vt9l.6 — honest-scan signal)
+
+  Both caps above are silent by default: nothing in the plain return
+  shapes distinguishes "these are all the matches" from "the walk hit
+  a cap and stopped early". That is a real hazard for anything that
+  treats a `select/3` result as a complete answer — most sharply an
+  aggregate (COUNT/SUM) computed over a capped scan, which is
+  confidently wrong with no way for the caller to tell (see
+  `Commonplace.Black.Query`'s moduledoc, "two-tier aggregate rule").
+
+  `opts[:with_truncation]` (boolean, default `false`) makes the scan
+  report both axes honestly. When true, the return is ALWAYS a map
+  (same "growing shape needs a map" precedent `with_dirs`/`with_pin`
+  already establish) with at least `:matches` and `:truncated`, plus
+  `:dirs` / `:pin` folded in when `with_dirs` / `with_pin` are also
+  set:
+
+    * `truncated: :none` — the walk ran to completion on BOTH axes:
+      never hit `limit`, never had to skip a directory for being
+      beyond `max_depth`. This is an explicit positive value, not the
+      absence of a key — "I checked and it's complete" reads
+      differently from "this key happens to be missing", and the
+      latter is exactly the silent-truncation failure this option
+      exists to close.
+    * `truncated: %{limit: boolean(), depth: [String.t()]}` — set
+      whenever EITHER axis was hit. `limit: true` means `state.stopped`
+      fired (the walk stopped accumulating matches at `opts[:limit]`).
+      `depth` is the list of relative paths of directories the walk
+      did NOT descend into because they sat at or beyond `max_depth`
+      — each entry means "there may be matches under here that were
+      never looked at", which is the sharper of the two holes: unlike
+      the limit cap, a depth cut has no correlate in the match count
+      (fewer rows, no signal). An axis that was NOT hit still reports
+      honestly: `limit: false` / `depth: []`.
+
+  Default `false` reproduces today's return shape and cost exactly —
+  this option only adds bookkeeping already computed during the walk
+  (`state.stopped` was already tracked; `depth`-cut tracking is a new,
+  cheap append at the one guard clause that already short-circuits a
+  too-deep directory).
+
   ## `opts[:with_pin]` and `opts[:at_pin]` (CX-vt9l.1 — F3 ephemeral
   queries / result-witness docs)
 
@@ -177,14 +218,17 @@ defmodule Commonplace.Black do
   a fixed-suffix check, not a glob. No reusable matcher was found, so
   the segment-glob compiler below is new to this module.
   """
+  @type truncation :: :none | %{limit: boolean(), depth: [String.t()]}
+
   @spec select(String.t(), String.t(), keyword()) ::
           [%{path: String.t(), uuid: String.t()}]
           | {[%{path: String.t(), uuid: String.t()}], MapSet.t()}
           | {[%{path: String.t(), uuid: String.t()}], %{optional(String.t()) => binary()}}
           | %{
-              matches: [%{path: String.t(), uuid: String.t()}],
-              dirs: MapSet.t(),
-              pin: %{optional(String.t()) => binary()}
+              :matches => [%{path: String.t(), uuid: String.t()}],
+              optional(:dirs) => MapSet.t(),
+              optional(:pin) => %{optional(String.t()) => binary()},
+              optional(:truncated) => truncation()
             }
   def select(root_uuid, pattern, opts \\ [])
       when is_binary(root_uuid) and is_binary(pattern) and is_list(opts) do
@@ -193,6 +237,7 @@ defmodule Commonplace.Black do
     limit = Keyword.get(opts, :limit, @default_limit)
     with_dirs = Keyword.get(opts, :with_dirs, false)
     with_pin = Keyword.get(opts, :with_pin, false)
+    with_truncation = Keyword.get(opts, :with_truncation, false)
     at_pin = Keyword.get(opts, :at_pin, nil)
 
     segments = pattern |> String.trim("/") |> String.split("/", trim: true)
@@ -205,7 +250,8 @@ defmodule Commonplace.Black do
       stopped: false,
       limit: limit,
       with_pin: with_pin,
-      at_pin: at_pin
+      at_pin: at_pin,
+      depth_truncated: []
     }
 
     state =
@@ -216,11 +262,38 @@ defmodule Commonplace.Black do
 
     matches = Enum.reverse(state.matches)
 
-    case {with_dirs, with_pin} do
-      {false, false} -> matches
-      {true, false} -> {matches, state.dirs}
-      {false, true} -> {matches, state.pin}
-      {true, true} -> %{matches: matches, dirs: state.dirs, pin: state.pin}
+    case {with_dirs, with_pin, with_truncation} do
+      {false, false, false} ->
+        matches
+
+      {true, false, false} ->
+        {matches, state.dirs}
+
+      {false, true, false} ->
+        {matches, state.pin}
+
+      {true, true, false} ->
+        %{matches: matches, dirs: state.dirs, pin: state.pin}
+
+      {_, _, true} ->
+        base = %{matches: matches, truncated: truncation(state)}
+        base = if with_dirs, do: Map.put(base, :dirs, state.dirs), else: base
+        if with_pin, do: Map.put(base, :pin, state.pin), else: base
+    end
+  end
+
+  # Fold the walk's own bookkeeping (limit hit via `state.stopped`,
+  # depth cuts recorded by `expand/7`'s depth-exceeded clause) into the
+  # single honest value `opts[:with_truncation]` returns. `:none` is an
+  # explicit positive ("checked both axes, neither was hit") — never
+  # inferred from a missing key.
+  defp truncation(state) do
+    depth = state.depth_truncated |> Enum.reverse() |> Enum.uniq()
+
+    if state.stopped or depth != [] do
+      %{limit: state.stopped, depth: depth}
+    else
+      :none
     end
   end
 
@@ -309,9 +382,21 @@ defmodule Commonplace.Black do
   #   2. One-or-more-match: recurse into every subdirectory entry with
   #      the SAME `["**" | rest]` pattern (still open to matching more
   #      levels of `**`).
-  defp expand(_store, _dir_uuid, _path, _segments, depth, max_depth, state)
-       when depth > max_depth or state.stopped do
+  defp expand(_store, _dir_uuid, _path, _segments, _depth, _max_depth, %{stopped: true} = state) do
     state
+  end
+
+  # Depth cut: this directory would have been explored (it was worth a
+  # recursive `expand/7` call) but sits at or beyond `max_depth`, so it
+  # is not descended into — "silently bounded, not an error" per the
+  # moduledoc. Recorded here (not inferred later) because this is the
+  # one place the walk actually decides to skip a directory for depth
+  # reasons; `path` at this point already includes this directory's own
+  # name (the recursive call below always appends `entry.name` before
+  # incrementing depth).
+  defp expand(_store, _dir_uuid, path, _segments, depth, max_depth, state)
+       when depth > max_depth do
+    %{state | depth_truncated: [Enum.join(path, "/") | state.depth_truncated]}
   end
 
   defp expand(store, dir_uuid, path, ["**" | rest] = segments, depth, max_depth, state) do
