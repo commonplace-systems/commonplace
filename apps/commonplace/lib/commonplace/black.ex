@@ -307,8 +307,23 @@ defmodule Commonplace.Black do
   Delegates to `Commonplace.GitBridge.CanonicalJson.encode/1` (the same
   deterministic renderer GitBridge's exporter uses for `:map` / `:array`
   content docs) and then `Jason.decode/1`. Returns `{:ok, term}` or
-  `{:error, reason}` — `{:error, :not_found}` when the doc has no
-  commits.
+  `{:error, reason}`:
+
+    * `{:error, :not_found}` — the doc has no commits (`DocBuilder`
+      returns `:none`).
+    * `{:error, :not_a_content_doc}` — the doc has no `ContentType`
+      envelope at all (`ContentType.get_type/1` is `nil`) — this is
+      what a schema/directory doc looks like (it uses a separate
+      top-level `"schema"` type, never the `"root"`/`"content"`
+      envelope), so it has no canonical JSON to render. CX-vt9l.5: this
+      used to collapse into `{:ok, %{}}`, byte-identical to a
+      genuinely empty map doc — a caller walking a mixed corpus could
+      not tell "this is a directory" from "this is an empty map",
+      which fabricated false zero-counts. `ContentType.get_content/1`
+      only ever returns `nil` when `get_type/1` is `nil` — every real
+      content type (`:text`/`:map`/`:array`/`:xml`) returns its own
+      empty value (`""`/`%{}`/`[]`/`[]`) rather than `nil`, so this
+      check is the exhaustive discriminator, not a heuristic.
   """
   @spec json(String.t(), keyword()) :: {:ok, term()} | {:error, term()}
   def json(uuid, opts \\ []) when is_binary(uuid) and is_list(opts) do
@@ -316,9 +331,15 @@ defmodule Commonplace.Black do
 
     case DocBuilder.reconstruct_doc(store, uuid) do
       {:ok, doc} ->
-        content = ContentType.get_content(doc)
-        encoded = CanonicalJson.encode(content || %{})
-        Jason.decode(encoded)
+        case ContentType.get_type(doc) do
+          nil ->
+            {:error, :not_a_content_doc}
+
+          _type ->
+            content = ContentType.get_content(doc)
+            encoded = CanonicalJson.encode(content)
+            Jason.decode(encoded)
+        end
 
       :none ->
         {:error, :not_found}
@@ -329,8 +350,15 @@ defmodule Commonplace.Black do
   Return the doc's canonical XML as a string. Delegates to
   `Commonplace.GitBridge.CanonicalXml.encode/1` (the same deterministic
   renderer GitBridge's exporter uses for `:xml` content docs). Returns
-  `{:ok, xml_string}` or `{:error, reason}` — `{:error, :not_found}`
-  when the doc has no commits.
+  `{:ok, xml_string}` or `{:error, reason}`:
+
+    * `{:error, :not_found}` — the doc has no commits.
+    * `{:error, :not_a_content_doc}` — the doc has no `ContentType`
+      envelope (`ContentType.get_type/1` is `nil`), e.g. a
+      schema/directory doc. Same CX-vt9l.5 fix as `json/2` — see its
+      doc for the full taxonomy; a doc with a real `:xml` content type
+      always renders to a (possibly empty) string, never `nil`, so
+      `|| []` was only ever masking the schema-doc case.
   """
   @spec xml(String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def xml(uuid, opts \\ []) when is_binary(uuid) and is_list(opts) do
@@ -338,8 +366,14 @@ defmodule Commonplace.Black do
 
     case DocBuilder.reconstruct_doc(store, uuid) do
       {:ok, doc} ->
-        tree = ContentType.get_content(doc) || []
-        CanonicalXml.encode(tree)
+        case ContentType.get_type(doc) do
+          nil ->
+            {:error, :not_a_content_doc}
+
+          _type ->
+            tree = ContentType.get_content(doc)
+            CanonicalXml.encode(tree)
+        end
 
       :none ->
         {:error, :not_found}

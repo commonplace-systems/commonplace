@@ -335,6 +335,43 @@ defmodule Commonplace.BlackTest do
     test "xml/2 returns :not_found for an uncommitted uuid", %{store: store} do
       assert {:error, :not_found} = Black.xml(UUID.uuid4(), store: store)
     end
+
+    test "json/2 returns :not_a_content_doc for a schema/directory doc (CX-vt9l.5)", %{
+      store: store
+    } do
+      root = mint_root(store)
+      dir_uuid = mint_dir(store, root, "subdir")
+
+      assert {:error, :not_a_content_doc} = Black.json(dir_uuid, store: store)
+    end
+
+    test "xml/2 returns :not_a_content_doc for a schema/directory doc (CX-vt9l.5)", %{
+      store: store
+    } do
+      root = mint_root(store)
+      dir_uuid = mint_dir(store, root, "subdir")
+
+      assert {:error, :not_a_content_doc} = Black.xml(dir_uuid, store: store)
+    end
+
+    test "json/2 distinguishes a genuinely empty map doc from a schema doc (CX-vt9l.5)", %{
+      store: store
+    } do
+      root = mint_root(store)
+      empty_map_uuid = mint_map_file(store, root, "empty.json", %{})
+
+      assert {:ok, %{}} = Black.json(empty_map_uuid, store: store)
+    end
+
+    test "xml/2 distinguishes a genuinely empty xml doc from a schema doc (CX-vt9l.5)", %{
+      store: store
+    } do
+      root = mint_root(store)
+      empty_xml_uuid = mint_xml_file(store, root, "empty.xml")
+
+      assert {:ok, xml_string} = Black.xml(empty_xml_uuid, store: store)
+      assert is_binary(xml_string)
+    end
   end
 
   describe "receipts worked example (spec §1)" do
