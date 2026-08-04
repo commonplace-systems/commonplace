@@ -143,6 +143,7 @@ defmodule Commonplace.Reflog.Restore do
   alias Commonplace.Document.ContentType
   alias Commonplace.Crypto.{NodeIdentity, SigningContext}
   alias Commonplace.WriterHand
+  alias Commonplace.DerivationRecord
   alias Commonplace.Reflog.Snapshot
   alias Commonplace.Sync.{Export, CheckoutRegistry}
 
@@ -390,13 +391,21 @@ defmodule Commonplace.Reflog.Restore do
   round-trips need a real signer, not just a permissive test). Pass
   `opts[:signing_context]` to override with a specific context.
 
-  Returns `{:ok, %{root_entry: name, docs: count}}` where `count` is
-  every fresh doc minted (files + directory schemas, including the new
-  root), or `{:error, reason}` if the checkpoint itself can't be
-  resolved (same failure shapes `resolve/3` can return).
+  Returns `{:ok, %{root_entry: name, docs: count, derivation_record:
+  record}}` where `count` is every fresh doc minted (files + directory
+  schemas, including the new root), or `{:error, reason}` if the
+  checkpoint itself can't be resolved (same failure shapes `resolve/3`
+  can return). `derivation_record` (CX-vt9l.2, additive — existing
+  callers reading `root_entry`/`docs` see no change) is a
+  `Commonplace.DerivationRecord` whose `sources_pin` is the single
+  `%{snapshot_doc_uuid => checkpoint_commit_id}` pin that fully
+  determines this materialization (the same pin `resolve_anchored/4`
+  walks from — regenerating from that one pin alone reproduces this
+  same branch) and whose `output` is `{new_root_uuid, commit_id}` for
+  the freshly attached root.
   """
   @spec materialize_branch(GenServer.server(), String.t(), binary(), String.t(), keyword()) ::
-          {:ok, %{root_entry: String.t(), docs: non_neg_integer()}}
+          {:ok, %{root_entry: String.t(), docs: non_neg_integer(), derivation_record: DerivationRecord.t()}}
           | {:error, term()}
   def materialize_branch(
         store \\ CommitStoreClient,
@@ -413,8 +422,31 @@ defmodule Commonplace.Reflog.Restore do
       {new_root_uuid, docs} = materialize_anchored_tree(store, anchored, signing_opts)
       attach_to_root(store, root_uuid, name, new_root_uuid, signing_opts)
 
-      {:ok, %{root_entry: name, docs: docs}}
+      record =
+        branch_derivation_record(store, snapshot_doc_uuid, checkpoint_commit_id, new_root_uuid)
+
+      {:ok, %{root_entry: name, docs: docs, derivation_record: record}}
     end
+  end
+
+  # CX-vt9l.2: sources_pin is the SAME two identifiers materialize_branch/5
+  # itself took (snapshot_doc_uuid, checkpoint_commit_id) — that one pin
+  # is what resolve_anchored/4 walks to reproduce the whole tree, so it is
+  # what makes this branch regenerable ("staleness decidable" per the
+  # convention doc), not the many per-file pins the walk touches along the
+  # way.
+  defp branch_derivation_record(store, snapshot_doc_uuid, checkpoint_commit_id, new_root_uuid) do
+    output_ref =
+      case CommitStoreClient.latest_commit(store, new_root_uuid) do
+        {:ok, commit} -> {new_root_uuid, commit.id}
+        :none -> nil
+      end
+
+    DerivationRecord.new(
+      %{snapshot_doc_uuid => checkpoint_commit_id},
+      "reflog-restore-materialize_branch-v1",
+      output_ref
+    )
   end
 
   # --- anchored resolution (stage 3, private — resolve/3 stays untouched) --
@@ -667,10 +699,24 @@ defmodule Commonplace.Reflog.Restore do
   bound: a checkpoint is coherent-with-what-the-witness-saw, not a
   guarantee nothing was mid-mutation).
 
-  Returns `{:ok, %{files: count, dest: dest_dir, witness: owner, at: at}}`.
+  Returns `{:ok, %{files: count, dest: dest_dir, witness: owner, at: at,
+  derivation_record: record}}`. `derivation_record` (CX-vt9l.2,
+  additive — every other key is unchanged) is a
+  `Commonplace.DerivationRecord` whose `sources_pin` is `resolved`
+  itself reshaped to `%{doc_uuid => commit_id}` (the `Black.Query` pin
+  shape) and whose `output` is the plain filesystem path `dest_dir` —
+  materialize_dir writes ordinary files, not a commonplace doc, so the
+  output ref is a path rather than a `{uuid, commit_id}` pair.
   """
   @spec materialize_dir(GenServer.server(), map(), String.t(), keyword()) ::
-          {:ok, %{files: non_neg_integer(), dest: String.t(), witness: String.t() | nil, at: term()}}
+          {:ok,
+           %{
+             files: non_neg_integer(),
+             dest: String.t(),
+             witness: String.t() | nil,
+             at: term(),
+             derivation_record: DerivationRecord.t()
+           }}
           | {:error, term()}
   def materialize_dir(store \\ CommitStoreClient, resolved, dest_dir, opts \\ []) do
     with :ok <- check_not_inside_checkout(dest_dir, opts),
@@ -678,14 +724,32 @@ defmodule Commonplace.Reflog.Restore do
       File.mkdir_p!(dest_dir)
       files = write_files(store, resolved, dest_dir)
 
+      record =
+        DerivationRecord.new(
+          dir_sources_pin(resolved),
+          "reflog-restore-materialize_dir-v1",
+          dest_dir
+        )
+
       {:ok,
        %{
          files: files,
          dest: dest_dir,
          witness: Keyword.get(opts, :owner, @default_owner),
-         at: Keyword.get(opts, :at)
+         at: Keyword.get(opts, :at),
+         derivation_record: record
        }}
     end
+  end
+
+  # Reshape resolve/3's `%{path => {:file, doc_uuid, commit_id_hex}}`
+  # into the `Black.Query` pin shape `%{doc_uuid => commit_id}` (binary,
+  # not hex) DerivationRecord expects — same reuse-not-reinvent rule the
+  # convention doc names.
+  defp dir_sources_pin(resolved) do
+    Map.new(resolved, fn {_path, {:file, doc_uuid, commit_id_hex}} ->
+      {doc_uuid, Base.decode16!(commit_id_hex, case: :lower)}
+    end)
   end
 
   defp check_not_inside_checkout(dest_dir, opts) do

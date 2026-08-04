@@ -99,6 +99,7 @@ defmodule Commonplace.ViewCompute do
 
   alias Commonplace.CommandRouter
   alias Commonplace.Dataflow.PubSub, as: CPPubSub
+  alias Commonplace.DerivationRecord
   alias Commonplace.Document.ContentType
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.DocBuilder
@@ -122,6 +123,12 @@ defmodule Commonplace.ViewCompute do
     :router,
     :store,
     :last_computed_at,
+    # CX-vt9l.2: derivation record for the most recent successful write
+    # (nil until the first compute completes) — see
+    # `Commonplace.DerivationRecord`. Additive: nothing existing reads
+    # this field; it rides alongside `last_computed_at`, which stays
+    # unchanged.
+    :derivation_record,
     # R6: async single-flight + coalesce
     :computing,
     pending: false,
@@ -143,6 +150,7 @@ defmodule Commonplace.ViewCompute do
           router: GenServer.server(),
           store: GenServer.server(),
           last_computed_at: DateTime.t() | nil,
+          derivation_record: DerivationRecord.t() | nil,
           computing: {pid(), reference(), reference()} | nil,
           pending: boolean(),
           recompute_log: [integer()],
@@ -332,6 +340,16 @@ defmodule Commonplace.ViewCompute do
     end
   end
 
+  # CX-vt9l.2: do_compute_work (inline or the spawned task) reports its
+  # freshly-built derivation record back here rather than returning it —
+  # the async path has no return channel to the GenServer. Additive:
+  # `last_computed_at` is set at the call site exactly as before; this
+  # only ever adds `derivation_record` alongside it.
+  @impl true
+  def handle_info({:derivation_record, target_uuid, record}, %{target_uuid: target_uuid} = state) do
+    {:noreply, %{state | derivation_record: record}}
+  end
+
   @impl true
   def handle_info(_msg, state) do
     {:noreply, state}
@@ -342,7 +360,7 @@ defmodule Commonplace.ViewCompute do
   # purpose — it's an out-of-band manual trigger, not the reactive path.
   @impl true
   def handle_call(:recompute, _from, state) do
-    do_compute_work(state)
+    do_compute_work(state, self())
     {:reply, :ok, %{state | last_computed_at: DateTime.utc_now()}}
   end
 
@@ -372,7 +390,8 @@ defmodule Commonplace.ViewCompute do
       # compute_fn (e.g. arbitrary substrate code via ComputeRunner) can't
       # block this GenServer — it stays responsive to coalesce further
       # requests. The timer enforces the timeout.
-      {pid, ref} = spawn_monitor(fn -> do_compute_work(state) end)
+      parent = self()
+      {pid, ref} = spawn_monitor(fn -> do_compute_work(state, parent) end)
       timer = Process.send_after(self(), {:compute_timeout, ref}, state.compute_timeout_ms)
       %{state | computing: {pid, ref, timer}, recompute_log: log, pending: false}
     end
@@ -397,7 +416,10 @@ defmodule Commonplace.ViewCompute do
   # The actual computation: read latest source, transform, write target.
   # Runs in the async task (reactive path) or inline (recompute/1). Returns
   # :ok; never lets a compute_fn raise escape uncaught on the inline path.
-  defp do_compute_work(%__MODULE__{} = state) do
+  # `reply_to` is the ViewCompute GenServer's own pid — needed so the
+  # CX-vt9l.2 derivation-record message (sent only on a successful write)
+  # reaches the right process even when this runs in a spawned task.
+  defp do_compute_work(%__MODULE__{} = state, reply_to) do
     try do
       source_content = read_content(state.store, state.source_uuid)
       new_content = state.compute_fn.(source_content)
@@ -407,6 +429,8 @@ defmodule Commonplace.ViewCompute do
           Logger.debug(fn ->
             "ViewCompute #{inspect(state.name || state.source_uuid)}: wrote #{info["new_bytes"]} bytes to target (was #{info["old_bytes"]})"
           end)
+
+          emit_derivation_record(state, reply_to)
 
         {:error, :not_found} ->
           Logger.warning(
@@ -426,6 +450,36 @@ defmodule Commonplace.ViewCompute do
 
         :ok
     end
+  end
+
+  # CX-vt9l.2 adoption (see docs/derivation-records.md): builds and posts a
+  # `Commonplace.DerivationRecord` for the write that just succeeded.
+  # `sources_pin` and `output` are each re-read via a SEPARATE
+  # `latest_commit` call after the write, rather than threaded through
+  # from the read/write above — that is a deliberate best-effort
+  # approximation (there is a small window where a concurrent writer
+  # could move the source between the content read and this read), not
+  # an atomic transaction. Good enough for provenance labeling; not a
+  # correctness primitive. Never blocks or fails the write path — a
+  # `latest_commit` miss just yields an empty/`nil` ref, it does not
+  # raise.
+  defp emit_derivation_record(state, reply_to) do
+    sources_pin =
+      case CommitStoreClient.latest_commit(state.store, state.source_uuid) do
+        {:ok, commit} -> %{state.source_uuid => commit.id}
+        :none -> %{}
+      end
+
+    output_ref =
+      case CommitStoreClient.latest_commit(state.store, state.target_uuid) do
+        {:ok, commit} -> {state.target_uuid, commit.id}
+        :none -> nil
+      end
+
+    transform_ref = state.code_uuid || :inline_compute_fn
+    record = DerivationRecord.new(sources_pin, transform_ref, output_ref)
+
+    send(reply_to, {:derivation_record, state.target_uuid, record})
   end
 
   defp read_content(store, uuid) do

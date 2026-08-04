@@ -219,6 +219,33 @@ defmodule Commonplace.Reflog.RestoreTest do
     assert tree2["added.txt"] == "brand new"
   end
 
+  test "CX-vt9l.2: materialize_branch/5 carries a witness-shaped, decidably-stale derivation record", %{
+    store: store
+  } do
+    ids = seed_tree(store)
+    {:ok, cid1} = Snapshot.checkpoint(ids.root, store)
+    {:ok, snapshot_uuid} = Restore.root_snapshot_uuid(store, ids.root, "server")
+
+    {:ok, %{derivation_record: record}} =
+      Restore.materialize_branch(store, snapshot_uuid, cid1, ids.root, as: "restore-derivation-record")
+
+    assert Commonplace.DerivationRecord.witness?(record)
+    assert record["sources_pin"] == %{snapshot_uuid => cid1}
+    assert record["transform"] == "reflog-restore-materialize_branch-v1"
+    assert {new_root_uuid, _output_commit_id} = record["output"]
+    assert is_binary(new_root_uuid)
+
+    # Nothing about the checkpoint doc moved since materialization.
+    assert Commonplace.DerivationRecord.stale?(record, store) == :current
+
+    # A later checkpoint commit on the SAME snapshot doc is exactly the
+    # staleness this record's sources_pin is supposed to make decidable.
+    write_text_doc(store, ids.notes, "v2 notes")
+    {:ok, _cid2} = Snapshot.checkpoint(ids.root, store)
+
+    assert Commonplace.DerivationRecord.stale?(record, store) == {:stale, [snapshot_uuid]}
+  end
+
   # --- (b) ancestry (the point of stage 3) ------------------------------
 
   test "ancestry: every restored doc's first commit chains to the checkpoint's recorded source commit", %{

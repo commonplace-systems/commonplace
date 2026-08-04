@@ -148,6 +148,32 @@ defmodule Commonplace.Reflog.CheckoutTest do
     assert File.read!(Path.join(dest2, "added.txt")) == "brand new"
   end
 
+  test "CX-vt9l.2: materialize_dir/4 carries a witness-shaped, decidably-stale derivation record", %{
+    store: store,
+    dest_root: dest_root
+  } do
+    ids = seed_tree(store)
+    {:ok, cid1} = Snapshot.checkpoint(ids.root, store)
+    {:ok, snapshot_uuid} = Restore.root_snapshot_uuid(store, ids.root, "server")
+
+    dest1 = Path.join(dest_root, "derivation-record")
+    {:ok, resolved1} = Restore.resolve(store, snapshot_uuid, cid1)
+    {:ok, %{derivation_record: record, dest: ^dest1}} = Restore.materialize_dir(store, resolved1, dest1)
+
+    assert Commonplace.DerivationRecord.witness?(record)
+    assert record["output"] == dest1
+    assert map_size(record["sources_pin"]) == 3
+    # Nothing pinned has moved since this checkpoint was taken — every
+    # pinned source is still current.
+    assert Commonplace.DerivationRecord.stale?(record, store) == :current
+
+    # Mutating one of the pinned sources makes staleness decidable
+    # (and names exactly the source that moved).
+    write_text_doc(store, ids.notes, "v2 notes")
+    assert {:stale, [notes_uuid]} = Commonplace.DerivationRecord.stale?(record, store)
+    assert notes_uuid == ids.notes
+  end
+
   # --- (b) zero-store-writes --------------------------------------------
 
   test "materialize_dir/4 issues zero store writes", %{store: store, dest_root: dest_root} do
