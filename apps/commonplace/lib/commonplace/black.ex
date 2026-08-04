@@ -49,7 +49,13 @@ defmodule Commonplace.Black do
 
   ## Out of scope for M1 (brief-settled forks, spec §4)
 
-  * Ephemeral/scratch query docs (F3).
+  * Ephemeral/scratch query docs (F3) — M1's `select/3` is the query
+    verb; the F3 pin-capture/replay + result-witness-doc composition
+    over it landed separately as `Commonplace.Black.Query` (CX-vt9l.1,
+    epic CX-vt9l slice 1). This module still adds no query-doc/witness
+    machinery of its own — `opts[:with_pin]`/`opts[:at_pin]` here are
+    the minimal additive hooks `Query` composes, kept in `select/3`
+    because they are properties of the WALK, not of F3 specifically.
   * Secondary indexes (F5 — deferred until measured; `select/3` scans).
   * JSONPath/XPath predicate strings (F2 residue) — `json/2` gives a
     stable decoded structure; predicates over it are plain Elixir
@@ -114,7 +120,52 @@ defmodule Commonplace.Black do
   `root_uuid` itself). `Commonplace.Black.PatternCompute` uses this to
   build its subscription set: every matched doc PLUS every visited
   directory schema, so a doc created after init under a
-  previously-visited directory still triggers recomputation.
+  previously-linked directory still triggers recomputation.
+
+  ## `opts[:with_pin]` and `opts[:at_pin]` (CX-vt9l.1 — F3 ephemeral
+  queries / result-witness docs)
+
+  Additive, default-off, and independent of each other and of
+  `with_dirs` — omitting both reproduces today's behavior exactly
+  (same return shape, same reads, same cost).
+
+    * `opts[:with_pin]` (boolean, default `false`) — also return the
+      PIN the walk actually observed: a `%{doc_uuid => commit_id}` map
+      (raw binary commit ids, same type as `Commit.id` / the
+      `commit_id` `resolve/3` and `reconstruct_doc_at/4` take) for
+      *every doc read during the walk* — every schema directory
+      visited (its own latest-or-pinned commit at read time) AND every
+      matched leaf doc (its own latest-or-pinned commit, resolved with
+      one extra `latest_commit`/pin lookup per match — `select/3`
+      itself never reads a leaf's *content*, only its identity, so
+      this is the cheapest read that can stand in as that leaf's
+      observed pin).
+
+      Return-shape precedent follows `with_dirs`: with only ONE of
+      `with_dirs` / `with_pin` set, the return is still a 2-tuple
+      (`{matches, dir_uuids}` or `{matches, pin}`, exactly like the
+      existing `with_dirs`-alone shape). When BOTH are set, a growing
+      tuple stops being legible, so the return becomes a map instead:
+      `%{matches: matches, dirs: dir_uuids, pin: pin}`.
+
+    * `opts[:at_pin]` (a `%{doc_uuid => commit_id}` map, or `nil` —
+      default `nil`) — when given, EVERY doc read during the walk
+      (schema dirs and matched leaves alike) resolves via
+      `DocBuilder.reconstruct_doc_at(store, uuid, pin[uuid])` instead
+      of latest. **A uuid absent from `at_pin` is treated as NOT
+      PRESENT at that cut — it does NOT fall back to latest.** For a
+      directory this means an empty schema (nothing below it can
+      match, exactly as if the directory did not exist at this cut);
+      for a matched leaf entry this means the match is dropped from
+      the result entirely (its parent directory's *pinned* schema may
+      still name the entry, but with no pinned commit to point the
+      hit's `@`-ref at, honesty requires excluding it rather than
+      silently substituting the doc's current `:latest` — see the
+      moduledoc-level "repeatable reads" rule this exists to serve).
+      This is deliberate and load-bearing for `Commonplace.Black.Query`
+      (CX-vt9l.1): re-running the same pattern against the same
+      `at_pin` must be byte-identical no matter what has mutated since,
+      and a query result must never quietly widen its own cut.
 
   ## Existing glob matcher search (CX-o1l9 build note)
 
@@ -129,16 +180,33 @@ defmodule Commonplace.Black do
   @spec select(String.t(), String.t(), keyword()) ::
           [%{path: String.t(), uuid: String.t()}]
           | {[%{path: String.t(), uuid: String.t()}], MapSet.t()}
+          | {[%{path: String.t(), uuid: String.t()}], %{optional(String.t()) => binary()}}
+          | %{
+              matches: [%{path: String.t(), uuid: String.t()}],
+              dirs: MapSet.t(),
+              pin: %{optional(String.t()) => binary()}
+            }
   def select(root_uuid, pattern, opts \\ [])
       when is_binary(root_uuid) and is_binary(pattern) and is_list(opts) do
     store = Keyword.get(opts, :store, CommitStoreClient)
     max_depth = Keyword.get(opts, :max_depth, @default_max_depth)
     limit = Keyword.get(opts, :limit, @default_limit)
     with_dirs = Keyword.get(opts, :with_dirs, false)
+    with_pin = Keyword.get(opts, :with_pin, false)
+    at_pin = Keyword.get(opts, :at_pin, nil)
 
     segments = pattern |> String.trim("/") |> String.split("/", trim: true)
 
-    state = %{matches: [], dirs: MapSet.new(), count: 0, stopped: false, limit: limit}
+    state = %{
+      matches: [],
+      dirs: MapSet.new(),
+      pin: %{},
+      count: 0,
+      stopped: false,
+      limit: limit,
+      with_pin: with_pin,
+      at_pin: at_pin
+    }
 
     state =
       case segments do
@@ -148,10 +216,11 @@ defmodule Commonplace.Black do
 
     matches = Enum.reverse(state.matches)
 
-    if with_dirs do
-      {matches, state.dirs}
-    else
-      matches
+    case {with_dirs, with_pin} do
+      {false, false} -> matches
+      {true, false} -> {matches, state.dirs}
+      {false, true} -> {matches, state.pin}
+      {true, true} -> %{matches: matches, dirs: state.dirs, pin: state.pin}
     end
   end
 
@@ -246,7 +315,7 @@ defmodule Commonplace.Black do
   end
 
   defp expand(store, dir_uuid, path, ["**" | rest] = segments, depth, max_depth, state) do
-    doc = load_schema(store, dir_uuid)
+    {doc, state} = read_dir(store, dir_uuid, state)
     entries = Schema.list_entries(doc)
     state = track_dir(state, dir_uuid)
 
@@ -262,7 +331,7 @@ defmodule Commonplace.Black do
   end
 
   defp expand(store, dir_uuid, path, segments, depth, max_depth, state) do
-    doc = load_schema(store, dir_uuid)
+    {doc, state} = read_dir(store, dir_uuid, state)
     entries = Schema.list_entries(doc)
     state = track_dir(state, dir_uuid)
     match_segments_here(store, entries, path, segments, depth, max_depth, state)
@@ -288,11 +357,11 @@ defmodule Commonplace.Black do
     end)
   end
 
-  defp match_segments_here(_store, entries, path, [seg], _depth, _max_depth, state) do
+  defp match_segments_here(store, entries, path, [seg], _depth, _max_depth, state) do
     Enum.reduce(entries, state, fn entry, acc ->
       cond do
         acc.stopped -> acc
-        glob_match?(seg, entry.name) -> add_match(acc, path ++ [entry.name], entry.node_id)
+        glob_match?(seg, entry.name) -> add_match(store, acc, path ++ [entry.name], entry.node_id)
         true -> acc
       end
     end)
@@ -315,23 +384,101 @@ defmodule Commonplace.Black do
 
   defp track_dir(state, uuid), do: %{state | dirs: MapSet.put(state.dirs, uuid)}
 
-  defp add_match(%{stopped: true} = state, _path, _uuid), do: state
+  defp add_match(_store, %{stopped: true} = state, _path, _uuid), do: state
 
-  defp add_match(state, path_segments, uuid) do
+  defp add_match(store, state, path_segments, uuid) do
     if state.count >= state.limit do
       %{state | stopped: true}
     else
-      match = %{path: Enum.join(path_segments, "/"), uuid: uuid}
-      %{state | matches: [match | state.matches], count: state.count + 1}
+      case resolve_leaf(store, uuid, state) do
+        :exclude ->
+          state
+
+        {:include, state} ->
+          match = %{path: Enum.join(path_segments, "/"), uuid: uuid}
+          %{state | matches: [match | state.matches], count: state.count + 1}
+      end
     end
   end
 
-  defp load_schema(store, uuid) do
-    case DocBuilder.reconstruct_snapshot(store, uuid) do
-      {:ok, doc} -> doc
-      :none -> Schema.new_schema()
+  # Read a directory schema doc, honoring `state.at_pin` when set (see
+  # select/3's moduledoc `opts[:at_pin]` section). The plain/default
+  # path (no at_pin, no with_pin) is EXACTLY the original `load_schema/2`
+  # implementation — one `reconstruct_snapshot/2` call, same as before
+  # this change — so default behavior and cost are unchanged.
+  defp read_dir(store, dir_uuid, %{at_pin: at_pin} = state) when is_map(at_pin) do
+    case Map.fetch(at_pin, dir_uuid) do
+      {:ok, commit_id} ->
+        doc =
+          case DocBuilder.reconstruct_doc_at(store, dir_uuid, commit_id) do
+            {:ok, d} -> d
+            :none -> Schema.new_schema()
+          end
+
+        {doc, maybe_put_pin(state, dir_uuid, commit_id)}
+
+      :error ->
+        # Not present in the pin — NOT PRESENT at this cut. No fallback
+        # to :latest (that would destroy repeatable reads); an absent
+        # directory resolves as though it never existed.
+        {Schema.new_schema(), state}
     end
   end
+
+  defp read_dir(store, dir_uuid, %{with_pin: true} = state) do
+    case CommitStoreClient.latest_commit(store, dir_uuid) do
+      {:ok, commit} ->
+        doc =
+          case DocBuilder.reconstruct_snapshot(store, dir_uuid) do
+            {:ok, d} -> d
+            :none -> Schema.new_schema()
+          end
+
+        {doc, maybe_put_pin(state, dir_uuid, commit.id)}
+
+      :none ->
+        {Schema.new_schema(), state}
+    end
+  end
+
+  defp read_dir(store, dir_uuid, state) do
+    doc =
+      case DocBuilder.reconstruct_snapshot(store, dir_uuid) do
+        {:ok, d} -> d
+        :none -> Schema.new_schema()
+      end
+
+    {doc, state}
+  end
+
+  # Resolve a matched leaf entry's own observed commit id, per the same
+  # at_pin/with_pin rules `read_dir/3` applies to directories. `select/3`
+  # never reads a leaf's content, so this is a commit-id-only lookup
+  # (cheap), skipped entirely unless with_pin or at_pin is in play —
+  # zero extra reads on the default path.
+  defp resolve_leaf(_store, uuid, %{at_pin: at_pin} = state) when is_map(at_pin) do
+    case Map.fetch(at_pin, uuid) do
+      {:ok, commit_id} -> {:include, maybe_put_pin(state, uuid, commit_id)}
+      # Not present in the pin — NOT PRESENT at this cut: exclude the
+      # match rather than silently resolving it at :latest.
+      :error -> :exclude
+    end
+  end
+
+  defp resolve_leaf(_store, _uuid, %{with_pin: false} = state), do: {:include, state}
+
+  defp resolve_leaf(store, uuid, state) do
+    case CommitStoreClient.latest_commit(store, uuid) do
+      {:ok, commit} -> {:include, maybe_put_pin(state, uuid, commit.id)}
+      # The schema names this entry but the target doc has no commits
+      # yet — still a legitimate match (matches the no-with_pin
+      # behavior), just nothing to pin it to.
+      :none -> {:include, state}
+    end
+  end
+
+  defp maybe_put_pin(%{with_pin: false} = state, _uuid, _commit_id), do: state
+  defp maybe_put_pin(state, uuid, commit_id), do: %{state | pin: Map.put(state.pin, uuid, commit_id)}
 
   # --- Private: fnmatch-style single-segment glob -> regex ---
   #
