@@ -457,6 +457,7 @@ defmodule Commonplace.MCP do
         if Node.connect(serve_node) do
           # Route CommitStore calls through the remote node.
           Commonplace.Store.CommitStoreClient.set_remote_node(serve_node)
+          warn_on_version_skew(serve_node)
           :ok
         else
           Node.stop()
@@ -466,6 +467,32 @@ defmodule Commonplace.MCP do
       {:error, _} ->
         {:error, :not_running}
     end
+  end
+
+  # CX-o9kj: warn (to stderr only — stdout is the MCP protocol channel,
+  # see module doc) when this escript's bundled `commonplace` modules
+  # differ from what the serve node is actually running. The escript is
+  # a precompiled binary that silently drifts stale after a serve
+  # redeploy unless `bin/rebuild-mcp` is re-run; this surfaces that
+  # drift instead of letting it masquerade as a real bug.
+  #
+  # This is diagnostic only: it must never block or fail the connect
+  # flow it's reporting on. Any exception here is caught and swallowed
+  # — a handshake that couldn't run must not be treated as either a
+  # clean result or a skew, and must never take down session startup.
+  defp warn_on_version_skew(serve_node) do
+    case Commonplace.VersionHandshake.compare(serve_node) do
+      {:skew, list} ->
+        IO.puts(:stderr, Commonplace.VersionHandshake.format_skew(list))
+
+      :ok ->
+        :ok
+
+      {:error, _reason} ->
+        :ok
+    end
+  rescue
+    _ -> :ok
   end
 
   # Build the presence_starter closure for AnubisServer.
