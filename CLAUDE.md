@@ -66,6 +66,8 @@ bd update CX-xxx --status=in_progress
 bd close CX-xxx --reason="..."
 ```
 
+⚠️ `bd ready` is currently an INCOMPLETE view of the work — bd and the substrate `/bd/` have diverged since the 2026-07-18 cutover and nothing reconciles them. Neither store alone answers "what is the work?". See CX-jhvn (measured 2026-08-05) for the exact items each side is missing.
+
 ## Design docs
 
 - `docs/plans/2026-03-21-commonplace-elixir-design.md` — overall system design
