@@ -1,0 +1,417 @@
+#!/usr/bin/env bash
+#
+# notedoc-audit — READ-ONLY census of every `__note.json` note doc
+# reachable from the live workspace tree, classified by RAW JSON
+# parseability.
+#
+# WHY THIS EXISTS (CX-r97r)
+#
+# Concurrent `Commonplace.Bots.NoteDoc.append_entry/3` calls can splice
+# a note's `__note.json` into UNPARSEABLE JSON — verified signature is
+# a stray brace, e.g.
+#   {"entries":[{"marker":"x"}}],"zone":"..."}
+# a `Jason.DecodeError` around byte 34. Roughly 1 in 6-10 eight-way
+# concurrent-append bursts trigger it in tests. Every concurrent writer
+# still returns `:ok` — nothing at write time notices.
+#
+# Until 2026-08-05, `NoteDoc.read_entries/2` swallowed a decode failure
+# and returned `[]`, so a CORRUPT note read identically to an EMPTY
+# one and nothing anywhere reported it. `read_entries/2` now RAISES on
+# an unreadable note (see `apps/commonplace_bots/lib/commonplace/bots/
+# note_doc.ex`), and `fetch_entries/2` distinguishes ABSENT from
+# CORRUPT. Both of those are runtime behavior for callers that happen
+# to hit a corrupt note — neither one CENSUSES the live world to find
+# out whether this has actually happened.
+#
+# This script answers that question: of every note doc reachable from
+# `Commonplace.Workspace.root_uuid()`, how many have a `__note.json`
+# whose RAW BYTES fail to `Jason.decode`?
+#
+# ⚠️ Classification is done by reconstructing the `__note.json` CHILD
+# DOC directly (`Commonplace.Tree.DocBuilder.reconstruct_doc/2` +
+# `Commonplace.Document.ContentType.get_content/1`) and Jason-decoding
+# the raw text ourselves — NOT via `NoteDoc.read_entries/2` (now
+# raises, would crash this script on the first hit) and NOT SOLELY via
+# `NoteDoc.fetch_entries/2` (goes through `World.get_meta_map/3`,
+# which already collapses the decode error to a bare reason atom/
+# struct — we want the decode error AND a raw-bytes snippet for every
+# corrupt doc, which means reading the bytes ourselves).
+#
+# A note doc, per `NoteDoc`'s own shape (`@note_filename`,
+# `lookup_entry/3`): a DIRECTORY entry (`Schema.Entry.type == :doc`...
+# actually the note-meta ITSELF is a `:doc` entry named `__note.json`
+# living inside some parent directory) — so: walk every `:dir` entry
+# in the workspace tree, and any directory whose schema contains a
+# `:doc` entry literally named `__note.json` is a note doc, keyed by
+# that DIRECTORY's uuid (matching `note_dir_uuid` throughout NoteDoc).
+#
+# WALK MECHANICS: BFS from `Commonplace.Workspace.root_uuid()` over
+# `Commonplace.MUD.Schemas.load_dir_schema/2` + `Commonplace.Tree.
+# Schema.list_entries/1`, recursing into `:dir` entries. A visited set
+# (by node_id) guards cycles — the tree is normally acyclic but a
+# schema is a CRDT map an adversarial or buggy write could still wire
+# into a cycle, and this is a MEASUREMENT script, not a trusted-shape
+# assumption. Depth is bounded (env-tunable) purely as a runaway
+# backstop; the workspace tree is not expected to approach it.
+#
+# This is a REPORT, not a gate. It never blocks anything and never
+# writes anything — it does not even use NoteDoc's own read path,
+# only DocBuilder/ContentType reads through the SAME read-only RPC
+# mechanics as bin/bd-invariants and bin/bd-divergence (read those
+# scripts' headers for the full connect/ERL_INETRC/lock story; not
+# repeated here).
+#
+# ⚠️ NEVER report a bare corrupt-count without scope beside it. If
+# ZERO note docs are found, that is NOT the same as "measured clean" —
+# it may mean the walk is broken. This script prints directories
+# walked, note docs found, parse/corrupt/empty-but-parses counts, and
+# SHOUTS if the note-doc count is zero.
+#
+# Usage:
+#   bin/notedoc-audit
+#
+# Env overrides (for testing / operating against a different serve):
+#   NOTEDOC_AUDIT_NODE  — serve node name (default commonplace_dev@commonplace)
+#   NOTEDOC_AUDIT_HOST  — short hostname to statically map to 127.0.0.1
+#                         in the probe's ERL_INETRC (default: derived
+#                         from NOTEDOC_AUDIT_NODE's host part)
+#   NOTEDOC_AUDIT_MAX_DEPTH — BFS depth bound (default 40)
+#   NOTEDOC_AUDIT_MAX_DIRS  — directories-visited bound, runaway backstop
+#                             (default 200000)
+#
+# Exit codes:
+#   0 — measured successfully (regardless of how many corrupt docs were found,
+#       and regardless of whether the note-doc population turned out to be 0 —
+#       a zero population is reported LOUDLY as vacuous, not silently as clean)
+#   2 — could not read the substrate side (serve unreachable, root_uuid
+#       missing, or a walk/reconstruct erpc call itself failed) — NEVER
+#       prints figures computed from a failed read
+#   3 — could not even acquire the one-probe-at-a-time lock
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+
+SERVE_NODE="${NOTEDOC_AUDIT_NODE:-commonplace_dev@commonplace}"
+SERVE_HOST="${NOTEDOC_AUDIT_HOST:-${SERVE_NODE#*@}}"
+MAX_DEPTH="${NOTEDOC_AUDIT_MAX_DEPTH:-40}"
+MAX_DIRS="${NOTEDOC_AUDIT_MAX_DIRS:-200000}"
+
+LOCK_FILE="$PROJECT_DIR/.notedoc-audit.lock"
+TMP_DIR="$(mktemp -d)"
+cleanup() { rm -rf "$TMP_DIR"; }
+trap cleanup EXIT
+
+# --- one-probe-at-a-time guard ---------------------------------------
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+  echo "notedoc-audit: another notedoc-audit (or probe) run holds the lock at $LOCK_FILE — refusing to start a second concurrent probe node." >&2
+  exit 3
+fi
+
+PROBE_SCRIPT="$TMP_DIR/probe.exs"
+INETRC="$TMP_DIR/inetrc"
+
+cat >"$INETRC" <<EOF
+{lookup, [file, native]}.
+{host, {127,0,0,1}, ["$SERVE_HOST"]}.
+EOF
+
+cat >"$PROBE_SCRIPT" <<'ELIXIR'
+[serve_node_str, max_depth_str, max_dirs_str] =
+  System.argv() |> Enum.reject(&(&1 == "--"))
+serve_node = String.to_atom(serve_node_str)
+max_depth = String.to_integer(max_depth_str)
+max_dirs = String.to_integer(max_dirs_str)
+
+# Same fix as bin/bd-divergence's probe (CX-y6uc): a short-lived probe
+# node joining/leaving repeatedly can trip :global's overlapping-
+# partition heuristic against the long-running serve. Must be set
+# before Node.start.
+:application.set_env(:kernel, :prevent_overlapping_partitions, false)
+:application.set_env(:kernel, :inet_dist_use_interface, {127, 0, 0, 1})
+
+probe_name =
+  :"notedoc_audit_probe_#{:erlang.unique_integer([:positive])}@#{System.get_env("NOTEDOC_AUDIT_HOST", "commonplace")}"
+
+fail = fn msg ->
+  IO.puts(:stderr, "notedoc-audit: could not read the substrate side — #{msg}")
+  IO.puts(:stderr, "notedoc-audit: refusing to report figures computed from a failed substrate read.")
+  System.halt(2)
+end
+
+case Node.start(probe_name, :shortnames) do
+  {:ok, _} -> :ok
+  {:error, reason} -> fail.("could not start local probe node (#{inspect(reason)})")
+end
+
+unless Node.connect(serve_node) do
+  fail.("Node.connect(#{inspect(serve_node)}) returned false/failed — is the serve up? (pang)")
+end
+
+root =
+  case :erpc.call(serve_node, Commonplace.Workspace, :root_uuid, [], 15_000) do
+    {:ok, root} -> root
+    other -> fail.("Commonplace.Workspace.root_uuid() on #{inspect(serve_node)} returned #{inspect(other)}")
+  end
+
+store = Commonplace.Store.CommitStoreClient
+note_filename = "__note.json"
+
+# --- BFS walk over the workspace tree, entirely via erpc ---------------
+#
+# Each step reconstructs one directory's schema remotely and returns
+# its :dir/:doc entries to us; the walk logic (visited set, depth
+# bound, dirs-visited bound) lives HERE, client-side, so it is
+# inspectable and not coupled to whatever's loaded on the serve.
+list_entries = fn dir_uuid ->
+  try do
+    :erpc.call(serve_node, Commonplace.MUD.Schemas, :load_dir_schema, [dir_uuid, store], 30_000)
+  catch
+    :error, reason -> {:rpc_error, reason}
+    :exit, reason -> {:rpc_error, reason}
+  end
+  |> case do
+    {:ok, schema} ->
+      try do
+        {:ok, :erpc.call(serve_node, Commonplace.Tree.Schema, :list_entries, [schema], 30_000)}
+      catch
+        :error, reason -> {:rpc_error, reason}
+        :exit, reason -> {:rpc_error, reason}
+      end
+
+    {:error, reason} ->
+      {:schema_error, reason}
+
+    {:rpc_error, _} = err ->
+      err
+
+    other ->
+      {:schema_error, other}
+  end
+end
+
+walk = fn walk, frontier, depth, visited, dirs_visited, note_dirs, walk_errors ->
+  cond do
+    frontier == [] ->
+      %{note_dirs: note_dirs, dirs_visited: dirs_visited, visited: visited, walk_errors: walk_errors}
+
+    depth > max_depth ->
+      %{
+        note_dirs: note_dirs,
+        dirs_visited: dirs_visited,
+        visited: visited,
+        walk_errors: [
+          {:depth_bound_hit, depth, length(frontier)} | walk_errors
+        ]
+      }
+
+    dirs_visited >= max_dirs ->
+      %{
+        note_dirs: note_dirs,
+        dirs_visited: dirs_visited,
+        visited: visited,
+        walk_errors: [
+          {:dirs_bound_hit, dirs_visited, length(frontier)} | walk_errors
+        ]
+      }
+
+    true ->
+      {next_frontier, visited, dirs_visited, note_dirs, walk_errors} =
+        Enum.reduce(frontier, {[], visited, dirs_visited, note_dirs, walk_errors}, fn dir_uuid,
+                                                                                       {acc_next, visited,
+                                                                                        dirs_visited, note_dirs,
+                                                                                        walk_errors} ->
+          if MapSet.member?(visited, dir_uuid) do
+            {acc_next, visited, dirs_visited, note_dirs, walk_errors}
+          else
+            visited = MapSet.put(visited, dir_uuid)
+            dirs_visited = dirs_visited + 1
+
+            case list_entries.(dir_uuid) do
+              {:ok, entries} ->
+                has_note = Enum.any?(entries, fn e -> e.type == :doc and e.name == note_filename end)
+                note_dirs = if has_note, do: [dir_uuid | note_dirs], else: note_dirs
+
+                child_dirs =
+                  entries
+                  |> Enum.filter(&(&1.type == :dir))
+                  |> Enum.map(& &1.node_id)
+
+                {child_dirs ++ acc_next, visited, dirs_visited, note_dirs, walk_errors}
+
+              other ->
+                {acc_next, visited, dirs_visited, note_dirs,
+                 [{:list_entries_failed, dir_uuid, other} | walk_errors]}
+            end
+          end
+        end)
+
+      walk.(walk, next_frontier, depth + 1, visited, dirs_visited, note_dirs, walk_errors)
+  end
+end
+
+walk_result = walk.(walk, [root], 0, MapSet.new(), 0, [], [])
+
+note_dirs = Enum.uniq(walk_result.note_dirs)
+
+# --- classify each note doc by RAW JSON parseability --------------------
+#
+# Reconstruct the `__note.json` CHILD DOC directly and Jason.decode the
+# raw text ourselves. Deliberately bypasses NoteDoc.read_entries/2
+# (raises on corrupt — would crash this census) and does not rely
+# solely on fetch_entries/2's collapsed error reason — we want the
+# actual Jason.DecodeError and a raw-bytes snippet per corrupt doc.
+classify = fn dir_uuid ->
+  with {:ok, schema} <-
+         (try do
+            :erpc.call(serve_node, Commonplace.MUD.Schemas, :load_dir_schema, [dir_uuid, store], 30_000)
+          catch
+            :error, r -> {:error, {:rpc, r}}
+            :exit, r -> {:error, {:rpc, r}}
+          end),
+       {:ok, entry} <-
+         (try do
+            :erpc.call(serve_node, Commonplace.Tree.Schema, :get_entry, [schema, note_filename], 30_000)
+          catch
+            :error, r -> {:error, {:rpc, r}}
+            :exit, r -> {:error, {:rpc, r}}
+          end),
+       {:ok, doc} <-
+         (try do
+            :erpc.call(serve_node, Commonplace.Tree.DocBuilder, :reconstruct_doc, [store, entry.node_id], 30_000)
+          catch
+            :error, r -> {:error, {:rpc, r}}
+            :exit, r -> {:error, {:rpc, r}}
+          end),
+       raw when is_binary(raw) <-
+         (try do
+            :erpc.call(serve_node, Commonplace.Document.ContentType, :get_content, [doc], 30_000)
+          catch
+            :error, r -> {:error, {:rpc, r}}
+            :exit, r -> {:error, {:rpc, r}}
+          end) do
+    case Jason.decode(raw) do
+      {:ok, parsed} when is_map(parsed) ->
+        entries = Map.get(parsed, "entries")
+        entry_count = if is_list(entries), do: length(entries), else: 0
+        {:ok, %{node_id: entry.node_id, entry_count: entry_count, raw_size: byte_size(raw)}}
+
+      {:ok, other} ->
+        {:ok, %{node_id: entry.node_id, entry_count: 0, raw_size: byte_size(raw), non_map: other}}
+
+      {:error, %Jason.DecodeError{} = err} ->
+        snippet =
+          raw
+          |> String.slice(0, 400)
+          |> then(&(if byte_size(raw) > 400, do: &1 <> "…[truncated, #{byte_size(raw)} bytes total]", else: &1))
+
+        {:corrupt, %{node_id: entry.node_id, error: Exception.message(err), snippet: snippet}}
+    end
+  else
+    :error -> {:absent, :no_meta_entry}
+    :none -> {:absent, :no_doc}
+    nil -> {:absent, :empty_doc}
+    {:error, reason} -> {:read_error, reason}
+    other -> {:read_error, other}
+  end
+end
+
+results = Enum.map(note_dirs, fn dir_uuid -> {dir_uuid, classify.(dir_uuid)} end)
+
+parsed = Enum.filter(results, fn {_, r} -> match?({:ok, _}, r) end)
+corrupt = Enum.filter(results, fn {_, r} -> match?({:corrupt, _}, r) end)
+absent = Enum.filter(results, fn {_, r} -> match?({:absent, _}, r) end)
+read_errors = Enum.filter(results, fn {_, r} -> match?({:read_error, _}, r) end)
+
+zero_entry_parsed =
+  Enum.filter(parsed, fn {_, {:ok, %{entry_count: n}}} -> n == 0 end)
+
+IO.puts("""
+
+notedoc-audit report
+=====================
+substrate node      : #{serve_node}
+walk root           : #{root}
+directories visited : #{walk_result.dirs_visited}
+walk depth bound    : #{max_depth}#{if Enum.any?(walk_result.walk_errors, &match?({:depth_bound_hit, _, _}, &1)), do: " ⚠️ HIT — walk may be INCOMPLETE", else: " (not hit)"}
+dirs bound          : #{max_dirs}#{if Enum.any?(walk_result.walk_errors, &match?({:dirs_bound_hit, _, _}, &1)), do: " ⚠️ HIT — walk may be INCOMPLETE", else: " (not hit)"}
+note docs found     : #{length(note_dirs)}
+""")
+
+if walk_result.walk_errors != [] do
+  IO.puts("walk errors/warnings (#{length(walk_result.walk_errors)}):")
+  Enum.each(walk_result.walk_errors, fn e -> IO.puts("  #{inspect(e)}") end)
+  IO.puts("")
+end
+
+if note_dirs == [] do
+  IO.puts("""
+  ⚠️⚠️⚠️  ZERO note docs found. This result is VACUOUS, not clean. ⚠️⚠️⚠️
+  "0 corrupt out of 0 scanned" and a genuinely clean world read
+  IDENTICALLY here — that ambiguity is exactly the failure class this
+  project (CX-r97r) keeps cataloguing. Bots are known to have
+  transcript/agenda/memory note dirs; a 0 count most likely means the
+  walk did not reach them, NOT that none exist. Do not report this as
+  "no corruption found" — report it as "the walk found nothing to
+  scan" and treat that as a bug to chase, not a clean bill of health.
+  """)
+
+  System.halt(0)
+end
+
+IO.puts(
+  "of #{length(note_dirs)} note docs: #{length(parsed)} parse, #{length(corrupt)} CORRUPT, " <>
+    "#{length(absent)} absent-at-read-time, #{length(read_errors)} read-error " <>
+    "(#{length(zero_entry_parsed)} of the #{length(parsed)} parsing docs have zero entries)"
+)
+
+IO.puts("")
+
+if corrupt != [] do
+  IO.puts("CORRUPT (#{length(corrupt)}) — per-doc detail:")
+
+  Enum.each(corrupt, fn {dir_uuid, {:corrupt, %{node_id: node_id, error: error, snippet: snippet}}} ->
+    IO.puts("""
+      note dir uuid : #{dir_uuid}
+      __note.json   : #{node_id}
+      decode error  : #{error}
+      raw snippet   : #{inspect(snippet)}
+    """)
+  end)
+end
+
+if absent != [] do
+  IO.puts("absent-at-read-time (#{length(absent)}) — schema listed __note.json but a raw read found none (likely a race with this script's own read, or the entry vanished between the walk and the read):")
+
+  Enum.each(absent, fn {dir_uuid, {:absent, reason}} ->
+    IO.puts("  #{dir_uuid} — #{inspect(reason)}")
+  end)
+
+  IO.puts("")
+end
+
+if read_errors != [] do
+  IO.puts("read-error (#{length(read_errors)}) — could not even attempt Jason.decode:")
+
+  Enum.each(read_errors, fn {dir_uuid, {:read_error, reason}} ->
+    IO.puts("  #{dir_uuid} — #{inspect(reason)}")
+  end)
+
+  IO.puts("")
+end
+
+if corrupt == [] do
+  IO.puts("notedoc-audit: measured successfully — NO corrupt note docs found among #{length(note_dirs)} scanned.")
+else
+  IO.puts(
+    "notedoc-audit: measured successfully — #{length(corrupt)} CORRUPT note doc(s) found among #{length(note_dirs)} scanned (see detail above). This is a REPORT, not a gate."
+  )
+end
+
+System.halt(0)
+ELIXIR
+
+cd "$PROJECT_DIR"
+NOTEDOC_AUDIT_HOST="$SERVE_HOST" ERL_INETRC="$INETRC" mix run --no-start "$PROBE_SCRIPT" -- "$SERVE_NODE" "$MAX_DEPTH" "$MAX_DIRS"
