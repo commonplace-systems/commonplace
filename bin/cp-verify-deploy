@@ -36,6 +36,25 @@
 # claims more than it checked. A module that was never loaded is reported
 # as NOT VERIFIED — never folded into an "agreement" count.
 #
+# SWEEPS EVERY UMBRELLA APP, not just `commonplace`. The app list is
+# discovered dynamically from the `apps/` directory at run time — a new
+# app added to the umbrella is covered automatically, no edit needed here.
+# This was itself a bug: in two consecutive real deploys, changed modules
+# in `commonplace_bots` (`Commonplace.Bots.NoteDoc`, `Commonplace.Bots.Agenda`)
+# came back "NOT a module of the `commonplace` app" and had to be verified
+# by a hand-rolled probe. A verification tool with a silent blind spot is
+# worse than none. Some umbrella apps (e.g. a CLI escript app) legitimately
+# never load in the serve at all — that is reported as NOT LOADED ON SERVE,
+# not as a failure.
+#
+# ⚠️ A RELATED TRAP, worth recording next to this tool: `:erlang.function_
+# exported/3` returns FALSE for a module that is not loaded, and does NOT
+# force-load it. Probing a function that shipped in a PREVIOUS deploy can
+# therefore report `false`, which reads as "the deploy failed" and actually
+# means "not verified — this module was never loaded to begin with." Check
+# `:code.is_loaded/1` FIRST. This tool reports load state before any verdict
+# for exactly this reason.
+#
 # RPC / connection mechanics mirror bin/bd-divergence and bin/bd-invariants
 # exactly (read either script's header for the full story) — this script
 # does not repeat the rationale, only the mechanism:
@@ -78,6 +97,18 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 SERVE_NODE="${CP_VERIFY_DEPLOY_NODE:-commonplace_dev@commonplace}"
 SERVE_HOST="${CP_VERIFY_DEPLOY_HOST:-${SERVE_NODE#*@}}"
 
+# --- discover the umbrella app list from apps/, dynamically -----------
+# Do NOT hardcode this list — a new app added to the umbrella must be
+# swept automatically. Passed to the Elixir probe via an env var (not
+# argv) because argv already carries the serve node plus any
+# user-supplied named modules ("$@").
+APPS_DIR="$PROJECT_DIR/apps"
+UMBRELLA_APPS=""
+for d in "$APPS_DIR"/*/; do
+  app="$(basename "$d")"
+  UMBRELLA_APPS="${UMBRELLA_APPS:+$UMBRELLA_APPS,}$app"
+done
+
 LOCK_FILE="$PROJECT_DIR/.cp-verify-deploy.lock"
 TMP_DIR="$(mktemp -d)"
 cleanup() { rm -rf "$TMP_DIR"; }
@@ -104,6 +135,11 @@ cat >"$PROBE_SCRIPT" <<'ELIXIR'
 serve_node = String.to_atom(serve_node_str)
 named_modules = Enum.map(named_modules_str, &String.to_atom("Elixir." <> &1))
 
+apps =
+  System.get_env("CP_VERIFY_DEPLOY_APPS", "")
+  |> String.split(",", trim: true)
+  |> Enum.map(&String.to_atom/1)
+
 # Same fix as bin/bd-divergence's probe (CX-y6uc): a short-lived probe
 # node joining/leaving repeatedly can trip :global's overlapping-
 # partition heuristic against the long-running serve. Must be set
@@ -129,12 +165,20 @@ unless Node.connect(serve_node) do
   fail.("Node.connect(#{inspect(serve_node)}) returned false/failed — is the serve up? (pang)")
 end
 
-# --- (1) enumerate every module of the `commonplace` app, on the REMOTE --
-modules =
-  case :erpc.call(serve_node, :application, :get_key, [:commonplace, :modules], 15_000) do
-    {:ok, mods} -> mods
-    other -> fail.(":application.get_key(:commonplace, :modules) on #{inspect(serve_node)} returned #{inspect(other)}")
-  end
+# --- (1) enumerate every module of EVERY umbrella app, on the REMOTE -----
+#
+# The app list is discovered dynamically from `apps/` by the bash wrapper
+# (never hardcoded here) and passed in via CP_VERIFY_DEPLOY_APPS. An app
+# that returns :undefined is NOT loaded on the serve at all — that is
+# expected for e.g. a CLI escript app and is reported, not failed.
+app_modules =
+  Enum.map(apps, fn app ->
+    case :erpc.call(serve_node, :application, :get_key, [app, :modules], 15_000) do
+      {:ok, mods} -> {app, :ok, mods}
+      :undefined -> {app, :not_loaded_on_serve, []}
+      other -> fail.(":application.get_key(#{inspect(app)}, :modules) on #{inspect(serve_node)} returned #{inspect(other)}")
+    end
+  end)
 
 # --- (2) load state, via :code.is_loaded/1 ONLY -------------------------
 #
@@ -150,12 +194,6 @@ is_loaded? = fn mod ->
     false -> false
     other -> fail.(":code.is_loaded(#{inspect(mod)}) on #{inspect(serve_node)} returned unexpected #{inspect(other)}")
   end
-end
-
-{loaded, not_loaded} = Enum.split_with(modules, is_loaded?)
-
-if length(loaded) + length(not_loaded) != length(modules) do
-  fail.("partition size mismatch — this should be impossible, refusing to report")
 end
 
 # --- (3) md5, LOADED modules only ----------------------------------------
@@ -205,10 +243,50 @@ compare = fn mod ->
   end
 end
 
-comparisons = Enum.map(loaded, compare)
-matches = Enum.count(comparisons, &match?({:match, _}, &1))
-diffs = Enum.filter(comparisons, &match?({:diff, _, _, _}, &1))
-compare_errors = Enum.filter(comparisons, &match?({:compare_error, _, _}, &1))
+# --- per-app sweep: partition + compare, one app at a time ---------------
+per_app =
+  Enum.map(app_modules, fn
+    {app, :not_loaded_on_serve, []} ->
+      %{app: app, status: :not_loaded_on_serve}
+
+    {app, :ok, mods} ->
+      {loaded, not_loaded} = Enum.split_with(mods, is_loaded?)
+
+      if length(loaded) + length(not_loaded) != length(mods) do
+        fail.("partition size mismatch for app #{inspect(app)} — this should be impossible, refusing to report")
+      end
+
+      comparisons = Enum.map(loaded, compare)
+      matches = Enum.count(comparisons, &match?({:match, _}, &1))
+      diffs = Enum.filter(comparisons, &match?({:diff, _, _, _}, &1))
+      compare_errors = Enum.filter(comparisons, &match?({:compare_error, _, _}, &1))
+
+      %{
+        app: app,
+        status: :ok,
+        modules: mods,
+        loaded: loaded,
+        not_loaded: not_loaded,
+        matches: matches,
+        diffs: diffs,
+        compare_errors: compare_errors
+      }
+  end)
+
+swept_apps = for %{app: app, status: :ok} <- per_app, do: app
+
+# --- totals across all apps ------------------------------------------------
+ok_apps = Enum.filter(per_app, &(&1.status == :ok))
+total_modules = Enum.sum(Enum.map(ok_apps, &length(&1.modules)))
+total_loaded = Enum.sum(Enum.map(ok_apps, &length(&1.loaded)))
+total_not_loaded = Enum.sum(Enum.map(ok_apps, &length(&1.not_loaded)))
+total_matches = Enum.sum(Enum.map(ok_apps, & &1.matches))
+total_diffs = Enum.sum(Enum.map(ok_apps, &length(&1.diffs)))
+total_compare_errors = Enum.sum(Enum.map(ok_apps, &length(&1.compare_errors)))
+
+if total_loaded + total_not_loaded != total_modules do
+  fail.("partition size mismatch across apps — this should be impossible, refusing to report")
+end
 
 # --- report ---------------------------------------------------------------
 
@@ -217,76 +295,117 @@ IO.puts("""
 cp-verify-deploy report
 ========================
 substrate node   : #{serve_node}
-commonplace app  : #{length(modules)} modules total
-LOADED           : #{length(loaded)}
-NOT LOADED       : #{length(not_loaded)}  (⚠️  NOT VERIFIED — these have never
-                     run on the serve this process; they will load
-                     whatever is in _build at first call, which may or
-                     may not be what was deployed)
+apps swept       : #{length(ok_apps)} (of #{length(apps)} discovered)
 """)
 
-if length(loaded) + length(not_loaded) == length(modules) do
-  IO.puts("partition check: LOADED + NOT LOADED = #{length(loaded) + length(not_loaded)} == #{length(modules)} total — nothing dropped.\n")
-end
+IO.puts("  app                total   LOADED   NOT LOADED   md5 match   md5 DIFF   cmp err")
 
-IO.puts("among LOADED (#{length(loaded)}):")
-IO.puts("  md5 matches      : #{matches}")
-IO.puts("  md5 DIFFERS       : #{length(diffs)}")
-IO.puts("  compare errors    : #{length(compare_errors)}")
+Enum.each(per_app, fn
+  %{status: :not_loaded_on_serve, app: app} ->
+    IO.puts(
+      "  " <>
+        String.pad_trailing(to_string(app), 19) <>
+        String.pad_leading("-", 7) <>
+        String.pad_leading("-", 9) <>
+        String.pad_leading("-", 13) <>
+        String.pad_leading("-", 12) <>
+        String.pad_leading("-", 11) <>
+        String.pad_leading("-", 10) <>
+        "   (NOT LOADED ON SERVE)"
+    )
+
+  %{status: :ok} = a ->
+    IO.puts(
+      "  " <>
+        String.pad_trailing(to_string(a.app), 19) <>
+        String.pad_leading(to_string(length(a.modules)), 7) <>
+        String.pad_leading(to_string(length(a.loaded)), 9) <>
+        String.pad_leading(to_string(length(a.not_loaded)), 13) <>
+        String.pad_leading(to_string(a.matches), 12) <>
+        String.pad_leading(to_string(length(a.diffs)), 11) <>
+        String.pad_leading(to_string(length(a.compare_errors)), 10)
+    )
+end)
+
+IO.puts("")
+IO.puts(
+  "TOTALS: #{total_modules} modules, #{total_loaded} loaded, #{total_not_loaded} not loaded (NOT VERIFIED), " <>
+    "#{total_matches} md5 matches, #{total_diffs} diffs, #{total_compare_errors} compare errors."
+)
+IO.puts(
+  "⚠️  NOT LOADED modules have never run on the serve this process; they will load whatever is in _build at first call, which may or may not be what was deployed."
+)
 IO.puts("")
 
-if diffs != [] do
+not_loaded_apps = for %{status: :not_loaded_on_serve, app: app} <- per_app, do: app
+
+if not_loaded_apps != [] do
+  IO.puts("NOT LOADED ON SERVE — 0 modules swept, NOT VERIFIED: #{Enum.map_join(not_loaded_apps, ", ", &to_string/1)}\n")
+end
+
+all_diffs = Enum.flat_map(ok_apps, fn a -> Enum.map(a.diffs, &{a.app, &1}) end)
+all_compare_errors = Enum.flat_map(ok_apps, fn a -> Enum.map(a.compare_errors, &{a.app, &1}) end)
+
+if all_diffs != [] do
   IO.puts("MODULES WITH DIFFERING md5 (local vs remote) — up to 20 shown:")
 
-  diffs
+  all_diffs
   |> Enum.take(20)
-  |> Enum.each(fn {:diff, mod, local, remote} ->
-    IO.puts("  #{inspect(mod)}")
+  |> Enum.each(fn {app, {:diff, mod, local, remote}} ->
+    IO.puts("  [#{app}] #{inspect(mod)}")
     IO.puts("    local  md5: #{Base.encode16(local, case: :lower)}")
     IO.puts("    remote md5: #{Base.encode16(remote, case: :lower)}")
   end)
 
-  extra = length(diffs) - 20
+  extra = length(all_diffs) - 20
   if extra > 0, do: IO.puts("  … and #{extra} more")
   IO.puts("")
 end
 
-if compare_errors != [] do
+if all_compare_errors != [] do
   IO.puts("MODULES WHERE THE COMPARISON ITSELF ERRORED — up to 20 shown (not counted as matches OR diffs):")
 
-  compare_errors
+  all_compare_errors
   |> Enum.take(20)
-  |> Enum.each(fn {:compare_error, mod, reason} ->
-    IO.puts("  #{inspect(mod)} — #{inspect(reason)}")
+  |> Enum.each(fn {app, {:compare_error, mod, reason}} ->
+    IO.puts("  [#{app}] #{inspect(mod)} — #{inspect(reason)}")
   end)
 
-  extra = length(compare_errors) - 20
+  extra = length(all_compare_errors) - 20
   if extra > 0, do: IO.puts("  … and #{extra} more")
   IO.puts("")
 end
 
-# --- named modules, called out explicitly --------------------------------
+# --- named modules, resolved across ALL swept apps ------------------------
 if named_modules != [] do
   IO.puts("NAMED MODULES (from argv):")
 
   Enum.each(named_modules, fn mod ->
-    cond do
-      mod not in modules ->
-        IO.puts("  #{inspect(mod)} — NOT a module of the `commonplace` app (per :application.get_key/2 on the remote)")
+    owner = Enum.find(ok_apps, fn a -> mod in a.modules end)
 
-      mod in not_loaded ->
-        IO.puts("  #{inspect(mod)} — MODULE NOT LOADED — the serve is not running this code; it will load from _build when first called. NOT a match, NOT a diff — not verified.")
+    cond do
+      owner == nil ->
+        IO.puts(
+          "  #{inspect(mod)} — NOT a module of ANY swept app (swept: #{Enum.map_join(swept_apps, ", ", &to_string/1)})"
+        )
+
+      mod in owner.not_loaded ->
+        IO.puts(
+          "  #{inspect(mod)} — [#{owner.app}] MODULE NOT LOADED — the serve is not running this code; it will load from _build when first called. NOT a match, NOT a diff — not verified."
+        )
 
       true ->
         case compare.(mod) do
           {:match, _} ->
-            IO.puts("  #{inspect(mod)} — LOADED, md5 MATCHES local disk.")
+            IO.puts("  #{inspect(mod)} — [#{owner.app}] LOADED, md5 MATCHES local disk.")
 
           {:diff, _, local, remote} ->
-            IO.puts("  #{inspect(mod)} — LOADED, md5 DIFFERS: local #{Base.encode16(local, case: :lower)} vs remote #{Base.encode16(remote, case: :lower)}")
+            IO.puts(
+              "  #{inspect(mod)} — [#{owner.app}] LOADED, md5 DIFFERS: local #{Base.encode16(local, case: :lower)} vs remote #{Base.encode16(remote, case: :lower)}"
+            )
 
           {:compare_error, _, reason} ->
-            IO.puts("  #{inspect(mod)} — LOADED, but comparison errored: #{inspect(reason)}")
+            IO.puts("  #{inspect(mod)} — [#{owner.app}] LOADED, but comparison errored: #{inspect(reason)}")
         end
     end
   end)
@@ -296,9 +415,12 @@ end
 
 # --- verdict ---------------------------------------------------------------
 IO.puts(
-  "cp-verify-deploy: verified #{matches} of #{length(modules)} modules " <>
-    "(#{length(not_loaded)} never loaded — NOT verified" <>
-    (if diffs != [] or compare_errors != [], do: "; #{length(diffs)} md5 diff(s), #{length(compare_errors)} compare error(s) among the loaded set", else: "") <>
+  "cp-verify-deploy: verified #{total_matches} of #{total_modules} modules across #{length(ok_apps)} app(s) " <>
+    "(#{total_not_loaded} never loaded — NOT verified" <>
+    (if total_diffs > 0 or total_compare_errors > 0,
+       do: "; #{total_diffs} md5 diff(s), #{total_compare_errors} compare error(s) among the loaded set",
+       else: "") <>
+    (if not_loaded_apps != [], do: "; #{length(not_loaded_apps)} app(s) not loaded on serve at all", else: "") <>
     ")."
 )
 
@@ -306,4 +428,4 @@ System.halt(0)
 ELIXIR
 
 cd "$PROJECT_DIR"
-CP_VERIFY_DEPLOY_HOST="$SERVE_HOST" ERL_INETRC="$INETRC" mix run --no-start "$PROBE_SCRIPT" -- "$SERVE_NODE" "$@"
+CP_VERIFY_DEPLOY_HOST="$SERVE_HOST" CP_VERIFY_DEPLOY_APPS="$UMBRELLA_APPS" ERL_INETRC="$INETRC" mix run --no-start "$PROBE_SCRIPT" -- "$SERVE_NODE" "$@"
