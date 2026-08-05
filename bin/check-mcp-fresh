@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+#
+# check-mcp-fresh — fail loudly if the MCP escript is stale against the
+# current build.
+#
+# WHY THIS EXISTS (CX-o9kj)
+#
+# The MCP escript is a precompiled binary bundling its own copies of the
+# `commonplace` and `yelixer` apps. A deploy that recompiles the tree but
+# forgets `bin/rebuild-mcp` leaves the escript running old code against a
+# fresh serve — silently. That has burned hours: three separate observed
+# "bugs" turned out to be the stale binary.
+#
+# `bin/rebuild-mcp` already existed, and its own header warns about
+# exactly this trap. It was still skipped during deploy #28, by someone
+# who had read that header the same evening. The reason is worth stating,
+# because it generalises: every OTHER step of that deploy had a
+# verifiable output — assert the sname, confirm the pid changed, poll for
+# HTTP 200 — and this one had none. A step with no check attached is the
+# one that evaporates under load. So this script attaches a check.
+#
+# It compares the md5 of modules bundled INSIDE the escript archive
+# against the same modules in _build. That compares what would actually
+# be loaded, rather than mtimes (which lie after a touch or a checkout)
+# or a build stamp (which lies about a dirty tree).
+#
+# Usage:
+#   bin/check-mcp-fresh          # exit 0 fresh, exit 1 stale
+#
+# Intended as a deploy gate:
+#   bin/check-mcp-fresh || bin/rebuild-mcp
+#
+# See also `Commonplace.VersionHandshake`, which makes the same skew
+# visible at MCP session start. This script catches it earlier — at
+# deploy time, when it is still cheap to fix.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+ESCRIPT="$PROJECT_DIR/apps/commonplace_mcp/commonplace_mcp"
+
+if [ ! -f "$ESCRIPT" ]; then
+  echo "check-mcp-fresh: no escript at $ESCRIPT — run bin/rebuild-mcp" >&2
+  exit 1
+fi
+
+cd "$PROJECT_DIR"
+exec elixir -e '
+escript = System.argv() |> List.first()
+# Overridable so the RED path can be exercised without mutating the real
+# build — point it at another env is build dir and the md5s legitimately
+# differ. A checker that has never been seen to fail is not a checker.
+build = System.get_env("MCP_CHECK_BUILD_DIR") || "_build/dev/lib"
+
+# Probe modules: the ones whose skew has actually caused incidents.
+# Keep this list aligned with Commonplace.VersionHandshake.probe_modules/0.
+probes = [
+  {"yelixer", "Elixir.Yelixer.Types.Text"},
+  {"yelixer", "Elixir.Yelixer.Doc"},
+  {"yelixer", "Elixir.Yelixer.Encoding"},
+  {"commonplace", "Elixir.Commonplace.Store.CommitStoreClient"},
+  {"commonplace", "Elixir.Commonplace.Document.ContentType"},
+  {"commonplace", "Elixir.Commonplace.Tree.DocBuilder"},
+  {"commonplace", "Elixir.Commonplace.MUD.Verbs"},
+  {"commonplace", "Elixir.Commonplace.MUD.World"},
+  {"commonplace", "Elixir.Commonplace.Code.SourceDoc"}
+]
+
+# An escript is NOT a plain zip: it carries a header before the archive,
+# so :zip.zip_open on the file fails with :bad_central_directory.
+# :escript.extract/2 hands back the archive section as a binary.
+{:ok, sections} = :escript.extract(String.to_charlist(escript), [])
+archive = Keyword.fetch!(sections, :archive)
+{:ok, zip} = :zip.zip_open(archive, [:memory])
+
+# :beam_lib.md5/1 takes the beam BINARY directly. Wrapping it as
+# {:binary, bin} silently fails for every input — which made this script
+# compare :unreadable against :unreadable and report FRESH unconditionally.
+# It was caught only by insisting on a positive control before shipping.
+md5_of = fn bin ->
+  case :beam_lib.md5(bin) do
+    {:ok, {_m, md5}} -> md5
+    _ -> :unreadable
+  end
+end
+
+results =
+  Enum.map(probes, fn {app, mod} ->
+    entry = ~c"#{app}/ebin/#{mod}.beam"
+
+    in_escript =
+      case :zip.zip_get(entry, zip) do
+        {:ok, {_n, bin}} -> md5_of.(bin)
+        _ -> :missing
+      end
+
+    built_path = Path.join([build, app, "ebin", "#{mod}.beam"])
+
+    in_build =
+      if File.exists?(built_path), do: md5_of.(File.read!(built_path)), else: :missing
+
+    {mod, in_escript, in_build}
+  end)
+
+:zip.zip_close(zip)
+
+# A pair that is :unreadable on BOTH sides is NOT a match — it means the
+# check did not run for that module. Treating equal-but-broken as "fresh"
+# is how a checker becomes incapable of failing; that bug shipped once in
+# this very script and was caught by a positive control.
+broken = Enum.filter(results, fn {_m, e, b} -> e == :unreadable or b == :unreadable end)
+
+if broken != [] do
+  IO.puts(:stderr, "check-mcp-fresh: CANNOT VERIFY — #{length(broken)} probe module(s) unreadable on one or both sides:")
+  Enum.each(broken, fn {m, e, b} -> IO.puts(:stderr, "      #{m} escript=#{inspect(e)} build=#{inspect(b)}") end)
+  IO.puts(:stderr, "  Refusing to report freshness from a check that did not run.")
+  System.halt(2)
+end
+
+stale = Enum.filter(results, fn {_m, e, b} -> e != b end)
+
+# A module missing from BOTH sides is not evidence of staleness; a probe
+# list that has drifted out of date should say so rather than fail the
+# deploy for the wrong reason.
+{stale, unknown} = Enum.split_with(stale, fn {_m, e, b} -> e != :missing or b != :missing end)
+
+Enum.each(unknown, fn {m, _, _} ->
+  IO.puts(:stderr, "check-mcp-fresh: probe module not found on either side (stale probe list?): #{m}")
+end)
+
+if stale == [] do
+  IO.puts("check-mcp-fresh: escript is FRESH (#{length(results)} probe modules match _build)")
+  System.halt(0)
+else
+  IO.puts(:stderr, """
+
+  ⚠️  MCP ESCRIPT IS STALE — #{length(stale)} of #{length(results)} probe modules differ from _build.
+
+  The escript is a precompiled binary; it does not pick up code changes
+  until it is rebuilt. A session started now would run old code against
+  the deployed serve.
+  """)
+
+  Enum.each(stale, fn {m, e, b} ->
+    fmt = fn
+      :missing -> "missing"
+      :unreadable -> "unreadable"
+      md5 -> Base.encode16(md5, case: :lower) |> String.slice(0, 12)
+    end
+
+    IO.puts(:stderr, "      #{String.pad_trailing(m, 46)} escript=#{fmt.(e)} build=#{fmt.(b)}")
+  end)
+
+  IO.puts(:stderr, "\n  Fix: bin/rebuild-mcp\n")
+  System.halt(1)
+end
+' "$ESCRIPT"
