@@ -76,29 +76,30 @@ defmodule Commonplace.Bots.NoteDoc do
   targeted field merge, not a typed round-trip — CX-cl65), so the node-signed
   stamp survives every append and the subtree carve keeps authorizing the write.
 
+  CX-r97r: the append is recomputed on every CAS retry — `World.update_meta/5`
+  invokes the modify function against each attempt's freshly-read current map,
+  so a losing writer re-appends onto the WINNER's already-written value
+  instead of replaying a stale concatenation that would clobber it.
+
   Returns `:ok` or `{:error, reason}`.
   """
   @spec append_text(String.t(), String.t(), String.t(), map()) :: :ok | {:error, term()}
   def append_text(note_dir_uuid, field, value, ctx)
       when is_binary(note_dir_uuid) and is_binary(field) and is_binary(value) do
-    case World.get_meta_map(note_dir_uuid, @note_filename, ctx.store) do
-      {:ok, map} ->
-        existing =
-          case Map.get(map, field) do
-            s when is_binary(s) -> s
-            _ -> ""
-          end
-
-        new_value = existing <> value
-
-        case World.merge_meta(note_dir_uuid, @note_filename, %{field => new_value}, ctx.store, bot_opts(ctx)) do
-          :ok -> :ok
-          {:error, _} = err -> err
-          other -> {:error, other}
+    fun = fn current ->
+      existing =
+        case Map.get(current, field) do
+          s when is_binary(s) -> s
+          _ -> ""
         end
 
-      {:error, _} = err ->
-        err
+      %{field => existing <> value}
+    end
+
+    case World.update_meta(note_dir_uuid, @note_filename, fun, ctx.store, bot_opts(ctx)) do
+      :ok -> :ok
+      {:error, _} = err -> err
+      other -> {:error, other}
     end
   end
 
@@ -113,29 +114,69 @@ defmodule Commonplace.Bots.NoteDoc do
   targeted field merge never touches the node-signed `zone` stamp (CX-cl65), so
   the subtree carve keeps authorizing the write on every append.
 
+  CX-r97r: the append is recomputed on every CAS retry — `World.update_meta/5`
+  invokes the modify function against each attempt's freshly-read current map,
+  so a losing writer re-appends onto the WINNER's already-written list instead
+  of replaying a stale one-element list that would clobber it.
+
   Returns `:ok` or `{:error, reason}`.
   """
   @spec append_entry(String.t(), map(), map()) :: :ok | {:error, term()}
   def append_entry(note_dir_uuid, entry_map, ctx)
       when is_binary(note_dir_uuid) and is_map(entry_map) do
-    case World.get_meta_map(note_dir_uuid, @note_filename, ctx.store) do
-      {:ok, map} ->
-        existing =
-          case Map.get(map, "entries") do
-            list when is_list(list) -> list
-            _ -> []
-          end
-
-        new_list = existing ++ [entry_map]
-
-        case World.merge_meta(note_dir_uuid, @note_filename, %{"entries" => new_list}, ctx.store, bot_opts(ctx)) do
-          :ok -> :ok
-          {:error, _} = err -> err
-          other -> {:error, other}
+    fun = fn current ->
+      existing =
+        case Map.get(current, "entries") do
+          list when is_list(list) -> list
+          _ -> []
         end
 
-      {:error, _} = err ->
-        err
+      %{"entries" => existing ++ [entry_map]}
+    end
+
+    case World.update_meta(note_dir_uuid, @note_filename, fun, ctx.store, bot_opts(ctx)) do
+      :ok -> :ok
+      {:error, _} = err -> err
+      other -> {:error, other}
+    end
+  end
+
+  @doc """
+  Like `append_entry/3`, but SKIPS the append when `pred.(existing_entries)`
+  returns true — the dedupe check and the append share the SAME recomputed
+  read (CX-r97r): both run against the freshly-read `"entries"` list on every
+  CAS attempt, closing the double-read window `read_entries/2` followed by a
+  separate `append_entry/3` call would leave open (the dedupe read and the
+  append's read could observe different states under concurrency).
+
+  `pred` receives the current `"entries"` list (`[]` if absent) and decides
+  whether `entry_map` is already present. When it returns true, this is a
+  no-op that still returns `:ok` — no write, no CAS attempt, no state change.
+
+  Returns `:ok` or `{:error, reason}`.
+  """
+  @spec append_entry_unless(String.t(), map(), ([map()] -> boolean()), map()) ::
+          :ok | {:error, term()}
+  def append_entry_unless(note_dir_uuid, entry_map, pred, ctx)
+      when is_binary(note_dir_uuid) and is_map(entry_map) and is_function(pred, 1) do
+    fun = fn current ->
+      existing =
+        case Map.get(current, "entries") do
+          list when is_list(list) -> list
+          _ -> []
+        end
+
+      if pred.(existing) do
+        %{}
+      else
+        %{"entries" => existing ++ [entry_map]}
+      end
+    end
+
+    case World.update_meta(note_dir_uuid, @note_filename, fun, ctx.store, bot_opts(ctx)) do
+      :ok -> :ok
+      {:error, _} = err -> err
+      other -> {:error, other}
     end
   end
 

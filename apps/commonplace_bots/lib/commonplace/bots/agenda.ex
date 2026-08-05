@@ -95,18 +95,27 @@ defmodule Commonplace.Bots.Agenda do
   """
   @spec append(map(), map() | nil) :: :ok | {:error, term()}
   def append(%{"text" => text} = item, %{} = ctx) when is_binary(text) do
+    stamped =
+      Map.put_new_lazy(item, "ts", fn -> DateTime.utc_now() |> DateTime.to_iso8601() end)
+
     with {:ok, uuid} <- ensure_dir(ctx) do
-      existing = NoteDoc.read_entries(uuid, ctx)
-
-      if Enum.any?(existing, fn e -> Map.get(e, "text") == text end) do
-        Logger.debug("Agenda.append: skipping duplicate entry #{inspect(text)}")
-        :ok
-      else
-        stamped =
-          Map.put_new_lazy(item, "ts", fn -> DateTime.utc_now() |> DateTime.to_iso8601() end)
-
-        NoteDoc.append_entry(uuid, stamped, ctx)
-      end
+      # CX-r97r: dedupe check and append share the SAME recomputed read (see
+      # `NoteDoc.append_entry_unless/4`) instead of a separate
+      # `read_entries/2` call followed by a separate `append_entry/3` read —
+      # closing the double-read staleness window between them.
+      NoteDoc.append_entry_unless(
+        uuid,
+        stamped,
+        fn existing ->
+          if Enum.any?(existing, fn e -> Map.get(e, "text") == text end) do
+            Logger.debug("Agenda.append: skipping duplicate entry #{inspect(text)}")
+            true
+          else
+            false
+          end
+        end,
+        ctx
+      )
     end
   end
 

@@ -363,7 +363,12 @@ defmodule Commonplace.MUD.Schemas do
   rejected commit.
 
   `opts` (CX-lg06): `:signing_context`, `:cert_cids`, `:signer_id` — see
-  `Commonplace.MUD.SignedWrite`.
+  `Commonplace.MUD.SignedWrite`. `:expect_parent` (CX-r97r) is an opt-in
+  strict-CAS token — see `latest_commit_id/2` and
+  `CommitStoreClient.create_chained_commit/5`; when it is present and the
+  doc's parent has moved since it was captured, this returns
+  `{:error, :parent_moved}` UNCHANGED to the caller rather than retrying
+  with the (now stale) positional diff computed above.
   """
   def write_meta_doc(uuid, json, store \\ CommitStoreClient, opts \\ [])
       when is_binary(uuid) and is_binary(json) do
@@ -376,10 +381,24 @@ defmodule Commonplace.MUD.Schemas do
          :ok <- verify_meta_roundtrip(store, uuid, update, json) do
       {metadata, commit_opts} = SignedWrite.opts_for(uuid, Keyword.put(opts, :store, store))
 
+      commit_opts =
+        case Keyword.fetch(opts, :expect_parent) do
+          {:ok, expected} -> Keyword.put(commit_opts, :expect_parent, expected)
+          :error -> commit_opts
+        end
+
       case CommitStoreClient.create_chained_commit(store, uuid, update, metadata, commit_opts) do
         {:error, _} = err -> err
         _commit -> :ok
       end
+    end
+  end
+
+  @doc "The doc's current latest commit id, or nil if it has none. The version token for a compare-and-swap read-modify-write (CX-r97r)."
+  def latest_commit_id(uuid, store \\ CommitStoreClient) when is_binary(uuid) do
+    case CommitStoreClient.latest_commit(store, uuid) do
+      {:ok, commit} -> commit.id
+      :none -> nil
     end
   end
 

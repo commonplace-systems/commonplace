@@ -122,6 +122,16 @@ defmodule Commonplace.Store.CommitStoreClient do
   def create_chained_commit(server \\ CommitStore, doc_uuid, update, metadata \\ %{}, opts \\ []) do
     case remote_node() do
       {:ok, node} ->
+        # CX-r97r KNOWN GAP: :expect_parent (strict-CAS, see strict_write/6
+        # below) has no remote-routed equivalent — the remote path only
+        # exposes create_commit's explicit-parent GenServer call, with no
+        # compare-and-swap semantics on this side. If present, it is
+        # stripped and IGNORED here rather than honored, so remote-routed
+        # meta writes remain exposed to the parent-moved-replay corruption
+        # this option exists to close. Closing that gap needs a remote CAS
+        # primitive, which does not exist yet.
+        opts = Keyword.delete(opts, :expect_parent)
+
         parent_id = case GenServer.call({CommitStore, node}, {:latest_commit, doc_uuid}) do
           {:ok, commit} -> commit.id
           :none -> nil
@@ -139,16 +149,58 @@ defmodule Commonplace.Store.CommitStoreClient do
       :local ->
         local_server = normalize_server(server)
 
-        caller_side_write(
-          :create_chained_commit,
-          local_server,
-          doc_uuid,
-          update,
-          metadata,
-          opts,
-          fn observed_latest_id -> observed_latest_id end,
-          fn -> CommitStore.create_chained_commit(local_server, doc_uuid, update, metadata, opts) end
+        if Keyword.has_key?(opts, :expect_parent) do
+          {expected, opts} = Keyword.pop(opts, :expect_parent)
+          strict_write(local_server, doc_uuid, update, metadata, opts, expected)
+        else
+          caller_side_write(
+            :create_chained_commit,
+            local_server,
+            doc_uuid,
+            update,
+            metadata,
+            opts,
+            fn observed_latest_id -> observed_latest_id end,
+            fn -> CommitStore.create_chained_commit(local_server, doc_uuid, update, metadata, opts) end
+          )
+        end
+    end
+  end
+
+  # CX-r97r: strict-CAS write path, LOCAL mode only, opt-in via the
+  # `:expect_parent` option on `create_chained_commit/5`.
+  #
+  # `attempt_write/10` (below) implements a bounded OPTIMISTIC retry: on
+  # {:error, :parent_moved} it re-observes :latest and retries with the
+  # SAME `update` bytes re-chained onto the new parent. That is safe for
+  # ordinary CRDT updates (they commute), but NOT safe for a positional
+  # text diff computed against now-stale content (Schemas.write_meta_doc's
+  # replace_text_minimal) — replaying it against a concurrent writer's text
+  # splices unparseable JSON. This path exists so such a caller can instead
+  # build against an EXPECTED parent it captured before reading, CAS
+  # against exactly that id, and get an immediate, unretried
+  # {:error, :parent_moved} to re-read-and-recompute from, rather than
+  # silent corruption. No retry, no legacy fallback — the caller owns
+  # recovery.
+  defp strict_write(server, doc_uuid, update, metadata, opts, expected_parent) do
+    db = CommitStore.db_handle(server)
+    built = CommitBuilder.build(db, doc_uuid, update, expected_parent, metadata, opts)
+
+    case CommitStore.put_built_commit(server, built.commit, expected_parent, built.genesis) do
+      {:ok, commit} ->
+        :telemetry.execute(
+          [:commonplace, :commit_store, :write_cpu],
+          %{build: built.build_ns, sign: built.sign_ns, validate: 0, persist: 0},
+          %{verb: :create_chained_commit, doc_uuid: doc_uuid, site: :caller}
         )
+
+        commit
+
+      {:error, {:trust_rejected, _}} = error ->
+        error
+
+      {:error, :parent_moved} = error ->
+        error
     end
   end
 

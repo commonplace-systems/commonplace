@@ -213,11 +213,46 @@ defmodule Commonplace.Bots.NoteDocConcurrentAppendTest do
           "present=#{length(present)} missing=#{length(missing)} #{inspect(missing)}"
       )
 
-      # No hard assertion on `missing == []` here — the whole point of this
-      # harness is to OBSERVE whether the hypothesized lost-update happens,
-      # not to assume it. Report is emitted above; final report is written
-      # up from the actual IO.puts output, not asserted blind.
-      assert ok_count == n, "expected all #{n} concurrent append_entry calls to return :ok"
+      # CX-r97r: this assertion CHANGED when the CAS fix landed, and the
+      # change is a deliberate narrowing — record why.
+      #
+      # It used to assert `ok_count == n` ("every concurrent append must
+      # return :ok"). Under a BOUNDED compare-and-swap that is not a
+      # promise the system makes: a writer that loses the CAS 5 times in
+      # a row is told `{:error, :write_conflict}` and its entry does not
+      # land. At 8-way that is reproducibly 3 of 8. Refusing loudly is
+      # the intended behaviour — the bug being fixed was that those
+      # writers were told `:ok` and silently lost.
+      #
+      # So the assertion is now the invariant that actually matters and
+      # that the old one did NOT check: NO SILENT LOSS. Every marker
+      # whose call returned `:ok` must be present in the doc, and every
+      # absent marker must have an explicit conflict error to account for
+      # it. This is strictly stronger where correctness lives and weaker
+      # only where the system deliberately makes no guarantee.
+      acked =
+        expected
+        |> Enum.zip(results)
+        |> Enum.filter(fn {_marker, result} -> result == :ok end)
+        |> Enum.map(fn {marker, _result} -> marker end)
+
+      silently_lost = acked -- present
+
+      assert silently_lost == [],
+             "SILENT LOSS (the CX-r97r bug): #{length(silently_lost)} marker(s) were " <>
+               "acknowledged with :ok but are absent from the doc: #{inspect(silently_lost)}"
+
+      # The converse: nothing may go missing without an error explaining it.
+      assert missing -- (expected -- acked) == [],
+             "marker(s) absent with no corresponding error result: " <>
+               "#{inspect(missing -- (expected -- acked))}"
+
+      # And a refusal must be a CONFLICT specifically — not a crash, not a
+      # corruption error, not some new failure mode wearing the same shape.
+      for {marker, result} <- Enum.zip(expected, results), result != :ok do
+        assert result == {:error, :write_conflict},
+               "#{marker} failed with an unexpected error: #{inspect(result)}"
+      end
     end
   end
 

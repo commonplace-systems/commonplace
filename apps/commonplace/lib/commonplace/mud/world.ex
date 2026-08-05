@@ -321,6 +321,12 @@ defmodule Commonplace.MUD.World do
     merge_meta(dir_uuid, filename, %{key => value}, store, opts)
   end
 
+  # CX-r97r: bounded retry count for merge_meta's read-modify-write CAS
+  # loop (see merge_meta/5 doc). Each attempt re-captures the version,
+  # re-reads, re-merges, and re-diffs from scratch — never replays stale
+  # diff bytes.
+  @merge_meta_max_attempts 5
+
   @doc """
   Surgically merge `updates` (a map of top-level key => value) into a meta
   file's RAW JSON, preserving EVERY key the typed structs would silently drop
@@ -339,43 +345,106 @@ defmodule Commonplace.MUD.World do
 
   `opts` (CX-lg06): `:signing_context`, `:cert_cids`, `:signer_id` — threaded
   into `Schemas.write_meta_doc/4`; see `Commonplace.MUD.SignedWrite`.
+
+  CX-r97r: this is a read-modify-write over `Schemas.write_meta_doc/4`, which
+  computes a MINIMAL POSITIONAL TEXT DIFF from the doc content read here to
+  the merged JSON. `CommitStoreClient`'s default write path retries a lost
+  CAS by REPLAYING THE SAME diff bytes onto whatever parent is current —
+  correct for ordinary CRDT updates, but a positional diff computed against
+  now-stale text splices into a concurrent writer's text and produces
+  unparseable, corrupted JSON. So this function instead captures the doc's
+  version (`Schemas.latest_commit_id/2`) BEFORE reading, passes it through as
+  `:expect_parent` (opt-in strict CAS, no retry inside `CommitStoreClient`),
+  and on `{:error, :parent_moved}` re-runs the WHOLE read→merge→write
+  sequence from scratch against a freshly-observed version, bounded by
+  `@merge_meta_max_attempts`. KNOWN GAP: this CAS is local-write-path only —
+  see `CommitStoreClient.create_chained_commit/5`'s remote branch, which
+  ignores `:expect_parent` and has no compare-and-swap on that path.
   """
   def merge_meta(dir_uuid, filename, updates, store \\ CommitStoreClient, opts \\ [])
       when is_map(updates) do
+    update_meta(dir_uuid, filename, fn _current -> updates end, store, opts)
+  end
+
+  @doc """
+  Read-modify-write primitive over a meta file: like `merge_meta/5`, but
+  `fun` is a 1-arity function (current decoded meta map => updates map,
+  same top-level key => value / nil-deletes-key semantics as `merge_meta/5`)
+  instead of a static map.
+
+  CX-r97r: `fun` is invoked INSIDE the CAS retry loop, on every attempt,
+  against THAT attempt's freshly-read current map. This is the correct
+  primitive for a read-modify-write (append-to-list, increment,
+  merge-into-nested) where the new value depends on the old one —
+  `merge_meta/5` with a pre-computed whole value is only safe when the new
+  value does NOT depend on the old one, because a lost-CAS retry there
+  replays the same frozen `updates` map against the freshly-read state
+  rather than recomputing it, silently clobbering a concurrent writer's
+  change.
+  """
+  def update_meta(dir_uuid, filename, fun, store \\ CommitStoreClient, opts \\ [])
+      when is_function(fun, 1) do
     with {:ok, schema} <- Schemas.load_dir_schema(dir_uuid, store),
-         {:ok, entry} <- Schema.get_entry(schema, filename),
-         {:ok, doc} <- DocBuilder.reconstruct_doc(store, entry.node_id),
-         json when is_binary(json) <- ContentType.get_content(doc),
-         {:ok, parsed} when is_map(parsed) <- Jason.decode(json) do
-      {deletes, sets} = Enum.split_with(updates, fn {_k, v} -> is_nil(v) end)
-
-      updated_map =
-        parsed
-        |> Map.merge(Map.new(sets))
-        |> Map.drop(Enum.map(deletes, fn {k, _} -> k end))
-
-      # CX-e8xj STATE FIREWALL: a token-elevated (possession→state) write MUST
-      # touch ONLY the `"state"` submap — every other key (the node-signed `zone`
-      # stamp + all typed/protected fields) byte-identical before/after. This is
-      # the load-bearing guard that makes possession-elevation safe to OVERRIDE
-      # the CX-orlm AXIS-2 zone veto: a holder can drive an object's runtime state
-      # but can NEVER re-stamp/re-home it to escape that veto. Fail-closed,
-      # pre-commit. Only the holder-state path sets `:state_only` (see
-      # `Facade.holder_state_write`); it is stripped before the signing opts flow
-      # on. A no-op change trivially passes (everything-except-state equal).
-      if Keyword.get(opts, :state_only, false) and
-           Map.delete(parsed, "state") != Map.delete(updated_map, "state") do
-        {:error, :state_firewall}
-      else
-        Schemas.write_meta_doc(
-          entry.node_id,
-          Jason.encode!(updated_map),
-          store,
-          Keyword.delete(opts, :state_only)
-        )
-      end
+         {:ok, entry} <- Schema.get_entry(schema, filename) do
+      merge_meta_cas(entry.node_id, fun, store, opts, @merge_meta_max_attempts)
     else
       :error -> {:error, :no_meta_entry}
+      {:error, _} = err -> err
+    end
+  end
+
+  defp merge_meta_cas(_node_id, _fun, _store, _opts, 0), do: {:error, :write_conflict}
+
+  defp merge_meta_cas(node_id, fun, store, opts, attempts_left) do
+    expected = Schemas.latest_commit_id(node_id, store)
+
+    with {:ok, doc} <- DocBuilder.reconstruct_doc(store, node_id),
+         json when is_binary(json) <- ContentType.get_content(doc),
+         {:ok, parsed} when is_map(parsed) <- Jason.decode(json) do
+      updates = fun.(parsed)
+
+      if updates == %{} do
+        # An empty updates map means the caller's modify step decided there is
+        # nothing to change (e.g. `NoteDoc.append_entry_unless/4`'s dedupe
+        # predicate matched) -- a true no-op: no write, no commit, no CAS
+        # attempt spent.
+        :ok
+      else
+        {deletes, sets} = Enum.split_with(updates, fn {_k, v} -> is_nil(v) end)
+
+        updated_map =
+          parsed
+          |> Map.merge(Map.new(sets))
+          |> Map.drop(Enum.map(deletes, fn {k, _} -> k end))
+
+        # CX-e8xj STATE FIREWALL: a token-elevated (possession->state) write MUST
+        # touch ONLY the `"state"` submap -- every other key (the node-signed `zone`
+        # stamp + all typed/protected fields) byte-identical before/after. This is
+        # the load-bearing guard that makes possession-elevation safe to OVERRIDE
+        # the CX-orlm AXIS-2 zone veto: a holder can drive an object's runtime state
+        # but can NEVER re-stamp/re-home it to escape that veto. Fail-closed,
+        # pre-commit. Only the holder-state path sets `:state_only` (see
+        # `Facade.holder_state_write`); it is stripped before the signing opts flow
+        # on. A no-op change trivially passes (everything-except-state equal).
+        if Keyword.get(opts, :state_only, false) and
+             Map.delete(parsed, "state") != Map.delete(updated_map, "state") do
+          {:error, :state_firewall}
+        else
+          write_opts =
+            opts
+            |> Keyword.delete(:state_only)
+            |> Keyword.put(:expect_parent, expected)
+
+          case Schemas.write_meta_doc(node_id, Jason.encode!(updated_map), store, write_opts) do
+            {:error, :parent_moved} ->
+              merge_meta_cas(node_id, fun, store, opts, attempts_left - 1)
+
+            other ->
+              other
+          end
+        end
+      end
+    else
       :none -> {:error, :no_doc}
       nil -> {:error, :empty_doc}
       {:error, _} = err -> err
