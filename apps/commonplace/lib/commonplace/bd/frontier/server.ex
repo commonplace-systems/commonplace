@@ -29,7 +29,7 @@ defmodule Commonplace.Bd.Frontier.Server do
     * appends a `%{"alarm" => "dependency-hell", "components" => [...],
       "at" => iso}` event when `Frontier.stranded_components/2` is
       non-empty,
-    * rewrites the `__ready.json` / `__blocked.json` view docs under
+    * rewrites the `_ready.json` / `_blocked.json` view docs under
       `/bd/`.
 
   ## Subscriptions
@@ -57,8 +57,30 @@ defmodule Commonplace.Bd.Frontier.Server do
   alias Commonplace.Tree.Schema
   alias Yelixer.Encoding
 
-  @ready_file "__ready.json"
-  @blocked_file "__blocked.json"
+  # CX-5le4 rider: these are DERIVED views, so they take a SINGLE
+  # underscore. The `__` prefix is the META namespace — `Trust.meta_file?`
+  # matches ~r/^__.*\.json$/ and `meta_child_zone` does an
+  # `Enum.find_values` over ALL matching entries in a directory, so a
+  # second `__*.json` under `/bd/` could shadow the real zone stamp
+  # depending on entry ordering. `/bd/` already carries a legitimate
+  # `__meta.json` (verified on the live store 2026-08-05), which is
+  # exactly the incumbent these would have competed with. Derived
+  # siblings elsewhere already use the single underscore (`_view.xml`,
+  # `_outline`, `_source.md`).
+  #
+  # Renamed while this Server is still DORMANT — nothing has ever started
+  # it, so neither doc exists in any store (verified live: `/bd/` entries
+  # are 4, none of them these). That made this a string edit with zero
+  # migration cost. The window was open only while the bug persisted: the
+  # moment anyone wires this Server, these become live meta-shadowing
+  # docs and the same change becomes a migration on real data.
+  @ready_file "_ready.json"
+  @blocked_file "_blocked.json"
+  # NOT renamed: `__frontier_log` has no `.json` extension, so
+  # `Trust.meta_file?` cannot match it and it poses no shadowing hazard.
+  # It is still arguably misnamed under the derived-vs-meta convention;
+  # left alone deliberately rather than widened into silently, and
+  # flagged on CX-5le4.
   @log_file "__frontier_log"
 
   @doc """
