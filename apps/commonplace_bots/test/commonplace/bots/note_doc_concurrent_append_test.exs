@@ -218,11 +218,18 @@ defmodule Commonplace.Bots.NoteDocConcurrentAppendTest do
       #
       # It used to assert `ok_count == n` ("every concurrent append must
       # return :ok"). Under a BOUNDED compare-and-swap that is not a
-      # promise the system makes: a writer that loses the CAS 5 times in
-      # a row is told `{:error, :write_conflict}` and its entry does not
-      # land. At 8-way that is reproducibly 3 of 8. Refusing loudly is
-      # the intended behaviour — the bug being fixed was that those
-      # writers were told `:ok` and silently lost.
+      # promise the system makes: a writer that exhausts its CAS budget
+      # is told `{:error, :write_conflict}` and its entry does not land.
+      # Refusing loudly is the intended behaviour — the bug being fixed
+      # was that those writers were told `:ok` and silently lost.
+      #
+      # As of CX-g8s9 all 8 DO land (the refusals were budget exhaustion
+      # inflated by an unretried roundtrip refusal, not a real limit), so
+      # today this passes with zero conflicts. The assertion deliberately
+      # does NOT go back to `ok_count == n`: that would re-encode a
+      # promise the design still does not make, and would fail on a
+      # future run with heavier contention for a reason that is correct
+      # behaviour. What must never happen is a SILENT loss.
       #
       # So the assertion is now the invariant that actually matters and
       # that the old one did NOT check: NO SILENT LOSS. Every marker
