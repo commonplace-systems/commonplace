@@ -60,10 +60,8 @@ defmodule Commonplace.Bd.Migrate do
       to}` direction normalization.
   """
 
-  alias Commonplace.Bd.{Frontier, Issue, Schemas, WriteGuard, Workspace}
-  alias Commonplace.Bd.Schemas.Issue, as: IssueStruct
+  alias Commonplace.Bd.{Frontier, Issue, WriteGuard, Workspace}
   alias Commonplace.Store.CommitStoreClient
-  alias Commonplace.Tree.Schema
 
   @non_imported_statuses ~w(closed wontfix)
 
@@ -90,6 +88,13 @@ defmodule Commonplace.Bd.Migrate do
   edges_added: n}}`.
   """
   def import_from_export(root_uuid, export_jsonl, store \\ CommitStoreClient, deps_jsonl \\ nil, opts \\ []) do
+    # The /bd/ skeleton is created here, with `opts`, so its commits
+    # carry the migration's signing context (CX-6cz3 kept this
+    # explicit when supplied-id creation moved to
+    # `Issue.create_with_id/5`, whose own skeleton lookup is
+    # opts-less).
+    _ = Workspace.ensure_bd_dir(root_uuid, store, opts)
+
     lines =
       export_jsonl
       |> String.split("\n", trim: true)
@@ -155,7 +160,24 @@ defmodule Commonplace.Bd.Migrate do
       else
         id = Map.fetch!(raw, "id")
         attrs = to_issue_attrs(raw, status)
-        {:ok, _issue, _dir_uuid} = create_with_fixed_id(root_uuid, id, attrs, store, opts)
+        issue = Issue.build_with_id(id, attrs)
+
+        # CX-6cz3: this module's own `create_with_fixed_id` copy is
+        # gone — supplied-id creation is `Issue.create_with_id/5`, and
+        # every caller of it runs the creation gate first (checked by
+        # `Commonplace.Bd.SuppliedIdCreationScanTest`). The allow
+        # posture is the import one (`ViewActionDispatch.import_allow_posture/0`,
+        # spec-derived): a migration legitimately carries a bd record's
+        # own `status`. `needs` is always `[]` here — edges are added
+        # afterwards, one at a time, through the cycle gate.
+        :ok =
+          WriteGuard.check_create(issue, root_uuid, store,
+            allow: Commonplace.ViewActionDispatch.import_allow_posture()
+          )
+
+        {:ok, _issue, _dir_uuid} =
+          Issue.create_with_id(root_uuid, issue, Map.get(attrs, :description, ""), store, opts)
+
         {[id | imported_ids], skipped}
       end
     end)
@@ -182,63 +204,6 @@ defmodule Commonplace.Bd.Migrate do
   defp normalize_priority(p) when p in [0, 1, 2, 3], do: "p#{p}"
   defp normalize_priority(p) when is_binary(p), do: p
   defp normalize_priority(_), do: "p2"
-
-  # Mirrors Commonplace.Bd.Issue.create/4's internals but with a
-  # caller-supplied id (the bd legacy id becomes the ticket id
-  # verbatim — this migration does NOT re-mint ids).
-  defp create_with_fixed_id(root_uuid, id, attrs, store, opts) do
-    now = DateTime.utc_now() |> DateTime.to_iso8601()
-
-    issue = %IssueStruct{
-      id: id,
-      title: Map.get(attrs, :title, ""),
-      status: Map.get(attrs, :status, "open"),
-      priority: Map.get(attrs, :priority, "p2"),
-      type: Map.get(attrs, :type, "task"),
-      owner: Map.get(attrs, :owner),
-      created_at: Map.get(attrs, :created_at) || now,
-      updated_at: Map.get(attrs, :updated_at) || now,
-      needs: [],
-      done_when: "manual",
-      done_witness: [],
-      claimed_by: nil,
-      legacy_id: Map.get(attrs, :legacy_id, id)
-    }
-
-    description = Map.get(attrs, :description, "")
-
-    dir_uuid = build_issue_dir(issue, description, store, opts)
-    :ok = add_issue_entry(root_uuid, id, dir_uuid, store, opts)
-
-    {:ok, issue, dir_uuid}
-  end
-
-  defp build_issue_dir(%IssueStruct{} = issue, description, store, opts) do
-    dir_uuid = UUID.uuid4()
-    dir_doc = Schema.new_schema()
-    issue_meta_uuid = Schemas.create_text_doc(Schemas.encode_issue(issue), store, opts)
-    desc_uuid = Schemas.create_text_doc(description, store, opts)
-    comments_uuid = Schemas.create_dir_with_meta(nil, nil, store, opts)
-
-    dir_doc =
-      dir_doc
-      |> Schema.add_file(Schemas.issue_filename(), issue_meta_uuid)
-      |> Schema.add_file(Schemas.description_filename(), desc_uuid)
-      |> Schema.add_directory("comments", comments_uuid)
-
-    update = Yelixer.Encoding.encode_update(dir_doc)
-    CommitStoreClient.create_commit(store, dir_uuid, update, nil, %{}, opts)
-    dir_uuid
-  end
-
-  defp add_issue_entry(root_uuid, id, child_uuid, store, opts) do
-    issues_uuid = Workspace.issues_dir_uuid(root_uuid, store, opts)
-    {:ok, schema} = Schemas.load_dir_schema(issues_uuid, store)
-    schema = Schema.add_directory(schema, "#{id}.iss", child_uuid)
-    update = Yelixer.Encoding.encode_update(schema)
-    CommitStoreClient.create_chained_commit(store, issues_uuid, update, %{}, opts)
-    :ok
-  end
 
   ## Private — edge conversion
 

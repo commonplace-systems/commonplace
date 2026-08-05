@@ -3,17 +3,25 @@ defmodule Commonplace.MCP.Tools.BdCreate do
   MCP tool (Tier-2 WRITE): create a new ticket in the commonplace
   ticket-DAG.
 
-  Routes `Commonplace.Bd.Issue.create/4` on the serve via `BdRoute`
-  (one bounded rpc — CX-z0v7 rationale), carrying a `signing_context`
-  from `BdWrite` so the resulting commit is signed (enforce-mode denies
-  unsigned writes). See `BdWrite` for the v1 node-signing story.
+  CX-6cz3 (tix-authority migration §7): routes the `ticket_create`
+  view action through `Commonplace.ViewActionDispatch` on the serve via
+  `BdRoute` (one bounded rpc — CX-z0v7 rationale), exactly as
+  `bd_add_needs` / `bd_update` / `bd_close` already route theirs. It
+  previously called `Commonplace.Bd.Issue.create/4` directly: node-signed
+  but UNGATED — the create door the cutover's single-write-path property
+  could not survive (design §3 finding 4). Every ticket write now passes
+  `Commonplace.Bd.WriteGuard`.
 
-  Dependency edges are usually added separately via `bd_add_needs`
-  (which routes the cycle-gated dispatch path); `needs` defaults to `[]`.
+  Carries a `signing_context` from `BdWrite` so the resulting commits are
+  signed (enforce-mode denies unsigned writes). See `BdWrite` for the v1
+  node-signing story.
+
+  Dependency edges are usually added separately via `bd_add_needs`;
+  `needs` defaults to `[]` (initial edges, if given, run the same cycle
+  gate).
   """
 
-  alias Commonplace.MCP.Tools.{BdRoute, BdRows, BdWrite, Response}
-  alias Commonplace.Store.CommitStoreClient
+  alias Commonplace.MCP.Tools.{BdRoute, BdWrite, Response}
 
   def descriptor do
     %{
@@ -63,25 +71,28 @@ defmodule Commonplace.MCP.Tools.BdCreate do
 
   defp create(title, args, context) do
     with sc when is_struct(sc, Commonplace.Crypto.SigningContext) <-
-           BdWrite.signing_context(context),
-         {:ok, root} <- BdRows.resolve_root() do
-      attrs = %{
-        title: title,
-        type: Map.get(args, "type", "task"),
-        priority: Map.get(args, "priority", "p2"),
-        status: "open",
-        done_when: "manual",
-        description: Map.get(args, "description", ""),
-        needs: Map.get(args, "needs", [])
+           BdWrite.signing_context(context) do
+      # The verb resolves the bd root itself (same
+      # `Commonplace.Workspace.root_uuid/0` every ticket verb uses), so
+      # the tool no longer carries one.
+      args_map = %{
+        "title" => title,
+        "type" => Map.get(args, "type", "task"),
+        "priority" => Map.get(args, "priority", "p2"),
+        "description" => Map.get(args, "description", ""),
+        "needs" => Map.get(args, "needs", [])
       }
 
-      case BdRoute.call(Commonplace.Bd.Issue, :create, [
-             root,
-             attrs,
-             CommitStoreClient,
-             [signing_context: sc]
-           ]) do
-        {:ok, issue, _dir} ->
+      dispatch =
+        BdRoute.call(Commonplace.ViewActionDispatch, :dispatch, [
+          "ticket_create",
+          %{args: args_map, signing_context: sc, source: "mcp"}
+        ])
+
+      case dispatch do
+        {:ok, :tree_mutation, details} ->
+          issue = details[:issue] || details["issue"]
+
           fields = %{
             "id" => issue.id,
             "title" => issue.title,
@@ -97,8 +108,8 @@ defmodule Commonplace.MCP.Tools.BdCreate do
              fields
            )}
 
-        {:error, reason} ->
-          {:error, :invalid_params, "bd_create failed: #{inspect(reason)}"}
+        {:error, msg} when is_binary(msg) ->
+          {:error, :invalid_params, msg}
 
         other ->
           {:error, :invalid_params, "bd_create failed: #{inspect(other)}"}

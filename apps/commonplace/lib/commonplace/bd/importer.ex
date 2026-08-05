@@ -36,37 +36,99 @@ defmodule Commonplace.Bd.Importer do
   Comments and dependencies are not part of the issue record;
   separate streams handle them via `import_comments_jsonl/3` and
   `import_deps_jsonl/3`.
+
+  ## CX-6cz3: this module no longer writes issues
+
+  Per the tix-authority migration design §7 (rulings @6418506), ALL
+  ticket writes flow through the `Commonplace.Bd.WriteGuard`
+  chokepoint. The private `create_with_fixed_id/4` that used to live
+  here — a raw `CommitStoreClient` write, no guard, no cycle gate —
+  is gone; `import_issues_jsonl/4` now PARSES (the good part: the
+  priority/status normalizers and the extra-field round-trip, kept as
+  pure transformation below) and hands the records to the gated
+  `ticket_import` verb on `Commonplace.ViewActionDispatch`.
+
+  `import_deps_jsonl/3` is a different graph and is deliberately
+  untouched: it writes `blocks` edges into `/bd/deps.json` (the P1
+  `Commonplace.Bd.Ready` graph), NOT the `needs` refs the P2
+  frontier/cycle gate walk — the two graphs are explicitly not
+  reconciled (see `Commonplace.Bd.Frontier`'s moduledoc). `needs`
+  edges that arrive with an imported record DO go through the cycle
+  gate, inside the verb.
   """
 
-  alias Commonplace.Bd.{Comment, Dep, Issue, Schemas, Workspace}
+  alias Commonplace.Bd.{Comment, Dep, Schemas, Workspace}
   alias Commonplace.Store.CommitStoreClient
-  alias Commonplace.Tree.Schema
 
   @doc """
-  Imports a stream of issues from JSONL text. Returns `{:ok, %{
-  imported: N, updated: M, errors: [...]}}`.
+  Imports a stream of issues from JSONL text through the GATED
+  `ticket_import` verb. Returns `{:ok, %{imported: N, updated: M,
+  unchanged: K, errors: [...], batch: <the verb's full report>}}`.
 
-  Idempotent — re-import updates existing issues by id (LWW per
-  field via the read-modify-write update path).
+  `imported`/`updated`/`errors` keep their historical meaning for
+  existing callers (`Commonplace.CLI.Bd`); `batch` carries the ruled
+  reporting shape — the declared denominator, and landed/refused/noop
+  against it (see the verb's docs).
+
+  Idempotent — a byte-identical record is a NO-OP (no write, no
+  commit); a changed record is a guarded update.
   """
-  def import_issues_jsonl(root_uuid, jsonl_text, store \\ CommitStoreClient) when is_binary(jsonl_text) do
+  def import_issues_jsonl(root_uuid, jsonl_text, store \\ CommitStoreClient, opts \\ [])
+      when is_binary(jsonl_text) do
     # Ensure the workspace exists before any reads.
     _ = Workspace.ensure_bd_dir(root_uuid, store)
 
-    {imported, updated, errors} =
-      jsonl_text
-      |> String.split("\n", trim: true)
-      |> Enum.with_index()
-      |> Enum.reduce({0, 0, []}, fn {line, idx}, {imp, upd, errs} ->
-        case import_issue_line(root_uuid, line, store) do
-          {:ok, :imported} -> {imp + 1, upd, errs}
-          {:ok, :updated} -> {imp, upd + 1, errs}
-          {:error, reason} -> {imp, upd, [{idx, reason} | errs]}
-        end
-      end)
+    {records, parse_errors} = parse_records(jsonl_text)
 
-    {:ok, %{imported: imported, updated: updated, errors: Enum.reverse(errors)}}
+    context =
+      %{
+        args: %{"records" => records},
+        root_uuid: root_uuid,
+        store: store,
+        source: "bd_importer"
+      }
+      |> maybe_put_signing_context(Keyword.get(opts, :signing_context))
+
+    case Commonplace.ViewActionDispatch.dispatch("ticket_import", context) do
+      {:ok, :tree_mutation, batch} ->
+        {:ok,
+         %{
+           imported: Enum.count(batch.landed, &(&1.op == :created)),
+           updated: Enum.count(batch.landed, &(&1.op == :updated)),
+           unchanged: length(batch.noop),
+           errors: parse_errors ++ Enum.map(batch.refused, fn r -> {r.id, r.reason} end),
+           batch: batch
+         }}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
+
+  @doc """
+  Splits JSONL text into `{decoded_records, errors}` — pure, writes
+  nothing. `errors` are `{line_index, reason}` for lines that are not
+  decodable JSON objects; they never reach the verb (there is no
+  record to gate), so the caller reports them alongside the verb's
+  own per-record refusals.
+  """
+  @spec parse_records(String.t()) :: {[map()], [{non_neg_integer(), term()}]}
+  def parse_records(jsonl_text) when is_binary(jsonl_text) do
+    jsonl_text
+    |> String.split("\n", trim: true)
+    |> Enum.with_index()
+    |> Enum.reduce({[], []}, fn {line, idx}, {records, errors} ->
+      case Jason.decode(line) do
+        {:ok, m} when is_map(m) -> {[m | records], errors}
+        {:ok, _other} -> {records, [{idx, :malformed_line} | errors]}
+        {:error, %Jason.DecodeError{} = e} -> {records, [{idx, {:bad_json, Exception.message(e)}} | errors]}
+      end
+    end)
+    |> then(fn {records, errors} -> {Enum.reverse(records), Enum.reverse(errors)} end)
+  end
+
+  defp maybe_put_signing_context(context, nil), do: context
+  defp maybe_put_signing_context(context, sc), do: Map.put(context, :signing_context, sc)
 
   @doc """
   Imports dependency edges from JSONL text. Each line:
@@ -135,27 +197,19 @@ defmodule Commonplace.Bd.Importer do
     {:ok, %{imported: count}}
   end
 
-  ## Private — issue-line dispatch
+  ## Record normalization — PURE transformation, no writes (CX-6cz3).
+  ## The gated `ticket_import` verb calls `normalize_record/1` for
+  ## every record it admits; this is the one place the beads wire
+  ## format (integer priorities, `issue_type`, `close_reason`,
+  ## unknown-field round-trip) is translated into our attrs bag.
 
-  defp import_issue_line(root_uuid, line, store) do
-    with {:ok, raw} <- Jason.decode(line),
-         {:ok, attrs, id} <- normalize_issue_attrs(raw) do
-      case Issue.show(root_uuid, id, store) do
-        {:ok, _existing} ->
-          case Issue.update(root_uuid, id, attrs, store) do
-            {:ok, _} -> {:ok, :updated}
-            err -> err
-          end
-
-        {:error, :not_found} ->
-          create_with_fixed_id(root_uuid, id, attrs, store)
-      end
-    else
-      {:error, %Jason.DecodeError{} = e} -> {:error, {:bad_json, Exception.message(e)}}
-      {:error, reason} -> {:error, reason}
-      _ -> {:error, :malformed_line}
-    end
-  end
+  @doc """
+  Normalizes one decoded bd record into `{:ok, attrs, id}` or
+  `{:error, reason}`. Pure.
+  """
+  @spec normalize_record(map()) :: {:ok, map(), String.t()} | {:error, term()}
+  def normalize_record(raw) when is_map(raw), do: normalize_issue_attrs(raw)
+  def normalize_record(_), do: {:error, :malformed_line}
 
   defp normalize_issue_attrs(raw) when is_map(raw) do
     case Map.get(raw, "id") do
@@ -167,13 +221,19 @@ defmodule Commonplace.Bd.Importer do
             priority: normalize_priority(Map.get(raw, "priority")),
             type: Map.get(raw, "issue_type") || Map.get(raw, "type") || "task",
             owner: Map.get(raw, "owner"),
-            description: Map.get(raw, "description") || Map.get(raw, "body") || "",
             created_at: Map.get(raw, "created_at"),
             updated_at: Map.get(raw, "updated_at"),
             closed_at: Map.get(raw, "closed_at"),
             closed_reason: Map.get(raw, "close_reason") || Map.get(raw, "closed_reason"),
             extra: extract_extra(raw)
           }
+          |> carry_description(raw)
+          |> carry(raw, "needs", :needs)
+          |> carry(raw, "done_when", :done_when)
+          |> carry(raw, "done_witness", :done_witness)
+          |> carry(raw, "claimed_by", :claimed_by)
+          |> carry(raw, "labels", :labels)
+          |> carry(raw, "legacy_id", :legacy_id)
 
         {:ok, attrs, id}
 
@@ -182,11 +242,36 @@ defmodule Commonplace.Bd.Importer do
     end
   end
 
+  # CX-6cz3: the GRAPH fields (`needs` above all) are carried only when
+  # the source record actually has the key — PRESENT-KEY semantics, not
+  # defaulted. A bd record carries no `needs`, and defaulting it to `[]`
+  # would make every re-import silently WIPE edges added locally through
+  # `ticket_add_needs`. Absent key => the field is not in the change
+  # set at all; on a create, `Issue.build_with_id/2` supplies the spec
+  # default.
+  # Same present-key rule for the description (which lives in a sibling
+  # text doc, not the field bag): a record that says nothing about the
+  # body must not blank an existing one.
+  defp carry_description(attrs, raw) do
+    cond do
+      Map.has_key?(raw, "description") -> Map.put(attrs, :description, Map.get(raw, "description") || "")
+      Map.has_key?(raw, "body") -> Map.put(attrs, :description, Map.get(raw, "body") || "")
+      true -> attrs
+    end
+  end
+
+  defp carry(attrs, raw, raw_key, attr_key) do
+    if Map.has_key?(raw, raw_key),
+      do: Map.put(attrs, attr_key, Map.get(raw, raw_key)),
+      else: attrs
+  end
+
   defp extract_extra(raw) do
     known =
       ~w(id title status priority issue_type type owner description body
          created_at updated_at closed_at close_reason closed_reason
-         created_by metadata)
+         created_by metadata
+         needs done_when done_witness claimed_by labels legacy_id)
 
     raw
     |> Map.drop(known)
@@ -208,58 +293,4 @@ defmodule Commonplace.Bd.Importer do
   end
 
   defp normalize_status(_), do: "open"
-
-  # Mirror Issue.create but with a caller-supplied id (used for import).
-  defp create_with_fixed_id(root_uuid, id, attrs, store) do
-    now = now_iso8601()
-
-    issue = %Schemas.Issue{
-      id: id,
-      title: Map.get(attrs, :title, ""),
-      status: Map.get(attrs, :status, "open"),
-      priority: Map.get(attrs, :priority, "p2"),
-      type: Map.get(attrs, :type, "task"),
-      owner: Map.get(attrs, :owner),
-      created_at: Map.get(attrs, :created_at) || now,
-      updated_at: Map.get(attrs, :updated_at) || now,
-      closed_at: Map.get(attrs, :closed_at),
-      closed_reason: Map.get(attrs, :closed_reason),
-      labels: Map.get(attrs, :labels, []),
-      extra: Map.get(attrs, :extra, %{})
-    }
-
-    description = Map.get(attrs, :description, "")
-    dir_uuid = build_issue_dir(issue, description, store)
-    :ok = add_issue_entry(root_uuid, id, dir_uuid, store)
-    {:ok, :imported}
-  end
-
-  defp build_issue_dir(%Schemas.Issue{} = issue, description, store) do
-    dir_uuid = UUID.uuid4()
-    dir_doc = Schema.new_schema()
-    issue_meta_uuid = Schemas.create_text_doc(Schemas.encode_issue(issue), store)
-    desc_uuid = Schemas.create_text_doc(description, store)
-    comments_uuid = Schemas.create_dir_with_meta(nil, nil, store)
-
-    dir_doc =
-      dir_doc
-      |> Schema.add_file(Schemas.issue_filename(), issue_meta_uuid)
-      |> Schema.add_file(Schemas.description_filename(), desc_uuid)
-      |> Schema.add_directory("comments", comments_uuid)
-
-    update = Yelixer.Encoding.encode_update(dir_doc)
-    CommitStoreClient.create_commit(store, dir_uuid, update, nil)
-    dir_uuid
-  end
-
-  defp add_issue_entry(root_uuid, id, child_uuid, store) do
-    issues_uuid = Workspace.issues_dir_uuid(root_uuid, store)
-    {:ok, schema} = Schemas.load_dir_schema(issues_uuid, store)
-    schema = Schema.add_directory(schema, "#{id}.iss", child_uuid)
-    update = Yelixer.Encoding.encode_update(schema)
-    CommitStoreClient.create_chained_commit(store, issues_uuid, update)
-    :ok
-  end
-
-  defp now_iso8601, do: DateTime.utc_now() |> DateTime.to_iso8601()
 end
