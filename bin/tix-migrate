@@ -1,0 +1,437 @@
+#!/usr/bin/env bash
+#
+# tix-migrate — migrate bd tickets into tix (the substrate tracker),
+# ids preserved, through the GATED `ticket_import` verb.
+#
+# WHY THIS EXISTS (CX-6n62)
+#
+# Design:
+# /home/jes/commonplace-plan/docs/plans/2026-08-05-tix-authority-migration-design.md
+# §2 (bd → tix, preserving ids), §4 (scope: the live bd-only set now),
+# §6 step 2, §7 (the gated write surface + rulings @6418506), §8 (the
+# deps ruling @2588425).
+#
+# THE DENOMINATOR IS RE-MEASURED, EVERY RUN. The design's "26 live
+# bd-only" was a 2026-08-05 measurement and was stale within hours
+# (CX-jfok was filed into bd after it was taken). This script derives
+# its input set FRESH: the ids in the supplied bd export MINUS the ids
+# in the live tix listing, computed and PRINTED before any write, with
+# everything downstream reported against that number.
+#
+# THE EDGE MAPPING is not declared here. It lives in exactly one place
+# — `Commonplace.Bd.TixMigration.EdgeMapping` — and says
+# bd "A blocks B" ↦ tix "B needs A" (§8, @2588425). This script is one
+# of its three consumers; the drift scanner and the acceptance check
+# are the other two.
+#
+# EDGES ACCOUNTING: refusals are EXPECTED, not exceptional. The bd
+# `blocks` graph has never lived under a cycle rule, so legacy cycles
+# may exist; a refused edge lands its ticket WITHOUT the edge plus a
+# named refusal for human resolution. The identity
+# EDGES-IN == LANDED ∪ REFUSED is recomputed after the gate ran and
+# printed. No silent pre-cleaning.
+#
+# ⚠️ EVERYTHING IS COMPUTED CLIENT-SIDE ON PURPOSE. Per CLAUDE.md, an
+# `:erpc` to a module the live serve has not loaded force-loads THIS
+# WORKING TREE's copy into the running node — a write, not a read.
+# `Commonplace.Bd.TixMigration` is by definition not loaded on the
+# serve, so this probe never calls it there. The only serve-side calls
+# are long-deployed readers (`Commonplace.Workspace.root_uuid/0`,
+# `Commonplace.Bd.Issue.list/2`, `Commonplace.Bd.Issue.show/3`), the
+# node signing context (`Commonplace.Crypto.NodeIdentity.signing_context/0`,
+# the same path `CommonplaceMCP.Tools.BdWrite` uses), and — under
+# --execute only — `Commonplace.ViewActionDispatch.dispatch/2` and
+# `Commonplace.Bd.Importer.import_comments_jsonl/4`.
+#
+# ⚠️ COMMENTS ARE NOT GATED. `import_comments_jsonl/4` writes through
+# `Commonplace.Bd.Comment.add/4`, which does not pass WriteGuard. That
+# is the pre-existing state of the comment path, not something this
+# script introduces, and it is stated here rather than left for
+# someone to discover: the TICKET write path is single and gated; the
+# comment write path is not yet.
+#
+# RPC / connection mechanics mirror bin/bd-invariants and
+# bin/bd-divergence EXACTLY (read bin/bd-divergence's header for the
+# full rationale — the ERL_INETRC hostname gotcha, the
+# one-probe-at-a-time flock, the :global overlapping-partition fix).
+# The one difference is that this script is WRITE-CAPABLE under
+# --execute.
+#
+# Usage:
+#   bin/tix-migrate ISSUES_JSONL [DEPS_JSONL]              # dry run (default)
+#   bin/tix-migrate --execute ISSUES_JSONL [DEPS_JSONL]    # writes
+#
+# The operator produces the export themselves — this script never
+# shells out to `bd`, so the bytes it migrates are bytes a human can
+# look at:
+#
+#   bd export --all > /tmp/bd-issues.jsonl
+#
+# `bd export` carries dependency edges INLINE on each issue row
+# (`"dependencies": [{"issue_id":…, "depends_on_id":…, "type":…}]`), so
+# DEPS_JSONL is optional; supply it only if you have a separate
+# `{"from","to","kind"}` stream. Both are read, and an edge that
+# appears in both is one edge.
+#
+# Env overrides (for testing / operating against a different serve):
+#   TIX_MIGRATE_NODE — serve node name (default commonplace_dev@commonplace)
+#   TIX_MIGRATE_HOST — short hostname to statically map to 127.0.0.1
+#                      in the probe's ERL_INETRC (default: derived from
+#                      TIX_MIGRATE_NODE's host part)
+#
+# Exit codes:
+#   0 — ran successfully. REFUSALS ARE FINDINGS, NOT FAILURES: a run
+#       that refuses records or edges and names every one of them
+#       exits 0.
+#   1 — bad arguments, or an export file that could not be read
+#   2 — could not read the substrate side (serve unreachable, root_uuid
+#       missing, or an erpc read failed) — NEVER prints figures
+#       computed from a failed read
+#   3 — could not acquire the one-probe-at-a-time lock
+#   4 — the accounting broke: `unaccounted` was non-empty for records
+#       or for edges (an input neither landed nor was refused)
+#   5 — the dispatch itself failed (the verb returned {:error, _})
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+
+SERVE_NODE="${TIX_MIGRATE_NODE:-commonplace_dev@commonplace}"
+SERVE_HOST="${TIX_MIGRATE_HOST:-${SERVE_NODE#*@}}"
+
+MODE="dry-run"
+ISSUES_PATH=""
+DEPS_PATH=""
+
+usage() {
+  sed -n '2,/^set -euo/p' "$0" | sed 's/^# \{0,1\}//' >&2
+  exit 1
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run) MODE="dry-run"; shift ;;
+    --execute) MODE="execute"; shift ;;
+    -h|--help) usage ;;
+    -*) echo "tix-migrate: unknown flag $1" >&2; exit 1 ;;
+    *)
+      if [ -z "$ISSUES_PATH" ]; then ISSUES_PATH="$1"
+      elif [ -z "$DEPS_PATH" ]; then DEPS_PATH="$1"
+      else echo "tix-migrate: too many positional arguments (got '$1')" >&2; exit 1
+      fi
+      shift
+      ;;
+  esac
+done
+
+if [ -z "$ISSUES_PATH" ]; then
+  echo "tix-migrate: no bd export given. Usage: bin/tix-migrate [--execute] ISSUES_JSONL [DEPS_JSONL]" >&2
+  exit 1
+fi
+
+if [ ! -r "$ISSUES_PATH" ]; then
+  echo "tix-migrate: cannot read issues export '$ISSUES_PATH'." >&2
+  exit 1
+fi
+
+if [ -n "$DEPS_PATH" ] && [ ! -r "$DEPS_PATH" ]; then
+  echo "tix-migrate: cannot read deps export '$DEPS_PATH'." >&2
+  exit 1
+fi
+
+ISSUES_ABS="$(cd "$(dirname "$ISSUES_PATH")" && pwd)/$(basename "$ISSUES_PATH")"
+DEPS_ABS=""
+if [ -n "$DEPS_PATH" ]; then
+  DEPS_ABS="$(cd "$(dirname "$DEPS_PATH")" && pwd)/$(basename "$DEPS_PATH")"
+fi
+
+LOCK_FILE="$PROJECT_DIR/.tix-migrate.lock"
+TMP_DIR="$(mktemp -d)"
+cleanup() { rm -rf "$TMP_DIR"; }
+trap cleanup EXIT
+
+# --- one-probe-at-a-time guard ---------------------------------------
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+  echo "tix-migrate: another tix-migrate (or probe) run holds the lock at $LOCK_FILE — refusing to start a second concurrent probe node." >&2
+  exit 3
+fi
+
+PROBE_SCRIPT="$TMP_DIR/probe.exs"
+INETRC="$TMP_DIR/inetrc"
+
+cat >"$INETRC" <<EOF
+{lookup, [file, native]}.
+{host, {127,0,0,1}, ["$SERVE_HOST"]}.
+EOF
+
+cat >"$PROBE_SCRIPT" <<'ELIXIR'
+[mode, issues_path, deps_path, serve_node_str] =
+  System.argv() |> Enum.reject(&(&1 == "--"))
+
+serve_node = String.to_atom(serve_node_str)
+
+alias Commonplace.Bd.TixMigration
+alias Commonplace.Bd.TixMigration.Report
+
+# Same fix as bin/bd-divergence's probe (CX-y6uc): a short-lived probe
+# node joining/leaving repeatedly can trip :global's overlapping-
+# partition heuristic against the long-running serve. Must be set
+# before Node.start.
+:application.set_env(:kernel, :prevent_overlapping_partitions, false)
+:application.set_env(:kernel, :inet_dist_use_interface, {127, 0, 0, 1})
+
+probe_name =
+  :"tix_migrate_probe_#{:erlang.unique_integer([:positive])}@#{System.get_env("TIX_MIGRATE_HOST", "commonplace")}"
+
+fail_read = fn msg ->
+  IO.puts(:stderr, "tix-migrate: could not read the substrate side — #{msg}")
+  IO.puts(:stderr, "tix-migrate: refusing to report migration figures computed from a failed substrate read.")
+  System.halt(2)
+end
+
+read_call = fn mod, fun, args, timeout ->
+  try do
+    :erpc.call(serve_node, mod, fun, args, timeout)
+  catch
+    :error, reason -> fail_read.("#{inspect(mod)}.#{fun}/#{length(args)} raised #{inspect(reason)}")
+    :exit, reason -> fail_read.("#{inspect(mod)}.#{fun}/#{length(args)} exited #{inspect(reason)}")
+  end
+end
+
+case Node.start(probe_name, :shortnames) do
+  {:ok, _} -> :ok
+  {:error, reason} -> fail_read.("could not start local probe node (#{inspect(reason)})")
+end
+
+unless Node.connect(serve_node) do
+  fail_read.("Node.connect(#{inspect(serve_node)}) returned false/failed — is the serve up? (pang)")
+end
+
+root =
+  case read_call.(Commonplace.Workspace, :root_uuid, [], 15_000) do
+    {:ok, root} -> root
+    other -> fail_read.("Commonplace.Workspace.root_uuid() returned #{inspect(other)}")
+  end
+
+store = Commonplace.Store.CommitStoreClient
+
+## --- (1) the bd side, read LOCALLY -----------------------------------
+issues_jsonl = File.read!(issues_path)
+deps_jsonl = if deps_path == "", do: "", else: File.read!(deps_path)
+
+export = TixMigration.parse_export(issues_jsonl, deps_jsonl)
+
+## --- (2) the tix side, and the RE-MEASURED denominator ----------------
+tix_issues =
+  read_call.(Commonplace.Bd.Issue, :list, [root, store], 120_000)
+  |> Enum.map(fn {issue, _node_id} -> issue end)
+
+tix_ids = Enum.map(tix_issues, & &1.id)
+bd_ids = TixMigration.record_ids(export.records)
+diff = TixMigration.live_set_diff(bd_ids, tix_ids)
+
+declared = diff.bd_only
+records = TixMigration.select_records(export.records, declared)
+{folded, fold_report} = TixMigration.fold_needs(records, export.edges_in)
+batch_records = TixMigration.build_batch(folded)
+
+IO.write(
+  Report.pre_write(%{
+    mode: mode,
+    serve_node: serve_node,
+    issues_path: issues_path,
+    deps_path: deps_path,
+    measured_at: DateTime.utc_now() |> DateTime.to_iso8601(),
+    diff: diff,
+    declared: declared,
+    batch_records: batch_records,
+    parse_refusals: export.parse_refusals,
+    fold_report: fold_report
+  })
+)
+
+if mode != "execute" do
+  IO.write(Report.dry_run_banner())
+  System.halt(if fold_report.unaccounted == [], do: 0, else: 4)
+end
+
+## --- (3) EXECUTE ------------------------------------------------------
+
+signing_context =
+  case read_call.(Commonplace.Crypto.NodeIdentity, :signing_context, [], 15_000) do
+    {:ok, sc} ->
+      sc
+
+    other ->
+      fail_read.(
+        "Commonplace.Crypto.NodeIdentity.signing_context() returned #{inspect(other)} — " <>
+          "refusing to import unsigned"
+      )
+  end
+
+context = %{
+  args: %{"records" => batch_records},
+  signing_context: signing_context,
+  source: "tix-migrate"
+}
+
+dispatch_result =
+  try do
+    :erpc.call(serve_node, Commonplace.ViewActionDispatch, :dispatch, ["ticket_import", context], 600_000)
+  catch
+    :error, reason ->
+      IO.puts(:stderr, "tix-migrate: ticket_import dispatch raised #{inspect(reason)}")
+      System.halt(5)
+
+    :exit, reason ->
+      IO.puts(:stderr, "tix-migrate: ticket_import dispatch exited #{inspect(reason)}")
+      System.halt(5)
+  end
+
+batch =
+  case dispatch_result do
+    {:ok, :tree_mutation, report} ->
+      report
+
+    {:error, reason} ->
+      IO.puts(:stderr, "tix-migrate: ticket_import REFUSED the whole batch: #{inspect(reason)}")
+      System.halt(5)
+
+    other ->
+      IO.puts(:stderr, "tix-migrate: ticket_import returned an unrecognised shape: #{inspect(other)}")
+      System.halt(5)
+  end
+
+landed_ids = Enum.map(batch.landed, & &1.id)
+
+## --- (4) comments, for the ids that actually landed --------------------
+comment_results =
+  TixMigration.comment_streams(export.records, landed_ids)
+  |> Enum.map(fn {id, jsonl} ->
+    result =
+      try do
+        :erpc.call(
+          serve_node,
+          Commonplace.Bd.Importer,
+          :import_comments_jsonl,
+          [root, id, jsonl, store],
+          120_000
+        )
+      catch
+        :error, reason -> {:error, reason}
+        :exit, reason -> {:error, reason}
+      end
+
+    {id, result}
+  end)
+
+## --- (5) the report ----------------------------------------------------
+IO.puts("""
+
+RECORDS (the ticket_import batch report, ruling (b))
+  declared    : #{batch.declared}
+  landed      : #{length(batch.landed)}  (#{Enum.count(batch.landed, &(&1.op == :created))} created, #{Enum.count(batch.landed, &(&1.op == :updated))} updated)
+  no-op       : #{length(batch.noop)}
+  refused     : #{length(batch.refused)}
+  unaccounted : #{length(batch.unaccounted)}
+""")
+
+if batch.refused != [] do
+  IO.puts("REFUSED RECORDS (#{length(batch.refused)}) — named TODOs, not a smaller denominator:")
+  Enum.each(batch.refused, fn r -> IO.puts("  #{String.pad_trailing(r.id, 16)} #{r.reason}") end)
+  IO.puts("")
+end
+
+if batch.unaccounted != [] do
+  IO.puts("❌ UNACCOUNTED RECORDS: #{inspect(batch.unaccounted)}")
+end
+
+# The EDGES identity, re-run against what tix ACTUALLY holds now.
+post_issues =
+  read_call.(Commonplace.Bd.Issue, :list, [root, store], 120_000)
+  |> Enum.map(fn {issue, _node_id} -> issue end)
+
+walk_graph = TixMigration.needs_graph_from_issues(post_issues)
+final_edges = TixMigration.final_edge_accounting(fold_report, batch, walk_graph)
+
+IO.puts("""
+EDGES (after the gate ran) — EDGES-IN == LANDED ∪ REFUSED
+  EDGES-IN    : #{length(final_edges.edges_in)}
+  landed      : #{length(final_edges.landed)}
+  refused     : #{length(final_edges.refused)}
+  unaccounted : #{length(final_edges.unaccounted)}
+""")
+
+if final_edges.refused != [] do
+  IO.puts("REFUSED EDGES (#{length(final_edges.refused)}) — expected: the blocks graph never had a cycle rule:")
+  Enum.each(final_edges.refused, fn r -> IO.puts("  #{r.edge}\n    #{r.reason}") end)
+  IO.puts("")
+end
+
+if final_edges.unaccounted != [] do
+  IO.puts("❌ UNACCOUNTED EDGES: #{inspect(final_edges.unaccounted)}")
+end
+
+comment_failures = Enum.reject(comment_results, fn {_id, r} -> match?({:ok, _}, r) end)
+
+IO.puts("""
+COMMENTS (ungated path — Bd.Comment.add, see this script's header)
+  streams attempted : #{length(comment_results)}
+  failed            : #{length(comment_failures)}
+""")
+
+Enum.each(comment_failures, fn {id, r} -> IO.puts("  #{id}: #{inspect(r)}") end)
+
+## --- (6) 3-way acceptance ---------------------------------------------
+query_graph =
+  declared
+  |> Enum.reduce(%{}, fn id, acc ->
+    case read_call.(Commonplace.Bd.Issue, :show, [root, id, store], 30_000) do
+      {:ok, issue} -> Map.merge(acc, TixMigration.needs_graph_from_issues([issue]))
+      _ -> acc
+    end
+  end)
+
+projection = TixMigration.bd_edge_projection(export.edges_in)
+three = TixMigration.three_way(walk_graph, query_graph, projection, declared)
+
+IO.puts("""
+3-WAY ACCEPTANCE (§3, amended by §8: walk == query on the needs graph,
+bd leg compared THROUGH the declared mapping)
+  scope         : #{three.scope.ids} declared ids, walk saw #{three.scope.walk_tickets}, query saw #{three.scope.query_tickets}
+  edges         : walk #{three.scope.walk_edges}, query #{three.scope.query_edges}, bd-projected #{three.scope.bd_edges}
+  declared ids neither leg resolved: #{length(three.scope.tickets_absent)} #{inspect(three.scope.tickets_absent)}
+  walk-only edges : #{inspect(three.walk_vs_query.only_in_walk)}
+  query-only edges: #{inspect(three.walk_vs_query.only_in_query)}
+  bd implies, tix lacks: #{inspect(three.bd_vs_tix.missing_in_tix)}
+  tix has, bd never implied (expected post-cutover): #{length(three.bd_vs_tix.extra_in_tix)}
+  VERDICT       : #{if three.agree?, do: "legs agree", else: "LEGS DISAGREE"}
+""")
+
+if three.scope.walk_edges == 0 and three.scope.bd_edges == 0 do
+  IO.puts(
+    "⚠️  zero edges on both sides — \"legs agree\" above is vacuous, not evidence. " <>
+      "Check whether the export carried any dependencies at all.\n"
+  )
+end
+
+exit_code =
+  cond do
+    batch.unaccounted != [] -> 4
+    final_edges.unaccounted != [] -> 4
+    true -> 0
+  end
+
+IO.puts(
+  "tix-migrate: done. Refusals above are FINDINGS, not failures — " <>
+    "exit #{exit_code}."
+)
+
+System.halt(exit_code)
+ELIXIR
+
+cd "$PROJECT_DIR"
+TIX_MIGRATE_HOST="$SERVE_HOST" ERL_INETRC="$INETRC" \
+  mix run --no-start "$PROBE_SCRIPT" -- "$MODE" "$ISSUES_ABS" "$DEPS_ABS" "$SERVE_NODE"

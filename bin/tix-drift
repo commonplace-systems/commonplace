@@ -1,0 +1,341 @@
+#!/usr/bin/env bash
+#
+# tix-drift — READ-ONLY standing scanner comparing a bd export against
+# the live tix corpus, during the bd decommission window.
+#
+# WHY THIS EXISTS (CX-q7nh)
+#
+# Design:
+# /home/jes/commonplace-plan/docs/plans/2026-08-05-tix-authority-migration-design.md
+# §3 step 2 ("a drift scanner is the guard during the decommission
+# window; after decommission, drift is impossible by construction
+# because nothing writes bd") and §8 (the deps ruling, @2588425).
+#
+# HOW THIS DIFFERS FROM bin/bd-divergence. bd-divergence answers "how
+# far apart are the two ID SETS" — it is the CX-jhvn measurement, and
+# it shells out to `bd list --json` itself. tix-drift complements it
+# rather than duplicating it:
+#
+#   * it reads an export FILE the operator produced (this script never
+#     invokes `bd`), so the bytes compared are bytes a human can look
+#     at and keep — which matters once bd is frozen and "what did bd
+#     say" becomes a historical question;
+#   * it compares FIELDS for ids present on both sides (status, title,
+#     priority — through the record normalization, so bd's integer
+#     priorities are judged against tix's stored form rather than
+#     against themselves);
+#   * it compares EDGES through the declared mapping — bd `blocks`
+#     projected to tix `needs` — which bd-divergence does not look at
+#     at all. The two graphs were never reconciled (§8), so id-set
+#     agreement says nothing about edge agreement.
+#
+# ⚠️ COUNT + PER-HIT SHAPES, ALWAYS. Every section prints its scope
+# line ("N bd records vs M tix tickets compared") beside its verdict.
+# A count with no shapes is not actionable and a false zero goes
+# unscrutinised; "no drift" over an empty comparison and "no drift"
+# over a full one must not render identically.
+#
+# This is a REPORT, not a gate. It never writes and never blocks. It
+# exits non-zero ONLY when it could not measure — never as a judgment
+# about how much drift was found. During the transition, ids in tix
+# and not in bd are EXPECTED (§4's substrate-native tickets) and are
+# labelled as such.
+#
+# ⚠️ Everything is computed CLIENT-SIDE, for the reason spelled out in
+# bin/tix-migrate's header: an `:erpc` to a module the serve has not
+# loaded force-loads this working tree's copy into the live node
+# (CLAUDE.md). The only serve-side calls here are long-deployed
+# readers: `Commonplace.Workspace.root_uuid/0` and
+# `Commonplace.Bd.Issue.list/2`.
+#
+# RPC / connection mechanics mirror bin/bd-invariants and
+# bin/bd-divergence EXACTLY (read bd-divergence's header for the full
+# rationale: the ERL_INETRC hostname gotcha, the one-probe-at-a-time
+# flock, the :global overlapping-partition fix).
+#
+# Usage:
+#   bin/tix-drift ISSUES_JSONL [DEPS_JSONL]
+#
+#   bd export --all > /tmp/bd-issues.jsonl && bin/tix-drift /tmp/bd-issues.jsonl
+#
+# Env overrides:
+#   TIX_DRIFT_NODE — serve node name (default commonplace_dev@commonplace)
+#   TIX_DRIFT_HOST — short hostname to statically map to 127.0.0.1 in
+#                    the probe's ERL_INETRC (default: derived from
+#                    TIX_DRIFT_NODE's host part)
+#
+# Exit codes:
+#   0 — measured successfully (regardless of how much drift was found)
+#   1 — bad arguments, or an export file that could not be read
+#   2 — could not read the substrate side — NEVER prints figures
+#       computed from a failed read
+#   3 — could not acquire the one-probe-at-a-time lock
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+
+SERVE_NODE="${TIX_DRIFT_NODE:-commonplace_dev@commonplace}"
+SERVE_HOST="${TIX_DRIFT_HOST:-${SERVE_NODE#*@}}"
+
+ISSUES_PATH=""
+DEPS_PATH=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help) sed -n '2,/^set -euo/p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 1 ;;
+    -*) echo "tix-drift: unknown flag $1" >&2; exit 1 ;;
+    *)
+      if [ -z "$ISSUES_PATH" ]; then ISSUES_PATH="$1"
+      elif [ -z "$DEPS_PATH" ]; then DEPS_PATH="$1"
+      else echo "tix-drift: too many positional arguments (got '$1')" >&2; exit 1
+      fi
+      shift
+      ;;
+  esac
+done
+
+if [ -z "$ISSUES_PATH" ]; then
+  echo "tix-drift: no bd export given. Usage: bin/tix-drift ISSUES_JSONL [DEPS_JSONL]" >&2
+  exit 1
+fi
+
+if [ ! -r "$ISSUES_PATH" ]; then
+  echo "tix-drift: cannot read issues export '$ISSUES_PATH'." >&2
+  exit 1
+fi
+
+if [ -n "$DEPS_PATH" ] && [ ! -r "$DEPS_PATH" ]; then
+  echo "tix-drift: cannot read deps export '$DEPS_PATH'." >&2
+  exit 1
+fi
+
+ISSUES_ABS="$(cd "$(dirname "$ISSUES_PATH")" && pwd)/$(basename "$ISSUES_PATH")"
+DEPS_ABS=""
+if [ -n "$DEPS_PATH" ]; then
+  DEPS_ABS="$(cd "$(dirname "$DEPS_PATH")" && pwd)/$(basename "$DEPS_PATH")"
+fi
+
+LOCK_FILE="$PROJECT_DIR/.tix-drift.lock"
+TMP_DIR="$(mktemp -d)"
+cleanup() { rm -rf "$TMP_DIR"; }
+trap cleanup EXIT
+
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+  echo "tix-drift: another tix-drift (or probe) run holds the lock at $LOCK_FILE — refusing to start a second concurrent probe node." >&2
+  exit 3
+fi
+
+PROBE_SCRIPT="$TMP_DIR/probe.exs"
+INETRC="$TMP_DIR/inetrc"
+
+cat >"$INETRC" <<EOF
+{lookup, [file, native]}.
+{host, {127,0,0,1}, ["$SERVE_HOST"]}.
+EOF
+
+cat >"$PROBE_SCRIPT" <<'ELIXIR'
+[issues_path, deps_path, serve_node_str] = System.argv() |> Enum.reject(&(&1 == "--"))
+serve_node = String.to_atom(serve_node_str)
+
+alias Commonplace.Bd.TixMigration
+alias Commonplace.Bd.TixMigration.EdgeMapping
+
+:application.set_env(:kernel, :prevent_overlapping_partitions, false)
+:application.set_env(:kernel, :inet_dist_use_interface, {127, 0, 0, 1})
+
+probe_name =
+  :"tix_drift_probe_#{:erlang.unique_integer([:positive])}@#{System.get_env("TIX_DRIFT_HOST", "commonplace")}"
+
+fail = fn msg ->
+  IO.puts(:stderr, "tix-drift: could not read the substrate side — #{msg}")
+  IO.puts(:stderr, "tix-drift: refusing to report drift figures computed from a failed substrate read.")
+  System.halt(2)
+end
+
+read_call = fn mod, fun, args, timeout ->
+  try do
+    :erpc.call(serve_node, mod, fun, args, timeout)
+  catch
+    :error, reason -> fail.("#{inspect(mod)}.#{fun}/#{length(args)} raised #{inspect(reason)}")
+    :exit, reason -> fail.("#{inspect(mod)}.#{fun}/#{length(args)} exited #{inspect(reason)}")
+  end
+end
+
+case Node.start(probe_name, :shortnames) do
+  {:ok, _} -> :ok
+  {:error, reason} -> fail.("could not start local probe node (#{inspect(reason)})")
+end
+
+unless Node.connect(serve_node) do
+  fail.("Node.connect(#{inspect(serve_node)}) returned false/failed — is the serve up? (pang)")
+end
+
+root =
+  case read_call.(Commonplace.Workspace, :root_uuid, [], 15_000) do
+    {:ok, root} -> root
+    other -> fail.("Commonplace.Workspace.root_uuid() returned #{inspect(other)}")
+  end
+
+store = Commonplace.Store.CommitStoreClient
+
+export =
+  TixMigration.parse_export(
+    File.read!(issues_path),
+    if(deps_path == "", do: "", else: File.read!(deps_path))
+  )
+
+tix_issues =
+  read_call.(Commonplace.Bd.Issue, :list, [root, store], 120_000)
+  |> Enum.map(fn {issue, _node_id} -> issue end)
+
+tix_by_id = Map.new(tix_issues, fn issue -> {issue.id, issue} end)
+bd_ids = TixMigration.record_ids(export.records)
+diff = TixMigration.live_set_diff(bd_ids, Map.keys(tix_by_id))
+
+IO.puts("""
+
+tix-drift report
+=================
+substrate node : #{serve_node}
+issues export  : #{issues_path}
+deps export    : #{if deps_path == "", do: "(none — inline dependencies only)", else: deps_path}
+measured at    : #{DateTime.utc_now() |> DateTime.to_iso8601()}
+#{EdgeMapping.direction_statement()}
+
+SCOPE: #{diff.bd_total} bd records vs #{diff.tix_total} tix tickets compared \
+(#{length(diff.both)} ids on both sides).
+""")
+
+if export.parse_refusals != [] do
+  IO.puts("EXPORT LINES THAT WOULD NOT PARSE (#{length(export.parse_refusals)}) — the comparison is missing these:")
+  Enum.each(export.parse_refusals, fn r -> IO.puts("  #{r.id}: #{r.reason}") end)
+  IO.puts("")
+end
+
+## --- (1) id-set drift --------------------------------------------------
+bd_by_id = Map.new(export.records, fn r -> {Map.get(r, "id"), r} end)
+
+IO.puts("IN BD, NOT IN TIX (#{length(diff.bd_only)}) — the migration backlog:")
+
+Enum.each(diff.bd_only, fn id ->
+  record = Map.get(bd_by_id, id, %{})
+
+  IO.puts(
+    "  #{String.pad_trailing(id, 16)} #{String.pad_trailing(to_string(Map.get(record, "status", "?")), 12)}" <>
+      "#{String.slice(to_string(Map.get(record, "title", "")), 0, 70)}"
+  )
+end)
+
+IO.puts("""
+
+IN TIX, NOT IN BD (#{length(diff.tix_only)}) — EXPECTED during the transition
+(§4: tickets created natively in tix; after cutover every new ticket
+lands here and nowhere else, so this list is SUPPOSED to grow):
+""")
+
+Enum.each(diff.tix_only, fn id ->
+  issue = Map.fetch!(tix_by_id, id)
+
+  IO.puts(
+    "  #{String.pad_trailing(id, 16)} #{String.pad_trailing(issue.status, 12)}" <>
+      "#{String.slice(issue.title || "", 0, 70)}"
+  )
+end)
+
+## --- (2) field drift for ids on both sides -----------------------------
+both_records = TixMigration.select_records(export.records, diff.both)
+field_hits = TixMigration.field_divergence(both_records, tix_by_id)
+
+IO.puts("""
+
+FIELD DRIFT (#{length(field_hits)} hits over #{length(diff.both)} ids present on both sides)
+— status / title / priority, compared THROUGH the record normalization
+so bd's integer priorities are judged against tix's stored form:
+""")
+
+Enum.each(field_hits, fn hit ->
+  IO.puts(
+    "  #{String.pad_trailing(hit.id, 16)} #{String.pad_trailing(to_string(hit.field), 10)}" <>
+      "bd=#{inspect(hit.bd)}  tix=#{inspect(hit.tix)}"
+  )
+end)
+
+if field_hits == [] and diff.both == [] do
+  IO.puts(
+    "⚠️  ZERO ids on both sides — \"no field drift\" above is vacuous, not evidence. " <>
+      "Check that the export and the tix corpus are the ones you meant to compare."
+  )
+end
+
+## --- (3) edge drift, THROUGH the declared mapping ----------------------
+bd_graph = TixMigration.bd_edge_projection(export.edges_in)
+tix_graph = TixMigration.needs_graph_from_issues(tix_issues)
+
+# Scoped to ids present on BOTH sides: an edge on a ticket tix does not
+# have yet is already reported by section (1), and re-reporting it here
+# as "edge drift" would double-count the same fact.
+drift = TixMigration.edge_drift(bd_graph, tix_graph, diff.both)
+
+# The mapping's own coverage, measured over bd's WHOLE id set — so a
+# `dependent_not_in_batch` here means the export references a ticket
+# bd itself does not export, which is a real finding, rather than an
+# artifact of the scanner's comparison scope.
+{_folded, fold_report} =
+  TixMigration.fold_needs(Enum.map(bd_ids, fn id -> %{"id" => id} end), export.edges_in)
+
+IO.puts("""
+
+EDGE DRIFT (bd `blocks` projected to tix `needs`; the two graphs were
+never reconciled, so id agreement says nothing about edge agreement)
+  scope        : #{drift.scope} ids on both sides; bd implies #{drift.bd_edges} edges over them, tix holds #{drift.tix_edges}
+  EDGES-IN     : #{length(fold_report.edges_in)} dependency rows in the export
+  mappable     : #{length(fold_report.landed)}
+  not mappable : #{length(fold_report.refused)} (named below)
+""")
+
+IO.puts("BD IMPLIES, TIX LACKS (#{length(drift.missing_in_tix)}):")
+
+Enum.each(drift.missing_in_tix, fn {ticket, prereq} ->
+  IO.puts("  #{String.pad_trailing(ticket, 16)} needs #{prereq}   (bd: #{prereq} blocks #{ticket})")
+end)
+
+IO.puts("\nTIX HAS, BD NEVER IMPLIED (#{length(drift.extra_in_tix)}) — expected for edges added natively after cutover:")
+
+Enum.each(drift.extra_in_tix, fn {ticket, prereq} ->
+  IO.puts("  #{String.pad_trailing(ticket, 16)} needs #{prereq}")
+end)
+
+if fold_report.refused != [] do
+  IO.puts("\nDEPENDENCY ROWS THE MAPPING DOES NOT COVER (#{length(fold_report.refused)}):")
+
+  fold_report.refused
+  |> Enum.group_by(fn r -> r.reason |> String.split(":") |> hd() end)
+  |> Enum.each(fn {family, rows} ->
+    IO.puts("  #{family} (#{length(rows)}):")
+    Enum.each(rows, fn r -> IO.puts("    #{r.edge}") end)
+  end)
+end
+
+if drift.bd_edges == 0 and drift.tix_edges == 0 do
+  IO.puts(
+    "\n⚠️  ZERO edges on both sides over the compared ids — the edge section above is " <>
+      "vacuous, not evidence. Check whether the export carried dependencies at all."
+  )
+end
+
+IO.puts("""
+
+tix-drift: measured successfully. This is a REPORT, not a gate.
+  bd-only: #{length(diff.bd_only)}   tix-only: #{length(diff.tix_only)}   \
+field hits: #{length(field_hits)}   edges bd-implies-tix-lacks: #{length(drift.missing_in_tix)}
+""")
+
+System.halt(0)
+ELIXIR
+
+cd "$PROJECT_DIR"
+TIX_DRIFT_HOST="$SERVE_HOST" ERL_INETRC="$INETRC" \
+  mix run --no-start "$PROBE_SCRIPT" -- "$ISSUES_ABS" "$DEPS_ABS" "$SERVE_NODE"

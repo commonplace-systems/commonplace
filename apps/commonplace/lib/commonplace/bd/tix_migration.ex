@@ -302,8 +302,8 @@ defmodule Commonplace.Bd.TixMigration do
                %{
                  edge: name,
                  reason:
-                   "not_a_blocks_edge: kind #{inspect(kind)} — the declared mapping " <>
-                     "(#{EdgeMapping.direction_statement()}) covers blocks edges only"
+                   "not_a_blocks_edge: kind #{inspect(kind)} — the declared mapping covers " <>
+                     "blocks edges only, so this row carries no needs ref"
                }
                | refused
              ]}
@@ -497,6 +497,23 @@ defmodule Commonplace.Bd.TixMigration do
     end)
   end
 
+  @doc """
+  The same graph, built from already-fetched `%Schemas.Issue{}`
+  structs rather than from a store.
+
+  This is what the probe scripts use. They must compute CLIENT-SIDE:
+  an `:erpc` to a module the live serve has not loaded force-loads the
+  probe's working-tree copy into the serve (CLAUDE.md — an RPC to an
+  unloaded module is a WRITE), and `Commonplace.Bd.TixMigration` is by
+  definition not loaded there. So the scripts erpc only to
+  long-deployed readers (`Bd.Issue.list/2`, `Bd.Issue.show/3`) and
+  fold the results here.
+  """
+  @spec needs_graph_from_issues([struct()]) :: %{String.t() => MapSet.t()}
+  def needs_graph_from_issues(issues) do
+    Map.new(issues, fn issue -> {issue.id, local_needs(issue)} end)
+  end
+
   defp local_needs(issue) do
     (issue.needs || [])
     |> Enum.filter(&(is_map(&1) and not Map.has_key?(&1, "repo")))
@@ -556,12 +573,12 @@ defmodule Commonplace.Bd.TixMigration do
 
     walk_edges = edge_pairs(walk, scope)
     query_edges = edge_pairs(query, scope)
-    bd_edges = edge_pairs(bd_projection, scope)
 
     only_in_walk = MapSet.difference(walk_edges, query_edges) |> Enum.sort()
     only_in_query = MapSet.difference(query_edges, walk_edges) |> Enum.sort()
-    missing_in_tix = MapSet.difference(bd_edges, walk_edges) |> Enum.sort()
-    extra_in_tix = MapSet.difference(walk_edges, bd_edges) |> Enum.sort()
+
+    %{missing_in_tix: missing_in_tix, extra_in_tix: extra_in_tix, bd_edges: bd_edges} =
+      edge_drift(bd_projection, walk, scope_ids)
 
     # Ids the walk saw and the query did not (or vice versa) — a
     # missing TICKET, not a missing edge. An id-keyed lookup that
@@ -586,7 +603,7 @@ defmodule Commonplace.Bd.TixMigration do
           MapSet.difference(scope, MapSet.union(walk_ids, query_ids)) |> Enum.sort(),
         walk_edges: MapSet.size(walk_edges),
         query_edges: MapSet.size(query_edges),
-        bd_edges: MapSet.size(bd_edges)
+        bd_edges: bd_edges
       },
       walk_vs_query: %{
         only_in_walk: only_in_walk,
@@ -601,6 +618,42 @@ defmodule Commonplace.Bd.TixMigration do
       agree?:
         only_in_walk == [] and only_in_query == [] and missing_in_tix == [] and
           MapSet.equal?(walk_ids, query_ids)
+    }
+  end
+
+  @doc """
+  The EDGE leg on its own — what the drift scanner needs, without a
+  second tix read path to compare against.
+
+  `bd_projection` is `bd_edge_projection/1`'s output, `tix_graph` a
+  needs graph, and the comparison is scoped to `scope_ids` (the
+  scanner passes the ids present on BOTH sides: an edge on a ticket
+  tix does not have yet is already reported as an id-set finding, and
+  re-reporting it as edge drift would count one fact twice).
+
+  Split out so the scanner does not have to pass the tix graph in as
+  both legs of `three_way/4` — a comparison of a thing with itself is
+  a check that cannot fail, and one of those wearing the name of an
+  acceptance check is worse than no check.
+  """
+  @spec edge_drift(map(), map(), [String.t()]) :: %{
+          missing_in_tix: [{String.t(), String.t()}],
+          extra_in_tix: [{String.t(), String.t()}],
+          bd_edges: non_neg_integer(),
+          tix_edges: non_neg_integer(),
+          scope: non_neg_integer()
+        }
+  def edge_drift(bd_projection, tix_graph, scope_ids) do
+    scope = MapSet.new(scope_ids)
+    bd_edges = edge_pairs(bd_projection, scope)
+    tix_edges = edge_pairs(tix_graph, scope)
+
+    %{
+      missing_in_tix: MapSet.difference(bd_edges, tix_edges) |> Enum.sort(),
+      extra_in_tix: MapSet.difference(tix_edges, bd_edges) |> Enum.sort(),
+      bd_edges: MapSet.size(bd_edges),
+      tix_edges: MapSet.size(tix_edges),
+      scope: MapSet.size(scope)
     }
   end
 
