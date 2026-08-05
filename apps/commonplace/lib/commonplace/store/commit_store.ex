@@ -62,6 +62,15 @@ defmodule Commonplace.Store.CommitStore do
   — reconciling two nodes' divergent `:latest` heads back into one — is
   a separate concern (see `Commonplace.Store.CrossEpochMerge`).
 
+  **Every write of `:latest` goes through one private function,
+  `put_latest/5` (CX-jfok, design §4 build-shape item 2 / §7 R1).** It
+  writes the pointer and the caller's commit rows in one `put_multi`,
+  then dispatches a post-advance invariant alarm. Adding a head-advance
+  site means calling it; a direct `{:latest, _}` write anywhere in
+  `apps/commonplace/lib` fails the source-scan test in
+  `test/commonplace/store/invariant_choke_test.exs`. See that function's
+  comment for why the surface is a choke rather than an enumerated list.
+
   Three operations touch `:latest`:
 
     1. **Local writes** (`create_commit`, `create_chained_commit`,
@@ -1091,23 +1100,30 @@ defmodule Commonplace.Store.CommitStore do
     trust_side_store = Keyword.get(opts, :trust_side_store, nil)
     pending_imports = Keyword.get(opts, :pending_imports, nil)
 
+    # CX-jfok: the post-advance invariant alarm's mailbox (see
+    # `put_latest/5`). A NAME, not a pid, and dispatch is a plain cast —
+    # so a store started before/without the dispatcher (tests, one-shot
+    # CLI, library embedding) writes exactly as it did before. Injectable
+    # so a test can register itself as the dispatcher.
+    invariant_dispatcher = Keyword.get(opts, :invariant_dispatcher, Commonplace.Invariants.Dispatcher)
+
     case open_cubdb(path) do
       {:ok, db} ->
         case probe_integrity(db) do
           :ok ->
-            ready(name, db, trust_side_store, pending_imports)
+            ready(name, db, trust_side_store, pending_imports, invariant_dispatcher)
 
           {:error, reason} ->
             require Logger
             Logger.warning("CubDB corrupt on probe (#{inspect(reason)}). Archiving and starting fresh.")
             CubDB.stop(db)
-            recover_cubdb(name, path, trust_side_store, pending_imports)
+            recover_cubdb(name, path, trust_side_store, pending_imports, invariant_dispatcher)
         end
 
       {:error, reason} ->
         require Logger
         Logger.warning("CubDB failed to open (#{inspect(reason)}). Archiving and starting fresh.")
-        recover_cubdb(name, path, trust_side_store, pending_imports)
+        recover_cubdb(name, path, trust_side_store, pending_imports, invariant_dispatcher)
     end
   end
 
@@ -1124,7 +1140,7 @@ defmodule Commonplace.Store.CommitStore do
   # retry queue). This state only remembers WHICH instances of those
   # companion processes belong to this CommitStore, so the back-compat shims
   # below know where to delegate.
-  defp ready(name, db, trust_side_store, pending_imports) do
+  defp ready(name, db, trust_side_store, pending_imports, invariant_dispatcher) do
     :persistent_term.put({__MODULE__, :db, name}, db)
     :persistent_term.put({__MODULE__, :trust_side_store, name}, trust_side_store)
     :persistent_term.put({__MODULE__, :pending_imports, name}, pending_imports)
@@ -1136,7 +1152,8 @@ defmodule Commonplace.Store.CommitStore do
        name: name,
        queue_poller: queue_poller,
        trust_side_store: trust_side_store,
-       pending_imports: pending_imports
+       pending_imports: pending_imports,
+       invariant_dispatcher: invariant_dispatcher
      }}
   end
 
@@ -1214,7 +1231,7 @@ defmodule Commonplace.Store.CommitStore do
     result
   end
 
-  defp recover_cubdb(name, path, trust_side_store, pending_imports) do
+  defp recover_cubdb(name, path, trust_side_store, pending_imports, invariant_dispatcher) do
     archive_corrupt_db(path)
 
     {:ok, db} =
@@ -1224,7 +1241,7 @@ defmodule Commonplace.Store.CommitStore do
         auto_compact: true
       )
 
-    ready(name, db, trust_side_store, pending_imports)
+    ready(name, db, trust_side_store, pending_imports, invariant_dispatcher)
   end
 
   @impl true
@@ -1262,10 +1279,7 @@ defmodule Commonplace.Store.CommitStore do
           warn_if_non_system_cas(commit, :snapshot_cas)
           commit = maybe_sign_commit(commit)
 
-          CubDB.put_multi(state.db, [
-            {{:commit, commit.id}, commit},
-            {{:latest, doc_uuid}, commit.id}
-          ])
+          put_latest(state, doc_uuid, commit.id, :snapshot_cas, [{{:commit, commit.id}, commit}])
 
           :telemetry.execute(
             [:commonplace, :commit, :create],
@@ -1310,9 +1324,8 @@ defmodule Commonplace.Store.CommitStore do
 
       case CubDB.get(state.db, {:latest, commit.doc_uuid}) do
         latest_id when latest_id == commit.parent_id ->
-          CubDB.put_multi(state.db, [
-            {{:commit, commit.id}, commit},
-            {{:latest, commit.doc_uuid}, commit.id}
+          put_latest(state, commit.doc_uuid, commit.id, :prebuilt_cas, [
+            {{:commit, commit.id}, commit}
           ])
 
           :telemetry.execute(
@@ -1355,18 +1368,13 @@ defmodule Commonplace.Store.CommitStore do
               # local_write_gate_check/2).
               case local_write_gate_check(commit, state) do
                 :ok ->
-                  rows =
+                  extra_rows =
                     case genesis do
                       %Commit{} = g -> [{{:commit, g.id}, g}]
                       nil -> []
-                    end ++
-                      [
-                        {{:commit, commit.id}, commit},
-                        {{:latest, commit.doc_uuid}, commit.id}
-                      ]
+                    end ++ [{{:commit, commit.id}, commit}]
 
-                  CubDB.put_multi(state.db, rows)
-                  :ok
+                  put_latest(state, commit.doc_uuid, commit.id, :put_built_commit, extra_rows)
 
                 {:error, _reason} = error ->
                   error
@@ -1508,7 +1516,7 @@ defmodule Commonplace.Store.CommitStore do
 
   @impl true
   def handle_call({:set_latest, doc_uuid, commit_id}, _from, state) do
-    CubDB.put(state.db, {:latest, doc_uuid}, commit_id)
+    put_latest(state, doc_uuid, commit_id, :set_latest)
     {:reply, :ok, state}
   end
 
@@ -1965,12 +1973,15 @@ defmodule Commonplace.Store.CommitStore do
   defp do_store_imported(commit, state) do
     case CubDB.get(state.db, {:latest, commit.doc_uuid}) do
       nil ->
-        CubDB.put_multi(state.db, [
-          {{:commit, commit.id}, commit},
-          {{:latest, commit.doc_uuid}, commit.id}
+        put_latest(state, commit.doc_uuid, commit.id, :imported_genesis, [
+          {{:commit, commit.id}, commit}
         ])
 
       _existing_latest ->
+        # No head advance happens on this branch, so it deliberately does
+        # NOT go through the choke: the commit is persisted as a sibling
+        # off a shared ancestor and `:latest` is left where it was. An
+        # advance dispatched here would alarm on a state nothing promoted.
         CubDB.put(state.db, {:commit, commit.id}, commit)
     end
 
@@ -2156,6 +2167,61 @@ defmodule Commonplace.Store.CommitStore do
   # server-serialized path just calls it and persists inline (already
   # running inside this GenServer's handle_call, so no extra CAS is
   # needed — the mailbox itself is the serialization).
+  # ── THE R1 CHOKE (CX-jfok) ───────────────────────────────────────────
+  #
+  # The ONE function in this codebase that writes `{:latest, doc_uuid}`.
+  # Every head advance — every one, from any handler, on any path —
+  # funnels through here. A NEW head-advance site MUST call this rather
+  # than writing the pointer itself, and that is not a convention: the
+  # source-scan test in
+  # `test/commonplace/store/invariant_choke_test.exs` reads this file and
+  # fails on any `{:latest, _}` write outside this function.
+  #
+  # Why a choke and not a list of call sites: per the 2026-08-05
+  # resting-state invariants design (§4 build-shape item 2), an
+  # enumeration of promoters is a claim that rots silently — "exactly N
+  # sites" is true when counted and a further one arrives as silence. A
+  # future promoter inherits validation by construction, the same move
+  # Gate A made.
+  #
+  # `extra_rows` (commit rows, and the piggy-backed genesis row on the
+  # paths that mint one) are written in the SAME `put_multi` as the head
+  # pointer. That atomicity is the store's standing contract (see the
+  # moduledoc): a commit row and the advance that promotes it land
+  # together or not at all. Callers must therefore pass their rows here
+  # rather than writing them separately around this call.
+  #
+  # The dispatch is a fire-and-forget cast to a NAME, deliberately: it is
+  # the only thing added to the synchronous write path, it must never
+  # raise into it, and it must never wait. Alarm-mode validation runs
+  # out-of-GenServer and post-advance (§7 R2). Block-promotion, when it
+  # exists, does NOT belong here in this shape — see
+  # `Commonplace.Invariants.Dispatcher`'s moduledoc on R9.
+  defp put_latest(state, doc_uuid, commit_id, source, extra_rows \\ []) do
+    CubDB.put_multi(state.db, extra_rows ++ [{{:latest, doc_uuid}, commit_id}])
+    dispatch_advance(state, doc_uuid, commit_id, source)
+    :ok
+  end
+
+  defp dispatch_advance(%{invariant_dispatcher: nil}, _doc_uuid, _commit_id, _source), do: :ok
+
+  defp dispatch_advance(%{invariant_dispatcher: dispatcher}, doc_uuid, commit_id, source) do
+    # `GenServer.cast/2` to an unregistered name is already a no-op, and
+    # to a live one it never blocks. The rescue/catch is for the residue:
+    # a `:global`/`:via` tuple whose registry is down raises, and a
+    # head-advance must not fail because the alarm's mailbox is missing.
+    GenServer.cast(dispatcher, {:advance, %{doc_uuid: doc_uuid, commit_id: commit_id, source: source}})
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  # A store started before this field existed (or by a hand-rolled state
+  # map in a test) simply does not dispatch.
+  defp dispatch_advance(_state, _doc_uuid, _commit_id, _source), do: :ok
+
   defp do_write_commit(verb, state, doc_uuid, update, parent_id, metadata, opts) do
     built = CommitBuilder.build(state.db, doc_uuid, update, parent_id, metadata, opts)
 
@@ -2167,17 +2233,13 @@ defmodule Commonplace.Store.CommitStore do
       :ok ->
         {_, persist_ns} =
           timed(fn ->
-            rows =
+            extra_rows =
               case built.genesis do
                 %Commit{} = g -> [{{:commit, g.id}, g}]
                 nil -> []
-              end ++
-                [
-                  {{:commit, built.commit.id}, built.commit},
-                  {{:latest, doc_uuid}, built.commit.id}
-                ]
+              end ++ [{{:commit, built.commit.id}, built.commit}]
 
-            CubDB.put_multi(state.db, rows)
+            put_latest(state, doc_uuid, built.commit.id, :write_commit, extra_rows)
           end)
 
         emit_write_cpu(verb, doc_uuid, built.build_ns, built.sign_ns, 0, persist_ns)

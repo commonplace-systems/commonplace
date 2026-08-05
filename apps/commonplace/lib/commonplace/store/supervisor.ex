@@ -53,6 +53,10 @@ defmodule Commonplace.Store.Supervisor do
       periodic sweep interval (see that module's moduledoc); pass
       `:infinity` to disable the sweep (useful for tests asserting on
       notification-only behavior).
+    * `:invariant_dispatcher` — CX-jfok: the registered name CommitStore's
+      head-advance choke casts to. Omitting it leaves CommitStore's own
+      default (`Commonplace.Invariants.Dispatcher`) in place; tests inject
+      a probe process name here.
   """
   def start_link(opts) do
     name = Keyword.get(opts, :name, __MODULE__)
@@ -73,12 +77,20 @@ defmodule Commonplace.Store.Supervisor do
           :error -> []
         end
 
+    commit_store_opts =
+      [
+        data_dir: data_dir,
+        name: commit_store_name,
+        trust_side_store: trust_side_store_name,
+        pending_imports: pending_imports_name
+      ] ++
+        case Keyword.fetch(opts, :invariant_dispatcher) do
+          {:ok, dispatcher} -> [invariant_dispatcher: dispatcher]
+          :error -> []
+        end
+
     children = [
-      {CommitStore,
-       data_dir: data_dir,
-       name: commit_store_name,
-       trust_side_store: trust_side_store_name,
-       pending_imports: pending_imports_name},
+      {CommitStore, commit_store_opts},
       {TrustSideStore,
        name: trust_side_store_name,
        commit_store: commit_store_name,
