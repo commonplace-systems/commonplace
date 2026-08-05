@@ -5,14 +5,17 @@ that are **known** but **deferred**. Anything listed here is known-broken or
 known-incomplete. The absence of a gap in the main codebase does NOT imply
 it's working — only that nobody has filed it yet.
 
-**Last updated:** 2026-08-05 — ⚠️ PARTIAL UPDATE ONLY. I verified and
-revised the entries that 2026-08-05's work directly touched (I1, I3, and
-new I4) and added the cross-references below. **Every other entry still
-carries its 2026-04-10 state and has NOT been re-checked against the
-code** — four months of drift, so treat an unrevised entry as a claim
-about April, not about now. Saying which parts were verified is the
-point: a doc that reads as uniformly current when only part of it is
-re-checked is worse than one that admits its scope.
+**Last updated:** 2026-08-05 (second pass, later same day) — ⚠️ STILL A
+PARTIAL UPDATE. Re-verified and revised only the entries that
+2026-08-05's work directly touched: **I1** (the runtime half is now
+closed too), **I4** (new measured consequence + the app-scope fix), and
+the bead cross-references below. **I3 was revised earlier the same day.
+Every other entry still carries its 2026-04-10 state and has NOT been
+re-checked against the code** — four months of drift, so treat an
+unrevised entry as a claim about April, not about now. Saying which
+parts were verified is the point: a doc that reads as uniformly current
+when only part of it is re-checked is worse than one that admits its
+scope.
 
 **Gaps found 2026-08-05 that live in beads rather than here** (filed
 with measurements; listed so this doc points at them rather than
@@ -35,6 +38,17 @@ silently omitting them):
   Runtime-verified 2026-08-05; the live corpus has ZERO violations, so
   these are reproducible-in-tests but have not yet happened to real
   data.
+- **CX-r97r / CX-g8s9 — CLOSED 2026-08-05, and listed here to STOP a
+  wrong inference.** The whole-blob-JSON-in-a-CRDT-text pattern is
+  unsafe under BOTH merge and concurrency. The CONCURRENCY half is now
+  fixed *for meta docs* (`World.merge_meta/5` is a compare-and-swap
+  read-modify-write, and `World.update_meta/5` recomputes the caller's
+  modification on every retry) — concurrent bot-note appends no longer
+  lose or corrupt. **That fix does NOT touch CX-o3ar.** `Bd.Schemas`
+  writes tickets through a different path, and no merge path consults
+  any of this. Do not read "the append race is fixed" as "whole-blob
+  JSON is safe now": the merge-side exposure above stands unchanged, as
+  does the O(n)-per-append cost of rewriting a whole list per write.
 
 ## How to use this doc
 
@@ -459,6 +473,36 @@ a pass catching modules present in `_build` but never bundled.
 Narrow coverage reported in complete language is worse than no check —
 the operator comes away holding positive evidence for a false belief.
 
+**UPDATE (later 2026-08-05) — the RUNTIME half is now closed too
+(CX-vknn, @4249503).** There were always two nets: `bin/check-mcp-fresh`
+at deploy time, and `Commonplace.VersionHandshake` at MCP *session
+start*. Widening the script left the handshake still sampling **6**
+fixed sentinel modules while printing "N of 6 probed modules differ" —
+the same disease in the sibling, and the reason it was filed separately
+rather than fixed at the same time was real: the handshake probes a
+REMOTE node, and `module_info/1` FORCE-LOADS there, so enumerating
+hundreds would have force-loaded hundreds on a live serve.
+
+The unblocking primitives came from `bin/cp-verify-deploy`:
+`:code.is_loaded/1` (a code-server query) and
+`:erlang.get_module_info/2` (a BIF reading the already-resident record).
+Neither dispatches through the probed module, so neither can auto-load
+it. Coverage is now 6 → **423 modules across all 6 umbrella apps**, in
+ONE rpc round trip, and non-perturbation was proven by CONTROL rather
+than argument: `:code.all_loaded` length on the live serve was **660
+before and 660 after**.
+
+Two details worth keeping:
+
+- It caught a real skew on its first live run — exactly one differing
+  module, `VersionHandshake` **itself**, which the old sentinel list was
+  structurally incapable of seeing. A check that cannot see itself is
+  the blind spot worth closing first.
+- A clean result now prints a one-line coverage statement instead of
+  nothing. **A passing check that prints nothing is this same defect
+  wearing silence** — the reader infers "everything matches" from an
+  absence of output.
+
 <a id="i2"></a>
 ### I2. xmerl code path handling for in-place dev
 
@@ -559,8 +603,40 @@ Two consequences, both measured rather than reasoned:
    (@40ca99f), which reads load state with `:code.is_loaded/1` only,
    compares md5 for LOADED modules exclusively, and reports the rest as
    NOT VERIFIED rather than folding them into a match count.
+   **Widened @098acd6** — it had swept only the `commonplace` app, so
+   changed modules in `commonplace_bots` reported as "not a module of
+   the commonplace app" for two consecutive deploys. Now discovers every
+   umbrella app from `apps/`: **423 modules across 6 apps** (a typical
+   live reading: 87 loaded, 336 NOT VERIFIED).
+
+3. **⚠️ AN RPC TO AN UNLOADED MODULE IS A WRITE, NOT A READ — the
+   consequence that keeps biting.** Because the code path is the working
+   tree, an `:erpc`/`:rpc` to a module the serve has not loaded yet
+   **force-loads YOUR CURRENT WORKING TREE's version into the live
+   node** — uncommitted code included, and functions that did not exist
+   at deploy time included. Measured 2026-08-05: a probe called
+   `VersionHandshake.resident_digest/1` on the live serve and it
+   *worked*, on a serve deployed before that function existed, because
+   the serve helped itself to the new beam off disk.
+
+   Three sub-consequences, the third being the one that recurs:
+   a probe can silently change what the live serve executes; it can
+   destroy the very condition being tested (the serve keeps upgrading
+   past the older-serve state you wanted to exercise); and **any
+   "LOADED, md5 matches" claim about a module your own probe just
+   touched is circular.** That last error was made twice in one day by
+   two independent routes, the second time without recognising it —
+   which is why the rule is mechanical rather than a matter of care.
+
+   **Rule (now in the repo's `CLAUDE.md`, under Key patterns):** check
+   `:code.is_loaded/1` first; if it is false, treat calling that module
+   as a write and decide deliberately. Prefer the non-perturbing
+   primitives. Prove a non-perturbation claim with a before/after
+   `:code.all_loaded` count, not an argument.
 
 `mix release` (embedded loading) is the real fix and is a jes decision.
+Note what it would close: under embedded loading none of the three
+consequences above exist, because nothing loads from disk at call time.
 
 ---
 
