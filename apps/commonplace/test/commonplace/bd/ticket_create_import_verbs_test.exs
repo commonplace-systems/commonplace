@@ -213,6 +213,48 @@ defmodule Commonplace.Bd.TicketCreateImportVerbsTest do
       assert reason =~ "id"
     end
 
+    test "for the jsonl form the denominator covers input LINES — an unparseable line is a named refusal",
+         %{root: root, signing_context: ctx} do
+      # The silent drop relocated to PARSE time: `parse_records/1`
+      # dutifully reports per-line failures, and if the verb discards
+      # them the malformed line never enters `declared_ids` at all. The
+      # union invariant then holds VACUOUSLY — "every input accounted"
+      # quietly degrades into "every input we could parse accounted",
+      # which is exactly what ruling (b) forbids.
+      jsonl =
+        [
+          Jason.encode!(record("CX-line-a")),
+          "{this is not json",
+          Jason.encode!(record("CX-line-c"))
+        ]
+        |> Enum.join("\n")
+
+      assert {:ok, :tree_mutation, r} =
+               ViewActionDispatch.dispatch("ticket_import", %{
+                 args: %{"jsonl" => jsonl},
+                 signing_context: ctx,
+                 source: "test"
+               })
+
+      # THREE input lines, not two surviving records.
+      assert r.declared == 3
+      assert length(r.declared_ids) == 3
+      assert r.unaccounted == []
+
+      # The bad line is refused BY NAME, carrying its line index, and it
+      # is in the declared set it was refused against.
+      assert [%{id: bad_id, reason: reason}] = r.refused
+      assert bad_id =~ "line 1"
+      assert bad_id in r.declared_ids
+      assert reason =~ "JSON" or reason =~ "json"
+
+      # Both good lines still landed.
+      landed_ids = Enum.map(r.landed, & &1.id) |> Enum.sort()
+      assert landed_ids == ["CX-line-a", "CX-line-c"]
+      assert {:ok, _} = Issue.show(root, "CX-line-a")
+      assert {:ok, _} = Issue.show(root, "CX-line-c")
+    end
+
     test "a WRITE that blows up mid-batch is a named refusal, not a lost batch report", %{
       root: root,
       signing_context: ctx

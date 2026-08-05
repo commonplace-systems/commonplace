@@ -843,9 +843,10 @@ defmodule Commonplace.ViewActionDispatch do
   defp do_dispatch("ticket_import", %{args: args} = context) when is_map(args) do
     store = Map.get(context, :store) || CommitStoreClient
 
-    with {:ok, records} <- import_records(args),
+    with {:ok, records, parse_refusals} <- import_records(args),
          {:ok, root_uuid} <- resolve_bd_root(context) do
-      {:ok, :tree_mutation, run_import_batch(records, root_uuid, store, signing_opts(context))}
+      {:ok, :tree_mutation,
+       run_import_batch(records, parse_refusals, root_uuid, store, signing_opts(context))}
     else
       {:error, reason} when is_binary(reason) -> {:error, reason}
       {:error, reason} -> {:error, "ticket_import failed: #{inspect(reason)}"}
@@ -1040,14 +1041,43 @@ defmodule Commonplace.ViewActionDispatch do
   @spec import_allow_posture() :: [atom()]
   def import_allow_posture, do: @import_allow_posture
 
-  defp import_records(%{"records" => records}) when is_list(records), do: {:ok, records}
+  # Returns `{:ok, records, parse_refusals}`. For the `records` form
+  # there is nothing to parse, so there are never any parse refusals —
+  # the caller supplied decoded maps and every one of them is a declared
+  # input already.
+  defp import_records(%{"records" => records}) when is_list(records), do: {:ok, records, []}
 
+  # For the `jsonl` form the DECLARED INPUT IS THE LINE, not the record
+  # that survived parsing. `parse_records/1` reports per-line failures;
+  # discarding them made the union invariant hold VACUOUSLY — a
+  # malformed line never entered `declared_ids`, so "every input
+  # accounted for" silently meant "every input we could parse accounted
+  # for". That is the same silent drop ruling (b) forbids, just moved
+  # earlier than the gate. Each parse failure becomes a NAMED refusal,
+  # in the same shape as an id-less record's, and enters the
+  # denominator.
   defp import_records(%{"jsonl" => jsonl}) when is_binary(jsonl) do
-    {records, _parse_errors} = Commonplace.Bd.Importer.parse_records(jsonl)
-    {:ok, records}
+    {records, parse_errors} = Commonplace.Bd.Importer.parse_records(jsonl)
+    {:ok, records, Enum.map(parse_errors, &parse_refusal/1)}
   end
 
   defp import_records(_), do: {:error, "ticket_import requires args map with records (or jsonl)"}
+
+  defp parse_refusal({line, {:bad_json, detail}}) do
+    %{line: line, id: "<line #{line}: bad json>", reason: "cannot parse line as JSON: #{detail}"}
+  end
+
+  defp parse_refusal({line, :malformed_line}) do
+    %{
+      line: line,
+      id: "<line #{line}: not a JSON object>",
+      reason: "line parsed as JSON but is not an object"
+    }
+  end
+
+  defp parse_refusal({line, other}) do
+    %{line: line, id: "<line #{line}: unparseable>", reason: "cannot parse line: #{inspect(other)}"}
+  end
 
   # RULED reporting shape (CX-6cz3, ruling (b) + boss's denominator
   # rider): the batch DECLARES its expected-landed set — the declared
@@ -1057,12 +1087,19 @@ defmodule Commonplace.ViewActionDispatch do
   # REFUSED ∪ NOOP must equal the declared input set. A refused record
   # is a named TODO, never a smaller denominator, and a refusal on
   # record N does NOT abort the batch.
-  defp run_import_batch(records, root_uuid, store, opts) do
+  # `parse_refusals` are inputs that never became records at all (see
+  # `import_records/1`). They are seeded into BOTH the denominator and
+  # `refused` before the first record is touched, so a line that could
+  # not be parsed is a named TODO exactly like a record the gate turned
+  # down.
+  defp run_import_batch(records, parse_refusals, root_uuid, store, opts) do
     indexed = Enum.with_index(records)
-    declared_ids = Enum.map(indexed, fn {record, idx} -> declared_id(record, idx) end)
+    declared_ids = declared_list(records, parse_refusals)
+
+    seed = {[], parse_refusals |> Enum.map(&Map.take(&1, [:id, :reason])) |> Enum.reverse(), []}
 
     {landed, refused, noop} =
-      Enum.reduce(indexed, {[], [], []}, fn {record, idx}, acc ->
+      Enum.reduce(indexed, seed, fn {record, idx}, acc ->
         import_one(record, idx, root_uuid, store, opts, acc)
       end)
 
@@ -1083,6 +1120,36 @@ defmodule Commonplace.ViewActionDispatch do
       unaccounted:
         MapSet.difference(MapSet.new(declared_ids), accounted) |> MapSet.to_list() |> Enum.sort()
     }
+  end
+
+  # The declared input set, IN INPUT ORDER. Parse refusals carry the
+  # line they failed on, and the surviving records are in line order, so
+  # walking the line numbers interleaves the two back into the original
+  # sequence — a 500-line report reads in the order the file did rather
+  # than putting all the casualties at the top. With no parse refusals
+  # (the `records` form) this is exactly `declared_id/2` over the
+  # records, unchanged.
+  defp declared_list(records, []), do: records |> Enum.with_index() |> Enum.map(fn {r, i} -> declared_id(r, i) end)
+
+  defp declared_list(records, parse_refusals) do
+    by_line = Map.new(parse_refusals, fn r -> {r.line, r.id} end)
+    total = length(records) + length(parse_refusals)
+
+    {ids, _leftover} =
+      Enum.reduce(0..(total - 1)//1, {[], records}, fn line, {acc, rest} ->
+        case Map.fetch(by_line, line) do
+          {:ok, id} ->
+            {[id | acc], rest}
+
+          :error ->
+            case rest do
+              [record | tail] -> {[declared_id(record, line) | acc], tail}
+              [] -> {acc, []}
+            end
+        end
+      end)
+
+    Enum.reverse(ids)
   end
 
   # A record with no usable id still gets a NAME in the denominator —
