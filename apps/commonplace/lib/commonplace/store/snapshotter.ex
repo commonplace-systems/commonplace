@@ -83,7 +83,25 @@ defmodule Commonplace.Store.Snapshotter do
   and intentionally left unchanged.
   """
 
-  @snapshotter_version 1
+  # CX-2xn1 (2026-08-05): bumped 1 -> 2. `Yelixer.Doc.snapshot_update/1`
+  # used to replay only ONE storage plane per named type, silently
+  # destroying the other on a doc that had both a Y.Map key plane and an
+  # ordered sequence plane under one name. It now replays both. Bytes
+  # for SINGLE-plane docs are unchanged (each added plane-replay is a
+  # no-op on an empty plane, pinned by
+  # apps/yelixer/test/snapshot_single_plane_bytes_test.exs), so the
+  # pragmatic case for not bumping was that no mixed-doc snapshot bytes
+  # are known to exist anywhere — the one armed doc in the live store
+  # never snapshotted while mixed.
+  #
+  # Bumped anyway, deliberately: this tag's contract is about the set of
+  # POSSIBLE inputs to the encoder, not about which inputs happen to
+  # have occurred. "No such bytes exist" is a claim about the past, and
+  # a version tag must not depend on one — the same encoder version
+  # producing different bytes for the same doc is precisely the silent
+  # aliasing the tag exists to prevent. Old snapshots keep version 1 and
+  # stay valid; cross-version bridge composition is designed for this.
+  @snapshotter_version 2
 
   @doc "The current snapshotter version tag (binds into the commit id)."
   def snapshotter_version, do: @snapshotter_version

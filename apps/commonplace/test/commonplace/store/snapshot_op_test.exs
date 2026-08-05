@@ -76,12 +76,12 @@ defmodule Commonplace.Store.SnapshotOpTest do
       assert snapshot.metadata[:snapshot_parents] == [genesis.id]
     end
 
-    test "snapshot carries snapshotter_version: 1", %{store: store} do
+    test "snapshot carries snapshotter_version: 2", %{store: store} do
       uuid = "snap-version"
       seed_doc_with_commits(store, uuid, 1, ["a"])
 
       {:ok, snapshot} = CommitStore.snapshot(store, uuid)
-      assert snapshot.metadata[:snapshotter_version] == 1
+      assert snapshot.metadata[:snapshotter_version] == 2
     end
 
     test "snapshot carries a derivation_map", %{store: store} do
@@ -147,9 +147,13 @@ defmodule Commonplace.Store.SnapshotOpTest do
 
       {:ok, snapshot} = CommitStore.snapshot(store, uuid)
 
-      # Build an identical commit but with a different snapshotter_version
+      # Build an identical commit but with a different snapshotter_version.
+      # CX-2xn1: this MUST NOT equal the current @snapshotter_version, or
+      # the test asserts that a commit id differs from itself and passes
+      # vacuously. It read 2 while the current version was 1; the CX-2xn1
+      # bump to 2 would have silently hollowed it out.
       # and verify the id changes.
-      alt_metadata = Map.put(snapshot.metadata, :snapshotter_version, 2)
+      alt_metadata = Map.put(snapshot.metadata, :snapshotter_version, 999)
       alt = Commit.new(snapshot.doc_uuid, snapshot.update, snapshot.parent_id, alt_metadata)
 
       refute alt.id == snapshot.id
@@ -258,7 +262,7 @@ defmodule Commonplace.Store.SnapshotOpTest do
       # the metadata scaffolding is still present.
       assert snapshot.metadata[:kind] == :snapshot
       assert snapshot.metadata[:snapshot_parents] == [genesis.id]
-      assert snapshot.metadata[:snapshotter_version] == 1
+      assert snapshot.metadata[:snapshotter_version] == 2
       # Derivation map may be empty for a genesis-only snapshot (no items
       # to derive), but it must be a map.
       assert is_map(snapshot.metadata[:derivation_map])
