@@ -44,6 +44,8 @@ dispatcher_name = :"bench_invariant_dispatcher_#{System.unique_integer([:positiv
 
 {:ok, task_sup} = Task.Supervisor.start_link([])
 
+bd_root = UUID.uuid4()
+
 dispatcher_pid =
   if dispatch? do
     {:ok, pid} =
@@ -53,7 +55,7 @@ dispatcher_pid =
         task_supervisor: task_sup,
         debounce_ms: String.to_integer(System.get_env("BENCH_DEBOUNCE_MS") || "5"),
         min_interval_ms: String.to_integer(System.get_env("BENCH_MIN_INTERVAL_MS") || "10"),
-        context_fn: fn -> {:ok, %{root_uuid: "bench-root", store: store}} end
+        context_fn: fn -> {:ok, %{root_uuid: bd_root, store: store}} end
       )
 
     pid
@@ -75,6 +77,28 @@ store_opts =
 
 :rand.seed(:exsss, {42, 42, 42})
 payload = :rand.bytes(100)
+
+# Seed a REAL bd corpus so `dispatch=on` measures the store under a
+# validation run that actually reads and decodes tickets. Without it the
+# engine would enumerate an empty corpus and the "enabled" column would
+# measure the dispatch plumbing only — a comparison that cannot go red.
+if dispatch? do
+  tickets = String.to_integer(System.get_env("BENCH_TICKETS") || "60")
+
+  Commonplace.Store.CommitStore.create_commit(
+    store,
+    bd_root,
+    Yelixer.Encoding.encode_update(Commonplace.Tree.Schema.new_schema()),
+    nil
+  )
+
+  for i <- 1..tickets do
+    {:ok, _issue, _} =
+      Commonplace.Bd.Issue.create(bd_root, %{title: "bench ticket #{i}"}, store)
+  end
+
+  IO.puts("seeded #{tickets} bd tickets under #{bd_root}")
+end
 
 report = fn mode, samples ->
   sorted = Enum.sort(samples)
