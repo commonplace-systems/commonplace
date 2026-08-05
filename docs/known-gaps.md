@@ -5,8 +5,36 @@ that are **known** but **deferred**. Anything listed here is known-broken or
 known-incomplete. The absence of a gap in the main codebase does NOT imply
 it's working — only that nobody has filed it yet.
 
-**Last updated:** 2026-04-10 (post architecture pass — see "Closed" section
-for items fixed in that pass).
+**Last updated:** 2026-08-05 — ⚠️ PARTIAL UPDATE ONLY. I verified and
+revised the entries that 2026-08-05's work directly touched (I1, I3, and
+new I4) and added the cross-references below. **Every other entry still
+carries its 2026-04-10 state and has NOT been re-checked against the
+code** — four months of drift, so treat an unrevised entry as a claim
+about April, not about now. Saying which parts were verified is the
+point: a doc that reads as uniformly current when only part of it is
+re-checked is worse than one that admits its scope.
+
+**Gaps found 2026-08-05 that live in beads rather than here** (filed
+with measurements; listed so this doc points at them rather than
+silently omitting them):
+
+- **CX-gq5o** — the serve lazily loads 173/249 modules from the working
+  tree; "deployed" has no single answer. Written up as I4 below.
+- **CX-jhvn** — bd and the substrate `/bd/` have diverged
+  BIDIRECTIONALLY since the 2026-07-18 cutover (10 substrate-only, 28
+  live bd-only). `bd ready` is an incomplete view of the work; neither
+  store alone answers "what is the work?".
+- **CX-hk1z / CX-di2m / CX-o3ar** — the ticket semantic gates (cycle,
+  close-freeze, ref-typed) are enforced ONLY on the local write path.
+  No merge path consults them, so two individually-legal edits can
+  merge into an illegal state; and where both edits hit the same
+  whole-blob JSON doc the result is unparseable. ⚠️ "Closed is forever"
+  is currently enforced BY ACCIDENT — corruption stands in for the
+  guarantee, and a storage change made for unrelated reasons would
+  withdraw it silently. See the warning at `Bd.Schemas.write_text_doc/4`.
+  Runtime-verified 2026-08-05; the live corpus has ZERO violations, so
+  these are reproducible-in-tests but have not yet happened to real
+  data.
 
 ## How to use this doc
 
@@ -404,11 +432,32 @@ ZWJ family emoji, 1 for a flag emoji, 4 for both precomposed and decomposed
 ## Infrastructure / workflow gaps
 
 <a id="i1"></a>
-### I1. MCP escript rebuild workflow — MITIGATED 2026-04-10
+### I1. MCP escript rebuild workflow — RE-OPENED then MITIGATED FOR REAL 2026-08-05
 
-**Status:** MITIGATED via convenience script (2026-04-10).
-**Commit:** 2f989e8 — `bin/rebuild-mcp`
-**See:** Closed section below for the full resolution.
+**Status:** now mitigated by a CHECK, not just a script.
+**Commits:** 2f989e8 (`bin/rebuild-mcp`), 879d889 (`bin/check-mcp-fresh`,
+CX-o9kj), 62b0f66 (widened coverage, CX-o1b9)
+
+**Why the 2026-04-10 "MITIGATED" was wrong**, and it is worth stating
+because the same reasoning will recur: a convenience script is not a
+mitigation. `bin/rebuild-mcp` existed, its own header warned about this
+exact trap, and deploy #28 (2026-08-05) skipped it anyway — leaving the
+escript two days stale while carrying a CRDT *authoring* fix, on a path
+that authors writes. The reason generalises: every OTHER step of that
+deploy had a verifiable output (assert the sname, confirm the pid
+changed, poll for HTTP 200) and this one had none. **A step with no
+check attached is the one that evaporates under load.**
+
+`bin/check-mcp-fresh` attaches one. Its first version then reproduced
+the same disease in miniature — it sampled 9 hardcoded probe modules
+while printing "escript is FRESH" in complete language, and reported
+FRESH for a deploy whose changed module was not on the list. Coverage is
+now derived from what the escript actually carries (553+ modules), plus
+a pass catching modules present in `_build` but never bundled.
+
+**Lesson to carry, not the fix:** state what a check actually covered.
+Narrow coverage reported in complete language is worse than no check —
+the operator comes away holding positive evidence for a false belief.
 
 <a id="i2"></a>
 ### I2. xmerl code path handling for in-place dev
@@ -451,6 +500,67 @@ error).
 Nothing fragile here yet, but if future devs start explicitly managing
 cookies for security reasons, the hot-reload workflow documented in the
 gap entries above will break and need rework.
+
+**UPDATE 2026-08-05 — THIS MATERIALISED, and the prediction was right in
+SHAPE but wrong in CAUSE.** The predicted symptom is exactly what
+happened: `Node.connect/1` returning `false` with no error. The trigger
+was not cookie rotation. jes authorised binding epmd and BEAM
+distribution to loopback; the serve keeps a SHORT name
+(`commonplace_dev@commonplace`), and this host has no `/etc/hosts` entry
+for `commonplace`, so the native resolver answers with the machine's
+real interface addresses (including its PUBLIC IP). Clients then query
+epmd at an address it does not listen on, get `noport`, and conclude
+nothing is running.
+
+It disguised itself badly: the MCP escript printed **"no running
+`commonplace serve` node found"** against a serve that was up and
+answering HTTP 200 — a name-resolution fault presenting as an MCP bug,
+with the error text pointing at the wrong component.
+
+**Fixed** for MCP in `bin/commonplace-mcp` (@38e1ded), which exports
+`ERL_INETRC` + `ERL_EPMD_ADDRESS` before exec (both are read at VM boot,
+so setting them inside the escript would be too late). The mapping lives
+in-repo at `bin/erl_inetrc`. **Hand-rolled RPC probes must set
+`ERL_INETRC` themselves** or they fail the same way.
+
+⚠️ Two non-obvious rules are recorded in `bin/erl_inetrc`'s header,
+established by testing the whole matrix rather than the first plausible
+cause: the `{lookup, [file, dns]}` directive is REQUIRED, and both names
+must share ONE `{host, ...}` entry — two entries mapping the same
+address clobber each other, so ADDING a `localhost` line to a working
+file BREAKS `commonplace`.
+
+<a id="i4"></a>
+### I4. "Deployed" is not a well-defined state — the serve lazily loads from the working tree
+
+**Status:** open, measured
+**Beads:** CX-gq5o
+
+**Summary:**
+
+The serve runs `:code.get_mode() == :interactive` with its code path in
+the WORKING TREE's `_build/dev/lib`. Measured 2026-08-05: of the
+`commonplace` app's 249 modules, only ~76 are LOADED; ~173 are not.
+Unloaded modules will load **whatever is on disk when first called**, so
+the running system is a mixture of deploy-time code and present-tense
+disk, and the split is invisible.
+
+Two consequences, both measured rather than reasoned:
+
+1. **Anything that recompiles `_build/dev` changes what the live serve
+   will run.** Tested with a real beam-altering change: a targeted
+   `mix test` leaves the dev beam UNCHANGED (it compiles to
+   `_build/test`), while `mix run --no-start` CHANGES it. So targeted
+   test runs are safe on this axis; dev-env commands — including the
+   deploy verification probes themselves — are the hazard.
+2. **The old md5 zero-skew check could not fail for unloaded modules.**
+   `module_info/1` FORCE-LOADS on the remote, so it reported an
+   agreement it had just manufactured. Replaced by `bin/cp-verify-deploy`
+   (@40ca99f), which reads load state with `:code.is_loaded/1` only,
+   compares md5 for LOADED modules exclusively, and reports the rest as
+   NOT VERIFIED rather than folding them into a match count.
+
+`mix release` (embedded loading) is the real fix and is a jes decision.
 
 ---
 
