@@ -314,6 +314,23 @@ defmodule Commonplace.MCP do
         """)
 
         System.halt(1)
+
+      {:error, {:workspace_mismatch, serve_node, remote_dir, expected_dir}} ->
+        IO.puts(:stderr, """
+        commonplace_mcp: connected serve node serves a DIFFERENT workspace \
+        than expected.
+
+          connected node:     #{inspect(serve_node)}
+          serve's workspace:  #{inspect(remote_dir)}
+          expected workspace: #{inspect(expected_dir)}
+
+        This usually means <data_dir>/node_name points at an orphan serve
+        left running from a different workspace. Stop that serve (or fix
+        the node_name file) and start `commonplace serve` in this
+        workspace, then relaunch the MCP client.
+        """)
+
+        System.halt(1)
     end
   end
 
@@ -375,6 +392,7 @@ defmodule Commonplace.MCP do
 
           true ->
             with :ok <- connect(serve_node),
+                 :ok <- refuse_on_workspace_mismatch(serve_node, data_dir),
                  {:ok, root_uuid} <- read_root_uuid(data_dir) do
               # Propagate the discovered data_dir into the escript's
               # Application env so helpers that default to it
@@ -389,6 +407,89 @@ defmodule Commonplace.MCP do
         end
     end
   end
+
+  # CX-fml6 (discovery half), part 2: `read_node_name/1` trusts whatever
+  # `<data_dir>/node_name` says without checking that the node it names
+  # actually serves THIS workspace. In the 2026-07-10 incident, discovery
+  # pinned to an orphan serve node running from a DIFFERENT data dir
+  # (dogfood-mud) with stale in-memory code, and the escript RPC'd its
+  # work into the wrong workspace. This closes that gap: after connect/1
+  # succeeds, verify the remote node's own `:commonplace, :data_dir` app
+  # env agrees with the data_dir we discovered `serve_node` from.
+  #
+  # A MISMATCH is a hard refusal (consistent with the module's
+  # refuse-without-serve contract) — it's positive evidence we're
+  # talking to the wrong workspace. An UNVERIFIABLE result (rpc failure,
+  # nil on either side) is NOT treated the same as a mismatch: it is
+  # only absence of evidence — e.g. an older serve build that predates
+  # this check has no way to answer, and refusing to attach to it would
+  # break every existing deployment for no security gain. Unverifiable
+  # only warns and continues.
+  defp refuse_on_workspace_mismatch(serve_node, data_dir) do
+    case verify_same_workspace(serve_node, data_dir) do
+      :ok ->
+        :ok
+
+      {:error, {:workspace_mismatch, remote_dir, local_dir}} ->
+        {:error, {:workspace_mismatch, serve_node, remote_dir, local_dir}}
+
+      {:error, {:workspace_unverifiable, reason}} ->
+        IO.puts(:stderr, """
+        commonplace_mcp: could not verify that #{inspect(serve_node)} serves \
+        the expected workspace (#{reason}); proceeding without verification. \
+        If commands act on the wrong workspace, restart that serve on a \
+        build newer than CX-fml6.
+        """)
+
+        :ok
+    end
+  end
+
+  # Fetch the remote node's configured data_dir via RPC and compare it
+  # against the data_dir we discovered `serve_node` from. Both sides are
+  # `Path.expand/1`-ed before comparison so `/a/b` and `/a/b/` and
+  # relative-vs-absolute forms compare equal.
+  defp verify_same_workspace(serve_node, data_dir) do
+    remote_dir =
+      try do
+        :rpc.call(serve_node, Application, :get_env, [:commonplace, :data_dir], 5_000)
+      catch
+        kind, reason -> {:rpc_exception, {kind, reason}}
+      end
+
+    case remote_dir do
+      {:badrpc, reason} ->
+        {:error, {:workspace_unverifiable, "rpc failed: #{inspect(reason)}"}}
+
+      {:rpc_exception, reason} ->
+        {:error, {:workspace_unverifiable, "rpc raised: #{inspect(reason)}"}}
+
+      other ->
+        compare_workspace(other, data_dir)
+    end
+  end
+
+  @doc false
+  # Pure comparison, extracted for direct unit testing without needing
+  # distribution/RPC. `remote` is whatever the remote node's
+  # `Application.get_env(:commonplace, :data_dir)` returned (or nil);
+  # `local` is the data_dir this escript discovered `serve_node` from.
+  #
+  # nil on either side is "couldn't determine," never "matches" — an
+  # unset remote data_dir is not evidence of agreement.
+  def compare_workspace(nil, _local), do: {:error, {:workspace_unverifiable, "remote data_dir is nil"}}
+  def compare_workspace(_remote, nil), do: {:error, {:workspace_unverifiable, "local data_dir is nil"}}
+
+  def compare_workspace(remote, local) when is_binary(remote) and is_binary(local) do
+    if Path.expand(remote) == Path.expand(local) do
+      :ok
+    else
+      {:error, {:workspace_mismatch, remote, local}}
+    end
+  end
+
+  def compare_workspace(remote, _local),
+    do: {:error, {:workspace_unverifiable, "remote data_dir has unexpected shape: #{inspect(remote)}"}}
 
   # CX-11p5: escripts don't run config/runtime.exs, so the escript's
   # :mud_full_citizenship app-env defaults to `false` regardless of the

@@ -176,10 +176,93 @@ defmodule Commonplace.Application do
         # presence is used only as the "this node has a real workspace"
         # signal — `ensure_doc_manifests/1` itself doesn't need the root.
         ensure_mud_doc_manifests_if_workspace_present()
+
+        # CX-fml6 (discovery half): Mode-B parity with Mode A's node_name
+        # write. Mode A (`commonplace_cli`'s Serve, apps/commonplace_cli/lib/
+        # commonplace/cli/serve.ex) writes `<data_dir>/node_name` after
+        # `Node.start` and removes it on shutdown. Mode B (Phoenix-as-serve,
+        # `mix phx.server` with `--sname`) boots through this Application
+        # callback instead and, until now, wrote nothing — the same
+        # Mode-A/Mode-B parity trap as CX-nyvm's `bursar_on_boot` gap, where
+        # a Mode-B-only omission was invisible until something that
+        # depended on it (there: every move; here: MCP serve discovery)
+        # broke. Both boot paths must agree on what they publish.
+        maybe_write_node_name(data_dir)
+
         {:ok, pid}
 
       other ->
         other
+    end
+  end
+
+  @doc false
+  # See the CX-fml6 comment at the call site in `start/2` above for the
+  # Mode-A/Mode-B parity rationale. Extracted to a public function so it's
+  # directly testable (`mode_b_node_name_test.exs`) without booting the
+  # full application.
+  #
+  # Gated on the SAME signal `workspace_lock_children/1` uses
+  # (`:workspace_lock_on_boot`) — that flag already means "this process is
+  # a `commonplace serve` (Mode A or Mode B), not a test run / bare `mix
+  # run` / library embedding" — plus `Node.alive?/0`, since an unnamed
+  # node has no node name worth publishing for RPC discovery.
+  #
+  # Deliberately does NOT clean up on shutdown: unlike Mode A, Mode B has
+  # no reliable shutdown hook here to remove the file, and a stale file
+  # left behind by a killed/crashed Mode-B serve is exactly the case
+  # CX-fml6 Part 2 (MCP-side `verify_same_workspace/2`) exists to catch —
+  # the write side doesn't need to be perfect if the read side verifies.
+  #
+  # Must not be able to crash boot: a serve that cannot write a discovery
+  # hint file must still serve. Errors are caught and logged at :warning.
+  def maybe_write_node_name(data_dir) do
+    do_maybe_write_node_name(
+      data_dir,
+      Node.alive?(),
+      Application.get_env(:commonplace, :workspace_lock_on_boot, false),
+      Node.self()
+    )
+  end
+
+  # The gating + write decision, with `alive?`/`gate?`/`node_name` taken
+  # as explicit arguments rather than read live. This is what
+  # `mode_b_node_name_test.exs` exercises directly — it lets the "gate on
+  # AND node alive" branch be tested without the test suite itself
+  # starting real BEAM distribution (Node.start/Node.stop), which is out
+  # of bounds for this codebase's test process per the CX-fml6 execution
+  # constraints (starting/stopping nodes from a test can collide with a
+  # live serve on the same box). `maybe_write_node_name/1` above is the
+  # thin, non-testable wrapper that supplies the real values.
+  @doc false
+  def do_maybe_write_node_name(data_dir, alive?, gate?, node_name) do
+    if alive? and gate? do
+      path = Path.join(data_dir, "node_name")
+
+      try do
+        case File.write(path, Atom.to_string(node_name)) do
+          :ok ->
+            :ok
+
+          {:error, reason} ->
+            Logger.warning(
+              "Commonplace.Application: could not write #{path} (#{inspect(reason)}); " <>
+                "MCP serve discovery via <data_dir>/node_name will not find this node"
+            )
+
+            :ok
+        end
+      rescue
+        e ->
+          Logger.warning(
+            "Commonplace.Application: writing #{path} raised #{inspect(e)}; " <>
+              "MCP serve discovery via <data_dir>/node_name will not find this node"
+          )
+
+          :ok
+      end
+    else
+      :ok
     end
   end
 
