@@ -160,7 +160,16 @@ defmodule Commonplace.Bd.WriteGuard do
     end
   end
 
-  defp validate_needs_shape(needs, root_uuid) when is_list(needs) do
+  @doc """
+  Validates the SHAPE of a `needs` list — used both on the write path
+  (`check_ref_types/2`, above) and by `Commonplace.Bd.Invariants.ref_typed/3`
+  to re-judge RESTING state against the same rule, without restating
+  it. Made public (was `defp`) for exactly that second caller — kept
+  narrow: this is the one predicate `Invariants` needs, not a general
+  WriteGuard-internals export.
+  """
+  @spec validate_needs_shape(list(), String.t()) :: :ok | {:error, String.t()}
+  def validate_needs_shape(needs, root_uuid) when is_list(needs) do
     Enum.reduce_while(needs, :ok, fn entry, :ok ->
       case validate_need_entry(entry, root_uuid) do
         :ok -> {:cont, :ok}
@@ -169,7 +178,7 @@ defmodule Commonplace.Bd.WriteGuard do
     end)
   end
 
-  defp validate_needs_shape(_, _), do: {:error, "needs must be a list"}
+  def validate_needs_shape(_, _), do: {:error, "needs must be a list"}
 
   @need_entry_keys MapSet.new(["ticket", "repo"])
 
@@ -228,7 +237,14 @@ defmodule Commonplace.Bd.WriteGuard do
      "done_when must be \"manual\" or a map of exactly %{\"type\" => \"pr_merge\", \"target\" => <non-empty string>}"}
   end
 
-  defp validate_done_witness(list) when is_list(list) do
+  @doc """
+  Validates the SHAPE of a `done_witness` list — same rationale as
+  `validate_needs_shape/2`'s doc: made public narrowly so
+  `Commonplace.Bd.Invariants.ref_typed/3` can re-judge RESTING state
+  against this exact rule instead of restating it.
+  """
+  @spec validate_done_witness(list()) :: :ok | {:error, String.t()}
+  def validate_done_witness(list) when is_list(list) do
     if Enum.all?(list, &hex_cid?/1) do
       :ok
     else
@@ -236,7 +252,7 @@ defmodule Commonplace.Bd.WriteGuard do
     end
   end
 
-  defp validate_done_witness(_), do: {:error, "done_witness must be a list"}
+  def validate_done_witness(_), do: {:error, "done_witness must be a list"}
 
   defp hex_cid?(s) when is_binary(s) and byte_size(s) > 0, do: Regex.match?(~r/^[0-9a-f]+$/, s)
   defp hex_cid?(_), do: false
