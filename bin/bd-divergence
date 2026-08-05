@@ -1,0 +1,265 @@
+#!/usr/bin/env bash
+#
+# bd-divergence — measure how far the `bd` (Dolt-backed CLI) issue store
+# has drifted from the substrate `/bd/` ticket-DAG living inside the
+# CRDT workspace on the live serve.
+#
+# WHY THIS EXISTS (CX-jhvn)
+#
+# Since a 2026-07-18 cutover, tickets can be filed through either
+# surface and NOTHING reconciles them. On 2026-08-05 the divergence was
+# hand-measured once (substrate 256 / bd 790 / both 246 / substrate-only
+# 10 / bd-only 544 = 516 closed + 28 non-closed) and written down as
+# prose in a bead. Prose goes stale the moment anyone files a ticket on
+# either side, and a stale snapshot is exactly what let the divergence
+# hide for 2.5 weeks unnoticed. This script makes the measurement
+# REPEATABLE: run it any time, get the current numbers, not the ones
+# from whenever someone last happened to write them down.
+#
+# This is a REPORT, not a gate. It never blocks anything. It exits
+# non-zero ONLY when it could not measure — a live signal that the
+# divergence estimate itself cannot be trusted this run, never a
+# judgment about how much divergence was found.
+#
+# GOTCHA — `bd list --json` DEFAULTS TO 50 ROWS (verified 2026-08-05):
+# with no `-n`/`--all` flags it silently returns the first 50 issues and
+# says nothing about truncation. `bd list --json -n 2000 --all` was
+# hand-verified to return the full 790. Get this wrong and every count
+# downstream is wrong in a way that LOOKS fine — a plausible small
+# number, no error, no warning. That is worse than a crash. This script
+# always passes `-n 2000 --all` for exactly that reason; if `bd`'s
+# corpus ever exceeds 2000 rows this ARGV needs bumping (a `length ==
+# 2000 exactly` cross-check below flags that case rather than silently
+# under-counting again).
+#
+# `bd` is REPO-SCOPED — it resolves its Dolt database from cwd. This
+# script always runs it with cwd = PROJECT_DIR, never from /tmp or the
+# caller's cwd.
+#
+# SUBSTRATE SIDE — read-only, over BEAM distribution, via
+# `Commonplace.Bd.Issue.list(root, Commonplace.Store.CommitStoreClient)`
+# after `Commonplace.Workspace.root_uuid()` — called via `:erpc.call`
+# against the ALREADY-RUNNING live serve node. This script never starts,
+# stops, or writes to that node; it only connects a short-lived probe
+# node to it, exactly the way the MCP escript does
+# (`apps/commonplace_mcp/lib/commonplace_mcp.ex`, `connect/1`).
+#
+# HOSTNAME GOTCHA (found while building this script): the live serve's
+# node name is `commonplace_dev@commonplace`, but on this host
+# `/etc/hosts` maps the bare name `commonplace` to link-local IPv6
+# addresses the local epmd/dist listener (bound to 127.0.0.1 only, via
+# `-kernel inet_dist_use_interface {127,0,0,1}`) does not listen on —
+# so a naive `Node.connect/1` from a probe resolving DNS normally gets
+# a silent `pang`, indistinguishable from "serve is down". The fix is
+# an `ERL_INETRC` override, scoped to this script's own probe process
+# only, statically mapping `commonplace` -> 127.0.0.1 for that one
+# lookup. This does NOT touch /etc/hosts and has no effect outside the
+# probe subprocess.
+#
+# ONE PROBE NODE AT A TIME: two concurrent `mix run --no-start` probe
+# nodes have previously tripped a `:global` overlapping-partitions
+# disconnect against this same serve. This script takes a non-blocking
+# flock on its own lockfile so a second concurrent invocation fails
+# fast with a clear message instead of silently racing the first.
+#
+# Usage:
+#   bin/bd-divergence
+#
+# Env overrides (for testing / operating against a different serve):
+#   BD_DIVERGENCE_NODE   — serve node name (default commonplace_dev@commonplace)
+#   BD_DIVERGENCE_HOST   — short hostname to statically map to 127.0.0.1
+#                          in the probe's ERL_INETRC (default: derived
+#                          from BD_DIVERGENCE_NODE's host part)
+#
+# Exit codes:
+#   0 — measured successfully (regardless of how much divergence was found)
+#   1 — could not read the bd side (bd CLI missing/failed, or bad JSON)
+#   2 — could not read the substrate side (serve unreachable, root_uuid
+#       missing, or the erpc call itself failed) — NEVER computes a
+#       divergence figure in this case
+#   3 — could not even acquire the one-probe-at-a-time lock
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+
+SERVE_NODE="${BD_DIVERGENCE_NODE:-commonplace_dev@commonplace}"
+SERVE_HOST="${BD_DIVERGENCE_HOST:-${SERVE_NODE#*@}}"
+
+LOCK_FILE="$PROJECT_DIR/.bd-divergence.lock"
+TMP_DIR="$(mktemp -d)"
+cleanup() { rm -rf "$TMP_DIR"; }
+trap cleanup EXIT
+
+# --- one-probe-at-a-time guard ---------------------------------------
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+  echo "bd-divergence: another bd-divergence (or probe) run holds the lock at $LOCK_FILE — refusing to start a second concurrent probe node." >&2
+  exit 3
+fi
+
+# --- (1) bd side -------------------------------------------------------
+if ! command -v bd >/dev/null 2>&1; then
+  echo "bd-divergence: could not read the bd side — 'bd' CLI not found on PATH." >&2
+  exit 1
+fi
+
+BD_JSON="$TMP_DIR/bd.json"
+if ! ( cd "$PROJECT_DIR" && bd list --json -n 2000 --all >"$BD_JSON" 2>"$TMP_DIR/bd.err" ); then
+  echo "bd-divergence: could not read the bd side — 'bd list --json -n 2000 --all' failed:" >&2
+  cat "$TMP_DIR/bd.err" >&2
+  exit 1
+fi
+
+BD_COUNT="$(jq 'length' "$BD_JSON" 2>/dev/null || echo "")"
+if [ -z "$BD_COUNT" ] || ! [ "$BD_COUNT" -ge 0 ] 2>/dev/null; then
+  echo "bd-divergence: could not read the bd side — 'bd list --json' did not return a JSON array." >&2
+  exit 1
+fi
+if [ "$BD_COUNT" -eq 2000 ]; then
+  echo "bd-divergence: WARNING — bd list returned exactly 2000 rows, the requested cap. The bd corpus may have grown past 2000 and be silently truncated; bump -n in this script." >&2
+fi
+
+BD_TSV="$TMP_DIR/bd.tsv"
+jq -r '.[] | [.id, .status, .title] | @tsv' "$BD_JSON" >"$BD_TSV"
+
+# --- (2) substrate side + (3) diff + report, all in one elixir run ---
+# Both sides land in one process so the comparison logic (set ops on
+# ids) lives in one place instead of being re-derived in bash.
+PROBE_SCRIPT="$TMP_DIR/probe.exs"
+INETRC="$TMP_DIR/inetrc"
+
+cat >"$INETRC" <<EOF
+{lookup, [file, native]}.
+{host, {127,0,0,1}, ["$SERVE_HOST"]}.
+EOF
+
+cat >"$PROBE_SCRIPT" <<'ELIXIR'
+[bd_tsv_path, serve_node_str] =
+  System.argv() |> Enum.reject(&(&1 == "--"))
+serve_node = String.to_atom(serve_node_str)
+
+# Same fix as the MCP escript's connect/1 (CX-y6uc): a short-lived probe
+# node joining/leaving repeatedly can trip :global's overlapping-
+# partition heuristic against the long-running serve. Must be set
+# before Node.start.
+:application.set_env(:kernel, :prevent_overlapping_partitions, false)
+# Must match the serve's own -kernel inet_dist_use_interface flag
+# (both hermes and commonplace_dev launch with {127,0,0,1}) — otherwise
+# our outbound dist connection targets whatever interface the OS
+# resolver prefers for the peer hostname, not the loopback interface
+# the serve's dist listener is actually bound to.
+:application.set_env(:kernel, :inet_dist_use_interface, {127, 0, 0, 1})
+
+probe_name = :"bd_divergence_probe_#{:erlang.unique_integer([:positive])}@#{System.get_env("BD_DIVERGENCE_HOST", "commonplace")}"
+
+fail = fn msg ->
+  IO.puts(:stderr, "bd-divergence: could not read the substrate side — #{msg}")
+  IO.puts(:stderr, "bd-divergence: refusing to report a divergence figure computed from a failed substrate read.")
+  System.halt(2)
+end
+
+case Node.start(probe_name, :shortnames) do
+  {:ok, _} ->
+    :ok
+
+  {:error, reason} ->
+    fail.("could not start local probe node (#{inspect(reason)})")
+end
+
+unless Node.connect(serve_node) do
+  fail.("Node.connect(#{inspect(serve_node)}) returned false/failed — is the serve up? (pang)")
+end
+
+root =
+  case :erpc.call(serve_node, Commonplace.Workspace, :root_uuid, [], 15_000) do
+    {:ok, root} -> root
+    other -> fail.("Commonplace.Workspace.root_uuid() on #{inspect(serve_node)} returned #{inspect(other)}")
+  end
+
+substrate_issues =
+  try do
+    :erpc.call(
+      serve_node,
+      Commonplace.Bd.Issue,
+      :list,
+      [root, Commonplace.Store.CommitStoreClient],
+      30_000
+    )
+  catch
+    :error, reason -> fail.("Commonplace.Bd.Issue.list/2 erpc call raised #{inspect(reason)}")
+    :exit, reason -> fail.("Commonplace.Bd.Issue.list/2 erpc call exited #{inspect(reason)}")
+  end
+
+substrate =
+  substrate_issues
+  |> Enum.map(fn {issue, _node_id} -> {issue.id, issue.status, issue.title} end)
+  |> Enum.sort()
+
+# --- bd side: parse the TSV bash already extracted via jq -----------
+bd =
+  bd_tsv_path
+  |> File.stream!()
+  |> Enum.map(fn line ->
+    [id, status, title] = line |> String.trim_trailing("\n") |> String.split("\t", parts: 3)
+    {id, status, title}
+  end)
+  |> Enum.sort()
+
+substrate_by_id = Map.new(substrate, fn {id, status, title} -> {id, {status, title}} end)
+bd_by_id = Map.new(bd, fn {id, status, title} -> {id, {status, title}} end)
+
+substrate_ids = MapSet.new(Map.keys(substrate_by_id))
+bd_ids = MapSet.new(Map.keys(bd_by_id))
+
+both = MapSet.intersection(substrate_ids, bd_ids)
+substrate_only = MapSet.difference(substrate_ids, bd_ids)
+bd_only = MapSet.difference(bd_ids, substrate_ids)
+
+bd_only_closed =
+  bd_only |> Enum.filter(fn id -> elem(Map.fetch!(bd_by_id, id), 0) == "closed" end)
+
+bd_only_non_closed =
+  bd_only |> Enum.reject(fn id -> elem(Map.fetch!(bd_by_id, id), 0) == "closed" end)
+
+IO.puts("""
+
+bd-divergence report
+=====================
+substrate node : #{serve_node}
+substrate total: #{MapSet.size(substrate_ids)}
+bd total       : #{MapSet.size(bd_ids)}
+in both        : #{MapSet.size(both)}
+substrate-only : #{MapSet.size(substrate_only)}
+bd-only        : #{MapSet.size(bd_only)}  (#{length(bd_only_closed)} closed, #{length(bd_only_non_closed)} non-closed)
+""")
+
+IO.puts("SUBSTRATE-ONLY (#{MapSet.size(substrate_only)}) — invisible to `bd ready`, the actionable set:")
+
+substrate_only
+|> Enum.sort()
+|> Enum.each(fn id ->
+  {status, title} = Map.fetch!(substrate_by_id, id)
+  IO.puts("  #{String.pad_trailing(id, 10)} #{String.pad_trailing(status, 12)} #{title}")
+end)
+
+IO.puts("")
+
+IO.puts(
+  "BD-ONLY, NON-CLOSED (#{length(bd_only_non_closed)}) — the live concern (most bd-only rows are closed cutover history, listed only as a count above):"
+)
+
+bd_only_non_closed
+|> Enum.sort()
+|> Enum.each(fn id ->
+  {status, title} = Map.fetch!(bd_by_id, id)
+  IO.puts("  #{String.pad_trailing(id, 10)} #{String.pad_trailing(status, 12)} #{title}")
+end)
+
+IO.puts("")
+System.halt(0)
+ELIXIR
+
+cd "$PROJECT_DIR"
+BD_DIVERGENCE_HOST="$SERVE_HOST" ERL_INETRC="$INETRC" mix run --no-start "$PROBE_SCRIPT" -- "$BD_TSV" "$SERVE_NODE"

@@ -1,0 +1,309 @@
+#!/usr/bin/env bash
+#
+# cp-verify-deploy — READ-ONLY deploy verification that reports LOAD STATE
+# before it ever compares an md5, instead of the misleading opposite.
+#
+# WHY THIS EXISTS (CX-gq5o)
+#
+# The prior "zero skew" deploy-verification recipe compared
+# `module_info(:md5)` local-vs-remote for the `commonplace` app's modules
+# and called agreement proof the serve is running the deployed code. That
+# check is ACTIVELY MISLEADING:
+#
+#   * The serve runs `mix phx.server` in :interactive code-loading mode,
+#     with its code path pointed at the WORKING TREE's `_build/dev/lib`
+#     (not a release snapshot). Modules load LAZILY, on first call.
+#     Measured 2026-08-05: of the `commonplace` app's 249 modules, only
+#     ~75 were actually loaded on the live serve; ~174 were not.
+#   * `module_info/1` is a function OF the module it describes. Calling
+#     `Mod.module_info(:md5)` on a module that is not yet loaded is a
+#     remote call to that module — which FORCE-LOADS it, from whatever is
+#     on disk in `_build` at that instant. So for an unloaded module the
+#     old check (a) proves nothing about what the serve WAS running (it
+#     wasn't running that module at all) and (b) pins the CURRENT disk
+#     version into the serve as a side effect of the measurement itself.
+#     It reports an agreement it just created, and structurally can never
+#     report skew for an unloaded module — not because there is none, but
+#     because the check erases the evidence as it looks.
+#
+# `:code.is_loaded/1` is the safe primitive: it reports load state without
+# loading anything. This script uses ONLY that to partition modules, and
+# only touches md5 for modules already confirmed loaded — see the probe
+# script below for exactly which erlang primitive does the md5 fetch and
+# why it was chosen over `module_info/1`.
+#
+# THIS IS A REPORT, NOT A GATE. It never blocks, never writes, and never
+# claims more than it checked. A module that was never loaded is reported
+# as NOT VERIFIED — never folded into an "agreement" count.
+#
+# RPC / connection mechanics mirror bin/bd-divergence and bin/bd-invariants
+# exactly (read either script's header for the full story) — this script
+# does not repeat the rationale, only the mechanism:
+#
+#   * connects READ-ONLY over BEAM distribution to the ALREADY-RUNNING
+#     live serve, the same way the MCP escript does
+#     (`apps/commonplace_mcp/lib/commonplace_mcp.ex`, `connect/1`);
+#   * NEVER starts, stops, or writes to that node;
+#   * REQUIRES `ERL_INETRC` (see `bin/erl_inetrc`'s header) — without it,
+#     `Node.connect` silently returns false because `commonplace` resolves
+#     to a real interface address the serve's loopback-only dist listener
+#     doesn't answer on;
+#   * takes a non-blocking flock on its own lockfile so a second
+#     concurrent invocation fails fast instead of racing a probe node
+#     against this one (ONE PROBE NODE AT A TIME).
+#
+# Usage:
+#   bin/cp-verify-deploy                          # full sweep, all modules
+#   bin/cp-verify-deploy Commonplace.Bd.Issue ...  # also call out named modules
+#
+# Env overrides (for testing / operating against a different serve):
+#   CP_VERIFY_DEPLOY_NODE — serve node name (default commonplace_dev@commonplace)
+#   CP_VERIFY_DEPLOY_HOST — short hostname to statically map to 127.0.0.1
+#                           in the probe's ERL_INETRC (default: derived
+#                           from CP_VERIFY_DEPLOY_NODE's host part)
+#
+# Exit codes:
+#   0 — measured successfully (regardless of load state or md5 findings —
+#       this is a report, not a gate)
+#   2 — could not read the substrate side (serve unreachable, module list
+#       or load-state calls failed) — NEVER prints figures computed from
+#       a failed read
+#   3 — could not even acquire the one-probe-at-a-time lock
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+
+SERVE_NODE="${CP_VERIFY_DEPLOY_NODE:-commonplace_dev@commonplace}"
+SERVE_HOST="${CP_VERIFY_DEPLOY_HOST:-${SERVE_NODE#*@}}"
+
+LOCK_FILE="$PROJECT_DIR/.cp-verify-deploy.lock"
+TMP_DIR="$(mktemp -d)"
+cleanup() { rm -rf "$TMP_DIR"; }
+trap cleanup EXIT
+
+# --- one-probe-at-a-time guard ---------------------------------------
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+  echo "cp-verify-deploy: another cp-verify-deploy (or probe) run holds the lock at $LOCK_FILE — refusing to start a second concurrent probe node." >&2
+  exit 3
+fi
+
+PROBE_SCRIPT="$TMP_DIR/probe.exs"
+INETRC="$TMP_DIR/inetrc"
+
+cat >"$INETRC" <<EOF
+{lookup, [file, native]}.
+{host, {127,0,0,1}, ["$SERVE_HOST"]}.
+EOF
+
+cat >"$PROBE_SCRIPT" <<'ELIXIR'
+[serve_node_str | named_modules_str] =
+  System.argv() |> Enum.reject(&(&1 == "--"))
+serve_node = String.to_atom(serve_node_str)
+named_modules = Enum.map(named_modules_str, &String.to_atom("Elixir." <> &1))
+
+# Same fix as bin/bd-divergence's probe (CX-y6uc): a short-lived probe
+# node joining/leaving repeatedly can trip :global's overlapping-
+# partition heuristic against the long-running serve. Must be set
+# before Node.start.
+:application.set_env(:kernel, :prevent_overlapping_partitions, false)
+:application.set_env(:kernel, :inet_dist_use_interface, {127, 0, 0, 1})
+
+probe_name =
+  :"cp_verify_deploy_probe_#{:erlang.unique_integer([:positive])}@#{System.get_env("CP_VERIFY_DEPLOY_HOST", "commonplace")}"
+
+fail = fn msg ->
+  IO.puts(:stderr, "cp-verify-deploy: could not read the substrate side — #{msg}")
+  IO.puts(:stderr, "cp-verify-deploy: refusing to report deploy-verification figures computed from a failed substrate read.")
+  System.halt(2)
+end
+
+case Node.start(probe_name, :shortnames) do
+  {:ok, _} -> :ok
+  {:error, reason} -> fail.("could not start local probe node (#{inspect(reason)})")
+end
+
+unless Node.connect(serve_node) do
+  fail.("Node.connect(#{inspect(serve_node)}) returned false/failed — is the serve up? (pang)")
+end
+
+# --- (1) enumerate every module of the `commonplace` app, on the REMOTE --
+modules =
+  case :erpc.call(serve_node, :application, :get_key, [:commonplace, :modules], 15_000) do
+    {:ok, mods} -> mods
+    other -> fail.(":application.get_key(:commonplace, :modules) on #{inspect(serve_node)} returned #{inspect(other)}")
+  end
+
+# --- (2) load state, via :code.is_loaded/1 ONLY -------------------------
+#
+# ⚠️ NEVER call `module_info/1`, `Code.ensure_loaded?/1`, `apply/3`, or
+# anything else that invokes a function OF the module being measured —
+# any of those force-load an unloaded module as a side effect, which is
+# exactly the bug this tool exists to stop repeating (see header).
+# `:code.is_loaded/1` is a code-server query, not a call into the module,
+# so it reports state without changing it.
+is_loaded? = fn mod ->
+  case :erpc.call(serve_node, :code, :is_loaded, [mod], 15_000) do
+    {:file, _path} -> true
+    false -> false
+    other -> fail.(":code.is_loaded(#{inspect(mod)}) on #{inspect(serve_node)} returned unexpected #{inspect(other)}")
+  end
+end
+
+{loaded, not_loaded} = Enum.split_with(modules, is_loaded?)
+
+if length(loaded) + length(not_loaded) != length(modules) do
+  fail.("partition size mismatch — this should be impossible, refusing to report")
+end
+
+# --- (3) md5, LOADED modules only ----------------------------------------
+#
+# Remote md5, without force-loading: `:erlang.get_module_info/2` is a BIF
+# that reads the code server's ALREADY-RESIDENT module record. Unlike
+# `Mod.module_info/1` — which is a call to a function *of* Mod and so
+# triggers the normal auto-load path if Mod isn't resident — this BIF
+# does not dispatch through the module at all, so it can't force a load.
+# It is only ever invoked here for modules `is_loaded?` already confirmed
+# resident, so there is no load to trigger either way, but this is the
+# form that stays safe even if that invariant were ever violated by a
+# future edit to this script.
+remote_md5 = fn mod ->
+  try do
+    case :erpc.call(serve_node, :erlang, :get_module_info, [mod, :md5], 15_000) do
+      md5 when is_binary(md5) -> {:ok, md5}
+      other -> {:error, other}
+    end
+  catch
+    kind, reason -> {:error, {kind, reason}}
+  end
+end
+
+# Local md5, from the beam file on disk — via :code.which/1 (locates the
+# object file, does not load it) + :beam_lib.md5/1 (reads file bytes).
+# Neither primitive loads the module into this probe process either.
+local_md5 = fn mod ->
+  case :code.which(mod) do
+    path when is_list(path) ->
+      case :beam_lib.md5(path) do
+        {:ok, {_mod, md5}} -> {:ok, md5}
+        other -> {:error, other}
+      end
+
+    other ->
+      {:error, {:which_failed, other}}
+  end
+end
+
+compare = fn mod ->
+  with {:ok, r} <- remote_md5.(mod),
+       {:ok, l} <- local_md5.(mod) do
+    if r == l, do: {:match, mod}, else: {:diff, mod, l, r}
+  else
+    {:error, reason} -> {:compare_error, mod, reason}
+  end
+end
+
+comparisons = Enum.map(loaded, compare)
+matches = Enum.count(comparisons, &match?({:match, _}, &1))
+diffs = Enum.filter(comparisons, &match?({:diff, _, _, _}, &1))
+compare_errors = Enum.filter(comparisons, &match?({:compare_error, _, _}, &1))
+
+# --- report ---------------------------------------------------------------
+
+IO.puts("""
+
+cp-verify-deploy report
+========================
+substrate node   : #{serve_node}
+commonplace app  : #{length(modules)} modules total
+LOADED           : #{length(loaded)}
+NOT LOADED       : #{length(not_loaded)}  (⚠️  NOT VERIFIED — these have never
+                     run on the serve this process; they will load
+                     whatever is in _build at first call, which may or
+                     may not be what was deployed)
+""")
+
+if length(loaded) + length(not_loaded) == length(modules) do
+  IO.puts("partition check: LOADED + NOT LOADED = #{length(loaded) + length(not_loaded)} == #{length(modules)} total — nothing dropped.\n")
+end
+
+IO.puts("among LOADED (#{length(loaded)}):")
+IO.puts("  md5 matches      : #{matches}")
+IO.puts("  md5 DIFFERS       : #{length(diffs)}")
+IO.puts("  compare errors    : #{length(compare_errors)}")
+IO.puts("")
+
+if diffs != [] do
+  IO.puts("MODULES WITH DIFFERING md5 (local vs remote) — up to 20 shown:")
+
+  diffs
+  |> Enum.take(20)
+  |> Enum.each(fn {:diff, mod, local, remote} ->
+    IO.puts("  #{inspect(mod)}")
+    IO.puts("    local  md5: #{Base.encode16(local, case: :lower)}")
+    IO.puts("    remote md5: #{Base.encode16(remote, case: :lower)}")
+  end)
+
+  extra = length(diffs) - 20
+  if extra > 0, do: IO.puts("  … and #{extra} more")
+  IO.puts("")
+end
+
+if compare_errors != [] do
+  IO.puts("MODULES WHERE THE COMPARISON ITSELF ERRORED — up to 20 shown (not counted as matches OR diffs):")
+
+  compare_errors
+  |> Enum.take(20)
+  |> Enum.each(fn {:compare_error, mod, reason} ->
+    IO.puts("  #{inspect(mod)} — #{inspect(reason)}")
+  end)
+
+  extra = length(compare_errors) - 20
+  if extra > 0, do: IO.puts("  … and #{extra} more")
+  IO.puts("")
+end
+
+# --- named modules, called out explicitly --------------------------------
+if named_modules != [] do
+  IO.puts("NAMED MODULES (from argv):")
+
+  Enum.each(named_modules, fn mod ->
+    cond do
+      mod not in modules ->
+        IO.puts("  #{inspect(mod)} — NOT a module of the `commonplace` app (per :application.get_key/2 on the remote)")
+
+      mod in not_loaded ->
+        IO.puts("  #{inspect(mod)} — MODULE NOT LOADED — the serve is not running this code; it will load from _build when first called. NOT a match, NOT a diff — not verified.")
+
+      true ->
+        case compare.(mod) do
+          {:match, _} ->
+            IO.puts("  #{inspect(mod)} — LOADED, md5 MATCHES local disk.")
+
+          {:diff, _, local, remote} ->
+            IO.puts("  #{inspect(mod)} — LOADED, md5 DIFFERS: local #{Base.encode16(local, case: :lower)} vs remote #{Base.encode16(remote, case: :lower)}")
+
+          {:compare_error, _, reason} ->
+            IO.puts("  #{inspect(mod)} — LOADED, but comparison errored: #{inspect(reason)}")
+        end
+    end
+  end)
+
+  IO.puts("")
+end
+
+# --- verdict ---------------------------------------------------------------
+IO.puts(
+  "cp-verify-deploy: verified #{matches} of #{length(modules)} modules " <>
+    "(#{length(not_loaded)} never loaded — NOT verified" <>
+    (if diffs != [] or compare_errors != [], do: "; #{length(diffs)} md5 diff(s), #{length(compare_errors)} compare error(s) among the loaded set", else: "") <>
+    ")."
+)
+
+System.halt(0)
+ELIXIR
+
+cd "$PROJECT_DIR"
+CP_VERIFY_DEPLOY_HOST="$SERVE_HOST" ERL_INETRC="$INETRC" mix run --no-start "$PROBE_SCRIPT" -- "$SERVE_NODE" "$@"

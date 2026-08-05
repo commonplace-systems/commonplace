@@ -61,3 +61,7 @@ apps/commonplace_mcp/commonplace_mcp
 # leaked a Telegram bot token from commonplace-rs on 2026-01-23. This repo
 # tracked the same app directory and missed the credential only by luck.
 workspace/
+
+# Probe-script single-instance locks (bin/bd-divergence, bin/bd-invariants,
+# bin/cp-verify-deploy). Runtime artifacts of running a diagnostic, never content.
+.*.lock
