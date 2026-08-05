@@ -378,12 +378,30 @@ defmodule Commonplace.Bd.Invariants do
   end
 
   ## ---------------------------------------------------------------
-  ## check_all/2 — the standing-audit entry point. Runs every
-  ## per-ticket check over every ticket in the corpus, plus the one
-  ## whole-corpus check (`acyclic/2`), and returns one structured
-  ## result. ALARM ONLY: this reads, it never writes or refuses
-  ## anything — see this module's moduledoc.
+  ## check_all/2 — the standing-audit entry point. THIN SHAPE-ADAPTER
+  ## over `Commonplace.Invariants.Engine.run/2` (CX-9fyz: the engine
+  ## is now the generic runner over the declared registry
+  ## (`Commonplace.Invariants.Registry`); this function no longer
+  ## enumerates or dispatches anything itself). ALARM ONLY: this
+  ## reads, it never writes or refuses anything — see this module's
+  ## moduledoc.
+  ##
+  ## Kept for `bin/bd-invariants` and this module's own callers, which
+  ## predate the engine and expect the OLD return shape exactly:
+  ## keyed `:parses`/`:closed_matches_pin`/`:ref_typed`/`:acyclic`
+  ## (not the registry's `:bd_`-prefixed names), each violation/error
+  ## detail carrying `:issue_id` (not the engine's generic `:subject`)
+  ## via `Map.put_new` — so a check's own detail map can still name
+  ## its subject something more specific (none currently do, but nothing
+  ## here would clobber it if one did).
   ## ---------------------------------------------------------------
+
+  @engine_name_to_legacy_key %{
+    bd_parses: :parses,
+    bd_closed_matches_pin: :closed_matches_pin,
+    bd_ref_typed: :ref_typed,
+    bd_acyclic: :acyclic
+  }
 
   @doc """
   Runs `parses/3`, `closed_matches_pin/3`, and `ref_typed/3` over
@@ -395,59 +413,54 @@ defmodule Commonplace.Bd.Invariants do
   """
   @spec check_all(String.t(), module() | atom()) :: map()
   def check_all(root_uuid, store \\ CommitStoreClient) do
-    ids = ticket_ids(root_uuid, store)
+    %{results: results} =
+      Commonplace.Invariants.Engine.run(%{root_uuid: root_uuid, store: store}, domain: :bd)
 
+    results
+    |> Enum.map(fn {engine_name, result} ->
+      legacy_key = Map.fetch!(@engine_name_to_legacy_key, engine_name)
+      {legacy_key, adapt_result(result)}
+    end)
+    |> Map.new()
+  end
+
+  defp adapt_result(%{checked: checked, ok: ok, violations: violations, errors: errors}) do
     %{
-      parses: summarize(ids, fn id -> parses(root_uuid, id, store) end),
-      closed_matches_pin: summarize(ids, fn id -> closed_matches_pin(root_uuid, id, store) end),
-      ref_typed: summarize(ids, fn id -> ref_typed(root_uuid, id, store) end),
-      acyclic: summarize_whole_corpus(fn -> acyclic(root_uuid, store) end)
+      checked: checked,
+      ok: ok,
+      violations: Enum.map(violations, &adapt_detail/1),
+      errors: Enum.map(errors, &adapt_detail/1)
     }
   end
 
-  # Reuses `Workspace.list_issue_entries/2` (the same enumeration
-  # `Issue.list/2` builds on) rather than re-walking the /bd/issues/
-  # schema here, so there is exactly one place that knows how a
-  # ticket id maps to its directory entry name.
-  defp ticket_ids(root_uuid, store) do
+  # The engine tags per-subject hits with the generic `:subject` key;
+  # the pre-engine shape used `:issue_id`. Add it via `Map.put_new`
+  # (never overwrite — a check's own detail map wins if it already
+  # names the field) so old callers (`bin/bd-invariants`, this
+  # module's existing tests) keep reading `:issue_id` unchanged. The
+  # whole-corpus check (`acyclic`) has no `:subject` to translate —
+  # `Map.put_new` on a map without `:subject` is a no-op.
+  defp adapt_detail(%{subject: subject} = detail) do
+    detail |> Map.put_new(:issue_id, subject)
+  end
+
+  defp adapt_detail(detail), do: detail
+
+  @doc """
+  Every ticket id under `root_uuid` — the per-subject enumeration
+  entry point `Commonplace.Invariants.Registry`'s three `:per_subject`
+  bd invariants (`:bd_parses`, `:bd_ref_typed`, `:bd_closed_matches_pin`)
+  use as their `enumerate` fun, and what `check_all/2` (below) also
+  uses so there is exactly one place that knows how a ticket id maps
+  to its directory entry name. Promoted from `defp` for exactly this
+  caller — reuses `Workspace.list_issue_entries/2` (the same
+  enumeration `Issue.list/2` builds on) rather than re-walking the
+  /bd/issues/ schema a second time.
+  """
+  @spec ticket_ids(String.t(), module() | atom()) :: [String.t()]
+  def ticket_ids(root_uuid, store) do
     root_uuid
     |> Workspace.list_issue_entries(store)
     |> Enum.map(fn e -> String.trim_trailing(e.name, ".iss") end)
-  end
-
-  defp summarize(ids, check_fun) do
-    {ok, violations, errors} =
-      Enum.reduce(ids, {0, [], []}, fn id, {ok, violations, errors} ->
-        case check_fun.(id) do
-          :ok ->
-            {ok + 1, violations, errors}
-
-          {:violation, details} ->
-            {ok, [Map.put_new(details, :issue_id, id) | violations], errors}
-
-          {:error, reason} ->
-            {ok, violations, [%{issue_id: id, error: reason} | errors]}
-        end
-      end)
-
-    %{
-      checked: length(ids),
-      ok: ok,
-      violations: Enum.reverse(violations),
-      errors: Enum.reverse(errors)
-    }
-  end
-
-  defp summarize_whole_corpus(check_fun) do
-    case check_fun.() do
-      :ok ->
-        %{checked: 1, ok: 1, violations: [], errors: []}
-
-      {:violation, details} ->
-        %{checked: 1, ok: 0, violations: [details], errors: []}
-
-      {:error, reason} ->
-        %{checked: 1, ok: 0, violations: [], errors: [%{error: reason}]}
-    end
   end
 end
