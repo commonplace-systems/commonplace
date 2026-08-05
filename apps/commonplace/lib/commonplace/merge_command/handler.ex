@@ -41,10 +41,48 @@ defmodule Commonplace.MergeCommand.Handler do
   each seeing it locally as `{latest, other_ref}` in the opposite order.
   Before merging, the handler canonicalizes the pair by CID
   (`Merger.canonical_pair/2`) so both feed the merge in the same order
-  and produce a *byte-identical* commit. Persisting is a CAS that treats
-  `:parent_moved` as success, so the second peer's identical commit is a
-  no-op rather than a conflict. Net effect: concurrent merges of the
-  same pair converge instead of forking the DAG.
+  and produce a *byte-identical* commit. Net effect: concurrent merges
+  of the same pair converge instead of forking the DAG.
+
+  ## Landing the canonical commit (CX-xxav)
+
+  Canonicalization makes the merge *symmetric* (both peers compute the
+  same commit) but the merge engines are *asymmetric*: the commit lands
+  in canonical-L's namespace with `parent_id == L` and
+  `merge_parents == [R]`. So on the peer whose local `:latest` sorts
+  SECOND, the canonical commit is a child of the sibling, not of the
+  local head — a legitimate, dominating new head, but not a linear
+  fast-forward.
+
+  `persist_commit/3` therefore splits on which side the local head is:
+
+  - `commit.parent_id == observed_head` — linear fast-forward. Land via
+    `CommitStore.write_prebuilt_commit_cas/2` (node-signs system kinds
+    on the way in).
+
+  - `observed_head ∈ commit.merge_parents` — non-linear but dominating:
+    the local head is folded into the merge by construction, so
+    advancing `:latest` to it loses nothing (same rule
+    `Commonplace.Sync.MergeAdopter` applies to *imported* merges).
+    Node-sign explicitly, then land + advance atomically via
+    `CommitStore.put_built_commit/4`, whose CAS compares `:latest` to
+    the head we actually observed rather than to `commit.parent_id`.
+
+  - neither — the merge does not descend from the local head at all.
+    Reply `merge_failed`; there is no id worth advertising.
+
+  A CAS miss in either arm means `:latest` moved under us mid-merge and
+  is reported as `merge_failed` with `:merge_head_moved`. It is NEVER
+  swallowed. Prior to CX-xxav `{:error, :parent_moved}` was mapped to
+  `{:ok, commit}` and the handler advertised a commit stored nowhere —
+  and an advertised `commit_id` does not stay in the reply: the red-log
+  onramp above persists every magenta message on this topic, so a
+  phantom id is written *durably* into `__merge.log` (or the leaf log),
+  a replicated commonplace doc, as a permanent reference to a commit
+  that exists in no store. `CommonplaceMcp.CrdtTools` will additionally
+  relay a reply payload verbatim to an agent for any interface doc
+  configured over this verb. Nothing in-repo reads `payload["commit_id"]`
+  programmatically (measured CX-xxav, 2026-08-05).
 
   ## Red-log onramp (CX-3hvu, CX-nuc2)
 
@@ -71,7 +109,13 @@ defmodule Commonplace.MergeCommand.Handler do
 
   alias Commonplace.Dataflow.{Magenta, RedLog}
   alias Commonplace.MergeCommand.MergeLog
-  alias Commonplace.Store.{CommitStore, CommitStoreClient, Merger, MergePolicy}
+  alias Commonplace.Store.{
+    CommitBuilder,
+    CommitStore,
+    CommitStoreClient,
+    Merger,
+    MergePolicy
+  }
   alias Commonplace.Tree.{DocBuilder, Schema, Walk}
   alias Yelixer.{Doc, Encoding}
 
@@ -142,7 +186,7 @@ defmodule Commonplace.MergeCommand.Handler do
          # other_ref} locally) produce byte-identical commits.
          {l, r} <- Merger.canonical_pair(latest.id, other_ref),
          {:ok, commit} <- MergePolicy.merge(state.store, l, r, strategy: strategy),
-         {:ok, persisted} <- persist_commit(state.store, commit) do
+         {:ok, persisted} <- persist_commit(state.store, commit, latest.id) do
       reply =
         Magenta.message("merge_completed", @source, %{
           "commit_id" => Base.encode16(persisted.id, case: :lower),
@@ -269,14 +313,37 @@ defmodule Commonplace.MergeCommand.Handler do
     end
   end
 
-  defp persist_commit(store, commit) do
-    case CommitStore.write_prebuilt_commit_cas(store, commit) do
-      :ok -> {:ok, commit}
-      {:ok, _} -> {:ok, commit}
-      {:error, :parent_moved} -> {:ok, commit}
-      other -> other
+  # Land the canonical merge commit and advance `:latest` to it. See the
+  # moduledoc's "Landing the canonical commit (CX-xxav)" section for why
+  # there are two arms and why a CAS miss is never absorbed.
+  defp persist_commit(store, commit, observed_head_id) do
+    cond do
+      commit.parent_id == observed_head_id ->
+        cas_result(CommitStore.write_prebuilt_commit_cas(store, commit), commit)
+
+      observed_head_id in merge_parents(commit) ->
+        # `put_built_commit/4` does not sign (unlike the prebuilt-CAS
+        # verb), so node-sign here. Signing binds over the already-fixed
+        # id, so the advertised id is unchanged — and the cross-peer
+        # byte-determinism of CX-1mml is unaffected.
+        signed = CommitBuilder.maybe_sign_commit(commit)
+        cas_result(CommitStore.put_built_commit(store, signed, observed_head_id), signed)
+
+      true ->
+        {:error, {:merge_does_not_dominate_head, commit.doc_uuid, observed_head_id}}
     end
   end
+
+  defp cas_result({:ok, stored}, _commit), do: {:ok, stored}
+  defp cas_result(:ok, commit), do: {:ok, commit}
+
+  defp cas_result({:error, :parent_moved}, commit),
+    do: {:error, {:merge_head_moved, commit.doc_uuid}}
+
+  defp cas_result(other, _commit), do: other
+
+  defp merge_parents(%{merge_parents: parents}) when is_list(parents), do: parents
+  defp merge_parents(_), do: []
 
   defp extract_doc_path(topic) do
     parts = String.split(topic, "/")

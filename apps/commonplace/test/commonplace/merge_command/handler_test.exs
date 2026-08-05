@@ -630,4 +630,125 @@ defmodule Commonplace.MergeCommand.HandlerTest do
       refute_receive {:magenta, _, %Magenta{type: "merge_failed"}}, 200
     end
   end
+
+  describe "the advertised commit id is real (CX-xxav)" do
+    # Regression pin for the swallowed CAS. `persist_commit/3` used to
+    # map `{:error, :parent_moved}` to `{:ok, commit}`, so the handler
+    # replied `merge_completed` carrying an id stored NOWHERE.
+    #
+    # The head is moved mid-merge from a telemetry handler on
+    # MergePolicy's `:strategy_selected` event, which fires inside the
+    # handler process AFTER it has read `:latest` and BEFORE the merge
+    # commit is persisted — a real, deterministic instance of the race
+    # the CAS exists to catch.
+    test "a head that moves mid-merge yields merge_failed, never a phantom commit_id",
+         %{store: store, root: root} do
+      uuid = "mcmd-cas-miss"
+      {_l, r} = build_l_r(store, uuid)
+
+      path = register_in_root(store, root, "cas_miss_doc", uuid)
+      topic = "commands/#{path}/merge"
+
+      test_pid = self()
+      handler_id = "cx-xxav-head-mover-#{:rand.uniform(1_000_000)}"
+
+      :telemetry.attach(
+        handler_id,
+        [:commonplace, :merge, :strategy_selected],
+        fn _event, _measure, _meta, _cfg ->
+          # Only interfere once, and only for this doc.
+          case CommitStore.latest_commit(store, uuid) do
+            {:ok, head} ->
+              doc = Doc.new(client_id: 99)
+              {doc, _} = Doc.get_or_create_type(doc, "t", :text)
+              {:ok, doc} = Encoding.apply_update(doc, head.update)
+              doc = Text.insert(doc, "t", 0, "Z")
+
+              interloper =
+                CommitStore.create_chained_commit(
+                  store,
+                  uuid,
+                  Encoding.encode_update(doc),
+                  %{kind: :regular}
+                )
+
+              send(test_pid, {:head_moved_to, interloper.id})
+
+            :none ->
+              :ok
+          end
+        end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      Magenta.subscribe(topic)
+
+      Magenta.send(
+        topic,
+        Magenta.message("merge", "test", %{
+          "other_ref" => Base.encode16(r.id, case: :lower),
+          "strategy" => "translate"
+        })
+      )
+
+      assert_receive {:head_moved_to, interloper_id}, 2000
+
+      # The load-bearing assertion: NOT merge_completed. Under the old
+      # swallow this arrived as merge_completed with an unstored id.
+      refute_receive {:magenta, ^topic, %Magenta{type: "merge_completed"}}, 500
+      assert_receive {:magenta, ^topic, %Magenta{type: "merge_failed"} = reply}, 2000
+      assert reply.payload["reason"] =~ "merge_head_moved"
+      assert reply.payload["path"] == path
+
+      # And the store is untouched by the failed merge: the head is
+      # exactly the interloper, no merge commit landed.
+      assert {:ok, %{id: ^interloper_id}} = CommitStore.latest_commit(store, uuid)
+    end
+
+    # The other half: when the canonical pair puts the LOCAL head on
+    # the right-hand side, the merge commit's `parent_id` is the
+    # sibling, not the local head. That is not a linear fast-forward,
+    # so `write_prebuilt_commit_cas/2` refuses it — the case that
+    # produced the phantom ids on main. It must now land for real and
+    # become the head.
+    test "every merge_completed id is stored AND is the doc's new head",
+         %{store: store, root: root} do
+      # Several fixtures so both canonical orientations are covered;
+      # which one a given doc gets is a function of its commit ids.
+      for n <- 1..6 do
+        uuid = "mcmd-head-#{n}"
+        {l, r} = build_l_r(store, uuid)
+
+        path = register_in_root(store, root, "head_doc_#{n}", uuid)
+        topic = "commands/#{path}/merge"
+
+        Magenta.subscribe(topic)
+
+        Magenta.send(
+          topic,
+          Magenta.message("merge", "test", %{
+            "other_ref" => Base.encode16(r.id, case: :lower),
+            "strategy" => "translate"
+          })
+        )
+
+        assert_receive {:magenta, ^topic, %Magenta{type: "merge_completed"} = reply}, 2000
+        commit_id = Base.decode16!(reply.payload["commit_id"], case: :lower)
+
+        assert {:ok, stored} = CommitStore.get_commit(store, commit_id),
+               "advertised commit_id is not in the store (doc #{uuid})"
+
+        assert stored.metadata[:kind] == :merge
+
+        assert {:ok, %{id: ^commit_id}} = CommitStore.latest_commit(store, uuid),
+               "advertised commit_id is not the doc's head (doc #{uuid})"
+
+        # Both sides are folded in, whichever orientation was canonical.
+        assert l.id == stored.parent_id or l.id in stored.merge_parents
+        assert r.id == stored.parent_id or r.id in stored.merge_parents
+      end
+    end
+  end
 end
