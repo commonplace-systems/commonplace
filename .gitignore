@@ -63,5 +63,6 @@ apps/commonplace_mcp/commonplace_mcp
 workspace/
 
 # Probe-script single-instance locks (bin/bd-divergence, bin/bd-invariants,
-# bin/cp-verify-deploy). Runtime artifacts of running a diagnostic, never content.
+# bin/cp-verify-deploy, bin/tix-migrate, bin/tix-drift). Runtime artifacts of
+# running a diagnostic, never content.
 .*.lock
