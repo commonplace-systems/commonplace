@@ -92,6 +92,90 @@ defmodule Commonplace.Bd.WriteGuard do
     end
   end
 
+  @doc """
+  The declared gate-exclusive field set, exposed so callers that
+  enumerate an `allow` posture (CX-6cz3's `ticket_import`) can be
+  checked AGAINST it rather than restating it. A widened protected
+  set turns the posture test red instead of silently letting a
+  newly-protected field ride in on an import.
+  """
+  @spec protected_fields() :: [atom()]
+  def protected_fields, do: @protected_fields
+
+  @doc """
+  CX-6cz3 (tix-authority migration §7, rulings @6418506) — the
+  first-class CREATION entry to this chokepoint. `check/5` is
+  update-shaped (it needs the ticket's current state); a ticket being
+  created has none, so creation gets its own entry rather than a
+  synthetic "current" struct at each call site.
+
+  It runs the SAME internals, not a second copy of them:
+
+    * `check_protected/2` — over the protected fields the proposed
+      record CARRIES, where "carries" means "differs from the struct
+      default" (`creation_changes/1` below). A create asserting
+      `status: "open"` is not asserting anything; a create asserting
+      `status: "closed"` is a close by another name and needs
+      `allow: [:status]`.
+    * `check_ref_types/2` — the same `needs` / `done_when` /
+      `done_witness` / `claimed_by` shape validators the update path
+      uses, run over the record's values.
+    * `check_cycle/4` — with an EMPTY prior `needs` list, so every
+      initial edge counts as added and walks
+      `reaches?/5` exactly as `ticket_add_needs` does. Creating a
+      ticket is not a way to smuggle in an edge the add-needs verb
+      would have refused.
+
+  There is no `check_frozen/2` (no prior state to be frozen) and no
+  `check_done_when_monotonic/2` (no prior value to strengthen from) —
+  those two are transitions, and a creation is not a transition.
+  """
+  @spec check_create(Issue.t(), String.t(), module() | atom(), keyword()) ::
+          :ok | {:error, String.t()}
+  def check_create(issue, root_uuid, store \\ CommitStoreClient, opts \\ [])
+
+  def check_create(%Issue{} = issue, root_uuid, store, opts) when is_binary(root_uuid) do
+    allow = Keyword.get(opts, :allow, [])
+
+    with :ok <- check_protected(creation_changes(issue), allow),
+         :ok <- check_ref_types(shape_changes(issue), root_uuid),
+         :ok <-
+           check_cycle(
+             %Issue{id: issue.id, needs: []},
+             %{needs: issue.needs || []},
+             root_uuid,
+             store
+           ) do
+      :ok
+    end
+  end
+
+  # A creation "carries" a protected field only when its value departs
+  # from the record spec's default. Derived from the `Schemas.Issue`
+  # struct itself (`%Issue{id: ...}`), never from a hand-copied list
+  # that could drift from the spec.
+  defp creation_changes(%Issue{} = issue) do
+    defaults = %Issue{id: issue.id}
+
+    @protected_fields
+    |> Enum.reduce(%{}, fn field, acc ->
+      value = Map.fetch!(issue, field)
+      if value == Map.fetch!(defaults, field), do: acc, else: Map.put(acc, field, value)
+    end)
+  end
+
+  # Shape checks run over EVERY ref-typed field, default or not — a
+  # default is well-formed, so this costs nothing and can never be
+  # skipped by a caller that happened to leave a field alone.
+  defp shape_changes(%Issue{} = issue) do
+    %{
+      needs: issue.needs || [],
+      done_when: issue.done_when,
+      done_witness: issue.done_witness || [],
+      claimed_by: issue.claimed_by
+    }
+  end
+
   ## Post-close freeze (S3) — runs BEFORE protected-field enforcement so
   ## it can never be bypassed by an `allow` list. A closed ticket never
   ## reopens in v1: `status`, `done_when`, and `done_witness` are frozen
@@ -339,7 +423,12 @@ defmodule Commonplace.Bd.WriteGuard do
     |> Enum.filter(fn e -> is_map(e) and not Map.has_key?(e, "repo") end)
     |> Enum.reduce_while(:ok, fn %{"ticket" => prereq_id}, :ok ->
       if reaches?(prereq_id, dependent_id, root_uuid, store, MapSet.new()) do
-        {:halt, {:error, "adding this dependency would create a cycle"}}
+        # CX-6cz3 build condition 4: a refusal must NAME the edge. A
+        # batch import refuses per record, and "would create a cycle"
+        # with no edge in it makes a 40-record refusal list unactionable.
+        {:halt,
+         {:error,
+          "adding this dependency would create a cycle: #{dependent_id} needs #{prereq_id}"}}
       else
         {:cont, :ok}
       end

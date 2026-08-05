@@ -31,32 +31,98 @@ defmodule Commonplace.Bd.Issue do
     {:ok, meta} = Workspace.load_meta(root_uuid, store)
 
     with {:ok, id} <- IdMint.mint_issue_id(root_uuid, meta.prefix, store) do
-      now = now_iso8601()
-
-      issue = %Issue{
-        id: id,
-        title: Map.get(attrs, :title, ""),
-        status: Map.get(attrs, :status, "open"),
-        priority: Map.get(attrs, :priority, "p2"),
-        type: Map.get(attrs, :type, "task"),
-        owner: Map.get(attrs, :owner),
-        created_at: Map.get(attrs, :created_at, now),
-        updated_at: Map.get(attrs, :updated_at, now),
-        labels: Map.get(attrs, :labels, []),
-        needs: Map.get(attrs, :needs, []),
-        done_when: Map.get(attrs, :done_when, "manual"),
-        done_witness: Map.get(attrs, :done_witness, []),
-        claimed_by: Map.get(attrs, :claimed_by),
-        legacy_id: Map.get(attrs, :legacy_id),
-        extra: Map.get(attrs, :extra, %{})
-      }
-
-      description = Map.get(attrs, :description, "")
-      dir_uuid = build_issue_dir(issue, description, store, opts)
-      :ok = add_issue_entry(root_uuid, id, dir_uuid, store, opts)
-
-      {:ok, issue, dir_uuid}
+      create_with_id(root_uuid, build_with_id(id, attrs), Map.get(attrs, :description, ""), store, opts)
     end
+  end
+
+  @doc """
+  Builds — PURELY, writing nothing — the `%Issue{}` an id + attrs bag
+  would be stored as. CX-6cz3 (tix-authority migration §7): the gated
+  `ticket_create` / `ticket_import` verbs must hash and gate the
+  EXACT record they are about to persist, so the struct is built once
+  here, handed to `Commonplace.Bd.WriteGuard.check_create/4`, and then
+  handed to `create_with_id/5` — one derivation, no chance for the
+  gated value and the written value to drift apart.
+
+  `created_at` / `updated_at` fall back to now when the attrs bag
+  doesn't carry them (an import carries bd's originals; a fresh
+  create doesn't).
+  """
+  @spec build_with_id(String.t(), map()) :: Issue.t()
+  def build_with_id(id, attrs) when is_binary(id) and is_map(attrs) do
+    now = now_iso8601()
+
+    %Issue{
+      id: id,
+      title: Map.get(attrs, :title) || "",
+      status: Map.get(attrs, :status) || "open",
+      priority: Map.get(attrs, :priority) || "p2",
+      type: Map.get(attrs, :type) || "task",
+      owner: Map.get(attrs, :owner),
+      created_at: Map.get(attrs, :created_at) || now,
+      updated_at: Map.get(attrs, :updated_at) || now,
+      closed_at: Map.get(attrs, :closed_at),
+      closed_reason: Map.get(attrs, :closed_reason),
+      labels: Map.get(attrs, :labels) || [],
+      needs: Map.get(attrs, :needs) || [],
+      done_when: Map.get(attrs, :done_when) || "manual",
+      done_witness: Map.get(attrs, :done_witness) || [],
+      claimed_by: Map.get(attrs, :claimed_by),
+      legacy_id: Map.get(attrs, :legacy_id),
+      extra: Map.get(attrs, :extra) || %{}
+    }
+  end
+
+  @doc """
+  The ONE supplied-id creation primitive (CX-6cz3). Writes `issue`
+  verbatim under `/bd/issues/<issue.id>.iss/`, with `description` in
+  the sibling text doc.
+
+  This supersedes the two private `create_with_fixed_id` copies that
+  used to live in `Commonplace.Bd.Importer` and
+  `Commonplace.Bd.Migrate` — both raw-store writes with no
+  `WriteGuard` involvement (tix design §7's step-1 VERIFY finding).
+  Like everything else in `Commonplace.Bd.*` it enforces NOTHING
+  itself: the guarantee is that no UNGATED caller exists, checked by
+  `Commonplace.Bd.SuppliedIdCreationScanTest` (build condition 3).
+  Callers must run `Commonplace.Bd.WriteGuard.check_create/4` on the
+  SAME struct first.
+
+  `opts[:commit_metadata]` rides onto the `__issue.json` GENESIS
+  commit — the doc whose chain `Commonplace.Bd.Invariants` walks for
+  the terminal pin, and the same place `Commonplace.Bd.Issue.close/4`
+  stamps it. That is how an import's provenance stamp and freeze pin
+  reach the one chain that reads them. The rest of `opts`
+  (`:signing_context`) threads to every commit this create issues.
+  """
+  @spec create_with_id(String.t(), Issue.t(), String.t(), module() | atom(), keyword()) ::
+          {:ok, Issue.t(), String.t()}
+  def create_with_id(root_uuid, issue, description \\ "", store \\ CommitStoreClient, opts \\ [])
+
+  def create_with_id(root_uuid, %Issue{id: id} = issue, description, store, opts)
+      when is_binary(id) and id != "" do
+    dir_uuid = build_issue_dir(issue, description, store, opts)
+    :ok = add_issue_entry(root_uuid, id, dir_uuid, store, plain_opts(opts))
+
+    {:ok, issue, dir_uuid}
+  end
+
+  @doc """
+  The commit metadata that stamps a ticket's terminal-state pin
+  (CX-gvbf). `close/4` and CX-6cz3's `ticket_import` both stamp
+  through THIS function — ruling (a)'s "import stamping rides the
+  SAME mechanism as close's, never a second separately-controlled
+  minting path".
+
+  There is no code-level pause knob on pin-minting: `close/4` stamps
+  unconditionally, so import does too. The standing
+  "(a)-validator → main, DEPLOY → fleet, then pin resumes" rule is
+  OPERATIONAL (a deploy-sequencing rule about the fleet), not a
+  runtime flag — see CX-6cz3's build report.
+  """
+  @spec terminal_pin_metadata(Issue.t()) :: map()
+  def terminal_pin_metadata(%Issue{} = issue) do
+    %{bd_terminal_pin: Schemas.canonical_issue_json(issue)}
   end
 
   @doc """
@@ -86,6 +152,26 @@ defmodule Commonplace.Bd.Issue do
   end
 
   @doc """
+  Overwrites the issue's description doc (the `description.txt`
+  sibling — descriptions are NOT part of the `__issue.json` field
+  bag). Added for CX-6cz3's import update path: without it a
+  re-imported record could only ever change field-bag values, so an
+  edited bd description silently never landed. Enforcement-free like
+  the rest of this module — the import verb runs the guard on the
+  record first.
+  """
+  @spec write_description(String.t(), String.t(), String.t(), module() | atom(), keyword()) ::
+          :ok | {:error, term()}
+  def write_description(root_uuid, id, text, store \\ CommitStoreClient, opts \\ [])
+      when is_binary(text) do
+    with {:ok, dir_uuid} <- Workspace.issue_dir_uuid(root_uuid, id, store) |> wrap_lookup(),
+         {:ok, schema} <- Schemas.load_dir_schema(dir_uuid, store),
+         {:ok, entry} <- Schema.get_entry(schema, Schemas.description_filename()) |> wrap_lookup() do
+      Schemas.write_text_doc(entry.node_id, text, store, opts)
+    end
+  end
+
+  @doc """
   Updates one or more fields on the issue. Stamps `updated_at`.
   Per spec §5.1, single-field updates are LWW per key on the
   `__issue.json` YMap; this v0 path does a read-modify-write through
@@ -102,9 +188,7 @@ defmodule Commonplace.Bd.Issue do
   def update(root_uuid, id, attrs, store \\ CommitStoreClient, opts \\ []) do
     with {:ok, dir_uuid} <- Workspace.issue_dir_uuid(root_uuid, id, store) |> wrap_lookup(),
          {:ok, issue} <- Schemas.load_issue(dir_uuid, store) do
-      issue =
-        Enum.reduce(attrs, issue, fn {k, v}, acc -> apply_update_field(acc, k, v) end)
-
+      issue = apply_attrs(issue, attrs)
       issue = %{issue | updated_at: now_iso8601()}
 
       :ok = write_issue_meta(dir_uuid, issue, store, opts)
@@ -179,8 +263,11 @@ defmodule Commonplace.Bd.Issue do
       # `Commonplace.Store.Commit.new/5` requires non-empty metadata to
       # carry a `:kind` — `:regular` matches every other non-snapshot
       # commit's tag.
-      pin = Schemas.canonical_issue_json(closed_state)
-      commit_metadata = %{kind: :regular, bd_terminal_pin: pin}
+      # CX-6cz3: the pin itself comes from `terminal_pin_metadata/1`,
+      # the ONE minting site — `ticket_import`'s stamping of an
+      # imported closed ticket rides this exact function (ruling (a):
+      # never a second, separately-controlled minting path).
+      commit_metadata = Map.put(terminal_pin_metadata(closed_state), :kind, :regular)
       update_opts = Keyword.put(signing_opts, :commit_metadata, commit_metadata)
 
       update(
@@ -212,14 +299,21 @@ defmodule Commonplace.Bd.Issue do
 
   ## Private
 
+  # `opts[:commit_metadata]` is deliberately applied to the
+  # `__issue.json` doc ONLY (CX-6cz3): that is the chain
+  # `Commonplace.Bd.Invariants` walks for the terminal pin and the
+  # chain a drift scanner reads for the import provenance stamp. The
+  # description doc, the comments dir and the parent schema entry get
+  # `plain_opts/1` — same signing context, no stamp.
   defp build_issue_dir(%Issue{} = issue, description, store, opts) do
     dir_uuid = UUID.uuid4()
     dir_doc = Schema.new_schema()
+    plain = plain_opts(opts)
 
     issue_json = Schemas.encode_issue(issue)
     issue_meta_uuid = Schemas.create_text_doc(issue_json, store, opts)
-    desc_uuid = Schemas.create_text_doc(description, store, opts)
-    comments_uuid = Schemas.create_dir_with_meta(nil, nil, store, opts)
+    desc_uuid = Schemas.create_text_doc(description, store, plain)
+    comments_uuid = Schemas.create_dir_with_meta(nil, nil, store, plain)
 
     dir_doc =
       dir_doc
@@ -228,9 +322,11 @@ defmodule Commonplace.Bd.Issue do
       |> Schema.add_directory("comments", comments_uuid)
 
     update = Encoding.encode_update(dir_doc)
-    CommitStoreClient.create_commit(store, dir_uuid, update, nil, %{}, opts)
+    CommitStoreClient.create_commit(store, dir_uuid, update, nil, %{}, plain)
     dir_uuid
   end
+
+  defp plain_opts(opts), do: Keyword.delete(opts, :commit_metadata)
 
   defp add_issue_entry(root_uuid, id, child_uuid, store, opts) do
     issues_uuid = Workspace.issues_dir_uuid(root_uuid, store)
@@ -248,6 +344,46 @@ defmodule Commonplace.Bd.Issue do
     :ok
   end
 
+  @doc """
+  Applies an `update/5`-shaped attrs bag to an issue struct, PURELY.
+  Exposed (CX-6cz3) so the gated import verb can compute the exact
+  would-be-stored record for its content-hash no-op check with the
+  SAME code that performs the write — a separate "what would this
+  become" implementation is how a no-op check quietly stops matching
+  reality, and a no-op skips the gate.
+  """
+  @spec apply_attrs(Issue.t(), map()) :: Issue.t()
+  def apply_attrs(%Issue{} = issue, attrs) when is_map(attrs) do
+    Enum.reduce(attrs, issue, fn {k, v}, acc -> apply_update_field(acc, k, v) end)
+  end
+
+  @doc """
+  The fields `apply_attrs/2` writes into first-class struct keys (as
+  opposed to the `extra` catch-all). CX-6cz3's import delta is
+  restricted to these: `created_at` / `updated_at` / `id` have no
+  update clause, so passing them as "changes" would silently bury
+  them in `extra` instead of updating them.
+  """
+  @spec writable_fields() :: [atom()]
+  def writable_fields do
+    [
+      :title,
+      :status,
+      :priority,
+      :type,
+      :owner,
+      :closed_at,
+      :closed_reason,
+      :labels,
+      :needs,
+      :done_when,
+      :done_witness,
+      :claimed_by,
+      :legacy_id,
+      :extra
+    ]
+  end
+
   defp apply_update_field(issue, :title, v), do: %{issue | title: v}
   defp apply_update_field(issue, :status, v), do: %{issue | status: v}
   defp apply_update_field(issue, :priority, v), do: %{issue | priority: v}
@@ -261,6 +397,13 @@ defmodule Commonplace.Bd.Issue do
   defp apply_update_field(issue, :done_witness, v) when is_list(v), do: %{issue | done_witness: v}
   defp apply_update_field(issue, :claimed_by, v), do: %{issue | claimed_by: v}
   defp apply_update_field(issue, :legacy_id, v), do: %{issue | legacy_id: v}
+  # CX-6cz3: without this clause an `extra:` attr fell into the
+  # atom-key catch-all below and nested itself as `extra["extra"]` on
+  # every re-import — the round-trip fidelity the importer's
+  # extra-field preservation exists for, lost on the second pass. The
+  # incoming map REPLACES `extra` (an import is a derivation from the
+  # source record, so the source record is authoritative over it).
+  defp apply_update_field(issue, :extra, v) when is_map(v), do: %{issue | extra: v}
   defp apply_update_field(issue, key, v) when is_atom(key), do: %{issue | extra: Map.put(issue.extra, Atom.to_string(key), v)}
   defp apply_update_field(issue, key, v) when is_binary(key), do: %{issue | extra: Map.put(issue.extra, key, v)}
 

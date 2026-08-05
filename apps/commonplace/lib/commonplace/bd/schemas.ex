@@ -255,6 +255,18 @@ defmodule Commonplace.Bd.Schemas do
     |> Jason.encode!()
   end
 
+  @doc """
+  Deterministic JSON for an arbitrary decoded map/list — the same
+  key-sorted encoding `canonical_issue_json/1` uses, exposed
+  (CX-6cz3) so an import can content-hash the RAW bd record it
+  derived a ticket from without a second, subtly-different
+  canonicalization. Erlang map order is not a contract; two
+  canonicalizations that disagree would make the provenance stamp's
+  `sources_pin` un-reproducible for the drift scanner.
+  """
+  @spec canonical_json(term()) :: String.t()
+  def canonical_json(value), do: value |> canonicalize() |> Jason.encode!()
+
   # Recursively rewrites maps into `Jason.OrderedObject`s with
   # lexicographically-sorted keys, and walks into lists, so nested
   # structures (e.g. `needs`, `extra`) are just as deterministic as
@@ -491,13 +503,22 @@ defmodule Commonplace.Bd.Schemas do
 
   # ---- Writing ----
 
+  # `opts[:commit_metadata]` (CX-6cz3) rides onto this doc's GENESIS
+  # commit, the same way `write_text_doc/4` puts it on a chained one —
+  # an import-created ticket has no chained commit to stamp, and the
+  # provenance stamp / freeze pin must land on the `__issue.json`
+  # chain that `Commonplace.Bd.Invariants` reads. Pulled out of `opts`
+  # and passed as `create_commit/6`'s explicit metadata argument; the
+  # rest of `opts` (`:signing_context`) rides through untouched.
   def create_text_doc(json, store \\ CommitStoreClient, opts \\ []) when is_binary(json) do
     uuid = UUID.uuid4()
     doc = Doc.new()
     doc = ContentType.create(doc, :text, "metadata")
     doc = if json != "", do: ContentType.insert_text(doc, 0, json), else: doc
     update = Encoding.encode_update(doc)
-    CommitStoreClient.create_commit(store, uuid, update, nil, %{}, opts)
+    metadata = Keyword.get(opts, :commit_metadata, %{})
+    rest_opts = Keyword.delete(opts, :commit_metadata)
+    CommitStoreClient.create_commit(store, uuid, update, nil, metadata, rest_opts)
     uuid
   end
 
