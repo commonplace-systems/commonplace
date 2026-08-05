@@ -99,6 +99,17 @@ defmodule Commonplace.Bd.WriteGuard do
 
   @frozen_after_close [:status, :done_when, :done_witness]
 
+  @doc """
+  The single declared set of fields frozen once a ticket closes.
+  `check_frozen/2` (below) and `Commonplace.Bd.Invariants`'s
+  closed-matches-pin comparison both read THIS list rather than each
+  keeping their own copy — a widened set only has to change here, and
+  a second silently-narrower copy can't drift back out of sync with
+  what's actually enforced.
+  """
+  @spec frozen_after_close() :: [atom()]
+  def frozen_after_close, do: @frozen_after_close
+
   defp check_frozen(%Issue{status: "closed"}, changes) do
     changes
     |> Map.keys()

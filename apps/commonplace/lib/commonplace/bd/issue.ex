@@ -141,12 +141,61 @@ defmodule Commonplace.Bd.Issue do
     signing_opts = Keyword.take(opts, [:signing_context])
     now = now_iso8601()
 
-    update(root_uuid, id, %{
-      status: "closed",
-      closed_at: now,
-      closed_reason: reason,
-      done_witness: done_witness
-    }, store, signing_opts)
+    with {:ok, dir_uuid} <- Workspace.issue_dir_uuid(root_uuid, id, store) |> wrap_lookup(),
+         {:ok, current} <- Schemas.load_issue(dir_uuid, store) do
+      closed_state = %{
+        current
+        | status: "closed",
+          closed_at: now,
+          closed_reason: reason,
+          done_witness: done_witness,
+          updated_at: now
+      }
+
+      # CX-gvbf (rework): the terminal-state pin
+      # (Commonplace.Bd.Invariants' "closed-matches-pin" gate target).
+      # Computed here, from the SAME field values this close is about
+      # to write, so the pin's frozen subset
+      # (status/done_when/done_witness — the only fields the invariant
+      # reads) always matches what `update/5` below actually persists.
+      # `update/5` unconditionally re-stamps `updated_at` with its own
+      # `now_iso8601()` call a few microseconds after this one, so the
+      # pin's `updated_at` can drift from the persisted value by that
+      # much — harmless, since `updated_at` is outside the frozen
+      # subset the invariant compares and isn't load-bearing for
+      # anything else here.
+      #
+      # The pin does NOT land as a doc field any more (that made it
+      # requester-writable state used as enforcement input — the same
+      # merge that reopens a ticket could rewrite the pin that would
+      # have caught it). Instead it rides the SIGNED CLOSE COMMIT's
+      # `metadata`, mirroring the pr-provenance stamp
+      # (`Commonplace.Bd.CloseGate`'s moduledoc /
+      # `ViewActionDispatch.do_accept_merge/7`): metadata is
+      # content-addressed (`Commonplace.Store.Commit.content_address/4`)
+      # and covered by the signer's signature over the commit id, so
+      # it is unforgeable without the signer's key and needs no trust
+      # in the doc's own (editable) recorded status.
+      # `Commonplace.Store.Commit.new/5` requires non-empty metadata to
+      # carry a `:kind` — `:regular` matches every other non-snapshot
+      # commit's tag.
+      pin = Schemas.canonical_issue_json(closed_state)
+      commit_metadata = %{kind: :regular, bd_terminal_pin: pin}
+      update_opts = Keyword.put(signing_opts, :commit_metadata, commit_metadata)
+
+      update(
+        root_uuid,
+        id,
+        %{
+          status: "closed",
+          closed_at: now,
+          closed_reason: reason,
+          done_witness: done_witness
+        },
+        store,
+        update_opts
+      )
+    end
   end
 
   @doc "Lists every issue currently in the workspace."

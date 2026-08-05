@@ -161,28 +161,7 @@ defmodule Commonplace.Bd.Schemas do
 
   # ---- Issue encoding ----
 
-  def encode_issue(%Issue{} = i) do
-    base = %{
-      "id" => i.id,
-      "title" => i.title,
-      "status" => i.status,
-      "priority" => i.priority,
-      "type" => i.type,
-      "owner" => i.owner,
-      "created_at" => i.created_at,
-      "updated_at" => i.updated_at,
-      "closed_at" => i.closed_at,
-      "closed_reason" => i.closed_reason,
-      "labels" => i.labels,
-      "needs" => i.needs,
-      "done_when" => i.done_when,
-      "done_witness" => i.done_witness,
-      "claimed_by" => i.claimed_by,
-      "legacy_id" => i.legacy_id
-    }
-
-    Map.merge(base, i.extra) |> Jason.encode!()
-  end
+  def encode_issue(%Issue{} = i), do: i |> issue_to_map() |> Jason.encode!()
 
   def decode_issue(json) when is_binary(json) do
     case Jason.decode(json) do
@@ -217,6 +196,78 @@ defmodule Commonplace.Bd.Schemas do
         err
     end
   end
+
+  defp issue_to_map(%Issue{} = i) do
+    base = %{
+      "id" => i.id,
+      "title" => i.title,
+      "status" => i.status,
+      "priority" => i.priority,
+      "type" => i.type,
+      "owner" => i.owner,
+      "created_at" => i.created_at,
+      "updated_at" => i.updated_at,
+      "closed_at" => i.closed_at,
+      "closed_reason" => i.closed_reason,
+      "labels" => i.labels,
+      "needs" => i.needs,
+      "done_when" => i.done_when,
+      "done_witness" => i.done_witness,
+      "claimed_by" => i.claimed_by,
+      "legacy_id" => i.legacy_id
+    }
+
+    Map.merge(base, i.extra)
+  end
+
+  @doc """
+  CX-gvbf: canonical JSON of `issue`'s LOGICAL state, for use as a
+  terminal-state pin or any other content-addressed comparison over
+  the app's own decoded structs (never leaf CRDT bytes — see the long
+  comment on `write_text_doc/4` for why a bytes-CID is the wrong tool
+  here).
+
+  The pin is no longer stored as a doc field (that made it
+  requester-writable state used as enforcement input — the same merge
+  that reopens a ticket could also rewrite the pin that would have
+  caught it). It now rides the SIGNED CLOSE COMMIT's `metadata`
+  instead (`Commonplace.Bd.Issue.close/4` stamps it via
+  `:commit_metadata`; `Commonplace.Bd.Invariants` reads it back by
+  walking commit history) — so there is no `"terminal_pin"` key on the
+  issue itself to exclude from its own hash any more; this just hashes
+  the issue's full logical state.
+
+  Determinism is REQUIRED, not cosmetic: two replicas (or the same
+  replica at two different times) computing this from the same
+  logical state must produce byte-identical output, or the
+  closed-matches-pin comparison in `Commonplace.Bd.Invariants` becomes
+  meaningless. Plain `Jason.encode!/1` over a regular map does not
+  promise that — Erlang map iteration order is a property of the map's
+  internal representation, not a stable contract — so this sorts every
+  object's keys explicitly before encoding via `Jason.OrderedObject`
+  (which Jason's encoder serializes in list order, unlike a bare map).
+  """
+  @spec canonical_issue_json(Issue.t()) :: String.t()
+  def canonical_issue_json(%Issue{} = issue) do
+    issue
+    |> issue_to_map()
+    |> canonicalize()
+    |> Jason.encode!()
+  end
+
+  # Recursively rewrites maps into `Jason.OrderedObject`s with
+  # lexicographically-sorted keys, and walks into lists, so nested
+  # structures (e.g. `needs`, `extra`) are just as deterministic as
+  # the top level.
+  defp canonicalize(map) when is_map(map) and not is_struct(map) do
+    map
+    |> Enum.map(fn {k, v} -> {to_string(k), canonicalize(v)} end)
+    |> Enum.sort_by(fn {k, _v} -> k end)
+    |> Jason.OrderedObject.new()
+  end
+
+  defp canonicalize(list) when is_list(list), do: Enum.map(list, &canonicalize/1)
+  defp canonicalize(other), do: other
 
   # ---- Comment encoding ----
 
@@ -450,12 +501,19 @@ defmodule Commonplace.Bd.Schemas do
     uuid
   end
 
-  # `opts` (default `[]`) is threaded, untouched, to
+  # `opts` (default `[]`) is threaded to
   # `CommitStoreClient.create_chained_commit/5` — notably
-  # `:signing_context` for writes that must land as signed commits.
-  # The default `[]` reproduces prior (unsigned) behavior, so every
-  # existing 3-arg caller is unaffected (byte-compatible, same pattern
-  # as `Tree.Merge.merge/4` / `Tree.Fork.fork/2`).
+  # `:signing_context` for writes that must land as signed commits,
+  # and (CX-gvbf rework) `:commit_metadata` for the caller-supplied
+  # commit `metadata` map, mirroring how `ViewActionDispatch`'s
+  # `do_accept_merge/7` threads `opts[:metadata]` into
+  # `Tree.Merge.merge/4` for the pr-provenance stamp. Pulled out of
+  # `opts` and passed as `create_chained_commit/5`'s explicit 4th
+  # (metadata) argument; the REST of `opts` (signing_context etc.)
+  # still rides through untouched as the 5th. Default `[]` has no
+  # `:commit_metadata` key, so `Keyword.get(opts, :commit_metadata, %{})`
+  # is `%{}` — byte-compatible for every existing caller, same pattern
+  # as `Tree.Merge.merge/4` / `Tree.Fork.fork/2`.
   #
   # ⚠️ READ THIS BEFORE MAKING CONCURRENT MERGES OF `__issue.json`
   # CLEANER — per-field YMap storage, minimal-diff writes, or any other
@@ -497,7 +555,9 @@ defmodule Commonplace.Bd.Schemas do
     doc = if current != "", do: ContentType.delete_text(doc, 0, String.length(current)), else: doc
     doc = if json != "", do: ContentType.insert_text(doc, 0, json), else: doc
     update = Encoding.encode_update(doc)
-    CommitStoreClient.create_chained_commit(store, uuid, update, %{}, opts)
+    metadata = Keyword.get(opts, :commit_metadata, %{})
+    rest_opts = Keyword.delete(opts, :commit_metadata)
+    CommitStoreClient.create_chained_commit(store, uuid, update, metadata, rest_opts)
     :ok
   end
 

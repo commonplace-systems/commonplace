@@ -159,15 +159,41 @@ defmodule Commonplace.Bd.CloseCommitImportTest do
     assert update_commit.parent_id == create_commit.id
     assert close_commit.parent_id == update_commit.id
 
-    # ---- Inspect actual metadata on all three (today's expected
-    # shape: plain %{} on every bd write, close included). ----
+    # ---- Inspect actual metadata on all three. ----
     IO.puts("create_commit.metadata = #{inspect(create_commit.metadata)}")
     IO.puts("update_commit.metadata = #{inspect(update_commit.metadata)}")
     IO.puts("close_commit.metadata = #{inspect(close_commit.metadata)}")
 
+    # Ordinary bd writes still carry legacy-empty metadata.
     assert create_commit.metadata == %{}
     assert update_commit.metadata == %{}
-    assert close_commit.metadata == %{}
+
+    # CX-gvbf: the CLOSE commit deliberately carries KINDED metadata —
+    # it stamps the terminal-state pin so "closed is forever" has a
+    # comparand that lives in signed history rather than in rewritable
+    # doc state.
+    #
+    # This assertion was `close_commit.metadata == %{}` when this file
+    # was written (2026-08-05), and that was correct for the tree at the
+    # time: the pin had been built and REVERTED because kinded metadata
+    # on a legacy-parented chain was rejected by every peer on import
+    # (CX-hqko). This test is what caught that.
+    #
+    # It is deliberately made STRONGER rather than merely updated. The
+    # combination below — a close commit that carries kinded metadata
+    # AND still imports — is exactly the regression that occurred, so
+    # pinning both halves together is what makes this file able to catch
+    # it again. Asserting only "it imports" would pass trivially if the
+    # pin were quietly dropped; asserting only the metadata shape would
+    # pass while the fleet rejected every close.
+    assert close_commit.metadata[:kind] == :regular
+    assert is_binary(close_commit.metadata[:bd_terminal_pin])
+
+    # And the shape that made it unimportable: kinded metadata with NO
+    # derivable snapshot_parent (the parent is a legacy-%{} bd write).
+    # Under CX-hqko's "validation judges claims, not absences" this is a
+    # legitimate state — which is precisely what the import below proves.
+    refute Map.has_key?(close_commit.metadata, :snapshot_parent)
 
     # ---- Round-trip each commit, with its own full ancestry
     # faithfully replayed first, into its own independent target
