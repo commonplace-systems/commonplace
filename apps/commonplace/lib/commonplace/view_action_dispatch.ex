@@ -769,6 +769,93 @@ defmodule Commonplace.ViewActionDispatch do
     {:error, "ticket_release requires args map with ticket"}
   end
 
+  # CX-6cz3 (tix-authority migration design §7, rulings @6418506) —
+  # `ticket_create` / `ticket_import`: the GATED write surface for
+  # ticket creation. Before this, creation had two doors and neither
+  # went past `Commonplace.Bd.WriteGuard`: MCP `bd_create` ->
+  # `Bd.Issue.create/4` (minted id), and `Bd.Importer`'s private
+  # `create_with_fixed_id` (supplied id, raw store writes). The
+  # cutover's single-write-path property is dishonest while either is
+  # open, so both move here.
+  #
+  # `ticket_create`: args `title` (+ optional `type` / `priority` /
+  # `description` / `done_when` / `needs`). The id is minted first
+  # (`IdMint.mint_issue_id/3`, which probes for existence, so ids are
+  # collision-proof by construction) so the CYCLE GATE sees the real
+  # dependent id rather than a placeholder, and so create and import
+  # share ONE write primitive (`Issue.create_with_id/5`).
+  #
+  # `status` is FORCED to "open": creation is not a close. There is
+  # exactly one status->closed path (`ticket_close`, S3), and a create
+  # verb that accepted `status: "closed"` would be a second one that
+  # skips the close gate entirely. The guard would refuse it anyway
+  # (`allow: []`), but refusing a value we should never have read from
+  # the client is worse than never reading it.
+  defp do_dispatch("ticket_create", %{args: args} = context) when is_map(args) do
+    store = Map.get(context, :store) || CommitStoreClient
+
+    with {:ok, title} <- fetch_arg(args, "title"),
+         {:ok, root_uuid} <- resolve_bd_root(context),
+         {:ok, meta} <- Commonplace.Bd.Workspace.load_meta(root_uuid, store),
+         {:ok, id} <- Commonplace.Bd.IdMint.mint_issue_id(root_uuid, meta.prefix, store) do
+      attrs = %{
+        title: title,
+        type: Map.get(args, "type") || "task",
+        priority: Map.get(args, "priority") || "p2",
+        status: "open",
+        done_when: Map.get(args, "done_when") || "manual",
+        needs: Map.get(args, "needs") || []
+      }
+
+      issue = Commonplace.Bd.Issue.build_with_id(id, attrs)
+
+      case Commonplace.Bd.WriteGuard.check_create(issue, root_uuid, store, allow: []) do
+        :ok ->
+          {:ok, created, _dir} =
+            Commonplace.Bd.Issue.create_with_id(
+              root_uuid,
+              issue,
+              Map.get(args, "description") || "",
+              store,
+              signing_opts(context)
+            )
+
+          {:ok, :tree_mutation, %{action: "ticket_create", ticket: created.id, issue: created}}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
+      {:error, reason} when is_binary(reason) -> {:error, reason}
+      {:error, reason} -> {:error, "ticket_create failed: #{inspect(reason)}"}
+    end
+  end
+
+  defp do_dispatch("ticket_create", _context) do
+    {:error, "ticket_create requires args map with title"}
+  end
+
+  # `ticket_import`: a BATCH of supplied-id records (`args["records"]`,
+  # already-decoded bd records; `args["jsonl"]` is the convenience form,
+  # parsed by `Bd.Importer.parse_records/1` — the same parser, kept as
+  # pure transformation). Per record: no-op check, then the gate, then
+  # the write. See `run_import_batch/4` for the reporting contract.
+  defp do_dispatch("ticket_import", %{args: args} = context) when is_map(args) do
+    store = Map.get(context, :store) || CommitStoreClient
+
+    with {:ok, records} <- import_records(args),
+         {:ok, root_uuid} <- resolve_bd_root(context) do
+      {:ok, :tree_mutation, run_import_batch(records, root_uuid, store, signing_opts(context))}
+    else
+      {:error, reason} when is_binary(reason) -> {:error, reason}
+      {:error, reason} -> {:error, "ticket_import failed: #{inspect(reason)}"}
+    end
+  end
+
+  defp do_dispatch("ticket_import", _context) do
+    {:error, "ticket_import requires args map with records (or jsonl)"}
+  end
+
   # CX-2qjd: outline actions route through Commonplace.Outline.* — the
   # SAME mutation implementation OutlineLive's keybinds call directly
   # (outliner.md §5: one implementation, two entry points). The agent's
@@ -904,6 +991,279 @@ defmodule Commonplace.ViewActionDispatch do
       {:error, reason} when is_binary(reason) -> {:error, reason}
       {:error, reason} -> {:error, "#{action} failed: #{inspect(reason)}"}
     end
+  end
+
+  # --- ticket_create / ticket_import helpers (CX-6cz3) ---
+
+  # The bd root. Every other ticket verb reads
+  # `Commonplace.Workspace.root_uuid/0`; these two additionally honor
+  # a CONTEXT-supplied root/store so in-process callers
+  # (`Bd.Importer`, the CLI, tests) can drive the gated path against
+  # their own workspace. Context is assembled by the calling CODE —
+  # unlike `args`, which is client data — so this is not a
+  # client-steerable knob.
+  defp resolve_bd_root(context) do
+    case Map.get(context, :root_uuid) do
+      root when is_binary(root) -> {:ok, root}
+      _ -> Workspace.root_uuid()
+    end
+  end
+
+  # RULED (CX-6cz3 build condition 1): import's declared allow posture
+  # is ENUMERATED from the tix record spec (`Commonplace.Bd.Schemas.Issue`),
+  # never inferred from whatever fields the migrating records happen to
+  # carry — pins-from-spec, not-from-diff. These are the spec fields an
+  # import is permitted to assert because a bd record legitimately
+  # carries them:
+  #
+  #   :status         — a bd ticket may already be closed/in_progress.
+  #   :closed_at      — the bd close timestamp.
+  #   :closed_reason  — the bd close reason.
+  #   :done_witness   — a witness list carried by an already-closed record.
+  #   :claimed_by     — the display mirror of a bd assignee/claim.
+  #
+  # Everything else protected stays refused. NOTE (reviewed, not an
+  # oversight): only `:status`, `:done_witness` and `:claimed_by` are in
+  # `WriteGuard.protected_fields/0` today — `:closed_at` /
+  # `:closed_reason` are declarative entries here, listing what an
+  # import may carry per the spec, and are inert until/unless the
+  # protected set widens. `Commonplace.Bd.TicketCreateImportVerbsTest`
+  # asserts the enforced intersection, so a widening turns red here
+  # rather than silently admitting a newly-protected field.
+  @import_allow_posture [:status, :closed_at, :closed_reason, :done_witness, :claimed_by]
+
+  @doc """
+  The enumerated allow posture `ticket_import` declares (CX-6cz3
+  build condition 1). Public so it is reviewable and testable as
+  DATA rather than inferred from behavior.
+  """
+  @spec import_allow_posture() :: [atom()]
+  def import_allow_posture, do: @import_allow_posture
+
+  defp import_records(%{"records" => records}) when is_list(records), do: {:ok, records}
+
+  defp import_records(%{"jsonl" => jsonl}) when is_binary(jsonl) do
+    {records, _parse_errors} = Commonplace.Bd.Importer.parse_records(jsonl)
+    {:ok, records}
+  end
+
+  defp import_records(_), do: {:error, "ticket_import requires args map with records (or jsonl)"}
+
+  # RULED reporting shape (CX-6cz3, ruling (b) + boss's denominator
+  # rider): the batch DECLARES its expected-landed set — the declared
+  # input, named — before it runs, and reports landed / refused / noop
+  # against that denominator. `unaccounted` is the acceptance property
+  # made checkable at runtime rather than only in a test: LANDED ∪
+  # REFUSED ∪ NOOP must equal the declared input set. A refused record
+  # is a named TODO, never a smaller denominator, and a refusal on
+  # record N does NOT abort the batch.
+  defp run_import_batch(records, root_uuid, store, opts) do
+    indexed = Enum.with_index(records)
+    declared_ids = Enum.map(indexed, fn {record, idx} -> declared_id(record, idx) end)
+
+    {landed, refused, noop} =
+      Enum.reduce(indexed, {[], [], []}, fn {record, idx}, acc ->
+        import_one(record, idx, root_uuid, store, opts, acc)
+      end)
+
+    landed = Enum.reverse(landed)
+    refused = Enum.reverse(refused)
+    noop = Enum.reverse(noop)
+
+    accounted =
+      MapSet.new(Enum.map(landed, & &1.id) ++ Enum.map(refused, & &1.id) ++ noop)
+
+    %{
+      action: "ticket_import",
+      declared: length(declared_ids),
+      declared_ids: declared_ids,
+      landed: landed,
+      refused: refused,
+      noop: noop,
+      unaccounted:
+        MapSet.difference(MapSet.new(declared_ids), accounted) |> MapSet.to_list() |> Enum.sort()
+    }
+  end
+
+  # A record with no usable id still gets a NAME in the denominator —
+  # otherwise "every input accounted for" degrades into "every input
+  # we could name accounted for", which is the silent drop the rider
+  # exists to forbid.
+  defp declared_id(record, idx) when is_map(record) do
+    case Map.get(record, "id") do
+      id when is_binary(id) and id != "" -> id
+      _ -> "<record ##{idx}: no id>"
+    end
+  end
+
+  defp declared_id(_record, idx), do: "<record ##{idx}: no id>"
+
+  defp import_one(record, idx, root_uuid, store, opts, {landed, refused, noop}) do
+    case Commonplace.Bd.Importer.normalize_record(record) do
+      {:ok, attrs, id} ->
+        case Commonplace.Bd.Issue.show(root_uuid, id, store) do
+          {:ok, current} ->
+            import_existing(record, current, id, attrs, root_uuid, store, opts, {landed, refused, noop})
+
+          {:error, _not_found} ->
+            import_absent(record, id, attrs, root_uuid, store, opts, {landed, refused, noop})
+        end
+
+      {:error, reason} ->
+        {landed,
+         [%{id: declared_id(record, idx), reason: "cannot import record: #{inspect(reason)}"} | refused],
+         noop}
+    end
+  end
+
+  # Absent -> CREATE through `WriteGuard.check_create/4` (every initial
+  # `needs` edge walks the cycle gate) then the one supplied-id write
+  # primitive, carrying the provenance stamp and — for a closed record
+  # — the freeze pin.
+  defp import_absent(record, id, attrs, root_uuid, store, opts, {landed, refused, noop}) do
+    issue = Commonplace.Bd.Issue.build_with_id(id, attrs)
+
+    description = Map.get(attrs, :description) || ""
+
+    case Commonplace.Bd.WriteGuard.check_create(issue, root_uuid, store, allow: @import_allow_posture) do
+      :ok ->
+        write_opts = opts ++ [commit_metadata: import_commit_metadata(record, issue, description)]
+
+        {:ok, _created, _dir} =
+          Commonplace.Bd.Issue.create_with_id(root_uuid, issue, description, store, write_opts)
+
+        {[%{id: id, op: :created} | landed], refused, noop}
+
+      {:error, reason} ->
+        {landed, [%{id: id, reason: reason} | refused], noop}
+    end
+  end
+
+  # Present -> byte-identical NO-OP check first, then the gate.
+  #
+  # RULED (build condition 2): the no-op test is CONTENT-HASH EQUALITY
+  # against the stored record, nothing weaker — a no-op skips the write
+  # AND the gate, so a bug in this comparison is a gate bypass. Both
+  # sides are hashed through `Schemas.canonical_issue_json/1`, the same
+  # deterministic encoding the terminal pin uses (raw `encode_issue/1`
+  # bytes depend on Erlang map iteration order, which is not a contract
+  # and would make "byte-identical" mean "identical this run").
+  #
+  # The proposed state is derived with `Issue.apply_attrs/2` — the SAME
+  # function `Issue.update/5` applies — so "what would be stored" cannot
+  # drift from what is stored. `updated_at` is excluded from the delta
+  # (it has no update clause; `update/5` re-stamps it itself), which
+  # means a ticket edited locally since import will hash-differ and go
+  # THROUGH the gate. That direction is the safe one: false negatives
+  # cost a redundant guarded write, false positives would skip the gate.
+  defp import_existing(record, current, id, attrs, root_uuid, store, opts, {landed, refused, noop}) do
+    changes =
+      attrs
+      # `description` lives in a sibling doc, not the field bag; passing
+      # it as a change would bury it in `extra`. It is compared and
+      # written separately, below.
+      |> Map.drop([:description, :created_at, :updated_at])
+      |> Map.take(Commonplace.Bd.Issue.writable_fields())
+
+    proposed = Commonplace.Bd.Issue.apply_attrs(current, changes)
+
+    current_description =
+      case Commonplace.Bd.Issue.description(root_uuid, id, store) do
+        {:ok, body} -> body
+        _ -> ""
+      end
+
+    # A record that says nothing about the description proposes the
+    # current one — present-key semantics, so a field-only record can
+    # never blank a body (and can never be dragged out of no-op by one).
+    proposed_description = Map.get(attrs, :description, current_description)
+
+    if content_hash(proposed, proposed_description) == content_hash(current, current_description) do
+      {landed, refused, [id | noop]}
+    else
+      # Only the fields that actually DIFFER are proposed to the gate:
+      # a closed ticket re-imported with an unchanged `status` must not
+      # trip the post-close freeze on a value it isn't changing.
+      delta = Map.filter(changes, fn {k, v} -> Map.fetch!(current, k) != v end)
+
+      case Commonplace.Bd.WriteGuard.check(current, delta, root_uuid, store,
+             allow: @import_allow_posture
+           ) do
+        :ok ->
+          write_opts = opts ++ [commit_metadata: import_commit_metadata(record, proposed, proposed_description)]
+
+          case Commonplace.Bd.Issue.update(root_uuid, id, delta, store, write_opts) do
+            {:ok, _updated} ->
+              if proposed_description != current_description do
+                Commonplace.Bd.Issue.write_description(
+                  root_uuid,
+                  id,
+                  proposed_description,
+                  store,
+                  opts
+                )
+              end
+
+              {[%{id: id, op: :updated} | landed], refused, noop}
+
+            {:error, reason} ->
+              {landed, [%{id: id, reason: "write failed: #{inspect(reason)}"} | refused], noop}
+          end
+
+        {:error, reason} ->
+          {landed, [%{id: id, reason: reason} | refused], noop}
+      end
+    end
+  end
+
+  # The ticket's full stored content: the canonical field bag PLUS the
+  # description doc's bytes (a description is stored content too — a
+  # no-op check that ignored it would skip a real change).
+  defp content_hash(%Commonplace.Bd.Schemas.Issue{} = issue, description) do
+    :crypto.hash(
+      :sha256,
+      Commonplace.Bd.Schemas.canonical_issue_json(issue) <> "\n" <> description
+    )
+    |> Base.encode16(case: :lower)
+  end
+
+  # RULED (c): every import commit carries the derivation record —
+  # `source=bd`, a content hash of the SOURCE record (`sources_pin`),
+  # the transform that produced it, and a hash of the OUTPUT state — so
+  # the drift scanner and the round-trip check share one anchor. It
+  # rides the `__issue.json` commit's `metadata`, which is
+  # content-addressed and covered by the signer's signature, exactly
+  # like the pr-provenance stamp and the terminal pin.
+  #
+  # RULED (a): an imported CLOSED ticket is pinned at import, and the
+  # pin attests the state AS ADMITTED AT IMPORT — not bd's original
+  # close, which is what the provenance stamp above is for. It is minted
+  # by `Issue.terminal_pin_metadata/1`, the SAME function `ticket_close`
+  # stamps through; there is no code-level pause knob on either (the
+  # standing "validator to main, deploy to fleet, then pin resumes" rule
+  # is operational), so import inherits close's condition exactly by
+  # riding close's mechanism.
+  defp import_commit_metadata(record, %Commonplace.Bd.Schemas.Issue{} = issue, description) do
+    stamp = %{
+      "source" => "bd",
+      "sources_pin" => raw_record_hash(record),
+      "transform" => "Commonplace.ViewActionDispatch ticket_import (CX-6cz3)",
+      "output" => content_hash(issue, description),
+      "imported_at" => DateTime.utc_now() |> DateTime.to_iso8601()
+    }
+
+    base = %{kind: :regular, bd_import: stamp}
+
+    if issue.status == "closed" do
+      Map.merge(base, Commonplace.Bd.Issue.terminal_pin_metadata(issue))
+    else
+      base
+    end
+  end
+
+  defp raw_record_hash(record) do
+    :crypto.hash(:sha256, Commonplace.Bd.Schemas.canonical_json(record))
+    |> Base.encode16(case: :lower)
   end
 
   defp build_need_ref(prereq_id, nil), do: %{"ticket" => prereq_id}
