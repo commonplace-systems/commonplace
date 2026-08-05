@@ -583,6 +583,19 @@ defmodule Commonplace.MCP do
   # clean result or a skew, and must never take down session startup.
   defp warn_on_version_skew(serve_node) do
     case Commonplace.VersionHandshake.compare(serve_node) do
+      # Wide path (see VersionHandshake's moduledoc "Coverage: wide vs
+      # narrow"): the serve supports resident_digest/1, so the whole
+      # umbrella-app-module set was actually checked. wide_ok still
+      # prints — silently doing nothing here would just be the old "N
+      # of 6" narrowness in a new shape, since a clean wide result and
+      # a clean narrow result cover very different amounts of code.
+      {:wide_ok, report} ->
+        IO.puts(:stderr, Commonplace.VersionHandshake.format_coverage_line(report))
+
+      {:wide_skew, report} ->
+        IO.puts(:stderr, Commonplace.VersionHandshake.format_wide_skew(report))
+
+      # Narrow fallback: older serve without resident_digest/1.
       {:skew, list} ->
         IO.puts(:stderr, Commonplace.VersionHandshake.format_skew(list))
 
