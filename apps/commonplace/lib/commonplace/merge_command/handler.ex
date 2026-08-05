@@ -71,6 +71,16 @@ defmodule Commonplace.MergeCommand.Handler do
   - neither — the merge does not descend from the local head at all.
     Reply `merge_failed`; there is no id worth advertising.
 
+  One asymmetry to know about: `put_built_commit/4` runs the local
+  write gate (`:local_write_gate`) and `write_prebuilt_commit_cas/2`
+  does not, so under `:enforce` the second arm is gated and the first
+  is not — the same logical merge, gated or not depending on which
+  side sorted first. The direction is fail-safe (a denial surfaces as
+  `merge_failed`, never as a phantom id), and a node-signed `:merge`
+  commit is expected to clear the gate, but that has not been proven
+  under `:enforce` here. Reconciling the two verbs' gating belongs to
+  whoever consolidates the head-advance write sites (CX-jfok).
+
   A CAS miss in either arm means `:latest` moved under us mid-merge and
   is reported as `merge_failed` with `:merge_head_moved`. It is NEVER
   swallowed. Prior to CX-xxav `{:error, :parent_moved}` was mapped to
