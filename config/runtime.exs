@@ -35,7 +35,44 @@ end
 # `{:error, :bursar_unavailable}` (World.move → do_go → "You can't go
 # <dir>"). A Mode-B serve is single-owner just like the CLI serve, so it
 # is the correct node to own the Bursar.
-if System.get_env("PHX_SERVER") && System.get_env("COMMONPLACE_DATA_DIR") do
+#
+# CX-p6g0: this gate USED to read `System.get_env("PHX_SERVER")` alone,
+# and that one env var caused a silent take/move outage on the live
+# :5199 serve. `mix phx.server` starts the endpoint but does NOT set
+# PHX_SERVER, so a hand-rolled relaunch with COMMONPLACE_DATA_DIR set
+# and PHX_SERVER omitted booted with NO Bursar, NO orchestrator and NO
+# workspace lock — while still answering HTTP 200. The serve looked
+# healthy from outside and every take/move crashed on
+# `:bursar_unavailable`. HTTP 200 was the DESCRIPTION; Mode-B-inactive
+# was the STATE.
+#
+# So don't ask the operator to remember a flag that names something the
+# system already knows. `Mix.Tasks.Phx.Server.run/1` sets
+# `:phoenix, :serve_endpoints` (phx.server.ex:35) BEFORE it calls
+# `Mix.Tasks.Run.run/1` (:36) — and that call is what triggers
+# app.config, which evaluates THIS file. So the flag is already visible
+# here, and `mix phx.server` can no longer drift from `PHX_SERVER=true`.
+# Releases keep working: they set PHX_SERVER and never run the Mix task.
+serving? =
+  System.get_env("PHX_SERVER") || Application.get_env(:phoenix, :serve_endpoints, false)
+
+data_dir = System.get_env("COMMONPLACE_DATA_DIR")
+
+# Belt for the case where the detection above is wrong: a workspace was
+# named but Mode B did not activate, which is precisely the silent state
+# that caused the outage. Say so loudly rather than serving a hollow
+# node. (If detection works, this can never fire.)
+if data_dir && !serving? do
+  IO.warn("""
+  COMMONPLACE_DATA_DIR is set (#{data_dir}) but this boot is not serving,
+  so Mode B did NOT activate: no Bursar, no orchestrator, no workspace
+  lock. HTTP may still answer while every take/move fails with
+  :bursar_unavailable (CX-p6g0). Start with PHX_SERVER=true or via
+  `mix phx.server` if you meant this to be a serve.
+  """)
+end
+
+if serving? && data_dir do
   config :commonplace, workspace_lock_on_boot: true
   config :commonplace, bursar_on_boot: true
   # CX-3xwu (A): the continuous ghost-reaper runs on the Mode-B serve (it needs
