@@ -258,4 +258,143 @@ defmodule Commonplace.Bots.NoteDocConcurrentAppendTest do
     # result can only mean lost-update, never a masked error.
     assert all_ok?, "expected every append_entry call across all #{rounds} rounds to return :ok"
   end
+
+  # --- Coordinator follow-up: is the SEVERE (total_present=0) mode a lost
+  # update, or is the `__note.json` blob itself unparseable (CX-o3ar's
+  # whole-blob-concatenation signature)? ---
+  #
+  # `Schemas.write_meta_doc` does a minimal-DIFF text replace against the
+  # doc's CURRENT reconstructed content — not an atomic whole-field CAS at
+  # the JSON level. If two concurrent writers' text edits interleave at the
+  # Yjs item level (rather than one cleanly clobbering the other, as the
+  # mild-mode 1-survivor-per-burst result suggested), the reconstructed
+  # text could come out as neither writer's JSON — e.g. two whole
+  # `{"entries":[...]}"` blobs concatenated, or a truncated splice —
+  # which would explain "previously-readable entries become unreadable,
+  # then subsequent appends themselves start erroring" (a decode failure
+  # inside `World.get_meta_map`/`merge_meta` surfaces as a non-:ok result).
+  #
+  # `NoteDoc.read_entries/2` MASKS decode failure as `[]` (a deliberate
+  # "unreadable → empty" degrade), so `total_present=0` alone cannot
+  # distinguish "all entries lost but the doc still parses" from "the doc
+  # no longer parses at all". This test captures the RAW pre-decode text
+  # every round instead of trusting `read_entries`.
+  test "CX-o3ar CHECK: is severe-mode (present=0) a parse failure, or a clean lost update?", ctx do
+    {:ok, node_ctx} = Commonplace.Crypto.NodeIdentity.signing_context()
+    _ = node_ctx
+
+    {:ok, sc} =
+      BotIdentity.resolve_signing_context("camillo", ctx.mud_root, ctx.store,
+        secret_store: ctx.secrets
+      )
+
+    {:ok, prov} = Citizen.provision("camillo", ctx.mud_root, ctx.store, secret_store: ctx.secrets)
+    {:ok, mud_ctx} = MudContext.resolve(%{name: "camillo"}, sc, ctx.mud_root, ctx.store)
+
+    home_room_uuid = prov.home_room_uuid
+    empty_entries = ~s({"entries":[]})
+
+    n = 8
+    attempts = 40
+
+    samples =
+      for attempt <- 1..attempts do
+        dir_name = "corruption-check-#{attempt}"
+        {:ok, note_uuid} = NoteDoc.ensure_zoned_dir(home_room_uuid, dir_name, empty_entries, mud_ctx)
+
+        expected = for i <- 1..n, do: "a#{attempt}-w#{i}-#{System.unique_integer([:positive])}"
+
+        results =
+          expected
+          |> Task.async_stream(
+            fn marker -> NoteDoc.append_entry(note_uuid, %{"marker" => marker}, mud_ctx) end,
+            max_concurrency: n,
+            timeout: 30_000
+          )
+          |> Enum.map(fn {:ok, result} -> result end)
+
+        ok_count = Enum.count(results, &(&1 == :ok))
+        error_results = Enum.reject(results, &(&1 == :ok))
+
+        {raw_status, raw} = raw_note_content(note_uuid, mud_ctx)
+        decode_result = if is_binary(raw), do: Jason.decode(raw), else: {:error, :no_raw}
+
+        entries_key_count =
+          if is_binary(raw) do
+            raw |> String.split(~s("entries")) |> length() |> Kernel.-(1)
+          else
+            0
+          end
+
+        byte_size = if is_binary(raw), do: byte_size(raw), else: 0
+        present = markers_present(note_uuid, mud_ctx)
+
+        mode =
+          cond do
+            match?({:error, _}, decode_result) -> :unparseable
+            entries_key_count > 1 -> :doubled_key
+            present == [] -> :severe_but_valid_json
+            length(present) < n -> :mild_lost_update
+            true -> :no_loss
+          end
+
+        %{
+          attempt: attempt,
+          mode: mode,
+          ok_count: ok_count,
+          error_results: error_results,
+          appended: n,
+          present_count: length(present),
+          raw_status: raw_status,
+          raw: raw,
+          decode_result: decode_result,
+          entries_key_count: entries_key_count,
+          byte_size: byte_size
+        }
+      end
+
+    by_mode = Enum.group_by(samples, & &1.mode)
+
+    IO.puts(
+      "\n[CX-o3ar mode tally across #{attempts} attempts, n=#{n}] " <>
+        (by_mode
+         |> Enum.map(fn {mode, list} -> "#{mode}=#{length(list)}" end)
+         |> Enum.join(" "))
+    )
+
+    mild_sample = Enum.find(samples, &(&1.mode in [:mild_lost_update, :no_loss]))
+    severe_sample =
+      Enum.find(samples, &(&1.mode in [:unparseable, :doubled_key, :severe_but_valid_json]))
+
+    report_sample = fn label, sample ->
+      if sample do
+        truncated =
+          case sample.raw do
+            r when is_binary(r) -> String.slice(r, 0, 400)
+            other -> inspect(other)
+          end
+
+        IO.puts("""
+
+        [CX-o3ar #{label} sample] attempt=#{sample.attempt} mode=#{sample.mode}
+          ok=#{sample.ok_count}/#{sample.appended} errors=#{inspect(sample.error_results)}
+          present_via_read_entries=#{sample.present_count}
+          raw_status=#{inspect(sample.raw_status)} byte_size=#{sample.byte_size}
+          entries_key_occurrences=#{sample.entries_key_count}
+          jason_decode=#{inspect(sample.decode_result) |> String.slice(0, 200)}
+          raw_content (first 400 bytes): #{inspect(truncated)}
+        """)
+      else
+        IO.puts("\n[CX-o3ar #{label} sample] none observed in #{attempts} attempts")
+      end
+    end
+
+    report_sample.("MILD", mild_sample)
+    report_sample.("SEVERE", severe_sample)
+
+    # Evidence-gathering only — no verdict asserted here. The mode tally
+    # and both raw samples above are the deliverable; see the written
+    # report for interpretation.
+    assert is_list(samples)
+  end
 end
