@@ -496,7 +496,21 @@ defmodule Commonplace.Bd.TicketCreateImportVerbsTest do
       # fact that the posture has to be re-reviewed rather than silently
       # letting a newly-protected field ride in on an import.
       enforced = Enum.filter(ViewActionDispatch.import_allow_posture(), &(&1 in WriteGuard.protected_fields()))
-      assert enforced == [:status, :done_witness, :claimed_by]
+
+      assert enforced == [:status, :done_witness, :claimed_by],
+             """
+             WriteGuard.protected_fields() changed, so the set of posture fields the
+             import gate actually ENFORCES changed with it (now: #{inspect(enforced)}).
+
+             This test is NOT a stale list to update — it exists because
+             :closed_at/:closed_reason sit in import_allow_posture/0 as
+             declarative-only entries (a bd record legitimately carries them) and are
+             INERT until WriteGuard protects them. If the protected set just widened,
+             a previously-inert posture field silently became an enforcement grant to
+             every import. Re-review import_allow_posture/0 against the CX-6cz3
+             ruling (@6418506, condition 1: posture from SPEC, reviewed — never from
+             drift) and only then update the expected list here.
+             """
     end
 
     test "the posture does NOT admit a protected field it never enumerated", %{
