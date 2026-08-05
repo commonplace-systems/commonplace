@@ -456,6 +456,40 @@ defmodule Commonplace.Bd.Schemas do
   # The default `[]` reproduces prior (unsigned) behavior, so every
   # existing 3-arg caller is unaffected (byte-compatible, same pattern
   # as `Tree.Merge.merge/4` / `Tree.Fork.fork/2`).
+  #
+  # ⚠️ READ THIS BEFORE MAKING CONCURRENT MERGES OF `__issue.json`
+  # CLEANER — per-field YMap storage, minimal-diff writes, or any other
+  # change that replaces the delete-all/insert-all below.
+  #
+  # The whole-blob rewrite is currently, by ACCIDENT, the only thing
+  # enforcing the post-close freeze ("a ticket closes once in v1; there
+  # is no reopen path" — WriteGuard.check_frozen/2). NO merge path
+  # consults WriteGuard: it has exactly two callers, ViewActionDispatch
+  # and Bd.Migrate, both local write paths (CX-hk1z). So a merge can
+  # compose a state WriteGuard would refuse, and nothing re-checks it.
+  #
+  # What stops that from becoming an observable REOPEN today is this
+  # function's shape. Two divergent lines each rewrite the WHOLE blob,
+  # so a merge concatenates both complete JSON documents and the doc
+  # stops parsing — `Issue.show/3` returns a Jason.DecodeError (CX-o3ar,
+  # runtime-verified: merge_cycle_invariant_test.exs). Loud and broken
+  # beats silent and wrong.
+  #
+  # Make the merge cleaner and that protection is withdrawn: "closed on
+  # line 1" merged with "in_progress on line 2" stops being garbage and
+  # becomes a WELL-FORMED ticket with one status winning — a silent
+  # reopen. The change would MANUFACTURE the bug the corruption was
+  # accidentally covering, and convert a visible failure into an
+  # invisible one.
+  #
+  # PRECONDITION: the closed-matches-pin invariant (a terminal-state
+  # hash of the CANONICAL LOGICAL state written at close, not a bytes
+  # CID — a bytes CID would be invalidated by the very change it must
+  # survive) must exist and be checked BEFORE this write path is made
+  # merge-friendly. With the pin in place the change is safe and
+  # routine. Without it, it is a regression that will not announce
+  # itself. See CX-o3ar and the 2026-08-05 resting-state-invariants
+  # design ruling.
   def write_text_doc(uuid, json, store \\ CommitStoreClient, opts \\ [])
       when is_binary(uuid) and is_binary(json) do
     {:ok, doc} = DocBuilder.reconstruct_doc(store, uuid, client_id: WriterHand.for_doc(uuid))
