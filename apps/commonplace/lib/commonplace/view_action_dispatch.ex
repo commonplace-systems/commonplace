@@ -1098,7 +1098,41 @@ defmodule Commonplace.ViewActionDispatch do
 
   defp declared_id(_record, idx), do: "<record ##{idx}: no id>"
 
+  # THE PER-RECORD BOUNDARY. The ruled contract is "a refusal on record
+  # N does not abort the batch; LANDED ∪ REFUSED ∪ NOOP == declared" —
+  # and that has to hold when a WRITE BLOWS UP, not just when the gate
+  # says no. The write path below it can raise (`Issue.create_with_id/5`
+  # and `Schemas.write_text_doc/4` both carry `{:ok, _} = ...` matches
+  # over store reads, so a dead or denying store surfaces as a
+  # MatchError or a GenServer exit, never as an `{:error, _}` return).
+  # Un-caught, any of those takes down the whole dispatch and the batch
+  # report with it — every record that already landed loses its
+  # accounting.
+  #
+  # So the boundary is here, around the whole per-record attempt: a
+  # raise or an exit becomes a NAMED refusal for THAT record and the
+  # batch continues. Proven load-bearing by removing it: the
+  # blows-up-mid-batch test then dies with the raw
+  # `Protocol.UndefinedError` and no report at all.
   defp import_one(record, idx, root_uuid, store, opts, {landed, refused, noop}) do
+    try do
+      do_import_one(record, idx, root_uuid, store, opts, {landed, refused, noop})
+    rescue
+      e ->
+        {landed,
+         [%{id: declared_id(record, idx), reason: "write failed: #{Exception.message(e)}"} | refused],
+         noop}
+    catch
+      :exit, reason ->
+        {landed,
+         [
+           %{id: declared_id(record, idx), reason: "write failed: exited with #{inspect(reason)}"}
+           | refused
+         ], noop}
+    end
+  end
+
+  defp do_import_one(record, idx, root_uuid, store, opts, {landed, refused, noop}) do
     case Commonplace.Bd.Importer.normalize_record(record) do
       {:ok, attrs, id} ->
         case Commonplace.Bd.Issue.show(root_uuid, id, store) do
@@ -1129,10 +1163,24 @@ defmodule Commonplace.ViewActionDispatch do
       :ok ->
         write_opts = opts ++ [commit_metadata: import_commit_metadata(record, issue, description)]
 
-        {:ok, _created, _dir} =
-          Commonplace.Bd.Issue.create_with_id(root_uuid, issue, description, store, write_opts)
-
-        {[%{id: id, op: :created} | landed], refused, noop}
+        # `create_with_id/5` has NO representable failure return today —
+        # the compiler's type checker rejects an `{:error, _}` clause
+        # here as unreachable, because every failure inside it (a dead
+        # store, a denied write, an unencodable field) surfaces as a
+        # raise or a GenServer exit, not a value. So this branch's
+        # failure handling lives at `import_one/6`'s per-record
+        # try/rescue/catch boundary, which turns any of those into a
+        # NAMED refusal for this record and lets the batch continue.
+        #
+        # This stays a `case` with a single clause rather than a bare
+        # match so that IF the primitive's contract ever widens to return
+        # a value, the mismatch raises a CaseClauseError the same
+        # boundary catches — the record is refused, not silently counted
+        # as landed, and the batch report survives either way.
+        case Commonplace.Bd.Issue.create_with_id(root_uuid, issue, description, store, write_opts) do
+          {:ok, _created, _dir} ->
+            {[%{id: id, op: :created} | landed], refused, noop}
+        end
 
       {:error, reason} ->
         {landed, [%{id: id, reason: reason} | refused], noop}
@@ -1194,17 +1242,36 @@ defmodule Commonplace.ViewActionDispatch do
 
           case Commonplace.Bd.Issue.update(root_uuid, id, delta, store, write_opts) do
             {:ok, _updated} ->
-              if proposed_description != current_description do
-                Commonplace.Bd.Issue.write_description(
-                  root_uuid,
-                  id,
-                  proposed_description,
-                  store,
-                  opts
-                )
-              end
+              # The description is a SECOND doc, so this record can land
+              # by halves. If the body write fails after the field bag
+              # landed, the record is REFUSED — reporting `op: :updated`
+              # would call a partial landing a full one — and the reason
+              # states the partiality honestly rather than implying the
+              # field write was rolled back (it was not; there is no
+              # transaction across two docs here).
+              case write_description_if_changed(
+                     root_uuid,
+                     id,
+                     proposed_description,
+                     current_description,
+                     store,
+                     opts
+                   ) do
+                :ok ->
+                  {[%{id: id, op: :updated} | landed], refused, noop}
 
-              {[%{id: id, op: :updated} | landed], refused, noop}
+                {:error, reason} ->
+                  {landed,
+                   [
+                     %{
+                       id: id,
+                       reason:
+                         "PARTIAL landing: field update landed, description write failed " <>
+                           "(#{inspect(reason)}) — the stored body is still the old one"
+                     }
+                     | refused
+                   ], noop}
+              end
 
             {:error, reason} ->
               {landed, [%{id: id, reason: "write failed: #{inspect(reason)}"} | refused], noop}
@@ -1213,6 +1280,16 @@ defmodule Commonplace.ViewActionDispatch do
         {:error, reason} ->
           {landed, [%{id: id, reason: reason} | refused], noop}
       end
+    end
+  end
+
+  defp write_description_if_changed(_root, _id, same, same, _store, _opts), do: :ok
+
+  defp write_description_if_changed(root_uuid, id, proposed, _current, store, opts) do
+    case Commonplace.Bd.Issue.write_description(root_uuid, id, proposed, store, opts) do
+      :ok -> :ok
+      {:error, reason} -> {:error, reason}
+      other -> {:error, {:unexpected_result, other}}
     end
   end
 

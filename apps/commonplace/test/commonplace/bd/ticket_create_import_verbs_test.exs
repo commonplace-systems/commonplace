@@ -213,6 +213,42 @@ defmodule Commonplace.Bd.TicketCreateImportVerbsTest do
       assert reason =~ "id"
     end
 
+    test "a WRITE that blows up mid-batch is a named refusal, not a lost batch report", %{
+      root: root,
+      signing_context: ctx
+    } do
+      # The gate can only refuse what it can judge; this is the other
+      # failure family — a record that passes the gate and then explodes
+      # on the write path. `Issue.create_with_id/5` and
+      # `Schemas.write_text_doc/4` both carry `{:ok, _} = ...` matches
+      # over store reads, so a store-level failure arrives as a raise or
+      # an exit, never as `{:error, _}`. Un-caught it takes down the
+      # whole dispatch — and with it the accounting for every record
+      # that already landed.
+      #
+      # Injected deterministically for ONE record: an `extra` value that
+      # is not JSON-encodable, which raises inside the write path (the
+      # provenance stamp's canonicalization / `encode_issue/1`) after
+      # the gate has passed it.
+      boom = record("CX-boom", %{"weird" => {:not, :json}})
+
+      assert {:ok, :tree_mutation, r} =
+               import_batch([record("CX-before"), boom, record("CX-after-boom")], ctx)
+
+      # The batch REPORT survived, and every input is accounted for.
+      assert r.declared == 3
+      assert r.unaccounted == []
+
+      assert [%{id: "CX-boom", reason: reason}] = r.refused
+      assert reason =~ "write failed"
+
+      # Records on BOTH sides of the blow-up still landed.
+      landed_ids = Enum.map(r.landed, & &1.id) |> Enum.sort()
+      assert landed_ids == ["CX-after-boom", "CX-before"]
+      assert {:ok, _} = Issue.show(root, "CX-before")
+      assert {:ok, _} = Issue.show(root, "CX-after-boom")
+    end
+
     test "a refusal on record N does not abort the batch — later records still land", %{
       root: root,
       signing_context: ctx
