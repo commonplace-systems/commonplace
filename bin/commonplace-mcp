@@ -14,5 +14,22 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ESCRIPT="${SCRIPT_DIR}/../apps/commonplace_mcp/commonplace_mcp"
 
+# Reach the serve over BEAM distribution when epmd and the dist listener are
+# bound to loopback (2026-08-05). The serve runs under the SHORT name
+# `commonplace_dev@commonplace`, and this host resolves `commonplace` to its
+# real interface addresses rather than 127.0.0.1 — so without these the
+# escript asks epmd at an address epmd is not listening on, gets `noport`,
+# and reports "no running `commonplace serve` node found" while the serve is
+# healthy and answering HTTP. Verified: that exact message, against a live
+# serve, before this was added.
+#
+# Both are read at VM BOOT, so they must be in the environment BEFORE exec —
+# setting them inside the escript would be too late.
+#
+# Overridable: an operator with a different topology (a remote serve, a
+# non-loopback bind) can export either and this wrapper defers to it.
+export ERL_INETRC="${ERL_INETRC:-${SCRIPT_DIR}/erl_inetrc}"
+export ERL_EPMD_ADDRESS="${ERL_EPMD_ADDRESS:-127.0.0.1}"
+
 cd "${COMMONPLACE_WORKSPACE:-.}"
 exec "$ESCRIPT" "$@"

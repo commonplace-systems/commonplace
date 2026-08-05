@@ -1,0 +1,41 @@
+%% Erlang inet resolver config for reaching a LOCAL commonplace serve over
+%% BEAM distribution. Consumed via ERL_INETRC (see bin/commonplace-mcp).
+%%
+%% WHY THIS EXISTS (2026-08-05)
+%%
+%% epmd and the serve's distribution listener are bound to loopback
+%% (ERL_EPMD_ADDRESS=127.0.0.1, -kernel inet_dist_use_interface {127,0,0,1}).
+%% But the serve runs under a SHORT name, `commonplace_dev@commonplace`, and
+%% this host's `commonplace` does NOT resolve to 127.0.0.1 — there is no
+%% /etc/hosts entry for it, so the native resolver answers with the machine's
+%% real interface addresses (including its PUBLIC IP). A client therefore
+%% asks epmd at an address epmd does not listen on, gets `noport`, and
+%% concludes the serve is not running.
+%%
+%% That failure is badly disguised: the MCP escript's refuse-without-serve
+%% contract fires and prints "no running `commonplace serve` node found"
+%% while the serve is perfectly healthy and answering HTTP. It reads as an
+%% MCP bug and is actually name resolution.
+%%
+%% TWO NON-OBVIOUS RULES, both established by testing the full matrix rather
+%% than the first plausible cause (bare `erl`, 2026-08-05):
+%%
+%%   1. The `{lookup, ...}` line is REQUIRED. Without it the file's host
+%%      entries are never consulted and the native resolver wins.
+%%
+%%   2. Both names MUST share ONE `{host, ...}` entry. Two separate entries
+%%      mapping the SAME address clobber each other, and the earlier name
+%%      stops resolving — so ADDING a second line for `localhost` to an
+%%      otherwise-working file BREAKS `commonplace`. That is the opposite of
+%%      what you would expect from an additive config change.
+%%
+%%   host only ................................. FAILS
+%%   host + separate localhost entry ........... FAILS
+%%   host + lookup ............................. works
+%%   host + separate localhost entry + lookup .. FAILS
+%%   both names in one host entry + lookup ..... works  <- this file
+%%
+%% ERL_INETRC is read at VM BOOT, so editing this file does nothing for an
+%% already-running process. Restart the client (or the serve) to pick it up.
+{host, {127,0,0,1}, ["commonplace", "localhost"]}.
+{lookup, [file, dns]}.
