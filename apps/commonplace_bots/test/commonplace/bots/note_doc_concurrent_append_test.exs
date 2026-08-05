@@ -106,9 +106,33 @@ defmodule Commonplace.Bots.NoteDocConcurrentAppendTest do
   end
 
   # Reads back "entries", returns the list of `"marker"` strings present.
+  #
+  # Uses fetch_entries/2, NOT read_entries/2, and that is deliberate.
+  # Since the CX-r97r fix, read_entries/2 RAISES on a corrupt note rather
+  # than masking it as `[]` — correct for callers, but it would kill this
+  # test at the first severe-mode burst, and this test's whole job is to
+  # OBSERVE both modes and report their relative frequency. A harness that
+  # dies on the condition it exists to measure cannot measure it.
+  #
+  # Corruption is reported here as a distinct outcome rather than as an
+  # empty list, which is the same distinction the fix introduced.
+  # Returns a marker list. A CORRUPT note yields `[]` here — but unlike
+  # the pre-fix read_entries/2, that is not a silent conflation: callers
+  # that care use `note_readable?/2` alongside, and the CX-o3ar test
+  # classifies on raw parseability directly. Kept list-shaped so the
+  # lost-update arithmetic stays simple.
   defp markers_present(note_uuid, ctx) do
-    NoteDoc.read_entries(note_uuid, ctx)
-    |> Enum.map(&Map.get(&1, "marker"))
+    case NoteDoc.fetch_entries(note_uuid, ctx) do
+      {:ok, entries} -> Enum.map(entries, &Map.get(&1, "marker"))
+      {:error, {:unreadable, _reason}} -> []
+    end
+  end
+
+  # Is the note readable at all? The distinction the CX-r97r fix added,
+  # exposed here so a test can tell "nothing was appended" apart from
+  # "the doc is corrupt" — the exact conflation that cost CX-t3bt weeks.
+  defp note_readable?(note_uuid, ctx) do
+    match?({:ok, _}, NoteDoc.fetch_entries(note_uuid, ctx))
   end
 
   # Fires `n` CONCURRENT append_entry/3 calls against the same note dir,
@@ -220,9 +244,19 @@ defmodule Commonplace.Bots.NoteDocConcurrentAppendTest do
     final_present = markers_present(transcript_uuid, mud_ctx)
     total_missing = all_expected -- final_present
 
+    # Say WHICH failure mode this run hit. "0 present" is ambiguous on its
+    # own — it means either every append was lost (mode 1) or the doc is
+    # corrupt and unreadable (mode 2). Conflating those two is precisely
+    # the bug under test, so the diagnostic must not repeat it.
+    mode =
+      if note_readable?(transcript_uuid, mud_ctx),
+        do: "readable (lost-update mode)",
+        else: "UNREADABLE — doc corrupt (CX-r97r severe mode)"
+
     IO.puts(
       "\n[CX-t3bt multi-round FINAL] total_appended=#{length(all_expected)} " <>
-        "total_present=#{length(final_present)} total_missing=#{length(total_missing)} #{inspect(total_missing)}"
+        "total_present=#{length(final_present)} total_missing=#{length(total_missing)} " <>
+        "doc=#{mode} #{inspect(total_missing)}"
     )
 
     if total_missing != [] do

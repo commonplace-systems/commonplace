@@ -147,15 +147,58 @@ defmodule Commonplace.Bots.NoteDoc do
   """
   @spec read_entries(String.t(), map()) :: [map()]
   def read_entries(note_dir_uuid, ctx) when is_binary(note_dir_uuid) do
+    case fetch_entries(note_dir_uuid, ctx) do
+      {:ok, list} ->
+        list
+
+      {:error, {:unreadable, reason}} ->
+        raise "note doc #{note_dir_uuid} is UNREADABLE (#{inspect(reason)}). " <>
+                "This is data CORRUPTION, not an empty note — see CX-r97r. " <>
+                "Concurrent NoteDoc.append_entry/3 calls can splice the JSON " <>
+                "into an unparseable hybrid. Returning [] here (the previous " <>
+                "behaviour) made a corrupt transcript indistinguishable from a " <>
+                "bot that never ran, which is how CX-t3bt cost weeks of " <>
+                "misdiagnosis. Use fetch_entries/2 to handle this explicitly."
+    end
+  end
+
+  @doc """
+  Like `read_entries/2` but distinguishes ABSENT from CORRUPT.
+
+  Returns `{:ok, list}` when the note is readable — including `{:ok, []}`
+  for a note that legitimately has no entries yet, or no note at all.
+  Returns `{:error, {:unreadable, reason}}` when the note EXISTS but its
+  JSON does not parse.
+
+  That distinction is the whole point (CX-r97r). `World.get_meta_map/3`
+  ALREADY separates the two — a decode failure comes back as
+  `{:error, %Jason.DecodeError{}}` while genuine absence is
+  `:no_meta_entry` / `:no_doc` / `:empty_doc` — and the old
+  `read_entries/2` discarded that with a bare `_ -> []`. A corrupt
+  transcript therefore read as an empty one, nothing anywhere reported
+  corruption, and a reader concluded the bot had never run while it was
+  in fact working.
+  """
+  @spec fetch_entries(String.t(), map()) ::
+          {:ok, [map()]} | {:error, {:unreadable, term()}}
+  def fetch_entries(note_dir_uuid, ctx) when is_binary(note_dir_uuid) do
     case World.get_meta_map(note_dir_uuid, @note_filename, ctx.store) do
       {:ok, map} ->
         case Map.get(map, "entries") do
-          list when is_list(list) -> list
-          _ -> []
+          list when is_list(list) -> {:ok, list}
+          # Readable, but no entries array yet — a real empty.
+          _ -> {:ok, []}
         end
 
-      _ ->
-        []
+      # Genuinely ABSENT: no note doc, no meta entry, or an empty doc.
+      # An empty answer is the truth here.
+      {:error, reason} when reason in [:no_meta_entry, :no_doc, :empty_doc] ->
+        {:ok, []}
+
+      # Anything else means the note EXISTS but could not be read — a
+      # Jason.DecodeError on spliced JSON being the case that matters.
+      {:error, reason} ->
+        {:error, {:unreadable, reason}}
     end
   end
 
