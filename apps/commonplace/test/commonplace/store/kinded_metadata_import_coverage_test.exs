@@ -107,7 +107,7 @@ defmodule Commonplace.Store.KindedMetadataImportCoverageTest do
       assert result in [:ok, :already_exists]
     end
 
-    test "CONTROL B: %{kind: :regular} chained on a %{} parent trips the bug" do
+    test "CONTROL B: %{kind: :regular} chained on a %{} parent now imports cleanly (CX-hqko fix)" do
       store = new_plain_store("ctrl_bug")
       uuid = UUID.uuid4()
       doc = Yelixer.Doc.new()
@@ -130,9 +130,71 @@ defmodule Commonplace.Store.KindedMetadataImportCoverageTest do
       IO.puts("CONTROL B commit.metadata = #{inspect(child_commit.metadata)}")
       refute Map.has_key?(child_commit.metadata, :snapshot_parent)
 
+      # CX-hqko: this used to assert rejection with :missing_snapshot_parent.
+      # Under the fix, "validation judges claims, not absences" — this
+      # commit makes no snapshot_parent claim at all, so it is no longer
+      # held to the strict ancestry check and imports cleanly. Kept (not
+      # deleted) as a record of the behavior change.
       result = round_trip("ctrl_bug", store, child_commit)
       IO.puts("CONTROL B import_commit/3 result: #{inspect(result)}")
-      assert result == {:error, {:namespace_rejected, :missing_snapshot_parent}}
+      assert result in [:ok, :already_exists]
+    end
+
+    test "NEGATIVE CONTROL: a snapshot_parent CLAIM that doesn't resolve is still rejected" do
+      # Proves the harness (and the fix) can still produce a rejection —
+      # without this, every assertion in this file passes and the file
+      # can no longer catch a regression. This commit CLAIMS an epoch
+      # (snapshot_parent is present and binary) but references a
+      # clientID outside the namespace that claim resolves to, so it
+      # must still be rejected via the unchanged strict path.
+      store = new_plain_store("ctrl_neg")
+      uuid = UUID.uuid4()
+      {:ok, genesis} = CommitStore.ensure_genesis(store, uuid)
+
+      seed_update =
+        (fn ->
+           doc = Yelixer.Doc.new(client_id: 1)
+           {doc, _} = Yelixer.Doc.get_or_create_type(doc, "t", :text)
+           doc = Yelixer.Types.Text.insert(doc, "t", 0, "a")
+           Yelixer.Encoding.encode_update(doc)
+         end).()
+
+      c1 =
+        CommitStore.create_commit(store, uuid, seed_update, genesis.id, %{
+          kind: :regular,
+          snapshot_parent: genesis.id
+        })
+
+      doc_ref = Yelixer.Doc.new(client_id: 999)
+      {doc_ref, _} = Yelixer.Doc.get_or_create_type(doc_ref, "t", :text)
+      doc_ref = Yelixer.Types.Text.insert(doc_ref, "t", 0, "ref")
+      base = Yelixer.Encoding.encode_update(doc_ref)
+
+      doc_auth = Yelixer.Doc.new(client_id: 42)
+      {doc_auth, _} = Yelixer.Doc.get_or_create_type(doc_auth, "t", :text)
+      {:ok, doc_auth} = Yelixer.Encoding.apply_update(doc_auth, base)
+      doc_auth = Yelixer.Types.Text.insert(doc_auth, "t", 3, "X")
+      base_sv = Yelixer.BlockStore.state_vector(doc_ref.store)
+      referencing_update = Yelixer.Encoding.encode_diff(doc_auth, base_sv)
+
+      # Persisted to the SOURCE store (not just built with Commit.new) —
+      # ancestry_of/2 assumes the tested commit is the newest entry in
+      # the source doc's log and drops exactly that one before replay
+      # (see its moduledoc). Building the tested commit off-store here
+      # would make ancestry_of drop c1 instead, starving the target of
+      # c1's clientID and making the namespace vacuously empty — that
+      # was caught while writing this test (first version accepted the
+      # commit for the wrong reason).
+      bad_commit =
+        CommitStore.create_commit(store, uuid, referencing_update, c1.id, %{
+          kind: :regular,
+          snapshot_parent: genesis.id
+        })
+
+      result = round_trip("ctrl_neg", store, bad_commit)
+      IO.puts("NEGATIVE CONTROL import_commit/3 result: #{inspect(result)}")
+      assert {:error, {:namespace_rejected, {:unknown_reference, ids}}} = result
+      assert 999 in ids
     end
   end
 
@@ -215,6 +277,12 @@ defmodule Commonplace.Store.KindedMetadataImportCoverageTest do
 
       result = round_trip("site_a", store, merge_commit)
       IO.puts("SITE A import_commit/3 result: #{inspect(result)}")
+
+      # CX-hqko: this is the deciding proof. Before the fix, a real
+      # pr_merge commit onto a legacy-headed target rejected with
+      # {:namespace_rejected, :missing_snapshot_parent}. The fix makes
+      # this import cleanly.
+      assert result == :ok
     end
 
     defp reconstruct_schema_a(store, uuid) do

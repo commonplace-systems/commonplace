@@ -129,16 +129,58 @@ defmodule Commonplace.Store.SnapshotParentAutostampTest do
   end
 
   describe "validator tightening" do
-    test "rejects a :regular commit without snapshot_parent", %{store: store} do
+    # CX-hqko (2026-08-05) — THIS TEST'S ASSERTION WAS DELIBERATELY
+    # REVERSED. It previously asserted that a `:regular` commit with no
+    # `:snapshot_parent` is REJECTED, on the CX-a04 premise that
+    # "post-umbrella this is malformed" because auto-stamp guarantees the
+    # key on every locally-produced commit.
+    #
+    # That premise was measured FALSE. `CommitBuilder.stamp_snapshot_parent`
+    # derives the key from the PARENT's `Namespace.current_namespace/1`,
+    # which is nil for legacy `%{}` metadata — so on a legacy-parented doc
+    # it silently skips, and perfectly ordinary local writes land WITHOUT
+    # the key. A real PR-merge (`%{kind: :regular, pr_merge: uuid}`) onto a
+    # legacy-headed doc was rejected by every peer on import.
+    #
+    # The rule is now VALIDATION JUDGES CLAIMS, NOT ABSENCES: a commit that
+    # claims no epoch gets no epoch validation (and stays fully subject to
+    # the WHO/trust gates); a commit that CLAIMS one is held to it
+    # completely. The old strictness bought nothing — a dishonest author
+    # dodges it by writing `%{}`, which `do_validate/2` accepts unvalidated
+    # (see the legacy test below) — while blocking only honest modernizers.
+    # Note also the test two below: a `:regular` commit WITH a
+    # snapshot_parent but an empty namespace was ALWAYS accepted, so
+    # "unvalidatable therefore accept" already existed in this very
+    # validator.
+    #
+    # This is a superseded invariant being retired on evidence, not a test
+    # adjusted to fit a patch. The strict path is still pinned — by the
+    # test below and by the present-but-unresolvable cases in
+    # namespace_test.exs.
+    test "accepts a :regular commit that CLAIMS no snapshot_parent (claims-not-absences)",
+         %{store: store} do
       uuid = "tighten-no-sp"
       {:ok, _genesis} = CommitStore.ensure_genesis(store, uuid)
 
-      # Hand-craft a commit whose metadata is `%{kind: :regular}` but
-      # lacks `:snapshot_parent`. Post-umbrella this is malformed.
-      bad = Commit.new(uuid, update_from(1, "a"), nil, %{kind: :regular})
+      absent = Commit.new(uuid, update_from(1, "a"), nil, %{kind: :regular})
+      refute Map.has_key?(absent.metadata, :snapshot_parent)
+
+      assert :ok = CommitStore.import_commit(store, absent)
+    end
+
+    test "still rejects a :regular commit whose snapshot_parent claim is PRESENT but unusable",
+         %{store: store} do
+      # The other half of the rule, and the reason the clause above is not
+      # a weakening: a present-but-non-binary `:snapshot_parent` is a
+      # malformed CLAIM, not an absence, and is still refused.
+      uuid = "tighten-nil-sp"
+      {:ok, _genesis} = CommitStore.ensure_genesis(store, uuid)
+
+      malformed =
+        Commit.new(uuid, update_from(1, "a"), nil, %{kind: :regular, snapshot_parent: nil})
 
       assert {:error, {:namespace_rejected, :missing_snapshot_parent}} =
-               CommitStore.import_commit(store, bad)
+               CommitStore.import_commit(store, malformed)
     end
 
     test "legacy (%{}) commits still accepted without snapshot_parent", %{store: store} do

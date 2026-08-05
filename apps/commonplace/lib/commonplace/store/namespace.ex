@@ -343,11 +343,32 @@ defmodule Commonplace.Store.Namespace do
     end
   end
 
-  # CX-a04: post-umbrella, every :regular commit MUST carry
-  # snapshot_parent. Auto-stamp (in CommitStore.create_commit) guarantees
-  # this for locally-produced commits; this clause rejects malformed
-  # incoming imports. Legacy `%{}` metadata keeps the read-side hatch
-  # and is handled earlier in `do_validate/2`.
+  # CX-hqko: validation judges CLAIMS, not ABSENCES. The old CX-a04 comment
+  # asserted that auto-stamp (CommitBuilder.stamp_snapshot_parent) guarantees
+  # every locally-produced :regular commit carries snapshot_parent. That
+  # premise does not hold: stamp_snapshot_parent derives snapshot_parent from
+  # the PARENT commit's Namespace.current_namespace/1, which returns nil for
+  # legacy `%{}`-metadata parents — so it silently skips, and an honest,
+  # locally-produced :regular commit on a legacy-headed chain lands with NO
+  # snapshot_parent key at all.
+  #
+  # Rejecting that absence bought zero security: a dishonest author can
+  # already bypass all epoch validation by writing `%{}` metadata, which
+  # `do_validate/2` short-circuits straight to `:ok`. So the strict clause
+  # only ever punished the population that authored MORE truthfully (kinded
+  # metadata on a legacy chain) while a `%{}` author sailed through
+  # unchecked — a category error that pushes authors toward saying less.
+  # The `MapSet.size(namespace) == 0 -> :ok` branch above already embodies
+  # the same rule two lines up: "unvalidatable therefore accept."
+  #
+  # So: a commit that claims nothing about epochs (no snapshot_parent key)
+  # gets no epoch validation here — it remains fully subject to the
+  # separate WHO/trust gates. A commit that DOES claim an epoch is held to
+  # that claim completely: present-but-unusable (nil, wrong type, etc.) is
+  # a malformed claim, not an absence, and still rejects below.
+  defp validate_regular(_fetcher, _commit, meta) when not is_map_key(meta, :snapshot_parent),
+    do: :ok
+
   defp validate_regular(_fetcher, _commit, _meta), do: {:error, :missing_snapshot_parent}
 
   defp fetcher_for(store) do
