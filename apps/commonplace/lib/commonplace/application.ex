@@ -77,6 +77,16 @@ defmodule Commonplace.Application do
             {Commonplace.Store.Supervisor, :start_link,
              [[data_dir: data_dir, name: Commonplace.Store.CommitStoreSupervisor]]}
         },
+        # CX-jfok: the alarm half of the resting-state invariant layer.
+        # Started right after the store subsystem because that is what
+        # feeds it — `CommitStore.put_latest/5` casts every head advance
+        # here. Unconditional and cheap: it is idle until an advance
+        # arrives, and `:invariant_dispatch_enabled` (false in
+        # config/test.exs) makes even that a counter bump. The task
+        # supervisor is where validation actually runs, so a recompute
+        # never occupies either the store's mailbox or the dispatcher's.
+        {Task.Supervisor, name: Commonplace.Invariants.TaskSupervisor},
+        Commonplace.Invariants.Dispatcher,
         {Commonplace.Store.SecretStore, data_dir: data_dir},
         Commonplace.Tree.DocCache,
         {DynamicSupervisor, name: Commonplace.SchemaCoordinator.Supervisor, strategy: :one_for_one},

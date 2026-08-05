@@ -45,6 +45,12 @@ config :commonplace,
   # background during every test, racing test-local telemetry attaches.
   # Tests that specifically exercise the poller enable it in their setup.
   commit_store_queue_poll_ms: false,
+  # CX-jfok: the head-advance invariant dispatcher is OFF in tests. Every
+  # test that writes a commit advances a head, so leaving it on would run
+  # full-corpus validation over the shared `tmp/test_data` store in the
+  # background of unrelated tests. Its own tests start their own
+  # dispatcher with `enabled: true` and injected timers.
+  invariant_dispatch_enabled: false,
   # CI: CubDB 2.0.2's auto-compact races with the parallel test
   # suite's SecretStore writes and crashes the SecretStore process
   # (`MatchError {:error, :enoent}` at `cubdb.ex:1499 trigger_compaction`).
