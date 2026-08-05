@@ -38,6 +38,32 @@ defmodule Commonplace.SiblingMerger do
   listed on CX-4qn1. The primitive is auto-trigger-friendly: same-parent
   callers produce the same merge commit id (byte-deterministic CAS
   write), and a stale-parent caller cleanly backs off.
+
+  ## Sibling ordering and merge failures (CX-xxav)
+
+  When more than one sibling exists, they are attempted in ascending
+  binary-id order and the first that merges wins. Two things about
+  that are deliberate:
+
+  - **The order is explicit.** It used to be `[sibling_id | _] =
+    MapSet.to_list(sibling_ids)` — i.e. whichever id BEAM's term order
+    happened to put first. That made which sibling gets merged a
+    function of hash bytes: bumping `Snapshotter`'s version tag
+    (CX-2xn1) re-rolled every commit id in the fixture and silently
+    changed which sibling `two_peer_merge_e2e_test`'s cross-epoch case
+    exercised — flipping a green test red without any behavior
+    changing. An arbitrary choice is fine; an *accidental* one is not,
+    because it makes tests over this path unable to fail on purpose.
+
+  - **A merge failure is reported, not renamed.** A sibling whose
+    merge engine refuses (e.g. `{:untranslatable, :case_b, id}` from
+    the cross-epoch translator) used to collapse to
+    `{:ok, :no_siblings}` — "there is nothing to merge", which is
+    false and unfalsifiable: the caller cannot tell a converged doc
+    from one whose convergence just failed. Now every sibling is
+    attempted, and if all of them fail the result is
+    `{:error, {:siblings_unmergeable, [{sibling_id, reason}, ...]}}`
+    carrying each refusal.
   """
 
   alias Commonplace.Store.{Commit, CommitStore, Merger}
@@ -51,6 +77,7 @@ defmodule Commonplace.SiblingMerger do
           {:ok, :merged, Commit.t()}
           | {:ok, :no_siblings}
           | {:ok, :code_doc_skip}
+          | {:error, {:siblings_unmergeable, [{binary(), term()}]}}
 
   @doc """
   Merge any sibling commits for `doc_uuid` into `:latest`.
@@ -64,7 +91,12 @@ defmodule Commonplace.SiblingMerger do
       `:latest` now points to `commit.id`.
     - `{:ok, :no_siblings}` when every persisted commit for `doc_uuid`
       is already on `:latest`'s chain (or the doc has no commits at
-      all).
+      all), or when a sibling existed but `:latest` moved under us
+      mid-write (CAS `:parent_moved` — re-invoke on a fresh read).
+    - `{:error, {:siblings_unmergeable, [{sibling_id, reason}, ...]}}`
+      (CX-xxav) when siblings existed and EVERY one of them was
+      refused by the merge engine. Distinct from `:no_siblings`, which
+      now means only what it says.
     - `{:ok, :code_doc_skip}` (CX-obfb) when a sibling exists but
       `doc_uuid` classifies as a code doc: auto-merging would emit a
       delta-merge commit whose `merge_parents` side-line Gate B
@@ -86,11 +118,13 @@ defmodule Commonplace.SiblingMerger do
         all_for_doc = CommitStore.all_commit_ids_for_doc(store, doc_uuid)
         sibling_ids = MapSet.difference(all_for_doc, covered)
 
-        case MapSet.to_list(sibling_ids) do
+        # CX-xxav: `Enum.sort/1`, not raw MapSet iteration order — see
+        # the moduledoc's "Sibling ordering and merge failures".
+        case sibling_ids |> MapSet.to_list() |> Enum.sort() do
           [] ->
             {:ok, :no_siblings}
 
-          [sibling_id | _] ->
+          [sibling_id | _] = siblings ->
             # Only tax the path where a sibling actually exists — the
             # common no-op case (:no_siblings) skips the classifier read.
             if CodeDocHeuristic.code_doc?(doc_uuid, store) do
@@ -109,7 +143,7 @@ defmodule Commonplace.SiblingMerger do
 
               {:ok, :code_doc_skip}
             else
-              merge_and_write(store, latest, sibling_id, strategy)
+              merge_first_mergeable(store, latest, siblings, strategy)
             end
         end
     end
@@ -146,24 +180,50 @@ defmodule Commonplace.SiblingMerger do
     end
   end
 
+  # CX-xxav: walk `siblings` in the caller's (sorted) order and return
+  # the first that merges. Accumulate each refusal so that "every
+  # sibling was refused" can be reported as itself rather than
+  # laundered into `{:ok, :no_siblings}`.
+  defp merge_first_mergeable(store, latest, siblings, strategy) do
+    Enum.reduce_while(siblings, [], fn sibling_id, failures ->
+      case merge_and_write(store, latest, sibling_id, strategy) do
+        {:ok, :merged, _} = merged -> {:halt, merged}
+        # `:latest` moved under us — no point trying the remaining
+        # siblings against a head we no longer hold.
+        {:ok, :no_siblings} = backoff -> {:halt, backoff}
+        {:error, reason} -> {:cont, [{sibling_id, reason} | failures]}
+      end
+    end)
+    |> case do
+      failures when is_list(failures) ->
+        {:error, {:siblings_unmergeable, Enum.reverse(failures)}}
+
+      result ->
+        result
+    end
+  end
+
   defp merge_and_write(store, latest, sibling_id, strategy) do
     case CommitStore.get_commit(store, sibling_id) do
       {:ok, sibling} ->
         case Merger.merge(store, latest.id, sibling.id, strategy: strategy) do
           {:ok, merge_commit} ->
             case CommitStore.write_prebuilt_commit_cas(store, merge_commit) do
-              {:ok, stored} -> {:ok, :merged, stored}
+              {:ok, stored} ->
+                {:ok, :merged, stored}
+
               # Concurrent local writer advanced :latest — bail to the
               # caller, who can re-invoke on a fresh read.
-              {:error, :parent_moved} -> {:ok, :no_siblings}
+              {:error, :parent_moved} ->
+                {:ok, :no_siblings}
             end
 
-          {:error, _reason} ->
-            {:ok, :no_siblings}
+          {:error, reason} ->
+            {:error, reason}
         end
 
       :none ->
-        {:ok, :no_siblings}
+        {:error, {:unknown_sibling, sibling_id}}
     end
   end
 end

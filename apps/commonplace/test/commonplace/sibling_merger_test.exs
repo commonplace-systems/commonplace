@@ -200,4 +200,98 @@ defmodule Commonplace.SiblingMergerTest do
       assert after_latest.id == first_latest.id
     end
   end
+
+  describe "maybe_merge_siblings/3 — unmergeable siblings (CX-xxav)" do
+    # A sibling the merge engine REFUSES used to be reported as
+    # `{:ok, :no_siblings}` — "there is nothing to merge", which is
+    # false and leaves the caller unable to distinguish a converged doc
+    # from one whose convergence just failed.
+    test "a sibling the merge engine refuses is reported, not renamed to :no_siblings",
+         %{store: store} do
+      uuid = "sib-unmergeable"
+      {:ok, _genesis} = CommitStore.ensure_genesis(store, uuid)
+
+      doc = Doc.new(client_id: 1)
+      {doc, _} = Doc.get_or_create_type(doc, "t", :text)
+      doc = Text.insert(doc, "t", 0, "abc")
+
+      l_commit =
+        CommitStore.create_chained_commit(
+          store,
+          uuid,
+          Encoding.encode_update(doc),
+          %{kind: :regular}
+        )
+
+      # A sibling chained to a parent this store has never seen: it is
+      # a real, persisted, off-:latest commit, but no common ancestor
+      # with the local head can be found, so `Merger.merge/4` refuses.
+      orphan_parent = :crypto.strong_rand_bytes(32)
+
+      doc_r = Doc.new(client_id: 3)
+      {doc_r, _} = Doc.get_or_create_type(doc_r, "t", :text)
+      doc_r = Text.insert(doc_r, "t", 0, "Y")
+
+      r_commit =
+        Commit.new(uuid, Encoding.encode_update(doc_r), orphan_parent, %{
+          kind: :regular,
+          snapshot_parent: orphan_parent
+        })
+
+      :ok = CommitStore.import_commit(store, r_commit, validator: fn _ -> :ok end)
+
+      # Precondition: it really is an off-:latest sibling.
+      assert MapSet.member?(CommitStore.all_commit_ids_for_doc(store, uuid), r_commit.id)
+      refute MapSet.member?(CommitStore.commit_ids_for_doc(store, uuid), r_commit.id)
+
+      assert {:error, {:siblings_unmergeable, failures}} =
+               SiblingMerger.maybe_merge_siblings(store, uuid)
+
+      assert [{sibling_id, _reason}] = failures
+      assert sibling_id == r_commit.id
+
+      # And the head is untouched.
+      assert {:ok, %{id: head_id}} = CommitStore.latest_commit(store, uuid)
+      assert head_id == l_commit.id
+    end
+
+    # Which sibling gets merged must be a decision, not a side effect of
+    # BEAM term order over content-addressed ids — bumping an unrelated
+    # version tag re-rolls every id and would otherwise silently change
+    # which code path a test exercises (that is exactly how CX-xxav's
+    # cross-epoch e2e case flipped red).
+    test "with two siblings, the lower id is attempted first", %{store: store} do
+      uuid = "sib-order"
+      {c_snapshot, _l, r} = seed_sibling_scenario(store, uuid)
+
+      {:ok, c_doc} = Encoding.apply_update(Doc.new(), c_snapshot.update)
+      c_update = Encoding.encode_update(c_doc)
+
+      # A second sibling off the same parent as R.
+      doc_r2 = Doc.new(client_id: 4)
+      {doc_r2, _} = Doc.get_or_create_type(doc_r2, "t", :text)
+      {:ok, doc_r2} = Encoding.apply_update(doc_r2, c_update)
+      doc_r2 = Text.insert(doc_r2, "t", 3, "Z")
+
+      r2_commit =
+        Commit.new(uuid, Encoding.encode_update(doc_r2), c_snapshot.id, %{
+          kind: :regular,
+          snapshot_parent: c_snapshot.id
+        })
+
+      :ok = CommitStore.import_commit(store, r2_commit, validator: fn _ -> :ok end)
+
+      handler_id =
+        :telemetry_test.attach_event_handlers(self(), [
+          [:commonplace, :merge, :completed]
+        ])
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      assert {:ok, :merged, _} = SiblingMerger.maybe_merge_siblings(store, uuid)
+
+      assert_received {[:commonplace, :merge, :completed], _ref, _measure, meta}
+      assert meta.r == Enum.min([r.id, r2_commit.id])
+    end
+  end
 end
