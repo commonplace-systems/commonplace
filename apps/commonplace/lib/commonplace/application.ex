@@ -146,7 +146,9 @@ defmodule Commonplace.Application do
         orchestrator_children() ++
         bursar_children() ++
         reflog_children() ++
-        ghost_reaper_children() ++ git_bridge_children() ++ workspace_lock_children(data_dir)
+        ghost_reaper_children() ++
+          git_bridge_children() ++
+          workspace_lock_children(data_dir) ++ scheduler_children()
 
     opts = [strategy: :one_for_one, name: Commonplace.Supervisor]
 
@@ -449,6 +451,64 @@ defmodule Commonplace.Application do
             start:
               {Commonplace.MUD.GhostReaper, :start_link,
                [[root_uuid: root_uuid, name: Commonplace.MUD.GhostReaper]]},
+            restart: :permanent
+          }
+        ]
+
+      _ ->
+        []
+    end
+  end
+
+  @doc false
+  # CX-x073: `Commonplace.Scheduler.Agent` (the userland one-shot
+  # scheduler, CX-6av) is a complete, tested GenServer that NOTHING has
+  # ever started — no application.ex entry, no non-test `start_link`
+  # caller in any of the five apps. Any client sending a `schedule`
+  # request on the magenta topic `agents/scheduler` got silence, on
+  # every standard boot, since it was written. A fully-tested subsystem
+  # that cannot run also misleads readers: a previous architecture
+  # review treated its delivery semantics as live.
+  #
+  # ⚠️ NOTE THE NAME COLLISION that helped it hide. `Commonplace.SnapshotWorker`
+  # is described in the children list above as the "single-flight
+  # scheduler" (CX-tdkq.4) and IS started. It is a different thing
+  # entirely — reader-side lazy-snapshot debounce, not this. Grepping
+  # application.ex for "scheduler" finds the started one.
+  #
+  # DOUBLE-GATED exactly like ghost_reaper_children/0: explicit opt-in
+  # AND a resolvable workspace root.
+  #
+  # It rides its OWN env var, default OFF, deliberately — the CX-0t2r
+  # deploy lesson. This agent FIRES TIMERS and WRITES a CRDT doc
+  # (`__system/scheduler`), so it is world-MUTATING, not a serve-role
+  # descriptor like the bursar/lock/reaper flags it sits beside. Putting
+  # it in the same block as those would make "deploy the code" and "start
+  # writing schedules into the live store" the same event, which is
+  # exactly how a deliberately staged deploy got silently collapsed
+  # before. Shipping this wiring changes NO existing boot: every current
+  # launch omits the var and gets the same behaviour as before.
+  #
+  # This does not decide the bead's (a)-wire-it-up vs (b)-delete
+  # question. It makes the launch path EXIST and be documented, so the
+  # subsystem is reachable deliberately instead of unreachable silently.
+  # Deleting it remains open and is a separate call.
+  #
+  # ⚠️ Its own moduledoc says "run at most one per workspace"; leader
+  # election is a future bead. On a clustered serve, enabling this on
+  # more than one node would run more than one. Single-node only until
+  # that lands.
+  def scheduler_children do
+    enabled = Application.get_env(:commonplace, :scheduler_on_boot, false)
+
+    case {enabled, Commonplace.Workspace.root_uuid()} do
+      {true, {:ok, root_uuid}} ->
+        [
+          %{
+            id: Commonplace.Scheduler.Agent,
+            start:
+              {Commonplace.Scheduler.Agent, :start_link,
+               [[root_uuid: root_uuid, name: Commonplace.Scheduler.Agent]]},
             restart: :permanent
           }
         ]

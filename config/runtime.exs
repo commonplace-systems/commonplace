@@ -101,6 +101,15 @@ if serving? && data_dir do
   config :commonplace,
          reflog_on_boot: System.get_env("COMMONPLACE_REFLOG_ON_BOOT") in ["1", "true"]
 
+  # CX-x073: the userland one-shot scheduler (Commonplace.Scheduler.Agent).
+  # Same shape and the same reasoning as reflog_on_boot directly above:
+  # it FIRES TIMERS and WRITES to `__system/scheduler`, so it is
+  # world-MUTATING rather than a serve-role descriptor, and must be
+  # separately stageable from "deploy the code". Default OFF — every
+  # existing launch omits this var and boots exactly as before.
+  config :commonplace,
+         scheduler_on_boot: System.get_env("COMMONPLACE_SCHEDULER_ON_BOOT") in ["1", "true"]
+
   # CX-i9ca-adjacent (2026-07-11): a Mode-B serve must also make the
   # GitBridge find its mount mapping, or the workspace→git mirror silently
   # stays down (the supervisor boots with zero bridge children). The mapping
