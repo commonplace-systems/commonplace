@@ -54,36 +54,53 @@ defmodule Commonplace.MergeCommand.Handler do
   local head — a legitimate, dominating new head, but not a linear
   fast-forward.
 
-  `persist_commit/3` therefore splits on which side the local head is:
+  `persist_commit/3` accepts BOTH shapes — a linear fast-forward and a
+  dominating non-linear merge — and lands them through ONE verb:
+  `CommitStore.put_built_commit/4`, node-signing the commit first
+  (that verb does not sign, unlike `write_prebuilt_commit_cas/2`).
+  Its CAS compares `:latest` to an independently supplied
+  `expected_parent_id`, so passing the head we actually observed covers
+  both cases naturally: in the linear case that value simply *is*
+  `commit.parent_id`. Advancing `:latest` to a dominating merge loses
+  nothing — the local head is in the merge's ancestral closure by
+  construction, the same rule `Commonplace.Sync.MergeAdopter` applies to
+  *imported* merges. If the observed head is neither the parent nor a
+  merge parent, the merge does not descend from the local head at all:
+  reply `merge_failed`, there is no id worth advertising.
 
-  - `commit.parent_id == observed_head` — linear fast-forward. Land via
-    `CommitStore.write_prebuilt_commit_cas/2` (node-signs system kinds
-    on the way in).
+  ### Why one verb, not two (CX-xxav)
 
-  - `observed_head ∈ commit.merge_parents` — non-linear but dominating:
-    the local head is folded into the merge by construction, so
-    advancing `:latest` to it loses nothing (same rule
-    `Commonplace.Sync.MergeAdopter` applies to *imported* merges).
-    Node-sign explicitly, then land + advance atomically via
-    `CommitStore.put_built_commit/4`, whose CAS compares `:latest` to
-    the head we actually observed rather than to `commit.parent_id`.
+  The obvious implementation is a two-arm split — `write_prebuilt_commit_cas/2`
+  for the linear case, `put_built_commit/4` for the other — and it is
+  wrong, because those two verbs are gated differently:
+  `put_built_commit/4` runs the local write gate (`:local_write_gate`)
+  and `write_prebuilt_commit_cas/2` does not. Under `:enforce` that
+  split exempts the linear arm from the gate.
 
-  - neither — the merge does not descend from the local head at all.
-    Reply `merge_failed`; there is no id worth advertising.
+  No property of the commit can justify that exemption, by
+  construction. Which arm a merge takes is a function of
+  `Merger.canonical_pair/2`'s sort order — that is, of *which peer you
+  happen to be*, not of any attribute of the commit. The same logical
+  merge, byte-identical on both peers, takes the linear arm on one and
+  the non-linear arm on the other. Any trust-relevant property one has,
+  the other has identically. An exemption keyed to the arm is an
+  exemption keyed to a coin flip, and the coin is re-flipped by any
+  change that re-rolls commit ids — which is exactly how this bead
+  started. Uniform gating is forced; the split is deleted rather than
+  documented.
 
-  One asymmetry to know about: `put_built_commit/4` runs the local
-  write gate (`:local_write_gate`) and `write_prebuilt_commit_cas/2`
-  does not, so under `:enforce` the second arm is gated and the first
-  is not — the same logical merge, gated or not depending on which
-  side sorted first. The direction is fail-safe (a denial surfaces as
-  `merge_failed`, never as a phantom id), and a node-signed `:merge`
-  commit is expected to clear the gate, but that has not been proven
-  under `:enforce` here. Reconciling the two verbs' gating belongs to
-  whoever consolidates the head-advance write sites (CX-jfok).
+  Consequence worth knowing: merges from this handler no longer pass
+  through `write_prebuilt_commit_cas/2`, so they no longer emit its
+  `warn_if_non_system_cas` check. That check only fires for NON-system
+  kinds and this path mints `kind: :merge` exclusively, so nothing it
+  could have caught is reachable here.
 
-  A CAS miss in either arm means `:latest` moved under us mid-merge and
-  is reported as `merge_failed` with `:merge_head_moved`. It is NEVER
-  swallowed. Prior to CX-xxav `{:error, :parent_moved}` was mapped to
+  Enforce-mode behaviour is pinned end-to-end by
+  `test/commonplace/merge_command/enforce_gate_test.exs`, in both
+  directions and both orientations.
+
+  A CAS miss means `:latest` moved under us mid-merge and is reported as
+  `merge_failed` with `:merge_head_moved`. It is NEVER swallowed. Prior to CX-xxav `{:error, :parent_moved}` was mapped to
   `{:ok, commit}` and the handler advertised a commit stored nowhere —
   and an advertised `commit_id` does not stay in the reply: the red-log
   onramp above persists every magenta message on this topic, so a
@@ -327,25 +344,30 @@ defmodule Commonplace.MergeCommand.Handler do
   # moduledoc's "Landing the canonical commit (CX-xxav)" section for why
   # there are two arms and why a CAS miss is never absorbed.
   defp persist_commit(store, commit, observed_head_id) do
-    cond do
-      commit.parent_id == observed_head_id ->
-        cas_result(CommitStore.write_prebuilt_commit_cas(store, commit), commit)
+    if dominates_observed_head?(commit, observed_head_id) do
+      # `put_built_commit/4` does not sign (unlike the prebuilt-CAS
+      # verb), so node-sign here. Signing binds over the already-fixed
+      # id, so the advertised id is unchanged — and the cross-peer
+      # byte-determinism of CX-1mml is unaffected.
+      signed = CommitBuilder.maybe_sign_commit(commit)
 
-      observed_head_id in merge_parents(commit) ->
-        # `put_built_commit/4` does not sign (unlike the prebuilt-CAS
-        # verb), so node-sign here. Signing binds over the already-fixed
-        # id, so the advertised id is unchanged — and the cross-peer
-        # byte-determinism of CX-1mml is unaffected.
-        signed = CommitBuilder.maybe_sign_commit(commit)
-        cas_result(CommitStore.put_built_commit(store, signed, observed_head_id), signed)
-
-      true ->
-        {:error, {:merge_does_not_dominate_head, commit.doc_uuid, observed_head_id}}
+      store
+      |> CommitStore.put_built_commit(signed, observed_head_id)
+      |> cas_result(signed)
+    else
+      {:error, {:merge_does_not_dominate_head, commit.doc_uuid, observed_head_id}}
     end
   end
 
+  # The observed head is in the merge's immediate ancestry — as its
+  # parent (a linear fast-forward) or as a merge parent (dominating but
+  # non-linear). Both are safe head advances and both take the same
+  # gated verb; see the moduledoc's "Why one verb, not two".
+  defp dominates_observed_head?(commit, observed_head_id) do
+    commit.parent_id == observed_head_id or observed_head_id in merge_parents(commit)
+  end
+
   defp cas_result({:ok, stored}, _commit), do: {:ok, stored}
-  defp cas_result(:ok, commit), do: {:ok, commit}
 
   defp cas_result({:error, :parent_moved}, commit),
     do: {:error, {:merge_head_moved, commit.doc_uuid}}
