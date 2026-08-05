@@ -137,6 +137,22 @@ end
 
 report.("spread-#{docs}-docs", measure.(fn i -> "bench-spread-#{rem(i, docs)}" end))
 
+# The single-doc phase costs minutes and its percentiles track chain
+# length, not the choke. Skippable so all three columns can be run
+# back-to-back inside ONE quiet window — comparing a quiet-box column
+# against a loaded-box column is a false verdict, and a column that
+# takes 15 minutes is a column that cannot be re-run when the box was
+# busy.
+if System.get_env("BENCH_MODES") == "spread" do
+  IO.puts("(single-doc mode skipped: BENCH_MODES=spread)")
+  if dispatcher_pid do
+    IO.inspect(Commonplace.Invariants.Dispatcher.status(dispatcher_name), label: "dispatcher status")
+  end
+
+  File.rm_rf!(dir)
+  System.halt(0)
+end
+
 # Mode "single-doc": 2000 commits chained onto ONE doc, as specified in
 # the CX-jfok brief. Per-call latency here grows with chain length
 # (reconstruction cost inside the GenServer dominates), so its
