@@ -147,13 +147,19 @@ defmodule Commonplace.Store.SnapshotOpTest do
 
       {:ok, snapshot} = CommitStore.snapshot(store, uuid)
 
-      # Build an identical commit but with a different snapshotter_version.
-      # CX-2xn1: this MUST NOT equal the current @snapshotter_version, or
-      # the test asserts that a commit id differs from itself and passes
-      # vacuously. It read 2 while the current version was 1; the CX-2xn1
-      # bump to 2 would have silently hollowed it out.
+      # Build an identical commit but with a different snapshotter_version
       # and verify the id changes.
-      alt_metadata = Map.put(snapshot.metadata, :snapshotter_version, 999)
+      #
+      # CX-2xn1: pin the RELATION (never equal to the current version),
+      # never a literal. This line used to read `2` while the current
+      # version was 1 — correct then, and the CX-2xn1 bump to 2 would
+      # have turned it into "assert this commit id differs from itself":
+      # green, vacuous, and with no diff to review, because the constant
+      # moved underneath a test nobody edited. Deriving it guarantees the
+      # test keeps meaning something across every future bump.
+      alt_version = Commonplace.Store.Snapshotter.snapshotter_version() + 1
+      refute alt_version == snapshot.metadata[:snapshotter_version]
+      alt_metadata = Map.put(snapshot.metadata, :snapshotter_version, alt_version)
       alt = Commit.new(snapshot.doc_uuid, snapshot.update, snapshot.parent_id, alt_metadata)
 
       refute alt.id == snapshot.id
