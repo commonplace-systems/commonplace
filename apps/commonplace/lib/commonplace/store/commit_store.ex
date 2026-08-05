@@ -1,4 +1,14 @@
 defmodule Commonplace.Store.CommitStore do
+  # CX-mg8s: upper bound for CubDB key-range scans over binary keys.
+  # MUST exceed every possible key. `<<255>>` does NOT: Erlang compares
+  # binaries lexicographically and a shorter binary that is a PREFIX of a
+  # longer one sorts LOWER, so `<<255>>` is smaller than any longer key
+  # beginning with 0xFF. Defined here, above every use — as a module
+  # attribute it is `nil` at any point textually before its definition,
+  # and `nil` (an atom) sorts BELOW all binaries, which silently empties
+  # the range instead of widening it.
+  @max_key_binary :binary.copy(<<255>>, 64)
+
   @moduledoc """
   The persistent storage layer for Commonplace's commit Merkle DAG —
   one singleton `GenServer` over a single CubDB instance at
@@ -2099,18 +2109,32 @@ defmodule Commonplace.Store.CommitStore do
   end
 
   defp do_all_doc_uuids(db) do
+    # CX-mg8s: same wrong bound as do_all_commit_ids_for_doc had. Not
+    # currently firing — doc uuids are ASCII UUID strings, so the first
+    # byte is a hex character and never 0xFF — but it is the identical
+    # latent defect and would start dropping rows the moment a non-string
+    # key is used here. Fixed rather than left as a trap.
     CubDB.select(db,
       min_key: {:latest, ""},
-      max_key: {:latest, <<255>>}
+      max_key: {:latest, @max_key_binary}
     )
     |> Enum.map(fn {{:latest, uuid}, _commit_id} -> uuid end)
     |> MapSet.new()
   end
 
+  # CX-mg8s: the upper bound must EXCEED every possible commit id, and
+  # `<<255>>` does not. Commit ids are raw 32-byte binaries, and Erlang
+  # compares binaries lexicographically with a shorter prefix sorting
+  # LOWER — so `<<255>>` is a PREFIX of `<<255, ...31 more>>` and
+  # therefore SMALLER than it. Every id beginning with byte 0xFF sorted
+  # above the old bound and was silently skipped: ~1/256 of all commits,
+  # measured live as 2 missing out of 1063 on a real doc. The bound
+  # looked obviously correct, which is why it survived; a binary longer
+  # than any id is the actual requirement.
   defp do_all_commit_ids_for_doc(db, doc_uuid) do
     CubDB.select(db,
       min_key: {:commit, ""},
-      max_key: {:commit, <<255>>}
+      max_key: {:commit, @max_key_binary}
     )
     |> Enum.reduce(MapSet.new(), fn
       {{:commit, id}, %{doc_uuid: ^doc_uuid}}, acc -> MapSet.put(acc, id)
