@@ -325,7 +325,19 @@ defmodule Commonplace.MUD.World do
   # loop (see merge_meta/5 doc). Each attempt re-captures the version,
   # re-reads, re-merges, and re-diffs from scratch — never replays stale
   # diff bytes.
-  @merge_meta_max_attempts 5
+  # CX-r97r/CX-g8s9: MEASURED, not guessed. Under N-way contention each
+  # retry re-reads and re-diffs, so throughput is bounded by this budget:
+  # at 5 attempts, 8-way landed 5 and refused 3, and 16-way landed 5 and
+  # refused 11 — the refusals were the budget running out, not a real
+  # limit. At 15: 8-way lands 8/8 and 16-way lands 15/16.
+  #
+  # ⚠️ Raising this ALONE was measured WORSE before CX-g8s9's fix landed,
+  # because a concurrent write caught by `verify_meta_roundtrip`'s window
+  # was refused with `:meta_write_roundtrip_failed` and NOT retried — so
+  # more attempts just produced more unretried hard failures. Both halves
+  # are required: classify that refusal as retryable (below), THEN the
+  # budget matters. Do not tune this number without re-reading that.
+  @merge_meta_max_attempts 15
 
   @doc """
   Surgically merge `updates` (a map of top-level key => value) into a meta
@@ -438,6 +450,35 @@ defmodule Commonplace.MUD.World do
           case Schemas.write_meta_doc(node_id, Jason.encode!(updated_map), store, write_opts) do
             {:error, :parent_moved} ->
               merge_meta_cas(node_id, fun, store, opts, attempts_left - 1)
+
+            # CX-g8s9: a contended write has TWO ways to be refused, and
+            # only one of them used to be retried.
+            #
+            # `write_meta_doc` calls `verify_meta_roundtrip/4`, which
+            # RE-READS the doc, applies the positional diff it just
+            # computed, and checks the result equals the intended JSON. A
+            # concurrent commit landing inside THAT window makes the diff
+            # no longer reproduce the intended text, so the write is
+            # refused with `:meta_write_roundtrip_failed` — the guard
+            # working exactly as designed, catching the splice before it
+            # can commit. But it is a CONCURRENCY refusal reaching the
+            # caller as a hard error, decided purely by which of the two
+            # reads happened to lose the race. Measured at 16-way: some
+            # runs refuse this way instead of `:parent_moved`.
+            #
+            # Retry it — but ONLY when the doc actually moved. If the
+            # version is unchanged, nothing raced us and the roundtrip
+            # genuinely failed to reproduce its own intent (an encoding
+            # fault, which is what this guard was built to catch). Those
+            # must keep their specific error rather than being retried
+            # into a generic conflict, or the detector loses the very
+            # signal it exists to provide.
+            {:error, :meta_write_roundtrip_failed} = err ->
+              if Schemas.latest_commit_id(node_id, store) != expected do
+                merge_meta_cas(node_id, fun, store, opts, attempts_left - 1)
+              else
+                err
+              end
 
             other ->
               other
