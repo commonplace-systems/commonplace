@@ -50,11 +50,12 @@ defmodule Commonplace.Bd.TixMigration.EdgeMapping do
   at the parse site, because a wire-shape misreading is a
   direction error wearing a different hat:
 
-    * the `bin/…` deps-stream shape, which
-      `Commonplace.Bd.Importer.import_deps_jsonl/3` also consumes:
+    * the `bin/…` deps-stream shape:
       `%{"from" => A, "to" => B, "kind" => "blocks"}` — `from` BLOCKS
-      `to` (see `Commonplace.Bd.Ready.incoming_blockers/2`, which
-      treats `e.to == issue_id` as "issue is blocked by `e.from`").
+      `to`. (`Commonplace.Bd.Importer.import_deps_jsonl/3` used to
+      consume the same shape into `/bd/deps.json`; that leg was
+      retired at the 2026-08-05 cutover — CX-hrbn — and this module,
+      which maps the shape to `needs`, is where it survives.)
 
     * the shape `bd export`'s issue records carry inline under
       `"dependencies"`:

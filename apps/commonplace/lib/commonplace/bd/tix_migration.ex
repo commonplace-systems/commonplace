@@ -105,8 +105,9 @@ defmodule Commonplace.Bd.TixMigration do
   same shape the verb produces), never drops.
 
   `deps_jsonl` is the optional separate dependency stream
-  (`%{"from","to","kind"}` lines, the shape
-  `Importer.import_deps_jsonl/3` consumes). bd ALSO carries its edges
+  (`%{"from","to","kind"}` lines — the shape
+  `Importer.import_deps_jsonl/3` consumed before that leg was retired
+  at the 2026-08-05 cutover; here it maps to `needs`). bd ALSO carries its edges
   inline on each issue row under `"dependencies"`, so both sources
   are collected; `EdgeMapping.normalize/1` reads either wire shape.
 

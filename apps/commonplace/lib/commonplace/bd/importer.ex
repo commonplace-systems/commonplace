@@ -33,9 +33,9 @@ defmodule Commonplace.Bd.Importer do
         "close_reason": "..."
       }
 
-  Comments and dependencies are not part of the issue record;
-  separate streams handle them via `import_comments_jsonl/3` and
-  `import_deps_jsonl/3`.
+  Comments are not part of the issue record; `import_comments_jsonl/4`
+  handles that stream. Dependencies used to be a separate stream too —
+  see the CX-hrbn note below for where they went.
 
   ## CX-6cz3: this module no longer writes issues
 
@@ -48,16 +48,20 @@ defmodule Commonplace.Bd.Importer do
   pure transformation below) and hands the records to the gated
   `ticket_import` verb on `Commonplace.ViewActionDispatch`.
 
-  `import_deps_jsonl/3` is a different graph and is deliberately
-  untouched: it writes `blocks` edges into `/bd/deps.json` (the P1
-  `Commonplace.Bd.Ready` graph), NOT the `needs` refs the P2
-  frontier/cycle gate walk — the two graphs are explicitly not
-  reconciled (see `Commonplace.Bd.Frontier`'s moduledoc). `needs`
-  edges that arrive with an imported record DO go through the cycle
-  gate, inside the verb.
+  ## CX-hrbn: the deps leg is retired
+
+  `import_deps_jsonl/3` wrote `blocks` edges into `/bd/deps.json` — a
+  different graph from the `needs` refs the P2 frontier and cycle gate
+  walk, and one nothing has written since the tix-authority cutover on
+  2026-08-05. It now refuses loudly. Its job is done inline by
+  `import_issues_jsonl/4`: `needs` edges arriving with an imported
+  record are folded through the gated `ticket_import` verb, cycle gate
+  and all, so a separate edge stream has nothing left to add.
+
+  `import_comments_jsonl/4` is unaffected — comments are not a graph.
   """
 
-  alias Commonplace.Bd.{Comment, Dep, Schemas, Workspace}
+  alias Commonplace.Bd.{Comment, Retired, Schemas, Workspace}
   alias Commonplace.Store.CommitStoreClient
 
   @doc """
@@ -131,38 +135,19 @@ defmodule Commonplace.Bd.Importer do
   defp maybe_put_signing_context(context, sc), do: Map.put(context, :signing_context, sc)
 
   @doc """
-  Imports dependency edges from JSONL text. Each line:
+  RETIRED. Raises `Commonplace.Bd.RetiredGraphError`.
 
-      {"from": "CX-a", "to": "CX-b", "kind": "blocks"}
-
-  Idempotent. `kind` defaults to `"blocks"`.
+  Imported `{"from": ..., "to": ..., "kind": "blocks"}` lines into
+  `/bd/deps.json`. Superseded by `import_issues_jsonl/4`, which folds a
+  record's `needs` through the gated `ticket_import` verb.
   """
-  def import_deps_jsonl(root_uuid, jsonl_text, store \\ CommitStoreClient) when is_binary(jsonl_text) do
-    _ = Workspace.ensure_bd_dir(root_uuid, store)
+  def import_deps_jsonl(root_uuid, jsonl_text, store \\ CommitStoreClient)
 
-    count =
-      jsonl_text
-      |> String.split("\n", trim: true)
-      |> Enum.reduce(0, fn line, acc ->
-        case Jason.decode(line) do
-          {:ok, m} ->
-            from = Map.get(m, "from")
-            to = Map.get(m, "to")
-            kind = Map.get(m, "kind", "blocks")
-
-            if is_binary(from) and is_binary(to) do
-              {:ok, _} = Dep.add(root_uuid, from, to, kind, %{}, store)
-              acc + 1
-            else
-              acc
-            end
-
-          _ ->
-            acc
-        end
-      end)
-
-    {:ok, %{imported: count}}
+  def import_deps_jsonl(_root_uuid, jsonl_text, _store) when is_binary(jsonl_text) do
+    Retired.write!(
+      "Commonplace.Bd.Importer.import_deps_jsonl/3",
+      "This separate edge stream is superseded by `import_issues_jsonl/4`: prerequisites now ride along on the issue record as `needs` and are folded in by the gated `ticket_import` verb, through the cycle gate. Rewrite the edge stream as `needs` entries on the dependent records rather than importing it on its own."
+    )
   end
 
   @doc """

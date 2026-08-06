@@ -2,6 +2,7 @@ defmodule Commonplace.Bd.FrontierTest do
   use ExUnit.Case
 
   alias Commonplace.Bd.{Frontier, Issue, Ready}
+  alias Commonplace.Bd.RetiredGraphError
   alias Commonplace.Store.CommitStore
   alias Commonplace.Tree.Schema
   alias Yelixer.Encoding
@@ -70,24 +71,29 @@ defmodule Commonplace.Bd.FrontierTest do
     refute b.id in ready_ids
   end
 
-  # Contrast pin: the SAME graph under P1 Bd.Ready's unknown-satisfied
-  # rule would (wrongly, for our purposes) call the same ticket ready,
-  # because Ready has no concept of `needs` at all — it only walks
-  # `blocks` edges in deps.json, which are untouched by a `needs`-only
-  # ticket. This pins that Ready and Frontier are genuinely different
-  # oracles over the same unresolvable-ref scenario: Ready sees no
-  # blocker at all (open, no incoming `blocks` edges => ready), while
-  # Frontier's needs-walk treats the unresolvable needs entry as
-  # unsatisfied => blocked.
-  test "inversion is actually present: Ready calls it ready, Frontier calls it blocked", ctx do
+  # Contrast pin, rewritten at the CX-hrbn retirement. This USED to
+  # assert that P1 `Bd.Ready` calls the same ticket ready — its
+  # unknown-blocker-is-satisfied rule saw no `blocks` edge and said
+  # "go" — while Frontier's needs-walk calls it blocked. That inversion
+  # is exactly why Ready could not simply be left running next to
+  # Frontier: two oracles, opposite answers, one of them reading a
+  # graph nothing writes.
+  #
+  # So the pin now holds the resolution rather than the disagreement:
+  # Frontier still calls it blocked, and Ready no longer answers at
+  # all. The refusal is the load-bearing half — a Ready that quietly
+  # returned `[]` here would look like agreement.
+  test "inversion is resolved: Frontier calls it blocked, Ready refuses to answer", ctx do
     {:ok, b, _} =
       Issue.create(ctx.root, %{title: "B", needs: [needs_ticket("CX-doesnotexist")]}, ctx.store)
 
-    ready_under_p1 = Ready.ready(ctx.root, ctx.store) |> Enum.map(& &1.id)
-    assert b.id in ready_under_p1
-
     ready_under_frontier = Frontier.ready_walk(ctx.root, ctx.store) |> Enum.map(& &1.id)
     refute b.id in ready_under_frontier
+    assert b.id in (Frontier.blocked_walk(ctx.root, ctx.store) |> Enum.map(& &1.id))
+
+    err = assert_raise(RetiredGraphError, fn -> Ready.ready(ctx.root, ctx.store) end)
+    assert Exception.message(err) =~ "RETIRED"
+    assert Exception.message(err) =~ "Frontier"
   end
 
   test "diamond dedup: D needs A and B, A needs C, B needs C", ctx do

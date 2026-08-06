@@ -1,7 +1,8 @@
 defmodule Commonplace.Bd.ImporterTest do
   use ExUnit.Case
 
-  alias Commonplace.Bd.{Dep, Importer, Issue, Ready}
+  alias Commonplace.Bd.{Frontier, Importer, Issue}
+  alias Commonplace.Bd.RetiredGraphError
   alias Commonplace.Store.CommitStore
   alias Commonplace.Tree.Schema
   alias Yelixer.Encoding
@@ -78,25 +79,52 @@ defmodule Commonplace.Bd.ImporterTest do
     assert length(Issue.list(ctx.root, ctx.store)) == 1
   end
 
-  test "imports deps from JSONL", ctx do
-    issue_text =
-      issue_jsonl([
-        %{"id" => "CX-a", "title" => "A", "status" => "open", "priority" => 2},
-        %{"id" => "CX-b", "title" => "B", "status" => "open", "priority" => 2}
-      ])
-
-    {:ok, _} = Importer.import_issues_jsonl(ctx.root, issue_text, ctx.store)
-
+  # CX-hrbn. The separate edge stream wrote /bd/deps.json, retired at
+  # the 2026-08-05 cutover. It refuses rather than reporting an import
+  # count for edges nothing will ever read.
+  test "the deps-stream leg refuses loudly and names its replacement", ctx do
     deps_text =
       [%{"from" => "CX-a", "to" => "CX-b", "kind" => "blocks"}]
       |> Enum.map(&Jason.encode!/1)
       |> Enum.join("\n")
 
-    {:ok, %{imported: 1}} = Importer.import_deps_jsonl(ctx.root, deps_text, ctx.store)
+    err =
+      assert_raise(RetiredGraphError, fn ->
+        Importer.import_deps_jsonl(ctx.root, deps_text, ctx.store)
+      end)
 
-    edges = Dep.list(ctx.root, ctx.store)
-    assert length(edges) == 1
-    assert hd(edges).from == "CX-a"
+    msg = Exception.message(err)
+    assert msg =~ "RETIRED"
+    assert msg =~ "2026-08-05"
+    assert msg =~ "import_issues_jsonl/4"
+    assert msg =~ "needs"
+  end
+
+  # ...and the replacement it names actually works: the same edge,
+  # carried inline on the dependent's record, lands in the live graph.
+  test "an edge carried as `needs` on the record imports and is walked by the frontier", ctx do
+    issue_text =
+      issue_jsonl([
+        %{"id" => "CX-a", "title" => "A", "status" => "open", "priority" => 2},
+        %{
+          "id" => "CX-b",
+          "title" => "B",
+          "status" => "open",
+          "priority" => 2,
+          "needs" => [%{"ticket" => "CX-a"}]
+        }
+      ])
+
+    {:ok, _} = Importer.import_issues_jsonl(ctx.root, issue_text, ctx.store)
+
+    {:ok, b} = Issue.show(ctx.root, "CX-b", ctx.store)
+    assert b.needs == [%{"ticket" => "CX-a"}]
+
+    ready_ids = Frontier.ready_walk(ctx.root, ctx.store) |> Enum.map(& &1.id)
+    blocked_ids = Frontier.blocked_walk(ctx.root, ctx.store) |> Enum.map(& &1.id)
+
+    assert "CX-a" in ready_ids
+    assert "CX-b" in blocked_ids
   end
 
   test "DEMO BAR — import + native create + bd ready returns the new issue", ctx do
@@ -113,8 +141,9 @@ defmodule Commonplace.Bd.ImporterTest do
     {:ok, native, _} = Issue.create(ctx.root, %{title: "thing"}, ctx.store)
 
     # Step 3: bd ready returns the native one + the imported open one,
-    # filters out the closed one. No views — walk-based.
-    ready_ids = Ready.ready(ctx.root, ctx.store) |> Enum.map(& &1.id) |> Enum.sort()
+    # filters out the closed one. Walk-based, over `needs` (CX-hrbn
+    # repointed this off the retired /bd/deps.json walk).
+    ready_ids = Frontier.ready_walk(ctx.root, ctx.store) |> Enum.map(& &1.id) |> Enum.sort()
 
     assert native.id in ready_ids
     assert "CX-imp1" in ready_ids
@@ -155,14 +184,18 @@ defmodule Commonplace.Bd.ImporterTest do
     text =
       issue_jsonl([
         %{"id" => "CX-blocker", "title" => "blocker", "status" => "open", "priority" => 2},
-        %{"id" => "CX-blocked", "title" => "blocked", "status" => "open", "priority" => 2}
+        %{
+          "id" => "CX-blocked",
+          "title" => "blocked",
+          "status" => "open",
+          "priority" => 2,
+          "needs" => [%{"ticket" => "CX-blocker"}]
+        }
       ])
 
     {:ok, _} = Importer.import_issues_jsonl(ctx.root, text, ctx.store)
 
-    {:ok, _} = Dep.add(ctx.root, "CX-blocker", "CX-blocked", "blocks", %{}, ctx.store)
-
-    ready_ids = Ready.ready(ctx.root, ctx.store) |> Enum.map(& &1.id)
+    ready_ids = Frontier.ready_walk(ctx.root, ctx.store) |> Enum.map(& &1.id)
     assert "CX-blocker" in ready_ids
     refute "CX-blocked" in ready_ids
   end
@@ -171,13 +204,18 @@ defmodule Commonplace.Bd.ImporterTest do
     text =
       issue_jsonl([
         %{"id" => "CX-closed-block", "title" => "done", "status" => "closed", "priority" => 2},
-        %{"id" => "CX-now-ready", "title" => "ready", "status" => "open", "priority" => 2}
+        %{
+          "id" => "CX-now-ready",
+          "title" => "ready",
+          "status" => "open",
+          "priority" => 2,
+          "needs" => [%{"ticket" => "CX-closed-block"}]
+        }
       ])
 
     {:ok, _} = Importer.import_issues_jsonl(ctx.root, text, ctx.store)
-    {:ok, _} = Dep.add(ctx.root, "CX-closed-block", "CX-now-ready", "blocks", %{}, ctx.store)
 
-    ready_ids = Ready.ready(ctx.root, ctx.store) |> Enum.map(& &1.id)
+    ready_ids = Frontier.ready_walk(ctx.root, ctx.store) |> Enum.map(& &1.id)
     assert "CX-now-ready" in ready_ids
   end
 end
