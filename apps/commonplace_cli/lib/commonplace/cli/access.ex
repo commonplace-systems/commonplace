@@ -176,6 +176,16 @@ defmodule Commonplace.CLI.Access do
       {:error, _other} ->
         :free
     end
+  rescue
+    # The flock(2) NIF failing to load (`:code.priv_dir` in an escript is
+    # the classic way) must not turn every CLI invocation into a crash in
+    # the probe. Degrade to the pre-CX-x8jk behaviour: fall through to the
+    # local open, where CommitStore.init/1's own Flock call is the thing
+    # that fails — loudly, and at the layer that owns the exclusion. This
+    # weakens nothing: the probe is a courtesy, the flock is the gate.
+    e ->
+      IO.puts(:stderr, "commonplace: could not probe the commits lock (#{inspect(e)})")
+      :free
   end
 
   @doc """
