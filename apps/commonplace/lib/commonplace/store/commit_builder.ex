@@ -64,14 +64,40 @@ defmodule Commonplace.Store.CommitBuilder do
   def build(db, doc_uuid, update, parent_id, metadata, opts \\ []) do
     {resolved_parent_id, genesis} = resolve_genesis(db, doc_uuid, parent_id)
     metadata = stamp_snapshot_parent(db, resolved_parent_id, metadata, genesis)
+    post_state_hash = mint_post_state(opts)
 
     {commit, build_ns} =
-      timed(fn -> Commit.new(doc_uuid, update, resolved_parent_id, metadata) end)
+      timed(fn ->
+        Commit.new(doc_uuid, update, resolved_parent_id, metadata, [], post_state_hash)
+      end)
 
     {commit, sign_ns} =
       timed(fn -> maybe_sign_commit(commit, Keyword.get(opts, :signing_context)) end)
 
     %{commit: commit, genesis: genesis, build_ns: build_ns, sign_ns: sign_ns}
+  end
+
+  # ── Post-state minting (CX-6scm) ──────────────────────────────────
+  #
+  # The carried expectation must live INSIDE the signed content, so it
+  # must exist at `Commit.new`/signing time — which is why minting lives
+  # HERE, at the build pipeline, and not at the `put_latest` funnel that
+  # writes rows AFTER build+sign.
+  #
+  # It is per-site THREADING, not one field at one funnel: for a delta
+  # writer the post-state is not free (the writer's in-memory doc must be
+  # canonically encoded), so the writer that already holds the resulting
+  # doc passes it as `post_state:`. Callers that do not — the named
+  # legacy-compatible sites, enumerated and guarded by
+  # `test/commonplace/projection/mint_source_scan_test.exs` — mint no
+  # hash, and their commits project at the corroboration ceiling. That is
+  # the whole rollout: observe-then-require, no flag day, the two-grade
+  # verdict IS the migration plan.
+  defp mint_post_state(opts) do
+    case Keyword.get(opts, :post_state) do
+      nil -> nil
+      state -> Commonplace.Projection.PostState.mint(state)
+    end
   end
 
   @doc "Time a zero-arg function, returning `{result, elapsed_native_time}`."
