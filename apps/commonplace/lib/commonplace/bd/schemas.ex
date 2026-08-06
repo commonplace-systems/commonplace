@@ -472,6 +472,18 @@ defmodule Commonplace.Bd.Schemas do
     end
   end
 
+  @doc """
+  The RAW stored bytes of `filename` in `dir_uuid`, undecoded.
+
+  CX-xmsd uses this for the backfill's idempotency check: "already
+  present with identical content" has to be decided on the stored
+  bytes, not on a decoded struct, so that a re-import can never
+  overwrite a comment that differs in a field the decoder drops.
+  """
+  @spec load_raw_text(String.t(), String.t(), term()) :: {:ok, String.t()} | {:error, term()}
+  def load_raw_text(dir_uuid, filename, store \\ CommitStoreClient),
+    do: load_meta(dir_uuid, filename, &{:ok, &1}, store)
+
   defp load_meta(dir_uuid, filename, decoder, store) do
     with {:ok, schema} <- load_dir_schema(dir_uuid, store),
          {:ok, entry} <- Schema.get_entry(schema, filename),
@@ -511,6 +523,30 @@ defmodule Commonplace.Bd.Schemas do
   # and passed as `create_commit/6`'s explicit metadata argument; the
   # rest of `opts` (`:signing_context`) rides through untouched.
   def create_text_doc(json, store \\ CommitStoreClient, opts \\ []) when is_binary(json) do
+    {_result, uuid} = do_create_text_doc(json, store, opts)
+    uuid
+  end
+
+  @doc """
+  `create_text_doc/3` with the store's answer KEPT (CX-xmsd layer 1).
+
+  Returns `{:ok, uuid}` only when the store actually accepted the
+  commit, and `{:error, reason}` — notably
+  `{:trust_rejected, :unsigned}` under Mode-B enforce — when it did
+  not. `create_text_doc/3` discards that answer and hands back a uuid
+  for a doc that may not exist; every caller that reports success to
+  someone else must use this one instead.
+  """
+  @spec create_text_doc_checked(String.t(), term(), keyword()) ::
+          {:ok, String.t()} | {:error, term()}
+  def create_text_doc_checked(json, store \\ CommitStoreClient, opts \\ []) when is_binary(json) do
+    case do_create_text_doc(json, store, opts) do
+      {{:error, reason}, _uuid} -> {:error, reason}
+      {_landed, uuid} -> {:ok, uuid}
+    end
+  end
+
+  defp do_create_text_doc(json, store, opts) do
     uuid = UUID.uuid4()
     doc = Doc.new()
     doc = ContentType.create(doc, :text, "metadata")
@@ -518,8 +554,8 @@ defmodule Commonplace.Bd.Schemas do
     update = Encoding.encode_update(doc)
     metadata = Keyword.get(opts, :commit_metadata, %{})
     rest_opts = Keyword.delete(opts, :commit_metadata)
-    CommitStoreClient.create_commit(store, uuid, update, nil, metadata, rest_opts)
-    uuid
+    result = CommitStoreClient.create_commit(store, uuid, update, nil, metadata, rest_opts)
+    {result, uuid}
   end
 
   # `opts` (default `[]`) is threaded to
@@ -571,6 +607,28 @@ defmodule Commonplace.Bd.Schemas do
   # design ruling.
   def write_text_doc(uuid, json, store \\ CommitStoreClient, opts \\ [])
       when is_binary(uuid) and is_binary(json) do
+    _ = do_write_text_doc(uuid, json, store, opts)
+    :ok
+  end
+
+  @doc """
+  `write_text_doc/4` with the store's answer KEPT (CX-xmsd layer 1).
+
+  `write_text_doc/4` returns a bare `:ok` whatever the store said, so a
+  denied edit is indistinguishable from a landed one. This returns
+  `:ok` only when the chained commit was accepted.
+  """
+  @spec write_text_doc_checked(String.t(), String.t(), term(), keyword()) ::
+          :ok | {:error, term()}
+  def write_text_doc_checked(uuid, json, store \\ CommitStoreClient, opts \\ [])
+      when is_binary(uuid) and is_binary(json) do
+    case do_write_text_doc(uuid, json, store, opts) do
+      {:error, reason} -> {:error, reason}
+      _landed -> :ok
+    end
+  end
+
+  defp do_write_text_doc(uuid, json, store, opts) do
     {:ok, doc} = DocBuilder.reconstruct_doc(store, uuid, client_id: WriterHand.for_doc(uuid))
     current = ContentType.get_content(doc) || ""
     doc = if current != "", do: ContentType.delete_text(doc, 0, String.length(current)), else: doc
@@ -579,7 +637,6 @@ defmodule Commonplace.Bd.Schemas do
     metadata = Keyword.get(opts, :commit_metadata, %{})
     rest_opts = Keyword.delete(opts, :commit_metadata)
     CommitStoreClient.create_chained_commit(store, uuid, update, metadata, rest_opts)
-    :ok
   end
 
   def create_dir_with_meta(meta_filename, json, store \\ CommitStoreClient, opts \\ []) do
