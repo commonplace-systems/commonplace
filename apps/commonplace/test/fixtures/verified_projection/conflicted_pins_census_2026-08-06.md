@@ -252,3 +252,21 @@ post-trim chain reaches `:reader_lazy_snapshot_threshold` (default 100, default-
 outside `:test`). **Reading a deep document through that function mints a snapshot
 commit.** `reconstruct_doc_at/4` does not. Part 2 uses `reconstruct_doc/3` and would
 write against a live store.
+
+---
+
+## Attribution addendum (coordinator, 2026-08-06 ~06:0xZ)
+
+The harness's disclosure above reports the deletion of the 2026-08-05
+derived store copies as unattributable from its own command history.
+The attribution is now known and closed: **the deletions were the
+coordinating session's own cleanup**, both recorded in its transcript —
+`.chit-sizing-work` and `.chit-sizing-tamper` removed during the
+evening's disk-pressure cleanup (derived, recreatable), and the
+provenance backup removed immediately after commonplace-plan accepted
+the sizing report with "release the backup." No unknown process was
+involved; the live store was never touched. The false zero the
+re-opened empty path produced remains the load-bearing lesson
+(measurement opens must assert non-emptiness; create-on-open turns an
+absent data source into a silently minted empty one), recorded in the
+project's verification-discipline notes.
