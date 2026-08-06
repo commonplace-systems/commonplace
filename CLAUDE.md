@@ -58,16 +58,12 @@ CI uses `--warnings-as-errors` — fix all compiler warnings before pushing.
 
 ## Issue tracking
 
-Uses `bd` (beads) — not markdown TODOs or external trackers. Issue prefix: CX.
+**tix — the substrate's own tracker — is the authority. `bd` (beads) is a frozen ARCHIVE as of the 2026-08-05 cutover** (all 798 bd tickets migrated, ids preserved; design: commonplace-plan `docs/plans/2026-08-05-tix-authority-migration-design.md`). Issue prefix: CX.
 
-```bash
-bd ready              # find available work
-bd show CX-xxx        # view issue
-bd update CX-xxx --status=in_progress
-bd close CX-xxx --reason="..."
-```
-
-⚠️ `bd ready` is currently an INCOMPLETE view of the work — bd and the substrate `/bd/` have diverged since the 2026-07-18 cutover and nothing reconciles them. Neither store alone answers "what is the work?". See CX-jhvn (measured 2026-08-05) for the exact items each side is missing.
+- **Read/write tickets through the gated verb surface**: MCP `bd_*` tools when available (`bd_ready`, `bd_show`, `bd_create`, `bd_update`, `bd_close`, `bd_add_needs` — all route `Commonplace.ViewActionDispatch` / `Commonplace.Bd.CLI`), or `commonplace bd ready|blocked|list|show` from the CLI, or the verbs directly on a serve.
+- **Never `bd create`/`bd update`/`bd close`** — writes to the bd store deepen a divergence nothing reconciles anymore. Reading old bd data (closed-ticket history, comments pending CX-xmsd backfill) is fine; `bd export` remains the archive read.
+- Dependencies are `needs` refs on the ticket (cycle-gated via `ticket_add_needs`), NOT the retired `/bd/deps.json` blocks graph — its read/write surfaces now raise `Commonplace.Bd.RetiredGraphError` on purpose (CX-hrbn).
+- ⚠️ The Claude Code beads plugin/hooks may still suggest `bd` commands at session start — that guidance is stale for THIS repo; tix is authoritative.
 
 ## Design docs
 
