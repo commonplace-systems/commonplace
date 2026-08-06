@@ -138,6 +138,7 @@ defmodule Commonplace.Reflog.Restore do
   nothing about that path.
   """
 
+  alias Commonplace.Projection
   alias Commonplace.Tree.{Schema, DocBuilder}
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Document.ContentType
@@ -256,19 +257,57 @@ defmodule Commonplace.Reflog.Restore do
   # docs are documented as "always store full snapshots"
   # (`DocBuilder.reconstruct_snapshot/2`'s moduledoc) for the same reason.
   #
+  # CX-6scm: **this logic is now `Commonplace.Projection`'s.** What used
+  # to be a `defp` here — the only implementation of the per-commit pin
+  # read in the whole codebase, per the conflicted-pins census — is the
+  # promoted public API, and this function is a thin adapter onto it.
+  # Everything above still describes WHY the read is per-commit; what
+  # changed is that the read now comes back with a VERDICT, and this
+  # module has to handle the declining outcomes rather than being
+  # structurally unable to hear them.
+  #
+  # `head_path: :direct` is this consumer declaring its shipped
+  # semantics: the reflog `__snapshot` doc is a full-state-rewrite chain
+  # (see the paragraph above), so at head the single-commit read is the
+  # correct path — chain replay is the side that sticks on round 1.
+  #
   # `expected_doc_uuid`, when given, is a defensive cross-check: the
   # checkpoint commit id the caller handed us should belong to the doc
-  # uuid the caller believes it does.
+  # uuid the caller believes it does. `Projection` performs it.
   defp single_commit_doc(store, commit_id, expected_doc_uuid \\ nil) do
     case CommitStoreClient.get_commit(store, commit_id) do
-      {:ok, %{doc_uuid: doc_uuid}} when not is_nil(expected_doc_uuid) and doc_uuid != expected_doc_uuid ->
-        {:error, {:commit_doc_mismatch, commit_id, expected: expected_doc_uuid, got: doc_uuid}}
-
-      {:ok, commit} ->
-        Yelixer.Encoding.apply_update(Yelixer.Doc.new(), commit.update)
+      {:ok, %{doc_uuid: doc_uuid}} ->
+        pin_read(store, doc_uuid, commit_id, expected_doc_uuid)
 
       :none ->
         :none
+    end
+  end
+
+  defp pin_read(store, doc_uuid, commit_id, expected_doc_uuid) do
+    uuid = expected_doc_uuid || doc_uuid
+
+    case Projection.project_doc_at(uuid, commit_id,
+           store: store,
+           head_path: :direct
+         ) do
+      {:ok, doc, _verdict} ->
+        {:ok, doc}
+
+      # A hole in a restore is a NAMED refusal, never a silently-wrong
+      # tree. Display and restore both surface this rather than
+      # laundering it into bytes.
+      {:unknown, reason} ->
+        {:error, {:projection_unknown, commit_id, reason}}
+
+      {:error, {:commit_not_found, _}} ->
+        :none
+
+      {:error, {:commit_not_on_chain, _}} ->
+        :none
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -630,10 +669,21 @@ defmodule Commonplace.Reflog.Restore do
   defp materialize_file(store, source_doc_uuid, commit_id, signing_opts) do
     new_uuid = UUID.uuid4()
 
+    # CX-6scm: this MATERIALISES a branch — it turns a pin read into new
+    # committed history — so an undecidable pin must refuse rather than
+    # pick a candidate. Picking here would launder a conflicted pin into
+    # a fresh commit that looks authoritative forever, which is the
+    # no-retroactive-WITNESSED rule violated in the other direction.
     update =
-      case DocBuilder.reconstruct_doc_at(store, source_doc_uuid, commit_id) do
-        {:ok, doc} -> Yelixer.Encoding.encode_update(doc)
-        :none -> Yelixer.Encoding.encode_update(Yelixer.Doc.new())
+      case Projection.project_at(source_doc_uuid, commit_id, store: store) do
+        {:ok, bytes, _verdict} ->
+          bytes
+
+        {:error, reason} when elem(reason, 0) in [:commit_not_found, :commit_not_on_chain] ->
+          Yelixer.Encoding.encode_update(Yelixer.Doc.new())
+
+        other ->
+          throw({:materialize_refused, source_doc_uuid, commit_id, other})
       end
 
     {meta, commit_opts} = split_opts(signing_opts)
@@ -787,13 +837,26 @@ defmodule Commonplace.Reflog.Restore do
     end)
   end
 
+  # CX-6scm: a materialised file's bytes come from the verdict-bearing
+  # API. A pin whose two reconstruction paths disagree writes a NAMED
+  # marker rather than one of the two candidate contents — writing either
+  # would be the silent-wrong-bytes failure this layer exists to close,
+  # and a checkout that silently contains the wrong version of a file is
+  # worse than one that says which file it could not decide.
   defp reconstruct_file_content(store, doc_uuid, commit_id_hex) do
     commit_id = Base.decode16!(commit_id_hex, case: :lower)
 
-    case DocBuilder.reconstruct_doc_at(store, doc_uuid, commit_id) do
-      {:ok, doc} -> doc_content(doc)
-      :none -> ""
+    case Projection.project_doc_at(doc_uuid, commit_id, store: store) do
+      {:ok, doc, _verdict} -> doc_content(doc)
+      {:unknown, reason} -> unresolved_marker(commit_id_hex, reason)
+      {:error, {:commit_not_found, _}} -> ""
+      {:error, {:commit_not_on_chain, _}} -> ""
+      {:error, reason} -> unresolved_marker(commit_id_hex, reason)
     end
+  end
+
+  defp unresolved_marker(commit_id_hex, reason) do
+    "<<commonplace: could not project #{commit_id_hex} — #{inspect(reason)}>>\n"
   end
 
   defp doc_content(doc) do
