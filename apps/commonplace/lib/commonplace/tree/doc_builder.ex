@@ -343,10 +343,17 @@ defmodule Commonplace.Tree.DocBuilder do
   10,000`. There the old path replayed from an arbitrary mid-chain
   position (a truncated, less complete baseline) and the new path replays
   from the real snapshot (a complete one). Detecting it would cost the
-  head walk. It requires a >10,000-deep chain pinned near its bottom; the
-  CX-ggdv neutrality run measured **0 occurrences** across the corpus. New
-  bytes would be *more* correct there, not less, but it is a byte change
-  and so it is named.
+  head walk, which is the cost this whole function exists to avoid, so it
+  is not detected — it is measured.
+
+  Measured 2026-08-06 against a read-only `CubDB.back_up/2` copy of the
+  live serve (69,973 rows, 5,186 docs, depth classes 2–10: 4,900 · 11–100:
+  187 · 101–1,000: 50 · >1,000: 49): the census's 80 head docs, its 27
+  conflicted pins, and a depth-stratified sample of 390 (doc, pin) pairs
+  taking EVERY doc in the deepest class — **0 divergences**, chain and
+  projection alike. New bytes would be *more* correct in this shape, not
+  less, but it is a byte change and so it is named rather than assumed
+  absent.
   """
   @spec chain_to(term(), String.t(), binary(), keyword()) :: {:ok, [struct()]} | :none
   def chain_to(store, uuid, target_commit_id, opts \\ []) do
