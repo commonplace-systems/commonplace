@@ -148,88 +148,21 @@ defmodule Commonplace.CLI do
   @doc """
   Start the application services needed for CLI commands.
 
-  Tries to connect to a running `commonplace serve` node first. If connected,
-  routes CommitStore calls remotely (no local CubDB). If not, acquires a file
-  lock and starts CubDB locally.
+  Delegates to `Commonplace.CLI.Access.ensure_started/2`, which decides
+  route / refuse / local BEFORE anything is opened (CX-x8jk):
+
+    * a reachable `commonplace serve` for this data dir → route every
+      call at it (`CommitStoreClient.set_remote_node/1`), no local CubDB;
+    * no serve, but `<data_dir>/commits.lock` held by a live process →
+      print the sanctioned-access refusal and exit 1, instead of opening
+      a second appender on someone else's store (or crashing out of the
+      store layer with `{:commits_store_locked, ...}`);
+    * no serve, no lock → open locally. The offline single-user case,
+      which must keep working.
   """
   def ensure_started(data_dir) do
     File.mkdir_p!(data_dir)
-
-    case try_connect_to_serve(data_dir) do
-      {:ok, node} ->
-        # Connected to serve — use remote CommitStore, don't start local app
-        Commonplace.Store.CommitStoreClient.set_remote_node(node)
-        :ok
-
-      :not_running ->
-        # No serve running — open locally. The exclusion is CX-2479's
-        # flock(2) inside CommitStore.init/1, not anything this module
-        # does: the old `acquire_db_lock/1` prose-lock over the SAME
-        # commits.lock file was a second, unrelated exclusion scheme
-        # (pid string + `kill -0` + take-over-on-stale) that could hand
-        # out access a live flock holder already had, and clobber that
-        # holder's diagnostic hint on the way past. Deleted in CX-x8jk.
-        start_local(data_dir)
-    end
-  end
-
-  defp start_local(data_dir) do
-    # Stop if already running with wrong data_dir (escript auto-start)
-    if Application.get_env(:commonplace, :data_dir) != data_dir do
-      Application.stop(:commonplace)
-    end
-
-    Application.put_env(:commonplace, :data_dir, data_dir)
-
-    case Application.ensure_all_started(:commonplace) do
-      {:ok, _} ->
-        :ok
-
-      {:error, reason} ->
-        # CX-qida: most commonly the workspace single-owner flock
-        # (Commonplace.Workspace.Lock) refusing to start because
-        # another process already holds <data_dir>/serve.lock —
-        # surface that as a clear, fail-fast CLI error instead of
-        # a raw MatchError crash. Commonplace.Workspace.Lock's
-        # own init/1 already printed the detailed lock/holder
-        # message to stderr; this is the summary.
-        IO.puts(:stderr, "Cannot start commonplace: #{inspect(reason)}")
-        System.halt(1)
-    end
-  end
-
-  defp try_connect_to_serve(data_dir) do
-    node_name_file = Path.join(data_dir, "node_name")
-
-    case File.read(node_name_file) do
-      {:ok, content} ->
-        serve_node = content |> String.trim() |> String.to_atom()
-
-        # Start a temporary CLI node so we can connect.
-        # CX-y6uc: disable :global's overlapping-partition protection
-        # (default-on since OTP 25). Each CLI invocation is short-lived;
-        # without this, repeated CLI calls trip serve's :global into
-        # disconnecting them. Must be set before Node.start.
-        :application.set_env(:kernel, :prevent_overlapping_partitions, false)
-
-        cli_name = :"commonplace_cli_#{:rand.uniform(999_999)}"
-
-        case Node.start(cli_name, :shortnames) do
-          {:ok, _} ->
-            if Node.connect(serve_node) do
-              {:ok, serve_node}
-            else
-              Node.stop()
-              :not_running
-            end
-
-          {:error, _} ->
-            :not_running
-        end
-
-      {:error, _} ->
-        :not_running
-    end
+    Commonplace.CLI.Access.ensure_started(data_dir)
   end
 
   @doc "Load a schema doc from the commit store."

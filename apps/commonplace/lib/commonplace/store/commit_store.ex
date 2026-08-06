@@ -1407,11 +1407,7 @@ defmodule Commonplace.Store.CommitStore do
     File.touch!(path)
 
     # Read the incumbent's hint BEFORE we overwrite it with our own.
-    hint =
-      case File.read(path) do
-        {:ok, content} -> String.trim(content)
-        {:error, _} -> ""
-      end
+    hint = Commonplace.Store.LockRefusal.holder_hint(path)
 
     case Commonplace.Sync.Flock.try_lock(path, :exclusive) do
       {:ok, ref} ->
@@ -1421,7 +1417,7 @@ defmodule Commonplace.Store.CommitStore do
       {:error, reason} ->
         detail = %{
           lock_path: path,
-          holder_hint: holder_hint(hint),
+          holder_hint: hint,
           reason: reason,
           sanctioned_access: sanctioned_access_message()
         }
@@ -1438,18 +1434,13 @@ defmodule Commonplace.Store.CommitStore do
     end
   end
 
-  defp holder_hint(""), do: "(lock file empty or unreadable)"
-  defp holder_hint(content), do: content
-
   # CX-2479 rider: the incident's trigger was a legitimate read need going
   # through an illegitimate door. A refusal that only says "no" breeds the
-  # workaround; this names the sanctioned door instead.
-  defp sanctioned_access_message do
-    "This store is held by a live process. Read it through the running serve " <>
-      "(:erpc into the serve node, or Commonplace.Store.CommitStoreClient against it), " <>
-      "or from a CubDB.back_up/2 copy. Do NOT retry the direct open and do NOT delete " <>
-      "the lock file — a second opener on one CubDB directory is how the store gets corrupted."
-  end
+  # workaround; this names the sanctioned door instead. CX-x8jk moved the
+  # prose to Commonplace.Store.LockRefusal so the CLI's tool-layer refusal
+  # says exactly the same thing without a second copy to drift.
+  defp sanctioned_access_message,
+    do: Commonplace.Store.LockRefusal.sanctioned_access_message()
 
   # R4(a): publish the CubDB handle so reads can run in the caller process
   # against it directly, never queuing behind a write in this GenServer's
