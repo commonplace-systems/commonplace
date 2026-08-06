@@ -54,7 +54,7 @@ defmodule Commonplace.Trust.AuditLogTest do
 
     AuditLog.attach(store_name, dispatcher: dispatcher)
 
-    if :ets.whereis(@rate_table) != :undefined, do: :ets.delete_all_objects(@rate_table)
+    AuditLog.reset_rate_table()
 
     on_exit(fn ->
       AuditLog.detach()

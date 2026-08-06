@@ -41,8 +41,6 @@ defmodule Commonplace.Trust.AuditDualMechanismTest do
   alias Commonplace.Store.{Commit, CommitStore}
   alias Commonplace.Trust.{AuditDispatcher, AuditLog}
 
-  @rate_table :commonplace_trust_audit_log_rate
-
   setup do
     dir = Path.join(System.tmp_dir!(), "cp_audit_dual_#{:rand.uniform(1_000_000_000)}")
     File.mkdir_p!(dir)
@@ -72,7 +70,7 @@ defmodule Commonplace.Trust.AuditDualMechanismTest do
       File.rm_rf!(dir)
     end)
 
-    if :ets.whereis(@rate_table) != :undefined, do: :ets.delete_all_objects(@rate_table)
+    AuditLog.reset_rate_table()
 
     %{store: store, n: n, dir: dir}
   end

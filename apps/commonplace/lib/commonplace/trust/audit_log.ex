@@ -433,6 +433,18 @@ defmodule Commonplace.Trust.AuditLog do
 
   # --- flood guard: per-event-name token bucket + window summary ---
 
+  @doc false
+  # Test support: the rate table is global, named, and shared across the
+  # whole BEAM run, so any test that asserts on dispatcher offers must
+  # start from a fresh bucket or inherit whatever the suite ran before it
+  # (that inheritance was a red CI on the first post-merge run). This is
+  # the ONE sanctioned way to clear it — tests must not reach into the
+  # named table themselves.
+  def reset_rate_table do
+    if :ets.whereis(@rate_table) != :undefined, do: :ets.delete_all_objects(@rate_table)
+    :ok
+  end
+
   defp ensure_rate_table do
     if :ets.whereis(@rate_table) == :undefined do
       :ets.new(@rate_table, [:named_table, :public, :set])

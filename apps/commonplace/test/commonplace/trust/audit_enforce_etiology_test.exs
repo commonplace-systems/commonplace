@@ -37,7 +37,6 @@ defmodule Commonplace.Trust.AuditEnforceEtiologyTest do
   alias Commonplace.Trust.AuditLog
 
   @handler_id "commonplace-trust-audit-log"
-  @rate_table :commonplace_trust_audit_log_rate
 
   setup do
     dir = Path.join(System.tmp_dir!(), "cp_audit_etiology_#{:rand.uniform(1_000_000_000)}")
@@ -71,9 +70,7 @@ defmodule Commonplace.Trust.AuditEnforceEtiologyTest do
       File.rm_rf!(dir)
     end)
 
-    if :ets.whereis(@rate_table) != :undefined do
-      :ets.delete_all_objects(@rate_table)
-    end
+    AuditLog.reset_rate_table()
 
     # This test's own dispatcher, pointed at this test's own store. The
     # app-level dispatcher writes to the global CommitStoreClient, which

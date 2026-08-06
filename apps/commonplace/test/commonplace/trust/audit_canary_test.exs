@@ -13,8 +13,6 @@ defmodule Commonplace.Trust.AuditCanaryTest do
 
   alias Commonplace.Trust.{AuditCanary, AuditDispatcher, AuditLog}
 
-  @rate_table :commonplace_trust_audit_log_rate
-
   setup do
     dir = Path.join(System.tmp_dir!(), "cp_audit_canary_#{:rand.uniform(1_000_000_000)}")
     File.mkdir_p!(dir)
@@ -46,7 +44,7 @@ defmodule Commonplace.Trust.AuditCanaryTest do
       File.rm_rf!(dir)
     end)
 
-    if :ets.whereis(@rate_table) != :undefined, do: :ets.delete_all_objects(@rate_table)
+    AuditLog.reset_rate_table()
 
     sup = :"acn_tasks_#{n}"
     dispatcher = :"acn_disp_#{n}"
