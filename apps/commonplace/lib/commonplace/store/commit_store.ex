@@ -877,8 +877,14 @@ defmodule Commonplace.Store.CommitStore do
   treat the log as possibly-truncated — the walk may have stopped
   before reaching genesis.
   """
+  # CX-ggdv: overridable so the cap-truncation branch of the bounded pin
+  # walk can be exercised by a test. Reaching it for real needs a chain
+  # deeper than 10,000 commits with no snapshot in range — buildable only
+  # against production-sized history, which is how it stayed untested.
+  # Nothing in production sets this; the default is the shipped cap.
   @spec max_commit_log_limit() :: pos_integer()
-  def max_commit_log_limit, do: @max_commit_log_limit
+  def max_commit_log_limit,
+    do: Application.get_env(:commonplace, :max_commit_log_limit, @max_commit_log_limit)
 
   @doc """
   Paged variant of `commit_log/3` (CX-klpi held half): walk the commit

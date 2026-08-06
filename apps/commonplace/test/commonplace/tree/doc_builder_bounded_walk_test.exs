@@ -216,6 +216,7 @@ defmodule Commonplace.Tree.DocBuilderBoundedWalkTest do
 
       for id <- all do
         assert ids(new_path(store, uuid, id)) == ids(old_path(store, uuid, id))
+
         assert unwrap_bytes(DocBuilder.reconstruct_doc_at(store, uuid, id)) ==
                  unwrap_bytes(
                    DocBuilder.reconstruct_doc_at(store, uuid, id, require_head_reachable: true)
@@ -404,6 +405,74 @@ defmodule Commonplace.Tree.DocBuilderBoundedWalkTest do
 
       # and the default is off, so every existing caller is unaffected
       assert CommitStore.commit_log(store, uuid, limit: 10_000) |> length() == 17
+    end
+
+    # The branch that actually decides the cap-truncated docs. Reaching it
+    # for real needs a >10,000-commit snapshot-free chain, which is why it
+    # went untested until CX-ggdv made `max_commit_log_limit/0`
+    # overridable. With the cap at 20 the shape is identical and fits in a
+    # unit test.
+    defp lower_the_cap! do
+      Application.put_env(:commonplace, :max_commit_log_limit, 20)
+
+      ExUnit.Callbacks.on_exit(fn ->
+        Application.delete_env(:commonplace, :max_commit_log_limit)
+      end)
+    end
+
+    test "a pin on a snapshot-free chain deeper than the cap returns the OLD window",
+         %{store: store} do
+      lower_the_cap!()
+      uuid = "over-cap"
+      {all, _} = build_chain(store, uuid, 60)
+
+      # `all` holds the 60 non-genesis commits ascending, so head is
+      # index 59 and the 20-commit head-anchored window is indices 40..59.
+      # Every pin INSIDE that window must match the old path exactly.
+      for idx <- [59, 55, 50, 45, 41] do
+        pin = Enum.at(all, idx)
+
+        assert ids(new_path(store, uuid, pin)) == ids(old_path(store, uuid, pin)),
+               "cap-fallback diverged at ascending index #{idx}"
+      end
+    end
+
+    test "the cap fallback reuses the backward walk instead of walking twice",
+         %{store: store} do
+      lower_the_cap!()
+      uuid = "over-cap-2"
+      {all, _} = build_chain(store, uuid, 60)
+      pin = Enum.at(all, 55)
+
+      {result, walks} = with_walk_count(fn -> new_path(store, uuid, pin) end)
+
+      assert {:ok, _} = result
+      # ONE walk event, mode :cap_fallback — not a bounded walk followed
+      # by a second full head-anchored walk. Re-running the old walk here
+      # measured 1.7 s → 3.8 s on a real >10,000-commit doc; a
+      # performance ticket that makes its worst case worse has not
+      # shipped.
+      assert [{20, :cap_fallback}] = walks
+    end
+
+    # The reachability change again, in its cap-shaped form: a pin FURTHER
+    # from head than the cap was outside the old window entirely, so the
+    # old path called it "not on the chain". The backward walk sees a pin
+    # that is perfectly well grounded in its own history and reconstructs
+    # it. Strictly more information, and a byte change all the same, so it
+    # is asserted rather than discovered later.
+    test "a target beyond the cap from head: old :none, bounded reconstructs",
+         %{store: store} do
+      lower_the_cap!()
+      uuid = "over-cap-3"
+      {all, _} = build_chain(store, uuid, 60)
+      # index 5 is ~54 back from head, far outside a 20-commit window
+      pin = Enum.at(all, 5)
+
+      assert old_path(store, uuid, pin) == :none
+      assert {:ok, commits} = new_path(store, uuid, pin)
+      # grounded at genesis (rejected) and replaying its own 6 commits
+      assert length(commits) == 6
     end
   end
 

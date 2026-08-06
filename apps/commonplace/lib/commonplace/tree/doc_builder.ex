@@ -312,9 +312,10 @@ defmodule Commonplace.Tree.DocBuilder do
       replay the two windows select the same snapshot and the question is
       moot; when the backward walk instead runs out of budget with **no
       snapshot found and the chain still continuing**, the two windows
-      genuinely differ — so that case falls back to the exact old
-      head-anchored implementation (`head_anchored_chain_to/3`). The
-      cap-truncated docs keep returning exactly what they returned. See
+      genuinely differ — so that case returns the old head-anchored
+      answer (`cap_fallback/5`), which it does WITHOUT a second full walk
+      because the two windows are nested. The cap-truncated docs keep
+      returning exactly what they returned. See
       "Residual" below for the one shape this does not cover, which is
       measured rather than assumed.
 
@@ -326,6 +327,14 @@ defmodule Commonplace.Tree.DocBuilder do
       used to return `:none`. Callers that use `:none` AS the oracle pass
       `require_head_reachable: true` and get the old contract verbatim
       — `Commonplace.Tree.Fork` is the one such caller in the tree.
+
+      The same change has a second, cap-shaped form: a pin FURTHER from
+      head than `max_commit_log_limit/0` fell outside the old window
+      entirely and was reported "not on the chain", while the backward
+      walk sees a pin perfectly well grounded in its own history and
+      reconstructs it. Strictly more information in both forms — and a
+      byte change all the same, which is why both are tested rather than
+      left to be discovered.
 
   ## Residual, stated rather than hidden
 
@@ -365,10 +374,7 @@ defmodule Commonplace.Tree.DocBuilder do
 
       [newest | _] = desc when newest.id == target_commit_id ->
         if cap_bound_without_snapshot?(store, desc, limit) do
-          # Ambiguous window: head-anchored and target-anchored truncation
-          # genuinely disagree here. Pay the old walk and return the old
-          # bytes.
-          head_anchored_chain_to(store, uuid, target_commit_id)
+          cap_fallback(store, uuid, target_commit_id, desc, limit)
         else
           emit_walk(uuid, desc, :bounded)
           {:ok, desc |> Enum.reverse() |> Enum.reject(&genesis?/1)}
@@ -390,6 +396,71 @@ defmodule Commonplace.Tree.DocBuilder do
       not Enum.any?(desc, &snapshot?/1) and
       not is_nil(oldest.parent_id) and
       match?({:ok, _}, CommitStoreClient.get_commit(store, oldest.parent_id))
+  end
+
+  # The ambiguous window, answered with the OLD bytes without paying the
+  # old walk twice.
+  #
+  # Naively re-running `head_anchored_chain_to/3` here doubles the cost on
+  # exactly the deepest documents in the corpus — measured 1.7 s → 3.8 s
+  # on a >10,000-commit chain pinned below its last snapshot. A
+  # performance ticket that makes its worst case worse has not shipped.
+  #
+  # It is avoidable, because the two windows are nested. Number positions
+  # from head (head = 0). The head-anchored answer is positions
+  # `t..limit-1`; the walk just done covers `t..t+limit-1`, a SUPERSET.
+  # So the old answer is already in hand — it is the newest `limit - t`
+  # entries of `desc` — and the only missing fact is `t` itself. Walking
+  # from head *just far enough to reach the target* costs `t` fetches and
+  # stops there, instead of the full `limit` the old walk always paid.
+  #
+  # `t` not found within `limit` steps is the old `:none`: the target is
+  # not reachable from `:latest` inside the cap.
+  #
+  # `trim_to_latest_snapshot/1` is applied for exactness even though this
+  # branch is snapshot-free by construction — the invariant lives in one
+  # place, not in a comment.
+  defp cap_fallback(store, uuid, target_commit_id, desc, limit) do
+    case distance_from_head(store, uuid, target_commit_id, limit) do
+      nil ->
+        :none
+
+      t ->
+        window = desc |> Enum.take(limit - t) |> Enum.reverse()
+        emit_walk(uuid, desc, :cap_fallback)
+        {:ok, window |> trim_to_latest_snapshot() |> Enum.reject(&genesis?/1)}
+    end
+  end
+
+  # Steps from `:latest` down to `target_commit_id`, or nil if the target
+  # is not reachable within `limit`. Pages the walk so the common (short)
+  # answer does not fetch the whole cap's worth of rows.
+  defp distance_from_head(store, uuid, target_commit_id, limit) do
+    case CommitStoreClient.latest_commit(store, uuid) do
+      {:ok, head} -> scan_for(store, head.id, target_commit_id, 0, limit)
+      _ -> nil
+    end
+  end
+
+  @scan_page 256
+
+  defp scan_for(_store, _from_id, _target, walked, limit) when walked >= limit, do: nil
+  defp scan_for(_store, nil, _target, _walked, _limit), do: nil
+
+  defp scan_for(store, from_id, target, walked, limit) do
+    page = CommitStoreClient.commit_log_from(store, from_id, limit: min(@scan_page, limit - walked))
+
+    case Enum.find_index(page, &(&1.id == target)) do
+      nil ->
+        case List.last(page) do
+          nil -> nil
+          %{parent_id: nil} -> nil
+          %{parent_id: parent} -> scan_for(store, parent, target, walked + length(page), limit)
+        end
+
+      idx ->
+        walked + idx
+    end
   end
 
   # The pre-CX-ggdv implementation, verbatim in behaviour: walk from
