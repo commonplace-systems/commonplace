@@ -891,6 +891,24 @@ defmodule Commonplace.Store.CommitStore do
   bounded by `opts[:limit]` (default 100). A result shorter than the
   requested limit means the walk ran out of chain (hit a missing parent
   or `nil`), not that it was denied.
+
+  ## `until_snapshot: true` (CX-ggdv)
+
+  Stop the walk **at and including** the first `%{kind: :snapshot}`
+  commit encountered. A snapshot commit is a self-contained encoding of
+  the doc state at that point, so no reader ever needs its ancestors —
+  every walk that ends in `trim_to_latest_snapshot/1` was fetching (and
+  deserializing) those ancestors only to throw them away.
+
+  This is the store-side half of walk-bounding: the stop happens where
+  the rows are, so the pre-snapshot commits are never read off disk and
+  never cross the GenServer/`:erpc` boundary. `Commonplace.Tree.DocBuilder.chain_to/4`
+  is the caller that makes pin reads O(distance-to-nearest-snapshot)
+  instead of O(total chain length).
+
+  Note the walk is a pure `parent_id` walk and stays doc-agnostic: a
+  chain that crosses into a foreign `doc_uuid` (fork lineage, 2.2% of
+  docs) is traversed exactly as before.
   """
   @spec commit_log_from(GenServer.server(), String.t() | nil, keyword()) :: [Commit.t()]
   def commit_log_from(server \\ __MODULE__, commit_id, opts \\ []) do
@@ -2110,14 +2128,16 @@ defmodule Commonplace.Store.CommitStore do
 
     case CubDB.get(db, {:latest, doc_uuid}) do
       nil -> []
-      commit_id -> collect_log(db, commit_id, limit, [])
+      commit_id -> collect_log(db, commit_id, limit, [], walk_opts(opts))
     end
   end
 
   defp do_commit_log_from(db, commit_id, opts) do
     limit = Keyword.get(opts, :limit, 100)
-    collect_log(db, commit_id, limit, [])
+    collect_log(db, commit_id, limit, [], walk_opts(opts))
   end
+
+  defp walk_opts(opts), do: %{until_snapshot: Keyword.get(opts, :until_snapshot, false)}
 
   defp do_all_doc_uuids(db) do
     # CX-mg8s: same wrong bound as do_all_commit_ids_for_doc had. Not
@@ -2323,13 +2343,33 @@ defmodule Commonplace.Store.CommitStore do
     end
   end
 
-  defp collect_log(_db, nil, _limit, acc), do: Enum.reverse(acc)
-  defp collect_log(_db, _id, 0, acc), do: Enum.reverse(acc)
+  defp collect_log(_db, nil, _limit, acc, _w), do: Enum.reverse(acc)
+  defp collect_log(_db, _id, 0, acc, _w), do: Enum.reverse(acc)
 
-  defp collect_log(db, commit_id, limit, acc) do
+  defp collect_log(db, commit_id, limit, acc, w) do
     case CubDB.get(db, {:commit, commit_id}) do
-      nil -> Enum.reverse(acc)
-      commit -> collect_log(db, commit.parent_id, limit - 1, [commit | acc])
+      nil ->
+        Enum.reverse(acc)
+
+      commit ->
+        acc = [commit | acc]
+
+        # CX-ggdv: `until_snapshot` stops the walk AT the snapshot,
+        # inclusive. The snapshot is a self-contained state encoding, so
+        # its ancestors are unreachable-by-construction for any reader
+        # that trims to the latest snapshot — fetching them is pure cost.
+        if w.until_snapshot and snapshot_commit?(commit) do
+          Enum.reverse(acc)
+        else
+          collect_log(db, commit.parent_id, limit - 1, acc, w)
+        end
+    end
+  end
+
+  defp snapshot_commit?(commit) do
+    case Map.get(commit, :metadata) do
+      %{kind: :snapshot} -> true
+      _ -> false
     end
   end
 

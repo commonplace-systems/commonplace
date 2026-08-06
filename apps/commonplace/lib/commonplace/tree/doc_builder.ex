@@ -23,6 +23,14 @@ defmodule Commonplace.Tree.DocBuilder do
   any commits chained on top. Docs with no snapshot commits replay the
   full chain exactly as before (backward-compatible).
 
+  CX-ggdv did NOT bound this walk, deliberately. Unlike a pin read, a
+  head read has no target commit to walk backward from, and its full
+  window is what `maybe_warn_truncated/2` and `maybe_warn_chain_incomplete/2`
+  inspect and what `maybe_lazy_snapshot/3` measures — so a
+  `until_snapshot: true` here would change warning behaviour and snapshot
+  triggering, not just cost. The head walk is still O(total chain length);
+  bounding it is its own ticket with its own neutrality fence.
+
   CX-41qg.3: pass `client_id: id` (mirrors `reconstruct_snapshot/3`,
   CX-41qg.1) to fix the replica's identity for write funnels that
   reconstruct the FULL chain (rather than just the latest commit)
@@ -237,11 +245,17 @@ defmodule Commonplace.Tree.DocBuilder do
   `Commonplace.GitBridge.Inbound` to reconstruct an anchor replica
   under the bridge's hand with mints continued past ops that landed
   later in the chain.
+
+  CX-ggdv: the walk is bounded — see `chain_to/4`. `require_head_reachable:
+  true` restores the pre-CX-ggdv `:none`-as-ancestry-oracle contract for
+  callers that use it as one (`Commonplace.Tree.Fork`).
   """
   def reconstruct_doc_at(store, uuid, target_commit_id, opts \\ []) do
-    case chain_to(store, uuid, target_commit_id) do
+    {walk_opts, doc_opts} = Keyword.split(opts, [:require_head_reachable])
+
+    case chain_to(store, uuid, target_commit_id, walk_opts) do
       {:ok, commits_to_apply} ->
-        doc = Doc.new(opts)
+        doc = Doc.new(doc_opts)
 
         Enum.reduce(commits_to_apply, {:ok, doc}, fn c, {:ok, d} ->
           Encoding.apply_update(d, c.update)
@@ -267,9 +281,122 @@ defmodule Commonplace.Tree.DocBuilder do
   Returns `{:ok, commits}` or `:none` when `target_commit_id` is not on
   the doc's chain. Note `{:ok, []}` is a legitimate answer: a genesis pin
   replays nothing and IS the empty state (F7).
+
+  ## The bounded walk (CX-ggdv)
+
+  The pin-read caller already **has** the target commit id, so the walk
+  starts there and goes backward, stopping at the nearest `:snapshot`
+  commit (inclusive) or at genesis. The pre-CX-ggdv implementation walked
+  forward from `:latest` to the target and only then trimmed to the
+  latest snapshot — so the walk term was linear in TOTAL chain length and
+  independent of distance-to-snapshot. A pin 50 commits past a snapshot
+  on a 10,000-deep chain paid ~1.9 s of walk to replay 50 commits.
+  Snapshots bounded the REPLAY; nothing bounded the WALK. Now the walk is
+  O(distance-to-nearest-snapshot) exactly.
+
+  **This is a pure cost change. Same commits, same order, same bytes.**
+  Both directions produce the same list because both are the same
+  `parent_id` walk over the same edges, and the forward version's only
+  extra work was fetching ancestors that `trim_to_latest_snapshot/1` then
+  discarded. Three places where that identity needed care:
+
+    * **Cross-doc chains (F5).** 2.2% of docs have commits carrying a
+      FOREIGN `doc_uuid` in-chain (fork lineage). The store's walk follows
+      `parent_id` and never filters on `doc_uuid`, in either direction, so
+      a forked lineage is traversed identically. Proven by fixture rather
+      than argued.
+
+    * **Cap truncation.** The old walk's window was anchored at HEAD:
+      positions `0..limit-1` from `:latest`. The backward walk's natural
+      window is anchored at the TARGET. When a snapshot grounds the
+      replay the two windows select the same snapshot and the question is
+      moot; when the backward walk instead runs out of budget with **no
+      snapshot found and the chain still continuing**, the two windows
+      genuinely differ — so that case falls back to the exact old
+      head-anchored implementation (`head_anchored_chain_to/3`). The
+      cap-truncated docs keep returning exactly what they returned. See
+      "Residual" below for the one shape this does not cover, which is
+      measured rather than assumed.
+
+    * **Reachability.** The old `:none` doubled as an ancestry oracle:
+      "target is among the first `limit` commits walking back from
+      `:latest(uuid)`". A backward walk cannot observe that without the
+      head walk it exists to avoid, so a pin on an ABANDONED branch (a
+      commit orphaned by a reflog reset, say) now reconstructs where it
+      used to return `:none`. Callers that use `:none` AS the oracle pass
+      `require_head_reachable: true` and get the old contract verbatim
+      — `Commonplace.Tree.Fork` is the one such caller in the tree.
+
+  ## Residual, stated rather than hidden
+
+  One shape can still differ: a target at depth `t` from head whose
+  nearest snapshot lies at depth `> limit - 1` — i.e. `t + walk_length >
+  10,000`. There the old path replayed from an arbitrary mid-chain
+  position (a truncated, less complete baseline) and the new path replays
+  from the real snapshot (a complete one). Detecting it would cost the
+  head walk. It requires a >10,000-deep chain pinned near its bottom; the
+  CX-ggdv neutrality run measured **0 occurrences** across the corpus. New
+  bytes would be *more* correct there, not less, but it is a byte change
+  and so it is named.
   """
-  @spec chain_to(term(), String.t(), binary()) :: {:ok, [struct()]} | :none
-  def chain_to(store, uuid, target_commit_id) do
+  @spec chain_to(term(), String.t(), binary(), keyword()) :: {:ok, [struct()]} | :none
+  def chain_to(store, uuid, target_commit_id, opts \\ []) do
+    if Keyword.get(opts, :require_head_reachable, false) do
+      head_anchored_chain_to(store, uuid, target_commit_id)
+    else
+      bounded_chain_to(store, uuid, target_commit_id)
+    end
+  end
+
+  defp bounded_chain_to(store, uuid, target_commit_id) do
+    limit = CommitStore.max_commit_log_limit()
+
+    walked =
+      CommitStoreClient.commit_log_from(store, target_commit_id,
+        limit: limit,
+        until_snapshot: true
+      )
+
+    case walked do
+      [] ->
+        # The target commit itself is not in the store. The old path
+        # reported this the same way, via "not found on the chain".
+        :none
+
+      [newest | _] = desc when newest.id == target_commit_id ->
+        if cap_bound_without_snapshot?(store, desc, limit) do
+          # Ambiguous window: head-anchored and target-anchored truncation
+          # genuinely disagree here. Pay the old walk and return the old
+          # bytes.
+          head_anchored_chain_to(store, uuid, target_commit_id)
+        else
+          emit_walk(uuid, desc, :bounded)
+          {:ok, desc |> Enum.reverse() |> Enum.reject(&genesis?/1)}
+        end
+
+      _ ->
+        :none
+    end
+  end
+
+  # The walk stopped because it exhausted `limit`, not because it found a
+  # snapshot or reached the DAG root — and the chain provably continues
+  # (the oldest commit still names a parent the store holds). Only then do
+  # the two anchorings select different baselines.
+  defp cap_bound_without_snapshot?(store, desc, limit) do
+    oldest = List.last(desc)
+
+    length(desc) >= limit and
+      not Enum.any?(desc, &snapshot?/1) and
+      not is_nil(oldest.parent_id) and
+      match?({:ok, _}, CommitStoreClient.get_commit(store, oldest.parent_id))
+  end
+
+  # The pre-CX-ggdv implementation, verbatim in behaviour: walk from
+  # `:latest` (head-anchored window), scan forward for the target, trim.
+  # Retained as the exact-fidelity fallback and as the
+  # `require_head_reachable: true` contract.
+  defp head_anchored_chain_to(store, uuid, target_commit_id) do
     commits =
       CommitStoreClient.commit_log(store, uuid, limit: CommitStore.max_commit_log_limit())
       |> Enum.reverse()
@@ -285,10 +412,23 @@ defmodule Commonplace.Tree.DocBuilder do
 
     case result do
       {:found, to_apply} ->
+        emit_walk(uuid, commits, :head_anchored)
         {:ok, to_apply |> trim_to_latest_snapshot() |> Enum.reject(&genesis?/1)}
 
       {:not_found, _} ->
         :none
     end
+  end
+
+  # Observability for the bound itself. `walked` is the number of commit
+  # rows the store actually fetched and deserialized — the term CX-ggdv
+  # exists to shrink — so a regression that quietly restores the head walk
+  # shows up as a number, not as a slow test.
+  defp emit_walk(uuid, walked, mode) do
+    :telemetry.execute(
+      [:commonplace, :doc_builder, :chain_to],
+      %{walked: length(walked)},
+      %{uuid: uuid, mode: mode}
+    )
   end
 end

@@ -260,7 +260,18 @@ defmodule Commonplace.Tree.Fork do
   end
 
   defp fetch_target_commit(store, source_uuid, target_commit_id) do
-    case DocBuilder.reconstruct_doc_at(store, source_uuid, target_commit_id) do
+    # CX-ggdv: `require_head_reachable: true` keeps `:none` meaning what it
+    # meant here before walk-bounding — "target_commit_id is not among the
+    # commits reachable from this doc's `:latest`". Fork uses that `:none`
+    # AS the ancestry oracle (see the `{:error, :target_commit_not_in_chain}`
+    # below), and the bounded backward walk cannot observe head-reachability
+    # without the head walk it exists to avoid. Fork-at-a-historical-commit
+    # is a rare admin operation, so it pays the old walk deliberately rather
+    # than quietly loosening its validation to accept a commit from an
+    # abandoned branch or another document.
+    case DocBuilder.reconstruct_doc_at(store, source_uuid, target_commit_id,
+           require_head_reachable: true
+         ) do
       {:ok, _doc} ->
         # reconstruct_doc_at succeeded — target_commit_id is in the chain.
         # Now fetch the commit struct for its timestamp.
@@ -275,7 +286,12 @@ defmodule Commonplace.Tree.Fork do
   end
 
   defp fork_node_at(source_uuid, target_commit_id, reference_time, store, uuid_map, opts) do
-    case DocBuilder.reconstruct_doc_at(store, source_uuid, target_commit_id) do
+    # CX-ggdv: same oracle use as fetch_target_commit/3 — the `:none` clause
+    # below ("no historical state reachable — mint empty") is a reachability
+    # decision, not a reconstruction failure.
+    case DocBuilder.reconstruct_doc_at(store, source_uuid, target_commit_id,
+           require_head_reachable: true
+         ) do
       {:ok, source_doc} ->
         # source_doc might not decode as a schema cleanly for leaf nodes;
         # list_entries will return [] if not a schema, which is fine.

@@ -226,6 +226,11 @@ defmodule Commonplace.Projection do
       declaration yields the `:declared` grade, not corroboration.
     * `:doc_opts` — forwarded to `Yelixer.Doc.new/1` for reconstruction
       (`:client_id`, `:clock_floor`).
+    * `:require_head_reachable` — CX-ggdv. Use the pre-walk-bounding
+      head-anchored chain walk (`DocBuilder.chain_to/4`) instead of the
+      bounded backward walk. Same bytes, same verdict, more work; it
+      exists so the two walks can be compared in one process and for the
+      one caller that uses `:none` as an ancestry oracle. Default `false`.
   """
   @spec project_at(String.t(), binary(), keyword()) :: result()
   def project_at(doc_uuid, commit_id, opts \\ []) do
@@ -253,7 +258,7 @@ defmodule Commonplace.Projection do
     unless required in @floors, do: raise(ArgumentError, "unknown :required floor #{inspect(required)}")
 
     with {:ok, commit} <- fetch_commit(store, doc_uuid, commit_id),
-         {:ok, chain} <- fetch_chain(store, doc_uuid, commit_id),
+         {:ok, chain} <- fetch_chain(store, doc_uuid, commit_id, opts),
          {:ok, sig_method} <- verify_chain_integrity(chain) do
       commit
       |> select_tier(store, doc_uuid, chain, required, opts)
@@ -280,8 +285,24 @@ defmodule Commonplace.Projection do
     end
   end
 
-  defp fetch_chain(store, doc_uuid, commit_id) do
-    case DocBuilder.chain_to(store, doc_uuid, commit_id) do
+  # CX-ggdv: the walk is bounded — `DocBuilder.chain_to/4` walks BACKWARD
+  # from the pin to the nearest snapshot instead of forward from `:latest`,
+  # making pin reads O(distance-to-nearest-snapshot) rather than O(total
+  # chain length). This is not a second projection path: it is the same
+  # single path with the walk strategy as a parameter, and every verdict
+  # downstream is a pure function of the chain this returns — so
+  # chain-identity IS verdict-identity, which is what the neutrality
+  # harness asserts.
+  #
+  # `require_head_reachable: true` selects the pre-CX-ggdv head-anchored
+  # walk verbatim. Its only in-tree production user is
+  # `Commonplace.Tree.Fork` (which uses `:none` as an ancestry oracle);
+  # here it exists so old-path and new-path projections can be compared
+  # byte-for-byte and verdict-for-verdict in one process against one store.
+  defp fetch_chain(store, doc_uuid, commit_id, opts) do
+    walk_opts = Keyword.take(opts, [:require_head_reachable])
+
+    case DocBuilder.chain_to(store, doc_uuid, commit_id, walk_opts) do
       {:ok, chain} -> {:ok, chain}
       :none -> {:error, {:commit_not_on_chain, commit_id}}
     end
