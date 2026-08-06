@@ -21,6 +21,29 @@ defmodule Commonplace.Projection.CorpusRegressionTest do
         apps/commonplace/test/commonplace/projection/corpus_regression_test.exs \\
         --include corpus
 
+  ## Store layout — get this wrong and every read returns `:none`
+
+  `CubDB.back_up/2` writes the data file **flat** into the target
+  directory. `CommitStore` opens `<data_dir>/commits/`. So `CX_CORPUS`
+  must point at a directory whose `commits/` subdirectory holds the
+  backed-up `.cub` file — NOT at the directory the backup was written
+  into.
+
+  Point it at the wrong level and `CommitStore` **creates an empty
+  `commits/0.cub` beside the real one**: the store opens cleanly, every
+  read returns `:none`, and the census's exact false-zero failure
+  reproduces itself in the harness meant to prevent it. That happened on
+  the first real run of this test. The setup therefore asserts the opened
+  store is **non-empty** before any assertion is allowed to count — the
+  project rule the census's false zero bought: a measurement over an
+  empty corpus is not a passing measurement, it is no measurement.
+
+  ## Timing
+
+  80 cold reads over a 537 MB store took **117 s** measured. The 60 s
+  ExUnit default times that out, so these tests carry an explicit
+  10-minute timeout.
+
   **Note one thing the census's reproduction section warns about is now
   fixed here**: it records that `reconstruct_doc/3` MINTS a snapshot on
   deep docs and "would write against a live store", so the measurement
@@ -45,6 +68,9 @@ defmodule Commonplace.Projection.CorpusRegressionTest do
   use ExUnit.Case, async: false
 
   @moduletag :corpus
+  # 80 cold reads over 537 MB: 117 s measured. The 60 s default is not a
+  # correctness bound here, just a stopwatch that was set for unit tests.
+  @moduletag timeout: 600_000
 
   alias Commonplace.Projection
   alias Commonplace.Store.CommitStore
@@ -68,7 +94,34 @@ defmodule Commonplace.Projection.CorpusRegressionTest do
 
     name = :"corpus_store_#{:rand.uniform(1_000_000)}"
     start_supervised!({CommitStore, data_dir: corpus, name: name})
-    %{store: name}
+
+    # THE NON-EMPTY GATE. `CommitStore` create-on-opens its CubDB, so
+    # pointing at the wrong directory level yields a store that opens
+    # perfectly and answers `:none` to everything — the census's own
+    # false-zero failure, reproduced inside the harness built to prevent
+    # it. Measured: that is exactly what the first real run did.
+    #
+    # An empty corpus must say WHY it is empty, not merely fail some
+    # assertion further down where the reason is guesswork.
+    rows = CubDB.size(CommitStore.db_handle(name))
+
+    if rows == 0 do
+      flunk("""
+      CX_CORPUS opened successfully but the store is EMPTY (0 rows).
+
+      This is the false-zero shape, not a result. Almost certainly a layout
+      problem: `CubDB.back_up/2` writes the .cub file FLAT, and `CommitStore`
+      opens `<data_dir>/commits/` — so CX_CORPUS must be the directory whose
+      `commits/` subdirectory contains the backup. Pointing one level off makes
+      CommitStore create an empty `commits/0.cub` beside the real file.
+
+        CX_CORPUS = #{corpus}
+        contents  = #{inspect(File.ls(corpus))}
+        commits/  = #{inspect(File.ls(Path.join(corpus, "commits")))}
+      """)
+    end
+
+    %{store: name, rows: rows}
   end
 
   # Rows look like: | `id` | ... | `sha_live` | `sha_replay` | ... |

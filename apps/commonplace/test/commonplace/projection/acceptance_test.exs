@@ -260,28 +260,26 @@ defmodule Commonplace.Projection.AcceptanceTest do
                Projection.project_at(u, c2.id, store: store)
     end
 
-    test "head_path: :direct returns the data-preserving live bytes, disagreement named",
+    test "head_path: :direct returns the data-preserving live bytes at the :declared grade",
          %{store: store, u: u, c2: c2, r2: r2} do
-      assert {:ok, bytes, {:corroborated, methods}} =
+      assert {:ok, bytes, {:declared, :direct, disagreement}} =
                Projection.project_at(u, c2.id, store: store, head_path: :direct)
 
       assert bytes == Encoding.encode_update(r2)
-      assert {:live_head_path, :direct} in methods
-      assert Enum.any?(methods, &match?({:head_path_disagreement, _}, &1))
+      assert disagreement.chain != disagreement.direct
     end
 
-    test "head_path: :chain returns the replay bytes, disagreement named", %{
+    test "head_path: :chain returns the replay bytes, also at the :declared grade", %{
       store: store,
       u: u,
       c2: c2
     } do
-      assert {:ok, bytes, {:corroborated, methods}} =
+      assert {:ok, bytes, {:declared, :chain, disagreement}} =
                Projection.project_at(u, c2.id, store: store, head_path: :chain)
 
       {:ok, replayed} = Commonplace.Tree.DocBuilder.reconstruct_doc(store, u, mint: false)
       assert bytes == Encoding.encode_update(replayed)
-      assert {:live_head_path, :chain} in methods
-      assert Enum.any?(methods, &match?({:head_path_disagreement, _}, &1))
+      assert disagreement.chain != disagreement.direct
     end
 
     test "at its DISAGREEING historical pin, the same chain is conflicted (tier iii)", %{
@@ -489,6 +487,92 @@ defmodule Commonplace.Projection.AcceptanceTest do
       # partial bytes.
       assert {:unknown, {:conflicted, _}} =
                Projection.project_at(u, c2.id, store: store, required: :any)
+    end
+  end
+
+  # ── #10 — a declaration cannot launder disagreed bytes ─────────────
+  #
+  # VP §7.7 R1/R3. The declaration form is blessed BECAUSE it is a claim
+  # about which production population a doc belongs to — but a claim of
+  # fact about the reader is not evidence about the bytes. So when the
+  # declaration is what resolved a disagreement, the grade drops to
+  # `:declared`, and the `:corroborated` floor must refuse it.
+  #
+  # CONTROL: return `{:corroborated, [...]}` from `decide_head/5`'s
+  # declared branches (the shape this code shipped in before R1) and both
+  # assertions go red — the disagreement would be reported as
+  # corroboration and would satisfy an export-grade floor.
+
+  describe "acceptance #10: the :declared grade, and the floors that exclude it" do
+    setup %{db: db} do
+      # A KNOWN DELTA at head. Chain replay assembles the full state;
+      # the single-commit read returns only the delta's own ops — silent
+      # partial state, the §7.6 precision-2 hazard, now at tier (ii).
+      u = uuid()
+
+      base = text_doc(["aaaa"])
+      c1 = full_state_commit(db, u, base, nil, false)
+
+      grown = Text.insert(base, "t", Text.length(base, "t"), "bbbb")
+      delta = Encoding.encode_diff(grown, Doc.state_vector(base))
+      c2 = Commit.new(u, delta, c1.id, %{kind: :regular}) |> put(db, u, true)
+
+      %{u: u, c2: c2, grown: grown}
+    end
+
+    test "the fixture's two head paths really do disagree", %{store: store, u: u, grown: grown} do
+      {:ok, chain} = Commonplace.Tree.DocBuilder.reconstruct_doc(store, u, mint: false)
+      {:ok, direct} = Commonplace.Tree.DocBuilder.reconstruct_snapshot(store, u)
+
+      assert Text.to_string(chain, "t") == Text.to_string(grown, "t")
+      refute Text.to_string(direct, "t") == Text.to_string(grown, "t")
+    end
+
+    test "declared :direct + disagreement → :declared grade naming both digests", %{
+      store: store,
+      u: u,
+      c2: c2
+    } do
+      assert {:ok, _bytes, {:declared, :direct, disagreement}} =
+               Projection.project_at(u, c2.id, store: store, head_path: :direct)
+
+      assert %{chain: <<_::256>>, direct: <<_::256>>, commit_id: _} = disagreement
+      assert disagreement.chain != disagreement.direct
+    end
+
+    test "the :corroborated floor REFUSES declared bytes", %{store: store, u: u, c2: c2} do
+      assert {:unknown, {:conflicted, %{at: :head}}} =
+               Projection.project_at(u, c2.id,
+                 store: store,
+                 head_path: :direct,
+                 required: :corroborated
+               )
+    end
+
+    test "the :witnessed floor refuses them too", %{store: store, u: u, c2: c2} do
+      assert {:unknown, {:conflicted, _}} =
+               Projection.project_at(u, c2.id,
+                 store: store,
+                 head_path: :direct,
+                 required: :witnessed
+               )
+    end
+
+    test "agreement is still real corroboration — the declaration did no work", %{
+      store: store,
+      db: db
+    } do
+      u = uuid()
+      c = full_state_commit(db, u, text_doc(["agreeing"]), nil, true)
+
+      assert {:ok, _, {:corroborated, methods}} =
+               Projection.project_at(u, c.id,
+                 store: store,
+                 head_path: :direct,
+                 required: :corroborated
+               )
+
+      assert :head_path_agreement in methods
     end
   end
 

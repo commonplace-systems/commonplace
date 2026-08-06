@@ -18,7 +18,9 @@ defmodule Commonplace.Projection do
         | {:unknown, reason}       # mixed-plane trip, conflicted paths, …
         | {:error, reason}         # store/signature/hash failure — loud
 
-      verdict :: :witnessed | {:corroborated, [method]}
+      verdict :: :witnessed
+               | {:corroborated, [method]}
+               | {:declared, path, disagreement}   # VP §7.7 R1
 
   An API without a declining outcome in its TYPE cannot underreport
   loudly even in principle — which is precisely why the old pin-read
@@ -73,11 +75,49 @@ defmodule Commonplace.Projection do
 
       So tier (ii) reads both and **refuses to choose silently**. Agree →
       bytes, `:head_path_agreement`. Disagree → the caller's declared
-      `head_path:` decides and the verdict names the disagreement;
-      undeclared → conflicted unknown. See `decide_head/4` and the
-      contradiction note in the build report.
+      `head_path:` decides, at the `:declared` grade; undeclared →
+      conflicted unknown. See `decide_head/5`.
 
       Guarded for TOCTOU: see "The tier-(ii) TOCTOU guard" below.
+
+  ## The declaration is a fact about a population, not a preference
+
+  Blessed at consensus (VP §7.7). `head_path:` is **not** the consumer
+  choosing which truth it likes. It is the consumer stating **which
+  production population its documents belong to** — "docs of this shape
+  are read through `reconstruct_snapshot` by the running system" — which
+  is a code-reviewed fact about the codebase, checkable by opening the
+  reader.
+
+  **The validity rule, review-enforced:** declare `:direct` ONLY for a
+  population production actually reads through the latest-commit path
+  (schema/tree docs via `DocCache`). **`:direct` over a delta-chain
+  content doc is review-refusable** — there the single-commit read
+  returns silent PARTIAL state, and a declaration cannot make partial
+  state correct. Declare `:chain` only where production replays. State
+  the reason at the call site, in the form
+  `Commonplace.Reflog.Restore.single_commit_doc/3` uses: name the
+  population and why it has that shape.
+
+  Nothing here is machine-checked; it is review-enforced and named as
+  such, which is the honest status.
+
+  ## The grade ladder
+
+      :witnessed  >  {:corroborated, methods}  >  {:declared, path, disagreement}  >  unknown
+
+  `{:declared, path, disagreement}` is its own grade, strictly BELOW
+  corroborated. It means: the two shipped paths disagreed, the caller's
+  population-declaration selected these bytes, and the disagreement is
+  carried in the verdict with both digests.
+
+  The `:witnessed` and `:corroborated` floors **exclude** it. A consumer
+  that asked for corroboration and could only be served declared bytes
+  gets `{:unknown, {:conflicted, _}}` instead. This is the one place the
+  floor is more than a budget, and deliberately so: without it, a
+  declaration would launder DISAGREED bytes into export grade, and
+  "chit export refuses a hole" would quietly stop being true. Display
+  (`required: :any`) may take declared bytes; export may never.
 
     * **(iii) historical non-head pins on hash-less chains.** Where the
       single-commit read and the replay AGREE, either — verdict
@@ -143,11 +183,27 @@ defmodule Commonplace.Projection do
   alias Yelixer.{Doc, Encoding}
 
   @type method :: atom() | {atom(), term()}
-  @type verdict :: :witnessed | {:corroborated, [method()]}
+  @type verdict ::
+          :witnessed
+          | {:corroborated, [method()]}
+          | {:declared, :chain | :direct, map()}
   @type floor :: :witnessed | :corroborated | :any
   @type result :: {:ok, binary(), verdict()} | {:unknown, term()} | {:error, term()}
 
   @floors [:witnessed, :corroborated, :any]
+
+  # VP §7.7 R1 — the grade ladder, strongest first:
+  #
+  #   :witnessed  >  {:corroborated, _}  >  {:declared, _, _}  >  unknown
+  #
+  # `:declared` is its OWN grade BELOW corroborated, and the
+  # `:witnessed` and `:corroborated` floors EXCLUDE it. A consumer that
+  # asked for corroboration must never be handed bytes whose only
+  # warrant is that the caller named a path — that would launder a
+  # DISAGREEMENT into export grade, which is exactly the hole the
+  # declaration form could otherwise open. Display-grade (`required:
+  # :any`) may take declared bytes; export may never.
+  @floors_excluding_declared [:witnessed, :corroborated]
 
   @doc """
   Project doc `doc_uuid` at pin `commit_id`, returning canonical bytes
@@ -164,8 +220,10 @@ defmodule Commonplace.Projection do
       (`DocBuilder.reconstruct_doc/3`) or `:direct`
       (`DocBuilder.reconstruct_snapshot/3`). Default `:undeclared`, which
       returns conflicted-unknown on disagreement rather than guessing.
-      A caller declares the path the running system already reads that
-      doc through.
+
+      **The declaration is not a preference — it is a claim of fact**,
+      and the rule it must satisfy is below. Disagreement resolved by a
+      declaration yields the `:declared` grade, not corroboration.
     * `:doc_opts` — forwarded to `Yelixer.Doc.new/1` for reconstruction
       (`:client_id`, `:clock_floor`).
   """
@@ -431,7 +489,7 @@ defmodule Commonplace.Projection do
           {:error, {:reconstruction_failed, commit.id}}
 
         true ->
-          decide_head(commit, chain_state, direct, opts)
+          decide_head(commit, chain_state, direct, required, opts)
       end
     end
   end
@@ -458,35 +516,52 @@ defmodule Commonplace.Projection do
   # that most tempts a shortcut: **no silent choice anywhere**. Wrong
   # bytes are never returned to a caller that did not say which semantics
   # it wanted.
-  defp decide_head(commit, chain_state, direct, opts) do
+  defp decide_head(commit, chain_state, direct, required, opts) do
     declared = Keyword.get(opts, :head_path, :undeclared)
     agree? = not is_nil(chain_state) and not is_nil(direct) and same?(chain_state, direct)
 
+    resolved =
+      case declared do
+        :chain -> chain_state
+        :direct -> direct
+        _ -> nil
+      end
+
     cond do
+      # The paths agree. The declaration did no work, so the grade is a
+      # real corroboration — two independent shipped reads produced the
+      # same bytes.
       agree? ->
         {:ok, chain_state, {:corroborated, [:head_path_agreement, {:live_head_path, :both}]}}
 
-      declared == :chain and not is_nil(chain_state) ->
-        {:ok, chain_state,
-         {:corroborated,
-          [{:live_head_path, :chain}, {:head_path_disagreement, %{direct: digest(direct)}}]}}
+      # VP §7.7 R1: the paths DISAGREE and only the declaration resolves
+      # it. That is the `:declared` grade — below corroborated — and the
+      # floors that exclude it get the honest unknown instead. The
+      # declaration decides which bytes; it does NOT upgrade what is
+      # known about them.
+      not is_nil(resolved) and required in @floors_excluding_declared ->
+        conflicted_head(commit, chain_state, direct)
 
-      declared == :direct and not is_nil(direct) ->
-        {:ok, direct,
-         {:corroborated,
-          [{:live_head_path, :direct}, {:head_path_disagreement, %{chain: digest(chain_state)}}]}}
+      not is_nil(resolved) ->
+        {:ok, resolved,
+         {:declared, declared,
+          %{commit_id: commit.id, chain: digest(chain_state), direct: digest(direct)}}}
 
       true ->
-        {:unknown,
-         {:conflicted,
-          %{
-            commit_id: commit.id,
-            at: :head,
-            chain: digest(chain_state),
-            direct: digest(direct),
-            resolvable_by: :head_path
-          }}}
+        conflicted_head(commit, chain_state, direct)
     end
+  end
+
+  defp conflicted_head(commit, chain_state, direct) do
+    {:unknown,
+     {:conflicted,
+      %{
+        commit_id: commit.id,
+        at: :head,
+        chain: digest(chain_state),
+        direct: digest(direct),
+        resolvable_by: :head_path
+      }}}
   end
 
   defp same?(a, b), do: PostState.canonical_bytes(a) == PostState.canonical_bytes(b)
@@ -599,10 +674,11 @@ defmodule Commonplace.Projection do
   defp add_method({:ok, doc, {:corroborated, ms}}, method),
     do: {:ok, doc, {:corroborated, [method | ms]}}
 
-  # A witnessed verdict stays the bare `:witnessed` atom. The grade IS
-  # the contract; appending methods would silently reshape the type
-  # consumers match on, and a witnessed pin has nothing left to
-  # corroborate — the writer's own expectation was met.
+  # `:witnessed` stays the bare atom and `{:declared, _, _}` keeps its
+  # exact shape. The grade IS the contract; appending methods would
+  # silently reshape the type consumers match on. A witnessed pin has
+  # nothing left to corroborate, and a declared pin must not accumulate
+  # methods that make it read like a corroborated one.
   defp add_method(other, _method), do: other
 
   # ── The mixed-binding tripwire, at PIN reads (F9) ──────────────────

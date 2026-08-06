@@ -266,10 +266,27 @@ defmodule Commonplace.Reflog.Restore do
   # module has to handle the declining outcomes rather than being
   # structurally unable to hear them.
   #
-  # `head_path: :direct` is this consumer declaring its shipped
-  # semantics: the reflog `__snapshot` doc is a full-state-rewrite chain
-  # (see the paragraph above), so at head the single-commit read is the
-  # correct path — chain replay is the side that sticks on round 1.
+  # `head_path: :direct` is a POPULATION DECLARATION, not a preference
+  # (VP §7.7 R2). The rule it has to satisfy: declare `:direct` only for
+  # documents production actually reads through the latest-commit path,
+  # never over a delta chain, where the single-commit read returns silent
+  # partial state.
+  #
+  # The claim, checkable: the docs reached here are the reflog
+  # `__snapshot` doc and the DATA DIRECTORY's schema commits reached via
+  # `__schema_cid`. Both are full-state-rewrite chains — every round
+  # re-encodes the whole state from a fresh `Yelixer.Doc` under a stable
+  # client_id (`Snapshot.build_reflog_doc/3`), and schema docs are
+  # documented as always storing full snapshots
+  # (`DocBuilder.reconstruct_snapshot/2`'s moduledoc). Neither is a delta
+  # chain. Chain replay is the side that sticks on round 1 here, which
+  # is the whole reason the paragraph above exists.
+  #
+  # Consequence, accepted: where the two paths disagree this yields the
+  # `:declared` grade, which is BELOW corroborated and cannot satisfy a
+  # `:corroborated` floor. Restore reads at the default `:any` floor —
+  # display/materialisation grade — so it may take those bytes; an
+  # export path asking the same question would correctly be refused.
   #
   # `expected_doc_uuid`, when given, is a defensive cross-check: the
   # checkpoint commit id the caller handed us should belong to the doc

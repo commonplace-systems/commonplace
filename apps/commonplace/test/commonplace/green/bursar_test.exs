@@ -506,6 +506,17 @@ defmodule Commonplace.Green.BursarTest do
              "ephemeral churn appended commits to __bursar.json (should be zero)"
     end
 
+    # CX-6scm: 400 SYNCHRONOUS Bursar ops, each a real durable commit. On
+    # an unloaded box this is seconds; under a parallel suite run on a
+    # shared machine it blows the 60 s default — observed twice in full
+    # runs, green at 44/0 in isolation. Same class its `:io_heavy`
+    # sibling above already documents ("under a loaded parallel suite run
+    # it can blow the 60s default"), which got the raised timeout while
+    # this one did not.
+    #
+    # This does NOT mask an unboundedness regression: that is the SIZE
+    # assertion below, which is unaffected by how long the loop takes.
+    @tag timeout: 600_000
     test "each durable persist stays O(table), not O(history)", ctx do
       {_pid, name} = start_bursar(ctx, nil, sweep_interval: 60_000)
 
