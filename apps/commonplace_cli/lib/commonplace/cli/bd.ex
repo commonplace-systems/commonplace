@@ -19,6 +19,8 @@ defmodule Commonplace.CLI.Bd do
   """
 
   alias Commonplace.Bd.{Comment, Dep, Importer, Issue, Label, Ready, Workspace}
+  alias Commonplace.Bd.CLI, as: BdQuery
+  alias Commonplace.Bd.RetiredGraphError
   alias Commonplace.CLI
   alias Commonplace.Store.CommitStoreClient
 
@@ -33,31 +35,37 @@ defmodule Commonplace.CLI.Bd do
 
     _ = Workspace.ensure_bd_dir(root, CommitStoreClient)
 
-    case args do
-      ["create" | rest] -> cmd_create(root, rest)
-      ["show", id] -> cmd_show(root, id)
-      ["update", id | rest] -> cmd_update(root, id, rest)
-      ["close", id | rest] -> cmd_close(root, id, rest)
-      ["list" | rest] -> cmd_list(root, rest)
-      ["ready"] -> cmd_ready(root)
-      ["blocked"] -> cmd_blocked(root)
-      ["comment", "add", id | rest] -> cmd_comment_add(root, id, rest)
-      ["comment", "list", id] -> cmd_comment_list(root, id)
-      ["comment", "edit", id, comment_id | rest] -> cmd_comment_edit(root, id, comment_id, rest)
-      ["comment", "delete", id, comment_id] -> cmd_comment_delete(root, id, comment_id)
-      ["dep", "add", from, to | rest] -> cmd_dep_add(root, from, to, rest)
-      ["dep", "remove", from, to | rest] -> cmd_dep_remove(root, from, to, rest)
-      ["dep", "list"] -> cmd_dep_list(root)
-      ["label", "create", name | rest] -> cmd_label_create(root, name, rest)
-      ["label", "list"] -> cmd_label_list(root)
-      ["label", "assign", id, name] -> cmd_label_assign(root, id, name)
-      ["label", "unassign", id, name] -> cmd_label_unassign(root, id, name)
-      ["import", "issues", path] -> cmd_import_issues(root, path)
-      ["import", "deps", path] -> cmd_import_deps(root, path)
-      _ ->
-        IO.puts(:stderr, usage())
-        System.halt(1)
-    end
+    result =
+      case args do
+        ["create" | rest] -> cmd_create(root, rest)
+        ["show", id] -> cmd_show(root, id)
+        ["update", id | rest] -> cmd_update(root, id, rest)
+        ["close", id | rest] -> cmd_close(root, id, rest)
+        ["list" | rest] -> cmd_list(root, rest)
+        ["ready"] -> cmd_ready(root)
+        ["blocked"] -> cmd_blocked(root)
+        ["comment", "add", id | rest] -> cmd_comment_add(root, id, rest)
+        ["comment", "list", id] -> cmd_comment_list(root, id)
+        ["comment", "edit", id, comment_id | rest] -> cmd_comment_edit(root, id, comment_id, rest)
+        ["comment", "delete", id, comment_id] -> cmd_comment_delete(root, id, comment_id)
+        ["dep", "add", from, to | rest] -> cmd_dep_add(root, from, to, rest)
+        ["dep", "remove", from, to | rest] -> cmd_dep_remove(root, from, to, rest)
+        ["dep", "list"] -> cmd_dep_list(root)
+        ["label", "create", name | rest] -> cmd_label_create(root, name, rest)
+        ["label", "list"] -> cmd_label_list(root)
+        ["label", "assign", id, name] -> cmd_label_assign(root, id, name)
+        ["label", "unassign", id, name] -> cmd_label_unassign(root, id, name)
+        ["import", "issues", path] -> cmd_import_issues(root, path)
+        ["import", "deps", path] -> cmd_import_deps(root, path)
+        _ ->
+          IO.puts(:stderr, usage())
+          System.halt(1)
+      end
+
+    # A retired verb printed its notice; the exit code has to agree
+    # with it, or a script keeps treating the call as a success.
+    if result == :retired, do: System.halt(1)
+    result
   end
 
   ## Subcommand handlers
@@ -166,12 +174,32 @@ defmodule Commonplace.CLI.Bd do
     |> render_issue_list()
   end
 
-  defp cmd_ready(root) do
-    Ready.ready(root) |> render_issue_list()
+  @doc """
+  `bd ready` — serves the LIVE `needs` graph (CX-hrbn).
+
+  Was `Commonplace.Bd.Ready.ready/2`, a walk over the `blocks` edges in
+  `/bd/deps.json`. Nothing has written that graph since the
+  tix-authority cutover on 2026-08-05, so it now answers from the same
+  Frontier-backed path as `Commonplace.Bd.CLI.ready/2` — one
+  implementation, not a second copy of the walk.
+
+  Two visible consequences, both intended:
+
+    * The rows are the Frontier display shape (`○ id  pri  type
+      title`, priority-sorted), not the old issue-list line.
+    * The semantics differ. A ticket whose prerequisite cannot be
+      resolved is BLOCKED here; the old `blocks` walk called it ready.
+  """
+  def cmd_ready(root, store \\ CommitStoreClient) do
+    BdQuery.ready(root, store) |> render_rows()
   end
 
-  defp cmd_blocked(root) do
-    Ready.blocked(root) |> render_issue_list()
+  @doc """
+  `bd blocked` — the live-`needs` counterpart of `cmd_ready/2`. See its
+  note on the shape and semantics change.
+  """
+  def cmd_blocked(root, store \\ CommitStoreClient) do
+    BdQuery.blocked(root, store) |> render_rows()
   end
 
   defp cmd_comment_add(root, id, rest) do
@@ -226,27 +254,31 @@ defmodule Commonplace.CLI.Bd do
     end
   end
 
-  defp cmd_dep_add(root, from, to, rest) do
+  # The three `bd dep` verbs all sat on `/bd/deps.json`, retired at the
+  # 2026-08-05 cutover (CX-hrbn). They still call into `Dep` and let
+  # the refusal come back out, rather than printing a copy of the
+  # notice: one source of truth for the text, and the CLI's refusal
+  # path is the library's refusal path, exercised end to end.
+
+  @doc "`bd dep add` — RETIRED; surfaces the notice and exits 1."
+  def cmd_dep_add(root, from, to, rest, store \\ CommitStoreClient) do
     {opts, _, _} = OptionParser.parse(rest, strict: [kind: :string])
     kind = opts[:kind] || "blocks"
 
-    case Dep.add(root, from, to, kind) do
-      {:ok, _} -> IO.puts("Added edge #{from} -[#{kind}]-> #{to}")
-      err -> error_exit("Dep add failed", err)
-    end
+    retired(fn -> Dep.add(root, from, to, kind, %{}, store) end)
   end
 
-  defp cmd_dep_remove(root, from, to, rest) do
+  @doc "`bd dep remove` — RETIRED; surfaces the notice and exits 1."
+  def cmd_dep_remove(root, from, to, rest, store \\ CommitStoreClient) do
     {opts, _, _} = OptionParser.parse(rest, strict: [kind: :string])
     kind = opts[:kind] || "blocks"
 
-    Dep.remove(root, from, to, kind)
-    IO.puts("Removed edge #{from} -[#{kind}]-> #{to}")
+    retired(fn -> Dep.remove(root, from, to, kind, store) end)
   end
 
-  defp cmd_dep_list(root) do
-    Dep.list(root)
-    |> Enum.each(fn e -> IO.puts("#{e.from} -[#{e.kind}]-> #{e.to}") end)
+  @doc "`bd dep list` — RETIRED; surfaces the notice and exits 1."
+  def cmd_dep_list(root, store \\ CommitStoreClient) do
+    retired(fn -> Dep.list(root, store) end)
   end
 
   defp cmd_label_create(root, name, rest) do
@@ -296,11 +328,11 @@ defmodule Commonplace.CLI.Bd do
     end
   end
 
-  defp cmd_import_deps(root, path) do
+  @doc "`bd import deps` — RETIRED; surfaces the notice and exits 1."
+  def cmd_import_deps(root, path, store \\ CommitStoreClient) do
     case File.read(path) do
       {:ok, text} ->
-        {:ok, %{imported: n}} = Importer.import_deps_jsonl(root, text)
-        IO.puts("Imported #{n} edges")
+        retired(fn -> Importer.import_deps_jsonl(root, text, store) end)
 
       {:error, reason} ->
         error_exit("Read failed: #{path}", reason)
@@ -308,6 +340,21 @@ defmodule Commonplace.CLI.Bd do
   end
 
   ## Helpers
+
+  # Runs a call into a retired `/bd/deps.json` surface and turns its
+  # raise into the user-facing notice. Returns `:retired` so `run/3`
+  # exits non-zero — a retired verb must not look like it worked.
+  defp retired(fun) do
+    fun.()
+    :ok
+  rescue
+    e in RetiredGraphError ->
+      IO.puts(:stderr, Exception.message(e))
+      :retired
+  end
+
+  defp render_rows([]), do: IO.puts("(no tickets)")
+  defp render_rows(rows), do: IO.puts(BdQuery.render(rows))
 
   defp render_issue_list([]), do: IO.puts("(no issues)")
 
@@ -348,8 +395,15 @@ defmodule Commonplace.CLI.Bd do
       bd update <id> [--title T] [--status S] [--priority P] [--type T] [--owner O]
       bd close <id> [--reason R]
       bd list [--status S] [--priority P] [--label L] [--owner O]
-      bd ready
-      bd blocked
+      bd ready      tickets whose every prerequisite is satisfied
+      bd blocked    open tickets with an unsatisfied prerequisite
+
+      ready/blocked read the LIVE `needs` graph carried on each ticket.
+      Before the 2026-08-05 tix cutover they walked `blocks` edges in
+      /bd/deps.json, which nothing writes any more. The answers differ:
+      a ticket needing something that cannot be resolved (missing, or
+      in another repo) is BLOCKED now, where the old walk called it
+      ready.
 
     Comments:
       bd comment add <id> [--body B] [--author A] [--reply-to C]
@@ -357,10 +411,13 @@ defmodule Commonplace.CLI.Bd do
       bd comment edit <id> <comment_id> [--body B]
       bd comment delete <id> <comment_id>
 
-    Dependencies:
+    Dependencies (RETIRED — these exit 1 with a pointer):
       bd dep add <from> <to> [--kind K]
       bd dep remove <from> <to> [--kind K]
       bd dep list
+
+      They edited /bd/deps.json, retired at the 2026-08-05 cutover.
+      Prerequisites live on the ticket now, as `needs`.
 
     Labels:
       bd label create <name> [--color C] [--description D]
@@ -370,7 +427,9 @@ defmodule Commonplace.CLI.Bd do
 
     Import:
       bd import issues <path.jsonl>
-      bd import deps <path.jsonl>
+      bd import deps <path.jsonl>   RETIRED — put the edges on the
+                                    issue records as `needs` and use
+                                    `bd import issues` instead.
     """
   end
 end
