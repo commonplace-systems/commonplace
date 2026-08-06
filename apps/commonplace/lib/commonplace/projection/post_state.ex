@@ -88,13 +88,20 @@ defmodule Commonplace.Projection.PostState do
   """
   @spec compare(Commit.t(), Doc.t() | binary()) ::
           :match | :mismatch | {:era_mismatch, non_neg_integer()} | :absent
-  def compare(%Commit{post_state_hash: nil}, _state), do: :absent
+  # Reads the field through `Commit.post_state_hash/1` rather than
+  # pattern-matching it: pre-CX-6scm rows deserialise WITHOUT the key, so
+  # `%Commit{post_state_hash: nil}` does not match them (see that
+  # function's docs).
+  def compare(%Commit{} = commit, state) do
+    case Commit.post_state_hash(commit) do
+      nil ->
+        :absent
 
-  def compare(%Commit{post_state_hash: {version, _hash}}, _state)
-      when version != @encoding_version,
-      do: {:era_mismatch, version}
+      {@encoding_version, hash} ->
+        if :crypto.hash(:sha256, canonical_bytes(state)) == hash, do: :match, else: :mismatch
 
-  def compare(%Commit{post_state_hash: {@encoding_version, hash}}, state) do
-    if :crypto.hash(:sha256, canonical_bytes(state)) == hash, do: :match, else: :mismatch
+      {version, _hash} ->
+        {:era_mismatch, version}
+    end
   end
 end

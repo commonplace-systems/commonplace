@@ -3,4 +3,13 @@ ExUnit.start()
 # measurement harness, not correctness tests, and scale up to slow/
 # memory-heavy magnitudes. Run them explicitly with:
 #   mix test apps/commonplace/test/commonplace/scale_benchmark_test.exs --include scale
-ExUnit.configure(exclude: [:scale])
+#
+# CX-6scm: `:corpus` tests measure against a copy of LIVE store history
+# (the conflicted-pins census's 537 MB backup), which is deliberately not
+# in the repo and must be regenerated read-only. They flunk loudly rather
+# than skip when their input is absent, so they are excluded by default
+# and run explicitly:
+#   CX_CORPUS=/path/to/backup mix test \
+#     apps/commonplace/test/commonplace/projection/corpus_regression_test.exs \
+#     --include corpus
+ExUnit.configure(exclude: [:scale, :corpus])
