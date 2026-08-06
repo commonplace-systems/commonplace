@@ -335,16 +335,18 @@ defmodule Commonplace.Projection do
 
   # ── Tier selection ─────────────────────────────────────────────────
 
-  defp select_tier(%Commit{post_state_hash: psh} = commit, store, uuid, chain, required, opts)
-       when not is_nil(psh) do
-    tier_i(commit, store, uuid, chain, required, opts)
-  end
-
+  # Reads the carried hash through `Commit.post_state_hash/1`, never as a
+  # struct pattern: legacy rows deserialise without the key.
   defp select_tier(%Commit{} = commit, store, uuid, chain, required, opts) do
-    if head?(store, uuid, commit.id) do
-      tier_ii(commit, store, uuid, chain, required, opts)
-    else
-      tier_iii(commit, store, uuid, chain, required, opts)
+    cond do
+      not is_nil(Commit.post_state_hash(commit)) ->
+        tier_i(commit, store, uuid, chain, required, opts)
+
+      head?(store, uuid, commit.id) ->
+        tier_ii(commit, store, uuid, chain, required, opts)
+
+      true ->
+        tier_iii(commit, store, uuid, chain, required, opts)
     end
   end
 
@@ -385,7 +387,7 @@ defmodule Commonplace.Projection do
              {:hash_mismatch,
               %{
                 commit_id: commit.id,
-                carried: elem(commit.post_state_hash, 1),
+                carried: elem(Commit.post_state_hash(commit), 1),
                 direct: digest(direct),
                 replay: digest(replay)
               }}}

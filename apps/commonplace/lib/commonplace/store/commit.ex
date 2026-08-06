@@ -291,9 +291,29 @@ defmodule Commonplace.Store.Commit do
       commit.parent_id,
       commit.metadata,
       commit.merge_parents,
-      commit.post_state_hash
+      post_state_hash(commit)
     )
   end
+
+  @doc """
+  Read a commit's carried post-state hash, **legacy-row safe**.
+
+  Adding a struct field is a MIGRATION here, because the store holds
+  `:erlang.term_to_binary/1` of `%Commit{}`. A row written before
+  `:post_state_hash` existed round-trips back as a map that does not
+  have the key at all: `commit.post_state_hash` raises `KeyError`, and
+  `%Commit{post_state_hash: _} = row` does not match. There are 64,651
+  such rows on the live serve and every one of them is read by
+  `Commonplace.Projection`, so a direct field read is a crash on the
+  first legacy commit touched — measured, not theorised
+  (`test/commonplace/projection/legacy_row_shape_test.exs`).
+
+  Every reader of this field must go through here. A legacy row and a
+  modern row with an explicit `nil` are the same commit, and the
+  `nil -> <<>>` hatch in `content_address/5` keeps their ids identical.
+  """
+  @spec post_state_hash(t()) :: post_state_hash()
+  def post_state_hash(%__MODULE__{} = commit), do: Map.get(commit, :post_state_hash)
 
   # Content-address formula (CX-u7p r2, extended CX-bv3, extended CX-6scm):
   #   sha256((parent_id || <<>>) <> update <> canonical_metadata(metadata)
