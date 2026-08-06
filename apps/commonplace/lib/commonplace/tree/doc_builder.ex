@@ -32,6 +32,14 @@ defmodule Commonplace.Tree.DocBuilder do
   Read-only callers can omit the option.
   """
   def reconstruct_doc(store, uuid, opts \\ []) do
+    # CX-6scm: `mint: false` suppresses the CX-fkvc lazy-snapshot
+    # write-on-read. `Commonplace.Projection.project_at/4` uses this path
+    # as tier (ii)'s authority and must NEVER mint — a read that writes
+    # cannot be a verification primitive, and it would perturb the very
+    # `:latest` pointer the tier-(ii) TOCTOU guard is checking.
+    # (`reconstruct_doc`'s minting in general is CX-68m6, out of scope.)
+    {mint?, opts} = Keyword.pop(opts, :mint, true)
+
     commits =
       CommitStoreClient.commit_log(store, uuid, limit: CommitStore.max_commit_log_limit())
       |> Enum.reverse()
@@ -58,7 +66,7 @@ defmodule Commonplace.Tree.DocBuilder do
         # (CX-tvyb), the periodic sweeper (CX-fab5), or the explicit CLI
         # command (CX-2ok0) collapses to a single snapshot via CX-umz.
         # Fired in a Task so the read isn't blocked on the snapshot build.
-        maybe_lazy_snapshot(store, uuid, length(commits_to_apply))
+        if mint?, do: maybe_lazy_snapshot(store, uuid, length(commits_to_apply))
 
         result
     end
@@ -231,6 +239,37 @@ defmodule Commonplace.Tree.DocBuilder do
   later in the chain.
   """
   def reconstruct_doc_at(store, uuid, target_commit_id, opts \\ []) do
+    case chain_to(store, uuid, target_commit_id) do
+      {:ok, commits_to_apply} ->
+        doc = Doc.new(opts)
+
+        Enum.reduce(commits_to_apply, {:ok, doc}, fn c, {:ok, d} ->
+          Encoding.apply_update(d, c.update)
+        end)
+
+      :none ->
+        :none
+    end
+  end
+
+  @doc """
+  The exact commit list `reconstruct_doc_at/4` would replay for
+  `target_commit_id` — post-snapshot-trim, genesis commits already
+  rejected — oldest first.
+
+  Extracted for `Commonplace.Projection` (CX-6scm), which threads
+  signature verification along **the chain it actually walks**. Sharing
+  this function is what makes "the chain we verified" and "the chain we
+  replayed" the same list by construction rather than by two
+  implementations agreeing. It changes nothing about which commits the
+  walk visits — `reconstruct_doc_at/4` is now its only other caller.
+
+  Returns `{:ok, commits}` or `:none` when `target_commit_id` is not on
+  the doc's chain. Note `{:ok, []}` is a legitimate answer: a genesis pin
+  replays nothing and IS the empty state (F7).
+  """
+  @spec chain_to(term(), String.t(), binary()) :: {:ok, [struct()]} | :none
+  def chain_to(store, uuid, target_commit_id) do
     commits =
       CommitStoreClient.commit_log(store, uuid, limit: CommitStore.max_commit_log_limit())
       |> Enum.reverse()
@@ -246,12 +285,7 @@ defmodule Commonplace.Tree.DocBuilder do
 
     case result do
       {:found, to_apply} ->
-        commits_to_apply = to_apply |> trim_to_latest_snapshot() |> Enum.reject(&genesis?/1)
-        doc = Doc.new(opts)
-
-        Enum.reduce(commits_to_apply, {:ok, doc}, fn c, {:ok, d} ->
-          Encoding.apply_update(d, c.update)
-        end)
+        {:ok, to_apply |> trim_to_latest_snapshot() |> Enum.reject(&genesis?/1)}
 
       {:not_found, _} ->
         :none

@@ -171,9 +171,18 @@ defmodule Commonplace.Store.Commit do
     :timestamp,
     :signature,   # Ed25519 signature of commit.id, or nil if unsigned
     :signer_id,   # identifier of the signing key, or nil if unsigned
+    :post_state_hash,   # {encoding_version, hash} of the state the WRITER produced, or nil (legacy-compatible mint sites); binds into id when present (CX-6scm)
     metadata: %{},      # free-form annotations (e.g. %{kind: :snapshot}); non-empty requires :kind and binds into id (CX-u7p r2, CX-bv3)
     merge_parents: []   # additional parent commit ids for merge commits; binds into id when non-empty (CX-bv3)
   ]
+
+  @typedoc """
+  `{encoding_version, hash}` — never a bare hash.
+
+  See `Commonplace.Projection.PostState` for the version constant and the
+  76dcd3c lesson it encodes.
+  """
+  @type post_state_hash :: {non_neg_integer(), binary()} | nil
 
   @type t :: %__MODULE__{
           id: binary(),
@@ -183,14 +192,23 @@ defmodule Commonplace.Store.Commit do
           timestamp: DateTime.t(),
           signature: binary() | nil,
           signer_id: String.t() | nil,
+          post_state_hash: post_state_hash(),
           metadata: map(),
           merge_parents: [binary()]
         }
 
-  def new(doc_uuid, update, parent_id \\ nil, metadata \\ %{}, merge_parents \\ []) do
+  def new(
+        doc_uuid,
+        update,
+        parent_id \\ nil,
+        metadata \\ %{},
+        merge_parents \\ [],
+        post_state_hash \\ nil
+      ) do
     validate_metadata_kind!(metadata)
+    validate_post_state_hash!(post_state_hash)
     timestamp = DateTime.utc_now()
-    id = content_address(update, parent_id, metadata, merge_parents)
+    id = content_address(update, parent_id, metadata, merge_parents, post_state_hash)
 
     %__MODULE__{
       id: id,
@@ -199,7 +217,8 @@ defmodule Commonplace.Store.Commit do
       update: update,
       timestamp: timestamp,
       metadata: metadata,
-      merge_parents: merge_parents
+      merge_parents: merge_parents,
+      post_state_hash: post_state_hash
     }
   end
 
@@ -217,7 +236,7 @@ defmodule Commonplace.Store.Commit do
   """
   def genesis(doc_uuid) do
     metadata = %{kind: :genesis, doc_uuid: doc_uuid}
-    id = content_address(<<>>, nil, metadata, [])
+    id = content_address(<<>>, nil, metadata, [], nil)
 
     %__MODULE__{
       id: id,
@@ -246,13 +265,7 @@ defmodule Commonplace.Store.Commit do
   """
   @spec verify_id(t()) :: :ok | {:error, {:id_mismatch, binary(), binary()}}
   def verify_id(%__MODULE__{} = commit) do
-    computed =
-      content_address(
-        commit.update,
-        commit.parent_id,
-        commit.metadata,
-        commit.merge_parents
-      )
+    computed = content_address_of(commit)
 
     if computed == commit.id do
       :ok
@@ -261,22 +274,69 @@ defmodule Commonplace.Store.Commit do
     end
   end
 
-  # Content-address formula (CX-u7p r2, extended CX-bv3):
-  #   sha256((parent_id || <<>>) <> update <> canonical_metadata(metadata) <> canonical_merge_parents(merge_parents))
+  @doc """
+  Recompute a commit's content address from the fields PRESENT on the
+  struct, without comparing it to the claimed `id`.
+
+  `Commonplace.Projection` needs the raw recomputation (not `verify_id/1`'s
+  boolean) so it can verify a signature against the address the bytes
+  ACTUALLY hash to, rather than against the id the commit merely claims
+  (CX-6scm). Tampered `update` bytes on a signed commit therefore fail
+  loudly instead of being absorbed.
+  """
+  @spec content_address_of(t()) :: binary()
+  def content_address_of(%__MODULE__{} = commit) do
+    content_address(
+      commit.update,
+      commit.parent_id,
+      commit.metadata,
+      commit.merge_parents,
+      commit.post_state_hash
+    )
+  end
+
+  # Content-address formula (CX-u7p r2, extended CX-bv3, extended CX-6scm):
+  #   sha256((parent_id || <<>>) <> update <> canonical_metadata(metadata)
+  #            <> canonical_merge_parents(merge_parents)
+  #            <> canonical_post_state_hash(post_state_hash))
   #
-  # `canonical_metadata(%{})` and `canonical_merge_parents([])` are
-  # both the empty binary so historical commits that were written
-  # without either keep their original id. Non-empty values are
-  # serialized deterministically via `:erlang.term_to_binary/2` with
-  # `:deterministic`.
-  defp content_address(update, parent_id, metadata, merge_parents) do
+  # `canonical_metadata(%{})`, `canonical_merge_parents([])` and
+  # `canonical_post_state_hash(nil)` are all the empty binary so
+  # historical commits that were written without any of them keep their
+  # original id. Non-empty values are serialized deterministically via
+  # `:erlang.term_to_binary/2` with `:deterministic`.
+  #
+  # CX-6scm: `post_state_hash` MUST bind into the id. The whole point of
+  # the witnessed grade is that the writer's own expectation is carried
+  # under the signature — and the signature is over the id, so a field
+  # outside the id would be freely editable by any holder of the row and
+  # the "witness" would witness nothing.
+  defp content_address(update, parent_id, metadata, merge_parents, post_state_hash) do
     data =
       (parent_id || <<>>) <>
         update <>
         canonical_metadata(metadata) <>
-        canonical_merge_parents(merge_parents)
+        canonical_merge_parents(merge_parents) <>
+        canonical_post_state_hash(post_state_hash)
 
     :crypto.hash(:sha256, data)
+  end
+
+  defp canonical_post_state_hash(nil), do: <<>>
+
+  defp canonical_post_state_hash({version, hash}) when is_integer(version) and is_binary(hash) do
+    :erlang.term_to_binary({version, hash}, [:deterministic])
+  end
+
+  defp validate_post_state_hash!(nil), do: :ok
+
+  defp validate_post_state_hash!({version, hash}) when is_integer(version) and is_binary(hash),
+    do: :ok
+
+  defp validate_post_state_hash!(other) do
+    raise ArgumentError,
+          "post_state_hash must be nil or {encoding_version, hash} — never a bare hash " <>
+            "(got #{inspect(other)})"
   end
 
   defp canonical_metadata(metadata) when metadata == %{}, do: <<>>
