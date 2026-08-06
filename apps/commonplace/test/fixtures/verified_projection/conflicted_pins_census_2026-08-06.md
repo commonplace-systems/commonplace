@@ -259,13 +259,19 @@ write against a live store.
 
 The harness's disclosure above reports the deletion of the 2026-08-05
 derived store copies as unattributable from its own command history.
-The attribution is now known and closed: **the deletions were the
-coordinating session's own cleanup**, both recorded in its transcript —
-`.chit-sizing-work` and `.chit-sizing-tamper` removed during the
-evening's disk-pressure cleanup (derived, recreatable), and the
-provenance backup removed immediately after commonplace-plan accepted
-the sizing report with "release the backup." No unknown process was
-involved; the live store was never touched. The false zero the
+**Attribution — stated as the coordinator's attestation from their own
+session transcript, not as harness-verified fact:** the coordinating
+session removed `.chit-sizing-work` and `.chit-sizing-tamper` during
+the evening's disk-pressure cleanup (derived, recreatable), and
+removed the provenance backup immediately after commonplace-plan
+accepted the sizing report with "release the backup." The harness
+independently corroborated the deletion WINDOW (last successful read
+of the work copy ~05:35Z, found empty 06:05Z — containing the
+coordinator's claimed cleanup time) without identifying the actor;
+the attestation and the corroboration are different grades of claim
+and are labeled as such on purpose. Under this attestation, no
+unknown process was involved; the live store was never touched
+(harness-verified: 643 MB, serve writing normally throughout). The false zero the
 re-opened empty path produced remains the load-bearing lesson
 (measurement opens must assert non-emptiness; create-on-open turns an
 absent data source into a silently minted empty one), recorded in the
