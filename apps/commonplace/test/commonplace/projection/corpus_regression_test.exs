@@ -193,4 +193,126 @@ defmodule Commonplace.Projection.CorpusRegressionTest do
     assert {conflicted, ok_bytes} == {27, 0},
            "conflicted #{conflicted}/27 · silently-returned-bytes #{ok_bytes}/27"
   end
+
+  # ══ CX-ggdv: the walk-bounding neutrality fence ═════════════════════
+  #
+  # Walk-bounding is a PERFORMANCE change whose one non-negotiable fence
+  # is byte-neutrality: identical bytes, identical verdicts, only
+  # cheaper. This is that fence, run against real history rather than
+  # constructed chains — the constructed-chain half lives in
+  # `test/commonplace/tree/doc_builder_bounded_walk_test.exs`.
+  #
+  # `require_head_reachable: true` selects the pre-CX-ggdv head-anchored
+  # walk, so both sides of the comparison run in ONE process against ONE
+  # store. Comparing whole `project_at/3` RESULTS (not just bytes) makes
+  # the verdict half of the fence a real assertion: a `{:corroborated,
+  # methods}` list that reordered, a tier that flipped, or a digest that
+  # moved all fail here.
+  #
+  # Denominators are printed on both the pass and the fail path — a
+  # neutrality run whose sample silently shrank to zero is the false-zero
+  # shape this file already exists to refuse.
+  describe "CX-ggdv walk-bounding neutrality" do
+    defp compare(store, pairs) do
+      Enum.map(pairs, fn {uuid, pin} ->
+        old = Projection.project_at(uuid, pin, store: store, require_head_reachable: true)
+        new = Projection.project_at(uuid, pin, store: store)
+        {uuid, pin, old == new, old, new}
+      end)
+    end
+
+    defp report(results, label, expected_n) do
+      divergences = Enum.reject(results, &elem(&1, 2))
+
+      detail =
+        divergences
+        |> Enum.take(5)
+        |> Enum.map_join("\n", fn {u, p, _, old, new} ->
+          "  #{u} @ #{Base.encode16(p, case: :lower)}\n" <>
+            "    old=#{inspect(old, limit: 3, printable_limit: 60)}\n" <>
+            "    new=#{inspect(new, limit: 3, printable_limit: 60)}"
+        end)
+
+      assert length(results) == expected_n,
+             "#{label}: sample is #{length(results)}, expected #{expected_n} — " <>
+               "a shrunken sample is not a passing measurement"
+
+      assert divergences == [],
+             "#{label}: #{length(divergences)}/#{length(results)} DIVERGED\n#{detail}"
+
+      length(results)
+    end
+
+    test "80 census head docs: bounded walk == head-anchored walk", %{store: store} do
+      pairs =
+        for [doc_id | _] <- census_rows("Part 2", 8) do
+          {:ok, head} = CommitStore.latest_commit(store, doc_id)
+          {doc_id, head.id}
+        end
+
+      assert report(compare(store, pairs), "census head docs", 80) == 80
+    end
+
+    test "27 census conflicted pins: bounded walk == head-anchored walk", %{store: store} do
+      pairs =
+        for [doc_id, hex | _] <- census_rows("Part 1", 9),
+            do: {doc_id, Base.decode16!(hex, case: :lower)}
+
+      assert report(compare(store, pairs), "census conflicted pins", 27) == 27
+    end
+
+    # A random sample stratified by DEPTH CLASS, because depth is exactly
+    # the axis walk-bounding changes: the old walk's cost (and its
+    # truncation window) scaled with distance-to-head, the new walk's with
+    # distance-to-snapshot. A sample drawn without regard to depth would
+    # be dominated by the corpus's ~4,100 shallow docs and would not
+    # exercise the shapes that can separate the two walks at all.
+    #
+    # The seed is FIXED so a divergence is reproducible by re-running,
+    # and every doc in the deepest class is taken rather than sampled.
+    test "≥100 random (doc, pin) pairs across depth classes", %{store: store} do
+      :rand.seed(:exsss, {20_260_806, 9, 9})
+
+      logs =
+        CommitStore.all_doc_uuids(store)
+        |> Enum.sort()
+        |> Enum.map(fn u ->
+          {u, CommitStore.commit_log(store, u, limit: CommitStore.max_commit_log_limit())}
+        end)
+
+      class = fn
+        d when d <= 1 -> :d1
+        d when d <= 10 -> :d2_10
+        d when d <= 100 -> :d11_100
+        d when d <= 1000 -> :d101_1000
+        _ -> :d1000plus
+      end
+
+      pairs =
+        logs
+        |> Enum.group_by(fn {_u, l} -> class.(length(l)) end)
+        |> Enum.flat_map(fn {cls, group} ->
+          take = if cls == :d1000plus, do: length(group), else: min(30, length(group))
+
+          group
+          |> Enum.shuffle()
+          |> Enum.take(take)
+          |> Enum.flat_map(fn {u, log} ->
+            asc = Enum.reverse(log)
+            n = length(asc)
+
+            [div(n, 4), div(n, 2), n - 1]
+            |> Enum.uniq()
+            |> Enum.filter(&(&1 >= 0 and &1 < n))
+            |> Enum.map(&{u, Enum.at(asc, &1).id})
+          end)
+        end)
+
+      assert length(pairs) >= 100,
+             "stratified sample is #{length(pairs)} pairs, need ≥100 — " <>
+               "check the corpus actually has depth spread"
+
+      assert report(compare(store, pairs), "stratified depth sample", length(pairs)) >= 100
+    end
+  end
 end
