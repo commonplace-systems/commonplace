@@ -61,7 +61,12 @@ defmodule Commonplace.CLI do
     case args do
       ["init" | rest] ->
         # init creates .commonplace in cwd (or -d override)
-        data_dir = opts[:data_dir] || Path.join(File.cwd!(), @workspace_dir)
+        data_dir =
+          case opts[:data_dir] do
+            nil -> announce_data_dir(Path.join(File.cwd!(), @workspace_dir), :cwd)
+            explicit -> explicit
+          end
+
         Commonplace.CLI.Init.run(data_dir, rest)
 
       [] ->
@@ -75,13 +80,32 @@ defmodule Commonplace.CLI do
             System.halt(1)
 
           {data_dir, relative_path} ->
-            run_command(cmd, data_dir, relative_path, rest)
+            run_command(cmd, announce_data_dir(data_dir, :cwd), relative_path, rest)
 
           data_dir when is_binary(data_dir) ->
             # -d override: no relative path context
             run_command(cmd, data_dir, "", rest)
         end
     end
+  end
+
+  @doc """
+  Say out loud, on stderr, which data dir a cwd walk-up resolved to
+  (CX-x8jk defect 3).
+
+  The 2026-08-06 incident was a documented command run from an
+  undistinguished-looking directory: the walk-up found the LIVE
+  `workspace/.commonplace` and the operator had no way to see that
+  before the store was touched. One line, before anything opens,
+  naming the resolved path, is what would have stopped it.
+
+  Only cwd-resolved dirs are announced: `-d/--data_dir` is the operator
+  saying it themselves, and echoing that back is noise. Returns
+  `data_dir` so it can be dropped into an existing expression.
+  """
+  def announce_data_dir(data_dir, :cwd) do
+    IO.puts(:stderr, "commonplace: data dir #{Path.expand(data_dir)} (resolved from cwd)")
+    data_dir
   end
 
   defp run_command(cmd, data_dir, relative_path, rest) do
@@ -148,129 +172,21 @@ defmodule Commonplace.CLI do
   @doc """
   Start the application services needed for CLI commands.
 
-  Tries to connect to a running `commonplace serve` node first. If connected,
-  routes CommitStore calls remotely (no local CubDB). If not, acquires a file
-  lock and starts CubDB locally.
+  Delegates to `Commonplace.CLI.Access.ensure_started/2`, which decides
+  route / refuse / local BEFORE anything is opened (CX-x8jk):
+
+    * a reachable `commonplace serve` for this data dir → route every
+      call at it (`CommitStoreClient.set_remote_node/1`), no local CubDB;
+    * no serve, but `<data_dir>/commits.lock` held by a live process →
+      print the sanctioned-access refusal and exit 1, instead of opening
+      a second appender on someone else's store (or crashing out of the
+      store layer with `{:commits_store_locked, ...}`);
+    * no serve, no lock → open locally. The offline single-user case,
+      which must keep working.
   """
   def ensure_started(data_dir) do
     File.mkdir_p!(data_dir)
-
-    case try_connect_to_serve(data_dir) do
-      {:ok, node} ->
-        # Connected to serve — use remote CommitStore, don't start local app
-        Commonplace.Store.CommitStoreClient.set_remote_node(node)
-        :ok
-
-      :not_running ->
-        # No serve running — acquire lock and start locally
-        case acquire_db_lock(data_dir) do
-          {:ok, _fd} ->
-            # Stop if already running with wrong data_dir (escript auto-start)
-            if Application.get_env(:commonplace, :data_dir) != data_dir do
-              Application.stop(:commonplace)
-            end
-
-            Application.put_env(:commonplace, :data_dir, data_dir)
-
-            case Application.ensure_all_started(:commonplace) do
-              {:ok, _} ->
-                :ok
-
-              {:error, reason} ->
-                # CX-qida: most commonly the workspace single-owner flock
-                # (Commonplace.Workspace.Lock) refusing to start because
-                # another process already holds <data_dir>/serve.lock —
-                # surface that as a clear, fail-fast CLI error instead of
-                # a raw MatchError crash. Commonplace.Workspace.Lock's
-                # own init/1 already printed the detailed lock/holder
-                # message to stderr; this is the summary.
-                IO.puts(:stderr, "Cannot start commonplace: #{inspect(reason)}")
-                System.halt(1)
-            end
-
-          {:error, :locked} ->
-            IO.puts(:stderr,
-              "Cannot access database — another process holds the lock.\n" <>
-                "If commonplace serve is running, distributed Erlang connection failed.\n" <>
-                "Stop the other process first."
-            )
-
-            System.halt(1)
-        end
-    end
-  end
-
-  defp try_connect_to_serve(data_dir) do
-    node_name_file = Path.join(data_dir, "node_name")
-
-    case File.read(node_name_file) do
-      {:ok, content} ->
-        serve_node = content |> String.trim() |> String.to_atom()
-
-        # Start a temporary CLI node so we can connect.
-        # CX-y6uc: disable :global's overlapping-partition protection
-        # (default-on since OTP 25). Each CLI invocation is short-lived;
-        # without this, repeated CLI calls trip serve's :global into
-        # disconnecting them. Must be set before Node.start.
-        :application.set_env(:kernel, :prevent_overlapping_partitions, false)
-
-        cli_name = :"commonplace_cli_#{:rand.uniform(999_999)}"
-
-        case Node.start(cli_name, :shortnames) do
-          {:ok, _} ->
-            if Node.connect(serve_node) do
-              {:ok, serve_node}
-            else
-              Node.stop()
-              :not_running
-            end
-
-          {:error, _} ->
-            :not_running
-        end
-
-      {:error, _} ->
-        :not_running
-    end
-  end
-
-  defp acquire_db_lock(data_dir) do
-    lock_path = Path.join(data_dir, "commits.lock")
-    my_pid = System.pid()
-
-    case File.read(lock_path) do
-      {:ok, content} ->
-        pid_str = String.trim(content)
-
-        cond do
-          # Same process already holds the lock — re-entrant
-          pid_str == my_pid ->
-            {:ok, lock_path}
-
-          # Check if the locking process is still alive
-          process_alive?(pid_str) ->
-            {:error, :locked}
-
-          # Stale lock file — process is dead, take over
-          true ->
-            write_lock(lock_path, my_pid)
-        end
-
-      {:error, _} ->
-        write_lock(lock_path, my_pid)
-    end
-  end
-
-  defp process_alive?(pid_str) do
-    case System.cmd("kill", ["-0", pid_str], stderr_to_stdout: true) do
-      {_, 0} -> true
-      _ -> false
-    end
-  end
-
-  defp write_lock(lock_path, pid) do
-    File.write!(lock_path, pid)
-    {:ok, lock_path}
+    Commonplace.CLI.Access.ensure_started(data_dir)
   end
 
   @doc "Load a schema doc from the commit store."

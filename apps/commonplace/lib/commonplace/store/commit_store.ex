@@ -351,10 +351,12 @@ defmodule Commonplace.Store.CommitStore do
   claim.** We write our OS pid and node name into the lock file purely so
   a human reading a refusal has somewhere to start; nothing reads it to
   decide whether to proceed, and a stale pid in it grants nobody
-  anything. (The pre-CX-2479 arrangement — and
-  `Commonplace.CLI.acquire_db_lock/1` still — was exactly the opposite: a
-  pid string a second process overwrote before proceeding. That is how
-  two appenders landed on one CubDB file.)
+  anything. (The pre-CX-2479 arrangement was exactly the opposite: a pid
+  string a second process overwrote before proceeding. That is how two
+  appenders landed on one CubDB file. `Commonplace.CLI.acquire_db_lock/1`
+  was a second, unrelated copy of that scheme over this same file; CX-x8jk
+  deleted it, and the CLI now refuses or routes before it ever reaches a
+  direct open — see `Commonplace.CLI.Access`.)
 
   The lock file sits in `data_dir`, deliberately **outside** the
   `commits/` directory that crash recovery renames, so one continuous
@@ -1379,9 +1381,10 @@ defmodule Commonplace.Store.CommitStore do
   #
   # THE EXCLUSION IS THE flock(2), NOT THE FILE CONTENT. Before this, the
   # only thing at `<data_dir>/commits.lock` was a pid string that a second
-  # process cheerfully overwrote before proceeding (see
-  # `Commonplace.CLI.acquire_db_lock/1` — advisory prose, alive-check and
-  # all). The pid+node line we write here is DIAGNOSTIC ONLY: a hint for a
+  # process cheerfully overwrote before proceeding — advisory prose,
+  # `kill -0` alive-check and all. (`Commonplace.CLI.acquire_db_lock/1`
+  # kept a second copy of that scheme over this same file until CX-x8jk
+  # deleted it.) The pid+node line we write here is DIAGNOSTIC ONLY: a hint for a
   # human staring at a refusal, never a proof of who holds the lock and
   # never consulted to decide whether to proceed. The kernel decides.
   #
@@ -1404,11 +1407,7 @@ defmodule Commonplace.Store.CommitStore do
     File.touch!(path)
 
     # Read the incumbent's hint BEFORE we overwrite it with our own.
-    hint =
-      case File.read(path) do
-        {:ok, content} -> String.trim(content)
-        {:error, _} -> ""
-      end
+    hint = Commonplace.Store.LockRefusal.holder_hint(path)
 
     case Commonplace.Sync.Flock.try_lock(path, :exclusive) do
       {:ok, ref} ->
@@ -1418,7 +1417,7 @@ defmodule Commonplace.Store.CommitStore do
       {:error, reason} ->
         detail = %{
           lock_path: path,
-          holder_hint: holder_hint(hint),
+          holder_hint: hint,
           reason: reason,
           sanctioned_access: sanctioned_access_message()
         }
@@ -1435,18 +1434,13 @@ defmodule Commonplace.Store.CommitStore do
     end
   end
 
-  defp holder_hint(""), do: "(lock file empty or unreadable)"
-  defp holder_hint(content), do: content
-
   # CX-2479 rider: the incident's trigger was a legitimate read need going
   # through an illegitimate door. A refusal that only says "no" breeds the
-  # workaround; this names the sanctioned door instead.
-  defp sanctioned_access_message do
-    "This store is held by a live process. Read it through the running serve " <>
-      "(:erpc into the serve node, or Commonplace.Store.CommitStoreClient against it), " <>
-      "or from a CubDB.back_up/2 copy. Do NOT retry the direct open and do NOT delete " <>
-      "the lock file — a second opener on one CubDB directory is how the store gets corrupted."
-  end
+  # workaround; this names the sanctioned door instead. CX-x8jk moved the
+  # prose to Commonplace.Store.LockRefusal so the CLI's tool-layer refusal
+  # says exactly the same thing without a second copy to drift.
+  defp sanctioned_access_message,
+    do: Commonplace.Store.LockRefusal.sanctioned_access_message()
 
   # R4(a): publish the CubDB handle so reads can run in the caller process
   # against it directly, never queuing behind a write in this GenServer's
