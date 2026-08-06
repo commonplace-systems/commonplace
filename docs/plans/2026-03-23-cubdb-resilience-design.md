@@ -114,6 +114,21 @@ All existing CLI commands work unchanged — the CommitStore API is the same, it
 
 #### 2c. File lock for fallback access
 
+> **STATUS 2026-08-06 — as-built differs, read this first.** The
+> `:file.lock` sketch below was never built. What shipped instead was a
+> pid string in `commits.lock` plus a `kill -0` liveness check with a
+> take-over-on-stale branch (`CLI.acquire_db_lock/1`) — advisory prose,
+> not an exclusion; on 2026-08-06 a CLI read from the workspace
+> directory opened the live store beside a running serve. As built now:
+> **CX-2479** put a real non-blocking `flock(2)` in
+> `CommitStore.init/1`, which fails closed with
+> `{:commits_store_locked, detail}` and has no takeover path; **CX-x8jk**
+> deleted `acquire_db_lock/1` (a second, unrelated exclusion scheme over
+> the same file) and moved the CLI to refuse-or-route BEFORE any open —
+> see `Commonplace.CLI.Access`. The lock lives at `<data_dir>/commits.lock`
+> (outside `commits/`, which crash recovery renames), and its CONTENT is
+> a diagnostic hint, never a claim.
+
 When the CLI falls back to direct CubDB access (serve not running), it acquires an exclusive file lock on `.commonplace/commits.lock`:
 
 ```elixir
