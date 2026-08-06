@@ -234,7 +234,10 @@ defmodule Commonplace.CLI do
     end
   end
 
-  defp acquire_db_lock(data_dir) do
+  # CX-x8jk red-first: temporarily public so the characterization test can
+  # record what this prose-lock does today. Deleted in the next commit.
+  @doc false
+  def acquire_db_lock(data_dir) do
     lock_path = Path.join(data_dir, "commits.lock")
     my_pid = System.pid()
 
