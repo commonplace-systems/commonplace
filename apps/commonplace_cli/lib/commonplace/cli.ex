@@ -61,7 +61,12 @@ defmodule Commonplace.CLI do
     case args do
       ["init" | rest] ->
         # init creates .commonplace in cwd (or -d override)
-        data_dir = opts[:data_dir] || Path.join(File.cwd!(), @workspace_dir)
+        data_dir =
+          case opts[:data_dir] do
+            nil -> announce_data_dir(Path.join(File.cwd!(), @workspace_dir), :cwd)
+            explicit -> explicit
+          end
+
         Commonplace.CLI.Init.run(data_dir, rest)
 
       [] ->
@@ -75,13 +80,32 @@ defmodule Commonplace.CLI do
             System.halt(1)
 
           {data_dir, relative_path} ->
-            run_command(cmd, data_dir, relative_path, rest)
+            run_command(cmd, announce_data_dir(data_dir, :cwd), relative_path, rest)
 
           data_dir when is_binary(data_dir) ->
             # -d override: no relative path context
             run_command(cmd, data_dir, "", rest)
         end
     end
+  end
+
+  @doc """
+  Say out loud, on stderr, which data dir a cwd walk-up resolved to
+  (CX-x8jk defect 3).
+
+  The 2026-08-06 incident was a documented command run from an
+  undistinguished-looking directory: the walk-up found the LIVE
+  `workspace/.commonplace` and the operator had no way to see that
+  before the store was touched. One line, before anything opens,
+  naming the resolved path, is what would have stopped it.
+
+  Only cwd-resolved dirs are announced: `-d/--data_dir` is the operator
+  saying it themselves, and echoing that back is noise. Returns
+  `data_dir` so it can be dropped into an existing expression.
+  """
+  def announce_data_dir(data_dir, :cwd) do
+    IO.puts(:stderr, "commonplace: data dir #{Path.expand(data_dir)} (resolved from cwd)")
+    data_dir
   end
 
   defp run_command(cmd, data_dir, relative_path, rest) do
