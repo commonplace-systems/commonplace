@@ -351,10 +351,12 @@ defmodule Commonplace.Store.CommitStore do
   claim.** We write our OS pid and node name into the lock file purely so
   a human reading a refusal has somewhere to start; nothing reads it to
   decide whether to proceed, and a stale pid in it grants nobody
-  anything. (The pre-CX-2479 arrangement — and
-  `Commonplace.CLI.acquire_db_lock/1` still — was exactly the opposite: a
-  pid string a second process overwrote before proceeding. That is how
-  two appenders landed on one CubDB file.)
+  anything. (The pre-CX-2479 arrangement was exactly the opposite: a pid
+  string a second process overwrote before proceeding. That is how two
+  appenders landed on one CubDB file. `Commonplace.CLI.acquire_db_lock/1`
+  was a second, unrelated copy of that scheme over this same file; CX-x8jk
+  deleted it, and the CLI now refuses or routes before it ever reaches a
+  direct open — see `Commonplace.CLI.Access`.)
 
   The lock file sits in `data_dir`, deliberately **outside** the
   `commits/` directory that crash recovery renames, so one continuous
@@ -1379,9 +1381,10 @@ defmodule Commonplace.Store.CommitStore do
   #
   # THE EXCLUSION IS THE flock(2), NOT THE FILE CONTENT. Before this, the
   # only thing at `<data_dir>/commits.lock` was a pid string that a second
-  # process cheerfully overwrote before proceeding (see
-  # `Commonplace.CLI.acquire_db_lock/1` — advisory prose, alive-check and
-  # all). The pid+node line we write here is DIAGNOSTIC ONLY: a hint for a
+  # process cheerfully overwrote before proceeding — advisory prose,
+  # `kill -0` alive-check and all. (`Commonplace.CLI.acquire_db_lock/1`
+  # kept a second copy of that scheme over this same file until CX-x8jk
+  # deleted it.) The pid+node line we write here is DIAGNOSTIC ONLY: a hint for a
   # human staring at a refusal, never a proof of who holds the lock and
   # never consulted to decide whether to proceed. The kernel decides.
   #

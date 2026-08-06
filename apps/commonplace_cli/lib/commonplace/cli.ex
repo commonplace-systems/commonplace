@@ -162,41 +162,39 @@ defmodule Commonplace.CLI do
         :ok
 
       :not_running ->
-        # No serve running — acquire lock and start locally
-        case acquire_db_lock(data_dir) do
-          {:ok, _fd} ->
-            # Stop if already running with wrong data_dir (escript auto-start)
-            if Application.get_env(:commonplace, :data_dir) != data_dir do
-              Application.stop(:commonplace)
-            end
+        # No serve running — open locally. The exclusion is CX-2479's
+        # flock(2) inside CommitStore.init/1, not anything this module
+        # does: the old `acquire_db_lock/1` prose-lock over the SAME
+        # commits.lock file was a second, unrelated exclusion scheme
+        # (pid string + `kill -0` + take-over-on-stale) that could hand
+        # out access a live flock holder already had, and clobber that
+        # holder's diagnostic hint on the way past. Deleted in CX-x8jk.
+        start_local(data_dir)
+    end
+  end
 
-            Application.put_env(:commonplace, :data_dir, data_dir)
+  defp start_local(data_dir) do
+    # Stop if already running with wrong data_dir (escript auto-start)
+    if Application.get_env(:commonplace, :data_dir) != data_dir do
+      Application.stop(:commonplace)
+    end
 
-            case Application.ensure_all_started(:commonplace) do
-              {:ok, _} ->
-                :ok
+    Application.put_env(:commonplace, :data_dir, data_dir)
 
-              {:error, reason} ->
-                # CX-qida: most commonly the workspace single-owner flock
-                # (Commonplace.Workspace.Lock) refusing to start because
-                # another process already holds <data_dir>/serve.lock —
-                # surface that as a clear, fail-fast CLI error instead of
-                # a raw MatchError crash. Commonplace.Workspace.Lock's
-                # own init/1 already printed the detailed lock/holder
-                # message to stderr; this is the summary.
-                IO.puts(:stderr, "Cannot start commonplace: #{inspect(reason)}")
-                System.halt(1)
-            end
+    case Application.ensure_all_started(:commonplace) do
+      {:ok, _} ->
+        :ok
 
-          {:error, :locked} ->
-            IO.puts(:stderr,
-              "Cannot access database — another process holds the lock.\n" <>
-                "If commonplace serve is running, distributed Erlang connection failed.\n" <>
-                "Stop the other process first."
-            )
-
-            System.halt(1)
-        end
+      {:error, reason} ->
+        # CX-qida: most commonly the workspace single-owner flock
+        # (Commonplace.Workspace.Lock) refusing to start because
+        # another process already holds <data_dir>/serve.lock —
+        # surface that as a clear, fail-fast CLI error instead of
+        # a raw MatchError crash. Commonplace.Workspace.Lock's
+        # own init/1 already printed the detailed lock/holder
+        # message to stderr; this is the summary.
+        IO.puts(:stderr, "Cannot start commonplace: #{inspect(reason)}")
+        System.halt(1)
     end
   end
 
@@ -232,48 +230,6 @@ defmodule Commonplace.CLI do
       {:error, _} ->
         :not_running
     end
-  end
-
-  # CX-x8jk red-first: temporarily public so the characterization test can
-  # record what this prose-lock does today. Deleted in the next commit.
-  @doc false
-  def acquire_db_lock(data_dir) do
-    lock_path = Path.join(data_dir, "commits.lock")
-    my_pid = System.pid()
-
-    case File.read(lock_path) do
-      {:ok, content} ->
-        pid_str = String.trim(content)
-
-        cond do
-          # Same process already holds the lock — re-entrant
-          pid_str == my_pid ->
-            {:ok, lock_path}
-
-          # Check if the locking process is still alive
-          process_alive?(pid_str) ->
-            {:error, :locked}
-
-          # Stale lock file — process is dead, take over
-          true ->
-            write_lock(lock_path, my_pid)
-        end
-
-      {:error, _} ->
-        write_lock(lock_path, my_pid)
-    end
-  end
-
-  defp process_alive?(pid_str) do
-    case System.cmd("kill", ["-0", pid_str], stderr_to_stdout: true) do
-      {_, 0} -> true
-      _ -> false
-    end
-  end
-
-  defp write_lock(lock_path, pid) do
-    File.write!(lock_path, pid)
-    {:ok, lock_path}
   end
 
   @doc "Load a schema doc from the commit store."
