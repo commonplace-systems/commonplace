@@ -22,6 +22,16 @@ defmodule Commonplace.Bd.RetiredGraphError do
 
   Messages are built by `Commonplace.Bd.Retired` so every surface
   points at the same replacement.
+
+  ## Also raised for retired UNGATED WRITE DOORS (CX-xmsd)
+
+  The name says "graph" because the deps graph was the first thing
+  retired through it. `Retired.ungated_write!/2` reuses the same
+  exception for a different retirement with the same shape: a write
+  door that bypasses the gated verb surface. The reasoning above
+  carries over unchanged — calling one is a code fact, not a runtime
+  condition, and `{:ok, %{imported: 0}}` was indistinguishable from
+  success.
   """
   defexception [:message, :surface]
 end
@@ -58,6 +68,48 @@ defmodule Commonplace.Bd.Retired do
   @doc "Raises `RetiredGraphError` for a write to the frozen graph."
   def write!(surface, extra \\ nil) do
     raise RetiredGraphError, surface: surface, message: write_notice(surface, extra)
+  end
+
+  @doc """
+  Raises `RetiredGraphError` for a retired UNGATED WRITE DOOR (CX-xmsd).
+
+  Distinct from `write!/2`, which is about the frozen deps graph: this
+  is for a write path that still reaches live data but does so around
+  the gated verb surface. `replacement` names the verb to call instead
+  and is REQUIRED — a retirement notice that does not say what to call
+  next just gets routed around.
+  """
+  def ungated_write!(surface, replacement) when is_binary(replacement) do
+    raise RetiredGraphError,
+      surface: surface,
+      message: ungated_write_notice(surface, replacement)
+  end
+
+  @doc "The ungated-write notice as a string (for surfaces that print it)."
+  def ungated_write_notice(surface, replacement) do
+    """
+    #{surface} — RETIRED (ungated write door).
+
+    It wrote through a path that never reached the gated verb surface,
+    and it reported a count of its own attempts as if that count were a
+    count of what landed. Under Mode-B enforce every one of those writes
+    was denied at the store gate while the return value said `{:ok,
+    %{imported: N}}` — the 2026-08-05 migration reported "failed: 0" and
+    landed ZERO comments (CX-xmsd; measured at the destination, not in
+    the report).
+
+    Call this instead:
+
+      #{replacement}
+
+    It threads the caller's signing context, checks every store result,
+    and reports landed / no-op / refused against a DECLARED denominator
+    built from what arrived — so "0 failed" can no longer coexist with
+    "0 landed".
+
+    Ticket: CX-xmsd. Build brief:
+    /home/jes/commonplace/docs/plans/2026-08-06-cx-xmsd-gated-comments-build-brief.md
+    """
   end
 
   @doc "The read notice as a string (for CLI surfaces that print it)."

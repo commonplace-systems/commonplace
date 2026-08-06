@@ -40,15 +40,18 @@
 # `Commonplace.Bd.Issue.list/2`, `Commonplace.Bd.Issue.show/3`), the
 # node signing context (`Commonplace.Crypto.NodeIdentity.signing_context/0`,
 # the same path `CommonplaceMCP.Tools.BdWrite` uses), and — under
-# --execute only — `Commonplace.ViewActionDispatch.dispatch/2` and
-# `Commonplace.Bd.Importer.import_comments_jsonl/4`.
+# --execute only — `Commonplace.ViewActionDispatch.dispatch/2`.
 #
-# ⚠️ COMMENTS ARE NOT GATED. `import_comments_jsonl/4` writes through
-# `Commonplace.Bd.Comment.add/4`, which does not pass WriteGuard. That
-# is the pre-existing state of the comment path, not something this
-# script introduces, and it is stated here rather than left for
-# someone to discover: the TICKET write path is single and gated; the
-# comment write path is not yet.
+# COMMENTS ARE NOW GATED TOO (CX-xmsd, 2026-08-06). This script used to
+# call `Commonplace.Bd.Importer.import_comments_jsonl/4`, an ungated
+# door that threaded no signing context, checked no store result, and
+# returned a count of its own ATTEMPTS — under Mode-B enforce it
+# reported "failed: 0" while landing ZERO comments. That function now
+# raises. Comments go through `ticket_comments_import`, one dispatch
+# per ticket, with the same declared-denominator report the record
+# batch gets. The comment tally printed below is still the VERB'S OWN
+# claim; the destination count for comments lives in
+# bin/tix-backfill-comments, which re-reads `Comment.list` per ticket.
 #
 # RPC / connection mechanics mirror bin/bd-invariants and
 # bin/bd-divergence EXACTLY (read bin/bd-divergence's header for the
@@ -307,16 +310,25 @@ batch =
 landed_ids = Enum.map(batch.landed, & &1.id)
 
 ## --- (4) comments, for the ids that actually landed --------------------
+## One dispatch PER TICKET (CX-hfxr: bounded per-call work), through the
+## gated `ticket_comments_import` verb (CX-xmsd).
 comment_results =
-  TixMigration.comment_streams(export.records, landed_ids)
-  |> Enum.map(fn {id, jsonl} ->
+  TixMigration.comment_record_lists(export.records, landed_ids)
+  |> Enum.map(fn {id, comment_records} ->
     result =
       try do
         :erpc.call(
           serve_node,
-          Commonplace.Bd.Importer,
-          :import_comments_jsonl,
-          [root, id, jsonl, store],
+          Commonplace.ViewActionDispatch,
+          :dispatch,
+          [
+            "ticket_comments_import",
+            %{
+              args: %{"ticket" => id, "records" => comment_records},
+              signing_context: signing_context,
+              source: "tix-migrate"
+            }
+          ],
           120_000
         )
       catch
@@ -374,15 +386,31 @@ if final_edges.unaccounted != [] do
   IO.puts("❌ UNACCOUNTED EDGES: #{inspect(final_edges.unaccounted)}")
 end
 
-comment_failures = Enum.reject(comment_results, fn {_id, r} -> match?({:ok, _}, r) end)
+comment_failures =
+  Enum.reject(comment_results, fn {_id, r} -> match?({:ok, :tree_mutation, _}, r) end)
+
+comment_batches = for {_id, {:ok, :tree_mutation, b}} <- comment_results, do: b
 
 IO.puts("""
-COMMENTS (ungated path — Bd.Comment.add, see this script's header)
-  streams attempted : #{length(comment_results)}
-  failed            : #{length(comment_failures)}
+COMMENTS (gated — ticket_comments_import, one dispatch per ticket)
+  tickets attempted : #{length(comment_results)}
+  dispatch failures : #{length(comment_failures)}
+  declared          : #{Enum.reduce(comment_batches, 0, &(&1.declared + &2))}
+  landed            : #{Enum.reduce(comment_batches, 0, &(length(&1.landed) + &2))}
+  no-op             : #{Enum.reduce(comment_batches, 0, &(length(&1.noop) + &2))}
+  refused           : #{Enum.reduce(comment_batches, 0, &(length(&1.refused) + &2))}
+  unaccounted       : #{Enum.reduce(comment_batches, 0, &(length(&1.unaccounted) + &2))}
+
+  ⚠️  Every figure in this block is THE VERB'S OWN CLAIM ABOUT ITSELF.
+      The destination count — `Comment.list` per ticket, compared with
+      the export — is bin/tix-backfill-comments' acceptance pass.
 """)
 
 Enum.each(comment_failures, fn {id, r} -> IO.puts("  #{id}: #{inspect(r)}") end)
+
+Enum.each(comment_batches, fn b ->
+  Enum.each(b.refused, fn r -> IO.puts("  #{b.ticket} refused #{r.id}: #{r.reason}") end)
+end)
 
 ## --- (6) 3-way acceptance ---------------------------------------------
 query_graph =

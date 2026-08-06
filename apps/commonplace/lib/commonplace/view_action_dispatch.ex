@@ -857,6 +857,91 @@ defmodule Commonplace.ViewActionDispatch do
     {:error, "ticket_import requires args map with records (or jsonl)"}
   end
 
+  # CX-xmsd — `ticket_comment` / `ticket_comments_import`: the GATED
+  # write surface for COMMENTS, extending the CX-6cz3 pattern to the
+  # one ticket-adjacent write path the cutover left open.
+  #
+  # Before this, the only comment doors were `Bd.Comment.add/4` (no
+  # signing opts, unchecked results — every write denied under Mode-B
+  # enforce while returning `{:ok, %Comment{}}`) and
+  # `Bd.Importer.import_comments_jsonl/4` (same, plus it counted its own
+  # attempts). The migration reported "failed: 0" and landed zero.
+  #
+  # WHY NO WriteGuard CALL HERE. The guard exists for the properties a
+  # TICKET write can violate: protected fields (`status`,
+  # `done_witness`, `claimed_by`), the `needs` cycle gate, and the
+  # single status->closed path. A comment carries none of them — no
+  # protected field, no graph edge, no close semantics — so there is
+  # nothing for the guard to check, and inventing a call to it would be
+  # a check that cannot fail, which reads as evidence and is not.
+  # The §3 ruling scoped the single-write-path property to TICKET
+  # writes; these two verbs extend the gated SURFACE to comments, which
+  # is what lets that property drop its qualifier: the signing context
+  # is server-resolved (`signing_opts/1`), the shape is checked here,
+  # and the library below reports the store's answer instead of its own
+  # intentions.
+  defp do_dispatch("ticket_comment", %{args: args} = context) when is_map(args) do
+    store = Map.get(context, :store) || CommitStoreClient
+
+    with {:ok, ticket_id} <- fetch_arg(args, "ticket"),
+         {:ok, body} <- fetch_comment_body(args),
+         {:ok, root_uuid} <- resolve_bd_root(context),
+         :ok <- require_ticket_exists(root_uuid, ticket_id, store) do
+      attrs =
+        %{body: body}
+        |> put_optional_binary(args, "author", :author)
+        |> put_optional_binary(args, "reply_to", :reply_to)
+        |> put_optional_binary(args, "id", :id)
+        |> put_optional_binary(args, "created_at", :created_at)
+
+      case Commonplace.Bd.Comment.add(root_uuid, ticket_id, attrs, store, signing_opts(context)) do
+        {:ok, :noop} ->
+          {:ok, :tree_mutation,
+           %{action: "ticket_comment", ticket: ticket_id, comment: nil, op: :noop}}
+
+        {:ok, comment} ->
+          {:ok, :tree_mutation,
+           %{action: "ticket_comment", ticket: ticket_id, comment: comment, op: :created}}
+
+        {:error, reason} ->
+          {:error, "ticket_comment failed: #{inspect(reason)}"}
+      end
+    else
+      {:error, reason} when is_binary(reason) -> {:error, reason}
+      {:error, reason} -> {:error, "ticket_comment failed: #{inspect(reason)}"}
+    end
+  end
+
+  defp do_dispatch("ticket_comment", _context) do
+    {:error, "ticket_comment requires args map with ticket + body"}
+  end
+
+  # `ticket_comments_import`: a batch, ONE TICKET PER DISPATCH.
+  #
+  # CX-hfxr's lesson, applied: the 524-record mega-batch cost a timeout
+  # and certified nothing. Work per call is bounded by one ticket's
+  # comment list (the archive's worst ticket carries a handful), so a
+  # failure costs one ticket's retry rather than the whole run's
+  # accounting.
+  defp do_dispatch("ticket_comments_import", %{args: args} = context) when is_map(args) do
+    store = Map.get(context, :store) || CommitStoreClient
+
+    with {:ok, ticket_id} <- fetch_arg(args, "ticket"),
+         {:ok, records} <- fetch_comment_records(args),
+         {:ok, root_uuid} <- resolve_bd_root(context),
+         :ok <- require_ticket_exists(root_uuid, ticket_id, store) do
+      {:ok, :tree_mutation,
+       run_comment_import_batch(ticket_id, records, root_uuid, store, signing_opts(context))}
+    else
+      {:error, reason} when is_binary(reason) -> {:error, reason}
+      {:error, reason} -> {:error, "ticket_comments_import failed: #{inspect(reason)}"}
+    end
+  end
+
+  defp do_dispatch("ticket_comments_import", _context) do
+    {:error, "ticket_comments_import requires args map with ticket + records"}
+  end
+
   # CX-2qjd: outline actions route through Commonplace.Outline.* — the
   # SAME mutation implementation OutlineLive's keybinds call directly
   # (outliner.md §5: one implementation, two entry points). The agent's
@@ -991,6 +1076,169 @@ defmodule Commonplace.ViewActionDispatch do
     else
       {:error, reason} when is_binary(reason) -> {:error, reason}
       {:error, reason} -> {:error, "#{action} failed: #{inspect(reason)}"}
+    end
+  end
+
+  # --- ticket_comment / ticket_comments_import helpers (CX-xmsd) ---
+
+  # The body is CLIENT DATA and is shape-checked here rather than
+  # coerced: `to_string/1` on a number or a map would land a comment
+  # nobody wrote. Empty is refused for the same reason the normalizer
+  # refuses it — an empty body cannot be told apart from a dropped one.
+  defp fetch_comment_body(args) do
+    case Map.get(args, "body") do
+      body when is_binary(body) and body != "" -> {:ok, body}
+      "" -> {:error, "ticket_comment requires a non-empty body"}
+      nil -> {:error, "ticket_comment requires args map with ticket + body"}
+      other -> {:error, "ticket_comment body must be a string, got #{inspect(other)}"}
+    end
+  end
+
+  defp fetch_comment_records(%{"records" => records}) when is_list(records), do: {:ok, records}
+
+  defp fetch_comment_records(_),
+    do: {:error, "ticket_comments_import requires args map with ticket + records (a list)"}
+
+  defp put_optional_binary(attrs, args, arg_key, attr_key) do
+    case Map.get(args, arg_key) do
+      v when is_binary(v) and v != "" -> Map.put(attrs, attr_key, v)
+      _ -> attrs
+    end
+  end
+
+  # A comment on a ticket that does not exist would attach to nothing
+  # (or, worse, to a stale dir uuid). Checked BEFORE any write, and
+  # store-aware so in-process callers driving their own workspace get
+  # the same check.
+  defp require_ticket_exists(root_uuid, ticket_id, store) do
+    case Commonplace.Bd.Workspace.issue_dir_uuid(root_uuid, ticket_id, store) do
+      {:ok, dir_uuid} ->
+        case Commonplace.Bd.Schemas.load_issue(dir_uuid, store) do
+          {:ok, _issue} -> :ok
+          {:error, reason} -> {:error, "ticket not readable: #{ticket_id} (#{inspect(reason)})"}
+        end
+
+      :error ->
+        {:error, "ticket not found: #{ticket_id}"}
+    end
+  end
+
+  # The SAME declared-denominator contract `run_import_batch/5` holds,
+  # for comments: `declared` is built from what ARRIVED (the records
+  # list as supplied), never from what survived normalization, and
+  # `landed + noop + refused == declared` is checked HERE, at runtime,
+  # not only in a test. `unaccounted` carries the names that fell
+  # through; the identity is also asserted on the COUNTS, because two
+  # records can share a declared name (a duplicate id in one batch) and
+  # a set difference alone would call that accounted for.
+  #
+  # `{:ok, :noop}` from `Comment.add/5` is the idempotent re-run: the
+  # comment is already stored with byte-identical content. It is NOT
+  # counted as landed — landed means this call wrote it — and it is not
+  # a refusal either, so it gets its own bucket, the same way
+  # `ticket_import` treats a byte-identical record.
+  defp run_comment_import_batch(ticket_id, records, root_uuid, store, opts) do
+    declared_ids =
+      records |> Enum.with_index() |> Enum.map(fn {r, i} -> declared_comment_id(r, i) end)
+
+    {landed, refused, noop} =
+      records
+      |> Enum.with_index()
+      |> Enum.reduce({[], [], []}, fn {record, idx}, acc ->
+        import_one_comment(record, idx, ticket_id, root_uuid, store, opts, acc)
+      end)
+
+    landed = Enum.reverse(landed)
+    refused = Enum.reverse(refused)
+    noop = Enum.reverse(noop)
+
+    accounted =
+      MapSet.new(Enum.map(landed, & &1.id) ++ Enum.map(refused, & &1.id) ++ noop)
+
+    counted = length(landed) + length(refused) + length(noop)
+
+    %{
+      action: "ticket_comments_import",
+      ticket: ticket_id,
+      declared: length(declared_ids),
+      declared_ids: declared_ids,
+      landed: landed,
+      refused: refused,
+      noop: noop,
+      unaccounted:
+        MapSet.difference(MapSet.new(declared_ids), accounted) |> MapSet.to_list() |> Enum.sort(),
+      identity_holds?: counted == length(declared_ids)
+    }
+  end
+
+  defp declared_comment_id(record, idx) when is_map(record) do
+    case Map.get(record, "id") do
+      id when is_binary(id) and id != "" -> id
+      _ -> "<comment ##{idx}: no id>"
+    end
+  end
+
+  defp declared_comment_id(_record, idx), do: "<comment ##{idx}: no id>"
+
+  # Same per-record boundary as `import_one/6`, and for the same
+  # reason: the write path under this can raise or exit (store reads
+  # inside the library carry `{:ok, _} = ...` matches), and an uncaught
+  # one would take the whole batch report with it.
+  defp import_one_comment(record, idx, ticket_id, root_uuid, store, opts, {landed, refused, noop}) do
+    try do
+      do_import_one_comment(record, idx, ticket_id, root_uuid, store, opts, {landed, refused, noop})
+    rescue
+      e ->
+        {landed,
+         [
+           %{id: declared_comment_id(record, idx), reason: "write failed: #{Exception.message(e)}"}
+           | refused
+         ], noop}
+    catch
+      :exit, reason ->
+        {landed,
+         [
+           %{
+             id: declared_comment_id(record, idx),
+             reason: "write failed: exited with #{inspect(reason)}"
+           }
+           | refused
+         ], noop}
+    end
+  end
+
+  defp do_import_one_comment(
+         record,
+         idx,
+         ticket_id,
+         root_uuid,
+         store,
+         opts,
+         {landed, refused, noop}
+       ) do
+    name = declared_comment_id(record, idx)
+
+    case Commonplace.Bd.Importer.normalize_comment_record(record) do
+      {:ok, attrs, _id} ->
+        case Commonplace.Bd.Comment.add(root_uuid, ticket_id, attrs, store, opts) do
+          {:ok, :noop} ->
+            {landed, refused, [name | noop]}
+
+          {:ok, comment} ->
+            # Keyed by the DECLARED name, not the stored id: a record
+            # that supplied no id is declared as "<comment #N: no id>"
+            # and gets a minted id, and keying on the minted one would
+            # leave its declared name unaccounted for.
+            {[%{id: name, comment_id: comment.id} | landed], refused, noop}
+
+          {:error, reason} ->
+            {landed, [%{id: name, reason: "comment write refused: #{inspect(reason)}"} | refused],
+             noop}
+        end
+
+      {:error, reason} ->
+        {landed, [%{id: name, reason: "cannot import comment record: #{inspect(reason)}"} | refused],
+         noop}
     end
   end
 

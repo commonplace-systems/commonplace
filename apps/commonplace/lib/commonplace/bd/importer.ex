@@ -33,9 +33,11 @@ defmodule Commonplace.Bd.Importer do
         "close_reason": "..."
       }
 
-  Comments are not part of the issue record; `import_comments_jsonl/4`
-  handles that stream. Dependencies used to be a separate stream too —
-  see the CX-hrbn note below for where they went.
+  Comments are not part of the issue record; they ride inline on a bd
+  export row and go through the gated `ticket_comments_import` verb
+  (CX-xmsd) — this module contributes only the pure
+  `normalize_comment_record/1`. Dependencies used to be a separate
+  stream too — see the CX-hrbn note below for where they went.
 
   ## CX-6cz3: this module no longer writes issues
 
@@ -58,10 +60,18 @@ defmodule Commonplace.Bd.Importer do
   record are folded through the gated `ticket_import` verb, cycle gate
   and all, so a separate edge stream has nothing left to add.
 
-  `import_comments_jsonl/4` is unaffected — comments are not a graph.
+  ## CX-xmsd: the comment door is retired too
+
+  `import_comments_jsonl/4` was the last ungated write door in this
+  module: no signing context, no result checks, a count of its own
+  ATTEMPTS returned as `{:ok, %{imported: N}}`, and the body read from
+  the wrong field. It now refuses loudly and points at
+  `ticket_comments_import`. What survives here is the pure part —
+  `normalize_comment_record/1`, the comment sibling of
+  `normalize_record/1`.
   """
 
-  alias Commonplace.Bd.{Comment, Retired, Schemas, Workspace}
+  alias Commonplace.Bd.{Retired, Schemas, Workspace}
   alias Commonplace.Store.CommitStoreClient
 
   @doc """
@@ -151,35 +161,32 @@ defmodule Commonplace.Bd.Importer do
   end
 
   @doc """
-  Imports comments scoped to a specific issue. Each line is a
-  JSON-encoded comment record.
+  RETIRED (CX-xmsd). Raises `Commonplace.Bd.RetiredGraphError`.
+
+  It imported comments through `Comment.add/4` with no signing context
+  and no result checks, counted its own ATTEMPTS, and returned
+  `{:ok, %{imported: N}}` — so a run that landed nothing was
+  indistinguishable from a run that landed everything. It also read the
+  body from `"body"` while `bd export` writes `"text"`, so even a
+  signed run would have landed empty bodies.
+
+  Use the gated `ticket_comments_import` verb (one ticket per
+  dispatch), which normalizes through `normalize_comment_record/1` and
+  reports against a declared denominator.
   """
-  def import_comments_jsonl(root_uuid, issue_id, jsonl_text, store \\ CommitStoreClient) when is_binary(jsonl_text) do
-    count =
-      jsonl_text
-      |> String.split("\n", trim: true)
-      |> Enum.reduce(0, fn line, acc ->
-        case Jason.decode(line) do
-          {:ok, m} ->
-            attrs = %{
-              id: Map.get(m, "id"),
-              author: Map.get(m, "author"),
-              body: Map.get(m, "body", ""),
-              reply_to: Map.get(m, "reply_to"),
-              created_at: Map.get(m, "created_at")
-            }
+  def import_comments_jsonl(root_uuid, issue_id, jsonl_text, store \\ CommitStoreClient)
 
-            case Comment.add(root_uuid, issue_id, attrs, store) do
-              {:ok, _} -> acc + 1
-              _ -> acc
-            end
-
-          _ ->
-            acc
-        end
-      end)
-
-    {:ok, %{imported: count}}
+  def import_comments_jsonl(_root_uuid, _issue_id, jsonl_text, _store) when is_binary(jsonl_text) do
+    Retired.ungated_write!(
+      "Commonplace.Bd.Importer.import_comments_jsonl/4",
+      """
+      Commonplace.ViewActionDispatch.dispatch("ticket_comments_import", %{
+              args: %{"ticket" => issue_id, "records" => decoded_comment_maps},
+              signing_context: ctx
+            })
+      """
+      |> String.trim_trailing()
+    )
   end
 
   ## Record normalization — PURE transformation, no writes (CX-6cz3).
@@ -195,6 +202,76 @@ defmodule Commonplace.Bd.Importer do
   @spec normalize_record(map()) :: {:ok, map(), String.t()} | {:error, term()}
   def normalize_record(raw) when is_map(raw), do: normalize_issue_attrs(raw)
   def normalize_record(_), do: {:error, :malformed_line}
+
+  @doc """
+  Normalizes one decoded bd COMMENT record into `{:ok, attrs, id}` or
+  `{:error, reason}`. Pure — the comment sibling of
+  `normalize_record/1`, called by the gated `ticket_comments_import`
+  verb for every record it admits.
+
+  ## The field-shape mismatch this exists to fix (CX-xmsd layer 3)
+
+  `bd export` carries a comment as
+  `{id, issue_id, author, created_at, text}` — the body is **`text`**.
+  The retired importer read `Map.get(m, "body", "")`, so even a signed,
+  result-checked import would have landed 196 comments with EMPTY
+  bodies and reported success. `body` is still accepted (it is our own
+  field name, and a re-export of our data carries it); `text` is the
+  archive's, and it wins only when `body` is absent.
+
+  A record with no usable body is a NAMED REFUSAL, never an empty
+  comment: an empty body is indistinguishable from a body that was
+  dropped, which is the whole defect family.
+
+  `issue_id` is deliberately IGNORED — the verb is scoped to one
+  ticket by its own `ticket` arg, and a record claiming a different
+  issue is refused there rather than silently re-homed here.
+  """
+  @spec normalize_comment_record(term()) :: {:ok, map(), String.t() | nil} | {:error, term()}
+  def normalize_comment_record(raw) when is_map(raw) do
+    with {:ok, id} <- comment_id(raw),
+         {:ok, body} <- comment_body(raw) do
+      attrs =
+        %{body: body}
+        |> put_if_binary(:id, id)
+        |> put_if_binary(:author, Map.get(raw, "author"))
+        |> put_if_binary(:created_at, Map.get(raw, "created_at"))
+        |> put_if_binary(:reply_to, Map.get(raw, "reply_to"))
+
+      {:ok, attrs, id}
+    end
+  end
+
+  def normalize_comment_record(_), do: {:error, :malformed_record}
+
+  # An absent id is legal (the comment gets a minted one); a PRESENT
+  # but unusable id is not, because it would silently become a
+  # different comment on every re-run and defeat the idempotency the
+  # backfill depends on.
+  defp comment_id(raw) do
+    case Map.fetch(raw, "id") do
+      :error -> {:ok, nil}
+      {:ok, nil} -> {:ok, nil}
+      {:ok, id} when is_binary(id) and id != "" -> {:ok, id}
+      {:ok, other} -> {:error, {:unusable_id, other}}
+    end
+  end
+
+  defp comment_body(raw) do
+    case {Map.get(raw, "body"), Map.get(raw, "text")} do
+      {body, _} when is_binary(body) and body != "" -> {:ok, body}
+      {_, text} when is_binary(text) and text != "" -> {:ok, text}
+      {nil, nil} -> {:error, :missing_body}
+      {"", nil} -> {:error, :empty_body}
+      {nil, ""} -> {:error, :empty_body}
+      {"", ""} -> {:error, :empty_body}
+      {b, t} -> {:error, {:unusable_body, %{"body" => b, "text" => t}}}
+    end
+  end
+
+  defp put_if_binary(attrs, _key, nil), do: attrs
+  defp put_if_binary(attrs, key, value) when is_binary(value), do: Map.put(attrs, key, value)
+  defp put_if_binary(attrs, _key, _other), do: attrs
 
   defp normalize_issue_attrs(raw) when is_map(raw) do
     case Map.get(raw, "id") do
