@@ -46,6 +46,12 @@ and hope the P1 lands inside it").
      handled by production machinery and undecidability never bites at
      this tier). The 80 docs get the live path's bytes at head, by
      ruling; chain replay is wrong there by ruling.
+     **TOCTOU guard (plan's gate addition 2, CX-axdi family): the
+     "this commit IS head" classification must hold BEFORE and AFTER
+     the live-path read** — if `:latest` advances mid-read, the live
+     path returns the NEW head's state, which is wrong bytes for the
+     REQUESTED commit; on a post-read mismatch, fall through to tier
+     (iii), where agreement/conflict handles it honestly.
    - (iii) historical non-head pins on hash-less chains → where
      single-commit read and replay AGREE, either; where they DISAGREE
      → `{:unknown, {:conflicted, %{replay: sha, direct: sha}}}` —
@@ -119,6 +125,11 @@ and hope the P1 lands inside it").
    partial bytes.
 8. Both source-scan guards (caller-side and mint-side) red-proven by
    injection, injection removed, stated where.
+9. **The floor's anti-thumb control (plan's gate addition 1):**
+   `required: :witnessed` on a doc that can only reach corroborated →
+   returns best-achievable with a TRUTHFUL verdict, never a fake
+   `:witnessed`. "A floor is a budget, never a thumb on the verdict"
+   is load-bearing and must be tested, not stated.
 
 ## Discipline
 
