@@ -20,7 +20,18 @@ defmodule Commonplace.Bd.Schemas do
   alias Yelixer.Encoding
 
   @issue_file "__issue.json"
-  @comment_filename_pattern ~r/^c-[a-z0-9]+\.json$/
+  # CX-xmsd: two accepted comment-id shapes, and the second one is not
+  # cosmetic. `Comment.list/3` FILTERS the comments dir through this
+  # pattern, so a comment written under a name it rejects is stored,
+  # referenced, and permanently invisible — a destination count of 0
+  # over docs that exist. bd's own comment ids are UUIDv7 strings
+  # (`019eb2d7-d95e-7184-a0d6-9de7a813d426`), which the minted `c-<suffix>`
+  # form rejects, so the archive backfill would have landed 196
+  # unlistable docs. Ids are PRESERVED across the migration (the same
+  # rule the ticket ids got), which means the pattern is what widens.
+  # `Comment.add/5` refuses any id whose filename this rejects, so the
+  # invisible-write state is unreachable rather than merely unlikely.
+  @comment_filename_pattern ~r/^(c-[a-z0-9]+|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\.json$/
   @meta_file "__meta.json"
   @deps_file "deps.json"
   @description_file "description.txt"

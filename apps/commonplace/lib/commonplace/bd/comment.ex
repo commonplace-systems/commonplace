@@ -65,6 +65,9 @@ defmodule Commonplace.Bd.Comment do
       byte-identical content (the backfill's idempotency case).
     * `{:error, {:exists_with_different_content, id}}` — same id,
       different bytes. A NAMED REFUSAL: this never overwrites.
+    * `{:error, {:unlistable_comment_id, id}}` — the id would produce a
+      filename `list/3` filters out (see `Schemas.comment_filename?/1`);
+      writing it would create an invisible comment.
     * `{:error, {:comment_write_failed, stage, reason}}` — the store
       refused a write. `stage` is `:doc_create` or `:entry_attach`;
       an `:entry_attach` reason carries the orphaned doc uuid.
@@ -91,10 +94,18 @@ defmodule Commonplace.Bd.Comment do
       filename = Schemas.comment_filename(comment_id)
       encoded = Schemas.encode_comment(comment)
 
-      case existing_bytes(comments_dir, filename, store) do
-        :absent -> write_new(comments_dir, filename, comment, encoded, store, opts)
-        {:present, ^encoded} -> {:ok, :noop}
-        {:present, _other} -> {:error, {:exists_with_different_content, comment_id}}
+      # A comment whose filename `list/3` filters out would be stored,
+      # referenced, and invisible — the destination count would read 0
+      # over docs that exist, which is exactly the lie this ticket is
+      # about, one layer down. Refuse before writing.
+      if not Schemas.comment_filename?(filename) do
+        {:error, {:unlistable_comment_id, comment_id}}
+      else
+        case existing_bytes(comments_dir, filename, store) do
+          :absent -> write_new(comments_dir, filename, comment, encoded, store, opts)
+          {:present, ^encoded} -> {:ok, :noop}
+          {:present, _other} -> {:error, {:exists_with_different_content, comment_id}}
+        end
       end
     end
   end
