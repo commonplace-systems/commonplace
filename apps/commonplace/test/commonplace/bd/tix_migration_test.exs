@@ -291,21 +291,29 @@ defmodule Commonplace.Bd.TixMigrationTest do
     end
   end
 
-  describe "comment_streams/2" do
-    test "extracts per-issue comment JSONL for the migrating ids only" do
+  describe "comment_record_lists/2" do
+    test "extracts per-issue comment RECORDS for the migrating ids only" do
       export = File.read!(@fixture) |> TixMigration.parse_export()
 
-      assert [{"CX-samp1", jsonl}] =
-               TixMigration.comment_streams(export.records, ["CX-samp1", "CX-samp2", "CX-samp3"])
+      assert [{"CX-samp1", [comment]}] =
+               TixMigration.comment_record_lists(export.records, [
+                 "CX-samp1",
+                 "CX-samp2",
+                 "CX-samp3"
+               ])
 
-      assert {:ok, comment} = Jason.decode(jsonl)
       assert comment["id"] == "c-0001"
-      assert comment["body"] =~ "re-measure"
+
+      # CX-xmsd: handed over RAW. The `text` -> `body` translation is
+      # the gate's job (`Importer.normalize_comment_record/1`), not a
+      # client-side pre-fill — that pre-fill is what let the field-shape
+      # mismatch pass unnoticed.
+      assert (comment["body"] || comment["text"]) =~ "re-measure"
     end
 
-    test "an id outside the migrating set contributes no stream" do
+    test "an id outside the migrating set contributes no records" do
       export = File.read!(@fixture) |> TixMigration.parse_export()
-      assert TixMigration.comment_streams(export.records, ["CX-samp3"]) == []
+      assert TixMigration.comment_record_lists(export.records, ["CX-samp3"]) == []
     end
   end
 

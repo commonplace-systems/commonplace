@@ -1,0 +1,399 @@
+#!/usr/bin/env bash
+#
+# tix-backfill-comments — backfill the bd archive's COMMENTS into tix
+# through the GATED `ticket_comments_import` verb, one dispatch per
+# ticket, and then PROVE it by counting the destination.
+#
+# WHY THIS EXISTS (CX-xmsd)
+#
+# The 2026-08-05 migration ran comments through
+# `Commonplace.Bd.Importer.import_comments_jsonl/4` and reported
+# "failed: 0". It landed ZERO. Three layers stacked up:
+#
+#   1. `Bd.Comment.add/4` threaded no signing context and discarded the
+#      store's answer, so under Mode-B enforce every write was denied
+#      while `add` returned `{:ok, %Comment{}}`.
+#   2. The importer swallowed both parse failures and add failures and
+#      returned a count of its own ATTEMPTS.
+#   3. `bd export` writes the body as `text`; the importer read `body`,
+#      so even a signed run would have landed empty bodies.
+#
+# All three are fixed. This script exists because fixing them is not
+# the same as proving them. THE GOVERNING PRINCIPLE (boss 2026-08-05,
+# verbatim in CX-xmsd):
+#
+#   A SUCCESS REPORT IS A CLAIM BY THE WRITER ABOUT ITSELF. "failed: 0"
+#   is equally consistent with wrote-everything, wrote-nothing, and
+#   never-tried. Only the DESTINATION count separates them.
+#
+# So the verb's own tally is PRINTED AND THEN IGNORED. The acceptance
+# pass re-reads `Commonplace.Bd.Comment.list/3` per ticket over ALL
+# exported CX tickets — including the ~700 that carry no comments,
+# because 0 == 0 is part of the identity and dropping those tickets
+# from the comparison would be a denominator built from what survived.
+#
+# THE DENOMINATOR IS RE-MEASURED, EVERY RUN, from the export handed to
+# this script. Never quote a constant from the brief: on 2026-08-06 the
+# export held 798 tickets, 92 with comments, 196 comments total, and
+# that was already a measurement of a moving archive.
+#
+# ⚠️ EVERYTHING PARSED CLIENT-SIDE ON PURPOSE. Per CLAUDE.md an
+# `:erpc` to a module the serve has not loaded force-loads THIS WORKING
+# TREE's copy into the running node — a write, not a read.
+# `Commonplace.Bd.TixMigration` is never called on the serve. Under
+# --execute the serve-side calls are the gated dispatch and the
+# destination read, both deliberate. Under the default DRY RUN the
+# script first asks `:code.is_loaded/1` (a code-server query on the
+# always-resident `:code` module, which perturbs nothing) and SKIPS the
+# destination read entirely if `Commonplace.Bd.Comment` is not already
+# resident — a dry run must not be the thing that changes what the
+# serve executes.
+#
+# RPC / connection mechanics are bin/tix-migrate's, verbatim (which in
+# turn are bin/bd-divergence's: the ERL_INETRC hostname gotcha, the
+# one-probe-at-a-time flock, the :global overlapping-partition fix).
+#
+# Usage:
+#   bin/tix-backfill-comments EXPORT_JSONL              # dry run (default)
+#   bin/tix-backfill-comments --execute EXPORT_JSONL    # writes
+#
+# The operator produces the export themselves — this script never
+# shells out to `bd`:
+#
+#   bd export --all > /tmp/bd-issues.jsonl
+#
+# Env overrides:
+#   TIX_MIGRATE_NODE — serve node name (default commonplace_dev@commonplace)
+#   TIX_MIGRATE_HOST — short hostname statically mapped to 127.0.0.1 in
+#                      the probe's ERL_INETRC (default: derived from
+#                      TIX_MIGRATE_NODE's host part)
+#
+# Exit codes:
+#   0 — ran, and the DESTINATION IDENTITY HOLDS for every exported
+#       ticket (dry run: 0 means the pre-write report printed cleanly)
+#   1 — bad arguments, or an export file that could not be read
+#   2 — could not read the substrate side — NEVER prints figures
+#       computed from a failed read
+#   3 — could not acquire the one-probe-at-a-time lock
+#   4 — THE DESTINATION DISAGREES with the export for at least one
+#       ticket. Refusals alone do not cause this; a refusal that is
+#       named and expected still has to show up as a missing comment
+#       at the destination to fail the run.
+#   5 — a dispatch itself failed (the verb returned {:error, _})
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+
+SERVE_NODE="${TIX_MIGRATE_NODE:-commonplace_dev@commonplace}"
+SERVE_HOST="${TIX_MIGRATE_HOST:-${SERVE_NODE#*@}}"
+
+MODE="dry-run"
+EXPORT_PATH=""
+
+usage() {
+  sed -n '2,/^set -euo/p' "$0" | sed 's/^# \{0,1\}//' >&2
+  exit 1
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run) MODE="dry-run"; shift ;;
+    --execute) MODE="execute"; shift ;;
+    -h|--help) usage ;;
+    -*) echo "tix-backfill-comments: unknown flag $1" >&2; exit 1 ;;
+    *)
+      if [ -z "$EXPORT_PATH" ]; then EXPORT_PATH="$1"
+      else echo "tix-backfill-comments: too many positional arguments (got '$1')" >&2; exit 1
+      fi
+      shift
+      ;;
+  esac
+done
+
+if [ -z "$EXPORT_PATH" ]; then
+  echo "tix-backfill-comments: no bd export given. Usage: bin/tix-backfill-comments [--execute] EXPORT_JSONL" >&2
+  exit 1
+fi
+
+if [ ! -r "$EXPORT_PATH" ]; then
+  echo "tix-backfill-comments: cannot read export '$EXPORT_PATH'." >&2
+  exit 1
+fi
+
+EXPORT_ABS="$(cd "$(dirname "$EXPORT_PATH")" && pwd)/$(basename "$EXPORT_PATH")"
+
+# The SAME lock file bin/tix-migrate uses: the constraint is one probe
+# node against the serve at a time, not one script.
+LOCK_FILE="$PROJECT_DIR/.tix-migrate.lock"
+TMP_DIR="$(mktemp -d)"
+cleanup() { rm -rf "$TMP_DIR"; }
+trap cleanup EXIT
+
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+  echo "tix-backfill-comments: another probe run holds the lock at $LOCK_FILE — refusing to start a second concurrent probe node." >&2
+  exit 3
+fi
+
+PROBE_SCRIPT="$TMP_DIR/probe.exs"
+INETRC="$TMP_DIR/inetrc"
+
+cat >"$INETRC" <<EOF
+{lookup, [file, native]}.
+{host, {127,0,0,1}, ["$SERVE_HOST"]}.
+EOF
+
+cat >"$PROBE_SCRIPT" <<'ELIXIR'
+[mode, export_path, serve_node_str] = System.argv() |> Enum.reject(&(&1 == "--"))
+
+serve_node = String.to_atom(serve_node_str)
+
+alias Commonplace.Bd.TixMigration
+
+:application.set_env(:kernel, :prevent_overlapping_partitions, false)
+:application.set_env(:kernel, :inet_dist_use_interface, {127, 0, 0, 1})
+
+probe_name =
+  :"tix_backfill_probe_#{:erlang.unique_integer([:positive])}@#{System.get_env("TIX_MIGRATE_HOST", "commonplace")}"
+
+fail_read = fn msg ->
+  IO.puts(:stderr, "tix-backfill-comments: could not read the substrate side — #{msg}")
+  IO.puts(:stderr, "tix-backfill-comments: refusing to report figures computed from a failed substrate read.")
+  System.halt(2)
+end
+
+read_call = fn mod, fun, args, timeout ->
+  try do
+    :erpc.call(serve_node, mod, fun, args, timeout)
+  catch
+    :error, reason -> fail_read.("#{inspect(mod)}.#{fun}/#{length(args)} raised #{inspect(reason)}")
+    :exit, reason -> fail_read.("#{inspect(mod)}.#{fun}/#{length(args)} exited #{inspect(reason)}")
+  end
+end
+
+case Node.start(probe_name, :shortnames) do
+  {:ok, _} -> :ok
+  {:error, reason} -> fail_read.("could not start local probe node (#{inspect(reason)})")
+end
+
+unless Node.connect(serve_node) do
+  fail_read.("Node.connect(#{inspect(serve_node)}) returned false/failed — is the serve up? (pang)")
+end
+
+root =
+  case read_call.(Commonplace.Workspace, :root_uuid, [], 15_000) do
+    {:ok, root} -> root
+    other -> fail_read.("Commonplace.Workspace.root_uuid() returned #{inspect(other)}")
+  end
+
+store = Commonplace.Store.CommitStoreClient
+
+## --- (1) the bd side, read LOCALLY, denominator RE-MEASURED ----------
+export = TixMigration.parse_export(File.read!(export_path))
+
+all_ids = TixMigration.record_ids(export.records)
+per_ticket = TixMigration.comment_record_lists(export.records, all_ids)
+expected = Map.new(per_ticket, fn {id, records} -> {id, length(records)} end)
+
+declared_total = expected |> Map.values() |> Enum.sum()
+
+IO.puts("""
+
+tix-backfill-comments (#{mode})
+  serve node   : #{inspect(serve_node)}
+  export       : #{export_path}
+  measured at  : #{DateTime.utc_now() |> DateTime.to_iso8601()}
+
+DENOMINATOR (re-measured from THIS export, every run)
+  tickets exported          : #{length(all_ids)}
+  tickets carrying comments : #{map_size(expected)}
+  comments declared         : #{declared_total}
+  export lines unparseable  : #{length(export.parse_refusals)}
+""")
+
+Enum.each(export.parse_refusals, fn r ->
+  IO.puts("  UNPARSEABLE EXPORT LINE: #{inspect(r)}")
+end)
+
+# The zero-comment tickets are NOT dropped: they are part of the
+# identity (0 == 0) and they are the majority, so an acceptance pass
+# that skipped them would be measuring the easy half.
+zero_ids = Enum.reject(all_ids, &Map.has_key?(expected, &1))
+
+# `:code.is_loaded/1` on the serve: a code-server query, no auto-load.
+# `:code` itself is always resident, so ASKING is not a write.
+comment_resident? =
+  case read_call.(:code, :is_loaded, [Commonplace.Bd.Comment], 15_000) do
+    {:file, _} -> true
+    false -> false
+    _ -> false
+  end
+
+destination_count = fn id ->
+  case :erpc.call(serve_node, Commonplace.Bd.Comment, :list, [root, id, store], 60_000) do
+    comments when is_list(comments) -> {:ok, length(comments)}
+    other -> {:error, other}
+  end
+end
+
+acceptance = fn ->
+  IO.puts("""
+  ACCEPTANCE (the DESTINATION count — independent of every report above)
+    reading Commonplace.Bd.Comment.list/3 for all #{length(all_ids)} exported tickets,
+    including the #{length(zero_ids)} that carry no comments (0 == 0 is part of the identity)
+  """)
+
+  results =
+    Enum.map(all_ids, fn id ->
+      want = Map.get(expected, id, 0)
+
+      got =
+        try do
+          destination_count.(id)
+        catch
+          :error, reason -> {:error, reason}
+          :exit, reason -> {:error, reason}
+        end
+
+      {id, want, got}
+    end)
+
+  mismatches =
+    Enum.reject(results, fn {_id, want, got} -> got == {:ok, want} end)
+
+  total_at_destination =
+    Enum.reduce(results, 0, fn
+      {_id, _want, {:ok, n}}, acc -> acc + n
+      _, acc -> acc
+    end)
+
+  IO.puts("""
+    comments declared by the export : #{declared_total}
+    comments AT THE DESTINATION     : #{total_at_destination}
+    tickets whose counts disagree   : #{length(mismatches)}
+  """)
+
+  Enum.each(mismatches, fn {id, want, got} ->
+    IO.puts("  ❌ #{String.pad_trailing(id, 16)} export #{want}, destination #{inspect(got)}")
+  end)
+
+  if mismatches == [] and declared_total == 0 do
+    IO.puts(
+      "  ⚠️  the export declared ZERO comments — \"identity holds\" above is vacuous, " <>
+        "not evidence. Check that the export carried comment rows at all.\n"
+    )
+  end
+
+  mismatches
+end
+
+if mode != "execute" do
+  IO.puts("""
+  DRY RUN — nothing was written. Re-run with --execute to dispatch
+  #{map_size(expected)} `ticket_comments_import` calls (one per ticket).
+  """)
+
+  if comment_resident? do
+    _ = acceptance.()
+
+    IO.puts(
+      "  (the destination read above is a genuine read: Commonplace.Bd.Comment " <>
+        "was ALREADY resident on the serve, so asking it loaded nothing.)\n"
+    )
+  else
+    IO.puts("""
+    Destination read SKIPPED: Commonplace.Bd.Comment is not resident on
+    #{inspect(serve_node)}, and per CLAUDE.md an erpc to an unloaded module
+    force-loads this working tree's copy into the live node — a write. A
+    dry run does not get to change what the serve executes. Run with
+    --execute (which is a write by intent) to see the destination count.
+    """)
+  end
+
+  System.halt(0)
+end
+
+## --- (2) EXECUTE ------------------------------------------------------
+
+signing_context =
+  case read_call.(Commonplace.Crypto.NodeIdentity, :signing_context, [], 15_000) do
+    {:ok, sc} ->
+      sc
+
+    other ->
+      fail_read.(
+        "Commonplace.Crypto.NodeIdentity.signing_context() returned #{inspect(other)} — " <>
+          "refusing to import unsigned"
+      )
+  end
+
+dispatch_one = fn id, records ->
+  try do
+    :erpc.call(
+      serve_node,
+      Commonplace.ViewActionDispatch,
+      :dispatch,
+      [
+        "ticket_comments_import",
+        %{
+          args: %{"ticket" => id, "records" => records},
+          signing_context: signing_context,
+          source: "tix-backfill-comments"
+        }
+      ],
+      120_000
+    )
+  catch
+    :error, reason -> {:error, reason}
+    :exit, reason -> {:error, reason}
+  end
+end
+
+results = Enum.map(per_ticket, fn {id, records} -> {id, dispatch_one.(id, records)} end)
+
+batches = for {_id, {:ok, :tree_mutation, b}} <- results, do: b
+failures = Enum.reject(results, fn {_id, r} -> match?({:ok, :tree_mutation, _}, r) end)
+
+sum = fn f -> Enum.reduce(batches, 0, fn b, acc -> acc + f.(b) end) end
+
+IO.puts("""
+THE VERB'S OWN TALLY (displayed, then IGNORED — see this script's header)
+  tickets dispatched : #{length(results)}
+  dispatch failures  : #{length(failures)}
+  declared           : #{sum.(& &1.declared)}
+  landed             : #{sum.(&length(&1.landed))}
+  no-op              : #{sum.(&length(&1.noop))}
+  refused            : #{sum.(&length(&1.refused))}
+  unaccounted        : #{sum.(&length(&1.unaccounted))}
+  identity held      : #{Enum.count(batches, & &1.identity_holds?)}/#{length(batches)}
+""")
+
+Enum.each(failures, fn {id, r} -> IO.puts("  DISPATCH FAILED #{id}: #{inspect(r)}") end)
+
+Enum.each(batches, fn b ->
+  Enum.each(b.refused, fn r -> IO.puts("  REFUSED #{b.ticket} #{r.id}: #{r.reason}") end)
+end)
+
+## --- (3) THE ACCEPTANCE PASS -----------------------------------------
+mismatches = acceptance.()
+
+exit_code =
+  cond do
+    failures != [] and mismatches == [] -> 5
+    mismatches != [] -> 4
+    true -> 0
+  end
+
+IO.puts(
+  "tix-backfill-comments: done — exit #{exit_code}. The number that decides this " <>
+    "is the destination count, not the tally above."
+)
+
+System.halt(exit_code)
+ELIXIR
+
+cd "$PROJECT_DIR"
+TIX_MIGRATE_HOST="$SERVE_HOST" ERL_INETRC="$INETRC" \
+  mix run --no-start "$PROBE_SCRIPT" -- "$MODE" "$EXPORT_ABS" "$SERVE_NODE"

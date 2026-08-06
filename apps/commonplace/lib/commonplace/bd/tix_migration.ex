@@ -431,13 +431,28 @@ defmodule Commonplace.Bd.TixMigration do
   end
 
   @doc """
-  The comment streams carried inline by a bd export, as
-  `{issue_id, jsonl}` pairs ready for
-  `Importer.import_comments_jsonl/4`. Only ids in `only_ids` are
+  The comment records carried inline by a bd export, as
+  `{issue_id, [record]}` pairs ready for the gated
+  `ticket_comments_import` verb (CX-xmsd — `import_comments_jsonl/4`,
+  what this used to feed, is retired). Only ids in `only_ids` are
   returned, and only records that actually carry comments.
+
+  The records are handed over RAW, exactly as the export wrote them.
+  This used to re-encode each one to JSONL and pre-fill `"body"` from
+  `"text"` on the way past — a client-side translation of the very
+  field-shape mismatch that made the migration land empty bodies. The
+  translation belongs in one place, `Importer.normalize_comment_record/1`,
+  inside the gate, where a record it cannot read becomes a NAMED
+  refusal in the batch's denominator instead of a silently-defaulted
+  empty string out here.
+
+  Non-map entries are kept, not filtered: a comment list entry that is
+  not an object is an input the destination must account for, and
+  dropping it here would shrink the denominator before anyone counted
+  it.
   """
-  @spec comment_streams([map()], [String.t()]) :: [{String.t(), String.t()}]
-  def comment_streams(records, only_ids) do
+  @spec comment_record_lists([map()], [String.t()]) :: [{String.t(), [term()]}]
+  def comment_record_lists(records, only_ids) do
     wanted = MapSet.new(only_ids)
 
     for record <- records,
@@ -447,16 +462,7 @@ defmodule Commonplace.Bd.TixMigration do
         comments = Map.get(record, "comments"),
         is_list(comments),
         comments != [] do
-      jsonl =
-        comments
-        |> Enum.filter(&is_map/1)
-        |> Enum.map(fn c ->
-          # bd's comment rows call the body "text"; ours is "body".
-          c |> Map.put_new("body", Map.get(c, "text", "")) |> Jason.encode!()
-        end)
-        |> Enum.join("\n")
-
-      {id, jsonl}
+      {id, comments}
     end
   end
 
