@@ -40,14 +40,20 @@ defmodule Commonplace.Application do
         nil
       )
 
-    # CX-hilo: durable trust-decision audit trail. Bridges the three
-    # trust-rejection telemetry events (rejected local write, ignored
-    # revocation, would-refuse dry-run read) into a red-log doc so a
-    # security-incident review has a data source beyond "who was
-    # tailing the live log at the time." Idempotent attach, same
-    # detach/attach idiom as the reflog dirty-tracker above. See
-    # `Commonplace.Trust.AuditLog` moduledoc for the flood guard and
-    # retention story.
+    # CX-hilo / CX-t3xv: durable trust-decision audit trail. Bridges the
+    # denial telemetry events enumerated in `Commonplace.Trust.DenySites`
+    # into a red-log doc, so a security-incident review has a data source
+    # beyond "who was tailing the live log at the time." Idempotent
+    # attach, same detach/attach idiom as the reflog dirty-tracker above.
+    #
+    # The handler only builds a record and casts it to
+    # `Commonplace.Trust.AuditDispatcher` (started below). It deliberately
+    # does NO store work: telemetry handlers run in the process that fired
+    # the event, and the loudest denial event fires from inside
+    # CommitStore's `handle_call`, where any call back into the store is
+    # `:calling_self` — an EXIT, which `:telemetry` answers by permanently
+    # detaching the handler. See `Commonplace.Trust.AuditLog` for the full
+    # etiology, the flood guard, and the recursion guard.
     _ = Commonplace.Trust.AuditLog.attach()
 
     data_dir = Application.get_env(:commonplace, :data_dir, "data")
@@ -87,6 +93,22 @@ defmodule Commonplace.Application do
         # never occupies either the store's mailbox or the dispatcher's.
         {Task.Supervisor, name: Commonplace.Invariants.TaskSupervisor},
         Commonplace.Invariants.Dispatcher,
+        # CX-t3xv: denial auditing, out of the store's execution context.
+        #
+        # Started right after the store subsystem for the same reason the
+        # invariant dispatcher is: the store is what feeds it. The
+        # telemetry handler attached above casts denial records HERE, and
+        # the persist runs in the task supervisor — never in
+        # CommitStore's mailbox, which is what `:calling_self`-killed the
+        # previous build.
+        #
+        # Acceptance criterion 7 ("is it started" closed structurally) is
+        # these three lines plus the canary: the auditor's starter is in
+        # the supervision tree of the deployed serve, and the canary is
+        # the continuous witness that it is doing its job.
+        {Task.Supervisor, name: Commonplace.Trust.AuditTaskSupervisor},
+        Commonplace.Trust.AuditDispatcher,
+        Commonplace.Trust.AuditCanary,
         {Commonplace.Store.SecretStore, data_dir: data_dir},
         Commonplace.Tree.DocCache,
         {DynamicSupervisor, name: Commonplace.SchemaCoordinator.Supervisor, strategy: :one_for_one},

@@ -1195,7 +1195,8 @@ defmodule Commonplace.Trust do
           trusted_identities_count: non_neg_integer(),
           local_write_gate: atom(),
           local_read_gate: atom(),
-          strict: boolean()
+          strict: boolean(),
+          audit: map()
         }
   def posture do
     cfg = config()
@@ -1209,8 +1210,42 @@ defmodule Commonplace.Trust do
       local_read_gate: local_read_gate,
       strict:
         cfg.accept_unsigned == false and local_write_gate == :enforce and
-          local_read_gate == :enforce
+          local_read_gate == :enforce,
+      # CX-t3xv: the AUDIT lane, in the same one call as the enforcement
+      # lanes. An operator asking "is this node enforcing?" is almost
+      # always also asking "and will I be able to see what it refused?" —
+      # and for the whole life of the previous audit build the honest
+      # answer to the second question was no, with nothing anywhere that
+      # said so. Reading it here makes dormancy visible at the same
+      # moment posture is.
+      audit: audit_posture()
     }
+  end
+
+  defp audit_posture do
+    dispatcher =
+      case Commonplace.Trust.AuditDispatcher.status() do
+        %{error: reason} -> %{running: false, error: reason}
+        s -> Map.put(Map.take(s, [:enabled, :offered, :recorded, :shed, :failed, :guarded]), :running, true)
+      end
+
+    canary =
+      case Process.whereis(Commonplace.Trust.AuditCanary) do
+        nil -> %{running: false}
+        _pid -> Commonplace.Trust.AuditCanary.status() |> Map.take([:enabled, :ticks, :passes, :alarms, :skips, :last_at]) |> Map.put(:running, true)
+      end
+
+    %{
+      handler_attached: Commonplace.Trust.AuditLog.attached?(),
+      dispatcher: dispatcher,
+      canary: canary
+    }
+  rescue
+    # Posture is a diagnostic. It must answer even when the thing it is
+    # diagnosing is broken.
+    e -> %{error: Exception.message(e)}
+  catch
+    kind, value -> %{error: {kind, value}}
   end
 
   # `:absent` (no file — permissive default applies) is distinct from

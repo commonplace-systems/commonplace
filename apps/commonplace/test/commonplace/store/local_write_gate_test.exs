@@ -115,10 +115,26 @@ defmodule Commonplace.Store.LocalWriteGateTest do
       ref = make_ref()
       parent = self()
 
+      # Filter on THIS test's doc uuid — same discipline as the CAS pin
+      # below, and for the same reason plus one more (CX-7m9g / CX-t3xv).
+      #
+      # `[:commonplace, :commit, :rejected, :local_trust]` is node-global.
+      # Any other denial in flight — a neighbour test's, or (before
+      # CX-t3xv) the trust-audit-log doc's OWN refused write, whose
+      # doc_uuid is the fixed uuid5 f4e8eac8-7bab-5ecd-ad86-e09f3a9ff900 —
+      # would arrive first and this assertion would check a stranger's
+      # metadata. That was CI 31081011655 at seed 940808, reproducible in
+      # isolation because the racing denial came from EARLIER IN THIS
+      # FILE, not from a neighbour.
+      #
+      # Note which layer this is: the gate's `reject + persist nothing`
+      # assertions never failed. Only the telemetry CAPTURE raced.
       :telemetry.attach(
         {:lwg_reject_handler, ref},
         [:commonplace, :commit, :rejected, :local_trust],
-        fn _event, meas, meta, _cfg -> send(parent, {:lwg_rejected, ref, meas, meta}) end,
+        fn _event, meas, %{doc_uuid: event_uuid} = meta, _cfg ->
+          if event_uuid == uuid, do: send(parent, {:lwg_rejected, ref, meas, meta})
+        end,
         nil
       )
 
@@ -127,9 +143,10 @@ defmodule Commonplace.Store.LocalWriteGateTest do
 
       assert :none = CommitStore.latest_commit(store, uuid)
 
-      assert_receive {:lwg_rejected, ^ref, _meas, meta}, 500
+      # Selective on the uuid as well as the ref: belt and braces, so the
+      # pin stays honest even if the handler filter is later loosened.
+      assert_receive {:lwg_rejected, ^ref, _meas, %{doc_uuid: ^uuid} = meta}, 500
       assert meta.mode == :enforce
-      assert meta.doc_uuid == uuid
       assert meta.reason == :unsigned
 
       :telemetry.detach({:lwg_reject_handler, ref})
@@ -307,10 +324,14 @@ defmodule Commonplace.Store.LocalWriteGateTest do
       ref = make_ref()
       parent = self()
 
+      # Same uuid filter as pin 2 — the event is node-global and this
+      # pin has the same first-event-is-mine assumption to lose.
       :telemetry.attach(
         {:lwg_dryrun_handler, ref},
         [:commonplace, :commit, :rejected, :local_trust],
-        fn _event, meas, meta, _cfg -> send(parent, {:lwg_dryrun, ref, meas, meta}) end,
+        fn _event, meas, %{doc_uuid: event_uuid} = meta, _cfg ->
+          if event_uuid == uuid, do: send(parent, {:lwg_dryrun, ref, meas, meta})
+        end,
         nil
       )
 
@@ -318,10 +339,9 @@ defmodule Commonplace.Store.LocalWriteGateTest do
       assert %Commit{} = commit
       assert {:ok, _} = CommitStore.get_commit(store, commit.id)
 
-      assert_receive {:lwg_dryrun, ^ref, _meas, meta}, 500
+      assert_receive {:lwg_dryrun, ^ref, _meas, %{doc_uuid: ^uuid} = meta}, 500
       assert meta.mode == :dry_run
       assert meta.reason == :unsigned
-      assert meta.doc_uuid == uuid
 
       :telemetry.detach({:lwg_dryrun_handler, ref})
     end

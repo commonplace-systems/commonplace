@@ -1762,7 +1762,7 @@ defmodule Commonplace.Store.CommitStore do
         :telemetry.execute(
           [:commonplace, :commit, :rejected, :trust],
           %{system_time: System.system_time()},
-          %{commit_id: commit.id, doc_uuid: commit.doc_uuid, signer_id: commit.signer_id, reason: reason}
+          denial_metadata(:enforce, commit, reason)
         )
 
         {:reply, {:error, {:trust_rejected, reason}}, state}
@@ -1952,7 +1952,7 @@ defmodule Commonplace.Store.CommitStore do
     :telemetry.execute(
       [:commonplace, :commit, :rejected, :local_trust],
       %{system_time: System.system_time()},
-      %{mode: :dry_run, doc_uuid: commit.doc_uuid, commit_id: commit.id, reason: reason}
+      denial_metadata(:dry_run, commit, reason)
     )
 
     :ok
@@ -1968,7 +1968,7 @@ defmodule Commonplace.Store.CommitStore do
     :telemetry.execute(
       [:commonplace, :commit, :rejected, :local_trust],
       %{system_time: System.system_time()},
-      %{mode: :enforce, doc_uuid: commit.doc_uuid, commit_id: commit.id, reason: reason}
+      denial_metadata(:enforce, commit, reason)
     )
 
     Commonplace.Dataflow.PubSub.broadcast_red(
@@ -1979,6 +1979,38 @@ defmodule Commonplace.Store.CommitStore do
 
     {:error, {:trust_rejected, reason}}
   end
+
+  # CX-t3xv §3 — the shape of a denial as it reaches the audit trail.
+  #
+  # HASH, NEVER PAYLOAD. `content_digest/1` is the only thing that ever
+  # looks at `commit.update`, and it returns a sha256 + a byte count. A
+  # denial record that carried the refused bytes would launder them into
+  # the store through their own refusal record: the gate says no, and
+  # then the audit of that "no" writes the content anyway. Refused by
+  # construction, pinned by `AuditRecordShapeTest`.
+  defp denial_metadata(mode, commit, reason) do
+    %{
+      mode: mode,
+      doc_uuid: commit.doc_uuid,
+      commit_id: commit.id,
+      # Advisory: what the commit CLAIMED, not a verified principal.
+      signer_id: commit.signer_id,
+      cert_cids: cert_cids_of(commit),
+      content_digest: Commonplace.Trust.AuditLog.content_digest(commit.update),
+      reason: reason
+    }
+  end
+
+  # Cert-chain SUMMARY only — the leaf cid the commit presented, never
+  # the certificate bodies.
+  defp cert_cids_of(%Commit{metadata: metadata}) when is_map(metadata) do
+    case Map.get(metadata, :capability_proof) do
+      nil -> []
+      cid -> [cid]
+    end
+  end
+
+  defp cert_cids_of(_), do: []
 
   defp namespace_check(commit, opts, state) do
     case validator_for(opts, state).(commit) do

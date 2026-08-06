@@ -51,6 +51,14 @@ config :commonplace,
   # background of unrelated tests. Its own tests start their own
   # dispatcher with `enabled: true` and injected timers.
   invariant_dispatch_enabled: false,
+  # CX-t3xv: the denial-audit deadman canary is OFF in tests. It writes
+  # on a timer against the shared `tmp/test_data` store and deliberately
+  # provokes a gate denial, both of which would race unrelated tests'
+  # telemetry attaches and store assertions. Its own tests start their
+  # own canary with injected timers and `enabled: true`. The DISPATCHER
+  # stays on — it is idle until a denial happens, and leaving it on is
+  # what makes every enforce-mode test exercise the real audit path.
+  audit_canary_enabled: false,
   # CI: CubDB 2.0.2's auto-compact races with the parallel test
   # suite's SecretStore writes and crashes the SecretStore process
   # (`MatchError {:error, :enoent}` at `cubdb.ex:1499 trigger_compaction`).

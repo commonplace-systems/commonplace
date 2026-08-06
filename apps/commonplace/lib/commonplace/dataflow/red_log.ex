@@ -14,6 +14,8 @@ defmodule Commonplace.Dataflow.RedLog do
 
   defstruct [:uuid, :doc, :store]
 
+  @type t :: %__MODULE__{uuid: String.t(), doc: term(), store: GenServer.server()}
+
   @log_type "events"
 
   @doc "Create a new empty red log."
@@ -72,15 +74,61 @@ defmodule Commonplace.Dataflow.RedLog do
     end)
   end
 
-  @doc "Commit the current log state to the store, with optional gold attestation."
+  @doc """
+  Commit the current log state to the store, with optional gold attestation.
+
+  `opts` are forwarded verbatim to
+  `CommitStoreClient.create_chained_commit/5` — notably
+  `:signing_context` (CX-t3xv). A red log whose writer has no ambient
+  identity (the trust audit log is the motivating case: it is written
+  from a telemetry handler, on behalf of the SYSTEM, not a user) must
+  pass an explicit node `%SigningContext{}` or the resulting commit is
+  unsigned and the local write gate refuses it under
+  `accept_unsigned: false` — i.e. the log silently stops recording
+  exactly when enforcement turns on.
+
+  Returns `{:ok, log}` / `{:error, reason}` from `commit/2`; the legacy
+  `commit/1` head keeps returning the log itself so existing callers are
+  unchanged.
+  """
   def commit(%__MODULE__{} = log) do
-    update = Yelixer.Encoding.encode_update(log.doc)
-    CommitStoreClient.create_chained_commit(log.store, log.uuid, update)
-
-    # Gold attestation: create tamper-evident chain entry
-    maybe_attest(log.uuid, log.store)
-
+    _ = do_commit(log, [])
     log
+  end
+
+  @doc """
+  As `commit/1`, but forwards `opts` to the write and REPORTS the
+  outcome instead of discarding it.
+
+  `commit/1` throws the store's return value away, which is the right
+  shape for a fire-and-forget onramp and the wrong shape for an audit
+  writer: a refused audit write that reports `:ok` is a silent
+  underreport in the one subsystem whose whole job is not to
+  underreport. Callers that must know use this head.
+  """
+  @spec commit(t(), keyword()) :: {:ok, t()} | {:error, term()}
+  def commit(%__MODULE__{} = log, opts) when is_list(opts) do
+    case do_commit(log, opts) do
+      {:error, reason} -> {:error, reason}
+      _ -> {:ok, log}
+    end
+  end
+
+  defp do_commit(%__MODULE__{} = log, opts) do
+    update = Yelixer.Encoding.encode_update(log.doc)
+    result = CommitStoreClient.create_chained_commit(log.store, log.uuid, update, %{}, opts)
+
+    case result do
+      {:error, _} = error ->
+        error
+
+      other ->
+        # Gold attestation: create tamper-evident chain entry. Only for
+        # writes that actually landed — attesting a refused write would
+        # chain over content the store does not have.
+        maybe_attest(log.uuid, log.store)
+        other
+    end
   end
 
   defp maybe_attest(uuid, store) do
