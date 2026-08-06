@@ -382,6 +382,22 @@ defmodule Commonplace.Store.CommitStore do
   `<path>.corrupt.<ts>` directory is preserved on disk for
   out-of-band recovery — see `salvage_corrupt_archive/2` below.
 
+  **CX-pm68: archive-and-fresh is gated on prior-world evidence.** The
+  paragraph above describes what happens on a dir with no history. If
+  `<data_dir>/root` exists — a world was here — `init/1` instead returns
+  `{:stop, {:refusing_fresh_reinit, detail}}`, archives nothing, and
+  changes nothing on disk. Silently serving an empty store in that
+  situation is how an enforce-mode serve ended up on a fresh world writing
+  genesis docs: the substrate could not tell empty-because-broke from
+  empty-because-new, so it kept going. Recovery is a human decision
+  (truncate-to-last-valid-header, or `salvage_corrupt_archive/2`). The
+  deliberate fresh start is available but is a recorded act:
+  `COMMONPLACE_ACCEPT_FRESH_REINIT=1` / `:accept_fresh_reinit`, which
+  proceeds AND writes a `{:fresh_reinit_fact, <iso8601>}` row into the
+  fresh store naming the archived predecessor. See
+  `prior_world_evidence?/1` for why the root pointer is the evidence and
+  not anything inside `commits/`.
+
   The scan is bounded by **time, not count**: it runs in a supervised
   `Task` capped at `Application.get_env(:commonplace,
   :corruption_probe_timeout_ms, 5_000)` milliseconds. A raise during
@@ -1146,12 +1162,12 @@ defmodule Commonplace.Store.CommitStore do
     # CX-2479: take the exclusion BEFORE any CubDB open. See
     # `acquire_commits_lock/1`.
     case acquire_commits_lock(data_dir) do
-      {:ok, lock_ref} -> init_locked(opts, name, path, lock_ref)
+      {:ok, lock_ref} -> init_locked(opts, name, data_dir, path, lock_ref)
       {:stop, _} = stop -> stop
     end
   end
 
-  defp init_locked(opts, name, path, lock_ref) do
+  defp init_locked(opts, name, data_dir, path, lock_ref) do
     File.mkdir_p!(path)
 
     # R4c carve-out: the names of this instance's companion processes
@@ -1184,12 +1200,13 @@ defmodule Commonplace.Store.CommitStore do
             ready(name, db, trust_side_store, pending_imports, invariant_dispatcher, lock_ref)
 
           {:error, reason} ->
-            require Logger
-            Logger.warning("CubDB corrupt on probe (#{inspect(reason)}). Archiving and starting fresh.")
             CubDB.stop(db)
 
-            recover_cubdb(
+            refuse_or_recover(
+              :probe,
+              reason,
               name,
+              data_dir,
               path,
               trust_side_store,
               pending_imports,
@@ -1199,11 +1216,11 @@ defmodule Commonplace.Store.CommitStore do
         end
 
       {:error, reason} ->
-        require Logger
-        Logger.warning("CubDB failed to open (#{inspect(reason)}). Archiving and starting fresh.")
-
-        recover_cubdb(
+        refuse_or_recover(
+          :open,
+          reason,
           name,
+          data_dir,
           path,
           trust_side_store,
           pending_imports,
@@ -1211,6 +1228,143 @@ defmodule Commonplace.Store.CommitStore do
           lock_ref
         )
     end
+  end
+
+  @root_pointer_file "root"
+
+  @doc """
+  CX-pm68: did a world already exist in this `data_dir`?
+
+  True iff `<data_dir>/root` — the workspace root-document pointer
+  (`Commonplace.Workspace.root_uuid/0` reads it) — is present.
+
+  **Why the root pointer and not the commits store itself.** The question
+  being asked is "was there a world here before this boot?", and it is
+  being asked precisely at the moment the commits store is unreadable. Any
+  evidence read out of `commits/` is evidence the corruption event could
+  have destroyed, so a missing signal there is indistinguishable between
+  "never existed" and "just got eaten" — a check that cannot tell those
+  apart cannot be allowed to authorize erasure. `root` is a SEPARATE
+  small file, written once at workspace init and never touched by the
+  commit-write path, so a corrupt-store event cannot remove it. Its
+  presence is therefore positive evidence of a prior world that survives
+  the very failure this guard fires on.
+  """
+  def prior_world_evidence?(data_dir) do
+    File.exists?(Path.join(data_dir, @root_pointer_file))
+  end
+
+  @doc """
+  CX-pm68 override: has an operator explicitly consented to a fresh
+  re-init over a prior world?
+
+  Application env `:accept_fresh_reinit`, bridged from
+  `COMMONPLACE_ACCEPT_FRESH_REINIT` in `config/runtime.exs` the same way
+  `:local_write_gate` is. Defaults to `false` — fail closed. This is a
+  deliberate, recorded act, never an ambient default: when it is used, the
+  fresh store carries a `{:fresh_reinit_fact, <iso8601>}` row saying so.
+  """
+  def accept_fresh_reinit? do
+    Application.get_env(:commonplace, :accept_fresh_reinit, false) == true
+  end
+
+  # CX-pm68. BOTH archive-and-start-fresh sites (probe-corrupt and
+  # failed-open) funnel through here.
+  #
+  # What was wrong: both sites silently substituted an EMPTY store and kept
+  # serving. This morning that put an enforce-mode serve on a fresh empty
+  # world, writing genesis docs — the substrate cannot tell
+  # empty-because-new from empty-because-broke, so it treated a destroyed
+  # world as a new one and started filling it in.
+  #
+  # An empty dir must still boot (first boot, and every test fixture), so
+  # the discriminator is prior-world EVIDENCE, not corruption severity.
+  defp refuse_or_recover(
+         site,
+         reason,
+         name,
+         data_dir,
+         path,
+         trust_side_store,
+         pending_imports,
+         invariant_dispatcher,
+         lock_ref
+       ) do
+    require Logger
+
+    cond do
+      not prior_world_evidence?(data_dir) ->
+        Logger.warning(
+          "CubDB #{site_phrase(site)} (#{inspect(reason)}). No prior-world evidence " <>
+            "(no #{Path.join(data_dir, @root_pointer_file)}) — treating as a first boot, " <>
+            "archiving and starting fresh."
+        )
+
+        recover_cubdb(
+          name,
+          path,
+          trust_side_store,
+          pending_imports,
+          invariant_dispatcher,
+          lock_ref,
+          nil
+        )
+
+      accept_fresh_reinit?() ->
+        Logger.warning(
+          "CubDB #{site_phrase(site)} (#{inspect(reason)}). A PRIOR WORLD EXISTS " <>
+            "(#{Path.join(data_dir, @root_pointer_file)} present) but :accept_fresh_reinit " <>
+            "is set — proceeding with archive-and-fresh by explicit operator consent. " <>
+            "A {:fresh_reinit_fact, <iso8601>} row is being written into the fresh store " <>
+            "so this empty world is durably marked empty-because-broke, not " <>
+            "empty-because-new. (CX-pm68)"
+        )
+
+        recover_cubdb(
+          name,
+          path,
+          trust_side_store,
+          pending_imports,
+          invariant_dispatcher,
+          lock_ref,
+          reason
+        )
+
+      true ->
+        detail = %{
+          data_dir: data_dir,
+          corrupt_path: path,
+          reason: reason,
+          evidence: :root_file_present,
+          override: override_instructions()
+        }
+
+        Logger.error("""
+        CommitStore: REFUSING TO BOOT — will not re-initialize an empty world over a prior one.
+          Corrupt commits store: #{path}
+          CubDB #{site_phrase(site)}: #{inspect(reason)}
+          Prior world EXISTS: #{Path.join(data_dir, @root_pointer_file)} is present, so this \
+        workspace held a world before this boot.
+          NO archive and NO re-initialization was performed. Nothing on disk was changed.
+          Recovery is a HUMAN/OPERATOR decision, not an automatic one. Options:
+            * truncate-to-last-valid-header on the damaged .cub, then reopen;
+            * salvage what is readable with \
+        Commonplace.Store.CommitStore.salvage_corrupt_archive/2 into a fresh store;
+            * if the empty world is genuinely what you want: #{override_instructions()}
+        (CX-pm68)\
+        """)
+
+        {:stop, {:refusing_fresh_reinit, detail}}
+    end
+  end
+
+  defp site_phrase(:probe), do: "corrupt on probe"
+  defp site_phrase(:open), do: "failed to open"
+
+  defp override_instructions do
+    "set COMMONPLACE_ACCEPT_FRESH_REINIT=1 (app env :accept_fresh_reinit) and reboot — " <>
+      "this is a deliberate, recorded act and the fresh store will carry a " <>
+      ":fresh_reinit_fact row naming the archived predecessor."
   end
 
   @commits_lock_file "commits.lock"
@@ -1430,14 +1584,22 @@ defmodule Commonplace.Store.CommitStore do
     result
   end
 
-  defp recover_cubdb(name, path, trust_side_store, pending_imports, invariant_dispatcher, lock_ref) do
+  defp recover_cubdb(
+         name,
+         path,
+         trust_side_store,
+         pending_imports,
+         invariant_dispatcher,
+         lock_ref,
+         fresh_reinit_reason
+       ) do
     # CX-2479: the lock is NOT released around this rename. It lives at
     # <data_dir>/commits.lock — a sibling of the `commits/` directory being
     # renamed, not a child of it — so the rename neither moves the locked
     # file nor invalidates the fd. One continuous hold spans archive and
     # fresh-open; there is no window in which a second opener could slip in
     # and start writing the fresh store alongside us.
-    archive_corrupt_db(path)
+    archive_path = archive_corrupt_db(path)
 
     {:ok, db} =
       CubDB.start_link(
@@ -1446,7 +1608,27 @@ defmodule Commonplace.Store.CommitStore do
         auto_compact: true
       )
 
+    write_fresh_reinit_fact(db, archive_path, fresh_reinit_reason)
+
     ready(name, db, trust_side_store, pending_imports, invariant_dispatcher, lock_ref)
+  end
+
+  # CX-pm68 rider: when an operator overrode the refusal, the fresh store
+  # records WHY it is empty, before it serves a single read. This is the
+  # empty-because-broke / empty-because-new distinction made durable and
+  # in-band: anything later inspecting this store — a human, an audit, a
+  # future guard — can see that this world replaced a broken one and where
+  # the predecessor's bytes went. `nil` reason means no prior world existed
+  # (a genuine first boot), and nothing is written: an empty store with no
+  # fact row means empty-because-new, and that must stay the common case.
+  defp write_fresh_reinit_fact(_db, _archive_path, nil), do: :ok
+
+  defp write_fresh_reinit_fact(db, archive_path, reason) do
+    CubDB.put(db, {:fresh_reinit_fact, DateTime.utc_now() |> DateTime.to_iso8601()}, %{
+      predecessor_archive: archive_path,
+      reason: inspect(reason),
+      evidence: :root_file_present
+    })
   end
 
   @impl true
@@ -2661,6 +2843,7 @@ defmodule Commonplace.Store.CommitStore do
     archive_path = "#{path}.corrupt.#{timestamp}"
     File.rename!(path, archive_path)
     File.mkdir_p!(path)
+    archive_path
   end
 
   # CX-hoj: the CAS write paths (`write_snapshot_cas/5`,

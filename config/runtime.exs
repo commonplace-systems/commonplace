@@ -150,6 +150,19 @@ if gate = System.get_env("COMMONPLACE_LOCAL_READ_GATE") do
   config :commonplace, local_read_gate: String.to_atom(gate)
 end
 
+# CX-pm68: `CommitStore.init/1` REFUSES to boot when the commits store is
+# unreadable AND `<data_dir>/root` shows a prior world existed — it will
+# not silently substitute an empty world for a destroyed one (which is
+# exactly what put an enforce-mode serve on a fresh world writing genesis
+# docs). The deliberate fresh-start is an operator decision, so it needs a
+# door: this env var, bridged to the app knob exactly like the two gates
+# above. Absent → refuse (fail closed). Set → archive-and-fresh proceeds
+# AND the fresh store records a {:fresh_reinit_fact, <iso8601>} row naming
+# the archived predecessor, so the empty world carries its own provenance.
+if System.get_env("COMMONPLACE_ACCEPT_FRESH_REINIT") in ~w(1 true yes on enforce) do
+  config :commonplace, accept_fresh_reinit: true
+end
+
 # CX-gjpi — the :5199 multiplayer serve opts bots into FULL citizenship (own
 # home + spawn-in-home, co-present with human players in the grafted "mud"
 # world) via this env. Absent (dogfood, standalone) → bots keep the simpler
