@@ -15,8 +15,9 @@ defmodule Commonplace.Projection.MixedPlaneHistory do
 
   Production calls run on the serve node itself. Document UUIDs come from
   `CommitStoreClient.all_doc_uuids/0` (including unreachable documents), and
-  commit IDs come from `CommitStore.all_commit_ids_for_doc/2` (including
-  unreachable commits). Nothing in this module writes to the commit store.
+  commit IDs come from one bounded walk of the complete persisted commit
+  range, grouped by document UUID (including unreachable commits). Nothing in
+  this module writes to the commit store.
 
   The reconstruction strategy defaults to the retained oracle: one
   `Projection.project_at/3` call per commit. This is a measured choice, not a
@@ -27,13 +28,12 @@ defmodule Commonplace.Projection.MixedPlaneHistory do
   `scan_strategy: :incremental` because it wins decisively on deep histories
   (9.8x on 200-commit chains), a workload the current corpus does not have.
 
-  Strategy choice does **not** determine whether a full sweep is viable.
-  `CommitStore.all_commit_ids_for_doc/2` selects the entire `{:commit, _}` key
-  range and filters in Elixir: O(documents x total commits), approximately
-  386 million row reads for today's 5,429 documents and 71,042 entries. That
-  enumeration accounts for 99.57% of measured time; unrelated commit rows
-  alone caused a controlled 678x slowdown. The sweep therefore remains about
-  10 hours with either reconstruction strategy until CX-3an0 Stage A lands.
+  Commit enumeration is scanner-owned and deliberately independent of
+  reachability from `:latest`. The sweep walks the same complete `{:commit, _}`
+  range used by the per-document oracle exactly once, then groups matching
+  rows for the censused documents. This changes enumeration from
+  O(documents x total commits) to O(total commits) without adding a store
+  index or changing commit persistence.
 
   Killing the local Mix client does **not** stop a remote sweep: the single
   `:erpc` call executes independently inside the serve node. The supported
@@ -55,6 +55,32 @@ defmodule Commonplace.Projection.MixedPlaneHistory do
 
   @checkpoint_version 1
   @default_known_positives ["235d73b5-a44a-44de-91ad-a753c61f7407"]
+  @max_key_binary :binary.copy(<<255>>, 64)
+
+  @doc false
+  def commit_ids_by_doc(store, doc_uuids) do
+    doc_uuids = MapSet.new(doc_uuids)
+    initial = Map.new(doc_uuids, &{&1, MapSet.new()})
+
+    if MapSet.size(doc_uuids) == 0 do
+      initial
+    else
+      store
+      |> CommitStore.db_handle()
+      |> CubDB.select(min_key: {:commit, ""}, max_key: {:commit, @max_key_binary})
+      |> Enum.reduce(initial, fn
+        {{:commit, commit_id}, %{doc_uuid: doc_uuid}}, grouped ->
+          if MapSet.member?(doc_uuids, doc_uuid) do
+            Map.update!(grouped, doc_uuid, &MapSet.put(&1, commit_id))
+          else
+            grouped
+          end
+
+        _, grouped ->
+          grouped
+      end)
+    end
+  end
 
   @type summary :: %{
           docs_total: non_neg_integer(),
@@ -127,7 +153,8 @@ defmodule Commonplace.Projection.MixedPlaneHistory do
     scan_strategy = effective_scan_strategy(opts)
 
     with {:ok, checkpoint} <- load_checkpoint(checkpoint_path, scan_id),
-         {:ok, doc_uuids} <- fetch_doc_uuids(store, opts) do
+         {:ok, doc_uuids} <- fetch_doc_uuids(store, opts),
+         {:ok, commit_groups} <- fetch_commit_groups(store, doc_uuids, opts) do
       docs = doc_uuids |> MapSet.to_list() |> Enum.sort()
       total = length(docs)
       checkpoint = put_in(checkpoint, ["docs"], Map.take(checkpoint["docs"], docs))
@@ -148,7 +175,14 @@ defmodule Commonplace.Projection.MixedPlaneHistory do
         docs
         |> Task.async_stream(
           fn doc_uuid ->
-            scan_or_reuse_doc(doc_uuid, store, checkpoint, checkpoint_path, opts)
+            scan_or_reuse_doc(
+              doc_uuid,
+              store,
+              commit_groups,
+              checkpoint,
+              checkpoint_path,
+              opts
+            )
           end,
           max_concurrency: max_concurrency,
           ordered: false,
@@ -197,16 +231,16 @@ defmodule Commonplace.Projection.MixedPlaneHistory do
     end
   end
 
-  defp scan_or_reuse_doc(doc_uuid, store, checkpoint, checkpoint_path, opts) do
+  defp scan_or_reuse_doc(doc_uuid, store, commit_groups, checkpoint, checkpoint_path, opts) do
     if stop_requested?(checkpoint_path) do
       {:stopped, doc_uuid}
     else
-      do_scan_or_reuse_doc(doc_uuid, store, checkpoint, opts)
+      do_scan_or_reuse_doc(doc_uuid, store, commit_groups, checkpoint, opts)
     end
   end
 
-  defp do_scan_or_reuse_doc(doc_uuid, store, checkpoint, opts) do
-    case fetch_commit_ids(store, doc_uuid, opts) do
+  defp do_scan_or_reuse_doc(doc_uuid, store, commit_groups, checkpoint, opts) do
+    case fetch_commit_ids(doc_uuid, commit_groups, opts) do
       {:ok, commit_ids} ->
         commit_hexes = Enum.map(commit_ids, &hex/1)
 
@@ -388,12 +422,24 @@ defmodule Commonplace.Projection.MixedPlaneHistory do
     end
   end
 
-  defp fetch_commit_ids(store, doc_uuid, opts) do
+  defp fetch_commit_groups(store, doc_uuids, opts) do
+    if Keyword.has_key?(opts, :commit_ids) do
+      {:ok, :injected_per_document}
+    else
+      case safely(fn -> commit_ids_by_doc(store, doc_uuids) end) do
+        {:ok, grouped} when is_map(grouped) -> {:ok, grouped}
+        {:ok, other} -> {:error, {:commit_ids_by_doc_not_map, other}}
+        {:error, _reason} = error -> error
+      end
+    end
+  end
+
+  defp fetch_commit_ids(doc_uuid, commit_groups, opts) do
     result =
       safely(fn ->
-        case Keyword.fetch(opts, :commit_ids) do
-          {:ok, fun} -> fun.(doc_uuid)
-          :error -> CommitStore.all_commit_ids_for_doc(store, doc_uuid)
+        case commit_groups do
+          :injected_per_document -> Keyword.fetch!(opts, :commit_ids).(doc_uuid)
+          grouped -> Map.fetch!(grouped, doc_uuid)
         end
       end)
 

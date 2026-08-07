@@ -2,7 +2,7 @@ defmodule Commonplace.Projection.MixedPlaneHistoryDifferentialTest do
   use ExUnit.Case, async: false
 
   alias Commonplace.Projection
-  alias Commonplace.Projection.MixedPlaneHistoryFixture
+  alias Commonplace.Projection.{MixedPlaneHistory, MixedPlaneHistoryFixture}
   alias Commonplace.Store.{Commit, CommitStore}
   alias Yelixer.{Doc, Encoding}
   alias Yelixer.Types.Text
@@ -27,6 +27,32 @@ defmodule Commonplace.Projection.MixedPlaneHistoryDifferentialTest do
     incremental = Projection.project_history(doc_uuid, commit_ids, store: store)
 
     assert_history_equal(oracle, incremental)
+  end
+
+  test "one-pass commit grouping exactly matches the per-document oracle, including unreachable commits",
+       %{store: store} do
+    {branching_doc, _commit_ids} = seed_delta_chain!(store, 4)
+    other_doc = "differential-other-doc"
+    _other_commit = CommitStore.create_commit(store, other_doc, <<1, 2, 3>>, nil)
+    doc_uuids = MapSet.new([branching_doc, other_doc])
+
+    oracle =
+      Map.new(doc_uuids, fn doc_uuid ->
+        {doc_uuid, CommitStore.all_commit_ids_for_doc(store, doc_uuid)}
+      end)
+
+    unreachable_ids =
+      MapSet.difference(
+        Map.fetch!(oracle, branching_doc),
+        CommitStore.commit_ids_for_doc(store, branching_doc)
+      )
+
+    assert MapSet.size(unreachable_ids) > 0,
+           "differential fixture must contain commits unreachable from :latest"
+
+    grouped = MixedPlaneHistory.commit_ids_by_doc(store, doc_uuids)
+
+    assert_commit_groups_equal(oracle, grouped)
   end
 
   test "incremental history agrees across every mixed-plane snapshot fixture commit" do
@@ -123,6 +149,18 @@ defmodule Commonplace.Projection.MixedPlaneHistoryDifferentialTest do
 
     incremental = Projection.project_history(doc_uuid, commit_ids, store: store)
     assert_history_equal(oracle, incremental)
+  end
+
+  defp assert_commit_groups_equal(oracle, grouped) do
+    Enum.each(oracle, fn {doc_uuid, expected} ->
+      actual = Map.get(grouped, doc_uuid, MapSet.new())
+      missing = expected |> MapSet.difference(actual) |> Enum.map(&hex/1) |> Enum.sort()
+      unexpected = actual |> MapSet.difference(expected) |> Enum.map(&hex/1) |> Enum.sort()
+
+      assert missing == [] and unexpected == [],
+             "COMMIT ENUMERATION DIFFERENTIAL doc=#{doc_uuid} " <>
+               "missing_ids=#{inspect(missing)} unexpected_ids=#{inspect(unexpected)}"
+    end)
   end
 
   defp hex(bytes), do: Base.encode16(bytes, case: :lower)
