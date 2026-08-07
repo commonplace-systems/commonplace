@@ -102,10 +102,23 @@ not a serve heartbeat, for a load-bearing reason: a serve trigger ties
 the render SCHEDULE to the same failure domain as the data source —
 serve down → cron still fires → render fails → STATE.md ages → banner at
 trust-until: the correct signal reaching the reader by the correct path.
-**TRUST-UNTIL = rendered_at + 45 minutes (3× interval — 2× is the floor,
-the extra covers cron jitter)** so the banner means "renderer dead,"
-never "between renders." Interval and multiplier are constants at the
-top of the script, changed together or not at all. v1 simplicity call:
+**TRUST-UNTIL is DERIVED FROM THE OBSERVED RENDER GAP, not a constant**
+(plan's final ruling — dissolves the split-constant seam instead of
+guarding it): the renderer reads the PREVIOUS rendered stamp from the
+file it is rewriting, so it knows the actual gap at zero cost;
+`trust_until = rendered_at + clamp(2 × observed_gap, floor: 60m, cap: 6h)`,
+constants (floor/cap/multiplier) co-located at the script top — one file,
+one owner, and the pairing problem ceases to exist. Widen the cron to 60m
+and the next render observes it and writes trust +120m: the banner cannot
+cry between renders BY CONSTRUCTION, whoever changes what — the promise
+derives from measured history, not a hoped-for schedule (the
+reader's-clock principle applied to the writer's own cadence). The 6h cap
+keeps a freak gap from minting a huge trust window; the 60m floor keeps a
+tight burst from a hair-trigger banner. Bootstrap (no prior stamp):
+trust = floor × 2. Every run PRINTS observed-gap vs floor so cron output
+shows cadence drift. Consequence, explicit: the cron interval (starting
+at 15m) is boss's to change FREELY — the system stays truthful without
+coordination, which is this design's entire thesis. v1 simplicity call:
 a FAILED render leaves STATE.md untouched (atomic rename guarantees it)
 and the aging banner carries the signal; a richer render-failure marker
 ("renderer ran at T, serve unreachable") is a NAMED follow-up, not v1.
@@ -127,7 +140,10 @@ non-degraded — "who runs this ongoing" is a deliverable.
    the markers byte-untouched (assert!).
 4. The close-without-evidence case renders its loud placeholder (never
    blank, never omitted).
-5. Structural (plan's addition — the fencing header CLAIMS nothing can
+5. Cadence-derivation: render after an artificially WIDENED gap → the
+   trust window visibly widens and the banner stays quiet (the
+   cannot-cry-between-renders property, demonstrated not argued).
+6. Structural (plan's addition — the fencing header CLAIMS nothing can
    open a store; claims get checks): a grep-shape assertion over the three
    delivered scripts proving none references CubDB or opens a store
    directly — the class closed by construction, verified, not asserted.
