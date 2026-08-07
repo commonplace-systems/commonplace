@@ -2,7 +2,7 @@
 
 ## FRONTIER
 
-> RENDERED 2026-08-07T01:27Z — TRUST UNTIL 2026-08-07T02:12Z. Reading this later?
+> RENDERED 2026-08-07T14:30Z — TRUST UNTIL 2026-08-07T17:36Z. Reading this later?
 > IT IS STALE: do not scope from it. Fallback: bin/state-render, or
 > tix via serve erpc, or git log --oneline --since=<week>.
 
@@ -25,7 +25,7 @@ Ready: **243** · Blocked: **12**
 
 ## IN-FLIGHT
 
-> RENDERED 2026-08-07T01:27Z — TRUST UNTIL 2026-08-07T02:12Z. Reading this later?
+> RENDERED 2026-08-07T14:30Z — TRUST UNTIL 2026-08-07T17:36Z. Reading this later?
 > IT IS STALE: do not scope from it. Fallback: bin/state-render, or
 > tix via serve erpc, or git log --oneline --since=<week>.
 
@@ -61,7 +61,7 @@ Ready: **243** · Blocked: **12**
 
 ## RECENT CLOSES
 
-> RENDERED 2026-08-07T01:27Z — TRUST UNTIL 2026-08-07T02:12Z. Reading this later?
+> RENDERED 2026-08-07T14:30Z — TRUST UNTIL 2026-08-07T17:36Z. Reading this later?
 > IT IS STALE: do not scope from it. Fallback: bin/state-render, or
 > tix via serve erpc, or git log --oneline --since=<week>.
 
@@ -130,7 +130,7 @@ Ready: **243** · Blocked: **12**
 
 ## OPEN-WITH-BLOCKER
 
-> RENDERED 2026-08-07T01:27Z — TRUST UNTIL 2026-08-07T02:12Z. Reading this later?
+> RENDERED 2026-08-07T14:30Z — TRUST UNTIL 2026-08-07T17:36Z. Reading this later?
 > IT IS STALE: do not scope from it. Fallback: bin/state-render, or
 > tix via serve erpc, or git log --oneline --since=<week>.
 
@@ -140,8 +140,8 @@ Ready: **243** · Blocked: **12**
 
 ## TRACKER-TRUST
 
-> RENDERED 2026-08-07T01:27Z — TRUST UNTIL 2026-08-07T02:12Z. Reading this later?
+> RENDERED 2026-08-07T14:30Z — TRUST UNTIL 2026-08-07T17:36Z. Reading this later?
 > IT IS STALE: do not scope from it. Fallback: bin/state-render, or
 > tix via serve erpc, or git log --oneline --since=<week>.
 
-scanner has not run
+VERDICT: DISCREPANCIES — 112/287 shipped-but-OPEN; 6/547 closed-but-unreferenced SHAPES; scanned 2026-08-07T13:29Z; export as_of 2026-08-07T13:29Z (age 0h 0m)

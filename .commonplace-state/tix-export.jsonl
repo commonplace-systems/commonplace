@@ -1,4 +1,4 @@
-{"as_of":"2026-08-07T01:27Z","kind":"tix-export"}
+{"as_of":"2026-08-07T14:30Z","kind":"tix-export"}
 {"closed_at":"2026-04-26T02:10:52Z","id":"CX-00ze","status":"closed","title":"[bug] ChatRoomLive composer accepts whitespace-only text and creates blank messages","updated_at":"2026-04-26T02:10:52Z"}
 {"closed_at":null,"id":"CX-01iq","status":"open","title":"Resonant Ward chimes are room-text-only \u2014 'examine azure chime'/'examine chimes' fails","updated_at":"2026-07-13T17:01:38Z"}
 {"closed_at":null,"id":"CX-01n4","status":"open","title":"@dump shows owner:nil on rooms \u2014 cosmetic (rooms are zone-stamped, no owner field)","updated_at":"2026-07-11T04:19:46Z"}
