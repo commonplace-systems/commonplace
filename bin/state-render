@@ -1,0 +1,269 @@
+#!/usr/bin/env bash
+#
+# state-render — atomically regenerate STATE.md, the offline tix export,
+# and only the marked state-projection pointer inside CLAUDE.md.
+#
+# Production usage (serve read; coordinator/cron only):
+#   bin/state-render
+# Fixture usage (never starts distribution or contacts the serve):
+#   bin/state-render --fixture INPUT.jsonl [--repo-root DIR] [--now ISO8601]
+#
+# Exit 0 success; 1 bad input/arguments; 2 serve/read failure;
+# 3 probe lock unavailable; 4 output/marker failure.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+
+TRUST_MULTIPLIER=3
+TRUST_FLOOR_SECONDS=2700
+# The no-coordination guarantee holds only below cap/multiplier (= 2h
+# observed interval). Above that, trust maxes at the 6h cap and the banner
+# cries between renders again; do not rediscover this at the cap boundary.
+TRUST_CAP_SECONDS=21600
+
+FIXTURE=""
+TARGET_ROOT="$PROJECT_DIR"
+NOW=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --fixture) [ $# -ge 2 ] || { echo "state-render: --fixture needs a path" >&2; exit 1; }; FIXTURE="$2"; shift 2 ;;
+    --repo-root) [ $# -ge 2 ] || { echo "state-render: --repo-root needs a path" >&2; exit 1; }; TARGET_ROOT="$2"; shift 2 ;;
+    --now) [ $# -ge 2 ] || { echo "state-render: --now needs a timestamp" >&2; exit 1; }; NOW="$2"; shift 2 ;;
+    -h|--help) sed -n '2,/^set -euo/p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 1 ;;
+    *) echo "state-render: unknown argument '$1'" >&2; exit 1 ;;
+  esac
+done
+
+if [ -z "$FIXTURE" ] && { [ "$TARGET_ROOT" != "$PROJECT_DIR" ] || [ -n "$NOW" ]; }; then
+  echo "state-render: --repo-root and --now are fixture-only controls" >&2
+  exit 1
+fi
+
+mkdir -p "$TARGET_ROOT/.commonplace-state"
+RAW_INPUT=""
+TMP_DIR="$(mktemp -d "$TARGET_ROOT/.commonplace-state/.state-render.XXXXXX")"
+cleanup() { rm -rf "$TMP_DIR"; }
+trap cleanup EXIT
+
+if [ -n "$FIXTURE" ]; then
+  [ -r "$FIXTURE" ] || { echo "state-render: cannot read fixture '$FIXTURE'" >&2; exit 1; }
+  RAW_INPUT="$FIXTURE"
+else
+  SERVE_NODE="${STATE_RENDER_NODE:-commonplace_dev@commonplace}"
+  SERVE_HOST="${STATE_RENDER_HOST:-${SERVE_NODE#*@}}"
+  LOCK_FILE="$PROJECT_DIR/.state-render.lock"
+  exec 9>"$LOCK_FILE"
+  if ! flock -n 9; then
+    echo "state-render: another probe holds $LOCK_FILE" >&2
+    exit 3
+  fi
+
+  PROBE_SCRIPT="$TMP_DIR/probe.exs"
+  INETRC="$TMP_DIR/inetrc"
+  RAW_INPUT="$TMP_DIR/serve-input.jsonl"
+  cat >"$INETRC" <<EOF
+{lookup, [file, native]}.
+{host, {127,0,0,1}, ["$SERVE_HOST"]}.
+EOF
+  cat >"$PROBE_SCRIPT" <<'ELIXIR'
+[output_path, serve_node_string] = System.argv() |> Enum.reject(&(&1 == "--"))
+serve_node = String.to_atom(serve_node_string)
+:application.set_env(:kernel, :prevent_overlapping_partitions, false)
+:application.set_env(:kernel, :inet_dist_use_interface, {127, 0, 0, 1})
+probe = :"state_render_probe_#{:erlang.unique_integer([:positive])}@#{System.get_env("STATE_RENDER_HOST", "commonplace")}"
+fail = fn message -> IO.puts(:stderr, "state-render: serve read failed — #{message}"); System.halt(2) end
+read = fn module, function, arguments, timeout ->
+  try do
+    :erpc.call(serve_node, module, function, arguments, timeout)
+  catch
+    kind, reason -> fail.("#{inspect(module)}.#{function}/#{length(arguments)} #{kind}: #{inspect(reason)}")
+  end
+end
+case Node.start(probe, :shortnames) do
+  {:ok, _} -> :ok
+  {:error, reason} -> fail.("could not start probe: #{inspect(reason)}")
+end
+unless Node.connect(serve_node), do: fail.("Node.connect returned false (pang)")
+root = case read.(Commonplace.Workspace, :root_uuid, [], 15_000) do
+  {:ok, value} -> value
+  other -> fail.("root_uuid returned #{inspect(other)}")
+end
+client = Commonplace.Store.CommitStoreClient
+ready = read.(Commonplace.Bd.CLI, :ready, [root, client], 120_000)
+blocked = read.(Commonplace.Bd.CLI, :blocked, [root, client], 120_000)
+issues = read.(Commonplace.Bd.Issue, :list, [root, client], 120_000) |> Enum.map(fn {issue, _} -> issue end)
+header = %{kind: "state-render-input", as_of: DateTime.utc_now() |> DateTime.to_iso8601(), ready_ids: Enum.map(ready, & &1.id), blocked_ids: Enum.map(blocked, & &1.id)}
+rows = Enum.map(issues, fn issue ->
+  description = case read.(Commonplace.Bd.Issue, :description, [root, issue.id, client], 30_000) do {:ok, value} -> value; _ -> "" end
+  comments = read.(Commonplace.Bd.Comment, :list, [root, issue.id, client], 30_000)
+  issue |> Map.from_struct() |> Map.put(:description, description) |> Map.put(:comments, Enum.map(comments, &Map.from_struct/1))
+end)
+bytes = Enum.map_join([header | rows], "\n", &Jason.encode!/1) <> "\n"
+File.write!(output_path, bytes)
+ELIXIR
+  cd "$PROJECT_DIR"
+  if ! STATE_RENDER_HOST="$SERVE_HOST" ERL_INETRC="$INETRC" mix run --no-start "$PROBE_SCRIPT" -- "$RAW_INPUT" "$SERVE_NODE"; then
+    exit 2
+  fi
+fi
+
+python3 - "$RAW_INPUT" "$TARGET_ROOT" "$NOW" "$TRUST_MULTIPLIER" "$TRUST_FLOOR_SECONDS" "$TRUST_CAP_SECONDS" <<'PYTHON'
+import datetime as dt
+import json
+import os
+import re
+import sys
+import tempfile
+from pathlib import Path
+
+source, root, now_raw, multiplier, floor, cap = sys.argv[1:]
+root = Path(root).resolve()
+multiplier, floor, cap = map(int, (multiplier, floor, cap))
+state_path = root / "STATE.md"
+claude_path = root / "CLAUDE.md"
+export_path = root / ".commonplace-state/tix-export.jsonl"
+verdict_path = root / ".commonplace-state/scan-verdict.txt"
+begin = "<!-- state-projection:begin -->"
+end = "<!-- state-projection:end -->"
+
+def parse_time(value):
+    parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError("timestamp has no timezone")
+    return parsed.astimezone(dt.timezone.utc)
+
+def stamp(value):
+    return value.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
+
+def atomic(path, body):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent, text=True)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(body); handle.flush(); os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        try: os.unlink(temporary)
+        except FileNotFoundError: pass
+        raise
+
+try:
+    claude = claude_path.read_text(encoding="utf-8")
+    if claude.count(begin) != 1 or claude.count(end) != 1 or claude.index(begin) > claude.index(end):
+        raise ValueError("CLAUDE.md must contain exactly one ordered state-projection marker pair")
+    raw_lines = [line for line in Path(source).read_text(encoding="utf-8").splitlines() if line.strip()]
+    header = json.loads(raw_lines[0])
+    if header.get("kind") != "state-render-input":
+        raise ValueError("fixture/serve input needs kind=state-render-input header")
+    issues = [json.loads(line) for line in raw_lines[1:]]
+    if any(not issue.get("id") or not issue.get("status") for issue in issues):
+        raise ValueError("each ticket requires id and status")
+    now = parse_time(now_raw) if now_raw else dt.datetime.now(dt.timezone.utc)
+except (OSError, IndexError, ValueError, json.JSONDecodeError) as error:
+    print(f"state-render: input/marker failure — {error}", file=sys.stderr)
+    raise SystemExit(4)
+
+previous = None
+if state_path.exists():
+    match = re.search(r"^> RENDERED ([^ ]+) — TRUST UNTIL ", state_path.read_text(encoding="utf-8"), re.MULTILINE)
+    if match:
+        try: previous = parse_time(match.group(1))
+        except ValueError: previous = None
+if previous is None:
+    observed = None
+    window = floor
+else:
+    observed = max(0, int((now - previous).total_seconds()))
+    window = min(cap, max(floor, multiplier * observed))
+trust = now + dt.timedelta(seconds=window)
+woven = (
+    f"> RENDERED {stamp(now)} — TRUST UNTIL {stamp(trust)}. Reading this later?\n"
+    "> IT IS STALE: do not scope from it. Fallback: bin/state-render, or\n"
+    "> tix via serve erpc, or git log --oneline --since=<week>."
+)
+
+priority_rank = {"p0": 0, "p1": 1, "p2": 2, "p3": 3}
+by_id = {issue["id"]: issue for issue in issues}
+ready_ids = header.get("ready_ids", [])
+blocked_ids = header.get("blocked_ids", [])
+frontier_ids = list(dict.fromkeys(ready_ids + blocked_ids))
+frontier = sorted((by_id[i] for i in frontier_ids if i in by_id), key=lambda i: (priority_rank.get(i.get("priority"), 99), i["id"]))[:15]
+
+def holder(issue):
+    return issue.get("claimed_by") or "unclaimed"
+
+def sentence(text):
+    text = " ".join((text or "").strip().split())
+    if not text: return ""
+    match = re.match(r"(.+?[.!?])(?:\s|$)", text)
+    return match.group(1) if match else text
+
+def comment_body(comment):
+    return "" if comment.get("deleted") else (comment.get("body") or "")
+
+def close_evidence(issue):
+    comments = sorted(issue.get("comments") or [], key=lambda c: c.get("created_at") or "", reverse=True)
+    for comment in comments:
+        body = comment_body(comment)
+        match = re.search(r"(?:^|\n)\s*close[- ]evidence\s*:\s*(.+)", body, re.IGNORECASE)
+        if match:
+            return sentence(match.group(1))
+    return sentence(issue.get("closed_reason")) or "**(no close evidence recorded)**"
+
+def latest_blocker(issue):
+    comments = sorted(issue.get("comments") or [], key=lambda c: c.get("created_at") or "", reverse=True)
+    if comments:
+        body = comment_body(comments[0])
+        if re.search(r"\bblock(?:ed|er|ing)?\b", body, re.IGNORECASE):
+            return sentence(body)
+    return None
+
+cutoff = now - dt.timedelta(days=7)
+recent = []
+for issue in issues:
+    if issue.get("status") != "closed" or not issue.get("closed_at"): continue
+    try: closed_at = parse_time(issue["closed_at"])
+    except ValueError: continue
+    if closed_at >= cutoff: recent.append(issue)
+recent.sort(key=lambda i: i.get("closed_at") or "", reverse=True)
+in_flight = sorted((i for i in issues if i.get("status") == "in_progress" or i.get("claimed_by")), key=lambda i: (priority_rank.get(i.get("priority"), 99), i["id"]))
+open_blockers = [(i, latest_blocker(i)) for i in issues if i.get("status") == "open"]
+open_blockers = sorted(((i, b) for i, b in open_blockers if b), key=lambda pair: pair[0]["id"])
+try:
+    verdict = verdict_path.read_text(encoding="utf-8").strip().splitlines()[0]
+except (OSError, IndexError):
+    verdict = "scanner has not run"
+
+def lines_or(items, empty="- None."):
+    return "\n".join(items) if items else empty
+
+sections = [
+    ("FRONTIER", [f"Ready: **{len(ready_ids)}** · Blocked: **{len(blocked_ids)}**", *[f"- `{i['id']}` [{i.get('priority','?')}] {i.get('title') or ''} — claimed_by: {holder(i)}" for i in frontier]]),
+    ("IN-FLIGHT", [f"- `{i['id']}` {i.get('title') or ''} — status: {i.get('status')} · holder: {holder(i)}" for i in in_flight]),
+    ("RECENT CLOSES", [f"- `{i['id']}` {i.get('closed_at')} — {i.get('title') or ''} — **WHAT-THE-FIX-WAS:** {close_evidence(i)}" for i in recent]),
+    ("OPEN-WITH-BLOCKER", [f"- `{i['id']}` {i.get('title') or ''} — {blocker}" for i, blocker in open_blockers]),
+    ("TRACKER-TRUST", [verdict]),
+]
+body = "# Project state\n\n" + "\n\n".join(f"## {name}\n\n{woven}\n\n{lines_or(rows)}" for name, rows in sections) + "\n"
+export_header = json.dumps({"kind": "tix-export", "as_of": stamp(now)}, sort_keys=True, separators=(",", ":"))
+keys = ("id", "status", "title", "closed_at", "updated_at")
+export_rows = [json.dumps({key: issue.get(key) for key in keys}, sort_keys=True, separators=(",", ":")) for issue in sorted(issues, key=lambda i: i["id"])]
+export = "\n".join([export_header, *export_rows]) + "\n"
+pointer = f"{begin}\nRead STATE.md before scoping any work.\nRendered at: {stamp(now)}.\n{end}"
+updated_claude = claude[:claude.index(begin)] + pointer + claude[claude.index(end) + len(end):]
+
+try:
+    atomic(state_path, body)
+    atomic(export_path, export)
+    atomic(claude_path, updated_claude)
+except OSError as error:
+    print(f"state-render: atomic output failure — {error}", file=sys.stderr)
+    raise SystemExit(4)
+
+observed_text = "bootstrap" if observed is None else f"{observed}s ({observed / 60:.1f}m)"
+print(f"state-render: observed gap: {observed_text}; derived trust window: {window}s ({window / 60:.1f}m); trust until {stamp(trust)}")
+print(f"state-render: wrote {state_path}, {export_path}, and CLAUDE.md marker block atomically")
+PYTHON

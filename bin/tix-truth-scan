@@ -1,0 +1,161 @@
+#!/usr/bin/env python3
+"""Offline, both-directions comparison of local git history and a tix export.
+
+Exit 0: clean. Exit 1: discrepancies/shapes found. Exit 2: could not scan.
+No serve or application store is contacted by this program.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+ID_RE = re.compile(r"\bCX-[A-Za-z0-9][A-Za-z0-9-]*\b", re.IGNORECASE)
+CODE_TITLE_RE = re.compile(
+    r"(?:\b(?:add|build|fix|implement|refactor|remove|rename|update|wire)\b|"
+    r"`[^`]+`|(?:^|\s)[\w./-]+\.(?:exs?|heex|js|ts|css|md)(?:\s|$))",
+    re.IGNORECASE,
+)
+TERMINAL = {"closed", "wontfix"}
+
+
+def parse_time(value: str) -> dt.datetime:
+    parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError("timestamp has no timezone")
+    return parsed.astimezone(dt.timezone.utc)
+
+
+def iso_minute(value: dt.datetime) -> str:
+    return value.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
+
+
+def age(now: dt.datetime, then: dt.datetime) -> str:
+    seconds = max(0, int((now - then).total_seconds()))
+    hours, remainder = divmod(seconds, 3600)
+    minutes = remainder // 60
+    return f"{hours}h {minutes}m"
+
+
+def atomic_write(path: Path, value: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent, text=True)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(value)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def fail(message: str) -> int:
+    print(f"tix-truth-scan: COULD NOT SCAN — {message}", file=sys.stderr)
+    return 2
+
+
+def main() -> int:
+    project = Path(__file__).resolve().parent.parent
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--export", type=Path, default=project / ".commonplace-state/tix-export.jsonl")
+    parser.add_argument("--git-repo", type=Path, default=project)
+    parser.add_argument("--verdict", type=Path, default=project / ".commonplace-state/scan-verdict.txt")
+    parser.add_argument("--now", help=argparse.SUPPRESS)
+    args = parser.parse_args()
+
+    try:
+        now = parse_time(args.now) if args.now else dt.datetime.now(dt.timezone.utc)
+    except ValueError as error:
+        return fail(f"invalid --now: {error}")
+
+    try:
+        lines = [line for line in args.export.read_text(encoding="utf-8").splitlines() if line.strip()]
+        if not lines:
+            return fail(f"export is empty: {args.export}")
+        header = json.loads(lines[0])
+        if header.get("kind") != "tix-export" or not header.get("as_of"):
+            return fail("export header must be the first line and contain kind=tix-export plus as_of")
+        export_as_of = parse_time(header["as_of"])
+        tickets = [json.loads(line) for line in lines[1:]]
+        if any(not row.get("id") or not row.get("status") for row in tickets):
+            return fail("every export ticket requires id and status")
+    except (OSError, json.JSONDecodeError, ValueError) as error:
+        return fail(f"could not read export {args.export}: {error}")
+
+    try:
+        log = subprocess.run(
+            ["git", "log", "--format=%H%x09%cI%x09%B%x00"],
+            cwd=args.git_repo,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        ).stdout
+        head = subprocess.run(
+            ["git", "log", "-1", "--format=%h%x09%cI"],
+            cwd=args.git_repo,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        ).stdout.strip()
+        head_hash, head_time_raw = head.split("\t", 1)
+        head_time = parse_time(head_time_raw)
+    except (OSError, subprocess.CalledProcessError, ValueError) as error:
+        return fail(f"could not read local git history at {args.git_repo}: {error}")
+
+    referenced = {match.group(0).upper() for match in ID_RE.finditer(log)}
+    open_tickets = [ticket for ticket in tickets if ticket["status"] not in TERMINAL]
+    closed_tickets = [ticket for ticket in tickets if ticket["status"] in TERMINAL]
+    shipped_open = [ticket for ticket in open_tickets if ticket["id"].upper() in referenced]
+    closed_shapes = [
+        ticket
+        for ticket in closed_tickets
+        if ticket["id"].upper() not in referenced and CODE_TITLE_RE.search(ticket.get("title") or "")
+    ]
+
+    clean = not shipped_open and not closed_shapes
+    verdict_word = "CLEAN" if clean else "DISCREPANCIES"
+    verdict = (
+        f"VERDICT: {verdict_word} — {len(shipped_open)}/{len(open_tickets)} shipped-but-OPEN; "
+        f"{len(closed_shapes)}/{len(closed_tickets)} closed-but-unreferenced SHAPES; "
+        f"scanned {iso_minute(now)}; export as_of {iso_minute(export_as_of)} (age {age(now, export_as_of)})"
+    )
+
+    print("tix truth scan")
+    print("==============")
+    print(f"git input: local HEAD {head_hash} at {iso_minute(head_time)} (age {age(now, head_time)}; local history is the fresh source)")
+    print(f"tix input: {args.export} as_of {iso_minute(export_as_of)} (age {age(now, export_as_of)})")
+    print()
+    print(f"SHIPPED-BUT-OPEN: {len(shipped_open)}/{len(open_tickets)} open tickets")
+    for ticket in shipped_open:
+        print(f"  {ticket['id']}  status={ticket['status']}  title={ticket.get('title') or ''}")
+    print()
+    print(f"CLOSED-BUT-UNREFERENCED SHAPES: {len(closed_shapes)}/{len(closed_tickets)} closed tickets")
+    print("  Review shapes, not alarms: legitimate non-code closes are common.")
+    for ticket in closed_shapes:
+        print(f"  {ticket['id']}  status={ticket['status']}  title={ticket.get('title') or ''}")
+    print()
+    print(verdict)
+
+    try:
+        atomic_write(args.verdict, verdict + "\n")
+    except OSError as error:
+        return fail(f"could not write verdict {args.verdict}: {error}")
+    return 0 if clean else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

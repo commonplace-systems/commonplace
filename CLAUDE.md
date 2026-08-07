@@ -2,6 +2,11 @@
 
 ## Project overview
 
+<!-- state-projection:begin -->
+Read STATE.md before scoping any work.
+Rendered at: never (run bin/state-render).
+<!-- state-projection:end -->
+
 Commonplace is a CRDT document store built on Elixir/OTP. Every piece of data is a Y.js-compatible CRDT document identified by a UUID, organized in a tree via schema documents. The system provides branching (deep-copy fork), three-way merging, a Merkle-CRDT commit DAG, and bidirectional filesystem sync.
 
 This is a port from a Rust version at `/home/jes/commonplace-rs/`. The Elixir version replaces yrs (Rust Y.js bindings) with yelixer (pure Elixir Y.js port), MQTT with Phoenix PubSub, and redb with CubDB.
