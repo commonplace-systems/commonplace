@@ -106,17 +106,23 @@ trust-until: the correct signal reaching the reader by the correct path.
 (plan's final ruling — dissolves the split-constant seam instead of
 guarding it): the renderer reads the PREVIOUS rendered stamp from the
 file it is rewriting, so it knows the actual gap at zero cost;
-`trust_until = rendered_at + clamp(2 × observed_gap, floor: 60m, cap: 6h)`,
-constants (floor/cap/multiplier) co-located at the script top — one file,
-one owner, and the pairing problem ceases to exist. Widen the cron to 60m
-and the next render observes it and writes trust +120m: the banner cannot
-cry between renders BY CONSTRUCTION, whoever changes what — the promise
-derives from measured history, not a hoped-for schedule (the
+`trust_until = rendered_at + clamp(3 × observed_gap, floor: 45m, cap: 6h)`
+(plan's FINAL ruling; the settled 15m/45m is this formula's floor case —
+at 15m cadence, 3× observed = 45m exactly, so nothing agreed is
+discarded, it's generalized). Constants (multiplier/floor/cap) co-located
+at the script top — one file, one owner, the pairing problem ceases to
+exist. Widen the cron to 60m and the next render writes trust +180m: the
+banner cannot cry between renders BY CONSTRUCTION, whoever changes what —
+the promise derives from measured history, not a hoped-for schedule (the
 reader's-clock principle applied to the writer's own cadence). The 6h cap
-keeps a freak gap from minting a huge trust window; the 60m floor keeps a
+keeps a freak gap from minting a huge trust window; the 45m floor keeps a
 tight burst from a hair-trigger banner. Bootstrap (no prior stamp):
-trust = floor × 2. Every run PRINTS observed-gap vs floor so cron output
-shows cadence drift. Consequence, explicit: the cron interval (starting
+trust = floor. **Boss's cap-boundary rider, REQUIRED as a comment beside
+the cap constant:** the derivation's no-coordination guarantee holds only
+below cap/multiplier (= 2h interval); above that, trust maxes at the cap
+and the banner cries between renders again — state it in the script so
+the next person doesn't rediscover it by watching a banner cry. Every run
+PRINTS observed-gap + derived trust so cron output shows cadence drift. Consequence, explicit: the cron interval (starting
 at 15m) is boss's to change FREELY — the system stays truthful without
 coordination, which is this design's entire thesis. v1 simplicity call:
 a FAILED render leaves STATE.md untouched (atomic rename guarantees it)
@@ -140,9 +146,11 @@ non-degraded — "who runs this ongoing" is a deliverable.
    the markers byte-untouched (assert!).
 4. The close-without-evidence case renders its loud placeholder (never
    blank, never omitted).
-5. Cadence-derivation: render after an artificially WIDENED gap → the
-   trust window visibly widens and the banner stays quiet (the
-   cannot-cry-between-renders property, demonstrated not argued).
+5. Cadence-derivation, BOTH clamps proven (boss's mirror rider): render
+   after an artificially WIDENED gap → trust window visibly widens,
+   banner stays quiet; render after an artificially NARROWED gap → trust
+   does NOT drop below the 45m floor. The interesting clamp and the
+   boring one, both demonstrated.
 6. Structural (plan's addition — the fencing header CLAIMS nothing can
    open a store; claims get checks): a grep-shape assertion over the three
    delivered scripts proving none references CubDB or opens a store
