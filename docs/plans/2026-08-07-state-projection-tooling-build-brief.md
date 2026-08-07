@@ -93,18 +93,26 @@ hook wiring (the harness half is boss's, not Sol's).
 
 ## Cadence and ownership (plan's required addition)
 
-`bin/state-render` runs ONGOING via cron on this box every 30 minutes
-(wired by boss alongside the session-start hook — host config is theirs;
-the script must be safe under overlapping/failed runs: the flock in the
-tix-migrate harness already serializes probes, and atomic rename means a
-failed render leaves the previous STATE.md intact). **TRUST-UNTIL is
-DERIVED from the cadence: rendered_at + 60m (2× the render interval)** —
-so the stale banner means "the renderer is actually dead," never "we're
-between renders"; a banner that cries between renders trains the reflex
-this design exists to build. The interval and multiplier are constants at
-the top of the script, changed together or not at all. Additionally,
-procedural: any session that closes tickets re-renders before ending
-(the same-day-close discipline's last step).
+FINAL (plan-ratified): `bin/state-render` runs ONGOING via BOX CRON,
+boss-owned, **every 15 minutes**; the cron wrapper runs `bin/state-render`
+THEN `bin/tix-truth-scan` in sequence (the scan is offline-cheap, its
+input export is written by the render, and running both keeps the
+TRACKER-TRUST line as fresh as the frontier it vouches for). Box cron and
+not a serve heartbeat, for a load-bearing reason: a serve trigger ties
+the render SCHEDULE to the same failure domain as the data source —
+serve down → cron still fires → render fails → STATE.md ages → banner at
+trust-until: the correct signal reaching the reader by the correct path.
+**TRUST-UNTIL = rendered_at + 45 minutes (3× interval — 2× is the floor,
+the extra covers cron jitter)** so the banner means "renderer dead,"
+never "between renders." Interval and multiplier are constants at the
+top of the script, changed together or not at all. v1 simplicity call:
+a FAILED render leaves STATE.md untouched (atomic rename guarantees it)
+and the aging banner carries the signal; a richer render-failure marker
+("renderer ran at T, serve unreachable") is a NAMED follow-up, not v1.
+Procedural: any session that closes tickets re-renders before ending
+(the same-day-close discipline's last step). Boss's general rule, banked:
+a component that only degrades gracefully still needs someone to keep it
+non-degraded — "who runs this ongoing" is a deliverable.
 
 ## Red-proofs (each control SEEN red before trusted, outputs in the report)
 
