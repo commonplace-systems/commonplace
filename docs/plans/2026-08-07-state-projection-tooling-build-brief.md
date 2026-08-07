@@ -1,4 +1,4 @@
-> **SUPERSEDED before dispatch (2026-08-07 00:51Z):** plan drafted the gate artifact in parallel — commonplace-plan `docs/plans/2026-08-07-state-projection-sol-brief.md` @8cbdbc6 is THE dispatch brief (plan is the gate; two briefs for one dispatch is the two-locks problem in documentation form). This file is kept as the design-conversation record; its operational fencing (fixtures-only, first-real-render-is-the-coordinator's) rides in the dispatch prompt.
+> **THE DISPATCH ARTIFACT (settled 2026-08-07 00:52Z):** two briefs were drafted in parallel (the two-locks problem, caught by boss); plan's gate reviewed THIS one and passed it with two additions (both folded in below). commonplace-plan's parallel draft (`2026-08-07-state-projection-sol-brief.md` @8cbdbc6) stands as the design-conversation record. One brief, one gate, one dispatch.
 
 # State-projection tooling — Sol build brief (jes directive 2026-08-07)
 
@@ -91,6 +91,21 @@ against the LOCAL clock at invocation:
 Document exact invocation + exit codes in the script header for boss's
 hook wiring (the harness half is boss's, not Sol's).
 
+## Cadence and ownership (plan's required addition)
+
+`bin/state-render` runs ONGOING via cron on this box every 30 minutes
+(wired by boss alongside the session-start hook — host config is theirs;
+the script must be safe under overlapping/failed runs: the flock in the
+tix-migrate harness already serializes probes, and atomic rename means a
+failed render leaves the previous STATE.md intact). **TRUST-UNTIL is
+DERIVED from the cadence: rendered_at + 60m (2× the render interval)** —
+so the stale banner means "the renderer is actually dead," never "we're
+between renders"; a banner that cries between renders trains the reflex
+this design exists to build. The interval and multiplier are constants at
+the top of the script, changed together or not at all. Additionally,
+procedural: any session that closes tickets re-renders before ending
+(the same-day-close discipline's last step).
+
 ## Red-proofs (each control SEEN red before trusted, outputs in the report)
 
 1. `state-prime` against a deliberately BACKDATED STATE.md → the stale
@@ -104,6 +119,10 @@ hook wiring (the harness half is boss's, not Sol's).
    the markers byte-untouched (assert!).
 4. The close-without-evidence case renders its loud placeholder (never
    blank, never omitted).
+5. Structural (plan's addition — the fencing header CLAIMS nothing can
+   open a store; claims get checks): a grep-shape assertion over the three
+   delivered scripts proving none references CubDB or opens a store
+   directly — the class closed by construction, verified, not asserted.
 
 ## Fencing (unchanged, incident-day rules)
 
