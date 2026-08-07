@@ -8,7 +8,6 @@ defmodule Commonplace.GitBridge.ServerTest do
   alias Commonplace.Presence
   alias Commonplace.Dataflow.PubSub
   alias Commonplace.Crypto.{Signing, SigningContext}
-  alias Commonplace.GitBridge.CanonicalXml
   alias Yelixer.Types.{XMLFragment, XMLElement, XMLText}
 
   setup do

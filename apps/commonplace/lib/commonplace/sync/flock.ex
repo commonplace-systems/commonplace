@@ -29,7 +29,10 @@ defmodule Commonplace.Sync.Flock do
   @retry_interval 100
 
   def load_nif do
-    path = :filename.join(:code.priv_dir(:commonplace), ~c"flock_nif")
+    path =
+      Application.get_env(:commonplace, :flock_nif_path) ||
+        :filename.join(:code.priv_dir(:commonplace), ~c"flock_nif")
+
     :erlang.load_nif(path, 0)
   end
 

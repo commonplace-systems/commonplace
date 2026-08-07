@@ -32,7 +32,7 @@ defmodule Commonplace.Process.OrchestratorTest do
   describe "compiling and running elixir processes" do
     test "compiles and starts an elixir process from source doc", %{store: store, root: root} do
       # Create a source document with a simple GenServer
-      source_uuid = create_source_doc(store, root, "greeter.exs", """
+      _source_uuid = create_source_doc(store, root, "greeter.exs", """
       defmodule Commonplace.UserProcess.Greeter do
         use GenServer
         def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
@@ -56,7 +56,7 @@ defmodule Commonplace.Process.OrchestratorTest do
 
       # Should be callable
       pid = pids["greeter"]
-      assert Commonplace.UserProcess.Greeter.greet(pid) == "hello from greeter"
+      assert apply(Commonplace.UserProcess.Greeter, :greet, [pid]) == "hello from greeter"
 
       Process.unlink(orch)
       Process.unlink(orch)
@@ -111,7 +111,7 @@ defmodule Commonplace.Process.OrchestratorTest do
 
       pids = Orchestrator.running_processes(orch)
       old_pid = pids["evolving"]
-      assert Commonplace.UserProcess.Evolving.version(old_pid) == 1
+      assert apply(Commonplace.UserProcess.Evolving, :version, [old_pid]) == 1
 
       # Update source — hot reload keeps the same pid
       create_source_doc(store, root, "evolving.exs", """
@@ -129,7 +129,7 @@ defmodule Commonplace.Process.OrchestratorTest do
       pids = Orchestrator.running_processes(orch)
       new_pid = pids["evolving"]
       assert new_pid == old_pid
-      assert Commonplace.UserProcess.Evolving.version(old_pid) == 2
+      assert apply(Commonplace.UserProcess.Evolving, :version, [old_pid]) == 2
 
       Process.unlink(orch)
       GenServer.stop(orch)
@@ -158,7 +158,7 @@ defmodule Commonplace.Process.OrchestratorTest do
       Process.sleep(200)
 
       pid = Orchestrator.running_processes(orch)["context_check"]
-      ctx = Commonplace.UserProcess.ContextCheck.get_context(pid)
+      ctx = apply(Commonplace.UserProcess.ContextCheck, :get_context, [pid])
       assert ctx.store == store
       assert ctx.name == "context_check"
       assert ctx.config["owns"] == "out.txt"

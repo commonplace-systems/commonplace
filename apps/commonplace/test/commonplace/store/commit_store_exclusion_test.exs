@@ -53,6 +53,24 @@ defmodule Commonplace.Store.CommitStoreExclusionTest do
     stop_store(pid_a, a)
   end
 
+  test "an unavailable flock NIF returns a named fail-closed refusal" do
+    dir = tmp_dir("flock_unavailable")
+    name = uniq("flock_unavailable")
+
+    Process.flag(:trap_exit, true)
+
+    assert {:error, {:flock_unavailable, remedy}} =
+             CommitStore.start_link(
+               data_dir: dir,
+               name: name,
+               flock_module: Commonplace.Sync.DeliberatelyMissingFlockNif
+             )
+
+    assert remedy =~ "flock NIF load failed"
+    assert remedy =~ "refusing the local CommitStore"
+    refute File.exists?(Path.join(dir, "commits"))
+  end
+
   test "the lock file lives in data_dir, NOT inside commits/" do
     dir = tmp_dir("path")
     name = uniq("path")

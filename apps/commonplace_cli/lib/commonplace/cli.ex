@@ -47,6 +47,10 @@ defmodule Commonplace.CLI do
   @workspace_dir ".commonplace"
 
   def main(args) do
+    # NIFs cannot be dlopen'd from a path inside an escript zip archive.
+    # Materialize flock_nif.so before any command can load Flock.
+    Commonplace.CLI.EscriptNif.prepare()
+
     {opts, args, _} =
       OptionParser.parse_head(args,
         strict: [data_dir: :string, help: :boolean],

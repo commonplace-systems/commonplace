@@ -165,7 +165,7 @@ defmodule Commonplace.CLI.Access do
   def probe_lock(data_dir) do
     path = CommitStore.commits_lock_path(data_dir)
 
-    case Flock.try_lock(path, :exclusive) do
+    case try_probe_lock(path) do
       {:ok, ref} ->
         Flock.unlock(ref)
         :free
@@ -176,16 +176,19 @@ defmodule Commonplace.CLI.Access do
       {:error, _other} ->
         :free
     end
+  end
+
+  # Loading a NIF-backed module whose on_load callback failed makes the
+  # module unavailable. Check that condition explicitly so the courtesy
+  # probe never manufactures an UndefinedFunctionError; the authoritative
+  # local open below will return CommitStore's named fail-closed refusal.
+  defp try_probe_lock(path) do
+    case Code.ensure_loaded(Flock) do
+      {:module, Flock} -> Flock.try_lock(path, :exclusive)
+      {:error, _reason} -> {:error, :flock_unavailable}
+    end
   rescue
-    # The flock(2) NIF failing to load (`:code.priv_dir` in an escript is
-    # the classic way) must not turn every CLI invocation into a crash in
-    # the probe. Degrade to the pre-CX-x8jk behaviour: fall through to the
-    # local open, where CommitStore.init/1's own Flock call is the thing
-    # that fails — loudly, and at the layer that owns the exclusion. This
-    # weakens nothing: the probe is a courtesy, the flock is the gate.
-    e ->
-      IO.puts(:stderr, "commonplace: could not probe the commits lock (#{inspect(e)})")
-      :free
+    _error -> {:error, :flock_unavailable}
   end
 
   @doc """
@@ -295,7 +298,10 @@ defmodule Commonplace.CLI.Access do
       Application.stop(:commonplace)
     end
 
-    Application.put_env(:commonplace, :data_dir, data_dir)
+    # The escript wrapper no longer preloads :commonplace. Persist this
+    # override so loading the embedded commonplace.app cannot replace the
+    # deliberately selected workspace with its compile-time "data" default.
+    Application.put_env(:commonplace, :data_dir, data_dir, persistent: true)
 
     case Application.ensure_all_started(:commonplace) do
       {:ok, _} ->

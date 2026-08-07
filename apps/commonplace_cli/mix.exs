@@ -23,7 +23,18 @@ defmodule Commonplace.CLI.MixProject do
   end
 
   defp escript do
-    [main_module: Commonplace.CLI]
+    [
+      main_module: Commonplace.CLI,
+      # The CLI decides deliberately whether to route to a serve or boot
+      # :commonplace locally. Letting Mix's generated escript wrapper start
+      # the project app would recursively start :commonplace against the
+      # compile-time default data dir ("data") before argument parsing.
+      app: nil,
+      # Native libraries are not included for dependencies unless named.
+      # EscriptNif extracts this entry onto a real filesystem before Flock's
+      # on_load callback runs.
+      include_priv_for: [:commonplace]
+    ]
   end
 
   defp deps do
