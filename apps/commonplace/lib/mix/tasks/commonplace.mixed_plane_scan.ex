@@ -28,12 +28,9 @@ defmodule Mix.Tasks.Commonplace.MixedPlaneScan do
   fast, or 1.43x slower, but remains opt-in because it wins on deep chains
   (9.8x on a 200-commit chain).
 
-  This choice is not the full-sweep bottleneck. The per-document commit
-  enumeration scans and filters the entire commit key range in Elixir,
-  approximately 386 million row reads at 5,429 documents and 71,042 entries.
-  It consumed 99.57% of measured time, and unrelated rows produced a 678x
-  controlled slowdown. The sweep remains about 10 hours under either strategy
-  until CX-3an0 Stage A lands.
+  Commit enumeration walks the complete commit key range once and groups IDs
+  by document before reconstruction begins. It does not derive IDs from
+  `:latest`, so persisted unreachable siblings remain in the sweep.
 
   Options:
 
