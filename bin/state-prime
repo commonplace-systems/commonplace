@@ -1,0 +1,106 @@
+#!/usr/bin/env python3
+"""
+state-prime — inject the reader-clock view of STATE.md at session start.
+
+Operator hook invocation (exact):
+  bin/state-prime
+
+Exit codes:
+  0 — a fresh state block or a stale safety banner was emitted to stdout.
+  1 — bad invocation (unknown arguments or an invalid --now test value).
+  2 — STATE.md was missing or its woven timestamp line was unparseable;
+      a loud error was still emitted to stdout (silence is never valid).
+
+`--state` and `--now` exist only for fixture/red-proof execution. The hook
+must use the zero-argument invocation above.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import re
+import sys
+from pathlib import Path
+
+STAMP_RE = re.compile(
+    r"^> RENDERED (?P<rendered>[^ ]+) — TRUST UNTIL (?P<trust>[^.]+)\. Reading this later\?$",
+    re.MULTILINE,
+)
+
+
+def parse_time(value: str) -> dt.datetime:
+    parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError("timestamp has no timezone")
+    return parsed.astimezone(dt.timezone.utc)
+
+
+def human_age(delta: dt.timedelta) -> str:
+    seconds = max(0, int(delta.total_seconds()))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m {seconds}s"
+    return f"{seconds}s"
+
+
+def loud_error(message: str) -> int:
+    print("!!! STATE PROJECTION UNAVAILABLE !!!")
+    print(message)
+    print("DO NOT SCOPE WORK WITHOUT CURRENT STATE.")
+    print("Fallback: bin/state-render, or tix via serve erpc, or git log --oneline --since=<week>.")
+    return 2
+
+
+def main() -> int:
+    project = Path(__file__).resolve().parent.parent
+    parser = argparse.ArgumentParser(add_help=True)
+    parser.add_argument("--state", type=Path, default=project / "STATE.md", help=argparse.SUPPRESS)
+    parser.add_argument("--now", help=argparse.SUPPRESS)
+    try:
+        args = parser.parse_args()
+    except SystemExit as error:
+        return 0 if error.code == 0 else 1
+
+    try:
+        now = parse_time(args.now) if args.now else dt.datetime.now(dt.timezone.utc)
+    except ValueError as error:
+        print(f"state-prime: invalid --now value: {error}", file=sys.stderr)
+        return 1
+
+    try:
+        body = args.state.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return loud_error(f"STATE.md is missing at {args.state}.")
+    except OSError as error:
+        return loud_error(f"STATE.md could not be read at {args.state}: {error}.")
+
+    match = STAMP_RE.search(body)
+    if not match:
+        return loud_error(f"STATE.md at {args.state} has no parseable RENDERED / TRUST UNTIL line.")
+
+    try:
+        rendered = parse_time(match.group("rendered"))
+        trust = parse_time(match.group("trust"))
+    except ValueError as error:
+        return loud_error(f"STATE.md at {args.state} has an invalid woven timestamp: {error}.")
+
+    if now <= trust:
+        sys.stdout.write(body)
+        if body and not body.endswith("\n"):
+            print()
+        return 0
+
+    print("!!! STATE PROJECTION IS STALE !!!")
+    print(f"Rendered {human_age(now - rendered)} ago; trust expired {human_age(now - trust)} ago.")
+    print("DO NOT SCOPE FROM THIS STATE.md.")
+    print("Stale frontier content has been withheld.")
+    print("Fallback: bin/state-render, or tix via serve erpc, or git log --oneline --since=<week>.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
