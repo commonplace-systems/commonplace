@@ -1159,11 +1159,12 @@ defmodule Commonplace.Store.CommitStore do
   def init(opts) do
     name = Keyword.get(opts, :name, __MODULE__)
     data_dir = Keyword.fetch!(opts, :data_dir)
+    flock_module = Keyword.get(opts, :flock_module, Commonplace.Sync.Flock)
     path = Path.join(data_dir, "commits")
 
     # CX-2479: take the exclusion BEFORE any CubDB open. See
     # `acquire_commits_lock/1`.
-    case acquire_commits_lock(data_dir) do
+    case acquire_commits_lock(data_dir, flock_module) do
       {:ok, lock_ref} -> init_locked(opts, name, data_dir, path, lock_ref)
       {:stop, _} = stop -> stop
     end
@@ -1399,7 +1400,7 @@ defmodule Commonplace.Store.CommitStore do
   #
   # Non-blocking: `Flock.try_lock/2`, not the fail-open
   # `with_exclusive_lock/3` helper — the whole point is to fail CLOSED.
-  defp acquire_commits_lock(data_dir) do
+  defp acquire_commits_lock(data_dir, flock_module) do
     require Logger
     path = commits_lock_path(data_dir)
 
@@ -1409,10 +1410,22 @@ defmodule Commonplace.Store.CommitStore do
     # Read the incumbent's hint BEFORE we overwrite it with our own.
     hint = Commonplace.Store.LockRefusal.holder_hint(path)
 
-    case Commonplace.Sync.Flock.try_lock(path, :exclusive) do
+    case try_flock(flock_module, path) do
       {:ok, ref} ->
         File.write(path, "#{System.pid()} #{node()}\n")
         {:ok, ref}
+
+      {:flock_unavailable, load_reason} ->
+        remedy = flock_unavailable_remedy(load_reason)
+
+        Logger.error("""
+        CommitStore: refusing to open #{Path.join(data_dir, "commits")} — flock_nif.so is \
+        unavailable, so single-opener exclusion cannot be guaranteed.
+          #{remedy}
+        No CubDB open was attempted. (CX-a449)\
+        """)
+
+        {:stop, {:flock_unavailable, remedy}}
 
       {:error, reason} ->
         detail = %{
@@ -1432,6 +1445,29 @@ defmodule Commonplace.Store.CommitStore do
 
         {:stop, {:commits_store_locked, detail}}
     end
+  end
+
+  defp try_flock(flock_module, path) do
+    case Code.ensure_loaded(flock_module) do
+      {:module, ^flock_module} ->
+        try do
+          apply(flock_module, :try_lock, [path, :exclusive])
+        rescue
+          error in [UndefinedFunctionError, ErlangError] ->
+            {:flock_unavailable, Exception.message(error)}
+        catch
+          :error, :undef -> {:flock_unavailable, :undef}
+        end
+
+      {:error, reason} ->
+        {:flock_unavailable, reason}
+    end
+  end
+
+  defp flock_unavailable_remedy(reason) do
+    "flock NIF load failed (#{inspect(reason)}). Reinstall or rebuild the CLI so " <>
+      "commonplace/priv/flock_nif.so is present and loadable; refusing the local " <>
+      "CommitStore rather than opening it without an OS lock."
   end
 
   # CX-2479 rider: the incident's trigger was a legitimate read need going

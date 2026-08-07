@@ -8,11 +8,10 @@ defmodule Commonplace.Sync.AgentTest do
   """
   use ExUnit.Case
 
-  alias Commonplace.Sync.{Agent, Export, InodeTracker}
+  alias Commonplace.Sync.{Agent, InodeTracker}
   alias Commonplace.Tree.{Schema, Walk}
   alias Commonplace.Document.ContentType
   alias Commonplace.Store.CommitStore
-  alias Commonplace.Dataflow.PubSub, as: CPPubSub
 
   setup do
     store_dir = Path.join(System.tmp_dir!(), "cp_agent_store_#{:rand.uniform(1_000_000)}")

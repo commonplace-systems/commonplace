@@ -170,7 +170,6 @@ defmodule Commonplace.Sync.SyncRecursiveTest do
       changes_root = Watcher.detect_changes(root, dir, store)
       assert changes_root == []
 
-      load = loader(store)
       {:ok, sub_entry} = Schema.get_entry(loader(store).(root), "sub")
       changes_sub = Watcher.detect_changes(sub_entry.node_id, Path.join(dir, "sub"), store)
       assert changes_sub == []
