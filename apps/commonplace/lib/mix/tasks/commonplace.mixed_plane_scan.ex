@@ -15,16 +15,33 @@ defmodule Mix.Tasks.Commonplace.MixedPlaneScan do
   boot, before this task can configure distribution.
 
   The production form makes exactly one `:erpc` call: the complete gate and
-  sweep execute inside the serve. `--fixture` instead performs a local dry
+  sweep execute inside the serve. Killing this Mix client does not reap that
+  remote work. To stop safely, create `STOP` in the checkpoint directory;
+  the serve finishes in-flight documents, checkpoints them, and exits the
+  sweep nonzero. Remove `STOP` before resuming. `--fixture` performs a local dry
   run using only scratch CubDB stores under `/tmp`; it never starts
   distribution or contacts a serve.
+
+  Oracle reconstruction is the default because it was faster on the live
+  workload: 162.7 seconds versus 231.9 seconds for incremental across 25
+  documents and 56 commits (2.24 commits/document). Incremental was 0.70x as
+  fast, or 1.43x slower, but remains opt-in because it wins on deep chains
+  (9.8x on a 200-commit chain).
+
+  This choice is not the full-sweep bottleneck. The per-document commit
+  enumeration scans and filters the entire commit key range in Elixir,
+  approximately 386 million row reads at 5,429 documents and 71,042 entries.
+  It consumed 99.57% of measured time, and unrelated rows produced a 678x
+  controlled slowdown. The sweep remains about 10 hours under either strategy
+  until CX-3an0 Stage A lands.
 
   Options:
 
     * `--node NODE` - target serve node (required except with `--fixture`)
     * `--checkpoint PATH` - resumability checkpoint directory (required)
-    * `--progress-every N` - progress cadence in documents (default 25)
+    * `--progress-every N` - progress cadence in documents (default 1)
     * `--max-concurrency N` - documents scanned concurrently (default 4)
+    * `--incremental` - use the memoized-parent walk instead of the default oracle
     * `--fixture` - local five-commit dry run; never contacts real data
   """
 
@@ -39,7 +56,8 @@ defmodule Mix.Tasks.Commonplace.MixedPlaneScan do
           checkpoint: :string,
           progress_every: :integer,
           max_concurrency: :integer,
-          fixture: :boolean
+          fixture: :boolean,
+          incremental: :boolean
         ]
       )
 
@@ -49,8 +67,9 @@ defmodule Mix.Tasks.Commonplace.MixedPlaneScan do
 
     scanner_opts = [
       checkpoint_path: checkpoint,
-      progress_every: opts[:progress_every] || 25,
-      max_concurrency: opts[:max_concurrency] || 4
+      progress_every: opts[:progress_every] || 1,
+      max_concurrency: opts[:max_concurrency] || 4,
+      scan_strategy: if(opts[:incremental], do: :incremental, else: :oracle)
     ]
 
     result =
@@ -109,7 +128,9 @@ defmodule Mix.Tasks.Commonplace.MixedPlaneScan do
     Mix.raise(
       "#{message}\nusage: mix commonplace.mixed_plane_scan " <>
         "--checkpoint PATH [--fixture | --node NODE] " <>
-        "[--progress-every N] [--max-concurrency N]"
+        "[--progress-every N] [--max-concurrency N] [--incremental]\n" <>
+        "default strategy: oracle (162.7s vs 231.9s incremental at 2.24 commits/doc); " <>
+        "the ~10h sweep is dominated by CX-3an0 commit enumeration, not reconstruction"
     )
   end
 end

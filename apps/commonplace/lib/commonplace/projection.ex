@@ -178,7 +178,7 @@ defmodule Commonplace.Projection do
 
   alias Commonplace.Crypto.Signing
   alias Commonplace.Projection.{MixedPlane, PostState}
-  alias Commonplace.Store.{Commit, CommitStoreClient}
+  alias Commonplace.Store.{Commit, CommitStore, CommitStoreClient}
   alias Commonplace.Tree.DocBuilder
   alias Yelixer.{Doc, Encoding}
 
@@ -241,6 +241,39 @@ defmodule Commonplace.Projection do
   end
 
   @doc """
+  Project several pins from one document with one memoized parent walk.
+
+  Results have exactly the `project_at/3` shape and preserve the caller's
+  order. The ordinary single-pin API remains the projection oracle. This
+  batch form is intentionally limited to the scanner's `required: :any`
+  floor; unusually deep cap-ambiguous histories fall back to the oracle.
+  """
+  @spec project_history(String.t(), [binary()], keyword()) :: [{binary(), result()}]
+  def project_history(doc_uuid, commit_ids, opts \\ []) do
+    required = Keyword.get(opts, :required, :any)
+
+    unless required == :any do
+      raise ArgumentError, "project_history/3 supports only required: :any"
+    end
+
+    store = Keyword.get(opts, :store, CommitStoreClient)
+
+    {results, _memo} =
+      Enum.map_reduce(commit_ids, %{}, fn commit_id, memo ->
+        case fetch_commit(store, doc_uuid, commit_id) do
+          {:ok, commit} ->
+            {prepared, memo} = prepare_history_commit(store, commit, memo, opts)
+            {{commit_id, project_prepared(doc_uuid, prepared, store, opts)}, memo}
+
+          other ->
+            {{commit_id, other}, memo}
+        end
+      end)
+
+    results
+  end
+
+  @doc """
   As `project_at/3`, but yields the reconstructed `Yelixer.Doc` instead of
   its canonical bytes.
 
@@ -255,7 +288,9 @@ defmodule Commonplace.Projection do
   def project_doc_at(doc_uuid, commit_id, opts \\ []) do
     store = Keyword.get(opts, :store, CommitStoreClient)
     required = Keyword.get(opts, :required, :any)
-    unless required in @floors, do: raise(ArgumentError, "unknown :required floor #{inspect(required)}")
+
+    unless required in @floors,
+      do: raise(ArgumentError, "unknown :required floor #{inspect(required)}")
 
     with {:ok, commit} <- fetch_commit(store, doc_uuid, commit_id),
          {:ok, chain} <- fetch_chain(store, doc_uuid, commit_id, opts),
@@ -266,6 +301,120 @@ defmodule Commonplace.Projection do
       |> tripwire()
     end
   end
+
+  defp prepare_history_commit(store, commit, memo, opts) do
+    case Map.fetch(memo, commit.id) do
+      {:ok, prepared} ->
+        {prepared, memo}
+
+      :error ->
+        {prepared, memo} = build_history_commit(store, commit, memo, opts)
+        {prepared, Map.put(memo, commit.id, prepared)}
+    end
+  end
+
+  defp build_history_commit(store, commit, memo, opts) do
+    cond do
+      genesis?(commit) ->
+        {%{commit: commit, replay: Doc.new(doc_opts(opts)), tally: empty_tally(), length: 0},
+         memo}
+
+      snapshot?(commit) ->
+        {advance_history(Doc.new(doc_opts(opts)), empty_tally(), 0, commit, opts), memo}
+
+      true ->
+        {parent, memo} = history_parent(store, commit.parent_id, memo, opts)
+
+        prepared =
+          case parent do
+            nil ->
+              advance_history(Doc.new(doc_opts(opts)), empty_tally(), 0, commit, opts)
+
+            %{fallback: true} ->
+              %{commit: commit, fallback: true}
+
+            prepared ->
+              if prepared.length >= CommitStore.max_commit_log_limit() do
+                %{commit: commit, fallback: true}
+              else
+                advance_history(prepared.replay, prepared.tally, prepared.length, commit, opts)
+              end
+          end
+
+        {prepared, memo}
+    end
+  end
+
+  defp history_parent(_store, nil, memo, _opts), do: {nil, memo}
+
+  defp history_parent(store, parent_id, memo, opts) do
+    case Map.fetch(memo, parent_id) do
+      {:ok, prepared} ->
+        {prepared, memo}
+
+      :error ->
+        case CommitStoreClient.get_commit(store, parent_id) do
+          {:ok, parent} -> prepare_history_commit(store, parent, memo, opts)
+          :none -> {nil, memo}
+        end
+    end
+  end
+
+  defp advance_history(replay, {:error, _} = error, length, commit, _opts),
+    do: %{commit: commit, replay: replay, tally: error, length: length + 1}
+
+  defp advance_history(replay, {:ok, tally}, length, commit, _opts) do
+    tally =
+      case classify_commit(commit, trust_config()) do
+        {:ok, key} -> {:ok, Map.update!(tally, key, &(&1 + 1))}
+        {:error, _} = error -> error
+      end
+
+    replay =
+      case replay do
+        %Doc{} ->
+          case Encoding.apply_update(replay, commit.update) do
+            {:ok, next} -> next
+            _ -> nil
+          end
+
+        nil ->
+          nil
+      end
+
+    %{commit: commit, replay: replay, tally: tally, length: length + 1}
+  end
+
+  defp project_prepared(doc_uuid, %{commit: commit, fallback: true}, store, opts),
+    do: project_at(doc_uuid, commit.id, Keyword.put(opts, :store, store))
+
+  defp project_prepared(doc_uuid, prepared, store, opts) do
+    case prepared.tally do
+      {:error, _} = error ->
+        error
+
+      {:ok, tally} ->
+        prepared.commit
+        |> select_tier(
+          store,
+          doc_uuid,
+          {:prepared_replay, prepared.replay},
+          :any,
+          opts
+        )
+        |> add_method(signature_method(tally, prepared.length))
+        |> tripwire()
+        |> case do
+          {:ok, %Doc{} = doc, verdict} -> {:ok, PostState.canonical_bytes(doc), verdict}
+          other -> other
+        end
+    end
+  end
+
+  defp empty_tally, do: {:ok, %{verified: 0, unsigned: 0, unpinned: 0}}
+
+  defp snapshot?(commit), do: match?(%{kind: :snapshot}, Map.get(commit, :metadata))
+  defp genesis?(commit), do: match?(%{kind: :genesis}, Map.get(commit, :metadata))
 
   # ── Fetch + cross-check ────────────────────────────────────────────
 
@@ -336,7 +485,7 @@ defmodule Commonplace.Projection do
     cfg = trust_config()
 
     Enum.reduce_while(chain, {:ok, %{verified: 0, unsigned: 0, unpinned: 0}}, fn commit,
-                                                                                {:ok, tally} ->
+                                                                                 {:ok, tally} ->
       case classify_commit(commit, cfg) do
         {:ok, key} -> {:cont, {:ok, Map.update!(tally, key, &(&1 + 1))}}
         {:error, _} = err -> {:halt, err}
@@ -658,6 +807,8 @@ defmodule Commonplace.Projection do
       _ -> nil
     end
   end
+
+  defp replay_state({:prepared_replay, replay}, _opts), do: replay
 
   defp replay_state(chain, opts) do
     Enum.reduce_while(chain, Doc.new(doc_opts(opts)), fn c, doc ->

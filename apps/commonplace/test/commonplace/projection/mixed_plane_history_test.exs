@@ -113,7 +113,8 @@ defmodule Commonplace.Projection.MixedPlaneHistoryTest do
         store: store,
         scan_id: "resume-fixture",
         progress_every: 1,
-        max_concurrency: 1
+        max_concurrency: 1,
+        scan_strategy: :oracle
       ]
 
       first_output =
@@ -136,7 +137,9 @@ defmodule Commonplace.Projection.MixedPlaneHistoryTest do
 
       second_output =
         capture_io(fn ->
-          assert {:ok, second} = MixedPlaneHistory.run(opts)
+          assert {:ok, second} =
+                   MixedPlaneHistory.run(Keyword.put(opts, :scan_strategy, :incremental))
+
           assert second.resumed_docs == 1
           assert second.commits_this_run == 0
           assert second.commits_scanned == 5
@@ -144,6 +147,84 @@ defmodule Commonplace.Projection.MixedPlaneHistoryTest do
 
       assert second_output =~ "resumed_docs=1 commits_this_run=0"
     end)
+  end
+
+  test "the default scanner strategy is oracle", %{dir: dir} do
+    MixedPlaneHistoryFixture.with_store(fn store, fixture ->
+      output =
+        capture_io(fn ->
+          assert {:ok, summary} =
+                   MixedPlaneHistory.run(
+                     checkpoint_path: Path.join(dir, "default-oracle"),
+                     store: store,
+                     scan_id: "default-oracle",
+                     mode: :fixture,
+                     positive_control: fn -> {:ok, %{armed_commit_id_hex: "control"}} end,
+                     progress_every: 1,
+                     max_concurrency: 1
+                   )
+
+          assert summary.commits_scanned == length(fixture.commit_ids)
+        end)
+
+      assert [_, observed_strategy] =
+               Regex.run(~r/^SWEEP START .* strategy=(\S+)$/m, output)
+
+      assert observed_strategy == "oracle",
+             "expected default scanner strategy oracle, got #{observed_strategy}"
+    end)
+  end
+
+  test "STOP finishes the current document, checkpoints it, and resumes cleanly", %{dir: dir} do
+    checkpoint = Path.join(dir, "stoppable")
+    parent = self()
+    commit_id = <<11::256>>
+
+    blocking_project = fn doc_uuid, ^commit_id, _opts ->
+      send(parent, {:project_started, doc_uuid, self()})
+
+      receive do
+        :release_project -> {:ok, <<>>, %{}}
+      end
+    end
+
+    opts = [
+      checkpoint_path: checkpoint,
+      scan_id: "stoppable-fixture",
+      store: :unused_store,
+      mode: :fixture,
+      positive_control: fn -> {:ok, %{armed_commit_id_hex: "control"}} end,
+      doc_uuids: fn -> MapSet.new(["doc-1", "doc-2", "doc-3"]) end,
+      commit_ids: fn _doc_uuid -> MapSet.new([commit_id]) end,
+      project: blocking_project,
+      progress_every: 1,
+      max_concurrency: 1,
+      emit: fn line -> send(parent, {:sweep_line, line}) end
+    ]
+
+    task = Task.async(fn -> MixedPlaneHistory.run(opts) end)
+    assert_receive {:project_started, "doc-1", worker}
+    File.touch!(Path.join(checkpoint, "STOP"))
+    send(worker, :release_project)
+
+    assert {:error, {:sweep_stopped, checkpointed: 1, remaining: 2}} = Task.await(task)
+    lines = receive_sweep_lines([])
+    assert Enum.any?(lines, &String.starts_with?(&1, "SWEEP STOPPED"))
+    refute Enum.any?(lines, &String.starts_with?(&1, "SUMMARY "))
+    assert length(Path.wildcard(Path.join(checkpoint, "docs/*.json"))) == 1
+    IO.puts(Enum.join(lines, "\n"))
+
+    File.rm!(Path.join(checkpoint, "STOP"))
+
+    assert {:ok, resumed} =
+             MixedPlaneHistory.run(
+               opts
+               |> Keyword.delete(:emit)
+               |> Keyword.put(:project, fn _doc_uuid, ^commit_id, _opts -> {:ok, <<>>, %{}} end)
+             )
+
+    assert resumed.resumed_docs == 1
+    assert resumed.commits_this_run == 2
   end
 
   test "projection failures skip the document and print the commit-specific reason", %{dir: dir} do
@@ -174,5 +255,13 @@ defmodule Commonplace.Projection.MixedPlaneHistoryTest do
     assert output =~ "SKIP doc=doc-unreadable commit=#{Base.encode16(commit_id, case: :lower)}"
     assert output =~ "reason={:error, :bad_pin}"
     assert output =~ "docs_skipped=1"
+  end
+
+  defp receive_sweep_lines(lines) do
+    receive do
+      {:sweep_line, line} -> receive_sweep_lines([line | lines])
+    after
+      0 -> Enum.reverse(lines)
+    end
   end
 end

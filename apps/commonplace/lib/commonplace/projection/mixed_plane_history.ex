@@ -18,6 +18,29 @@ defmodule Commonplace.Projection.MixedPlaneHistory do
   commit IDs come from `CommitStore.all_commit_ids_for_doc/2` (including
   unreachable commits). Nothing in this module writes to the commit store.
 
+  The reconstruction strategy defaults to the retained oracle: one
+  `Projection.project_at/3` call per commit. This is a measured choice, not a
+  correctness workaround: on the live corpus (25 documents, 56 commits,
+  2.24 commits/document), oracle took 162.7 seconds versus 231.9 seconds for
+  the incremental memoized-parent walk, so incremental ran at 0.70x oracle
+  throughput (1.43x slower). Incremental remains available with
+  `scan_strategy: :incremental` because it wins decisively on deep histories
+  (9.8x on 200-commit chains), a workload the current corpus does not have.
+
+  Strategy choice does **not** determine whether a full sweep is viable.
+  `CommitStore.all_commit_ids_for_doc/2` selects the entire `{:commit, _}` key
+  range and filters in Elixir: O(documents x total commits), approximately
+  386 million row reads for today's 5,429 documents and 71,042 entries. That
+  enumeration accounts for 99.57% of measured time; unrelated commit rows
+  alone caused a controlled 678x slowdown. The sweep therefore remains about
+  10 hours with either reconstruction strategy until CX-3an0 Stage A lands.
+
+  Killing the local Mix client does **not** stop a remote sweep: the single
+  `:erpc` call executes independently inside the serve node. The supported
+  cooperative stop is a file named `STOP` in the checkpoint directory. It
+  is checked before each document; already-running documents finish and are
+  checkpointed, then the run emits `SWEEP STOPPED` and returns an error.
+
   The checkpoint is an operator-selected directory outside the store. Its
   manifest and per-document JSON records are replaced atomically. Keeping one
   file per document avoids quadratically rewriting an ever-growing census
@@ -49,10 +72,11 @@ defmodule Commonplace.Projection.MixedPlaneHistory do
 
   Required option: `:checkpoint_path`. Production normally leaves `:store`
   unset, which selects `CommitStore` and the required
-  `CommitStoreClient.all_doc_uuids/0` census. `:progress_every` defaults to 25
-  documents and `:max_concurrency` defaults to 4. `:mode` defaults to `:live`;
+  `CommitStoreClient.all_doc_uuids/0` census. `:progress_every` defaults to 1
+  document and `:max_concurrency` defaults to 4. `:mode` defaults to `:live`;
   live mode requires every UUID in `:expected_known_positives` to have a hit,
-  with the known affected document as the default set.
+  with the known affected document as the default set. `:scan_strategy`
+  defaults to `:oracle`; pass `:incremental` only for deep-chain workloads.
   """
   @spec run(keyword()) :: {:ok, summary()} | {:error, term()}
   def run(opts) do
@@ -98,8 +122,9 @@ defmodule Commonplace.Projection.MixedPlaneHistory do
     store = Keyword.get(opts, :store, CommitStore)
     checkpoint_path = Keyword.fetch!(opts, :checkpoint_path)
     scan_id = Keyword.get(opts, :scan_id, "#{inspect(node())}:#{inspect(store)}")
-    progress_every = positive_integer!(opts, :progress_every, 25)
+    progress_every = positive_integer!(opts, :progress_every, 1)
     max_concurrency = positive_integer!(opts, :max_concurrency, 4)
+    scan_strategy = effective_scan_strategy(opts)
 
     with {:ok, checkpoint} <- load_checkpoint(checkpoint_path, scan_id),
          {:ok, doc_uuids} <- fetch_doc_uuids(store, opts) do
@@ -109,7 +134,7 @@ defmodule Commonplace.Projection.MixedPlaneHistory do
 
       emit.(
         "SWEEP START docs_total=#{total} checkpoint=#{checkpoint_path} " <>
-          "resumable=true max_concurrency=#{max_concurrency}"
+          "resumable=true max_concurrency=#{max_concurrency} strategy=#{scan_strategy}"
       )
 
       initial = %{
@@ -122,31 +147,48 @@ defmodule Commonplace.Projection.MixedPlaneHistory do
       final =
         docs
         |> Task.async_stream(
-          fn doc_uuid -> scan_or_reuse_doc(doc_uuid, store, checkpoint, opts) end,
+          fn doc_uuid ->
+            scan_or_reuse_doc(doc_uuid, store, checkpoint, checkpoint_path, opts)
+          end,
           max_concurrency: max_concurrency,
           ordered: false,
           timeout: :infinity
         )
-        |> Enum.reduce(initial, fn {:ok, result}, acc ->
-          acc = accept_result(result, acc, checkpoint_path, emit)
+        |> Enum.reduce(initial, fn
+          {:ok, {:stopped, _doc_uuid}}, acc ->
+            acc
 
-          if rem(acc.processed, progress_every) == 0 or acc.processed == total do
-            emit_progress(emit, acc, total, started_ms)
-          end
+          {:ok, result}, acc ->
+            acc = accept_result(result, acc, checkpoint_path, emit)
 
-          acc
+            if rem(acc.processed, progress_every) == 0 or acc.processed == total do
+              emit_progress(emit, acc, total, started_ms)
+            end
+
+            acc
         end)
 
-      summary = summarize(final.checkpoint, total, final, started_ms)
+      if final.processed < total and stop_requested?(checkpoint_path) do
+        remaining = total - final.processed
 
-      case missing_known_positives(final.checkpoint, opts) do
-        [] ->
-          emit_summary(emit, summary)
-          {:ok, summary}
+        emit.(
+          "SWEEP STOPPED checkpoint=#{checkpoint_path} docs_checkpointed=#{final.processed} " <>
+            "docs_remaining=#{remaining} exit_nonzero=true"
+        )
 
-        missing ->
-          emit_void(emit, missing, summary)
-          {:error, {:known_positives_missing, missing}}
+        {:error, {:sweep_stopped, checkpointed: final.processed, remaining: remaining}}
+      else
+        summary = summarize(final.checkpoint, total, final, started_ms)
+
+        case missing_known_positives(final.checkpoint, opts) do
+          [] ->
+            emit_summary(emit, summary)
+            {:ok, summary}
+
+          missing ->
+            emit_void(emit, missing, summary)
+            {:error, {:known_positives_missing, missing}}
+        end
       end
     else
       {:error, reason} ->
@@ -155,7 +197,15 @@ defmodule Commonplace.Projection.MixedPlaneHistory do
     end
   end
 
-  defp scan_or_reuse_doc(doc_uuid, store, checkpoint, opts) do
+  defp scan_or_reuse_doc(doc_uuid, store, checkpoint, checkpoint_path, opts) do
+    if stop_requested?(checkpoint_path) do
+      {:stopped, doc_uuid}
+    else
+      do_scan_or_reuse_doc(doc_uuid, store, checkpoint, opts)
+    end
+  end
+
+  defp do_scan_or_reuse_doc(doc_uuid, store, checkpoint, opts) do
     case fetch_commit_ids(store, doc_uuid, opts) do
       {:ok, commit_ids} ->
         commit_hexes = Enum.map(commit_ids, &hex/1)
@@ -174,11 +224,11 @@ defmodule Commonplace.Projection.MixedPlaneHistory do
   end
 
   defp scan_commits(doc_uuid, commit_ids, store, opts) do
-    project = Keyword.get(opts, :project, &Projection.project_at/3)
+    results = project_results(doc_uuid, commit_ids, store, opts)
 
     {hits, failures, attempted} =
-      Enum.reduce(commit_ids, {[], [], 0}, fn commit_id, {hits, failures, attempted} ->
-        case safe_project(project, doc_uuid, commit_id, store) do
+      Enum.reduce(results, {[], [], 0}, fn {commit_id, result}, {hits, failures, attempted} ->
+        case result do
           {:unknown, {:mixed_plane, details}} ->
             hit = %{"commit_id" => hex(commit_id), "details" => json_safe(details)}
             {[hit | hits], failures, attempted + 1}
@@ -198,6 +248,24 @@ defmodule Commonplace.Projection.MixedPlaneHistory do
       "hits" => Enum.reverse(hits),
       "skip_reasons" => Enum.reverse(failures)
     }
+  end
+
+  defp project_results(doc_uuid, commit_ids, store, opts) do
+    if effective_scan_strategy(opts) == :oracle do
+      project = Keyword.get(opts, :project, &Projection.project_at/3)
+      Enum.map(commit_ids, &{&1, safe_project(project, doc_uuid, &1, store)})
+    else
+      case safely(fn -> Projection.project_history(doc_uuid, commit_ids, store: store) end) do
+        {:ok, results} -> results
+        {:error, reason} -> Enum.map(commit_ids, &{&1, {:scanner_exception, reason}})
+      end
+    end
+  end
+
+  defp effective_scan_strategy(opts) do
+    if Keyword.has_key?(opts, :project),
+      do: :oracle,
+      else: Keyword.get(opts, :scan_strategy, :oracle)
   end
 
   defp failed_enumeration_record(reason) do
@@ -440,6 +508,8 @@ defmodule Commonplace.Projection.MixedPlaneHistory do
         raise ArgumentError, "#{inspect(key)} must be a positive integer, got: #{inspect(value)}"
     end
   end
+
+  defp stop_requested?(checkpoint_path), do: File.regular?(Path.join(checkpoint_path, "STOP"))
 
   defp json_safe(value) when is_map(value),
     do: Map.new(value, fn {key, nested} -> {to_string(key), json_safe(nested)} end)
