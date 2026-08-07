@@ -1,0 +1,835 @@
+{"as_of":"2026-08-07T01:27Z","kind":"tix-export"}
+{"closed_at":"2026-04-26T02:10:52Z","id":"CX-00ze","status":"closed","title":"[bug] ChatRoomLive composer accepts whitespace-only text and creates blank messages","updated_at":"2026-04-26T02:10:52Z"}
+{"closed_at":null,"id":"CX-01iq","status":"open","title":"Resonant Ward chimes are room-text-only \u2014 'examine azure chime'/'examine chimes' fails","updated_at":"2026-07-13T17:01:38Z"}
+{"closed_at":null,"id":"CX-01n4","status":"open","title":"@dump shows owner:nil on rooms \u2014 cosmetic (rooms are zone-stamped, no owner field)","updated_at":"2026-07-11T04:19:46Z"}
+{"closed_at":"2026-04-28T09:30:00Z","id":"CX-01pc","status":"closed","title":"MUD v0 P1: world mechanics (no in-world programming)","updated_at":"2026-04-28T09:30:00Z"}
+{"closed_at":"2026-04-20T00:16:42Z","id":"CX-023","status":"closed","title":"Commonplace.Document.TextMerge: shared text-diff CRDT merge utility","updated_at":"2026-04-20T00:16:42Z"}
+{"closed_at":"2026-04-26T19:27:17Z","id":"CX-04d8","status":"closed","title":"M3 substrate-pure chat: declarative XML sprint (umbrella)","updated_at":"2026-04-26T19:27:17Z"}
+{"closed_at":"2026-07-07T16:44:56Z","id":"CX-0a9a","status":"closed","title":"Zone-ownership M1 piece 2: presence-carve (content-aware Gate-B)","updated_at":"2026-07-07T16:44:56Z"}
+{"closed_at":null,"id":"CX-0axz","status":"open","title":"Federation PullClient: skip genesis CIDs in catch-up diff (suppress strict-reject noise)","updated_at":"2026-06-12T08:13:56Z"}
+{"closed_at":"2026-03-24T00:56:10Z","id":"CX-0di","status":"closed","title":"BlockStore O(n) scan performance","updated_at":"2026-03-24T00:56:10Z"}
+{"closed_at":null,"id":"CX-0ii3","status":"open","title":"@verb editor pre-fill/preview showed EMPTY for existing SAFE verbs (read_source looked up legacy .elx only)","updated_at":"2026-07-10T18:32:53Z"}
+{"closed_at":null,"id":"CX-0kke","status":"open","title":"bd CLI parity: hygiene/quality commands (preflight/lint/doctor/human/stale-orphans)","updated_at":"2026-07-19T04:04:39.966680Z"}
+{"closed_at":"2026-04-16T17:53:39Z","id":"CX-0kz","status":"closed","title":"Phoenix code_reloader Mix listener warning on every dev request","updated_at":"2026-04-16T17:53:39Z"}
+{"closed_at":"2026-03-24T00:56:09Z","id":"CX-0n3","status":"closed","title":"Get yrs dataset tests passing","updated_at":"2026-03-24T00:56:09Z"}
+{"closed_at":"2026-04-25T17:52:24Z","id":"CX-0nkq","status":"closed","title":"CommitStore overload + MCP tool crash propagation under fork","updated_at":"2026-04-25T17:52:24Z"}
+{"closed_at":"2026-03-25T04:54:23Z","id":"CX-0ou","status":"closed","title":"TreeLive: silent data loss, no catch-all handle_info, path traversal risk","updated_at":"2026-03-25T04:54:23Z"}
+{"closed_at":"2026-03-23T04:53:20Z","id":"CX-0qw","status":"closed","title":"Import creates duplicate flat entries alongside directory structure","updated_at":"2026-03-23T04:53:20Z"}
+{"closed_at":"2026-03-22T21:18:38Z","id":"CX-0r7","status":"closed","title":"CLI: commonplace replay (view commit history)","updated_at":"2026-03-22T21:18:38Z"}
+{"closed_at":null,"id":"CX-0t2r","status":"in_progress","title":"Reflog checkpointing silently dormant on the live serve since 2026-04-25; would be trust-denied if it ever fired","updated_at":"2026-08-03T06:36:22Z"}
+{"closed_at":"2026-04-25T23:27:05Z","id":"CX-0trq","status":"closed","title":"Chat: switch _messages and _reactions docs to ContentType envelopes","updated_at":"2026-04-25T23:27:05Z"}
+{"closed_at":"2026-04-18T09:10:03Z","id":"CX-0ut2","status":"closed","title":"6.4 \u2014 Pre-flight validator + atomic apply","updated_at":"2026-04-18T09:10:03Z"}
+{"closed_at":"2026-07-20T02:59:30Z","id":"CX-0xt0","status":"closed","title":"Heartbeat wake + read_chat crashes the worker: :messages_uuid missing from autonomous spawn opts (KeyError via fetch!)","updated_at":"2026-07-20T02:59:30Z"}
+{"closed_at":"2026-07-07T06:50:27Z","id":"CX-0ywq","status":"closed","title":"MUD QoL: object-only guard refusal (:requires_object_host) is silent to players","updated_at":"2026-07-07T06:50:27Z"}
+{"closed_at":"2026-04-03T18:09:38Z","id":"CX-108","status":"closed","title":"BEAM distribution for multi-node sync","updated_at":"2026-04-03T18:09:38Z"}
+{"closed_at":"2026-07-07T21:45:47Z","id":"CX-11p5","status":"closed","title":"[bug] escript MCP bots take STARTER path (no mud_full_citizenship in escript app-env) \u2192 capability_insufficient under enforce; -32602 wrapper misleads","updated_at":"2026-07-07T21:45:47Z"}
+{"closed_at":null,"id":"CX-12cl","status":"open","title":"Doc: open_exit missing from @verb editor banner + object-hosted-verb grant gotcha","updated_at":"2026-07-14T10:04:42Z"}
+{"closed_at":null,"id":"CX-15ff","status":"open","title":"PullClient periodic-poll: re-offered back-filled genesis :already_exists crashed poll GenServer","updated_at":"2026-07-12T20:36:08Z"}
+{"closed_at":"2026-04-09T02:26:53Z","id":"CX-17i","status":"closed","title":"Tech debt: route CLI verbs through magenta (fork/merge/branch/checkout/gc)","updated_at":"2026-04-09T02:26:53Z"}
+{"closed_at":null,"id":"CX-18s","status":"open","title":"Architectural reconciliation: ViewCompute vs SmartDoc+Orchestrator","updated_at":"2026-04-09T23:35:49Z"}
+{"closed_at":null,"id":"CX-1a9y","status":"open","title":"Container open-vs-locked state not visible on look \u2014 deposit-is-relinquish footgun","updated_at":"2026-07-13T16:56:55Z"}
+{"closed_at":null,"id":"CX-1azj","status":"open","title":"Code-signing-key separation \u2014 data-key compromise != RCE (gates broad self-hosting)","updated_at":"2026-07-08T14:53:46Z"}
+{"closed_at":"2026-03-24T00:56:10Z","id":"CX-1bc","status":"closed","title":"Robust error handling for malformed update binaries","updated_at":"2026-03-24T00:56:10Z"}
+{"closed_at":"2026-04-17T23:12:58Z","id":"CX-1cc","status":"closed","title":"Positional-rebase phase 4: YArray rebase (LCS + identity function contract)","updated_at":"2026-04-17T23:12:58Z"}
+{"closed_at":"2026-07-10T18:50:12Z","id":"CX-1cfj","status":"closed","title":"Containers are name-keyed: same-name objects can't coexist in a room or inventory \u2014 drop/take refused, items become undroppable","updated_at":"2026-07-10T18:50:12Z"}
+{"closed_at":"2026-08-05T21:50:03.510366Z","id":"CX-1duj","status":"closed","title":"Ticket-DAG: thin CLI/UI for the on-substrate dev-DAG (day-1 is MCP verbs + Frontier RPC)","updated_at":"2026-08-05T21:50:04.386543Z"}
+{"closed_at":"2026-07-20T02:29:48Z","id":"CX-1f5t","status":"closed","title":"Camillo batch: prompt caching + usage accounting + fork-minter fix + real thread-idle + pending-chat surfacing","updated_at":"2026-07-20T02:29:48Z"}
+{"closed_at":null,"id":"CX-1f64","status":"open","title":"CLI escript has no freshness check \u2014 stale binary is a second authoring surface (check-mcp-fresh covers MCP only)","updated_at":"2026-08-06T17:02:34.674882Z"}
+{"closed_at":null,"id":"CX-1ji","status":"open","title":"Black channel: condition engine (programmatic rules)","updated_at":"2026-03-22T16:17:23Z"}
+{"closed_at":"2026-04-25T23:27:04Z","id":"CX-1kl1","status":"closed","title":"[bug] ViewActionDispatch chat clauses drop args['messages_log_uuid'] \u2014 red onramp never triggered via MCP path","updated_at":"2026-04-25T23:27:04Z"}
+{"closed_at":"2026-04-18T23:48:07Z","id":"CX-1mml","status":"closed","title":"Canonicalize merge (parent_id, merge_parents) by CID ordering","updated_at":"2026-04-18T23:48:07Z"}
+{"closed_at":"2026-04-28T11:34:33Z","id":"CX-1mwy","status":"closed","title":"MUD: verb-output API needs docs (or convenience module)","updated_at":"2026-04-28T11:34:33Z"}
+{"closed_at":"2026-07-08T05:07:03Z","id":"CX-1mz7","status":"closed","title":"DROP/GIVE hard prereq: structural is-shared-curated-room gate (M2 zone-stamp or tree-location) before drop lands","updated_at":"2026-07-08T05:07:03Z"}
+{"closed_at":null,"id":"CX-1pa","status":"open","title":"Podman/container sandbox for untrusted code","updated_at":"2026-08-05T21:49:51.986539Z"}
+{"closed_at":"2026-04-26T02:10:52Z","id":"CX-1si4","status":"closed","title":"Bug hunt: Wallaby-driven chat MVP exercise to find real bugs","updated_at":"2026-04-26T02:10:52Z"}
+{"closed_at":"2026-04-18T15:22:16Z","id":"CX-1t0t","status":"closed","title":"Heuristic snapshot trigger with lull detection","updated_at":"2026-04-18T15:22:16Z"}
+{"closed_at":null,"id":"CX-1uf1","status":"open","title":"Capability-GRANT verb \u2014 in-game delegation of edit powers","updated_at":"2026-07-07T02:33:47Z"}
+{"closed_at":null,"id":"CX-1zge","status":"open","title":"MUD: first connect renders the spawn room TWICE (after 'Welcome, <name>')","updated_at":"2026-07-12T21:26:47Z"}
+{"closed_at":"2026-07-07T04:12:52Z","id":"CX-1zqd","status":"closed","title":"actor_carries?(world, \"\") returned true (blank matches any held item) \u2014 FIXED","updated_at":"2026-07-07T04:12:52Z"}
+{"closed_at":"2026-08-07T00:43:33.578936Z","id":"CX-2479","status":"closed","title":"commits.lock excludes nobody \u2014 second opener overwrites the pid instead of being refused","updated_at":"2026-08-07T00:43:34.508550Z"}
+{"closed_at":null,"id":"CX-26rw","status":"open","title":"@verb compile-error line numbers offset +2 from author's typed body lines","updated_at":"2026-07-13T17:24:30Z"}
+{"closed_at":null,"id":"CX-27ck","status":"open","title":"QoL: @private/@public state invisible + noun shadowing breaks verbs (ring bell vs brass bell)","updated_at":"2026-07-10T05:54:38Z"}
+{"closed_at":null,"id":"CX-28bd","status":"open","title":"put with ghost-inventory item gives misleading 'You can't put that there' (should be 'You aren't carrying that')","updated_at":"2026-07-13T17:01:20Z"}
+{"closed_at":"2026-03-24T01:45:31Z","id":"CX-290","status":"closed","title":"Zigzag (signed varint) encoding bug: encode_sint(-1) produces wrong value","updated_at":"2026-03-24T01:45:31Z"}
+{"closed_at":null,"id":"CX-2cd","status":"open","title":"Cron-style recurring scheduled events","updated_at":"2026-08-05T21:49:09.896286Z"}
+{"closed_at":"2026-07-13T18:17:13Z","id":"CX-2cmq","status":"closed","title":"MUD: containers are roach motels for visitors \u2014 put-in allowed, take-out ALWAYS denied (even your own just-deposited item); zone owner can extract but ghost-poisoning can strand the item forever","updated_at":"2026-07-13T18:17:13Z"}
+{"closed_at":"2026-04-09T09:14:30Z","id":"CX-2cq","status":"closed","title":"P4: Multi-commit yelixer fixture tests","updated_at":"2026-04-09T09:14:30Z"}
+{"closed_at":null,"id":"CX-2enc","status":"open","title":"Prune stale pre-mud/ top-level room layout from commonplace-data mirror","updated_at":"2026-07-11T02:34:47Z"}
+{"closed_at":"2026-04-28T01:56:22Z","id":"CX-2fia","status":"closed","title":"Gold.Chain.attest crashes when called with CommitStoreClient routing module","updated_at":"2026-04-28T01:56:22Z"}
+{"closed_at":null,"id":"CX-2gm","status":"open","title":"Reflog: recursive checkpoint snapshots with gold attestation","updated_at":"2026-04-06T02:25:36Z"}
+{"closed_at":null,"id":"CX-2h2c","status":"open","title":"MUD NPE: chant glyph described as 'glowing coal' but only 'ember' is accepted \u2014 natural first answer fails and resets the altar","updated_at":"2026-07-10T07:34:41Z"}
+{"closed_at":"2026-04-09T06:57:22Z","id":"CX-2j4","status":"closed","title":"P5: Yelixer wire format decode fuzzing","updated_at":"2026-04-09T06:57:22Z"}
+{"closed_at":"2026-05-13T14:35:13Z","id":"CX-2j50","status":"closed","title":"Literate-rewrite Store.CommitStore \u2014 cycle 1","updated_at":"2026-05-13T14:35:13Z"}
+{"closed_at":null,"id":"CX-2jq6","status":"open","title":"Verb-surface gap: in_progress-without-claim is unexitable through the gate \u2014 release clears custody but not the status mirror, close requires open (live instance: CX-3hv0)","updated_at":"2026-08-05T21:51:30.496449Z"}
+{"closed_at":null,"id":"CX-2l0d","status":"open","title":"\"A zoned dir has exactly one meta\" is an unenforced comment invariant \u2014 find_value over a filtered list lets entry ordering pick the zone","updated_at":"2026-08-04T20:49:15Z"}
+{"closed_at":"2026-07-19T20:04:24Z","id":"CX-2npv","status":"closed","title":"GhostReaper: autonomous registration counts as live-session membership","updated_at":"2026-07-19T20:04:24Z"}
+{"closed_at":null,"id":"CX-2o9o","status":"in_progress","title":"Safe-verb gate: compile errors are surfaced opaquely ('errors have been logged') \u2014 hide the real diagnostic + line","updated_at":"2026-07-13T17:12:42Z"}
+{"closed_at":"2026-04-20T00:26:05Z","id":"CX-2ok0","status":"closed","title":"Explicit CLI snapshot command","updated_at":"2026-04-20T00:26:05Z"}
+{"closed_at":"2026-06-12T13:30:41Z","id":"CX-2qjd","status":"closed","title":"Outliner MVP iv: _view.xml action declarations + ViewActionDispatch wiring (MCP surface)","updated_at":"2026-06-12T13:30:41Z"}
+{"closed_at":null,"id":"CX-2rbz","status":"open","title":"Expose Trust.anchor_keys/0 public accessor; delete the local_anchor_keys/0 copy in MUD.Verbs","updated_at":"2026-07-06T19:58:24Z"}
+{"closed_at":"2026-04-18T08:11:38Z","id":"CX-2rd","status":"closed","title":"6.2 \u2014 Derivation-map inversion helper","updated_at":"2026-04-18T08:11:38Z"}
+{"closed_at":"2026-04-09T06:36:12Z","id":"CX-2sv","status":"closed","title":"yelixer Item.split overrides left halfs right_origin (CX-rmk blocker)","updated_at":"2026-04-09T06:36:12Z"}
+{"closed_at":"2026-08-03T05:39:29Z","id":"CX-2t8p","status":"closed","title":"BotPresenceCertTest re-spawn flake under load: send_input hits dead bot session after CX-vj8v registry+lease respawn","updated_at":"2026-08-03T05:39:29Z"}
+{"closed_at":null,"id":"CX-2uio","status":"open","title":"Self-host: builder verbs (@dig/@create/@desc/@name/@link/@verb/@teleport/@private/@container/\u2026) are compiled-in \u2192 doc-hosting slice (trust-sensitive, after CX-1azj)","updated_at":"2026-08-05T21:13:30.259119Z"}
+{"closed_at":"2026-07-08T14:52:25Z","id":"CX-2xez","status":"closed","title":"MUD-as-documents Inc-1: doc-host the command parser via EngineModule resolver","updated_at":"2026-07-08T14:52:25Z"}
+{"closed_at":"2026-08-05T00:45:29Z","id":"CX-2xn1","status":"closed","title":"Yelixer: Doc.snapshot_update/1 silently DESTROYS one whole kind on a mixed keyed+plain sequence","updated_at":"2026-08-05T00:45:29Z"}
+{"closed_at":null,"id":"CX-2zb","status":"open","title":"White channel: entitlements / merge gates","updated_at":"2026-08-05T21:49:11.150759Z"}
+{"closed_at":"2026-07-18T20:25:08Z","id":"CX-2ztl","status":"closed","title":"Ticket-DAG S2: instance-first frontier ready-query (replaces walk-based Bd.Ready)","updated_at":"2026-07-18T20:25:08Z"}
+{"closed_at":null,"id":"CX-315","status":"open","title":"HTTP/REST API for documents","updated_at":"2026-03-22T16:14:48Z"}
+{"closed_at":"2026-04-26T20:53:07Z","id":"CX-38fw","status":"closed","title":"M4 (i): /chat/__template/ bootstrap + chat-tier __template validation rule","updated_at":"2026-04-26T20:53:07Z"}
+{"closed_at":null,"id":"CX-3ab7","status":"open","title":"[security] MCP mud_send: client-supplied bot 'name' resolves to a stable node-held identity + owned home with NO caller-auth (impersonation, local-stdio)","updated_at":"2026-07-12T17:38:27Z"}
+{"closed_at":null,"id":"CX-3bm8","status":"open","title":"[bug] MUD output-hygiene: mine/harvest + smith leak Elixir internals to players (graceful-refusal + drop-note gaps)","updated_at":"2026-07-07T21:52:37Z"}
+{"closed_at":"2026-03-30T20:28:12Z","id":"CX-3ct","status":"closed","title":"CLI commands do raw Schema + Encoding instead of tree APIs","updated_at":"2026-03-30T20:28:12Z"}
+{"closed_at":"2026-07-04T06:34:57Z","id":"CX-3erd","status":"closed","title":"Hoist CPU out of CommitStore's serialized write section (R4c Option A)","updated_at":"2026-07-04T06:37:19Z"}
+{"closed_at":null,"id":"CX-3hii","status":"open","title":"Builtin @create collides on duplicate names (only Facade minters stack)","updated_at":"2026-07-07T03:32:21Z"}
+{"closed_at":null,"id":"CX-3hv0","status":"in_progress","title":"Ticket-DAG S5: migrate ~214 open beads \u2192 live ticket-DAG (import + three-way verify + cutover)","updated_at":"2026-08-05T21:50:57.666752Z"}
+{"closed_at":"2026-04-18T23:24:43Z","id":"CX-3hvu","status":"closed","title":"Magenta merge: lazy red-log onramp per path + schema path resolution","updated_at":"2026-04-18T23:24:43Z"}
+{"closed_at":"2026-04-09T06:43:26Z","id":"CX-3hy","status":"closed","title":"P1: Targeted yelixer rehydrate-modify integration tests","updated_at":"2026-04-09T06:43:26Z"}
+{"closed_at":"2026-03-26T04:38:30Z","id":"CX-3i3","status":"closed","title":"CommitStoreClient missing function parity with CommitStore","updated_at":"2026-03-26T04:38:30Z"}
+{"closed_at":"2026-04-25T10:40:50Z","id":"CX-3ine","status":"closed","title":"Sync.Agent resurrects reaped presence files from disk \u2192 CPU spin","updated_at":"2026-04-25T10:40:50Z"}
+{"closed_at":"2026-03-24T06:22:40Z","id":"CX-3jd","status":"closed","title":"CheckoutRegistry silently drops failed checkouts on startup","updated_at":"2026-03-24T06:22:40Z"}
+{"closed_at":null,"id":"CX-3s0j","status":"open","title":"Flip Object.fixed default to opt-in takeable (fail-closed) \u2014 Object.takeable:true instead of fixed:false-default","updated_at":"2026-07-08T02:30:03Z"}
+{"closed_at":"2026-04-16T17:45:59Z","id":"CX-3ty","status":"closed","title":"Snapshot/compaction pass for presence docs (Yelixer state vector reduction)","updated_at":"2026-04-16T17:45:59Z"}
+{"closed_at":"2026-04-18T15:22:13Z","id":"CX-3vc2","status":"closed","title":"Automatic mandatory snapshot threshold","updated_at":"2026-04-18T15:22:13Z"}
+{"closed_at":"2026-07-07T11:09:35Z","id":"CX-3x5a","status":"closed","title":"Harden map_safe_result: audit every builtin/go verb-result arm vs what the safe-verb path forwards","updated_at":"2026-07-07T11:09:35Z"}
+{"closed_at":"2026-06-10T01:38:05Z","id":"CX-3xfc","status":"closed","title":"Architecture review of Commonplace (Fable 5 shakedown)","updated_at":"2026-06-10T01:38:05Z"}
+{"closed_at":"2026-07-13T01:23:33Z","id":"CX-3xwu","status":"closed","title":"MUD: quit leaves ghost player in who/room roster \u2014 presence never cleaned up on disconnect","updated_at":"2026-07-13T16:01:49Z"}
+{"closed_at":null,"id":"CX-405h","status":"open","title":"Harden node-signed round-trip writes against silent zone-stamp strip (Mint.write_vein_meta + audit)","updated_at":"2026-07-10T16:45:23Z"}
+{"closed_at":null,"id":"CX-41qg","status":"open","title":"Writer identity \u2014 persistent client-ids, the actor/hand model","updated_at":"2026-07-06T03:32:09Z"}
+{"closed_at":"2026-07-06T04:23:13Z","id":"CX-41qg.1","status":"closed","title":"W1: CommandRouter persistent node-writer hand","updated_at":"2026-07-06T04:23:13Z"}
+{"closed_at":"2026-07-06T10:47:48Z","id":"CX-41qg.2","status":"closed","title":"W2: The actor/hand design finalized + reviewed","updated_at":"2026-07-06T10:47:48Z"}
+{"closed_at":"2026-07-06T10:47:49Z","id":"CX-41qg.3","status":"closed","title":"W3: Writer adoption sweep","updated_at":"2026-07-06T10:47:49Z"}
+{"closed_at":"2026-07-06T11:11:46Z","id":"CX-41qg.4","status":"closed","title":"W4: Browser-session hands","updated_at":"2026-07-06T11:11:46Z"}
+{"closed_at":null,"id":"CX-41qg.5","status":"open","title":"W5: Legacy bloat measurement + compaction rider","updated_at":"2026-07-06T03:32:48Z"}
+{"closed_at":"2026-08-03T01:48:22Z","id":"CX-42no","status":"closed","title":"Watcher/Sync.Agent disk reads raise uncontained \u2014 one bad file (perms/symlink cycle) crash-loops a checkout forever","updated_at":"2026-08-03T01:48:22Z"}
+{"closed_at":null,"id":"CX-4631","status":"open","title":"Legacy Keep-basement chain (Cellar \u2192 'The Ashfall Forge' \u2192 'The Warded Vault') duplicates questline names and is a looted dead end","updated_at":"2026-07-12T19:53:25Z"}
+{"closed_at":"2026-04-25T21:39:04Z","id":"CX-487i","status":"closed","title":"Chat V1+V2 \u2014 ViewActionDispatch chat clauses + post_message handler (merged)","updated_at":"2026-04-25T21:39:04Z"}
+{"closed_at":"2026-07-19T20:54:13Z","id":"CX-4a5y","status":"closed","title":"C6: dig tool + wiki namespace + the door that names itself","updated_at":"2026-07-19T20:54:13Z"}
+{"closed_at":"2026-04-16T20:10:18Z","id":"CX-4ba","status":"closed","title":"Presence doc rendering: surface useful actor info on .bot/.usr/.exe/.who pages","updated_at":"2026-04-16T20:10:18Z"}
+{"closed_at":"2026-04-18T19:14:59Z","id":"CX-4e2g","status":"closed","title":"Snapshot-trigger primitive: mandatory-threshold check","updated_at":"2026-04-18T19:14:59Z"}
+{"closed_at":"2026-04-09T18:59:10Z","id":"CX-4im","status":"closed","title":"CommitStore publishes on commits: but UI subscribes on blue: \u2014 topic mismatch","updated_at":"2026-04-09T18:59:10Z"}
+{"closed_at":null,"id":"CX-4k36","status":"open","title":"chat-over-web bots: audit serve wiring + make real on the web chat surface","updated_at":"2026-07-19T04:04:40.472957Z"}
+{"closed_at":"2026-04-21T18:36:19Z","id":"CX-4l7u","status":"closed","title":"Yelixer.Doc-level clientID_in_namespace?/3 cache (CX-ch5 follow-up)","updated_at":"2026-04-21T18:36:19Z"}
+{"closed_at":"2026-03-26T04:41:52Z","id":"CX-4o4","status":"closed","title":"Merge.ex uses CommitStore directly \u2014 needs CommitStoreClient parity first","updated_at":"2026-03-26T04:41:52Z"}
+{"closed_at":"2026-03-24T01:45:32Z","id":"CX-4pe","status":"closed","title":"Build bidirectional Yjs oracle test harness","updated_at":"2026-03-24T01:45:32Z"}
+{"closed_at":null,"id":"CX-4pmm","status":"open","title":"Arrival broadcast reads 'X arrives from the in.' when player exits their home","updated_at":"2026-07-13T17:01:37Z"}
+{"closed_at":"2026-04-18T19:25:11Z","id":"CX-4qn1","status":"closed","title":"Distributed sibling-commit merge (post-import chain reassembly)","updated_at":"2026-04-18T19:25:11Z"}
+{"closed_at":null,"id":"CX-4rec","status":"open","title":"Transcript doc growth: roll to per-period docs when it matters","updated_at":"2026-07-19T19:09:25Z"}
+{"closed_at":null,"id":"CX-4u03","status":"in_progress","title":"Zone-ownership M2: growing zones \u2014 Tree.ChildMutation chokepoint + move-cleared zone-stamp","updated_at":"2026-07-10T16:05:22Z"}
+{"closed_at":"2026-07-18T22:55:01.231240Z","id":"CX-4vy8","status":"closed","title":"Gitignore workspace/.commonplace (+ live data dirs) so 'git stash -u' can't sweep jes's 90MB world into a stash","updated_at":"2026-07-18T22:55:01.625543Z"}
+{"closed_at":"2026-04-19T23:04:05Z","id":"CX-4wl","status":"closed","title":"Reaper doesn't follow workspace reroot \u2014 pinned to startup root_uuid","updated_at":"2026-04-19T23:04:05Z"}
+{"closed_at":"2026-03-25T04:48:46Z","id":"CX-4xf","status":"closed","title":"CommitStoreClient and DocBuilder have no tests","updated_at":"2026-03-25T04:48:46Z"}
+{"closed_at":"2026-03-23T01:58:53Z","id":"CX-539","status":"closed","title":"CubDB corrupts on unclean shutdown","updated_at":"2026-03-23T01:58:53Z"}
+{"closed_at":"2026-07-12T02:05:52Z","id":"CX-55o3","status":"closed","title":"BUG: verb-authoring bricks object takeability (verbs/ zoned child) \u2014 M3 object-following prerequisite","updated_at":"2026-07-12T02:05:52Z"}
+{"closed_at":"2026-05-13T17:37:19Z","id":"CX-57w3","status":"closed","title":"v0 chat-room bot build: entity-as-doc, ephemeral cave-diver workers","updated_at":"2026-05-13T17:37:19Z"}
+{"closed_at":"2026-04-21T01:16:15Z","id":"CX-592q","status":"closed","title":"Heuristic lull-aware snapshot trigger","updated_at":"2026-04-21T01:16:15Z"}
+{"closed_at":"2026-07-10T08:28:31Z","id":"CX-5c78","status":"closed","title":"MUD enforce-mode: containers are loot-only for non-owners \u2014 take allowed, put denied on EVERY curated container (chest, forge, reliquary)","updated_at":"2026-07-10T08:28:31Z"}
+{"closed_at":null,"id":"CX-5e8s","status":"open","title":"HumanWebPlayTest/RoomVisibility greet-render race: PlayerSession greet renders '(this place has no description)' instead of the home room under some seed orderings (the deep CX-c93b tail)","updated_at":"2026-07-17T17:17:46Z"}
+{"closed_at":"2026-04-19T22:59:51Z","id":"CX-5gp","status":"closed","title":"Resolve presence identity from stored content, not filename","updated_at":"2026-04-19T22:59:51Z"}
+{"closed_at":"2026-03-24T03:00:25Z","id":"CX-5gr","status":"closed","title":"Detect node_id replacements under unchanged filenames","updated_at":"2026-03-24T03:00:25Z"}
+{"closed_at":"2026-04-20T02:52:18Z","id":"CX-5gx","status":"closed","title":"Build 6 \u2014 Late-edit translation (primary path via derivation maps)","updated_at":"2026-04-20T02:52:18Z"}
+{"closed_at":"2026-03-25T01:32:39Z","id":"CX-5h8","status":"closed","title":"Remove dead stub modules: Reachability and Runner","updated_at":"2026-03-25T01:32:39Z"}
+{"closed_at":"2026-03-27T19:40:50Z","id":"CX-5he","status":"closed","title":"CLI commands do raw Encoding.apply_update instead of DocBuilder","updated_at":"2026-03-27T19:40:50Z"}
+{"closed_at":null,"id":"CX-5ikm","status":"open","title":"Boot-durable autonomous-bot heartbeat registration (Camillo survives serve restart)","updated_at":"2026-07-19T07:31:47Z"}
+{"closed_at":null,"id":"CX-5kw4","status":"open","title":"Sync/Orchestrator crash-containment hardening (defense-in-depth beyond CX-xmhw)","updated_at":"2026-06-13T04:02:38Z"}
+{"closed_at":null,"id":"CX-5kw9","status":"open","title":"MUD: 10s session-call timeout on trivial 'drop' after builder burst \u2014 mud_send crashes, op completes late; error blames closed CX-0nkq","updated_at":"2026-07-06T18:53:33Z"}
+{"closed_at":null,"id":"CX-5le4","status":"open","title":"Bd.Frontier.Server never started in production \u2014 ready/blocked view-docs and dependency-hell alarm never fire on the serve","updated_at":"2026-08-03T01:06:06Z"}
+{"closed_at":"2026-03-23T05:07:52Z","id":"CX-5mp","status":"closed","title":"Export command doesn't route through CommitStoreClient","updated_at":"2026-03-23T05:07:52Z"}
+{"closed_at":"2026-07-06T17:48:32Z","id":"CX-5plk","status":"closed","title":"MCP sessions have no signing identity \u2014 agents can BUILD but can't PLAY under strict (move/take unsigned-denied)","updated_at":"2026-07-06T17:48:32Z"}
+{"closed_at":null,"id":"CX-5ssa","status":"open","title":"M2 subtree QUOTA: bound per-player build count under their home subtree (DoS-hygiene fast-follow)","updated_at":"2026-07-10T16:05:40Z"}
+{"closed_at":"2026-07-07T08:24:49Z","id":"CX-5u5j","status":"closed","title":"Expose consume/give_to_actor (mutation) to player verbs \u2014 the quest-turn-in beat","updated_at":"2026-07-07T08:24:49Z"}
+{"closed_at":"2026-07-12T19:49:00Z","id":"CX-5ujj","status":"closed","title":"BUG: mine debug-event leak \u2014 raw '(event: %{kind: :mine, ...})' printed to the player","updated_at":"2026-07-12T19:49:00Z"}
+{"closed_at":"2026-03-22T18:33:16Z","id":"CX-5ym","status":"closed","title":"Recursive __processes.json discovery and subdirectory-scoped sandboxes","updated_at":"2026-03-22T18:33:16Z"}
+{"closed_at":"2026-07-06T10:45:04Z","id":"CX-60na","status":"closed","title":"Develop the Green + Black channels (jes wiki-read: underdeveloped)","updated_at":"2026-07-06T10:45:04Z"}
+{"closed_at":"2026-07-08T17:53:26Z","id":"CX-60wl","status":"closed","title":"Sync suite fs-watch timing flakes: SyncLoopTest / VersionTrackingTest 'never reached v2'","updated_at":"2026-07-08T17:53:26Z"}
+{"closed_at":null,"id":"CX-6567","status":"open","title":"Economy items (mine/smith) carry an :available (unheld) possession token in inventory \u2014 location-protected, not held-protected","updated_at":"2026-08-05T21:49:18.446314Z"}
+{"closed_at":"2026-04-21T19:19:35Z","id":"CX-65n","status":"closed","title":"Snapshots / time-travel checkout","updated_at":"2026-04-21T19:19:35Z"}
+{"closed_at":"2026-07-06T19:12:23Z","id":"CX-66ca","status":"closed","title":"MUD: user verbs shadow BUILTIN commands \u2014 define bell:take and 'take bell' runs user code instead of the builtin pickup (survives an mczs fix)","updated_at":"2026-07-06T19:12:23Z"}
+{"closed_at":null,"id":"CX-66v6","status":"open","title":"Spec: general durable orphaned-token reconcile sweep (re-anchor by structural inventory membership, standing auto-repair)","updated_at":"2026-07-10T19:58:05Z"}
+{"closed_at":null,"id":"CX-68m6","status":"open","title":"reconstruct_doc/3 is a WRITE: lazy-snapshot minting fires on reads of deep docs (default-on outside :test) \u2014 reader discipline gap","updated_at":"2026-08-06T05:43:56.089677Z"}
+{"closed_at":"2026-04-19T02:08:40Z","id":"CX-69d7","status":"closed","title":"Sync-agent + merge command end-to-end integration tests","updated_at":"2026-04-19T02:08:40Z"}
+{"closed_at":"2026-04-17T23:54:35Z","id":"CX-6a7","status":"closed","title":"Positional-rebase dirty-edit preservation across snapshot boundaries (umbrella)","updated_at":"2026-04-17T23:54:35Z"}
+{"closed_at":"2026-04-24T03:34:02Z","id":"CX-6av","status":"closed","title":"One-time scheduled events (at-style)","updated_at":"2026-04-24T03:34:02Z"}
+{"closed_at":"2026-08-03T01:39:21Z","id":"CX-6bqk","status":"closed","title":"CAS write path: fixed 5-attempt constant, no telemetry when optimistic writes exhaust and fall back to serialized path","updated_at":"2026-08-03T01:39:21Z"}
+{"closed_at":"2026-08-03T01:33:41Z","id":"CX-6cgl","status":"closed","title":"Repo hygiene: gitignore priv/*.so, remove stale erl_crash.dump, rename misleading CommitStore alias in inspect_cmd","updated_at":"2026-08-03T01:33:41Z"}
+{"closed_at":"2026-04-28T01:56:22Z","id":"CX-6cts","status":"closed","title":"MCP escript stale \u2014 predates M3-M7; workspace can't invoke_view_action against new shape","updated_at":"2026-04-28T01:56:22Z"}
+{"closed_at":"2026-08-05T20:02:26.285372Z","id":"CX-6cz3","status":"closed","title":"tix-migration step 1: gated ticket_import + ticket_create verbs (WriteGuard chokepoint for supplied-id and minted-id creation)","updated_at":"2026-08-05T20:02:26.391451Z"}
+{"closed_at":"2026-04-26T20:59:09Z","id":"CX-6e92","status":"closed","title":"M4 (iv): Non-chat synthetic anchor for Tree.Fork (Anchor G)","updated_at":"2026-04-26T20:59:09Z"}
+{"closed_at":"2026-04-27T00:55:16Z","id":"CX-6fhe","status":"closed","title":"M6 (iii): ViewCompute code_uuid subscription (third commit topic)","updated_at":"2026-04-27T00:55:16Z"}
+{"closed_at":null,"id":"CX-6g0j","status":"open","title":"Extend CodeDocHeuristic to sniff view-XML / compute-spec docs (CX-tdkq.28 defense-in-depth gap)","updated_at":"2026-07-06T23:42:03Z"}
+{"closed_at":null,"id":"CX-6g21","status":"open","title":"MUD demo curation: default spawn room \u2192 The Copper Lantern (best-written 6-way hub), not The Start Room","updated_at":"2026-07-07T15:07:18Z"}
+{"closed_at":"2026-04-16T20:16:49Z","id":"CX-6g6","status":"closed","title":"Stabilize client_id for Presence writers (root cause of state-vector bloat)","updated_at":"2026-04-16T20:16:49Z"}
+{"closed_at":"2026-03-26T05:22:48Z","id":"CX-6gv","status":"closed","title":"Green channel: exclusive lock manager (bursar)","updated_at":"2026-03-26T05:22:48Z"}
+{"closed_at":"2026-07-08T16:11:11Z","id":"CX-6hxa","status":"closed","title":"Pre-existing: mud/ test suite order-dependent flakiness (mud_full_citizenship / CommitStore singleton leak)","updated_at":"2026-07-08T16:11:11Z"}
+{"closed_at":"2026-03-24T05:27:06Z","id":"CX-6ib","status":"closed","title":"Sparse sync: selective subtree materialization","updated_at":"2026-03-24T05:27:06Z"}
+{"closed_at":"2026-04-18T03:32:53Z","id":"CX-6mm","status":"closed","title":"CX-ch5: Yelixer namespace primitive + validator swap (umbrella build 3)","updated_at":"2026-04-18T03:32:53Z"}
+{"closed_at":"2026-08-05T21:15:15.894397Z","id":"CX-6n62","status":"closed","title":"tix-migration step 2: migrate the 26 live bd-only tickets, ids preserved, through the gated import \u2014 3-way acceptance + scanner reads zero","updated_at":"2026-08-05T21:15:16.053505Z"}
+{"closed_at":"2026-04-27T00:55:16Z","id":"CX-6on8","status":"closed","title":"M6 substrate-pure chat: code as doc \u2014 Elixir source declared by DocRef (umbrella)","updated_at":"2026-04-27T00:55:16Z"}
+{"closed_at":"2026-07-16T16:48:49Z","id":"CX-6pbu","status":"closed","title":"Self-host: doc-hosted engine verbs (parser/look/say/emote/inventory) + chat compute have their SOURCE OF TRUTH as compiled ~S''' string literals \u2192 move canonical seed into editable documents","updated_at":"2026-07-16T16:48:49Z"}
+{"closed_at":"2026-03-24T03:00:25Z","id":"CX-6pp","status":"closed","title":"Auto-rename on name collision during merge","updated_at":"2026-03-24T03:00:25Z"}
+{"closed_at":"2026-03-23T05:48:57Z","id":"CX-6rf","status":"closed","title":"GC: reachability walk to find orphaned docs","updated_at":"2026-03-23T05:48:57Z"}
+{"closed_at":"2026-04-18T04:44:32Z","id":"CX-6sc","status":"closed","title":"Snapshot op + derivation map + deterministic-anyone hash (Build 5, CX-umz)","updated_at":"2026-04-18T04:44:32Z"}
+{"closed_at":"2026-08-06T07:29:17.844784Z","id":"CX-6scm","status":"closed","title":"P1: chain replay (reconstruct_doc_at / reconstruct_doc) silently drops entries on full-state-rewrite chains \u2014 80/2376 dir_schema docs disagree with the live read path AT HEAD, 124 tree entries lost","updated_at":"2026-08-06T07:29:18.692416Z"}
+{"closed_at":null,"id":"CX-6sf2","status":"open","title":"Port messaging to Commonplace \u2014 claude-chat (#loom) + clod-squad on the substrate","updated_at":"2026-07-06T05:47:58Z"}
+{"closed_at":"2026-07-06T04:49:35Z","id":"CX-6sf2.1","status":"closed","title":"A1: #loom as a commonplace chat room + agent tool surface","updated_at":"2026-07-06T05:57:32Z"}
+{"closed_at":"2026-07-06T05:31:05Z","id":"CX-6sf2.2","status":"closed","title":"A2: IRC bridge bot \u2014 bidirectional #loom \u2194 room mirror","updated_at":"2026-07-06T05:31:05Z"}
+{"closed_at":null,"id":"CX-6sf2.3","status":"open","title":"B1: Inbox-doc model + delivery semantics design","updated_at":"2026-07-06T05:48:17Z"}
+{"closed_at":null,"id":"CX-6sf2.4","status":"open","title":"B2: Inbox docs + send/read_history MCP tools","updated_at":"2026-08-05T21:13:32.811510Z"}
+{"closed_at":"2026-07-06T04:58:49Z","id":"CX-6sf2.5","status":"closed","title":"B3: list_peers/presence on visible-actors","updated_at":"2026-07-06T04:58:49Z"}
+{"closed_at":null,"id":"CX-6sf2.6","status":"open","title":"B4: Harness delivery \u2014 messages into live sessions","updated_at":"2026-08-05T21:13:33.423583Z"}
+{"closed_at":null,"id":"CX-6sf2.7","status":"open","title":"C: Black-channel requirements capture","updated_at":"2026-07-06T02:03:08Z"}
+{"closed_at":"2026-07-06T05:57:12Z","id":"CX-6sf2.8","status":"closed","title":"LoomBridge: live IRC transport adapter + supervision (human-gated wiring)","updated_at":"2026-07-06T05:57:12Z"}
+{"closed_at":null,"id":"CX-6sf2.9","status":"open","title":"IRC deprecation \u2014 cut #loom over to the native loom room, retire claude-chat","updated_at":"2026-07-06T05:57:31Z"}
+{"closed_at":null,"id":"CX-6xwq","status":"open","title":"ComputeRehydratorTest 'rehydrates on boot' flakes {:already_started} \u2014 app-supervised rehydrator collides with test's own start_link","updated_at":"2026-07-10T15:10:56Z"}
+{"closed_at":"2026-04-17T23:58:30Z","id":"CX-6y9","status":"closed","title":"snapshot_update/1 discards XML-backed doc content","updated_at":"2026-04-17T23:58:30Z"}
+{"closed_at":"2026-07-13T00:41:39Z","id":"CX-6zie","status":"closed","title":"Warded Vault unlock: gold ingot give silently denied \u2014 success flavor prints but ingot never lands (enforce/identity)","updated_at":"2026-07-13T00:41:39Z"}
+{"closed_at":null,"id":"CX-6zyz","status":"open","title":"MUD: two-vaults naming confusion \u2014 'Warded Vault' (DOWN) vs 'dialed vault' (WEST, in 'The Vault Antechamber')","updated_at":"2026-07-12T17:28:16Z"}
+{"closed_at":"2026-04-25T17:52:31Z","id":"CX-71ej","status":"closed","title":"Idempotent reflog checkpoint via per-dir cursor","updated_at":"2026-04-25T17:52:31Z"}
+{"closed_at":"2026-04-25T23:00:26Z","id":"CX-71o3","status":"closed","title":"Chat C1 \u2014 _view.xml chat chrome (message list + composer)","updated_at":"2026-04-25T23:00:26Z"}
+{"closed_at":null,"id":"CX-73a3","status":"in_progress","title":"Read-scoping P3: read-enforce parity + the COMPLETENESS AUDIT (no-bypass)","updated_at":"2026-08-05T21:49:24.917718Z"}
+{"closed_at":"2026-04-18T20:30:58Z","id":"CX-7cm1","status":"closed","title":"NodeSync hook: invoke LateEditAutoTranslator on incoming commits","updated_at":"2026-04-18T20:30:58Z"}
+{"closed_at":"2026-04-28T11:34:33Z","id":"CX-7eqk","status":"closed","title":"MUD: verb_error appears 3x on raise (duplicate routing)","updated_at":"2026-04-28T11:34:33Z"}
+{"closed_at":"2026-04-26T19:05:40Z","id":"CX-7kl3","status":"closed","title":"M3 (ii): Chat-tier ChatViewCompute + ChatViewBuilder + ChatViewComputeSupervisor","updated_at":"2026-04-26T19:05:40Z"}
+{"closed_at":null,"id":"CX-7m9g","status":"open","title":"Seed-dependent flake family reddening CI: RoomVisibility self-read + WebPlayIntegration @desc + ComputeRehydrator \u2014 cross-test contamination, reproducer seed 735821","updated_at":"2026-08-06T04:50:42.495882Z"}
+{"closed_at":null,"id":"CX-7qpt","status":"open","title":"MUD: orrery intermediate feedback renders as player speech \u2014 'You say, \"Gears whir... (2/3)\"'","updated_at":"2026-07-12T17:49:15Z"}
+{"closed_at":"2026-04-18T10:08:41Z","id":"CX-7sln","status":"closed","title":"6.6 \u2014 Positional-rebase fallback dispatch (opt-in)","updated_at":"2026-04-18T10:08:41Z"}
+{"closed_at":"2026-04-27T00:48:09Z","id":"CX-7v9x","status":"closed","title":"M6 (ii): ComputeSpec extension for <function ref> syntax","updated_at":"2026-04-27T00:48:09Z"}
+{"closed_at":"2026-03-25T04:23:18Z","id":"CX-7vm","status":"closed","title":"Fix 3 test failures: yelixer timeout + NodeGraph race conditions","updated_at":"2026-03-25T04:23:18Z"}
+{"closed_at":"2026-07-10T21:11:09Z","id":"CX-7w3r","status":"closed","title":"Forward fix: HolderMove.push must lazy-mint a possession token when :available (gifted/placed items are un-droppable)","updated_at":"2026-07-10T21:11:09Z"}
+{"closed_at":"2026-07-19T18:18:55Z","id":"CX-7xxr","status":"closed","title":"C5a: room-snapshot wake perception + deliberation framing + per-bot budget","updated_at":"2026-07-19T18:18:55Z"}
+{"closed_at":"2026-04-09T22:25:29Z","id":"CX-817","status":"closed","title":"Views first pass: static view detection + XML parser + HTML renderer + WikiLive dispatch + example doc + MCP cat awareness","updated_at":"2026-04-09T22:25:29Z"}
+{"closed_at":null,"id":"CX-81uv","status":"open","title":"MUD QoL: who-list and rooms polluted by smoke-test bot identities (e12asmoke448, ember-qz9, emberash...)","updated_at":"2026-07-10T07:35:02Z"}
+{"closed_at":"2026-07-10T21:21:40Z","id":"CX-82wi","status":"closed","title":"MUD builder QoL: @dump omits the room's OWN uuid \u2014 @link/@teleport unusable for your own rooms despite help saying 'see @dump for uuids'","updated_at":"2026-07-10T21:21:40Z"}
+{"closed_at":"2026-04-20T20:28:24Z","id":"CX-86t2","status":"closed","title":"Sync.AgentTest 'bidirectional edits on disk and CRDT both appear after sync' is flaky on CI","updated_at":"2026-04-20T20:28:24Z"}
+{"closed_at":null,"id":"CX-86u2","status":"open","title":"MUD builder: no in-world way to empty/force-remove a LOCKED NON-EMPTY container (@empty or @destroy --force)","updated_at":"2026-07-07T14:52:10Z"}
+{"closed_at":"2026-03-24T07:49:23Z","id":"CX-87i","status":"closed","title":"TreeLive: unhandled Base.decode64\\! crash on malformed yjs_edit","updated_at":"2026-03-24T07:49:23Z"}
+{"closed_at":"2026-06-12T07:43:53Z","id":"CX-88mw","status":"closed","title":"Substrate: per-agent ed25519 key minting, binding, and SigningContext construction","updated_at":"2026-06-12T07:43:53Z"}
+{"closed_at":"2026-06-12T07:43:51Z","id":"CX-88mw.1","status":"closed","title":"Federation Phase B(i): agent-key mint helper + custody + signing_context_for_presence","updated_at":"2026-06-12T07:43:51Z"}
+{"closed_at":"2026-06-12T07:43:51Z","id":"CX-88mw.2","status":"closed","title":"Federation Phase B(ii): MCP session signing-context threading","updated_at":"2026-06-12T07:43:51Z"}
+{"closed_at":"2026-06-12T07:43:52Z","id":"CX-88mw.3","status":"closed","title":"Federation Phase B(iii): strict-mode identity-doc signing","updated_at":"2026-06-12T07:43:52Z"}
+{"closed_at":"2026-03-23T07:05:04Z","id":"CX-89r","status":"closed","title":"Fork with ForkManifest (deep-copy with new UUIDs)","updated_at":"2026-03-23T07:05:04Z"}
+{"closed_at":"2026-04-26T03:08:47Z","id":"CX-8cw5","status":"closed","title":"Substrate: invoke_view_action context auto-resolution (umbrella)","updated_at":"2026-04-26T03:08:47Z"}
+{"closed_at":null,"id":"CX-8ho2","status":"open","title":"Self-host (JUDGMENT-CLOSE): player-facing message/flavor templates are hardcoded in verb bodies \u2192 maybe a message-catalog document","updated_at":"2026-07-16T05:10:06Z"}
+{"closed_at":"2026-07-06T18:04:54Z","id":"CX-8iyv","status":"closed","title":"MUD parser breaks on multi-word names","updated_at":"2026-07-06T18:04:54Z"}
+{"closed_at":"2026-04-23T22:23:24Z","id":"CX-8k1v","status":"closed","title":"Autonomous B-side convergence: import-hook adopts vs merge-reply set_latest broadcast","updated_at":"2026-04-23T22:23:24Z"}
+{"closed_at":"2026-07-10T05:54:48Z","id":"CX-8l5c","status":"closed","title":"MUD MCP session spawn hard-crashes: Bootstrap calls Schemas.recipe_filename which is :undef on serve node (deploy version skew)","updated_at":"2026-07-10T05:54:48Z"}
+{"closed_at":"2026-04-17T23:00:26Z","id":"CX-8nu","status":"closed","title":"Positional-rebase phase 3: YMap rebase (symmetric keyset diff + recursion)","updated_at":"2026-04-17T23:00:26Z"}
+{"closed_at":"2026-04-18T23:24:42Z","id":"CX-8qzi","status":"closed","title":"Magenta merge command: {workspace}/commands/{path}/merge","updated_at":"2026-04-18T23:24:42Z"}
+{"closed_at":"2026-07-12T04:30:45Z","id":"CX-8qzl","status":"closed","title":"CX-eqdr (a): free-follow LOCK-IN \u2014 forward-guard test + move.ex doc-note","updated_at":"2026-07-12T04:30:45Z"}
+{"closed_at":"2026-03-24T00:02:14Z","id":"CX-8tp","status":"closed","title":"Merge test coverage: delete-vs-modify, nested dirs, process filtering","updated_at":"2026-03-24T00:02:14Z"}
+{"closed_at":"2026-07-19T04:21:46.238821Z","id":"CX-8vns","status":"closed","title":"[MCP-PROBE] Tier-2 write-tool live verification \u2014 safe to ignore (auto-closed)","updated_at":"2026-07-19T04:21:46.283904Z"}
+{"closed_at":null,"id":"CX-8vsv","status":"open","title":"MUD 'quit' crashes mud_send: unguarded drain_buffer on dead session + misleading CX-0nkq overload hint","updated_at":"2026-07-06T18:16:19Z"}
+{"closed_at":null,"id":"CX-8wkb","status":"open","title":"MUD MCP bridge \u2014 fat (Session-as-MCP)","updated_at":"2026-08-05T21:49:49.721894Z"}
+{"closed_at":null,"id":"CX-8xfy","status":"open","title":"Keys-at-rest decision: node key + every agent key are plaintext on disk \u2014 accepted-risk sign-off needed before wider exposure","updated_at":"2026-08-03T01:05:37Z"}
+{"closed_at":"2026-03-24T03:00:25Z","id":"CX-8xt","status":"closed","title":"MergeReport.errors field unused, docstring claims {:error, reason} return","updated_at":"2026-03-24T03:00:25Z"}
+{"closed_at":"2026-07-10T16:05:21Z","id":"CX-8yzt","status":"closed","title":"MUD enforce-mode: @dig/@create denied in player's OWN home \u2014 'yours to shape' room can't be built in (mutate works, create doesn't)","updated_at":"2026-07-10T16:05:21Z"}
+{"closed_at":null,"id":"CX-8ztc","status":"open","title":"Cross-epoch merge of a snapshot sibling fails {:untranslatable, :case_b, {1,4}} \u2014 and CX-hmkz's e2e never exercised the cross-epoch path at all (found during CX-xxav)","updated_at":"2026-08-05T20:35:58.815678Z"}
+{"closed_at":"2026-04-22T07:08:45Z","id":"CX-92u","status":"closed","title":"Auto per-agent mailbox onramp (magenta\u2192red for incoming messages)","updated_at":"2026-04-22T07:08:45Z"}
+{"closed_at":"2026-07-06T15:38:03Z","id":"CX-93ea","status":"closed","title":"MUD write helpers swallow create_commit errors \u2014 denied writes report verb success","updated_at":"2026-07-06T15:38:03Z"}
+{"closed_at":"2026-07-19T18:35:57Z","id":"CX-93rv","status":"closed","title":"Agenda.append lacks idempotence guard \u2014 provision re-runs duplicate the seed errand","updated_at":"2026-07-19T18:35:57Z"}
+{"closed_at":"2026-03-23T03:21:38Z","id":"CX-9ac","status":"closed","title":"Sandbox deleted while managed process still running","updated_at":"2026-03-23T03:21:38Z"}
+{"closed_at":"2026-07-07T05:13:47Z","id":"CX-9aeh","status":"closed","title":"P0: safe-verb leaks invoker's private key via inspect(world) / world.ctx field-access \u2014 FIXED","updated_at":"2026-07-07T05:13:47Z"}
+{"closed_at":null,"id":"CX-9bcs","status":"open","title":"Curation: puzzle verbs use Facade.say for status -> renders 'You say' (should use notify); + missing object descs","updated_at":"2026-07-07T18:53:16Z"}
+{"closed_at":"2026-04-25T21:29:48Z","id":"CX-9cr2","status":"closed","title":"Chat V2 \u2014 post_message action handler","updated_at":"2026-04-25T21:29:48Z"}
+{"closed_at":"2026-07-06T17:48:31Z","id":"CX-9f62","status":"closed","title":"Custom @verbs are ephemeral + all compile to one module name \u2014 global collision, last-wins","updated_at":"2026-07-06T17:48:31Z"}
+{"closed_at":"2026-04-17T23:54:35Z","id":"CX-9fy","status":"closed","title":"Positional-rebase phase 2: YXmlFragment/YXmlElement rebase (tree-path diff)","updated_at":"2026-04-17T23:54:35Z"}
+{"closed_at":"2026-08-05T17:45:49Z","id":"CX-9fyz","status":"closed","title":"Invariant registry + engine: declare the four base checks as invariant objects (resting-state design \u00a74.1/4.2 step 1)","updated_at":"2026-08-05T17:45:49Z"}
+{"closed_at":"2026-07-04T04:58:49Z","id":"CX-9hql","status":"closed","title":"CommitStore write-path telemetry + R4c trigger threshold","updated_at":"2026-07-04T04:58:49Z"}
+{"closed_at":"2026-07-10T07:23:19Z","id":"CX-9jqa","status":"closed","title":"Spurious 'Nothing happens \u2014 it doesn't respond to you.' after SUCCESSFUL verb invocations (utter, offer)","updated_at":"2026-07-10T07:23:19Z"}
+{"closed_at":null,"id":"CX-9kpg","status":"open","title":"bd CLI parity: mutation commands (create/update/close/dep-add/defer/supersede/label)","updated_at":"2026-07-19T04:04:39.751201Z"}
+{"closed_at":"2026-07-07T02:00:52Z","id":"CX-9plf","status":"closed","title":"Verb-authoring toolbox gaps: no RNG, args include the object-noun, no way to delete a verb","updated_at":"2026-07-07T02:00:52Z"}
+{"closed_at":"2026-04-26T03:08:47Z","id":"CX-9rbc","status":"closed","title":"Auto-resolution sub-bead (iii): AnubisServer.init/2 stashes presence_path in frame.assigns","updated_at":"2026-04-26T03:08:47Z"}
+{"closed_at":"2026-04-09T02:11:13Z","id":"CX-9rc","status":"closed","title":"Restore broken beads DB from Apr 6 backup","updated_at":"2026-04-09T02:11:13Z"}
+{"closed_at":null,"id":"CX-9rd3","status":"open","title":"Unified permission model \u2014 read + code perms on the cert backbone","updated_at":"2026-07-11T04:29:52Z"}
+{"closed_at":"2026-04-03T22:57:55Z","id":"CX-9rl","status":"closed","title":"Cryptographic signatures on commits","updated_at":"2026-04-03T22:57:55Z"}
+{"closed_at":null,"id":"CX-9tbi","status":"open","title":"Resonant Ward opens but the revealed spiral stair doesn't exist \u2014 no down exit, no stair object","updated_at":"2026-07-10T07:21:31Z"}
+{"closed_at":"2026-04-27T06:06:28Z","id":"CX-9tj0","status":"closed","title":"M7 (iv): Chat-tier migration KEYSTONE \u2014 _compute body XML\u2192Elixir","updated_at":"2026-04-27T06:06:28Z"}
+{"closed_at":null,"id":"CX-9xw","status":"open","title":"MQTT bridge for external tool integration","updated_at":"2026-08-05T21:13:31.052473Z"}
+{"closed_at":"2026-04-25T22:44:14Z","id":"CX-9zpb","status":"closed","title":"Chat R1 \u2014 _messages.log red onramp + Commonplace.Chat.OnrampSupervisor","updated_at":"2026-04-25T22:44:14Z"}
+{"closed_at":"2026-03-23T20:05:55Z","id":"CX-9zu","status":"closed","title":"Fork schema as edit in merkle tree, not new document","updated_at":"2026-03-23T20:05:55Z"}
+{"closed_at":"2026-04-18T04:19:24Z","id":"CX-a04","status":"closed","title":"Auto-stamp snapshot_parent on regular commits (Build 4)","updated_at":"2026-04-18T04:19:24Z"}
+{"closed_at":null,"id":"CX-a0m","status":"open","title":"SSE subscriptions for live document updates","updated_at":"2026-08-05T21:13:31.428687Z"}
+{"closed_at":"2026-07-07T08:46:30Z","id":"CX-a2gd","status":"closed","title":"Facade.actor_name/1 + actor_ref/1 \u2014 a safe verb can read its own invoker (secure per-player state)","updated_at":"2026-07-07T08:46:30Z"}
+{"closed_at":"2026-07-07T07:48:16Z","id":"CX-a3rq","status":"closed","title":"Object-only guard refusal (:requires_object_host) is silent \u2014 no player-facing message","updated_at":"2026-07-07T07:48:16Z"}
+{"closed_at":null,"id":"CX-a449","status":"open","title":"Flock NIF cannot load inside the CLI escript \u2014 embedded app boot dies at CommitStore.init (found by CX-x8jk live smoke)","updated_at":"2026-08-06T22:14:00.479274Z"}
+{"closed_at":"2026-07-10T06:14:47Z","id":"CX-a70n","status":"closed","title":"MUD web console: no auto-scroll-to-bottom on new output (async room render / ambient events)","updated_at":"2026-07-10T06:14:47Z"}
+{"closed_at":"2026-08-03T01:11:56Z","id":"CX-a7i2","status":"closed","title":"local_read_gate has no production activation path \u2014 read enforcement for the P3 cohort cannot be turned on","updated_at":"2026-08-03T01:11:56Z"}
+{"closed_at":null,"id":"CX-a7i8","status":"open","title":"Preposition stripping only covers put \u2014 'step on warppad' fails while 'step warppad' resolves","updated_at":"2026-07-13T17:01:39Z"}
+{"closed_at":"2026-04-27T06:11:47Z","id":"CX-a9cv","status":"closed","title":"M7 expressive Elixir compute: full-fn-as-pipeline (umbrella)","updated_at":"2026-04-27T06:11:47Z"}
+{"closed_at":"2026-03-25T04:46:45Z","id":"CX-a9t","status":"closed","title":"Bare pattern matches in Merge/Fork crash on unexpected input","updated_at":"2026-03-25T04:46:45Z"}
+{"closed_at":"2026-07-19T18:00:27Z","id":"CX-abbs","status":"closed","title":"TelegramBridge.post_inbound fire-and-forgets Actions.post_message errors \u2014 denied inbound posts vanish silently","updated_at":"2026-07-19T18:00:27Z"}
+{"closed_at":"2026-07-06T03:26:22Z","id":"CX-abyi","status":"closed","title":"yelixer: order-statistics sequence structure \u2014 the scattered-insertion residual (E5)","updated_at":"2026-07-06T03:26:22Z"}
+{"closed_at":null,"id":"CX-adzi","status":"open","title":"MUD QoL: 7 of 16 Start Room interactables have '(no description yet)' and their verbs are only discoverable by blind guessing","updated_at":"2026-07-10T07:01:19Z"}
+{"closed_at":null,"id":"CX-ae2m","status":"open","title":"MUD onboarding: first login renders home room twice back-to-back","updated_at":"2026-07-13T01:03:17Z"}
+{"closed_at":"2026-04-22T01:34:10Z","id":"CX-agxw","status":"closed","title":"[bug] Sync.LiveSyncIntegrationTest 'peer-to-peer sync via shared CRDT file modification on one peer propagates to the other' is flaky","updated_at":"2026-04-22T01:34:10Z"}
+{"closed_at":"2026-08-05T21:50:01.851225Z","id":"CX-ajdx","status":"closed","title":"Wiki fork button (ViewActionDispatch fork + CommandRouter.fork) writes unsigned genesis commits \u2192 latently BROKEN on the live enforce serve","updated_at":"2026-08-05T21:50:03.037790Z"}
+{"closed_at":null,"id":"CX-ara","status":"open","title":"FUSE filesystem checkouts","updated_at":"2026-04-09T18:08:43Z"}
+{"closed_at":"2026-04-18T20:06:23Z","id":"CX-atk3","status":"closed","title":"Sync-agent late-edit auto-translation on incoming cross-epoch edits","updated_at":"2026-04-18T20:06:23Z"}
+{"closed_at":"2026-07-07T11:45:29Z","id":"CX-avgu","status":"closed","title":"MUD builder gap: no @destroy for arbitrary owned objects (only destroy_child for minted children) \u2014 builders can't clean up stray objects","updated_at":"2026-07-07T11:45:29Z"}
+{"closed_at":null,"id":"CX-avps","status":"open","title":"MCP bd_* writes silently fall back to node signing; referenced follow-up bead CX-hk0s does not exist","updated_at":"2026-08-03T01:06:13Z"}
+{"closed_at":"2026-07-13T19:33:15Z","id":"CX-avzp","status":"closed","title":"Private-room privacy bypass: move blocked but presence lands + hears say/broadcasts inside private room","updated_at":"2026-07-13T19:33:15Z"}
+{"closed_at":null,"id":"CX-aw4r","status":"in_progress","title":"Safe verbs have no actor-attribution: Facade.emit renders identical text to actor and observers","updated_at":"2026-07-07T00:27:35Z"}
+{"closed_at":null,"id":"CX-axdi","status":"open","title":"Pre-widening: default shadow-tracking ON to fully close the inbound-write TOCTOU (multi-writer safety)","updated_at":"2026-07-08T17:14:49Z"}
+{"closed_at":null,"id":"CX-aya0","status":"in_progress","title":"MUD-as-docs Inc-2: stateless-leaf verbs (look/examine/inventory/emote/say) doc-hosted via SourceDoc.compile + Gate-B","updated_at":"2026-07-10T15:16:19Z"}
+{"closed_at":"2026-04-26T15:51:52Z","id":"CX-azwh","status":"closed","title":"M3 (i): Commonplace.View.ArgResolver substrate primitive","updated_at":"2026-04-26T15:51:52Z"}
+{"closed_at":null,"id":"CX-b0ow","status":"open","title":"GitHub sync \u2014 readable-in-git bidirectional bridge","updated_at":"2026-07-03T22:54:23Z"}
+{"closed_at":"2026-07-04T16:14:12Z","id":"CX-b0ow.1","status":"closed","title":"G1 one-way export \u2014 repo/branch dir \u2192 git commit+push","updated_at":"2026-07-04T16:14:12Z"}
+{"closed_at":"2026-07-06T04:23:14Z","id":"CX-b0ow.2","status":"closed","title":"G2 inbound \u2014 git diff \u2192 Yjs edit (anchor-replica)","updated_at":"2026-07-06T04:23:14Z"}
+{"closed_at":null,"id":"CX-b0ow.3","status":"open","title":"G3 polish \u2014 PR-gated inbound, per-subtree scope annotations, conflict-branch UX, structured-doc opt-in","updated_at":"2026-08-05T21:49:17.126379Z"}
+{"closed_at":"2026-07-04T16:53:27Z","id":"CX-b0ow.4","status":"closed","title":"G1.5 full-fidelity archive layer (jes-committed, was G4)","updated_at":"2026-07-04T16:53:27Z"}
+{"closed_at":"2026-07-06T03:20:17Z","id":"CX-b0ow.5","status":"closed","title":"Canonical XML render for GitBridge export (pre-G2 accessor)","updated_at":"2026-07-06T03:20:17Z"}
+{"closed_at":null,"id":"CX-b0ow.6","status":"open","title":"GitBridge: SecretStore-held push credential (git credential helper)","updated_at":"2026-07-04T17:02:23Z"}
+{"closed_at":null,"id":"CX-b0ow.7","status":"open","title":"Legacy-doc render coverage \u2014 nil-ContentType docs (April-era chat _messages/_reactions)","updated_at":"2026-07-04T17:14:06Z"}
+{"closed_at":"2026-07-06T05:17:39Z","id":"CX-b0ow.8","status":"closed","title":"GitBridge inbound: file ADD/DELETE ingestion (fast-follow to G2)","updated_at":"2026-07-06T05:17:39Z"}
+{"closed_at":"2026-07-06T13:29:30Z","id":"CX-b0ow.9","status":"closed","title":"GitBridge G2: true region-merge for concurrent CRDT+git edits (anchor-replica full)","updated_at":"2026-07-06T13:29:30Z"}
+{"closed_at":"2026-04-17T23:54:34Z","id":"CX-b2y","status":"closed","title":"Yelixer: XML delete_child + snapshot_update XML replay (unblock Phase 2 CX-9fy)","updated_at":"2026-04-17T23:54:34Z"}
+{"closed_at":"2026-03-25T04:52:58Z","id":"CX-b3c","status":"closed","title":"Add merge CLI command","updated_at":"2026-03-25T04:52:58Z"}
+{"closed_at":"2026-04-27T05:51:25Z","id":"CX-b52t","status":"closed","title":"M7 (i): Commonplace.View.ComputeRunner substrate primitive","updated_at":"2026-04-27T05:51:25Z"}
+{"closed_at":"2026-04-28T11:34:33Z","id":"CX-b54p","status":"closed","title":"MUD: 'look me' / 'look myself' should render the player","updated_at":"2026-04-28T11:34:33Z"}
+{"closed_at":null,"id":"CX-b58q","status":"open","title":"CX-zy4q secondaries: smith can't consume pre-update tokens + smith leaks raw debug event to the actor","updated_at":"2026-08-05T03:34:56Z"}
+{"closed_at":"2026-04-09T02:02:29Z","id":"CX-b6u","status":"closed","title":"Green channel: token transfer + renew","updated_at":"2026-04-09T02:02:29Z"}
+{"closed_at":null,"id":"CX-b6wl","status":"open","title":"Arrival-direction text can be wrong for a player who is arriving in the same tick as another (cosmetic; stationary observers see it correctly)","updated_at":"2026-07-07T00:42:02Z"}
+{"closed_at":"2026-04-22T00:53:37Z","id":"CX-b70","status":"closed","title":"Cherry-pick commits across branches","updated_at":"2026-04-22T00:53:37Z"}
+{"closed_at":null,"id":"CX-ba1l","status":"open","title":"[QoL] MUD: 'examine' verb alias for 'look <item>' + missing prop descriptions","updated_at":"2026-07-07T21:50:24Z"}
+{"closed_at":null,"id":"CX-bag8","status":"open","title":"MUD: @create room makes an unreachable orphan \u2014 uuid never revealed, @dump can't find it, recovery verbs can't target it","updated_at":"2026-07-06T19:00:44Z"}
+{"closed_at":null,"id":"CX-be1","status":"open","title":"TypeScript/JS support for sandboxed evaluator","updated_at":"2026-08-05T21:49:53.855030Z"}
+{"closed_at":null,"id":"CX-bec1","status":"open","title":"MUD: 53 legacy items have malformed .obj entry-names (pre-CX-lfo3 naming)","updated_at":"2026-07-11T00:09:30Z"}
+{"closed_at":"2026-07-06T14:11:24Z","id":"CX-bepn","status":"closed","title":"Capability revocation records \u2014 design-first (split from CX-qat5.4)","updated_at":"2026-07-06T14:11:24Z"}
+{"closed_at":"2026-07-06T23:50:49Z","id":"CX-bg1v","status":"closed","title":"P0: user @verb sandbox is a no-op against Elixir stdlib \u2014 arbitrary RCE (System.cmd) by untrusted authors","updated_at":"2026-07-06T23:50:49Z"}
+{"closed_at":"2026-04-17T06:29:48Z","id":"CX-bgq","status":"closed","title":"Advance parent_commit on remote-incremental apply (rebase baseline tightening)","updated_at":"2026-04-17T06:29:48Z"}
+{"closed_at":"2026-04-20T22:33:56Z","id":"CX-bgy","status":"closed","title":"Merkle-tracked Yjs: namespace epochs + derivation maps (umbrella, builds 1-5)","updated_at":"2026-04-20T22:33:56Z"}
+{"closed_at":"2026-07-12T22:38:48Z","id":"CX-bi84","status":"closed","title":"Partial-noun 'unlock vault' resolves to a carried item instead of the room's Warded Vault","updated_at":"2026-07-12T22:38:48Z"}
+{"closed_at":"2026-03-24T10:01:10Z","id":"CX-bjv","status":"closed","title":"CLI commands silently drop CommitStore errors","updated_at":"2026-03-24T10:01:10Z"}
+{"closed_at":"2026-07-10T15:42:47Z","id":"CX-bp2f","status":"closed","title":"MUD: extend presence-robust elevation-oracle to move_object/spawn/consume (judge authority on write-target, not churned room dir)","updated_at":"2026-07-10T15:42:47Z"}
+{"closed_at":"2026-03-24T03:00:25Z","id":"CX-bp3","status":"closed","title":"Extract shared reconstruct_doc helper from Fork and Merge","updated_at":"2026-03-24T03:00:25Z"}
+{"closed_at":null,"id":"CX-bp9n","status":"open","title":"config/test.exs sets server: true unconditionally \u2014 umbrella-root mix test binds port 4002, concurrent worktree suites collide","updated_at":"2026-07-06T11:16:23Z"}
+{"closed_at":null,"id":"CX-bpx9","status":"open","title":"Sparse-sync implementation diverges from spec: no PubSub subscription, no tick \u2014 per-entry agents sync exactly once","updated_at":"2026-08-03T01:05:30Z"}
+{"closed_at":"2026-03-22T17:12:48Z","id":"CX-bqz","status":"closed","title":"stdout/stderr capture to red event log","updated_at":"2026-03-22T17:12:48Z"}
+{"closed_at":"2026-03-23T01:03:06Z","id":"CX-btk","status":"closed","title":"Design robust orphan cleanup for managed processes","updated_at":"2026-03-23T01:03:06Z"}
+{"closed_at":"2026-03-23T06:03:30Z","id":"CX-bu2","status":"closed","title":"Rename detection in sync","updated_at":"2026-03-23T06:18:47Z"}
+{"closed_at":"2026-04-18T01:59:19Z","id":"CX-bv3","status":"closed","title":"Commit struct gains structural metadata; regular-commit-path validates namespace (build 1+3)","updated_at":"2026-04-18T01:59:19Z"}
+{"closed_at":null,"id":"CX-bxsh","status":"open","title":"chat-over-mcp bots: audit + make real on the MCP chat surface (loom_send/loom_read)","updated_at":"2026-07-19T04:04:40.624506Z"}
+{"closed_at":"2026-07-18T21:25:10Z","id":"CX-bzhe","status":"closed","title":"Ticket-DAG S4: claim/release via green possession token","updated_at":"2026-07-18T21:25:10Z"}
+{"closed_at":"2026-04-09T23:28:40Z","id":"CX-c1i","status":"closed","title":"Views Pass C: MCP meta-tool invoke_view_action for agent-driven view actions","updated_at":"2026-04-09T23:28:40Z"}
+{"closed_at":"2026-05-05T00:59:33Z","id":"CX-c6nd","status":"closed","title":"Beads-on-Commonplace P1 \u2014 issue/comment/edge/label/import + CLI shim","updated_at":"2026-05-05T00:59:33Z"}
+{"closed_at":"2026-07-13T01:23:32Z","id":"CX-c6ph","status":"closed","title":"Noun resolution: alias/partial match on wrong object beats exact-name room object \u2014 'unlock vault' hits brass key even when both are room objects","updated_at":"2026-07-13T01:23:32Z"}
+{"closed_at":null,"id":"CX-c93b","status":"open","title":"Broad test-isolation contamination tail: full-suite flakes ~50%/run across a POOL of tests (post-CX-6hxa residual)","updated_at":"2026-08-05T21:13:32.185928Z"}
+{"closed_at":"2026-07-06T00:28:52Z","id":"CX-cdyi","status":"closed","title":"yelixer: bounded pending buffer \u2014 never advance SV past un-integrated items (convergence under out-of-order delivery)","updated_at":"2026-07-06T00:28:52Z"}
+{"closed_at":null,"id":"CX-cgs","status":"in_progress","title":"Wiki-style web UI demo","updated_at":"2026-03-26T04:15:39Z"}
+{"closed_at":"2026-04-20T03:42:06Z","id":"CX-ch5","status":"closed","title":"Yelixer namespace boundary (envelope-carried) (build 3)","updated_at":"2026-04-20T03:42:06Z"}
+{"closed_at":null,"id":"CX-cj3t","status":"in_progress","title":"(EPIC) MUD improvement \u2014 fix + harden the multiplayer MUD from dogfood findings","updated_at":"2026-07-08T06:59:52Z"}
+{"closed_at":null,"id":"CX-cj3t.1","status":"open","title":"Items + inventory as a first-class MUD feature \u2014 object model, carry set, inventory/get/drop/give","updated_at":"2026-07-07T00:18:42Z"}
+{"closed_at":"2026-07-07T02:18:42Z","id":"CX-cj3t.1.1","status":"closed","title":"Nested containers (bags/chests) \u2014 put/get-from/look-in, cycle-guarded","updated_at":"2026-07-07T02:18:42Z"}
+{"closed_at":null,"id":"CX-cj3t.10","status":"in_progress","title":"Directed / self-only messaging Facade primitive (whisper / tell-actor / per-player outcome)","updated_at":"2026-07-07T04:01:34Z"}
+{"closed_at":"2026-07-13T17:19:49Z","id":"CX-cj3t.11","status":"closed","title":"@verb <obj>:<verb> parsing breaks on multi-word object names","updated_at":"2026-07-13T17:19:49Z"}
+{"closed_at":null,"id":"CX-cj3t.2","status":"open","title":"Strict-play cap-provisioning for MCP/player bots \u2014 node auto-issues a starter section cert so signed bots can move/take/build under strict","updated_at":"2026-07-11T04:30:11Z"}
+{"closed_at":"2026-07-06T18:18:32Z","id":"CX-cj3t.3","status":"closed","title":"Escript tick_bot singleton retries every 1s + bursar commits a DENIED red event per attempt \u2014 ~86k commits/day of append-only noise","updated_at":"2026-07-06T18:18:32Z"}
+{"closed_at":null,"id":"CX-cj3t.4","status":"open","title":"MUD @listen shows no red events on say/verb-run/take/drop \u2014 nothing emits or subscription broken","updated_at":"2026-07-06T18:45:08Z"}
+{"closed_at":"2026-07-06T20:44:45Z","id":"CX-cj3t.5","status":"closed","title":"Safe-verbs dispatch integration \u2014 wire safe-verb @verb flow + builtins-first precedence + target resolution + tree-position section_scope (THE untrusted-@verb gate)","updated_at":"2026-07-06T20:44:45Z"}
+{"closed_at":"2026-07-10T19:32:23Z","id":"CX-cj3t.6","status":"closed","title":"set_attr can clobber typed Object fields (fixed/container/name) via freeform write","updated_at":"2026-07-10T19:32:23Z"}
+{"closed_at":"2026-07-07T02:23:33Z","id":"CX-cj3t.7","status":"closed","title":"Object lifecycle from verbs \u2014 spawn/create/give/grant/destroy via the Facade","updated_at":"2026-07-07T02:23:33Z"}
+{"closed_at":null,"id":"CX-cj3t.8","status":"open","title":"Container 'locked' attribute / before_get hook \u2014 verbs can gate get/put mechanically","updated_at":"2026-07-07T02:53:35Z"}
+{"closed_at":null,"id":"CX-cj3t.9","status":"in_progress","title":"Facade.move budget/semantics \u2014 owner_grant_exceeded makes it unusable for gameplay","updated_at":"2026-07-07T04:01:34Z"}
+{"closed_at":null,"id":"CX-cjh8","status":"open","title":"MUD: dialed vault (WEST) is a non-resetting spent set-piece \u2014 no reset, no loot, no feedback","updated_at":"2026-07-12T17:28:03Z"}
+{"closed_at":"2026-07-10T17:08:26Z","id":"CX-cl65","status":"closed","title":"M2 gate FAIL: @dig/@link denied in player's own fresh home \u2014 link-authority check (A1c) wrongly refuses while @create/@desc succeed","updated_at":"2026-07-10T17:08:26Z"}
+{"closed_at":"2026-03-30T20:53:09Z","id":"CX-clo","status":"closed","title":"serve.ex uses CommitStore directly for process management","updated_at":"2026-03-30T20:53:09Z"}
+{"closed_at":"2026-07-13T18:17:12Z","id":"CX-cogd","status":"closed","title":"Deposit gate refuses node-minted items into citizen containers with vague 'You can't put that there'","updated_at":"2026-07-13T18:17:12Z"}
+{"closed_at":"2026-07-12T23:25:58Z","id":"CX-coo8","status":"closed","title":"MUD: Warded Vault unlock flavor text promises 'gold ingot gleaming within' but vault is empty","updated_at":"2026-07-12T23:25:58Z"}
+{"closed_at":"2026-04-18T20:15:34Z","id":"CX-csmr","status":"closed","title":"Merge strategy policy layer: configurable default + heuristic override","updated_at":"2026-04-18T20:15:34Z"}
+{"closed_at":"2026-04-18T11:47:17Z","id":"CX-cy7","status":"closed","title":"Build 7 \u2014 Cross-epoch merge + merge-snapshots","updated_at":"2026-04-18T11:47:17Z"}
+{"closed_at":"2026-07-19T16:58:43Z","id":"CX-cy80","status":"closed","title":"C4: Telegram door \u2014 bridge + poller + cert-authorized chat writes","updated_at":"2026-07-19T16:58:43Z"}
+{"closed_at":"2026-08-03T01:20:29Z","id":"CX-d029","status":"closed","title":"GitBridge crash containment: Inbound.run unrescued; one crash-looping mount can reset every mounts in-memory state","updated_at":"2026-08-03T01:20:29Z"}
+{"closed_at":null,"id":"CX-d1py","status":"open","title":"MUD NPE: signpost says 'listen for a secret in the fire' but listen is not a command anywhere on that path","updated_at":"2026-07-10T07:34:40Z"}
+{"closed_at":"2026-04-09T23:13:08Z","id":"CX-d4q","status":"closed","title":"Views Pass B: reactive computed views via ViewCompute GenServer + push_cyan\u2192Diff rewrite","updated_at":"2026-04-09T23:13:08Z"}
+{"closed_at":"2026-04-26T21:48:44Z","id":"CX-d819","status":"closed","title":"M5 substrate-pure chat: code stored in document (umbrella)","updated_at":"2026-04-26T21:48:44Z"}
+{"closed_at":"2026-03-25T01:32:40Z","id":"CX-d9k","status":"closed","title":"Inconsistent CommitStore vs CommitStoreClient usage across sync modules","updated_at":"2026-03-25T01:32:40Z"}
+{"closed_at":"2026-07-12T19:49:00Z","id":"CX-df64","status":"closed","title":"@desc on a CARRIED object fails with misleading generic usage string \u2014 should say 'drop it first' (or just work)","updated_at":"2026-07-12T19:49:00Z"}
+{"closed_at":"2026-04-27T05:53:51Z","id":"CX-dhde","status":"closed","title":"M7 (ii): Commonplace.Compute stdlib (author-facing helpers)","updated_at":"2026-04-27T05:53:51Z"}
+{"closed_at":null,"id":"CX-di2m","status":"open","title":"Ticket cycle invariant is not merge-safe \u2014 two legal edits on divergent lines merge into a cycle, and WriteGuard cannot see an existing one","updated_at":"2026-08-05T04:36:33Z"}
+{"closed_at":"2026-05-21T14:12:01Z","id":"CX-didr","status":"closed","title":"CLI: commonplace process remove <name>","updated_at":"2026-05-21T14:12:01Z"}
+{"closed_at":null,"id":"CX-dk7d","status":"open","title":"bd CLI parity: read/query commands (list/show/stats/search/dep-tree/stale/orphans)","updated_at":"2026-07-19T04:04:39.525948Z"}
+{"closed_at":null,"id":"CX-dm54","status":"open","title":"Migration should SKIP transient .usr presence entries (ephemeral session state, not durable world content)","updated_at":"2026-07-10T19:12:01Z"}
+{"closed_at":null,"id":"CX-dnmd","status":"open","title":"Chat-door provision ceremony must grant chat tools in the bot charter (post_message/read_chat) \u2014 Camillo woke voiceless","updated_at":"2026-07-19T18:01:53Z"}
+{"closed_at":"2026-04-26T14:35:22Z","id":"CX-dqci","status":"closed","title":"M2 sub-bead (ii): Chat.Messages.materialize/1 wrapper migration","updated_at":"2026-04-26T14:35:22Z"}
+{"closed_at":"2026-06-12T13:30:42Z","id":"CX-dqjs","status":"closed","title":"[EPIC] Outliner \u2014 Workflowy/org-mode tree on the flat-bag-of-xml-items model","updated_at":"2026-06-12T13:30:42Z"}
+{"closed_at":"2026-04-17T05:46:56Z","id":"CX-dqn","status":"closed","title":"Positional-rebase phase 1: YText rebase + dispatcher scaffold + Document.Server integration","updated_at":"2026-04-17T05:46:56Z"}
+{"closed_at":"2026-07-07T07:48:17Z","id":"CX-drp2","status":"closed","title":"MUD DX: @verb hint teaches put_state but not that mutations must be the verb's LAST expression","updated_at":"2026-07-07T07:48:17Z"}
+{"closed_at":"2026-04-26T21:07:45Z","id":"CX-dvba","status":"closed","title":"M4 (iii): Refactor Chat.Rooms.create/3 onto Tree.Fork + Tree.Lookup","updated_at":"2026-04-26T21:07:45Z"}
+{"closed_at":"2026-03-22T17:27:10Z","id":"CX-dvt","status":"closed","title":"Run bartleby in commonplace sandbox","updated_at":"2026-03-22T17:27:10Z"}
+{"closed_at":"2026-08-03T01:14:11Z","id":"CX-dvtj","status":"closed","title":"Sync EntryAgent lacks the CX-60wl inbound-clobber guard; accepts shadow_dir but never uses it","updated_at":"2026-08-03T01:14:11Z"}
+{"closed_at":"2026-03-24T09:15:08Z","id":"CX-dws","status":"closed","title":"Deprecate and remove Cell module in favor of SmartDoc","updated_at":"2026-03-24T09:15:08Z"}
+{"closed_at":"2026-04-18T11:41:37Z","id":"CX-dx22","status":"closed","title":"7.4 \u2014 Merge-snapshot construction","updated_at":"2026-04-18T11:41:37Z"}
+{"closed_at":null,"id":"CX-dzfv","status":"open","title":"tix-migration step 3: cutover \u2014 all agents switch to tix verbs, bd sync daemon retired","updated_at":"2026-08-05T19:24:38.194471Z"}
+{"closed_at":"2026-07-10T07:19:58Z","id":"CX-e12a","status":"closed","title":"Convergence rite unwinnable: offer verb state writes never persist (same-session offer\u2192status shows empty altar)","updated_at":"2026-07-10T07:19:58Z"}
+{"closed_at":"2026-04-25T19:19:24Z","id":"CX-e2k8","status":"closed","title":"Chat S1 \u2014 Yelixer (\u03b2-revised) shape smoke test (snapshot_update + apply_update roundtrip)","updated_at":"2026-04-25T19:19:24Z"}
+{"closed_at":"2026-03-24T00:56:10Z","id":"CX-e2x","status":"closed","title":"Property-based CRDT convergence tests","updated_at":"2026-03-24T00:56:10Z"}
+{"closed_at":"2026-04-20T22:45:37Z","id":"CX-e31","status":"closed","title":"Snapshot-parents: second Merkle tree linking snapshot commits","updated_at":"2026-04-20T22:45:37Z"}
+{"closed_at":"2026-04-16T18:11:48Z","id":"CX-e6s","status":"closed","title":"Wire Commonplace.Presence.Reaper into supervision tree","updated_at":"2026-04-16T18:11:48Z"}
+{"closed_at":"2026-03-24T01:04:06Z","id":"CX-e8q","status":"closed","title":"YMap.to_json returns nil for nested array/sub-doc values","updated_at":"2026-03-24T01:04:06Z"}
+{"closed_at":"2026-07-12T05:47:59Z","id":"CX-e8xj","status":"closed","title":"Gifted-object verbs half-work for non-authors: say fires, state write silently dropped, contradictory 'Nothing happens' message","updated_at":"2026-07-12T05:47:59Z"}
+{"closed_at":"2026-04-28T11:34:33Z","id":"CX-eby7","status":"closed","title":"MUD: @dig and @name parsers eat only first word of name argument","updated_at":"2026-04-28T11:34:33Z"}
+{"closed_at":null,"id":"CX-ecge","status":"open","title":"MUD: ad-hoc 'mix run' temp nodes orphan global singletons (MoveServer, TickBot)","updated_at":"2026-04-28T11:45:30Z"}
+{"closed_at":"2026-04-22T02:02:31Z","id":"CX-edy","status":"closed","title":"Guard write tool against honorific file extensions","updated_at":"2026-04-22T02:02:31Z"}
+{"closed_at":null,"id":"CX-ee93","status":"open","title":"SourceDoc UserVerb module-name prefix is MUD-hardcoded (profile-driven cleanup)","updated_at":"2026-07-11T17:28:48Z"}
+{"closed_at":null,"id":"CX-egnh","status":"open","title":"Live serve: recurring unsigned-write denial noise (GitBridge/sync class) against root + entity dirs under enforce","updated_at":"2026-07-19T14:38:23Z"}
+{"closed_at":"2026-03-25T00:56:18Z","id":"CX-eh6","status":"closed","title":"CI only runs commonplace tests, missing yelixer/cli/web","updated_at":"2026-03-25T00:56:18Z"}
+{"closed_at":"2026-03-24T06:44:16Z","id":"CX-ehp","status":"closed","title":"DirAgent race between disk scan and schema reload","updated_at":"2026-03-24T06:44:16Z"}
+{"closed_at":"2026-07-10T18:43:15Z","id":"CX-el97","status":"closed","title":"MUD movement/action denials lie \u2014 'can't go north' shown for a real exit that was actually an unsigned-write denial","updated_at":"2026-07-10T18:43:15Z"}
+{"closed_at":null,"id":"CX-en2e","status":"open","title":"MUD demo curation: de-dupe duplicate 'Ashfall Forge' rooms + 'Warded Vault' object vs 'The Warded Vault' room","updated_at":"2026-07-07T15:07:19Z"}
+{"closed_at":null,"id":"CX-ep82","status":"open","title":"MUD world-scrub: test-residue state keys render to players \u2014 lantern dumps bk1..bk63, pebble 'marker: pebble-42', statue 'os: topaz-object-value'","updated_at":"2026-07-13T01:02:55Z"}
+{"closed_at":null,"id":"CX-eqdr","status":"open","title":"Verb-authoring M3: object-following verbs (verbs on object doc travel via HolderMove)","updated_at":"2026-07-12T04:30:46Z"}
+{"closed_at":"2026-06-13T03:55:20Z","id":"CX-exg0","status":"closed","title":"SandboxExecRunner test teardown must kill spawned OS children","updated_at":"2026-06-13T04:02:39Z"}
+{"closed_at":null,"id":"CX-f0od","status":"open","title":"One-shot puzzle/quest state persists globally \u2014 later players find quests pre-solved or soft-locked","updated_at":"2026-07-10T05:54:31Z"}
+{"closed_at":null,"id":"CX-f1c8","status":"open","title":"Chat Bots.Worker signs with placeholder string-signers \u2014 never rewired to per-agent Ed25519 (CX-88mw landed)","updated_at":"2026-07-19T03:58:04.884394Z"}
+{"closed_at":null,"id":"CX-f3lf","status":"open","title":"Builder introspection: @dump shows neither an object's VERBS nor its STATE (owner-only @verbs/@state)","updated_at":"2026-07-07T04:32:50Z"}
+{"closed_at":null,"id":"CX-f3n5","status":"open","title":"Outliner follow-up: zoom into subtree","updated_at":"2026-08-05T21:49:36.826009Z"}
+{"closed_at":"2026-08-05T21:50:00.520236Z","id":"CX-f3ob","status":"closed","title":"Ticket-DAG (Bd P2): graph-vocabulary lift of on-substrate beads","updated_at":"2026-08-05T21:50:01.277181Z"}
+{"closed_at":null,"id":"CX-f3qy","status":"open","title":"TRIPWIRE: version-track last-good re-gate for doc-hosted verbs when a verb-doc DIVERGES from its compiled-in floor","updated_at":"2026-07-10T15:15:07Z"}
+{"closed_at":"2026-07-06T17:20:11Z","id":"CX-f89w","status":"closed","title":"Read-auth on :5199 browser pipeline \u2014 require authenticated session to VIEW (close the HTTP read exposure at app layer)","updated_at":"2026-07-06T17:20:11Z"}
+{"closed_at":"2026-04-20T00:32:06Z","id":"CX-fab5","status":"closed","title":"Sync-agent heartbeat periodic snapshot sweep","updated_at":"2026-04-20T00:32:06Z"}
+{"closed_at":"2026-04-18T11:45:56Z","id":"CX-fb74","status":"closed","title":"7.5 \u2014 Top-level merge router + red events","updated_at":"2026-04-18T11:45:56Z"}
+{"closed_at":"2026-04-18T15:03:01Z","id":"CX-fbs6","status":"closed","title":"Namespace validator rejects late-edit translated commits introducing new item-authorship clients","updated_at":"2026-04-18T15:03:01Z"}
+{"closed_at":"2026-04-18T10:42:47Z","id":"CX-fdjh","status":"closed","title":"7.3 \u2014 Translate-into-primary merge","updated_at":"2026-04-18T10:42:47Z"}
+{"closed_at":"2026-04-27T05:57:05Z","id":"CX-fe7f","status":"closed","title":"M7 (iii): Commonplace.ViewCompute migration to ComputeRunner","updated_at":"2026-04-27T05:57:05Z"}
+{"closed_at":"2026-04-18T09:25:38Z","id":"CX-fefz","status":"closed","title":"6.5 \u2014 End-to-end translator pipeline with red events","updated_at":"2026-04-18T09:25:38Z"}
+{"closed_at":"2026-08-03T01:47:12Z","id":"CX-fg1e","status":"closed","title":"Direct test coverage for holder_move.ex and sections.ex (zone/ownership logic, security-adjacent)","updated_at":"2026-08-03T01:47:12Z"}
+{"closed_at":"2026-07-06T23:50:49Z","id":"CX-fhz4","status":"closed","title":"Safe-verb run boundary does not re-lint stored content (filename-trust, Gap B)","updated_at":"2026-07-06T23:50:49Z"}
+{"closed_at":"2026-07-19T19:30:27Z","id":"CX-fi3w","status":"closed","title":"C5c-ii: scrollback wake injection \u2014 the transcript tail becomes short-term memory","updated_at":"2026-07-19T19:30:27Z"}
+{"closed_at":null,"id":"CX-fk9t","status":"open","title":"Receipts \u2014 settlement substrate for nested agent payments","updated_at":"2026-07-06T02:13:42Z"}
+{"closed_at":null,"id":"CX-fk9t.1","status":"open","title":"R1: Dogfood rider \u2014 friction log + metering on the messaging port","updated_at":"2026-08-05T21:13:33.817304Z"}
+{"closed_at":null,"id":"CX-fk9t.2","status":"open","title":"R2: Metering entry vocabulary \u2014 charge/void/credit as first-class types","updated_at":"2026-07-06T02:14:05Z"}
+{"closed_at":null,"id":"CX-fk9t.3","status":"open","title":"R3: Spend-cap caveats + consumption tracking","updated_at":"2026-08-05T21:13:34.546939Z"}
+{"closed_at":null,"id":"CX-fk9t.4","status":"open","title":"R4: Gold notary trust model for bilateral distrust","updated_at":"2026-07-06T02:14:07Z"}
+{"closed_at":null,"id":"CX-fk9t.5","status":"open","title":"R5: The nested x402 receipt demo","updated_at":"2026-08-05T21:13:35.442119Z"}
+{"closed_at":null,"id":"CX-fk9t.6","status":"open","title":"R6: Black requirements \u2014 invoice workspace queries","updated_at":"2026-07-06T02:14:09Z"}
+{"closed_at":null,"id":"CX-fk9t.7","status":"open","title":"R7: Subtree privacy \u2014 summary-up visibility","updated_at":"2026-07-06T02:14:10Z"}
+{"closed_at":null,"id":"CX-fkrx","status":"open","title":"MUD verb-parity: add examine/x + Colossal Cave + Zork verb sets (real verbs + classic synonyms + easter eggs)","updated_at":"2026-07-10T05:43:47Z"}
+{"closed_at":"2026-04-20T00:53:50Z","id":"CX-fkvc","status":"closed","title":"Reader-side lazy snapshot on slow load","updated_at":"2026-04-20T00:53:50Z"}
+{"closed_at":"2026-08-05T21:49:56.638551Z","id":"CX-fml6","status":"closed","title":"MUD escript serve-discovery pins to STALE ORPHAN serve node; orphan serve nodes accumulate (temp-node hazard) \u2192 recurring stale-code crashes","updated_at":"2026-08-05T21:49:57.412842Z"}
+{"closed_at":null,"id":"CX-fogy","status":"in_progress","title":"Verb-authoring M1: execute-safe cert at home-genesis + editable-flag gate fix (trust-core)","updated_at":"2026-07-11T17:30:30Z"}
+{"closed_at":"2026-07-06T03:33:10Z","id":"CX-forh","status":"closed","title":"CommandRouter: stable client ids per doc (finish the random-id-writer deprecation)","updated_at":"2026-07-06T03:33:10Z"}
+{"closed_at":null,"id":"CX-fphf","status":"open","title":"Parked autonomous bot loses presence to GhostReaper before first tick (observed once, by-design but ceremony-relevant)","updated_at":"2026-07-19T14:39:50Z"}
+{"closed_at":null,"id":"CX-ftwi","status":"open","title":"Smithy advertised interactions broken: 'put ore in forge' permission-denied, 'smith forge' wrong syntax, vending machine gone","updated_at":"2026-07-10T05:54:13Z"}
+{"closed_at":null,"id":"CX-fura","status":"open","title":"Interactable-authority follow-ups: (b) resolve actual meta write-target owner; converge writer_authorized?/authorized? predicate","updated_at":"2026-07-07T19:40:10Z"}
+{"closed_at":"2026-04-18T02:10:07Z","id":"CX-fzi","status":"closed","title":"Stamp deterministic genesis snapshot at doc creation (build 2)","updated_at":"2026-04-18T02:10:07Z"}
+{"closed_at":"2026-07-10T10:13:31Z","id":"CX-g44l","status":"closed","title":"verb-output-as-speech still live on legacy verbs \u2014 narration AND private usage errors broadcast as player speech","updated_at":"2026-07-10T10:13:31Z"}
+{"closed_at":"2026-08-07T01:09:05.810292Z","id":"CX-g486","status":"closed","title":"AuditChokePerfTest deny arm: measure the OFFERED-denial path (under-cap), not only storm suppression","updated_at":"2026-08-07T01:09:06.992042Z"}
+{"closed_at":"2026-07-16T19:50:49Z","id":"CX-g5lb","status":"closed","title":"Bootstrap.repair vein/recipe auto-seed never runs under enforce (unsigned merge_exits short-circuits the chain)","updated_at":"2026-07-16T19:50:49Z"}
+{"closed_at":"2026-04-04T18:30:46Z","id":"CX-g6g","status":"closed","title":"Gold channel: notarized append-only ledger","updated_at":"2026-04-04T18:30:46Z"}
+{"closed_at":"2026-03-22T17:27:10Z","id":"CX-g8o","status":"closed","title":"Run text-to-telegram in commonplace sandbox","updated_at":"2026-03-22T17:27:10Z"}
+{"closed_at":"2026-08-05T12:14:47Z","id":"CX-g8s9","status":"closed","title":"write_meta_doc's verify-then-commit window is its own race \u2014 blocks closing the 8-way CAS gap","updated_at":"2026-08-05T12:14:47Z"}
+{"closed_at":null,"id":"CX-gbd1","status":"open","title":"MUD: @verb editor preamble leaks internal bead IDs and is ambiguous about the Facade. prefix","updated_at":"2026-07-12T17:56:33Z"}
+{"closed_at":"2026-07-19T18:37:18Z","id":"CX-geog","status":"closed","title":"C5b: describe tool + agenda dedupe + consolidation filing framing","updated_at":"2026-07-19T18:37:18Z"}
+{"closed_at":"2026-08-06T10:08:45.506093Z","id":"CX-ggdv","status":"closed","title":"Walk-bounding: pin reads walk backward FROM THE TARGET to the nearest snapshot \u2014 kill the full-history-linear commit_log term (M3 finding; byte-neutral by fence)","updated_at":"2026-08-06T10:08:46.284636Z"}
+{"closed_at":null,"id":"CX-ght7","status":"open","title":"Chat-bots: genuine signed principals across all surfaces (web + mcp + worker)","updated_at":"2026-07-19T04:04:38.745846Z"}
+{"closed_at":"2026-07-07T18:07:43Z","id":"CX-gjpi","status":"closed","title":"Web-play wiring: browser MUD client on :5199 (citizenship-on-login + MudLive + PlayerSession)","updated_at":"2026-07-07T18:07:43Z"}
+{"closed_at":"2026-07-16T16:29:08Z","id":"CX-gkqk","status":"closed","title":"Self-host: citizenship starter-home room template (home_room_json/3) is hardcoded \u2192 seed a home-room template document + fork-per-citizen (mirror the chat template model)","updated_at":"2026-07-16T16:29:08Z"}
+{"closed_at":"2026-04-25T04:10:57Z","id":"CX-glc6","status":"closed","title":"Orchestrator reconcile loop hits Schema.get_entry/2 FunctionClauseError on fresh workspace","updated_at":"2026-04-25T04:10:57Z"}
+{"closed_at":null,"id":"CX-gnup","status":"open","title":"Cross-object / shared state API \u2014 per-object state isolation blocks multi-part puzzles","updated_at":"2026-07-07T04:30:56Z"}
+{"closed_at":"2026-05-15T01:19:44Z","id":"CX-gptu","status":"closed","title":"Worker outcomes in __bot_activity (completed/cap_hit/error)","updated_at":"2026-05-15T01:19:44Z"}
+{"closed_at":null,"id":"CX-gq5o","status":"open","title":"The live serve lazily loads 174 of 249 modules from _build on first call \u2014 'what code is deployed' has no single answer, and md5 verification force-loads","updated_at":"2026-08-05T09:34:50Z"}
+{"closed_at":"2026-07-06T18:21:33Z","id":"CX-gq7a","status":"closed","title":"Session crash on empty '.' save in @verb editor (Yelixer empty-string insert) + error hint mis-blames CommitStore","updated_at":"2026-07-06T18:21:33Z"}
+{"closed_at":"2026-07-07T07:41:13Z","id":"CX-gs9e","status":"closed","title":"safe-verb allows only ONE persisted state write per verb (nested put_state rejected)","updated_at":"2026-07-07T07:41:13Z"}
+{"closed_at":null,"id":"CX-gsmm","status":"open","title":"MUD: no length bounds on @name/@desc/@create \u2014 380-char name accepted, spams every room render persistently","updated_at":"2026-07-06T18:58:59Z"}
+{"closed_at":"2026-03-23T06:31:51Z","id":"CX-gt8","status":"closed","title":"DocRef identity format (path:uuid@cid)","updated_at":"2026-03-23T06:31:51Z"}
+{"closed_at":"2026-05-15T04:13:10Z","id":"CX-gua4","status":"closed","title":"Bot persona patch: write-reflexive remember on observations + patterns","updated_at":"2026-05-15T04:13:10Z"}
+{"closed_at":"2026-08-05T06:39:58Z","id":"CX-gvbf","status":"closed","title":"Freeze pin: write terminal-state pin at close + closed-matches-pin invariant (CX-o3ar durable fix)","updated_at":"2026-08-05T06:39:58Z"}
+{"closed_at":"2026-04-18T15:27:06Z","id":"CX-gwz","status":"closed","title":"Validate imported commits before trusting snapshot metadata","updated_at":"2026-04-18T15:27:06Z"}
+{"closed_at":"2026-07-18T21:14:02Z","id":"CX-gz61","status":"closed","title":"Ticket-DAG S3: close-gate + done-witnesses (manual + pr_merge validators)","updated_at":"2026-07-18T21:14:02Z"}
+{"closed_at":"2026-03-23T06:03:31Z","id":"CX-h2y","status":"closed","title":"Built-in observability via BEAM telemetry","updated_at":"2026-03-23T06:03:31Z"}
+{"closed_at":"2026-04-26T21:48:44Z","id":"CX-h4mc","status":"closed","title":"M5 (iv): Chat-tier wire-up + DELETE ChatViewCompute","updated_at":"2026-04-26T21:48:44Z"}
+{"closed_at":null,"id":"CX-hb5x","status":"open","title":"Commonplace.CLI.Bd.cmd_comment_add is the residual ungated comment door \u2014 reroute through ticket_comment","updated_at":"2026-08-06T17:42:33.235971Z"}
+{"closed_at":"2026-07-16T15:35:06Z","id":"CX-hbb2","status":"closed","title":"Self-host: in-world help (help_text/0) + @verb-editor verb-discovery banner are compiled-in content \u2192 a help/discovery document (generated from the live registry)","updated_at":"2026-07-16T15:35:06Z"}
+{"closed_at":null,"id":"CX-hbbi","status":"in_progress","title":"Container spoiler: 'look <container>' reveals contents of a locked/shut container","updated_at":"2026-07-07T04:21:19Z"}
+{"closed_at":"2026-04-09T06:45:44Z","id":"CX-hbs","status":"closed","title":"P2: Property-based rehydrate-modify tests (StreamData)","updated_at":"2026-04-09T06:45:44Z"}
+{"closed_at":"2026-07-07T03:40:03Z","id":"CX-hbua","status":"closed","title":"Facade.actor_carries? \u2014 inventory introspection (the gated-content primitive)","updated_at":"2026-07-07T03:40:03Z"}
+{"closed_at":"2026-03-24T02:35:20Z","id":"CX-hco","status":"closed","title":"Yelixer CRDT Hardening","updated_at":"2026-03-24T02:35:20Z"}
+{"closed_at":null,"id":"CX-hd8d","status":"open","title":"maybe_warn_truncated/2 suppressed by ANY in-window snapshot \u2014 46 cap-truncated docs (depth 10000) warn nothing, their true chain length unknown","updated_at":"2026-08-06T05:43:59.156607Z"}
+{"closed_at":"2026-04-24T08:36:20Z","id":"CX-hf71","status":"closed","title":"Port hand-rolled MCP server to anubis_mcp","updated_at":"2026-04-24T08:36:20Z"}
+{"closed_at":null,"id":"CX-hfxr","status":"open","title":"tix-migrate: chunk the ticket_import dispatch \u2014 a single erpc for N records has a size-dependent timeout a small successful run cannot reveal","updated_at":"2026-08-05T21:52:49.839731Z"}
+{"closed_at":"2026-03-22T17:12:48Z","id":"CX-hgv","status":"closed","title":"Hot code reload for .exs processes","updated_at":"2026-03-22T17:12:48Z"}
+{"closed_at":null,"id":"CX-hh70","status":"in_progress","title":"MUD onboarding: 'examine' on puzzle objects appends raw State block that SPOILS the answer \u2014 altar shows 'expect: spark' + 'solved: yes'","updated_at":"2026-07-13T16:29:59Z"}
+{"closed_at":"2026-08-03T01:48:48Z","id":"CX-hilo","status":"closed","title":"No persisted trust-decision audit trail \u2014 denials and revocation hits are telemetry-only, audit/ is a false-friend name","updated_at":"2026-08-03T01:48:48Z"}
+{"closed_at":null,"id":"CX-hk0s","status":"open","title":"MCP/CLI ticket-DAG write tools: per-agent signing (attribution, not node)","updated_at":"2026-07-19T04:04:40.163389Z"}
+{"closed_at":null,"id":"CX-hk1z","status":"open","title":"Semantic gates (cycle, close, ref-typed) sit on the LOCAL write path only \u2014 any import path bypasses them","updated_at":"2026-08-05T04:45:21Z"}
+{"closed_at":null,"id":"CX-hkp6","status":"open","title":"MUD: item vanished from player inventory across deploys \u2014 fable's crown (looted 7/10 pre-restart) gone by 7/10 post-restart","updated_at":"2026-07-10T06:32:53Z"}
+{"closed_at":"2026-05-15T01:23:36Z","id":"CX-hl7j","status":"closed","title":"Auto-fallback to secondary model on Anthropic 529 / transient errors","updated_at":"2026-05-15T01:23:36Z"}
+{"closed_at":null,"id":"CX-hlpr","status":"open","title":"RNG discoverability: Facade.random/2 + pick/2 ARE exposed; agent tried random/1 + Enum.random (wrong arity)","updated_at":"2026-07-07T05:19:49Z"}
+{"closed_at":"2026-04-19T22:31:18Z","id":"CX-hmkz","status":"closed","title":"Two-peer E2E cross-epoch: reconstructed text drops L's edit after sibling-merger","updated_at":"2026-04-19T22:31:18Z"}
+{"closed_at":null,"id":"CX-hmmc","status":"open","title":"Parser: single-noun verb args go to args.target, not args.rest (author reaches for rest, gets \"\")","updated_at":"2026-07-07T05:19:50Z"}
+{"closed_at":null,"id":"CX-hmnx","status":"open","title":"MUD parser: \"look at <obj>\" mis-resolves to an unrelated object (returned statue for \"look at signpost\")","updated_at":"2026-07-10T06:32:37Z"}
+{"closed_at":"2026-07-14T10:04:26Z","id":"CX-hn75","status":"closed","title":"REGRESSION: citizen @verb save denied everywhere ('you don't have permission to edit verbs here') \u2014 blocks CX-we3l open_exit live re-verify","updated_at":"2026-07-16T05:10:53Z"}
+{"closed_at":"2026-07-04T04:45:44Z","id":"CX-hoj","status":"closed","title":"Per-call signing context for CommitStore (fix MCP/CLI cross-contamination)","updated_at":"2026-07-04T04:45:44Z"}
+{"closed_at":null,"id":"CX-hqk5","status":"in_progress","title":"Safe verbs are stateless + read-only: no way to build stateful mechanics (persistent flags, lit/unlit, score, gated puzzles)","updated_at":"2026-07-07T01:15:04Z"}
+{"closed_at":"2026-08-05T07:34:35Z","id":"CX-hqko","status":"closed","title":"A :regular commit whose parent is legacy-%{} gets NO snapshot_parent and is then unconditionally rejected on import \u2014 blocks any legacy\u2192modern metadata migration","updated_at":"2026-08-05T07:34:35Z"}
+{"closed_at":"2026-08-06T04:33:39.501984Z","id":"CX-hrbn","status":"closed","title":"Cutover scope (CX-dzfv gate): Bd.Ready reads deps.json, which freezes at cutover \u2014 retire it with bd, repoint it at needs, or make it refuse loudly","updated_at":"2026-08-06T04:33:40.420731Z"}
+{"closed_at":"2026-03-25T00:56:18Z","id":"CX-huw","status":"closed","title":"Orchestrator silently swallows all exceptions in reconcile loop","updated_at":"2026-03-25T00:56:18Z"}
+{"closed_at":"2026-04-18T10:17:56Z","id":"CX-hzdc","status":"closed","title":"Snapshotter pair_ids mispairs DM when replay reorders types","updated_at":"2026-04-18T10:17:56Z"}
+{"closed_at":"2026-04-27T00:25:41Z","id":"CX-i27x","status":"closed","title":"M6 (i): Commonplace.Code.SourceDoc substrate primitive","updated_at":"2026-04-27T00:25:41Z"}
+{"closed_at":"2026-04-18T08:44:25Z","id":"CX-i6xt","status":"closed","title":"7.2 \u2014 compose_dms/1 chained-lookup helper","updated_at":"2026-04-18T08:44:25Z"}
+{"closed_at":null,"id":"CX-i8pk","status":"open","title":"Federation: actual second-machine smoke test (beyond config-only cross-machine)","updated_at":"2026-06-12T08:13:55Z"}
+{"closed_at":"2026-07-11T00:09:29Z","id":"CX-i9ca","status":"closed","title":"Bursar __bursar.json unbounded op-log bloat \u2192 serve OOM risk (persist re-encodes whole doc per op + TickBot lease churn)","updated_at":"2026-07-11T00:09:29Z"}
+{"closed_at":null,"id":"CX-i9j3","status":"open","title":"[epic] UI Inc-1: committed replayable transcript \u2014 per-session view-doc + commit-rate measurement","updated_at":"2026-07-08T08:09:19Z"}
+{"closed_at":"2026-07-10T09:59:51Z","id":"CX-i9w9","status":"closed","title":"MUD presence writes UNSIGNED under enforce \u2014 heartbeat + terminate Presence.remove denied (presence not retracted; the real jicn.1 remainder)","updated_at":"2026-07-10T09:59:51Z"}
+{"closed_at":null,"id":"CX-ic9r","status":"open","title":"MUD: 'A Forest Path' is a bare one-room dead end \u2014 yet it's both signpost-advertised AND the warppad's destination","updated_at":"2026-07-12T20:56:25Z"}
+{"closed_at":"2026-04-26T03:08:46Z","id":"CX-icc2","status":"closed","title":"Auto-resolution sub-bead (i): Chat.Actions.resolve_args/4 + Wallaby anchor RED","updated_at":"2026-04-26T03:08:46Z"}
+{"closed_at":null,"id":"CX-icor","status":"open","title":"Honest player-facing message for safe-verb permission refusals (replace generic 'Nothing happens')","updated_at":"2026-07-13T20:28:56Z"}
+{"closed_at":"2026-07-19T19:18:21Z","id":"CX-ief5","status":"closed","title":"C5c-i: turn transcript write side \u2014 the scrollback substrate","updated_at":"2026-07-19T19:18:21Z"}
+{"closed_at":"2026-08-05T04:16:50Z","id":"CX-inlb","status":"closed","title":"Audit the 55 content docs that reconstruct EMPTY on the live serve","updated_at":"2026-08-05T04:16:50Z"}
+{"closed_at":"2026-08-03T01:21:54Z","id":"CX-inpn","status":"closed","title":"Nested-subtype docs permanently refuse snapshots with no operator surface \u2014 unbounded chains feeding the 10k-cap truncation","updated_at":"2026-08-03T01:21:54Z"}
+{"closed_at":null,"id":"CX-ip68","status":"open","title":"MUD: add 'home' teleport verb to Verbs.dispatch (escript/Bot path)","updated_at":"2026-07-08T05:07:04Z"}
+{"closed_at":"2026-07-10T05:23:33Z","id":"CX-ivqz","status":"closed","title":"Read-scoping P2: zone read-visibility (private homes / private content)","updated_at":"2026-07-10T05:23:33Z"}
+{"closed_at":"2026-07-20T02:13:00Z","id":"CX-iwf5","status":"closed","title":"Citizen.provision presence-guard is location-blind \u2014 re-provision while the bot stands elsewhere MINTS A DUPLICATE .usr (the ceremony fork-minter)","updated_at":"2026-07-20T02:13:00Z"}
+{"closed_at":"2026-07-08T04:04:12Z","id":"CX-ix9n","status":"closed","title":"Items v1 TAKE under enforce \u2014 push-not-pull elevated node transfer + item-possession token","updated_at":"2026-07-08T04:04:12Z"}
+{"closed_at":"2026-08-03T01:59:51Z","id":"CX-izol","status":"closed","title":"General architecture study of commonplace (Fable, 2026-08-03) \u2014 file beads for gaps","updated_at":"2026-08-03T01:59:51Z"}
+{"closed_at":"2026-03-23T23:20:15Z","id":"CX-izt","status":"closed","title":"Schema merge fallback when parent_id=nil breaks DAG ancestry","updated_at":"2026-03-23T23:20:15Z"}
+{"closed_at":"2026-07-13T20:56:15Z","id":"CX-j2wt","status":"closed","title":"MUD: orphaned possession tokens from broken-session era \u2014 items show in inventory but drop/put say 'you aren't carrying that'","updated_at":"2026-07-13T20:56:15Z"}
+{"closed_at":null,"id":"CX-j30w","status":"open","title":"CX-qida flock NIF (flock_nif.so) fails to load from packaged escript \u2014 commonplace_cli serve crashes on boot","updated_at":"2026-07-06T16:57:44Z"}
+{"closed_at":"2026-07-07T21:08:40Z","id":"CX-j5eo","status":"closed","title":"[bug] MUD full-citizen bot crashes with GenServer.call(CommitStoreClient,:get_db) :noproc \u2014 unaliased module atom","updated_at":"2026-07-07T21:08:40Z"}
+{"closed_at":"2026-04-28T09:35:59Z","id":"CX-j62w","status":"closed","title":"MUD v0 P2: tick loop","updated_at":"2026-04-28T09:35:59Z"}
+{"closed_at":"2026-04-26T20:59:09Z","id":"CX-j6ul","status":"closed","title":"M4 (ii): Commonplace.Tree.Lookup substrate primitive","updated_at":"2026-04-26T20:59:09Z"}
+{"closed_at":"2026-03-23T06:31:51Z","id":"CX-j8o","status":"closed","title":"Document diff (character-level)","updated_at":"2026-03-23T06:31:51Z"}
+{"closed_at":"2026-04-25T10:40:51Z","id":"CX-j99d","status":"closed","title":"RedLog mailbox onramp: in-memory writes invisible to tail_red without commit","updated_at":"2026-04-25T10:40:51Z"}
+{"closed_at":"2026-03-22T21:18:38Z","id":"CX-jcu","status":"closed","title":"CLI: commonplace log (commit history)","updated_at":"2026-03-22T21:18:38Z"}
+{"closed_at":"2026-08-05T20:22:29Z","id":"CX-jfok","status":"closed","title":"Invariant registry step 2: bind the engine to the head-advance choke (put_latest funnel + async alarm dispatch) \u2014 \u00a74.2, R1/R2/R9","updated_at":"2026-08-05T20:22:29Z"}
+{"closed_at":"2026-07-19T19:05:36Z","id":"CX-jfw0","status":"closed","title":"TelegramBridge outbound cursor is in-memory \u2014 every restart re-relays the full bot-signed history to the owner's phone","updated_at":"2026-07-19T19:05:36Z"}
+{"closed_at":"2026-04-26T21:07:45Z","id":"CX-jfwv","status":"closed","title":"M4 substrate-pure chat: template-instantiation keystone (umbrella)","updated_at":"2026-04-26T21:07:45Z"}
+{"closed_at":null,"id":"CX-jhvn","status":"open","title":"Substrate and bd have silently diverged since the 2026-07-18 cutover \u2014 9 real open tickets exist only in the substrate, invisible to bd ready","updated_at":"2026-08-05T14:05:50Z"}
+{"closed_at":"2026-07-12T19:48:59Z","id":"CX-jicn","status":"closed","title":"MUD enforce-mode: human web sessions run UNSIGNED \u2192 own writes denied + raw {:trust,:local_write_denied,signer_id:nil} events flood the player pane","updated_at":"2026-07-12T19:48:59Z"}
+{"closed_at":null,"id":"CX-jiyi","status":"open","title":"MUD: wire MCP-agent Presence.Server creds so agent presence heartbeats land under enforce","updated_at":"2026-07-11T04:30:12Z"}
+{"closed_at":"2026-03-24T22:57:17Z","id":"CX-joi","status":"closed","title":"Integrate flock advisory locks into SyncAgent write path","updated_at":"2026-03-24T22:57:17Z"}
+{"closed_at":"2026-07-10T18:33:15Z","id":"CX-jxqs","status":"closed","title":"@verb editor: signal read-only PREVIEW upfront when caller lacks verb-authoring authority (instead of full-editor-then-deny)","updated_at":"2026-07-10T18:33:15Z"}
+{"closed_at":"2026-07-14T10:03:47Z","id":"CX-k20z","status":"closed","title":"write_meta_doc/merge_meta CORRUPTS (empties) certain seeded room-meta docs on the node-ELEVATED write path (funnel-hand vs actor-hand mismatch)","updated_at":"2026-07-14T10:03:47Z"}
+{"closed_at":"2026-04-19T18:57:06Z","id":"CX-k250","status":"closed","title":"Bug: CrossEpochMerge emits empty update when merging a fallback-translated sibling","updated_at":"2026-04-19T18:57:06Z"}
+{"closed_at":"2026-05-21T14:17:48Z","id":"CX-k320","status":"closed","title":"[bug] call_tool meta-tool drops session context (presence_uuid lands as nil)","updated_at":"2026-05-21T14:17:48Z"}
+{"closed_at":"2026-08-03T01:39:20Z","id":"CX-k34x","status":"closed","title":"InodeTracker.Registry grows without bound \u2014 tracked shadow entries never evicted","updated_at":"2026-08-03T01:39:20Z"}
+{"closed_at":"2026-07-19T07:28:46Z","id":"CX-k87w","status":"closed","title":"Autonomous-tick Worker resolves under WORKSPACE root not registered mud_root (demo-blocker, CX-morj root-divergence class)","updated_at":"2026-07-19T07:28:46Z"}
+{"closed_at":"2026-07-06T17:27:47Z","id":"CX-k8lq","status":"closed","title":"MUD bootstrap seeding is not idempotent \u2014 every session login re-seeds the Start Room cloak, minting duplicate instances","updated_at":"2026-07-06T17:27:47Z"}
+{"closed_at":"2026-06-12T13:30:40Z","id":"CX-k8tn","status":"closed","title":"Outliner MVP iii: OutlineLive LiveView \u2014 render tree + keybinds","updated_at":"2026-06-12T13:30:40Z"}
+{"closed_at":null,"id":"CX-kaah","status":"open","title":"Yelixer Doc.gc/1 tombstone-stripping is fully built but inert \u2014 zero production callers, deleted content retained forever","updated_at":"2026-08-03T01:03:26Z"}
+{"closed_at":null,"id":"CX-kk8s","status":"open","title":"Restore bd CLI to parity with Yegge's beads (lost in the Elixir port)","updated_at":"2026-07-19T04:04:39.322232Z"}
+{"closed_at":"2026-08-03T02:41:05Z","id":"CX-klpi","status":"closed","title":"CommitStore commit_log 10k cap silently truncates to newest window \u2014 trust gates authorize against partial history","updated_at":"2026-08-03T02:41:05Z"}
+{"closed_at":null,"id":"CX-kol8","status":"open","title":"Raw Elixir event maps leak into player output on mine/smith: '(event: %{kind: :mine, ...})'","updated_at":"2026-07-10T05:54:06Z"}
+{"closed_at":null,"id":"CX-kp3l","status":"open","title":"MUD onboarding: signpost hook 'listen for a secret in the fire' has no listen surface \u2014 bare 'listen' not understood, brazier undescribed","updated_at":"2026-07-12T21:26:46Z"}
+{"closed_at":"2026-04-25T17:52:31Z","id":"CX-kqz3","status":"closed","title":"Fork concurrency cap + timeout bump to prevent dist-Erlang heartbeat starvation","updated_at":"2026-04-25T17:52:31Z"}
+{"closed_at":"2026-03-23T05:37:03Z","id":"CX-kt7","status":"closed","title":"CLI: commonplace event (red event log management)","updated_at":"2026-03-23T05:37:03Z"}
+{"closed_at":null,"id":"CX-l4yv","status":"open","title":"MUD: Bot.spawn_session should host PlayerSession on serve, not the calling escript","updated_at":"2026-04-28T11:40:29Z"}
+{"closed_at":"2026-08-03T01:25:15Z","id":"CX-l5js","status":"closed","title":"Presence set_activity/set_attributes never thread signing \u2014 silently dead the day a workspace goes strict","updated_at":"2026-08-03T01:25:15Z"}
+{"closed_at":"2026-03-25T01:32:40Z","id":"CX-l5m","status":"closed","title":"CLI code duplication and inconsistent error handling","updated_at":"2026-03-25T01:32:40Z"}
+{"closed_at":"2026-04-18T17:02:30Z","id":"CX-l7j","status":"closed","title":"Sibling-commit merge for concurrent CommitStore writes (multi-writer correctness)","updated_at":"2026-04-18T17:02:30Z"}
+{"closed_at":null,"id":"CX-ldot","status":"open","title":"Test flake: Gold.RedLogAttestationTest teardown timing","updated_at":"2026-07-06T03:50:14Z"}
+{"closed_at":"2026-07-10T06:14:46Z","id":"CX-ldwj","status":"closed","title":"MUD web room-pane: 'Here:'/'Also here:' item lists render with NO separator (spans concatenate \u2192 overflow)","updated_at":"2026-07-10T06:14:46Z"}
+{"closed_at":null,"id":"CX-lf08","status":"open","title":"[bug] Presence reaper misses escript-orphaned presences \u2014 agent churn litters the world","updated_at":"2026-07-08T00:49:42Z"}
+{"closed_at":null,"id":"CX-lfo3","status":"open","title":"Object identity / stacking \u2014 Facade creators collide on duplicate item names","updated_at":"2026-07-07T02:53:34Z"}
+{"closed_at":"2026-07-06T15:00:52Z","id":"CX-lg06","status":"closed","title":"Thread session identity through the MUD game loop \u2014 PlayerSession/verbs writes carry signing_context + capability_proof","updated_at":"2026-07-06T15:00:52Z"}
+{"closed_at":null,"id":"CX-lgfg","status":"open","title":"[bug] Yelixer: named top-level XMLElement root tag doesn't survive Yjs replay (nil after reconstruct)","updated_at":"2026-07-07T21:49:05Z"}
+{"closed_at":null,"id":"CX-liim","status":"open","title":"Outliner follow-up: full Kleppmann cycle-safe move","updated_at":"2026-08-05T21:49:38.487254Z"}
+{"closed_at":null,"id":"CX-ll5d","status":"open","title":"CX-sfj8 convergence: extend the session-identity chokepoint's presence-cert GUARANTEE to durable identities (fold in Bot/web provisioning)","updated_at":"2026-07-12T17:57:18Z"}
+{"closed_at":null,"id":"CX-llfj","status":"open","title":"who-filter live_presence? hardcodes .usr \u2014 key off the actual presence-filename convention","updated_at":"2026-07-13T01:17:48Z"}
+{"closed_at":null,"id":"CX-lm7p","status":"open","title":"Outliner follow-up: node-id transclusion -> mirrors","updated_at":"2026-08-05T21:49:40.071279Z"}
+{"closed_at":null,"id":"CX-ln5u","status":"open","title":"MUD toolkit doc: curated verb on a node-owned private room is visitor-castable via elevation","updated_at":"2026-07-10T07:09:21Z"}
+{"closed_at":"2026-04-26T19:23:09Z","id":"CX-lok1","status":"closed","title":"M3 (iv): Generic renderer extension: phx-submit FORM + kind-aware CSS","updated_at":"2026-04-26T19:23:09Z"}
+{"closed_at":null,"id":"CX-lr0i","status":"open","title":"Warded Vault reward: bound total ingot PRODUCTION (drop-cycle farm), not just concurrent holding","updated_at":"2026-07-12T23:02:12Z"}
+{"closed_at":"2026-07-16T16:29:07Z","id":"CX-lr73","status":"closed","title":"Self-host: MUD seed world (rooms/objects/exits/recipes/veins) is hardcoded Elixir in bootstrap.ex \u2192 migrate to CRDT seed documents","updated_at":"2026-07-16T16:29:07Z"}
+{"closed_at":null,"id":"CX-lsmn","status":"open","title":"MUD: warppad works only via hidden bare verb 'warp' \u2014 'use warppad' says 'Nothing happens'; teleport messages out of order","updated_at":"2026-07-12T17:49:10Z"}
+{"closed_at":"2026-04-18T02:54:36Z","id":"CX-m3x","status":"closed","title":"Wire ensure_genesis into document creation (build 2.5)","updated_at":"2026-04-18T02:54:36Z"}
+{"closed_at":"2026-03-26T04:41:52Z","id":"CX-m4z","status":"closed","title":"CLI merge command uses CommitStore directly","updated_at":"2026-03-26T04:41:52Z"}
+{"closed_at":null,"id":"CX-m5nz","status":"open","title":"Bursar-under-enforce: presence Reaper loops unsigned-remove on non-heartbeating (incl. new ephemeral) presences \u2014 serve-log :unsigned spam","updated_at":"2026-07-12T19:50:04Z"}
+{"closed_at":"2026-03-24T00:56:09Z","id":"CX-m83","status":"closed","title":"Yelixer CRDT: full-chain replay gives inconsistent results for schema docs","updated_at":"2026-03-24T00:56:09Z"}
+{"closed_at":"2026-05-21T14:20:17Z","id":"CX-m8xl","status":"closed","title":"presence_info returns all-NIL after CX-hf71 anubis port \u2014 possible regression","updated_at":"2026-05-21T14:20:17Z"}
+{"closed_at":null,"id":"CX-mchn","status":"open","title":"Yelixer: full-state-snapshot-into-chained-commit delete_set OVER-COVERS a fresh insert on apply_update re-fold (silent data loss)","updated_at":"2026-07-14T09:30:34Z"}
+{"closed_at":"2026-07-06T19:12:24Z","id":"CX-mczs","status":"closed","title":"MUD verb dispatch ignores the target \u2014 verb-name hijack (any verb matches regardless of object)","updated_at":"2026-07-06T19:12:24Z"}
+{"closed_at":"2026-08-05T14:44:37Z","id":"CX-mg8s","status":"closed","title":"all_commit_ids_for_doc silently skips every commit whose id starts with byte 0xFF (~1/256) \u2014 CubDB range bound is wrong","updated_at":"2026-08-05T14:44:37Z"}
+{"closed_at":"2026-03-27T19:40:48Z","id":"CX-mmv","status":"closed","title":"TreeLive still uses CommitStore directly","updated_at":"2026-03-27T19:40:48Z"}
+{"closed_at":"2026-08-05T21:52:52.544718Z","id":"CX-mmxr","status":"closed","title":"tix-migration: the 521 closed bd tickets \u2014 migrate as batch vs archive-in-bd (jes's scope call)","updated_at":"2026-08-05T21:52:53.489044Z"}
+{"closed_at":"2026-07-13T20:27:42Z","id":"CX-morj","status":"closed","title":"Visitor-invoked sandboxed verb put_state silently drops (non-owner state write not persisted + dishonest denial)","updated_at":"2026-07-13T20:27:42Z"}
+{"closed_at":"2026-07-19T20:28:30Z","id":"CX-mpk0","status":"closed","title":"Move-then-look serves a STALE position read \u2014 read-your-writes gap breaks in-turn exploration (single .usr proven, no fork)","updated_at":"2026-07-19T20:28:30Z"}
+{"closed_at":null,"id":"CX-mxxe","status":"in_progress","title":"MUD: examine dumps full verb state to any player \u2014 puzzle spoilers + actor_ref\u2192name mapping leak","updated_at":"2026-07-13T16:29:58Z"}
+{"closed_at":null,"id":"CX-n2j2","status":"open","title":"Confused-deputy: ComputeRunner + Orchestrator run author-plantable doc code under vacuous :execute gate","updated_at":"2026-07-06T23:41:45Z"}
+{"closed_at":"2026-08-05T21:49:57.787875Z","id":"CX-n3i7","status":"closed","title":"[security] Yelixer XMLElement.to_string/2 does not HTML-escape text or attributes \u2014 XSS if raw-rendered on web","updated_at":"2026-08-05T21:49:58.540351Z"}
+{"closed_at":null,"id":"CX-n6fv","status":"deferred","title":"[PARKED] OS-level verb sandbox (Podman-class) \u2014 open-adversarial tier prerequisite","updated_at":"2026-07-06T22:19:46Z"}
+{"closed_at":"2026-07-12T20:58:50Z","id":"CX-n9ne","status":"closed","title":"Noun collision: inventory noun shadows room noun in the parser","updated_at":"2026-07-12T20:58:50Z"}
+{"closed_at":null,"id":"CX-nalw","status":"open","title":"Room-render 'Players:' line still shows ghost presences \u2014 extend the who-filter's live-session filter to room rendering","updated_at":"2026-07-13T01:26:08Z"}
+{"closed_at":"2026-07-19T18:00:27Z","id":"CX-nckj","status":"closed","title":"TgRoom.issue_write_cert mints but never persists the capability \u2014 live certs unresolvable, first real bridge post DENIED","updated_at":"2026-07-19T18:00:27Z"}
+{"closed_at":null,"id":"CX-nd49","status":"open","title":"Presence.create has unchecked commits + MUD bootstrap writes unsigned \u2014 strict-mode world seeding gaps","updated_at":"2026-07-06T15:35:05Z"}
+{"closed_at":"2026-07-06T19:15:12Z","id":"CX-ndvi","status":"closed","title":"Safe-verbs MVP \u2014 capability-bounded player code (impl; design reviewed)","updated_at":"2026-07-06T19:15:12Z"}
+{"closed_at":"2026-07-08T07:38:47Z","id":"CX-nf8p","status":"closed","title":"Web MUD rate-limits before widening past jes (per-session + per-principal command/verb caps)","updated_at":"2026-07-08T07:38:47Z"}
+{"closed_at":null,"id":"CX-nfyo","status":"open","title":"MUD demo curation: remove 'Lira Testlab' blank scratch room (off Forest Path)","updated_at":"2026-07-07T15:07:20Z"}
+{"closed_at":"2026-04-20T00:01:03Z","id":"CX-njf","status":"closed","title":"Stop using node() in identity stable_client_id derivation","updated_at":"2026-04-20T00:01:03Z"}
+{"closed_at":"2026-07-06T11:34:14Z","id":"CX-nn4y","status":"closed","title":"W4 rider: thread per-session hands into LiveView write paths (outline/wiki/tree) \u2014 closes residual shared-hand collision","updated_at":"2026-07-06T11:34:14Z"}
+{"closed_at":null,"id":"CX-nnyw","status":"open","title":"FLAKY: GitBridge.ArchiveTest 'excluded docs never get an archive directory' \u2014 on_exit File.rm_rf! races live sync writer ('file already exists')","updated_at":"2026-07-06T20:47:25Z"}
+{"closed_at":null,"id":"CX-nphu","status":"open","title":"MUD world-building toolkit \u2014 from capabilities demo to authoring platform","updated_at":"2026-07-07T02:33:27Z"}
+{"closed_at":"2026-04-18T08:28:11Z","id":"CX-ntz5","status":"closed","title":"7.1 \u2014 Common-ancestor snapshot walk","updated_at":"2026-04-18T08:28:11Z"}
+{"closed_at":"2026-04-23T21:13:27Z","id":"CX-nuc2","status":"closed","title":"Leaf-doc merge log: __merge.log placement when {path} resolves to non-schema","updated_at":"2026-04-23T21:13:27Z"}
+{"closed_at":null,"id":"CX-nyj9","status":"in_progress","title":"Mint-with-behavior / spawn-from-template \u2014 configure a freshly-minted object (TRUST-SENSITIVE)","updated_at":"2026-08-05T21:13:37.790328Z"}
+{"closed_at":null,"id":"CX-nyvm","status":"open","title":"Mode A vs Mode B serve boot-gate parity (bursar_on_boot found missing; audit other on-boot gates)","updated_at":"2026-07-07T18:38:31Z"}
+{"closed_at":"2026-07-04T07:38:21Z","id":"CX-o04t","status":"closed","title":"Extract non-doc-keyed state from CommitStore (R4c carve-out, pre-staged)","updated_at":"2026-07-04T07:38:21Z"}
+{"closed_at":"2026-08-05T06:34:17Z","id":"CX-o1b9","status":"closed","title":"bin/check-mcp-fresh reports FRESH in complete language but only samples 6 fixed probe modules","updated_at":"2026-08-05T06:34:17Z"}
+{"closed_at":"2026-07-06T11:24:02Z","id":"CX-o1l9","status":"closed","title":"CX-60na Black half: query verbs + pattern-scoped subscription + emit_red in the compute DSL","updated_at":"2026-07-06T11:24:02Z"}
+{"closed_at":"2026-07-10T18:47:35Z","id":"CX-o2hw","status":"closed","title":"MUD: @name updates display name but not lookup key \u2014 renamed objects unaddressable by visible name, still answer to invisible original name","updated_at":"2026-07-10T18:47:35Z"}
+{"closed_at":null,"id":"CX-o3ar","status":"open","title":"Merging concurrent edits to the SAME whole-blob JSON doc concatenates both documents and corrupts it (bd tickets + MUD verb source)","updated_at":"2026-08-05T04:44:57Z"}
+{"closed_at":"2026-03-23T20:05:59Z","id":"CX-o3i","status":"closed","title":"Track target fork-point separately for collision detection on repeated merges","updated_at":"2026-03-23T20:05:59Z"}
+{"closed_at":"2026-04-25T20:34:45Z","id":"CX-o3r7","status":"closed","title":"Chat S2 \u2014 CommandRouter per-MCP-session signer-context threading","updated_at":"2026-04-25T20:34:45Z"}
+{"closed_at":"2026-04-25T18:21:32Z","id":"CX-o8tx","status":"closed","title":"Amortize reflog checkpoint via change-driven dirty-subtree invalidation","updated_at":"2026-04-25T18:21:32Z"}
+{"closed_at":"2026-08-05T21:49:58.928880Z","id":"CX-o9kj","status":"closed","title":"Dogfood deploy gap: MCP escript not rebuilt on deploy \u2014 relaunch verified stale pre-fix code","updated_at":"2026-08-05T21:49:59.712809Z"}
+{"closed_at":"2026-07-04T02:37:54Z","id":"CX-obfb","status":"closed","title":"Gate B merge_parents omission \u2014 enforce no-delta-merge-on-code-docs","updated_at":"2026-07-04T02:37:54Z"}
+{"closed_at":"2026-08-07T00:43:38.838403Z","id":"CX-oc30","status":"closed","title":"Trust audit log has recorded NOTHING on the live serve \u2014 RedLog.commit writes unsigned, so every audit write is denied by the gate it exists to audit","updated_at":"2026-08-07T00:43:40.060890Z"}
+{"closed_at":"2026-03-23T05:37:03Z","id":"CX-oft","status":"closed","title":"CLI: commonplace inspect (CRDT state inspection)","updated_at":"2026-03-23T05:37:03Z"}
+{"closed_at":"2026-07-07T08:08:34Z","id":"CX-oh5k","status":"closed","title":"move_self ghost: verb-driven teleport moves presence but NOT the session room (state desync)","updated_at":"2026-07-07T08:08:34Z"}
+{"closed_at":"2026-08-03T01:41:13Z","id":"CX-oh9z","status":"closed","title":"Yelixer snapshot_update/1 should refuse lossy compaction itself instead of relying on every caller to pre-check","updated_at":"2026-08-03T01:41:13Z"}
+{"closed_at":null,"id":"CX-oj83","status":"in_progress","title":"MUD NPE: newcomer critical path dead \u2014 Warded Vault brass KEY looted, no respawn; room copy still advertises it","updated_at":"2026-07-11T23:36:12Z"}
+{"closed_at":"2026-04-19T23:00:49Z","id":"CX-ok3","status":"closed","title":"Include snapshot metadata in authenticated commit payload (content-address hash)","updated_at":"2026-04-19T23:00:49Z"}
+{"closed_at":"2026-07-12T22:38:49Z","id":"CX-ony7","status":"closed","title":"MUD: 6 of 9 Start Room showcase objects are undescribed AND inert \u2014 '(no description yet)' + 'Nothing happens'","updated_at":"2026-07-12T22:38:49Z"}
+{"closed_at":"2026-03-23T05:21:28Z","id":"CX-oq8","status":"closed","title":"Stale BEAM processes survive across serve restarts","updated_at":"2026-03-23T05:21:28Z"}
+{"closed_at":"2026-06-12T08:13:57Z","id":"CX-orfw","status":"closed","title":"[EPIC] Federation move #1 \u2014 federate-for-real with agents as principals","updated_at":"2026-06-12T08:13:57Z"}
+{"closed_at":"2026-06-12T08:02:36Z","id":"CX-orfw.1","status":"closed","title":"Federation Phase C: commit-exchange envelope over Phoenix Channels (two local workspaces)","updated_at":"2026-06-12T08:02:36Z"}
+{"closed_at":"2026-06-12T08:13:55Z","id":"CX-orfw.2","status":"closed","title":"Federation Phase D: cross-machine config","updated_at":"2026-06-12T08:13:55Z"}
+{"closed_at":"2026-07-12T04:30:45Z","id":"CX-orlm","status":"closed","title":"Interactable curated objects under enforce: verbs need object-owner authority (non-owner spin/take refused)","updated_at":"2026-07-12T04:30:45Z"}
+{"closed_at":null,"id":"CX-osaf","status":"open","title":"Tree pins: unify checkpoint and checkout state as one shape \u2014 durable per-node checkout pins as presence-shaped docs","updated_at":"2026-08-03T06:11:33Z"}
+{"closed_at":null,"id":"CX-osj8","status":"open","title":"MUD view-doc scrollback: turn-number collisions + non-monotonic ordering (command vs ambient use independent 'n' counters)","updated_at":"2026-07-10T05:38:52Z"}
+{"closed_at":"2026-04-09T09:14:31Z","id":"CX-ost","status":"closed","title":"Hammer yelixer with test coverage (parent)","updated_at":"2026-04-09T09:14:31Z"}
+{"closed_at":"2026-03-23T05:37:01Z","id":"CX-ot0","status":"closed","title":"CLI: commonplace uuid (resolve path to UUID)","updated_at":"2026-03-23T05:37:01Z"}
+{"closed_at":"2026-04-26T21:41:15Z","id":"CX-oui2","status":"closed","title":"M5 (ii): Commonplace.View.ComputeSpec parser + validator + interpreter","updated_at":"2026-04-26T21:41:15Z"}
+{"closed_at":null,"id":"CX-oxrb","status":"open","title":"MUD QoL: classic-verb gaps \u2014 open/close/search/climb/sit/push absent; whisper missing from play surface despite facade; emote doesn't conjugate","updated_at":"2026-07-10T07:01:24Z"}
+{"closed_at":null,"id":"CX-oygu","status":"open","title":"MUD separability decision: MUD processes are unconditional children of the core library app","updated_at":"2026-08-03T01:05:45Z"}
+{"closed_at":null,"id":"CX-oyku","status":"open","title":"MUD: @verb editor checks permission at SAVE, not at OPEN \u2014 composes whole verb, then discards it on denial","updated_at":"2026-07-12T17:56:16Z"}
+{"closed_at":null,"id":"CX-oznt","status":"open","title":"MUD NPE: zero onboarding at first login \u2014 no help pointer, no goal, home room gives no next step","updated_at":"2026-07-10T07:34:39Z"}
+{"closed_at":"2026-07-06T18:21:35Z","id":"CX-p0wx","status":"closed","title":"@dig onto an existing direction silently clobbers the exit \u2014 can fragment the map permanently (no @link/@teleport recovery)","updated_at":"2026-07-06T18:21:35Z"}
+{"closed_at":"2026-04-25T23:00:48Z","id":"CX-p2qp","status":"closed","title":"Chat rooms \u2014 view-as-CRDT-message-log (umbrella)","updated_at":"2026-04-25T23:00:48Z"}
+{"closed_at":"2026-08-05T21:49:55.481609Z","id":"CX-p6g0","status":"closed","title":"Bursar went DOWN on the :5199 serve under enforce (deploy #4, 708e00c) \u2014 root unreproduced; take/move crashed on :bursar_unavailable","updated_at":"2026-08-05T21:49:56.253024Z"}
+{"closed_at":"2026-08-03T01:41:12Z","id":"CX-pb23","status":"closed","title":"Add Yelixer.Doc.state_vector/1 \u2014 a dozen commonplace call sites reach through doc.store to BlockStore","updated_at":"2026-08-03T01:41:12Z"}
+{"closed_at":null,"id":"CX-pcjk","status":"open","title":"MUD content: riddle-road finale is a dangling exit \u2014 Sunken Stair 'west' points at nonexistent room, 3-riddle chain dead-ends at climax","updated_at":"2026-07-13T01:02:28Z"}
+{"closed_at":"2026-04-27T06:11:47Z","id":"CX-pcn4","status":"closed","title":"M7 (v): DELETE Commonplace.View.ComputeSpec + tests","updated_at":"2026-04-27T06:11:47Z"}
+{"closed_at":"2026-04-24T08:36:20Z","id":"CX-pd6k","status":"closed","title":"Anubis_mcp fork trigger criteria","updated_at":"2026-04-24T08:36:20Z"}
+{"closed_at":null,"id":"CX-pe8d","status":"open","title":"MUD builder paper cuts: dangling bootstrap exits, no @unlink/@destroy, invisible presence, one-bot-per-session, no @verbs list","updated_at":"2026-07-06T18:34:17Z"}
+{"closed_at":"2026-08-07T00:43:35.979872Z","id":"CX-pm68","status":"closed","title":"CommitStore corrupt-open policy silently substitutes an EMPTY world (\"Archiving and starting fresh\") \u2014 enforce serves must refuse to boot","updated_at":"2026-08-07T00:43:37.096651Z"}
+{"closed_at":null,"id":"CX-poik","status":"open","title":"tech-debt: raw CommitStore fn chokes when store is the CommitStoreClient module \u2014 add fail-fast guard/lint","updated_at":"2026-07-07T22:32:45Z"}
+{"closed_at":null,"id":"CX-pp5i","status":"open","title":"FORK-1: import_with_translation does not advance :latest for read-only cross-repo replicas (linear commits)","updated_at":"2026-07-12T20:36:14Z"}
+{"closed_at":"2026-04-28T09:45:19Z","id":"CX-pqaj","status":"closed","title":"MUD v0 P3: in-world programming (@verb + dispatcher)","updated_at":"2026-04-28T09:45:19Z"}
+{"closed_at":"2026-07-08T16:39:46Z","id":"CX-pt3e","status":"closed","title":"RateLimit.check ArithmeticError fails open in session-spawning tests (benign, noisy telemetry)","updated_at":"2026-07-08T16:39:46Z"}
+{"closed_at":null,"id":"CX-puo8","status":"open","title":"Outliner follow-up: per-viewer collapse state","updated_at":"2026-08-05T21:49:31.640043Z"}
+{"closed_at":"2026-07-04T07:38:23Z","id":"CX-pvrl","status":"closed","title":"Test flake: Bursar global-name contention across async test modules","updated_at":"2026-07-04T07:38:23Z"}
+{"closed_at":"2026-04-19T23:40:12Z","id":"CX-pyi","status":"closed","title":"Stabilize client_id for Sync.Watcher/RedLog writers (same bug class as CX-6g6)","updated_at":"2026-04-19T23:40:12Z"}
+{"closed_at":"2026-04-26T14:35:22Z","id":"CX-q15o","status":"closed","title":"Substrate-pure-chat M2: declarative materialize semantics (umbrella)","updated_at":"2026-04-26T14:35:22Z"}
+{"closed_at":"2026-03-24T08:07:09Z","id":"CX-q7k","status":"closed","title":"TreeLive: presence processes unmanaged, no unsubscribe on terminate","updated_at":"2026-03-24T08:07:09Z"}
+{"closed_at":null,"id":"CX-q7nh","status":"open","title":"tix-migration: drift scanner \u2014 black standing query comparing bd store to tix on the boundary (count + per-hit shapes)","updated_at":"2026-08-05T18:19:13.601353Z"}
+{"closed_at":"2026-05-21T14:05:05Z","id":"CX-q8nk","status":"closed","title":"bots v0 follow-up: .exe presence flicker + per-entity red log + replay-from-log rate-limit rebuild","updated_at":"2026-05-21T14:05:05Z"}
+{"closed_at":null,"id":"CX-q9aj","status":"in_progress","title":"Smoke-test commonplace MCP tools per boss-clod ask","updated_at":"2026-04-25T04:04:48Z"}
+{"closed_at":null,"id":"CX-qat5","status":"open","title":"Multiplayer MUD \u2014 capabilities demo with enforced permissions","updated_at":"2026-07-06T02:01:09Z"}
+{"closed_at":"2026-07-06T04:31:05Z","id":"CX-qat5.1","status":"closed","title":"Recon \u2014 browser write-path inventory","updated_at":"2026-07-06T04:31:05Z"}
+{"closed_at":"2026-07-06T11:11:45Z","id":"CX-qat5.2","status":"closed","title":"Browser identity \u2014 login \u2192 per-player keys, sessions sign as their player","updated_at":"2026-07-06T11:11:45Z"}
+{"closed_at":"2026-07-06T10:32:02Z","id":"CX-qat5.3","status":"closed","title":"Third Trust.authorized? call site \u2014 enforce :write at the browser write path","updated_at":"2026-07-06T10:32:02Z"}
+{"closed_at":"2026-07-06T12:03:58Z","id":"CX-qat5.4","status":"closed","title":"Section ownership via capability certs \u2014 enforced owned map sections","updated_at":"2026-07-06T12:03:58Z"}
+{"closed_at":"2026-07-06T12:24:37Z","id":"CX-qat5.5","status":"closed","title":"New-room cert coverage \u2014 auto-extend-on-create","updated_at":"2026-07-06T12:24:37Z"}
+{"closed_at":"2026-07-06T05:53:00Z","id":"CX-qat5.6","status":"closed","title":"Multiplayer plumbing M1 \u2014 exposure, sessions, presence, rate limits","updated_at":"2026-07-06T05:53:00Z"}
+{"closed_at":null,"id":"CX-qat5.7","status":"in_progress","title":"MUD M1: server exposure \u2014 bind-beyond-localhost / tailscale / TLS (HUMAN-GATED, exposure)","updated_at":"2026-07-06T17:20:13Z"}
+{"closed_at":"2026-04-26T21:34:42Z","id":"CX-qbhb","status":"closed","title":"M5 (i): Chat.TemplateBootstrap mints _compute in /chat/__template/","updated_at":"2026-04-26T21:34:42Z"}
+{"closed_at":"2026-07-07T07:41:12Z","id":"CX-qexv","status":"closed","title":"safe-verb put_state silently drops non-scalar values (lists/maps don't persist)","updated_at":"2026-07-07T07:41:12Z"}
+{"closed_at":null,"id":"CX-qg1j","status":"open","title":"Curation: consolidate/rename 3 near-duplicate forge rooms (The Smithy / Ashfall Forge / The Ashfall Forge) \u2014 questline path ambiguous","updated_at":"2026-07-08T03:54:29Z"}
+{"closed_at":"2026-07-06T14:38:56Z","id":"CX-qida","status":"closed","title":"Enforce workspace single-owner: flock at serve startup (green cluster-arbiter residual, from CX-vfau part c)","updated_at":"2026-07-06T14:38:56Z"}
+{"closed_at":null,"id":"CX-qlgy","status":"open","title":"MUD: returning players respawn at LAST session location, not Start Room \u2014 desired, or add @recall home?","updated_at":"2026-07-07T09:08:07Z"}
+{"closed_at":"2026-07-10T08:28:32Z","id":"CX-qmgc","status":"closed","title":"Convergence bearer identity is spoofable \u2014 offer takes self-reported name instead of actor_name","updated_at":"2026-07-10T08:28:32Z"}
+{"closed_at":null,"id":"CX-qol0","status":"open","title":"MUD: Warded Vault reliquary \u2014 open/unlock verb mismatch, key-in-desc not takeable, unlock ignores lock state (and maybe the key)","updated_at":"2026-07-13T16:30:02Z"}
+{"closed_at":"2026-07-06T23:50:50Z","id":"CX-qom0","status":"closed","title":"Gate legacy .elx verb dispatch at the compile waist (open-tier prerequisite)","updated_at":"2026-07-06T23:50:50Z"}
+{"closed_at":null,"id":"CX-qph8","status":"open","title":"CX-55o3 cleanup: pure token-keyed take node-ownership (drop the :available schema-signer fallback)","updated_at":"2026-07-12T01:55:15Z"}
+{"closed_at":null,"id":"CX-r08p","status":"open","title":"MUD broadcast polish: actor name doubled ('wisp wisp speaks a word...') and 'arrives from the up'","updated_at":"2026-07-13T01:03:07Z"}
+{"closed_at":null,"id":"CX-r10u","status":"open","title":"QoL: silent locked-verb acceptance \u2014 @verb take/go 'compiles cleanly' but never fires (warn at save / refuse at open)","updated_at":"2026-07-11T23:29:34Z"}
+{"closed_at":"2026-07-16T16:48:50Z","id":"CX-r1e0","status":"closed","title":"Self-host: LLM bot personas + triggers (@default_alice_persona/@default_bob_persona) are compiled Elixir literals in commonplace_bots demo.ex \u2192 seed-from-document bundle","updated_at":"2026-07-16T16:48:50Z"}
+{"closed_at":"2026-04-10T00:21:05Z","id":"CX-r1f","status":"closed","title":"Commonplace.Document.Diff: cursor advance uses String.length (codepoints) not graphemes \u2014 Unicode bug","updated_at":"2026-04-10T00:21:05Z"}
+{"closed_at":"2026-07-07T10:12:20Z","id":"CX-r8vp","status":"closed","title":"Close the verb-facing facade data surface: world.ctx / world.store reachable (generalize the P0 scrub to a thin handle)","updated_at":"2026-07-07T10:12:20Z"}
+{"closed_at":"2026-08-05T11:59:20Z","id":"CX-r97r","status":"closed","title":"Concurrent NoteDoc appends CORRUPT the doc into unparseable JSON, all writers get :ok, and read_entries masks it as an empty list","updated_at":"2026-08-05T11:59:20Z"}
+{"closed_at":"2026-07-13T17:18:05Z","id":"CX-r9r8","status":"closed","title":"Builder commands @desc/@name can't target carried objects (room-contents-only lookup) while @verb CAN \u2014 inconsistent reach","updated_at":"2026-07-13T17:18:05Z"}
+{"closed_at":null,"id":"CX-rbvl","status":"open","title":"CommitStoreClient.create_commit/6 explicit parent_id is not CAS-enforced \u2014 caller-side path re-reads :latest as expected parent","updated_at":"2026-07-06T12:20:11Z"}
+{"closed_at":"2026-03-22T21:03:51Z","id":"CX-rcd","status":"closed","title":"CLI: commonplace ps (list managed processes)","updated_at":"2026-03-22T21:03:51Z"}
+{"closed_at":"2026-07-07T15:41:30Z","id":"CX-rdww","status":"closed","title":"Enforce-mode denial log crashes Logger formatter (raw-binary commit_id)","updated_at":"2026-07-07T15:41:30Z"}
+{"closed_at":"2026-04-25T17:52:31Z","id":"CX-re6b","status":"closed","title":"MCP session dies on tools/list, resources/list, resources/read crashes","updated_at":"2026-04-25T17:52:31Z"}
+{"closed_at":null,"id":"CX-rkvp","status":"open","title":"MUD: add Facade.exists?/2 boolean existence-probe IF deliberate target-probing becomes a common verb pattern","updated_at":"2026-07-07T11:02:04Z"}
+{"closed_at":"2026-04-19T22:55:16Z","id":"CX-rlv","status":"closed","title":"Normalize string-keyed maps in Presence.set_attributes/3","updated_at":"2026-04-19T22:55:16Z"}
+{"closed_at":null,"id":"CX-rmk","status":"in_progress","title":"Layer 2 MCP server for commonplace channels","updated_at":"2026-08-05T21:49:05.965110Z"}
+{"closed_at":null,"id":"CX-rmuk","status":"open","title":"Sections.auto_extend_for_new_room reissues WITHOUT verify_chain \u2014 revoked/expired cert scope launders into a fresh clean cert","updated_at":"2026-07-06T19:58:25Z"}
+{"closed_at":"2026-03-24T17:14:07Z","id":"CX-rr1","status":"closed","title":"Untested core modules: Presence, Document.Server, Export, FileLock","updated_at":"2026-03-24T17:14:07Z"}
+{"closed_at":null,"id":"CX-rtm7","status":"open","title":"BotRoute: fail-fast on a dead serve node (escript survives a serve restart)","updated_at":"2026-07-08T06:53:40Z"}
+{"closed_at":"2026-03-22T23:36:50Z","id":"CX-s33","status":"closed","title":"commonplace ps cannot detect running orchestrator","updated_at":"2026-03-22T23:36:50Z"}
+{"closed_at":null,"id":"CX-s9at","status":"open","title":"Fork is O(tree) sequential round-trips \u2014 no batching, parallelism, or progress reporting for large trees","updated_at":"2026-08-03T01:04:55Z"}
+{"closed_at":"2026-04-25T21:26:30Z","id":"CX-sacn","status":"closed","title":"Chat D1 \u2014 Commonplace.Chat.Messages module (YArray helpers + JSON encode/decode)","updated_at":"2026-04-25T21:26:30Z"}
+{"closed_at":"2026-06-12T12:54:00Z","id":"CX-saix","status":"closed","title":"Outliner MVP i: _outline xml doc shape + structured-XML mutation layer","updated_at":"2026-06-12T12:54:00Z"}
+{"closed_at":"2026-03-24T00:56:09Z","id":"CX-sew","status":"closed","title":"Fix YMap.to_map non-deterministic iteration order","updated_at":"2026-03-24T00:56:09Z"}
+{"closed_at":"2026-07-12T19:48:59Z","id":"CX-sfj8","status":"closed","title":"Presence-fix M4: bootstrap cap-provisioning for unsigned sessions (resolves CX-3xwu clean-quit)","updated_at":"2026-07-12T19:48:59Z"}
+{"closed_at":"2026-03-23T20:05:58Z","id":"CX-spp","status":"closed","title":"Recursive schema diff for nested directory merges","updated_at":"2026-03-23T20:05:58Z"}
+{"closed_at":null,"id":"CX-spyc","status":"open","title":"Visitor-triggers-owner-effect (setuid) \u2014 per-verb identity + owner certs","updated_at":"2026-07-07T02:33:48Z"}
+{"closed_at":"2026-07-08T15:19:29Z","id":"CX-sqb6","status":"closed","title":"Read-scoping P1: view-doc read-caps (spectate + transcript-gating) \u2014 the bounded slice","updated_at":"2026-07-08T15:19:29Z"}
+{"closed_at":"2026-04-19T22:42:48Z","id":"CX-sqcg","status":"closed","title":"CrossEpochMerge.merge(snap, translated_R) duplicates baseline content in merge.update","updated_at":"2026-04-19T22:42:48Z"}
+{"closed_at":"2026-07-06T21:49:39Z","id":"CX-sqyc","status":"closed","title":"Bursar singleton contention floods red log: 1 DENIED event committed per second, forever","updated_at":"2026-07-06T21:49:39Z"}
+{"closed_at":"2026-03-24T10:01:08Z","id":"CX-sra","status":"closed","title":"Extract DocLoader utility for repeated load-and-apply pattern","updated_at":"2026-03-24T10:01:08Z"}
+{"closed_at":"2026-07-07T11:50:27Z","id":"CX-ssi6","status":"closed","title":"configure_state/4 (and configure_attr) function-clause crash on non-string value \u2014 graceful {:error,:bad_value}","updated_at":"2026-07-07T11:50:27Z"}
+{"closed_at":"2026-03-24T02:17:59Z","id":"CX-stz","status":"closed","title":"Boolean tag reversal: lib0 uses 120=true/121=false, yelixer has them swapped","updated_at":"2026-03-24T02:17:59Z"}
+{"closed_at":"2026-06-12T13:30:39Z","id":"CX-sugc","status":"closed","title":"Outliner MVP ii: tree reconstruction + defensive cycle/orphan handling","updated_at":"2026-06-12T13:30:39Z"}
+{"closed_at":"2026-03-23T03:33:05Z","id":"CX-syc","status":"closed","title":"Orchestrator does not re-export CRDT changes to sandbox","updated_at":"2026-03-23T03:33:05Z"}
+{"closed_at":null,"id":"CX-t3bt","status":"open","title":"Probe-side read staleness: reconstruct-read of a recently-appended entries-doc served pre-append state ~50min later \u2014 forensics nearly misread live state","updated_at":"2026-07-20T03:04:43Z"}
+{"closed_at":null,"id":"CX-t3x7","status":"open","title":"Browser Y.Doc mints a random client_id per page load \u2014 seed yjs_hook.js with the session hand","updated_at":"2026-07-06T11:31:26Z"}
+{"closed_at":"2026-08-06T11:11:21.699755Z","id":"CX-t3xv","status":"closed","title":"P1: the FIRST enforce-mode denial on a node permanently kills denial auditing \u2014 audit persist GenServer.calls back into the CommitStore mid-handle_call, exits :calling_self, telemetry detaches the trust-audit-log handler for the VM lifetime","updated_at":"2026-08-06T11:11:22.464700Z"}
+{"closed_at":"2026-04-19T22:39:10Z","id":"CX-t47h","status":"closed","title":"Cross-epoch two-peer merge E2E: translator-hook + sibling-merger interaction","updated_at":"2026-04-19T22:39:10Z"}
+{"closed_at":"2026-07-07T15:41:31Z","id":"CX-t4rm","status":"closed","title":"Zone-ownership M1 piece 1: dedicated enforce-node standup + minimal seed","updated_at":"2026-07-07T15:41:31Z"}
+{"closed_at":"2026-05-20T18:12:17Z","id":"CX-t6if","status":"closed","title":"squad-alerts MCP server (cross-ref: HERMES-6e1u)","updated_at":"2026-05-20T18:12:17Z"}
+{"closed_at":"2026-03-23T05:48:57Z","id":"CX-t75","status":"closed","title":"Heartbeat reaper for stale presence files","updated_at":"2026-03-23T05:48:57Z"}
+{"closed_at":"2026-04-26T14:35:22Z","id":"CX-t7te","status":"closed","title":"M2 sub-bead (i): Commonplace.Materialize substrate primitive + synthetic non-chat tests","updated_at":"2026-04-26T14:35:22Z"}
+{"closed_at":null,"id":"CX-t8ua","status":"open","title":"Chat docs are zone-blind \u2014 Trust.own_zone cannot read a zone stamp from :array content (blocks subtree-cert coverage of _messages)","updated_at":"2026-07-19T15:22:46Z"}
+{"closed_at":null,"id":"CX-tam7","status":"open","title":"Invariant candidate: every advertised commit id resolves in the store (referential integrity of externally-reported ids) \u2014 birth certificate CX-xxav","updated_at":"2026-08-05T19:24:37.078198Z"}
+{"closed_at":"2026-04-26T19:27:17Z","id":"CX-tb7s","status":"closed","title":"M3 (v): Migration helper + Chat.Rooms.create initial-write extension","updated_at":"2026-04-26T19:27:17Z"}
+{"closed_at":null,"id":"CX-tdkq","status":"open","title":"Architecture-review follow-ups","updated_at":"2026-06-10T02:13:29Z"}
+{"closed_at":"2026-06-10T21:50:20Z","id":"CX-tdkq.1","status":"closed","title":"R1. Draw the trust boundary in code, not docs","updated_at":"2026-06-10T21:50:20Z"}
+{"closed_at":"2026-06-10T18:11:01Z","id":"CX-tdkq.10","status":"closed","title":"R10. Close the tracked seams","updated_at":"2026-06-10T18:11:01Z"}
+{"closed_at":"2026-06-10T18:18:50Z","id":"CX-tdkq.11","status":"closed","title":"R11. Handle out-of-order imports","updated_at":"2026-06-10T18:18:50Z"}
+{"closed_at":"2026-06-12T09:15:51Z","id":"CX-tdkq.12","status":"closed","title":"Supervise Process.Orchestrator on boot (federation-gated)","updated_at":"2026-06-12T09:15:51Z"}
+{"closed_at":null,"id":"CX-tdkq.12.1","status":"open","title":"Orchestrator hot-adopt managed processes on restart (vs cold sweep)","updated_at":"2026-06-12T08:35:31Z"}
+{"closed_at":null,"id":"CX-tdkq.12.2","status":"open","title":"Orchestrator per-tick workspace-root re-resolution (CX-4wl semantics)","updated_at":"2026-06-12T08:35:32Z"}
+{"closed_at":"2026-07-03T22:03:48Z","id":"CX-tdkq.13","status":"closed","title":"Shard CommitStore write serialization by doc-UUID hash (R4c)","updated_at":"2026-07-03T22:03:48Z"}
+{"closed_at":null,"id":"CX-tdkq.14","status":"open","title":"CX-\u03b1: structural replay of nested map/array sub-types in yelixer snapshots","updated_at":"2026-06-10T17:32:57Z"}
+{"closed_at":null,"id":"CX-tdkq.15","status":"open","title":"ViewCompute self-write origin-ignore (commit-origin metadata)","updated_at":"2026-06-10T17:43:48Z"}
+{"closed_at":"2026-06-10T17:54:26Z","id":"CX-tdkq.16","status":"closed","title":"Bursar-backed cluster singleton ownership + wiring (R7 impl)","updated_at":"2026-06-10T17:54:26Z"}
+{"closed_at":null,"id":"CX-tdkq.17","status":"open","title":"Cold-storage GC of superseded snapshots (R8a) \u2014 append-only deletion decision","updated_at":"2026-06-10T17:58:36Z"}
+{"closed_at":null,"id":"CX-tdkq.18","status":"open","title":"Unify commits:/blue: topic duality + wire remote snapshot/2 (R10 gated seams)","updated_at":"2026-06-10T18:10:58Z"}
+{"closed_at":null,"id":"CX-tdkq.19","status":"open","title":"Factor shared path-resolution out of LiveViews/CLI into Tree.Lookup (R10)","updated_at":"2026-06-10T18:10:59Z"}
+{"closed_at":"2026-06-10T22:10:59Z","id":"CX-tdkq.2","status":"closed","title":"R2. Gate code-doc execution (signer allowlist)","updated_at":"2026-06-10T22:10:59Z"}
+{"closed_at":null,"id":"CX-tdkq.20","status":"open","title":"Remove legacy single-arg checkout re-root (R10)","updated_at":"2026-06-10T18:11:00Z"}
+{"closed_at":null,"id":"CX-tdkq.21","status":"open","title":"Trust phase 1.5: revocation RESIDUALS (purge loaded modules + bound the gap)","updated_at":"2026-08-05T21:49:42.540530Z"}
+{"closed_at":"2026-06-11T01:27:52Z","id":"CX-tdkq.22","status":"closed","title":"Trust phase 3: attenuable capability cert docs + chain-walk verifier (UCAN-shaped)","updated_at":"2026-06-11T01:27:52Z"}
+{"closed_at":"2026-06-11T01:11:39Z","id":"CX-tdkq.22.1","status":"closed","title":"Trust phase 3a: Capability cert value type (Commonplace.Trust.Capability)","updated_at":"2026-06-11T01:11:39Z"}
+{"closed_at":"2026-06-11T01:11:41Z","id":"CX-tdkq.22.2","status":"closed","title":"Trust phase 3b: Capability CubDB storage (store_capability/get_capability)","updated_at":"2026-06-11T01:11:41Z"}
+{"closed_at":"2026-06-11T01:21:08Z","id":"CX-tdkq.22.3","status":"closed","title":"Trust phase 3c: verify_chain \u2014 leaf\u2192root cert-DAG verifier","updated_at":"2026-06-11T01:21:08Z"}
+{"closed_at":"2026-06-11T01:21:09Z","id":"CX-tdkq.22.4","status":"closed","title":"Trust phase 3d: authorized? phase-3 body + commit-author binding","updated_at":"2026-06-11T01:21:09Z"}
+{"closed_at":"2026-06-11T01:21:11Z","id":"CX-tdkq.22.5","status":"closed","title":"Trust phase 3e: proof-in-metadata + pending-queue (:awaiting_capability)","updated_at":"2026-06-11T01:21:11Z"}
+{"closed_at":"2026-06-11T01:27:51Z","id":"CX-tdkq.22.6","status":"closed","title":"Trust phase 3f: capability issuance API + minimal CLI","updated_at":"2026-06-11T01:27:51Z"}
+{"closed_at":null,"id":"CX-tdkq.23","status":"open","title":"Trust phase 3: subtree-scope resolution via write-gated schema walk (Wrinkle H)","updated_at":"2026-08-05T21:49:44.789595Z"}
+{"closed_at":"2026-06-10T23:10:01Z","id":"CX-tdkq.24","status":"closed","title":"Trust phase 2.5: sign system-minted commits (snapshots + merges) with a node identity \u2014 strict-mode deployability","updated_at":"2026-06-10T23:10:01Z"}
+{"closed_at":"2026-06-12T05:21:05Z","id":"CX-tdkq.25","status":"closed","title":"Trust hardening: always node-sign system-kind commits (robust zero-config strict)","updated_at":"2026-06-12T05:21:05Z"}
+{"closed_at":"2026-06-12T05:21:06Z","id":"CX-tdkq.26","status":"closed","title":"Trust: cross-epoch translator mints unsigned :regular commits \u2014 strict-mode gap","updated_at":"2026-06-12T05:21:06Z"}
+{"closed_at":"2026-06-13T03:23:21Z","id":"CX-tdkq.27","status":"closed","title":"Gate B execute-baseline must be Gate-B-clean (snapshot/merge/translation absorption laundering)","updated_at":"2026-06-13T03:23:21Z"}
+{"closed_at":"2026-06-13T03:14:37Z","id":"CX-tdkq.28","status":"closed","title":"Enforce no-write-without-execute certs on code/process-decl docs at mint time (interim guard for CX-tdkq.27)","updated_at":"2026-06-13T03:14:37Z"}
+{"closed_at":null,"id":"CX-tdkq.29","status":"open","title":"Distinct :secrets caveat on :execute for $secret resolution (phase-3 refinement)","updated_at":"2026-06-12T08:35:32Z"}
+{"closed_at":"2026-06-10T17:12:45Z","id":"CX-tdkq.3","status":"closed","title":"R3. Supervise the things that must run","updated_at":"2026-06-10T17:12:45Z"}
+{"closed_at":"2026-07-04T00:50:08Z","id":"CX-tdkq.30","status":"closed","title":"Audit YMap.set call-history for the origin=nil LWW loss (Find 1 fallout)","updated_at":"2026-07-04T00:50:08Z"}
+{"closed_at":null,"id":"CX-tdkq.31","status":"open","title":"Extend nested_subtype_names to refuse UNREGISTERED content shapes (snapshot guard defense-in-depth)","updated_at":"2026-06-12T12:54:03Z"}
+{"closed_at":"2026-07-04T04:45:43Z","id":"CX-tdkq.32","status":"closed","title":"Bursar binds token holder to authenticated caller identity (trust gap)","updated_at":"2026-07-04T04:45:43Z"}
+{"closed_at":"2026-06-10T17:22:40Z","id":"CX-tdkq.4","status":"closed","title":"R4. Relieve the CommitStore","updated_at":"2026-06-10T17:22:40Z"}
+{"closed_at":"2026-06-10T17:33:33Z","id":"CX-tdkq.5","status":"closed","title":"R5. Decide the nested-CRDT question","updated_at":"2026-06-10T17:33:33Z"}
+{"closed_at":"2026-06-10T17:43:49Z","id":"CX-tdkq.6","status":"closed","title":"R6. Backpressure and loop-safety for the reactive layer","updated_at":"2026-06-10T17:43:49Z"}
+{"closed_at":"2026-06-12T22:11:23Z","id":"CX-tdkq.7","status":"closed","title":"R7. Dogfood green tokens (Bursar) for singletons","updated_at":"2026-06-12T22:11:23Z"}
+{"closed_at":null,"id":"CX-tdkq.7.1","status":"open","title":"MUD Bot sessions \u2192 green tokens (retire {:global, {Bot, name}})","updated_at":"2026-06-12T13:43:40Z"}
+{"closed_at":"2026-06-10T18:00:42Z","id":"CX-tdkq.8","status":"closed","title":"R8. A retention story","updated_at":"2026-06-10T18:00:42Z"}
+{"closed_at":"2026-06-10T18:05:31Z","id":"CX-tdkq.9","status":"closed","title":"R9. Measure before the limits are load-bearing","updated_at":"2026-06-10T18:05:31Z"}
+{"closed_at":null,"id":"CX-toyh","status":"open","title":"MUD: Cellar cask taunts 'DO NOT DRINK' but drinking is unreachable \u2014 tap narrates a tankard/ale that don't exist","updated_at":"2026-07-13T16:28:13Z"}
+{"closed_at":null,"id":"CX-tpyt","status":"open","title":"MUD: 'unlock vault' fails with 'I don't understand that' while 'unlock warded vault' works \u2014 misleading parser error","updated_at":"2026-07-12T20:57:01Z"}
+{"closed_at":"2026-08-03T01:11:06Z","id":"CX-tu7a","status":"closed","title":"git_bridges.json written non-atomically; decode failure silently drops ALL git mirrors on boot","updated_at":"2026-08-03T01:11:06Z"}
+{"closed_at":"2026-04-19T02:54:43Z","id":"CX-tvyb","status":"closed","title":"Producer-side snapshot hook: writer-local threshold check","updated_at":"2026-04-19T02:54:43Z"}
+{"closed_at":"2026-04-16T18:02:30Z","id":"CX-tx8","status":"closed","title":"Doc reconstruction cache: per-uuid, keyed on latest commit_id, invalidate on PubSub :commit","updated_at":"2026-04-16T18:02:30Z"}
+{"closed_at":null,"id":"CX-u0nw","status":"open","title":"134,500 denied root-schema writes are 90% of the serve log \u2014 a retry loop whose volume would hide anything else in there","updated_at":"2026-08-05T15:43:22Z"}
+{"closed_at":"2026-07-18T20:12:16Z","id":"CX-u4zk","status":"closed","title":"Ticket-DAG S1: schema evolution + ref-typed fields + write-guard + cycle-gate + opts-plumb","updated_at":"2026-07-18T20:12:16Z"}
+{"closed_at":null,"id":"CX-u7kj","status":"in_progress","title":"MUD web console: excess vertical whitespace between command output blocks","updated_at":"2026-07-10T18:18:28Z"}
+{"closed_at":"2026-04-16T20:49:09Z","id":"CX-u7p","status":"closed","title":"Implement snapshot-append compaction primitive (CommitStore + Yelixer)","updated_at":"2026-04-16T20:49:09Z"}
+{"closed_at":"2026-03-24T02:18:01Z","id":"CX-ubm","status":"closed","title":"Integer ContentAny: lib0 writeVarInt vs yelixer zigzag mismatch","updated_at":"2026-03-24T02:18:01Z"}
+{"closed_at":null,"id":"CX-ubyf","status":"open","title":"Identity-bound container gate (owner-only / recipient-only) for private chests + real mailboxes","updated_at":"2026-08-05T21:49:04.649399Z"}
+{"closed_at":"2026-08-03T05:52:40Z","id":"CX-ud1u","status":"closed","title":"Split MUD verbs.ex (2890 lines): extract Resolver + Rendering at the existing section seams","updated_at":"2026-08-03T05:52:40Z"}
+{"closed_at":null,"id":"CX-ud5r","status":"open","title":"MUD: spurious 'You can't go north' on a valid exit \u2014 one-shot movement failure, correlated with draining an ambient-event backlog (silent wrong-answer, not a timeout)","updated_at":"2026-07-06T19:09:45Z"}
+{"closed_at":null,"id":"CX-ue5b","status":"open","title":"MUD: Cellar strongbox riddle (MOON/ALE/COIN) climax mints nothing \u2014 narrated 'old silver + sealed letter' don't exist","updated_at":"2026-07-13T16:38:53Z"}
+{"closed_at":"2026-03-26T04:32:55Z","id":"CX-uev","status":"closed","title":"Audit: abstraction layer violations across codebase","updated_at":"2026-03-26T04:32:55Z"}
+{"closed_at":"2026-04-27T00:42:03Z","id":"CX-uffl","status":"closed","title":"M6 (i.5): Orchestrator migration to consume SourceDoc","updated_at":"2026-04-27T00:42:03Z"}
+{"closed_at":"2026-03-22T20:41:49Z","id":"CX-ulv","status":"closed","title":"Process management: cleanup stale processes, commonplace ps","updated_at":"2026-03-22T20:41:49Z"}
+{"closed_at":"2026-04-20T18:52:01Z","id":"CX-umz","status":"closed","title":"Snapshot op with derivation map + deterministic-anyone hashing (build 5)","updated_at":"2026-04-20T18:52:01Z"}
+{"closed_at":"2026-08-03T01:33:41Z","id":"CX-usv6","status":"closed","title":"CLAUDE.md architecture section is stale: says four apps (there are six), calls commonplace_web early stage","updated_at":"2026-08-03T01:33:41Z"}
+{"closed_at":null,"id":"CX-uwam","status":"in_progress","title":"Key-gated container: take-from bypasses custom key-check (the 'lock is theater' gap)","updated_at":"2026-07-07T04:22:33Z"}
+{"closed_at":"2026-03-22T17:27:11Z","id":"CX-uww","status":"closed","title":"Run file-tmux-file in commonplace sandbox","updated_at":"2026-03-22T17:27:11Z"}
+{"closed_at":"2026-03-24T08:05:18Z","id":"CX-uyj","status":"closed","title":"Process cleanup sends SIGTERM to process group, not individual PID","updated_at":"2026-03-24T08:05:18Z"}
+{"closed_at":"2026-03-23T15:21:13Z","id":"CX-v4q","status":"closed","title":"Merge across branches","updated_at":"2026-03-23T15:21:13Z"}
+{"closed_at":"2026-04-28T09:45:20Z","id":"CX-v55j","status":"closed","title":"MUD v0 prototype on Commonplace (umbrella)","updated_at":"2026-04-28T09:45:20Z"}
+{"closed_at":"2026-07-07T06:54:44Z","id":"CX-v6j4","status":"closed","title":"State-persistence asymmetry: room (here:) verbs lose put_state, object verbs persist it","updated_at":"2026-07-07T06:54:44Z"}
+{"closed_at":"2026-04-09T22:59:19Z","id":"CX-vaw","status":"closed","title":"Views Pass A: action dispatch via CommandRouter + magenta audit","updated_at":"2026-04-09T22:59:19Z"}
+{"closed_at":"2026-07-19T19:38:00Z","id":"CX-veh6","status":"closed","title":"C5c-iii: read_scratch + list_scratch \u2014 the filing loop's read half","updated_at":"2026-07-19T19:38:00Z"}
+{"closed_at":null,"id":"CX-vewo","status":"open","title":"CX-y3q followup: notifications/tools/list_changed watcher","updated_at":"2026-08-05T21:49:46.435048Z"}
+{"closed_at":null,"id":"CX-vfau","status":"in_progress","title":"CX-60na Green half: bursar adoption wave + author-facing acquire/release verbs + cluster-arbiter design residual + docs","updated_at":"2026-07-06T13:50:00Z"}
+{"closed_at":"2026-04-28T11:34:33Z","id":"CX-vh3s","status":"closed","title":"MUD: @dump 'here' literal not resolved as current room","updated_at":"2026-04-28T11:34:33Z"}
+{"closed_at":null,"id":"CX-vhkq","status":"open","title":"Seed-ordering CI flake: SystemCommitSigningTest setup \u2014 NodeIdentity.signing_context :enoent (stale data_dir state across sync tests)","updated_at":"2026-07-06T14:10:37Z"}
+{"closed_at":"2026-07-10T19:12:12Z","id":"CX-vhnj","status":"closed","title":"Migration carried transient .usr presences \u2192 find_presence name-collision hijacks fresh players (spawn-in-home broken)","updated_at":"2026-07-10T19:12:12Z"}
+{"closed_at":null,"id":"CX-vih9","status":"open","title":"destroy_child write-guards the PARENT only \u2014 latent cross-owner setuid even for object hosts","updated_at":"2026-07-07T05:27:40Z"}
+{"closed_at":"2026-08-03T01:30:43Z","id":"CX-vj8v","status":"closed","title":"MUD.Bot still uses :global registration \u2014 the retired MoveServer/TickBot netsplit/name-conflict hazard, unfixed for 1 of 3 siblings","updated_at":"2026-08-03T01:30:43Z"}
+{"closed_at":"2026-08-05T12:46:44Z","id":"CX-vknn","status":"closed","title":"VersionHandshake's MCP session-start skew warning still samples 6 fixed probe modules (pair to CX-o1b9)","updated_at":"2026-08-05T12:46:44Z"}
+{"closed_at":null,"id":"CX-vlvz","status":"open","title":"MUD NPE: EMBERFALL reveal gives no pointer to the font \u2014 say does nothing, utter unknown at the Oratory","updated_at":"2026-07-10T07:35:01Z"}
+{"closed_at":"2026-04-22T03:38:00Z","id":"CX-voi","status":"closed","title":"MCP presence should land in sandbox checkout dir, not workspace root","updated_at":"2026-04-22T03:38:00Z"}
+{"closed_at":null,"id":"CX-vsid","status":"open","title":"MUD DX: @verb re-edit starts an EMPTY buffer \u2014 patching one line means retyping the whole verb","updated_at":"2026-07-07T08:30:17Z"}
+{"closed_at":null,"id":"CX-vt9l","status":"in_progress","title":"Relational + search as commonplace profiles (F3, derivation records, one index instance)","updated_at":"2026-08-04T20:37:23Z"}
+{"closed_at":"2026-08-04T21:39:15Z","id":"CX-vt9l.1","status":"closed","title":"Slice 1: F3 ephemeral query docs + query-result-as-witness-doc","updated_at":"2026-08-04T21:39:15Z"}
+{"closed_at":"2026-08-04T21:39:16Z","id":"CX-vt9l.2","status":"closed","title":"Slice 2: derivation-record convention (named shape + adoption)","updated_at":"2026-08-04T21:39:16Z"}
+{"closed_at":null,"id":"CX-vt9l.3","status":"open","title":"Slice 3: one measured term-index instance over the /bd/ ticket corpus (two-layer artifact, instance-first)","updated_at":"2026-08-04T20:36:49Z"}
+{"closed_at":null,"id":"CX-vt9l.4","status":"blocked","title":"Slice 4 [BLOCKED DESIGN CALL \u2014 DO NOT IMPLEMENT]: scoped-index trust model, co-designed with white P2/P3","updated_at":"2026-08-04T20:37:22Z"}
+{"closed_at":"2026-08-04T23:48:26Z","id":"CX-vt9l.5","status":"closed","title":"Black.json/2 silent-empty: directory docs, content-less docs, and genuinely empty rows are indistinguishable ({:ok, %{}})","updated_at":"2026-08-04T23:48:26Z"}
+{"closed_at":"2026-08-04T21:39:17Z","id":"CX-vt9l.6","status":"closed","title":"Black.select/Query silently truncate on TWO axes (limit + max_depth) with no signal in the return \u2014 blocking for any SELECT surface","updated_at":"2026-08-04T21:39:17Z"}
+{"closed_at":null,"id":"CX-vxr4","status":"open","title":"Cellar strongbox puzzle reward is narrative-only \u2014 letter/silver unobtainable, examine still shows closed","updated_at":"2026-07-13T17:01:21Z"}
+{"closed_at":"2026-08-03T01:11:57Z","id":"CX-vyrs","status":"closed","title":"Effective-enforcement-posture introspection: three trust knobs must agree, no single place reports them","updated_at":"2026-08-03T01:11:57Z"}
+{"closed_at":"2026-08-03T05:42:39Z","id":"CX-vzod","status":"closed","title":"DocBuilder.reconstruct_doc silently reconstructs from a mid-chain start when a parent commit is missing","updated_at":"2026-08-03T05:42:39Z"}
+{"closed_at":"2026-07-05T23:20:39Z","id":"CX-w1fw","status":"closed","title":"yelixer Text insert is ~O(n) per insert (O(n\u00b2) bulk) \u2014 measured by R9","updated_at":"2026-07-05T23:20:39Z"}
+{"closed_at":"2026-04-18T08:08:11Z","id":"CX-w62","status":"closed","title":"6.1 \u2014 Yelixer encoder byte-determinism property test","updated_at":"2026-04-18T08:08:11Z"}
+{"closed_at":null,"id":"CX-w9z","status":"open","title":"Periodic git backup of workspace state","updated_at":"2026-03-22T16:16:26Z"}
+{"closed_at":"2026-04-26T18:06:36Z","id":"CX-waid","status":"closed","title":"M3 (iii): Action-routing lift: declarative <arg> + delete resolve_args/4 clauses","updated_at":"2026-04-26T18:06:36Z"}
+{"closed_at":null,"id":"CX-wc0o","status":"open","title":"Test-infra: two cross-test-contamination flakes in MUD full-suite (ComputeRehydrator + WebPlayIntegration @desc-enforce)","updated_at":"2026-07-11T23:16:04Z"}
+{"closed_at":"2026-07-14T10:04:42Z","id":"CX-we3l","status":"closed","title":"open_exit \u2014 trust-gated safe-verb exit-mutation primitive (3-gate: source-auth / dest-scope / idempotent-non-clobber)","updated_at":"2026-07-14T10:04:42Z"}
+{"closed_at":"2026-04-16T17:38:35Z","id":"CX-wi0","status":"closed","title":"Compact or drop claude-code-2ca.bot doc to unblock wiki","updated_at":"2026-04-16T17:38:35Z"}
+{"closed_at":null,"id":"CX-wkau","status":"in_progress","title":"Self-host: ~20 gameplay verbs (take/drop/give/put/mine/smith/get/examine/search/\u2026) are compiled-in dispatch_builtin, not doc-hosted engine modules \u2192 continue the Inc-1 pattern","updated_at":"2026-07-16T16:49:29Z"}
+{"closed_at":null,"id":"CX-wkyf","status":"open","title":"MUD: brass bell description promises a swing/ring but no verb exists \u2014 affordance lie","updated_at":"2026-07-12T17:48:58Z"}
+{"closed_at":"2026-07-05T23:58:37Z","id":"CX-wmtz","status":"closed","title":"yelixer: adversarial resource bounds on decode/apply (clock/len sanity + delete-range skip)","updated_at":"2026-07-05T23:58:37Z"}
+{"closed_at":"2026-07-12T19:49:00Z","id":"CX-wnof","status":"closed","title":"QoL: 'unlock vault' (partial name) \u2192 parser 'I don't understand that' instead of 'unlock what?'/resolving the vault","updated_at":"2026-07-12T19:49:00Z"}
+{"closed_at":null,"id":"CX-wp0p","status":"open","title":"Boot-path components write unsigned commits (denied under strict+enforce)","updated_at":"2026-07-07T18:14:59Z"}
+{"closed_at":null,"id":"CX-wp2s","status":"open","title":"MUD builder: orphan disconnected ROOMS can't be @destroyed (v1 object-only) \u2014 accrete harmlessly","updated_at":"2026-07-07T11:45:30Z"}
+{"closed_at":null,"id":"CX-wr12","status":"open","title":"Cert-threading follow-up: thread cert_cids into the wiki/PR/witness surface (2 obligations)","updated_at":"2026-07-18T21:12:51Z"}
+{"closed_at":"2026-08-03T05:39:03Z","id":"CX-wrg0","status":"closed","title":"InodeTracker second growth vector: shadowed-but-never-diverged entries never reach reconciliation cleanup","updated_at":"2026-08-03T05:39:03Z"}
+{"closed_at":"2026-04-26T21:41:15Z","id":"CX-wxbp","status":"closed","title":"M5 (iii): Commonplace.ViewCompute :spec_uuid opt + restart-on-spec-commit","updated_at":"2026-04-26T21:41:15Z"}
+{"closed_at":null,"id":"CX-wxxc","status":"open","title":"Flaky-suite: singleton whereis/start_link race in crypto+store+chat tests (SecretStore/SigningIntegration/CommitHoist/ComputeRehydrator {:already_started})","updated_at":"2026-07-10T19:32:25Z"}
+{"closed_at":"2026-08-05T07:33:31Z","id":"CX-x073","status":"closed","title":"Scheduler.Agent is fully built but nothing ever starts it \u2014 schedule requests silently get no reply on any standard boot","updated_at":"2026-08-05T07:33:31Z"}
+{"closed_at":"2026-03-24T07:44:53Z","id":"CX-x1f","status":"closed","title":"Node graph: reactive dataflow with blue/red ports","updated_at":"2026-03-24T07:44:53Z"}
+{"closed_at":null,"id":"CX-x8jk","status":"open","title":"CLI escript opens the live store via cwd data-dir resolution \u2014 documented usage is a corruption hazard","updated_at":"2026-08-06T17:02:28.772721Z"}
+{"closed_at":null,"id":"CX-x9ll","status":"open","title":"[tech-debt] Recurring hazard: raw CommitStore.<fn>(store) chokes when store=CommitStoreClient \u2014 add a guard/lint","updated_at":"2026-07-07T22:31:14Z"}
+{"closed_at":"2026-08-03T01:27:24Z","id":"CX-x9vj","status":"closed","title":"Targeted test: can re-importing an old still-valid snapshot commit regress field values via CRDT clock semantics?","updated_at":"2026-08-03T01:27:24Z"}
+{"closed_at":null,"id":"CX-xaof","status":"open","title":"Remove hand-rolled MCP substrate after anubis port","updated_at":"2026-08-05T21:49:22.744536Z"}
+{"closed_at":null,"id":"CX-xe0r","status":"in_progress","title":"MUD: 'look <player>' cannot target other LIVE players \u2014 room lists them in Players:, self-look works, give resolves them","updated_at":"2026-07-13T16:39:59Z"}
+{"closed_at":"2026-07-06T03:03:13Z","id":"CX-xes3","status":"closed","title":"yelixer: fix remaining quadratic paths \u2014 delete application (E3) + map-key conflict resolution (E4)","updated_at":"2026-07-06T03:03:13Z"}
+{"closed_at":null,"id":"CX-xgp3","status":"open","title":"GitBridge inbound writes rejected under enforce \u2014 'edit commonplace data from git' broken on strict :5199","updated_at":"2026-07-11T02:37:22Z"}
+{"closed_at":"2026-04-09T06:53:04Z","id":"CX-xk6","status":"closed","title":"P3: Differential testing against Node yjs (canonical reference)","updated_at":"2026-04-09T06:53:04Z"}
+{"closed_at":"2026-06-13T04:02:26Z","id":"CX-xmhw","status":"closed","title":"Sync.Agent crash propagation: bartleby Port exit takes down :commonplace app","updated_at":"2026-06-13T04:02:26Z"}
+{"closed_at":"2026-08-06T18:45:43.497947Z","id":"CX-xmsd","status":"closed","title":"Comment writes never pass WriteGuard \u2014 the single-gated-write-path property is true of tickets, not comments (found building CX-6n62 tooling)","updated_at":"2026-08-06T18:45:44.341333Z"}
+{"closed_at":"2026-03-24T05:42:45Z","id":"CX-xqw","status":"closed","title":"Bang operations in sync critical paths can crash agents","updated_at":"2026-03-24T05:42:45Z"}
+{"closed_at":"2026-08-03T01:56:28Z","id":"CX-xrds","status":"closed","title":"CommitStore corruption recovery: 1-row integrity probe + whole-store lossy rename granularity","updated_at":"2026-08-03T01:56:28Z"}
+{"closed_at":"2026-07-16T19:50:49Z","id":"CX-xs2d","status":"closed","title":"Mode-B serve boot leaves :mud_engine_manifest EMPTY \u2014 all doc-hosted engine verbs + help silently run on compiled floor until Bootstrap.seed fires","updated_at":"2026-07-16T19:50:49Z"}
+{"closed_at":null,"id":"CX-xttg","status":"open","title":"CX-3x5a banner-blindness: a CORRECTLY-handled facade error still nags the author \u2014 consider an explicit ack primitive","updated_at":"2026-07-07T11:12:37Z"}
+{"closed_at":"2026-07-07T15:12:09Z","id":"CX-xujo","status":"closed","title":"Facade.notify/2 \u2014 invoker-PRIVATE non-speech verb feedback (fix: puzzle verb output leaks as 'You say')","updated_at":"2026-07-07T15:12:09Z"}
+{"closed_at":"2026-04-25T23:44:35Z","id":"CX-xwh4","status":"closed","title":"Install Wallaby + headless Chrome for end-to-end browser testing","updated_at":"2026-04-25T23:44:35Z"}
+{"closed_at":"2026-03-22T20:41:49Z","id":"CX-xwn","status":"closed","title":"CLI: commonplace log and commonplace replay","updated_at":"2026-03-22T20:41:49Z"}
+{"closed_at":"2026-08-05T20:58:21.036406Z","id":"CX-xxav","status":"closed","title":"P1: merge_completed advertises a commit id that is stored NOWHERE \u2014 76dcd3c (snapshotter_version 1->2) broke the path that used to store it, and persist_commit's swallowed :parent_moved hid the divergence","updated_at":"2026-08-05T20:58:21.171946Z"}
+{"closed_at":null,"id":"CX-xyc1","status":"open","title":"CX-y3q followup: progress notifications forwarding","updated_at":"2026-08-05T21:49:48.112660Z"}
+{"closed_at":"2026-05-15T01:26:16Z","id":"CX-y09i","status":"closed","title":"mix bots.tail live observability command","updated_at":"2026-05-15T01:26:16Z"}
+{"closed_at":"2026-04-26T03:08:47Z","id":"CX-y0qj","status":"closed","title":"Auto-resolution sub-bead (ii): wire resolver into ViewActionDispatch chat clauses \u2192 anchor GREEN","updated_at":"2026-04-26T03:08:47Z"}
+{"closed_at":null,"id":"CX-y2jh","status":"open","title":"MUD: 'examine <obj>' verb missing \u2014 returns 'I don't understand that.'; alias to look-at","updated_at":"2026-07-10T05:38:52Z"}
+{"closed_at":"2026-04-25T03:56:58Z","id":"CX-y3q","status":"closed","title":"MCP server using commonplace docs for tool definitions","updated_at":"2026-04-25T03:56:58Z"}
+{"closed_at":"2026-04-25T10:40:49Z","id":"CX-y6uc","status":"closed","title":"CX-c2bx: file as bead \u2014 :global overlapping-partition kicks short-lived nodes","updated_at":"2026-04-25T10:40:49Z"}
+{"closed_at":null,"id":"CX-y8k0","status":"open","title":"Flaky CI test: EntryAgentTest 'writer-local snapshot fires after threshold' \u2014 no snapshot observed after 4 sync cycles (CI-only)","updated_at":"2026-07-06T11:43:23Z"}
+{"closed_at":"2026-04-25T22:31:50Z","id":"CX-ybhb","status":"closed","title":"Chat V3 \u2014 edit_message + delete_message action handlers","updated_at":"2026-04-25T22:31:50Z"}
+{"closed_at":"2026-07-10T18:33:14Z","id":"CX-ydmv","status":"closed","title":"emote self-echo renders 'You <text>' (grammatically broken for third-person emote text) \u2014 should show actor's name","updated_at":"2026-07-10T18:33:14Z"}
+{"closed_at":null,"id":"CX-yft7","status":"open","title":"tail_red occasional 'Connection closed' transport wobble (per-tool, retry-succeeds)","updated_at":"2026-04-25T10:41:12Z"}
+{"closed_at":"2026-04-25T10:40:50Z","id":"CX-yfva","status":"closed","title":"MCP write tool clobbers non-text docs (views, JSON, etc.)","updated_at":"2026-04-25T10:40:50Z"}
+{"closed_at":"2026-07-07T07:48:16Z","id":"CX-ylge","status":"closed","title":"MUD dispatch: room verb unreachable when first arg names an in-room object","updated_at":"2026-07-07T07:48:16Z"}
+{"closed_at":null,"id":"CX-ypgf","status":"in_progress","title":"MUD parser: preposition swallowed as noun + substring match across words \u2014 'step on warppad' \u2192 \"You can't step iron ingot\"","updated_at":"2026-07-13T16:45:26Z"}
+{"closed_at":"2026-04-28T10:38:07Z","id":"CX-yu2w","status":"closed","title":"MUD MCP bridge \u2014 thin (mud_send + mud_read tools)","updated_at":"2026-04-28T10:38:07Z"}
+{"closed_at":"2026-04-18T08:40:34Z","id":"CX-yvhs","status":"closed","title":"6.3 \u2014 Rewrite Yjs op references via inverse DM","updated_at":"2026-04-18T08:40:34Z"}
+{"closed_at":"2026-07-08T05:34:30Z","id":"CX-z0v7","status":"closed","title":"[bug] MUD mud_send runs Bot IN the escript node (N remote store-calls/turn) \u2014 link-sensitive hang","updated_at":"2026-07-08T05:34:30Z"}
+{"closed_at":null,"id":"CX-z542","status":"open","title":"MUD: build-permission denial gives no path forward \u2014 should point newcomers to 'home'","updated_at":"2026-07-12T17:56:20Z"}
+{"closed_at":null,"id":"CX-z6ub","status":"in_progress","title":"Verb-authoring M2: standard verb set as node-signed prototype (inherited, override-on-top)","updated_at":"2026-07-11T22:48:58Z"}
+{"closed_at":null,"id":"CX-z9jc","status":"open","title":"tix-migration step 5: rename /bd/ subtree + bd_* -> tix_* MCP tools with deprecation aliases","updated_at":"2026-08-05T18:19:15.711895Z"}
+{"closed_at":null,"id":"CX-ziwy","status":"open","title":"MUD QoL: \"read <obj>\" should alias to \"look <obj>\" \u2014 world copy invites reading but the verb does not exist","updated_at":"2026-07-10T06:32:41Z"}
+{"closed_at":"2026-07-06T11:46:41Z","id":"CX-ziye","status":"closed","title":"Gate-B capability path ignores non-default store: walk_contributors/VerifyChain bypass CommitStoreClient store threading","updated_at":"2026-07-06T11:46:41Z"}
+{"closed_at":null,"id":"CX-zjmu","status":"open","title":"MUD UX nits: multi-word @verb target rejected, give usage doc mismatch, emote self-echo grammar, stale @abort hint","updated_at":"2026-07-06T18:39:32Z"}
+{"closed_at":"2026-07-10T08:28:32Z","id":"CX-znwh","status":"closed","title":"MUD NPE: iron vein depletes permanently \u2014 newcomers can gather 1 ore, the only recipe needs 2; crafting loop dead","updated_at":"2026-07-10T08:28:32Z"}
+{"closed_at":null,"id":"CX-zodb","status":"open","title":"Smithy tutorial hint is stale: 3 of its 4 'Try:' commands fail against the actual mechanics","updated_at":"2026-07-12T19:51:11Z"}
+{"closed_at":"2026-04-03T21:51:47Z","id":"CX-zpk","status":"closed","title":"Secrets store for process environment variables","updated_at":"2026-04-03T21:51:47Z"}
+{"closed_at":null,"id":"CX-zraz","status":"blocked","title":"CLI merge command: commonplace merge <ref>","updated_at":"2026-08-05T21:49:20.879300Z"}
+{"closed_at":null,"id":"CX-zrri","status":"open","title":"MUD: vault open/shut state not reflected in room render or object description (both vaults)","updated_at":"2026-07-12T17:28:24Z"}
+{"closed_at":null,"id":"CX-zwjj","status":"open","title":"Player-verb room narration: only say/ works; emit_action reads as 'You say...' (DX + discoverability)","updated_at":"2026-07-07T05:19:50Z"}
+{"closed_at":"2026-08-05T21:49:54.306095Z","id":"CX-zy4q","status":"closed","title":"P1: Start Room (public hub 9d6b7039) flipped private/unreadable MID-SESSION \u2014 all citizens incl. fresh spawns locked out of entire demesne","updated_at":"2026-08-05T21:49:55.091478Z"}
+{"closed_at":"2026-07-10T06:14:45Z","id":"CX-zyee","status":"closed","title":"MUD web session: 'look' (+ every command) shows stale 'Welcome, <name>.' as output; the real room render lands async in the ambient stream","updated_at":"2026-07-10T06:14:45Z"}

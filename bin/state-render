@@ -16,6 +16,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
+# RENDER COST SCALES LINEARLY WITH TICKET COUNT: the serve read is
+# Issue.list plus per-ticket description/comment reads over erpc.
+# Measured 2026-08-07 at 828 tickets: ~8.5 minutes wall. Size the cron
+# interval against this number as tix grows — at 60m cadence that is
+# ~14% duty today, and the derived trust window makes interval changes
+# free (no coordination), so widening is always the cheap remedy.
 TRUST_MULTIPLIER=3
 TRUST_FLOOR_SECONDS=2700
 # The no-coordination guarantee holds only below cap/multiplier (= 2h
