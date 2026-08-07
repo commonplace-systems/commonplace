@@ -1669,6 +1669,30 @@ defmodule Commonplace.ViewActionDispatch do
   # here because every name is already a `Schemas.Issue` struct field.
   @ticket_update_fields ~w(title status priority type owner labels needs done_when done_witness claimed_by legacy_id)
 
+  # ⚠️ CX-7smx: this filter SILENTLY DROPS non-updatable keys and the verb
+  # still returns `{:ok, :tree_mutation}`. Demonstrated by effect
+  # 2026-08-07: a `ticket_update` carrying only `"description"` reported
+  # success and changed nothing (body read back byte-identical). Note
+  # `description` is absent from `@ticket_update_fields` above, so TICKET
+  # BODIES ARE WRITE-ONCE THROUGH THIS SURFACE — which is *why* stale
+  # ticket bodies keep misleading readers: nobody reconciles them because
+  # nobody can, and anyone who tried was told it worked.
+  #
+  # THE FIX ALREADY EXISTS IN THIS MODULE. `import_existing/9` (~:1522-1543)
+  # handles the body correctly: `Map.drop([:description, ...])` BEFORE the
+  # field filter, read the current body via `Issue.description/3`, then
+  # PRESENT-KEY SEMANTICS — `Map.get(attrs, :description, current)` — so a
+  # field-only update can never blank an existing body, with both feeding
+  # `content_hash` for the no-op check. That present-key detail is the part
+  # a fresh implementation gets wrong. This is not a missing capability;
+  # it is a missing step the system already performs 150 lines above.
+  #
+  # Worth fixing even if bodies stay immutable by design: make unknown /
+  # non-updatable keys REJECT LOUDLY instead of being filtered. An error
+  # teaches; a silent drop misleads. Contrast `Bd.WriteGuard.check_protected/2`
+  # (bd/write_guard.ex:214), which uses the same `Enum.filter` idiom in the
+  # opposite direction — it filters to FIND offending keys and then refuses,
+  # naming the field. The idiom is innocent; the direction is everything.
   defp atomize_ticket_changes(map) do
     map
     |> Enum.filter(fn {k, _v} -> k in @ticket_update_fields end)
