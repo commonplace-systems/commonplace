@@ -116,6 +116,24 @@ defmodule Commonplace.Trust.AuditChokePerfTest do
     |> percentiles()
   end
 
+  defp measure_offered(fun) do
+    warm_up_calls = 20
+
+    for _ <- 1..warm_up_calls do
+      AuditLog.reset_rate_table()
+      fun.()
+    end
+
+    samples =
+      for _ <- 1..@samples do
+        AuditLog.reset_rate_table()
+        {us, _} = :timer.tc(fun)
+        us
+      end
+
+    {percentiles(samples), warm_up_calls + length(samples)}
+  end
+
   # ── the ALLOW path: must pay nothing ─────────────────────────────────
 
   test "the ALLOW path is unaffected by audit wiring", %{store: store, dispatcher: dispatcher} do
@@ -207,6 +225,56 @@ defmodule Commonplace.Trust.AuditChokePerfTest do
     # to have timed; the guard below still proves the pipeline was live.
     assert status.offered > 0, "the deny arm provoked no denials; the timing means nothing"
     assert status.recorded > 0, "denials were timed but not recorded: #{inspect(status)}"
+  end
+
+  # ── the ordinary DENY path: every denial is offered ─────────────────
+
+  test "the DENY path's OFFERED work is bounded", %{store: store, dispatcher: dispatcher} do
+    Application.put_env(:commonplace, :trust, %{accept_unsigned: false, trusted_identities: %{}})
+    Application.put_env(:commonplace, :local_write_gate, :enforce)
+
+    on_exit(fn -> AuditLog.reset_rate_table() end)
+
+    deny = fn ->
+      CommitStore.create_commit(store, UUID.uuid4(), text_update("secret"), nil)
+    end
+
+    AuditLog.detach()
+    AuditLog.reset_rate_table()
+    {baseline, baseline_calls} = measure_offered(deny)
+
+    before_status = AuditDispatcher.status(dispatcher)
+    AuditLog.attach(store, dispatcher: dispatcher)
+    {with_audit, measured_calls} = measure_offered(deny)
+    AuditLog.detach()
+
+    ratio50 = with_audit.p50 / max(baseline.p50, 1)
+    ratio99 = with_audit.p99 / max(baseline.p99, 1)
+
+    _ = AuditDispatcher.flush(dispatcher, 10_000)
+    after_status = AuditDispatcher.status(dispatcher)
+    offered_delta = after_status.offered - before_status.offered
+
+    report = """
+    DENY OFFERED path, n=#{baseline.n} per arm
+      baseline    p50=#{baseline.p50}us p99=#{baseline.p99}us calls=#{baseline_calls}
+      with audit  p50=#{with_audit.p50}us p99=#{with_audit.p99}us calls=#{measured_calls}
+      ratio       p50=#{Float.round(ratio50, 3)} p99=#{Float.round(ratio99, 3)}
+      offered     expected=#{measured_calls} observed=#{offered_delta}
+    """
+
+    IO.puts("\n" <> report)
+
+    assert offered_delta == measured_calls,
+           "#{measured_calls - offered_delta} attached deny calls were suppressed; " <>
+             "the OFFERED-path timing is vacuous\n" <> report
+
+    assert ratio50 <= @max_ratio, "deny OFFERED-path p50 regressed beyond budget\n" <> report
+
+    # As in the storm arm above, p99 is reported but not asserted: one
+    # collision with the dispatcher's legitimate asynchronous flush can
+    # trip a tight tail bound, while a synchronous regression inflates
+    # every sample and is therefore caught more reliably by p50.
   end
 
   # ── the structural claim, asserted structurally ──────────────────────
