@@ -23,6 +23,13 @@ Commonplace is a commonplace book that became a distributed operating environmen
 - **Branching and merging**: Deep-copy fork creates a new tree with new UUIDs. Merge walks both schemas, diffs documents via CRDT, and reconciles changes (three-way merge with auto-rename on collision).
 - **Filesystem sync**: Bidirectional sync between the CRDT store and the local filesystem. Edit files with any editor; changes sync into the CRDT and vice versa. Shadow hardlinks detect writes from stale file descriptors.
 - **Yelixer**: Pure Elixir port of Y.js (CRDT library). Wire-compatible with Yjs V1 binary protocol. Supports Text, Map, Array, and XML types.
+- **Agent access**: `commonplace_mcp` is an MCP server that gives an agent tool-level access to a live workspace over BEAM distribution. `commonplace_bots` runs an LLM tool-use loop on top of it, with call/token/wall-clock budgets, persona and charter documents, and a Telegram bridge.
+- **MUD**: rooms, objects, and verbs are ordinary documents in the tree — this is the largest subsystem in the codebase. Citizen-authored "safe verbs" run sandboxed against a closed-by-default capability allowlist (the Facade), not against the raw store.
+- **Issue tracking**: an on-substrate tracker (`bd`) where tickets, dependencies, and comments are documents rather than rows in an external database.
+- **Trust**: commits are Ed25519-signed. `Commonplace.Trust.posture/0` reports the resolved read/write enforcement knobs for a running node.
+- **Git bridge**: exports and syncs the document tree against a git remote.
+- **Multi-node sync**: nodes clustered over BEAM distribution share a commit store via Phoenix PubSub, with CID-set diffing for catch-up on join.
+- **Self-describing infrastructure**: some parts of the tree describe the system that's running it — presence documents track who's connected, process documents declare running OS/BEAM processes, projection documents compute derived views over other documents, and code documents hold executable behavior directly in the tree.
 
 ## Project structure
 
@@ -56,6 +63,15 @@ commonplace/
 | `Commonplace.Tree.DocBuilder` | Reconstruct documents from commit chains |
 | `Commonplace.Sync.Agent` | Bidirectional filesystem sync |
 | `Commonplace.Sync.InodeTracker` | Shadow hardlinks for stale write detection |
+| `Commonplace.Trust` / `Commonplace.Trust.posture/0` | Resolved sign/verify and enforcement posture |
+| `Commonplace.MUD.World.Facade` | Closed-by-default capability surface for citizen-authored verbs |
+| `Commonplace.MUD.SafeVerb` | Sandboxed execution of citizen-authored verbs |
+| `Commonplace.Bd.Ready` | On-substrate issue tracker: ready-work queries over ticket documents |
+| `Commonplace.GitBridge.Server` | Sync between the document tree and a git remote |
+| `Commonplace.Bots.Worker.Loop` | Agent-citizen tool-use loop (budgets, persona docs) |
+| `Commonplace.MCP.Server` | MCP server exposing a live workspace to agent clients |
+
+This table is a starting point, not the full picture — `commonplace`'s MUD subsystem alone is the largest body of code in the tree.
 
 ## Getting started
 
@@ -66,19 +82,25 @@ mix deps.get
 # Run tests
 mix test
 
-# Build the CLI
-cd apps/commonplace_cli && mix escript.build
+# Build the CLI (the escript lands in apps/commonplace_cli/)
+mix escript.build --app commonplace_cli
+CLI="$PWD/apps/commonplace_cli/commonplace_cli"
 
-# Initialize a workspace
-./commonplace init workspace/
+# Initialize a workspace — init creates .commonplace/ in the CURRENT directory
+mkdir -p workspace && cd workspace && "$CLI" init
 
 # Sync (watches for changes)
-cd workspace && ../commonplace sync
+"$CLI" sync
 ```
+
+⚠️ The CLI resolves its data directory from the current working directory
+(`--data-dir` overrides). Run it from the workspace you mean to act on, never
+from a directory that already holds someone else's `.commonplace/` — a second
+opener on one store is how it gets corrupted.
 
 ## Design principles
 
 - **BEAM fundamentals first**: GenServer-per-document, PubSub for dataflow, supervision trees for lifecycle. External interfaces come later.
 - **Everything is documents, dataflow is the only verb**: Documents have UUIDs, are organized in a tree. Reachability from root = liveness.
-- **Color channels** define communication semantics: Blue (CRDT state), Cyan (directed writes), Red (event logs), Magenta (ephemeral messages), Green (exclusive locks).
+- **Color channels** name communication semantics across the tree. Red (event logs), Magenta (ephemeral messages), and Green (exclusive locks) are built and have dedicated implementations. Blue (CRDT state) and Cyan (directed writes) are named in the design but don't yet have modules of their own.
 - **Append-only CommitStore**: Data is never deleted. `rm -rf` on disk just removes schema entries; commit history preserves everything.
