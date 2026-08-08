@@ -129,14 +129,35 @@ perfectly correctly.
 announces itself with a comment saying it bypasses the choke, whereas this one
 IS inside the choke and still gets missed.**
 
-⭐ **And the independence runs both ways** — `:1936` calls
-`put_latest(state, doc_uuid, commit_id, :set_latest)` with **no `extra_rows` at
-all**: a head advance writing zero commit rows. So "index the advance's
-subject" would *also* mint an index entry at a moment when no commit row is
-being written.
+**The invariant rests on `:1788`/`:2688` above** — those are a genuine, silent
+**MISS**, which is the harm. `:1936` is offered as corroboration that the two
+facts are independent, **not as a second harm**, and the distinction is worth
+being exact about:
+
+`:1936` calls `put_latest(state, doc_uuid, commit_id, :set_latest)` with **no
+`extra_rows` at all** — a head advance writing zero commit rows. Indexing the
+advance's subject there is **usually a benign duplicate**: `set_latest` re-points
+`:latest` at a commit that already exists, whose row some other path wrote, and
+`MapSet.put` of an existing member is a no-op.
+
+⚠️ It stops being benign in two conditions, and one of them is reachable today:
+- **If the index is count- or list-valued** rather than set-valued, the count
+  drifts. (Another reason to keep it set-valued.)
+- ⚠️ **`set_latest/3` does not constrain `commit_id` to be a real commit of
+  `doc_uuid`** — both are free arguments, validated nowhere. And there is an
+  in-repo caller that passes a **literal non-commit sentinel**:
+  `projection/mixed_plane_history_fixture.ex:69` →
+  `CommitStore.set_latest(store, @source_doc_uuid, "fixture-seed-sentinel")`.
+  Indexing the advance's subject there would file `"fixture-seed-sentinel"` as
+  one of that doc's commit ids. That is a fixture-support path rather than a
+  production one, so treat it as **evidence the API permits it**, not as a live
+  bug.
 
 ⇒ **The advance's subject and the rows being written are independent facts.
-Index the rows.**
+Index the rows.** No red test is demanded for `:1936` — a test written against
+a benign duplicate is hard to fail honestly, and a soft leg would invite
+discounting the `:2434` leg, which is the one that actually breaks sibling
+merging.
 
 ## 4. Work
 
@@ -147,8 +168,18 @@ Index the rows.**
    **same `put_multi`** as the commit row wherever one exists — the store's
    standing atomicity contract is that a commit row and its advance land
    together or not at all, and the index entry belongs in that same unit.
-   ⚠️ If you find you cannot make it atomic somewhere, **say so** rather than
-   quietly writing it separately.
+   ⚠️ **`:2434` and `:1948` are bare `CubDB.put` calls with no multi to join.**
+   ⛔ **DO NOT restructure them to gain atomicity.** That branch is shaped
+   deliberately — its comment says an advance dispatched there *"would alarm on
+   a state nothing promoted"* — and converting it is **a change to
+   sibling-import semantics wearing a perf-fix costume**, which is the exact
+   thing `Identity.converge/2` was scoped out for in §6.
+   ⇒ **If you cannot make the index atomic there, SAY SO AND STOP.** We will
+   take the non-atomic window as a stated, ticketed residual. That is
+   survivable precisely because invariant 2 requires a stale index to be
+   *detectable*; a quiet semantics change nobody reviewed is not.
+   (Ruling: boss-clod, 2026-08-08, recorded here so it isn't decided by
+   momentum mid-run.)
 3. **Backfill.** Existing stores have ~71k commit rows and no index entries. A
    store opened without a backfill must not silently answer from an empty
    index — that would report *no commits for any doc*, which is
