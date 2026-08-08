@@ -8,6 +8,10 @@ defmodule Commonplace.Store.CommitStore do
   # and `nil` (an atom) sorts BELOW all binaries, which silently empties
   # the range instead of widening it.
   @max_key_binary :binary.copy(<<255>>, 64)
+  @doc_commit_index_version 1
+  @doc_commit_index_state_key {:doc_commit_index, :state}
+  @doc_commit_index_ready {:ready, @doc_commit_index_version}
+  @doc_commit_index_backfill_chunk 1_000
 
   @moduledoc """
   The persistent storage layer for Commonplace's commit Merkle DAG —
@@ -1492,6 +1496,7 @@ defmodule Commonplace.Store.CommitStore do
   # companion processes belong to this CommitStore, so the back-compat shims
   # below know where to delegate.
   defp ready(name, db, trust_side_store, pending_imports, invariant_dispatcher, lock_ref) do
+    ensure_doc_commit_index(db)
     :persistent_term.put({__MODULE__, :db, name}, db)
     :persistent_term.put({__MODULE__, :trust_side_store, name}, trust_side_store)
     :persistent_term.put({__MODULE__, :pending_imports, name}, pending_imports)
@@ -1696,7 +1701,7 @@ defmodule Commonplace.Store.CommitStore do
           warn_if_non_system_cas(commit, :snapshot_cas)
           commit = maybe_sign_commit(commit)
 
-          put_latest(state, doc_uuid, commit.id, :snapshot_cas, [{{:commit, commit.id}, commit}])
+          put_latest(state, doc_uuid, commit.id, :snapshot_cas, commit_rows(commit))
 
           :telemetry.execute(
             [:commonplace, :commit, :create],
@@ -1741,9 +1746,7 @@ defmodule Commonplace.Store.CommitStore do
 
       case CubDB.get(state.db, {:latest, commit.doc_uuid}) do
         latest_id when latest_id == commit.parent_id ->
-          put_latest(state, commit.doc_uuid, commit.id, :prebuilt_cas, [
-            {{:commit, commit.id}, commit}
-          ])
+          put_latest(state, commit.doc_uuid, commit.id, :prebuilt_cas, commit_rows(commit))
 
           :telemetry.execute(
             [:commonplace, :commit, :create],
@@ -1787,9 +1790,9 @@ defmodule Commonplace.Store.CommitStore do
                 :ok ->
                   extra_rows =
                     case genesis do
-                      %Commit{} = g -> [{{:commit, g.id}, g}]
+                      %Commit{} = g -> commit_rows(g)
                       nil -> []
-                    end ++ [{{:commit, commit.id}, commit}]
+                    end ++ commit_rows(commit)
 
                   put_latest(state, commit.doc_uuid, commit.id, :put_built_commit, extra_rows)
 
@@ -1945,7 +1948,7 @@ defmodule Commonplace.Store.CommitStore do
   @impl true
   def handle_call({:ensure_genesis, doc_uuid}, _from, state) do
     genesis = Commit.genesis(doc_uuid)
-    CubDB.put(state.db, {:commit, genesis.id}, genesis)
+    put_bare_commit_with_index(state.db, genesis)
     {:reply, {:ok, genesis}, state}
   end
 
@@ -2422,16 +2425,14 @@ defmodule Commonplace.Store.CommitStore do
   defp do_store_imported(commit, state) do
     case CubDB.get(state.db, {:latest, commit.doc_uuid}) do
       nil ->
-        put_latest(state, commit.doc_uuid, commit.id, :imported_genesis, [
-          {{:commit, commit.id}, commit}
-        ])
+        put_latest(state, commit.doc_uuid, commit.id, :imported_genesis, commit_rows(commit))
 
       _existing_latest ->
         # No head advance happens on this branch, so it deliberately does
         # NOT go through the choke: the commit is persisted as a sibling
         # off a shared ancestor and `:latest` is left where it was. An
         # advance dispatched here would alarm on a state nothing promoted.
-        CubDB.put(state.db, {:commit, commit.id}, commit)
+        put_bare_commit_with_index(state.db, commit)
     end
 
     state
@@ -2594,17 +2595,42 @@ defmodule Commonplace.Store.CommitStore do
   # looked obviously correct, which is why it survived; a binary longer
   # than any id is the actual requirement.
   defp do_all_commit_ids_for_doc(db, doc_uuid) do
-    CubDB.select(db,
-      min_key: {:commit, ""},
-      max_key: {:commit, @max_key_binary}
-    )
-    |> Enum.reduce(MapSet.new(), fn
-      {{:commit, id}, %{doc_uuid: ^doc_uuid}}, acc -> MapSet.put(acc, id)
-      _, acc -> acc
-    end)
+    case CubDB.get(db, @doc_commit_index_state_key) do
+      @doc_commit_index_ready ->
+        {ids, index_rows_read} =
+          CubDB.select(db,
+            min_key: {:doc_commit, doc_uuid, ""},
+            max_key: {:doc_commit, doc_uuid, @max_key_binary}
+          )
+          |> Enum.reduce({MapSet.new(), 0}, fn
+            {{:doc_commit, ^doc_uuid, id}, true}, {acc, count} ->
+              {MapSet.put(acc, id), count + 1}
+          end)
+
+        # The readiness point-read above is part of this call's cost. Report it
+        # alongside the range rows so acceptance measures the whole lookup.
+        :telemetry.execute(
+          [:commonplace, :commit_store, :doc_commit_index_read],
+          %{rows_read: index_rows_read + 1, index_rows_read: index_rows_read},
+          %{doc_uuid: doc_uuid}
+        )
+
+        ids
+
+      state ->
+        require Logger
+
+        Logger.error(
+          "CommitStore: doc commit index unavailable for doc_uuid=#{inspect(doc_uuid)}; " <>
+            "state=#{inspect(state)}; refusing silent full-scan fallback"
+        )
+
+        raise "doc commit index unavailable for doc_uuid=#{inspect(doc_uuid)}: #{inspect(state)}"
+    end
   end
 
   defp do_is_ancestor(_db, nil, _descendant_id), do: false
+
   defp do_is_ancestor(db, ancestor_id, descendant_id), do: walk_ancestors(db, ancestor_id, descendant_id)
 
   defp do_find_common_ancestor(db, uuid_a, uuid_b) do
@@ -2654,6 +2680,102 @@ defmodule Commonplace.Store.CommitStore do
     :ok
   end
 
+  # Every `{:commit, _}` row in this store is produced here with its index
+  # row structurally attached. Writers consume this pair as a unit; the index
+  # is derived from the row, never from a head advance's subject.
+  defp commit_rows(%{id: id, doc_uuid: doc_uuid} = commit) do
+    [{{:commit, id}, commit}, {{:doc_commit, doc_uuid, id}, true}]
+  end
+
+  # `ensure_genesis` and sibling import deliberately remain bare commit
+  # writes. The marker covers their only non-atomic risk: a process crash
+  # between writing the commit and its attached index row. Missing call sites
+  # are covered structurally by commit_rows/1, not inferred from this marker.
+  defp put_bare_commit_with_index(db, commit) do
+    [commit_row, index_row] = commit_rows(commit)
+
+    CubDB.put(
+      db,
+      @doc_commit_index_state_key,
+      {:dirty, @doc_commit_index_version, commit.doc_uuid}
+    )
+
+    CubDB.put(db, elem(commit_row, 0), elem(commit_row, 1))
+
+    CubDB.put_multi(db, [
+      index_row,
+      {@doc_commit_index_state_key, @doc_commit_index_ready}
+    ])
+  end
+
+  defp ensure_doc_commit_index(db) do
+    case CubDB.get(db, @doc_commit_index_state_key) do
+      @doc_commit_index_ready -> :ok
+      prior_state -> rebuild_doc_commit_index(db, prior_state)
+    end
+  end
+
+  defp rebuild_doc_commit_index(db, prior_state) do
+    require Logger
+
+    CubDB.put(
+      db,
+      @doc_commit_index_state_key,
+      {:rebuilding, @doc_commit_index_version, prior_state}
+    )
+
+    removed_index_rows = delete_doc_commit_index_rows(db)
+
+    {pending, _pending_count, commit_count, doc_uuids} =
+      CubDB.select(db,
+        min_key: {:commit, ""},
+        max_key: {:commit, @max_key_binary}
+      )
+      |> Enum.reduce({[], 0, 0, MapSet.new()}, fn
+        {{:commit, id}, %{doc_uuid: doc_uuid}}, {pending, pending_count, count, docs} ->
+          row = {{:doc_commit, doc_uuid, id}, true}
+          pending = [row | pending]
+          pending_count = pending_count + 1
+
+          if pending_count == @doc_commit_index_backfill_chunk do
+            CubDB.put_multi(db, pending)
+            {[], 0, count + 1, MapSet.put(docs, doc_uuid)}
+          else
+            {pending, pending_count, count + 1, MapSet.put(docs, doc_uuid)}
+          end
+      end)
+
+    if pending != [], do: CubDB.put_multi(db, pending)
+    CubDB.put(db, @doc_commit_index_state_key, @doc_commit_index_ready)
+
+    if commit_count > 0 or prior_state != nil do
+      Logger.warning(
+        "CommitStore: doc commit index #{index_state_label(prior_state)}; " <>
+          "startup backfill repaired commit_rows=#{commit_count} " <>
+          "doc_uuids=#{MapSet.size(doc_uuids)} removed_index_rows=#{removed_index_rows} " <>
+          "scope=entire_commit_range"
+      )
+    end
+
+    :ok
+  end
+
+  defp index_state_label(nil), do: "missing"
+  defp index_state_label(state), do: "interrupted (state=#{inspect(state)})"
+
+  defp delete_doc_commit_index_rows(db) do
+    CubDB.select(db,
+      min_key: {:doc_commit, "", ""},
+      max_key: {:doc_commit, @max_key_binary, @max_key_binary}
+    )
+    |> Stream.map(fn {key, _value} -> key end)
+    |> Stream.chunk_every(@doc_commit_index_backfill_chunk)
+    |> Enum.reduce(0, fn keys, count ->
+      CubDB.delete_multi(db, keys)
+      count + length(keys)
+    end)
+  end
+
   defp dispatch_advance(%{invariant_dispatcher: nil}, _doc_uuid, _commit_id, _source), do: :ok
 
   defp dispatch_advance(%{invariant_dispatcher: dispatcher}, doc_uuid, commit_id, source) do
@@ -2686,9 +2808,9 @@ defmodule Commonplace.Store.CommitStore do
           timed(fn ->
             extra_rows =
               case built.genesis do
-                %Commit{} = g -> [{{:commit, g.id}, g}]
+                %Commit{} = g -> commit_rows(g)
                 nil -> []
-              end ++ [{{:commit, built.commit.id}, built.commit}]
+              end ++ commit_rows(built.commit)
 
             put_latest(state, doc_uuid, built.commit.id, :write_commit, extra_rows)
           end)
