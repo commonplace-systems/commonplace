@@ -1,8 +1,16 @@
 # BUILD BRIEF — `merge_snapshotter.ex:284` reintroduces the CX-w1fw bug
 
 **For:** Sol (codex) — parallel to the struct-opacity pass, **different branch**
-**Ticket:** *(unminted — boss to create in tix; this brief is its body)*
-**Priority:** P1 if §2 confirms; P3 doc-only if §2 refutes
+**Ticket:** **CX-6zvr** — *"merge_snapshotter:284 reimplements
+BlockStore.client_ids unsafely — MEASURE FIRST (P1 if confirmed, P3 doc-only if
+refuted)"*, filed p1, type bug.
+**Priority:** filed **p1**; drops to **p3 doc-only** if §2 refutes.
+⚠️ The conditional is in the ticket TITLE on purpose — tix bodies are write-once
+and cannot be amended (CX-7smx). If your measurement refutes the consequence, the
+title still tells the truth and the priority field gets dropped; a title
+asserting the bug would have become a permanently wrong claim. **So: report your
+§2 result even if — especially if — it refutes.** The ticket was filed expecting
+that outcome to be possible.
 **Provenance:** carved out of `2026-08-08-yelixer-struct-opacity-build-brief.md`
 §5 on purpose. That pass leaves line 284 byte-identical. **This is the ticket it
 was carved out into.** Do not touch the other branch's files.
