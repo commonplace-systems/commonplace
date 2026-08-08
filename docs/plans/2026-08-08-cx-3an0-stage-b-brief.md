@@ -40,6 +40,18 @@ path in the ticket's title is still unfixed.** This is Stage B.
 3. ⛔ **THE ACCEPTANCE IS A MEASUREMENT OF ROWS READ, not the existence of an
    index.** See §5.
 
+## 1a. ⚠️ READ THIS BRANCH FIRST — there is prior art
+
+`salvage/snapshot-compact-uncommitted` @f8680b9 (**CX-f168**) threads a
+`read_only` option through `Bd.Issue.show/4` and its neighbours, into issue
+metadata reconstruction. **That is an attempt at this same problem** — reads
+that converge, and therefore write, on the hot path.
+
+It is **unmerged, unreviewed, and not known to compile** — it was recovered
+from uncommitted worktree state that a cleanup pass nearly deleted. So do not
+trust it, and do not treat it as a base. **But read it before re-deriving the
+same idea**, and say in your report whether you used anything from it.
+
 ## 2. The defect
 
 `apps/commonplace/lib/commonplace/store/commit_store.ex:2596`:
