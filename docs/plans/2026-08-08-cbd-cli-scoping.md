@@ -154,6 +154,42 @@ them again:
   work. `cbd` is the *human* surface — jes has no working way to check a
   ticket today, and that is the actual gap.
 
+## 6a. ⚠️ THE RESIDUAL THIS RETIRES — jes at a bare shell
+
+Two guards now cover the `bd` reflex, and **neither covers jes.**
+
+| surface | guard | covered |
+|---|---|---|
+| Claude Code agents in this repo | PreToolUse/Bash hook (`.claude/settings.json` @885f8ea) | ✅ |
+| Sol under codex | `bd` shadowed inside `sol-egress-run.sh`'s bwrap MASK (@b8e3800) | ✅ |
+| **jes in his own terminal** | — | ⛔ **none** |
+
+⛔ **So `bd show CX-3mj2` typed by jes still returns a confident, well-formed,
+wrong negative.** This must not be recorded as solved. It is the
+**highest-stakes remaining instance**, because he is the one person who cannot
+be told by a peer that his instrument is pointed at a frozen world — and the
+answer looks exactly like a legitimate "that ticket doesn't exist."
+
+**Why it isn't already fixed:** the only mechanisms that would fire for a bare
+shell are `~/.bashrc` or a global binary shadow, and **both are jes's
+environment and cross-repo dangerous** — `~/.local/bin/bd` is global, and
+hermes / wimble / gastown / turingtest / starloom26 / paravel are live,
+legitimate, **un-migrated** beads users. A global guard would tell them their
+real tickets don't exist. direnv would be repo-scoped and safe, but is **not
+installed or hooked** on this box.
+
+**Ready-made opt-in, if jes wants the stopgap before `cbd` lands** — repo-scoped,
+one line, trivially revertible:
+
+```bash
+# ~/.bashrc — makes `bd` resolve to the repo's guard only inside commonplace
+cd() { builtin cd "$@" && case "$PWD" in /home/jes/commonplace*) PATH="/home/jes/commonplace/bin:$PATH";; esac; }
+```
+
+⇒ **But the real answer is `cbd`.** Once a working CLI exists, jes stops
+reaching for `bd` because there is something better to reach for — which beats
+any guard, since a guard only ever intercepts a habit it cannot replace.
+
 ## 7. Open questions (not blockers, but decide before building)
 
 1. **Where does `cbd` live?** `commonplace_cli` alongside the existing escript,
