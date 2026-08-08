@@ -1,6 +1,20 @@
 # Commonplace
 
-A CRDT document store where everything is a document with a UUID, organized in a tree. Documents sync between peers using Yjs-compatible CRDTs. Built on Elixir/OTP.
+A shared, programmable world made of documents.
+
+Commonplace gives humans, agents, and ordinary programs one persistent place to work. Everything—text, structured data, directories, interfaces, event logs, schedules, identities, memories, and executable behavior—can live in the same UUID-addressed CRDT substrate.
+
+The document tree can be projected as an ordinary filesystem. Edit it through a text editor, a live web interface, an MCP tool, or a sandboxed Unix process. Underneath, every change becomes part of a content-addressed Merkle history: concurrent edits converge, forks preserve their ancestry, and the complete causal record remains inspectable.
+
+This makes Commonplace less like an application and more like a place. A wiki, ticket tracker, collaborative document, MUD, bot room, dataflow computation, or command-line program does not need its own private database and integration layer. Each is a different view and vocabulary of actions over the same living objects.
+
+Unix programs do not need to understand Commonplace. They see files. Their reads and writes quietly become participation in a synchronized computational world.
+
+Agents can inhabit that world more natively. They perceive structured documents rather than screenshots, act through capability-limited identities, collaborate with humans and other agents, and leave durable evidence of what they saw and did. Their memory, tools, tasks, conversations, and artifacts remain in the world instead of vanishing with a chat session.
+
+The long-term application is a lit software factory: an automated workplace whose machinery never disappears into the dark. Humans and agents share the factory floor; work remains visible, social, interruptible, forkable, and accountable.
+
+Commonplace is a commonplace book that became a distributed operating environment—and a common place for human and machine teammates.
 
 ## What it does
 
@@ -18,9 +32,11 @@ Elixir umbrella application:
 commonplace/
 ├── apps/
 │   ├── yelixer/            # CRDT library (pure Elixir Y.js port)
-│   ├── commonplace/        # Core: document store, commit DAG, tree, sync
+│   ├── commonplace/        # Core: document store, commit DAG, tree, sync, MUD
 │   ├── commonplace_cli/    # CLI tool (escript)
-│   └── commonplace_web/    # Phoenix LiveView UI
+│   ├── commonplace_web/    # Phoenix LiveView UI (wiki, tree, outline, chat, MUD client)
+│   ├── commonplace_mcp/    # MCP server (escript) — agent access to a live workspace
+│   └── commonplace_bots/   # Agent-citizen runtime: LLM tool-use loop, personas, Telegram
 ├── docs/
 │   ├── plans/              # Design documents
 │   └── superpowers/specs/  # Feature specs
