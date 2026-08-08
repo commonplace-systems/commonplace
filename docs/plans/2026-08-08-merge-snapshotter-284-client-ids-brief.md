@@ -1,9 +1,13 @@
 # BUILD BRIEF — `merge_snapshotter.ex:284` reintroduces the CX-w1fw bug
 
 **For:** Sol (codex) — parallel to the struct-opacity pass, **different branch**
-**Ticket:** **CX-6zvr** — *"merge_snapshotter:284 reimplements
+**Ticket:** **CX-wn7z** — *"merge_snapshotter:284 reimplements
 BlockStore.client_ids unsafely — MEASURE FIRST (P1 if confirmed, P3 doc-only if
-refuted)"*, filed p1, type bug.
+refuted)"*, filed p1, type bug, **verified present by re-reading it from the
+store after filing**.
+⚠️ **An earlier revision of this brief said `CX-6zvr`. That id never existed** —
+it was minted and printed by the `bd` CLI, whose write the enforce gate refused
+(see **CX-3nf4**). Do not search for it.
 **Priority:** filed **p1**; drops to **p3 doc-only** if §2 refutes.
 ⚠️ The conditional is in the ticket TITLE on purpose — tix bodies are write-once
 and cannot be amended (CX-7smx). If your measurement refutes the consequence, the
