@@ -498,6 +498,16 @@ defmodule Commonplace.Store.LocalWriteGateTest do
       # requests a commit/index row pair from the single commit_rows/1
       # constructor. The constructor itself is pinned by
       # DocCommitIndexTest; this sweep pins the authority paths reaching it.
+      #
+      # ⚠️ THIS SWEEP NO LONGER SEES INLINE ROW CONSTRUCTION AT ALL. It
+      # matches calls to commit_rows/1, so a writer that hand-builds
+      # `{{:commit, id}, commit}` is INVISIBLE here. That half of pin 8's
+      # original coverage now lives entirely in DocCommitIndexTest's
+      # `== 2` count assertion — a dependency across two files, verified
+      # 2026-08-08 by injecting an ungated inline writer (this sweep stayed
+      # green; the count caught it).
+      # ⇒ If that count is ever relaxed, THIS TRIPWIRE LOSES ITS BASE and
+      # nothing here will say so.
       def_re = ~r/^  def(p)?\s+([a-zA-Z_][a-zA-Z0-9_?!]*)/
 
       {_current, writers} =

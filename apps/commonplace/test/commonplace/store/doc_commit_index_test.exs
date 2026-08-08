@@ -64,6 +64,23 @@ defmodule Commonplace.Store.DocCommitIndexTest do
     # the constructor in commit_rows/1 and the read pattern in the startup
     # backfill. Another writer-side tuple would make a commit row possible
     # without its index row and must fail review mechanically.
+    #
+    # ⛔ THIS COUNT IS THE NO-BYPASS TRIPWIRE. IT IS NOT TIDINESS.
+    #
+    # Pin 8 in local_write_gate_test.exs used to match inline row
+    # construction itself. It no longer does — it matches CALLS to
+    # commit_rows/1 — so it cannot see a writer that hand-builds a row.
+    # That coverage now lives HERE and nowhere else. Verified 2026-08-08 by
+    # injecting an ungated `CubDB.put_multi(db, [{{:commit, id}, commit}])`
+    # into commit_store.ex: pin 8 stayed green; this assertion caught it
+    # (left: 3, right: 2).
+    #
+    # ⚠️ IF YOU ARE HERE BECAUSE THE COUNT CHANGED, THE QUESTION IS WHETHER
+    # A NEW COMMIT-ROW WRITER APPEARED — NOT WHETHER TO RAISE THE NUMBER.
+    # Bumping this to 3 is a thirty-second edit that silently retires the
+    # boundary and leaves every test green. If the third tuple is genuinely
+    # a READ pattern, say so here in writing and raise it deliberately; if
+    # it writes a row, it belongs behind commit_rows/1 instead.
     assert length(Regex.scan(~r/\{\{:commit,/, source)) == 2
 
     assert source =~
