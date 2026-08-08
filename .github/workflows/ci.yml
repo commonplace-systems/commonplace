@@ -21,6 +21,12 @@ jobs:
           otp-version: "27.3"
           elixir-version: "1.18.4"
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/yelixer/test/fixtures/package-lock.json
+
       - name: Cache deps
         uses: actions/cache@v4
         with:
@@ -33,6 +39,9 @@ jobs:
       - name: Install dependencies
         run: mix deps.get
 
+      - name: Install Yjs test oracle
+        run: npm ci --prefix apps/yelixer/test/fixtures
+
       - name: Compile (warnings as errors)
         run: mix compile --warnings-as-errors
 
@@ -40,11 +49,6 @@ jobs:
         run: elixir scripts/check_yelixer_commonplace_refs.exs
 
       - name: Run tests
-        # diff_yjs is a developer-only differential test against the JS
-        # reference implementation living at a hardcoded local path; it
-        # cannot run on a clean CI runner. CX-3mj2 de-hardcodes it and turns
-        # it on here, asserting the COUNT that ran rather than an exit code.
-        #
         # Wrapped in cp-test-guard because `mix test` exits 0 when it selects
         # NOTHING — an umbrella app whose path stops matching is silently
         # untested, and nothing in the output says so. --apps is the
@@ -56,4 +60,7 @@ jobs:
         # If this trips: do NOT lower the numbers to get green. Either an app
         # is being skipped, or the suite legitimately changed — in which case
         # raise them deliberately, in the commit that changed it.
-        run: bin/cp-test-guard --min 4200 --apps 6 -- mix test --exclude diff_yjs
+        run: bin/cp-test-guard --min 4200 --apps 6 -- mix test
+
+      - name: Assert Yjs conformance test count
+        run: bin/cp-test-guard --min 11 --apps 1 -- mix test apps/yelixer/test/yelixer/diff_yjs_test.exs --include diff_yjs
