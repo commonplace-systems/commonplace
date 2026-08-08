@@ -281,6 +281,17 @@ defmodule Commonplace.Store.MergeSnapshotter do
     end
   end
 
+  # CX-wn7z: this is DELIBERATELY not `Doc.client_ids/1`, and it is
+  # SUSPECTED WRONG. `Doc.client_ids/1` also reports clients whose only
+  # blocks are still in `client_pending` (the CX-w1fw fix); this reads
+  # `store.clients` alone and would miss them. `deterministic_client_id/1`
+  # below calls the safe version — the divergence is the bug, not a
+  # convention.
+  #
+  # Left byte-identical on purpose: substituting the safe function here is
+  # a SEMANTIC change (it also returns a list, not a MapSet), and CX-wn7z
+  # exists to measure the consequence first — whether `reconstruct/2` can
+  # leave blocks pending in `d_l` — before changing behaviour.
   defp client_ids(%Doc{store: %{clients: clients}}), do: MapSet.new(Map.keys(clients))
 
   # Character-level pair_ids. Replaces Snapshotter.pair_ids for merge-
@@ -317,7 +328,7 @@ defmodule Commonplace.Store.MergeSnapshotter do
     {update_bytes, pairs}
   end
 
-  defp deterministic_client_id(doc) do
+  defp deterministic_client_id(%Doc{} = doc) do
     case Doc.client_ids(doc) do
       [] -> 0
       clients -> Enum.min(clients)

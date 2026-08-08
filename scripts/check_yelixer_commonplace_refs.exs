@@ -44,6 +44,25 @@ defmodule YelixerCommonplaceBoundary do
 
   # Preserve newlines for actionable locations while removing the two prose
   # forms allowed to mention Commonplace: line comments and heredoc bodies.
+  #
+  # ⚠️ STRING BODIES ARE DELIBERATELY *NOT* MASKED, AND MUST NOT BE.
+  #
+  # If you are reading this because the checker flagged a harmless mention
+  # inside a plain string literal, the fix you are about to make — treating
+  # `"..."` like a comment — opens a silent hole: `"val: #{Commonplace.Store.get(x)}"`
+  # is EXECUTABLE code inside a string, and masking string bodies stops
+  # flagging it. The checker would go quietly green on a real boundary
+  # violation, which is the exact failure this whole check exists to prevent.
+  #
+  # This scanner is therefore built to fail toward FALSE RED: an unmatched
+  # quote or an odd `?"` literal leaves it preserving bytes, never masking
+  # them. A false red is a two-minute conversation; a false green is
+  # invisible until an extraction fails months later. If a legitimate string
+  # mention appears, rename the string's content or add a narrow exclusion —
+  # do not widen the masker.
+  #
+  # Verified by probe 2026-08-08: plain alias, `#{...}` interpolation inside a
+  # string, a `?"` char literal, and a sigil-then-alias were all caught.
   defp strip_prose(source), do: scan(source, :code, []) |> IO.iodata_to_binary()
 
   defp scan(<<>>, _state, acc), do: Enum.reverse(acc)
