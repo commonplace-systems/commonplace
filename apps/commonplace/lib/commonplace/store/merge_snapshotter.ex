@@ -115,7 +115,7 @@ defmodule Commonplace.Store.MergeSnapshotter do
     Snapshotter
   }
 
-  alias Yelixer.{BlockStore, Doc, Encoding}
+  alias Yelixer.{Doc, Encoding}
 
   @type result :: {:ok, Commit.t()} | {:error, term()}
 
@@ -306,21 +306,19 @@ defmodule Commonplace.Store.MergeSnapshotter do
     {:ok, new_doc} = Encoding.apply_update(Doc.new(), update_bytes)
 
     pairs =
-      Map.keys(source.types)
+      Doc.types(source)
+      |> Map.keys()
       |> Enum.reduce(%{}, fn type_name, acc ->
-        src_seq = BlockStore.get_sequence(source.store, type_name)
-        new_seq = BlockStore.get_sequence(new_doc.store, type_name)
+        src_seq = Doc.sequence(source, type_name)
+        new_seq = Doc.sequence(new_doc, type_name)
         Map.merge(acc, pair_sequences(new_seq, src_seq))
       end)
 
     {update_bytes, pairs}
   end
 
-  defp deterministic_client_id(%Doc{store: store}) do
-    # CX-w1fw: client_ids/1 includes clients whose only blocks are
-    # still in client_pending — Map.keys(store.clients) alone would
-    # miss them.
-    case BlockStore.client_ids(store) do
+  defp deterministic_client_id(doc) do
+    case Doc.client_ids(doc) do
       [] -> 0
       clients -> Enum.min(clients)
     end

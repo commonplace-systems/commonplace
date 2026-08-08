@@ -92,11 +92,9 @@ defmodule Commonplace.Trust.ReadMeta do
   defp view_doc?(%{types: types}) when is_map(types), do: Map.has_key?(types, @view_type)
   defp view_doc?(_), do: false
 
-  # Mirror SessionView.read_meta/2: force-re-register the root tag (the
-  # replay quirk documented there — a named root's tag is never recovered
-  # off the wire) then read the protected attributes.
+  # Mirror SessionView.read_meta/2 via the replay invariant in Doc.put_type/3.
   defp view_meta(doc) do
-    doc = %{doc | types: Map.put(doc.types, @view_type, {:xml_element, "view"})}
+    doc = Yelixer.Doc.put_type(doc, @view_type, {:xml_element, "view"})
 
     %{
       visibility: parse_visibility(XMLElement.get_attribute(doc, @view_type, "visibility")),

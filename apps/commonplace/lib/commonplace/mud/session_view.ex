@@ -472,25 +472,8 @@ defmodule Commonplace.MUD.SessionView do
 
   # --- Private helpers ---
 
-  # SUBSTRATE SURPRISE (see moduledoc): a top-level named XMLElement's
-  # own tag registration (`doc.types[type_name] = {:xml_element, tag}`)
-  # is set locally by `XMLElement.new_element/3` and is NEVER encoded
-  # onto the wire — only Items are. `Yelixer.Encoding.apply_update/2`'s
-  # `infer_type_ref/2` only recovers a type_ref for items whose parent
-  # is `{:id, _}` (map/array-of-types values) or for XML children via
-  # `maybe_register_xml_child_type/3` (keys ending in `"::children"`).
-  # A root registered under a *named*, non-synthetic key (our `"view"`)
-  # falls through both paths: the first item integrated with
-  # `parent: {:named, "view"}` (e.g. the `session` attribute) makes
-  # `Doc.get_or_create_type(doc, "view", :unknown)` stick — and since
-  # `get_or_create_type` never overwrites an existing key,
-  # `tag_name(doc, "view")` comes back `nil` forever after a replay,
-  # silently corrupting `to_string/2`'s `<tag>` open/close tags. Fixed
-  # names known statically (ours always is `"view"`, tag `"view"`) must
-  # be force-re-registered after `reconstruct_doc/2` — done here, since
-  # replay can never recover it on its own.
   defp reregister_root_tag(doc) do
-    %{doc | types: Map.put(doc.types, @view_name, {:xml_element, "view"})}
+    Doc.put_type(doc, @view_name, {:xml_element, "view"})
   end
 
   # Re-derive the scrollback/room child type-names by position: index 0

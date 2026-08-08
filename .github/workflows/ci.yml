@@ -36,6 +36,9 @@ jobs:
       - name: Compile (warnings as errors)
         run: mix compile --warnings-as-errors
 
+      - name: Enforce yelixer boundary
+        run: elixir scripts/check_yelixer_commonplace_refs.exs
+
       - name: Run tests
         # diff_yjs is a developer-only differential test against the JS
         # reference implementation living at a hardcoded local path; it
