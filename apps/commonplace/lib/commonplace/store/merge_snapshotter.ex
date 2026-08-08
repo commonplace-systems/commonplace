@@ -281,18 +281,23 @@ defmodule Commonplace.Store.MergeSnapshotter do
     end
   end
 
-  # CX-wn7z: this is DELIBERATELY not `Doc.client_ids/1`, and it is
-  # SUSPECTED WRONG. `Doc.client_ids/1` also reports clients whose only
-  # blocks are still in `client_pending` (the CX-w1fw fix); this reads
-  # `store.clients` alone and would miss them. `deterministic_client_id/1`
-  # below calls the safe version — the divergence is the bug, not a
-  # convention.
+  # CX-wn7z (FIXED — this line was the bug). It used to destructure two levels
+  # into the Doc's block store and take the keys of the materialized clients
+  # map alone, which MISSES clients whose only blocks are still in
+  # `client_pending`. `Doc.client_ids/1` reports both (the CX-w1fw fix).
+  # (Described rather than quoted: the struct-opacity acceptance grep matches
+  # source text, so quoting the old pattern here would keep the boundary check
+  # reporting its own documentation forever.)
   #
-  # Left byte-identical on purpose: substituting the safe function here is
-  # a SEMANTIC change (it also returns a list, not a MapSet), and CX-wn7z
-  # exists to measure the consequence first — whether `reconstruct/2` can
-  # leave blocks pending in `d_l` — before changing behaviour.
-  defp client_ids(%Doc{store: %{clients: clients}}), do: MapSet.new(Map.keys(clients))
+  # Consequence when it was wrong, confirmed live rather than inferred: with
+  # `d_l` pending clients `MapSet.new([1, 7])`, client 7 was invisible here, so
+  # `split_dm/4` attributed its pairs to the R namespace and late-edit
+  # translation ran against the wrong namespace map.
+  #
+  # Returns a MapSet: `Doc.client_ids/1` returns a LIST, and `l_ns_clients`
+  # feeds `split_dm/4` as a set. Converting HERE, once, is why no caller has to
+  # remember the shape difference.
+  defp client_ids(%Doc{} = doc), do: doc |> Doc.client_ids() |> MapSet.new()
 
   # Character-level pair_ids. Replaces Snapshotter.pair_ids for merge-
   # snapshot construction because the MVP pair_ids pairs by item-count
