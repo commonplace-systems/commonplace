@@ -13,6 +13,10 @@ defmodule Commonplace.Tree.DocBuilderLazySnapshotTest do
   alias Commonplace.Tree.DocBuilder
 
   setup do
+    if Process.whereis(Commonplace.SnapshotWorker) == nil do
+      start_supervised!(Commonplace.SnapshotWorker)
+    end
+
     dir = Path.join(System.tmp_dir!(), "cp_lazy_snap_#{:rand.uniform(1_000_000)}")
     File.mkdir_p!(dir)
     store_name = :"lazy_snap_store_#{:rand.uniform(1_000_000)}"
@@ -74,7 +78,58 @@ defmodule Commonplace.Tree.DocBuilderLazySnapshotTest do
     end)
   end
 
+  defp store_row_count(store) do
+    store
+    |> CommitStore.db_handle()
+    |> CubDB.select()
+    |> Enum.count()
+  end
+
+  defp wait_for_snapshot_worker(timeout_ms \\ 2_000) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    wait_for_snapshot_worker_idle(deadline)
+  end
+
+  defp wait_for_snapshot_worker_idle(deadline) do
+    state = :sys.get_state(Commonplace.SnapshotWorker)
+
+    cond do
+      state.inflight == %{} and state.pending == %{} ->
+        :ok
+
+      System.monotonic_time(:millisecond) > deadline ->
+        flunk("SnapshotWorker did not settle within the timeout: #{inspect(state)}")
+
+      true ->
+        wait_for_snapshot_worker_idle(deadline)
+    end
+  end
+
   describe "reader-lazy snapshot trigger (CX-fkvc)" do
+    test "deep reads expose and can suppress their destination write", %{store: store} do
+      Application.put_env(:commonplace, :reader_lazy_snapshot_threshold, 5)
+      Application.put_env(:commonplace, :snapshot_chain_threshold, 50)
+
+      minting_uuid = seed_chained_doc(store, 6)
+      refute snapshot?(store, minting_uuid)
+      rows_before_minting_read = store_row_count(store)
+
+      Application.put_env(:commonplace, :snapshot_chain_threshold, 5)
+      assert {:ok, _doc} = DocBuilder.reconstruct_doc(store, minting_uuid)
+      assert :ok = wait_for_snapshot_worker()
+      assert store_row_count(store) == rows_before_minting_read + 1
+
+      Application.put_env(:commonplace, :snapshot_chain_threshold, 50)
+      read_only_uuid = seed_chained_doc(store, 6)
+      refute snapshot?(store, read_only_uuid)
+      rows_before_read_only = store_row_count(store)
+
+      Application.put_env(:commonplace, :snapshot_chain_threshold, 5)
+      assert {:ok, _doc} = DocBuilder.reconstruct_doc(store, read_only_uuid, read_only: true)
+      assert :ok = wait_for_snapshot_worker()
+      assert store_row_count(store) == rows_before_read_only
+    end
+
     test "long-chain reads opportunistically trigger a snapshot",
          %{store: store} do
       Application.put_env(:commonplace, :reader_lazy_snapshot_threshold, 5)
@@ -100,8 +155,15 @@ defmodule Commonplace.Tree.DocBuilderLazySnapshotTest do
       Process.sleep(150)
 
       log = CommitStore.commit_log(store, uuid)
+
       refute Enum.any?(log, fn c -> c.metadata[:kind] == :snapshot end),
              "below-threshold read should not have triggered a snapshot"
     end
+  end
+
+  defp snapshot?(store, uuid) do
+    store
+    |> CommitStore.commit_log(uuid)
+    |> Enum.any?(fn commit -> commit.metadata[:kind] == :snapshot end)
   end
 end

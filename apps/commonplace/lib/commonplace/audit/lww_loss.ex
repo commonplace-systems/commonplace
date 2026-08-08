@@ -25,9 +25,8 @@ defmodule Commonplace.Audit.LwwLoss do
       actually see (snapshot-trimmed; a pre-fix snapshot may have baked
       the loss in).
 
-  Read-only, but `reconstruct_doc/2` can opportunistically fire a
-  background snapshot — callers auditing a live store should either run
-  against a copy or disable `:reader_lazy_snapshot_enabled` first.
+  The production-view reconstruction passes `read_only: true`, so the audit
+  never mints a lazy snapshot or perturbs the store it is measuring.
   """
 
   alias Commonplace.Store.{CommitStore, CommitStoreClient}
@@ -95,7 +94,7 @@ defmodule Commonplace.Audit.LwwLoss do
           not intentionally_deleted?(deletes, w),
           status_full = replay_status(full_replay, w.id),
           status_prod = item_status(production, w.id),
-          (status_full not in [:visible, :skipped]) or status_prod != :visible do
+          status_full not in [:visible, :skipped] or status_prod != :visible do
         %{
           key: key,
           expected_content: content_value(w.content),
@@ -167,7 +166,7 @@ defmodule Commonplace.Audit.LwwLoss do
   end
 
   defp reconstruct_production(store, uuid) do
-    case DocBuilder.reconstruct_doc(store, uuid) do
+    case DocBuilder.reconstruct_doc(store, uuid, read_only: true) do
       {:ok, doc} -> doc
       _ -> nil
     end

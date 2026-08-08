@@ -97,7 +97,7 @@ defmodule Commonplace.Bd.Invariants do
   @spec closed_matches_pin(String.t(), String.t(), module() | atom()) ::
           :ok | {:violation, map()} | {:error, term()}
   def closed_matches_pin(root_uuid, id, store \\ CommitStoreClient) do
-    with {:ok, issue} <- Issue.show(root_uuid, id, store),
+    with {:ok, issue} <- Issue.show(root_uuid, id, store, read_only: true),
          {:ok, node_id} <- issue_meta_node_id(root_uuid, id, store) do
       case latest_stamped_pin(store, node_id) do
         nil -> :ok
@@ -181,7 +181,7 @@ defmodule Commonplace.Bd.Invariants do
   @spec parses(String.t(), String.t(), module() | atom()) ::
           :ok | {:violation, map()} | {:error, term()}
   def parses(root_uuid, id, store \\ CommitStoreClient) do
-    case Issue.show(root_uuid, id, store) do
+    case Issue.show(root_uuid, id, store, read_only: true) do
       {:ok, %IssueStruct{}} ->
         :ok
 
@@ -226,7 +226,7 @@ defmodule Commonplace.Bd.Invariants do
   def acyclic(root_uuid, store \\ CommitStoreClient) do
     adjacency =
       root_uuid
-      |> Issue.list(store)
+      |> Issue.list(store, read_only: true)
       |> Enum.into(%{}, fn {issue, _node_id} -> {issue.id, local_need_targets(issue)} end)
 
     case find_cycles(adjacency) do
@@ -258,7 +258,9 @@ defmodule Commonplace.Bd.Invariants do
           tickets_with_needs: non_neg_integer()
         }
   def needs_graph_stats(root_uuid, store \\ CommitStoreClient) do
-    issues = root_uuid |> Issue.list(store) |> Enum.map(fn {issue, _} -> issue end)
+    issues =
+      root_uuid |> Issue.list(store, read_only: true) |> Enum.map(fn {issue, _} -> issue end)
+
     targets = Enum.map(issues, &local_need_targets/1)
 
     %{
@@ -286,8 +288,8 @@ defmodule Commonplace.Bd.Invariants do
 
     {cycles, _state} =
       Enum.reduce(ids, {[], %{visited: MapSet.new(), in_stack: MapSet.new(), stack: []}}, fn id,
-                                                                                              {cycles,
-                                                                                               state} ->
+                                                                                             {cycles,
+                                                                                              state} ->
         if MapSet.member?(state.visited, id) do
           {cycles, state}
         else
@@ -363,7 +365,7 @@ defmodule Commonplace.Bd.Invariants do
   @spec ref_typed(String.t(), String.t(), module() | atom()) ::
           :ok | {:violation, map()} | {:error, term()}
   def ref_typed(root_uuid, id, store \\ CommitStoreClient) do
-    case Issue.show(root_uuid, id, store) do
+    case Issue.show(root_uuid, id, store, read_only: true) do
       {:ok, %IssueStruct{} = issue} ->
         with :ok <- WriteGuard.validate_needs_shape(issue.needs || [], root_uuid),
              :ok <- WriteGuard.validate_done_witness(issue.done_witness || []) do

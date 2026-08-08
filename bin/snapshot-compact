@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+#
+# snapshot-compact — deliberate head-snapshot sweep through the running serve.
+#
+# Usage:
+#   bin/snapshot-compact                 # census only (default)
+#   bin/snapshot-compact --dry-run       # census only
+#   bin/snapshot-compact --execute       # census, execute, destination acceptance
+#
+# Environment:
+#   SNAPSHOT_COMPACT_NODE — serve node (default commonplace_dev@commonplace)
+#   SNAPSHOT_COMPACT_HOST — serve hostname mapped to 127.0.0.1 in ERL_INETRC
+#
+# The probe never opens storage. Every census read and every snapshot request
+# executes inside the serve. Exit 0 means all identities held (and, for
+# --execute, destination acceptance found no unnamed remainder).
+# Exit 1 bad arguments; 2 serve/probe failure; 3 lock unavailable;
+# 4 accounting/acceptance failure.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+SERVE_NODE="${SNAPSHOT_COMPACT_NODE:-commonplace_dev@commonplace}"
+SERVE_HOST="${SNAPSHOT_COMPACT_HOST:-${SERVE_NODE#*@}}"
+MODE="dry_run"
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run) MODE="dry_run"; shift ;;
+    --execute) MODE="execute"; shift ;;
+    -h|--help) sed -n '2,/^set -euo/p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 1 ;;
+    *) echo "snapshot-compact: unknown argument '$1'" >&2; exit 1 ;;
+  esac
+done
+
+LOCK_FILE="$PROJECT_DIR/.snapshot-compact.lock"
+TMP_DIR="$(mktemp -d)"
+cleanup() { rm -rf "$TMP_DIR"; }
+trap cleanup EXIT
+
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+  echo "snapshot-compact: another probe holds $LOCK_FILE" >&2
+  exit 3
+fi
+
+PROBE_SCRIPT="$TMP_DIR/probe.exs"
+INETRC="$TMP_DIR/inetrc"
+
+cat >"$INETRC" <<EOF
+{lookup, [file, native]}.
+{host, {127,0,0,1}, ["$SERVE_HOST"]}.
+EOF
+
+cat >"$PROBE_SCRIPT" <<'ELIXIR'
+[mode_string, serve_node_string] = System.argv() |> Enum.reject(&(&1 == "--"))
+mode = if mode_string == "execute", do: :execute, else: :dry_run
+serve_node = String.to_atom(serve_node_string)
+
+:application.set_env(:kernel, :prevent_overlapping_partitions, false)
+:application.set_env(:kernel, :inet_dist_use_interface, {127, 0, 0, 1})
+
+probe =
+  :"snapshot_compact_probe_#{:erlang.unique_integer([:positive])}@#{System.get_env("SNAPSHOT_COMPACT_HOST", "commonplace")}"
+
+fail = fn message ->
+  IO.puts(:stderr, "snapshot-compact: serve/probe failure — #{message}")
+  IO.puts(:stderr, "snapshot-compact: refusing to print figures from a failed destination read")
+  System.halt(2)
+end
+
+case Node.start(probe, :shortnames) do
+  {:ok, _pid} -> :ok
+  {:error, reason} -> fail.("could not start probe: #{inspect(reason)}")
+end
+
+unless Node.connect(serve_node), do: fail.("Node.connect(#{inspect(serve_node)}) returned false (pang)")
+
+report =
+  try do
+    :erpc.call(serve_node, Commonplace.SnapshotCompact, :run, [mode], 900_000)
+  catch
+    kind, reason -> fail.("SnapshotCompact.run/1 #{kind}: #{inspect(reason)}")
+  end
+
+IO.write(Commonplace.SnapshotCompact.format(report))
+System.halt(if report.ok?, do: 0, else: 4)
+ELIXIR
+
+cd "$PROJECT_DIR"
+SNAPSHOT_COMPACT_HOST="$SERVE_HOST" ERL_INETRC="$INETRC" \
+  mix run --no-start "$PROBE_SCRIPT" -- "$MODE" "$SERVE_NODE"

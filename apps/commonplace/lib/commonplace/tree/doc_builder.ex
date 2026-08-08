@@ -11,10 +11,18 @@ defmodule Commonplace.Tree.DocBuilder do
   alias Yelixer.{Doc, Encoding}
 
   @doc """
-  Reconstruct a doc by replaying its commit chain (oldest -> newest).
+  Reconstruct a doc by replaying its commit chain (oldest -> newest). **This
+  read writes by default:** a sufficiently deep HEAD read asynchronously
+  requests a lazy snapshot commit so future reads stay bounded.
 
   Use for content docs where edits are stored incrementally.
   Returns `{:ok, doc}` or `:none` if no commits exist.
+
+  Pass `read_only: true` for audits, measurements, probes, or any other caller
+  that must guarantee this read path requests no writes. The older
+  `mint: false` option remains supported; `read_only: true` takes precedence
+  over `mint: true`. Omitting both options deliberately preserves lazy
+  snapshot minting.
 
   CX-u7p: when a snapshot commit (metadata.kind == :snapshot) appears
   in the chain, the backward walk stops at the most recent snapshot —
@@ -37,16 +45,17 @@ defmodule Commonplace.Tree.DocBuilder do
   before re-encoding a new commit — e.g. `Commonplace.Outline`'s
   mutation helpers. Without it every such write mints a fresh random
   client_id and the state vector grows one slot per write, forever.
-  Read-only callers can omit the option.
+  Callers that will not encode a new commit can omit `client_id:`; callers
+  that must not write must still pass `read_only: true` as described above.
   """
   def reconstruct_doc(store, uuid, opts \\ []) do
-    # CX-6scm: `mint: false` suppresses the CX-fkvc lazy-snapshot
-    # write-on-read. `Commonplace.Projection.project_at/4` uses this path
-    # as tier (ii)'s authority and must NEVER mint — a read that writes
-    # cannot be a verification primitive, and it would perturb the very
-    # `:latest` pointer the tier-(ii) TOCTOU guard is checking.
-    # (`reconstruct_doc`'s minting in general is CX-68m6, out of scope.)
+    # CX-68m6 regularizes CX-6scm's internal `mint: false` escape hatch as
+    # the caller-facing `read_only: true` guarantee. Keep `mint` compatible,
+    # but make read_only dominant so the guarantee cannot be defeated by an
+    # accidentally combined option list.
+    {read_only?, opts} = Keyword.pop(opts, :read_only, false)
     {mint?, opts} = Keyword.pop(opts, :mint, true)
+    mint? = mint? and not read_only?
 
     commits =
       CommitStoreClient.commit_log(store, uuid, limit: CommitStore.max_commit_log_limit())
@@ -455,7 +464,8 @@ defmodule Commonplace.Tree.DocBuilder do
   defp scan_for(_store, nil, _target, _walked, _limit), do: nil
 
   defp scan_for(store, from_id, target, walked, limit) do
-    page = CommitStoreClient.commit_log_from(store, from_id, limit: min(@scan_page, limit - walked))
+    page =
+      CommitStoreClient.commit_log_from(store, from_id, limit: min(@scan_page, limit - walked))
 
     case Enum.find_index(page, &(&1.id == target)) do
       nil ->

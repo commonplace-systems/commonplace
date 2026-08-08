@@ -25,6 +25,20 @@ defmodule Commonplace.SnapshotWorkerTest do
     refute_receive {:ran, "doc-1"}, 100
   end
 
+  test "a synchronous request returns the existing trigger result" do
+    result = {:ok, :below_threshold, {:chain_length, 2, 5}}
+    trigger = fn :store, "doc-sync", [chain_length_threshold: 5] -> result end
+    {:ok, w} = SnapshotWorker.start_link(name: nil, trigger: trigger)
+
+    assert SnapshotWorker.request_and_wait(
+             w,
+             :store,
+             "doc-sync",
+             [chain_length_threshold: 5],
+             2_000
+           ) == result
+  end
+
   test "concurrent same-doc requests during an in-flight run coalesce to one re-run" do
     test = self()
 

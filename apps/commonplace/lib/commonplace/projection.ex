@@ -168,7 +168,7 @@ defmodule Commonplace.Projection do
       verdict. "Verified" without saying *how* is the underreport pattern
       wearing a checkmark.
     * **No minting.** `project_at/3` never writes — not a lazy snapshot
-      (`mint: false` into `DocBuilder.reconstruct_doc/3`), not anything.
+      (`read_only: true` into `DocBuilder.reconstruct_doc/3`), not anything.
       A read that writes cannot be a verification primitive.
     * **No second projection path.** One API, one verdict, source-scan
       guarded (`test/commonplace/projection/caller_source_scan_test.exs`).
@@ -255,7 +255,9 @@ defmodule Commonplace.Projection do
   def project_doc_at(doc_uuid, commit_id, opts \\ []) do
     store = Keyword.get(opts, :store, CommitStoreClient)
     required = Keyword.get(opts, :required, :any)
-    unless required in @floors, do: raise(ArgumentError, "unknown :required floor #{inspect(required)}")
+
+    unless required in @floors,
+      do: raise(ArgumentError, "unknown :required floor #{inspect(required)}")
 
     with {:ok, commit} <- fetch_commit(store, doc_uuid, commit_id),
          {:ok, chain} <- fetch_chain(store, doc_uuid, commit_id, opts),
@@ -336,7 +338,7 @@ defmodule Commonplace.Projection do
     cfg = trust_config()
 
     Enum.reduce_while(chain, {:ok, %{verified: 0, unsigned: 0, unpinned: 0}}, fn commit,
-                                                                                {:ok, tally} ->
+                                                                                 {:ok, tally} ->
       case classify_commit(commit, cfg) do
         {:ok, key} -> {:cont, {:ok, Map.update!(tally, key, &(&1 + 1))}}
         {:error, _} = err -> {:halt, err}
@@ -669,11 +671,11 @@ defmodule Commonplace.Projection do
   end
 
   # One of tier (ii)'s two shipped head-read paths, with minting
-  # suppressed (`mint: false`) so a verification read can never write —
+  # suppressed (`read_only: true`) so a verification read can never write —
   # and so it cannot perturb the very `:latest` pointer the TOCTOU guard
   # is reading.
   defp head_state(store, uuid, :chain, opts) do
-    unwrap(DocBuilder.reconstruct_doc(store, uuid, [{:mint, false} | doc_opts(opts)]))
+    unwrap(DocBuilder.reconstruct_doc(store, uuid, [{:read_only, true} | doc_opts(opts)]))
   end
 
   defp head_state(store, uuid, :direct, opts) do

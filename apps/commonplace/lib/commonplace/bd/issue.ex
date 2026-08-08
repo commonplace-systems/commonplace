@@ -31,7 +31,13 @@ defmodule Commonplace.Bd.Issue do
     {:ok, meta} = Workspace.load_meta(root_uuid, store)
 
     with {:ok, id} <- IdMint.mint_issue_id(root_uuid, meta.prefix, store) do
-      create_with_id(root_uuid, build_with_id(id, attrs), Map.get(attrs, :description, ""), store, opts)
+      create_with_id(
+        root_uuid,
+        build_with_id(id, attrs),
+        Map.get(attrs, :description, ""),
+        store,
+        opts
+      )
     end
   end
 
@@ -127,10 +133,13 @@ defmodule Commonplace.Bd.Issue do
 
   @doc """
   Reads an issue by id. Returns `{:ok, %Issue{}}` or `{:error, :not_found}`.
+
+  Reader options such as `read_only: true` are forwarded to the issue
+  metadata reconstruction.
   """
-  def show(root_uuid, id, store \\ CommitStoreClient) do
+  def show(root_uuid, id, store \\ CommitStoreClient, opts \\ []) do
     case Workspace.issue_dir_uuid(root_uuid, id, store) do
-      {:ok, dir_uuid} -> Schemas.load_issue(dir_uuid, store)
+      {:ok, dir_uuid} -> Schemas.load_issue(dir_uuid, store, opts)
       :error -> {:error, :not_found}
     end
   end
@@ -286,10 +295,10 @@ defmodule Commonplace.Bd.Issue do
   end
 
   @doc "Lists every issue currently in the workspace."
-  def list(root_uuid, store \\ CommitStoreClient) do
+  def list(root_uuid, store \\ CommitStoreClient, opts \\ []) do
     Workspace.list_issue_entries(root_uuid, store)
     |> Enum.map(fn entry ->
-      case Schemas.load_issue(entry.node_id, store) do
+      case Schemas.load_issue(entry.node_id, store, opts) do
         {:ok, issue} -> {issue, entry.node_id}
         _ -> nil
       end
@@ -404,8 +413,12 @@ defmodule Commonplace.Bd.Issue do
   # incoming map REPLACES `extra` (an import is a derivation from the
   # source record, so the source record is authoritative over it).
   defp apply_update_field(issue, :extra, v) when is_map(v), do: %{issue | extra: v}
-  defp apply_update_field(issue, key, v) when is_atom(key), do: %{issue | extra: Map.put(issue.extra, Atom.to_string(key), v)}
-  defp apply_update_field(issue, key, v) when is_binary(key), do: %{issue | extra: Map.put(issue.extra, key, v)}
+
+  defp apply_update_field(issue, key, v) when is_atom(key),
+    do: %{issue | extra: Map.put(issue.extra, Atom.to_string(key), v)}
+
+  defp apply_update_field(issue, key, v) when is_binary(key),
+    do: %{issue | extra: Map.put(issue.extra, key, v)}
 
   defp wrap_lookup({:ok, _} = ok), do: ok
   defp wrap_lookup(:error), do: {:error, :not_found}
