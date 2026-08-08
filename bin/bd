@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+#
+# bin/bd — a repo-local guardrail in front of the real `bd` binary.
+#
+# WHY THIS EXISTS (2026-08-08)
+#
+# `bd` is bound to the FROZEN BEADS ARCHIVE. Tickets have lived in tix —
+# the substrate's own tracker, in the commonplace commit store — since the
+# 2026-08-05 cutover. Measured that day:
+#
+#     tix : 854 issues   (workspace/.commonplace/commits/)
+#     bd  : 798 issues   (Dolt database "CX", .beads/config.json)
+#
+# The 798 are the migrated archive. The other 56 are every ticket filed
+# since, and `bd` cannot see any of them.
+#
+# ⛔ SO `bd show <recent-ticket>` RETURNS "no issue found" FOR TICKETS THAT
+#    DEMONSTRABLY EXIST — a confident, well-formed, completely wrong
+#    negative. Two people hit it within an hour; one was three lines from
+#    reporting six real tickets as fabricated, and was saved only by
+#    running a positive control.
+#
+# The instrument is NOT broken. It is correct, internally consistent, and
+# pointed at a world frozen on 2026-08-05 — and nothing in its output names
+# which world it is describing. A broken tool announces itself; this one
+# never will. That is why this guardrail is a wrapper and not a paragraph:
+# CLAUDE.md already said "reading old bd data is fine", which is true about
+# HARM and silent about VALIDITY, and both of us read it and reached for
+# `bd` anyway.
+#
+# READS OF THE ARCHIVE ARE STILL LEGITIMATE — closed-ticket history,
+# pre-cutover comments. Set CP_BD_ARCHIVE=1 to say you mean the archive.
+#
+# WRITES ARE NEVER LEGITIMATE: under enforce the CLI passes no signing
+# context at create/update/close, so the gate refuses the write and the CLI
+# prints a freshly minted id anyway (CX-3nf4). It reports on ITSELF, not on
+# the store.
+
+set -uo pipefail
+
+REAL_BD="${CP_BD_REAL:-$HOME/.local/bin/bd}"
+SUB="${1:-}"
+ORIGINAL_ARGS="$*"
+
+die() {
+  echo "" >&2
+  echo "⛔ bd is the FROZEN ARCHIVE (cutover 2026-08-05). $1" >&2
+  echo "" >&2
+  echo "   Tickets filed since the cutover are INVISIBLE to bd. A 'no issue" >&2
+  echo "   found' from this tool is not evidence a ticket does not exist." >&2
+  echo "" >&2
+  echo "   To check whether a ticket exists, ask the store that holds it:" >&2
+  echo "     • MCP:  bd_show CX-xxxx   (routes to the tix verbs)" >&2
+  echo "     • erpc: Commonplace.Bd.Issue.show(root, \"CX-xxxx\", CommitStoreClient)" >&2
+  echo "             on the commonplace_dev@commonplace serve" >&2
+  echo "" >&2
+  echo "   To read PRE-CUTOVER archive data on purpose:" >&2
+  echo "     CP_BD_ARCHIVE=1 bin/bd ${ORIGINAL_ARGS}" >&2
+  echo "" >&2
+  exit 1
+}
+
+case "$SUB" in
+  create|update|close|reopen|delete|dep|label|claim|release)
+    die "'$SUB' is a WRITE, and bd writes silently do not land (CX-3nf4):
+   the CLI passes no signing context, the enforce gate refuses the commit,
+   and it prints a minted id for a ticket that was never created."
+    ;;
+  show|list|ready|blocked|search|stats|stale|orphans|blocked-by)
+    if [[ "${CP_BD_ARCHIVE:-}" != "1" ]]; then
+      die "'$SUB' would answer from the archive, not from current tickets."
+    fi
+    ;;
+esac
+
+if [[ ! -x "$REAL_BD" ]]; then
+  echo "bin/bd: real bd binary not found or not executable at: $REAL_BD" >&2
+  echo "  (set CP_BD_REAL to point at it)" >&2
+  exit 127
+fi
+
+exec "$REAL_BD" "$@"
