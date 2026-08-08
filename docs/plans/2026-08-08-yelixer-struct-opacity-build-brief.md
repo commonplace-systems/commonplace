@@ -9,9 +9,31 @@ wins and says why.
 **Ordering:** this lands BEFORE Phase 1 of the extractability work — 4 of the 8
 sites sit in CommitStore's immediate neighbourhood.
 
-**Sandbox note:** you have no BEAM distribution and no route to the live serve
-(closed at 4af35a7). Nothing in this task needs one. If you think you need live
-access, stop and say so — you don't get to route around it.
+---
+
+## 0. Environment contract (standing — true of every Sol task, not just this one)
+
+These are environment facts, not ticket facts. They do not change per brief.
+
+- **Work in the named worktree**, on the named branch, off main.
+- ⛔ **Git metadata is read-only. LEAVE YOUR CHANGES UNSTAGED.** Do not `git add`,
+  do not commit, and **do not work around `index.lock`** — hitting it is the
+  sandbox working correctly, not an obstacle to route around. Improvising here
+  cost a whole run on 2026-08-07.
+- ⛔ **No BEAM distribution, no route to the live serve** (closed at 4af35a7).
+  Nothing in this task needs one. If you think you need live access, stop and
+  say so.
+- ⚠️ **`mix test apps/<app>` selects NOTHING** in this umbrella — it silently
+  runs zero tests and exits 0. Run per-app from the app directory, and **check
+  the test count**.
+- ⚠️ **Before counting a run, establish that it ran.** A zero-failure line over
+  zero tests is indistinguishable from success. Report counts, not verdicts.
+- ⚠️ **Capture the return code from the command itself, never from a pipe.** A
+  pipeline's status is the *tail's* status; a pipe that swallows status also
+  swallows the failing test's name.
+- ⚠️ **`tmp/test_data` is shared** — concurrent runs collide there.
+- ⚠️ **Read the source for signatures.** Do not infer an arity or a return shape
+  from a name, a docstring, or this brief.
 
 ---
 
@@ -247,12 +269,17 @@ Run these and paste real output. Do not assert green without it.
 
 ## 8. Explicitly out of scope
 
-- **Tests.** ~60 sites in `apps/commonplace*/test` reach `doc.store` (mostly
+- **Tests — DEFERRED UNTIL THE DEP SWITCH, not permanently out of scope.**
+  ~60 sites in `apps/commonplace*/test` reach `doc.store` (mostly
   `BlockStore.state_vector(doc_x.store)`), plus one `%Doc{store: store}`
   destructure at `test/commonplace/audit/lww_loss_test.exs:64`. Leaving them is a
-  **decision, not an oversight**: the ruling is about the library boundary, and
-  sweeping tests would triple the diff for no extractability gain. Do not touch
-  them, and do not scope the acceptance greps to `test` — they'd drown.
+  **decision, not an oversight**: while yelixer is an in-umbrella app, sweeping
+  them triples the diff for no extractability gain. Do not touch them now, and
+  do not scope the acceptance greps to `test` — they'd drown.
+  ⚠️ **The reason has an expiry.** Once yelixer becomes an external dependency,
+  every one of those test reaches carries the same version-skew hazard as the lib
+  ones did, and this deferral must be revisited as part of the dep switch. Stated
+  as an expiry so the decision doesn't quietly outlive its rationale.
 - `merge_snapshotter.ex:284` (§5).
 - Any `item.deleted` / `id.client` value-type read.
 - Any behaviour change whatsoever. If you find a second suspected bug, **report
