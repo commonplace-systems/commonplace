@@ -27,8 +27,11 @@ path in the ticket's title is still unfixed.** This is Stage B.
 ## 1. ⛔ THE INVARIANTS — state these back in your report
 
 1. ⛔ **THE INDEX MUST COVER EVERY `{:commit, _}` ROW, FROM EVERY WRITE SITE.**
-   Not "the main one". See §3 — there are three, and the one that is easiest to
-   miss is the one that matters most.
+   Not "the main one". See §3 — and the one that is easiest to miss is the one
+   that matters most.
+1b. ⛔ **DERIVE THE INDEX FROM THE ROWS BEING WRITTEN, NEVER FROM THE ADVANCE'S
+   SUBJECT.** See §3a. These are genuinely independent, in both directions, and
+   the natural reading of the code gets it wrong.
 2. ⛔ **A MISSING OR STALE INDEX MUST BE DETECTABLE, NEVER A SILENT FALLBACK.**
    If `all_commit_ids_for_doc` quietly falls back to the full scan when the
    index is absent, the fix becomes invisible: still correct, still slow,
@@ -98,6 +101,43 @@ somewhere else, much later.
 likely way to get this ticket wrong. Your report must state explicitly how all
 three sites are covered.
 
+## 3a. ⛔ THE SECOND TRAP — inside the choke, and nastier, because it looks handled
+
+The other four writers (`:1699` `:snapshot_cas`, `:1745` `:prebuilt_cas`,
+`:1792` `:put_built_commit`, `:2691` `:write_commit`) **do** route through
+`put_latest`, carrying their commit row in `extra_rows`. So the §3 bypass set is
+exactly two. That is the good news. Here is the trap:
+
+⚠️ **`extra_rows` can carry TWO commit rows, not one.** At `:1788-1792` and
+`:2688-2691`:
+
+```elixir
+extra_rows =
+  case genesis do
+    %Commit{} = g -> [{{:commit, g.id}, g}]
+    nil -> []
+  end ++ [{{:commit, commit.id}, commit}]
+```
+
+— **a genesis commit piggybacking alongside the advancing commit.** An
+implementer who indexes *"the commit `put_latest` is advancing to"* — the
+natural reading, since `commit_id` is the function's own argument — **silently
+drops those genesis rows**, even though they arrived through the choke
+perfectly correctly.
+
+⇒ **This is the §3 failure by a different route, and it is nastier: `:2434`
+announces itself with a comment saying it bypasses the choke, whereas this one
+IS inside the choke and still gets missed.**
+
+⭐ **And the independence runs both ways** — `:1936` calls
+`put_latest(state, doc_uuid, commit_id, :set_latest)` with **no `extra_rows` at
+all**: a head advance writing zero commit rows. So "index the advance's
+subject" would *also* mint an index entry at a moment when no commit row is
+being written.
+
+⇒ **The advance's subject and the rows being written are independent facts.
+Index the rows.**
+
 ## 4. Work
 
 1. **Add a per-doc commit index**, e.g. `{:doc_commit, doc_uuid, commit_id} → true`,
@@ -137,6 +177,13 @@ about rows read; measure rows read.
    the non-choke path, then assert `maybe_merge_siblings` still finds it.
    **Show this test red against an index built only at `put_latest`** — that is
    the failure this brief exists to prevent, so prove your code isn't it.
+3b. ⛔ **A test proving the PIGGYBACKED GENESIS row is indexed** (§3a): drive a
+   path where `extra_rows` carries both a genesis and the advancing commit
+   (`:put_built_commit` / `:write_commit`), then assert **both** ids are in the
+   doc's index. **Show it red against an index derived from `commit_id`** —
+   the advance's subject — which is the natural and wrong implementation.
+   ⇒ Together, 3 and 3b are the two ways to be the obvious mistake: one outside
+   the choke, one inside it.
 4. `mix compile --warnings-as-errors` rc=0; suites green **with counts**, via
    `bin/cp-test-guard`.
 5. State how the un-backfilled / stale-index state is detected, and show it.
