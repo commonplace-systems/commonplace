@@ -47,7 +47,7 @@ defmodule Commonplace.Projection.MixedPlane do
   fires on ordinary history gets muted, which is worse than no tripwire.
   """
 
-  alias Yelixer.{BlockStore, Doc}
+  alias Yelixer.Doc
 
   @type details :: %{
           types: [
@@ -68,10 +68,11 @@ defmodule Commonplace.Projection.MixedPlane do
   both plane populations and the stranded keys.
   """
   @spec scan(Doc.t()) :: :ok | {:trip, details()}
-  def scan(%Doc{types: types, store: store}) do
+  def scan(%Doc{} = doc) do
     offenders =
-      types
-      |> Enum.map(fn {name, kind} -> classify(store, name, kind) end)
+      doc
+      |> Doc.types()
+      |> Enum.map(fn {name, kind} -> classify(doc, name, kind) end)
       |> Enum.reject(&is_nil/1)
       |> Enum.sort_by(& &1.name)
 
@@ -81,8 +82,8 @@ defmodule Commonplace.Projection.MixedPlane do
     end
   end
 
-  defp classify(store, name, kind) do
-    items = BlockStore.get_sequence(store, name) |> Enum.reject(& &1.deleted)
+  defp classify(doc, name, kind) do
+    items = Doc.sequence(doc, name) |> Enum.reject(& &1.deleted)
 
     {keyed, plain} = Enum.split_with(items, &(&1.parent_sub != nil))
 

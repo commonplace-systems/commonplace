@@ -115,10 +115,10 @@ defmodule Commonplace.CLI.InspectCmd do
     # Type information
     IO.puts("Types:")
 
-    if map_size(doc.types) == 0 do
+    if map_size(Yelixer.Doc.types(doc)) == 0 do
       IO.puts("  (none)")
     else
-      Enum.each(doc.types, fn {name, type_ref} ->
+      Enum.each(Yelixer.Doc.types(doc), fn {name, type_ref} ->
         IO.puts("  #{name}: #{type_ref}")
       end)
     end
@@ -137,7 +137,7 @@ defmodule Commonplace.CLI.InspectCmd do
     IO.puts("")
 
     # State vector
-    state_vector = Yelixer.BlockStore.state_vector(doc.store)
+    state_vector = Yelixer.Doc.state_vector(doc)
 
     IO.puts("State vector (#{map_size(state_vector.clocks)} client(s)):")
 
@@ -150,7 +150,7 @@ defmodule Commonplace.CLI.InspectCmd do
 
     # CX-w1fw: materialized view — recently-pushed blocks may still be
     # sitting in client_pending rather than doc.store.clients.
-    all_blocks = Yelixer.BlockStore.all_items(doc.store)
+    all_blocks = Yelixer.Doc.all_items(doc)
     total_blocks = length(all_blocks)
     total_items = all_blocks |> Enum.map(& &1.length) |> Enum.sum()
 
