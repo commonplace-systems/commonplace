@@ -4,7 +4,7 @@
 
 <!-- state-projection:begin -->
 Read STATE.md before scoping any work.
-Rendered at: 2026-08-08T16:37Z.
+Rendered at: 2026-08-08T18:39Z.
 <!-- state-projection:end -->
 
 Commonplace is a CRDT document store built on Elixir/OTP. Every piece of data is a Y.js-compatible CRDT document identified by a UUID, organized in a tree via schema documents. The system provides branching (deep-copy fork), three-way merging, a Merkle-CRDT commit DAG, and bidirectional filesystem sync.
@@ -15,7 +15,7 @@ This is a port from a Rust version at `/home/jes/commonplace-rs/`. The Elixir ve
 
 Elixir umbrella with six apps:
 
-- **yelixer** — Pure Elixir Y.js CRDT library. Wire-compatible with Yjs V1 binary protocol. Supports Text, Map, Array, XML types. Also maintained as a standalone repo at `jes5199/yelixer`.
+- **yelixer** — Pure Elixir Y.js CRDT library. Wire-compatible with Yjs V1 binary protocol. Supports Text, Map, Array, XML types. Also maintained as a standalone repo at `commonplace-systems/yelixer` (transferred from `jes5199/` on 2026-08-08, along with `commonplace` and `commonplace-plan`). ⚠️ That standalone repo is **4.5 months stale** — last commit 2026-03-24, `encoding.ex` 1,012 lines vs the umbrella's 1,940. Re-converging it is CX-1mn4 → CX-fbah; do not treat it as a current mirror.
 - **commonplace** — Core library: CommitStore (CubDB), document tree (Schema, Fork, Merge, DocBuilder), sync agent, inode tracking.
 - **commonplace_cli** — CLI escript for init, sync, checkout, branch, merge operations.
 - **commonplace_web** — Phoenix LiveView UI with invite-token auth (two-phase: `require_auth` plug for dead-render + `on_mount ensure_authenticated` for the websocket mount), wiki/tree/outline/chat LiveViews, a browser MUD client (`MudLive`), and a bearer-token federation endpoint.
