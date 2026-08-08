@@ -488,18 +488,16 @@ defmodule Commonplace.Store.LocalWriteGateTest do
 
   # ── Pin 8: no-bypass enumeration ───────────────────────────────────────
   describe "pin 8: no-bypass sweep" do
-    test "every function that constructs a {{:commit, _}, _} PUT row is one of the known gated writers" do
+    test "every function requesting commit row pairs is a known gated or synthetic writer" do
       source = File.read!("lib/commonplace/store/commit_store.ex")
       lines = String.split(source, "\n")
 
       # Walk the file top-to-bottom, tracking which top-level `def`/`defp`
       # we're currently inside (2-space indented — this module's only
-      # indentation level for definitions), and record the enclosing
-      # definition's name for every line that constructs a `{{:commit,
-      # id}, commit}` PUT-row literal (the `, commit}` / `, g}` /
-      # `, built.commit}` suffix distinguishes a row CONSTRUCTION from a
-      # mere pattern-match read like `{{:commit, id}, %{doc_uuid: ...}}`
-      # inside `do_all_commit_ids_for_doc`'s CubDB.select reduce).
+      # indentation level for definitions), and record every function that
+      # requests a commit/index row pair from the single commit_rows/1
+      # constructor. The constructor itself is pinned by
+      # DocCommitIndexTest; this sweep pins the authority paths reaching it.
       def_re = ~r/^  def(p)?\s+([a-zA-Z_][a-zA-Z0-9_?!]*)/
 
       {_current, writers} =
@@ -511,7 +509,7 @@ defmodule Commonplace.Store.LocalWriteGateTest do
             end
 
           acc =
-            if current && Regex.match?(~r/\{\{:commit,\s*[\w.]+\},\s*[\w.]+\}/, line) do
+            if current && current != "commit_rows" && String.contains?(line, "commit_rows(") do
               MapSet.put(acc, current)
             else
               acc
@@ -520,8 +518,8 @@ defmodule Commonplace.Store.LocalWriteGateTest do
           {current, acc}
         end)
 
-      # The complete, hand-verified set of functions allowed to construct
-      # a `{:commit, id}` PUT row (verified by inspection at bead-
+      # The complete, hand-verified set of functions allowed to request
+      # a commit/index row pair (verified by inspection at bead-
       # authoring time — CX-qat5.3):
       #
       #   * do_write_commit      — legacy serialized create path, GATED
@@ -537,27 +535,55 @@ defmodule Commonplace.Store.LocalWriteGateTest do
       #   * do_store_imported    — import_commit's landing verb, gated
       #                            by the SEPARATE, pre-existing Gate A
       #                            (trust_check/2 via import_validation/3).
-      expected = MapSet.new(["do_write_commit", "handle_call", "do_store_imported"])
+      #   * put_bare_commit_with_index — the shared persistence mechanism
+      #                            for imported siblings and synthetic genesis;
+      #                            its callers are pinned separately below.
+      expected =
+        MapSet.new([
+          "do_write_commit",
+          "handle_call",
+          "do_store_imported",
+          "put_bare_commit_with_index"
+        ])
 
       assert writers == expected,
-             "commit-row PUT construction sites changed: found #{inspect(MapSet.to_list(writers))}, " <>
+             "commit-row pair request sites changed: found #{inspect(MapSet.to_list(writers))}, " <>
                "expected exactly #{inspect(MapSet.to_list(expected))}. If you added a new local-write " <>
-               "path that persists a {:commit, id} row, it MUST run through " <>
+               "path that requests a commit row pair, it MUST run through " <>
                "local_write_gate_check/2 (mirroring do_write_commit / the put_built_commit " <>
                "handle_call clause) before persisting — this test is the tripwire."
 
-      # Positive control: assert the sweep actually found the CAS-family
-      # handle_call clauses too, so "handle_call" isn't matching zero
-      # gated sites vacuously.
-      handle_call_commit_lines =
-        Enum.count(lines, fn line ->
-          Regex.match?(~r/\{\{:commit,\s*[\w.]+\},\s*[\w.]+\}/, line)
+      # The bare helper is not an authority decision of its own. Pin its two
+      # callers so a new path cannot gain persistence merely by reusing it.
+      {_current, bare_callers} =
+        Enum.reduce(lines, {nil, MapSet.new()}, fn line, {current, acc} ->
+          current =
+            case Regex.run(def_re, line) do
+              [_, _, name] -> name
+              nil -> current
+            end
+
+          acc =
+            if current && current != "put_bare_commit_with_index" &&
+                 String.contains?(line, "put_bare_commit_with_index(") do
+              MapSet.put(acc, current)
+            else
+              acc
+            end
+
+          {current, acc}
         end)
 
-      assert handle_call_commit_lines >= 5,
-             "expected at least 5 {:commit, id} PUT-row construction lines " <>
-               "(write_snapshot_cas, write_prebuilt_commit_cas, put_built_commit x2, " <>
-               "do_write_commit x2, do_store_imported) — found #{handle_call_commit_lines}"
+      assert bare_callers == MapSet.new(["handle_call", "do_store_imported"])
+
+      # Positive control: the sweep must see all current pair requests (the
+      # piggybacked-genesis paths each contain two calls).
+      pair_request_lines =
+        Enum.count(lines, fn line -> String.contains?(line, "commit_rows(") end) - 1
+
+      assert pair_request_lines == 8,
+             "expected 8 commit_rows/1 request lines across the seven write sites; " <>
+               "found #{pair_request_lines}"
     end
   end
 end

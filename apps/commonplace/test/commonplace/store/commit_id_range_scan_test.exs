@@ -26,27 +26,43 @@ defmodule Commonplace.Store.CommitIdRangeScanTest do
 
   alias Commonplace.Store.CommitStore
 
+  @index_state_key {:doc_commit_index, :state}
+
   setup do
     dir = Path.join(System.tmp_dir!(), "cp_range_scan_#{:rand.uniform(1_000_000)}")
     File.mkdir_p!(dir)
     name = :"commit_store_#{:rand.uniform(1_000_000)}"
-    start_supervised!({CommitStore, data_dir: dir, name: name})
+    start_supervised!(Supervisor.child_spec({CommitStore, data_dir: dir, name: name}, id: name))
     on_exit(fn -> File.rm_rf!(dir) end)
-    %{store: name, db: CommitStore.db_handle(name)}
+    %{store: name, db: CommitStore.db_handle(name), dir: dir}
   end
 
-  # A commit row only needs a doc_uuid for this scan — it matches
-  # `{{:commit, id}, %{doc_uuid: ^doc_uuid}}`.
+  # These raw rows deliberately cannot use CommitStore's private commit_rows/1
+  # choke: the test must choose the content-addressed id bytes. Marking the
+  # index dirty after each seed makes that bypass explicit and exercises the
+  # production startup rebuild, instead of quietly duplicating the index-row
+  # implementation in test code and teaching future readers that raw writes
+  # beside the choke are safe.
   defp put_commit(db, id, doc_uuid) do
-    CubDB.put(db, {:commit, id}, %{doc_uuid: doc_uuid, id: id})
+    :ok = CubDB.put(db, {:commit, id}, %{doc_uuid: doc_uuid, id: id})
+    :ok = CubDB.put(db, @index_state_key, {:dirty, 1, {:range_scan_seed, id}})
     id
+  end
+
+  defp rebuild_after_raw_seed(%{store: store, dir: dir}) do
+    :ok = stop_supervised(store)
+
+    start_supervised!(Supervisor.child_spec({CommitStore, data_dir: dir, name: store}, id: store))
+
+    store
   end
 
   defp id_starting_with(byte), do: <<byte>> <> :binary.copy(<<7>>, 31)
 
-  test "finds a commit whose id starts with 0xFF (the regression)", %{store: store, db: db} do
+  test "finds a commit whose id starts with 0xFF (the regression)", context do
     uuid = "doc-ff"
-    ff = put_commit(db, id_starting_with(255), uuid)
+    ff = put_commit(context.db, id_starting_with(255), uuid)
+    store = rebuild_after_raw_seed(context)
 
     found = CommitStore.all_commit_ids_for_doc(store, uuid)
 
@@ -56,14 +72,15 @@ defmodule Commonplace.Store.CommitIdRangeScanTest do
              "caller that relies on this function to enumerate what exists"
   end
 
-  test "0xFF ids are found alongside ordinary ones, and none are lost", %{store: store, db: db} do
+  test "0xFF ids are found alongside ordinary ones, and none are lost", context do
     uuid = "doc-mixed"
 
     ids =
       for b <- [0x00, 0x01, 0x7F, 0x80, 0xFE, 0xFF] do
-        put_commit(db, id_starting_with(b), uuid)
+        put_commit(context.db, id_starting_with(b), uuid)
       end
 
+    store = rebuild_after_raw_seed(context)
     found = CommitStore.all_commit_ids_for_doc(store, uuid)
 
     missing = Enum.reject(ids, &MapSet.member?(found, &1))
@@ -75,9 +92,10 @@ defmodule Commonplace.Store.CommitIdRangeScanTest do
     assert MapSet.size(found) == length(ids)
   end
 
-  test "an all-0xFF id (the extreme of the range) is still found", %{store: store, db: db} do
+  test "an all-0xFF id (the extreme of the range) is still found", context do
     uuid = "doc-max"
-    maxi = put_commit(db, :binary.copy(<<255>>, 32), uuid)
+    maxi = put_commit(context.db, :binary.copy(<<255>>, 32), uuid)
+    store = rebuild_after_raw_seed(context)
 
     assert MapSet.member?(CommitStore.all_commit_ids_for_doc(store, uuid), maxi)
   end
@@ -120,9 +138,10 @@ defmodule Commonplace.Store.CommitIdRangeScanTest do
     end
   end
 
-  test "the scan still excludes other docs' commits", %{store: store, db: db} do
-    mine = put_commit(db, id_starting_with(255), "doc-a")
-    theirs = put_commit(db, id_starting_with(254), "doc-b")
+  test "the scan still excludes other docs' commits", context do
+    mine = put_commit(context.db, id_starting_with(255), "doc-a")
+    theirs = put_commit(context.db, id_starting_with(254), "doc-b")
+    store = rebuild_after_raw_seed(context)
 
     found = CommitStore.all_commit_ids_for_doc(store, "doc-a")
 
