@@ -122,6 +122,62 @@ constraint is why this ticket goes first in the queue.)
 4. Test suites green **with counts**, via `bin/cp-test-guard`.
 5. The version you pinned, and the reason.
 
+## 5a. ⛔ PRE-DECLARED ACCEPTANCE CONTROL — is yjs still in the loop?
+
+**Written 2026-08-08 17:26Z, BEFORE the diff exists**, deliberately: at
+acceptance there will be a green suite and a finished run pulling toward
+"it's fine," and that is exactly when a criterion invented on the spot bends.
+This one is fixed in advance and is not negotiable at review time.
+
+Sol's run has produced `apps/yelixer/test/fixtures/yelixer_oracle_{text,map,arr}.bin`.
+Those may be entirely legitimate. The question that decides it is **not** "does
+the suite pass", "is it faster", or "does the diff look right":
+
+> ⛔ **CAN THIS TEST FAIL BECAUSE OF SOMETHING YJS DOES?**
+
+- ✅ **Legitimate:** yjs executes on **every run**, and the `.bin` files are
+  *inputs* — seeds, corpora, recorded edit scripts fed **through** the live
+  library. A divergence introduced by yjs still surfaces.
+- ⛔ **Not legitimate:** the `.bin` files are yjs's *outputs*, compared against
+  ours, with yjs **no longer invoked**. Then upgrading yjs can never fail this
+  test, and the conformance suite has become **a regression test against our
+  own past behaviour, wearing the conformance name.** It would still report
+  `11 tests, 0 failures`. It would still satisfy §1's count assertion. And the
+  ratchet installed to protect the extraction would be measuring nothing about
+  the thing it is named after.
+
+⇒ That is the **non-diagnostic-signature failure promoted to a whole suite**:
+the observable stays identical while what it discriminates quietly empties out.
+Same family as the empty-DM red that this morning turned out to be a dropped
+`Map.keys/1` — and as [[the zero-selection green]], where the output of a run
+that tested nothing was indistinguishable from a pass.
+
+### The falsifier (run this; do not settle it by reading the diff)
+
+**Bump or corrupt the pinned yjs, and confirm the suite goes RED.**
+
+```bash
+# in the worktree, after the change lands
+<perturb the pinned yjs — bump the version, or corrupt the installed package>
+bin/cp-test-guard --min 11 --apps 1 -- mix test <diff_yjs paths> --include diff_yjs
+# MUST be red. If it stays green, yjs is not in the loop, whatever the
+# file layout suggests.
+```
+
+⚠️ **This is a better test than reading the diff**, because a vendored-oracle
+design can be written to look exactly like a live one. Same move as the
+boundary checker's tamper control: **prove it can fail for the reason it exists.**
+
+### If it is a vendored oracle
+
+A captured oracle may still be legitimate **as a speed-up — but only if the
+live path is retained and actually run somewhere.** In that case acceptance has
+**two counts, not one**: the fast path's and the live path's.
+
+⛔ **If the live path has been traded away for speed, that is a scope change on
+the ticket whose entire justification was that the live path exists.** Bounce
+it — "report it, don't fix it" — rather than merging with a note.
+
 ## 6. Out of scope
 
 - Anything touching `/home/jes/yelixer` (the stale clone) — later tickets.
