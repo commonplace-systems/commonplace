@@ -65,7 +65,7 @@ defmodule Commonplace.Store.LateEditTranslator do
   decoded (in-order) sequence per client.
   """
 
-  alias Yelixer.{BlockStore, Doc, Encoding, ID, Item}
+  alias Yelixer.{Encoding, ID, Item}
 
   @type ref_tuple :: {non_neg_integer(), non_neg_integer()}
   @type inverse_dm :: %{optional(binary()) => %{optional(ref_tuple()) => ref_tuple()}}
@@ -120,42 +120,5 @@ defmodule Commonplace.Store.LateEditTranslator do
   defp translate_parent(nil, _flat), do: nil
 
   # --- Re-encode translated items through the normal encoder ---
-  #
-  # We build a minimal %Doc{} whose BlockStore holds the translated
-  # items in their decoded order per client, then call encode_update/1.
-  # The encoder's `encode_diff/2` path:
-  #   1. Derives a state-vector from store contents,
-  #   2. Filters clients desc by id (determinism — CX-w62),
-  #   3. Emits struct runs,
-  #   4. Appends encode_delete_set/1 (determinism — CX-w62).
-  #
-  # The store IS only consulted for GC remapping (`remap_gc_origin/2`
-  # and friends). Translated items' origins point at ids from the
-  # source namespace — those ids are not in our synthetic store, so
-  # the GC-remap lookups miss and return the ref unchanged, which is
-  # exactly what we want.
-  defp reencode(items, delete_set) do
-    doc = build_doc(items, delete_set)
-    Encoding.encode_update(doc)
-  end
-
-  defp build_doc(items, delete_set) do
-    store =
-      Enum.reduce(items, BlockStore.new(), fn item, s ->
-        BlockStore.push(s, item)
-      end)
-
-    # client_id is a local-peer field, not persisted in the wire format;
-    # we set it deterministically to 0 because `encode_update/1` never
-    # reads it. types is empty — we don't need named-type registration
-    # for re-encoding (the type-declaration items themselves carry their
-    # names in `parent: {:named, _}`).
-    %Doc{
-      client_id: 0,
-      store: store,
-      delete_set: delete_set,
-      types: %{}
-    }
-  end
-
+  defp reencode(items, delete_set), do: Encoding.encode_items(items, delete_set)
 end

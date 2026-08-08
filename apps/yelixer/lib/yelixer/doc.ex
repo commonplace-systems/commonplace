@@ -89,7 +89,7 @@ defmodule Yelixer.Doc do
       `doc.delete_set`.
   """
 
-  alias Yelixer.{BlockStore, DeleteSet, Item, StateVector}
+  alias Yelixer.{BlockStore, DeleteSet, ID, Item, StateVector}
   alias Yelixer.Types.{YMap, Text, Array, XMLFragment, XMLElement, XMLText}
 
   @type t :: %__MODULE__{
@@ -277,6 +277,27 @@ defmodule Yelixer.Doc do
   def state_vector(%__MODULE__{store: store}), do: BlockStore.state_vector(store)
 
   @doc """
+  Returns every client id represented in the document's block store.
+
+  This includes clients whose only blocks are still in `client_pending`.
+  Reading `Map.keys(store.clients)` alone would miss them (CX-w1fw).
+  """
+  def client_ids(%__MODULE__{store: store}), do: BlockStore.client_ids(store)
+
+  @doc "Returns all items in the document's block store."
+  def all_items(%__MODULE__{store: store}), do: BlockStore.all_items(store)
+
+  @doc "Returns the item containing `id`, or `nil` when it is not present."
+  def get_item(%__MODULE__{store: store}, %ID{} = id), do: BlockStore.get(store, id)
+
+  @doc "Returns the ordered item sequence for the named type."
+  def sequence(%__MODULE__{store: store}, type_name),
+    do: BlockStore.get_sequence(store, type_name)
+
+  @doc "Returns the document's named type registry."
+  def types(%__MODULE__{types: types}), do: types
+
+  @doc """
   Returns the synthetic names of CRDT sub-types nested inside maps and
   arrays — the `"__sub:CLIENT:CLOCK"`-keyed types that `snapshot_update/1`
   does **not** replay structurally (`replay_named_type/3` short-circuits on
@@ -315,6 +336,33 @@ defmodule Yelixer.Doc do
       {doc, type_ref}
     end
   end
+
+  @doc """
+  Force-registers `name` → `type_ref`, overwriting any existing entry.
+
+  Unlike `get_or_create_type/3`, this overwrites an existing registration.
+
+  ## Why replay cannot recover a named root's tag (the mechanism)
+
+  A top-level named XMLElement's own tag registration is set locally by
+  `XMLElement.new_element/3` and is NEVER encoded onto the wire — only Items
+  are. On replay, `Yelixer.Encoding.apply_update/2`'s `infer_type_ref/2`
+  recovers a type_ref for exactly two shapes: items whose parent is
+  `{:id, _}` (map/array-of-types values), and XML children via
+  `maybe_register_xml_child_type/3` (keys ending in `"::children"`).
+
+  A root registered under a *named*, non-synthetic key falls through BOTH
+  paths. The first item integrated with `parent: {:named, name}` makes
+  `get_or_create_type(doc, name, :unknown)` stick — and `get_or_create_type/3`
+  never overwrites an existing key, so `tag_name/2` returns `nil` forever
+  after a replay, silently corrupting `to_string/2`'s open/close tags.
+
+  Statically-known root tags must therefore be force-registered after
+  reconstruction; replay can never recover them on its own. That is what this
+  function is for.
+  """
+  def put_type(%__MODULE__{types: types} = doc, name, type_ref),
+    do: %{doc | types: Map.put(types, name, type_ref)}
 
   @doc """
   Strips content from tombstoned items by rewriting them as `:gc`

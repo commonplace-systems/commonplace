@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+#
+# cp-test-guard — make a test run that SELECTED NOTHING a failure.
+#
+# WHY THIS EXISTS (2026-08-08)
+#
+#   $ mix test apps/yelixer      # from the umbrella root
+#   $ echo $?
+#   0
+#   $ # ...and zero tests ran. No summary line. No warning. Clean exit.
+#
+# That is indistinguishable from a clean pass at every surface a caller
+# normally checks: exit status, absence of failures, absence of output.
+# The correct invocation is `mix test apps/yelixer/test`, and the two
+# differ by four characters.
+#
+# The hazard was known, written down, and written down by the person who
+# then walked into it — which is the argument for a mechanical guard
+# rather than better documentation. A failure mode whose whole nature is
+# LOOKING LIKE SUCCESS cannot be carried by a paragraph someone reads once.
+#
+# WHAT IT CHECKS
+#
+#   1. At least one ExUnit summary line was emitted at all. No summary
+#      means nothing ran, whatever the exit status says.
+#   2. The total test count across all summary lines meets --min.
+#      In an umbrella each app prints its own summary, so a silently
+#      dropped app shows up as a total below the floor.
+#
+# The floor rots as the suite grows — deliberately. It rots LOUDLY, in the
+# direction of a red, which is the only direction safe to be wrong in.
+# Raise it when it trips for the boring reason.
+#
+# USAGE
+#
+#   bin/cp-test-guard --min 3000 -- mix test --exclude diff_yjs
+#   bin/cp-test-guard --min 390  -- mix test apps/yelixer/test
+#
+# The wrapped command's exit status is preserved when the guard passes, so
+# this composes with everything that already treats a non-zero rc as red.
+#
+# NOTE ON HOW IT RUNS THE COMMAND: unpiped, output captured to a file, and
+# the status read from the command itself. A pipeline's status is the
+# TAIL's status — a guard that read its subject's rc through a pipe would
+# be a nicely ironic instance of the bug it exists to catch.
+
+set -uo pipefail
+
+MIN=1
+APPS=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --min) MIN="$2"; shift 2 ;;
+    --apps) APPS="$2"; shift 2 ;;
+    --) shift; break ;;
+    *) echo "cp-test-guard: unexpected argument '$1' (did you forget '--'?)" >&2; exit 64 ;;
+  esac
+done
+
+if [[ $# -eq 0 ]]; then
+  echo "cp-test-guard: no command given. usage: cp-test-guard --min N -- mix test ..." >&2
+  exit 64
+fi
+
+OUT="$(mktemp -t cp-test-guard.XXXXXX)"
+trap 'rm -f "$OUT"' EXIT
+
+"$@" >"$OUT" 2>&1
+CMD_RC=$?
+
+cat "$OUT"
+
+# Every ExUnit summary line carries "<n> test" / "<n> tests". Umbrella runs
+# print one per app; sum them.
+mapfile -t COUNTS < <(grep -oE '[0-9]+ tests?,' "$OUT" | grep -oE '[0-9]+')
+
+if [[ ${#COUNTS[@]} -eq 0 ]]; then
+  echo "" >&2
+  echo "cp-test-guard: FAILED — no ExUnit summary line was emitted." >&2
+  echo "  The command exited ${CMD_RC}, but nothing ran. A zero-selection run" >&2
+  echo "  is a failure here, not a pass." >&2
+  echo "  Command: $*" >&2
+  echo "  Most likely cause: an umbrella app path that selects no test files" >&2
+  echo "  (e.g. 'mix test apps/yelixer' instead of 'mix test apps/yelixer/test')." >&2
+  exit 1
+fi
+
+TOTAL=0
+for n in "${COUNTS[@]}"; do TOTAL=$((TOTAL + n)); done
+
+if [[ "$TOTAL" -lt "$MIN" ]]; then
+  echo "" >&2
+  echo "cp-test-guard: FAILED — selected ${TOTAL} tests, floor is ${MIN}." >&2
+  echo "  Summary lines seen: ${#COUNTS[@]} (${COUNTS[*]})" >&2
+  echo "  Command: $*" >&2
+  echo "  Either an app is being silently skipped, or the suite shrank and the" >&2
+  echo "  floor needs raising DELIBERATELY — never lower it to make this pass." >&2
+  exit 1
+fi
+
+# --apps is the DIAGNOSTIC check; --min is the proxy. A dropped umbrella app
+# loses one whole summary line, which this sees directly — whereas the floor
+# only notices if the dropped app was big enough to push the total under it.
+# (Today: dropping the smallest app, 94 tests, leaves 4169 — under a 4200
+# floor by 31. That margin is luck, not design, and it shrinks as the suite
+# grows. Hence both checks.)
+if [[ "$APPS" -gt 0 && "${#COUNTS[@]}" -ne "$APPS" ]]; then
+  echo "" >&2
+  echo "cp-test-guard: FAILED — ${#COUNTS[@]} summary line(s), expected ${APPS}." >&2
+  echo "  Counts seen: ${COUNTS[*]} (total ${TOTAL})" >&2
+  echo "  Command: $*" >&2
+  echo "  An umbrella app produced no summary — it was skipped, not run." >&2
+  echo "  If an app was legitimately added or removed, change this number" >&2
+  echo "  DELIBERATELY, in the same commit as the app." >&2
+  exit 1
+fi
+
+SHAPE="floor ${MIN}"
+[[ "$APPS" -gt 0 ]] && SHAPE="${SHAPE}, expected apps ${APPS}"
+echo "cp-test-guard: selected ${TOTAL} tests across ${#COUNTS[@]} summary line(s) (${SHAPE}) — command rc=${CMD_RC}"
+exit "$CMD_RC"

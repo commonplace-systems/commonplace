@@ -143,7 +143,7 @@ defmodule Commonplace.Store.CrossEpochMerge do
     SnapshotAncestry
   }
 
-  alias Yelixer.{BlockStore, Doc, Encoding, Item}
+  alias Yelixer.{Doc, Encoding}
 
   @type merge_result :: {:ok, Commit.t()} | {:error, term()}
 
@@ -313,7 +313,7 @@ defmodule Commonplace.Store.CrossEpochMerge do
   # plus any novel-edit clients — none overlap with C's re-authoring
   # client(s) — so encode_diff against D_C.sv captures all of them.
   defp encode_edits_since(d_r, d_c) do
-    sv = BlockStore.state_vector(d_c.store)
+    sv = Doc.state_vector(d_c)
     {:ok, Encoding.encode_diff(d_r, sv)}
   end
 
@@ -377,24 +377,8 @@ defmodule Commonplace.Store.CrossEpochMerge do
     end)
   end
 
-  # Re-encode a filtered items+ds pair back into a Yjs V1 update. Same
-  # shape as LateEditTranslator.reencode — builds a synthetic Doc and
-  # runs encode_update.
-  defp reencode(items, delete_set) do
-    store =
-      Enum.reduce(items, BlockStore.new(), fn %Item{} = item, s ->
-        BlockStore.push(s, item)
-      end)
-
-    doc = %Doc{
-      client_id: 0,
-      store: store,
-      delete_set: delete_set,
-      types: %{}
-    }
-
-    Encoding.encode_update(doc)
-  end
+  # Re-encode a filtered items+ds pair back into a Yjs V1 update.
+  defp reencode(items, delete_set), do: Encoding.encode_items(items, delete_set)
 
   # --- Translation passes ---
 

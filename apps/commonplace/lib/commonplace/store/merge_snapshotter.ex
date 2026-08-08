@@ -115,7 +115,7 @@ defmodule Commonplace.Store.MergeSnapshotter do
     Snapshotter
   }
 
-  alias Yelixer.{BlockStore, Doc, Encoding}
+  alias Yelixer.{Doc, Encoding}
 
   @type result :: {:ok, Commit.t()} | {:error, term()}
 
@@ -281,14 +281,23 @@ defmodule Commonplace.Store.MergeSnapshotter do
     end
   end
 
-  defp client_ids(%Doc{store: store}), do: client_ids(store)
-
-  defp client_ids(%BlockStore{} = store) do
-    # CX-w1fw: client_ids/1 includes clients whose only blocks are
-    # still in client_pending — Map.keys(store.clients) alone would
-    # miss them.
-    store |> BlockStore.client_ids() |> MapSet.new()
-  end
+  # CX-wn7z (FIXED — this line was the bug). It used to destructure two levels
+  # into the Doc's block store and take the keys of the materialized clients
+  # map alone, which MISSES clients whose only blocks are still in
+  # `client_pending`. `Doc.client_ids/1` reports both (the CX-w1fw fix).
+  # (Described rather than quoted: the struct-opacity acceptance grep matches
+  # source text, so quoting the old pattern here would keep the boundary check
+  # reporting its own documentation forever.)
+  #
+  # Consequence when it was wrong, confirmed live rather than inferred: with
+  # `d_l` pending clients `MapSet.new([1, 7])`, client 7 was invisible here, so
+  # `split_dm/4` attributed its pairs to the R namespace and late-edit
+  # translation ran against the wrong namespace map.
+  #
+  # Returns a MapSet: `Doc.client_ids/1` returns a LIST, and `l_ns_clients`
+  # feeds `split_dm/4` as a set. Converting HERE, once, is why no caller has to
+  # remember the shape difference.
+  defp client_ids(%Doc{} = doc), do: doc |> Doc.client_ids() |> MapSet.new()
 
   # Character-level pair_ids. Replaces Snapshotter.pair_ids for merge-
   # snapshot construction because the MVP pair_ids pairs by item-count
@@ -313,20 +322,22 @@ defmodule Commonplace.Store.MergeSnapshotter do
     {:ok, new_doc} = Encoding.apply_update(Doc.new(), update_bytes)
 
     pairs =
-      Map.keys(source.types)
+      Doc.types(source)
+      |> Map.keys()
       |> Enum.reduce(%{}, fn type_name, acc ->
-        src_seq = BlockStore.get_sequence(source.store, type_name)
-        new_seq = BlockStore.get_sequence(new_doc.store, type_name)
+        src_seq = Doc.sequence(source, type_name)
+        new_seq = Doc.sequence(new_doc, type_name)
         Map.merge(acc, pair_sequences(new_seq, src_seq))
       end)
 
     {update_bytes, pairs}
   end
 
-  defp deterministic_client_id(%Doc{store: store}) do
-    clients = client_ids(store)
-
-    if MapSet.size(clients) == 0, do: 0, else: Enum.min(clients)
+  defp deterministic_client_id(%Doc{} = doc) do
+    case Doc.client_ids(doc) do
+      [] -> 0
+      clients -> Enum.min(clients)
+    end
   end
 
   # Walk two YATA sequences in parallel by character. For each character

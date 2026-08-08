@@ -32,7 +32,7 @@ defmodule Commonplace.Audit.LwwLoss do
 
   alias Commonplace.Store.{CommitStore, CommitStoreClient}
   alias Commonplace.Tree.DocBuilder
-  alias Yelixer.{BlockStore, DeleteSet, Doc, Encoding, Item}
+  alias Yelixer.{DeleteSet, Doc, Encoding, Item}
 
   @type status :: :visible | :tombstoned | :missing | :skipped
   @type finding :: %{
@@ -178,8 +178,8 @@ defmodule Commonplace.Audit.LwwLoss do
 
   defp item_status(nil, _id), do: :missing
 
-  defp item_status(%Doc{store: store}, id) do
-    case BlockStore.get(store, id) do
+  defp item_status(%Doc{} = doc, id) do
+    case Doc.get_item(doc, id) do
       nil -> :missing
       %Item{deleted: true} -> :tombstoned
       %Item{content: content} -> if tombstone_content?(content), do: :tombstoned, else: :visible
