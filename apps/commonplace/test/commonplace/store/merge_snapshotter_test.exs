@@ -19,7 +19,7 @@ defmodule Commonplace.Store.MergeSnapshotterTest do
   """
   use ExUnit.Case, async: false
 
-  alias Commonplace.Store.{Commit, CommitStore, MergeSnapshotter, Namespace}
+  alias Commonplace.Store.{Commit, CommitStore, MergeSnapshotter, Namespace, Snapshotter}
   alias Yelixer.{BlockStore, Doc, Encoding}
   alias Yelixer.Types.Text
 
@@ -86,6 +86,26 @@ defmodule Commonplace.Store.MergeSnapshotterTest do
     {c_snapshot, l_commit, r_commit}
   end
 
+  defp build_distinct_snapshot_branch(store, uuid, c_snapshot, branch) do
+    {:ok, branch_doc} = Encoding.apply_update(Doc.new(), c_snapshot.update)
+
+    regular =
+      Commit.new(uuid, Encoding.encode_update(branch_doc), c_snapshot.id, %{
+        kind: :regular,
+        snapshot_parent: c_snapshot.id,
+        test_branch: branch
+      })
+
+    :ok = CommitStore.import_commit(store, regular, validator: fn _ -> :ok end)
+    {:ok, update, metadata} = Snapshotter.build_payload(branch_doc, regular)
+
+    snapshot =
+      Commit.new(uuid, update, regular.id, Map.put(metadata, :kind, :snapshot))
+
+    :ok = CommitStore.import_commit(store, snapshot, validator: fn _ -> :ok end)
+    snapshot
+  end
+
   # -------------------- Shape: multi-parent snapshot w/ 2-entry DM --------
 
   describe "build_merge_snapshot/3 — commit shape" do
@@ -127,6 +147,75 @@ defmodule Commonplace.Store.MergeSnapshotterTest do
                Commonplace.Store.Snapshotter.snapshotter_version()
 
       assert is_binary(snap.update)
+    end
+
+    test "attributes a client introduced by L's final replayed update to L's namespace",
+         %{store: store} do
+      uuid = "ms-pending-l-client"
+      {:ok, _genesis} = CommitStore.ensure_genesis(store, uuid)
+
+      base = Doc.new(client_id: 1)
+      {base, _} = Doc.get_or_create_type(base, "t", :text)
+      base = Text.insert(base, "t", 0, "a")
+
+      _base_commit =
+        CommitStore.create_chained_commit(
+          store,
+          uuid,
+          Encoding.encode_update(base),
+          %{kind: :regular}
+        )
+
+      {:ok, c_snapshot} = CommitStore.snapshot(store, uuid)
+      l_snapshot = build_distinct_snapshot_branch(store, uuid, c_snapshot, :l)
+      r_snapshot = build_distinct_snapshot_branch(store, uuid, c_snapshot, :r)
+
+      {:ok, before_l} = Encoding.apply_update(Doc.new(client_id: 7), l_snapshot.update)
+      before_l_sv = BlockStore.state_vector(before_l.store)
+      after_l = Text.insert(before_l, "t", byte_size(Text.to_string(before_l, "t")), "Z")
+
+      l_commit =
+        Commit.new(uuid, Encoding.encode_diff(after_l, before_l_sv), l_snapshot.id, %{
+          kind: :regular,
+          snapshot_parent: l_snapshot.id
+        })
+
+      :ok = CommitStore.import_commit(store, l_commit, validator: fn _ -> :ok end)
+
+      assert {:ok, merge_snapshot} =
+               MergeSnapshotter.build_merge_snapshot(store, l_commit.id, r_snapshot.id)
+
+      l_ns = Namespace.current_namespace(l_commit)
+      r_ns = Namespace.current_namespace(r_snapshot)
+      derivation_map = merge_snapshot.metadata.derivation_map
+      dm_l = Map.fetch!(derivation_map, l_ns)
+      dm_r = Map.fetch!(derivation_map, r_ns)
+
+      # PRECONDITION, asserted rather than assumed: this test is only
+      # meaningful when L and R are DISTINCT namespaces. When they collapse to
+      # one key (both chains hanging directly off C), build_merge_snapshot
+      # unions the inner maps — dm_l and dm_r become the same map, "client 7 is
+      # in L" is trivially true, and the test passes while checking nothing.
+      # A fixture change could introduce that silently.
+      refute l_ns == r_ns,
+             "fixture precondition broken: L and R share namespace #{inspect(l_ns)}, " <>
+               "so the DM collapses to one entry and this test cannot distinguish L from R"
+
+      assert Enum.any?(derivation_map, fn {_namespace, inner} -> map_size(inner) > 0 end),
+             "expected derivation map to be non-empty overall"
+
+      l_clients = dm_l |> Map.values() |> Enum.map(&elem(&1, 0)) |> MapSet.new()
+      r_clients = dm_r |> Map.values() |> Enum.map(&elem(&1, 0)) |> MapSet.new()
+
+      observed_namespace =
+        cond do
+          MapSet.member?(l_clients, 7) -> "L"
+          MapSet.member?(r_clients, 7) -> "R"
+          true -> "neither L nor R"
+        end
+
+      assert MapSet.member?(l_clients, 7),
+             "expected client 7 in L namespace, found #{observed_namespace}"
     end
   end
 

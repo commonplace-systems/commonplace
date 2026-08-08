@@ -281,7 +281,14 @@ defmodule Commonplace.Store.MergeSnapshotter do
     end
   end
 
-  defp client_ids(%Doc{store: %{clients: clients}}), do: MapSet.new(Map.keys(clients))
+  defp client_ids(%Doc{store: store}), do: client_ids(store)
+
+  defp client_ids(%BlockStore{} = store) do
+    # CX-w1fw: client_ids/1 includes clients whose only blocks are
+    # still in client_pending — Map.keys(store.clients) alone would
+    # miss them.
+    store |> BlockStore.client_ids() |> MapSet.new()
+  end
 
   # Character-level pair_ids. Replaces Snapshotter.pair_ids for merge-
   # snapshot construction because the MVP pair_ids pairs by item-count
@@ -317,13 +324,9 @@ defmodule Commonplace.Store.MergeSnapshotter do
   end
 
   defp deterministic_client_id(%Doc{store: store}) do
-    # CX-w1fw: client_ids/1 includes clients whose only blocks are
-    # still in client_pending — Map.keys(store.clients) alone would
-    # miss them.
-    case BlockStore.client_ids(store) do
-      [] -> 0
-      clients -> Enum.min(clients)
-    end
+    clients = client_ids(store)
+
+    if MapSet.size(clients) == 0, do: 0, else: Enum.min(clients)
   end
 
   # Walk two YATA sequences in parallel by character. For each character
