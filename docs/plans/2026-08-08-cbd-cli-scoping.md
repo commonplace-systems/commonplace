@@ -195,10 +195,25 @@ any guard, since a guard only ever intercepts a habit it cannot replace.
 1. **Where does `cbd` live?** `commonplace_cli` alongside the existing escript,
    or its own escript? The existing one already carries the app boot and the
    CX-a449 packaging fix, which argues for reuse.
-2. **Whose key signs?** Today MCP writes are NODE-signed (CX-hk0s: no
-   per-agent keys yet), so every caller shares one principal. `cbd` inherits
-   that. Worth confirming jes is content with node-signed attribution for
-   human CLI writes in v1, since it makes `claimed_by` non-discriminating.
+2. ~~**Whose key signs?**~~ ✅ **ANSWERED — jes, 2026-08-08:** *"cdb should be
+   node signed for now, but that's tech debt, eventually it needs to have an
+   actor."* v1 ships **node-signed**. Debt tracked on **CX-hk0s** (which
+   already existed and covers exactly this surface — the ruling is recorded
+   there as a comment rather than in a new ticket, so the work isn't split).
+
+   ⛔ **BUT THIS IS A CONSTRAINT ON V1, NOT JUST A NOTE ABOUT V2.** He graded
+   it as debt, not as fine, which means it has an end date — so **v1 must not
+   make node-signing hard to unwind:**
+   - **Do not let `claimed_by` acquire semantics that assume one principal.**
+     Under v1 it answers *this box did it*, not *who did it* — a human at a CLI
+     is indistinguishable from a worker process. Don't build anything on top of
+     it that would be wrong once they differ.
+   - **Do not bake the node key into a call signature** a per-actor key
+     couldn't later slot into. Resolve a `SigningContext` and pass it; don't
+     reach for `NodeIdentity` at the point of use.
+
+   Cheap now, expensive in three months — a design constraint on v1 arriving
+   from a decision about v2.
 3. **Output format.** Straight `bd`-alike text, or `--json` first? Agents
    currently read tickets through MCP, so the human format is the priority —
    but a `--json` mode is cheap now and expensive to retrofit.
