@@ -38,20 +38,56 @@ defmodule Commonplace.Store.CommitStoreTelemetryTest do
     Encoding.encode_update(doc)
   end
 
-  defp attach(event) do
+  defp attach(event, opts \\ []) do
     test_pid = self()
     ref = make_ref()
+    include_source? = Keyword.get(opts, :include_source, false)
 
     :telemetry.attach(
       "#{inspect(event)}-#{inspect(ref)}",
       event,
       fn ^event, measurements, metadata, _config ->
-        send(test_pid, {:telemetry, event, measurements, metadata})
+        message =
+          if include_source? do
+            source = %{
+              pid: self(),
+              registered_name: registered_name(self())
+            }
+
+            {:telemetry, event, measurements, metadata, source}
+          else
+            {:telemetry, event, measurements, metadata}
+          end
+
+        send(test_pid, message)
       end,
       nil
     )
 
     on_exit(fn -> :telemetry.detach("#{inspect(event)}-#{inspect(ref)}") end)
+  end
+
+  defp registered_name(pid) do
+    case Process.info(pid, :registered_name) do
+      {:registered_name, name} -> name
+      _ -> nil
+    end
+  end
+
+  defp refute_telemetry(event, timeout) do
+    receive do
+      {:telemetry, ^event, measurements, metadata, source} ->
+        flunk("""
+        Expected no telemetry event, but received an unexpected event during the assertion window.
+
+          name: #{inspect(event)}
+          measurements: #{inspect(measurements, pretty: true)}
+          metadata: #{inspect(metadata, pretty: true)}
+          source: #{inspect(source, pretty: true)}
+        """)
+    after
+      timeout -> :ok
+    end
   end
 
   test "create_chained_commit emits :call with verb, non-negative duration/queue_len, correct doc_uuid",
@@ -106,17 +142,18 @@ defmodule Commonplace.Store.CommitStoreTelemetryTest do
   end
 
   test "a read (commit_log) emits no :call event", %{store: store} do
-    attach([:commonplace, :commit_store, :call])
+    event = [:commonplace, :commit_store, :call]
+    attach(event, include_source: true)
 
     uuid = "read-#{:rand.uniform(1_000_000)}"
     CommitStore.create_chained_commit(store, uuid, text_doc("x"))
 
     # Drain the write's own :call event first.
-    assert_receive {:telemetry, [:commonplace, :commit_store, :call], _, _}
+    assert_receive {:telemetry, ^event, _, _, _}
 
     _log = CommitStore.commit_log(store, uuid)
 
-    refute_receive {:telemetry, [:commonplace, :commit_store, :call], _, _}, 100
+    refute_telemetry(event, 100)
   end
 
   test "write_cpu on the create path has all four keys and persist > 0", %{store: store} do
