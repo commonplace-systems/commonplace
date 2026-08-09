@@ -198,7 +198,7 @@ defmodule Commonplace.Bots.Worker do
     # the bot's private durable trail across rooms; __bot_activity
     # is the room's view of all bots that fired in it. A bot that
     # operates in multiple rooms gets one cross-room ledger here.
-    maybe_write_red_log(entity, room, event, outcome, opts)
+    maybe_write_red_log(entity, room, event, outcome, signing_context, opts)
 
     outcome
   end
@@ -257,7 +257,14 @@ defmodule Commonplace.Bots.Worker do
 
   @red_log_child "__red_log"
 
-  defp maybe_write_red_log(%Entity{children: children} = entity, room, event, outcome, opts) do
+  defp maybe_write_red_log(
+         %Entity{children: children} = entity,
+         room,
+         event,
+         outcome,
+         signing_context,
+         opts
+       ) do
     case Map.get(children, @red_log_child) do
       nil ->
         :ok
@@ -265,17 +272,29 @@ defmodule Commonplace.Bots.Worker do
       red_log_uuid when is_binary(red_log_uuid) ->
         store = Keyword.get(opts, :store, Commonplace.Store.CommitStoreClient)
         entry = outcome_to_event(room, entity, event, outcome)
+        commit_opts = if signing_context, do: [signing_context: signing_context], else: []
 
         try do
-          Commonplace.Dataflow.RedLog.load(red_log_uuid, store)
-          |> Commonplace.Dataflow.RedLog.append_raw(entry)
-          |> Commonplace.Dataflow.RedLog.commit()
+          result =
+            Commonplace.Dataflow.RedLog.load(red_log_uuid, store)
+            |> Commonplace.Dataflow.RedLog.append_raw(entry)
+            |> Commonplace.Dataflow.RedLog.commit(commit_opts)
 
-          :telemetry.execute(
-            [:commonplace, :bots, :worker, :red_log_written],
-            %{system_time: System.system_time()},
-            %{bot: entity.name, room: room, red_log_uuid: red_log_uuid}
-          )
+          case result do
+            {:ok, _log} ->
+              :telemetry.execute(
+                [:commonplace, :bots, :worker, :red_log_written],
+                %{system_time: System.system_time()},
+                %{bot: entity.name, room: room, red_log_uuid: red_log_uuid}
+              )
+
+            {:error, reason} ->
+              :telemetry.execute(
+                [:commonplace, :bots, :worker, :red_log_write_failed],
+                %{system_time: System.system_time()},
+                %{bot: entity.name, reason: inspect(reason)}
+              )
+          end
         rescue
           e ->
             :telemetry.execute(
