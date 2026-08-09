@@ -333,9 +333,15 @@ defmodule Commonplace.Green.Bursar do
     # Load or create state. Resolve the node signing context BEFORE load_state so
     # a first-boot seed (create_state_doc / create_log_doc) is signed under enforce.
     node_ctx =
-      case Commonplace.Crypto.NodeIdentity.signing_context() do
-        {:ok, ctx} -> ctx
-        _ -> nil
+      case Keyword.fetch(opts, :signing_context) do
+        {:ok, ctx} ->
+          ctx
+
+        :error ->
+          case Commonplace.Crypto.NodeIdentity.signing_context() do
+            {:ok, ctx} -> ctx
+            _ -> nil
+          end
       end
 
     state = %__MODULE__{root_uuid: root_uuid, store: store, node_ctx: node_ctx}
@@ -824,8 +830,24 @@ defmodule Commonplace.Green.Bursar do
     })
 
     log = RedLog.append_raw(state.log, event)
-    log = RedLog.commit(log)
-    %{state | log: log}
+
+    case RedLog.commit(log, sign_opts(state)) do
+      {:ok, committed_log} ->
+        %{state | log: committed_log}
+
+      {:error, reason} ->
+        :telemetry.execute(
+          [:commonplace, :bursar, :red_log_write_failed],
+          %{system_time: System.system_time()},
+          %{event: event_type, path: path, reason: reason}
+        )
+
+        Logger.warning(
+          "Bursar: red-log write failed event=#{event_type} path=#{inspect(path)} reason=#{inspect(reason)}"
+        )
+
+        state
+    end
   end
 
   # CX-sqyc: persist a denied event only the first time this exact
@@ -883,15 +905,48 @@ defmodule Commonplace.Green.Bursar do
   defp create_log_doc(state, _schema) do
     uuid = UUID.uuid4()
     log = RedLog.new(uuid, state.store)
-    RedLog.commit(log)
 
-    # Reload schema (may have been updated by create_state_doc)
-    schema = load_root_schema(state)
-    schema = Schema.add_file(schema, @log_doc, uuid)
-    schema_update = Yelixer.Encoding.encode_update(schema)
-    CommitStoreClient.create_chained_commit(state.store, state.root_uuid, schema_update, %{}, sign_opts(state))
+    case RedLog.commit(log, sign_opts(state)) do
+      {:ok, _log} ->
+        # Reload schema (may have been updated by create_state_doc)
+        schema = load_root_schema(state)
+        schema = Schema.add_file(schema, @log_doc, uuid)
+        schema_update = Yelixer.Encoding.encode_update(schema)
+        CommitStoreClient.create_chained_commit(state.store, state.root_uuid, schema_update, %{}, sign_opts(state))
 
-    uuid
+        uuid
+
+      {:error, reason} ->
+        # CX-2jfb review: DEGRADE, DO NOT DIE. The dangling-entry hazard is
+        # already closed above — the schema entry is only written on {:ok},
+        # so a refused log-doc creation leaves no pointer to a commit-less
+        # doc either way. Exiting here would additionally take the Bursar
+        # down, and `create_log_doc/2` runs inside `init/1` under a
+        # `restart: :permanent` child spec (application.ex:403-416), so a
+        # refusal would become a BOOT CRASH LOOP and then a supervisor
+        # shutdown — on any enforce node whose signing context is
+        # unresolvable (`sign_opts/1` returns `[]` when `node_ctx` is nil,
+        # which is exactly the masked/absent-node-key case of CX-cj59).
+        #
+        # That inverts this codebase's own stated rule, eleven lines of
+        # comment away in a neighbouring trust module
+        # (`AuditDispatcher.offer/2`): "losing its RECORD must never turn
+        # into losing its ENFORCEMENT." The Bursar is the custody manager;
+        # its log failing must not stop it holding tokens.
+        Logger.error(
+          "Bursar: red-log DOC CREATION refused (#{inspect(reason)}) — no schema entry was " <>
+            "written, so nothing points at the commit-less doc. Custody enforcement continues; " <>
+            "EVENT LOGGING IS DEGRADED until the write path accepts this writer."
+        )
+
+        :telemetry.execute(
+          [:commonplace, :bursar, :red_log_create_failed],
+          %{system_time: System.system_time()},
+          %{uuid: uuid, reason: reason}
+        )
+
+        uuid
+    end
   end
 
   # CX-pyi: stable client_id keeps the SV at one slot per state doc

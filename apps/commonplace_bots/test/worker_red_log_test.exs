@@ -10,9 +10,10 @@ defmodule Commonplace.Bots.Worker.RedLogTest do
   use ExUnit.Case, async: false
 
   alias Commonplace.Bots.{Entity, Worker}
+  alias Commonplace.Crypto.{Signing, SigningContext}
   alias Commonplace.Dataflow.RedLog
   alias Commonplace.Document.ContentType
-  alias Commonplace.Store.{CommitStore, CommitStoreClient}
+  alias Commonplace.Store.{CommitStore, CommitStoreClient, SecretStore}
   alias Commonplace.Tree.Schema
 
   setup do
@@ -101,6 +102,96 @@ defmodule Commonplace.Bots.Worker.RedLogTest do
     }
   end
 
+  defp signing_fixture do
+    root = mint_doc(Schema.new_schema())
+    secrets_dir = Path.join(System.tmp_dir!(), "cp_bots_redlog_keys_#{:rand.uniform(1_000_000_000)}")
+    File.mkdir_p!(secrets_dir)
+    secrets = :"cp_bots_redlog_keys_#{:rand.uniform(1_000_000_000)}"
+    _secrets_pid = start_supervised!({SecretStore, data_dir: secrets_dir, name: secrets})
+    on_exit(fn -> File.rm_rf!(secrets_dir) end)
+
+    {pub, priv} = Signing.generate_keypair()
+
+    registrar = %SigningContext{
+      identity_uuid: UUID.uuid4(),
+      private_key: priv,
+      public_key: pub
+    }
+
+    {:ok, signing_context} =
+      Commonplace.Bots.Identity.resolve_signing_context("alice", root, CommitStoreClient,
+        secret_store: secrets,
+        registrar_signing_context: registrar
+      )
+
+    {root, secrets, signing_context}
+  end
+
+  defp strict_on_worker_start(signing_contexts) do
+    old_trust = Application.get_env(:commonplace, :trust)
+    old_gate = Application.get_env(:commonplace, :local_write_gate)
+    test_pid = self()
+    id = "worker-red-log-enforce-#{System.unique_integer([:positive])}"
+
+    trusted =
+      Map.new(signing_contexts, fn ctx ->
+        {ctx.identity_uuid, Signing.encode_key(ctx.public_key)}
+      end)
+
+    :ok =
+      :telemetry.attach(
+        id,
+        [:commonplace, :bots, :worker, :started],
+        fn _event, _measurements, _metadata, _ ->
+          Application.put_env(:commonplace, :trust, %{
+            accept_unsigned: false,
+            trusted_identities: trusted
+          })
+
+          Application.put_env(:commonplace, :local_write_gate, :enforce)
+          send(test_pid, :worker_gate_enabled)
+        end,
+        nil
+      )
+
+    on_exit(fn ->
+      :telemetry.detach(id)
+
+      if is_nil(old_trust),
+        do: Application.delete_env(:commonplace, :trust),
+        else: Application.put_env(:commonplace, :trust, old_trust)
+
+      if is_nil(old_gate),
+        do: Application.delete_env(:commonplace, :local_write_gate),
+        else: Application.put_env(:commonplace, :local_write_gate, old_gate)
+    end)
+  end
+
+  defp attach_red_log_telemetry do
+    test_pid = self()
+    id = "worker-red-log-result-#{System.unique_integer([:positive])}"
+
+    for event <- [
+          [:commonplace, :bots, :worker, :red_log_written],
+          [:commonplace, :bots, :worker, :red_log_write_failed]
+        ] do
+      :ok =
+        :telemetry.attach(
+          "#{id}-#{List.last(event)}",
+          event,
+          fn name, measurements, metadata, _ ->
+            send(test_pid, {:red_log_telemetry, name, measurements, metadata})
+          end,
+          nil
+        )
+    end
+
+    on_exit(fn ->
+      :telemetry.detach("#{id}-red_log_written")
+      :telemetry.detach("#{id}-red_log_write_failed")
+    end)
+  end
+
   test "end_turn appends a 'completed' entry" do
     bot = mint_bot_dir([])
     entity = load_entity(bot)
@@ -121,6 +212,58 @@ defmodule Commonplace.Bots.Worker.RedLogTest do
     assert entry["message_id"] == "m1"
     assert entry["source_author"] == "human.usr"
     assert is_binary(entry["ts"])
+  end
+
+  test "worker outcome log lands with the resolved bot fixture identity under enforce" do
+    {root, secrets, signing_context} = signing_fixture()
+    bot = mint_bot_dir([])
+    entity = load_entity(bot)
+    strict_on_worker_start([signing_context])
+
+    assert {:ok, :end_turn} =
+             Worker.run(
+               "demo",
+               entity,
+               %{"message_id" => "m-enforce", "author_path" => "human.usr", "text" => "hi"},
+               client_fn: fn _ -> {:ok, end_turn()} end,
+               presence_enabled: false,
+               root_uuid: root,
+               secret_store: secrets
+             )
+
+    assert_receive :worker_gate_enabled
+    assert [%{"message_id" => "m-enforce"}] = red_log_entries(entity.children["__red_log"])
+    {:ok, head} = CommitStore.latest_commit(CommitStore, entity.children["__red_log"])
+
+    assert head.signer_id ==
+             Signing.signer_id(signing_context.identity_uuid, signing_context.public_key)
+  end
+
+  test "worker surfaces a refused outcome-log write instead of reporting success" do
+    {root, secrets, _signing_context} = signing_fixture()
+    bot = mint_bot_dir([])
+    entity = load_entity(bot)
+    strict_on_worker_start([])
+    attach_red_log_telemetry()
+
+    assert {:ok, :end_turn} =
+             Worker.run(
+               "demo",
+               entity,
+               %{"message_id" => "m-refused", "author_path" => "human.usr", "text" => "hi"},
+               client_fn: fn _ -> {:ok, end_turn()} end,
+               presence_enabled: false,
+               root_uuid: root,
+               secret_store: secrets
+             )
+
+    assert_receive :worker_gate_enabled
+
+    assert_receive {:red_log_telemetry,
+                    [:commonplace, :bots, :worker, :red_log_write_failed], _, metadata}
+
+    assert metadata.reason =~ "trust_rejected"
+    refute_receive {:red_log_telemetry, [:commonplace, :bots, :worker, :red_log_written], _, _}
   end
 
   test "cap_hit outcome appends with reason" do
