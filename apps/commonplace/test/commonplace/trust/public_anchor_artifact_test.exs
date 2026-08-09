@@ -1,6 +1,8 @@
 defmodule Commonplace.Trust.PublicAnchorArtifactTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias Commonplace.Crypto.{NodeIdentity, Signing, SigningContext}
   alias Commonplace.Store.{Commit, CommitStore}
   alias Commonplace.Trust.{Capability, VerifyChain}
@@ -137,6 +139,89 @@ defmodule Commonplace.Trust.PublicAnchorArtifactTest do
 
     assert {:ok, []} = NodeIdentity.public_keys()
     assert {:error, :no_node_public_keys} = NodeIdentity.public_key()
+  end
+
+  test "an absent public artifact quietly falls back to configured anchors" do
+    {configured_key, _private_key} = Signing.generate_keypair()
+
+    cfg = %{
+      accept_unsigned: false,
+      trusted_identities: %{"configured-root" => Signing.encode_key(configured_key)}
+    }
+
+    log =
+      capture_log(fn ->
+        assert Commonplace.Trust.anchor_keys(cfg) == MapSet.new([configured_key])
+      end)
+
+    assert log == ""
+  end
+
+  test "a corrupt public artifact makes anchor loss loud", %{dir: dir, store: store} do
+    assert {:ok, node_ctx} = NodeIdentity.signing_context()
+
+    {alice_pub, alice_priv} = Signing.generate_keypair()
+
+    alice_ctx = %SigningContext{
+      identity_uuid: "alice",
+      private_key: alice_priv,
+      public_key: alice_pub
+    }
+
+    assert {:ok, leaf} =
+             Capability.issue(
+               node_ctx,
+               {alice_ctx.identity_uuid, alice_ctx.public_key},
+               %{
+                 verbs: [:write],
+                 scope: {:docs, ["doc-corrupt-anchor"]},
+                 caveats: %{not_before: nil, not_after: nil}
+               }
+             )
+
+    :ok = CommitStore.store_capability(store, leaf)
+
+    commit =
+      Commit.new("doc-corrupt-anchor", "payload", nil, %{
+        kind: :regular,
+        capability_proof: leaf.id
+      })
+      |> Signing.sign_commit(
+        alice_ctx.private_key,
+        Signing.signer_id(alice_ctx.identity_uuid, alice_ctx.public_key)
+      )
+
+    cfg = %{accept_unsigned: false, trusted_identities: %{}}
+
+    assert :ok =
+             Commonplace.Trust.authorized?(
+               commit,
+               :write,
+               {:doc, "doc-corrupt-anchor"},
+               cfg,
+               store
+             )
+
+    public_keys_path = Path.join(dir, "node_signing_public_keys.json")
+    File.write!(public_keys_path, "not-json\n")
+
+    assert File.exists?(public_keys_path)
+    assert {:error, :corrupt_node_public_keys} = NodeIdentity.public_keys()
+
+    log =
+      capture_log(fn ->
+        assert {:error, :untrusted_root} =
+                 Commonplace.Trust.authorized?(
+                   commit,
+                   :write,
+                   {:doc, "doc-corrupt-anchor"},
+                   cfg,
+                   store
+                 )
+      end)
+
+    assert log =~ "node signing public-key artifact is present but unreadable"
+    assert log =~ ":corrupt_node_public_keys"
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:commonplace, key)

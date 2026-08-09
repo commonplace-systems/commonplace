@@ -512,7 +512,7 @@ defmodule Commonplace.MUD.Verbs do
         end
       end)
 
-    anchors = local_anchor_keys()
+    anchors = Commonplace.Trust.anchor_keys(Commonplace.Trust.config())
 
     verified_certs =
       Enum.filter(certs, fn cap ->
@@ -550,43 +550,6 @@ defmodule Commonplace.MUD.Verbs do
 
   defp cert_scope_uuids(%Capability{claim: %{scope: {:docs, uuids}}}), do: uuids
   defp cert_scope_uuids(_), do: []
-
-  # `Commonplace.Trust.VerifyChain.verify_chain/3` requires the caller's
-  # locally-pinned anchor-key set — the same set `Commonplace.Trust`
-  # derives internally (its `anchor_keys/1` is private, and per CX-cj3t.5
-  # §3 constraints `trust.ex` is not to be touched to expose it). This is
-  # a small, mechanical duplication of that derivation (decode every
-  # pinned pubkey from `Trust.config/0`'s PUBLIC config), not a
-  # reimplementation of any verification logic — the actual chain/
-  # revocation/expiry checks all still run inside `VerifyChain` itself.
-  #
-  # DUPLICATE of `Commonplace.Trust.anchor_keys/1` (private) — kept in
-  # sync BY HAND until CX-2rbz exposes a public accessor and deletes
-  # this copy. Any change to the anchor-key derivation in trust.ex MUST
-  # be mirrored here (and vice versa) until then.
-  defp local_anchor_keys do
-    cfg = Commonplace.Trust.config()
-
-    configured_keys =
-      cfg.trusted_identities
-      |> Map.values()
-      |> Enum.flat_map(&List.wrap/1)
-      |> Enum.flat_map(fn encoded ->
-        case Commonplace.Crypto.Signing.decode_key(encoded) do
-          {:ok, key} -> [key]
-          {:error, _} -> []
-        end
-      end)
-
-    public_node_keys =
-      case Commonplace.Crypto.NodeIdentity.public_keys() do
-        {:ok, keys} -> keys
-        :absent -> []
-        {:error, _} -> []
-      end
-
-    MapSet.new(configured_keys ++ public_node_keys)
-  end
 
   defp build_user_verb_ctx(:object, host_uuid, _host_name, ctx) do
     object =
