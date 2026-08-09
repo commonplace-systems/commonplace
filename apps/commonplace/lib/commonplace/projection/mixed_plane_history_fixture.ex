@@ -89,7 +89,24 @@ defmodule Commonplace.Projection.MixedPlaneHistoryFixture do
             signing_context: :unsigned
           ).commit
 
-        CubDB.put(db, {:commit, commit.id}, commit)
+        # ⛔ RAW COMMIT-ROW WRITE + ITS INDEX ROW, HAND-ROLLED ON PURPOSE.
+        #
+        # This fixture must mint specific content-addressed ids to reproduce a
+        # five-pin incident shape, so it cannot go through create/import. The
+        # commit_rows/1 choke that CX-3an0 Stage B added is PRIVATE to
+        # CommitStore, so an out-of-module seeder has no supported way to reach
+        # it — see CX-j57e for the API decision that fixes this properly.
+        #
+        # Until then the index row is written here, beside the commit row, and
+        # the two MUST stay together: when Stage B merged, this fixture's raw
+        # commit write left the index empty for this doc,
+        # all_commit_ids_for_doc returned nothing, the sweep found nothing, and
+        # THIS FIXTURE'S POSITIVE CONTROL SILENTLY STOPPED TRIPPING. Three
+        # projection tests went red and the cause was two modules away.
+        CubDB.put_multi(db, [
+          {{:commit, commit.id}, commit},
+          {{:doc_commit, @source_doc_uuid, commit.id}, true}
+        ])
         {commit, commit.id}
       end)
 
