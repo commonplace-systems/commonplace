@@ -62,5 +62,5 @@ jobs:
         # raise them deliberately, in the commit that changed it.
         run: bin/cp-test-guard --min 4200 --apps 6 -- mix test
 
-      - name: Assert Yjs conformance test count
-        run: bin/cp-test-guard --min 11 --apps 1 -- mix test apps/yelixer/test/yelixer/diff_yjs_test.exs --include diff_yjs
+      - name: Run Yjs stable and preview conformance matrix
+        run: bin/cp-yjs-matrix
