@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+#
+# cp-ci-failures — CI failures BY TEST NAME, each with a LAST SEEN.
+#
+# ⛔ WHY THIS EXISTS
+#
+# 2026-08-09, twice in one day, the same defect with different arithmetic:
+#
+#   "21% red over 30 runs"        — a window artifact, quoted without its window
+#   "MixedPlaneHistoryTest, 22 of 31 reds"
+#                                 — a correct count over a window that SPANNED
+#                                   A FIX. The bug was repaired at 03:47 by
+#                                   289894c; every failure counted was older
+#                                   than that. The queue owner re-ranked the
+#                                   top slot on it, twice, unnecessarily.
+#
+# ⭐ A COUNT OVER A WINDOW CONTAINING A REPAIR MEASURES HISTORY, NOT STATE.
+# It presents a FIXED bug as a LIVE one — the most expensive direction for the
+# error to point, because it spends attention on work already done.
+#
+# ⇒ "22 of 31" is un-actionable. "22 of 31, LAST SEEN 03:39" is refutable on
+#   sight. So this tool REFUSES to print a count without its last-seen.
+#
+# ⚠️ It also reports the count restricted to runs NEWER than the last-seen
+# cutoff you give it (--since), which is the number that describes NOW.
+#
+# USAGE
+#   bin/cp-ci-failures                     # last 40 runs on main
+#   bin/cp-ci-failures --limit 60
+#   bin/cp-ci-failures --since 2026-08-09T03:47   # only runs after a fix
+#   bin/cp-ci-failures --branch some-branch
+
+set -uo pipefail
+cd "$(dirname "$(readlink -f "$0")")/.." || exit 2
+
+LIMIT=40
+BRANCH=main
+SINCE=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --limit)  LIMIT="${2:?--limit needs a number}"; shift 2 ;;
+    --branch) BRANCH="${2:?--branch needs a name}"; shift 2 ;;
+    --since)  SINCE="${2:?--since needs an ISO timestamp}"; shift 2 ;;
+    -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
+    *) echo "cp-ci-failures: unknown argument '$1'" >&2; exit 2 ;;
+  esac
+done
+
+command -v gh >/dev/null || { echo "cp-ci-failures: gh not on PATH" >&2; exit 2; }
+
+WORK="$(mktemp -d -t cp-ci-failures.XXXXXX)"
+trap 'rm -rf "$WORK"' EXIT
+
+gh run list --branch "$BRANCH" --limit "$LIMIT" \
+   --json databaseId,conclusion,createdAt \
+   --jq '.[] | [.databaseId, .conclusion, .createdAt] | @tsv' > "$WORK/runs.tsv" 2>/dev/null
+
+# ⛔ REFUSE rather than report zeros against no subject. A count with no runs
+#    behind it is not 0, it is undefined — same rule as cp-deploy-gap.
+[[ -s "$WORK/runs.tsv" ]] || {
+  echo "cp-ci-failures: REFUSING — no runs returned for branch '$BRANCH'." >&2
+  echo "  (auth? wrong branch? a count against no subject is undefined, not zero.)" >&2
+  exit 2
+}
+
+red=0; green=0
+: > "$WORK/hits.tsv"
+
+while IFS=$'\t' read -r id concl ts; do
+  [[ -n "${SINCE}" && ! "$ts" > "$SINCE" ]] && continue
+  case "$concl" in
+    success) green=$((green+1)); continue ;;
+    failure) red=$((red+1)) ;;
+    *) continue ;;
+  esac
+
+  # ⚠️ GitHub prefixes every log line with "job\tstep\t<ISO timestamp>", so an
+  #    anchored ^ pattern silently matches NOTHING. That cost a "0 failures
+  #    captured across 31 runs" once already.
+  gh run view "$id" --log-failed 2>/dev/null \
+    | sed -E 's/^.*[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+Z //' \
+    | grep -oE '^ *[0-9]+\) (test|doctest) .*' \
+    | sed -E 's/^ *[0-9]+\) //' \
+    | while read -r name; do printf '%s\t%s\n' "$ts" "$name" >> "$WORK/hits.tsv"; done
+done < "$WORK/runs.tsv"
+
+echo "window: last $LIMIT runs on '$BRANCH'${SINCE:+, restricted to > $SINCE}"
+echo "        $red red, $green green"
+echo
+
+if [[ ! -s "$WORK/hits.tsv" ]]; then
+  # A bare zero is a claim about the pattern first. Say which it is.
+  if (( red == 0 )); then
+    echo "no red runs in this window — nothing to attribute."
+  else
+    echo "⛔ $red red runs but ZERO test names extracted — the extraction is"
+    echo "   probably broken, NOT the suite clean. Check a --log-failed by hand."
+    exit 2
+  fi
+  exit 0
+fi
+
+echo "failures by test, with LAST SEEN (⛔ a count without one is un-actionable):"
+echo
+sort -t$'\t' -k2 "$WORK/hits.tsv" | awk -F'\t' '
+  { n[$2]++; if ($1 > last[$2]) last[$2] = $1 }
+  END { for (t in n) printf "%4d  last-seen %s  %s\n", n[t], last[t], t }
+' | sort -rn | head -25
+
+echo
+echo "⭐ Read the LAST SEEN before the count. A test whose last-seen predates a"
+echo "   known fix is history, not state — and ranking it spends attention on"
+echo "   work already done. Re-run with --since <fix-time> to get NOW."
