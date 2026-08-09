@@ -46,11 +46,35 @@ supervision tree.** Every reference outside its own directory is a test
   exactly the laundering this document exists to prevent.
 - **When unresolvable?** Not yet applicable.
 
+⚠️ **AND IT IS DOUBLY RIGHT TO DEFER, FOR A REASON THIS DOCUMENT DID NOT
+ORIGINALLY CLAIM (plan):** an unsupervised handler **cannot be exercised on
+the production path at all**, so any acceptance test for this site would be a
+**fixture** test, not a production-caller test. ⇒ **You would be deciding a
+signing question you cannot red-test.** That is *"fixtures are not the
+production caller"* arriving as a **scheduling** argument rather than a
+testing one. **Defer until there is a path that runs.**
+
 ⇒ **Blocked on the magenta command envelope carrying a requester identity.**
 That is the same missing field as **CX-8fyq** (denial records name the target,
 not the actor) at the *request* layer instead of the *audit* layer.
 ⭐ **Same defect, both ends of the pipe: nothing that crosses a boundary in
 this system currently carries who asked.**
+
+### ⇒ AND THE FIELD MUST BE TAGGED, NOT NULLABLE
+
+`nil` cannot carry its own etiology, so *"unknown because the boundary dropped
+it"* and *"unknown because nobody asked"* collapse into one value the moment
+they are written. Three distinguishable states instead:
+
+    {:principal, id}              — someone asked, and we know who
+    {:unknown, :not_propagated}   — ⛔ A BUG REPORT: the boundary dropped it
+    {:unknown, :not_applicable}   — a FACT about the site: nobody asked
+                                     (e.g. Frontier.Server, acting for itself)
+
+⭐ **That is the enclosure rule applied to a data field instead of a
+sentence: A VALUE MUST CARRY WHY IT IS WHAT IT IS.** ⇒ And it makes the
+acceptance **mechanically checkable** — you can assert that **no site emits
+`:not_propagated`**, which you cannot assert about `nil`.
 
 ---
 
@@ -129,6 +153,19 @@ is how this gets wrong, and it runs **on every sandbox launch.**
   minting path reached by an absent credential is how a sandbox acquires an
   identity nobody granted it.** If minting is chosen it must be **explicitly
   granted and recorded**, never a fallback on a missing lookup.
+
+⛔⛔ **PROMOTED FROM A WARNING TO A RULE (plan): PROVISIONING MUST NEVER BE A
+FALLBACK OF A LOOKUP.** Mint on an **explicit grant, recorded**. A missing
+credential is an **ERROR, never a birth.**
+⇒ **The failure is silent and self-legitimating:** the sandbox comes up,
+signs, and every downstream check passes — **it HAS an identity, it just isn't
+one anybody granted.**
+
+⚠️ ⭐ **AND THE INTERACTION THAT MAKES IT WORST EXACTLY HERE: THE FENCE MASKS
+CREDENTIALS BY DESIGN, SO THE SANDBOX IS THE ONE CONTEXT WHERE "ABSENT
+CREDENTIAL" IS THE NORMAL CASE.** ⇒ **A mint-on-missing path at this site
+fires on the HAPPY PATH, every launch** — not on an error branch someone might
+notice.
 
 ⇒ **Deciding this is a prerequisite for sites 4–5, not an implementation
 detail of them.**
