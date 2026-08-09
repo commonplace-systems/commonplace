@@ -6,7 +6,7 @@ defmodule Commonplace.Process.SandboxExecRunnerTest do
   use ExUnit.Case
 
   alias Commonplace.Process.SandboxExecRunner
-  alias Commonplace.Store.CommitStore
+  alias Commonplace.Store.{CommitStore, SecretStore}
   alias Commonplace.Tree.Schema
   alias Commonplace.Dataflow.RedLog
 
@@ -37,6 +37,31 @@ defmodule Commonplace.Process.SandboxExecRunnerTest do
     end)
 
     %{store: store_name, root: root_uuid}
+  end
+
+  test "missing launch identity returns not_found without minting", %{store: store, root: root} do
+    identity_uuid = UUID.uuid4()
+    secrets = :"runner_missing_identity_#{:rand.uniform(1_000_000)}"
+
+    start_supervised!(
+      {SecretStore,
+       data_dir: Path.join(System.tmp_dir!(), "cp_runner_secrets_#{identity_uuid}"), name: secrets}
+    )
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:error, :not_found} =
+                 SandboxExecRunner.start_link(
+                   root_uuid: root,
+                   store: store,
+                   command: "true",
+                   identity_uuid: identity_uuid,
+                   secret_store: secrets
+                 )
+      end)
+
+    assert log =~ "signing identity unavailable: :not_found"
+    assert :not_found = SecretStore.get(secrets, "signing_pub:" <> identity_uuid)
   end
 
   # Kill the tree of any `__CP_STDERR__` relay bash that has reparented to init

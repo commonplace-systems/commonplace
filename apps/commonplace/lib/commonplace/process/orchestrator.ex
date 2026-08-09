@@ -100,6 +100,9 @@ defmodule Commonplace.Process.Orchestrator do
   alias Commonplace.Document.ContentType
   alias Commonplace.Dataflow.Wiring
   alias Commonplace.Dataflow.GraphRegistry
+  alias Commonplace.Crypto.NodeIdentity
+  alias Commonplace.Presence.Identity
+  alias Commonplace.Trust.Capability
 
   require Logger
 
@@ -479,6 +482,9 @@ defmodule Commonplace.Process.Orchestrator do
         args: config.args,
         name: config.name,
         env: resolved_env,
+        identity_uuid: config.identity_uuid,
+        event_log_uuid: config.event_log_uuid,
+        capability_cid: config.capability_cid,
         sync_interval: 50
       )
 
@@ -578,7 +584,9 @@ defmodule Commonplace.Process.Orchestrator do
   defp parse_processes_doc(doc_uuid, dir_uuid, root_uuid, store) do
     case Commonplace.Trust.authorized_to_execute?(store, doc_uuid) do
       :ok ->
-        do_parse_processes_doc(doc_uuid, dir_uuid, root_uuid, store)
+        doc_uuid
+        |> do_parse_processes_doc(dir_uuid, root_uuid, store)
+        |> Enum.map(&register_process_identity(&1, root_uuid, store))
 
       {:error, reason} ->
         # Gate B second ingress (CX-tdkq.2 / R2): a __processes.json
@@ -597,6 +605,116 @@ defmodule Commonplace.Process.Orchestrator do
 
         []
     end
+  end
+
+  # Registration belongs inside Gate B's :ok branch. __processes.json is
+  # collected recursively, so provisioning later from the reconciled config
+  # would let any tree writer mint a signing principal.
+  #
+  # ⛔ REVIEW FIX (CX-hk0s): LOOK UP BEFORE REGISTERING. This runs on EVERY
+  # reconcile pass (5s default, orchestrator.ex:160), and
+  # `Identity.register_agent/4` -> `register/5` takes the existing-identity
+  # branch -> `touch_last_seen/3`, which writes an UNCONDITIONAL
+  # `create_chained_commit` (identity.ex:284-304) whose `last_seen` timestamp
+  # differs every time and therefore can never dedupe.
+  #
+  # That is ~17,280 commits per declared process per day, growing the identity
+  # doc's chain without bound — and ACCEPTED writes, so unlike the 08-07 storm
+  # nothing would ever refuse them and nothing would report it.
+  #
+  # `Identity.lookup/4` is a pure read. The capability cid is a deterministic
+  # content address (`Capability.new/4` hashes issuer+audience+claim+proof with
+  # no nonce or timestamp, and Ed25519 signing is deterministic), so it can be
+  # RECOMPUTED rather than re-minted; we only store when the store does not
+  # already have it.
+  #
+  # ⭐ This is the same mint-vs-lookup separation the brief required at the
+  # LAUNCH path, applied to the REGISTRATION path — which needed it just as
+  # much and was not named.
+  defp register_process_identity(config, root_uuid, store) do
+    case Identity.lookup(config.name, :bot, root_uuid, store) do
+      {:ok, identity_uuid} -> resolve_existing_identity(config, identity_uuid, store)
+      :error -> do_register_process_identity(config, root_uuid, store)
+    end
+  end
+
+  defp resolve_existing_identity(config, identity_uuid, store) do
+    with {:ok, agent_ctx} <- Commonplace.Crypto.AgentKeys.signing_context(identity_uuid),
+         {:ok, node_ctx} <- NodeIdentity.signing_context() do
+      log_uuid = process_log_uuid(identity_uuid)
+      claim = log_write_claim(log_uuid)
+      cid = Capability.new({node_ctx.identity_uuid, node_ctx.public_key},
+                           {identity_uuid, agent_ctx.public_key}, claim, nil).id
+
+      # Store only if genuinely absent — never unconditionally.
+      cid =
+        case CommitStoreClient.get_capability(store, cid) do
+          {:ok, _cap} -> cid
+          :none -> delegate_log_write(node_ctx, identity_uuid, agent_ctx.public_key, log_uuid, store)
+        end
+
+      %{config | identity_uuid: identity_uuid, event_log_uuid: log_uuid, capability_cid: cid}
+    else
+      _ -> config
+    end
+  end
+
+  defp process_log_uuid(identity_uuid),
+    do: UUID.uuid5(:url, "urn:commonplace:process-log:" <> identity_uuid)
+
+  defp log_write_claim(log_uuid) do
+    %{verbs: [:write], scope: {:docs, [log_uuid]}, caveats: %{not_before: nil, not_after: nil}}
+  end
+
+  defp do_register_process_identity(config, root_uuid, store) do
+    node_ctx =
+      case NodeIdentity.signing_context() do
+        {:ok, ctx} -> ctx
+        {:error, _reason} -> nil
+      end
+
+    registrar_opts = if node_ctx, do: [signing_context: node_ctx], else: []
+
+    case Identity.register_agent(config.name, root_uuid, store, registrar_opts) do
+      {:ok, identity_uuid, public_key} ->
+        log_uuid = process_log_uuid(identity_uuid)
+        capability_cid = delegate_log_write(node_ctx, identity_uuid, public_key, log_uuid, store)
+
+        %{
+          config
+          | identity_uuid: identity_uuid,
+            event_log_uuid: log_uuid,
+            capability_cid: capability_cid
+        }
+
+      {:error, reason} ->
+        Logger.error("Process #{config.name}: identity registration failed: #{inspect(reason)}")
+        config
+    end
+  end
+
+  defp delegate_log_write(nil, _identity_uuid, _public_key, _log_uuid, _store), do: nil
+
+  defp delegate_log_write(node_ctx, identity_uuid, public_key, log_uuid, store) do
+    claim = log_write_claim(log_uuid)
+
+    with {:ok, cap} <- Capability.delegate(node_ctx, {identity_uuid, public_key}, claim),
+         :ok <- store_process_capability(store, cap) do
+      cap.id
+    else
+      error ->
+        Logger.error(
+          "Process #{identity_uuid}: log capability delegation failed: #{inspect(error)}"
+        )
+
+        nil
+    end
+  end
+
+  defp store_process_capability(store, cap) do
+    CommitStoreClient.store_capability(store, cap)
+  catch
+    :exit, reason -> {:error, {:capability_store_unavailable, reason}}
   end
 
   defp do_parse_processes_doc(doc_uuid, dir_uuid, root_uuid, store) do

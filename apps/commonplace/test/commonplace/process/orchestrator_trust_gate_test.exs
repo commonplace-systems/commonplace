@@ -20,7 +20,8 @@ defmodule Commonplace.Process.OrchestratorTrustGateTest do
   alias Commonplace.Crypto.{Signing, SigningContext}
   alias Commonplace.Document.ContentType
   alias Commonplace.Process.Orchestrator
-  alias Commonplace.Store.CommitStore
+  alias Commonplace.Presence.Identity
+  alias Commonplace.Store.{CommitStore, SecretStore}
   alias Commonplace.Tree.Schema
 
   setup do
@@ -119,6 +120,36 @@ defmodule Commonplace.Process.OrchestratorTrustGateTest do
     GenServer.stop(orch)
   end
 
+  test "strict: untrusted declaration cannot mint a signing identity", ctx do
+    {identity_uuid, orch} = start_rejected_declaration(ctx, "mint")
+
+    assert :not_found = SecretStore.get("signing_pub:" <> identity_uuid)
+
+    Process.unlink(orch)
+    GenServer.stop(orch)
+  end
+
+  test "rejected declaration leaves launch lookup keyless and does not mint", ctx do
+    {identity_uuid, orch} = start_rejected_declaration(ctx, "launch")
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:error, :not_found} =
+                 Commonplace.Process.SandboxExecRunner.start_link(
+                   root_uuid: ctx.root,
+                   store: ctx.store,
+                   command: "true",
+                   identity_uuid: identity_uuid
+                 )
+      end)
+
+    assert log =~ "signing identity unavailable: :not_found"
+    assert :not_found = SecretStore.get("signing_pub:" <> identity_uuid)
+
+    Process.unlink(orch)
+    GenServer.stop(orch)
+  end
+
   test "strict: trusted declaration + trusted source starts",
        %{store: store, root: root, identity: identity, pub: pub, ctx: ctx} do
     put_doc(store, root, "tg2.exs", greeter_source("Two"), signing_context: ctx)
@@ -189,5 +220,35 @@ defmodule Commonplace.Process.OrchestratorTrustGateTest do
     :telemetry.detach({:orch_trust_handler, ref})
     Process.unlink(orch)
     GenServer.stop(orch)
+  end
+
+  defp start_rejected_declaration(%{store: store, root: root}, suffix) do
+    name = "untrusted_identity_#{suffix}_#{:rand.uniform(1_000_000)}"
+    {:ok, identity_uuid} = Identity.register(name, :bot, root, store)
+
+    SecretStore.delete("signing_key:" <> identity_uuid)
+    SecretStore.delete("signing_pub:" <> identity_uuid)
+
+    on_exit(fn ->
+      SecretStore.delete("signing_key:" <> identity_uuid)
+      SecretStore.delete("signing_pub:" <> identity_uuid)
+    end)
+
+    put_doc(store, root, "blocked_#{suffix}.exs", greeter_source("Blocked#{suffix}"), [])
+
+    put_doc(
+      store,
+      root,
+      "__processes.json",
+      processes_json(name, "blocked_#{suffix}.exs"),
+      []
+    )
+
+    strict!(%{})
+
+    {:ok, orch} = Orchestrator.start_link(root_uuid: root, store: store, interval: 100)
+    send(orch, :reconcile)
+    _ = :sys.get_state(orch)
+    {identity_uuid, orch}
   end
 end

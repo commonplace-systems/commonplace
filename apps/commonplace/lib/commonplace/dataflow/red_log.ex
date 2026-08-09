@@ -87,6 +87,10 @@ defmodule Commonplace.Dataflow.RedLog do
   `accept_unsigned: false` — i.e. the log silently stops recording
   exactly when enforcement turns on.
 
+  `opts[:metadata]` supplies the commit metadata while the remaining options
+  continue to be forwarded to the commit store. This lets callers attach an
+  existing `:capability_proof` without creating a RedLog-specific trust path.
+
   Returns `{:ok, log}` / `{:error, reason}` from `commit/2`; the legacy
   `commit/1` head keeps returning the log itself so existing callers are
   unchanged.
@@ -116,7 +120,8 @@ defmodule Commonplace.Dataflow.RedLog do
 
   defp do_commit(%__MODULE__{} = log, opts) do
     update = Yelixer.Encoding.encode_update(log.doc)
-    result = CommitStoreClient.create_chained_commit(log.store, log.uuid, update, %{}, opts)
+    {metadata, commit_opts} = Keyword.pop(opts, :metadata, %{})
+    result = CommitStoreClient.create_chained_commit(log.store, log.uuid, update, metadata, commit_opts)
 
     case result do
       {:error, _} = error ->
