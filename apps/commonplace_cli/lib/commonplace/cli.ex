@@ -42,6 +42,7 @@ defmodule Commonplace.CLI do
     snapshot [path]               Force a snapshot commit for the doc at path (or workspace root)
     mud connect <name>            Connect to the workspace MUD world (shares the serve daemon)
     bd <subcommand>               Beads issue tracker on commonplace (create/show/update/close/list/ready/…)
+    proto-chit emit ...           Internal signed punctuation emitter
   """
 
   @workspace_dir ".commonplace"
@@ -151,6 +152,11 @@ defmodule Commonplace.CLI do
       "snapshot" -> Commonplace.CLI.Snapshot.run(data_dir, relative_path, rest)
       "mud" -> Commonplace.CLI.Mud.run(data_dir, relative_path, rest)
       "bd" -> Commonplace.CLI.Bd.run(data_dir, relative_path, rest)
+      "proto-chit" ->
+        case Commonplace.CLI.ProtoChit.run(data_dir, relative_path, rest) do
+          0 -> :ok
+          code -> System.halt(code)
+        end
       _ ->
         IO.puts(:stderr, "Unknown command: #{cmd}")
         IO.puts(:stderr, "Run 'commonplace --help' for usage.")

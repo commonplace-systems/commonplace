@@ -191,7 +191,7 @@ defmodule Commonplace.Reflog.Snapshot do
   and child reflog commit_ids for all directories. Returns the root
   reflog commit_id.
   """
-  def checkpoint(root_uuid, store \\ CommitStoreClient, owner \\ @default_owner) do
+  def checkpoint(root_uuid, store \\ CommitStoreClient, owner \\ @default_owner, opts \\ []) do
     ensure_cursor_table()
 
     # CX-0t2r (SIGNING): resolve the node signing context ONCE per
@@ -200,7 +200,7 @@ defmodule Commonplace.Reflog.Snapshot do
     # `nil` (today's unsigned behavior, unchanged) when no node identity
     # exists — e.g. a fresh test store with no minted keypair — so
     # permissive tests keep passing without needing a node identity.
-    signing_context = resolve_signing_context()
+    signing_context = Keyword.get_lazy(opts, :signing_context, &resolve_signing_context/0)
 
     # Ensure __reflog branch exists
     {:ok, reflog_root} = ensure_reflog_branch(root_uuid, owner, store, signing_context)

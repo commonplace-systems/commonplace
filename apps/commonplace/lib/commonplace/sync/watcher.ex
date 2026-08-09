@@ -37,6 +37,7 @@ defmodule Commonplace.Sync.Watcher do
     schema_doc = load_schema(root_uuid, store)
     schema_entries = Schema.entries(schema_doc)
     inode_registry = Keyword.get(opts, :inode_registry)
+    exclude_names = Keyword.get(opts, :exclude_names, []) |> MapSet.new()
 
     # Get files/dirs on disk (exclude system dirs + honorific presence
     # files — see CX-3ine). Honorific files (.bot/.exe/.usr/.who) are
@@ -52,6 +53,7 @@ defmodule Commonplace.Sync.Watcher do
         {:ok, names} ->
           names
           |> Enum.reject(&String.starts_with?(&1, ".commonplace"))
+          |> Enum.reject(&MapSet.member?(exclude_names, &1))
           |> Enum.reject(&Schema.honorific_extension?/1)
           |> MapSet.new()
 
@@ -126,7 +128,7 @@ defmodule Commonplace.Sync.Watcher do
 
   Syncs the root directory, then recurses into subdirectories.
   """
-  def sync_recursive(root_uuid, dir, store \\ CommitStoreClient) do
+  def sync_recursive(root_uuid, dir, store \\ CommitStoreClient, opts \\ []) do
     start_time = System.monotonic_time()
 
     :telemetry.execute(
@@ -135,8 +137,8 @@ defmodule Commonplace.Sync.Watcher do
       %{root_uuid: root_uuid, dir: dir}
     )
 
-    changes = detect_changes(root_uuid, dir, store)
-    apply_changes(changes, root_uuid, dir, store)
+    changes = detect_changes(root_uuid, dir, store, opts)
+    apply_changes(changes, root_uuid, dir, store, opts)
 
     :telemetry.execute(
       [:commonplace, :sync, :stop],
@@ -159,7 +161,7 @@ defmodule Commonplace.Sync.Watcher do
             )
 
           File.dir?(sub_dir) ->
-            sync_recursive(entry.node_id, sub_dir, store)
+            sync_recursive(entry.node_id, sub_dir, store, opts)
 
           true ->
             :ok
@@ -189,42 +191,42 @@ defmodule Commonplace.Sync.Watcher do
 
   Creates/updates documents and updates the schema for each change.
   """
-  def apply_changes(changes, root_uuid, _dir, store \\ CommitStoreClient) do
+  def apply_changes(changes, root_uuid, _dir, store \\ CommitStoreClient, opts \\ []) do
     Enum.each(changes, fn change ->
       case change.type do
         :created ->
-          apply_create(change, root_uuid, store)
+          apply_create(change, root_uuid, store, opts)
 
         :modified ->
-          apply_modify(change, root_uuid, store)
+          apply_modify(change, root_uuid, store, opts)
 
         :deleted ->
-          apply_delete(change, root_uuid, store)
+          apply_delete(change, root_uuid, store, opts)
 
         :renamed ->
-          apply_rename(change, root_uuid, store)
+          apply_rename(change, root_uuid, store, opts)
       end
     end)
   end
 
-  defp apply_create(%Change{is_dir: true} = change, root_uuid, store) do
+  defp apply_create(%Change{is_dir: true} = change, root_uuid, store, opts) do
     # Create empty schema doc for new directory
     sub_uuid = UUID.uuid4()
     sub_doc = Schema.new_schema()
     update = Yelixer.Encoding.encode_update(sub_doc)
-    CommitStoreClient.create_commit(store, sub_uuid, update, nil)
+    CommitStoreClient.create_commit(store, sub_uuid, update, nil, %{}, write_opts(opts))
 
     # Add to parent schema
     root_doc = load_schema(root_uuid, store)
     root_doc = Schema.add_directory(root_doc, change.name, sub_uuid)
     update = Yelixer.Encoding.encode_update(root_doc)
-    CommitStoreClient.create_chained_commit(store, root_uuid, update)
+    CommitStoreClient.create_chained_commit(store, root_uuid, update, %{}, write_opts(opts))
   end
 
-  defp apply_create(%Change{is_dir: false} = change, root_uuid, store) do
+  defp apply_create(%Change{is_dir: false} = change, root_uuid, store, opts) do
     case File.read(change.path) do
       {:ok, content} ->
-        do_apply_create_file(change, content, root_uuid, store)
+        do_apply_create_file(change, content, root_uuid, store, opts)
 
       {:error, reason} ->
         warn_unreadable(change.path, reason)
@@ -232,7 +234,7 @@ defmodule Commonplace.Sync.Watcher do
     end
   end
 
-  defp do_apply_create_file(change, content, root_uuid, store) do
+  defp do_apply_create_file(change, content, root_uuid, store, opts) do
     # Create document with envelope.
     # CX-pyi: stable client_id so subsequent apply_modify writes (which
     # also use this id) share one slot in the state vector instead of
@@ -249,23 +251,23 @@ defmodule Commonplace.Sync.Watcher do
       end
 
     update = Yelixer.Encoding.encode_update(doc)
-    CommitStoreClient.create_commit(store, file_uuid, update, nil)
+    CommitStoreClient.create_commit(store, file_uuid, update, nil, %{}, write_opts(opts))
 
     # Add to parent schema
     root_doc = load_schema(root_uuid, store)
     root_doc = Schema.add_file(root_doc, change.name, file_uuid)
     update = Yelixer.Encoding.encode_update(root_doc)
-    CommitStoreClient.create_chained_commit(store, root_uuid, update)
+    CommitStoreClient.create_chained_commit(store, root_uuid, update, %{}, write_opts(opts))
   end
 
-  defp apply_modify(change, root_uuid, store) do
+  defp apply_modify(change, root_uuid, store, opts) do
     root_doc = load_schema(root_uuid, store)
 
     case Schema.get_entry(root_doc, change.name) do
       {:ok, entry} ->
         case File.read(change.path) do
           {:ok, new_content} ->
-            do_apply_modify(change, entry, new_content, store)
+            do_apply_modify(change, entry, new_content, store, opts)
 
           {:error, reason} ->
             warn_unreadable(change.path, reason)
@@ -277,7 +279,7 @@ defmodule Commonplace.Sync.Watcher do
     end
   end
 
-  defp do_apply_modify(change, entry, new_content, store) do
+  defp do_apply_modify(change, entry, new_content, store, opts) do
     # CX-pyi: load + mutate pattern. Reconstruct the existing doc
     # under a stable client_id, compute the text diff between the
     # previous content and the disk content, and apply it as
@@ -303,14 +305,14 @@ defmodule Commonplace.Sync.Watcher do
     doc = Diff.apply_diff(doc, old_content, new_content)
 
     update = Yelixer.Encoding.encode_update(doc)
-    CommitStoreClient.create_chained_commit(store, entry.node_id, update)
+    CommitStoreClient.create_chained_commit(store, entry.node_id, update, %{}, write_opts(opts))
   end
 
-  defp apply_delete(change, root_uuid, store) do
+  defp apply_delete(change, root_uuid, store, opts) do
     root_doc = load_schema(root_uuid, store)
     root_doc = Schema.remove_entry(root_doc, change.name)
     update = Yelixer.Encoding.encode_update(root_doc)
-    CommitStoreClient.create_chained_commit(store, root_uuid, update)
+    CommitStoreClient.create_chained_commit(store, root_uuid, update, %{}, write_opts(opts))
   end
 
   defp detect_renames(created, deleted, schema_entries, dir, store, inode_registry) do
@@ -442,13 +444,20 @@ defmodule Commonplace.Sync.Watcher do
     {Enum.reverse(renames), Enum.reverse(unmatched_created), used_deleted}
   end
 
-  defp apply_rename(change, root_uuid, store) do
+  defp apply_rename(change, root_uuid, store, opts) do
     # Remove old entry, add new entry pointing to the same document UUID
     root_doc = load_schema(root_uuid, store)
     root_doc = Schema.remove_entry(root_doc, change.old_name)
     root_doc = Schema.add_file(root_doc, change.name, change.node_id)
     update = Yelixer.Encoding.encode_update(root_doc)
-    CommitStoreClient.create_chained_commit(store, root_uuid, update)
+    CommitStoreClient.create_chained_commit(store, root_uuid, update, %{}, write_opts(opts))
+  end
+
+  defp write_opts(opts) do
+    case Keyword.get(opts, :signing_context) do
+      nil -> []
+      signing_context -> [signing_context: signing_context]
+    end
   end
 
   defp load_schema(uuid, store) do

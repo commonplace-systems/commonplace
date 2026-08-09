@@ -1,0 +1,37 @@
+#!/bin/sh
+
+# Worktree-local tap-through shim. Never install or copy this onto a global PATH.
+set -u
+
+real_git=${PROTO_CHIT_REAL_GIT:-/usr/bin/git}
+command_name=${1:-}
+
+case "$command_name" in
+  commit|merge|pull|branch|checkout|switch|tag|worktree|rebase|reset|filter-branch|replace|update-ref|notes|bisect|reflog|stash|cherry-pick|revert)
+    shim_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+    state_dir=${PROTO_CHIT_STATE_DIR:-"$shim_dir/../state"}
+    emitter=${PROTO_CHIT_COMMONPLACE:-}
+    emit_status=127
+
+    if [ -n "$emitter" ] && [ -n "${PROTO_CHIT_DATA_DIR:-}" ] && [ -n "${PROTO_CHIT_EVENT_LOG_UUID:-}" ]; then
+      if [ -n "${PROTO_CHIT_TRACE_FILE:-}" ]; then
+        "$emitter" --data-dir "$PROTO_CHIT_DATA_DIR" proto-chit emit \
+          --repo "$PWD" --state-dir "$state_dir" \
+          --event-log "$PROTO_CHIT_EVENT_LOG_UUID" --real-git "$real_git" \
+          --trace "$PROTO_CHIT_TRACE_FILE" -- "$@"
+      else
+        "$emitter" --data-dir "$PROTO_CHIT_DATA_DIR" proto-chit emit \
+          --repo "$PWD" --state-dir "$state_dir" \
+          --event-log "$PROTO_CHIT_EVENT_LOG_UUID" --real-git "$real_git" -- "$@"
+      fi
+      emit_status=$?
+    fi
+
+    if [ "$emit_status" -ne 0 ]; then
+      "$shim_dir/proto-chit-wal" "$PWD" "$state_dir" "emitter-exit-$emit_status" "$@" ||
+        echo "proto-chit: WAL APPEND FAILED; git remains advisory" >&2
+    fi
+    ;;
+esac
+
+exec "$real_git" "$@"
