@@ -51,7 +51,10 @@ defmodule Commonplace.Bd.Frontier.Server do
 
   use GenServer
 
+  require Logger
+
   alias Commonplace.Bd.{Frontier, Schemas, Workspace}
+  alias Commonplace.Crypto.NodeIdentity
   alias Commonplace.Dataflow.RedLog
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.Schema
@@ -85,7 +88,8 @@ defmodule Commonplace.Bd.Frontier.Server do
 
   @doc """
   `opts` — `:root_uuid` (required), `:store` (default
-  `CommitStoreClient`). The ready/blocked view docs and the red log
+  `CommitStoreClient`), and injectable `:signing_context` (defaulting
+  to the node identity). The ready/blocked view docs and the red log
   doc are resolved (or created, idempotently, if this is the first
   Frontier server for this root) under `/bd/` on init.
   """
@@ -112,13 +116,14 @@ defmodule Commonplace.Bd.Frontier.Server do
   def init(opts) do
     root_uuid = Keyword.fetch!(opts, :root_uuid)
     store = Keyword.get(opts, :store, CommitStoreClient)
+    signing_context = resolve_signing_context(opts)
 
     bd_uuid = Workspace.ensure_bd_dir(root_uuid, store)
     issues_dir_uuid = Workspace.issues_dir_uuid(root_uuid, store)
 
     ready_uuid = ensure_json_file(bd_uuid, store, @ready_file)
     blocked_uuid = ensure_json_file(bd_uuid, store, @blocked_file)
-    log_uuid = ensure_log_file(bd_uuid, store, @log_file)
+    log_uuid = ensure_log_file(bd_uuid, store, @log_file, signing_context)
 
     Phoenix.PubSub.subscribe(Commonplace.PubSub, "commits:#{issues_dir_uuid}")
     subscribed_issue_uuids = subscribe_all_issues(root_uuid, store)
@@ -134,6 +139,7 @@ defmodule Commonplace.Bd.Frontier.Server do
       ready_uuid: ready_uuid,
       blocked_uuid: blocked_uuid,
       log_uuid: log_uuid,
+      signing_context: signing_context,
       subscribed_issue_uuids: subscribed_issue_uuids,
       prev_ready: frontier.ready
     }
@@ -159,7 +165,15 @@ defmodule Commonplace.Bd.Frontier.Server do
       |> append_ready_delta(state.prev_ready, frontier.ready)
       |> append_stranded_alarm(state.root_uuid, state.store)
 
-    _ = RedLog.commit(log)
+    prev_ready =
+      case RedLog.commit(log, sign_opts(state.signing_context)) do
+        {:ok, _committed_log} ->
+          frontier.ready
+
+        {:error, reason} ->
+          report_red_log_write_failure(state.log_uuid, reason)
+          state.prev_ready
+      end
 
     write_views(state.ready_uuid, state.blocked_uuid, frontier, state.store)
 
@@ -170,8 +184,7 @@ defmodule Commonplace.Bd.Frontier.Server do
         state.subscribed_issue_uuids
       end
 
-    {:noreply,
-     %{state | prev_ready: frontier.ready, subscribed_issue_uuids: subscribed_issue_uuids}}
+    {:noreply, %{state | prev_ready: prev_ready, subscribed_issue_uuids: subscribed_issue_uuids}}
   end
 
   def handle_info(_other, state), do: {:noreply, state}
@@ -195,7 +208,7 @@ defmodule Commonplace.Bd.Frontier.Server do
     end
   end
 
-  defp ensure_log_file(bd_uuid, store, filename) do
+  defp ensure_log_file(bd_uuid, store, filename, signing_context) do
     {:ok, schema} = Schemas.load_dir_schema(bd_uuid, store)
 
     case Schema.get_entry(schema, filename) do
@@ -205,12 +218,93 @@ defmodule Commonplace.Bd.Frontier.Server do
       :error ->
         uuid = UUID.uuid4()
         log = RedLog.new(uuid, store)
-        _ = RedLog.commit(log)
-        schema = Schema.add_file(schema, filename, uuid)
-        update = Encoding.encode_update(schema)
-        CommitStoreClient.create_chained_commit(store, bd_uuid, update)
+
+        case RedLog.commit(log, sign_opts(signing_context)) do
+          {:ok, _committed_log} ->
+            schema = Schema.add_file(schema, filename, uuid)
+            update = Encoding.encode_update(schema)
+
+            case CommitStoreClient.create_chained_commit(
+                   store,
+                   bd_uuid,
+                   update,
+                   %{},
+                   sign_opts(signing_context)
+                 ) do
+              {:error, reason} -> report_schema_write_failure(bd_uuid, filename, uuid, reason)
+              _landed -> :ok
+            end
+
+          {:error, reason} ->
+            report_red_log_create_failure(bd_uuid, filename, uuid, reason)
+        end
+
         uuid
     end
+  end
+
+  defp resolve_signing_context(opts) do
+    case Keyword.fetch(opts, :signing_context) do
+      {:ok, signing_context} ->
+        signing_context
+
+      :error ->
+        case NodeIdentity.signing_context() do
+          {:ok, signing_context} ->
+            signing_context
+
+          {:error, reason} ->
+            Logger.error(
+              "Bd.Frontier.Server: node signing context unavailable " <>
+                "(#{inspect(reason)}); writes will degrade if the local trust gate refuses unsigned commits"
+            )
+
+            nil
+        end
+    end
+  end
+
+  defp sign_opts(nil), do: []
+  defp sign_opts(signing_context), do: [signing_context: signing_context]
+
+  defp report_red_log_write_failure(log_uuid, reason) do
+    Logger.error(
+      "Bd.Frontier.Server: red-log write failed log_uuid=#{log_uuid} " <>
+        "reason=#{inspect(reason)}; frontier server continues with stale log state"
+    )
+
+    :telemetry.execute(
+      [:commonplace, :bd, :frontier, :red_log_write_failed],
+      %{system_time: System.system_time()},
+      %{log_uuid: log_uuid, reason: reason}
+    )
+  end
+
+  defp report_red_log_create_failure(bd_uuid, filename, log_uuid, reason) do
+    Logger.error(
+      "Bd.Frontier.Server: red-log creation failed log_uuid=#{log_uuid} " <>
+        "reason=#{inspect(reason)}; no #{filename} schema entry was written and the frontier server continues"
+    )
+
+    :telemetry.execute(
+      [:commonplace, :bd, :frontier, :red_log_create_failed],
+      %{system_time: System.system_time()},
+      %{bd_uuid: bd_uuid, filename: filename, log_uuid: log_uuid, reason: reason}
+    )
+  end
+
+  defp report_schema_write_failure(bd_uuid, filename, log_uuid, reason) do
+    Logger.error(
+      "Bd.Frontier.Server: schema entry write failed bd_uuid=#{bd_uuid} " <>
+        "filename=#{filename} log_uuid=#{log_uuid} reason=#{inspect(reason)}; " <>
+        "the frontier server continues with an unlinked log document"
+    )
+
+    :telemetry.execute(
+      [:commonplace, :bd, :frontier, :schema_write_failed],
+      %{system_time: System.system_time()},
+      %{bd_uuid: bd_uuid, filename: filename, log_uuid: log_uuid, reason: reason}
+    )
   end
 
   defp write_views(ready_uuid, blocked_uuid, frontier, store) do
@@ -297,7 +391,9 @@ defmodule Commonplace.Bd.Frontier.Server do
   end
 
   defp subscribe_issue(uuid), do: Phoenix.PubSub.subscribe(Commonplace.PubSub, "commits:#{uuid}")
-  defp unsubscribe_issue(uuid), do: Phoenix.PubSub.unsubscribe(Commonplace.PubSub, "commits:#{uuid}")
+
+  defp unsubscribe_issue(uuid),
+    do: Phoenix.PubSub.unsubscribe(Commonplace.PubSub, "commits:#{uuid}")
 
   defp now_iso8601, do: DateTime.utc_now() |> DateTime.to_iso8601()
 end
