@@ -198,6 +198,45 @@ defmodule Commonplace.Trust.CaptureRateTest do
     assert idle.capture_rate == :not_applicable
   end
 
+  test "a dispatcher that does not report emitted_at_start is REFUSED, not defaulted to 0", ctx do
+    # ⛔ THE REGRESSION. Map.get(status, :emitted_at_start, 0) would treat a
+    # dispatcher that does not REPORT the field as one that started with zero
+    # prior denials — and the identity emitted == pre + offered + upstream_loss
+    # STILL BALANCES, so the inflated upstream_loss is indistinguishable from a
+    # real one. That is the very defect this function exists to remove,
+    # reintroduced through a defaulting read.
+    #
+    # ⚠️ Reachable today: the RUNNING serve predates this instrument (CX-y4bq),
+    # so its status/0 has no :emitted_at_start. A 0 there reads as "no upstream
+    # loss" when the truth is "no instrument".
+    defmodule OldDispatcher do
+      # status/0 in the shape the pre-CX-m0qw build returns: no :emitted_at_start.
+      def status(_server) do
+        %{
+          enabled: true,
+          store: nil,
+          boot_id: Commonplace.Trust.DenialCounter.boot_id(),
+          offered: 0,
+          recorded: 0,
+          shed: 0,
+          failed: 0,
+          guarded: 0,
+          queued: 0,
+          in_flight: 0,
+          max_queue: 256
+        }
+      end
+    end
+
+    _ = ctx
+
+    report = Commonplace.Trust.capture_rate(dispatcher_mod: OldDispatcher, dispatcher: :ignored)
+
+    assert report.error == :dispatcher_predates_instrument
+    refute Map.has_key?(report, :upstream_loss)
+    refute Map.has_key?(report, :capture_rate)
+  end
+
   defp drive_denials(store, count) do
     for i <- 1..count do
       assert {:error, {:trust_rejected, :unsigned}} =

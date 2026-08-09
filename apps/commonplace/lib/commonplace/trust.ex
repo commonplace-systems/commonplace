@@ -1197,8 +1197,11 @@ defmodule Commonplace.Trust do
   @spec capture_rate(keyword()) :: map()
   def capture_rate(opts \\ []) when is_list(opts) do
     dispatcher = Keyword.get(opts, :dispatcher, Commonplace.Trust.AuditDispatcher)
+    # Injectable module so a test can present a status/0 of the shape an OLDER
+    # build returns — which is the case the refusal above exists for.
+    dispatcher_mod = Keyword.get(opts, :dispatcher_mod, Commonplace.Trust.AuditDispatcher)
 
-    case Commonplace.Trust.AuditDispatcher.status(dispatcher) do
+    case dispatcher_mod.status(dispatcher) do
       %{error: _} = error ->
         Map.put(error, :boot_id, Commonplace.Trust.DenialCounter.boot_id())
 
@@ -1212,8 +1215,44 @@ defmodule Commonplace.Trust do
           # difference to upstream_loss would report every pre-restart denial
           # as fresh loss — a false alarm that BALANCES, and so is
           # indistinguishable from the real thing. Split the two.
-          pre_dispatcher_emitted = Map.get(status, :emitted_at_start, 0)
+          # ⛔ REFUSE, DO NOT DEFAULT. `Map.get(status, :emitted_at_start, 0)`
+          # would silently treat a dispatcher that does not REPORT the field as
+          # one that started with ZERO prior denials — and the identity
+          # `emitted == pre + offered + upstream_loss` STILL BALANCES, so the
+          # inflated `upstream_loss` is indistinguishable from a real one.
+          #
+          # That is the same defect this function was written to remove (a
+          # false alarm that satisfies its own consistency check), reintroduced
+          # by its own fix through a defaulting read. A 0 that cannot
+          # distinguish "no prior denials" from "no such field" is a `nil` that
+          # cannot distinguish "dropped" from "never asked".
+          #
+          # ⚠️ It is reachable: the RUNNING serve predates this instrument, so
+          # its `status/0` has no `:emitted_at_start` (CX-y4bq — the live build
+          # is 35 tickets behind main). An answer of 0 there would read as "no
+          # upstream loss" when the truth is "no instrument".
+          case Map.fetch(status, :emitted_at_start) do
+            :error ->
+              %{
+                error: :dispatcher_predates_instrument,
+                boot_id: counter_boot_id,
+                emitted: emitted
+              }
 
+            {:ok, pre_dispatcher_emitted} ->
+              build_capture_report(status, counter_boot_id, emitted, pre_dispatcher_emitted, opts)
+          end
+        else
+          %{
+            error: :boot_id_mismatch,
+            boot_id: counter_boot_id,
+            dispatcher_boot_id: dispatcher_boot_id
+          }
+        end
+    end
+  end
+
+  defp build_capture_report(status, counter_boot_id, emitted, pre_dispatcher_emitted, opts) do
           status
           |> Map.take([:offered, :recorded, :shed, :failed, :guarded, :queued, :in_flight])
           |> Map.merge(%{
@@ -1224,14 +1263,6 @@ defmodule Commonplace.Trust do
           })
           |> capture_interval(Keyword.get(opts, :since))
           |> put_capture_rate()
-        else
-          %{
-            error: :boot_id_mismatch,
-            boot_id: counter_boot_id,
-            dispatcher_boot_id: dispatcher_boot_id
-          }
-        end
-    end
   end
 
   defp capture_interval(current, nil), do: current
