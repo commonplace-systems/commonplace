@@ -4,8 +4,10 @@ defmodule Commonplace.Bd.Frontier.ServerTest do
   alias Commonplace.Bd.Frontier
   alias Commonplace.Bd.Frontier.Server, as: FrontierServer
   alias Commonplace.Bd.Issue
+  alias Commonplace.Bd.{Schemas, Workspace}
+  alias Commonplace.Crypto.{Signing, SigningContext}
   alias Commonplace.Dataflow.RedLog
-  alias Commonplace.Store.CommitStore
+  alias Commonplace.Store.{CommitStore, CommitStoreClient}
   alias Commonplace.Tree.{DocBuilder, Schema}
   alias Commonplace.Document.ContentType
   alias Yelixer.Encoding
@@ -15,13 +17,88 @@ defmodule Commonplace.Bd.Frontier.ServerTest do
     File.mkdir_p!(dir)
     store = :"commit_store_frontier_srv_#{:rand.uniform(1_000_000)}"
     start_supervised!({CommitStore, data_dir: dir, name: store})
-    on_exit(fn -> File.rm_rf!(dir) end)
+
+    old_trust = Application.get_env(:commonplace, :trust)
+    old_gate = Application.get_env(:commonplace, :local_write_gate)
+
+    permissive!()
+
+    on_exit(fn ->
+      restore_env(:trust, old_trust)
+      restore_env(:local_write_gate, old_gate)
+      File.rm_rf!(dir)
+    end)
+
+    {pub, priv} = Signing.generate_keypair()
+
+    signing_context = %SigningContext{
+      identity_uuid: UUID.uuid4(),
+      private_key: priv,
+      public_key: pub
+    }
 
     root = UUID.uuid4()
     update = Encoding.encode_update(Schema.new_schema())
-    CommitStore.create_commit(store, root, update, nil)
+    CommitStore.create_commit(store, root, update, nil, %{}, signing_context: signing_context)
 
-    %{store: store, root: root}
+    %{store: store, root: root, signing_context: signing_context}
+  end
+
+  defp restore_env(key, nil), do: Application.delete_env(:commonplace, key)
+  defp restore_env(key, value), do: Application.put_env(:commonplace, key, value)
+
+  defp permissive! do
+    Application.put_env(:commonplace, :trust, %{
+      accept_unsigned: true,
+      trusted_identities: %{}
+    })
+
+    Application.put_env(:commonplace, :local_write_gate, :off)
+  end
+
+  defp strict!(trusted_contexts) do
+    trusted =
+      Map.new(trusted_contexts, fn signing_context ->
+        {signing_context.identity_uuid, Signing.encode_key(signing_context.public_key)}
+      end)
+
+    Application.put_env(:commonplace, :trust, %{
+      accept_unsigned: false,
+      trusted_identities: trusted
+    })
+
+    Application.put_env(:commonplace, :local_write_gate, :enforce)
+  end
+
+  defp attach(event, callback) do
+    id = "#{inspect(event)}-#{System.unique_integer([:positive])}"
+    :ok = :telemetry.attach(id, event, callback, nil)
+    on_exit(fn -> :telemetry.detach(id) end)
+  end
+
+  defp precreate_view_docs(ctx) do
+    signing_opts = [signing_context: ctx.signing_context]
+    bd_uuid = Workspace.ensure_bd_dir(ctx.root, ctx.store, signing_opts)
+
+    for filename <- ["_ready.json", "_blocked.json"] do
+      uuid = Schemas.create_text_doc("{}", ctx.store, signing_opts)
+      {:ok, schema} = Schemas.load_dir_schema(bd_uuid, ctx.store)
+      schema = Schema.add_file(schema, filename, uuid)
+
+      CommitStoreClient.create_chained_commit(
+        ctx.store,
+        bd_uuid,
+        Encoding.encode_update(schema),
+        %{},
+        signing_opts
+      )
+    end
+
+    bd_uuid
+  end
+
+  defp signer_id(signing_context) do
+    Signing.signer_id(signing_context.identity_uuid, signing_context.public_key)
   end
 
   defp needs_ticket(id), do: %{"ticket" => id}
@@ -36,6 +113,114 @@ defmodule Commonplace.Bd.Frontier.ServerTest do
     pid
   end
 
+  defp start_server(root, store, signing_context) do
+    start_supervised!(
+      {FrontierServer, root_uuid: root, store: store, signing_context: signing_context}
+    )
+  end
+
+  test "frontier log creation and reactive commits land fixture-signed under enforce", ctx do
+    bd_uuid = precreate_view_docs(ctx)
+    strict!([ctx.signing_context])
+
+    pid = start_server(ctx.root, ctx.store, ctx.signing_context)
+    %{log: log_uuid} = FrontierServer.view_uuids(pid)
+
+    {:ok, bd_head} = CommitStore.latest_commit(ctx.store, bd_uuid)
+    {:ok, schema_after} = Schemas.load_dir_schema(bd_uuid, ctx.store)
+    assert {:ok, log_entry} = Schema.get_entry(schema_after, "__frontier_log")
+    assert log_entry.node_id == log_uuid
+
+    assert CommitStoreClient.commit_ids_for_doc(ctx.store, log_uuid) |> MapSet.size() > 0,
+           "frontier schema entry points at a zero-commit log doc"
+
+    {:ok, log_head} = CommitStore.latest_commit(ctx.store, log_uuid)
+    expected_signer = signer_id(ctx.signing_context)
+
+    assert bd_head.signer_id == expected_signer
+    assert log_head.signer_id == expected_signer
+
+    before_count = CommitStoreClient.commit_ids_for_doc(ctx.store, log_uuid) |> MapSet.size()
+    issues_uuid = Workspace.issues_dir_uuid(ctx.root, ctx.store)
+    send(pid, {:commit, issues_uuid, "fixture-commit", %{}})
+    assert :ok = FrontierServer.sync(pid)
+
+    assert CommitStoreClient.commit_ids_for_doc(ctx.store, log_uuid) |> MapSet.size() ==
+             before_count + 1
+
+    {:ok, reactive_head} = CommitStore.latest_commit(ctx.store, log_uuid)
+    assert reactive_head.signer_id == expected_signer
+  end
+
+  test "a refused log-doc creation leaves no schema entry and the server keeps processing", ctx do
+    bd_uuid = precreate_view_docs(ctx)
+    strict!([])
+    test_pid = self()
+
+    attach([:commonplace, :bd, :frontier, :red_log_create_failed], fn event,
+                                                                      _measurements,
+                                                                      metadata,
+                                                                      _config ->
+      send(test_pid, {:frontier_telemetry, event, metadata})
+    end)
+
+    pid = start_server(ctx.root, ctx.store, nil)
+
+    assert_receive {:frontier_telemetry, [:commonplace, :bd, :frontier, :red_log_create_failed],
+                    metadata}
+
+    assert match?({:trust_rejected, _}, metadata.reason)
+
+    assert CommitStoreClient.commit_ids_for_doc(ctx.store, metadata.log_uuid) |> MapSet.size() ==
+             0
+
+    {:ok, schema_after} = Schemas.load_dir_schema(bd_uuid, ctx.store)
+
+    assert :error == Schema.get_entry(schema_after, "__frontier_log"),
+           "refused log creation left a schema entry pointing at a zero-commit doc"
+
+    assert Process.alive?(pid)
+    send(pid, :still_processing)
+    assert :ok = FrontierServer.sync(pid)
+    assert Process.alive?(pid)
+  end
+
+  test "a refused reactive log write is observable and does not stop the server", ctx do
+    precreate_view_docs(ctx)
+    strict!([ctx.signing_context])
+
+    pid = start_server(ctx.root, ctx.store, ctx.signing_context)
+    %{log: log_uuid} = FrontierServer.view_uuids(pid)
+    before_count = CommitStoreClient.commit_ids_for_doc(ctx.store, log_uuid) |> MapSet.size()
+
+    strict!([])
+    test_pid = self()
+
+    attach([:commonplace, :bd, :frontier, :red_log_write_failed], fn event,
+                                                                     _measurements,
+                                                                     metadata,
+                                                                     _config ->
+      send(test_pid, {:frontier_telemetry, event, metadata})
+    end)
+
+    issues_uuid = Workspace.issues_dir_uuid(ctx.root, ctx.store)
+    send(pid, {:commit, issues_uuid, "refused-commit", %{}})
+    assert :ok = FrontierServer.sync(pid)
+
+    assert_receive {:frontier_telemetry, [:commonplace, :bd, :frontier, :red_log_write_failed],
+                    metadata}
+
+    assert match?({:trust_rejected, _}, metadata.reason)
+
+    assert CommitStoreClient.commit_ids_for_doc(ctx.store, log_uuid) |> MapSet.size() ==
+             before_count
+
+    assert Process.alive?(pid)
+    send(pid, :still_processing)
+    assert :ok = FrontierServer.sync(pid)
+    assert Process.alive?(pid)
+  end
+
   test "walk-oracle equivalence: maintained view docs == fresh Frontier.compute after a sequence of status changes",
        ctx do
     {:ok, c, _} = Issue.create(ctx.root, %{title: "C"}, ctx.store)
@@ -43,7 +228,11 @@ defmodule Commonplace.Bd.Frontier.ServerTest do
     {:ok, b, _} = Issue.create(ctx.root, %{title: "B", needs: [needs_ticket(c.id)]}, ctx.store)
 
     {:ok, _d, _} =
-      Issue.create(ctx.root, %{title: "D", needs: [needs_ticket(a.id), needs_ticket(b.id)]}, ctx.store)
+      Issue.create(
+        ctx.root,
+        %{title: "D", needs: [needs_ticket(a.id), needs_ticket(b.id)]},
+        ctx.store
+      )
 
     pid = start_server(ctx.root, ctx.store)
     %{ready: ready_uuid, blocked: blocked_uuid} = FrontierServer.view_uuids(pid)
