@@ -2345,6 +2345,8 @@ defmodule Commonplace.Store.CommitStore do
         "reason=#{inspect(reason)}"
     )
 
+    Commonplace.Trust.DenialCounter.increment()
+
     :telemetry.execute(
       [:commonplace, :commit, :rejected, :local_trust],
       %{system_time: System.system_time()},
@@ -2360,6 +2362,8 @@ defmodule Commonplace.Store.CommitStore do
         "doc_uuid=#{commit.doc_uuid} commit_id=#{Base.encode16(commit.id, case: :lower)} " <>
         "reason=#{inspect(reason)}"
     )
+
+    Commonplace.Trust.DenialCounter.increment()
 
     :telemetry.execute(
       [:commonplace, :commit, :rejected, :local_trust],

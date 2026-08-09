@@ -40,6 +40,11 @@ defmodule Commonplace.Application do
         nil
       )
 
+    # CX-m0qw: create the per-BEAM-boot denominator before a denial can
+    # reach the audit telemetry handler. This is an atomic primitive, not a
+    # supervised process; the denial decision site increments it directly.
+    :ok = Commonplace.Trust.DenialCounter.init()
+
     # CX-hilo / CX-t3xv: durable trust-decision audit trail. Bridges the
     # denial telemetry events enumerated in `Commonplace.Trust.DenySites`
     # into a red-log doc, so a security-incident review has a data source

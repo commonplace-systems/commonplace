@@ -177,16 +177,33 @@ defmodule Commonplace.Trust.AuditDispatcher do
   end
 
   @doc """
-  The denominator identity. True when every offered event is accounted
-  for in exactly one bucket.
+  The full denominator identity. It refuses the old dispatcher-only shape:
+  callers must supply `emitted` and `upstream_loss`, normally by passing the
+  result of `Commonplace.Trust.capture_rate/1`.
   """
   @spec accounted?(map()) :: boolean()
-  def accounted?(%{offered: offered} = s) do
+  def accounted?(
+        %{
+          emitted: emitted,
+          upstream_loss: upstream_loss,
+          offered: offered,
+          pre_dispatcher_emitted: pre_dispatcher_emitted
+        } = s
+      )
+      when upstream_loss >= 0 and pre_dispatcher_emitted >= 0 do
+    emitted == pre_dispatcher_emitted + offered + upstream_loss and downstream_accounted?(s)
+  end
+
+  def accounted?(_), do: false
+
+  @doc "The dispatcher-local identity, excluding loss before `offer/2`."
+  @spec downstream_accounted?(map()) :: boolean()
+  def downstream_accounted?(%{offered: offered} = s) do
     offered ==
       s.recorded + s.shed + s.failed + s.guarded + s.queued + s.in_flight
   end
 
-  def accounted?(_), do: false
+  def downstream_accounted?(_), do: false
 
   @doc """
   The standing COUNT PARITY probe between mechanism A (in-band counters)
@@ -256,7 +273,14 @@ defmodule Commonplace.Trust.AuditDispatcher do
       max_queue: Keyword.get(opts, :max_queue, @max_queue),
       task_supervisor: Keyword.get(opts, :task_supervisor, Commonplace.Trust.AuditTaskSupervisor),
       signing_context_fn: Keyword.get(opts, :signing_context_fn, &NodeIdentity.signing_context/0),
-      boot_id: Keyword.get(opts, :boot_id, generate_boot_id()),
+      boot_id: Keyword.get(opts, :boot_id, Commonplace.Trust.DenialCounter.boot_id()),
+      # CX-m0qw review: the denial counter is :persistent_term and survives a
+      # dispatcher restart; THESE counters do not. Without this baseline a
+      # restart makes `emitted - offered` report every pre-restart denial as
+      # fresh upstream loss, and the identity still balances, so the false
+      # alarm is indistinguishable from a real one. Snapshot what the
+      # denominator had already counted when this instance began.
+      emitted_at_start: Commonplace.Trust.DenialCounter.value(),
       queue: :queue.new(),
       queued: 0,
       timer: nil,
@@ -305,6 +329,7 @@ defmodule Commonplace.Trust.AuditDispatcher do
        enabled: state.enabled,
        store: state.store,
        boot_id: state.boot_id,
+       emitted_at_start: state.emitted_at_start,
        offered: state.offered,
        recorded: state.recorded,
        shed: state.shed,
@@ -509,6 +534,4 @@ defmodule Commonplace.Trust.AuditDispatcher do
       other -> {:error, {:bad_signing_context, other}}
     end
   end
-
-  defp generate_boot_id, do: Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
 end
