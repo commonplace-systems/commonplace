@@ -63,6 +63,55 @@ defmodule Commonplace.Crypto.NodeIdentityTest do
     assert File.read!(key_path) == key_contents
   end
 
+  test "boot publishes an existing identity without reading its private-key line", %{dir: dir} do
+    {public_key, _private_key} = Signing.generate_keypair()
+    key_path = Path.join(dir, "node_signing_key")
+    public_keys_path = Path.join(dir, "node_signing_public_keys.json")
+
+    # The deliberately invalid second line proves the boot migration does not
+    # decode the private half of the legacy key file.
+    File.write!(key_path, Base.encode64(public_key) <> "\nprivate-key-is-masked\n")
+    refute File.exists?(public_keys_path)
+    assert {:error, :node_public_keys_absent} = NodeIdentity.public_key()
+
+    assert :ok = NodeIdentity.publish_public_keys_at_boot()
+    assert File.exists?(public_keys_path)
+    assert {:ok, ^public_key} = NodeIdentity.public_key()
+  end
+
+  test "boot and public reads use the artifact while the private-key path is fence-masked", %{
+    dir: dir
+  } do
+    {public_key, _private_key} = Signing.generate_keypair()
+    key_path = Path.join(dir, "node_signing_key")
+    public_keys_path = Path.join(dir, "node_signing_public_keys.json")
+
+    File.write!(key_path, "")
+    File.write!(public_keys_path, Jason.encode!([Base.encode64(public_key)]) <> "\n")
+    File.chmod!(public_keys_path, 0o400)
+    assert File.stat!(key_path).size == 0
+    assert File.stat!(public_keys_path).access == :read
+
+    assert :ok = NodeIdentity.publish_public_keys_at_boot()
+    assert {:ok, [^public_key]} = NodeIdentity.public_keys()
+    assert {:ok, ^public_key} = NodeIdentity.public_key()
+    assert File.stat!(key_path).size == 0
+    assert File.stat!(public_keys_path).access == :read_write
+  end
+
+  test "boot publication does not mint when a prior world has no key", %{dir: dir} do
+    key_path = Path.join(dir, "node_signing_key")
+    File.write!(Path.join(dir, "root"), "prior-world")
+
+    assert :ok = NodeIdentity.publish_public_keys_at_boot()
+    refute File.exists?(key_path)
+
+    assert {:error, {:node_signing_key_absent, :prior_world_present}} =
+             NodeIdentity.signing_context()
+
+    refute File.exists?(key_path)
+  end
+
   test "public_key/0 and identity/0 agree with the context" do
     assert {:ok, ctx} = NodeIdentity.signing_context()
     assert {:ok, pub} = NodeIdentity.public_key()

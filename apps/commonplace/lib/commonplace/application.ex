@@ -7,6 +7,12 @@ defmodule Commonplace.Application do
 
   @impl true
   def start(_type, _args) do
+    # CX-qvrz: this runs synchronously in the application callback, before
+    # Commonplace.Supervisor (and therefore every store/MUD caller of
+    # NodeIdentity.public_key/0) exists. The migration reads only the legacy
+    # key file's public first line and never mints an identity.
+    :ok = Commonplace.Crypto.NodeIdentity.publish_public_keys_at_boot()
+
     # :xmerl is used by Commonplace.Document.ViewXml for parsing view XML
     # documents. Ensure it's loaded at app start so `mix phx.server` and
     # other dev-mode entry points don't require a cold restart after the

@@ -40,6 +40,7 @@ defmodule Commonplace.Crypto.NodeIdentity do
 
   @key_file "node_signing_key"
   @public_keys_file "node_signing_public_keys.json"
+  @encoded_public_key_line_bytes 45
 
   @doc """
   Return the node's `%SigningContext{}`, minting the keypair on genuine
@@ -58,6 +59,25 @@ defmodule Commonplace.Crypto.NodeIdentity do
          private_key: priv,
          public_key: pub
        }}
+    end
+  end
+
+  @doc """
+  Ensure the public-key artifact exists before the application starts its
+  supervision tree.
+
+  Existing artifacts are validated through `public_keys/0` and republished
+  atomically. For an identity created before the public artifact was
+  introduced, this reads and decodes only the key file's first (public-key)
+  line, then publishes it atomically. It never reads the private-key line and
+  never mints an identity.
+  """
+  @spec publish_public_keys_at_boot() :: :ok | {:error, term()}
+  def publish_public_keys_at_boot do
+    case public_keys() do
+      {:ok, keys} -> publish_public_keys(keys)
+      :absent -> publish_existing_public_key()
+      {:error, _} = err -> err
     end
   end
 
@@ -111,6 +131,43 @@ defmodule Commonplace.Crypto.NodeIdentity do
         else
           mint_keypair(data_dir, path)
         end
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  defp publish_existing_public_key do
+    data_dir = Application.get_env(:commonplace, :data_dir, "data")
+    path = Path.join(data_dir, @key_file)
+
+    case :file.open(path, [:read, :raw, :binary]) do
+      {:ok, device} ->
+        result =
+          case :file.read(device, @encoded_public_key_line_bytes) do
+            {:ok, <<encoded_public_key::binary-size(44), "\n">>} ->
+              with {:ok, public_key} <- Base.decode64(encoded_public_key),
+                   true <- byte_size(public_key) == 32 do
+                publish_public_keys([public_key])
+              else
+                _ -> {:error, :corrupt_node_key}
+              end
+
+            {:ok, _} ->
+              {:error, :corrupt_node_key}
+
+            :eof ->
+              {:error, :corrupt_node_key}
+
+            {:error, _} = err ->
+              err
+          end
+
+        :ok = :file.close(device)
+        result
+
+      {:error, :enoent} ->
+        :ok
 
       {:error, _} = err ->
         err
