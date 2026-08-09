@@ -584,9 +584,14 @@ defmodule Commonplace.Trust do
     with {:ok, leaf} <- fetch_cap(store, cid),
          {_uuid, audience_pub} <- leaf.audience,
          true <- pub != nil and audience_pub == pub,
-         {:ok, %{verbs: verbs, scope: {:docs, docs}}} <-
+         {:ok, %{verbs: verbs, scope: scope}} <-
            Commonplace.Trust.VerifyChain.verify_chain(cid, anchor_keys(cfg), store) do
-      :read in verbs and target_uuid in docs
+      :read in verbs and
+        case scope do
+          {:docs, docs} -> target_uuid in docs
+          {:subtree, root} -> doc_zone(target_uuid, store) == root
+          _other -> false
+        end
     else
       _ -> false
     end

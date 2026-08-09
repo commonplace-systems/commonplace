@@ -59,6 +59,8 @@ defmodule Commonplace.Trust.Read do
   alias Commonplace.Trust
   alias Commonplace.Trust.Capability
 
+  @type scope :: {:docs, [String.t()]} | {:subtree, String.t()}
+
   @doc """
   Decide whether `principal_identity` (an identity_uuid, or `nil` for an
   unauthenticated principal) may READ `target_uuid`.
@@ -109,10 +111,11 @@ defmodule Commonplace.Trust.Read do
   end
 
   @doc """
-  Grant a `:read` capability over `target_uuid` from `issuer_ctx` (the
-  view-doc OWNER) to a spectator `audience` (`{identity_uuid, public_key}`),
-  and persist it so the verifier can resolve it. The read-side analog of a
-  `:write` delegation; revocable via `Commonplace.Trust.Revocation`
+  Grant a `:read` capability over `scope` from `issuer_ctx` (the view-doc
+  OWNER) to a spectator `audience` (`{identity_uuid, public_key}`), and persist
+  it so the verifier can resolve it. Passing a target UUID retains the original
+  shorthand for `{:docs, [target_uuid]}`. The read-side analog of a `:write`
+  delegation; revocable via `Commonplace.Trust.Revocation`
   (CX-bepn), enforced verify-time by `verify_chain`.
 
   `opts`: `:store` (default `CommitStoreClient`), `:parent_cid` + `:parent`
@@ -121,12 +124,29 @@ defmodule Commonplace.Trust.Read do
   Returns `{:ok, capability}` (whose `.id` is the cid to present as a
   `cert_cid`) or `{:error, reason}`.
   """
-  @spec grant(SigningContext.t(), String.t(), {String.t(), binary()}, keyword()) ::
+  @spec grant(
+          SigningContext.t(),
+          String.t() | scope(),
+          {String.t(), binary()},
+          keyword()
+        ) ::
           {:ok, Capability.t()} | {:error, term()}
-  def grant(%SigningContext{} = issuer_ctx, target_uuid, {_aud_id, _aud_pub} = audience, opts \\ [])
+  def grant(issuer_ctx, target_or_scope, audience, opts \\ [])
+
+  def grant(%SigningContext{} = issuer_ctx, target_uuid, {_aud_id, _aud_pub} = audience, opts)
       when is_binary(target_uuid) do
+    grant(issuer_ctx, {:docs, [target_uuid]}, audience, opts)
+  end
+
+  def grant(
+        %SigningContext{} = issuer_ctx,
+        {kind, value} = scope,
+        {_aud_id, _aud_pub} = audience,
+        opts
+      )
+      when (kind == :docs and is_list(value)) or (kind == :subtree and is_binary(value)) do
     store = Keyword.get(opts, :store, CommitStoreClient)
-    claim = %{verbs: [:read], scope: {:docs, [target_uuid]}}
+    claim = %{verbs: [:read], scope: scope}
 
     with {:ok, cap} <-
            Capability.issue(issuer_ctx, audience, claim, Keyword.get(opts, :parent_cid), opts) do
