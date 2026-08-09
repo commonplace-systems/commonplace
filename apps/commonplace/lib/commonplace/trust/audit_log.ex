@@ -111,7 +111,7 @@ defmodule Commonplace.Trust.AuditLog do
 
   require Logger
 
-  alias Commonplace.Trust.AuditDispatcher
+  alias Commonplace.Trust.{AuditDispatcher, AuditLogCounter}
 
   @handler_id "commonplace-trust-audit-log"
 
@@ -140,6 +140,18 @@ defmodule Commonplace.Trust.AuditLog do
 
   @doc "The telemetry handler id."
   def handler_id, do: @handler_id
+
+  @doc """
+  Return all six `handle_event/4` stage counters for this BEAM boot.
+
+  `offered` counts calls to `AuditDispatcher.offer/2` (records); the other
+  fields count input events. The returned `boot_id` encloses every count.
+  """
+  @spec counters() :: map()
+  def counters, do: AuditLogCounter.snapshot()
+
+  @doc false
+  def rate_cap, do: @cap
 
   @doc "The deterministic red-log doc UUID this module writes into."
   def log_uuid do
@@ -187,11 +199,14 @@ defmodule Commonplace.Trust.AuditLog do
 
   @doc false
   def handle_event(event_name, measurements, metadata, config) do
+    AuditLogCounter.increment(:entered)
     dispatcher = Map.get(config, :dispatcher, AuditDispatcher)
     payload = build_payload(event_name, measurements, metadata)
+    AuditLogCounter.increment(:built)
 
     cond do
       recursion_guard(payload) ->
+        AuditLogCounter.increment(:guarded)
         # The fallback sink of last resort: the local Logger, which is
         # outside the substrate and therefore outside the loop. NEVER
         # re-enter the audit write path from here.
@@ -207,13 +222,25 @@ defmodule Commonplace.Trust.AuditLog do
       true ->
         case rate_gate(event_name) do
           {:log, nil} ->
+            # `offer_events` counts EVENTS reaching this stage; `offered` counts
+            # RECORDS handed to the dispatcher. They diverge in the clause below,
+            # and only `offer_events` belongs in the stage identity. See
+            # AuditLogCounter's moduledoc.
+            AuditLogCounter.increment(:offer_events)
+            AuditLogCounter.increment(:offered)
             AuditDispatcher.offer(dispatcher, payload)
 
           {:log, summary} ->
+            # ⚠️ ONE event, TWO records. This is the clause that makes
+            # `entered == … + offered + …` false.
+            AuditLogCounter.increment(:offer_events)
+            AuditLogCounter.increment(:offered)
             AuditDispatcher.offer(dispatcher, summary)
+            AuditLogCounter.increment(:offered)
             AuditDispatcher.offer(dispatcher, payload)
 
           :suppress ->
+            AuditLogCounter.increment(:rate_suppressed)
             :ok
         end
     end
@@ -248,6 +275,8 @@ defmodule Commonplace.Trust.AuditLog do
   def recursion_guard(_), do: false
 
   defp handler_failure(reason, stacktrace) do
+    AuditLogCounter.increment(:handler_failed)
+
     Logger.error(
       "Commonplace.Trust.AuditLog: handler failed (#{inspect(reason)}) — SWALLOWED so " <>
         ":telemetry does not detach it. Denial auditing may have lost this record; " <>
