@@ -439,6 +439,13 @@ defmodule Commonplace.Reflog.SnapshotTest do
     end
 
     test "checkpoint commits carry the node identity's signer_id", %{store: store} do
+      # ⚠️ public_key/0 reads ONLY the public artifact (a4e708d) and never the
+      # private key. The artifact is written by publish_public_keys/1, which
+      # runs inside signing_context/0 and — in production — at application boot
+      # (CX-qvrz). A bare fixture does neither, so it must establish the
+      # identity before reading its public half, exactly as a real node has.
+      {:ok, _ctx} = Commonplace.Crypto.NodeIdentity.signing_context()
+
       {:ok, node_identity} = Commonplace.Crypto.NodeIdentity.identity()
       {:ok, node_pub} = Commonplace.Crypto.NodeIdentity.public_key()
       expected_signer_id = Commonplace.Crypto.Signing.signer_id(node_identity, node_pub)
