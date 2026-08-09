@@ -294,6 +294,59 @@ defmodule Commonplace.Projection.MixedPlaneHistoryTest do
     assert output =~ "docs_skipped=1"
   end
 
+  test "coverage does not improve when more documents fail commit enumeration", %{dir: dir} do
+    commit_covered = <<17::256>>
+    commit_unscanned = <<18::256>>
+
+    run_fixture = fn name, enumeration_failures ->
+      commits = %{
+        "doc-covered" => MapSet.new([commit_covered]),
+        "doc-unscanned-a" => MapSet.new([commit_unscanned]),
+        "doc-unscanned-b" => MapSet.new([commit_unscanned])
+      }
+
+      assert {:ok, summary} =
+               MixedPlaneHistory.run(
+                 checkpoint_path: Path.join(dir, name),
+                 scan_id: name,
+                 store: :fixture_store,
+                 mode: :fixture,
+                 positive_control: fn -> {:ok, %{armed_commit_id_hex: "control"}} end,
+                 doc_uuids: fn -> Map.keys(commits) |> MapSet.new() end,
+                 commit_ids: fn doc_uuid ->
+                   if MapSet.member?(enumeration_failures, doc_uuid) do
+                     raise "deliberate enumeration failure for #{doc_uuid}"
+                   else
+                     Map.fetch!(commits, doc_uuid)
+                   end
+                 end,
+                 project: fn
+                   "doc-covered", ^commit_covered, _opts -> {:ok, <<>>, %{}}
+                   _doc_uuid, ^commit_unscanned, _opts -> {:error, :unreadable}
+                 end,
+                 progress_every: 3,
+                 max_concurrency: 1
+               )
+
+      summary
+    end
+
+    fewer_failures = run_fixture.("fewer-enumeration-failures", MapSet.new(["doc-unscanned-b"]))
+
+    more_failures =
+      run_fixture.(
+        "more-enumeration-failures",
+        MapSet.new(["doc-unscanned-a", "doc-unscanned-b"])
+      )
+
+    assert fewer_failures.docs_fully_unscanned == 2
+    assert more_failures.docs_fully_unscanned == 2
+
+    refute coverage_improved?(fewer_failures.coverage_percent, more_failures.coverage_percent),
+           "coverage improved from #{inspect(fewer_failures.coverage_percent)} " <>
+             "to #{inspect(more_failures.coverage_percent)} as enumeration got worse"
+  end
+
   test "summary exposes partial commit coverage and separates fully from partially unscanned docs",
        %{dir: dir} do
     commit_1 = <<21::256>>
@@ -417,4 +470,9 @@ defmodule Commonplace.Projection.MixedPlaneHistoryTest do
       0 -> Enum.reverse(lines)
     end
   end
+
+  defp coverage_improved?(before, later) when is_number(before) and is_number(later),
+    do: later > before
+
+  defp coverage_improved?(_before, _after), do: false
 end
