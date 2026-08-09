@@ -90,7 +90,7 @@ defmodule Commonplace.Projection.MixedPlaneHistory do
           commits_total: non_neg_integer(),
           commits_scanned: non_neg_integer(),
           commits_skipped: non_neg_integer(),
-          coverage_percent: float() | :not_applicable,
+          coverage_percent: float() | :not_applicable | :unknown,
           docs_skipped: non_neg_integer(),
           affected_docs: non_neg_integer(),
           hits: non_neg_integer(),
@@ -345,11 +345,12 @@ defmodule Commonplace.Projection.MixedPlaneHistory do
     commits_total = commits_total(records)
     commits_scanned = sum(records, "commits_scanned")
     commits_skipped = commits_total - commits_scanned
+    enumeration_failed? = enumeration_failed?(records)
 
     emit.(
       "PROGRESS docs=#{acc.processed}/#{total} commits_scanned=#{commits_scanned} " <>
         "commits_skipped=#{commits_skipped} " <>
-        "coverage=#{format_coverage(commits_scanned, commits_total)} " <>
+        "coverage=#{format_coverage(commits_scanned, commits_total, enumeration_failed?)} " <>
         "commits_this_run=#{acc.commits_this_run} resumed_docs=#{acc.reused} " <>
         "elapsed_ms=#{monotonic_ms() - started_ms}"
     )
@@ -363,6 +364,7 @@ defmodule Commonplace.Projection.MixedPlaneHistory do
     hits = Enum.flat_map(records, & &1["hits"])
     commits_total = commits_total(records)
     commits_scanned = sum(records, "commits_scanned")
+    enumeration_failed? = enumeration_failed?(records)
 
     %{
       docs_total: total,
@@ -372,7 +374,7 @@ defmodule Commonplace.Projection.MixedPlaneHistory do
       commits_total: commits_total,
       commits_scanned: commits_scanned,
       commits_skipped: commits_total - commits_scanned,
-      coverage_percent: coverage_percent(commits_scanned, commits_total),
+      coverage_percent: coverage_percent(commits_scanned, commits_total, enumeration_failed?),
       docs_skipped: length(skipped),
       affected_docs: Enum.count(records, &(&1["hits"] != [])),
       hits: length(hits),
@@ -389,7 +391,7 @@ defmodule Commonplace.Projection.MixedPlaneHistory do
         "docs_partially_skipped=#{summary.docs_partially_skipped} " <>
         "commits_total=#{summary.commits_total} commits_scanned=#{summary.commits_scanned} " <>
         "commits_skipped=#{summary.commits_skipped} " <>
-        "coverage=#{format_coverage(summary.commits_scanned, summary.commits_total)} " <>
+        "coverage=#{format_coverage(summary.commits_scanned, summary.commits_total, summary.coverage_percent == :unknown)} " <>
         "docs_skipped=#{summary.docs_skipped} affected_docs=#{summary.affected_docs} " <>
         "hits=#{summary.hits} resumed_docs=#{summary.resumed_docs} " <>
         "commits_this_run=#{summary.commits_this_run} elapsed_ms=#{summary.elapsed_ms}"
@@ -588,6 +590,8 @@ defmodule Commonplace.Projection.MixedPlaneHistory do
   defp commits_total(records),
     do: records |> Enum.flat_map(&(&1["commit_ids"] || [])) |> length()
 
+  defp enumeration_failed?(records), do: Enum.any?(records, &is_nil(&1["commit_ids"]))
+
   # ⛔ ZERO COMMITS IS NOT FULL COVERAGE. Reporting 100% for 0/0 is the exact
   # defect this module was fixed for — "0 scanned out of 0" reading as a clean
   # result — reintroduced inside the fix. A sweep that examined nothing has a
@@ -599,15 +603,20 @@ defmodule Commonplace.Projection.MixedPlaneHistory do
   # and suppresses the summary entirely — but fixture mode can, and so can any
   # future caller running live without expected positives. The figure must not
   # depend on a guard two functions away for its honesty.
-  defp coverage_percent(_scanned, 0), do: :not_applicable
-  defp coverage_percent(scanned, total), do: scanned / total * 100
+  defp coverage_percent(_scanned, _total, true), do: :unknown
+  defp coverage_percent(_scanned, 0, false), do: :not_applicable
+  defp coverage_percent(scanned, total, false), do: scanned / total * 100
 
-  defp format_coverage(_scanned, 0), do: "0/0 (no commits — coverage not applicable)"
+  defp format_coverage(_scanned, _total, true),
+    do: "unavailable (commit enumeration failed for one or more docs)"
 
-  defp format_coverage(scanned, total) do
+  defp format_coverage(_scanned, 0, false),
+    do: "0/0 (no commits — coverage not applicable)"
+
+  defp format_coverage(scanned, total, false) do
     percent =
       scanned
-      |> coverage_percent(total)
+      |> coverage_percent(total, false)
       |> Float.floor(2)
       |> :erlang.float_to_binary(decimals: 2)
 
