@@ -791,16 +791,17 @@ defmodule Commonplace.Trust do
     end
   end
 
-  # The locally-pinned trusted-identity keys ARE the cert-chain root
-  # anchors (§4: an allowlist entry = an unattenuated root). Decode every
-  # pinned pubkey into the anchor set.
-  #
-  # NOTE: `Commonplace.MUD.Verbs.local_anchor_keys/0` is a hand-kept copy
-  # of this derivation (CX-2rbz) — it needs the same anchor set to call
-  # `VerifyChain.verify_chain/3` from the MUD dispatch path but can't
-  # reach this private function. Any change here MUST update that site
-  # until CX-2rbz exposes a public accessor and removes the copy.
-  defp anchor_keys(cfg) do
+  @doc """
+  Build the locally-pinned cert-chain root anchors for a resolved trust config.
+
+  An absent node public-key artifact contributes no node keys, preserving the
+  configured-anchor fallback. A present artifact that cannot be read or decoded
+  is operationally distinct: verification still degrades to the configured
+  anchors, but the loss is logged so a resulting denial cannot look like an
+  ordinary policy decision.
+  """
+  @spec anchor_keys(config()) :: MapSet.t(binary())
+  def anchor_keys(cfg) do
     configured_keys =
       cfg.trusted_identities
       |> Map.values()
@@ -816,7 +817,14 @@ defmodule Commonplace.Trust do
       case Commonplace.Crypto.NodeIdentity.public_keys() do
         {:ok, keys} -> keys
         :absent -> []
-        {:error, _} -> []
+
+        {:error, reason} ->
+          Logger.error(
+            "node signing public-key artifact is present but unreadable " <>
+              "(#{inspect(reason)}) — DEGRADING to configured trust anchors"
+          )
+
+          []
       end
 
     MapSet.new(configured_keys ++ public_node_keys)
