@@ -117,6 +117,70 @@ defmodule Commonplace.Trust.AuditLogTest do
     assert event["visibility"] == "private"
   end
 
+  test "firing process distinguishes an unnamed emitter from the registered CommitStore",
+       %{store: store} do
+    AuditLog.attach(store, dispatcher: self())
+    AuditLog.reset_rate_table()
+
+    # Control the unnamed branch: prove this process actually has no
+    # registered name before expecting the explicit descriptor.
+    assert {:registered_name, []} = Process.info(self(), :registered_name)
+
+    :telemetry.execute(
+      [:commonplace, :trust, :revocation, :ignored],
+      %{system_time: 123},
+      %{cap_id: "cap-process", revoker_pubkey: "pub-process"}
+    )
+
+    assert_receive {:"$gen_cast", {:audit, direct_record}}
+
+    assert direct_record["firing_process"] == %{
+             "registered_name" => "unnamed",
+             "pid" => inspect(self())
+           }
+
+    assert Map.delete(direct_record, "firing_process") == %{
+             "event" => "commonplace.trust.revocation.ignored",
+             "gate" => "revocation",
+             "check" => "revocation_ignored",
+             "cap_id" => "cap-process",
+             "revoker_pubkey" => "pub-process",
+             "system_time" => 123
+           }
+
+    store_pid = Process.whereis(store)
+    assert is_pid(store_pid)
+    assert {:registered_name, ^store} = Process.info(store_pid, :registered_name)
+
+    old_gate = Application.get_env(:commonplace, :local_write_gate)
+    old_trust = Application.get_env(:commonplace, :trust)
+
+    on_exit(fn ->
+      restore_env(:local_write_gate, old_gate)
+      restore_env(:trust, old_trust)
+    end)
+
+    Application.put_env(:commonplace, :local_write_gate, :enforce)
+    Application.put_env(:commonplace, :trust, %{accept_unsigned: false, trusted_identities: %{}})
+
+    doc_uuid = UUID.uuid4()
+    update = Yelixer.Doc.new() |> Yelixer.Encoding.encode_update()
+
+    assert {:error, {:trust_rejected, :unsigned}} =
+             CommitStore.create_commit(store, doc_uuid, update, nil)
+
+    assert_receive {:"$gen_cast", {:audit, store_record}}
+
+    assert store_record["firing_process"] == %{
+             "registered_name" => Atom.to_string(store),
+             "pid" => inspect(store_pid)
+           }
+
+    refute direct_record["firing_process"] == store_record["firing_process"],
+           "firing_process must discriminate: direct=#{inspect(direct_record["firing_process"])} " <>
+             "store=#{inspect(store_record["firing_process"])}"
+  end
+
   test "handler failure is swallowed, never raised into the caller", %{store: store, dispatcher: d} do
     # Malformed metadata (missing everything build_payload expects) must
     # not crash the caller that fired the telemetry event — this event
@@ -197,4 +261,7 @@ defmodule Commonplace.Trust.AuditLogTest do
       assert length(would_refuse_events) == 21
     end
   end
+
+  defp restore_env(key, nil), do: Application.delete_env(:commonplace, key)
+  defp restore_env(key, value), do: Application.put_env(:commonplace, key, value)
 end

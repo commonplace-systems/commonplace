@@ -285,6 +285,7 @@ defmodule Commonplace.Trust.AuditLog do
       "system_time" => Map.get(measurements, :system_time)
     }
     |> Map.merge(Map.get(metadata, :content_digest) || %{})
+    |> Map.put("firing_process", firing_process())
   end
 
   defp build_payload(
@@ -305,6 +306,7 @@ defmodule Commonplace.Trust.AuditLog do
       "system_time" => Map.get(measurements, :system_time)
     }
     |> Map.merge(Map.get(metadata, :content_digest) || %{})
+    |> Map.put("firing_process", firing_process())
   end
 
   # Gate B / sandbox_exec / safe-verb / code-doc-merge / federation.
@@ -332,6 +334,7 @@ defmodule Commonplace.Trust.AuditLog do
     |> Map.merge(Map.get(metadata, :content_digest) || %{})
     |> Enum.reject(fn {_k, v} -> is_nil(v) end)
     |> Map.new()
+    |> Map.put("firing_process", firing_process())
   end
 
   defp build_payload(
@@ -347,6 +350,7 @@ defmodule Commonplace.Trust.AuditLog do
       "revoker_pubkey" => encode_id(Map.get(metadata, :revoker_pubkey)),
       "system_time" => Map.get(measurements, :system_time)
     }
+    |> Map.put("firing_process", firing_process())
   end
 
   defp build_payload(
@@ -364,6 +368,7 @@ defmodule Commonplace.Trust.AuditLog do
       "visibility" => Map.get(metadata, :visibility),
       "count" => Map.get(measurements, :count, 1)
     }
+    |> Map.put("firing_process", firing_process())
   end
 
   # Backstop. An event added to `@events` without a shaping clause would
@@ -385,6 +390,17 @@ defmodule Commonplace.Trust.AuditLog do
       "reason" => inspect(Map.drop(metadata, [:content_digest])),
       "system_time" => Map.get(measurements, :system_time) || System.system_time()
     }
+    |> Map.put("firing_process", firing_process())
+  end
+
+  defp firing_process do
+    registered_name =
+      case Process.info(self(), :registered_name) do
+        {:registered_name, name} when is_atom(name) -> Atom.to_string(name)
+        {:registered_name, []} -> "unnamed"
+      end
+
+    %{"registered_name" => registered_name, "pid" => inspect(self())}
   end
 
   @doc """
