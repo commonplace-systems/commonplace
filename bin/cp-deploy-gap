@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+#
+# cp-deploy-gap — how much would a serve restart deploy?
+#
+# WHY THIS EXISTS (CX-y4bq, 2026-08-09)
+#
+# The serve loads modules LAZILY in :interactive mode. Any beam in _build that
+# is NEWER than the running serve's start is code the serve was not built with
+# and will hot-load the moment something touches it. So:
+#
+#   - a restart deploys every one of them, at once
+#   - and until then, ANY incidental module load is an unplanned partial deploy
+#
+# Measured 2026-08-09: 52 such beams, accumulated by an ordinary session's
+# merges. Nobody could see the number, which was the whole problem.
+#
+# ⛔ WHAT THIS ANSWERS, AND WHAT IT DOES NOT
+#
+#   ✅ "What would a restart CHANGE?"     — beam mtime vs serve start. THIS.
+#   ⛔ "Is _build a COHERENT version?"    — NOT ANSWERABLE HERE.
+#
+# _build legitimately holds beams from months ago: an April beam is CORRECT if
+# its source has not changed since April. A reassuring age distribution is not
+# evidence of coherence. The only thing that answers coherence is `mix compile`
+# reporting "Compiling 0 files" — and running it is a WRITE that MOVES THE
+# DEPLOY BOUNDARY, so it is a deliberate step, never a measurement.
+#
+# ⚠️ Do not relabel this as a coherence check. A gauge mislabelled is worse
+#    than no gauge: it converts "I did not look" into "I looked and it was fine".
+#
+# ⭐ THE DISCRIMINATOR THIS EXISTS TO MAKE CHEAP:
+#      beam OLDER than the serve's start -> the file the serve would load
+#                                            anyway; loading it is NOT a deploy
+#      beam NEWER than the serve's start -> loading it IS a deploy
+#
+# USAGE
+#   bin/cp-deploy-gap                 # against the running serve
+#   bin/cp-deploy-gap --since <time>  # against an explicit reference time
+#   CP_BUILD_DIR=... bin/cp-deploy-gap --since <time>   # for testing the gauge
+
+set -uo pipefail
+cd "$(dirname "$0")/.." || exit 1
+
+BUILD_DIR="${CP_BUILD_DIR:-_build/dev/lib}"
+SINCE=""
+
+if [[ "${1:-}" == "--since" ]]; then
+  SINCE="${2:?--since needs a timestamp}"
+else
+  # Process-derived, never assumed: find the serve by its OWN start time.
+  # ⚠️ If we cannot identify it, REFUSE — a gauge that reports 0 because it
+  #    could not find the subject is the exact false green this repo keeps
+  #    producing.
+  pid="$(pgrep -f 'beam.smp.*commonplace' | while read -r p; do
+           if tr '\0' '\n' < "/proc/$p/cmdline" 2>/dev/null | grep -q 'commonplace_dev'; then
+             echo "$p"; break
+           fi
+         done)"
+
+  if [[ -z "$pid" ]]; then
+    echo "cp-deploy-gap: REFUSING — no running commonplace serve found." >&2
+    echo "  A count against no subject is not zero, it is undefined." >&2
+    echo "  Use --since <timestamp> if you meant a reference time." >&2
+    exit 2
+  fi
+
+  SINCE="$(ps -o lstart= -p "$pid" | sed 's/^ *//')"
+  echo "serve pid $pid, started $SINCE"
+fi
+
+[[ -d "$BUILD_DIR" ]] || { echo "cp-deploy-gap: no $BUILD_DIR" >&2; exit 2; }
+
+total="$(find "$BUILD_DIR" -name '*.beam' -newermt "$SINCE" 2>/dev/null | wc -l)"
+
+echo "WOULD-DEPLOY-ON-RESTART: $total beam(s) newer than that start"
+echo "  (this is NOT a coherence check — see the header)"
+
+if (( total > 0 )); then
+  echo "  by app:"
+  find "$BUILD_DIR" -name '*.beam' -newermt "$SINCE" 2>/dev/null \
+    | sed "s|^$BUILD_DIR/\([^/]*\)/.*|\1|" | sort | uniq -c | sort -rn \
+    | sed 's/^/    /'
+  echo
+  echo "  ⇒ A restart deploys all of these AT ONCE."
+  echo "  ⇒ Until then, any incidental load of one is an unplanned partial deploy."
+  echo "  ⇒ Run 'mix compile' DELIBERATELY before restarting, so what ships"
+  echo "    corresponds to a commit rather than to whatever happens to be built."
+fi
+
+exit 0
