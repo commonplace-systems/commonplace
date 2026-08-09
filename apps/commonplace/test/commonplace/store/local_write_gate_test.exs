@@ -502,12 +502,12 @@ defmodule Commonplace.Store.LocalWriteGateTest do
       # ⚠️ THIS SWEEP NO LONGER SEES INLINE ROW CONSTRUCTION AT ALL. It
       # matches calls to commit_rows/1, so a writer that hand-builds
       # `{{:commit, id}, commit}` is INVISIBLE here. That half of pin 8's
-      # original coverage now lives entirely in DocCommitIndexTest's
-      # `== 2` count assertion — a dependency across two files, verified
-      # 2026-08-08 by injecting an ungated inline writer (this sweep stayed
-      # green; the count caught it).
-      # ⇒ If that count is ever relaxed, THIS TRIPWIRE LOSES ITS BASE and
-      # nothing here will say so.
+      # original coverage now lives in DocCommitIndexTest's whole-app
+      # commit-row boundary checker. That checker distinguishes writes from
+      # read patterns and enumerates the two justified production writers;
+      # its tamper control injects a third-module raw writer and proves the
+      # checker names it while this caller sweep remains intentionally blind.
+      # ⇒ If that perimeter is ever relaxed, THIS TRIPWIRE LOSES ITS BASE.
       def_re = ~r/^  def(p)?\s+([a-zA-Z_][a-zA-Z0-9_?!]*)/
 
       {_current, writers} =

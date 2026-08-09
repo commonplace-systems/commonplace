@@ -9,6 +9,8 @@ defmodule Commonplace.Store.DocCommitIndexTest do
   alias Yelixer.Types.Text
 
   @index_state_key {:doc_commit_index, :state}
+  @project_root Path.expand("../../../../..", __DIR__)
+  @commit_row_checker Path.join(@project_root, "scripts/check_commonplace_commit_row_writes.exs")
 
   defp tmp_dir(prefix) do
     dir = Path.join(System.tmp_dir!(), "#{prefix}_#{System.unique_integer([:positive])}")
@@ -52,39 +54,98 @@ defmodule Commonplace.Store.DocCommitIndexTest do
     rows
   end
 
-  test "commit row construction is centralized in the row-pair choke" do
-    source_path =
-      System.get_env("CP_COMMIT_STORE_SOURCE_PATH") ||
-        Path.expand("../../../lib/commonplace/store/commit_store.ex", __DIR__)
+  test "every production commit-row writer is an enumerated row-pair site" do
+    {output, status} =
+      System.cmd("elixir", [@commit_row_checker, @project_root], stderr_to_stdout: true)
 
-    source = File.read!(source_path)
+    assert status == 0, output
+    assert output =~ "commonplace commit-row boundary check passed"
+    assert output =~ "commit_store.ex:commit_rows/… — the private persistence choke"
+    assert output =~ "mixed_plane_history_fixture.ex:seed!/… — the incident fixture"
 
-    # This is intentionally a source-shape test, like invariant_choke_test:
-    # the guarantee is structural. There are exactly two commit tuple forms:
-    # the constructor in commit_rows/1 and the read pattern in the startup
-    # backfill. Another writer-side tuple would make a commit row possible
-    # without its index row and must fail review mechanically.
-    #
-    # ⛔ THIS COUNT IS THE NO-BYPASS TRIPWIRE. IT IS NOT TIDINESS.
-    #
-    # Pin 8 in local_write_gate_test.exs used to match inline row
-    # construction itself. It no longer does — it matches CALLS to
-    # commit_rows/1 — so it cannot see a writer that hand-builds a row.
-    # That coverage now lives HERE and nowhere else. Verified 2026-08-08 by
-    # injecting an ungated `CubDB.put_multi(db, [{{:commit, id}, commit}])`
-    # into commit_store.ex: pin 8 stayed green; this assertion caught it
-    # (left: 3, right: 2).
-    #
-    # ⚠️ IF YOU ARE HERE BECAUSE THE COUNT CHANGED, THE QUESTION IS WHETHER
-    # A NEW COMMIT-ROW WRITER APPEARED — NOT WHETHER TO RAISE THE NUMBER.
-    # Bumping this to 3 is a thirty-second edit that silently retires the
-    # boundary and leaves every test green. If the third tuple is genuinely
-    # a READ pattern, say so here in writing and raise it deliberately; if
-    # it writes a row, it belongs behind commit_rows/1 instead.
-    assert length(Regex.scan(~r/\{\{:commit,/, source)) == 2
+    # This production reader is intentionally part of the scanned tree. Its
+    # presence in the checker's read-only report proves a select/reduce match
+    # is distinguished from a persistence expression and does not trip the
+    # perimeter.
+    assert output =~ "ignored read pattern"
+    assert output =~ "mixed_plane_history.ex"
+  end
 
-    assert source =~
-             "[{{:commit, id}, commit}, {{:doc_commit, doc_uuid, id}, true}]"
+  test "a stray commit-row write in a DIFFERENT UMBRELLA APP trips the perimeter" do
+    # ⛔ The sibling test below injects into apps/commonplace/lib — the app the
+    # checker already scans. That control cannot reveal the checker's BOUNDARY,
+    # only its behaviour inside it. Measured 2026-08-09: with the glob scoped to
+    # one app, this exact write in commonplace_web PASSED rc=0 while the
+    # identical write in commonplace was caught rc=1.
+    # ⇒ A control that can only fire where the guard already looks says nothing
+    # about where the guard stops.
+    temp_root =
+      Path.join(
+        System.tmp_dir!(),
+        "commonplace-commit-row-crossapp-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    on_exit(fn -> File.rm_rf!(temp_root) end)
+
+    for app <- ["commonplace", "commonplace_web"] do
+      source = Path.join([@project_root, "apps", app, "lib"])
+      destination = Path.join([temp_root, "apps", app, "lib"])
+      File.mkdir_p!(Path.dirname(destination))
+      File.cp_r!(source, destination)
+    end
+
+    tamper_path = Path.join([temp_root, "apps", "commonplace_web", "lib", "stray_commit_writer.ex"])
+
+    File.write!(
+      tamper_path,
+      "defmodule CommonplaceWeb.StrayCommitWriter do\n" <>
+        "  def write(db, id, commit) do\n" <>
+        "    CubDB.put_multi(db, [{{:commit, id}, commit}])\n" <>
+        "  end\n" <>
+        "end\n"
+    )
+
+    {output, status} =
+      System.cmd("elixir", [@commit_row_checker, temp_root], stderr_to_stdout: true)
+
+    assert status == 1, output
+    assert output =~ "commonplace_web/lib/stray_commit_writer.ex"
+    assert output =~ "unexpected commit-row write"
+  end
+
+  test "a stray commit-row write in a third production module trips the perimeter" do
+    temp_root =
+      Path.join(
+        System.tmp_dir!(),
+        "commonplace-commit-row-boundary-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    on_exit(fn -> File.rm_rf!(temp_root) end)
+
+    source = Path.join([@project_root, "apps", "commonplace", "lib"])
+    destination = Path.join([temp_root, "apps", "commonplace", "lib"])
+    File.mkdir_p!(Path.dirname(destination))
+    File.cp_r!(source, destination)
+
+    tamper_path = Path.join(destination, "commonplace/stray_commit_writer.ex")
+
+    File.write!(
+      tamper_path,
+      "defmodule Commonplace.StrayCommitWriter do\n" <>
+        "  def write(db, id, commit) do\n" <>
+        "    CubDB.put_multi(db, [{{:commit, id}, commit}])\n" <>
+        "  end\n" <>
+        "end\n"
+    )
+
+    {output, status} =
+      System.cmd("elixir", [@commit_row_checker, temp_root], stderr_to_stdout: true)
+
+    if System.get_env("SHOW_COMMIT_ROW_TAMPER") == "1", do: IO.write(output)
+
+    assert status == 1
+    assert output =~ "commonplace commit-row boundary check failed"
+    assert output =~ "stray_commit_writer.ex:3:write/…: unexpected commit-row write"
   end
 
   test "one-doc lookup reads only that doc's bounded index range" do
