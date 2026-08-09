@@ -52,6 +52,33 @@ defmodule Commonplace.Projection.MixedPlaneHistoryTest do
     IO.write(output)
   end
 
+  test "a sweep that examined nothing does not report full coverage", %{dir: dir} do
+    # Regression: coverage_percent/2 returned 100.0 for a 0-commit sweep, so a
+    # run that learned NOTHING printed "coverage=0/0 (100.00%)" — the very
+    # "0 out of 0 reads as clean" defect this module was fixed for, inside the
+    # fix. Live mode is protected by the known-positives gate; fixture mode is
+    # not, so the figure must be honest on its own.
+    output =
+      capture_io(fn ->
+        MixedPlaneHistory.run(
+          checkpoint_path: Path.join(dir, "empty-coverage"),
+          scan_id: "empty-coverage",
+          store: :unused_store,
+          mode: :fixture,
+          positive_control: fn -> {:ok, %{armed_commit_id_hex: "control"}} end,
+          doc_uuids: fn -> MapSet.new() end,
+          progress_every: 1,
+          max_concurrency: 1
+        )
+      end)
+
+    summary = output |> String.split("\n") |> Enum.find("", &String.contains?(&1, "SUMMARY"))
+
+    assert summary =~ "commits_total=0"
+    refute summary =~ "100.00%", "a sweep over zero commits must not report full coverage: #{summary}"
+    assert summary =~ "coverage=0/0 (no commits"
+  end
+
   test "live sweep is void without its expected known positive and emits no summary", %{dir: dir} do
     output =
       capture_io(fn ->
@@ -122,8 +149,12 @@ defmodule Commonplace.Projection.MixedPlaneHistoryTest do
           assert {:ok, first} = MixedPlaneHistory.run(opts)
           assert first.docs_total == 1
           assert first.docs_scanned == 1
+          assert first.docs_fully_unscanned == 0
+          assert first.docs_partially_skipped == 0
           assert first.commits_total == 5
           assert first.commits_scanned == 5
+          assert first.commits_skipped == 0
+          assert first.coverage_percent == 100.0
           assert first.docs_skipped == 0
           assert first.affected_docs == 1
           assert first.hits == 1
@@ -133,7 +164,9 @@ defmodule Commonplace.Projection.MixedPlaneHistoryTest do
       assert first_output =~ "HIT doc=235d73b5-a44a-44de-91ad-a753c61f7407 commit="
 
       assert first_output =~
-               "SUMMARY docs_total=1 docs_scanned=1 commits_total=5 commits_scanned=5"
+               "SUMMARY docs_total=1 docs_scanned=1 docs_fully_unscanned=0 " <>
+                 "docs_partially_skipped=0 commits_total=5 commits_scanned=5 " <>
+                 "commits_skipped=0 coverage=5/5 (100.00%)"
 
       second_output =
         capture_io(fn ->
@@ -248,13 +281,133 @@ defmodule Commonplace.Projection.MixedPlaneHistoryTest do
 
         assert summary.docs_total == 1
         assert summary.docs_scanned == 0
-        assert summary.commits_scanned == 1
+        assert summary.docs_fully_unscanned == 1
+        assert summary.docs_partially_skipped == 0
+        assert summary.commits_scanned == 0
+        assert summary.commits_skipped == 1
+        assert summary.coverage_percent == 0.0
         assert summary.docs_skipped == 1
       end)
 
     assert output =~ "SKIP doc=doc-unreadable commit=#{Base.encode16(commit_id, case: :lower)}"
     assert output =~ "reason={:error, :bad_pin}"
     assert output =~ "docs_skipped=1"
+  end
+
+  test "summary exposes partial commit coverage and separates fully from partially unscanned docs",
+       %{dir: dir} do
+    commit_1 = <<21::256>>
+    commit_2 = <<22::256>>
+    commit_3 = <<23::256>>
+    commit_4 = <<24::256>>
+    commit_5 = <<25::256>>
+
+    commits = %{
+      "doc-covered" => MapSet.new([commit_1]),
+      "doc-partial" => MapSet.new([commit_2, commit_3]),
+      "doc-fully-unscanned" => MapSet.new([commit_4, commit_5])
+    }
+
+    output =
+      capture_io(fn ->
+        assert {:ok, summary} =
+                 MixedPlaneHistory.run(
+                   checkpoint_path: Path.join(dir, "partial-coverage"),
+                   scan_id: "partial-coverage",
+                   store: :fixture_store,
+                   mode: :fixture,
+                   positive_control: fn -> {:ok, %{armed_commit_id_hex: "control"}} end,
+                   doc_uuids: fn -> Map.keys(commits) |> MapSet.new() end,
+                   commit_ids: &Map.fetch!(commits, &1),
+                   project: fn
+                     "doc-covered", ^commit_1, _opts ->
+                       {:ok, <<>>, %{}}
+
+                     "doc-partial", ^commit_2, _opts ->
+                       {:ok, <<>>, %{}}
+
+                     "doc-partial", ^commit_3, _opts ->
+                       {:unknown, {:conflicted, :partial}}
+
+                     "doc-fully-unscanned", commit_id, _opts
+                     when commit_id in [commit_4, commit_5] ->
+                       {:unknown, {:conflicted, :complete}}
+                   end,
+                   progress_every: 3,
+                   max_concurrency: 1
+                 )
+
+        assert summary.commits_total == 5
+        assert summary.commits_scanned == 2
+        assert summary.commits_skipped == 3
+        assert summary.coverage_percent == 40.0
+        assert summary.docs_scanned == 2
+        assert summary.docs_fully_unscanned == 1
+        assert summary.docs_partially_skipped == 1
+      end)
+
+    assert output =~
+             "SUMMARY docs_total=3 docs_scanned=2 docs_fully_unscanned=1 " <>
+               "docs_partially_skipped=1 commits_total=5 commits_scanned=2 commits_skipped=3 " <>
+               "coverage=2/5 (40.00%)"
+
+    assert output =~ "SKIP doc=doc-partial commit=#{Base.encode16(commit_3, case: :lower)}"
+    assert output =~ "reason={:unknown, {:conflicted, :partial}}"
+  end
+
+  test "a version-one checkpoint with skips is rescanned under verdict-count semantics", %{
+    dir: dir
+  } do
+    checkpoint = Path.join(dir, "old-partial-checkpoint")
+    docs_path = Path.join(checkpoint, "docs")
+    doc_uuid = "doc-with-old-skip"
+    commit_id = <<31::256>>
+    commit_hex = Base.encode16(commit_id, case: :lower)
+    digest = :crypto.hash(:sha256, doc_uuid) |> Base.encode16(case: :lower)
+
+    File.mkdir_p!(docs_path)
+
+    File.write!(
+      Path.join(checkpoint, "manifest.json"),
+      Jason.encode!(%{"version" => 1, "scan_id" => "old-partial-checkpoint"})
+    )
+
+    File.write!(
+      Path.join(docs_path, digest <> ".json"),
+      Jason.encode!(%{
+        "doc_uuid" => doc_uuid,
+        "record" => %{
+          "commit_ids" => [commit_hex],
+          "commits_scanned" => 1,
+          "hits" => [],
+          "skip_reasons" => [%{"commit_id" => commit_hex, "reason" => "old failure"}]
+        }
+      })
+    )
+
+    parent = self()
+
+    assert {:ok, summary} =
+             MixedPlaneHistory.run(
+               checkpoint_path: checkpoint,
+               scan_id: "old-partial-checkpoint",
+               store: :fixture_store,
+               mode: :fixture,
+               positive_control: fn -> {:ok, %{armed_commit_id_hex: "control"}} end,
+               doc_uuids: fn -> MapSet.new([doc_uuid]) end,
+               commit_ids: fn ^doc_uuid -> MapSet.new([commit_id]) end,
+               project: fn ^doc_uuid, ^commit_id, _opts ->
+                 send(parent, :old_partial_rescanned)
+                 {:ok, <<>>, %{}}
+               end,
+               progress_every: 1,
+               max_concurrency: 1
+             )
+
+    assert_receive :old_partial_rescanned
+    assert summary.resumed_docs == 0
+    assert summary.commits_scanned == 1
+    assert summary.commits_skipped == 0
   end
 
   defp receive_sweep_lines(lines) do
