@@ -85,8 +85,12 @@ defmodule Commonplace.Projection.MixedPlaneHistory do
   @type summary :: %{
           docs_total: non_neg_integer(),
           docs_scanned: non_neg_integer(),
+          docs_fully_unscanned: non_neg_integer(),
+          docs_partially_skipped: non_neg_integer(),
           commits_total: non_neg_integer(),
           commits_scanned: non_neg_integer(),
+          commits_skipped: non_neg_integer(),
+          coverage_percent: float() | :not_applicable,
           docs_skipped: non_neg_integer(),
           affected_docs: non_neg_integer(),
           hits: non_neg_integer(),
@@ -260,25 +264,25 @@ defmodule Commonplace.Projection.MixedPlaneHistory do
   defp scan_commits(doc_uuid, commit_ids, store, opts) do
     results = project_results(doc_uuid, commit_ids, store, opts)
 
-    {hits, failures, attempted} =
-      Enum.reduce(results, {[], [], 0}, fn {commit_id, result}, {hits, failures, attempted} ->
+    {hits, failures, scanned} =
+      Enum.reduce(results, {[], [], 0}, fn {commit_id, result}, {hits, failures, scanned} ->
         case result do
           {:unknown, {:mixed_plane, details}} ->
             hit = %{"commit_id" => hex(commit_id), "details" => json_safe(details)}
-            {[hit | hits], failures, attempted + 1}
+            {[hit | hits], failures, scanned + 1}
 
           {:ok, _bytes, _verdict} ->
-            {hits, failures, attempted + 1}
+            {hits, failures, scanned + 1}
 
           other ->
             failure = %{"commit_id" => hex(commit_id), "reason" => inspect(other)}
-            {hits, [failure | failures], attempted + 1}
+            {hits, [failure | failures], scanned}
         end
       end)
 
     %{
       "commit_ids" => Enum.map(commit_ids, &hex/1),
-      "commits_scanned" => attempted,
+      "commits_scanned" => scanned,
       "hits" => Enum.reverse(hits),
       "skip_reasons" => Enum.reverse(failures)
     }
@@ -338,9 +342,14 @@ defmodule Commonplace.Projection.MixedPlaneHistory do
 
   defp emit_progress(emit, acc, total, started_ms) do
     records = Map.values(acc.checkpoint["docs"])
+    commits_total = commits_total(records)
+    commits_scanned = sum(records, "commits_scanned")
+    commits_skipped = commits_total - commits_scanned
 
     emit.(
-      "PROGRESS docs=#{acc.processed}/#{total} commits_scanned=#{sum(records, "commits_scanned")} " <>
+      "PROGRESS docs=#{acc.processed}/#{total} commits_scanned=#{commits_scanned} " <>
+        "commits_skipped=#{commits_skipped} " <>
+        "coverage=#{format_coverage(commits_scanned, commits_total)} " <>
         "commits_this_run=#{acc.commits_this_run} resumed_docs=#{acc.reused} " <>
         "elapsed_ms=#{monotonic_ms() - started_ms}"
     )
@@ -349,13 +358,21 @@ defmodule Commonplace.Projection.MixedPlaneHistory do
   defp summarize(checkpoint, total, run, started_ms) do
     records = Map.values(checkpoint["docs"])
     skipped = Enum.filter(records, &(&1["skip_reasons"] != []))
+    fully_unscanned = Enum.filter(skipped, &(&1["commits_scanned"] == 0))
+    partially_skipped = Enum.filter(skipped, &(&1["commits_scanned"] > 0))
     hits = Enum.flat_map(records, & &1["hits"])
+    commits_total = commits_total(records)
+    commits_scanned = sum(records, "commits_scanned")
 
     %{
       docs_total: total,
-      docs_scanned: total - length(skipped),
-      commits_total: records |> Enum.flat_map(&(&1["commit_ids"] || [])) |> length(),
-      commits_scanned: sum(records, "commits_scanned"),
+      docs_scanned: total - length(fully_unscanned),
+      docs_fully_unscanned: length(fully_unscanned),
+      docs_partially_skipped: length(partially_skipped),
+      commits_total: commits_total,
+      commits_scanned: commits_scanned,
+      commits_skipped: commits_total - commits_scanned,
+      coverage_percent: coverage_percent(commits_scanned, commits_total),
       docs_skipped: length(skipped),
       affected_docs: Enum.count(records, &(&1["hits"] != [])),
       hits: length(hits),
@@ -368,7 +385,11 @@ defmodule Commonplace.Projection.MixedPlaneHistory do
   defp emit_summary(emit, summary) do
     emit.(
       "SUMMARY docs_total=#{summary.docs_total} docs_scanned=#{summary.docs_scanned} " <>
+        "docs_fully_unscanned=#{summary.docs_fully_unscanned} " <>
+        "docs_partially_skipped=#{summary.docs_partially_skipped} " <>
         "commits_total=#{summary.commits_total} commits_scanned=#{summary.commits_scanned} " <>
+        "commits_skipped=#{summary.commits_skipped} " <>
+        "coverage=#{format_coverage(summary.commits_scanned, summary.commits_total)} " <>
         "docs_skipped=#{summary.docs_skipped} affected_docs=#{summary.affected_docs} " <>
         "hits=#{summary.hits} resumed_docs=#{summary.resumed_docs} " <>
         "commits_this_run=#{summary.commits_this_run} elapsed_ms=#{summary.elapsed_ms}"
@@ -563,6 +584,35 @@ defmodule Commonplace.Projection.MixedPlaneHistory do
   defp json_safe(value) when is_list(value), do: Enum.map(value, &json_safe/1)
   defp json_safe(value) when is_atom(value), do: Atom.to_string(value)
   defp json_safe(value), do: value
+
+  defp commits_total(records),
+    do: records |> Enum.flat_map(&(&1["commit_ids"] || [])) |> length()
+
+  # ⛔ ZERO COMMITS IS NOT FULL COVERAGE. Reporting 100% for 0/0 is the exact
+  # defect this module was fixed for — "0 scanned out of 0" reading as a clean
+  # result — reintroduced inside the fix. A sweep that examined nothing has a
+  # coverage figure of NOT APPLICABLE, and saying so is the only honest option:
+  # 0.0 would be equally wrong in the other direction (it implies commits
+  # existed and were missed).
+  #
+  # Live mode cannot reach this — the known-positives gate voids an empty sweep
+  # and suppresses the summary entirely — but fixture mode can, and so can any
+  # future caller running live without expected positives. The figure must not
+  # depend on a guard two functions away for its honesty.
+  defp coverage_percent(_scanned, 0), do: :not_applicable
+  defp coverage_percent(scanned, total), do: scanned / total * 100
+
+  defp format_coverage(_scanned, 0), do: "0/0 (no commits — coverage not applicable)"
+
+  defp format_coverage(scanned, total) do
+    percent =
+      scanned
+      |> coverage_percent(total)
+      |> Float.floor(2)
+      |> :erlang.float_to_binary(decimals: 2)
+
+    "#{scanned}/#{total} (#{percent}%)"
+  end
 
   defp sum(records, key), do: Enum.sum(Enum.map(records, &(&1[key] || 0)))
   defp fixture_source_shape, do: "235d73b5-a44a-44de-91ad-a753c61f7407@5042f340"
