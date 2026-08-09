@@ -43,6 +43,26 @@ defmodule Commonplace.Crypto.NodeIdentityTest do
     assert ctx1.private_key == ctx2.private_key
   end
 
+  test "a missing key is refused when a prior world is present", %{dir: dir} do
+    File.write!(Path.join(dir, "root"), "prior-world")
+
+    assert {:error, {:node_signing_key_absent, :prior_world_present}} =
+             NodeIdentity.signing_context()
+
+    refute File.exists?(Path.join(dir, "node_signing_key"))
+  end
+
+  test "an existing key loads unchanged when a prior world is present", %{dir: dir} do
+    assert {:ok, ctx_before} = NodeIdentity.signing_context()
+    key_path = Path.join(dir, "node_signing_key")
+    key_contents = File.read!(key_path)
+    File.write!(Path.join(dir, "root"), "prior-world")
+
+    assert {:ok, ctx_after} = NodeIdentity.signing_context()
+    assert ctx_after == ctx_before
+    assert File.read!(key_path) == key_contents
+  end
+
   test "public_key/0 and identity/0 agree with the context" do
     assert {:ok, ctx} = NodeIdentity.signing_context()
     assert {:ok, pub} = NodeIdentity.public_key()
