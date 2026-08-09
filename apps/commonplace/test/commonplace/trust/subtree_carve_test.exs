@@ -14,7 +14,7 @@ defmodule Commonplace.Trust.SubtreeCarveTest do
 
   alias Commonplace.MUD.{Schemas, World}
   alias Commonplace.Trust
-  alias Commonplace.Trust.{Capability, CodeDocHeuristic}
+  alias Commonplace.Trust.{Capability, CodeDocHeuristic, Read, VerifyChain}
   alias Commonplace.Crypto.{Signing, SigningContext, NodeIdentity}
   alias Commonplace.Store.CommitStoreClient
 
@@ -86,6 +86,11 @@ defmodule Commonplace.Trust.SubtreeCarveTest do
     %{id: pid, pub: pub, ctx: ctx, cid: cap.id, creds: [signing_context: ctx, cert_cids: [cap.id]]}
   end
 
+  defp fresh_reader do
+    {pub, _priv} = Signing.generate_keypair()
+    %{id: UUID.uuid4(), pub: pub}
+  end
+
   defp meta_field(room, key, store) do
     {:ok, doc} = Commonplace.Tree.DocBuilder.reconstruct_doc(store, meta_uuid(room, store))
     Commonplace.Document.ContentType.get_content(doc) |> Jason.decode!() |> Map.get(key)
@@ -145,6 +150,93 @@ defmodule Commonplace.Trust.SubtreeCarveTest do
 
     assert Trust.writer_authorized?(member.id, member.pub, [member.cid], target, cfg, store)
     refute Trust.writer_authorized?(stranger.id, stranger.pub, [stranger.cid], target, cfg, store)
+  end
+
+  test "subtree read cert authorizes a reader inside its carried zone", %{
+    store: store,
+    node_ctx: node_ctx,
+    room: room
+  } do
+    zone = UUID.uuid4()
+    stamp_zone(room, zone, store, node_ctx)
+    reader = fresh_reader()
+
+    assert {:ok, cap} =
+             Read.grant(node_ctx, {:subtree, zone}, {reader.id, reader.pub}, store: store)
+
+    assert {:ok, %{verbs: verbs, scope: {:subtree, ^zone}}} =
+             VerifyChain.verify_chain(cap.id, MapSet.new([node_ctx.public_key]), store)
+
+    assert :read in verbs
+    reader_id = reader.id
+    assert {^reader_id, audience_pub} = cap.audience
+    assert reader.pub == audience_pub
+
+    cfg = %{
+      accept_unsigned: false,
+      trusted_identities: %{node_ctx.identity_uuid => Signing.encode_key(node_ctx.public_key)}
+    }
+
+    target = meta_uuid(room, store)
+    assert Trust.reader_authorized?(reader.id, reader.pub, [cap.id], target, cfg, store)
+
+    {:ok, outside_room} =
+      Schemas.create_dir_with_meta(
+        Schemas.room_filename(),
+        Schemas.encode_room(%Schemas.Room{name: "Outside", description: "another room"}),
+        store,
+        signing_context: node_ctx
+      )
+
+    stamp_zone(outside_room, UUID.uuid4(), store, node_ctx)
+    outside_target = meta_uuid(outside_room, store)
+
+    refute Trust.reader_authorized?(
+             reader.id,
+             reader.pub,
+             [cap.id],
+             outside_target,
+             cfg,
+             store
+           )
+  end
+
+  test "existing doc-scoped read grants remain exact", %{
+    store: store,
+    node_ctx: node_ctx,
+    room: room
+  } do
+    reader = fresh_reader()
+    target = meta_uuid(room, store)
+
+    assert {:ok, cap} =
+             Read.grant(node_ctx, target, {reader.id, reader.pub}, store: store)
+
+    assert {:ok, %{verbs: verbs, scope: {:docs, [^target]}}} =
+             VerifyChain.verify_chain(cap.id, MapSet.new([node_ctx.public_key]), store)
+
+    assert :read in verbs
+    reader_id = reader.id
+    assert {^reader_id, audience_pub} = cap.audience
+    assert reader.pub == audience_pub
+
+    cfg = %{
+      accept_unsigned: false,
+      trusted_identities: %{
+        node_ctx.identity_uuid => Signing.encode_key(node_ctx.public_key)
+      }
+    }
+
+    assert Trust.reader_authorized?(reader.id, reader.pub, [cap.id], target, cfg, store)
+
+    refute Trust.reader_authorized?(
+             reader.id,
+             reader.pub,
+             [cap.id],
+             UUID.uuid4(),
+             cfg,
+             store
+           )
   end
 
   test "subtree certs are LEAF-ONLY: delegation involving a subtree scope is refused at mint", %{store: store, node_ctx: node_ctx} do
