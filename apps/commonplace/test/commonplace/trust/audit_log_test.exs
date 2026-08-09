@@ -181,7 +181,10 @@ defmodule Commonplace.Trust.AuditLogTest do
              "store=#{inspect(store_record["firing_process"])}"
   end
 
-  test "handler failure is swallowed, never raised into the caller", %{store: store, dispatcher: d} do
+  test "handler failure is swallowed, never raised into the caller", %{
+    store: store,
+    dispatcher: d
+  } do
     # Malformed metadata (missing everything build_payload expects) must
     # not crash the caller that fired the telemetry event — this event
     # name fires directly on a trust-gate denial path.
@@ -197,7 +200,10 @@ defmodule Commonplace.Trust.AuditLogTest do
   end
 
   describe "flood guard" do
-    test "caps persisted events per window and suppresses the rest", %{store: store, dispatcher: d} do
+    test "caps persisted events per window and suppresses the rest", %{
+      store: store,
+      dispatcher: d
+    } do
       event_name = [:commonplace, :trust, :read, :would_refuse]
 
       for i <- 1..25 do
@@ -222,7 +228,10 @@ defmodule Commonplace.Trust.AuditLogTest do
       assert suppressed == 5
     end
 
-    test "window rollover emits one summary record for what was suppressed", %{store: store, dispatcher: d} do
+    test "window rollover emits one summary record for what was suppressed", %{
+      store: store,
+      dispatcher: d
+    } do
       event_name = [:commonplace, :trust, :read, :would_refuse]
 
       for i <- 1..25 do
@@ -238,6 +247,7 @@ defmodule Commonplace.Trust.AuditLogTest do
       # next event triggers rollover, without a real sleep.
       [{^event_name, window_start, count, suppressed}] = :ets.lookup(@rate_table, event_name)
       :ets.insert(@rate_table, {event_name, window_start - 61_000, count, suppressed})
+      counters_before_rollover = AuditLog.counters()
 
       :telemetry.execute(event_name, %{count: 1}, %{
         surface: :test,
@@ -245,6 +255,14 @@ defmodule Commonplace.Trust.AuditLogTest do
         reader: "r",
         visibility: :public
       })
+
+      counters_after_rollover = AuditLog.counters()
+      assert counters_after_rollover.entered == counters_before_rollover.entered + 1
+      assert counters_after_rollover.built == counters_before_rollover.built + 1
+
+      # `offered` counts records handed to the dispatcher, not input events:
+      # the rollover produces one summary record and one payload record.
+      assert counters_after_rollover.offered == counters_before_rollover.offered + 2
 
       events = read_log(store, d)
 
