@@ -72,7 +72,13 @@ else
   fi
 
   SINCE="$(ps -o lstart= -p "$pid" | sed 's/^ *//')"
+  # State the METHOD in the output. A tool's number arrives without its
+  # provenance: when a person tells you something you ask how they know, and
+  # when a gauge prints a pid the question does not occur to anyone. This one
+  # printed a transient wrapper pid once and it was relayed onward untouched.
   echo "serve pid $pid, started $SINCE"
+  echo "  (identified by: comm==beam.smp AND cmdline contains commonplace_dev;"
+  echo "   cross-check with: ss -ltnp | grep :5199)"
 fi
 
 [[ -d "$BUILD_DIR" ]] || { echo "cp-deploy-gap: no $BUILD_DIR" >&2; exit 2; }
