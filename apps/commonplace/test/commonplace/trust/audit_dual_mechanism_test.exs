@@ -174,7 +174,7 @@ defmodule Commonplace.Trust.AuditDualMechanismTest do
     assert is_binary(record["boot_id"])
 
     # Denominator rule: everything offered is accounted for.
-    assert AuditDispatcher.accounted?(status),
+    assert AuditDispatcher.downstream_accounted?(status),
            "audit counters do not sum: #{inspect(status)}"
 
     assert status.shed == 0
@@ -255,7 +255,7 @@ defmodule Commonplace.Trust.AuditDualMechanismTest do
            "the refused audit write must be COUNTED as failed, not dropped silently: " <>
              inspect(status)
 
-    assert AuditDispatcher.accounted?(status),
+    assert AuditDispatcher.downstream_accounted?(status),
            "counters must still sum even when persistence fails: #{inspect(status)}"
 
     # Enforcement, meanwhile, is untouched.
@@ -366,7 +366,7 @@ defmodule Commonplace.Trust.AuditDualMechanismTest do
     assert after_.recorded == before.recorded,
            "a denial of the audit doc must NOT be written into the audit doc"
 
-    assert AuditDispatcher.accounted?(after_),
+    assert AuditDispatcher.downstream_accounted?(after_),
            "guarded events must appear in the denominator: #{inspect(after_)}"
   end
 
@@ -427,7 +427,7 @@ defmodule Commonplace.Trust.AuditDualMechanismTest do
     # And the dispatcher is answering, not merely alive.
     status = AuditDispatcher.status()
     assert is_integer(status.offered)
-    assert AuditDispatcher.accounted?(status)
+    assert AuditDispatcher.downstream_accounted?(status)
   end
 
   test "the audit handler is attached, subscribed to EVERY audited event" do

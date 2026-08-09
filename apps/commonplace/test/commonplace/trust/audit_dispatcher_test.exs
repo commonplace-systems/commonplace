@@ -62,6 +62,16 @@ defmodule Commonplace.Trust.AuditDispatcherTest do
 
   defp record(i), do: %{"event" => "test.denial", "doc_uuid" => "doc-#{i}", "reason" => ":unsigned"}
 
+  test "accounted?/1 refuses a dispatcher-only half-answer", %{store: store, n: n} do
+    dispatcher = start_dispatcher!(store, n, flush_ms: 60_000)
+    AuditDispatcher.offer(dispatcher, record(1))
+
+    status = AuditDispatcher.status(dispatcher)
+
+    assert AuditDispatcher.downstream_accounted?(status)
+    refute AuditDispatcher.accounted?(status)
+  end
+
   # ── AC2: overflow increments a VISIBLE loss counter ──────────────────
 
   test "a deliberately induced overflow increments the loss counter — zero silent shedding",
@@ -80,7 +90,7 @@ defmodule Commonplace.Trust.AuditDispatcherTest do
     assert status.shed > 0, "an overflow that sheds nothing is not an overflow: #{inspect(status)}"
 
     # The point of the criterion: events offered vs recorded vs shed SUM.
-    assert AuditDispatcher.accounted?(status),
+    assert AuditDispatcher.downstream_accounted?(status),
            "the audit stream lost events without accounting for them: #{inspect(status)}"
 
     assert status.shed == offered - status.queued - status.recorded - status.failed -
@@ -103,7 +113,7 @@ defmodule Commonplace.Trust.AuditDispatcherTest do
     assert status.offered == 50
     assert status.shed == 0, "shedding below the bound: #{inspect(status)}"
     assert status.queued == 50
-    assert AuditDispatcher.accounted?(status)
+    assert AuditDispatcher.downstream_accounted?(status)
   end
 
   test "the loss counter is LOUD — shedding emits telemetry, not just a field",
@@ -141,7 +151,7 @@ defmodule Commonplace.Trust.AuditDispatcherTest do
     assert status.shed == 1
     assert status.recorded == 0
     refute status.enabled
-    assert AuditDispatcher.accounted?(status)
+    assert AuditDispatcher.downstream_accounted?(status)
   end
 
   test "offering to a dead dispatcher never raises into the deny site", %{store: store, n: n} do

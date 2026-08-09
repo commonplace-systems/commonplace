@@ -1168,6 +1168,106 @@ defmodule Commonplace.Trust do
     %{accept_unsigned: true, trusted_identities: %{}}
   end
 
+  @capture_count_fields [
+    :emitted,
+    :offered,
+    :recorded,
+    :shed,
+    :failed,
+    :guarded,
+    :queued,
+    :in_flight,
+    :upstream_loss,
+    :pre_dispatcher_emitted
+  ]
+
+  @doc """
+  Report denial-audit capture for this BEAM boot.
+
+  `emitted` is incremented synchronously by the local-write denial decision
+  site. `offered` and the remaining buckets come from the dispatcher, making
+  `upstream_loss = emitted - offered` the count lost before dispatch. Every
+  returned figure shares the returned `boot_id`; a dispatcher from a different
+  boot is rejected rather than compared.
+
+  Pass `dispatcher: server` for an injected dispatcher. Pass a prior result as
+  `since: snapshot` to obtain a boot-scoped interval while retaining the same
+  identity and enclosure.
+  """
+  @spec capture_rate(keyword()) :: map()
+  def capture_rate(opts \\ []) when is_list(opts) do
+    dispatcher = Keyword.get(opts, :dispatcher, Commonplace.Trust.AuditDispatcher)
+
+    case Commonplace.Trust.AuditDispatcher.status(dispatcher) do
+      %{error: _} = error ->
+        Map.put(error, :boot_id, Commonplace.Trust.DenialCounter.boot_id())
+
+      %{boot_id: dispatcher_boot_id} = status ->
+        %{boot_id: counter_boot_id, emitted: emitted} =
+          Commonplace.Trust.DenialCounter.snapshot()
+
+        if dispatcher_boot_id == counter_boot_id do
+          # CX-m0qw review: `emitted` is per-BEAM-boot (:persistent_term) while
+          # the dispatcher's buckets reset when IT restarts. Charging the
+          # difference to upstream_loss would report every pre-restart denial
+          # as fresh loss — a false alarm that BALANCES, and so is
+          # indistinguishable from the real thing. Split the two.
+          pre_dispatcher_emitted = Map.get(status, :emitted_at_start, 0)
+
+          status
+          |> Map.take([:offered, :recorded, :shed, :failed, :guarded, :queued, :in_flight])
+          |> Map.merge(%{
+            boot_id: counter_boot_id,
+            emitted: emitted,
+            pre_dispatcher_emitted: pre_dispatcher_emitted,
+            upstream_loss: emitted - pre_dispatcher_emitted - status.offered
+          })
+          |> capture_interval(Keyword.get(opts, :since))
+          |> put_capture_rate()
+        else
+          %{
+            error: :boot_id_mismatch,
+            boot_id: counter_boot_id,
+            dispatcher_boot_id: dispatcher_boot_id
+          }
+        end
+    end
+  end
+
+  defp capture_interval(current, nil), do: current
+
+  defp capture_interval(%{boot_id: boot_id} = current, %{boot_id: boot_id} = baseline) do
+    Enum.reduce(@capture_count_fields, %{boot_id: boot_id}, fn field, acc ->
+      Map.put(acc, field, Map.fetch!(current, field) - Map.fetch!(baseline, field))
+    end)
+  end
+
+  defp capture_interval(%{boot_id: boot_id}, %{boot_id: baseline_boot_id}) do
+    %{error: :baseline_boot_id_mismatch, boot_id: boot_id, baseline_boot_id: baseline_boot_id}
+  end
+
+  # CX-m0qw review: 0/0 is neither 100% nor 0%. Reporting 1.0 for a window
+  # with no denials is the same lie CX-1n8y removed from the mixed-plane
+  # scanner (`coverage_percent(_scanned, 0, false) -> :not_applicable`), and
+  # it is worse here: "capture_rate: 1.0" on an idle boot is exactly the
+  # reassuring green this ticket exists because someone believed.
+  # ...AND THE DENOMINATOR IS THIS DISPATCHER'S WINDOW, NOT THE BOOT'S.
+  # `recorded / emitted` would score a freshly restarted dispatcher 0.0
+  # because the boot's earlier denials predate it — the same false alarm as
+  # the upstream_loss one, one field over, introduced by the fix for it.
+  # (Fourth instance this week of a remedy carrying the defect it removes.)
+  defp put_capture_rate(%{emitted: emitted, recorded: recorded} = report) do
+    window = emitted - Map.get(report, :pre_dispatcher_emitted, 0)
+
+    if window > 0 do
+      Map.put(report, :capture_rate, recorded / window)
+    else
+      Map.put(report, :capture_rate, :not_applicable)
+    end
+  end
+
+  defp put_capture_rate(error), do: error
+
   @doc """
   CX-vyrs — the RESOLVED effective-enforcement posture, in one place. Three
   independent knobs each gate a different lane (trust-anchor strictness,
