@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+#
+# cp-kill — signal a process by NUMERIC PID, after resolving it by identity.
+#
+# ⛔ WHY THIS EXISTS, AND WHY IT IS A SCRIPT RATHER THAN A RULE
+#
+# 2026-08-09, three times in one session, the third THIRTY SECONDS after being
+# handed the rule:
+#
+#   pgrep -f "codex exec"          → matched the shell whose cmdline contained
+#                                    the phrase. A waiter built on it could
+#                                    never terminate, and "waiter never fires"
+#                                    is indistinguishable from "job still
+#                                    running".
+#   pkill -f 'while pgrep -f'      → matched the shell RUNNING IT. Aimed at a
+#                                    waiter, hit itself.
+#
+# ⭐ The lesson recorded at the time: *reading the rule did not install it.*
+# A habit that must be recalled under time pressure is not installed. So the
+# fix belongs in the command you reach for.
+#
+# ⛔ THE HAZARD IS NOT "A CARELESS PATTERN". `pkill -f` has NO BOUNDED BLAST
+# RADIUS, EVER: what it hits is decided by text in OTHER processes' command
+# lines — a set you do not control and cannot enumerate in advance. If a
+# pattern can surprise you about your own shell, it can surprise you about a
+# beam.smp whose cmdline you never read.
+#
+# ⚠️ ON THIS HOST THAT IS NOT ABSTRACT: `hermes` RUNS A LIVE-MONEY TRADING BEAM.
+#
+# USAGE
+#   bin/cp-kill --list <regex>     # IDENTIFY by executable (comm), never cmdline
+#   bin/cp-kill <pid> [pid...]     # SIGNAL by numeric pid only
+#   bin/cp-kill --signal TERM <pid>
+#
+# The two steps are deliberately separate. The gap between them is where you
+# notice you were about to kill the wrong thing.
+
+set -uo pipefail
+
+SIG=TERM
+PROTECTED_CWDS=(/home/jes/hermes)
+
+die() { echo "cp-kill: $*" >&2; exit 2; }
+
+if [[ "${1:-}" == "--list" ]]; then
+  pat="${2:?--list needs a regex matched against COMM (the executable), not the cmdline}"
+  echo "pid      comm             args"
+  ps -eo pid,comm,args --no-headers \
+    | awk -v p="$pat" '$2 ~ p { printf "%-8s %-16s %s\n", $1, $2, substr($0, index($0,$3)) }'
+  exit 0
+fi
+
+if [[ "${1:-}" == "--signal" ]]; then
+  SIG="${2:?--signal needs a signal name}"; shift 2
+fi
+
+[[ $# -gt 0 ]] || die "usage: cp-kill [--signal SIG] <pid>...   |   cp-kill --list <comm-regex>"
+
+for pid in "$@"; do
+  # ⛔ NUMERIC ONLY. A pattern here would reintroduce the entire defect.
+  [[ "$pid" =~ ^[0-9]+$ ]] || die "refusing '$pid' — pids only, never patterns. Use --list to resolve."
+
+  [[ -d "/proc/$pid" ]] || { echo "cp-kill: pid $pid is already gone"; continue; }
+
+  comm="$(cat "/proc/$pid/comm" 2>/dev/null || echo '?')"
+  cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null || echo '?')"
+
+  # ⛔ REFUSE THE PROTECTED SET BY IDENTITY, not by name — a process is hermes
+  #    because of where it runs, not because of what its cmdline says.
+  for guard in "${PROTECTED_CWDS[@]}"; do
+    if [[ "$cwd" == "$guard" || "$cwd" == "$guard"/* ]]; then
+      die "REFUSING pid $pid ($comm, cwd=$cwd) — protected: this is a live-money system.
+  If you genuinely mean it, use kill(1) directly and own the decision."
+    fi
+  done
+
+  # State WHAT is being killed before killing it. A pid alone is not reviewable.
+  echo "cp-kill: SIG$SIG → pid $pid  comm=$comm  cwd=$cwd"
+  kill -"$SIG" "$pid" || die "kill failed for $pid"
+done
