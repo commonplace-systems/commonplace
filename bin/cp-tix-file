@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+#
+# cp-tix-file — file a tix ticket IDEMPOTENTLY by title.
+#
+# WHY THIS EXISTS (2026-08-09)
+#
+# `ticket_create` goes over erpc to the live serve and its GenServer.call can
+# TIME OUT MID-FLIGHT — the write lands, the caller sees an exception. The
+# reflex is to retry. The retry files a second ticket.
+#
+# That happened TWICE in one session:
+#   CX-8pks / CX-0chq   (the commit_log default-limit ticket)
+#   CX-bjd2 / CX-y4bq   (the stale-beam ticket)
+#
+# ⚠️ AND THE SECOND ONE IS THE POINT. After the first I wrote down "check
+# whether it landed before retrying" — a RESOLUTION TO REMEMBER — and then
+# repeated the mistake verbatim two hours later, in a session whose entire
+# subject was that rules do not work as memory.
+#
+# ⇒ Every remedy that held this week was a file or a script. Every one that
+#   failed was a resolution. So this is a script.
+#
+# WHAT IT DOES
+#   1. Searches existing tickets for an EXACT title match.
+#   2. If found, prints the id and exits 0 WITHOUT creating anything.
+#   3. Otherwise creates, then re-reads to confirm, and prints the id.
+#
+# ⭐ Step 1 also runs on a retry after a timeout, which is the whole point:
+#   the second invocation finds the first invocation's ticket.
+#
+# USAGE
+#   bin/cp-tix-file <priority> <type> <<'EOF'
+#   Title on the first line
+#   ---
+#   Body from here down.
+#   EOF
+
+set -uo pipefail
+cd "$(dirname "$0")/.." || exit 1
+
+PRIORITY="${1:?usage: cp-tix-file <priority> <type>  (title/body on stdin, separated by a --- line)}"
+TYPE="${2:?usage: cp-tix-file <priority> <type>}"
+
+INPUT="$(cat)"
+TITLE="$(printf '%s' "$INPUT" | head -1)"
+BODY="$(printf '%s' "$INPUT" | sed '1,/^---$/d')"
+
+[[ -n "$TITLE" ]] || { echo "cp-tix-file: empty title" >&2; exit 1; }
+
+SCRATCH="$(mktemp -t cp-tix-file.XXXXXX.exs)"
+trap 'rm -f "$SCRATCH"' EXIT
+
+{
+  echo 'node = :"commonplace_dev@commonplace"'
+  echo 'true = Node.connect(node)'
+  echo 'store = Commonplace.Store.CommitStoreClient'
+  echo 'root = case :erpc.call(node, Commonplace.Workspace, :root_uuid, [], 30_000) do {:ok,r}->r; r->r end'
+  echo 'title = System.fetch_env!("CP_TIX_TITLE")'
+  echo 'body = System.fetch_env!("CP_TIX_BODY")'
+  echo 'prio = String.to_integer(System.fetch_env!("CP_TIX_PRIORITY"))'
+  echo 'type = System.fetch_env!("CP_TIX_TYPE")'
+  echo ''
+  echo '# ⭐ THE CHECK. Runs on the first call AND on a post-timeout retry.'
+  echo 'existing = fn ->'
+  echo '  case :erpc.call(node, Commonplace.Bd.Issue, :list, [root, store], 300_000) do'
+  echo '    {:ok, l} -> l; l when is_list(l) -> l'
+  echo '  end'
+  echo '  |> Enum.find(fn {i, _uuid} -> i.title == title end)'
+  echo 'end'
+  echo ''
+  echo 'case existing.() do'
+  echo '  {i, _} ->'
+  echo '    IO.puts("EXISTS #{i.id}  (no ticket created)")'
+  echo ''
+  echo '  nil ->'
+  echo '    {:ok, sc} = :erpc.call(node, Commonplace.Crypto.NodeIdentity, :signing_context, [], 30_000)'
+  echo ''
+  echo '    result ='
+  echo '      try do'
+  echo '        :erpc.call(node, Commonplace.ViewActionDispatch, :dispatch,'
+  echo '          ["ticket_create", %{args: %{"title" => title, "priority" => prio,'
+  echo '                                      "type" => type, "description" => body},'
+  echo '                             signing_context: sc}], 300_000)'
+  echo '      catch'
+  echo '        kind, reason -> {:raised, kind, reason}'
+  echo '      end'
+  echo ''
+  echo '    # ⛔ CONFIRM BY RE-READING, never by trusting the return. A timeout'
+  echo '    # here means the write may well have LANDED.'
+  echo '    case existing.() do'
+  echo '      {i, _} -> IO.puts("CREATED #{i.id}")'
+  echo '      nil -> IO.puts("FAILED — no ticket with that title after the attempt: #{inspect(result) |> String.slice(0, 200)}")'
+  echo '    end'
+  echo 'end'
+} > "$SCRATCH"
+
+CP_TIX_TITLE="$TITLE" CP_TIX_BODY="$BODY" CP_TIX_PRIORITY="$PRIORITY" CP_TIX_TYPE="$TYPE" \
+  ERL_INETRC=bin/erl_inetrc ERL_EPMD_ADDRESS=127.0.0.1 \
+  elixir --sname "cptixfile$$" "$SCRATCH" 2>&1 | tail -3
