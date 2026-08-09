@@ -1,0 +1,105 @@
+#!/usr/bin/env python3
+"""Append an unsigned proto-chit intent to the local replay WAL."""
+
+import datetime
+import fcntl
+import hashlib
+import json
+import os
+import subprocess
+import sys
+
+
+def classify(argv):
+    command = argv[0] if argv else ""
+    if command == "commit":
+        return "rewrite" if "--amend" in argv[1:] else "commit"
+    if command in {"merge", "pull"}:
+        return "merge"
+    if command in {"branch", "checkout", "switch", "tag", "worktree"}:
+        return "branch"
+    if command in {"cherry-pick", "revert"}:
+        return "commit"
+    return "rewrite"
+
+
+def message(argv):
+    for index, arg in enumerate(argv[1:], start=1):
+        if arg in {"-m", "--message"} and index + 1 < len(argv):
+            return argv[index + 1]
+        if arg.startswith("--message="):
+            return arg.split("=", 1)[1]
+    return " ".join(argv[1:])
+
+
+def git_value(repo, real_git, args, fallback=None):
+    try:
+        result = subprocess.run(
+            [real_git, *args], cwd=repo, check=False, capture_output=True, text=True
+        )
+        return result.stdout.strip() if result.returncode == 0 else fallback
+    except OSError:
+        return fallback
+
+
+def content_hashes(repo):
+    excluded_dirs = {".git", ".commonplace", "_build", "deps"}
+    hashes = {}
+    for root, dirs, files in os.walk(repo):
+        dirs[:] = [directory for directory in dirs if directory not in excluded_dirs]
+        for filename in files:
+            path = os.path.join(root, filename)
+            if os.path.islink(path):
+                continue
+            relative = os.path.relpath(path, repo)
+            digest = hashlib.sha256()
+            try:
+                with open(path, "rb") as handle:
+                    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                        digest.update(chunk)
+            except OSError:
+                continue
+            hashes[relative] = digest.hexdigest()
+    return dict(sorted(hashes.items()))
+
+
+def main():
+    if len(sys.argv) < 5:
+        return 2
+
+    repo, state_dir, failure, *argv = sys.argv[1:]
+    real_git = os.environ.get("PROTO_CHIT_REAL_GIT", "/usr/bin/git")
+    branch = git_value(repo, real_git, ["symbolic-ref", "--quiet", "--short", "HEAD"], "DETACHED")
+    sha = git_value(repo, real_git, ["rev-parse", "--verify", "HEAD"])
+
+    record = {
+        "wal-version": 1,
+        "status": "pending",
+        "replay-grade": "pin-cut-at-replay",
+        "failure": failure,
+        "recorded-at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "git-argv": argv,
+        "content-hashes": content_hashes(repo),
+        "event": {
+            "verb": classify(argv),
+            "author-principal": os.environ.get("PROTO_CHIT_PRINCIPAL"),
+            "message": message(argv),
+            "proto-pin": None,
+            "predecessor-ref": {"branch": branch, "event-refs": []},
+            "git-sha": sha,
+        },
+    }
+
+    os.makedirs(state_dir, mode=0o700, exist_ok=True)
+    wal_path = os.path.join(state_dir, "events.wal.ndjson")
+    with open(wal_path, "a", encoding="utf-8") as wal:
+        fcntl.flock(wal.fileno(), fcntl.LOCK_EX)
+        wal.write(json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n")
+        wal.flush()
+        os.fsync(wal.fileno())
+    print(f"proto-chit: unsigned intent WALed at {wal_path}", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
