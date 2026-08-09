@@ -5,9 +5,15 @@ call site in `main` as of `f8ce129`.
 
 The `2026-08-05-remote-worker-sandbox-design.md` §2/§6 was written with
 explicit `VERIFY` markers against machinery that "was CX-88mw's shape." This
-resolves them. ⭐ **Three of the capabilities it treats as work already exist;
-one is a two-line extension of an existing helper; one is genuinely open — and
-it is not the one the ledger flagged.**
+resolves them. ⭐ **Most of the trust story is standing: keypair mint +
+custody, audience-bound anti-theft, revocation, and `{:subtree,R}` WRITE are
+all shipped.** ⛔ **The real work is three named items, not an identity layer**
+— and **one of them is a security-relevant silent failure** (§①), not the
+"missing parameter" this document claimed in its first version.
+
+⚠️ **This header was itself corrected**: the summary survived a revision that
+changed the body, which is how a corrected document keeps giving the old
+answer to anyone who reads only the top.
 
 ⚠️ **Scope of this measurement:** `main` @`f8ce129`, source-read. ⛔ **It is
 NOT a statement about the running serve, which is 35 tickets behind
