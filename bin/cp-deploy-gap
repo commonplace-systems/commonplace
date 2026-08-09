@@ -51,7 +51,14 @@ else
   # ⚠️ If we cannot identify it, REFUSE — a gauge that reports 0 because it
   #    could not find the subject is the exact false green this repo keeps
   #    producing.
-  pid="$(pgrep -f 'beam.smp.*commonplace' | while read -r p; do
+  # ⚠️ MUST filter on comm == beam.smp. `elixir -S mix phx.server` runs a
+  # wrapper process whose cmdline also contains commonplace_dev, and it exists
+  # only for the first seconds after launch. Measured 2026-08-09: this tool
+  # reported pid 2135710 (the wrapper, already gone) while the serve was
+  # 2135767 — a transient sampled and printed as fact, by the tool built to be
+  # authoritative about deploy state.
+  pid="$(pgrep -f 'commonplace_dev' | while read -r p; do
+           [ "$(cat "/proc/$p/comm" 2>/dev/null)" = beam.smp ] || continue
            if tr '\0' '\n' < "/proc/$p/cmdline" 2>/dev/null | grep -q 'commonplace_dev'; then
              echo "$p"; break
            fi
