@@ -36,17 +36,16 @@ defmodule Commonplace.Crypto.NodeIdentity do
   """
 
   alias Commonplace.Crypto.{Signing, SigningContext}
-  alias Commonplace.Store.CommitStore
 
   @key_file "node_signing_key"
   @public_keys_file "node_signing_public_keys.json"
   @encoded_public_key_line_bytes 45
 
   @doc """
-  Return the node's `%SigningContext{}`, minting the keypair on genuine
-  first use. If the key is absent after a prior world existed, refuses
-  to mint a replacement identity. Callers treat errors as "no node signer
-  available" and fall back to leaving the commit unsigned.
+  Return the node's `%SigningContext{}`, minting the keypair on first
+  use. `{:error, reason}` only on filesystem errors that prevent both
+  reading and creating the key (callers treat that as "no node signer
+  available" and fall back to leaving the commit unsigned).
   """
   @spec signing_context() :: {:ok, SigningContext.t()} | {:error, term()}
   def signing_context do
@@ -126,11 +125,7 @@ defmodule Commonplace.Crypto.NodeIdentity do
         decode_keypair(contents)
 
       {:error, :enoent} ->
-        if CommitStore.prior_world_evidence?(data_dir) do
-          {:error, {:node_signing_key_absent, :prior_world_present}}
-        else
-          mint_keypair(data_dir, path)
-        end
+        mint_keypair(data_dir, path)
 
       {:error, _} = err ->
         err
