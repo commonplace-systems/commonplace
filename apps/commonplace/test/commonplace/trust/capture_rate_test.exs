@@ -237,6 +237,43 @@ defmodule Commonplace.Trust.CaptureRateTest do
     refute Map.has_key?(report, :capture_rate)
   end
 
+  test "a NON-local_write audited event must not make upstream_loss negative", ctx do
+    # ⛔ THE FIXTURE MONOCULTURE THIS FILE HAD. Every other test here drives
+    # ONLY local_write denials, so `emitted` (incremented at the local_write
+    # decision site) and `offered` (incremented for ALL NINE audited event
+    # types) were IDENTICAL BY CONSTRUCTION — and a cross-population ratio
+    # cannot fail a test whose fixtures produce one population.
+    #
+    # Observed live within a minute of deploy: emitted 3, offered 4,
+    # upstream_loss -1, capture_rate 1.33. Both impossible.
+    AuditLog.attach(ctx.store, dispatcher: ctx.dispatcher)
+    before = Commonplace.Trust.capture_rate(dispatcher: ctx.dispatcher)
+
+    # population 1: a real local_write denial -> increments BOTH counters
+    drive_denials(ctx.store, 1)
+
+    # population 2: any other audited event -> increments `offered` ONLY.
+    # This is what real traffic does and what the fixtures never did.
+    AuditDispatcher.offer(ctx.dispatcher, %{
+      "event" => "commonplace.code.rejected.trust",
+      "gate" => "code.trust",
+      "boot_id" => Commonplace.Trust.DenialCounter.boot_id()
+    })
+
+    assert :ok = AuditDispatcher.flush(ctx.dispatcher, 5_000)
+    rate = Commonplace.Trust.capture_rate(dispatcher: ctx.dispatcher, since: before)
+    report("two_populations", rate)
+
+    # The instrument must REFUSE rather than report an impossible number.
+    assert rate[:error] == :cross_population_counters,
+           "expected a refusal, got #{inspect(rate)}"
+
+    refute Map.has_key?(rate, :upstream_loss),
+           "a figure whose halves count different things must not be reported"
+
+    refute Map.has_key?(rate, :capture_rate)
+  end
+
   defp drive_denials(store, count) do
     for i <- 1..count do
       assert {:error, {:trust_rejected, :unsigned}} =

@@ -1236,6 +1236,27 @@ defmodule Commonplace.Trust do
           # its `status/0` has no `:emitted_at_start` (CX-y4bq — the live build
           # is 35 tickets behind main). An answer of 0 there would read as "no
           # upstream loss" when the truth is "no instrument".
+          # ⛔ THE POPULATIONS DO NOT MATCH, SO WE DO NOT DIVIDE THEM.
+          #
+          # `emitted` is incremented at the local-write denial DECISION site
+          # (commit_store.ex:2348,2366) — two call sites, one event type.
+          # `offered` is incremented by the dispatcher for EVERY audited event
+          # — AuditLog's @events lists NINE. So `emitted - offered` subtracts a
+          # SUPERSET from a SUBSET and goes negative the moment any non-
+          # local_write denial occurs. Observed live within a minute of deploy:
+          # emitted 3, offered 4, upstream_loss -1, capture_rate 1.33.
+          #
+          # ⚠️ Every test passed because the fixtures only ever drove
+          # local_write denials, so the two populations were IDENTICAL BY
+          # CONSTRUCTION in every test. A same-population assumption is
+          # invisible when the fixtures produce only one population.
+          #
+          # ⭐ Until the counter is widened to cover all nine event types
+          # (the real fix — it must stay at the DECISION sites, because that
+          # is what makes it survive handler detachment), this function
+          # REFUSES rather than reporting a number whose two halves count
+          # different things. Same discipline as the pre-instrument refusal
+          # below: a figure that cannot be computed honestly is not reported.
           case Map.fetch(status, :emitted_at_start) do
             :error ->
               %{
@@ -1245,7 +1266,24 @@ defmodule Commonplace.Trust do
               }
 
             {:ok, pre_dispatcher_emitted} ->
-              build_capture_report(status, counter_boot_id, emitted, pre_dispatcher_emitted, opts)
+              report =
+                build_capture_report(status, counter_boot_id, emitted, pre_dispatcher_emitted, opts)
+
+              # Cross-population guard: a negative loss or a rate above 1 is
+              # arithmetically impossible for a real capture rate, so its
+              # appearance means the two counters are drawn from different
+              # populations. Report the raw counts and refuse the ratio.
+              if is_integer(report[:upstream_loss]) and report[:upstream_loss] < 0 do
+                report
+                |> Map.drop([:upstream_loss, :capture_rate])
+                |> Map.put(:error, :cross_population_counters)
+                |> Map.put(
+                  :note,
+                  "emitted counts local_write denials only; offered counts all audited events"
+                )
+              else
+                report
+              end
           end
         else
           %{
