@@ -57,10 +57,18 @@ defmodule Commonplace.FileRmRfGuardTest do
         {:error, reason} -> flunk("child-path control could not observe a live store: #{reason}")
       end
 
-    child = Path.join(dir, "0.cub")
+    # ⚠️ Do NOT hardcode a filename. CubDB names its data file by COMPACTION
+    # GENERATION — a freshly created store holds `0.cub`, a store that has
+    # compacted holds e.g. `7B.cub`. Hardcoding `0.cub` passed in a fresh
+    # worktree and failed on a checkout whose store had compacted.
+    child =
+      case File.ls(dir) do
+        {:ok, [entry | _]} -> Path.join(dir, entry)
+        other -> flunk("expected CubDB data inside #{dir}; File.ls returned #{inspect(other)}")
+      end
 
-    # Control-for-the-control: if the store has no file here, this test would
-    # pass without ever exercising the case.
+    # Control-for-the-control: without this, an empty store directory would let
+    # the test pass without ever exercising the child-path case.
     assert File.exists?(child),
            "expected CubDB data inside #{dir}; found: #{inspect(File.ls(dir))}"
 
