@@ -7,6 +7,7 @@ defmodule Commonplace.Process.Config do
   """
 
   defstruct [:name, :mode, :source, :command, :args, :owns, :scope_uuid, :fork,
+             :identity_uuid, :event_log_uuid, :capability_cid,
              restart: :permanent, depends_on: [], env: %{}]
 
   @type t :: %__MODULE__{
@@ -20,7 +21,10 @@ defmodule Commonplace.Process.Config do
           depends_on: [String.t()],
           env: %{String.t() => String.t()},
           scope_uuid: String.t() | nil,
-          fork: :copy | :skip | nil
+          fork: :copy | :skip | nil,
+          identity_uuid: String.t() | nil,
+          event_log_uuid: String.t() | nil,
+          capability_cid: binary() | nil
         }
 
   @doc "Parse a __processes.json map into a list of Config entries."

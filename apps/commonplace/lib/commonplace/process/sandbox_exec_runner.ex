@@ -12,12 +12,16 @@ defmodule Commonplace.Process.SandboxExecRunner do
 
   alias Commonplace.Process.Sandbox
   alias Commonplace.Dataflow.RedLog
+  alias Commonplace.Crypto.AgentKeys
+
+  require Logger
 
   # Prefix used to tag stderr lines coming through the port
   @stderr_prefix "__CP_STDERR__"
   @max_line_length 8192
 
-  defstruct [:sandbox_pid, :command, :args, :name, :port, :os_pid, :event_log, :event_log_uuid, :store, :env]
+  defstruct [:sandbox_pid, :command, :args, :name, :port, :os_pid, :event_log, :event_log_uuid,
+             :store, :env, :signing_context, :capability_cid]
 
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts)
@@ -40,6 +44,13 @@ defmodule Commonplace.Process.SandboxExecRunner do
 
   @impl true
   def init(opts) do
+    case resolve_signing_context(opts) do
+      {:ok, signing_context} -> init_runner(opts, signing_context)
+      {:error, reason} -> {:stop, reason}
+    end
+  end
+
+  defp init_runner(opts, signing_context) do
     root_uuid = Keyword.fetch!(opts, :root_uuid)
     store = Keyword.fetch!(opts, :store)
     command = Keyword.fetch!(opts, :command)
@@ -69,7 +80,9 @@ defmodule Commonplace.Process.SandboxExecRunner do
       env: env,
       event_log: event_log,
       event_log_uuid: log_uuid,
-      store: store
+      store: store,
+      signing_context: signing_context,
+      capability_cid: Keyword.get(opts, :capability_cid)
     }
 
     # Wait for initial sync then run command
@@ -146,7 +159,7 @@ defmodule Commonplace.Process.SandboxExecRunner do
   @impl true
   def handle_info({port, {:exit_status, _status}}, %{port: port} = state) do
     # Command finished — commit the event log and schedule done check
-    event_log = RedLog.commit(state.event_log)
+    event_log = commit_event_log(state)
     Process.send_after(self(), :check_done, 200)
     {:noreply, %{state | event_log: event_log, port: nil}}
   end
@@ -186,7 +199,7 @@ defmodule Commonplace.Process.SandboxExecRunner do
 
     # Commit any remaining events
     if state.event_log != nil do
-      RedLog.commit(state.event_log)
+      _ = commit_event_log(state)
     end
 
     if state.sandbox_pid && Process.alive?(state.sandbox_pid) do
@@ -247,6 +260,57 @@ defmodule Commonplace.Process.SandboxExecRunner do
   end
 
   # --- Private ---
+
+  # Direct legacy callers that do not supply an identity retain their unsigned
+  # behavior. Orchestrated processes always supply one and must already have a
+  # registered key: this lookup never provisions custody.
+  defp resolve_signing_context(opts) do
+    case Keyword.get(opts, :identity_uuid) do
+      nil ->
+        {:ok, nil}
+
+      identity_uuid ->
+        secret_store = Keyword.get(opts, :secret_store, Commonplace.Store.SecretStore)
+
+        case AgentKeys.signing_context(identity_uuid, secret_store) do
+          {:ok, ctx} ->
+            {:ok, ctx}
+
+          {:error, reason} = error ->
+            Logger.error(
+              "Sandbox process #{Keyword.get(opts, :name, "sandbox")}: signing identity unavailable: #{inspect(reason)}"
+            )
+
+            error
+        end
+    end
+  end
+
+  defp commit_event_log(state) do
+    case RedLog.commit(state.event_log, commit_opts(state)) do
+      {:ok, event_log} ->
+        event_log
+
+      {:error, reason} ->
+        Logger.error(
+          "Sandbox process #{state.name}: event-log commit refused: #{inspect(reason)}"
+        )
+
+        state.event_log
+    end
+  end
+
+  defp commit_opts(%{signing_context: nil}), do: []
+
+  defp commit_opts(state) do
+    metadata =
+      case state.capability_cid do
+        nil -> %{}
+        cid -> %{kind: :regular, capability_proof: cid}
+      end
+
+    [signing_context: state.signing_context, metadata: metadata]
+  end
 
   defp parse_line(line) do
     if String.starts_with?(line, @stderr_prefix) do
