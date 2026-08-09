@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+#
+# cp-sol-snapshot — make a returned Sol run exist TWICE, before review touches it.
+#
+# WHY THIS EXISTS (2026-08-09)
+#
+# The sandbox contract says Sol leaves everything UNSTAGED — correct, it is what
+# stops Sol writing git metadata. The consequence is that SOL'S OUTPUT EXISTS IN
+# EXACTLY ONE PLACE (the worktree's working files) for the entire duration of
+# review, with no commit to fall back on.
+#
+# That window is not hypothetical. Twice in one night uncommitted work in a
+# worktree was nearly or actually lost:
+#   - the sol-perf salvage: 17 files on a branch that read as MERGED, one
+#     `rm -rf` from gone (recovered, CX-f168)
+#   - CX-qh55: I reverted Sol's entire test file with a `git checkout --`
+#     folded into a cleanup command, mid-review. Recovered VERBATIM only
+#     because the run log sits BESIDE the worktree and records the applied
+#     patch.
+#
+# ⇒ `git checkout --` is `rm` for uncommitted work. Review involves probing,
+#   perturbing and reverting — so review is exactly when that danger peaks.
+#
+# WHAT IT DOES, AND WHY NOT `git add -A && git commit`
+#
+# It writes a commit object holding the ENTIRE worktree state (tracked
+# modifications AND untracked files) and parks it at
+# refs/sol-snapshot/<branch>, WITHOUT moving the branch and WITHOUT leaving
+# anything staged.
+#
+#   - not on the branch, so it can never be merged by accident
+#   - includes untracked files, so generated fixtures and new modules survive
+#   - ⚠️ and precisely because it sweeps everything, it must NOT be the thing
+#     you merge: `git add -A` on a Sol worktree also sweeps generated
+#     artifacts, which is how three oracle .bin files nearly landed as
+#     "fixtures" on 2026-08-08. Snapshot broadly; COMMIT NARROWLY, by path.
+#
+# RECOVERY
+#   git show refs/sol-snapshot/<branch>:<path>          # one file
+#   git restore --source refs/sol-snapshot/<branch> -- <path>
+#   git diff refs/sol-snapshot/<branch>                 # what review changed
+#
+# USAGE
+#   bin/cp-sol-snapshot /home/jes/sol-xxxx/wt
+
+set -uo pipefail
+
+WT="${1:?usage: cp-sol-snapshot <worktree-path>}"
+
+cd "$WT" || { echo "cp-sol-snapshot: cannot cd to $WT" >&2; exit 1; }
+
+BRANCH="$(git branch --show-current)"
+[[ -n "$BRANCH" ]] || { echo "cp-sol-snapshot: detached HEAD in $WT" >&2; exit 1; }
+
+case "$BRANCH" in
+  main) echo "cp-sol-snapshot: REFUSED — $WT is on main, not a Sol branch." >&2; exit 1 ;;
+esac
+
+# Build the tree from a THROWAWAY index so the real index is never touched.
+TMP_INDEX="$(mktemp -t cp-sol-snapshot-index.XXXXXX)"
+rm -f "$TMP_INDEX"
+trap 'rm -f "$TMP_INDEX"' EXIT
+
+GIT_INDEX_FILE="$TMP_INDEX" git read-tree HEAD || exit 1
+GIT_INDEX_FILE="$TMP_INDEX" git add -A || exit 1
+TREE="$(GIT_INDEX_FILE="$TMP_INDEX" git write-tree)" || exit 1
+
+if [[ "$TREE" == "$(git rev-parse HEAD^{tree})" ]]; then
+  echo "cp-sol-snapshot: worktree is identical to HEAD — nothing to snapshot." >&2
+  exit 1
+fi
+
+SHA="$(git commit-tree "$TREE" -p HEAD -m "sol-snapshot: $BRANCH as returned, before review")" || exit 1
+REF="refs/sol-snapshot/$BRANCH"
+git update-ref "$REF" "$SHA" || exit 1
+
+CHANGED="$(git diff --name-only HEAD "$SHA" | wc -l)"
+echo "cp-sol-snapshot: $REF -> ${SHA:0:12}  ($CHANGED file(s) captured, index untouched)"
+echo "  recover: git restore --source $REF -- <path>"

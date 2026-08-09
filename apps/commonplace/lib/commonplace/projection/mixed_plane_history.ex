@@ -603,6 +603,15 @@ defmodule Commonplace.Projection.MixedPlaneHistory do
   # and suppresses the summary entirely — but fixture mode can, and so can any
   # future caller running live without expected positives. The figure must not
   # depend on a guard two functions away for its honesty.
+  # ⚠️ CLAUSE ORDER IS LOAD-BEARING. `emit_summary/2` derives its
+  # enumeration-failed flag as `summary.coverage_percent == :unknown`, which is
+  # equivalent to the flag passed in here ONLY because this is the FIRST clause
+  # — i.e. :unknown is returned iff enumeration failed, and for no other reason.
+  # A second path returning :unknown (or this clause moving below the others)
+  # breaks that derivation silently: PROGRESS and SUMMARY would then disagree
+  # about the same run. Same shape as the cross-file coupling in
+  # doc_commit_index_test's `== 2` — an equivalence nothing at either site
+  # declares.
   defp coverage_percent(_scanned, _total, true), do: :unknown
   defp coverage_percent(_scanned, 0, false), do: :not_applicable
   defp coverage_percent(scanned, total, false), do: scanned / total * 100
