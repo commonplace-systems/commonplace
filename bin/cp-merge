@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+#
+# cp-merge — merge a Sol branch into main, refusing to run anywhere else.
+#
+# WHY THIS EXISTS (2026-08-09)
+#
+# The dispatch loop's shape is: commit IN the worktree, then merge FROM main.
+# Written as one compound command, the leading `cd <worktree>` persists, so the
+# merge runs inside the worktree and merges the branch into itself:
+#
+#   $ cd /home/jes/sol-x/wt && git commit ... && git merge --no-ff sol/x
+#   Already up to date.
+#   fatal: The upstream branch of your current branch does not match ...
+#
+# Harmless — it no-ops and the push fails loudly — but it happened THREE TIMES
+# in one night, each time noticed, named, and then repeated. That is the
+# signature of something structure should hold rather than attention:
+# COMMITTING IN THE WORKTREE AND MERGING FROM MAIN ARE TWO COMMANDS, NOT ONE.
+#
+# Same family as "count and view are two commands" and "the rc you act on never
+# comes through a pipe": a leading `cd` or a pipe silently redefines the context
+# of the next thing, and the output still looks plausible.
+#
+# USAGE
+#   bin/cp-merge sol/cx-xxxx "Merge subject line
+#
+#   body..."
+
+set -uo pipefail
+
+MAIN_CHECKOUT="/home/jes/commonplace"
+BRANCH="${1:?usage: cp-merge <branch> <message>}"
+MESSAGE="${2:?usage: cp-merge <branch> <message>}"
+
+HERE="$(git rev-parse --show-toplevel 2>/dev/null)"
+
+if [[ "$HERE" != "$MAIN_CHECKOUT" ]]; then
+  echo "cp-merge: REFUSED — not in the main checkout." >&2
+  echo "  here: ${HERE:-<not a git repo>}" >&2
+  echo "  want: $MAIN_CHECKOUT" >&2
+  echo "" >&2
+  echo "  Merging from inside a worktree merges the branch into itself:" >&2
+  echo "  git says 'Already up to date' and the push then fails on the" >&2
+  echo "  upstream mismatch. Commit in the worktree, merge from main —" >&2
+  echo "  two commands, not one." >&2
+  exit 1
+fi
+
+CURRENT="$(git branch --show-current)"
+if [[ "$CURRENT" != "main" ]]; then
+  echo "cp-merge: REFUSED — on branch '$CURRENT', not main." >&2
+  exit 1
+fi
+
+exec git merge --no-ff "$BRANCH" -m "$MESSAGE"
