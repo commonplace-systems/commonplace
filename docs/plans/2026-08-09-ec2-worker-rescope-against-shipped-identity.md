@@ -30,30 +30,73 @@ NOT a statement about the running serve, which is 35 tickets behind
 
 ## ⛔ The two real gaps, and neither is what §6 listed
 
-**① `Trust.Read.grant/4` cannot express a SUBTREE read.** It hardcodes
+**① ⛔ A `{:subtree, R}` CERT CANNOT AUTHORIZE A READ AT ALL — and this is
+bigger than a missing parameter.** *(Found by commonplace-plan; verified
+here.)*
+
+`Trust.Read.grant/4` hardcodes `claim = %{verbs: [:read], scope: {:docs,
+[target_uuid]}}`, so it cannot MINT a subtree read. ⚠️ **But adding the
+parameter would not be enough**, because the VERIFIER cannot consume one
+either:
 
 ```elixir
-claim = %{verbs: [:read], scope: {:docs, [target_uuid]}}
+# trust.ex — cert_grants_read?/5
+{:ok, %{verbs: verbs, scope: {:docs, docs}}} <- VerifyChain.verify_chain(...)
+  ...
+else
+  _ -> false        # ← a {:subtree, _} cert lands HERE
 ```
 
-⇒ **Single doc only.** But `{:subtree, R}` is a first-class scope in the
-grammar and `grants?/5` already evaluates it. ⭐ **So "a `:read` cert for the
-project subtree" — the design's day-one requirement — needs a scope parameter
-on an existing helper, not new machinery.** ⚠️ Two constraints to respect:
-`check_subtree_leaf_only/2` makes `{:subtree,_}` **leaf-only in M2** (it cannot
-be re-delegated), and `check_no_code_doc_in_scope/2` treats subtree scopes
-differently from doc scopes.
+Compare the write side, which **has** the clause:
 
-**② The genuinely open one: does the worker run a commonplace node?**
-`AgentKeys` custody is the node-local `SecretStore` (CubDB). ⇒ **If the worker
-runs a commonplace node, the whole mint/custody story is reusable as-is.** If
-it is a bare `opencode` sandbox with no BEAM, **none of it applies** and the
-worker needs a different custody story entirely.
-⭐ **§2's `VERIFY what's reusable for a non-BEAM-resident principal` is the
-right question and it is still unanswered — it is an architecture question
-about the sandbox, not a gap in the trust code.** ⛔ **Nothing else in this
-table can be sized until it is settled**, because it decides whether the
-answer is "reuse `AgentKeys`" or "build custody."
+```elixir
+defp write_scope_covers?({:docs, docs}, target_uuid, _store), do: target_uuid in docs
+defp write_scope_covers?({:subtree, root}, target_uuid, store),
+  do: doc_zone(target_uuid, store) == root
+```
+
+⇒ ⭐ **SUBTREE SCOPE IS ENFORCED FOR WRITE AND STRUCTURALLY INVISIBLE FOR
+READ.** Day-one needs **both** halves: the scope parameter at the mint **and a
+`{:subtree, _}` clause in `cert_grants_read?/5`.**
+
+⚠️ ⭐ **AND THE FAILURE MODE IS THIS WEEK'S SIGNATURE: a `with` whose pattern
+does not match falls through to a bare `false`.** The cert mints fine,
+`verify_chain` passes, the audience binding holds — **and it simply never
+authorizes anything, with no error naming the scope mismatch.** A silent
+`false`, **indistinguishable from "not permitted."**
+
+⛔ **CORRECTION TO THIS DOCUMENT'S FIRST VERSION**, which called gap ① *"a
+parameter, not machinery."* ⚠️ **That was wrong, and the reason is instructive:
+I reported "grep finds `{:subtree,_}` for `:define_verb` and write carves, not
+for `:read`" as an absence of EXERCISE. It is an absence of the CODE PATH.**
+⭐ **An absence needs its explanation before it can be sized — I recorded the
+observation and did not chase the why.**
+
+**② ✅ CLOSED — the worker is BEAM-resident by design, and the design says so.**
+*(commonplace-plan; the answer was in the same document.)*
+
+`2026-08-05-remote-worker-sandbox-design.md` **§0.1**: *"the worker is a PEER,
+NOT A CLIENT: it runs its own local serve in the sandbox, federates with home
+over HTTP, and works against its own replica."* ⇒ **`AgentKeys`' node-local
+`SecretStore` custody applies as-is.**
+
+⚠️ **I spent measurement on a question the document had already settled two
+paragraphs before the `VERIFY` marker I was resolving.** The marker was hedging
+about CX-88mw's per-agent machinery and READ as doubt about the worker's
+residency. ⭐ **A hedge that contradicts its own document is worse than no
+hedge.**
+
+⇒ ⭐ **BUT THE DISTINCTION THE QUESTION SURFACED IS REAL AND IS NOW RULED — TWO
+PRINCIPALS, TWO CUSTODY STORIES, AND CONFLATING THEM IS A SECURITY BUG:**
+  · **EC2 worker = a PEER.** Runs its own node, **mints and holds its own key**
+    via `AgentKeys`, federates to home. Everything in the table above applies.
+  · **Sol/codex in a sandbox = NOT BEAM-resident, and MUST NEVER HOLD A KEY.**
+    **The RUNNER holds custody and signs on its behalf** — which the
+    sol-sandbox design already says.
+⭐ **And that is the better posture anyway: the workload is the untrusted part,
+so the key belongs to the supervisor, not the supervised.** ⚠️ **Conflating
+them is how a sandbox acquires an identity nobody granted it — the
+mint-on-missing trap arriving through the org chart instead of the code.**
 
 ## ⚠️ One design premise re-verified as STILL TRUE
 
@@ -67,9 +110,10 @@ every gate on it is decorative.
 
 ## ⇒ What this changes about sizing
 
-- **Day-one contribution** (read granted subtree, work locally, propose)
-  needs **the scope parameter on `Read.grant/4`** and nothing else from the
-  trust layer.
+- **Day-one contribution** (read granted subtree, work locally, propose) needs
+  **two changes, not one**: the scope parameter on `Read.grant/4` **and** a
+  `{:subtree, _}` clause in `cert_grants_read?/5`. ⛔ **Shipping only the
+  first mints a cert the verifier silently refuses.**
 - **B4** is **smaller than "unbuilt"**: the cert primitive exists and is
   enforced. What is unproven is the **cross-repo audience** and the fact that
   subtree certs are **leaf-only**, which forbids the worker re-delegating.
@@ -78,7 +122,9 @@ every gate on it is decorative.
   wrote it, under authority delegated by home"* — the honest record, available
   today with a single anchor.
 
-⚠️ **What I did NOT verify:** that any of this works across a transport (Slice-0
-state), that `{:subtree, R}` read certs are exercised anywhere today — **grep
-found subtree usage only for `:define_verb` and write carves, not for
-`:read`** — or anything about the running serve.
+⚠️ **What I did NOT verify:** that any of this works across a transport
+(Slice-0 state), or anything about the running serve.
+⭐ **And the one I recorded but did not chase — "grep found subtree usage only
+for `:define_verb` and write carves, not for `:read`" — turned out to be gap ①
+itself.** An absence I reported as a coverage observation was a missing code
+path. **Chase the absence next time; it was the finding.**
