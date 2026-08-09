@@ -38,6 +38,7 @@ defmodule Commonplace.Crypto.NodeIdentity do
   alias Commonplace.Crypto.{Signing, SigningContext}
 
   @key_file "node_signing_key"
+  @public_keys_file "node_signing_public_keys.json"
 
   @doc """
   Return the node's `%SigningContext{}`, minting the keypair on first
@@ -48,7 +49,8 @@ defmodule Commonplace.Crypto.NodeIdentity do
   @spec signing_context() :: {:ok, SigningContext.t()} | {:error, term()}
   def signing_context do
     with {:ok, identity} <- Commonplace.Workspace.node_id(),
-         {:ok, {pub, priv}} <- load_or_mint_keypair() do
+         {:ok, {pub, priv}} <- load_or_mint_keypair(),
+         :ok <- publish_public_keys([pub]) do
       {:ok,
        %SigningContext{
          identity_uuid: identity,
@@ -58,10 +60,34 @@ defmodule Commonplace.Crypto.NodeIdentity do
     end
   end
 
-  @doc "The node identity's raw Ed25519 public key."
+  @doc "The node identity's raw Ed25519 public key, read only from the public artifact."
   @spec public_key() :: {:ok, binary()} | {:error, term()}
   def public_key do
-    with {:ok, {pub, _priv}} <- load_or_mint_keypair(), do: {:ok, pub}
+    case public_keys() do
+      {:ok, [pub | _]} -> {:ok, pub}
+      {:ok, []} -> {:error, :no_node_public_keys}
+      :absent -> {:error, :node_public_keys_absent}
+      {:error, _} = err -> err
+    end
+  end
+
+  @doc """
+  Read the node anchor's public-key artifact.
+
+  `:absent` is deliberately distinct from `{:ok, []}`: the former lets
+  anchor consumers fall back to their configured anchors, while the
+  latter faithfully represents a present artifact declaring zero keys.
+  This function never reads or creates `node_signing_key`.
+  """
+  @spec public_keys() :: {:ok, [binary()]} | :absent | {:error, term()}
+  def public_keys do
+    data_dir = Application.get_env(:commonplace, :data_dir, "data")
+
+    case File.read(Path.join(data_dir, @public_keys_file)) do
+      {:ok, contents} -> decode_public_keys(contents)
+      {:error, :enoent} -> :absent
+      {:error, _} = err -> err
+    end
   end
 
   @doc "The node signing identity (the workspace node_id)."
@@ -110,6 +136,50 @@ defmodule Commonplace.Crypto.NodeIdentity do
       # Re-read after rename so concurrent first-boot races settle on
       # whichever rename landed (both callers see the same final key).
       decode_keypair(final)
+    end
+  end
+
+  defp publish_public_keys(keys) do
+    data_dir = Application.get_env(:commonplace, :data_dir, "data")
+    path = Path.join(data_dir, @public_keys_file)
+    suffix = System.unique_integer([:positive, :monotonic])
+    tmp = Path.join(data_dir, ".#{@public_keys_file}.#{suffix}.tmp")
+    contents = Jason.encode!(Enum.map(keys, &Base.encode64/1)) <> "\n"
+
+    result =
+      with :ok <- File.mkdir_p(data_dir),
+           :ok <- File.write(tmp, contents, [:write]),
+           :ok <- File.chmod(tmp, 0o644),
+           :ok <- File.rename(tmp, path) do
+        :ok
+      end
+
+    if result != :ok do
+      _ = File.rm(tmp)
+    end
+
+    result
+  end
+
+  defp decode_public_keys(contents) do
+    with {:ok, encoded_keys} when is_list(encoded_keys) <- Jason.decode(contents),
+         {:ok, keys} <- decode_public_key_list(encoded_keys) do
+      {:ok, keys}
+    else
+      _ -> {:error, :corrupt_node_public_keys}
+    end
+  end
+
+  defp decode_public_key_list(encoded_keys) do
+    Enum.reduce_while(encoded_keys, {:ok, []}, fn encoded, {:ok, keys} ->
+      case is_binary(encoded) && Base.decode64(encoded) do
+        {:ok, key} when byte_size(key) == 32 -> {:cont, {:ok, [key | keys]}}
+        _ -> {:halt, {:error, :corrupt_node_public_keys}}
+      end
+    end)
+    |> case do
+      {:ok, keys} -> {:ok, Enum.reverse(keys)}
+      {:error, _} = err -> err
     end
   end
 end

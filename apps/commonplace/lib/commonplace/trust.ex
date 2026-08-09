@@ -801,16 +801,25 @@ defmodule Commonplace.Trust do
   # reach this private function. Any change here MUST update that site
   # until CX-2rbz exposes a public accessor and removes the copy.
   defp anchor_keys(cfg) do
-    cfg.trusted_identities
-    |> Map.values()
-    |> Enum.flat_map(&List.wrap/1)
-    |> Enum.flat_map(fn encoded ->
-      case Signing.decode_key(encoded) do
-        {:ok, key} -> [key]
+    configured_keys =
+      cfg.trusted_identities
+      |> Map.values()
+      |> Enum.flat_map(&List.wrap/1)
+      |> Enum.flat_map(fn encoded ->
+        case Signing.decode_key(encoded) do
+          {:ok, key} -> [key]
+          {:error, _} -> []
+        end
+      end)
+
+    public_node_keys =
+      case Commonplace.Crypto.NodeIdentity.public_keys() do
+        {:ok, keys} -> keys
+        :absent -> []
         {:error, _} -> []
       end
-    end)
-    |> MapSet.new()
+
+    MapSet.new(configured_keys ++ public_node_keys)
   end
 
   # A trusted identity's signature must verify against one of its pinned
@@ -1159,8 +1168,9 @@ defmodule Commonplace.Trust do
   # silent).
   defp with_local_node_trust(cfg) do
     with {:ok, identity} <- Commonplace.Crypto.NodeIdentity.identity(),
-         {:ok, pub} <- Commonplace.Crypto.NodeIdentity.public_key() do
-      trusted = Map.put_new(cfg.trusted_identities, identity, Signing.encode_key(pub))
+         {:ok, [_ | _] = public_keys} <- Commonplace.Crypto.NodeIdentity.public_keys() do
+      encoded_keys = Enum.map(public_keys, &Signing.encode_key/1)
+      trusted = Map.put_new(cfg.trusted_identities, identity, encoded_keys)
       %{cfg | trusted_identities: trusted}
     else
       _ -> cfg

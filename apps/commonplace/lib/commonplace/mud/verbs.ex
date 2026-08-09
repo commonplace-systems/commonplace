@@ -567,16 +567,25 @@ defmodule Commonplace.MUD.Verbs do
   defp local_anchor_keys do
     cfg = Commonplace.Trust.config()
 
-    cfg.trusted_identities
-    |> Map.values()
-    |> Enum.flat_map(&List.wrap/1)
-    |> Enum.flat_map(fn encoded ->
-      case Commonplace.Crypto.Signing.decode_key(encoded) do
-        {:ok, key} -> [key]
+    configured_keys =
+      cfg.trusted_identities
+      |> Map.values()
+      |> Enum.flat_map(&List.wrap/1)
+      |> Enum.flat_map(fn encoded ->
+        case Commonplace.Crypto.Signing.decode_key(encoded) do
+          {:ok, key} -> [key]
+          {:error, _} -> []
+        end
+      end)
+
+    public_node_keys =
+      case Commonplace.Crypto.NodeIdentity.public_keys() do
+        {:ok, keys} -> keys
+        :absent -> []
         {:error, _} -> []
       end
-    end)
-    |> MapSet.new()
+
+    MapSet.new(configured_keys ++ public_node_keys)
   end
 
   defp build_user_verb_ctx(:object, host_uuid, _host_name, ctx) do

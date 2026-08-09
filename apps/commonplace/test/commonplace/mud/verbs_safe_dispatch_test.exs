@@ -14,7 +14,7 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
   """
   use ExUnit.Case, async: false
 
-  alias Commonplace.Crypto.{Signing, SigningContext}
+  alias Commonplace.Crypto.{NodeIdentity, Signing, SigningContext}
   alias Commonplace.Document.ContentType
   alias Commonplace.MUD.{Parser, Schemas, SignedWrite, VerbSource, Verbs, World}
   alias Commonplace.MUD.Schemas.{Object, Room}
@@ -80,7 +80,7 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
 
     {:ok, inventory_uuid} = Schemas.create_dir_with_meta(nil, nil, store)
 
-    %{store: store, root_uuid: root_uuid, room_uuid: room_uuid, inventory_uuid: inventory_uuid}
+    %{dir: dir, store: store, root_uuid: root_uuid, room_uuid: room_uuid, inventory_uuid: inventory_uuid}
   end
 
   # ---- test helpers ----
@@ -407,27 +407,38 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
   # ---- pin 6b (RIDER 1): verified-chains-only owner ceiling ----
 
   test "pin 6b: revoking the owner's section cert collapses owner_grant back to the host-only default", %{
+    dir: dir,
     store: store,
     room_uuid: room_uuid,
     inventory_uuid: inventory_uuid
   } do
-    {root_pub, root_priv} = Signing.generate_keypair()
-    root_identity = "root-#{:rand.uniform(999_999_999_999)}"
-    root_ctx = %SigningContext{identity_uuid: root_identity, private_key: root_priv, public_key: root_pub}
+    old_data_dir = Application.get_env(:commonplace, :data_dir)
+    Application.put_env(:commonplace, :data_dir, dir)
+
+    on_exit(fn ->
+      if old_data_dir == nil do
+        Application.delete_env(:commonplace, :data_dir)
+      else
+        Application.put_env(:commonplace, :data_dir, old_data_dir)
+      end
+    end)
+
+    assert {:ok, root_ctx} = NodeIdentity.signing_context()
+    root_identity = root_ctx.identity_uuid
 
     {owner_pub, owner_priv} = Signing.generate_keypair()
     owner_identity = "owner-#{:rand.uniform(999_999_999_999)}"
     owner_ctx = %SigningContext{identity_uuid: owner_identity, private_key: owner_priv, public_key: owner_pub}
 
-    # Both pinned: root anchors the section cert's chain (VerifyChain's
-    # `check_root`); owner being pinned too keeps this pin isolated to
-    # the OWNER-GRANT (gate b) ceiling — invoker authority (gate a) and
-    # the define-gate both trivially pass via the pinned-root fast path,
-    # so only RIDER 1's verified-chains-only union is under test.
+    # Owner being pinned keeps this pin isolated to the OWNER-GRANT
+    # (gate b) ceiling. The node root is deliberately unusable in config:
+    # its chain can verify only if Verbs.local_anchor_keys/0 reads the
+    # node's public artifact itself. This catches the hand-kept copy
+    # drifting from Trust.anchor_keys/1.
     Application.put_env(:commonplace, :trust, %{
       accept_unsigned: true,
       trusted_identities: %{
-        root_identity => Signing.encode_key(root_pub),
+        root_identity => "not-a-public-key",
         owner_identity => Signing.encode_key(owner_pub)
       }
     })
@@ -461,8 +472,14 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
 
     ctx = base_ctx(store, room_uuid, inventory_uuid, signing_context: owner_ctx)
 
+    private_key_path = Path.join(dir, "node_signing_key")
+    assert File.exists?(private_key_path)
+    :ok = File.rm(private_key_path)
+    refute File.exists?(private_key_path)
+
     # BEFORE revocation: owner_grant = {chest, room, dest} (verified,
-    # unrevoked chain) → the move (touches chest/room/dest) is permitted.
+    # unrevoked chain) → the move (touches chest/room/dest) is permitted,
+    # even though the node's private-key path is masked.
     assert :ok = Verbs.dispatch(Parser.parse("shove chest"), ctx)
     assert Enum.any?(World.list_objects_in(dest_uuid, store), &(&1.node_id == chest_uuid))
     refute Enum.any?(World.list_objects_in(room_uuid, store), &(&1.node_id == chest_uuid))
