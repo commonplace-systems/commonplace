@@ -87,10 +87,20 @@ that matters and the part nobody has done.
    caused, and do not resurrect four dead scripts inside a re-pointing
    ticket.**
 3. ⭐ **`multi_commit_generator.mjs` must regenerate `multi_commit_fixtures.json`
-   BYTE-IDENTICALLY.** It is the one that currently works, so it is the one
-   that can prove the swap is behaviour-preserving. ⛔ **If the bytes differ,
-   STOP AND REPORT** — that is a finding about the fixture or the version, not
-   a licence to commit new bytes.
+   BYTE-IDENTICALLY.**
+   ⛔ **AND IT MUST FIRST PROVE THE GENERATOR WROTE THE FILE — this criterion as
+   originally written was unfalsifiable.** An unchanged file means *"regenerated
+   identically"* OR *"never written"*, and a hash comparison cannot tell them
+   apart. Sol hit exactly this: `before d1f8ced1… / after d1f8ced1… / cmp rc=0`
+   while the generator had **crashed before writing** — the check produced its
+   passing output *because* the work did not happen, and would do so on every
+   future run. ⇒ **Positive control required: assert the process exited 0 AND
+   the mtime advanced, before comparing bytes.**
+
+   It is the one generator that currently works, so it is the one that can
+   prove the swap is behaviour-preserving. ⛔ **If the bytes differ, STOP AND
+   REPORT** — that is a finding about the fixture or the version, not a licence
+   to commit new bytes.
    ⚠️ Note it currently resolves an **absolute** path into the stale clone,
    whose Yjs is a **v14 rc**; `yjs-preview` is **14.0.0-16**. **If the bytes
    differ, that difference IS the answer to "does the pinned preview match the
