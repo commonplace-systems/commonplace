@@ -10,22 +10,63 @@ shim_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 state_dir=${PROTO_CHIT_STATE_DIR:-"$shim_dir/../state"}
 wal_path="$state_dir/events.wal.ndjson"
 
+# Runs the emitter with the caller's git argv after `--`, prefixed by whatever
+# optional flags this invocation carries. Positional parameters set inside a
+# function are its own, so the caller's git argv survives untouched for the WAL
+# fallback and the real-git exec below.
+#
+# PROTO_CHIT_SYNC_EXCLUDES is a comma-separated list of workspace entry names;
+# each becomes one `--sync-exclude NAME` pair. Unset or empty adds no flags and
+# leaves behaviour unchanged -- the emitter appends these to its own defaults,
+# it never substitutes them, so `.git`/`.commonplace` stay excluded regardless.
+run_emitter() {
+  git_argv_count=$#
+
+  if [ -n "${PROTO_CHIT_TRACE_FILE:-}" ]; then
+    set -- "$@" --trace "$PROTO_CHIT_TRACE_FILE"
+  fi
+
+  excludes=${PROTO_CHIT_SYNC_EXCLUDES:-}
+  while [ -n "$excludes" ]; do
+    case "$excludes" in
+      *,*)
+        name=${excludes%%,*}
+        excludes=${excludes#*,}
+        ;;
+      *)
+        name=$excludes
+        excludes=""
+        ;;
+    esac
+
+    if [ -n "$name" ]; then
+      set -- "$@" --sync-exclude "$name"
+    fi
+  done
+
+  set -- "$@" --
+
+  # Rotate the git argv, still at the front, around behind the flags and `--`.
+  while [ "$git_argv_count" -gt 0 ]; do
+    arg=$1
+    shift
+    set -- "$@" "$arg"
+    git_argv_count=$((git_argv_count - 1))
+  done
+
+  "$emitter" --data-dir "$PROTO_CHIT_DATA_DIR" proto-chit emit \
+    --repo "$PWD" --state-dir "$state_dir" \
+    --event-log "$PROTO_CHIT_EVENT_LOG_UUID" --real-git "$real_git" \
+    "$@"
+}
+
 case "$command_name" in
   commit|merge|pull|branch|checkout|switch|tag|worktree|rebase|reset|filter-branch|replace|update-ref|notes|bisect|reflog|stash|cherry-pick|revert)
     emitter=${PROTO_CHIT_COMMONPLACE:-}
     emit_status=127
 
     if [ -n "$emitter" ] && [ -n "${PROTO_CHIT_DATA_DIR:-}" ] && [ -n "${PROTO_CHIT_EVENT_LOG_UUID:-}" ]; then
-      if [ -n "${PROTO_CHIT_TRACE_FILE:-}" ]; then
-        "$emitter" --data-dir "$PROTO_CHIT_DATA_DIR" proto-chit emit \
-          --repo "$PWD" --state-dir "$state_dir" \
-          --event-log "$PROTO_CHIT_EVENT_LOG_UUID" --real-git "$real_git" \
-          --trace "$PROTO_CHIT_TRACE_FILE" -- "$@"
-      else
-        "$emitter" --data-dir "$PROTO_CHIT_DATA_DIR" proto-chit emit \
-          --repo "$PWD" --state-dir "$state_dir" \
-          --event-log "$PROTO_CHIT_EVENT_LOG_UUID" --real-git "$real_git" -- "$@"
-      fi
+      run_emitter "$@"
       emit_status=$?
     fi
 
