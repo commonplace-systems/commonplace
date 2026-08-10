@@ -149,6 +149,66 @@ defmodule Commonplace.Sync.WatcherTest do
       assert change.type == :created
       assert change.name == "regular.txt"
     end
+
+    # exclude_names must be symmetric: a name in the exclude list is
+    # invisible to the diff in BOTH directions. Previously it was applied
+    # only to the disk listing, so a substrate-minted schema entry with no
+    # on-disk counterpart perpetually surfaced as :deleted and blocked
+    # sync-flush completeness (measured on the "bd" entry).
+    test "excluded schema-only entry produces no :deleted change",
+         %{store: store, watch_dir: dir, root_uuid: root} do
+      add_schema_file(store, root, "minted", "substrate data")
+
+      changes = Watcher.detect_changes(root, dir, store, exclude_names: ["minted"])
+
+      assert changes == []
+    end
+
+    # CONTROL: the same setup without the exclude still reports :deleted.
+    test "non-excluded schema-only entry still produces a :deleted change",
+         %{store: store, watch_dir: dir, root_uuid: root} do
+      add_schema_file(store, root, "minted", "substrate data")
+
+      changes = Watcher.detect_changes(root, dir, store)
+
+      assert [%{type: :deleted, name: "minted"}] = changes
+    end
+
+    test "excluded name present on disk AND in schema produces no :modified change",
+         %{store: store, watch_dir: dir, root_uuid: root} do
+      add_schema_file(store, root, "minted", "crdt content")
+      File.write!(Path.join(dir, "minted"), "different disk content")
+
+      changes = Watcher.detect_changes(root, dir, store, exclude_names: ["minted"])
+
+      assert changes == []
+    end
+  end
+
+  describe "sync_recursive/4 exclusions" do
+    test "does not recurse into an excluded schema dir entry",
+         %{store: store, watch_dir: dir, root_uuid: root} do
+      # A schema dir entry named "bd" whose child schema holds a file that
+      # does not exist on disk. If sync_recursive descended into it, that
+      # child would be deleted from the child schema.
+      sub_uuid = UUID.uuid4()
+      sub_doc = Schema.new_schema()
+      sub_doc = Schema.add_file(sub_doc, "inner.txt", UUID.uuid4())
+      CommitStore.create_commit(store, sub_uuid, Yelixer.Encoding.encode_update(sub_doc), nil)
+
+      root_doc = load_schema(root, store)
+      root_doc = Schema.add_directory(root_doc, "bd", sub_uuid)
+      CommitStore.create_commit(store, root, Yelixer.Encoding.encode_update(root_doc), nil)
+
+      # The directory exists on disk (so recursion would be attempted).
+      File.mkdir_p!(Path.join(dir, "bd"))
+
+      Watcher.sync_recursive(root, dir, store, exclude_names: ["bd"])
+
+      # Root schema still has "bd", and the child schema is untouched.
+      assert {:ok, _} = Schema.get_entry(load_schema(root, store), "bd")
+      assert {:ok, _} = Schema.get_entry(load_schema(sub_uuid, store), "inner.txt")
+    end
   end
 
   describe "apply_changes/4" do
@@ -286,6 +346,20 @@ defmodule Commonplace.Sync.WatcherTest do
       {:ok, _} -> true
       {:error, _} -> false
     end
+  end
+
+  # Register a text doc under `name` in the schema at `root` (no disk file).
+  defp add_schema_file(store, root, name, content) do
+    file_uuid = UUID.uuid4()
+    doc = Yelixer.Doc.new()
+    doc = ContentType.create(doc, :text, name)
+    doc = ContentType.insert_text(doc, 0, content)
+    CommitStore.create_commit(store, file_uuid, Yelixer.Encoding.encode_update(doc), nil)
+
+    root_doc = load_schema(root, store)
+    root_doc = Schema.add_file(root_doc, name, file_uuid)
+    CommitStore.create_commit(store, root, Yelixer.Encoding.encode_update(root_doc), nil)
+    file_uuid
   end
 
   defp load_schema(uuid, store) do
