@@ -169,6 +169,14 @@ defmodule Commonplace.MUD.BotPresenceCertTest do
   # up with `{:EXIT, {:noproc, _}}` against the stale pid — exactly the
   # observed CI failure. Looped tight (no sleep) to maximize the chance of
   # landing in that window every run.
+  #
+  # CX-5gkw: all 50 iterations perform session spawn, a write-bearing verb
+  # round-trip, stop, and a write-bearing respawn round-trip. The inherited
+  # 60 s limit budgets only 1.2 s/iteration and has expired mid-loop; 10x
+  # per-iteration load headroom is 12 s x 50 = 600 s. This finite budget does
+  # NOT mask the race: a real dead-pid hit still fails the in-loop assertion
+  # immediately, regardless of the loop's total duration.
+  @tag timeout: 600_000
   test "stop immediately followed by send_input never hits a dead session pid", ctx do
     Enum.each(1..50, fn i ->
       name = "respawn-race-bot"
