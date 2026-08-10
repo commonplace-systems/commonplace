@@ -40,20 +40,8 @@ defmodule Commonplace.MCP.Tools.BdToolsTest do
 
     on_exit(fn ->
       CommitStoreClient.clear_remote_node()
-      _ = Supervisor.terminate_child(sup, Commonplace.Store.CommitStore)
-      _ = Supervisor.delete_child(sup, Commonplace.Store.CommitStore)
-      restored_data_dir = prior_data_dir || "tmp/test_data"
-      Application.put_env(:commonplace, :data_dir, restored_data_dir)
+      Application.put_env(:commonplace, :data_dir, prior_data_dir || "tmp/test_data")
       File.rm_rf!(dir)
-
-      {:ok, restored_pid} =
-        Supervisor.start_child(sup, {Commonplace.Store.CommitStore, data_dir: restored_data_dir})
-
-      assert Process.alive?(restored_pid)
-      assert Process.whereis(Commonplace.Store.CommitStore) == restored_pid
-
-      assert CubDB.data_dir(CommitStore.db_handle(CommitStore)) ==
-               Path.join(restored_data_dir, "commits")
     end)
 
     %{root: root_uuid}

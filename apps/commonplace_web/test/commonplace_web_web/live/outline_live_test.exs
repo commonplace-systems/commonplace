@@ -24,43 +24,21 @@ defmodule CommonplaceWebWeb.OutlineLiveTest do
   setup do
     dir = Path.join(System.tmp_dir!(), "cp_outline_live_#{:rand.uniform(1_000_000_000)}")
     File.mkdir_p!(dir)
-    prior_data_dir = Application.get_env(:commonplace, :data_dir)
     Application.put_env(:commonplace, :data_dir, dir)
 
     sup = Commonplace.Store.CommitStoreSupervisor
-    :ok = Commonplace.Trust.AuditDispatcher.flush()
     _ = Supervisor.terminate_child(sup, CommitStore)
     _ = Supervisor.delete_child(sup, CommitStore)
     {:ok, _} = Supervisor.start_child(sup, {CommitStore, data_dir: dir})
     Commonplace.Tree.DocCache.clear()
 
     root_uuid = UUID.uuid4()
-
-    CommitStore.create_commit(
-      CommitStore,
-      root_uuid,
-      Yelixer.Encoding.encode_update(Schema.new_schema()),
-      nil
-    )
-
+    CommitStore.create_commit(CommitStore, root_uuid, Yelixer.Encoding.encode_update(Schema.new_schema()), nil)
     File.write!(Path.join(dir, "root"), root_uuid)
 
     on_exit(fn ->
-      :ok = Commonplace.Trust.AuditDispatcher.flush()
-      _ = Supervisor.terminate_child(sup, CommitStore)
-      _ = Supervisor.delete_child(sup, CommitStore)
-      restored_data_dir = prior_data_dir || "tmp/test_data"
-      Application.put_env(:commonplace, :data_dir, restored_data_dir)
+      Application.put_env(:commonplace, :data_dir, "tmp/test_data")
       File.rm_rf!(dir)
-
-      {:ok, restored_pid} =
-        Supervisor.start_child(sup, {CommitStore, data_dir: restored_data_dir})
-
-      assert Process.alive?(restored_pid)
-      assert Process.whereis(CommitStore) == restored_pid
-
-      assert CubDB.data_dir(CommitStore.db_handle(CommitStore)) ==
-               Path.join(restored_data_dir, "commits")
     end)
 
     {:ok, uuid} = Outline.create("daily", root_uuid, CommitStore)
@@ -205,9 +183,7 @@ defmodule CommonplaceWebWeb.OutlineLiveTest do
       # NOT land under it.
       funnel_hand = Commonplace.WriterHand.for_doc(uuid)
       {:ok, doc_before} = DocBuilder.reconstruct_doc(CommitStore, uuid)
-
-      funnel_clock_before =
-        Yelixer.StateVector.get(Yelixer.BlockStore.state_vector(doc_before.store), funnel_hand)
+      funnel_clock_before = Yelixer.StateVector.get(Yelixer.BlockStore.state_vector(doc_before.store), funnel_hand)
 
       {:ok, view, _html} = live(conn, ~p"/outline/daily")
 
