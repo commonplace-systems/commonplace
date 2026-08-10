@@ -44,7 +44,7 @@ Rooms, objects, and verbs are CRDT docs under the workspace tree (`lib/commonpla
 
 ```bash
 mix test                          # all apps
-mix test apps/yelixer             # yelixer only (includes 5320 yrs dataset tests)
+mix test apps/yelixer/test        # yelixer only (includes the 5,320-case yrs dataset)
 mix test apps/commonplace/test    # core only
 ```
 
