@@ -23,6 +23,17 @@ defmodule Commonplace.Tree.DocBuilderBoundedWalkTest do
   """
   use ExUnit.Case, async: false
 
+  # CX-5gkw: the long fixtures synchronously build 250-470 genuine commits via
+  # one GenServer.call per commit, and the recorded 60 s crossings occurred in
+  # build_chain/4 before an assertion ran. At 250 commits the inherited limit
+  # allowed only 0.24 s/commit; 10x load headroom at the module's 470-commit
+  # maximum is 1,128 s, rounded to a finite 1,200 s hang budget. A moduletag
+  # covers every hundreds-of-commits fixture (and harmlessly the smaller
+  # siblings) without changing their work. This does NOT mask a walk
+  # regression: the deliverables are walk-COUNT and byte-equality assertions,
+  # which are work bounds rather than elapsed-time bounds.
+  @moduletag timeout: 1_200_000
+
   alias Commonplace.Store.{Commit, CommitStore}
   alias Commonplace.Tree.DocBuilder
   alias Commonplace.Document.ContentType

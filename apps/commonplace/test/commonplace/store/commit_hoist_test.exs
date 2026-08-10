@@ -81,6 +81,10 @@ defmodule Commonplace.Store.CommitHoistTest do
           Task.async(fn -> CommitStoreClient.create_chained_commit(store, uuid, <<i::32>>, %{}) end)
         end
 
+      # CX-5gkw: keep this 10 s await. Even if every one of 40 callers uses all
+      # five bounded CAS attempts, this is at most 200 write attempts, 15x less
+      # work than CX-qzbh's measured 3,000-write hammer (9.9-13.9 s). A linear
+      # projection is below 1 s, leaving over 10x headroom here.
       commits = Task.await_many(tasks, 10_000)
 
       ids = MapSet.new(commits, & &1.id)
@@ -301,7 +305,13 @@ defmodule Commonplace.Store.CommitHoistTest do
 
       commit = CommitStoreClient.create_chained_commit(store, uuid, <<99>>, %{})
 
-      Task.await(hammer, 10_000)
+      # CX-5gkw: CX-qzbh measured this exact 3,000-write hammer at 9.9-13.9 s,
+      # so 10 s sits inside its workload distribution. A 30 s await is over
+      # 2x the measured maximum while remaining a finite hang detector. The
+      # containing test keeps its 60 s timeout, over 4x that maximum. This does
+      # NOT mask fallback failure: the commit and telemetry assertions below
+      # remain byte-for-byte unchanged and independent of elapsed time.
+      Task.await(hammer, 30_000)
 
       assert commit.doc_uuid == uuid
 

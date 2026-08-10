@@ -541,6 +541,15 @@ defmodule Commonplace.Green.BursarTest do
                "cycles — the op-log is accumulating (O(history), not O(table))"
     end
 
+    # CX-5gkw: 200 distinct permanent acquires are 200 SYNCHRONOUS durable
+    # commits, followed by a Bursar restart and a 200-token reload. That is the
+    # same >200-durable-op workload class as the 400-op sibling above, whose
+    # 600 s budget is green in isolation but avoids the inherited 60 s race
+    # under parallel-suite CubDB I/O load; use that same-class budget here.
+    # This does NOT mask a persistence regression: the deliverables are the
+    # reload-count and snapshot-SIZE assertions, neither of which depends on
+    # how long the durable loop takes.
+    @tag timeout: 600_000
     test "a large permanent table stays bounded and survives restart at scale", ctx do
       {pid, name} = start_bursar(ctx, nil, sweep_interval: 60_000)
 
