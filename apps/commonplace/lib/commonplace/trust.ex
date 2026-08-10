@@ -1171,17 +1171,57 @@ defmodule Commonplace.Trust do
   # keypair file), exactly the §4 anchor model. Folding the node
   # identity→pubkey into the trusted set means a single-node strict
   # workspace accepts node-signed snapshots/merges with zero pinning.
-  # Best-effort: if the node key can't be sourced, the set is unchanged
-  # (the node's commits will then fail strict checks — visible, not
-  # silent).
+  # Best-effort: if the node identity or public keys can't be sourced,
+  # log the specific degradation and leave the set unchanged. The node's
+  # commits will then fail strict checks, but startup remains available.
   defp with_local_node_trust(cfg) do
-    with {:ok, identity} <- Commonplace.Crypto.NodeIdentity.identity(),
-         {:ok, [_ | _] = public_keys} <- Commonplace.Crypto.NodeIdentity.public_keys() do
+    with {:identity, {:ok, identity}} <-
+           {:identity, Commonplace.Crypto.NodeIdentity.identity()},
+         {:public_keys, {:ok, [_ | _] = public_keys}} <-
+           {:public_keys, Commonplace.Crypto.NodeIdentity.public_keys()} do
       encoded_keys = Enum.map(public_keys, &Signing.encode_key/1)
       trusted = Map.put_new(cfg.trusted_identities, identity, encoded_keys)
       %{cfg | trusted_identities: trusted}
     else
-      _ -> cfg
+      {:identity, {:error, reason}} ->
+        Logger.error(
+          "local node self-trust was not added: node identity could not be sourced " <>
+            "(#{inspect(reason)}) — continuing with configured trusted identities"
+        )
+
+        cfg
+
+      {:public_keys, :absent} ->
+        Logger.error(
+          "local node self-trust was not added: node signing public-key artifact is absent — " <>
+            "continuing with configured trusted identities"
+        )
+
+        cfg
+
+      {:public_keys, {:error, reason}} ->
+        Logger.error(
+          "local node self-trust was not added: node signing public-key artifact is present " <>
+            "but unreadable (#{inspect(reason)}) — continuing with configured trusted identities"
+        )
+
+        cfg
+
+      {:public_keys, {:ok, []}} ->
+        Logger.error(
+          "local node self-trust was not added: node signing public-key artifact declares zero " <>
+            "keys — continuing with configured trusted identities"
+        )
+
+        cfg
+
+      {source, result} ->
+        Logger.error(
+          "local node self-trust was not added: #{source} returned an unexpected result " <>
+            "(#{inspect(result)}) — continuing with configured trusted identities"
+        )
+
+        cfg
     end
   end
 
