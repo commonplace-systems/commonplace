@@ -1,11 +1,12 @@
-# BUILD BRIEF (DRAFT — one slot pending plan's CX-vvbh ruling) — CX-8wh1: the complete-workspace fixture helper
+# BUILD BRIEF — CX-8wh1: the complete-workspace fixture helper
 
 **For:** Sol (codex) · **plan's #1 (suite reliability), class 1 — the build half**
 **Worktree:** `/home/jes/sol-8wh1/wt` · **branch:** `sol/cx-8wh1-helper`
 **Run log:** `/home/jes/sol-8wh1/sol-run.log`
 
-⛔ **DO NOT DISPATCH until §2's PENDING slot is filled with plan's CX-vvbh
-posture ruling.** Everything else is settled.
+**DISPATCH-READY** (holds only for the CX-5gkw lane to free). Plan ratified
+the CX-vvbh posture 2026-08-10 17:01 and recorded @95abb38 that **CX-a2eb's
+gate is now ONLY this helper** — §2c carries the ruling.
 
 ---
 
@@ -85,16 +86,30 @@ a bare fixture.
    degraded world (converting them to the helper's explicit degradation
    options is in scope where mechanical).
 
-### 2c. ⏳ PENDING — the TrustConfigFailClosed assertion
+### 2c. The TrustConfigFailClosed assertion — RULED, and the ruling means: DO NOT CHANGE IT
 
-**[SLOT: plan's CX-vvbh posture ruling goes here verbatim before dispatch.]**
-The test asserts what a strict config's `trusted_identities` contains when the
-world is corrupt/degraded — which is exactly what the ruling decides.
-Acceptance from CX-a2eb stands regardless of the ruling's direction:
-- The test passes **because the behaviour is decided**, citing the ruling.
-- ⛔ The assertion must still be able to FAIL if self-trust is genuinely
-  dropped — a `!= nil`-shaped loosening is the failure mode this ticket
-  exists to prevent. Demonstrate the red by breaking the precondition once.
+**Plan's ratified posture (2026-08-10 17:01, verified against
+`trust.ex:1177-1226`, queue @95abb38): loud-degrade-and-continue** — when
+self-trust cannot be folded, every producer outcome (identity-error /
+`:absent` / `{:error,_}` / `{:ok,[]}` / catch-all) emits a named
+`Logger.error`, the trusted set is unchanged, and startup stays available.
+
+⇒ **What this means for the test, so you don't have to interpret:** its
+failing assertion —
+`assert Map.keys(cfg.trusted_identities) == [node_identity]` — already
+asserts the ratified posture's HEALTHY path: corrupt `trust.json` ⇒ strict
+with zero pins, node self-trust folded **when the world is complete**. The
+fixture's missing artifact was the defect, not the assertion.
+
+- ⛔ **The assertion stays byte-identical.** The test goes green because the
+  helper completes its world, citing this ruling.
+- The DEGRADED case (absent artifact ⇒ loud error + trusted set unchanged) is
+  already covered by `trust/self_trust_visibility_test.exs` — do not
+  duplicate it here.
+- ⭐ **The still-can-fail control**: degrade the world once (the helper's
+  delete-the-artifact option), show the ORIGINAL assertion go red
+  (`left: []`), paste it, restore. ⛔ A `!= nil`-shaped loosening is the
+  failure mode this ticket exists to prevent.
 
 ### ⛔ Untouchables
 
