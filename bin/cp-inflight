@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+#
+# cp-inflight — list in-flight Sol/codex work WITHOUT the self-match trap.
+#
+# WHY THIS EXISTS (2026-08-10)
+#
+# `pgrep -f "codex exec"` typed INLINE matched the invoking shell's own argv
+# TWICE in one day (exit 144: the searcher killed itself). Both post-mortems
+# prescribed "be careful, use comm + numeric pids" — discipline, and
+# discipline is what failed twice.
+#
+# ⭐ THE STRUCTURAL FIX (boss-clod's, verified by effect 2026-08-10 @8715f8d):
+# a pattern living INSIDE A SCRIPT FILE appears in NO process's argv, so
+# self-match is IMPOSSIBLE rather than avoided. Moving the pattern from the
+# command line into this file destroys the trap's precondition instead of
+# remembering around it.
+#
+# ⚠️ SCOPE: this closes the SELF-match trap only. A file-borne pattern can
+# still match someone else's process — which is why KILLING still goes
+# through bin/cp-kill (identity-resolved, numeric pids), never through the
+# output of this script piped to kill.
+#
+# USAGE
+#   bin/cp-inflight            # pid + args of live codex exec/resume runs
+#   bin/cp-inflight -q         # pids only (for kill -0 liveness loops)
+
+quiet=""
+[ "${1:-}" = "-q" ] && quiet=1
+
+pids=$(pgrep -f '(^|/)codex (exec|resume)')
+
+if [ -z "$pids" ]; then
+  [ -n "$quiet" ] || echo "no codex exec/resume in flight"
+  exit 1
+fi
+
+if [ -n "$quiet" ]; then
+  echo "$pids"
+else
+  # shellcheck disable=SC2086
+  ps -o pid,etime,args -p $pids
+fi
