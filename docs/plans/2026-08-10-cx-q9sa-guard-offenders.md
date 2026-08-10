@@ -2,6 +2,8 @@
 
 This is the pre-cleanup enumeration captured from the restored guard's first full blast-radius run on 2026-08-10. The brief's 41 was a prior, not a target. The measured result is **58 guard firings**: commonplace process 0, commonplace trust 0, commonplace_web 20, commonplace_mcp 21, commonplace_cli 17, commonplace_bots 0, and yelixer 0.
 
+Round 3 measured the previously omitted whole `apps/commonplace/test` population: **5 doctests, 3277 tests, 97 failures, 12 excluded**, with **95 guard firings**. Those 95 extend the table to **153 total measured offenders**; the other two baseline failures were not guard firings.
+
 Every measured hit is an ancestor-delete shape: the deletion path contains the captured path. There were no equal-path or child-delete hits in this enumeration. None points at the live workspace store; every captured path is beneath a test-created `/tmp/cp_*` scratch directory.
 
 | # | suite | test file and line | deletion path | captured path | containment |
@@ -64,3 +66,98 @@ Every measured hit is an ancestor-delete shape: the deletion path contains the c
 | 56 | cli | `apps/commonplace_cli/test/commonplace/cli_integration_test.exs:51` | `/tmp/cp_test_ws_888803` | `/tmp/cp_test_ws_888803/commits` | deletion contains captured |
 | 57 | cli | `apps/commonplace_cli/test/commonplace/cli_integration_test.exs:32` | `/tmp/cp_test_ws_112250` | `/tmp/cp_test_ws_112250/commits` | deletion contains captured |
 | 58 | cli | `apps/commonplace_cli/test/commonplace/cli_integration_test.exs:139` | `/tmp/cp_test_ws_505858` | `/tmp/cp_test_ws_505858/commits` | deletion contains captured |
+| 59 | commonplace | `apps/commonplace/test/commonplace/pr_preview_read_guard_test.exs:230` | `/tmp/cp_pr_read_guard_test_525078363` | `/tmp/cp_pr_read_guard_test_525078363/commits` | deletion contains captured |
+| 60 | commonplace | `apps/commonplace/test/commonplace/pr_preview_read_guard_test.exs:169` | `/tmp/cp_pr_read_guard_test_499325365` | `/tmp/cp_pr_read_guard_test_499325365/commits` | deletion contains captured |
+| 61 | commonplace | `apps/commonplace/test/commonplace/pr_preview_read_guard_test.exs:206` | `/tmp/cp_pr_read_guard_test_565792013` | `/tmp/cp_pr_read_guard_test_565792013/commits` | deletion contains captured |
+| 62 | commonplace | `apps/commonplace/test/commonplace/pr_accept_test.exs:263` | `/tmp/cp_pr_accept_test_850811776` | `/tmp/cp_pr_accept_test_850811776/commits` | deletion contains captured |
+| 63 | commonplace | `apps/commonplace/test/commonplace/pr_accept_test.exs:356` | `/tmp/cp_pr_accept_test_44163709` | `/tmp/cp_pr_accept_test_44163709/commits` | deletion contains captured |
+| 64 | commonplace | `apps/commonplace/test/commonplace/pr_accept_test.exs:366` | `/tmp/cp_pr_accept_test_876257216` | `/tmp/cp_pr_accept_test_876257216/commits` | deletion contains captured |
+| 65 | commonplace | `apps/commonplace/test/commonplace/pr_accept_test.exs:185` | `/tmp/cp_pr_accept_test_823549091` | `/tmp/cp_pr_accept_test_823549091/commits` | deletion contains captured |
+| 66 | commonplace | `apps/commonplace/test/commonplace/pr_accept_test.exs:110` | `/tmp/cp_pr_accept_test_192191687` | `/tmp/cp_pr_accept_test_192191687/commits` | deletion contains captured |
+| 67 | commonplace | `apps/commonplace/test/commonplace/pr_accept_test.exs:135` | `/tmp/cp_pr_accept_test_5860243` | `/tmp/cp_pr_accept_test_5860243/commits` | deletion contains captured |
+| 68 | commonplace | `apps/commonplace/test/commonplace/pr_accept_test.exs:233` | `/tmp/cp_pr_accept_test_46347501` | `/tmp/cp_pr_accept_test_46347501/commits` | deletion contains captured |
+| 69 | commonplace | `apps/commonplace/test/commonplace/bd/cli_test.exs:157` | `/tmp/cp_bd_cli_test_963009292` | `/tmp/cp_bd_cli_test_963009292/commits` | deletion contains captured |
+| 70 | commonplace | `apps/commonplace/test/commonplace/bd/cli_test.exs:167` | `/tmp/cp_bd_cli_test_299333884` | `/tmp/cp_bd_cli_test_299333884/commits` | deletion contains captured |
+| 71 | commonplace | `apps/commonplace/test/commonplace/bd/cli_test.exs:179` | `/tmp/cp_bd_cli_test_916056658` | `/tmp/cp_bd_cli_test_916056658/commits` | deletion contains captured |
+| 72 | commonplace | `apps/commonplace/test/commonplace/bd/cli_test.exs:120` | `/tmp/cp_bd_cli_test_671337287` | `/tmp/cp_bd_cli_test_671337287/commits` | deletion contains captured |
+| 73 | commonplace | `apps/commonplace/test/commonplace/bd/cli_test.exs:80` | `/tmp/cp_bd_cli_test_901731796` | `/tmp/cp_bd_cli_test_901731796/commits` | deletion contains captured |
+| 74 | commonplace | `apps/commonplace/test/commonplace/bd/cli_test.exs:103` | `/tmp/cp_bd_cli_test_960698213` | `/tmp/cp_bd_cli_test_960698213/commits` | deletion contains captured |
+| 75 | commonplace | `apps/commonplace/test/commonplace/bd/cli_test.exs:143` | `/tmp/cp_bd_cli_test_757463620` | `/tmp/cp_bd_cli_test_757463620/commits` | deletion contains captured |
+| 76 | commonplace | `apps/commonplace/test/commonplace/pr_decline_test.exs:139` | `/tmp/cp_pr_decline_test_157959385` | `/tmp/cp_pr_decline_test_157959385/commits` | deletion contains captured |
+| 77 | commonplace | `apps/commonplace/test/commonplace/pr_decline_test.exs:98` | `/tmp/cp_pr_decline_test_715373177` | `/tmp/cp_pr_decline_test_715373177/commits` | deletion contains captured |
+| 78 | commonplace | `apps/commonplace/test/commonplace/pr_decline_test.exs:129` | `/tmp/cp_pr_decline_test_830659957` | `/tmp/cp_pr_decline_test_830659957/commits` | deletion contains captured |
+| 79 | commonplace | `apps/commonplace/test/commonplace/pr_decline_test.exs:162` | `/tmp/cp_pr_decline_test_103492362` | `/tmp/cp_pr_decline_test_103492362/commits` | deletion contains captured |
+| 80 | commonplace | `apps/commonplace/test/commonplace/bd/claim_test.exs:186` | `/tmp/cp_bd_claim_test_997555442` | `/tmp/cp_bd_claim_test_997555442/commits` | deletion contains captured |
+| 81 | commonplace | `apps/commonplace/test/commonplace/bd/claim_test.exs:212` | `/tmp/cp_bd_claim_test_413839307` | `/tmp/cp_bd_claim_test_413839307/commits` | deletion contains captured |
+| 82 | commonplace | `apps/commonplace/test/commonplace/bd/claim_test.exs:243` | `/tmp/cp_bd_claim_test_162820790` | `/tmp/cp_bd_claim_test_162820790/commits` | deletion contains captured |
+| 83 | commonplace | `apps/commonplace/test/commonplace/bd/claim_test.exs:153` | `/tmp/cp_bd_claim_test_740349524` | `/tmp/cp_bd_claim_test_740349524/commits` | deletion contains captured |
+| 84 | commonplace | `apps/commonplace/test/commonplace/bd/claim_test.exs:113` | `/tmp/cp_bd_claim_test_72831736` | `/tmp/cp_bd_claim_test_72831736/commits` | deletion contains captured |
+| 85 | commonplace | `apps/commonplace/test/commonplace/bd/claim_test.exs:131` | `/tmp/cp_bd_claim_test_653343452` | `/tmp/cp_bd_claim_test_653343452/commits` | deletion contains captured |
+| 86 | commonplace | `apps/commonplace/test/commonplace/bd/claim_test.exs:170` | `/tmp/cp_bd_claim_test_972113320` | `/tmp/cp_bd_claim_test_972113320/commits` | deletion contains captured |
+| 87 | commonplace | `apps/commonplace/test/commonplace/pr_comment_test.exs:121` | `/tmp/cp_pr_comment_test_231115769` | `/tmp/cp_pr_comment_test_231115769/commits` | deletion contains captured |
+| 88 | commonplace | `apps/commonplace/test/commonplace/pr_comment_test.exs:88` | `/tmp/cp_pr_comment_test_392164860` | `/tmp/cp_pr_comment_test_392164860/commits` | deletion contains captured |
+| 89 | commonplace | `apps/commonplace/test/commonplace/pr_comment_test.exs:108` | `/tmp/cp_pr_comment_test_370562532` | `/tmp/cp_pr_comment_test_370562532/commits` | deletion contains captured |
+| 90 | commonplace | `apps/commonplace/test/commonplace/pr_comment_test.exs:146` | `/tmp/cp_pr_comment_test_800882370` | `/tmp/cp_pr_comment_test_800882370/commits` | deletion contains captured |
+| 91 | commonplace | `apps/commonplace/test/commonplace/bd/close_gate_test.exs:235` | `/tmp/cp_close_gate_test_687209188` | `/tmp/cp_close_gate_test_687209188/commits` | deletion contains captured |
+| 92 | commonplace | `apps/commonplace/test/commonplace/bd/close_gate_test.exs:280` | `/tmp/cp_close_gate_test_687713399` | `/tmp/cp_close_gate_test_687713399/commits` | deletion contains captured |
+| 93 | commonplace | `apps/commonplace/test/commonplace/bd/close_gate_test.exs:333` | `/tmp/cp_close_gate_test_734524413` | `/tmp/cp_close_gate_test_734524413/commits` | deletion contains captured |
+| 94 | commonplace | `apps/commonplace/test/commonplace/bd/close_gate_test.exs:303` | `/tmp/cp_close_gate_test_346122322` | `/tmp/cp_close_gate_test_346122322/commits` | deletion contains captured |
+| 95 | commonplace | `apps/commonplace/test/commonplace/bd/close_gate_test.exs:291` | `/tmp/cp_close_gate_test_757425002` | `/tmp/cp_close_gate_test_757425002/commits` | deletion contains captured |
+| 96 | commonplace | `apps/commonplace/test/commonplace/bd/close_gate_test.exs:183` | `/tmp/cp_close_gate_test_696634051` | `/tmp/cp_close_gate_test_696634051/commits` | deletion contains captured |
+| 97 | commonplace | `apps/commonplace/test/commonplace/bd/close_gate_test.exs:430` | `/tmp/cp_close_gate_test_210651649` | `/tmp/cp_close_gate_test_210651649/commits` | deletion contains captured |
+| 98 | commonplace | `apps/commonplace/test/commonplace/bd/close_gate_test.exs:396` | `/tmp/cp_close_gate_test_788562011` | `/tmp/cp_close_gate_test_788562011/commits` | deletion contains captured |
+| 99 | commonplace | `apps/commonplace/test/commonplace/bd/close_gate_test.exs:150` | `/tmp/cp_close_gate_test_182146975` | `/tmp/cp_close_gate_test_182146975/commits` | deletion contains captured |
+| 100 | commonplace | `apps/commonplace/test/commonplace/bd/close_gate_test.exs:171` | `/tmp/cp_close_gate_test_16538440` | `/tmp/cp_close_gate_test_16538440/commits` | deletion contains captured |
+| 101 | commonplace | `apps/commonplace/test/commonplace/bd/close_gate_test.exs:201` | `/tmp/cp_close_gate_test_117370214` | `/tmp/cp_close_gate_test_117370214/commits` | deletion contains captured |
+| 102 | commonplace | `apps/commonplace/test/commonplace/pr_open_test.exs:147` | `/tmp/cp_pr_open_test_192647798` | `/tmp/cp_pr_open_test_192647798/commits` | deletion contains captured |
+| 103 | commonplace | `apps/commonplace/test/commonplace/pr_open_test.exs:91` | `/tmp/cp_pr_open_test_155107751` | `/tmp/cp_pr_open_test_155107751/commits` | deletion contains captured |
+| 104 | commonplace | `apps/commonplace/test/commonplace/pr_open_test.exs:127` | `/tmp/cp_pr_open_test_512244304` | `/tmp/cp_pr_open_test_512244304/commits` | deletion contains captured |
+| 105 | commonplace | `apps/commonplace/test/commonplace/pr_open_test.exs:185` | `/tmp/cp_pr_open_test_664280050` | `/tmp/cp_pr_open_test_664280050/commits` | deletion contains captured |
+| 106 | commonplace | `apps/commonplace/test/commonplace/fork_enforce_test.exs:74` | `/tmp/cp_fork_enforce_189139311` | `/tmp/cp_fork_enforce_189139311/commits` | deletion contains captured |
+| 107 | commonplace | `apps/commonplace/test/commonplace/fork_enforce_test.exs:90` | `/tmp/cp_fork_enforce_43116383` | `/tmp/cp_fork_enforce_43116383/commits` | deletion contains captured |
+| 108 | commonplace | `apps/commonplace/test/commonplace/bd/ticket_verbs_test.exs:134` | `/tmp/cp_ticket_verbs_test_627994764` | `/tmp/cp_ticket_verbs_test_627994764/commits` | deletion contains captured |
+| 109 | commonplace | `apps/commonplace/test/commonplace/bd/ticket_verbs_test.exs:150` | `/tmp/cp_ticket_verbs_test_340966250` | `/tmp/cp_ticket_verbs_test_340966250/commits` | deletion contains captured |
+| 110 | commonplace | `apps/commonplace/test/commonplace/bd/ticket_verbs_test.exs:174` | `/tmp/cp_ticket_verbs_test_551415854` | `/tmp/cp_ticket_verbs_test_551415854/commits` | deletion contains captured |
+| 111 | commonplace | `apps/commonplace/test/commonplace/bd/ticket_verbs_test.exs:162` | `/tmp/cp_ticket_verbs_test_451968112` | `/tmp/cp_ticket_verbs_test_451968112/commits` | deletion contains captured |
+| 112 | commonplace | `apps/commonplace/test/commonplace/bd/ticket_verbs_test.exs:106` | `/tmp/cp_ticket_verbs_test_205821292` | `/tmp/cp_ticket_verbs_test_205821292/commits` | deletion contains captured |
+| 113 | commonplace | `apps/commonplace/test/commonplace/bd/ticket_verbs_test.exs:62` | `/tmp/cp_ticket_verbs_test_943974892` | `/tmp/cp_ticket_verbs_test_943974892/commits` | deletion contains captured |
+| 114 | commonplace | `apps/commonplace/test/commonplace/bd/ticket_verbs_test.exs:82` | `/tmp/cp_ticket_verbs_test_334941327` | `/tmp/cp_ticket_verbs_test_334941327/commits` | deletion contains captured |
+| 115 | commonplace | `apps/commonplace/test/commonplace/bd/ticket_verbs_test.exs:122` | `/tmp/cp_ticket_verbs_test_359253725` | `/tmp/cp_ticket_verbs_test_359253725/commits` | deletion contains captured |
+| 116 | commonplace | `apps/commonplace/test/commonplace/bd/tix_migration_acceptance_test.exs:253` | `/tmp/cp_tix_migration_test_885545635` | `/tmp/cp_tix_migration_test_885545635/commits` | deletion contains captured |
+| 117 | commonplace | `apps/commonplace/test/commonplace/bd/tix_migration_acceptance_test.exs:279` | `/tmp/cp_tix_migration_test_206504279` | `/tmp/cp_tix_migration_test_206504279/commits` | deletion contains captured |
+| 118 | commonplace | `apps/commonplace/test/commonplace/bd/tix_migration_acceptance_test.exs:301` | `/tmp/cp_tix_migration_test_797474231` | `/tmp/cp_tix_migration_test_797474231/commits` | deletion contains captured |
+| 119 | commonplace | `apps/commonplace/test/commonplace/bd/tix_migration_acceptance_test.exs:153` | `/tmp/cp_tix_migration_test_396506313` | `/tmp/cp_tix_migration_test_396506313/commits` | deletion contains captured |
+| 120 | commonplace | `apps/commonplace/test/commonplace/bd/tix_migration_acceptance_test.exs:71` | `/tmp/cp_tix_migration_test_326266225` | `/tmp/cp_tix_migration_test_326266225/commits` | deletion contains captured |
+| 121 | commonplace | `apps/commonplace/test/commonplace/bd/tix_migration_acceptance_test.exs:119` | `/tmp/cp_tix_migration_test_504902885` | `/tmp/cp_tix_migration_test_504902885/commits` | deletion contains captured |
+| 122 | commonplace | `apps/commonplace/test/commonplace/bd/tix_migration_acceptance_test.exs:179` | `/tmp/cp_tix_migration_test_826958484` | `/tmp/cp_tix_migration_test_826958484/commits` | deletion contains captured |
+| 123 | commonplace | `apps/commonplace/test/commonplace/bd/ticket_create_import_verbs_test.exs:181` | `/tmp/cp_ticket_create_import_test_575835612` | `/tmp/cp_ticket_create_import_test_575835612/commits` | deletion contains captured |
+| 124 | commonplace | `apps/commonplace/test/commonplace/bd/ticket_create_import_verbs_test.exs:194` | `/tmp/cp_ticket_create_import_test_745806854` | `/tmp/cp_ticket_create_import_test_745806854/commits` | deletion contains captured |
+| 125 | commonplace | `apps/commonplace/test/commonplace/bd/ticket_create_import_verbs_test.exs:536` | `/tmp/cp_ticket_create_import_test_389338755` | `/tmp/cp_ticket_create_import_test_389338755/commits` | deletion contains captured |
+| 126 | commonplace | `apps/commonplace/test/commonplace/bd/ticket_create_import_verbs_test.exs:294` | `/tmp/cp_ticket_create_import_test_334899687` | `/tmp/cp_ticket_create_import_test_334899687/commits` | deletion contains captured |
+| 127 | commonplace | `apps/commonplace/test/commonplace/bd/ticket_create_import_verbs_test.exs:527` | `/tmp/cp_ticket_create_import_test_666459473` | `/tmp/cp_ticket_create_import_test_666459473/commits` | deletion contains captured |
+| 128 | commonplace | `apps/commonplace/test/commonplace/bd/ticket_create_import_verbs_test.exs:258` | `/tmp/cp_ticket_create_import_test_784074731` | `/tmp/cp_ticket_create_import_test_784074731/commits` | deletion contains captured |
+| 129 | commonplace | `apps/commonplace/test/commonplace/bd/ticket_create_import_verbs_test.exs:350` | `/tmp/cp_ticket_create_import_test_807193565` | `/tmp/cp_ticket_create_import_test_807193565/commits` | deletion contains captured |
+| 130 | commonplace | `apps/commonplace/test/commonplace/bd/ticket_create_import_verbs_test.exs:216` | `/tmp/cp_ticket_create_import_test_936316801` | `/tmp/cp_ticket_create_import_test_936316801/commits` | deletion contains captured |
+| 131 | commonplace | `apps/commonplace/test/commonplace/bd/ticket_create_import_verbs_test.exs:133` | `/tmp/cp_ticket_create_import_test_644614650` | `/tmp/cp_ticket_create_import_test_644614650/commits` | deletion contains captured |
+| 132 | commonplace | `apps/commonplace/test/commonplace/bd/ticket_create_import_verbs_test.exs:335` | `/tmp/cp_ticket_create_import_test_345981922` | `/tmp/cp_ticket_create_import_test_345981922/commits` | deletion contains captured |
+| 133 | commonplace | `apps/commonplace/test/commonplace/bd/ticket_create_import_verbs_test.exs:441` | `/tmp/cp_ticket_create_import_test_301187938` | `/tmp/cp_ticket_create_import_test_301187938/commits` | deletion contains captured |
+| 134 | commonplace | `apps/commonplace/test/commonplace/bd/ticket_create_import_verbs_test.exs:462` | `/tmp/cp_ticket_create_import_test_258512378` | `/tmp/cp_ticket_create_import_test_258512378/commits` | deletion contains captured |
+| 135 | commonplace | `apps/commonplace/test/commonplace/bd/ticket_create_import_verbs_test.exs:308` | `/tmp/cp_ticket_create_import_test_947848776` | `/tmp/cp_ticket_create_import_test_947848776/commits` | deletion contains captured |
+| 136 | commonplace | `apps/commonplace/test/commonplace/bd/ticket_create_import_verbs_test.exs:98` | `/tmp/cp_ticket_create_import_test_636650016` | `/tmp/cp_ticket_create_import_test_636650016/commits` | deletion contains captured |
+| 137 | commonplace | `apps/commonplace/test/commonplace/bd/ticket_create_import_verbs_test.exs:390` | `/tmp/cp_ticket_create_import_test_281287218` | `/tmp/cp_ticket_create_import_test_281287218/commits` | deletion contains captured |
+| 138 | commonplace | `apps/commonplace/test/commonplace/bd/ticket_create_import_verbs_test.exs:118` | `/tmp/cp_ticket_create_import_test_705108461` | `/tmp/cp_ticket_create_import_test_705108461/commits` | deletion contains captured |
+| 139 | commonplace | `apps/commonplace/test/commonplace/bd/ticket_create_import_verbs_test.exs:425` | `/tmp/cp_ticket_create_import_test_494591241` | `/tmp/cp_ticket_create_import_test_494591241/commits` | deletion contains captured |
+| 140 | commonplace | `apps/commonplace/test/commonplace/bd/ticket_create_import_verbs_test.exs:622` | `/tmp/cp_ticket_create_import_test_894165257` | `/tmp/cp_ticket_create_import_test_894165257/commits` | deletion contains captured |
+| 141 | commonplace | `apps/commonplace/test/commonplace/bd/ticket_create_import_verbs_test.exs:599` | `/tmp/cp_ticket_create_import_test_721033108` | `/tmp/cp_ticket_create_import_test_721033108/commits` | deletion contains captured |
+| 142 | commonplace | `apps/commonplace/test/commonplace/bd/ticket_create_import_verbs_test.exs:585` | `/tmp/cp_ticket_create_import_test_14172991` | `/tmp/cp_ticket_create_import_test_14172991/commits` | deletion contains captured |
+| 143 | commonplace | `apps/commonplace/test/commonplace/bd/ticket_create_import_verbs_test.exs:410` | `/tmp/cp_ticket_create_import_test_773622592` | `/tmp/cp_ticket_create_import_test_773622592/commits` | deletion contains captured |
+| 144 | commonplace | `apps/commonplace/test/commonplace/bd/ticket_create_import_verbs_test.exs:146` | `/tmp/cp_ticket_create_import_test_878711198` | `/tmp/cp_ticket_create_import_test_878711198/commits` | deletion contains captured |
+| 145 | commonplace | `apps/commonplace/test/commonplace/bd/ticket_create_import_verbs_test.exs:517` | `/tmp/cp_ticket_create_import_test_782592405` | `/tmp/cp_ticket_create_import_test_782592405/commits` | deletion contains captured |
+| 146 | commonplace | `apps/commonplace/test/commonplace/bd/ticket_create_import_verbs_test.exs:370` | `/tmp/cp_ticket_create_import_test_459897019` | `/tmp/cp_ticket_create_import_test_459897019/commits` | deletion contains captured |
+| 147 | commonplace | `apps/commonplace/test/commonplace/bd/ticket_create_import_verbs_test.exs:486` | `/tmp/cp_ticket_create_import_test_136726815` | `/tmp/cp_ticket_create_import_test_136726815/commits` | deletion contains captured |
+| 148 | commonplace | `apps/commonplace/test/commonplace/bd/ticket_create_import_verbs_test.exs:558` | `/tmp/cp_ticket_create_import_test_387240018` | `/tmp/cp_ticket_create_import_test_387240018/commits` | deletion contains captured |
+| 149 | commonplace | `apps/commonplace/test/commonplace/pr_refresh_preview_test.exs:206` | `/tmp/cp_pr_refresh_test_50648349` | `/tmp/cp_pr_refresh_test_50648349/commits` | deletion contains captured |
+| 150 | commonplace | `apps/commonplace/test/commonplace/pr_refresh_preview_test.exs:172` | `/tmp/cp_pr_refresh_test_495593593` | `/tmp/cp_pr_refresh_test_495593593/commits` | deletion contains captured |
+| 151 | commonplace | `apps/commonplace/test/commonplace/pr_refresh_preview_test.exs:103` | `/tmp/cp_pr_refresh_test_656389040` | `/tmp/cp_pr_refresh_test_656389040/commits` | deletion contains captured |
+| 152 | commonplace | `apps/commonplace/test/commonplace/pr_refresh_preview_test.exs:136` | `/tmp/cp_pr_refresh_test_21128974` | `/tmp/cp_pr_refresh_test_21128974/commits` | deletion contains captured |
+| 153 | commonplace | `apps/commonplace/test/commonplace/pr_refresh_preview_test.exs:192` | `/tmp/cp_pr_refresh_test_744086130` | `/tmp/cp_pr_refresh_test_744086130/commits` | deletion contains captured |
