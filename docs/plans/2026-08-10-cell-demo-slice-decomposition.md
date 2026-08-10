@@ -65,10 +65,24 @@ yelixer subtree — with every link exercised rather than asserted.
    yelixer targeted suite, and writes a signed witness record carrying the
    VP verdict vocabulary. Independence = different `identity_uuid` on the
    witness write than on the candidate's events, asserted in the artifact.
-6. **Cert scope (L6).** A subtree-write cert for the cell's principal over
-   the yelixer subtree, minted with the shipped zone-ownership machinery —
-   and the CONTROL: the cell attempting a write OUTSIDE its subtree is
-   DENIED, visibly, in the demo artifact.
+6. **Cert scope (L6) — AMENDED per CX-b38c + plan's ruling (20:33Z).** The
+   write⊥execute belt (trust.ex:534) means a subtree-write cert cannot author
+   code-classified docs — BY DESIGN. So: cell code writes ride the cell
+   workspace's own node identity (L1 as designed), and the cert machinery is
+   demonstrated with THREE controls, the third kept prominent: (a) non-code
+   write inside the subtree under the cert LANDS; (b) write outside is DENIED
+   (`{:error, {:trust_rejected, :capability_insufficient}}`); (c) a
+   code-classified write INSIDE the subtree under the cert is ALSO denied —
+   the invariant working, since a write-only cert that could plant
+   auto-executing code would be the write→execute laundering hole the belt
+   closes. ⛔ **Evidence-doc wording constraint (plan's, verbatim): "cert-scoped
+   write demonstrated for NON-CODE writes; code authoring rides node trust
+   today, BY DESIGN of the write⊥execute belt; gap filed CX-b38c, shape
+   ruled" — never "cert-scoped code contribution demonstrated."** The
+   attenuated-code-authoring destination is (i)-shaped (explicit capability,
+   write AND execute conjunction or :author_code; route (iii)
+   runner-as-author is ruled NOT a route — writer-identity violation);
+   mechanism round owed by plan before L2.
 
 ## ⚠️ The two choices that are plan's to ack (they shape acceptance, and
 ## acceptance is plan's §5)
