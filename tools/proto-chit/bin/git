@@ -6,10 +6,12 @@ set -u
 real_git=${PROTO_CHIT_REAL_GIT:-/usr/bin/git}
 command_name=${1:-}
 
+shim_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+state_dir=${PROTO_CHIT_STATE_DIR:-"$shim_dir/../state"}
+wal_path="$state_dir/events.wal.ndjson"
+
 case "$command_name" in
   commit|merge|pull|branch|checkout|switch|tag|worktree|rebase|reset|filter-branch|replace|update-ref|notes|bisect|reflog|stash|cherry-pick|revert)
-    shim_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-    state_dir=${PROTO_CHIT_STATE_DIR:-"$shim_dir/../state"}
     emitter=${PROTO_CHIT_COMMONPLACE:-}
     emit_status=127
 
@@ -33,5 +35,45 @@ case "$command_name" in
     fi
     ;;
 esac
+
+# Pending unsigned envelopes are invisible by default: a checkout with broken
+# credentials keeps feeling healthy while landing nothing. So every invocation
+# -- read verbs included -- reports a non-empty WAL once, loudly, on stderr.
+# Nothing here may block or fail git: every step is guarded and falls through.
+if [ -s "$wal_path" ]; then
+  pending=$(grep -c '' "$wal_path" 2>/dev/null) || pending=""
+
+  if [ -n "$pending" ]; then
+    age="unknown"
+    recorded=$(head -n 1 "$wal_path" 2>/dev/null |
+      sed -n 's/.*"recorded-at":"\([^"]*\)".*/\1/p') || recorded=""
+
+    if [ -n "$recorded" ]; then
+      recorded_epoch=$(date -d "$recorded" +%s 2>/dev/null) || recorded_epoch=""
+      now_epoch=$(date +%s 2>/dev/null) || now_epoch=""
+
+      case "$recorded_epoch:$now_epoch" in
+        *[!0-9:]* | *:*:* | :* | *:) ;;
+        *)
+          delta=$((now_epoch - recorded_epoch))
+          if [ "$delta" -lt 0 ]; then
+            delta=0
+          fi
+          if [ "$delta" -lt 60 ]; then
+            age="${delta}s"
+          elif [ "$delta" -lt 3600 ]; then
+            age="$((delta / 60))m"
+          elif [ "$delta" -lt 86400 ]; then
+            age="$((delta / 3600))h"
+          else
+            age="$((delta / 86400))d"
+          fi
+          ;;
+      esac
+    fi
+
+    echo "proto-chit: $pending pending unsigned envelopes, oldest $age" >&2
+  fi
+fi
 
 exec "$real_git" "$@"

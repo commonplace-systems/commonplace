@@ -88,6 +88,81 @@ defmodule Commonplace.CLI.ProtoChitShimTest do
     assert {_sha, 0} = System.cmd(@real_git, ["rev-parse", "HEAD"], cd: repo)
   end
 
+  test "a non-empty WAL is reported loudly on stderr by an untapped read verb", %{base: base} do
+    repo = create_ready_repo(Path.join(base, "loud-repo"))
+    state_dir = Path.join(base, "loud-state")
+    write_wal!(state_dir, [wal_row(hours_ago(50)), wal_row(hours_ago(2))])
+
+    {stderr, status} = shim_stderr(repo, state_dir, ["status"])
+
+    assert status == 0
+    assert [line] = Regex.run(~r/^proto-chit: .*$/m, stderr)
+    assert line =~ ~r/^proto-chit: 2 pending unsigned envelopes, oldest 2d$/
+    assert {_sha, 0} = System.cmd(@real_git, ["rev-parse", "--is-inside-work-tree"], cd: repo)
+  end
+
+  test "no WAL means no loud line, and the capture proves it can see one", %{base: base} do
+    repo = create_ready_repo(Path.join(base, "quiet-repo"))
+    state_dir = Path.join(base, "quiet-state")
+    File.mkdir_p!(state_dir)
+
+    {quiet_stderr, quiet_status} = shim_stderr(repo, state_dir, ["status"])
+
+    assert quiet_status == 0
+    refute quiet_stderr =~ "proto-chit:"
+
+    # Positive control on the same capture path, same test run: the only change
+    # is the WAL, so a silent capture cannot be mistaken for a silent shim.
+    write_wal!(state_dir, [wal_row(hours_ago(2))])
+    {loud_stderr, loud_status} = shim_stderr(repo, state_dir, ["status"])
+
+    assert loud_status == 0
+    assert loud_stderr =~ ~r/^proto-chit: 1 pending unsigned envelopes, oldest 2h$/m
+  end
+
+  test "a malformed WAL still reports the count with an unknown age", %{base: base} do
+    repo = create_ready_repo(Path.join(base, "garbage-repo"))
+    state_dir = Path.join(base, "garbage-state")
+    write_wal!(state_dir, ["}{ not json at all", wal_row(hours_ago(2))])
+
+    {stderr, status} = shim_stderr(repo, state_dir, ["status"])
+
+    assert status == 0
+    assert stderr =~ ~r/^proto-chit: 2 pending unsigned envelopes, oldest unknown$/m
+    assert {_sha, 0} = System.cmd(@real_git, ["rev-parse", "--is-inside-work-tree"], cd: repo)
+  end
+
+  # Runs the shim with stdout discarded, so anything captured here reached
+  # stderr and nothing the shim adds could have polluted git's stdout.
+  defp shim_stderr(repo, state_dir, args) do
+    System.cmd("/bin/sh", ["-c", ~s(exec "$0" "$@" 2>&1 1>/dev/null), @shim | args],
+      cd: repo,
+      env: shim_env(state_dir, "/bin/false") ++ @fixed_env
+    )
+  end
+
+  defp hours_ago(hours), do: DateTime.add(DateTime.utc_now(), -hours * 3600, :second)
+
+  # Mirrors the recording-time field proto-chit-wal writes: an ISO-8601 UTC
+  # `recorded-at` on a compact single-line JSON object.
+  defp wal_row(%DateTime{} = recorded_at) do
+    Jason.encode!(%{
+      "wal-version" => 1,
+      "status" => "pending",
+      "replay-grade" => "pin-cut-at-replay",
+      "failure" => "emitter-exit-1",
+      "recorded-at" => String.replace_suffix(DateTime.to_iso8601(recorded_at), "Z", "+00:00"),
+      "git-argv" => ["commit", "-m", "backdated"],
+      "content-hashes" => %{},
+      "event" => %{"verb" => "commit", "proto-pin" => nil}
+    })
+  end
+
+  defp write_wal!(state_dir, rows) do
+    File.mkdir_p!(state_dir)
+    File.write!(Path.join(state_dir, "events.wal.ndjson"), Enum.map(rows, &(&1 <> "\n")))
+  end
+
   defp create_ready_repo(path) do
     File.mkdir_p!(path)
     File.write!(Path.join(path, "payload.txt"), "same bytes\n")

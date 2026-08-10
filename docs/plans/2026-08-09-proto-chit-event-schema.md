@@ -95,6 +95,20 @@ landed event. It contains:
   paths as sync; and
 - its recording time.
 
+A pending row is not allowed to be quiet. Whenever the WAL exists and is
+non-empty, **every** shim invocation — read verbs included, so `git status`
+carries it — prints exactly one line to stderr before handing off to real git:
+
+`proto-chit: 14 pending unsigned envelopes, oldest 3d`
+
+The count is the WAL's line count and the age is derived from the first row's
+`recorded-at`, in a single humane unit (`37s`, `12m`, `5h`, `3d`); a row the
+shim cannot parse still reports the count with age `unknown`. The line is
+advisory only: it never touches stdout, never changes git's exit status, and
+any failure inside the report falls through to the git invocation. Without it,
+a checkout with broken credentials lands zero events for weeks while feeling
+fully functional.
+
 Replay must reacquire a real `SigningContext`, rerun the gated sync, cut the
 real reflog-format pin, and write a newly signed event. It must never copy the
 unsigned WAL candidate directly into the store. Content addressing can make
