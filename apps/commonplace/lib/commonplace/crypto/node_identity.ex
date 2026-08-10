@@ -183,16 +183,81 @@ defmodule Commonplace.Crypto.NodeIdentity do
   defp mint_keypair(data_dir, path) do
     {pub, priv} = Signing.generate_keypair()
     contents = Base.encode64(pub) <> "\n" <> Base.encode64(priv) <> "\n"
-    tmp = Path.join(data_dir, ".#{@key_file}.tmp")
+    tmp = Path.join(data_dir, ".#{@key_file}.#{mint_temp_suffix()}.tmp")
 
-    with :ok <- File.mkdir_p(data_dir),
-         :ok <- File.write(tmp, contents, [:write]),
-         :ok <- File.chmod(tmp, 0o600),
-         :ok <- File.rename(tmp, path),
-         {:ok, final} <- File.read(path) do
-      # Re-read after rename so concurrent first-boot races settle on
-      # whichever rename landed (both callers see the same final key).
-      decode_keypair(final)
+    result =
+      with :ok <- File.mkdir_p(data_dir),
+           :ok <- File.write(tmp, contents, [:write]),
+           :ok <- File.chmod(tmp, 0o600),
+           :ok <- link_into_place(tmp, path),
+           :ok <- drop_temp(tmp),
+           {:ok, final} <- File.read(path) do
+        # Re-read after linking so concurrent first-boot races settle on
+        # whichever mint landed first (both callers see the same final key).
+        decode_keypair(final)
+      end
+
+    # Covers the paths that failed before `drop_temp/1` ran. The temp file is
+    # ours alone, so removing it never touches another caller's mint.
+    _ = File.rm(tmp)
+    result
+  end
+
+  # Unlink our temp name as soon as `path` is published — on the winning path it
+  # is a second link to the very inode now at `path`, so the key is already safe
+  # and dropping it early keeps the temp's lifetime as short as the old rename's.
+  # This is not just tidiness: holding the temp until after the read-back left an
+  # extra entry in data_dir for the whole decode, which measurably widened the
+  # window for a concurrent directory walk to trip over an entry that appeared
+  # mid-walk (it reddened a trust-suite teardown at seed 422078). Never fails the
+  # mint — `path` is already published, so a failed cleanup is not a mint error.
+  defp drop_temp(tmp) do
+    _ = File.rm(tmp)
+    :ok
+  end
+
+  # A per-caller temp name (CX-37d9): a FIXED one let two concurrent first-use
+  # mints share a single temp file, so one caller's rename consumed the other's
+  # — the same defect that raced on the public-key path on 2026-08-09.
+  #
+  # `System.unique_integer/1` ALONE is not enough here, and this is the part a
+  # later reader is most likely to "simplify" back: it is unique per BEAM VM,
+  # not per machine. Two nodes cold-starting against a SHARED data_dir — the
+  # multi-node case this ticket was filed for — can each draw the same integer
+  # and land on the same temp path. That one does not diverge (both callers
+  # read `path` back after linking), but one caller's `File.rm(tmp)` can delete
+  # the file the other is about to link, turning its link into :enoent and
+  # failing an otherwise fine mint. So the name also carries the OS pid and
+  # random bytes, making it unique across processes and machines, not just
+  # across schedulers. All three parts are filename-legal (url_encode64 emits
+  # only [A-Za-z0-9-_], and we drop the padding).
+  defp mint_temp_suffix do
+    rand = 9 |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false)
+    "#{System.pid()}.#{System.unique_integer([:positive, :monotonic])}.#{rand}"
+  end
+
+  # This fix does NOT close the cold-start identity race. `Workspace`'s
+  # `write_fresh_node_id/2` (workspace.ex:125) still has exactly this defect —
+  # fixed temp name plus a clobbering rename — and races in the very same
+  # first-boot window. It is tracked as CX-kmtq and is not fixed here.
+  #
+  # The asymmetry is the part worth carrying: the race fixed below was the LOUD
+  # one, failing an :enoent straight out of `signing_context/0`. The node_id race
+  # is SILENT — two callers simply walk away with different node_ids. And node_id
+  # is the identity this signing key is BOUND TO, so the quieter bug is attached
+  # to the more load-bearing value.
+  #
+  # `File.rename/2` cannot express "create, but never clobber": the loser of a
+  # mint race would overwrite the winner's key and the two callers would walk
+  # away holding DIFFERENT private keys for one node_id (measured, CX-37d9).
+  # A hard link fails with :eexist instead, which is success for us — the key
+  # already exists, and the caller reads it back below. The link also carries
+  # the inode's 0o600 mode, so the published key is never briefly world-readable.
+  defp link_into_place(tmp, path) do
+    case File.ln(tmp, path) do
+      :ok -> :ok
+      {:error, :eexist} -> :ok
+      {:error, _} = err -> err
     end
   end
 
