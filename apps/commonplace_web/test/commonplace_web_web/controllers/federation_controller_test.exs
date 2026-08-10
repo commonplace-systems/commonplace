@@ -23,6 +23,7 @@ defmodule CommonplaceWebWeb.FederationControllerTest do
     # Point the default CommitStore at a scratch dir (wiki_live_test pattern).
     dir = Path.join(System.tmp_dir!(), "cp_fed_ctrl_#{:rand.uniform(1_000_000_000)}")
     File.mkdir_p!(dir)
+    prior_data_dir = Application.get_env(:commonplace, :data_dir)
     Application.put_env(:commonplace, :data_dir, dir)
 
     # R4c carve-out: swap ALL THREE trio children, not just CommitStore —
@@ -31,6 +32,7 @@ defmodule CommonplaceWebWeb.FederationControllerTest do
     # at their own init/1; leaving them running after a CommitStore swap
     # would pin them to the OLD, about-to-be-abandoned instance).
     sup = Commonplace.Store.CommitStoreSupervisor
+    :ok = Commonplace.Trust.AuditDispatcher.flush()
     _ = Supervisor.terminate_child(sup, Commonplace.Store.PendingImports)
     _ = Supervisor.delete_child(sup, Commonplace.Store.PendingImports)
     _ = Supervisor.terminate_child(sup, Commonplace.Store.TrustSideStore)
@@ -50,16 +52,32 @@ defmodule CommonplaceWebWeb.FederationControllerTest do
     {:ok, _} =
       Supervisor.start_child(sup, {Commonplace.Store.TrustSideStore, commit_store: CommitStore})
 
-    {:ok, _} = Supervisor.start_child(sup, {Commonplace.Store.PendingImports, commit_store: CommitStore})
+    {:ok, _} =
+      Supervisor.start_child(sup, {Commonplace.Store.PendingImports, commit_store: CommitStore})
 
     Application.put_env(:commonplace_web, :federation_peers, %{@token => @peer})
 
     on_exit(fn ->
+      :ok = Commonplace.Trust.AuditDispatcher.flush()
       Application.delete_env(:commonplace_web, :federation_peers)
       Application.delete_env(:commonplace_web, :federation_deferral_budget)
       Application.delete_env(:commonplace, :trust)
-      Application.put_env(:commonplace, :data_dir, "tmp/test_data")
+      _ = Supervisor.terminate_child(sup, Commonplace.Store.PendingImports)
+      _ = Supervisor.delete_child(sup, Commonplace.Store.PendingImports)
+      _ = Supervisor.terminate_child(sup, Commonplace.Store.TrustSideStore)
+      _ = Supervisor.delete_child(sup, Commonplace.Store.TrustSideStore)
+      _ = Supervisor.terminate_child(sup, CommitStore)
+      _ = Supervisor.delete_child(sup, CommitStore)
+      restored_data_dir = prior_data_dir || "tmp/test_data"
+      Application.put_env(:commonplace, :data_dir, restored_data_dir)
       File.rm_rf!(dir)
+      {:ok, restored_pid} = restore_store_trio(sup, restored_data_dir)
+
+      assert Process.alive?(restored_pid)
+      assert Process.whereis(CommitStore) == restored_pid
+
+      assert CubDB.data_dir(CommitStore.db_handle(CommitStore)) ==
+               Path.join(restored_data_dir, "commits")
     end)
 
     CommonplaceWebWeb.FederationPeerBudget.reset()
@@ -69,11 +87,35 @@ defmodule CommonplaceWebWeb.FederationControllerTest do
 
   defp authed(conn), do: put_req_header(conn, "authorization", "Bearer " <> @token)
 
+  defp restore_store_trio(sup, data_dir) do
+    {:ok, store_pid} =
+      Supervisor.start_child(
+        sup,
+        {CommitStore,
+         data_dir: data_dir,
+         trust_side_store: Commonplace.Store.TrustSideStore,
+         pending_imports: Commonplace.Store.PendingImports}
+      )
+
+    {:ok, _} =
+      Supervisor.start_child(sup, {Commonplace.Store.TrustSideStore, commit_store: CommitStore})
+
+    {:ok, _} =
+      Supervisor.start_child(sup, {Commonplace.Store.PendingImports, commit_store: CommitStore})
+
+    {:ok, store_pid}
+  end
+
   defp ident(id) do
     {pub, priv} = Signing.generate_keypair()
-    %{uuid: id, pub: pub, priv: priv,
+
+    %{
+      uuid: id,
+      pub: pub,
+      priv: priv,
       ctx: %SigningContext{identity_uuid: id, private_key: priv, public_key: pub},
-      signer: Signing.signer_id(id, pub)}
+      signer: Signing.signer_id(id, pub)
+    }
   end
 
   # A root pinned strict, delegating :write over `docs` to an agent.

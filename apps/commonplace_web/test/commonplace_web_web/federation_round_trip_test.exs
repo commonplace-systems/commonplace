@@ -32,6 +32,7 @@ defmodule CommonplaceWebWeb.FederationRoundTripTest do
   setup do
     dir = Path.join(System.tmp_dir!(), "cp_fed_rt_#{:rand.uniform(1_000_000_000)}")
     File.mkdir_p!(dir)
+    prior_data_dir = Application.get_env(:commonplace, :data_dir)
 
     # Serving side = the DEFAULT trio (the controller's store + its
     # TrustSideStore/PendingImports companions), pointed at scratch
@@ -49,12 +50,14 @@ defmodule CommonplaceWebWeb.FederationRoundTripTest do
     # here triggered by an explicit admin swap rather than a crash.
     Application.put_env(:commonplace, :data_dir, dir)
     sup = Commonplace.Store.CommitStoreSupervisor
+    :ok = Commonplace.Trust.AuditDispatcher.flush()
     _ = Supervisor.terminate_child(sup, Commonplace.Store.PendingImports)
     _ = Supervisor.delete_child(sup, Commonplace.Store.PendingImports)
     _ = Supervisor.terminate_child(sup, Commonplace.Store.TrustSideStore)
     _ = Supervisor.delete_child(sup, Commonplace.Store.TrustSideStore)
     _ = Supervisor.terminate_child(sup, CommitStore)
     _ = Supervisor.delete_child(sup, CommitStore)
+
     {:ok, _} =
       Supervisor.start_child(
         sup,
@@ -67,7 +70,8 @@ defmodule CommonplaceWebWeb.FederationRoundTripTest do
     {:ok, _} =
       Supervisor.start_child(sup, {Commonplace.Store.TrustSideStore, commit_store: CommitStore})
 
-    {:ok, _} = Supervisor.start_child(sup, {Commonplace.Store.PendingImports, commit_store: CommitStore})
+    {:ok, _} =
+      Supervisor.start_child(sup, {Commonplace.Store.PendingImports, commit_store: CommitStore})
 
     # Pulling side = its own trio, its own root. PullClient calls
     # store_capability/2 on this side when inlining a fetched envelope's
@@ -91,13 +95,47 @@ defmodule CommonplaceWebWeb.FederationRoundTripTest do
     Application.put_env(:commonplace_web, :federation_peers, %{@token => "puller"})
 
     on_exit(fn ->
+      :ok = Commonplace.Trust.AuditDispatcher.flush()
       Application.delete_env(:commonplace_web, :federation_peers)
       Application.delete_env(:commonplace, :trust)
-      Application.put_env(:commonplace, :data_dir, "tmp/test_data")
+      _ = Supervisor.terminate_child(sup, Commonplace.Store.PendingImports)
+      _ = Supervisor.delete_child(sup, Commonplace.Store.PendingImports)
+      _ = Supervisor.terminate_child(sup, Commonplace.Store.TrustSideStore)
+      _ = Supervisor.delete_child(sup, Commonplace.Store.TrustSideStore)
+      _ = Supervisor.terminate_child(sup, CommitStore)
+      _ = Supervisor.delete_child(sup, CommitStore)
+      restored_data_dir = prior_data_dir || "tmp/test_data"
+      Application.put_env(:commonplace, :data_dir, restored_data_dir)
       File.rm_rf!(dir)
+      {:ok, restored_pid} = restore_store_trio(sup, restored_data_dir)
+
+      assert Process.alive?(restored_pid)
+      assert Process.whereis(CommitStore) == restored_pid
+
+      assert CubDB.data_dir(CommitStore.db_handle(CommitStore)) ==
+               Path.join(restored_data_dir, "commits")
     end)
 
     %{pulling: pulling, port: port}
+  end
+
+  defp restore_store_trio(sup, data_dir) do
+    {:ok, store_pid} =
+      Supervisor.start_child(
+        sup,
+        {CommitStore,
+         data_dir: data_dir,
+         trust_side_store: Commonplace.Store.TrustSideStore,
+         pending_imports: Commonplace.Store.PendingImports}
+      )
+
+    {:ok, _} =
+      Supervisor.start_child(sup, {Commonplace.Store.TrustSideStore, commit_store: CommitStore})
+
+    {:ok, _} =
+      Supervisor.start_child(sup, {Commonplace.Store.PendingImports, commit_store: CommitStore})
+
+    {:ok, store_pid}
   end
 
   test "agent commit federates A→B over real HTTP and lands through strict Gate A",
@@ -106,7 +144,12 @@ defmodule CommonplaceWebWeb.FederationRoundTripTest do
     # agent's cert on the serving side.
     {root_pub, root_priv} = Signing.generate_keypair()
     root_uuid = "root-" <> UUID.uuid4()
-    root_ctx = %SigningContext{identity_uuid: root_uuid, private_key: root_priv, public_key: root_pub}
+
+    root_ctx = %SigningContext{
+      identity_uuid: root_uuid,
+      private_key: root_priv,
+      public_key: root_pub
+    }
 
     Application.put_env(:commonplace, :trust, %{
       accept_unsigned: false,
@@ -129,11 +172,16 @@ defmodule CommonplaceWebWeb.FederationRoundTripTest do
     :ok = CommitStore.store_capability(CommitStore, cert)
 
     commit =
-      Commit.new(doc, Yelixer.Encoding.encode_update(Commonplace.Tree.Schema.new_schema()), nil, %{
-        kind: :regular,
-        snapshot_parent: :crypto.hash(:sha256, "fed-rt-epoch"),
-        capability_proof: cert.id
-      })
+      Commit.new(
+        doc,
+        Yelixer.Encoding.encode_update(Commonplace.Tree.Schema.new_schema()),
+        nil,
+        %{
+          kind: :regular,
+          snapshot_parent: :crypto.hash(:sha256, "fed-rt-epoch"),
+          capability_proof: cert.id
+        }
+      )
       |> Signing.sign_commit(agent_priv, Signing.signer_id(agent_uuid, agent_pub))
 
     :ok = CommitStore.import_commit(CommitStore, commit, validator: fn _ -> :ok end)
