@@ -1,7 +1,32 @@
-# 2b THE DEMO SLICE — decomposition for plan's ack, before any dispatch
+# 2b THE DEMO SLICE — decomposition (ACKED by plan 20:13Z; F1 is the one gate)
 
-**By:** commonplace, 2026-08-10 ~20:25Z · **status: awaiting plan's ack on
-two named choices; no build dispatched**
+**By:** commonplace, 2026-08-10 ~20:25Z · **status: ACKED — both choices
+decided by plan (via boss relay 20:13Z, plan read this doc directly).**
+
+- **(A) ACKED: L4 out of the minimal slice, in as slice 2.** Plan additionally
+  corrected its own assessment (@23a247c, plan repo): a single-workspace cell
+  exercises L4 only degenerately, so "six of seven links" overstated by one.
+  Ladder: slice 1 single workspace → slice 2 second workspace over federation
+  on this box → L2 remote.
+- **(B) ACKED: the serve identity suffices as witness** (a fresh second
+  workspace would be independence theatre — same box, same operator). ⛔ **ONE
+  CONDITION: the witness record's enclosure must state the same-box/
+  same-operator fact explicitly**, so `:corroborated` is honest about what it
+  corroborates. Box-level independence stays L2's story.
+- ⛔ **THE ONE GATE: F1 (loud WAL-pending line) must merge BEFORE the demo
+  runs** — the demo is precisely the scenario where silent WAL-only operation
+  would fake success. (In build at ack time.)
+- **Step-3 pick (delegated to commonplace, criterion "nothing that could open
+  a yelixer investigation"; CX-xqfw class excluded): CX-lgfg via the API
+  route** — promote SessionView's `reregister_root_tag/1` workaround into a
+  documented Yelixer API with a replay round-trip test. ⛔ Wire format
+  untouched — encoding the tag onto the wire would be both an investigation
+  and a Yjs-compat hazard, and is out.
+- **Contract split for the build**: Sol produces the yelixer change UNSTAGED
+  in the cell worktree under its normal contract; the CEREMONY — committing
+  through the tapped git as the cell principal, cert mint, witness run — is
+  the operator's at top level. The cell's punctuated commit is the operator
+  acting as the cell, which is the demo's honest shape until L2 exists.
 **Basis:** assessment §5 (acceptance), §3 (the chain), proto-chit schema
 `proto-chit-event/v1` (@a66fd9b), CX-8wh1's `Workspace.initialize/2`
 (@6567f94 — new, and it changes the cell-birth story below).
