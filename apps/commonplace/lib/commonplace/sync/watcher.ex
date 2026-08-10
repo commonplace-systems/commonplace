@@ -61,7 +61,16 @@ defmodule Commonplace.Sync.Watcher do
           MapSet.new()
       end
 
-    schema_names = MapSet.new(Map.keys(schema_entries))
+    # `exclude_names` is symmetric: an excluded name must be invisible to
+    # the diff in BOTH directions. Filtering only the disk listing left
+    # schema-side entries exposed — a substrate-minted entry (e.g. "bd")
+    # with no on-disk counterpart surfaced as a perpetual :deleted change
+    # and blocked sync-flush completeness even while excluded.
+    schema_names =
+      schema_entries
+      |> Map.keys()
+      |> Enum.reject(&MapSet.member?(exclude_names, &1))
+      |> MapSet.new()
 
     # New files (on disk but not in schema)
     created =
@@ -148,10 +157,11 @@ defmodule Commonplace.Sync.Watcher do
 
     # Recurse into subdirectories
     schema_doc = load_schema(root_uuid, store)
+    exclude_names = Keyword.get(opts, :exclude_names, []) |> MapSet.new()
 
     Schema.list_entries(schema_doc)
     |> Enum.each(fn entry ->
-      if entry.type == :dir do
+      if entry.type == :dir and not MapSet.member?(exclude_names, entry.name) do
         sub_dir = Path.join(dir, entry.name)
 
         cond do
