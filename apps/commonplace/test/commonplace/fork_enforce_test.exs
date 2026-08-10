@@ -31,6 +31,10 @@ defmodule Commonplace.ForkEnforceTest do
     _ = Supervisor.delete_child(sup, Commonplace.Store.CommitStore)
     {:ok, _pid} = Supervisor.start_child(sup, {Commonplace.Store.CommitStore, data_dir: dir})
 
+    Commonplace.Test.WorkspaceFixture.complete_workspace!(dir,
+      store: Commonplace.Store.CommitStore
+    )
+
     {pub, priv} = Signing.generate_keypair()
     identity = "test-fork-signer"
     sc = %SigningContext{identity_uuid: identity, private_key: priv, public_key: pub}
@@ -45,7 +49,11 @@ defmodule Commonplace.ForkEnforceTest do
     # Root doc must be signed under enforce.
     root_uuid = UUID.uuid4()
     root_update = Yelixer.Encoding.encode_update(Schema.new_schema())
-    CommitStore.create_commit(Commonplace.Store.CommitStore, root_uuid, root_update, nil, %{}, signing_context: sc)
+
+    CommitStore.create_commit(Commonplace.Store.CommitStore, root_uuid, root_update, nil, %{},
+      signing_context: sc
+    )
+
     File.write!(Path.join(dir, "root"), root_uuid)
 
     on_exit(fn ->
@@ -79,7 +87,11 @@ defmodule Commonplace.ForkEnforceTest do
     doc = Commonplace.Document.ContentType.create(Yelixer.Doc.new(), :text, "doc.txt")
     doc = Commonplace.Document.ContentType.insert_text(doc, 0, content)
     update = Yelixer.Encoding.encode_update(doc)
-    CommitStoreClient.create_commit(CommitStoreClient, uuid, update, nil, %{}, signing_context: sc)
+
+    CommitStoreClient.create_commit(CommitStoreClient, uuid, update, nil, %{},
+      signing_context: sc
+    )
+
     uuid
   end
 

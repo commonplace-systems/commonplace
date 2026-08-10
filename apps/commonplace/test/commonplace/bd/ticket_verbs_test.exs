@@ -35,6 +35,11 @@ defmodule Commonplace.Bd.TicketVerbsTest do
     root_doc = Schema.new_schema()
     update = Yelixer.Encoding.encode_update(root_doc)
     CommitStore.create_commit(Commonplace.Store.CommitStore, root_uuid, update, nil)
+
+    Commonplace.Test.WorkspaceFixture.complete_workspace!(dir,
+      store: Commonplace.Store.CommitStore
+    )
+
     File.write!(Path.join(dir, "root"), root_uuid)
 
     on_exit(fn ->
@@ -115,7 +120,10 @@ defmodule Commonplace.Bd.TicketVerbsTest do
       assert b_reloaded.needs == []
     end
 
-    test "accepts a cross-repo-leaf prereq without walking it", %{root: root, signing_context: ctx} do
+    test "accepts a cross-repo-leaf prereq without walking it", %{
+      root: root,
+      signing_context: ctx
+    } do
       a = create_ticket(root, "A")
 
       context = %{
@@ -192,7 +200,9 @@ defmodule Commonplace.Bd.TicketVerbsTest do
         source: "test"
       }
 
-      assert {:ok, :tree_mutation, details} = ViewActionDispatch.dispatch("ticket_update", context)
+      assert {:ok, :tree_mutation, details} =
+               ViewActionDispatch.dispatch("ticket_update", context)
+
       assert details.action == "ticket_update"
 
       {:ok, reloaded} = Issue.show(root, a.id)

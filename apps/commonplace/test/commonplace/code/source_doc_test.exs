@@ -182,7 +182,13 @@ defmodule Commonplace.Code.SourceDocTest do
       root_doc = Schema.add_directory(root_doc, "test", dir_uuid)
       update = Yelixer.Encoding.encode_update(root_doc)
       CommitStore.create_commit(Commonplace.Store.CommitStore, root_uuid, update, nil)
-      File.write!(Path.join(Application.get_env(:commonplace, :data_dir), "root"), root_uuid)
+      data_dir = Application.fetch_env!(:commonplace, :data_dir)
+
+      Commonplace.Test.WorkspaceFixture.complete_workspace!(data_dir,
+        store: Commonplace.Store.CommitStore
+      )
+
+      File.write!(Path.join(data_dir, "root"), root_uuid)
 
       _ = store
       %{root_uuid: root_uuid, dir_path: "test", renderer_uuid: renderer_uuid}
@@ -219,9 +225,9 @@ defmodule Commonplace.Code.SourceDocTest do
 
     defp cached_uuids do
       :source_doc_index
-    |> :ets.tab2list()
-    |> Enum.map(fn {uuid, _h, _cache_key, _a} -> uuid end)
-    |> MapSet.new()
+      |> :ets.tab2list()
+      |> Enum.map(fn {uuid, _h, _cache_key, _a} -> uuid end)
+      |> MapSet.new()
     end
 
     test "evicts least-recently-used modules once over the cap" do

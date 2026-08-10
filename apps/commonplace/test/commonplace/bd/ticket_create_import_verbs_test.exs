@@ -55,6 +55,11 @@ defmodule Commonplace.Bd.TicketCreateImportVerbsTest do
     root_uuid = UUID.uuid4()
     update = Yelixer.Encoding.encode_update(Schema.new_schema())
     CommitStore.create_commit(Commonplace.Store.CommitStore, root_uuid, update, nil)
+
+    Commonplace.Test.WorkspaceFixture.complete_workspace!(dir,
+      store: Commonplace.Store.CommitStore
+    )
+
     File.write!(Path.join(dir, "root"), root_uuid)
 
     on_exit(fn ->
@@ -549,7 +554,11 @@ defmodule Commonplace.Bd.TicketCreateImportVerbsTest do
       # Drift alarm: if WriteGuard's protected set widens, this pins the
       # fact that the posture has to be re-reviewed rather than silently
       # letting a newly-protected field ride in on an import.
-      enforced = Enum.filter(ViewActionDispatch.import_allow_posture(), &(&1 in WriteGuard.protected_fields()))
+      enforced =
+        Enum.filter(
+          ViewActionDispatch.import_allow_posture(),
+          &(&1 in WriteGuard.protected_fields())
+        )
 
       assert enforced == [:status, :done_witness, :claimed_by],
              """

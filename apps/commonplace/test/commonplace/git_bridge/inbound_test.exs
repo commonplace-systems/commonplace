@@ -45,7 +45,13 @@ defmodule Commonplace.GitBridge.InboundTest do
       Application.put_env(:commonplace, :data_dir, prev_data_dir || "tmp/test_data")
     end)
 
-    %{store: store_name, repo_dir: repo_dir, workspace_dir: workspace_dir, bare_dir: bare_dir, clone_dir: clone_dir}
+    %{
+      store: store_name,
+      repo_dir: repo_dir,
+      workspace_dir: workspace_dir,
+      bare_dir: bare_dir,
+      clone_dir: clone_dir
+    }
   end
 
   # --- Seed helpers (mirrors server_test.exs patterns) ---
@@ -75,8 +81,9 @@ defmodule Commonplace.GitBridge.InboundTest do
     CommitStore.create_commit(store, uuid, update, nil)
   end
 
-  defp put_workspace_root(workspace_dir, root_uuid) do
+  defp put_workspace_root(store, workspace_dir, root_uuid) do
     Application.put_env(:commonplace, :data_dir, workspace_dir)
+    Commonplace.Test.WorkspaceFixture.complete_workspace!(workspace_dir, store: store)
     File.write!(Path.join(workspace_dir, "root"), root_uuid)
   end
 
@@ -95,7 +102,7 @@ defmodule Commonplace.GitBridge.InboundTest do
     root_schema = Schema.new_schema() |> Schema.add_directory("workspace", mount_uuid)
     create_schema(store, root_uuid, root_schema)
 
-    put_workspace_root(workspace_dir, root_uuid)
+    put_workspace_root(store, workspace_dir, root_uuid)
 
     %{root_uuid: root_uuid, mount_uuid: mount_uuid, doc_uuid: doc_uuid}
   end
@@ -113,7 +120,7 @@ defmodule Commonplace.GitBridge.InboundTest do
     root_schema = Schema.new_schema() |> Schema.add_directory("workspace", mount_uuid)
     create_schema(store, root_uuid, root_schema)
 
-    put_workspace_root(workspace_dir, root_uuid)
+    put_workspace_root(store, workspace_dir, root_uuid)
 
     %{root_uuid: root_uuid, mount_uuid: mount_uuid, doc_uuid: doc_uuid}
   end
@@ -188,9 +195,11 @@ defmodule Commonplace.GitBridge.InboundTest do
     bare_dir: bare_dir,
     clone_dir: clone_dir
   } do
-    %{mount_uuid: mount_uuid, doc_uuid: doc_uuid} = seed_single_doc(store, workspace_dir, "hello world")
+    %{mount_uuid: mount_uuid, doc_uuid: doc_uuid} =
+      seed_single_doc(store, workspace_dir, "hello world")
 
-    name = start_bridge(mount_uuid: mount_uuid, repo_dir: repo_dir, store: store, remote: bare_dir)
+    name =
+      start_bridge(mount_uuid: mount_uuid, repo_dir: repo_dir, store: store, remote: bare_dir)
 
     {:ok, r1} = Server.sync_now(name)
     assert r1.committed == true
@@ -212,17 +221,21 @@ defmodule Commonplace.GitBridge.InboundTest do
     _ = r3
   end
 
-  test "pin 2: anchor-replica property — CRDT edit + git edit in different regions both survive", %{
-    store: store,
-    repo_dir: repo_dir,
-    workspace_dir: workspace_dir,
-    bare_dir: bare_dir,
-    clone_dir: clone_dir
-  } do
+  test "pin 2: anchor-replica property — CRDT edit + git edit in different regions both survive",
+       %{
+         store: store,
+         repo_dir: repo_dir,
+         workspace_dir: workspace_dir,
+         bare_dir: bare_dir,
+         clone_dir: clone_dir
+       } do
     original = "Paragraph A original.\n\nParagraph B original."
-    %{mount_uuid: mount_uuid, doc_uuid: doc_uuid} = seed_single_doc(store, workspace_dir, original)
 
-    name = start_bridge(mount_uuid: mount_uuid, repo_dir: repo_dir, store: store, remote: bare_dir)
+    %{mount_uuid: mount_uuid, doc_uuid: doc_uuid} =
+      seed_single_doc(store, workspace_dir, original)
+
+    name =
+      start_bridge(mount_uuid: mount_uuid, repo_dir: repo_dir, store: store, remote: bare_dir)
 
     {:ok, _} = Server.sync_now(name)
 
@@ -250,17 +263,22 @@ defmodule Commonplace.GitBridge.InboundTest do
     assert final =~ "Paragraph B EDITED"
   end
 
-  test "pin 3: same-region overlap — CRDT+git converge (v2 true region-merge), pre-merge git version still preserved for review", %{
-    store: store,
-    repo_dir: repo_dir,
-    workspace_dir: workspace_dir,
-    bare_dir: bare_dir,
-    clone_dir: clone_dir
-  } do
+  test "pin 3: same-region overlap — CRDT+git converge (v2 true region-merge), pre-merge git version still preserved for review",
+       %{
+         store: store,
+         repo_dir: repo_dir,
+         workspace_dir: workspace_dir,
+         bare_dir: bare_dir,
+         clone_dir: clone_dir
+       } do
     original = "same region text"
-    %{mount_uuid: mount_uuid, doc_uuid: doc_uuid} = seed_single_doc(store, workspace_dir, original)
 
-    name = start_bridge(mount_uuid: mount_uuid, repo_dir: repo_dir, store: store, remote: bare_dir)
+    %{mount_uuid: mount_uuid, doc_uuid: doc_uuid} =
+      seed_single_doc(store, workspace_dir, original)
+
+    name =
+      start_bridge(mount_uuid: mount_uuid, repo_dir: repo_dir, store: store, remote: bare_dir)
+
     {:ok, _} = Server.sync_now(name)
 
     human_clone(bare_dir, clone_dir)
@@ -289,7 +307,8 @@ defmodule Commonplace.GitBridge.InboundTest do
     # bailing, and the pre-merge git version is STILL preserved at the
     # conflict path (same event/marker as before) as review evidence,
     # not a rejection.
-    assert_receive {"red:" <> _, {:git_bridge, :conflict_preserved, %{reason: :both_moved}}}, 2_000
+    assert_receive {"red:" <> _, {:git_bridge, :conflict_preserved, %{reason: :both_moved}}},
+                   2_000
 
     merged = doc_content(store, doc_uuid)
     refute is_nil(merged)
@@ -309,21 +328,28 @@ defmodule Commonplace.GitBridge.InboundTest do
     git!(".", ["clone", bare_dir, scratch])
     git!(scratch, ["checkout", "-B", "main", "origin/main"])
 
-    conflict_files = scratch |> File.ls!() |> Enum.filter(&String.starts_with?(&1, "a.txt.conflict-"))
+    conflict_files =
+      scratch |> File.ls!() |> Enum.filter(&String.starts_with?(&1, "a.txt.conflict-"))
+
     assert conflict_files != []
   end
 
-  test "pin 11 (headline): CRDT edit + git edit to DISJOINT regions both survive the merge, no conflict file", %{
-    store: store,
-    repo_dir: repo_dir,
-    workspace_dir: workspace_dir,
-    bare_dir: bare_dir,
-    clone_dir: clone_dir
-  } do
+  test "pin 11 (headline): CRDT edit + git edit to DISJOINT regions both survive the merge, no conflict file",
+       %{
+         store: store,
+         repo_dir: repo_dir,
+         workspace_dir: workspace_dir,
+         bare_dir: bare_dir,
+         clone_dir: clone_dir
+       } do
     original = "Paragraph ONE original.\n\nParagraph TWO original."
-    %{mount_uuid: mount_uuid, doc_uuid: doc_uuid} = seed_single_doc(store, workspace_dir, original)
 
-    name = start_bridge(mount_uuid: mount_uuid, repo_dir: repo_dir, store: store, remote: bare_dir)
+    %{mount_uuid: mount_uuid, doc_uuid: doc_uuid} =
+      seed_single_doc(store, workspace_dir, original)
+
+    name =
+      start_bridge(mount_uuid: mount_uuid, repo_dir: repo_dir, store: store, remote: bare_dir)
+
     {:ok, _} = Server.sync_now(name)
 
     human_clone(bare_dir, clone_dir)
@@ -365,14 +391,18 @@ defmodule Commonplace.GitBridge.InboundTest do
     # Re-exported file reflects both edits, and there is no conflict marker.
     assert File.read!(Path.join(scratch, "a.txt")) =~ "Paragraph ONE EDITED"
     assert File.read!(Path.join(scratch, "a.txt")) =~ "Paragraph TWO EDITED"
-    conflict_files = scratch |> File.ls!() |> Enum.filter(&String.starts_with?(&1, "a.txt.conflict-"))
+
+    conflict_files =
+      scratch |> File.ls!() |> Enum.filter(&String.starts_with?(&1, "a.txt.conflict-"))
+
     assert conflict_files == []
   end
 
-  test "pin 12: clock-continuation — a second region-merge under the same bridge hand doesn't collide with the first's ops", %{
-    store: store,
-    workspace_dir: workspace_dir
-  } do
+  test "pin 12: clock-continuation — a second region-merge under the same bridge hand doesn't collide with the first's ops",
+       %{
+         store: store,
+         workspace_dir: workspace_dir
+       } do
     original = "Alpha original.\n\nBeta original.\n\nGamma original."
     %{doc_uuid: doc_uuid} = seed_single_doc(store, workspace_dir, original)
 
@@ -383,14 +413,25 @@ defmodule Commonplace.GitBridge.InboundTest do
     first_edit = "Alpha FIRST EDIT.\n\nBeta original.\n\nGamma original."
 
     {:ok, _c1} =
-      Commonplace.GitBridge.Inbound.mint_region_merge(store, doc_uuid, anchor0.id, original, first_edit)
+      Commonplace.GitBridge.Inbound.mint_region_merge(
+        store,
+        doc_uuid,
+        anchor0.id,
+        original,
+        first_edit
+      )
 
     # A concurrent CRDT-side edit (region: Beta) under a DIFFERENT client
     # id lands on top — `:latest` advances, but the bridge hand's OWN
     # clock does not (only hand-authored commits move it).
     {:ok, live} = DocBuilder.reconstruct_doc(store, doc_uuid)
     crdt_edit = "Alpha FIRST EDIT.\n\nBeta CRDT EDITED.\n\nGamma original."
-    update = Yelixer.Encoding.encode_update(Commonplace.Document.Diff.apply_diff(live, first_edit, crdt_edit))
+
+    update =
+      Yelixer.Encoding.encode_update(
+        Commonplace.Document.Diff.apply_diff(live, first_edit, crdt_edit)
+      )
+
     CommitStore.create_chained_commit(store, doc_uuid, update)
 
     # Second region-merge: reconstructed against the SAME STALE anchor0
@@ -405,7 +446,13 @@ defmodule Commonplace.GitBridge.InboundTest do
     second_edit = "Alpha original.\n\nBeta original.\n\nGamma SECOND EDIT."
 
     {:ok, _c3} =
-      Commonplace.GitBridge.Inbound.mint_region_merge(store, doc_uuid, anchor0.id, original, second_edit)
+      Commonplace.GitBridge.Inbound.mint_region_merge(
+        store,
+        doc_uuid,
+        anchor0.id,
+        original,
+        second_edit
+      )
 
     final = doc_content(store, doc_uuid)
     # All three edits survive: the second region-merge's newly-minted
@@ -428,7 +475,12 @@ defmodule Commonplace.GitBridge.InboundTest do
     # Concurrent CRDT edit (region one) — establishes anchor != :latest.
     {:ok, doc} = DocBuilder.reconstruct_doc(store, doc_uuid)
     crdt_edit = "region one EDITED.\n\nregion two text."
-    update = Yelixer.Encoding.encode_update(Commonplace.Document.Diff.apply_diff(doc, original, crdt_edit))
+
+    update =
+      Yelixer.Encoding.encode_update(
+        Commonplace.Document.Diff.apply_diff(doc, original, crdt_edit)
+      )
+
     CommitStore.create_chained_commit(store, doc_uuid, update)
 
     theirs = "region one text.\n\nregion two EDITED."
@@ -444,7 +496,16 @@ defmodule Commonplace.GitBridge.InboundTest do
         :counters.add(race_fired, 1, 1)
         {:ok, live} = DocBuilder.reconstruct_doc(store, doc_uuid)
         racer_content = ContentType.get_content(live) <> " [racer]"
-        racer_update = Yelixer.Encoding.encode_update(Commonplace.Document.Diff.apply_diff(live, ContentType.get_content(live), racer_content))
+
+        racer_update =
+          Yelixer.Encoding.encode_update(
+            Commonplace.Document.Diff.apply_diff(
+              live,
+              ContentType.get_content(live),
+              racer_content
+            )
+          )
+
         CommitStore.create_chained_commit(store, doc_uuid, racer_update)
       end
     end
@@ -468,16 +529,20 @@ defmodule Commonplace.GitBridge.InboundTest do
     assert final =~ "[racer]"
   end
 
-  test "pin 4: push-race — human pushes between fetch and push, worktree resets, next cycle converges", %{
-    store: store,
-    repo_dir: repo_dir,
-    workspace_dir: workspace_dir,
-    bare_dir: bare_dir,
-    clone_dir: clone_dir
-  } do
-    %{mount_uuid: mount_uuid, doc_uuid: doc_uuid} = seed_single_doc(store, workspace_dir, "base content")
+  test "pin 4: push-race — human pushes between fetch and push, worktree resets, next cycle converges",
+       %{
+         store: store,
+         repo_dir: repo_dir,
+         workspace_dir: workspace_dir,
+         bare_dir: bare_dir,
+         clone_dir: clone_dir
+       } do
+    %{mount_uuid: mount_uuid, doc_uuid: doc_uuid} =
+      seed_single_doc(store, workspace_dir, "base content")
 
-    name = start_bridge(mount_uuid: mount_uuid, repo_dir: repo_dir, store: store, remote: bare_dir)
+    name =
+      start_bridge(mount_uuid: mount_uuid, repo_dir: repo_dir, store: store, remote: bare_dir)
+
     {:ok, _} = Server.sync_now(name)
 
     human_clone(bare_dir, clone_dir)
@@ -504,16 +569,19 @@ defmodule Commonplace.GitBridge.InboundTest do
     _ = r2
   end
 
-  test "pin 5: force-push — rewritten remote history halts inbound + red event; export still runs", %{
-    store: store,
-    repo_dir: repo_dir,
-    workspace_dir: workspace_dir,
-    bare_dir: bare_dir,
-    clone_dir: clone_dir
-  } do
+  test "pin 5: force-push — rewritten remote history halts inbound + red event; export still runs",
+       %{
+         store: store,
+         repo_dir: repo_dir,
+         workspace_dir: workspace_dir,
+         bare_dir: bare_dir,
+         clone_dir: clone_dir
+       } do
     %{mount_uuid: mount_uuid} = seed_single_doc(store, workspace_dir, "content")
 
-    name = start_bridge(mount_uuid: mount_uuid, repo_dir: repo_dir, store: store, remote: bare_dir)
+    name =
+      start_bridge(mount_uuid: mount_uuid, repo_dir: repo_dir, store: store, remote: bare_dir)
+
     {:ok, _} = Server.sync_now(name)
 
     human_clone(bare_dir, clone_dir)
@@ -543,16 +611,19 @@ defmodule Commonplace.GitBridge.InboundTest do
     assert match?(%{}, result)
   end
 
-  test "pin 6: structured-class rejection — xml doc git edit rejected to conflict path, doc unchanged", %{
-    store: store,
-    repo_dir: repo_dir,
-    workspace_dir: workspace_dir,
-    bare_dir: bare_dir,
-    clone_dir: clone_dir
-  } do
+  test "pin 6: structured-class rejection — xml doc git edit rejected to conflict path, doc unchanged",
+       %{
+         store: store,
+         repo_dir: repo_dir,
+         workspace_dir: workspace_dir,
+         bare_dir: bare_dir,
+         clone_dir: clone_dir
+       } do
     %{mount_uuid: mount_uuid, doc_uuid: doc_uuid} = seed_xml_doc(store, workspace_dir)
 
-    name = start_bridge(mount_uuid: mount_uuid, repo_dir: repo_dir, store: store, remote: bare_dir)
+    name =
+      start_bridge(mount_uuid: mount_uuid, repo_dir: repo_dir, store: store, remote: bare_dir)
+
     {:ok, _} = Server.sync_now(name)
 
     {:ok, before_doc} = DocBuilder.reconstruct_doc(store, doc_uuid)
@@ -564,23 +635,30 @@ defmodule Commonplace.GitBridge.InboundTest do
 
     PubSub.subscribe_red(mount_uuid)
     {:ok, _} = Server.sync_now(name)
-    assert_receive {"red:" <> _, {:git_bridge, :conflict_preserved, %{reason: :structured_class}}}, 2_000
+
+    assert_receive {"red:" <> _,
+                    {:git_bridge, :conflict_preserved, %{reason: :structured_class}}},
+                   2_000
 
     {:ok, after_doc} = DocBuilder.reconstruct_doc(store, doc_uuid)
     after_xml = CanonicalXml.encode(ContentType.get_content(after_doc))
     assert after_xml == before_xml
   end
 
-  test "pin 7: add/delete ingestion — git-side new file becomes a doc, deletion removes the schema entry", %{
-    store: store,
-    repo_dir: repo_dir,
-    workspace_dir: workspace_dir,
-    bare_dir: bare_dir,
-    clone_dir: clone_dir
-  } do
-    %{mount_uuid: mount_uuid, doc_uuid: doc_uuid} = seed_single_doc(store, workspace_dir, "keep me")
+  test "pin 7: add/delete ingestion — git-side new file becomes a doc, deletion removes the schema entry",
+       %{
+         store: store,
+         repo_dir: repo_dir,
+         workspace_dir: workspace_dir,
+         bare_dir: bare_dir,
+         clone_dir: clone_dir
+       } do
+    %{mount_uuid: mount_uuid, doc_uuid: doc_uuid} =
+      seed_single_doc(store, workspace_dir, "keep me")
 
-    name = start_bridge(mount_uuid: mount_uuid, repo_dir: repo_dir, store: store, remote: bare_dir)
+    name =
+      start_bridge(mount_uuid: mount_uuid, repo_dir: repo_dir, store: store, remote: bare_dir)
+
     {:ok, _} = Server.sync_now(name)
 
     human_clone(bare_dir, clone_dir)
@@ -591,8 +669,13 @@ defmodule Commonplace.GitBridge.InboundTest do
     PubSub.subscribe_red(mount_uuid)
     {:ok, _} = Server.sync_now(name)
 
-    assert_receive {"red:" <> _, {:git_bridge, :file_added, %{rel_path: "new_file.txt", uuid: new_uuid}}}, 2_000
-    assert_receive {"red:" <> _, {:git_bridge, :file_removed, %{rel_path: "a.txt", uuid: ^doc_uuid}}}, 2_000
+    assert_receive {"red:" <> _,
+                    {:git_bridge, :file_added, %{rel_path: "new_file.txt", uuid: new_uuid}}},
+                   2_000
+
+    assert_receive {"red:" <> _,
+                    {:git_bridge, :file_removed, %{rel_path: "a.txt", uuid: ^doc_uuid}}},
+                   2_000
 
     # New doc exists with the human's content, and a schema entry was added.
     assert doc_content(store, new_uuid) == "brand new"
@@ -623,7 +706,9 @@ defmodule Commonplace.GitBridge.InboundTest do
   } do
     %{mount_uuid: mount_uuid} = seed_single_doc(store, workspace_dir, "keep me")
 
-    name = start_bridge(mount_uuid: mount_uuid, repo_dir: repo_dir, store: store, remote: bare_dir)
+    name =
+      start_bridge(mount_uuid: mount_uuid, repo_dir: repo_dir, store: store, remote: bare_dir)
+
     {:ok, _} = Server.sync_now(name)
 
     human_clone(bare_dir, clone_dir)
@@ -634,8 +719,15 @@ defmodule Commonplace.GitBridge.InboundTest do
     PubSub.subscribe_red(mount_uuid)
     {:ok, _} = Server.sync_now(name)
 
-    assert_receive {"red:" <> _, {:git_bridge, :conflict_preserved, %{rel_path: "__system", reason: :ineligible_add}}}, 2_000
-    assert_receive {"red:" <> _, {:git_bridge, :conflict_preserved, %{rel_path: "alice.usr", reason: :ineligible_add}}}, 2_000
+    assert_receive {"red:" <> _,
+                    {:git_bridge, :conflict_preserved,
+                     %{rel_path: "__system", reason: :ineligible_add}}},
+                   2_000
+
+    assert_receive {"red:" <> _,
+                    {:git_bridge, :conflict_preserved,
+                     %{rel_path: "alice.usr", reason: :ineligible_add}}},
+                   2_000
 
     {:ok, mount_schema} = DocBuilder.reconstruct_snapshot(store, mount_uuid)
     assert Schema.resolve_name(mount_schema, "__system") == :error
@@ -649,9 +741,12 @@ defmodule Commonplace.GitBridge.InboundTest do
     bare_dir: bare_dir,
     clone_dir: clone_dir
   } do
-    %{mount_uuid: mount_uuid, doc_uuid: doc_uuid} = seed_single_doc(store, workspace_dir, "keep me stable enough to detect as a rename")
+    %{mount_uuid: mount_uuid, doc_uuid: doc_uuid} =
+      seed_single_doc(store, workspace_dir, "keep me stable enough to detect as a rename")
 
-    name = start_bridge(mount_uuid: mount_uuid, repo_dir: repo_dir, store: store, remote: bare_dir)
+    name =
+      start_bridge(mount_uuid: mount_uuid, repo_dir: repo_dir, store: store, remote: bare_dir)
+
     {:ok, _} = Server.sync_now(name)
 
     human_clone(bare_dir, clone_dir)
@@ -661,7 +756,10 @@ defmodule Commonplace.GitBridge.InboundTest do
     PubSub.subscribe_red(mount_uuid)
     {:ok, _} = Server.sync_now(name)
 
-    assert_receive {"red:" <> _, {:git_bridge, :conflict_preserved, %{rel_path: "b.txt", reason: :rename_unsupported}}}, 2_000
+    assert_receive {"red:" <> _,
+                    {:git_bridge, :conflict_preserved,
+                     %{rel_path: "b.txt", reason: :rename_unsupported}}},
+                   2_000
 
     # Original doc/schema entry untouched.
     assert doc_content(store, doc_uuid) == "keep me stable enough to detect as a rename"
@@ -676,14 +774,22 @@ defmodule Commonplace.GitBridge.InboundTest do
     bare_dir: bare_dir,
     clone_dir: clone_dir
   } do
-    %{mount_uuid: mount_uuid, doc_uuid: doc_uuid} = seed_single_doc(store, workspace_dir, "unchanged content")
+    %{mount_uuid: mount_uuid, doc_uuid: doc_uuid} =
+      seed_single_doc(store, workspace_dir, "unchanged content")
 
-    name = start_bridge(mount_uuid: mount_uuid, repo_dir: repo_dir, store: store, remote: bare_dir)
+    name =
+      start_bridge(mount_uuid: mount_uuid, repo_dir: repo_dir, store: store, remote: bare_dir)
+
     {:ok, _} = Server.sync_now(name)
 
     human_clone(bare_dir, clone_dir)
     tamper_path = Path.join(clone_dir, ".commonplace/a.txt.json")
-    File.write!(tamper_path, Jason.encode!(%{"uuid" => "not-a-real-uuid", "type" => "text", "anchor" => nil}))
+
+    File.write!(
+      tamper_path,
+      Jason.encode!(%{"uuid" => "not-a-real-uuid", "type" => "text", "anchor" => nil})
+    )
+
     human_commit_and_push(clone_dir, "tamper with sidecar")
 
     {:ok, _} = Server.sync_now(name)
@@ -702,9 +808,12 @@ defmodule Commonplace.GitBridge.InboundTest do
     bare_dir: bare_dir,
     clone_dir: clone_dir
   } do
-    %{mount_uuid: mount_uuid, doc_uuid: doc_uuid} = seed_single_doc(store, workspace_dir, "unchanged content")
+    %{mount_uuid: mount_uuid, doc_uuid: doc_uuid} =
+      seed_single_doc(store, workspace_dir, "unchanged content")
 
-    name = start_bridge(mount_uuid: mount_uuid, repo_dir: repo_dir, store: store, remote: bare_dir)
+    name =
+      start_bridge(mount_uuid: mount_uuid, repo_dir: repo_dir, store: store, remote: bare_dir)
+
     {:ok, _} = Server.sync_now(name)
 
     # Corrupt the BRIDGE's own local sidecar (not the git-side copy,
@@ -725,8 +834,10 @@ defmodule Commonplace.GitBridge.InboundTest do
     # sidecar (disk-controlled) data, not trusted to be well-formed.
     {:ok, _result} = Server.sync_now(name)
 
-    assert_receive {"red:" <> _, {:git_bridge, :conflict_preserved, %{rel_path: "a.txt", reason: :malformed_anchor}}},
-                    2_000
+    assert_receive {"red:" <> _,
+                    {:git_bridge, :conflict_preserved,
+                     %{rel_path: "a.txt", reason: :malformed_anchor}}},
+                   2_000
 
     # The doc itself is untouched — the malformed-anchor edit never minted.
     assert doc_content(store, doc_uuid) == "unchanged content"
@@ -741,9 +852,12 @@ defmodule Commonplace.GitBridge.InboundTest do
     workspace_dir: workspace_dir,
     bare_dir: bare_dir
   } do
-    %{mount_uuid: mount_uuid, doc_uuid: doc_uuid} = seed_single_doc(store, workspace_dir, "steady state")
+    %{mount_uuid: mount_uuid, doc_uuid: doc_uuid} =
+      seed_single_doc(store, workspace_dir, "steady state")
 
-    name = start_bridge(mount_uuid: mount_uuid, repo_dir: repo_dir, store: store, remote: bare_dir)
+    name =
+      start_bridge(mount_uuid: mount_uuid, repo_dir: repo_dir, store: store, remote: bare_dir)
+
     {:ok, _} = Server.sync_now(name)
 
     {:ok, before} = DocBuilder.reconstruct_doc(store, doc_uuid)
@@ -775,7 +889,9 @@ defmodule Commonplace.GitBridge.InboundTest do
 
     %{mount_uuid: mount_uuid, doc_uuid: doc_uuid} = seed_single_doc(store, workspace_dir, "short")
 
-    name = start_bridge(mount_uuid: mount_uuid, repo_dir: repo_dir, store: store, remote: bare_dir)
+    name =
+      start_bridge(mount_uuid: mount_uuid, repo_dir: repo_dir, store: store, remote: bare_dir)
+
     {:ok, _} = Server.sync_now(name)
 
     human_clone(bare_dir, clone_dir)

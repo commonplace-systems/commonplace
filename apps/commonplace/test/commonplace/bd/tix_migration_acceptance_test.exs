@@ -37,6 +37,11 @@ defmodule Commonplace.Bd.TixMigrationAcceptanceTest do
     root_uuid = UUID.uuid4()
     update = Yelixer.Encoding.encode_update(Schema.new_schema())
     CommitStore.create_commit(Commonplace.Store.CommitStore, root_uuid, update, nil)
+
+    Commonplace.Test.WorkspaceFixture.complete_workspace!(dir,
+      store: Commonplace.Store.CommitStore
+    )
+
     File.write!(Path.join(dir, "root"), root_uuid)
 
     on_exit(fn ->

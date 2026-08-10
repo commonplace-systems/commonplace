@@ -55,6 +55,7 @@ defmodule Commonplace.Presence.ReaperSupervisedTest do
 
       store_name = :"commit_store_reroot_#{:rand.uniform(1_000_000)}"
       start_supervised!({CommitStore, data_dir: dir, name: store_name})
+      Commonplace.Test.WorkspaceFixture.complete_workspace!(dir, store: store_name)
 
       on_exit(fn ->
         Application.put_env(:commonplace, :data_dir, prior_data_dir || "tmp/test_data")

@@ -20,9 +20,14 @@ defmodule Commonplace.GitBridge.ArchiveTest do
   alias Commonplace.Presence
 
   setup do
-    store_dir = Path.join(System.tmp_dir!(), "cp_gb_archive_store_#{:rand.uniform(1_000_000_000)}")
+    store_dir =
+      Path.join(System.tmp_dir!(), "cp_gb_archive_store_#{:rand.uniform(1_000_000_000)}")
+
     repo_dir = Path.join(System.tmp_dir!(), "cp_gb_archive_repo_#{:rand.uniform(1_000_000_000)}")
-    workspace_dir = Path.join(System.tmp_dir!(), "cp_gb_archive_ws_#{:rand.uniform(1_000_000_000)}")
+
+    workspace_dir =
+      Path.join(System.tmp_dir!(), "cp_gb_archive_ws_#{:rand.uniform(1_000_000_000)}")
+
     File.mkdir_p!(store_dir)
     File.mkdir_p!(repo_dir)
     File.mkdir_p!(workspace_dir)
@@ -64,8 +69,9 @@ defmodule Commonplace.GitBridge.ArchiveTest do
     CommitStore.create_commit(store, uuid, update, nil)
   end
 
-  defp put_workspace_root(workspace_dir, root_uuid) do
+  defp put_workspace_root(store, workspace_dir, root_uuid) do
     Application.put_env(:commonplace, :data_dir, workspace_dir)
+    Commonplace.Test.WorkspaceFixture.complete_workspace!(workspace_dir, store: store)
     File.write!(Path.join(workspace_dir, "root"), root_uuid)
   end
 
@@ -104,7 +110,7 @@ defmodule Commonplace.GitBridge.ArchiveTest do
     root_schema = Schema.new_schema() |> Schema.add_directory("workspace", mount_uuid)
     create_schema(store, root_uuid, root_schema)
 
-    put_workspace_root(workspace_dir, root_uuid)
+    put_workspace_root(store, workspace_dir, root_uuid)
 
     %{
       root_uuid: root_uuid,
@@ -384,7 +390,9 @@ defmodule Commonplace.GitBridge.ArchiveTest do
     {:ok, result} = Server.sync_now(name)
     assert result.committed == true
 
-    {show, 0} = System.cmd("git", ["show", "--name-only", "--pretty=format:", result.sha], cd: repo_dir)
+    {show, 0} =
+      System.cmd("git", ["show", "--name-only", "--pretty=format:", result.sha], cd: repo_dir)
+
     changed_files = show |> String.split("\n", trim: true)
 
     assert "a.txt" in changed_files
@@ -408,13 +416,17 @@ defmodule Commonplace.GitBridge.ArchiveTest do
   end
 
   test "Archive.archive/3 is a no-op count-wise for docs with no commits" do
-    store_dir = Path.join(System.tmp_dir!(), "cp_gb_archive_empty_#{:rand.uniform(1_000_000_000)}")
+    store_dir =
+      Path.join(System.tmp_dir!(), "cp_gb_archive_empty_#{:rand.uniform(1_000_000_000)}")
+
     File.mkdir_p!(store_dir)
     on_exit(fn -> File.rm_rf!(store_dir) end)
     name = unique_name("gb_archive_empty")
     {:ok, _pid} = CommitStore.start_link(data_dir: store_dir, name: name)
 
-    repo_dir = Path.join(System.tmp_dir!(), "cp_gb_archive_empty_repo_#{:rand.uniform(1_000_000_000)}")
+    repo_dir =
+      Path.join(System.tmp_dir!(), "cp_gb_archive_empty_repo_#{:rand.uniform(1_000_000_000)}")
+
     File.mkdir_p!(repo_dir)
     on_exit(fn -> File.rm_rf!(repo_dir) end)
 

@@ -75,7 +75,12 @@ defmodule Commonplace.MUD.BotFullCitizenshipTest do
 
     on_exit(fn ->
       if Process.alive?(bursar_pid),
-        do: (try do GenServer.stop(bursar_pid) catch (:exit, _ -> :ok) end)
+        do:
+          (try do
+             GenServer.stop(bursar_pid)
+           catch
+             (:exit, _ -> :ok)
+           end)
     end)
 
     # The migrated shape: a workspace root whose "mud" child IS the
@@ -100,13 +105,23 @@ defmodule Commonplace.MUD.BotFullCitizenshipTest do
       mud_full_citizenship: Application.get_env(:commonplace, :mud_full_citizenship)
     }
 
-    File.write!(Path.join(dir, "root"), workspace_root)
     Application.put_env(:commonplace, :data_dir, dir)
+
+    Commonplace.Test.WorkspaceFixture.complete_workspace!(dir, store: store)
+    File.write!(Path.join(dir, "root"), workspace_root)
+
     Application.put_env(:commonplace, :mud_full_citizenship, true)
 
     on_exit(fn ->
       Bot.stop("regcitizen")
-      if Process.alive?(secrets_pid), do: (try do GenServer.stop(secrets_pid) catch (:exit, _ -> :ok) end)
+
+      if Process.alive?(secrets_pid),
+        do:
+          (try do
+             GenServer.stop(secrets_pid)
+           catch
+             (:exit, _ -> :ok)
+           end)
 
       for {k, v} <- old do
         if is_nil(v),
@@ -125,7 +140,12 @@ defmodule Commonplace.MUD.BotFullCitizenshipTest do
     # No :root_uuid → drives resolve_root/1 → mud_world_root/2 (the path
     # that crashed with GenServer.call(CommitStoreClient, :get_db) before
     # the alias + store-threading fix).
-    result = Bot.send_input("regcitizen", "look", store: ctx.store, secret_store: ctx.secrets, settle_ms: 150)
+    result =
+      Bot.send_input("regcitizen", "look",
+        store: ctx.store,
+        secret_store: ctx.secrets,
+        settle_ms: 150
+      )
 
     assert {:ok, events} = result
     assert is_list(events)

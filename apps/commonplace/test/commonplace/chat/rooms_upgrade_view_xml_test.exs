@@ -52,6 +52,11 @@ defmodule Commonplace.Chat.RoomsUpgradeViewXmlTest do
     root_doc = Schema.new_schema()
     update = Yelixer.Encoding.encode_update(root_doc)
     CommitStore.create_commit(Commonplace.Store.CommitStore, root_uuid, update, nil)
+
+    Commonplace.Test.WorkspaceFixture.complete_workspace!(dir,
+      store: Commonplace.Store.CommitStore
+    )
+
     File.write!(Path.join(dir, "root"), root_uuid)
 
     %{root: root_uuid}
@@ -130,10 +135,12 @@ defmodule Commonplace.Chat.RoomsUpgradeViewXmlTest do
       assert :ok = Rooms.upgrade_view_xml(root, "general")
 
       upgraded = read_view_content(room.view_uuid)
+
       assert upgraded =~ ~s(kind="chat_room"),
              "upgrade must rewrite kind to underscore form"
 
       assert upgraded =~ ~s(<list id="messages">)
+
       assert upgraded =~ ~s(from="../_messages"),
              "upgraded view-XML must carry <arg> children for ArgResolver"
     end
@@ -162,6 +169,7 @@ defmodule Commonplace.Chat.RoomsUpgradeViewXmlTest do
       assert :ok = Rooms.upgrade_view_xml(root, "general")
 
       upgraded = read_view_content(room.view_uuid)
+
       assert upgraded =~ "first",
              "upgrade must materialize existing _messages into the new view-XML body"
 

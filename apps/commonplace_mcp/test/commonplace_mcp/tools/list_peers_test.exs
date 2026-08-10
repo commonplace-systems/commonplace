@@ -51,6 +51,11 @@ defmodule Commonplace.MCP.Tools.ListPeersTest do
     root_doc = Schema.new_schema()
     update = Yelixer.Encoding.encode_update(root_doc)
     CommitStore.create_commit(Commonplace.Store.CommitStore, root_uuid, update, nil)
+
+    Commonplace.Test.WorkspaceFixture.complete_workspace!(dir,
+      store: Commonplace.Store.CommitStore
+    )
+
     File.write!(Path.join(dir, "root"), root_uuid)
 
     %{root: root_uuid}
@@ -90,7 +95,9 @@ defmodule Commonplace.MCP.Tools.ListPeersTest do
 
       Presence.heartbeat(fresh_uuid, CommitStoreClient)
 
-      old = DateTime.utc_now() |> DateTime.add(-3 * Reaper.default_stale_threshold(), :millisecond)
+      old =
+        DateTime.utc_now() |> DateTime.add(-3 * Reaper.default_stale_threshold(), :millisecond)
+
       set_heartbeat(stale_uuid, DateTime.to_iso8601(old), CommitStoreClient)
 
       assert {:ok, result} = ListPeers.run(%{}, %{})
