@@ -49,7 +49,10 @@ defmodule Commonplace.ForkEnforceTest do
     File.write!(Path.join(dir, "root"), root_uuid)
 
     on_exit(fn ->
-      Application.put_env(:commonplace, :data_dir, prior_data_dir || "tmp/test_data")
+      _ = Supervisor.terminate_child(sup, Commonplace.Store.CommitStore)
+      _ = Supervisor.delete_child(sup, Commonplace.Store.CommitStore)
+      restored_data_dir = prior_data_dir || "tmp/test_data"
+      Application.put_env(:commonplace, :data_dir, restored_data_dir)
 
       case prior_trust do
         nil -> Application.delete_env(:commonplace, :trust)
@@ -57,6 +60,15 @@ defmodule Commonplace.ForkEnforceTest do
       end
 
       File.rm_rf!(dir)
+
+      {:ok, restored_pid} =
+        Supervisor.start_child(sup, {Commonplace.Store.CommitStore, data_dir: restored_data_dir})
+
+      assert Process.alive?(restored_pid)
+      assert Process.whereis(Commonplace.Store.CommitStore) == restored_pid
+
+      assert CubDB.data_dir(CommitStore.db_handle(CommitStore)) ==
+               Path.join(restored_data_dir, "commits")
     end)
 
     %{root: root_uuid, sc: sc}

@@ -67,8 +67,20 @@ defmodule Commonplace.Bd.ClaimTest do
         end
       end
 
-      Application.put_env(:commonplace, :data_dir, prior_data_dir || "tmp/test_data")
+      _ = Supervisor.terminate_child(sup, Commonplace.Store.CommitStore)
+      _ = Supervisor.delete_child(sup, Commonplace.Store.CommitStore)
+      restored_data_dir = prior_data_dir || "tmp/test_data"
+      Application.put_env(:commonplace, :data_dir, restored_data_dir)
       File.rm_rf!(dir)
+
+      {:ok, restored_pid} =
+        Supervisor.start_child(sup, {Commonplace.Store.CommitStore, data_dir: restored_data_dir})
+
+      assert Process.alive?(restored_pid)
+      assert Process.whereis(Commonplace.Store.CommitStore) == restored_pid
+
+      assert CubDB.data_dir(CommitStore.db_handle(CommitStore)) ==
+               Path.join(restored_data_dir, "commits")
     end)
 
     {pub_a, priv_a} = Signing.generate_keypair()
