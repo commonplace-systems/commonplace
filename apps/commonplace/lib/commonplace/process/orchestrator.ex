@@ -108,6 +108,8 @@ defmodule Commonplace.Process.Orchestrator do
 
   @max_propagation_depth 8
 
+  @worker_permissive_refusal "role=worker declared and trust config permissive — write trust.json or remove the role."
+
   defstruct [:root_uuid, :store, :interval, :processes, :current_config, :source_hashes, :started_at]
 
   defmodule ProcessInfo do
@@ -140,7 +142,8 @@ defmodule Commonplace.Process.Orchestrator do
     # sentinel so every supervisor RESTART re-resolves the root (correct
     # after a re-root). A missing root file stops cleanly — a
     # half-configured boot should not crash-loop the supervisor.
-    with {:ok, root_uuid} <- resolve_root(Keyword.fetch!(opts, :root_uuid)) do
+    with {:ok, root_uuid} <- resolve_root(Keyword.fetch!(opts, :root_uuid)),
+         :ok <- enforce_worker_trust_posture() do
       # CX-tdkq.12 (O1): sweep the prior generation BEFORE the first
       # reconcile. Managed processes are unnamed+unlinked, so without
       # this a restarted orchestrator duplicates everything its
@@ -151,8 +154,6 @@ defmodule Commonplace.Process.Orchestrator do
       if swept > 0 do
         Logger.info("Orchestrator: swept #{swept} prior-generation process entr#{if swept == 1, do: "y", else: "ies"} before reconciling")
       end
-
-      warn_if_permissive()
 
       state = %__MODULE__{
         root_uuid: root_uuid,
@@ -182,15 +183,26 @@ defmodule Commonplace.Process.Orchestrator do
   # auto-executes any synced-in code doc ungated (Gate B fast-paths a
   # fully-permissive config). Legitimate for a single-operator serve —
   # but the posture must be VISIBLE at the one moment it matters.
-  defp warn_if_permissive do
+  defp enforce_worker_trust_posture do
     cfg = Commonplace.Trust.config()
 
-    if cfg.accept_unsigned do
-      Logger.warning(
-        "Orchestrator running with a permissive trust config: declared processes " <>
-          "(including code docs synced from peers) will auto-execute ungated. " <>
-          "Pin identities / set accept_unsigned:false in trust.json for strict gating."
-      )
+    case {Application.get_env(:commonplace, :node_role), cfg.accept_unsigned} do
+      # Worker status is only this positive declaration. Do not infer it
+      # from the host, runtime environment, sandbox, or filesystem.
+      {:worker, true} ->
+        {:stop, {:worker_role_requires_strict_trust, @worker_permissive_refusal}}
+
+      {_role, true} ->
+        Logger.warning(
+          "Orchestrator running with a permissive trust config: declared processes " <>
+            "(including code docs synced from peers) will auto-execute ungated. " <>
+            "Pin identities / set accept_unsigned:false in trust.json for strict gating."
+        )
+
+        :ok
+
+      {_role, false} ->
+        :ok
     end
   end
 
