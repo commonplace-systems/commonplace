@@ -57,6 +57,11 @@ defmodule Commonplace.MCP.SessionSigningTest do
     root_doc = Schema.new_schema()
     update = Yelixer.Encoding.encode_update(root_doc)
     CommitStore.create_commit(Commonplace.Store.CommitStore, root_uuid, update, nil)
+
+    Commonplace.Test.WorkspaceFixture.complete_workspace!(dir,
+      store: Commonplace.Store.CommitStore
+    )
+
     File.write!(Path.join(dir, "root"), root_uuid)
 
     {:ok, room} = Rooms.create(root_uuid, "general")
@@ -74,7 +79,8 @@ defmodule Commonplace.MCP.SessionSigningTest do
 
     AnubisServer.config(
       presence_starter: fn name, _type ->
-        {:ok, %{pid: self(), name: name <> ".bot", uuid: "hot-uuid", identity_uuid: identity_uuid}}
+        {:ok,
+         %{pid: self(), name: name <> ".bot", uuid: "hot-uuid", identity_uuid: identity_uuid}}
       end
     )
 

@@ -43,6 +43,7 @@ defmodule CommonplaceWebWeb.OutlineLiveTest do
       nil
     )
 
+    Commonplace.Test.WorkspaceFixture.complete_workspace!(dir, store: CommitStore)
     File.write!(Path.join(dir, "root"), root_uuid)
 
     on_exit(fn ->

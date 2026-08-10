@@ -11,6 +11,8 @@ defmodule Commonplace.TrustConfigFailClosedTest do
   """
   use ExUnit.Case, async: false
 
+  alias Commonplace.Store.CommitStore
+  alias Commonplace.Test.WorkspaceFixture
   alias Commonplace.Trust
 
   setup do
@@ -21,6 +23,10 @@ defmodule Commonplace.TrustConfigFailClosedTest do
     # config/0 prefers app env over the file — clear it for these tests.
     prior_trust = Application.get_env(:commonplace, :trust)
     Application.delete_env(:commonplace, :trust)
+
+    store = Module.concat(__MODULE__, Store)
+    start_supervised!({CommitStore, data_dir: dir, name: store})
+    WorkspaceFixture.complete_workspace!(dir, store: store)
 
     on_exit(fn ->
       Application.put_env(:commonplace, :data_dir, prior_data_dir || "tmp/test_data")

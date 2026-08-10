@@ -57,6 +57,10 @@ defmodule Commonplace.CLI.ProcessTest do
   end
 
   defp setup_workspace(data_dir, json_map) do
+    Commonplace.Test.WorkspaceFixture.complete_workspace!(data_dir,
+      store: Commonplace.Store.CommitStore
+    )
+
     processes_uuid = mint_processes_text(json_map)
 
     root_doc =
@@ -146,6 +150,10 @@ defmodule Commonplace.CLI.ProcessTest do
     end
 
     test "missing __processes.json prints a friendly message", %{data_dir: dir} do
+      Commonplace.Test.WorkspaceFixture.complete_workspace!(dir,
+        store: Commonplace.Store.CommitStore
+      )
+
       root_uuid = mint_doc(Schema.new_schema())
       File.write!(Path.join(dir, "root"), root_uuid)
 

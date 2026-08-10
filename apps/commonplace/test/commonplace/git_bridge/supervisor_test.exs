@@ -38,6 +38,11 @@ defmodule Commonplace.GitBridge.SupervisorTest do
     File.mkdir_p!(workspace_dir)
     prev_data_dir = Application.get_env(:commonplace, :data_dir)
     Application.put_env(:commonplace, :data_dir, workspace_dir)
+
+    Commonplace.Test.WorkspaceFixture.complete_workspace!(workspace_dir,
+      store: store_name
+    )
+
     File.write!(Path.join(workspace_dir, "root"), "mount-uuid")
 
     on_exit(fn ->
@@ -78,7 +83,9 @@ defmodule Commonplace.GitBridge.SupervisorTest do
     on_exit(fn -> stop_quietly(sup) end)
 
     mapping = %{mount_uuid: "mount-uuid", repo_dir: repo_dir1, interval_ms: 3_600_000}
-    assert {:ok, _} = GitBridgeSupervisor.add_mapping(sup, mapping, data_dir: data_dir, store: store)
+
+    assert {:ok, _} =
+             GitBridgeSupervisor.add_mapping(sup, mapping, data_dir: data_dir, store: store)
 
     contents = File.read!(Path.join(data_dir, "git_bridges.json"))
     decoded = Jason.decode!(contents)
@@ -89,15 +96,23 @@ defmodule Commonplace.GitBridge.SupervisorTest do
     assert length(children) == 1
   end
 
-  test "duplicate repo_dir mapping is rejected", %{store: store, data_dir: data_dir, repo_dir1: repo_dir1} do
+  test "duplicate repo_dir mapping is rejected", %{
+    store: store,
+    data_dir: data_dir,
+    repo_dir1: repo_dir1
+  } do
     {:ok, sup} = GitBridgeSupervisor.start_link(data_dir: data_dir, store: store)
     on_exit(fn -> stop_quietly(sup) end)
 
     mapping = %{mount_uuid: "mount-uuid", repo_dir: repo_dir1, interval_ms: 3_600_000}
-    assert {:ok, _} = GitBridgeSupervisor.add_mapping(sup, mapping, data_dir: data_dir, store: store)
+
+    assert {:ok, _} =
+             GitBridgeSupervisor.add_mapping(sup, mapping, data_dir: data_dir, store: store)
 
     dup = %{mount_uuid: "other-mount", repo_dir: repo_dir1, interval_ms: 3_600_000}
-    assert {:error, _} = GitBridgeSupervisor.add_mapping(sup, dup, data_dir: data_dir, store: store)
+
+    assert {:error, _} =
+             GitBridgeSupervisor.add_mapping(sup, dup, data_dir: data_dir, store: store)
 
     decoded = Jason.decode!(File.read!(Path.join(data_dir, "git_bridges.json")))
     assert length(decoded) == 1
@@ -120,7 +135,8 @@ defmodule Commonplace.GitBridge.SupervisorTest do
       interval_ms: 3_600_000
     }
 
-    assert {:ok, _} = GitBridgeSupervisor.add_mapping(sup, mapping, data_dir: data_dir, store: store)
+    assert {:ok, _} =
+             GitBridgeSupervisor.add_mapping(sup, mapping, data_dir: data_dir, store: store)
 
     dup = %{
       mount_uuid: "mount-uuid",
@@ -129,7 +145,8 @@ defmodule Commonplace.GitBridge.SupervisorTest do
       interval_ms: 3_600_000
     }
 
-    assert {:error, _} = GitBridgeSupervisor.add_mapping(sup, dup, data_dir: data_dir, store: store)
+    assert {:error, _} =
+             GitBridgeSupervisor.add_mapping(sup, dup, data_dir: data_dir, store: store)
 
     decoded = Jason.decode!(File.read!(Path.join(data_dir, "git_bridges.json")))
     assert length(decoded) == 1
@@ -144,7 +161,9 @@ defmodule Commonplace.GitBridge.SupervisorTest do
     {:ok, sup1} = GitBridgeSupervisor.start_link(data_dir: data_dir, store: store)
 
     mapping = %{mount_uuid: "mount-uuid", repo_dir: repo_dir1, interval_ms: 3_600_000}
-    assert {:ok, _} = GitBridgeSupervisor.add_mapping(sup1, mapping, data_dir: data_dir, store: store)
+
+    assert {:ok, _} =
+             GitBridgeSupervisor.add_mapping(sup1, mapping, data_dir: data_dir, store: store)
 
     :ok = Supervisor.stop(sup1)
 
@@ -173,7 +192,10 @@ defmodule Commonplace.GitBridge.SupervisorTest do
     on_exit(fn -> stop_quietly(sup) end)
 
     mapping = %{mount_uuid: "mount-uuid", repo_dir: repo_dir1, interval_ms: 3_600_000}
-    assert {:ok, _} = GitBridgeSupervisor.add_mapping(sup, mapping, data_dir: data_dir, store: store)
+
+    assert {:ok, _} =
+             GitBridgeSupervisor.add_mapping(sup, mapping, data_dir: data_dir, store: store)
+
     assert length(Supervisor.which_children(sup)) == 1
 
     assert :ok = GitBridgeSupervisor.remove_mapping(sup, "mount-uuid", data_dir: data_dir)
@@ -192,9 +214,19 @@ defmodule Commonplace.GitBridge.SupervisorTest do
     {:ok, sup1} = GitBridgeSupervisor.start_link(data_dir: data_dir, store: store)
 
     mapping1 = %{mount_uuid: "mount-uuid", repo_dir: repo_dir1, interval_ms: 3_600_000}
-    mapping2 = %{mount_uuid: "mount-uuid", repo_dir: repo_dir2, remote: nil, interval_ms: 3_600_000}
-    assert {:ok, _} = GitBridgeSupervisor.add_mapping(sup1, mapping1, data_dir: data_dir, store: store)
-    assert {:ok, _} = GitBridgeSupervisor.add_mapping(sup1, mapping2, data_dir: data_dir, store: store)
+
+    mapping2 = %{
+      mount_uuid: "mount-uuid",
+      repo_dir: repo_dir2,
+      remote: nil,
+      interval_ms: 3_600_000
+    }
+
+    assert {:ok, _} =
+             GitBridgeSupervisor.add_mapping(sup1, mapping1, data_dir: data_dir, store: store)
+
+    assert {:ok, _} =
+             GitBridgeSupervisor.add_mapping(sup1, mapping2, data_dir: data_dir, store: store)
 
     :ok = Supervisor.stop(sup1)
 

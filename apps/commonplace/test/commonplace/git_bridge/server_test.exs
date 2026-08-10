@@ -13,7 +13,10 @@ defmodule Commonplace.GitBridge.ServerTest do
   setup do
     store_dir = Path.join(System.tmp_dir!(), "cp_gb_server_store_#{:rand.uniform(1_000_000_000)}")
     repo_dir = Path.join(System.tmp_dir!(), "cp_gb_server_repo_#{:rand.uniform(1_000_000_000)}")
-    workspace_dir = Path.join(System.tmp_dir!(), "cp_gb_server_ws_#{:rand.uniform(1_000_000_000)}")
+
+    workspace_dir =
+      Path.join(System.tmp_dir!(), "cp_gb_server_ws_#{:rand.uniform(1_000_000_000)}")
+
     File.mkdir_p!(store_dir)
     File.mkdir_p!(repo_dir)
     File.mkdir_p!(workspace_dir)
@@ -111,8 +114,9 @@ defmodule Commonplace.GitBridge.ServerTest do
     CommitStore.create_chained_commit(store, uuid, update)
   end
 
-  defp put_workspace_root(workspace_dir, root_uuid) do
+  defp put_workspace_root(store, workspace_dir, root_uuid) do
     Application.put_env(:commonplace, :data_dir, workspace_dir)
+    Commonplace.Test.WorkspaceFixture.complete_workspace!(workspace_dir, store: store)
     File.write!(Path.join(workspace_dir, "root"), root_uuid)
   end
 
@@ -155,7 +159,7 @@ defmodule Commonplace.GitBridge.ServerTest do
     root_schema = Schema.new_schema() |> Schema.add_directory("workspace", mount_uuid)
     create_schema(store, root_uuid, root_schema)
 
-    put_workspace_root(workspace_dir, root_uuid)
+    put_workspace_root(store, workspace_dir, root_uuid)
 
     %{root_uuid: root_uuid, mount_uuid: mount_uuid, signer_id: signer_id}
   end
@@ -389,11 +393,12 @@ defmodule Commonplace.GitBridge.ServerTest do
     assert status.halted == true
   end
 
-  test "pause/resume: paused sync_now is a no-op, resumed sync_now works, both events broadcast", %{
-    store: store,
-    repo_dir: repo_dir,
-    workspace_dir: workspace_dir
-  } do
+  test "pause/resume: paused sync_now is a no-op, resumed sync_now works, both events broadcast",
+       %{
+         store: store,
+         repo_dir: repo_dir,
+         workspace_dir: workspace_dir
+       } do
     %{mount_uuid: mount_uuid} = seed_tree(store, workspace_dir)
     name = unique_name("gb_server6")
 
@@ -501,11 +506,12 @@ defmodule Commonplace.GitBridge.ServerTest do
     assert Process.alive?(pid)
   end
 
-  test "CX-d029: an unexpected raise mid-cycle is contained — tick skipped, PRIOR state kept, server alive", %{
-    store: store,
-    repo_dir: repo_dir,
-    workspace_dir: workspace_dir
-  } do
+  test "CX-d029: an unexpected raise mid-cycle is contained — tick skipped, PRIOR state kept, server alive",
+       %{
+         store: store,
+         repo_dir: repo_dir,
+         workspace_dir: workspace_dir
+       } do
     %{mount_uuid: mount_uuid} = seed_tree(store, workspace_dir)
     name = unique_name("gb_server9")
 

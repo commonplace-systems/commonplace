@@ -33,6 +33,11 @@ defmodule Commonplace.Bd.CLITest do
     root_doc = Commonplace.Tree.Schema.new_schema()
     update = Yelixer.Encoding.encode_update(root_doc)
     CommitStore.create_commit(Commonplace.Store.CommitStore, root_uuid, update, nil)
+
+    Commonplace.Test.WorkspaceFixture.complete_workspace!(dir,
+      store: Commonplace.Store.CommitStore
+    )
+
     File.write!(Path.join(dir, "root"), root_uuid)
 
     case GenServer.whereis(Bursar) do
@@ -178,7 +183,12 @@ defmodule Commonplace.Bd.CLITest do
 
     test "a second claim on the same ticket is refused", %{root: root, signing_context: sc} do
       {pub2, priv2} = Signing.generate_keypair()
-      other_ctx = %SigningContext{identity_uuid: "cli-test-other", private_key: priv2, public_key: pub2}
+
+      other_ctx = %SigningContext{
+        identity_uuid: "cli-test-other",
+        private_key: priv2,
+        public_key: pub2
+      }
 
       ticket = create_ticket(root, %{title: "contested"})
 

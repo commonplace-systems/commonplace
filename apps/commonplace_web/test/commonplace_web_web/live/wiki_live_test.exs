@@ -62,6 +62,11 @@ defmodule CommonplaceWebWeb.WikiLiveTest do
     root_doc = Schema.new_schema()
     update = Yelixer.Encoding.encode_update(root_doc)
     CommitStore.create_commit(Commonplace.Store.CommitStore, root_uuid, update, nil)
+
+    Commonplace.Test.WorkspaceFixture.complete_workspace!(dir,
+      store: Commonplace.Store.CommitStore
+    )
+
     File.write!(Path.join(dir, "root"), root_uuid)
 
     on_exit(fn ->
@@ -126,6 +131,7 @@ defmodule CommonplaceWebWeb.WikiLiveTest do
 
       # Find the suffixed filename so we can navigate to it.
       schema_doc = read_root_schema(root_uuid)
+
       suffixed_name =
         schema_doc
         |> Schema.list_entries()

@@ -26,6 +26,7 @@ defmodule CommonplaceWebWeb.MudLiveTest do
 
   alias Commonplace.Invites
   alias Commonplace.Store.CommitStore
+  alias Commonplace.Test.WorkspaceFixture
   alias Commonplace.Tree.{DocBuilder, Schema, Walk}
   alias CommonplaceWebWeb.MudLive
 
@@ -52,20 +53,27 @@ defmodule CommonplaceWebWeb.MudLiveTest do
 
       Commonplace.Tree.DocCache.clear()
 
-      # Seed the workspace root schema + root pointer file, and a "mud"
-      # dir under it (a bare Schema doc is enough — Citizenship.ensure
+      # Initialize the workspace through the real init path, then add a "mud"
+      # dir under its root (a bare Schema doc is enough — Citizenship.ensure
       # provisions players/<name>/ under it on demand; the world's
       # shared "start" room is optional and simply absent here).
-      root_uuid = UUID.uuid4()
-      root_doc = Schema.new_schema()
-      CommitStore.create_commit(Commonplace.Store.CommitStore, root_uuid, Yelixer.Encoding.encode_update(root_doc), nil)
-      File.write!(Path.join(dir, "root"), root_uuid)
+      %{root_uuid: root_uuid} =
+        WorkspaceFixture.complete_workspace!(dir, store: Commonplace.Store.CommitStore)
+
+      {:ok, root_doc} = DocBuilder.reconstruct_doc(Commonplace.Store.CommitStoreClient, root_uuid)
 
       mud_uuid = UUID.uuid4()
       mud_doc = Schema.new_schema()
-      CommitStore.create_commit(Commonplace.Store.CommitStore, mud_uuid, Yelixer.Encoding.encode_update(mud_doc), nil)
+
+      CommitStore.create_commit(
+        Commonplace.Store.CommitStore,
+        mud_uuid,
+        Yelixer.Encoding.encode_update(mud_doc),
+        nil
+      )
 
       root_doc2 = Schema.add_directory(root_doc, "mud", mud_uuid)
+
       CommitStore.create_chained_commit(
         Commonplace.Store.CommitStore,
         root_uuid,
@@ -197,7 +205,9 @@ defmodule CommonplaceWebWeb.MudLiveTest do
     # CX-i9j3 (UI Inc-2) — commit-on-DIFF trigger: room-only CHATTER (a `say`
     # line) does NOT change the pane (it's a scrollback event, not a state
     # change); a real room-content change DOES update the pane.
-    test "commit-on-diff: chatter leaves the pane unchanged, a room change updates it", %{conn: conn} do
+    test "commit-on-diff: chatter leaves the pane unchanged, a room change updates it", %{
+      conn: conn
+    } do
       {:ok, view, _html} = live_isolated(conn, MudLive, session: get_session(conn))
 
       # Force an initial pane materialize, then snapshot the committed sections.
@@ -289,11 +299,15 @@ defmodule CommonplaceWebWeb.MudLiveTest do
           doc
         end)
 
-      {:ok, sessions_doc} = DocBuilder.reconstruct_doc(Commonplace.Store.CommitStoreClient, sessions_dir_uuid)
+      {:ok, sessions_doc} =
+        DocBuilder.reconstruct_doc(Commonplace.Store.CommitStoreClient, sessions_dir_uuid)
+
       entries = Schema.list_entries(sessions_doc)
 
       matching = Enum.filter(entries, &(&1.node_id == view_uuid))
-      assert length(matching) == 1, "reconnect must not re-link/duplicate the view's sessions/ entry"
+
+      assert length(matching) == 1,
+             "reconnect must not re-link/duplicate the view's sessions/ entry"
     end
 
     test "a DIFFERENT identity mounting gets its own fresh transcript, not the other identity's turns",
@@ -348,7 +362,14 @@ defmodule CommonplaceWebWeb.MudLiveTest do
         signing_context: ctx
       )
 
-    add_child_entry!(room_uuid, "obj-#{System.unique_integer([:positive])}.obj", obj_uuid, ctx, :dir)
+    add_child_entry!(
+      room_uuid,
+      "obj-#{System.unique_integer([:positive])}.obj",
+      obj_uuid,
+      ctx,
+      :dir
+    )
+
     obj_uuid
   end
 

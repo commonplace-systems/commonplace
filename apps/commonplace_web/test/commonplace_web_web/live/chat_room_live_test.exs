@@ -57,6 +57,11 @@ defmodule CommonplaceWebWeb.ChatRoomLiveTest do
     root_doc = Schema.new_schema()
     update = Yelixer.Encoding.encode_update(root_doc)
     CommitStore.create_commit(Commonplace.Store.CommitStore, root_uuid, update, nil)
+
+    Commonplace.Test.WorkspaceFixture.complete_workspace!(dir,
+      store: Commonplace.Store.CommitStore
+    )
+
     File.write!(Path.join(dir, "root"), root_uuid)
 
     on_exit(fn ->
@@ -258,7 +263,9 @@ defmodule CommonplaceWebWeb.ChatRoomLiveTest do
       assert html =~ "hello signed in as mallory"
 
       # Acceptance pin 2: the landed commit is signed as the player.
-      {:ok, doc} = Commonplace.Tree.DocBuilder.reconstruct_snapshot(CommitStore, room.messages_uuid)
+      {:ok, doc} =
+        Commonplace.Tree.DocBuilder.reconstruct_snapshot(CommitStore, room.messages_uuid)
+
       entries = Commonplace.Chat.Messages.list(doc)
       assert Enum.any?(entries, &(&1["text"] == "hello signed in as mallory"))
       assert Enum.any?(entries, &(&1["author_signer_id"] == expected_signer_id))

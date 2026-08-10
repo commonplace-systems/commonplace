@@ -39,6 +39,11 @@ defmodule Commonplace.PrOpenTest do
     root_doc = Schema.new_schema()
     update = Yelixer.Encoding.encode_update(root_doc)
     CommitStore.create_commit(Commonplace.Store.CommitStore, root_uuid, update, nil)
+
+    Commonplace.Test.WorkspaceFixture.complete_workspace!(dir,
+      store: Commonplace.Store.CommitStore
+    )
+
     File.write!(Path.join(dir, "root"), root_uuid)
 
     on_exit(fn ->
@@ -150,7 +155,8 @@ defmodule Commonplace.PrOpenTest do
         source: "test"
       }
 
-      assert {:error, "pr_open failed: no common ancestor" <> _} = ViewActionDispatch.dispatch("pr_open", context)
+      assert {:error, "pr_open failed: no common ancestor" <> _} =
+               ViewActionDispatch.dispatch("pr_open", context)
 
       {:ok, root_doc} = DocBuilder.reconstruct_snapshot(CommitStoreClient, root_uuid)
       assert Schema.get_entry(root_doc, "__pulls") == :error

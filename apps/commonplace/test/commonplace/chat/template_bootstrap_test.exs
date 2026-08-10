@@ -51,6 +51,11 @@ defmodule Commonplace.Chat.TemplateBootstrapTest do
     root_doc = Schema.new_schema()
     update = Yelixer.Encoding.encode_update(root_doc)
     CommitStore.create_commit(Commonplace.Store.CommitStore, root_uuid, update, nil)
+
+    Commonplace.Test.WorkspaceFixture.complete_workspace!(dir,
+      store: Commonplace.Store.CommitStore
+    )
+
     File.write!(Path.join(dir, "root"), root_uuid)
 
     %{root: root_uuid}
@@ -126,6 +131,7 @@ defmodule Commonplace.Chat.TemplateBootstrapTest do
       assert :ok = TemplateBootstrap.ensure_template(root)
 
       {:ok, template_entry_2} = lookup_template(root)
+
       assert template_entry_2.node_id == template_uuid,
              "template UUID must not change across boots"
 
@@ -181,7 +187,9 @@ defmodule Commonplace.Chat.TemplateBootstrapTest do
       template_doc = load_schema(template_entry.node_id)
       {:ok, compute_entry} = Schema.get_entry(template_doc, "_compute")
 
-      {:ok, compute_doc} = DocBuilder.reconstruct_snapshot(CommitStoreClient, compute_entry.node_id)
+      {:ok, compute_doc} =
+        DocBuilder.reconstruct_snapshot(CommitStoreClient, compute_entry.node_id)
+
       content = ContentType.get_content(compute_doc) || ""
 
       # CX-9tj0 (M7 sub-bead iv): _compute body is Elixir source. Chain

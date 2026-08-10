@@ -6,6 +6,8 @@ defmodule Commonplace.Trust.SelfTrustVisibilityTest do
   require Logger
 
   alias Commonplace.Crypto.{NodeIdentity, Signing}
+  alias Commonplace.Store.CommitStore
+  alias Commonplace.Test.WorkspaceFixture
   alias Commonplace.Trust
 
   setup do
@@ -32,7 +34,15 @@ defmodule Commonplace.Trust.SelfTrustVisibilityTest do
     %{dir: dir}
   end
 
-  test "an absent public-key artifact makes missing self-trust loud" do
+  test "an absent public-key artifact makes missing self-trust loud", %{dir: dir} do
+    store = Module.concat(__MODULE__, Store)
+    start_supervised!({CommitStore, data_dir: dir, name: store})
+
+    WorkspaceFixture.complete_workspace!(dir,
+      store: store,
+      degrade: [:without_public_key_artifact]
+    )
+
     assert :absent = NodeIdentity.public_keys()
 
     {cfg, log} = capture_config()

@@ -1,10 +1,10 @@
 defmodule Commonplace.Workspace do
   @moduledoc """
-  Workspace discovery + identity helpers — shared across the CLI, MCP,
-  and web/core entrypoints.
+  Workspace initialization, discovery, and identity helpers — shared across
+  the CLI, MCP, and web/core entrypoints.
 
   A commonplace workspace is any directory containing a `.commonplace/`
-  subdirectory. Three helpers:
+  subdirectory. Its helpers include:
 
   * `discover/1` walks upward from a starting path to the nearest such
     directory, returning the resolved `data_dir` (the `.commonplace/`
@@ -21,6 +21,60 @@ defmodule Commonplace.Workspace do
   """
 
   @workspace_dir ".commonplace"
+
+  alias Commonplace.Crypto.NodeIdentity
+  alias Commonplace.Store.CommitStoreClient
+  alias Commonplace.Sync.CheckoutRegistry
+  alias Commonplace.Tree.Schema
+
+  @doc """
+  Initialize a complete workspace through the domain path used by `commonplace
+  init`.
+
+  The commit store must already be running against `data_dir`. Creating the
+  root commit before writing the `root` prior-world marker is intentional: the
+  normal commit builder mints and publishes the node signing identity while
+  this is still a genuine first boot. The returned checkout registry is linked
+  to the caller, matching the CLI command's lifetime.
+
+  Tests may supply a store pid/name and a contained checkout directory while
+  exercising this same path; production init uses the normal store client and
+  the directory containing `.commonplace`.
+  """
+  @spec initialize(Path.t(), keyword()) ::
+          {:ok, %{root_uuid: String.t(), checkout_registry: pid()}} | {:error, term()}
+  def initialize(data_dir, opts \\ []) when is_binary(data_dir) do
+    store = Keyword.get(opts, :store, Commonplace.Store.CommitStore)
+    checkout_dir = Keyword.get(opts, :checkout_dir, Path.dirname(data_dir))
+    root_uuid = UUID.uuid4()
+    root_doc = Schema.new_schema()
+    update = Yelixer.Encoding.encode_update(root_doc)
+
+    with {:ok, node_context} <- NodeIdentity.signing_context() do
+      initialize_root(data_dir, checkout_dir, store, root_uuid, update, node_context)
+    end
+  end
+
+  defp initialize_root(data_dir, checkout_dir, store, root_uuid, update, node_context) do
+    case CommitStoreClient.create_chained_commit(store, root_uuid, update, %{},
+           signing_context: node_context
+         ) do
+      %Commonplace.Store.Commit{} ->
+        with :ok <- File.write(Path.join(data_dir, "root"), root_uuid),
+             {:ok, registry} <-
+               CheckoutRegistry.start_link(
+                 config_path: Path.join(data_dir, "checkouts.json"),
+                 store: store
+               ),
+             {:ok, _checkout} <-
+               CheckoutRegistry.register(registry, checkout_dir, root_uuid, :dir) do
+          {:ok, %{root_uuid: root_uuid, checkout_registry: registry}}
+        end
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
 
   @doc """
   Discover the nearest commonplace workspace at or above `start_dir`.

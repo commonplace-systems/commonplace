@@ -51,6 +51,11 @@ defmodule Commonplace.MCP.Tools.BdWriteToolsTest do
     root_doc = Commonplace.Tree.Schema.new_schema()
     update = Yelixer.Encoding.encode_update(root_doc)
     CommitStore.create_commit(Commonplace.Store.CommitStore, root_uuid, update, nil)
+
+    Commonplace.Test.WorkspaceFixture.complete_workspace!(dir,
+      store: Commonplace.Store.CommitStore
+    )
+
     File.write!(Path.join(dir, "root"), root_uuid)
 
     # A running default-named Bursar is needed only for claim/release

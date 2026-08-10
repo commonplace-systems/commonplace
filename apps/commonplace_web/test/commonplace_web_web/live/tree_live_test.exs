@@ -41,6 +41,11 @@ defmodule CommonplaceWebWeb.TreeLiveTest do
     root_doc = Schema.new_schema()
     update = Yelixer.Encoding.encode_update(root_doc)
     CommitStore.create_commit(Commonplace.Store.CommitStore, root_uuid, update, nil)
+
+    Commonplace.Test.WorkspaceFixture.complete_workspace!(dir,
+      store: Commonplace.Store.CommitStore
+    )
+
     File.write!(Path.join(dir, "root"), root_uuid)
 
     # A text page under the root schema, so "select" + "yjs_edit" have
@@ -77,7 +82,9 @@ defmodule CommonplaceWebWeb.TreeLiveTest do
   end
 
   defp login_conn(conn, root) do
-    {:ok, %{identity_uuid: identity_uuid, token: token}} = Invites.mint("mallory-#{System.unique_integer([:positive])}", root)
+    {:ok, %{identity_uuid: identity_uuid, token: token}} =
+      Invites.mint("mallory-#{System.unique_integer([:positive])}", root)
+
     {:ok, ^identity_uuid} = Invites.redeem(token)
     nonce = Base.encode64(:crypto.strong_rand_bytes(16))
 
