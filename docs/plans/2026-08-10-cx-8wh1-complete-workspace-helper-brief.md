@@ -38,8 +38,13 @@ Test fixtures across the umbrella hand-assemble partial `data_dir`s — a
   isolated, `cp-ci-failures` #1 with 12 occurrences). Same class already fixed
   once at `901d91b` (reflog snapshot fixture).
 - **CX-8wh1 original**: `MudLiveTest` fixtures carry prior-world evidence
-  (`root` file) but no `node_signing_key` → the `0053a8c` mint-refusal fires →
-  **11 tests, 10 failures** in `commonplace_web`, bisected not assumed.
+  (`root` file) but no `node_signing_key`, so the `0053a8c` mint-refusal
+  fired → 11 tests, 10 failures, bisected not assumed. ⚠️ **TIMELINE
+  CORRECTION (2026-08-10 18:51, found by Sol's escape-hatch stop): `0053a8c`
+  was REVERTED at `85f8990` the same night ("43 fixtures model the state it
+  rejects"), so MudLiveTest is GREEN on today's main — 11/0, verified.** The
+  ticket's disposition option 1 was taken: *revert, then re-land WITH the
+  fixture fix.* **This brief IS that re-land** — see §2d.
 - **CX-k2yr** (side effect, fixed by this for free): fixtures lacking the
   public-key artifact make CX-vvbh's degraded-state error line fire ~3,500
   times PER suite run, burying real errors.
@@ -111,20 +116,47 @@ fixture's missing artifact was the defect, not the assertion.
   (`left: []`), paste it, restore. ⛔ A `!= nil`-shaped loosening is the
   failure mode this ticket exists to prevent.
 
+### 2d. RE-LAND the mint refusal — the gate lands WITH its cleanup
+
+The refusal (`load_or_mint_keypair` refuses to mint a replacement identity
+when prior-world evidence exists and no signing key does) is **ruled correct
+by its own revert commit** and is currently ABSENT from main. Re-land it in
+THIS branch, so the gate and the fixture fix merge together — a gate landing
+before its cleanup is the named failure mode that broke 41 tests once already.
+
+- Semantics per `0053a8c` (read the commit), **reimplemented against the
+  CURRENT mint code** — `4af73c5` (CX-37d9) rewrote the mint to
+  hard-link-into-place today, so a mechanical cherry-pick will conflict;
+  the refusal check belongs BEFORE any mint attempt, unchanged in meaning.
+- Restore the refusal's unit tests (the revert deleted 33 test lines from
+  `crypto/node_identity_test.exs`; adapt, don't resurrect blindly).
+- ⭐ **Red-first for the Mud population is CONSTRUCTED, not inherited: after
+  re-applying the refusal and BEFORE converting fixtures, isolated
+  `MudLiveTest` must show the 10 MatchError reds** (quote one:
+  `{:error, {:node_signing_key_absent, :prior_world_present}}` at
+  `signing_context!/1`). Then the helper conversion turns it 11/0 **with the
+  refusal in force** — that pairing is the whole point.
+- Still-can-fail control: with everything landed, a deliberately degraded
+  world (prior-world evidence, no key) still refuses — the restored unit
+  tests are that control; show them red once by disabling the refusal check
+  locally (then restore it).
+
 ### ⛔ Untouchables
 
-- ⛔ **The `0053a8c` mint-refusal itself** — it is correct; a green obtained by
-  weakening it is a failed run.
+- ⛔ **The refusal's SEMANTICS** — re-land them; a green obtained by weakening
+  the refusal (or by quietly not re-landing it) is a failed run.
 - ⛔ `signing_context!/1`'s bang-brittleness (CX-f4vv) — separate posture
-  decision, do not "improve" it in passing.
+  decision, do not "improve" it in passing. The MatchError presentation is
+  ugly; it is also not yours.
 - ⛔ `audit_choke_perf_test.exs`, and any budget numbers (CX-5gkw's lane).
 - Any other defect: one line, don't pursue.
 
 ## 3. ⛔ Acceptance — artifacts
 
-1. **RED FIRST, both populations**: `MudLiveTest` 10 failures and
-   `TrustConfigFailClosedTest`'s 0.4s isolated red, reproduced in YOUR tree
-   before any change, pasted with rc.
+1. **RED FIRST, both populations**: `TrustConfigFailClosedTest`'s 0.4s
+   isolated red reproduced in YOUR tree before any change; `MudLiveTest`'s
+   10 reds CONSTRUCTED per §2d (green before the refusal re-lands is the
+   documented current state, not a discrepancy). Both pasted with rc.
 2. **The enumeration** (§2b.1) with per-hit shapes and the denominator stated.
 3. **The helper**, with the calls-real-init property visible in its
    implementation, plus its degradation options exercised by at least one
