@@ -4,7 +4,11 @@ defmodule Commonplace.CLI.ProtoChit do
 
   Usage:
     commonplace proto-chit emit --repo DIR --state-dir DIR --event-log UUID
-      [--real-git PATH] [--trace FILE] -- <git argv...>
+      [--real-git PATH] [--trace FILE] [--sync-exclude NAME]... -- <git argv...>
+
+  `--sync-exclude` is repeatable. The names given are APPENDED to the emitter's
+  own default exclusions (`.git`, `.commonplace`, ...) — an operator cannot drop
+  that protection, only add to it.
   """
 
   alias Commonplace.Crypto.SigningContext
@@ -15,8 +19,14 @@ defmodule Commonplace.CLI.ProtoChit do
     state_dir: :string,
     event_log: :string,
     real_git: :string,
-    trace: :string
+    trace: :string,
+    sync_exclude: :keep
   ]
+
+  # Mirrors `@sync_excludes` in `Commonplace.ProtoChit`. Operator-supplied names
+  # are appended to this set, never substituted for it, so no invocation can
+  # sync `.git` or `.commonplace` into the substrate by accident.
+  @default_sync_excludes [".git", ".commonplace", "_build", "deps"]
 
   def run(data_dir, _relative_path, ["emit" | args]) do
     with :ok <- Commonplace.CLI.ensure_started(data_dir),
@@ -33,6 +43,7 @@ defmodule Commonplace.CLI.ProtoChit do
              state_dir: state_dir,
              real_git: Keyword.get(opts, :real_git, "/usr/bin/git"),
              trace_file: opts[:trace],
+             sync_excludes: sync_excludes(opts),
              signing_context: signing_context
            ) do
       IO.puts(:stderr, "proto-chit: tap fired #{result.event_ref}")
@@ -54,6 +65,16 @@ defmodule Commonplace.CLI.ProtoChit do
       nil -> {:error, :workspace_has_no_root}
       root -> {:ok, root}
     end
+  end
+
+  defp sync_excludes(opts) do
+    extra =
+      opts
+      |> Keyword.get_values(:sync_exclude)
+      |> Enum.map(&String.trim/1)
+      |> Enum.reject(&(&1 == ""))
+
+    Enum.uniq(@default_sync_excludes ++ extra)
   end
 
   defp required(opts, key) do

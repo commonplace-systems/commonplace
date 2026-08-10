@@ -37,6 +37,45 @@ defmodule Commonplace.CLI.ProtoChitShimTest do
     assert {_sha, 0} = System.cmd(@real_git, ["rev-parse", "HEAD"], cd: repo)
   end
 
+  test "PROTO_CHIT_SYNC_EXCLUDES becomes one --sync-exclude pair per name", %{base: base} do
+    repo = create_ready_repo(Path.join(base, "excludes-repo"))
+    argv = recording_emitter_argv(base, repo, [{"PROTO_CHIT_SYNC_EXCLUDES", "bd,chat"}])
+
+    assert argv =~ "--sync-exclude bd --sync-exclude chat"
+    # The git argv still arrives last, after the `--` separator, unchanged.
+    assert argv =~ ~r/-- commit -m excluded$/
+  end
+
+  test "no PROTO_CHIT_SYNC_EXCLUDES means no --sync-exclude flag at all", %{base: base} do
+    repo = create_ready_repo(Path.join(base, "no-excludes-repo"))
+    argv = recording_emitter_argv(base, repo, [])
+
+    refute argv =~ "--sync-exclude"
+    assert argv =~ ~r/-- commit -m excluded$/
+  end
+
+  # Drives the real shim with an emitter that records the argv it was handed.
+  defp recording_emitter_argv(base, repo, extra_env) do
+    unique = System.unique_integer([:positive])
+    fired = Path.join(base, "argv-#{unique}")
+    emitter = Path.join(base, "argv-emitter-#{unique}")
+
+    File.write!(emitter, "#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$PROTO_CHIT_TEST_FIRED\"\n")
+    File.chmod!(emitter, 0o755)
+
+    env =
+      shim_env(base, emitter) ++ [{"PROTO_CHIT_TEST_FIRED", fired}] ++ @fixed_env ++ extra_env
+
+    assert {_output, 0} =
+             System.cmd(@shim, ["commit", "-m", "excluded"],
+               cd: repo,
+               env: env,
+               stderr_to_stdout: true
+             )
+
+    String.trim(File.read!(fired))
+  end
+
   test "tap-through commit leaves git object and ref bytes identical", %{base: base} do
     direct_repo = create_ready_repo(Path.join(base, "direct"))
     tapped_repo = create_ready_repo(Path.join(base, "tapped"))
