@@ -17,8 +17,11 @@ defmodule Commonplace.CLI.CheckoutTest do
     File.mkdir_p!(sync_dir)
 
     on_exit(fn ->
+      _ = Application.stop(:commonplace)
+      Application.put_env(:commonplace, :data_dir, "tmp/test_data", persistent: true)
       File.rm_rf!(workspace)
       File.rm_rf!(sync_dir)
+      {:ok, _} = Application.ensure_all_started(:commonplace)
     end)
 
     CLI.ensure_started(workspace)

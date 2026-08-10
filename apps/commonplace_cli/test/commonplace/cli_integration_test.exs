@@ -21,8 +21,11 @@ defmodule Commonplace.CLI.IntegrationTest do
     File.mkdir_p!(source)
 
     on_exit(fn ->
+      _ = Application.stop(:commonplace)
+      Application.put_env(:commonplace, :data_dir, "tmp/test_data", persistent: true)
       File.rm_rf!(workspace)
       File.rm_rf!(source)
+      {:ok, _} = Application.ensure_all_started(:commonplace)
     end)
 
     %{workspace: workspace, source: source}

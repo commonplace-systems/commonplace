@@ -1,4 +1,5 @@
 ExUnit.start()
+Code.require_file("../../../test/support/file_rm_rf_guard.exs", __DIR__)
 
 # CX-xwh4: only start Wallaby when feature tests will actually run.
 # Plain `mix test` skips Wallaby entirely (no chromedriver child
