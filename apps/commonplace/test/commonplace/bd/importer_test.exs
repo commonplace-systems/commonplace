@@ -4,7 +4,7 @@ defmodule Commonplace.Bd.ImporterTest do
   alias Commonplace.Bd.{Frontier, Importer, Issue}
   alias Commonplace.Bd.RetiredGraphError
   alias Commonplace.Store.CommitStore
-  alias Commonplace.Tree.Schema
+  alias Commonplace.Tree.{DocBuilder, Schema}
   alias Yelixer.Encoding
 
   setup do
@@ -18,13 +18,27 @@ defmodule Commonplace.Bd.ImporterTest do
     update = Encoding.encode_update(Schema.new_schema())
     CommitStore.create_commit(store, root, update, nil)
 
-    %{store: store, root: root}
+    %{dir: dir, store: store, root: root}
   end
 
   defp issue_jsonl(records) do
     records
     |> Enum.map(&Jason.encode!/1)
     |> Enum.join("\n")
+  end
+
+  test "a refused bd ensure stops the issue import without a partial /bd/", ctx do
+    root = minimal_root!(ctx.store, ctx.dir)
+    text = issue_jsonl([%{"id" => "CX-refused", "title" => "must not import"}])
+
+    assert {:error, refusal} = Importer.import_issues_jsonl(root, text, ctx.store)
+
+    assert refusal ==
+             "bd ensure refused before issue import: " <>
+               "{:trust_rejected, \"workspace class 'minimal' does not accept root entry 'bd' — declared in profile\"}; " <>
+               "issue import did not run"
+
+    assert :error = Schema.get_entry(load_schema!(ctx.store, root), "bd")
   end
 
   test "imports a single issue with priority-int normalization", ctx do
@@ -53,6 +67,19 @@ defmodule Commonplace.Bd.ImporterTest do
 
     {:ok, body} = Issue.description(ctx.root, "CX-test", ctx.store)
     assert body == "the body"
+  end
+
+  defp minimal_root!(store, data_dir) do
+    root = UUID.uuid4()
+    schema = Schema.new_schema() |> Schema.put_workspace_profile(:minimal)
+    CommitStore.create_commit(store, root, Encoding.encode_update(schema), nil)
+    File.write!(Path.join(data_dir, "root"), root)
+    root
+  end
+
+  defp load_schema!(store, uuid) do
+    {:ok, schema} = DocBuilder.reconstruct_snapshot(store, uuid)
+    schema
   end
 
   test "re-import is idempotent — second pass updates instead of duplicating", ctx do

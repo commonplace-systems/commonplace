@@ -52,7 +52,11 @@ defmodule Commonplace.WorkspaceRootWritePolicyTest do
                    )
 
           for _ <- 1..2 do
-            _ = BdWorkspace.ensure_bd_dir(root, ctx.store)
+            assert {:error, {:trust_rejected, reason}} =
+                     BdWorkspace.ensure_bd_dir(root, ctx.store)
+
+            assert reason ==
+                     "workspace class 'minimal' does not accept root entry 'bd' — declared in profile"
           end
         end)
       after

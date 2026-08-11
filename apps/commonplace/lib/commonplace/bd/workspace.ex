@@ -44,33 +44,34 @@ defmodule Commonplace.Bd.Workspace do
   Returns the UUID of the /bd/ directory.
   """
   def ensure_bd_dir(root_uuid, store \\ CommitStoreClient, opts \\ []) do
-    {:ok, root_schema} = Schemas.load_dir_schema(root_uuid, store)
+    with {:ok, root_schema} <- Schemas.load_dir_schema(root_uuid, store) do
+      case Schema.get_entry(root_schema, @bd_dir) do
+        {:ok, entry} ->
+          case ensure_bd_skeleton(entry.node_id, store, opts) do
+            :ok -> entry.node_id
+            {:error, _reason} = error -> error
+          end
 
-    case Schema.get_entry(root_schema, @bd_dir) do
-      {:ok, entry} ->
-        ensure_bd_skeleton(entry.node_id, store, opts)
-        entry.node_id
-
-      :error ->
-        bd_uuid = Schemas.create_dir_with_meta(nil, nil, store, opts)
-        ensure_bd_skeleton(bd_uuid, store, opts)
-        :ok = add_dir_entry(root_uuid, @bd_dir, bd_uuid, store, opts)
-        bd_uuid
+        :error ->
+          with {:ok, bd_uuid} <- Schemas.create_dir_with_meta_checked(nil, nil, store, opts),
+               :ok <- ensure_bd_skeleton(bd_uuid, store, opts),
+               :ok <- add_dir_entry(root_uuid, @bd_dir, bd_uuid, store, opts) do
+            bd_uuid
+          end
+      end
     end
   end
 
   defp ensure_bd_skeleton(bd_uuid, store, opts) do
-    {:ok, schema} = Schemas.load_dir_schema(bd_uuid, store)
-
-    schema =
-      schema
-      |> ensure_file(bd_uuid, store, Schemas.meta_filename(), &default_meta_json/0, opts)
-      |> ensure_file(bd_uuid, store, Schemas.deps_filename(), fn -> "{}" end, opts)
-      |> ensure_dir_entry(bd_uuid, store, @issues_dir, opts)
-      |> ensure_dir_entry(bd_uuid, store, @labels_dir, opts)
-
-    _ = schema
-    :ok
+    with {:ok, schema} <- Schemas.load_dir_schema(bd_uuid, store),
+         {:ok, schema} <-
+           ensure_file(schema, bd_uuid, store, Schemas.meta_filename(), &default_meta_json/0, opts),
+         {:ok, schema} <-
+           ensure_file(schema, bd_uuid, store, Schemas.deps_filename(), fn -> "{}" end, opts),
+         {:ok, schema} <- ensure_dir_entry(schema, bd_uuid, store, @issues_dir, opts),
+         {:ok, _schema} <- ensure_dir_entry(schema, bd_uuid, store, @labels_dir, opts) do
+      :ok
+    end
   end
 
   defp default_meta_json do
@@ -80,27 +81,30 @@ defmodule Commonplace.Bd.Workspace do
   defp ensure_file(schema, parent_uuid, store, filename, default_json_fn, opts) do
     case Schema.get_entry(schema, filename) do
       {:ok, _} ->
-        schema
+        {:ok, schema}
 
       :error ->
         json = default_json_fn.()
-        file_uuid = Schemas.create_text_doc(json, store, opts)
-        :ok = add_file_entry(parent_uuid, filename, file_uuid, store, opts)
-        {:ok, fresh} = Schemas.load_dir_schema(parent_uuid, store)
-        fresh
+
+        with {:ok, file_uuid} <- Schemas.create_text_doc_checked(json, store, opts),
+             :ok <- add_file_entry(parent_uuid, filename, file_uuid, store, opts),
+             {:ok, fresh} <- Schemas.load_dir_schema(parent_uuid, store) do
+          {:ok, fresh}
+        end
     end
   end
 
   defp ensure_dir_entry(schema, parent_uuid, store, name, opts) do
     case Schema.get_entry(schema, name) do
       {:ok, _} ->
-        schema
+        {:ok, schema}
 
       :error ->
-        child_uuid = Schemas.create_dir_with_meta(nil, nil, store, opts)
-        :ok = add_dir_entry_into(parent_uuid, name, child_uuid, store, opts)
-        {:ok, fresh} = Schemas.load_dir_schema(parent_uuid, store)
-        fresh
+        with {:ok, child_uuid} <- Schemas.create_dir_with_meta_checked(nil, nil, store, opts),
+             :ok <- add_dir_entry_into(parent_uuid, name, child_uuid, store, opts),
+             {:ok, fresh} <- Schemas.load_dir_schema(parent_uuid, store) do
+          {:ok, fresh}
+        end
     end
   end
 
@@ -219,23 +223,23 @@ defmodule Commonplace.Bd.Workspace do
     {:ok, schema} = Schemas.load_dir_schema(parent_uuid, store)
     schema = Schema.add_directory(schema, name, child_uuid)
     update = Encoding.encode_update(schema)
-    CommitStoreClient.create_chained_commit(store, parent_uuid, update, %{}, opts)
-    :ok
+    checked_commit(CommitStoreClient.create_chained_commit(store, parent_uuid, update, %{}, opts))
   end
 
   defp add_dir_entry_into(parent_uuid, name, child_uuid, store, opts) do
     {:ok, schema} = Schemas.load_dir_schema(parent_uuid, store)
     schema = Schema.add_directory(schema, name, child_uuid)
     update = Encoding.encode_update(schema)
-    CommitStoreClient.create_chained_commit(store, parent_uuid, update, %{}, opts)
-    :ok
+    checked_commit(CommitStoreClient.create_chained_commit(store, parent_uuid, update, %{}, opts))
   end
 
   defp add_file_entry(parent_uuid, name, child_uuid, store, opts) do
     {:ok, schema} = Schemas.load_dir_schema(parent_uuid, store)
     schema = Schema.add_file(schema, name, child_uuid)
     update = Encoding.encode_update(schema)
-    CommitStoreClient.create_chained_commit(store, parent_uuid, update, %{}, opts)
-    :ok
+    checked_commit(CommitStoreClient.create_chained_commit(store, parent_uuid, update, %{}, opts))
   end
+
+  defp checked_commit({:error, _reason} = error), do: error
+  defp checked_commit(%Commonplace.Store.Commit{}), do: :ok
 end

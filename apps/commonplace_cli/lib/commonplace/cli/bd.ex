@@ -34,8 +34,13 @@ defmodule Commonplace.CLI.Bd do
       System.halt(1)
     end
 
-    _ = Workspace.ensure_bd_dir(root, CommitStoreClient)
+    case Workspace.ensure_bd_dir(root, CommitStoreClient) do
+      bd_uuid when is_binary(bd_uuid) -> run_command(root, args)
+      {:error, reason} -> refuse_ensure(reason)
+    end
+  end
 
+  defp run_command(root, args) do
     result =
       case args do
         ["create" | rest] ->
@@ -107,6 +112,14 @@ defmodule Commonplace.CLI.Bd do
     # with it, or a script keeps treating the call as a success.
     if result == :retired, do: System.halt(1)
     result
+  end
+
+  defp refuse_ensure(reason) do
+    refusal =
+      "bd ensure refused before CLI bd command: #{inspect(reason)}; CLI bd command did not run"
+
+    IO.puts(:stderr, "REFUSED: #{refusal}")
+    {:error, refusal}
   end
 
   ## Subcommand handlers

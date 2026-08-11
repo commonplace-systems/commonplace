@@ -5,7 +5,7 @@ defmodule Commonplace.Bd.MigrateTest do
   alias Commonplace.Crypto.Signing
   alias Commonplace.Crypto.SigningContext
   alias Commonplace.Store.CommitStore
-  alias Commonplace.Tree.Schema
+  alias Commonplace.Tree.{DocBuilder, Schema}
   alias Yelixer.Encoding
 
   setup do
@@ -19,13 +19,27 @@ defmodule Commonplace.Bd.MigrateTest do
     update = Encoding.encode_update(Schema.new_schema())
     CommitStore.create_commit(store, root, update, nil)
 
-    %{store: store, root: root}
+    %{dir: dir, store: store, root: root}
   end
 
   defp jsonl(records) do
     records
     |> Enum.map(&Jason.encode!/1)
     |> Enum.join("\n")
+  end
+
+  test "a refused bd ensure stops migration without a partial /bd/ or import", ctx do
+    root = minimal_root!(ctx.store, ctx.dir)
+    export = jsonl([%{"id" => "CX-refused", "title" => "must not migrate", "status" => "open"}])
+
+    assert {:error, refusal} = Migrate.import_from_export(root, export, ctx.store)
+
+    assert refusal ==
+             "bd ensure refused before export migration: " <>
+               "{:trust_rejected, \"workspace class 'minimal' does not accept root entry 'bd' — declared in profile\"}; " <>
+               "export migration did not run"
+
+    assert :error = Schema.get_entry(load_schema!(ctx.store, root), "bd")
   end
 
   describe "status filter" do
@@ -62,6 +76,19 @@ defmodule Commonplace.Bd.MigrateTest do
       assert {:error, :not_found} = Issue.show(ctx.root, "CX-5", ctx.store)
       assert {:error, :not_found} = Issue.show(ctx.root, "CX-6", ctx.store)
     end
+  end
+
+  defp minimal_root!(store, data_dir) do
+    root = UUID.uuid4()
+    schema = Schema.new_schema() |> Schema.put_workspace_profile(:minimal)
+    CommitStore.create_commit(store, root, Encoding.encode_update(schema), nil)
+    File.write!(Path.join(data_dir, "root"), root)
+    root
+  end
+
+  defp load_schema!(store, uuid) do
+    {:ok, schema} = DocBuilder.reconstruct_snapshot(store, uuid)
+    schema
   end
 
   describe "no tokens minted" do

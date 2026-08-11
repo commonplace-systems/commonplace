@@ -93,7 +93,16 @@ defmodule Commonplace.Bd.Migrate do
     # explicit when supplied-id creation moved to
     # `Issue.create_with_id/5`, whose own skeleton lookup is
     # opts-less).
-    _ = Workspace.ensure_bd_dir(root_uuid, store, opts)
+    case Workspace.ensure_bd_dir(root_uuid, store, opts) do
+      bd_uuid when is_binary(bd_uuid) ->
+        do_import_from_export(root_uuid, export_jsonl, store, deps_jsonl, opts)
+
+      {:error, reason} ->
+        {:error, ensure_refusal(reason)}
+    end
+  end
+
+  defp do_import_from_export(root_uuid, export_jsonl, store, deps_jsonl, opts) do
 
     lines =
       export_jsonl
@@ -114,6 +123,10 @@ defmodule Commonplace.Bd.Migrate do
        manifest: manifest,
        edges_added: edges_added
      }}
+  end
+
+  defp ensure_refusal(reason) do
+    "bd ensure refused before export migration: #{inspect(reason)}; export migration did not run"
   end
 
   @doc """

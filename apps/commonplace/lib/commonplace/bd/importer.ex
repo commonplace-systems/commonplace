@@ -89,8 +89,13 @@ defmodule Commonplace.Bd.Importer do
   """
   def import_issues_jsonl(root_uuid, jsonl_text, store \\ CommitStoreClient, opts \\ [])
       when is_binary(jsonl_text) do
-    # Ensure the workspace exists before any reads.
-    _ = Workspace.ensure_bd_dir(root_uuid, store)
+    case Workspace.ensure_bd_dir(root_uuid, store) do
+      bd_uuid when is_binary(bd_uuid) -> do_import_issues_jsonl(root_uuid, jsonl_text, store, opts)
+      {:error, reason} -> {:error, ensure_refusal(reason)}
+    end
+  end
+
+  defp do_import_issues_jsonl(root_uuid, jsonl_text, store, opts) do
 
     {records, parse_errors} = parse_records(jsonl_text)
 
@@ -117,6 +122,10 @@ defmodule Commonplace.Bd.Importer do
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  defp ensure_refusal(reason) do
+    "bd ensure refused before issue import: #{inspect(reason)}; issue import did not run"
   end
 
   @doc """
