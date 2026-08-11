@@ -35,8 +35,8 @@ defmodule Commonplace.ProtoChit do
          {:ok, state_dir} <- fetch_binary(opts, :state_dir),
          {:ok, verb} <- classify(git_args),
          {:ok, observation} <- observe_git(repo, git_args, opts),
-         :ok <- sync_flush(repo, root_uuid, signing_context, opts),
-         {:ok, proto_pin} <- cut_pin(root_uuid, signing_context, opts),
+         {:ok, exclusions} <- sync_flush(repo, root_uuid, signing_context, opts),
+         {:ok, proto_pin} <- cut_pin(root_uuid, signing_context, exclusions, opts),
          {:ok, predecessor_ref} <- predecessor_ref(state_dir, observation, git_args),
          event <-
            build_event(verb, signing_context, git_args, observation, proto_pin, predecessor_ref),
@@ -132,15 +132,17 @@ defmodule Commonplace.ProtoChit do
       exclude_names: Enum.uniq(@sync_excludes ++ declared_excludes)
     ]
 
-    Watcher.sync_recursive(root_uuid, repo, store, sync_opts)
+    report = Watcher.sync_recursive(root_uuid, repo, store, sync_opts)
+    skipped_paths = MapSet.new(report.skipped, & &1.path)
 
-    case Watcher.detect_changes(root_uuid, repo, store, sync_opts) do
-      [] -> :ok
+    case Watcher.detect_changes(root_uuid, repo, store, sync_opts)
+         |> Enum.reject(&MapSet.member?(skipped_paths, &1.path)) do
+      [] -> {:ok, pin_exclusions(report.skipped, repo)}
       remaining -> {:error, {:sync_flush_incomplete, Enum.map(remaining, & &1.path)}}
     end
   end
 
-  defp cut_pin(root_uuid, signing_context, opts) do
+  defp cut_pin(root_uuid, signing_context, exclusions, opts) do
     store = Keyword.get(opts, :store, CommitStoreClient)
     owner = Keyword.get(opts, :pin_owner, "proto-chit")
 
@@ -153,16 +155,26 @@ defmodule Commonplace.ProtoChit do
           {path, %{"doc" => doc_uuid, "commit" => commit_id}}
         end)
 
-      {:ok,
-       %{
-         "format" => @pin_format,
-         "checkpoint" => %{
-           "doc" => snapshot_doc_uuid,
-           "commit" => hex(checkpoint_commit_id)
-         },
-         "entries" => entries
-       }}
+      pin = %{
+        "format" => @pin_format,
+        "checkpoint" => %{
+          "doc" => snapshot_doc_uuid,
+          "commit" => hex(checkpoint_commit_id)
+        },
+        "entries" => entries
+      }
+
+      pin = if exclusions == [], do: pin, else: Map.put(pin, "exclusions", exclusions)
+      {:ok, pin}
     end
+  end
+
+  defp pin_exclusions(skipped, repo) do
+    skipped
+    |> Enum.map(fn %{path: path, reason: reason} ->
+      %{"path" => Path.relative_to(path, repo), "reason" => reason}
+    end)
+    |> Enum.sort_by(& &1["path"])
   end
 
   defp build_event(verb, signing_context, git_args, observation, proto_pin, predecessor_ref) do
