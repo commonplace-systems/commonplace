@@ -38,7 +38,14 @@ Stop and REPORT if:
    `:default` or ABSENT (pre-profile workspaces) → today's behavior.
    Absence means default here by explicit decision — record that in the
    artifact's doc comment (it is the one place absence-is-consent is
-   correct: pre-existing workspaces predate the field).
+   correct: pre-existing workspaces predate the field — "not yet asked" is
+   a different fact from "declined"). ⛔ Plan's boundary (msg 11181), write
+   it AT the artifact in substance: this exception is TEMPORAL and its
+   membership is CLOSED — since initialize now records the profile, every
+   post-field workspace has it explicitly, so an absent profile on a
+   post-field workspace is a BUG TO SURFACE (log it loudly), never a
+   default to apply; the exception's population shrinks monotonically to
+   the legacy set and retires itself.
 3. `ensure_bd_dir` for a `:minimal` workspace: **SKIP with a debug line**
    (plan's decision, made in this brief): return a value the caller
    handles as not-present rather than minting. ⛔ NAMED CHECK, not an
