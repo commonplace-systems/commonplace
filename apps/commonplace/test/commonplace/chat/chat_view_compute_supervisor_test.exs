@@ -17,6 +17,9 @@ defmodule Commonplace.Chat.ChatViewComputeSupervisorTest do
   alias Commonplace.Store.{CommitStore, CommitStoreClient}
   alias Commonplace.Tree.DocBuilder
 
+  @eventually_poll_ms 20
+  @eventually_attempts 1_000
+
   setup do
     # Per-test scratch dir + CommitStore restart. Restore to the
     # test-config default ("tmp/test_data") in on_exit — NOT a captured
@@ -185,11 +188,13 @@ defmodule Commonplace.Chat.ChatViewComputeSupervisorTest do
           author_path: "alice.usr"
         )
 
-      # ViewCompute subscribes to commits on messages_uuid; recompute
-      # arrives async, give it a beat.
+      # CX-6kxv: ViewCompute's async compute is itself bounded at 10 s. Polling
+      # every 20 ms preserves prompt readiness detection; 1,000 attempts give
+      # source notification + read/compute/write twice that bound (20 s).
       eventually(fn -> read_view_content(view_uuid) =~ "hi from anchor B" end)
 
       content = read_view_content(view_uuid)
+
       assert content =~ ~s(id="#{m1}"),
              "rendered view-XML should carry the new message id"
 
@@ -214,18 +219,21 @@ defmodule Commonplace.Chat.ChatViewComputeSupervisorTest do
     end
   end
 
-  defp eventually(fun, attempts \\ 50) do
+  defp eventually(fun, attempts \\ @eventually_attempts) do
     Enum.reduce_while(1..attempts, false, fn _, _ ->
       if fun.() do
         {:halt, true}
       else
-        Process.sleep(20)
+        Process.sleep(@eventually_poll_ms)
         {:cont, false}
       end
     end)
     |> case do
-      true -> :ok
-      false -> flunk("eventually-condition never became true within #{attempts * 20}ms")
+      true ->
+        :ok
+
+      false ->
+        flunk("eventually-condition never became true within #{attempts * @eventually_poll_ms}ms")
     end
   end
 end
