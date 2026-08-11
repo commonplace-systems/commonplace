@@ -154,7 +154,11 @@ defmodule Commonplace.CLI do
       "reflog" -> Commonplace.CLI.Reflog.run(data_dir, relative_path, rest)
       "snapshot" -> Commonplace.CLI.Snapshot.run(data_dir, relative_path, rest)
       "mud" -> Commonplace.CLI.Mud.run(data_dir, relative_path, rest)
-      "bd" -> Commonplace.CLI.Bd.run(data_dir, relative_path, rest)
+      "bd" ->
+        case Commonplace.CLI.Bd.run(data_dir, relative_path, rest) do
+          {:error, _refusal} -> System.halt(1)
+          result -> result
+        end
       "proto-chit" ->
         case Commonplace.CLI.ProtoChit.run(data_dir, relative_path, rest) do
           0 -> :ok
