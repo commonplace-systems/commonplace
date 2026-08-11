@@ -20,7 +20,11 @@ defmodule Commonplace.Trust.AuditChokePerfTest do
   block, which is the property that matters — the old inline persist
   was an unbounded synchronous write, and before that it was a deadlock.
   That property is asserted structurally from `AuditLogCounter`, not
-  inferred from a wall-clock ratio.
+  inferred from a wall-clock ratio. The structural arm remains blocking
+  everywhere, but it is blind to a constant-factor blowup: work that is
+  100x slower still counts as four operations per denial. The wall-clock
+  arm is the only instrument for that class, so it remains blocking where
+  its enclosure says it can measure.
 
   ## Why this is a self-baselined comparison
 
@@ -48,6 +52,14 @@ defmodule Commonplace.Trust.AuditChokePerfTest do
   # 0.715 and its maximum is still well clear of 3.0. Use n=1_000 and let the
   # impossibility guard name the three sub-1.0 runs as no-verdicts.
   @allow_p99_samples 1_000
+
+  # CX-d0sc's identical-code runs at 1-minute load averages 8.6-9.5 spread
+  # from 0.38 to 3.26, unlike CX-dsqc's quiet five-run distributions above.
+  # Fix 8.0 a priori as the round-number line below the lowest observed noisy
+  # load; it is never tuned from this run. This DETECTOR replaces unconditional
+  # wall-clock eligibility. It is not a tighter assertion: @max_ratio remains
+  # 3.0 and is applied unchanged whenever the enclosure holds.
+  @max_enclosure_load_1m 8.0
 
   # Generous on purpose: see the moduledoc. The failure this guards is
   # a synchronous store write back in the choke, which is ~100x, not 2x.
@@ -181,15 +193,19 @@ defmodule Commonplace.Trust.AuditChokePerfTest do
   # ── the ALLOW path: must pay nothing ─────────────────────────────────
 
   test "the ALLOW path p50 ratio is within budget", %{store: store, dispatcher: dispatcher} do
-    measurement = measure_allow(store, dispatcher)
+    with_wall_clock_enclosure("ALLOW p50", fn ->
+      measurement = measure_allow(store, dispatcher)
 
-    assert_ratio_verdict!("ALLOW p50", measurement.p50, @max_ratio, measurement.report)
+      assert_ratio_verdict!("ALLOW p50", measurement.p50, @max_ratio, measurement.report)
+    end)
   end
 
   test "the ALLOW path p99 ratio is within budget", %{store: store, dispatcher: dispatcher} do
-    measurement = measure_allow(store, dispatcher, @allow_p99_samples)
+    with_wall_clock_enclosure("ALLOW p99", fn ->
+      measurement = measure_allow(store, dispatcher, @allow_p99_samples)
 
-    assert_ratio_verdict!("ALLOW p99", measurement.p99, @max_ratio, measurement.report)
+      assert_ratio_verdict!("ALLOW p99", measurement.p99, @max_ratio, measurement.report)
+    end)
   end
 
   # ── the ordinary DENY path: every denial is offered ─────────────────
@@ -199,53 +215,56 @@ defmodule Commonplace.Trust.AuditChokePerfTest do
     store: store,
     dispatcher: dispatcher
   } do
-    Application.put_env(:commonplace, :trust, %{accept_unsigned: false, trusted_identities: %{}})
-    Application.put_env(:commonplace, :local_write_gate, :enforce)
+    with_wall_clock_enclosure("DENY OFFERED p50", fn ->
+      Application.put_env(:commonplace, :trust, %{accept_unsigned: false, trusted_identities: %{}})
 
-    on_exit(fn -> AuditLog.reset_rate_table() end)
+      Application.put_env(:commonplace, :local_write_gate, :enforce)
 
-    deny = fn ->
-      CommitStore.create_commit(store, UUID.uuid4(), text_update("secret"), nil)
-    end
+      on_exit(fn -> AuditLog.reset_rate_table() end)
 
-    AuditLog.detach()
-    AuditLog.reset_rate_table()
-    {baseline, baseline_calls} = measure_offered(deny)
+      deny = fn ->
+        CommitStore.create_commit(store, UUID.uuid4(), text_update("secret"), nil)
+      end
 
-    before_status = AuditDispatcher.status(dispatcher)
-    AuditLog.attach(store, dispatcher: dispatcher)
-    {with_audit, measured_calls} = measure_offered(deny)
-    AuditLog.detach()
+      AuditLog.detach()
+      AuditLog.reset_rate_table()
+      {baseline, baseline_calls} = measure_offered(deny)
 
-    ratio50 = with_audit.p50 / max(baseline.p50, 1)
-    ratio99 = with_audit.p99 / max(baseline.p99, 1)
+      before_status = AuditDispatcher.status(dispatcher)
+      AuditLog.attach(store, dispatcher: dispatcher)
+      {with_audit, measured_calls} = measure_offered(deny)
+      AuditLog.detach()
 
-    _ = AuditDispatcher.flush(dispatcher, 10_000)
-    after_status = AuditDispatcher.status(dispatcher)
-    offered_delta = after_status.offered - before_status.offered
+      ratio50 = with_audit.p50 / max(baseline.p50, 1)
+      ratio99 = with_audit.p99 / max(baseline.p99, 1)
 
-    report = """
-    DENY OFFERED path, n=#{baseline.n} per arm
-      baseline    p50=#{baseline.p50}us p99=#{baseline.p99}us calls=#{baseline_calls}
-      with audit  p50=#{with_audit.p50}us p99=#{with_audit.p99}us calls=#{measured_calls}
-      ratio       p50=#{Float.round(ratio50, 3)} p99=#{Float.round(ratio99, 3)}
-      offered     expected=#{measured_calls} observed=#{offered_delta}
-    """
+      _ = AuditDispatcher.flush(dispatcher, 10_000)
+      after_status = AuditDispatcher.status(dispatcher)
+      offered_delta = after_status.offered - before_status.offered
 
-    IO.puts("\n" <> report)
+      report = """
+      DENY OFFERED path, n=#{baseline.n} per arm
+        baseline    p50=#{baseline.p50}us p99=#{baseline.p99}us calls=#{baseline_calls}
+        with audit  p50=#{with_audit.p50}us p99=#{with_audit.p99}us calls=#{measured_calls}
+        ratio       p50=#{Float.round(ratio50, 3)} p99=#{Float.round(ratio99, 3)}
+        offered     expected=#{measured_calls} observed=#{offered_delta}
+      """
 
-    assert offered_delta == measured_calls,
-           "#{measured_calls - offered_delta} attached deny calls were suppressed; " <>
-             "the OFFERED-path timing is vacuous\n" <> report
+      IO.puts("\n" <> report)
 
-    # This remains the original 3.0 budget. CX-dsqc forbids changing the
-    # DENY OFFERED budget while the structural discriminator is established.
-    assert_ratio_verdict!("DENY OFFERED p50", ratio50, @max_ratio, report)
+      assert offered_delta == measured_calls,
+             "#{measured_calls - offered_delta} attached deny calls were suppressed; " <>
+               "the OFFERED-path timing is vacuous\n" <> report
 
-    # p99 is reported but not asserted: one
-    # collision with the dispatcher's legitimate asynchronous flush can
-    # trip a tight tail bound, while a synchronous regression inflates
-    # every sample and is therefore caught more reliably by p50.
+      # This remains the original 3.0 budget. CX-dsqc forbids changing the
+      # DENY OFFERED budget while the structural discriminator is established.
+      assert_ratio_verdict!("DENY OFFERED p50", ratio50, @max_ratio, report)
+
+      # p99 is reported but not asserted: one
+      # collision with the dispatcher's legitimate asynchronous flush can
+      # trip a tight tail bound, while a synchronous regression inflates
+      # every sample and is therefore caught more reliably by p50.
+    end)
   end
 
   # ── the DENY path: bounded work asserted from exact counter deltas ───
@@ -311,6 +330,53 @@ defmodule Commonplace.Trust.AuditChokePerfTest do
 
   # ── positive controls: every reshaped arm can still go red ──────────
 
+  test "wall-clock arms name the load and marker when their enclosure declines" do
+    enclosure = %{load_1m: 8.75, concurrent_build_marker: "cc1(pid=4242)"}
+
+    output =
+      ExUnit.CaptureIO.capture_io(fn ->
+        assert {:no_verdict, message} =
+                 with_wall_clock_enclosure(
+                   "ALLOW p50",
+                   fn -> send(self(), :wall_clock_measurement_ran) end,
+                   fn -> enclosure end
+                 )
+
+        assert message ==
+                 "NO VERDICT ALLOW p50: enclosure failed; 1-minute loadavg=8.75 " <>
+                   "(detector line < 8.0); concurrent-build-marker=cc1(pid=4242); " <>
+                   "wall-clock ratio assertion skipped"
+
+        refute_received :wall_clock_measurement_ran
+      end)
+
+    assert output =~ "NO VERDICT ALLOW p50: enclosure failed"
+  end
+
+  test "the structural arm still gives its verdict when wall-clock arms decline" do
+    enclosure = %{load_1m: 8.75, concurrent_build_marker: "cc1(pid=4242)"}
+
+    assert {:no_verdict, _message} =
+             with_wall_clock_enclosure(
+               "DENY OFFERED p50",
+               fn -> send(self(), :wall_clock_measurement_ran) end,
+               fn -> enclosure end
+             )
+
+    refute_received :wall_clock_measurement_ran
+
+    assert :constant =
+             assert_counter_curve!(
+               "DENY OFFERED structural while wall clock declined",
+               [
+                 %{denials: 1, operations_per_denial: 4.0},
+                 %{denials: 10, operations_per_denial: 4.0},
+                 %{denials: 100, operations_per_denial: 4.0}
+               ],
+               @max_counter_operations_per_denial
+             )
+  end
+
   test "positive control: the ALLOW p50 ratio arm rejects over-budget work" do
     assert_ratio_positive_control!("ALLOW p50", @max_ratio)
   end
@@ -367,6 +433,72 @@ defmodule Commonplace.Trust.AuditChokePerfTest do
     |> Map.new(fn {key, was} -> {key, Map.fetch!(after_counts, key) - was} end)
   end
 
+  defp with_wall_clock_enclosure(arm, verdict, probe \\ &measure_enclosure/0) do
+    enclosure = probe.()
+
+    if enclosure_holds?(enclosure) do
+      verdict.()
+    else
+      message =
+        "NO VERDICT #{arm}: enclosure failed; 1-minute loadavg=#{format_load(enclosure.load_1m)} " <>
+          "(detector line < #{@max_enclosure_load_1m}); " <>
+          "concurrent-build-marker=#{enclosure.concurrent_build_marker || "none"}; " <>
+          "wall-clock ratio assertion skipped"
+
+      IO.puts(message)
+      {:no_verdict, message}
+    end
+  end
+
+  defp enclosure_holds?(%{load_1m: load, concurrent_build_marker: nil})
+       when is_number(load) and load < @max_enclosure_load_1m,
+       do: true
+
+  defp enclosure_holds?(_enclosure), do: false
+
+  defp measure_enclosure do
+    %{
+      load_1m: read_load_1m(),
+      concurrent_build_marker: concurrent_build_marker()
+    }
+  end
+
+  defp read_load_1m do
+    with {:ok, loadavg} <- File.read("/proc/loadavg"),
+         [load | _] <- String.split(loadavg),
+         {load, ""} <- Float.parse(load) do
+      load
+    else
+      _ -> :unavailable
+    end
+  end
+
+  # A second beam.smp or a cc1 compiler is a cheap, Linux-local indication
+  # that another build can perturb the timing. This deliberately risks a
+  # false positive for unrelated BEAM work; it can miss short-lived or
+  # differently named compilers, and a process can start just after the scan.
+  defp concurrent_build_marker do
+    own_pid = System.pid()
+
+    "/proc/[0-9]*/comm"
+    |> Path.wildcard()
+    |> Enum.find_value(fn path ->
+      pid = path |> Path.dirname() |> Path.basename()
+
+      with false <- pid == own_pid,
+           {:ok, comm} <- File.read(path),
+           comm = String.trim(comm),
+           true <- comm in ["beam.smp", "cc1", "cc1plus"] do
+        "#{comm}(pid=#{pid})"
+      else
+        _ -> nil
+      end
+    end)
+  end
+
+  defp format_load(load) when is_float(load), do: Float.to_string(load)
+  defp format_load(load), do: inspect(load)
+
   defp assert_ratio_verdict!(arm, ratio, budget, report) do
     if ratio < 1.0 do
       IO.puts(
@@ -400,11 +532,17 @@ defmodule Commonplace.Trust.AuditChokePerfTest do
 
     error =
       assert_raise ExUnit.AssertionError, fn ->
-        assert_ratio_verdict!(
-          "#{arm} positive control",
-          inflated_ratio,
-          budget,
-          "deliberately inflated counted work"
+        with_wall_clock_enclosure(
+          arm,
+          fn ->
+            assert_ratio_verdict!(
+              "#{arm} positive control",
+              inflated_ratio,
+              budget,
+              "deliberately inflated counted work"
+            )
+          end,
+          fn -> %{load_1m: 0.0, concurrent_build_marker: nil} end
         )
       end
 
