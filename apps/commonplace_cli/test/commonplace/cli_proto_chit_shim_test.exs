@@ -20,7 +20,12 @@ defmodule Commonplace.CLI.ProtoChitShimTest do
     fired = Path.join(base, "emitter-fired")
     emitter = Path.join(base, "emitter")
 
-    File.write!(emitter, "#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$PROTO_CHIT_TEST_FIRED\"\n")
+    File.write!(
+      emitter,
+      "#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$PROTO_CHIT_TEST_FIRED\"\n" <>
+        "echo 'proto-chit: tap fired recorded' >&2\n"
+    )
+
     File.chmod!(emitter, 0o755)
 
     env = shim_env(base, emitter) ++ [{"PROTO_CHIT_TEST_FIRED", fired}] ++ @fixed_env
@@ -35,6 +40,80 @@ defmodule Commonplace.CLI.ProtoChitShimTest do
     assert File.read!(fired) =~ "proto-chit emit"
     assert File.read!(fired) =~ "commit -m fired"
     assert {_sha, 0} = System.cmd(@real_git, ["rev-parse", "HEAD"], cd: repo)
+  end
+
+  test "exit zero without persist confirmation WALs and still runs git", %{base: base} do
+    repo = create_ready_repo(Path.join(base, "unconfirmed-repo"))
+    state_dir = Path.join(base, "unconfirmed-state")
+    emitter = write_emitter!(base, "unconfirmed-emitter", "echo 'booting emitter' >&2\nexit 0\n")
+
+    assert {_output, 0} =
+             System.cmd(@shim, ["commit", "-m", "unconfirmed"],
+               cd: repo,
+               env: shim_env(state_dir, emitter) ++ @fixed_env,
+               stderr_to_stdout: true
+             )
+
+    assert [record] = read_wal(state_dir)
+    assert record["failure"] == "emitter-exit-0-unconfirmed"
+    assert {_sha, 0} = System.cmd(@real_git, ["rev-parse", "HEAD"], cd: repo)
+  end
+
+  test "exit zero with persist confirmation does not WAL and still runs git", %{base: base} do
+    repo = create_ready_repo(Path.join(base, "confirmed-repo"))
+    state_dir = Path.join(base, "confirmed-state")
+
+    emitter =
+      write_emitter!(
+        base,
+        "confirmed-emitter",
+        "echo 'proto-chit: tap fired abc123' >&2\nexit 0\n"
+      )
+
+    assert {_output, 0} =
+             System.cmd(@shim, ["commit", "-m", "confirmed"],
+               cd: repo,
+               env: shim_env(state_dir, emitter) ++ @fixed_env,
+               stderr_to_stdout: true
+             )
+
+    refute File.exists?(Path.join(state_dir, "events.wal.ndjson"))
+    assert {_sha, 0} = System.cmd(@real_git, ["rev-parse", "HEAD"], cd: repo)
+  end
+
+  test "nonzero emitter exit WALs and still runs git", %{base: base} do
+    repo = create_ready_repo(Path.join(base, "nonzero-repo"))
+    state_dir = Path.join(base, "nonzero-state")
+    emitter = write_emitter!(base, "nonzero-emitter", "exit 3\n")
+
+    assert {_output, 0} =
+             System.cmd(@shim, ["commit", "-m", "nonzero"],
+               cd: repo,
+               env: shim_env(state_dir, emitter) ++ @fixed_env,
+               stderr_to_stdout: true
+             )
+
+    assert [record] = read_wal(state_dir)
+    assert record["failure"] == "emitter-exit-3"
+    assert {_sha, 0} = System.cmd(@real_git, ["rev-parse", "HEAD"], cd: repo)
+  end
+
+  test "emitter output remains loud on stderr and ordered", %{base: base} do
+    repo = create_ready_repo(Path.join(base, "ordered-repo"))
+    state_dir = Path.join(base, "ordered-state")
+
+    emitter =
+      write_emitter!(
+        base,
+        "ordered-emitter",
+        "echo 'emitter marker one'\necho 'emitter marker two' >&2\n" <>
+          "echo 'proto-chit: tap fired ordered' >&2\nexit 0\n"
+      )
+
+    {stderr, status} = shim_stderr(repo, state_dir, ["commit", "-m", "ordered"], emitter)
+
+    assert status == 0
+    assert stderr =~ "emitter marker one\nemitter marker two\n"
   end
 
   test "PROTO_CHIT_SYNC_EXCLUDES becomes one --sync-exclude pair per name", %{base: base} do
@@ -60,7 +139,12 @@ defmodule Commonplace.CLI.ProtoChitShimTest do
     fired = Path.join(base, "argv-#{unique}")
     emitter = Path.join(base, "argv-emitter-#{unique}")
 
-    File.write!(emitter, "#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$PROTO_CHIT_TEST_FIRED\"\n")
+    File.write!(
+      emitter,
+      "#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$PROTO_CHIT_TEST_FIRED\"\n" <>
+        "echo 'proto-chit: tap fired argv' >&2\n"
+    )
+
     File.chmod!(emitter, 0o755)
 
     env =
@@ -80,7 +164,7 @@ defmodule Commonplace.CLI.ProtoChitShimTest do
     direct_repo = create_ready_repo(Path.join(base, "direct"))
     tapped_repo = create_ready_repo(Path.join(base, "tapped"))
     emitter = Path.join(base, "success-emitter")
-    File.write!(emitter, "#!/bin/sh\nexit 0\n")
+    File.write!(emitter, "#!/bin/sh\necho 'proto-chit: tap fired identical' >&2\nexit 0\n")
     File.chmod!(emitter, 0o755)
 
     assert {_output, 0} =
@@ -174,10 +258,21 @@ defmodule Commonplace.CLI.ProtoChitShimTest do
   # Runs the shim with stdout discarded, so anything captured here reached
   # stderr and nothing the shim adds could have polluted git's stdout.
   defp shim_stderr(repo, state_dir, args) do
+    shim_stderr(repo, state_dir, args, "/bin/false")
+  end
+
+  defp shim_stderr(repo, state_dir, args, emitter) do
     System.cmd("/bin/sh", ["-c", ~s(exec "$0" "$@" 2>&1 1>/dev/null), @shim | args],
       cd: repo,
-      env: shim_env(state_dir, "/bin/false") ++ @fixed_env
+      env: shim_env(state_dir, emitter) ++ @fixed_env
     )
+  end
+
+  defp write_emitter!(base, name, body) do
+    emitter = Path.join(base, name)
+    File.write!(emitter, "#!/bin/sh\n" <> body)
+    File.chmod!(emitter, 0o755)
+    emitter
   end
 
   defp hours_ago(hours), do: DateTime.add(DateTime.utc_now(), -hours * 3600, :second)
@@ -200,6 +295,14 @@ defmodule Commonplace.CLI.ProtoChitShimTest do
   defp write_wal!(state_dir, rows) do
     File.mkdir_p!(state_dir)
     File.write!(Path.join(state_dir, "events.wal.ndjson"), Enum.map(rows, &(&1 <> "\n")))
+  end
+
+  defp read_wal(state_dir) do
+    state_dir
+    |> Path.join("events.wal.ndjson")
+    |> File.read!()
+    |> String.split("\n", trim: true)
+    |> Enum.map(&Jason.decode!/1)
   end
 
   defp create_ready_repo(path) do
