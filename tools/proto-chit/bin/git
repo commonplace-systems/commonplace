@@ -64,14 +64,43 @@ case "$command_name" in
   commit|merge|pull|branch|checkout|switch|tag|worktree|rebase|reset|filter-branch|replace|update-ref|notes|bisect|reflog|stash|cherry-pick|revert)
     emitter=${PROTO_CHIT_COMMONPLACE:-}
     emit_status=127
+    emit_confirmed=0
+    emit_output=""
 
     if [ -n "$emitter" ] && [ -n "${PROTO_CHIT_DATA_DIR:-}" ] && [ -n "${PROTO_CHIT_EVENT_LOG_UUID:-}" ]; then
-      run_emitter "$@"
-      emit_status=$?
+      emit_output="${TMPDIR:-/tmp}/proto-chit-emitter.$$"
+
+      if ! (umask 077 && set -C && : >"$emit_output") 2>/dev/null; then
+        emit_output=""
+      fi
+
+      if [ -n "$emit_output" ]; then
+        trap 'rm -f "$emit_output"' 0
+        run_emitter "$@" >"$emit_output" 2>&1
+        emit_status=$?
+        cat "$emit_output" >&2 || :
+
+        if [ "$emit_status" -eq 0 ] &&
+          grep -q '^proto-chit: tap fired ' "$emit_output" 2>/dev/null; then
+          emit_confirmed=1
+        fi
+
+        rm -f "$emit_output" || :
+        emit_output=""
+        trap - 0
+      else
+        # Temp-file failure cannot block git. Keep the emitter loud, but fail
+        # toward recording because positive persistence cannot be confirmed.
+        run_emitter "$@" >&2
+        emit_status=$?
+      fi
     fi
 
     if [ "$emit_status" -ne 0 ]; then
       "$shim_dir/proto-chit-wal" "$PWD" "$state_dir" "emitter-exit-$emit_status" "$@" ||
+        echo "proto-chit: WAL APPEND FAILED; git remains advisory" >&2
+    elif [ "$emit_confirmed" -ne 1 ]; then
+      "$shim_dir/proto-chit-wal" "$PWD" "$state_dir" "emitter-exit-0-unconfirmed" "$@" ||
         echo "proto-chit: WAL APPEND FAILED; git remains advisory" >&2
     fi
     ;;
