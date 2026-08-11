@@ -29,15 +29,14 @@ defmodule Commonplace.MCP.Tools.ListPeers do
   ## Online/offline
 
   A peer is `online` when its heartbeat is within
-  `Commonplace.Presence.Reaper.default_stale_threshold/0` — the SAME
-  threshold the reaper uses to decide what to reap, reused rather than
-  reinvented so "online" here and "about to be reaped" there never
-  disagree.
+  the entry's owner-signed `lease_ttl_ms` (or its declared temporal
+  class default for a legacy-absent entry) — the SAME per-record terms
+  the reaper verifies, so "online" here and "about to be reaped" there
+  never disagree.
   """
 
   alias Commonplace.MCP.Tools.Response
   alias Commonplace.Presence
-  alias Commonplace.Presence.Reaper
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.{DocBuilder, Schema}
 
@@ -69,17 +68,17 @@ defmodule Commonplace.MCP.Tools.ListPeers do
          {:ok, root_uuid} <- Commonplace.Workspace.root_uuid() do
       root_doc = load_schema(root_uuid, CommitStoreClient)
       entries = Presence.discover(root_doc, type_filter)
-      threshold = Reaper.default_stale_threshold()
 
       peers =
         entries
-        |> Enum.map(&build_peer(&1, threshold))
+        |> Enum.map(&build_peer/1)
         |> Enum.reject(&is_nil/1)
 
       {:ok, Response.text(summary(peers), %{"peers" => peers})}
     else
       {:error, :invalid_type} ->
-        {:error, :invalid_params, "list_peers: unknown type — expected one of #{inspect(@honorific_types)}"}
+        {:error, :invalid_params,
+         "list_peers: unknown type — expected one of #{inspect(@honorific_types)}"}
 
       {:error, reason} ->
         {:error, :invalid_params, "list_peers failed: #{inspect(reason)}"}
@@ -97,7 +96,7 @@ defmodule Commonplace.MCP.Tools.ListPeers do
 
   defp parse_type(_), do: {:error, :invalid_type}
 
-  defp build_peer(entry, threshold) do
+  defp build_peer(entry) do
     case Presence.read(entry.node_id, CommitStoreClient) do
       %{} = fields ->
         case Presence.parse_honorific(entry.name) do
@@ -106,7 +105,7 @@ defmodule Commonplace.MCP.Tools.ListPeers do
               "name" => name,
               "type" => Atom.to_string(type),
               "status" => Map.get(fields, "status"),
-              "online" => online?(Map.get(fields, "heartbeat"), threshold),
+              "online" => online?(fields),
               "last_seen" => Map.get(fields, "heartbeat")
             }
             |> maybe_put_activity(Map.get(fields, "activity"))
@@ -124,15 +123,13 @@ defmodule Commonplace.MCP.Tools.ListPeers do
   defp maybe_put_activity(peer, ""), do: peer
   defp maybe_put_activity(peer, activity), do: Map.put(peer, "activity", activity)
 
-  defp online?(nil, _threshold), do: false
-
-  defp online?(heartbeat, threshold) when is_binary(heartbeat) do
-    case DateTime.from_iso8601(heartbeat) do
-      {:ok, hb_time, _} ->
-        DateTime.diff(DateTime.utc_now(), hb_time, :millisecond) <= threshold
-
-      _ ->
-        false
+  defp online?(fields) do
+    with heartbeat when is_binary(heartbeat) <- Map.get(fields, "heartbeat"),
+         {:ok, terms} <- Presence.lease_terms(fields),
+         {:ok, hb_time, _} <- DateTime.from_iso8601(heartbeat) do
+      DateTime.diff(DateTime.utc_now(), hb_time, :millisecond) <= terms.ttl_ms
+    else
+      _ -> false
     end
   end
 

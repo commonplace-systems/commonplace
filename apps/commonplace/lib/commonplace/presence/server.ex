@@ -5,6 +5,12 @@ defmodule Commonplace.Presence.Server do
   Creates the presence document on start, runs a heartbeat loop,
   and cleans up on shutdown. Registers a cold identity that persists
   across restarts.
+
+  The default 10s heartbeat is the actor's liveness assertion cadence. Its
+  owner-signed class TTL is the reaper detector window: 30s for interactive
+  `.usr`/`.who` actors (three missed assertions) and 120s for service
+  `.exe`/`.bot` actors. Tighter defaults would turn ordinary scheduler stalls
+  into false expiry.
   """
 
   use GenServer
@@ -27,6 +33,7 @@ defmodule Commonplace.Presence.Server do
     :uuid,
     :identity_uuid,
     :heartbeat_interval,
+    :lease_ttl_ms,
     :signing_context,
     cert_cids: []
   ]
@@ -64,9 +71,15 @@ defmodule Commonplace.Presence.Server do
     dir_uuid = Keyword.fetch!(opts, :dir_uuid)
     store = Keyword.get(opts, :store, Commonplace.Store.CommitStoreClient)
     interval = Keyword.get(opts, :heartbeat_interval, 10_000)
+    lease_ttl_ms = Keyword.get(opts, :lease_ttl_ms, Presence.default_lease_ttl_ms(type))
     signing_context = Keyword.get(opts, :signing_context)
     cert_cids = Keyword.get(opts, :cert_cids, [])
-    creds = [signing_context: signing_context, cert_cids: cert_cids]
+
+    creds = [
+      signing_context: signing_context,
+      cert_cids: cert_cids,
+      lease_ttl_ms: lease_ttl_ms
+    ]
 
     Process.flag(:trap_exit, true)
 
@@ -84,6 +97,7 @@ defmodule Commonplace.Presence.Server do
       uuid: uuid,
       identity_uuid: identity_uuid,
       heartbeat_interval: interval,
+      lease_ttl_ms: lease_ttl_ms,
       signing_context: signing_context,
       cert_cids: cert_cids
     }
@@ -144,7 +158,13 @@ defmodule Commonplace.Presence.Server do
 
   # CX-i9w9 — the presence-writer creds threaded into every signed presence
   # write (see the defstruct note).
-  defp creds(state), do: [signing_context: state.signing_context, cert_cids: state.cert_cids]
+  defp creds(state) do
+    [
+      signing_context: state.signing_context,
+      cert_cids: state.cert_cids,
+      lease_ttl_ms: state.lease_ttl_ms
+    ]
+  end
 
   defp with_live_store(fun) do
     fun.()

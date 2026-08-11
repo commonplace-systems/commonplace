@@ -43,6 +43,12 @@ defmodule Commonplace.GitBridge.Server do
   @remote_name "origin"
   @presence_name "__git-bridge"
   @presence_filename "__git-bridge.bot"
+  # Liveness assertion cadence, separate from the export detector/work cycle.
+  # Replaces the one-shot boot heartbeat. 30s is one normal bridge export tick
+  # and one quarter of the service/bot 120s TTL, tolerating four missed
+  # assertions before the reaper may act; tighter would couple liveness to
+  # transient git/network work.
+  @presence_heartbeat_interval_ms 30_000
 
   # --- Public API ---
 
@@ -78,7 +84,12 @@ defmodule Commonplace.GitBridge.Server do
 
     :ok = ensure_repo!(repo_dir, branch, remote)
 
-    presence_uuid = safe_create_presence(mount_uuid, store, secret_store)
+    presence = safe_create_presence(mount_uuid, store, secret_store)
+    presence_uuid = if presence, do: presence.uuid, else: nil
+    presence_creds = if presence, do: presence.creds, else: []
+
+    presence_heartbeat_interval_ms =
+      Keyword.get(opts, :presence_heartbeat_interval_ms, @presence_heartbeat_interval_ms)
 
     state = %{
       mount_uuid: mount_uuid,
@@ -91,6 +102,8 @@ defmodule Commonplace.GitBridge.Server do
       paused: false,
       halted: false,
       presence_uuid: presence_uuid,
+      presence_creds: presence_creds,
+      presence_heartbeat_interval_ms: presence_heartbeat_interval_ms,
       last_manifest: nil,
       last_pushed_commit: nil,
       force_push_halted: false,
@@ -98,6 +111,7 @@ defmodule Commonplace.GitBridge.Server do
     }
 
     schedule_tick(interval_ms)
+    schedule_presence_heartbeat(presence_uuid, presence_heartbeat_interval_ms)
 
     PubSub.broadcast_red(mount_uuid, {:git_bridge, :started, %{repo_dir: repo_dir}})
 
@@ -141,6 +155,23 @@ defmodule Commonplace.GitBridge.Server do
     {_result, new_state} = do_tick(state)
     schedule_tick(new_state.interval_ms)
     {:noreply, new_state}
+  end
+
+  @impl true
+  def handle_info(:presence_heartbeat, state) do
+    case Presence.heartbeat(state.presence_uuid, state.store, state.presence_creds) do
+      %Commonplace.Store.Commit{} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.error("GitBridge.Server: presence heartbeat DENIED: #{inspect(reason)}")
+
+      other ->
+        Logger.error("GitBridge.Server: presence heartbeat failed: #{inspect(other)}")
+    end
+
+    schedule_presence_heartbeat(state.presence_uuid, state.presence_heartbeat_interval_ms)
+    {:noreply, state}
   end
 
   # --- Tick logic ---
@@ -390,7 +421,7 @@ defmodule Commonplace.GitBridge.Server do
          creds = [signing_context: signing_context, cert_cids: [cert_cid]],
          {:ok, uuid} <- create_or_reuse_presence(mount_uuid, store, creds),
          %Commonplace.Store.Commit{} <- Presence.set_activity(uuid, "idle", store, creds) do
-      uuid
+      %{uuid: uuid, creds: creds}
     else
       :not_found ->
         log_presence_skip(
@@ -423,8 +454,17 @@ defmodule Commonplace.GitBridge.Server do
 
   defp create_or_reuse_presence(mount_uuid, store, creds) do
     case Schema.get_entry(load_schema(mount_uuid, store), @presence_filename) do
-      {:ok, entry} -> {:ok, entry.node_id}
-      :error -> Presence.create(@presence_name, :bot, mount_uuid, store, creds)
+      {:ok, entry} ->
+        {:ok, entry.node_id}
+
+      :error ->
+        Presence.create(
+          @presence_name,
+          :bot,
+          mount_uuid,
+          store,
+          Keyword.put(creds, :lease_ttl_ms, Presence.default_lease_ttl_ms(:bot))
+        )
     end
   end
 
@@ -435,6 +475,12 @@ defmodule Commonplace.GitBridge.Server do
 
   defp schedule_tick(interval_ms) do
     Process.send_after(self(), :tick, interval_ms)
+  end
+
+  defp schedule_presence_heartbeat(nil, _interval_ms), do: :ok
+
+  defp schedule_presence_heartbeat(_presence_uuid, interval_ms) do
+    Process.send_after(self(), :presence_heartbeat, interval_ms)
   end
 
   defp manifest_size(nil), do: 0
