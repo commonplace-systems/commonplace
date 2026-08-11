@@ -1,0 +1,25 @@
+run: seed 101 umbrella
+command: mix test --seed 101 > run-seed101.log 2>&1; echo "rc=$?"
+
+before:
+date -u: Tue Aug 11 02:41:41 UTC 2026
+/proc/loadavg: 1.50 3.32 5.18 2/877 4
+git rev-parse HEAD: 20017cb94e98d2a65a2822cb9f621983cd653264
+worktree path: /home/jes/sol-measure
+MIX_ENV: <unset>
+listener assertion command: curl -s -m 2 -o /dev/null http://localhost:5199/; echo rc=$?
+listener assertion output: rc=7
+
+after:
+date -u: Tue Aug 11 02:52:25 UTC 2026
+/proc/loadavg: 2.80 2.39 3.73 3/874 4
+git rev-parse HEAD: 20017cb94e98d2a65a2822cb9f621983cd653264
+worktree path: /home/jes/sol-measure
+MIX_ENV: <unset>
+command output: rc=2
+total test count: 4352
+reported aggregate duration: 606.2 seconds
+reported failure count: 0
+extracted failure identity count: 1
+extraction reconciliation: FLAG
+

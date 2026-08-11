@@ -1,0 +1,26 @@
+run: repeated identity file alone
+command: mix test apps/yelixer/test/yelixer/diff_yjs_test.exs > alone-diff-yjs.log 2>&1; echo "rc=$?"
+
+before:
+date -u: Tue Aug 11 03:17:04 UTC 2026
+/proc/loadavg: 1.67 2.11 2.56 4/893 4
+git rev-parse HEAD: 20017cb94e98d2a65a2822cb9f621983cd653264
+worktree path: /home/jes/sol-measure
+MIX_ENV: <unset>
+listener assertion command: curl -s -m 2 -o /dev/null http://localhost:5199/; echo rc=$?
+listener assertion output: rc=7
+
+after:
+date -u: Tue Aug 11 03:17:15 UTC 2026
+/proc/loadavg: 1.81 2.12 2.56 3/873 4
+git rev-parse HEAD: 20017cb94e98d2a65a2822cb9f621983cd653264
+worktree path: /home/jes/sol-measure
+MIX_ENV: <unset>
+command output: rc=2
+total test count: 11
+reported duration: 0.3 seconds
+reported failure count: 0
+invalid count: 11
+extracted failure identity count: 1
+extraction reconciliation: FLAG
+
