@@ -169,10 +169,11 @@ defmodule Commonplace.ProtoChit do
     store = Keyword.get(opts, :store, CommitStoreClient)
     declared_excludes = Keyword.fetch!(opts, :sync_excludes)
 
-    sync_opts = [
-      signing_context: signing_context,
-      exclude_names: Enum.uniq(@sync_excludes ++ declared_excludes)
-    ]
+    sync_opts =
+      [
+        signing_context: signing_context,
+        exclude_names: Enum.uniq(@sync_excludes ++ declared_excludes)
+      ] ++ Keyword.take(opts, [:artifact_store, :binary_extensions])
 
     report = Watcher.sync_recursive(root_uuid, repo, store, sync_opts)
     skipped_paths = MapSet.new(report.skipped, & &1.path)
@@ -194,7 +195,8 @@ defmodule Commonplace.ProtoChit do
          {:ok, resolved} <- Restore.resolve(store, snapshot_doc_uuid, checkpoint_commit_id) do
       entries =
         Map.new(resolved, fn {path, {:file, doc_uuid, commit_id}} ->
-          {path, %{"doc" => doc_uuid, "commit" => commit_id}}
+          entry = %{"doc" => doc_uuid, "commit" => commit_id}
+          {path, maybe_put_classification(entry, store, doc_uuid, commit_id)}
         end)
 
       pin = %{
@@ -210,6 +212,43 @@ defmodule Commonplace.ProtoChit do
       {:ok, pin}
     end
   end
+
+  defp maybe_put_classification(entry, store, doc_uuid, commit_id) do
+    commit_id = decode_commit_id(commit_id)
+
+    case Commonplace.Projection.project_doc_at(doc_uuid, commit_id,
+           store: store,
+           required: :any,
+           head_path: :direct
+         ) do
+      {:ok, doc, _verdict} ->
+        case Commonplace.Document.ContentType.get_type(doc) do
+          :binary ->
+            case Commonplace.Document.ContentType.get_content(doc) do
+              %{classified_by: classified_by} ->
+                Map.put(entry, "classified_by", Atom.to_string(classified_by))
+
+              _ ->
+                entry
+            end
+
+          _ ->
+            entry
+        end
+
+      _ ->
+        entry
+    end
+  end
+
+  defp decode_commit_id(commit_id) when is_binary(commit_id) and byte_size(commit_id) == 64 do
+    case Base.decode16(commit_id, case: :mixed) do
+      {:ok, decoded} -> decoded
+      :error -> commit_id
+    end
+  end
+
+  defp decode_commit_id(commit_id), do: commit_id
 
   defp pin_exclusions(skipped, repo) do
     skipped

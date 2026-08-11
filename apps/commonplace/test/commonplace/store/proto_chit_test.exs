@@ -51,7 +51,13 @@ defmodule Commonplace.Store.ProtoChitTest do
       File.rm_rf!(base)
     end)
 
-    %{repo: repo, state_dir: state_dir, store: store, signing_context: signing_context}
+    %{
+      repo: repo,
+      state_dir: state_dir,
+      store: store,
+      artifact_store: Commonplace.Store.ArtifactStore.new(store_dir),
+      signing_context: signing_context
+    }
   end
 
   test "refuses emission when sync scope was not declared", context do
@@ -111,6 +117,7 @@ defmodule Commonplace.Store.ProtoChitTest do
                state_dir: state_dir,
                trace_file: trace,
                sync_excludes: [],
+               artifact_store: context.artifact_store,
                signing_context: signing_context,
                store: store
              )
@@ -146,7 +153,7 @@ defmodule Commonplace.Store.ProtoChitTest do
     assert RedLog.load(event_log_uuid, store) |> RedLog.read() == [event]
   end
 
-  test "declares binary skips in the persisted event's pin", context do
+  test "binary pin entries carry their fact classification", context do
     %{repo: repo, state_dir: state_dir, store: store, signing_context: signing_context} = context
     File.write!(Path.join(repo, "landed.txt"), "text\n")
     File.write!(Path.join(repo, "excluded.bin"), <<0xFF, 0x00>>)
@@ -166,7 +173,6 @@ defmodule Commonplace.Store.ProtoChitTest do
                signing_context: signing_context
              )
 
-    {:ok, kept_before} = CommitStore.latest_commit(store, kept_uuid)
     root_uuid = UUID.uuid4()
     root_doc = Schema.new_schema() |> Schema.add_file("kept.txt", kept_uuid)
 
@@ -187,21 +193,21 @@ defmodule Commonplace.Store.ProtoChitTest do
                event_log_uuid: event_log_uuid,
                state_dir: state_dir,
                sync_excludes: [],
+               artifact_store: context.artifact_store,
                signing_context: signing_context,
                store: store
              )
 
-    assert event["proto-pin"]["exclusions"] == [
-             %{"path" => "excluded.bin", "reason" => "excluded-binary"},
-             %{"path" => "kept.txt", "reason" => "excluded-binary"}
-           ]
+    refute Map.has_key?(event["proto-pin"], "exclusions")
 
     assert Map.has_key?(event["proto-pin"]["entries"], "landed.txt")
     assert Map.has_key?(event["proto-pin"]["entries"], "kept.txt")
-    refute Map.has_key?(event["proto-pin"]["entries"], "excluded.bin")
+    assert Map.has_key?(event["proto-pin"]["entries"], "excluded.bin")
 
-    assert {:ok, kept_after} = CommitStore.latest_commit(store, kept_uuid)
-    assert kept_after.id == kept_before.id
+    assert event["proto-pin"]["entries"]["kept.txt"]["classified_by"] == "invalid_utf8"
+
+    assert event["proto-pin"]["entries"]["excluded.bin"]["classified_by"] ==
+             "invalid_utf8"
 
     assert RedLog.load(event_log_uuid, store) |> RedLog.read() |> List.last() == event
   end

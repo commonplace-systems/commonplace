@@ -14,7 +14,7 @@ defmodule Commonplace.Sync.Agent do
   ## Why two layers of version tracking
 
   - **Content hashes** (`known_hashes`) are the cheap gate: "did this
-    file change on disk since we last looked?" An MD5 per file answers
+    file change on disk since we last looked?" A streaming SHA-256 per file answers
     that without reconstructing any CRDT.
   - **Commit identity** (`written_commits`: `doc_uuid => commit_id`) is
     the authority gate: the exact commit whose content is *currently on
@@ -127,13 +127,16 @@ defmodule Commonplace.Sync.Agent do
   require Logger
 
   alias Commonplace.Sync.{Watcher, Export, InodeTracker}
-  alias Commonplace.Store.CommitStoreClient
+  alias Commonplace.Store.{ArtifactStore, CommitStoreClient}
+  alias Commonplace.Sync.{BinaryClassifier, BinaryWriteBack}
   alias Commonplace.Tree.Schema
 
   defstruct [
     :root_uuid,
     :sync_dir,
     :store,
+    :artifact_store,
+    :binary_extensions,
     :known_paths,
     :known_hashes,
     # %{doc_uuid => commit_id} — the commit whose content is currently on disk
@@ -178,6 +181,9 @@ defmodule Commonplace.Sync.Agent do
       root_uuid: Keyword.fetch!(opts, :root_uuid),
       sync_dir: Keyword.fetch!(opts, :sync_dir),
       store: Keyword.get(opts, :store, CommitStoreClient),
+      artifact_store: Keyword.get(opts, :artifact_store, default_artifact_store()),
+      binary_extensions:
+        Keyword.get(opts, :binary_extensions, BinaryClassifier.declared_extensions()),
       known_paths: MapSet.new(),
       known_hashes: %{},
       written_commits: %{},
@@ -244,10 +250,19 @@ defmodule Commonplace.Sync.Agent do
     {_pre_paths, pre_hashes} = scan_disk_state(state.sync_dir, "")
 
     # Phase 1: Outbound — disk → CRDT
-    sync_outbound_recursive(state.root_uuid, state.sync_dir, state.store, state.known_paths, state.known_hashes, state.inode_registry)
+    sync_outbound_recursive(
+      state.root_uuid,
+      state.sync_dir,
+      state.store,
+      state.artifact_store,
+      state.binary_extensions,
+      state.known_paths,
+      state.known_hashes,
+      state.inode_registry
+    )
 
     # Phase 2: Inbound — CRDT → disk, using commit ancestry. Returns the
-    # commit map AND {rel_path => md5(bytes it wrote)} for the files it wrote
+    # commit map AND {rel_path => sha256(bytes it wrote)} for the files it wrote
     # this cycle (loop prevention: content just written matches the CRDT, so
     # outbound must not push it back — hashing the EXACT written buffer makes
     # this byte-match by construction, no CRDT-extract-vs-disk risk).
@@ -256,6 +271,7 @@ defmodule Commonplace.Sync.Agent do
         state.root_uuid,
         state.sync_dir,
         state.store,
+        state.artifact_store,
         state.written_commits,
         state.inode_registry,
         state.known_hashes
@@ -278,10 +294,28 @@ defmodule Commonplace.Sync.Agent do
   # Returns `{written_commits, inbound_hashes}`. `known_hashes` (last cycle's
   # reconciled disk hashes) gates the write so inbound never clobbers an
   # unreconciled disk edit (CX-60wl clobber race).
-  defp export_with_ancestry(root_uuid, dir, store, written_commits, registry, known_hashes) do
+  defp export_with_ancestry(
+         root_uuid,
+         dir,
+         store,
+         artifact_store,
+         written_commits,
+         registry,
+         known_hashes
+       ) do
     File.mkdir_p!(dir)
     schema_doc = load_schema(root_uuid, store)
-    export_schema(schema_doc, dir, "", store, {written_commits, %{}}, registry, known_hashes)
+
+    export_schema(
+      schema_doc,
+      dir,
+      "",
+      store,
+      artifact_store,
+      {written_commits, %{}},
+      registry,
+      known_hashes
+    )
   end
 
   # Rel-path is built the SAME way `scan_disk_state/2` builds its keys:
@@ -289,7 +323,7 @@ defmodule Commonplace.Sync.Agent do
   # "#{prefix}/#{name}". Any drift here misaligns the known_hashes merge →
   # a spurious "changed" next cycle → re-commit loop, so the two must match
   # exactly (guarded by the "inbound-written file is a no-op next cycle" test).
-  defp export_schema(schema_doc, dir, prefix, store, acc, registry, known_hashes) do
+  defp export_schema(schema_doc, dir, prefix, store, artifact_store, acc, registry, known_hashes) do
     shadow_dir = Path.join(dir, ".commonplace-shadow")
 
     Schema.list_entries(schema_doc)
@@ -301,26 +335,51 @@ defmodule Commonplace.Sync.Agent do
         :dir ->
           File.mkdir_p!(path)
           sub_schema = load_schema(entry.node_id, store)
-          export_schema(sub_schema, path, rel, store, {written, hashes}, registry, known_hashes)
+
+          export_schema(
+            sub_schema,
+            path,
+            rel,
+            store,
+            artifact_store,
+            {written, hashes},
+            registry,
+            known_hashes
+          )
 
         :doc ->
-          maybe_write_doc(entry, path, rel, store, {written, hashes}, registry, shadow_dir, known_hashes)
+          maybe_write_doc(
+            entry,
+            path,
+            rel,
+            store,
+            artifact_store,
+            {written, hashes},
+            registry,
+            shadow_dir,
+            known_hashes
+          )
       end
     end)
   end
 
-  defp maybe_write_doc(entry, path, rel, store, {written, hashes}, registry, shadow_dir, known_hashes) do
+  defp maybe_write_doc(
+         entry,
+         path,
+         rel,
+         store,
+         artifact_store,
+         {written, hashes},
+         registry,
+         shadow_dir,
+         known_hashes
+       ) do
     case CommitStoreClient.latest_commit(store, entry.node_id) do
       {:ok, commit} ->
         last_written = Map.get(written, entry.node_id)
-        content = extract_content(commit)
-        content_hash = :erlang.md5(content)
-
-        disk_hash =
-          case File.read(path) do
-            {:ok, disk} -> :erlang.md5(disk)
-            _ -> nil
-          end
+        materialized = extract_content(commit)
+        content_hash = materialized_hash(materialized)
+        disk_hash = file_hash(path)
 
         cond do
           # Same commit — nothing written this cycle. Do NOT record a hash
@@ -335,7 +394,7 @@ defmodule Commonplace.Sync.Agent do
           # reconciled but DON'T rewrite. This kills the redundant write-back
           # (outbound just committed what it read from disk) that would
           # otherwise clobber a concurrent edit, and avoids pointless churn.
-          disk_hash == content_hash ->
+          content_hash != nil and disk_hash == content_hash ->
             {Map.put(written, entry.node_id, commit.id), Map.put(hashes, rel, content_hash)}
 
           # Disk holds an edit we have NOT reconciled (differs from both the
@@ -347,22 +406,26 @@ defmodule Commonplace.Sync.Agent do
             {written, hashes}
 
           # Disk is stale (absent, or equals what we last reconciled) and the
-          # CRDT is ahead → write the CRDT content out. Record the md5 of the
+          # CRDT is ahead → write the CRDT content out. Record the SHA-256 of the
           # EXACT bytes we wrote (byte-match by construction → next-cycle
           # outbound sees disk == known and won't push it back).
           true ->
-            if registry do
-              # CX-wrg0: reconcile any shadow left over from the PREVIOUS
-              # generation at this path before minting a new one — see
-              # reconcile_superseded_shadow/3 for why this is safe and
-              # necessary (otherwise a never-diverged shadow leaks forever).
-              reconcile_superseded_shadow(store, registry, path)
-              InodeTracker.atomic_write_with_shadow(path, content, shadow_dir, registry, commit.id, entry.node_id)
-            else
-              Export.atomic_write(path, content)
-            end
+            case write_materialized(
+                   materialized,
+                   path,
+                   artifact_store,
+                   store,
+                   registry,
+                   shadow_dir,
+                   commit,
+                   entry
+                 ) do
+              :ok ->
+                {Map.put(written, entry.node_id, commit.id), Map.put(hashes, rel, content_hash)}
 
-            {Map.put(written, entry.node_id, commit.id), Map.put(hashes, rel, content_hash)}
+              {:skipped, _reason} ->
+                {written, hashes}
+            end
         end
 
       :none ->
@@ -510,13 +573,29 @@ defmodule Commonplace.Sync.Agent do
     {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
 
     case Commonplace.Document.ContentType.get_type(doc) do
-      :text -> Commonplace.Document.ContentType.get_content(doc) || ""
-      _ -> Commonplace.Document.ContentType.get_content(doc) |> inspect()
+      :text -> {:text, Commonplace.Document.ContentType.get_content(doc) || ""}
+      :binary -> {:binary, Commonplace.Document.ContentType.get_content(doc)}
+      _ -> {:text, Commonplace.Document.ContentType.get_content(doc) |> inspect()}
     end
   end
 
-  defp sync_outbound_recursive(root_uuid, dir, store, known_paths, known_hashes, inode_registry) do
-    changes = Watcher.detect_changes(root_uuid, dir, store, inode_registry: inode_registry)
+  defp sync_outbound_recursive(
+         root_uuid,
+         dir,
+         store,
+         artifact_store,
+         binary_extensions,
+         known_paths,
+         known_hashes,
+         inode_registry
+       ) do
+    watcher_opts = [
+      inode_registry: inode_registry,
+      artifact_store: artifact_store,
+      binary_extensions: binary_extensions
+    ]
+
+    changes = Watcher.detect_changes(root_uuid, dir, store, watcher_opts)
 
     changes =
       Enum.filter(changes, fn change ->
@@ -536,14 +615,13 @@ defmodule Commonplace.Sync.Agent do
             # flip, unlink+symlink race). Reading here under rescue and treating
             # a failure as "not confirmed changed" (drop the change, retried
             # next tick) keeps one bad file from crash-looping the whole pass.
-            case read_locked(change.path) do
-              {:ok, content} ->
-                disk_hash = :erlang.md5(content)
+            case hash_locked(change.path) do
+              disk_hash when is_binary(disk_hash) ->
                 Map.get(known_hashes, change.name) != disk_hash
 
-              {:error, reason} ->
+              nil ->
                 Logger.warning(
-                  "Sync.Agent: skipping unreadable modified file #{change.path} (#{inspect(reason)})"
+                  "Sync.Agent: skipping unreadable modified file #{change.path} (:stream-read-failed)"
                 )
 
                 false
@@ -555,7 +633,7 @@ defmodule Commonplace.Sync.Agent do
       end)
 
     if changes != [] do
-      Watcher.apply_changes(changes, root_uuid, dir, store)
+      Watcher.apply_changes(changes, root_uuid, dir, store, watcher_opts)
     end
 
     # Recurse into subdirectories
@@ -591,7 +669,16 @@ defmodule Commonplace.Sync.Agent do
               |> Enum.map(fn {k, v} -> {String.replace_leading(k, prefix, ""), v} end)
               |> Map.new()
 
-            sync_outbound_recursive(entry.node_id, sub_dir, store, sub_known, sub_hashes, inode_registry)
+            sync_outbound_recursive(
+              entry.node_id,
+              sub_dir,
+              store,
+              artifact_store,
+              binary_extensions,
+              sub_known,
+              sub_hashes,
+              inode_registry
+            )
 
           true ->
             :ok
@@ -607,13 +694,10 @@ defmodule Commonplace.Sync.Agent do
     end
   end
 
-  # CX-42no: read a file under Flock's shared-lock discipline but never
-  # raise — File.read! inside with_shared_lock would crash the whole sync
-  # pass on a single unreadable file (perms, dangling symlink, mid-write
-  # unlink). Converts to a plain {:ok, _} / {:error, reason} result.
-  defp read_locked(path) do
+  # Hash under the shared-lock discipline without retaining whole-file bytes.
+  defp hash_locked(path) do
     Commonplace.Sync.Flock.with_shared_lock(path, 30_000, fn ->
-      File.read(path)
+      file_hash(path)
     end)
   end
 
@@ -632,9 +716,7 @@ defmodule Commonplace.Sync.Agent do
               # symlinked_dir?/1 above. The path itself is still recorded
               # in `paths` (so it doesn't spuriously look "deleted"), just
               # not walked for children.
-              Logger.warning(
-                "Sync.Agent: scan_disk_state skipping symlinked directory #{full}"
-              )
+              Logger.warning("Sync.Agent: scan_disk_state skipping symlinked directory #{full}")
 
               {paths, hashes}
 
@@ -643,14 +725,9 @@ defmodule Commonplace.Sync.Agent do
               {MapSet.union(paths, sub_paths), Map.merge(hashes, sub_hashes)}
 
             true ->
-              case File.read(full) do
-                {:ok, content} ->
-                  hash = :erlang.md5(content)
-                  {paths, Map.put(hashes, rel, hash)}
-
-                {:error, _} ->
-                  # File disappeared or is unreadable — skip
-                  {paths, hashes}
+              case file_hash(full) do
+                nil -> {paths, hashes}
+                hash -> {paths, Map.put(hashes, rel, hash)}
               end
           end
         end)
@@ -670,5 +747,64 @@ defmodule Commonplace.Sync.Agent do
       :none ->
         Schema.new_schema()
     end
+  end
+
+  defp materialized_hash({:text, content}), do: hash_bytes(content)
+  defp materialized_hash({:binary, %{cid: cid}}), do: cid
+
+  defp write_materialized(
+         {:text, content},
+         path,
+         _artifact_store,
+         store,
+         registry,
+         shadow_dir,
+         commit,
+         entry
+       ) do
+    if registry do
+      reconcile_superseded_shadow(store, registry, path)
+
+      InodeTracker.atomic_write_with_shadow(
+        path,
+        content,
+        shadow_dir,
+        registry,
+        commit.id,
+        entry.node_id
+      )
+    else
+      Export.atomic_write(path, content)
+    end
+
+    :ok
+  end
+
+  defp write_materialized(
+         {:binary, envelope},
+         path,
+         artifact_store,
+         _store,
+         _registry,
+         _shadow_dir,
+         _commit,
+         _entry
+       ) do
+    BinaryWriteBack.write(artifact_store, envelope, path)
+  end
+
+  defp file_hash(path) do
+    case ArtifactStore.digest(File.stream!(path, [], 64 * 1024)) do
+      {:ok, cid, _size} -> cid
+      {:error, _reason} -> nil
+    end
+  rescue
+    _ -> nil
+  end
+
+  defp hash_bytes(content), do: Base.encode16(:crypto.hash(:sha256, content), case: :lower)
+
+  defp default_artifact_store do
+    Application.get_env(:commonplace, :data_dir, "data") |> ArtifactStore.new()
   end
 end

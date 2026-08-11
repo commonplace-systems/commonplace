@@ -5,8 +5,6 @@ defmodule Commonplace.Sync.WatcherTest do
   """
   use ExUnit.Case
 
-  import ExUnit.CaptureLog
-
   alias Commonplace.Sync.Watcher
   alias Commonplace.Tree.Schema
   alias Commonplace.Document.ContentType
@@ -261,42 +259,33 @@ defmodule Commonplace.Sync.WatcherTest do
     end
   end
 
-  describe "binary-file floor (CX-g8r1)" do
-    test "a binary among text files is named, skipped, and does not abort the pass",
+  describe "binary artifact references and the S1 floor" do
+    test "an invalid-UTF8 binary among text files lands by measured classification",
          %{store: store, watch_dir: dir, root_uuid: root} do
       text_path = Path.join(dir, "landed.txt")
       binary_path = Path.join(dir, "excluded.bin")
       File.write!(text_path, "land me")
       File.write!(binary_path, <<0xFF, 0xFE, 0x00>>)
 
-      log =
-        capture_log(fn ->
-          report = Watcher.sync_recursive(root, dir, store)
+      report = Watcher.sync_recursive(root, dir, store)
 
-          assert report.encountered == Enum.sort([text_path, binary_path])
-          assert report.landed == [text_path]
-          assert report.refused == []
-
-          assert report.skipped == [
-                   %{path: binary_path, reason: "excluded-binary"}
-                 ]
-
-          assert MapSet.new(report.encountered) ==
-                   MapSet.union(
-                     MapSet.new(report.landed ++ report.refused),
-                     MapSet.new(Enum.map(report.skipped, & &1.path))
-                   )
-        end)
-
-      assert log =~ binary_path
-      assert log =~ "excluded-binary"
+      assert report.encountered == Enum.sort([text_path, binary_path])
+      assert report.landed == Enum.sort([text_path, binary_path])
+      assert report.refused == []
+      assert report.skipped == []
 
       root_doc = load_schema(root, store)
       assert {:ok, _entry} = Schema.get_entry(root_doc, "landed.txt")
-      assert :error = Schema.get_entry(root_doc, "excluded.bin")
+      assert {:ok, binary_entry} = Schema.get_entry(root_doc, "excluded.bin")
+
+      {:ok, binary_doc} =
+        Commonplace.Tree.DocBuilder.reconstruct_doc(store, binary_entry.node_id, mint: false)
+
+      assert ContentType.get_type(binary_doc) == :binary
+      assert ContentType.get_content(binary_doc).classified_by == :invalid_utf8
     end
 
-    test "modifying a text file to binary leaves its stored content unchanged and reports the skip",
+    test "modifying a text file to binary replaces text with an artifact envelope",
          %{store: store, watch_dir: dir, root_uuid: root} do
       path = Path.join(dir, "kept.txt")
       File.write!(path, "original")
@@ -310,16 +299,17 @@ defmodule Commonplace.Sync.WatcherTest do
       report = Watcher.sync_recursive(root, dir, store)
 
       assert report.encountered == [path]
-      assert report.landed == []
+      assert report.landed == [path]
       assert report.refused == []
-      assert report.skipped == [%{path: path, reason: "excluded-binary"}]
+      assert report.skipped == []
 
       assert {:ok, after_commit} = CommitStore.latest_commit(store, entry.node_id)
-      assert after_commit.id == before_commit.id
+      refute after_commit.id == before_commit.id
 
       doc = Yelixer.Doc.new()
       assert {:ok, doc} = Yelixer.Encoding.apply_update(doc, after_commit.update)
-      assert ContentType.get_content(doc) == "original"
+      assert ContentType.get_type(doc) == :binary
+      assert ContentType.get_content(doc).classified_by == :invalid_utf8
     end
 
     test "an all-text pass reports every arrived file as landed",
