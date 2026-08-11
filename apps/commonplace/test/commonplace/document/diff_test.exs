@@ -5,6 +5,16 @@ defmodule Commonplace.Document.DiffTest do
   alias Commonplace.Document.ContentType
 
   describe "diff/2" do
+    test "large append completes within the sized budget" do
+      old = String.duplicate("a", 100_000)
+      tail = String.duplicate("b", 9_000)
+
+      task = Task.async(fn -> Diff.diff(old, old <> tail) end)
+
+      assert {:ok, [{:insert, 100_000, ^tail}]} =
+               Task.yield(task, 5_000) || Task.shutdown(task)
+    end
+
     test "no changes returns empty list" do
       assert Diff.diff("hello", "hello") == []
     end
@@ -14,9 +24,11 @@ defmodule Commonplace.Document.DiffTest do
     end
 
     test "insert at end" do
-      edits = Diff.diff("hello", "hello world")
-      assert length(edits) > 0
-      assert Enum.any?(edits, fn {op, _, _} -> op == :insert end)
+      assert Diff.diff("hello", "hello world") == [{:insert, 5, " world"}]
+    end
+
+    test "insert at beginning" do
+      assert Diff.diff("world", "hello world") == [{:insert, 0, "hello "}]
     end
 
     test "delete from end" do
@@ -49,6 +61,15 @@ defmodule Commonplace.Document.DiffTest do
     test "single character delete in middle" do
       edits = Diff.diff("axb", "ab")
       assert edits == [{:delete, 1, 1}]
+    end
+
+    test "middle replacement edits stay inside the changed span" do
+      edits = Diff.diff("prefix-OLD-suffix", "prefix-NEW-suffix")
+
+      assert Enum.all?(edits, fn
+               {:delete, index, length} -> index >= 7 and index + length <= 10
+               {:insert, index, _text} -> index >= 7 and index <= 10
+             end)
     end
   end
 
@@ -148,6 +169,28 @@ defmodule Commonplace.Document.DiffTest do
 
       doc = Diff.apply_diff(doc, old, new)
       assert ContentType.get_content(doc) == new
+    end
+
+    test "round-trips representative edit and grapheme-boundary shapes" do
+      cases = [
+        {"base", "base tail"},
+        {"base", "head base"},
+        {"prefix OLD suffix", "prefix NEW suffix"},
+        {"everything", "nothing in common"},
+        {"same", "same"},
+        {"", "content"},
+        {"content", ""},
+        {"aeXz", "ae\u0301Yz"},
+        {"aXe\u0301", "aYe\u0301"},
+        {"a\rX", "a\r\nX"},
+        {"x👩‍👧a", "x👩‍👦a"},
+        {"x🇺🇸a", "x🇯🇵a"}
+      ]
+
+      for {old, new} <- cases do
+        doc = old |> make_text_doc() |> Diff.apply_diff(old, new)
+        assert ContentType.get_content(doc) == new
+      end
     end
   end
 
