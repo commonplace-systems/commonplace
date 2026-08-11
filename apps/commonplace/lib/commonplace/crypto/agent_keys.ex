@@ -86,6 +86,22 @@ defmodule Commonplace.Crypto.AgentKeys do
     end
   end
 
+  @doc "Read an identity's current public key without touching its private-key slot."
+  @spec public_key(String.t(), GenServer.server()) ::
+          {:ok, binary()} | {:error, :not_found | :corrupt_key}
+  def public_key(identity_uuid, secret_store \\ SecretStore) when is_binary(identity_uuid) do
+    case SecretStore.get(secret_store, pub_slot(identity_uuid)) do
+      {:ok, encoded} ->
+        case Base.decode64(encoded) do
+          {:ok, pub} when byte_size(pub) == 32 -> {:ok, pub}
+          _ -> {:error, :corrupt_key}
+        end
+
+      :not_found ->
+        {:error, :not_found}
+    end
+  end
+
   @doc """
   Mint a replacement keypair, overwriting the custody slots (D10).
   Certs delegated to the old key stay valid until expiry; the caller is

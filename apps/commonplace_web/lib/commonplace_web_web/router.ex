@@ -72,6 +72,14 @@ defmodule CommonplaceWebWeb.Router do
     end
   end
 
+  # Runner-lane mint transport. The controller additionally refuses every
+  # non-loopback peer before the node signing authority is consulted.
+  scope "/api", CommonplaceWebWeb do
+    pipe_through :api
+
+    post "/cert-mint", CertMintController, :create
+  end
+
   pipeline :federation do
     plug :accepts, ["json"]
     plug CommonplaceWebWeb.Plugs.FederationAuth

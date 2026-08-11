@@ -34,6 +34,8 @@ defmodule Commonplace.CLI do
     keygen [name]                 Generate Ed25519 signing keypair
     attest [path]                 Sign the head of a document (gold chain)
     cap <issue|delegate|show>     Issue/attenuate capability certs (phase 3)
+    cert-mint --scope REF --verbs LIST --audience PRINCIPAL [--expiry E]
+                                  Mint a node-signed leaf capability via local serve
     checkpoint [--owner name]     Create a reflog checkpoint
     reflog list [--owner name]    List reflog checkpoints
     reflog fork <commit-id> [--owner name] [--as name]  Fork a checkpoint as a new, ancestry-bearing branch ('restore' is an alias)
@@ -147,6 +149,7 @@ defmodule Commonplace.CLI do
       "keygen" -> Commonplace.CLI.Keygen.run(data_dir, relative_path, rest)
       "attest" -> Commonplace.CLI.Attest.run(data_dir, relative_path, rest)
       "cap" -> Commonplace.CLI.Cap.run(data_dir, relative_path, rest)
+      "cert-mint" -> Commonplace.CLI.CertMint.run(data_dir, relative_path, rest)
       "checkpoint" -> Commonplace.CLI.Checkpoint.run(data_dir, relative_path, rest)
       "reflog" -> Commonplace.CLI.Reflog.run(data_dir, relative_path, rest)
       "snapshot" -> Commonplace.CLI.Snapshot.run(data_dir, relative_path, rest)
