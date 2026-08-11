@@ -13,7 +13,10 @@ defmodule Commonplace.Workspace.RootWritePolicy do
     * `__processes.json` — `:default`
     * `__pulls` — `:default`
     * `__recipes` — `:default`
-    * `__reflog` — `:default`
+    * `__reflog` — `:default`, `:minimal` (S20 amendment: the proto-chit
+      pin rides the reflog snapshot, and punctuation-with-real-pins is a
+      cell's core product — the original set was seeded from a default
+      workspace's inventory; cells were not in the measured population)
     * `__system` — `:default`
 
   New substrate root entries use the `__` prefix.
@@ -39,7 +42,7 @@ defmodule Commonplace.Workspace.RootWritePolicy do
     "__processes.json" => [:default],
     "__pulls" => [:default],
     "__recipes" => [:default],
-    "__reflog" => [:default],
+    "__reflog" => [:default, :minimal],
     "__system" => [:default]
   }
 
