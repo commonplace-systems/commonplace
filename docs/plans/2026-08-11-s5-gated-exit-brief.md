@@ -1,11 +1,23 @@
 # S5 build brief: every gated-reachable ticket state has a gated exit — the in_progress-without-claim trap closes
 
-> ⛔ STATUS: PENDING PLAN REVIEW — DO NOT DISPATCH. Plan's split (msg 11196)
-> classes S5 as carrying residual judgment ("what the exit verb is and what
-> it clears"), and this brief MADE that call (release resets the mirror to
-> open — chosen over close-accepts-stranded and over a dedicated reset
-> verb, on the release-means-released principle and no-new-verb parsimony).
-> Per plan's offer, that decision takes its review before dispatch.
+> ✅ RATIFIED by plan (msg 11200) — dispatchable. The basis is stronger than
+> the parsimony this brief argued from: this is the five-axes derivation in
+> miniature — status was one field carrying TWO axes (custody AND decision),
+> and the stranded state is custody-released with the mirror still asserting
+> in-progress. Release-resets-to-open makes the mirror follow the axes:
+> custody ended, no decision was made, the projection reads eligible — which
+> is also the frontier semantics the lease design already assumes.
+> Alternatives killed on their own terms: close-accepts-stranded records a
+> completion decision nobody made (a false durable fact, worse than the
+> trap); a reset verb adds gated surface for a state that should not exist.
+>
+> TWO FORWARD-BINDING CONDITIONS (plan's), for the builder and the record:
+> ① The reset is a PROJECTION update, never an erasure — history keeps
+>   claimed→released as facts; candidate/work artifacts survive; "back to
+>   open" must not read as "nothing happened."
+> ② The rule generalizes BY NAME to every custody-ending-without-decision
+>   transition: voluntary release now; lease EXPIRY and FORCED RELEASE
+>   inherit this ruling when the progress-witness TTL work lands.
 
 > Basis: CX-2jq6, whose mechanism is ALREADY MEASURED in the ticket (the
 > 2026-08-05 verb walk): a ticket can sit `in_progress` with NO claim token
