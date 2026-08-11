@@ -32,8 +32,8 @@ defmodule Commonplace.MUD.World.Facade do
     * (a) `Trust.authorized?(invoker, :write, scope)` — is the invoker
       allowed to make this write directly? This is enforced by the
       EXISTING local-write gate
-      (`Commonplace.Store.CommitStore`'s `local_write_gate_check/2`,
-      `Application.get_env(:commonplace, :local_write_gate)`) the
+      (`Commonplace.Store.CommitStore`'s `local_write_gate_check/2`, via
+      `Commonplace.Trust.local_write_gate/0`) the
       moment the facade issues the commit with the invoker's
       `signing_context`/`cert_cids` — this module does not reimplement
       that check, it just always signs as the invoker so the existing
@@ -131,7 +131,12 @@ defmodule Commonplace.MUD.World.Facade do
   @genesis_scan_limit 10_000
 
   @enforce_keys [:store, :ctx, :owner_grant, :via_verb]
-  defstruct store: nil, ctx: nil, object_uuid: nil, owner_grant: MapSet.new(), via_verb: nil, host_kind: :object
+  defstruct store: nil,
+            ctx: nil,
+            object_uuid: nil,
+            owner_grant: MapSet.new(),
+            via_verb: nil,
+            host_kind: :object
 
   @type t :: %__MODULE__{
           store: GenServer.server(),
@@ -320,7 +325,8 @@ defmodule Commonplace.MUD.World.Facade do
   # CX-v6j4 (plan #6135) — OBJECT-host only: a room is not a movable object.
   # (host_kind is preserved on the thin verb-facing facade, so this head guard
   # still fires correctly in a verb run — CX-r8vp.)
-  def move_object(%__MODULE__{host_kind: :room}, _dest_room_uuid), do: {:error, :requires_object_host}
+  def move_object(%__MODULE__{host_kind: :room}, _dest_room_uuid),
+    do: {:error, :requires_object_host}
 
   def move_object(%__MODULE__{} = f, dest_room_uuid) when is_binary(dest_room_uuid) do
     f = unwrap(f)
@@ -338,7 +344,13 @@ defmodule Commonplace.MUD.World.Facade do
         fn ->
           case entry_name(f.ctx.current_room_uuid, f.object_uuid, f.store) do
             {:ok, name} ->
-              Move.move(f.object_uuid, name, f.ctx.current_room_uuid, dest_room_uuid, write_opts(f))
+              Move.move(
+                f.object_uuid,
+                name,
+                f.ctx.current_room_uuid,
+                dest_room_uuid,
+                write_opts(f)
+              )
 
             :error ->
               {:error, :not_found}
@@ -456,7 +468,14 @@ defmodule Commonplace.MUD.World.Facade do
 
           nil ->
             new_exits = Map.put(exits, dir, dest_uuid)
-            World.merge_meta(source, Schemas.room_filename(), %{"exits" => new_exits}, f.store, write_opts(f))
+
+            World.merge_meta(
+              source,
+              Schemas.room_filename(),
+              %{"exits" => new_exits},
+              f.store,
+              write_opts(f)
+            )
 
           _other ->
             # dir taken by a DIFFERENT dest — refuse, never silently reroute.
@@ -885,7 +904,9 @@ defmodule Commonplace.MUD.World.Facade do
       # object-spam DoS). Authority is unchanged: strict intersection on the
       # bound object.
       with :ok <- charge_lifecycle_op() do
-        write_guarded(f, [f.object_uuid], fn -> create_object_in(f, f.object_uuid, name, node_holder()) end)
+        write_guarded(f, [f.object_uuid], fn ->
+          create_object_in(f, f.object_uuid, name, node_holder())
+        end)
       end
     end
   end
@@ -974,7 +995,9 @@ defmodule Commonplace.MUD.World.Facade do
       # presence-untouched META anchor, not the churned dir. (The new object has
       # no meta yet — it is born under [room.meta], never anchored on its own
       # un-minted meta, so the authority set can't collapse to the empty trap.)
-      write_guarded(f, [room], [room_meta_authority(room, f)], fn -> create_object_in(f, room, name, node_holder()) end)
+      write_guarded(f, [room], [room_meta_authority(room, f)], fn ->
+        create_object_in(f, room, name, node_holder())
+      end)
     end
   end
 
@@ -1439,7 +1462,15 @@ defmodule Commonplace.MUD.World.Facade do
   # plain locked Move with no token hop — matching the whole system's "tokens
   # bind under enforce" stance; the live serve runs :enforce, so the token
   # transfers there.
-  defp deposit_gift(%__MODULE__{} = f, source_inv, entry, display, recipient_inv, recipient_name, recipient_identity) do
+  defp deposit_gift(
+         %__MODULE__{} = f,
+         source_inv,
+         entry,
+         display,
+         recipient_inv,
+         recipient_name,
+         recipient_identity
+       ) do
     case Schemas.load_dir_schema(recipient_inv, f.store) do
       {:ok, schema} ->
         if length(Schema.list_entries(schema)) >= @container_max_entries do
@@ -1466,8 +1497,11 @@ defmodule Commonplace.MUD.World.Facade do
             # (:collision — structurally unreachable for the unique key —
             # trust_rejected, gone, busy, bursar_unavailable) closes to the safe
             # generic via the outer sanitize_reason seam.
-            {:error, :not_holder} -> {:error, :not_carrying}
-            {:error, _reason} = err -> err
+            {:error, :not_holder} ->
+              {:error, :not_carrying}
+
+            {:error, _reason} = err ->
+              err
           end
         end
 
@@ -1539,7 +1573,8 @@ defmodule Commonplace.MUD.World.Facade do
   a minted husk into a real item (description/stats). `{:error,
   :not_minted_here}` if `minted_uuid` was not minted this run.
   """
-  @spec configure_attr(t(), String.t() | {:ok, String.t()}, String.t(), term()) :: :ok | {:error, term()}
+  @spec configure_attr(t(), String.t() | {:ok, String.t()}, String.t(), term()) ::
+          :ok | {:error, term()}
   # CX-hbua/DX (boss #6045) — accept the mint's `{:ok, uuid}` return
   # directly, so `configure_attr(world, give_to_actor(world, "sword"), ...)`
   # works without the author manually destructuring. Still re-gates (unwraps
@@ -1571,7 +1606,8 @@ defmodule Commonplace.MUD.World.Facade do
   owner_grant, invoker-signed, uuid re-gated against the minted-set.
   `{:error, :not_minted_here}` if `minted_uuid` was not minted this run.
   """
-  @spec configure_state(t(), String.t() | {:ok, String.t()}, String.t(), term()) :: :ok | {:error, term()}
+  @spec configure_state(t(), String.t() | {:ok, String.t()}, String.t(), term()) ::
+          :ok | {:error, term()}
   # CX-hbua/DX — accept the mint's `{:ok, uuid}` return directly (see
   # configure_attr). Still re-gates via the binary clause below.
   def configure_state(%__MODULE__{} = f, {:ok, minted_uuid}, key, value),
@@ -1602,7 +1638,12 @@ defmodule Commonplace.MUD.World.Facade do
   @spec say(t(), String.t()) :: :ok
   def say(%__MODULE__{} = f, text) when is_binary(text) do
     f = unwrap(f)
-    World.broadcast_room(f.ctx.current_room_uuid, %{kind: :say, who: f.ctx[:player_name], text: text})
+
+    World.broadcast_room(f.ctx.current_room_uuid, %{
+      kind: :say,
+      who: f.ctx[:player_name],
+      text: text
+    })
   end
 
   @doc """
@@ -1844,7 +1885,11 @@ defmodule Commonplace.MUD.World.Facade do
     identity = sc && sc.identity_uuid
     pub = sc && sc.public_key
     certs = ctx[:cert_cids] || []
-    Enum.all?(scope_uuids, &Commonplace.Trust.writer_authorized?(identity, pub, certs, &1, cfg, f.store))
+
+    Enum.all?(
+      scope_uuids,
+      &Commonplace.Trust.writer_authorized?(identity, pub, certs, &1, cfg, f.store)
+    )
   end
 
   # (C) the object-owner authority to elevate to. STRUCTURED as "resolve the
@@ -2222,7 +2267,10 @@ defmodule Commonplace.MUD.World.Facade do
     end
   end
 
-  defp verb_author_identity_uuid(%__MODULE__{via_verb: {source_uuid, _} = _via_verb, store: store})
+  defp verb_author_identity_uuid(%__MODULE__{
+         via_verb: {source_uuid, _} = _via_verb,
+         store: store
+       })
        when is_binary(source_uuid) do
     case CommitStoreClient.latest_commit(store, source_uuid) do
       {:ok, commit} ->
@@ -2343,8 +2391,14 @@ defmodule Commonplace.MUD.World.Facade do
           obj_json = encode_object_json(name, opts[:zone])
 
           with {:ok, new_uuid} <-
-                 Schemas.create_dir_with_meta(Schemas.object_filename(), obj_json, f.store, write_opts(f)),
-               :ok <- add_child_entry(parent_uuid, instance_entry_name(name, new_uuid), new_uuid, f) do
+                 Schemas.create_dir_with_meta(
+                   Schemas.object_filename(),
+                   obj_json,
+                   f.store,
+                   write_opts(f)
+                 ),
+               :ok <-
+                 add_child_entry(parent_uuid, instance_entry_name(name, new_uuid), new_uuid, f) do
             # CX-nyj9 — record ONLY here (server-side, from our own return
             # value) so configure_* can later validate an author-passed uuid
             # against the run's minted-set.
@@ -2461,7 +2515,9 @@ defmodule Commonplace.MUD.World.Facade do
   # (shared by add_child_entry / unlink_child).
   defp commit_schema(uuid, schema, f) do
     update = Encoding.encode_update(schema)
-    {metadata, commit_opts} = SignedWrite.opts_for(uuid, Keyword.put(write_opts(f), :store, f.store))
+
+    {metadata, commit_opts} =
+      SignedWrite.opts_for(uuid, Keyword.put(write_opts(f), :store, f.store))
 
     case CommitStoreClient.create_chained_commit(f.store, uuid, update, metadata, commit_opts) do
       {:error, _} = err -> err

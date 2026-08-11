@@ -103,7 +103,12 @@ defmodule Commonplace.Trust.AuditCanary do
   @impl true
   def init(opts) do
     state = %{
-      enabled: Keyword.get(opts, :enabled, Application.get_env(:commonplace, :audit_canary_enabled, true)),
+      enabled:
+        Keyword.get(
+          opts,
+          :enabled,
+          Application.get_env(:commonplace, :audit_canary_enabled, true)
+        ),
       interval_ms:
         Keyword.get(
           opts,
@@ -180,7 +185,7 @@ defmodule Commonplace.Trust.AuditCanary do
   end
 
   defp do_tick(state) do
-    gate = Application.get_env(:commonplace, :local_write_gate, :dry_run)
+    gate = Commonplace.Trust.local_write_gate()
 
     cond do
       gate == :off ->

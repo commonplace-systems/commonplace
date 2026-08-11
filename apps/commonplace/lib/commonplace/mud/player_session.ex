@@ -880,7 +880,7 @@ defmodule Commonplace.MUD.PlayerSession do
     end
   end
 
-  defp enforce?, do: Application.get_env(:commonplace, :local_write_gate) == :enforce
+  defp enforce?, do: Commonplace.Trust.local_write_gate() == :enforce
 
   # A node-generated, server-assigned ephemeral session identity + its presence
   # cert. `[]` cert on provisioning failure → cert_cids stays empty → the presence
