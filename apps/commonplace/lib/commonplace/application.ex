@@ -7,11 +7,15 @@ defmodule Commonplace.Application do
 
   @impl true
   def start(_type, _args) do
+    # S6v2: resolve before starting any child so an invalid explicit gate
+    # refuses this boot at the single policy site.
+    _local_write_gate = Commonplace.Trust.local_write_gate()
+
     # CX-qvrz: this runs synchronously in the application callback, before
     # Commonplace.Supervisor (and therefore every store/MUD caller of
     # NodeIdentity.public_key/0) exists. The migration reads only the legacy
     # key file's public first line and never mints an identity.
-    :ok = Commonplace.Crypto.NodeIdentity.publish_public_keys_at_boot()
+    publish_public_keys_or_refuse!()
 
     # :xmerl is used by Commonplace.Document.ViewXml for parsing view XML
     # documents. Ensure it's loaded at app start so `mix phx.server` and
@@ -204,7 +208,7 @@ defmodule Commonplace.Application do
         # place an operator/log-scraper can confirm which of the three
         # independently-staged knobs (trust-anchor strictness, local-write,
         # local-read) actually took effect on THIS node.
-        Logger.info("Commonplace.Trust posture at boot: #{inspect(Commonplace.Trust.posture())}")
+        log_trust_posture_at_boot()
 
         # CX-38fw (M4 sub-bead i): boot-time idempotent template ensure.
         # Mints /chat/__template/ on first boot; no-op on subsequent
@@ -241,6 +245,83 @@ defmodule Commonplace.Application do
         other
     end
   end
+
+  @doc false
+  def publish_public_keys_or_refuse! do
+    case Commonplace.Crypto.NodeIdentity.publish_public_keys_at_boot() do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        message =
+          "Commonplace.Application boot refusal: node public-key publication failed: " <>
+            "#{inspect(reason)}; refusing to boot because the node trust anchor cannot " <>
+            "be published; check COMMONPLACE_DATA_DIR and " <>
+            "node_signing_public_keys.json permissions/content"
+
+        Logger.error(message)
+        raise message
+    end
+  end
+
+  @doc false
+  def log_trust_posture_at_boot do
+    posture = Commonplace.Trust.posture()
+    write_gate = Commonplace.Trust.local_write_gate_resolution()
+    read_source = configured_source(:local_read_gate)
+    trust_source = trust_config_source()
+    reflog_source = external_env_source("COMMONPLACE_REFLOG_ON_BOOT")
+    scheduler_source = external_env_source("COMMONPLACE_SCHEDULER_ON_BOOT")
+    fresh_source = external_env_source("COMMONPLACE_ACCEPT_FRESH_REINIT")
+    citizenship_source = external_env_source("COMMONPLACE_MUD_FULL_CITIZENSHIP")
+    invariant = Commonplace.Invariants.Mode.describe()
+
+    Logger.info("""
+    Commonplace.Trust posture at boot:
+      local_write_gate: #{inspect(write_gate.value)} (#{source_label(write_gate.source)})
+      local_read_gate: #{inspect(posture.local_read_gate)} (#{source_label(read_source)})
+      trust.accept_unsigned: #{inspect(posture.accept_unsigned)} (#{source_label(trust_source)})
+      reflog_on_boot: #{inspect(Application.get_env(:commonplace, :reflog_on_boot, false))} (#{source_label(reflog_source)})
+      scheduler_on_boot: #{inspect(Application.get_env(:commonplace, :scheduler_on_boot, false))} (#{source_label(scheduler_source)})
+      accept_fresh_reinit: #{inspect(Application.get_env(:commonplace, :accept_fresh_reinit, false))} (#{source_label(fresh_source)})
+      mud_full_citizenship: #{inspect(Application.get_env(:commonplace, :mud_full_citizenship, false))} (#{source_label(citizenship_source)})
+      invariant_enforcement: #{inspect(invariant.mode)} (#{source_label(invariant.source)})
+    """)
+
+    :ok
+  end
+
+  defp configured_source(key) do
+    case Application.fetch_env(:commonplace, key) do
+      {:ok, _value} -> :env_set
+      :error -> :absent_defaulted
+    end
+  end
+
+  defp external_env_source(name) do
+    if System.get_env(name), do: :env_set, else: :absent_defaulted
+  end
+
+  defp trust_config_source do
+    case Application.fetch_env(:commonplace, :trust) do
+      {:ok, _value} ->
+        :env_set
+
+      :error ->
+        data_dir = Application.get_env(:commonplace, :data_dir, "data")
+
+        if File.exists?(Path.join(data_dir, "trust.json")),
+          do: :trust_json,
+          else: :absent_defaulted
+    end
+  end
+
+  defp source_label(:absent_defaulted), do: "ABSENT — defaulted"
+  defp source_label(:default), do: "ABSENT — defaulted"
+  defp source_label(:env_set), do: "env-set"
+  defp source_label(:env_var), do: "env-set"
+  defp source_label(:app_env), do: "app env"
+  defp source_label(:trust_json), do: "trust.json"
 
   @doc false
   # See the CX-fml6 comment at the call site in `start/2` above for the

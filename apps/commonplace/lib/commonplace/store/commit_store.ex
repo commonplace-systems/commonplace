@@ -569,7 +569,14 @@ defmodule Commonplace.Store.CommitStore do
   `opts[:signing_context]` selects the signing identity for this
   commit; see the module-level "Signing" section.
   """
-  def create_commit(server \\ __MODULE__, doc_uuid, update, parent_id, metadata \\ %{}, opts \\ []) do
+  def create_commit(
+        server \\ __MODULE__,
+        doc_uuid,
+        update,
+        parent_id,
+        metadata \\ %{},
+        opts \\ []
+      ) do
     GenServer.call(
       server,
       {:create_commit, doc_uuid, update, parent_id, metadata, opts}
@@ -608,10 +615,11 @@ defmodule Commonplace.Store.CommitStore do
   def create_snapshot_commit(server \\ __MODULE__, doc_uuid, update, metadata \\ %{}) do
     metadata = Map.put(metadata, :kind, :snapshot)
 
-    parent_id = case latest_commit(server, doc_uuid) do
-      {:ok, commit} -> commit.id
-      :none -> nil
-    end
+    parent_id =
+      case latest_commit(server, doc_uuid) do
+        {:ok, commit} -> commit.id
+        :none -> nil
+      end
 
     create_commit(server, doc_uuid, update, parent_id, metadata)
   end
@@ -737,7 +745,12 @@ defmodule Commonplace.Store.CommitStore do
   """
   @spec put_built_commit(GenServer.server(), Commit.t(), binary() | nil, Commit.t() | nil) ::
           {:ok, Commit.t()} | {:error, :parent_moved}
-  def put_built_commit(server \\ __MODULE__, %Commit{} = commit, expected_parent_id, genesis \\ nil) do
+  def put_built_commit(
+        server \\ __MODULE__,
+        %Commit{} = commit,
+        expected_parent_id,
+        genesis \\ nil
+      ) do
     GenServer.call(server, {:put_built_commit, commit, expected_parent_id, genesis})
   end
 
@@ -1198,7 +1211,8 @@ defmodule Commonplace.Store.CommitStore do
     # so a store started before/without the dispatcher (tests, one-shot
     # CLI, library embedding) writes exactly as it did before. Injectable
     # so a test can register itself as the dispatcher.
-    invariant_dispatcher = Keyword.get(opts, :invariant_dispatcher, Commonplace.Invariants.Dispatcher)
+    invariant_dispatcher =
+      Keyword.get(opts, :invariant_dispatcher, Commonplace.Invariants.Dispatcher)
 
     case open_cubdb(path) do
       {:ok, db} ->
@@ -1800,7 +1814,11 @@ defmodule Commonplace.Store.CommitStore do
   end
 
   @impl true
-  def handle_call({:put_built_commit, %Commit{} = commit, expected_parent_id, genesis}, _from, state) do
+  def handle_call(
+        {:put_built_commit, %Commit{} = commit, expected_parent_id, genesis},
+        _from,
+        state
+      ) do
     instrumented(:put_built_commit, commit.doc_uuid, fn ->
       {cas_result, persist_ns} =
         timed(fn ->
@@ -1924,7 +1942,17 @@ defmodule Commonplace.Store.CommitStore do
           commit_id -> commit_id
         end
 
-      commit = do_write_commit(:create_chained_commit, state, doc_uuid, update, parent_id, metadata, opts)
+      commit =
+        do_write_commit(
+          :create_chained_commit,
+          state,
+          doc_uuid,
+          update,
+          parent_id,
+          metadata,
+          opts
+        )
+
       {:reply, commit, state}
     end)
   end
@@ -2126,7 +2154,9 @@ defmodule Commonplace.Store.CommitStore do
   @impl true
   def handle_call({:attestation_chain, doc_uuid, limit}, _from, state) do
     case CubDB.get(state.db, {:latest_attestation, doc_uuid}) do
-      nil -> {:reply, [], state}
+      nil ->
+        {:reply, [], state}
+
       att_id ->
         chain = collect_attestation_chain(state.db, att_id, limit, [])
         {:reply, chain, state}
@@ -2140,7 +2170,13 @@ defmodule Commonplace.Store.CommitStore do
   # next walk" tolerance the doc above already promises.
   @impl true
   def handle_cast({:put_execute_clean, fp, commit_id, bool}, state) do
-    Commonplace.Store.TrustSideStore.put_execute_clean(state.trust_side_store, fp, commit_id, bool)
+    Commonplace.Store.TrustSideStore.put_execute_clean(
+      state.trust_side_store,
+      fp,
+      commit_id,
+      bool
+    )
+
     {:noreply, state}
   end
 
@@ -2277,7 +2313,8 @@ defmodule Commonplace.Store.CommitStore do
   #   - a MergeSnapshotter-style merge-snapshot: `metadata.snapshot_parents`
   #     carrying 2+ entries (the two-parent shape; a normal single-lineage
   #     snapshot carries exactly one).
-  defp delta_merge_shaped?(%Commit{merge_parents: merge_parents}) when merge_parents != [], do: true
+  defp delta_merge_shaped?(%Commit{merge_parents: merge_parents}) when merge_parents != [],
+    do: true
 
   defp delta_merge_shaped?(%Commit{metadata: %{snapshot_parents: snapshot_parents}})
        when is_list(snapshot_parents) and length(snapshot_parents) > 1,
@@ -2358,7 +2395,7 @@ defmodule Commonplace.Store.CommitStore do
   end
 
   defp trust_local_write_gate_check(commit, state) do
-    case Application.get_env(:commonplace, :local_write_gate, :dry_run) do
+    case Commonplace.Trust.local_write_gate() do
       :off ->
         :ok
 
@@ -2679,7 +2716,8 @@ defmodule Commonplace.Store.CommitStore do
 
   defp do_is_ancestor(_db, nil, _descendant_id), do: false
 
-  defp do_is_ancestor(db, ancestor_id, descendant_id), do: walk_ancestors(db, ancestor_id, descendant_id)
+  defp do_is_ancestor(db, ancestor_id, descendant_id),
+    do: walk_ancestors(db, ancestor_id, descendant_id)
 
   defp do_find_common_ancestor(db, uuid_a, uuid_b) do
     ids_a = collect_commit_ids(db, uuid_a)
@@ -2831,7 +2869,11 @@ defmodule Commonplace.Store.CommitStore do
     # to a live one it never blocks. The rescue/catch is for the residue:
     # a `:global`/`:via` tuple whose registry is down raises, and a
     # head-advance must not fail because the alarm's mailbox is missing.
-    GenServer.cast(dispatcher, {:advance, %{doc_uuid: doc_uuid, commit_id: commit_id, source: source}})
+    GenServer.cast(
+      dispatcher,
+      {:advance, %{doc_uuid: doc_uuid, commit_id: commit_id, source: source}}
+    )
+
     :ok
   rescue
     _ -> :ok

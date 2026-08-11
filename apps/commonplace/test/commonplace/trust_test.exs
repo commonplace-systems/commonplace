@@ -273,4 +273,46 @@ defmodule Commonplace.TrustTest do
       assert Trust.posture().strict == false
     end
   end
+
+  describe "local_write_gate/0 (S6v2)" do
+    setup do
+      old_gate = Application.get_env(:commonplace, :local_write_gate)
+
+      on_exit(fn ->
+        if is_nil(old_gate),
+          do: Application.delete_env(:commonplace, :local_write_gate),
+          else: Application.put_env(:commonplace, :local_write_gate, old_gate)
+      end)
+
+      :ok
+    end
+
+    test "resolves an absent value to dry_run" do
+      Application.delete_env(:commonplace, :local_write_gate)
+      assert Trust.local_write_gate() == :dry_run
+    end
+
+    test "resolves each valid value to itself" do
+      for value <- [:off, :dry_run, :enforce] do
+        Application.put_env(:commonplace, :local_write_gate, value)
+        assert Trust.local_write_gate() == value
+      end
+    end
+
+    test "resolves each valid runtime env string without minting an atom" do
+      for {raw, value} <- [{"off", :off}, {"dry_run", :dry_run}, {"enforce", :enforce}] do
+        Application.put_env(:commonplace, :local_write_gate, raw)
+        assert Trust.local_write_gate() == value
+      end
+    end
+
+    test "invalid values raise the named refusal with the complete valid set" do
+      Application.put_env(:commonplace, :local_write_gate, "invalid-s6-value")
+
+      assert_raise ArgumentError,
+                   "Commonplace.Trust local_write_gate refusal: invalid value " <>
+                     "\"invalid-s6-value\"; valid values: off | dry_run | enforce",
+                   fn -> Trust.local_write_gate() end
+    end
+  end
 end

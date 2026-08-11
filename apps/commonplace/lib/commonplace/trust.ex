@@ -123,7 +123,9 @@ defmodule Commonplace.Trust do
             # walk the cert chain; else (c) fall to the existing logic.
             case Map.get(commit.metadata, :capability_proof) do
               nil ->
-                if cfg.accept_unsigned, do: :ok, else: {:error, {:untrusted_signer, identity_uuid}}
+                if cfg.accept_unsigned,
+                  do: :ok,
+                  else: {:error, {:untrusted_signer, identity_uuid}}
 
               leaf_cid ->
                 capability_path(commit, verb, scope, leaf_cid, cfg, store)
@@ -210,7 +212,14 @@ defmodule Commonplace.Trust do
   citizen was wrongly shown read-only PREVIEW on their own home. CX-fogy points it
   at the real safe-verb gate, `:define_verb`.)
   """
-  @spec safe_verb_author_authorized?(String.t() | nil, binary() | nil, [String.t()], String.t(), config(), GenServer.server()) ::
+  @spec safe_verb_author_authorized?(
+          String.t() | nil,
+          binary() | nil,
+          [String.t()],
+          String.t(),
+          config(),
+          GenServer.server()
+        ) ::
           boolean()
   def safe_verb_author_authorized?(identity_uuid, pub, cert_cids, target_uuid, cfg, store) do
     cond do
@@ -316,7 +325,9 @@ defmodule Commonplace.Trust do
           :error ->
             case Map.get(commit.metadata, :capability_proof) do
               nil ->
-                if cfg.accept_unsigned, do: :ok, else: {:error, {:untrusted_signer, identity_uuid}}
+                if cfg.accept_unsigned,
+                  do: :ok,
+                  else: {:error, {:untrusted_signer, identity_uuid}}
 
               leaf_cid ->
                 define_verb_capability_path(commit, host_uuid, leaf_cid, cfg, store)
@@ -719,7 +730,9 @@ defmodule Commonplace.Trust do
   # check — a real bypass, closed here). A fresh doc has no established
   # type → :none.
   defp carve_branch(:none), do: :none
-  defp carve_branch({:ok, doc}), do: if(Doc.has_type?(doc, "entries"), do: :schema, else: :presence)
+
+  defp carve_branch({:ok, doc}),
+    do: if(Doc.has_type?(doc, "entries"), do: :schema, else: :presence)
 
   # --- schema branch: target is a room-dir schema (add/remove of a presence entry) ---
   # VALUE-diff entries; EVERY changed key must be a pure add XOR remove of
@@ -820,8 +833,11 @@ defmodule Commonplace.Trust do
 
     public_node_keys =
       case Commonplace.Crypto.NodeIdentity.public_keys() do
-        {:ok, keys} -> keys
-        :absent -> []
+        {:ok, keys} ->
+          keys
+
+        :absent ->
+          []
 
         {:error, reason} ->
           Logger.error(
@@ -970,11 +986,14 @@ defmodule Commonplace.Trust do
       # default config keeps compile O(cache-hit) on hot paths.
       :ok
     else
-      page_size = Keyword.get(opts, :page_size, Commonplace.Store.CommitStore.max_commit_log_limit())
+      page_size =
+        Keyword.get(opts, :page_size, Commonplace.Store.CommitStore.max_commit_log_limit())
+
       total_ceiling = Application.get_env(:commonplace, :max_authorization_walk_commits, 200_000)
       fp = cfg_fingerprint(cfg, store)
 
-      first_page = Commonplace.Store.CommitStoreClient.commit_log(store, doc_uuid, limit: page_size)
+      first_page =
+        Commonplace.Store.CommitStoreClient.commit_log(store, doc_uuid, limit: page_size)
 
       walk_pages(store, doc_uuid, cfg, fp, first_page, nil, page_size, total_ceiling, 0, 1, [])
     end
@@ -996,7 +1015,9 @@ defmodule Commonplace.Trust do
   # One extra get per walk, amortized over every cached verdict it
   # protects.
   defp cfg_fingerprint(cfg, store) do
-    :erlang.phash2({cfg.trusted_identities, Commonplace.Store.CommitStoreClient.revocation_set_hash(store)})
+    :erlang.phash2(
+      {cfg.trusted_identities, Commonplace.Store.CommitStoreClient.revocation_set_hash(store)}
+    )
   end
 
   # CX-klpi held half: the paged contributor walk. `page` is the current
@@ -1006,7 +1027,19 @@ defmodule Commonplace.Trust do
   # to reach here — see below) apart from "the chain visibly continues
   # but the next commit is missing" (prev_last had a non-nil parent_id
   # yet the store had nothing at that id).
-  defp walk_pages(store, doc_uuid, cfg, fp, page, prev_last, page_size, total_ceiling, examined, page_number, passed) do
+  defp walk_pages(
+         store,
+         doc_uuid,
+         cfg,
+         fp,
+         page,
+         prev_last,
+         page_size,
+         total_ceiling,
+         examined,
+         page_number,
+         passed
+       ) do
     examined_after = examined + length(page)
 
     cond do
@@ -1126,7 +1159,12 @@ defmodule Commonplace.Trust do
 
   defp finish_walk(store, fp, verdict, passed) do
     clean? = verdict == :ok
-    Enum.each(passed, &Commonplace.Store.CommitStoreClient.put_execute_clean(store, fp, &1, clean?))
+
+    Enum.each(
+      passed,
+      &Commonplace.Store.CommitStoreClient.put_execute_clean(store, fp, &1, clean?)
+    )
+
     verdict
   end
 
@@ -1236,6 +1274,48 @@ defmodule Commonplace.Trust do
     %{accept_unsigned: true, trusted_identities: %{}}
   end
 
+  @local_write_gate_values [:off, :dry_run, :enforce]
+
+  @doc """
+  Resolve the local-write gate at its single policy site.
+
+  Absence is the observe posture (`:dry_run`). Runtime configuration keeps
+  OS-environment input as a string so this function can map only the three
+  declared values without minting atoms. Any other explicit value is a boot
+  configuration error and raises the named refusal.
+  """
+  @spec local_write_gate() :: :off | :dry_run | :enforce
+  def local_write_gate, do: local_write_gate_resolution().value
+
+  @doc false
+  @spec local_write_gate_resolution() :: %{
+          value: :off | :dry_run | :enforce,
+          source: :absent_defaulted | :env_set
+        }
+  def local_write_gate_resolution do
+    case Application.get_env(:commonplace, :local_write_gate) do
+      nil ->
+        %{value: :dry_run, source: :absent_defaulted}
+
+      value when value in @local_write_gate_values ->
+        %{value: value, source: :env_set}
+
+      "off" ->
+        %{value: :off, source: :env_set}
+
+      "dry_run" ->
+        %{value: :dry_run, source: :env_set}
+
+      "enforce" ->
+        %{value: :enforce, source: :env_set}
+
+      invalid ->
+        raise ArgumentError,
+              "Commonplace.Trust local_write_gate refusal: invalid value " <>
+                "#{inspect(invalid)}; valid values: off | dry_run | enforce"
+    end
+  end
+
   @capture_count_fields [
     :emitted,
     :offered,
@@ -1330,7 +1410,13 @@ defmodule Commonplace.Trust do
 
             {:ok, pre_dispatcher_emitted} ->
               report =
-                build_capture_report(status, counter_boot_id, emitted, pre_dispatcher_emitted, opts)
+                build_capture_report(
+                  status,
+                  counter_boot_id,
+                  emitted,
+                  pre_dispatcher_emitted,
+                  opts
+                )
 
               # Cross-population guard: a negative loss or a rate above 1 is
               # arithmetically impossible for a real capture rate, so its
@@ -1359,16 +1445,16 @@ defmodule Commonplace.Trust do
   end
 
   defp build_capture_report(status, counter_boot_id, emitted, pre_dispatcher_emitted, opts) do
-          status
-          |> Map.take([:offered, :recorded, :shed, :failed, :guarded, :queued, :in_flight])
-          |> Map.merge(%{
-            boot_id: counter_boot_id,
-            emitted: emitted,
-            pre_dispatcher_emitted: pre_dispatcher_emitted,
-            upstream_loss: emitted - pre_dispatcher_emitted - status.offered
-          })
-          |> capture_interval(Keyword.get(opts, :since))
-          |> put_capture_rate()
+    status
+    |> Map.take([:offered, :recorded, :shed, :failed, :guarded, :queued, :in_flight])
+    |> Map.merge(%{
+      boot_id: counter_boot_id,
+      emitted: emitted,
+      pre_dispatcher_emitted: pre_dispatcher_emitted,
+      upstream_loss: emitted - pre_dispatcher_emitted - status.offered
+    })
+    |> capture_interval(Keyword.get(opts, :since))
+    |> put_capture_rate()
   end
 
   defp capture_interval(current, nil), do: current
@@ -1416,9 +1502,9 @@ defmodule Commonplace.Trust do
     * `accept_unsigned` / `trusted_identities_count` — via `config/0`, the
       same resolution `authorized?/3` and the gates use (app env → trust.json
       → permissive default; folds in local-node trust).
-    * `local_write_gate` — `Application.get_env(:commonplace,
-      :local_write_gate, :dry_run)`, the same default `CommitStore`'s
-      `local_write_gate_check/2` applies.
+    * `local_write_gate` — via `local_write_gate/0`, the single resolver used
+      by every local-write reader. It defaults absence to `:dry_run` and
+      refuses values outside `:off | :dry_run | :enforce`.
     * `local_read_gate` — `Application.get_env(:commonplace, :local_read_gate,
       :permissive)`, the same default `Trust.Read.gate/3` applies.
 
@@ -1437,7 +1523,7 @@ defmodule Commonplace.Trust do
         }
   def posture do
     cfg = config()
-    local_write_gate = Application.get_env(:commonplace, :local_write_gate, :dry_run)
+    local_write_gate = local_write_gate()
     local_read_gate = Application.get_env(:commonplace, :local_read_gate, :permissive)
 
     %{
@@ -1462,14 +1548,26 @@ defmodule Commonplace.Trust do
   defp audit_posture do
     dispatcher =
       case Commonplace.Trust.AuditDispatcher.status() do
-        %{error: reason} -> %{running: false, error: reason}
-        s -> Map.put(Map.take(s, [:enabled, :offered, :recorded, :shed, :failed, :guarded]), :running, true)
+        %{error: reason} ->
+          %{running: false, error: reason}
+
+        s ->
+          Map.put(
+            Map.take(s, [:enabled, :offered, :recorded, :shed, :failed, :guarded]),
+            :running,
+            true
+          )
       end
 
     canary =
       case Process.whereis(Commonplace.Trust.AuditCanary) do
-        nil -> %{running: false}
-        _pid -> Commonplace.Trust.AuditCanary.status() |> Map.take([:enabled, :ticks, :passes, :alarms, :skips, :last_at]) |> Map.put(:running, true)
+        nil ->
+          %{running: false}
+
+        _pid ->
+          Commonplace.Trust.AuditCanary.status()
+          |> Map.take([:enabled, :ticks, :passes, :alarms, :skips, :last_at])
+          |> Map.put(:running, true)
       end
 
     %{
@@ -1499,9 +1597,14 @@ defmodule Commonplace.Trust do
 
       {:ok, raw} ->
         case Jason.decode(raw) do
-          {:ok, json} when is_map(json) -> {:ok, normalize(json)}
-          {:ok, _not_a_map} -> {:error, :not_a_map}
-          {:error, %Jason.DecodeError{} = err} -> {:error, {:invalid_json, Exception.message(err)}}
+          {:ok, json} when is_map(json) ->
+            {:ok, normalize(json)}
+
+          {:ok, _not_a_map} ->
+            {:error, :not_a_map}
+
+          {:error, %Jason.DecodeError{} = err} ->
+            {:error, {:invalid_json, Exception.message(err)}}
         end
     end
   end

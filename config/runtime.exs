@@ -99,7 +99,7 @@ if serving? && data_dir do
   # neighbours — the Mode-A serve path mirrors this exactly (CX-nyvm
   # parity still holds: both paths read the same var).
   config :commonplace,
-         reflog_on_boot: System.get_env("COMMONPLACE_REFLOG_ON_BOOT") in ["1", "true"]
+    reflog_on_boot: System.get_env("COMMONPLACE_REFLOG_ON_BOOT") in ["1", "true"]
 
   # CX-x073: the userland one-shot scheduler (Commonplace.Scheduler.Agent).
   # Same shape and the same reasoning as reflog_on_boot directly above:
@@ -108,7 +108,7 @@ if serving? && data_dir do
   # separately stageable from "deploy the code". Default OFF — every
   # existing launch omits this var and boots exactly as before.
   config :commonplace,
-         scheduler_on_boot: System.get_env("COMMONPLACE_SCHEDULER_ON_BOOT") in ["1", "true"]
+    scheduler_on_boot: System.get_env("COMMONPLACE_SCHEDULER_ON_BOOT") in ["1", "true"]
 
   # CX-i9ca-adjacent (2026-07-11): a Mode-B serve must also make the
   # GitBridge find its mount mapping, or the workspace→git mirror silently
@@ -119,9 +119,10 @@ if serving? && data_dir do
   # Overridable via COMMONPLACE_GIT_BRIDGE_DATA_DIR for a non-default layout.
   # (Regression fix: a 2026-07-11 restart dropped a hand-set put_env and the
   # jes5199/commonplace-data mirror sat inactive for ~5 days.)
-  config :commonplace, :git_bridge_data_dir,
-    System.get_env("COMMONPLACE_GIT_BRIDGE_DATA_DIR") ||
-      Path.join(System.get_env("COMMONPLACE_DATA_DIR"), "git_bridges")
+  config :commonplace,
+         :git_bridge_data_dir,
+         System.get_env("COMMONPLACE_GIT_BRIDGE_DATA_DIR") ||
+           Path.join(System.get_env("COMMONPLACE_DATA_DIR"), "git_bridges")
 end
 
 # CX-qat5.7: the local-write gate knob is otherwise Application-env only
@@ -133,7 +134,9 @@ end
 # strict-enforcing durably and PER NODE (a permissive dogfood node simply
 # omits this var). Values: off | dry_run | enforce.
 if gate = System.get_env("COMMONPLACE_LOCAL_WRITE_GATE") do
-  config :commonplace, local_write_gate: String.to_atom(gate)
+  # Keep the raw string inert. Commonplace.Trust.local_write_gate/0 is the
+  # single parser/resolver and refuses values outside the declared set.
+  config :commonplace, local_write_gate: gate
 end
 
 # CX-a7i2: the local-read gate (`Trust.Read.gate/3`, CX-73a3) has the SAME
