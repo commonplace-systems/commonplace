@@ -186,7 +186,7 @@ defmodule Commonplace.Trust.Read do
   """
   @spec gate(String.t() | nil, String.t(), keyword()) :: :ok | {:error, term()}
   def gate(principal_identity, target_uuid, opts \\ []) when is_binary(target_uuid) do
-    case Application.get_env(:commonplace, :local_read_gate, :permissive) do
+    case Commonplace.Trust.local_read_gate() do
       :permissive ->
         :ok
 
