@@ -46,12 +46,38 @@ defmodule Commonplace.Workspace do
   def initialize(data_dir, opts \\ []) when is_binary(data_dir) do
     store = Keyword.get(opts, :store, Commonplace.Store.CommitStore)
     checkout_dir = Keyword.get(opts, :checkout_dir, Path.dirname(data_dir))
+    profile = Keyword.get(opts, :profile, :default)
+    validate_profile!(profile)
     root_uuid = UUID.uuid4()
-    root_doc = Schema.new_schema()
+    root_doc = Schema.new_schema() |> Schema.put_workspace_profile(profile)
     update = Yelixer.Encoding.encode_update(root_doc)
 
     with {:ok, node_context} <- NodeIdentity.signing_context() do
       initialize_root(data_dir, checkout_dir, store, root_uuid, update, node_context)
+    end
+  end
+
+  defp validate_profile!(profile) when profile in [:default, :minimal], do: :ok
+
+  defp validate_profile!(profile) do
+    raise ArgumentError,
+          "invalid workspace profile #{inspect(profile)}; expected :default or :minimal"
+  end
+
+  @doc """
+  Read a workspace's recorded class declaration from its root schema.
+
+  `:absent` is the deliberate compatibility result for the closed population
+  of legacy workspaces which predate profile recording. A versioned root whose
+  profile field is missing returns an error instead of defaulting.
+  """
+  @spec profile(String.t(), GenServer.server()) ::
+          {:ok, :default | :minimal} | :absent | {:error, term()}
+  def profile(root_uuid, store \\ CommitStoreClient) when is_binary(root_uuid) do
+    case Commonplace.Tree.DocBuilder.reconstruct_snapshot(store, root_uuid) do
+      {:ok, root_doc} -> Schema.workspace_profile(root_doc)
+      :none -> {:error, :no_root_schema}
+      {:error, reason} -> {:error, reason}
     end
   end
 
