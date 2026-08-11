@@ -151,6 +151,49 @@ defmodule Commonplace.Bd.TicketVerbsTest do
   end
 
   describe "ticket_update" do
+    test "refuses description instead of silently dropping it", %{
+      root: root,
+      signing_context: ctx
+    } do
+      ticket = create_ticket(root, "A")
+
+      context = %{
+        args: %{"ticket" => ticket.id, "changes" => %{"description" => "x"}},
+        signing_context: ctx,
+        source: "test"
+      }
+
+      assert {:error, reason} = ViewActionDispatch.dispatch("ticket_update", context)
+      assert reason =~ "description"
+      assert reason =~ "Bd.Issue.write_description/5"
+      assert {:ok, ""} = Issue.description(root, ticket.id)
+    end
+
+    test "refuses a mixed valid and unknown change without applying either", %{
+      root: root,
+      signing_context: ctx
+    } do
+      ticket = create_ticket(root, "original")
+
+      context = %{
+        args: %{
+          "ticket" => ticket.id,
+          "changes" => %{"title" => "renamed", "description" => "x", "mystery" => true}
+        },
+        signing_context: ctx,
+        source: "test"
+      }
+
+      assert {:error, reason} = ViewActionDispatch.dispatch("ticket_update", context)
+      assert reason =~ "description"
+      assert reason =~ "mystery"
+      assert reason =~ "Updatable fields: title, priority"
+
+      {:ok, reloaded} = Issue.show(root, ticket.id)
+      assert reloaded.title == "original"
+      assert {:ok, ""} = Issue.description(root, ticket.id)
+    end
+
     test "refuses a change touching status", %{root: root, signing_context: ctx} do
       a = create_ticket(root, "A")
 
@@ -162,6 +205,7 @@ defmodule Commonplace.Bd.TicketVerbsTest do
 
       assert {:error, reason} = ViewActionDispatch.dispatch("ticket_update", context)
       assert reason =~ "status"
+      assert reason =~ "ticket_close"
 
       {:ok, reloaded} = Issue.show(root, a.id)
       assert reloaded.status == "open"
