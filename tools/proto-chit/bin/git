@@ -16,9 +16,9 @@ wal_path="$state_dir/events.wal.ndjson"
 # fallback and the real-git exec below.
 #
 # PROTO_CHIT_SYNC_EXCLUDES is a comma-separated list of workspace entry names;
-# each becomes one `--sync-exclude NAME` pair. Unset or empty adds no flags and
-# leaves behaviour unchanged -- the emitter appends these to its own defaults,
-# it never substitutes them, so `.git`/`.commonplace` stay excluded regardless.
+# each becomes one `--sync-exclude NAME` pair. Set-but-empty becomes an explicit
+# defaults-only declaration. Unset adds no declaration, so the emitter refuses
+# and the ordinary WAL fallback records the intent without blocking real git.
 run_emitter() {
   git_argv_count=$#
 
@@ -26,23 +26,32 @@ run_emitter() {
     set -- "$@" --trace "$PROTO_CHIT_TRACE_FILE"
   fi
 
-  excludes=${PROTO_CHIT_SYNC_EXCLUDES:-}
-  while [ -n "$excludes" ]; do
-    case "$excludes" in
-      *,*)
-        name=${excludes%%,*}
-        excludes=${excludes#*,}
-        ;;
-      *)
-        name=$excludes
-        excludes=""
-        ;;
-    esac
+  if [ "${PROTO_CHIT_SYNC_EXCLUDES+x}" = x ]; then
+    excludes=$PROTO_CHIT_SYNC_EXCLUDES
+    scope_name_added=0
 
-    if [ -n "$name" ]; then
-      set -- "$@" --sync-exclude "$name"
+    while [ -n "$excludes" ]; do
+      case "$excludes" in
+        *,*)
+          name=${excludes%%,*}
+          excludes=${excludes#*,}
+          ;;
+        *)
+          name=$excludes
+          excludes=""
+          ;;
+      esac
+
+      if [ -n "$name" ]; then
+        set -- "$@" --sync-exclude "$name"
+        scope_name_added=1
+      fi
+    done
+
+    if [ "$scope_name_added" -eq 0 ]; then
+      set -- "$@" --declare-empty-sync-excludes
     fi
-  done
+  fi
 
   set -- "$@" --
 

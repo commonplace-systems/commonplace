@@ -17,6 +17,9 @@ defmodule Commonplace.ProtoChit do
   @pin_format "commonplace-reflog-path-pin/v1"
   @state_file "predecessors.json"
   @sync_excludes [".git", ".commonplace", "_build", "deps"]
+  @sync_scope_refusal "sync scope is undeclared; set PROTO_CHIT_SYNC_EXCLUDES " <>
+                        "(set-but-empty declares defaults-only), repeat --sync-exclude NAME, " <>
+                        "or pass --declare-empty-sync-excludes"
 
   @type event :: %{required(String.t()) => term()}
 
@@ -24,7 +27,8 @@ defmodule Commonplace.ProtoChit do
   @spec emit(Path.t(), [String.t()], keyword()) ::
           {:ok, %{event: event(), event_ref: String.t()}} | {:error, term()}
   def emit(repo, git_args, opts) when is_binary(repo) and is_list(git_args) do
-    with :ok <- validate_repo(repo),
+    with :ok <- validate_sync_scope(opts),
+         :ok <- validate_repo(repo),
          {:ok, signing_context} <- fetch_signing_context(opts),
          {:ok, root_uuid} <- fetch_binary(opts, :root_uuid),
          {:ok, event_log_uuid} <- fetch_binary(opts, :event_log_uuid),
@@ -79,6 +83,13 @@ defmodule Commonplace.ProtoChit do
     if File.dir?(repo), do: :ok, else: {:error, {:repo_not_found, repo}}
   end
 
+  defp validate_sync_scope(opts) do
+    case Keyword.fetch(opts, :sync_excludes) do
+      {:ok, excludes} when is_list(excludes) -> :ok
+      _ -> {:error, {:sync_scope_undeclared, @sync_scope_refusal}}
+    end
+  end
+
   defp fetch_signing_context(opts) do
     case Keyword.get(opts, :signing_context) do
       %SigningContext{} = context -> {:ok, context}
@@ -114,10 +125,11 @@ defmodule Commonplace.ProtoChit do
 
   defp sync_flush(repo, root_uuid, signing_context, opts) do
     store = Keyword.get(opts, :store, CommitStoreClient)
+    declared_excludes = Keyword.fetch!(opts, :sync_excludes)
 
     sync_opts = [
       signing_context: signing_context,
-      exclude_names: Keyword.get(opts, :sync_excludes, @sync_excludes)
+      exclude_names: Enum.uniq(@sync_excludes ++ declared_excludes)
     ]
 
     Watcher.sync_recursive(root_uuid, repo, store, sync_opts)

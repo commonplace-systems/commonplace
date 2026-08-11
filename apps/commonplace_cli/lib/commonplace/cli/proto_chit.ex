@@ -4,11 +4,13 @@ defmodule Commonplace.CLI.ProtoChit do
 
   Usage:
     commonplace proto-chit emit --repo DIR --state-dir DIR --event-log UUID
-      [--real-git PATH] [--trace FILE] [--sync-exclude NAME]... -- <git argv...>
+      [--real-git PATH] [--trace FILE]
+      [--sync-exclude NAME]... [--declare-empty-sync-excludes] -- <git argv...>
 
   `--sync-exclude` is repeatable. The names given are APPENDED to the emitter's
   own default exclusions (`.git`, `.commonplace`, ...) — an operator cannot drop
-  that protection, only add to it.
+  that protection, only add to it. At least one scope declaration is required;
+  `--declare-empty-sync-excludes` explicitly selects defaults-only scope.
   """
 
   alias Commonplace.Crypto.SigningContext
@@ -20,7 +22,8 @@ defmodule Commonplace.CLI.ProtoChit do
     event_log: :string,
     real_git: :string,
     trace: :string,
-    sync_exclude: :keep
+    sync_exclude: :keep,
+    declare_empty_sync_excludes: :boolean
   ]
 
   # Mirrors `@sync_excludes` in `Commonplace.ProtoChit`. Operator-supplied names
@@ -37,14 +40,10 @@ defmodule Commonplace.CLI.ProtoChit do
          {:ok, root_uuid} <- root_uuid(data_dir),
          {:ok, signing_context} <- signing_context(),
          {:ok, result} <-
-           Commonplace.ProtoChit.emit(repo, git_args,
-             root_uuid: root_uuid,
-             event_log_uuid: event_log_uuid,
-             state_dir: state_dir,
-             real_git: Keyword.get(opts, :real_git, "/usr/bin/git"),
-             trace_file: opts[:trace],
-             sync_excludes: sync_excludes(opts),
-             signing_context: signing_context
+           Commonplace.ProtoChit.emit(
+             repo,
+             git_args,
+             emit_opts(opts, root_uuid, event_log_uuid, state_dir, signing_context)
            ) do
       IO.puts(:stderr, "proto-chit: tap fired #{result.event_ref}")
       0
@@ -75,6 +74,28 @@ defmodule Commonplace.CLI.ProtoChit do
       |> Enum.reject(&(&1 == ""))
 
     Enum.uniq(@default_sync_excludes ++ extra)
+  end
+
+  defp emit_opts(opts, root_uuid, event_log_uuid, state_dir, signing_context) do
+    emit_opts = [
+      root_uuid: root_uuid,
+      event_log_uuid: event_log_uuid,
+      state_dir: state_dir,
+      real_git: Keyword.get(opts, :real_git, "/usr/bin/git"),
+      trace_file: opts[:trace],
+      signing_context: signing_context
+    ]
+
+    if sync_scope_declared?(opts) do
+      Keyword.put(emit_opts, :sync_excludes, sync_excludes(opts))
+    else
+      emit_opts
+    end
+  end
+
+  defp sync_scope_declared?(opts) do
+    Keyword.has_key?(opts, :sync_exclude) or
+      Keyword.get(opts, :declare_empty_sync_excludes, false)
   end
 
   defp required(opts, key) do

@@ -54,6 +54,23 @@ defmodule Commonplace.Store.ProtoChitTest do
     %{repo: repo, state_dir: state_dir, store: store, signing_context: signing_context}
   end
 
+  test "refuses emission when sync scope was not declared", context do
+    %{signing_context: signing_context} = context
+
+    assert {:error, {:sync_scope_undeclared, message}} =
+             Commonplace.ProtoChit.emit("/not/a/repository", ["commit", "-m", "undeclared"],
+               root_uuid: UUID.uuid4(),
+               event_log_uuid: UUID.uuid4(),
+               state_dir: "/not/a/state-dir",
+               signing_context: signing_context,
+               store: context.store
+             )
+
+    assert message =~ "PROTO_CHIT_SYNC_EXCLUDES"
+    assert message =~ "--sync-exclude"
+    assert message =~ "--declare-empty-sync-excludes"
+  end
+
   test "cuts a real pin and lands the six-field event as the supplied principal", context do
     %{repo: repo, state_dir: state_dir, store: store, signing_context: signing_context} = context
     File.write!(Path.join(repo, "hello.txt"), "hello\n")
@@ -93,6 +110,7 @@ defmodule Commonplace.Store.ProtoChitTest do
                event_log_uuid: event_log_uuid,
                state_dir: state_dir,
                trace_file: trace,
+               sync_excludes: [],
                signing_context: signing_context,
                store: store
              )
