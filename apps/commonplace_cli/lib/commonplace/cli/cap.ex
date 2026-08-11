@@ -161,6 +161,10 @@ defmodule Commonplace.CLI.Cap do
 
         System.halt(1)
 
+      {:error, :subtree_scope_not_delegable} ->
+        IO.puts(:stderr, Commonplace.CertMint.refusal_text(:subtree_scope_not_delegable))
+        System.halt(1)
+
       {:error, reason} ->
         IO.puts(:stderr, "cap #{kind} failed: #{inspect(reason)}")
         System.halt(1)
