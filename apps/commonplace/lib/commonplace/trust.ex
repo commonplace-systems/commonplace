@@ -194,12 +194,14 @@ defmodule Commonplace.Trust do
   The `@verb` editor writes ONLY sandboxed safe-verbs (`save_safe_verb`: lint +
   AST-allowlist + facade-bound), whose commit-time gate is `DefineVerbGate`
   (`:define_verb` over the verb's section) — NOT the raw-code `:execute` / Gate-B
-  lane, which a citizen never holds and which the editor never reaches. So this
-  pre-check mirrors THAT gate: authorized iff a trusted identity (the node), or a
+  lane. `:execute` is delegable by explicit cert, though no cert carrying it had
+  been minted before CX-b38c; the editor never reaches that lane. So this pre-check
+  mirrors THAT gate: authorized iff a trusted identity (the node), or a
   verified cert granting `:define_verb` over the target's zone — exactly the
   citizenship `{:subtree,home}[:define_verb]` grant (CX-fogy). This is the
-  sandboxed-authoring lane; raw executable engine code stays node-signed-only
-  (Gate-B, `authorized_to_execute?`) and is untouched by this cert. Under
+  sandboxed-authoring lane; raw executable engine code requires node authority or
+  an explicit `:execute` cert (Gate-B, `authorized_to_execute?`) and is untouched
+  by this `:define_verb` cert. Under
   `accept_unsigned` (the permissive dev gate) the save would land, so this returns
   `true` (editor stays fully functional). Fail-closed on any error.
 
@@ -239,13 +241,16 @@ defmodule Commonplace.Trust do
 
     * non-code (data)                              -> `:write`
     * a valid SANDBOXED safe-verb (allowlist-clean, wrapper-shaped) -> `:define_verb`
-    * raw / unparseable / unsafe code              -> `:execute` (Gate-B, node-only)
+    * raw / unparseable / unsafe code              -> `:execute`
+      (Gate-B; node or explicit cert)
 
   The classifier IS the safety validator (the SAME `check_wrapped` `SafeVerb.compile`
   runs — no skew), so "classified safe" == "sandboxed by construction": a raw RCE
   payload cannot pass the facade-bound allowlist, so it is forced to `:execute` ->
-  node-only -> denied for a citizen. FAIL-CLOSED: any error/uncertainty resolves to
-  `:execute` (the highest bar). The four load-bearing conditions (plan #7537):
+  denied unless the signer has node authority or an explicit `:execute` cert. No
+  cert carrying `:execute` had been minted before CX-b38c. FAIL-CLOSED: any
+  error/uncertainty resolves to `:execute` (the highest bar). The four load-bearing
+  conditions (plan #7537):
   (i) classify the AFTER-state, (ii) one shared validator commit+compile,
   (iii) fail-closed to :execute, (iv) Gate-B untouched for raw.
 
@@ -257,8 +262,8 @@ defmodule Commonplace.Trust do
   `:safe_verb_profile`). So Trust no longer references the MUD domain, and a MUD
   change can only ADD-within-safety (a facade allow-set), never weaken the core
   wall. FAIL-CLOSED: an absent/invalid profile → the write classifies `:execute`
-  (node-only), never `:define_verb`. The classifier is isolated to
-  `safe_verb_code?/1`.
+  (node authority or explicit cert), never `:define_verb`. The classifier is
+  isolated to `safe_verb_code?/1`.
   """
   @spec authorized_to_write?(Commit.t(), {:doc, String.t()}, config(), GenServer.server()) ::
           :ok | {:error, term()}
