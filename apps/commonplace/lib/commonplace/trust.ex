@@ -1316,6 +1316,48 @@ defmodule Commonplace.Trust do
     end
   end
 
+  @local_read_gate_values [:permissive, :dry_run, :enforce]
+
+  @doc """
+  Resolve the local-read gate at its single policy site.
+
+  Absence preserves the permissive posture (`:permissive`). Runtime
+  configuration keeps OS-environment input as a string so this function can
+  map only the three declared values without minting atoms. Any other explicit
+  value is a boot configuration error and raises the named refusal.
+  """
+  @spec local_read_gate() :: :permissive | :dry_run | :enforce
+  def local_read_gate, do: local_read_gate_resolution().value
+
+  @doc false
+  @spec local_read_gate_resolution() :: %{
+          value: :permissive | :dry_run | :enforce,
+          source: :absent_defaulted | :env_set
+        }
+  def local_read_gate_resolution do
+    case Application.get_env(:commonplace, :local_read_gate) do
+      nil ->
+        %{value: :permissive, source: :absent_defaulted}
+
+      value when value in @local_read_gate_values ->
+        %{value: value, source: :env_set}
+
+      "permissive" ->
+        %{value: :permissive, source: :env_set}
+
+      "dry_run" ->
+        %{value: :dry_run, source: :env_set}
+
+      "enforce" ->
+        %{value: :enforce, source: :env_set}
+
+      invalid ->
+        raise ArgumentError,
+              "Commonplace.Trust local_read_gate refusal: invalid value " <>
+                "#{inspect(invalid)}; valid values: permissive | dry_run | enforce"
+    end
+  end
+
   @capture_count_fields [
     :emitted,
     :offered,
@@ -1505,8 +1547,9 @@ defmodule Commonplace.Trust do
     * `local_write_gate` — via `local_write_gate/0`, the single resolver used
       by every local-write reader. It defaults absence to `:dry_run` and
       refuses values outside `:off | :dry_run | :enforce`.
-    * `local_read_gate` — `Application.get_env(:commonplace, :local_read_gate,
-      :permissive)`, the same default `Trust.Read.gate/3` applies.
+    * `local_read_gate` — via `local_read_gate/0`, the single resolver used
+      by every local-read reader. It defaults absence to `:permissive` and
+      refuses values outside `:permissive | :dry_run | :enforce`.
 
   `strict` is a derived summary, true only when ALL THREE lanes are at
   their strictest setting (`accept_unsigned: false`, both gates `:enforce`)
@@ -1524,7 +1567,7 @@ defmodule Commonplace.Trust do
   def posture do
     cfg = config()
     local_write_gate = local_write_gate()
-    local_read_gate = Application.get_env(:commonplace, :local_read_gate, :permissive)
+    local_read_gate = local_read_gate()
 
     %{
       accept_unsigned: cfg.accept_unsigned,

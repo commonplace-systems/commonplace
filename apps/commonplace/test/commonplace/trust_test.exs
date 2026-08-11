@@ -315,4 +315,50 @@ defmodule Commonplace.TrustTest do
                    fn -> Trust.local_write_gate() end
     end
   end
+
+  describe "local_read_gate/0 (S12)" do
+    setup do
+      old_gate = Application.get_env(:commonplace, :local_read_gate)
+
+      on_exit(fn ->
+        if is_nil(old_gate),
+          do: Application.delete_env(:commonplace, :local_read_gate),
+          else: Application.put_env(:commonplace, :local_read_gate, old_gate)
+      end)
+
+      :ok
+    end
+
+    test "resolves an absent value to permissive" do
+      Application.delete_env(:commonplace, :local_read_gate)
+      assert Trust.local_read_gate() == :permissive
+    end
+
+    test "resolves each valid value to itself" do
+      for value <- [:permissive, :dry_run, :enforce] do
+        Application.put_env(:commonplace, :local_read_gate, value)
+        assert Trust.local_read_gate() == value
+      end
+    end
+
+    test "resolves each valid runtime env string without minting an atom" do
+      for {raw, value} <- [
+            {"permissive", :permissive},
+            {"dry_run", :dry_run},
+            {"enforce", :enforce}
+          ] do
+        Application.put_env(:commonplace, :local_read_gate, raw)
+        assert Trust.local_read_gate() == value
+      end
+    end
+
+    test "invalid values raise the named refusal with the complete valid set" do
+      Application.put_env(:commonplace, :local_read_gate, "invalid-s12-value")
+
+      assert_raise ArgumentError,
+                   "Commonplace.Trust local_read_gate refusal: invalid value " <>
+                     "\"invalid-s12-value\"; valid values: permissive | dry_run | enforce",
+                   fn -> Trust.local_read_gate() end
+    end
+  end
 end

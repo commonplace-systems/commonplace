@@ -7,9 +7,10 @@ defmodule Commonplace.Application do
 
   @impl true
   def start(_type, _args) do
-    # S6v2: resolve before starting any child so an invalid explicit gate
-    # refuses this boot at the single policy site.
+    # S6v2/S12: resolve both local gates before starting any child so an
+    # invalid explicit value refuses this boot at the single policy site.
     _local_write_gate = Commonplace.Trust.local_write_gate()
+    _local_read_gate = Commonplace.Trust.local_read_gate()
 
     # CX-qvrz: this runs synchronously in the application callback, before
     # Commonplace.Supervisor (and therefore every store/MUD caller of
@@ -268,7 +269,7 @@ defmodule Commonplace.Application do
   def log_trust_posture_at_boot do
     posture = Commonplace.Trust.posture()
     write_gate = Commonplace.Trust.local_write_gate_resolution()
-    read_source = configured_source(:local_read_gate)
+    read_gate = Commonplace.Trust.local_read_gate_resolution()
     trust_source = trust_config_source()
     reflog_source = external_env_source("COMMONPLACE_REFLOG_ON_BOOT")
     scheduler_source = external_env_source("COMMONPLACE_SCHEDULER_ON_BOOT")
@@ -279,7 +280,7 @@ defmodule Commonplace.Application do
     Logger.info("""
     Commonplace.Trust posture at boot:
       local_write_gate: #{inspect(write_gate.value)} (#{source_label(write_gate.source)})
-      local_read_gate: #{inspect(posture.local_read_gate)} (#{source_label(read_source)})
+      local_read_gate: #{inspect(read_gate.value)} (#{source_label(read_gate.source)})
       trust.accept_unsigned: #{inspect(posture.accept_unsigned)} (#{source_label(trust_source)})
       reflog_on_boot: #{inspect(Application.get_env(:commonplace, :reflog_on_boot, false))} (#{source_label(reflog_source)})
       scheduler_on_boot: #{inspect(Application.get_env(:commonplace, :scheduler_on_boot, false))} (#{source_label(scheduler_source)})
@@ -289,13 +290,6 @@ defmodule Commonplace.Application do
     """)
 
     :ok
-  end
-
-  defp configured_source(key) do
-    case Application.fetch_env(:commonplace, key) do
-      {:ok, _value} -> :env_set
-      :error -> :absent_defaulted
-    end
   end
 
   defp external_env_source(name) do

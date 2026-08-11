@@ -150,7 +150,9 @@ end
 # this var), mirroring the write-gate bridge above exactly. Values:
 # permissive | dry_run | enforce.
 if gate = System.get_env("COMMONPLACE_LOCAL_READ_GATE") do
-  config :commonplace, local_read_gate: String.to_atom(gate)
+  # Keep the raw string inert. Commonplace.Trust.local_read_gate/0 is the
+  # single parser/resolver and refuses values outside the declared set.
+  config :commonplace, local_read_gate: gate
 end
 
 # CX-pm68: `CommitStore.init/1` REFUSES to boot when the commits store is

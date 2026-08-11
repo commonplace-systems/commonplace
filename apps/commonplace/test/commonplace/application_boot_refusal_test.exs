@@ -37,4 +37,21 @@ defmodule Commonplace.ApplicationBootRefusalTest do
     File.rm_rf!(Path.join(dir, "node_signing_public_keys.json"))
     assert :ok = Commonplace.Application.publish_public_keys_or_refuse!()
   end
+
+  test "invalid local read gate refuses application start before supervisor children" do
+    old_gate = Application.fetch_env(:commonplace, :local_read_gate)
+    Application.put_env(:commonplace, :local_read_gate, "invalid-s12-boot-value")
+
+    on_exit(fn ->
+      case old_gate do
+        {:ok, value} -> Application.put_env(:commonplace, :local_read_gate, value)
+        :error -> Application.delete_env(:commonplace, :local_read_gate)
+      end
+    end)
+
+    assert_raise ArgumentError,
+                 "Commonplace.Trust local_read_gate refusal: invalid value " <>
+                   "\"invalid-s12-boot-value\"; valid values: permissive | dry_run | enforce",
+                 fn -> Commonplace.Application.start(:normal, []) end
+  end
 end

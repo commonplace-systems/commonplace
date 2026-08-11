@@ -39,4 +39,22 @@ defmodule Commonplace.ApplicationBootPostureTest do
 
     assert log =~ "local_write_gate: :enforce (env-set)"
   end
+
+  test "boot fact distinguishes an absent-defaulted read gate" do
+    Application.delete_env(:commonplace, :local_read_gate)
+
+    log =
+      capture_log([level: :info], fn -> Commonplace.Application.log_trust_posture_at_boot() end)
+
+    assert log =~ "local_read_gate: :permissive (ABSENT — defaulted)"
+  end
+
+  test "boot fact distinguishes an env-set read gate after resolution" do
+    Application.put_env(:commonplace, :local_read_gate, "enforce")
+
+    log =
+      capture_log([level: :info], fn -> Commonplace.Application.log_trust_posture_at_boot() end)
+
+    assert log =~ "local_read_gate: :enforce (env-set)"
+  end
 end
