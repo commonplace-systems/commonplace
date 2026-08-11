@@ -1,0 +1,133 @@
+==> file_system
+Compiling 7 files (.ex)
+Generated file_system app
+==> stream_data
+Compiling 3 files (.ex)
+Generated stream_data app
+==> mime
+Compiling 1 file (.ex)
+Generated mime app
+==> nimble_options
+Compiling 3 files (.ex)
+Generated nimble_options app
+==> fine
+Compiling 1 file (.ex)
+Generated fine app
+===> Analyzing applications...
+===> Compiling unicode_util_compat
+===> Analyzing applications...
+===> Compiling idna
+===> Analyzing applications...
+===> Compiling telemetry
+==> telemetry_metrics
+Compiling 7 files (.ex)
+Generated telemetry_metrics app
+===> Analyzing applications...
+===> Compiling telemetry_poller
+==> thousand_island
+Compiling 18 files (.ex)
+Generated thousand_island app
+==> jason
+Compiling 10 files (.ex)
+Generated jason app
+==> libcluster
+Compiling 13 files (.ex)
+Generated libcluster app
+==> esbuild
+Compiling 4 files (.ex)
+Generated esbuild app
+==> phoenix_html
+Compiling 6 files (.ex)
+Generated phoenix_html app
+==> phoenix_template
+Compiling 4 files (.ex)
+Generated phoenix_template app
+==> phoenix_pubsub
+Compiling 12 files (.ex)
+Generated phoenix_pubsub app
+==> plug_crypto
+Compiling 5 files (.ex)
+Generated plug_crypto app
+==> hpax
+Compiling 4 files (.ex)
+Generated hpax app
+==> mint
+Compiling 1 file (.erl)
+Compiling 20 files (.ex)
+Generated mint app
+==> peri
+Compiling 7 files (.ex)
+Generated peri app
+===> Analyzing applications...
+===> Compiling mimerl
+==> dns_cluster
+Compiling 1 file (.ex)
+Generated dns_cluster app
+==> ssl_verify_fun
+Compiling 7 files (.erl)
+Generated ssl_verify_fun app
+==> cubdb
+Compiling 14 files (.ex)
+Generated cubdb app
+===> Analyzing applications...
+===> Compiling certifi
+==> plug
+Compiling 1 file (.erl)
+Compiling 42 files (.ex)
+Generated plug app
+===> Analyzing applications...
+===> Compiling parse_trans
+==> nimble_pool
+Compiling 2 files (.ex)
+Generated nimble_pool app
+==> finch
+Compiling 14 files (.ex)
+Generated finch app
+==> req
+Compiling 19 files (.ex)
+Generated req app
+==> anubis_mcp
+Compiling 73 files (.ex)
+Generated anubis_mcp app
+===> Analyzing applications...
+===> Compiling metrics
+===> Analyzing applications...
+===> Compiling hackney
+==> tesla
+Compiling 41 files (.ex)
+Generated tesla app
+==> web_driver_client
+Compiling 97 files (.ex)
+Generated web_driver_client app
+==> tailwind
+Compiling 3 files (.ex)
+Generated tailwind app
+==> elixir_make
+Compiling 8 files (.ex)
+Generated elixir_make app
+==> cc_precompiler
+Compiling 3 files (.ex)
+Generated cc_precompiler app
+==> lazy_html
+Compiling 3 files (.ex)
+Generated lazy_html app
+==> websock
+Compiling 1 file (.ex)
+Generated websock app
+==> bandit
+Compiling 54 files (.ex)
+Generated bandit app
+==> websock_adapter
+Compiling 4 files (.ex)
+Generated websock_adapter app
+==> phoenix
+could not compile dependency :phoenix, "mix compile" failed. Errors may have been logged above. You can recompile this dependency with "mix deps.compile phoenix --force", update it with "mix deps.update phoenix" or clean it with "mix deps.clean phoenix"
+** (File.CopyError) could not copy from "/home/jes/commonplace/deps/phoenix/installer/templates/phx_web/components/core_components.ex" to "/home/jes/commonplace/deps/phoenix/priv/templates/phx.gen.live/core_components.ex": read-only file system
+    (elixir 1.18.4) lib/file.ex:865: File.cp!/3
+    (mix 1.18.4) lib/mix/task.ex:574: Mix.Task.run_alias/6
+    (mix 1.18.4) lib/mix/tasks/deps.compile.ex:188: anonymous fn/2 in Mix.Tasks.Deps.Compile.do_mix/2
+    (mix 1.18.4) lib/mix/project.ex:476: Mix.Project.in_project/4
+    (elixir 1.18.4) lib/file.ex:1665: File.cd!/2
+    (mix 1.18.4) lib/mix/dep.ex:266: Mix.Dep.in_dependency/3
+    (mix 1.18.4) lib/mix/tasks/deps.compile.ex:92: anonymous fn/4 in Mix.Tasks.Deps.Compile.compile/2
+    (elixir 1.18.4) lib/enum.ex:1714: Enum."-map/2-lists^map/1-1-"/2

@@ -1,0 +1,29 @@
+run: initial seed 101 umbrella attempt
+status: VOID; no test total reported
+command: mix test --seed 101 > run-seed101.log 2>&1; echo "rc=$?"
+
+load-delay observations before run:
+Tue Aug 11 02:36:16 UTC 2026: 4.79 5.81 6.44 4/917 4
+Tue Aug 11 02:36:59 UTC 2026: 4.86 5.68 6.36 3/899 3
+Tue Aug 11 02:37:55 UTC 2026: 3.84 5.27 6.18 1/870 4
+Tue Aug 11 02:38:49 UTC 2026: 2.05 4.52 5.87 1/878 4
+Tue Aug 11 02:39:42 UTC 2026: 1.35 3.93 5.59 1/881 4
+
+before:
+date -u: Tue Aug 11 02:39:52 UTC 2026
+/proc/loadavg: 1.22 3.82 5.54 1/880 4
+git rev-parse HEAD: 20017cb94e98d2a65a2822cb9f621983cd653264
+worktree path: /home/jes/sol-measure
+MIX_ENV: <unset>
+listener assertion command: curl -s -m 2 -o /dev/null http://localhost:5199/; echo rc=$?
+listener assertion output: rc=7
+
+after:
+date -u: Tue Aug 11 02:40:48 UTC 2026
+/proc/loadavg: 2.77 3.83 5.44 2/880 4
+git rev-parse HEAD: 20017cb94e98d2a65a2822cb9f621983cd653264
+worktree path: /home/jes/sol-measure
+MIX_ENV: <unset>
+command output: rc=1
+total test count: none reported
+raw output: run-seed101-void-compile.log
