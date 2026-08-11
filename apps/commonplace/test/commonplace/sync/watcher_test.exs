@@ -5,6 +5,8 @@ defmodule Commonplace.Sync.WatcherTest do
   """
   use ExUnit.Case
 
+  import ExUnit.CaptureLog
+
   alias Commonplace.Sync.Watcher
   alias Commonplace.Tree.Schema
   alias Commonplace.Document.ContentType
@@ -256,6 +258,83 @@ defmodule Commonplace.Sync.WatcherTest do
       doc = Yelixer.Doc.new()
       {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
       assert ContentType.get_content(doc) == "modified content"
+    end
+  end
+
+  describe "binary-file floor (CX-g8r1)" do
+    test "a binary among text files is named, skipped, and does not abort the pass",
+         %{store: store, watch_dir: dir, root_uuid: root} do
+      text_path = Path.join(dir, "landed.txt")
+      binary_path = Path.join(dir, "excluded.bin")
+      File.write!(text_path, "land me")
+      File.write!(binary_path, <<0xFF, 0xFE, 0x00>>)
+
+      log =
+        capture_log(fn ->
+          report = Watcher.sync_recursive(root, dir, store)
+
+          assert report.encountered == Enum.sort([text_path, binary_path])
+          assert report.landed == [text_path]
+          assert report.refused == []
+
+          assert report.skipped == [
+                   %{path: binary_path, reason: "excluded-binary"}
+                 ]
+
+          assert MapSet.new(report.encountered) ==
+                   MapSet.union(
+                     MapSet.new(report.landed ++ report.refused),
+                     MapSet.new(Enum.map(report.skipped, & &1.path))
+                   )
+        end)
+
+      assert log =~ binary_path
+      assert log =~ "excluded-binary"
+
+      root_doc = load_schema(root, store)
+      assert {:ok, _entry} = Schema.get_entry(root_doc, "landed.txt")
+      assert :error = Schema.get_entry(root_doc, "excluded.bin")
+    end
+
+    test "modifying a text file to binary leaves its stored content unchanged and reports the skip",
+         %{store: store, watch_dir: dir, root_uuid: root} do
+      path = Path.join(dir, "kept.txt")
+      File.write!(path, "original")
+      Watcher.sync_recursive(root, dir, store)
+
+      root_doc = load_schema(root, store)
+      {:ok, entry} = Schema.get_entry(root_doc, "kept.txt")
+      {:ok, before_commit} = CommitStore.latest_commit(store, entry.node_id)
+
+      File.write!(path, <<0x80, 0x81>>)
+      report = Watcher.sync_recursive(root, dir, store)
+
+      assert report.encountered == [path]
+      assert report.landed == []
+      assert report.refused == []
+      assert report.skipped == [%{path: path, reason: "excluded-binary"}]
+
+      assert {:ok, after_commit} = CommitStore.latest_commit(store, entry.node_id)
+      assert after_commit.id == before_commit.id
+
+      doc = Yelixer.Doc.new()
+      assert {:ok, doc} = Yelixer.Encoding.apply_update(doc, after_commit.update)
+      assert ContentType.get_content(doc) == "original"
+    end
+
+    test "an all-text pass reports every arrived file as landed",
+         %{store: store, watch_dir: dir, root_uuid: root} do
+      first = Path.join(dir, "first.txt")
+      second = Path.join(dir, "second.txt")
+      File.write!(first, "first")
+      File.write!(second, "second")
+
+      report = Watcher.sync_recursive(root, dir, store)
+
+      assert report.encountered == Enum.sort([first, second])
+      assert report.landed == Enum.sort([first, second])
+      assert report.refused == []
+      assert report.skipped == []
     end
   end
 

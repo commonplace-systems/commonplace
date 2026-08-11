@@ -31,7 +31,10 @@ member order has no meaning.
         "doc": "bc14a777-…",
         "commit": "64 lowercase hex characters"
       }
-    }
+    },
+    "exclusions": [
+      {"path": "priv/archive.bin", "reason": "excluded-binary"}
+    ]
   },
   "predecessor-ref": {
     "branch": "main",
@@ -52,7 +55,7 @@ field in the event body.
 | `verb` | Required string enum: `commit`, `merge`, `branch`, or `rewrite`. | Classification of the intercepted git argv before real git executes. `commit --amend` is `rewrite`; `merge`/`pull` is `merge`; ref/checkout operations are `branch`; history-changing rewrite operations are `rewrite`. | An arbitrary git subcommand, a free-form action name, or an event identity. |
 | `author-principal` | Required non-empty string naming a Commonplace principal. | `SigningContext.identity_uuid` used for the gated event-log write. The enclosing commit's `signer_id` and Ed25519 signature prove which key wrote for this principal. | `user.name`, `GIT_AUTHOR_NAME`, an inferred OS account, a git author string, or an unsigned claim. |
 | `message` | Required UTF-8 string; empty is permitted when git supplied no human message. | First explicit `-m`/`--message` value when present; otherwise the human-readable operands of the tapped command. | Event identity, a canonical serialization of argv, or permission to discard the original argv from a WAL record. |
-| `proto-pin` | Required `commonplace-reflog-path-pin/v1` object on a landed event. `checkpoint.doc` is the reflog `__snapshot` document UUID; `checkpoint.commit` is its 32-byte commit id encoded as 64 lowercase hex characters. `entries` maps checkout-relative POSIX paths to `{doc, commit}` pairs, where `doc` is a document UUID and `commit` is a 32-byte id encoded as 64 lowercase hex characters. | Cut only after the synchronous disk→CRDT sync pass returns and a second scan proves no changes remain. The pin is the real reflog checkpoint resolved through `Commonplace.Reflog.Restore`; the checkpoint and sync writes use the same explicit signing context and ordinary gated write path. | A git tree id, a git sha, a content-hash placeholder, an eventually-consistent/torn scan, or a pin reconstructed after the event silently. |
+| `proto-pin` | Required `commonplace-reflog-path-pin/v1` object on a landed event. `checkpoint.doc` is the reflog `__snapshot` document UUID; `checkpoint.commit` is its 32-byte commit id encoded as 64 lowercase hex characters. `entries` maps checkout-relative POSIX paths to `{doc, commit}` pairs, where `doc` is a document UUID and `commit` is a 32-byte id encoded as 64 lowercase hex characters. When the sync pass skips files, `exclusions` is a path-sorted list of `{path, reason}` objects; binary files use reason `excluded-binary`. The field is absent when the list is empty, preserving all-text pins exactly. This is an additive v1 field, so the format remains `commonplace-reflog-path-pin/v1`: existing readers that ignore unknown object members retain their meaning, while witnesses aware of the field can enumerate what the pin excludes. | Cut only after the synchronous disk→CRDT sync pass returns and a second scan proves no changes remain other than the pin-declared exclusions. The pin is the real reflog checkpoint resolved through `Commonplace.Reflog.Restore`; the checkpoint and sync writes use the same explicit signing context and ordinary gated write path. | A git tree id, a git sha, a content-hash placeholder, an eventually-consistent/torn scan, or a pin reconstructed after the event silently. |
 | `predecessor-ref` | Required object: `{branch: string, event-refs: [hex]}`. `event-refs` has zero entries for a first punctuation, one for an ordinary per-branch successor, and up to two for a merge when both branch tips are known. Each ref names the enclosing substrate commit of an earlier event. | A worktree-local predecessor map, advanced only after the signed event lands. The current branch contributes its last event ref; a named merge source contributes the second. | A timestamp ordering, a git parent sha, a branch name by itself, or proof that an absent merge parent never existed. |
 | `git-sha` | Required nullable string. Non-null values are the 40- or 64-hex object name returned by `git rev-parse --verify HEAD` immediately before real git executes. | Read from the disposable local git scaffolding at tap time. `null` means there was no resolvable `HEAD` (for example, the first commit). | Event identity, a proto-pin, a predecessor reference, authority, or the resulting sha of an operation that has not executed yet. **Annotation only.** |
 
@@ -62,7 +65,8 @@ For a landed event the required order is:
 
 1. synchronously import the checkout's source state through the signed sync
    path, excluding `.git`, `.commonplace`, `_build`, and `deps`;
-2. scan again and refuse emission if any disk/CRDT changes remain;
+2. scan again and refuse emission if any disk/CRDT changes remain other than
+   files named in the pin's `exclusions` list;
 3. create and resolve the signed reflog checkpoint;
 4. append this six-field object to the red event log using the principal's
    `SigningContext` through `CommitStoreClient` and the local trust gate;
@@ -153,4 +157,3 @@ usage therefore forbids aliases that expand to history/ref mutations.
 5. **Event-log partitioning.** The pilot receives one configured event-log
    UUID. The stable rule for one-log-per-checkout versus one-log-per-principal
    remains deliberately unsettled.
-

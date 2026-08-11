@@ -129,6 +129,7 @@ defmodule Commonplace.Store.ProtoChitTest do
     assert event["author-principal"] == signing_context.identity_uuid
     assert event["message"] == "punctuate"
     assert event["proto-pin"]["format"] == "commonplace-reflog-path-pin/v1"
+    refute Map.has_key?(event["proto-pin"], "exclusions")
 
     assert event["proto-pin"]["entries"]["hello.txt"] == %{
              "doc" => file_uuid,
@@ -143,6 +144,66 @@ defmodule Commonplace.Store.ProtoChitTest do
     assert Base.encode16(landed.id, case: :lower) == event_ref
     assert String.starts_with?(landed.signer_id, signing_context.identity_uuid <> "@")
     assert RedLog.load(event_log_uuid, store) |> RedLog.read() == [event]
+  end
+
+  test "declares binary skips in the persisted event's pin", context do
+    %{repo: repo, state_dir: state_dir, store: store, signing_context: signing_context} = context
+    File.write!(Path.join(repo, "landed.txt"), "text\n")
+    File.write!(Path.join(repo, "excluded.bin"), <<0xFF, 0x00>>)
+    File.write!(Path.join(repo, "kept.txt"), <<0x80, 0x81>>)
+    init_git(repo)
+
+    kept_uuid = UUID.uuid4()
+    kept_doc = Yelixer.Doc.new() |> ContentType.create(:text, "kept.txt")
+    kept_doc = ContentType.insert_text(kept_doc, 0, "original")
+
+    assert %Commonplace.Store.Commit{} =
+             CommitStoreClient.create_chained_commit(
+               store,
+               kept_uuid,
+               Yelixer.Encoding.encode_update(kept_doc),
+               %{},
+               signing_context: signing_context
+             )
+
+    {:ok, kept_before} = CommitStore.latest_commit(store, kept_uuid)
+    root_uuid = UUID.uuid4()
+    root_doc = Schema.new_schema() |> Schema.add_file("kept.txt", kept_uuid)
+
+    assert %Commonplace.Store.Commit{} =
+             CommitStoreClient.create_chained_commit(
+               store,
+               root_uuid,
+               Yelixer.Encoding.encode_update(root_doc),
+               %{},
+               signing_context: signing_context
+             )
+
+    event_log_uuid = UUID.uuid4()
+
+    assert {:ok, %{event: event}} =
+             Commonplace.ProtoChit.emit(repo, ["commit", "-m", "binary floor"],
+               root_uuid: root_uuid,
+               event_log_uuid: event_log_uuid,
+               state_dir: state_dir,
+               sync_excludes: [],
+               signing_context: signing_context,
+               store: store
+             )
+
+    assert event["proto-pin"]["exclusions"] == [
+             %{"path" => "excluded.bin", "reason" => "excluded-binary"},
+             %{"path" => "kept.txt", "reason" => "excluded-binary"}
+           ]
+
+    assert Map.has_key?(event["proto-pin"]["entries"], "landed.txt")
+    assert Map.has_key?(event["proto-pin"]["entries"], "kept.txt")
+    refute Map.has_key?(event["proto-pin"]["entries"], "excluded.bin")
+
+    assert {:ok, kept_after} = CommitStore.latest_commit(store, kept_uuid)
+    assert kept_after.id == kept_before.id
+
+    assert RedLog.load(event_log_uuid, store) |> RedLog.read() |> List.last() == event
   end
 
   defp init_git(repo) do

@@ -147,7 +147,7 @@ defmodule Commonplace.Sync.Watcher do
     )
 
     changes = detect_changes(root_uuid, dir, store, opts)
-    apply_changes(changes, root_uuid, dir, store, opts)
+    report = apply_changes(changes, root_uuid, dir, store, opts)
 
     :telemetry.execute(
       [:commonplace, :sync, :stop],
@@ -159,25 +159,32 @@ defmodule Commonplace.Sync.Watcher do
     schema_doc = load_schema(root_uuid, store)
     exclude_names = Keyword.get(opts, :exclude_names, []) |> MapSet.new()
 
-    Schema.list_entries(schema_doc)
-    |> Enum.each(fn entry ->
-      if entry.type == :dir and not MapSet.member?(exclude_names, entry.name) do
-        sub_dir = Path.join(dir, entry.name)
+    child_reports =
+      Schema.list_entries(schema_doc)
+      |> Enum.map(fn entry ->
+        if entry.type == :dir and not MapSet.member?(exclude_names, entry.name) do
+          sub_dir = Path.join(dir, entry.name)
 
-        cond do
-          symlinked_dir?(sub_dir) ->
-            Logger.warning(
-              "Watcher: skipping symlinked directory #{sub_dir} (not followed, prevents cycle)"
-            )
+          cond do
+            symlinked_dir?(sub_dir) ->
+              Logger.warning(
+                "Watcher: skipping symlinked directory #{sub_dir} (not followed, prevents cycle)"
+              )
 
-          File.dir?(sub_dir) ->
-            sync_recursive(entry.node_id, sub_dir, store, opts)
+              empty_report()
 
-          true ->
-            :ok
+            File.dir?(sub_dir) ->
+              sync_recursive(entry.node_id, sub_dir, store, opts)
+
+            true ->
+              empty_report()
+          end
+        else
+          empty_report()
         end
-      end
-    end)
+      end)
+
+    merge_reports([report | child_reports])
   end
 
   # A directory reached via a symlink is never recursed into. Commonplace's
@@ -202,21 +209,26 @@ defmodule Commonplace.Sync.Watcher do
   Creates/updates documents and updates the schema for each change.
   """
   def apply_changes(changes, root_uuid, _dir, store \\ CommitStoreClient, opts \\ []) do
-    Enum.each(changes, fn change ->
-      case change.type do
-        :created ->
-          apply_create(change, root_uuid, store, opts)
+    changes
+    |> Enum.map(fn change ->
+      outcome =
+        case change.type do
+          :created ->
+            apply_create(change, root_uuid, store, opts)
 
-        :modified ->
-          apply_modify(change, root_uuid, store, opts)
+          :modified ->
+            apply_modify(change, root_uuid, store, opts)
 
-        :deleted ->
-          apply_delete(change, root_uuid, store, opts)
+          :deleted ->
+            apply_delete(change, root_uuid, store, opts)
 
-        :renamed ->
-          apply_rename(change, root_uuid, store, opts)
-      end
+          :renamed ->
+            apply_rename(change, root_uuid, store, opts)
+        end
+
+      {change, normalize_outcome(outcome)}
     end)
+    |> report_changes()
   end
 
   defp apply_create(%Change{is_dir: true} = change, root_uuid, store, opts) do
@@ -240,11 +252,19 @@ defmodule Commonplace.Sync.Watcher do
 
       {:error, reason} ->
         warn_unreadable(change.path, reason)
-        :ok
+        {:skipped, "unreadable"}
     end
   end
 
   defp do_apply_create_file(change, content, root_uuid, store, opts) do
+    if String.valid?(content) do
+      do_apply_text_create_file(change, content, root_uuid, store, opts)
+    else
+      skip_binary(change.path)
+    end
+  end
+
+  defp do_apply_text_create_file(change, content, root_uuid, store, opts) do
     # Create document with envelope.
     # CX-pyi: stable client_id so subsequent apply_modify writes (which
     # also use this id) share one slot in the state vector instead of
@@ -281,15 +301,23 @@ defmodule Commonplace.Sync.Watcher do
 
           {:error, reason} ->
             warn_unreadable(change.path, reason)
-            :ok
+            {:skipped, "unreadable"}
         end
 
       :error ->
-        :ok
+        {:refused, "schema-entry-missing"}
     end
   end
 
   defp do_apply_modify(change, entry, new_content, store, opts) do
+    if String.valid?(new_content) do
+      do_apply_text_modify(change, entry, new_content, store, opts)
+    else
+      skip_binary(change.path)
+    end
+  end
+
+  defp do_apply_text_modify(change, entry, new_content, store, opts) do
     # CX-pyi: load + mutate pattern. Reconstruct the existing doc
     # under a stable client_id, compute the text diff between the
     # previous content and the disk content, and apply it as
@@ -468,6 +496,65 @@ defmodule Commonplace.Sync.Watcher do
       nil -> []
       signing_context -> [signing_context: signing_context]
     end
+  end
+
+  defp skip_binary(path) do
+    reason = "excluded-binary"
+    Logger.warning("Watcher: skipping binary file #{path} (#{reason})")
+    {:skipped, reason}
+  end
+
+  defp normalize_outcome({:skipped, reason}), do: {:skipped, reason}
+  defp normalize_outcome({:refused, reason}), do: {:refused, reason}
+  defp normalize_outcome({:error, reason}), do: {:refused, inspect(reason)}
+  defp normalize_outcome(_landed), do: :landed
+
+  defp report_changes(results) do
+    Enum.reduce(results, empty_report(), fn
+      {%Change{is_dir: true}, _outcome}, report ->
+        report
+
+      {%Change{path: path}, :landed}, report ->
+        %{report | encountered: [path | report.encountered], landed: [path | report.landed]}
+
+      {%Change{path: path}, {:refused, _reason}}, report ->
+        %{report | encountered: [path | report.encountered], refused: [path | report.refused]}
+
+      {%Change{path: path}, {:skipped, reason}}, report ->
+        exclusion = %{path: path, reason: reason}
+
+        %{
+          report
+          | encountered: [path | report.encountered],
+            skipped: [exclusion | report.skipped]
+        }
+    end)
+    |> sort_report()
+  end
+
+  defp empty_report do
+    %{encountered: [], landed: [], refused: [], skipped: []}
+  end
+
+  defp merge_reports(reports) do
+    Enum.reduce(reports, empty_report(), fn report, merged ->
+      %{
+        encountered: report.encountered ++ merged.encountered,
+        landed: report.landed ++ merged.landed,
+        refused: report.refused ++ merged.refused,
+        skipped: report.skipped ++ merged.skipped
+      }
+    end)
+    |> sort_report()
+  end
+
+  defp sort_report(report) do
+    %{
+      encountered: Enum.sort(report.encountered),
+      landed: Enum.sort(report.landed),
+      refused: Enum.sort(report.refused),
+      skipped: Enum.sort_by(report.skipped, & &1.path)
+    }
   end
 
   defp load_schema(uuid, store) do
