@@ -301,6 +301,72 @@ defmodule Commonplace.Bd.TicketVerbsTest do
     end
   end
 
+  describe "ticket_close" do
+    test "persists the optional reason through the atomic close", %{
+      root: root,
+      signing_context: ctx
+    } do
+      ticket = create_ticket(root, "reasoned close")
+      reason = "the acceptance evidence is complete"
+
+      assert {:ok, :tree_mutation, %{status: "closed"}} =
+               ViewActionDispatch.dispatch("ticket_close", %{
+                 args: %{"ticket" => ticket.id, "reason" => reason},
+                 signing_context: ctx,
+                 source: "test"
+               })
+
+      assert {:ok, reloaded} = Issue.show(root, ticket.id)
+      assert reloaded.closed_reason == reason
+    end
+
+    test "refuses all unknown args before closing", %{root: root, signing_context: ctx} do
+      ticket = create_ticket(root, "typo must not close")
+
+      assert {:error,
+              "ticket_close refuses unknown argument keys: \"foo\", \"resaon\". " <>
+                "Accepted keys: ticket, witnesses, reason."} =
+               ViewActionDispatch.dispatch("ticket_close", %{
+                 args: %{
+                   "ticket" => ticket.id,
+                   "reason" => "would otherwise close",
+                   "resaon" => "typo",
+                   "foo" => true
+                 },
+                 signing_context: ctx,
+                 source: "test"
+               })
+
+      assert {:ok, reloaded} = Issue.show(root, ticket.id)
+      assert reloaded.status == "open"
+      assert reloaded.closed_reason == nil
+    end
+
+    test "ticket-only close retains the existing result and nil reason", %{
+      root: root,
+      signing_context: ctx
+    } do
+      ticket = create_ticket(root, "reasonless close")
+
+      assert {:ok, :tree_mutation, details} =
+               ViewActionDispatch.dispatch("ticket_close", %{
+                 args: %{"ticket" => ticket.id},
+                 signing_context: ctx,
+                 source: "test"
+               })
+
+      assert details == %{
+               action: "ticket_close",
+               ticket: ticket.id,
+               status: "closed",
+               done_witness: []
+             }
+
+      assert {:ok, reloaded} = Issue.show(root, ticket.id)
+      assert reloaded.closed_reason == nil
+    end
+  end
+
   describe "ticket_set_status" do
     test "the closed-ticket transition path has no bare WriteGuard bypass" do
       source =
