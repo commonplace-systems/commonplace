@@ -64,7 +64,8 @@ defmodule Commonplace.Sync.DirAgent do
   alias Commonplace.Sync.{EntryAgent, SchemaCoordinator}
   alias Commonplace.Tree.{Schema, DocBuilder}
   alias Commonplace.Document.ContentType
-  alias Commonplace.Store.CommitStoreClient
+  alias Commonplace.Store.{ArtifactStore, CommitStoreClient}
+  alias Commonplace.Sync.BinaryClassifier
 
   @ignored_prefixes [".commonplace"]
 
@@ -72,6 +73,8 @@ defmodule Commonplace.Sync.DirAgent do
     :schema_uuid,
     :dir_path,
     :store,
+    :artifact_store,
+    :binary_extensions,
     :supervisor,
     children: %{}
   ]
@@ -99,10 +102,13 @@ defmodule Commonplace.Sync.DirAgent do
     schema_uuid = Keyword.fetch!(opts, :schema_uuid)
     dir_path = Keyword.fetch!(opts, :dir_path)
     store = Keyword.get(opts, :store, CommitStoreClient)
+    artifact_store = Keyword.get(opts, :artifact_store, default_artifact_store())
 
     # Ensure directory exists
     case File.mkdir_p(dir_path) do
-      :ok -> :ok
+      :ok ->
+        :ok
+
       {:error, reason} ->
         require Logger
         Logger.warning("DirAgent: failed to create #{dir_path}: #{inspect(reason)}")
@@ -115,6 +121,9 @@ defmodule Commonplace.Sync.DirAgent do
       schema_uuid: schema_uuid,
       dir_path: dir_path,
       store: store,
+      artifact_store: artifact_store,
+      binary_extensions:
+        Keyword.get(opts, :binary_extensions, BinaryClassifier.declared_extensions()),
       supervisor: supervisor,
       children: %{}
     }
@@ -231,45 +240,59 @@ defmodule Commonplace.Sync.DirAgent do
   end
 
   defp add_file_to_schema(state, name, path) do
-    content =
-      case File.read(path) do
-        {:ok, data} -> data
-        {:error, _} -> ""
-      end
     file_uuid = UUID.uuid4()
 
-    # Create the CRDT document.
-    # CX-pyi: stable client_id so subsequent writers (Watcher /
-    # EntryAgent / etc.) of this same file_uuid reuse the same SV slot
-    # instead of each minting a fresh random client.
-    doc = Yelixer.Doc.new(client_id: stable_client_id(file_uuid))
-    doc = ContentType.create(doc, :text, name)
+    case build_file_doc(state, file_uuid, name, path) do
+      {:ok, doc} ->
+        update = Yelixer.Encoding.encode_update(doc)
+        CommitStoreClient.create_commit(state.store, file_uuid, update, nil)
 
-    doc =
-      if content != "" do
-        ContentType.insert_text(doc, 0, content)
-      else
-        doc
-      end
+        SchemaCoordinator.mutate(state.schema_uuid, state.store, fn schema_doc ->
+          schema_doc = Schema.add_file(schema_doc, name, file_uuid)
+          {schema_doc, :ok}
+        end)
 
-    update = Yelixer.Encoding.encode_update(doc)
-    CommitStoreClient.create_commit(state.store, file_uuid, update, nil)
+        entry = %Schema.Entry{name: name, type: :doc, node_id: file_uuid, sync: true}
 
-    # Add to schema via coordinator
-    SchemaCoordinator.mutate(state.schema_uuid, state.store, fn schema_doc ->
-      schema_doc = Schema.add_file(schema_doc, name, file_uuid)
-      {schema_doc, :ok}
-    end)
+        case start_child(state, entry) do
+          {:ok, pid} -> %{state | children: Map.put(state.children, name, pid)}
+          _ -> state
+        end
 
-    # Spawn EntryAgent
-    entry = %Schema.Entry{name: name, type: :doc, node_id: file_uuid, sync: true}
-
-    case start_child(state, entry) do
-      {:ok, pid} ->
-        %{state | children: Map.put(state.children, name, pid)}
-
-      _ ->
+      {:error, reason} ->
+        require Logger
+        Logger.warning("DirAgent: skipping #{path} (#{inspect(reason)}; excluded-binary floor)")
         state
+    end
+  end
+
+  defp build_file_doc(state, file_uuid, name, path) do
+    base = Yelixer.Doc.new(client_id: stable_client_id(file_uuid))
+
+    case BinaryClassifier.classify(path, binary_extensions: state.binary_extensions) do
+      :text ->
+        with {:ok, content} <- File.read(path) do
+          doc = ContentType.create(base, :text, name)
+          {:ok, if(content == "", do: doc, else: ContentType.insert_text(doc, 0, content))}
+        end
+
+      {:binary, classified_by} ->
+        with {:ok, stat} <- File.stat(path),
+             {:ok, cid} <-
+               ArtifactStore.put(state.artifact_store, File.stream!(path, [], 64 * 1024)) do
+          envelope = %{
+            cid: cid,
+            size: stat.size,
+            mode: Bitwise.band(stat.mode, 0o7777),
+            classified_by: classified_by
+          }
+
+          {:ok,
+           base |> ContentType.create(:binary, name) |> ContentType.put_binary_envelope(envelope)}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -376,7 +399,9 @@ defmodule Commonplace.Sync.DirAgent do
       EntryAgent,
       doc_uuid: entry.node_id,
       file_path: Path.join(state.dir_path, entry.name),
-      store: state.store
+      store: state.store,
+      artifact_store: state.artifact_store,
+      binary_extensions: state.binary_extensions
     })
   end
 
@@ -385,7 +410,9 @@ defmodule Commonplace.Sync.DirAgent do
       __MODULE__,
       schema_uuid: entry.node_id,
       dir_path: Path.join(state.dir_path, entry.name),
-      store: state.store
+      store: state.store,
+      artifact_store: state.artifact_store,
+      binary_extensions: state.binary_extensions
     })
   end
 
@@ -424,5 +451,9 @@ defmodule Commonplace.Sync.DirAgent do
   # across writers of the same logical doc.
   defp stable_client_id(uuid) when is_binary(uuid) do
     :erlang.phash2(uuid, 0xFFFF_FFFF)
+  end
+
+  defp default_artifact_store do
+    Application.get_env(:commonplace, :data_dir, "data") |> ArtifactStore.new()
   end
 end

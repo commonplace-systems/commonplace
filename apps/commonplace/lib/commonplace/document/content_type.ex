@@ -6,17 +6,26 @@ defmodule Commonplace.Document.ContentType do
   types side by side:
 
   - the **envelope** — a YMap registered under the name `"root"` — whose
-    keys are `"_type"` (`"text" | "map" | "array" | "xml"`), `"_name"`
+    keys are `"_type"` (`"text" | "map" | "array" | "xml" | "binary"`), `"_name"`
     (a human-readable name), and any arbitrary metadata;
-  - the **content** — a separate top-level type registered under the
-    name `"content"` — holding the actual payload. Its Yjs type is
-    chosen from `"_type"`: `Text` for text, `YMap` for map, `Array` for
-    array, `XMLFragment` for xml.
+  - the **content** — a separate top-level type holding the actual payload.
+    Text, map, array, and XML documents use the name `"content"`; binary
+    documents use a `"binary_content"` YMap so a text-to-binary transition
+    never mixes keyed and sequence planes under one Yjs name.
 
-  The key subtlety: `"content"` is NOT a key inside the envelope YMap —
-  it is a *sibling* named type in the same Doc. So `_type` / `_name` /
-  metadata are read from the `"root"` map (`get_type/1`), while the
-  payload is read from the `"content"` type (`get_content/1`).
+  The key subtlety: content is NOT a key inside the envelope YMap — it is a
+  *sibling* named type in the same Doc. So `_type` / `_name` / metadata are
+  read from the `"root"` map (`get_type/1`), while payload is read through
+  `get_content/1` from the type-specific sibling.
+
+  Binary content is never stored inline. Its `"binary_content"` YMap has one LWW key,
+  `"envelope"`, whose scalar JSON value explicitly contains `cid`, `size`,
+  `mode`, and `classified_by`. Keeping the four fields in one YMap value makes
+  an envelope replacement atomic under concurrent updates: replicas converge
+  on one whole envelope rather than a torn mixture. Convergence is not
+  coherence—the winner is representational, both immutable blobs remain
+  CAS-reachable, and both commits remain history. There is no byte-merge path
+  by construction.
   """
 
   alias Yelixer.Doc
@@ -24,10 +33,17 @@ defmodule Commonplace.Document.ContentType do
 
   @root_type "root"
   @content_type "content"
+  @binary_content_type "binary_content"
 
-  @valid_types ~w(text map array xml)a
-  @type_to_string %{text: "text", map: "map", array: "array", xml: "xml"}
-  @string_to_type %{"text" => :text, "map" => :map, "array" => :array, "xml" => :xml}
+  @valid_types ~w(text map array xml binary)a
+  @type_to_string %{text: "text", map: "map", array: "array", xml: "xml", binary: "binary"}
+  @string_to_type %{
+    "text" => :text,
+    "map" => :map,
+    "array" => :array,
+    "xml" => :xml,
+    "binary" => :binary
+  }
 
   @doc """
   Create a new document with the envelope structure.
@@ -45,7 +61,7 @@ defmodule Commonplace.Document.ContentType do
 
     # Register and initialize the content type
     type_ref = content_type_ref(type)
-    {doc, _} = Doc.get_or_create_type(doc, @content_type, type_ref)
+    {doc, _} = Doc.get_or_create_type(doc, content_type_name(type), type_ref)
 
     doc
   end
@@ -83,9 +99,47 @@ defmodule Commonplace.Document.ContentType do
       :map -> YMap.to_map(doc, @content_type)
       :array -> Array.to_list(doc, @content_type)
       :xml -> materialize_xml_fragment(doc, @content_type)
+      :binary -> get_binary_envelope(doc)
       nil -> nil
     end
   end
+
+  @doc "Atomically replace the explicit artifact-reference envelope of a binary document."
+  def put_binary_envelope(%Doc{} = doc, envelope) when is_map(envelope) do
+    %{cid: cid, size: size, mode: mode, classified_by: classified_by} = envelope
+
+    unless is_binary(cid) and is_integer(size) and size >= 0 and is_integer(mode) and
+             classified_by in [:invalid_utf8, :declared_extension] do
+      raise ArgumentError, "invalid binary content envelope"
+    end
+
+    doc = set_meta(doc, "_type", "binary")
+    doc = ensure_content_type(doc, :binary)
+
+    encoded =
+      Jason.encode!(%{
+        "cid" => cid,
+        "size" => size,
+        "mode" => mode,
+        "classified_by" => Atom.to_string(classified_by)
+      })
+
+    YMap.set(doc, @binary_content_type, "envelope", encoded)
+  end
+
+  defp get_binary_envelope(doc) do
+    with encoded when is_binary(encoded) <- YMap.get(doc, @binary_content_type, "envelope"),
+         {:ok, %{"cid" => cid, "size" => size, "mode" => mode, "classified_by" => classified_by}} <-
+           Jason.decode(encoded) do
+      %{cid: cid, size: size, mode: mode, classified_by: parse_classification(classified_by)}
+    else
+      _ -> nil
+    end
+  end
+
+  defp parse_classification("invalid_utf8"), do: :invalid_utf8
+  defp parse_classification("declared_extension"), do: :declared_extension
+  defp parse_classification(other), do: other
 
   defp materialize_xml_fragment(%Doc{} = doc, type_name) do
     XMLFragment.to_list(doc, type_name)
@@ -202,18 +256,24 @@ defmodule Commonplace.Document.ContentType do
   end
 
   defp ensure_content_type(%Doc{} = doc, type) do
-    if Doc.has_type?(doc, @content_type) do
+    type_name = content_type_name(type)
+
+    if Doc.has_type?(doc, type_name) do
       doc
     else
       type_ref = content_type_ref(type)
-      {doc, _} = Doc.get_or_create_type(doc, @content_type, type_ref)
+      {doc, _} = Doc.get_or_create_type(doc, type_name, type_ref)
       doc
     end
   end
+
+  defp content_type_name(:binary), do: @binary_content_type
+  defp content_type_name(_), do: @content_type
 
   defp content_type_ref(:text), do: :text
   defp content_type_ref(:map), do: :map
   defp content_type_ref(:array), do: :array
   defp content_type_ref(:xml), do: :xml_fragment
+  defp content_type_ref(:binary), do: :map
   defp content_type_ref(_), do: :map
 end

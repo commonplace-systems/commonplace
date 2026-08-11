@@ -77,6 +77,26 @@ defmodule Commonplace.Document.ContentTypeTest do
     end
   end
 
+  describe "create/3 — binary artifact references" do
+    test "stores one explicit envelope value and never inline bytes" do
+      envelope = %{
+        cid: String.duplicate("a", 64),
+        size: 42,
+        mode: 0o640,
+        classified_by: :invalid_utf8
+      }
+
+      doc =
+        Yelixer.Doc.new(client_id: 1)
+        |> ContentType.create(:binary, "asset.bin")
+        |> ContentType.put_binary_envelope(envelope)
+
+      assert ContentType.get_type(doc) == :binary
+      assert ContentType.get_content(doc) == envelope
+      refute inspect(Yelixer.Encoding.encode_update(doc)) =~ "raw artifact bytes"
+    end
+  end
+
   describe "create/3 — array documents" do
     test "creates an array document with envelope structure" do
       doc = Yelixer.Doc.new(client_id: 1)
@@ -207,7 +227,6 @@ defmodule Commonplace.Document.ContentTypeTest do
       assert ContentType.get_content(doc) ==
                [{:element, "div", %{}, [{:element, "p", %{}, [{:text, "nested"}]}]}]
     end
-
   end
 
   describe "metadata" do

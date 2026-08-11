@@ -11,7 +11,9 @@ defmodule Commonplace.Sync.Watcher do
 
   alias Commonplace.Tree.Schema
   alias Commonplace.Document.{ContentType, Diff}
+  alias Commonplace.Store.ArtifactStore
   alias Commonplace.Store.CommitStoreClient
+  alias Commonplace.Sync.BinaryClassifier
 
   defmodule Change do
     @moduledoc "A detected filesystem change."
@@ -106,19 +108,10 @@ defmodule Commonplace.Sync.Watcher do
         entry = schema_entries[name]
 
         if entry["type"] == "doc" and File.regular?(path) do
-          case File.read(path) do
-            {:ok, disk_content} ->
-              crdt_content = load_content(entry["node_id"], store)
-
-              if disk_content != crdt_content do
-                [%Change{type: :modified, name: name, path: path, is_dir: false}]
-              else
-                []
-              end
-
-            {:error, reason} ->
-              warn_unreadable(path, reason)
-              []
+          if file_matches_doc?(path, entry["node_id"], store) do
+            []
+          else
+            [%Change{type: :modified, name: name, path: path, is_dir: false}]
           end
         else
           []
@@ -246,21 +239,18 @@ defmodule Commonplace.Sync.Watcher do
   end
 
   defp apply_create(%Change{is_dir: false} = change, root_uuid, store, opts) do
-    case File.read(change.path) do
-      {:ok, content} ->
-        do_apply_create_file(change, content, root_uuid, store, opts)
+    case BinaryClassifier.classify(change.path, opts) do
+      :text ->
+        case File.read(change.path) do
+          {:ok, content} -> do_apply_text_create_file(change, content, root_uuid, store, opts)
+          {:error, reason} -> unreadable_skip(change.path, reason)
+        end
+
+      {:binary, classified_by} ->
+        do_apply_binary_create_file(change, classified_by, root_uuid, store, opts)
 
       {:error, reason} ->
-        warn_unreadable(change.path, reason)
-        {:skipped, "unreadable"}
-    end
-  end
-
-  defp do_apply_create_file(change, content, root_uuid, store, opts) do
-    if String.valid?(content) do
-      do_apply_text_create_file(change, content, root_uuid, store, opts)
-    else
-      skip_binary(change.path)
+        classification_skip(change.path, reason)
     end
   end
 
@@ -295,25 +285,22 @@ defmodule Commonplace.Sync.Watcher do
 
     case Schema.get_entry(root_doc, change.name) do
       {:ok, entry} ->
-        case File.read(change.path) do
-          {:ok, new_content} ->
-            do_apply_modify(change, entry, new_content, store, opts)
+        case BinaryClassifier.classify(change.path, opts) do
+          :text ->
+            case File.read(change.path) do
+              {:ok, new_content} -> do_apply_text_modify(change, entry, new_content, store, opts)
+              {:error, reason} -> unreadable_skip(change.path, reason)
+            end
+
+          {:binary, classified_by} ->
+            do_apply_binary_modify(change, entry, classified_by, store, opts)
 
           {:error, reason} ->
-            warn_unreadable(change.path, reason)
-            {:skipped, "unreadable"}
+            classification_skip(change.path, reason)
         end
 
       :error ->
         {:refused, "schema-entry-missing"}
-    end
-  end
-
-  defp do_apply_modify(change, entry, new_content, store, opts) do
-    if String.valid?(new_content) do
-      do_apply_text_modify(change, entry, new_content, store, opts)
-    else
-      skip_binary(change.path)
     end
   end
 
@@ -346,6 +333,65 @@ defmodule Commonplace.Sync.Watcher do
     CommitStoreClient.create_chained_commit(store, entry.node_id, update, %{}, write_opts(opts))
   end
 
+  defp do_apply_binary_create_file(change, classified_by, root_uuid, store, opts) do
+    file_uuid = UUID.uuid4()
+
+    with {:ok, envelope} <- store_binary(change.path, classified_by, opts) do
+      doc =
+        Yelixer.Doc.new(client_id: stable_client_id(file_uuid))
+        |> ContentType.create(:binary, change.name)
+        |> ContentType.put_binary_envelope(envelope)
+
+      update = Yelixer.Encoding.encode_update(doc)
+      CommitStoreClient.create_commit(store, file_uuid, update, nil, %{}, write_opts(opts))
+
+      root_doc = load_schema(root_uuid, store)
+      root_doc = Schema.add_file(root_doc, change.name, file_uuid)
+      update = Yelixer.Encoding.encode_update(root_doc)
+      CommitStoreClient.create_chained_commit(store, root_uuid, update, %{}, write_opts(opts))
+    else
+      {:error, reason} -> classification_skip(change.path, reason)
+    end
+  end
+
+  defp do_apply_binary_modify(change, entry, classified_by, store, opts) do
+    with {:ok, envelope} <- store_binary(change.path, classified_by, opts) do
+      doc =
+        case Commonplace.Tree.DocBuilder.reconstruct_doc(store, entry.node_id,
+               client_id: stable_client_id(entry.node_id),
+               mint: false
+             ) do
+          {:ok, existing} -> existing
+          :none -> Yelixer.Doc.new(client_id: stable_client_id(entry.node_id))
+        end
+
+      doc =
+        doc
+        |> ContentType.create(:binary, change.name)
+        |> ContentType.put_binary_envelope(envelope)
+
+      update = Yelixer.Encoding.encode_update(doc)
+      CommitStoreClient.create_chained_commit(store, entry.node_id, update, %{}, write_opts(opts))
+    else
+      {:error, reason} -> classification_skip(change.path, reason)
+    end
+  end
+
+  defp store_binary(path, classified_by, opts) do
+    artifact_store = artifact_store(opts)
+
+    with {:ok, stat} <- File.stat(path),
+         {:ok, cid} <- ArtifactStore.put(artifact_store, File.stream!(path, [], 64 * 1024)) do
+      {:ok,
+       %{
+         cid: cid,
+         size: stat.size,
+         mode: Bitwise.band(stat.mode, 0o7777),
+         classified_by: classified_by
+       }}
+    end
+  end
+
   defp apply_delete(change, root_uuid, store, opts) do
     root_doc = load_schema(root_uuid, store)
     root_doc = Schema.remove_entry(root_doc, change.name)
@@ -368,22 +414,23 @@ defmodule Commonplace.Sync.Watcher do
         {[], created_files, MapSet.new()}
       end
 
-    remaining_deleted_1 = Enum.reject(deleted_files, fn change ->
-      MapSet.member?(used_deleted_1, change.name)
-    end)
+    remaining_deleted_1 =
+      Enum.reject(deleted_files, fn change ->
+        MapSet.member?(used_deleted_1, change.name)
+      end)
 
     # Phase 2: Content-based matching on remaining unmatched pairs
     {content_renames, remaining_created_2, used_deleted_2} =
       match_by_content(remaining_created_1, remaining_deleted_1, schema_entries, store)
 
-    remaining_deleted_2 = Enum.reject(remaining_deleted_1, fn change ->
-      MapSet.member?(used_deleted_2, change.name)
-    end)
+    remaining_deleted_2 =
+      Enum.reject(remaining_deleted_1, fn change ->
+        MapSet.member?(used_deleted_2, change.name)
+      end)
 
     all_renames = inode_renames ++ content_renames
 
-    {all_renames, remaining_created_2 ++ created_dirs,
-     remaining_deleted_2 ++ deleted_dirs}
+    {all_renames, remaining_created_2 ++ created_dirs, remaining_deleted_2 ++ deleted_dirs}
   end
 
   # Match renames by inode: a created file whose inode is tracked in the registry
@@ -392,29 +439,33 @@ defmodule Commonplace.Sync.Watcher do
     alias Commonplace.Sync.InodeTracker
 
     # Build lookup: doc_uuid → deleted change name
-    deleted_by_uuid = Map.new(deleted_files, fn change ->
-      entry = schema_entries[change.name]
-      uuid = if entry, do: entry["node_id"]
-      {uuid, change}
-    end)
+    deleted_by_uuid =
+      Map.new(deleted_files, fn change ->
+        entry = schema_entries[change.name]
+        uuid = if entry, do: entry["node_id"]
+        {uuid, change}
+      end)
 
     {renames, unmatched, used} =
       Enum.reduce(created_files, {[], [], MapSet.new()}, fn created_change,
                                                             {renames_acc, unmatched_acc, used_acc} ->
-        inode_match = try do
-          inode_key = InodeTracker.inode_key(created_change.path)
-          case InodeTracker.Registry.lookup(registry, inode_key) do
-            {:ok, mapping} -> mapping
-            :error -> nil
+        inode_match =
+          try do
+            inode_key = InodeTracker.inode_key(created_change.path)
+
+            case InodeTracker.Registry.lookup(registry, inode_key) do
+              {:ok, mapping} -> mapping
+              :error -> nil
+            end
+          rescue
+            _ -> nil
           end
-        rescue
-          _ -> nil
-        end
 
         del_change = if inode_match, do: Map.get(deleted_by_uuid, inode_match.doc_uuid)
 
         if del_change && not MapSet.member?(used_acc, del_change.name) do
           entry = schema_entries[del_change.name]
+
           rename = %Change{
             type: :renamed,
             name: created_change.name,
@@ -423,6 +474,7 @@ defmodule Commonplace.Sync.Watcher do
             old_name: del_change.name,
             node_id: entry["node_id"]
           }
+
           {[rename | renames_acc], unmatched_acc, MapSet.put(used_acc, del_change.name)}
         else
           {renames_acc, [created_change | unmatched_acc], used_acc}
@@ -434,47 +486,41 @@ defmodule Commonplace.Sync.Watcher do
 
   # Match renames by content: a created file whose disk content matches
   # a deleted entry's CRDT content (skips empty files).
+  defp match_by_content(created_files, [], _schema_entries, _store) do
+    {[], created_files, MapSet.new()}
+  end
+
   defp match_by_content(created_files, deleted_files, schema_entries, store) do
     deleted_with_content =
       Enum.map(deleted_files, fn change ->
         entry = schema_entries[change.name]
-        content = if entry, do: load_content(entry["node_id"], store), else: ""
+        content = if entry, do: load_rename_identity(entry["node_id"], store), else: :missing
         {change, content, entry}
       end)
 
     {renames, unmatched_created, used_deleted} =
       Enum.reduce(created_files, {[], [], MapSet.new()}, fn created_change,
                                                             {renames_acc, unmatched_acc, used_acc} ->
-        case File.read(created_change.path) do
-          {:ok, disk_content} ->
-            match =
-              Enum.find(deleted_with_content, fn {del_change, del_content, _entry} ->
-                del_content == disk_content and
-                  disk_content != "" and
-                  not MapSet.member?(used_acc, del_change.name)
-              end)
+        match =
+          Enum.find(deleted_with_content, fn {del_change, identity, _entry} ->
+            not MapSet.member?(used_acc, del_change.name) and
+              created_matches_identity?(created_change.path, identity)
+          end)
 
-            case match do
-              {del_change, _content, entry} ->
-                rename = %Change{
-                  type: :renamed,
-                  name: created_change.name,
-                  path: created_change.path,
-                  is_dir: false,
-                  old_name: del_change.name,
-                  node_id: entry["node_id"]
-                }
+        case match do
+          {del_change, _content, entry} ->
+            rename = %Change{
+              type: :renamed,
+              name: created_change.name,
+              path: created_change.path,
+              is_dir: false,
+              old_name: del_change.name,
+              node_id: entry["node_id"]
+            }
 
-                {[rename | renames_acc], unmatched_acc, MapSet.put(used_acc, del_change.name)}
+            {[rename | renames_acc], unmatched_acc, MapSet.put(used_acc, del_change.name)}
 
-              nil ->
-                {renames_acc, [created_change | unmatched_acc], used_acc}
-            end
-
-          {:error, reason} ->
-            # Unreadable file can't be rename-matched by content — fall
-            # through as an ordinary :created change (not a rename).
-            warn_unreadable(created_change.path, reason)
+          nil ->
             {renames_acc, [created_change | unmatched_acc], used_acc}
         end
       end)
@@ -498,10 +544,17 @@ defmodule Commonplace.Sync.Watcher do
     end
   end
 
-  defp skip_binary(path) do
-    reason = "excluded-binary"
-    Logger.warning("Watcher: skipping binary file #{path} (#{reason})")
-    {:skipped, reason}
+  defp classification_skip(path, reason) do
+    Logger.warning(
+      "Watcher: skipping unclassified file #{path} (#{inspect(reason)}; excluded-binary floor)"
+    )
+
+    {:skipped, "excluded-binary"}
+  end
+
+  defp unreadable_skip(path, reason) do
+    warn_unreadable(path, reason)
+    {:skipped, "unreadable"}
   end
 
   defp normalize_outcome({:skipped, reason}), do: {:skipped, reason}
@@ -569,20 +622,80 @@ defmodule Commonplace.Sync.Watcher do
     end
   end
 
-  defp load_content(uuid, store) do
-    case CommitStoreClient.latest_commit(store, uuid) do
-      {:ok, commit} ->
-        doc = Yelixer.Doc.new()
-        {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
-
+  defp load_rename_identity(uuid, store) do
+    case load_doc(uuid, store) do
+      {:ok, doc} ->
         case ContentType.get_type(doc) do
-          :text -> ContentType.get_content(doc) || ""
-          _ -> ""
+          :text -> {:text, ContentType.get_content(doc) || ""}
+          :binary -> {:binary, ContentType.get_content(doc).cid}
+          _ -> :missing
         end
 
       :none ->
-        ""
+        :missing
     end
+  end
+
+  defp created_matches_identity?(path, {:text, content}) when content != "" do
+    File.read(path) == {:ok, content}
+  end
+
+  defp created_matches_identity?(path, {:binary, cid}) do
+    case ArtifactStore.digest(File.stream!(path, [], 64 * 1024)) do
+      {:ok, ^cid, _size} -> true
+      _ -> false
+    end
+  rescue
+    _ -> false
+  end
+
+  defp created_matches_identity?(_path, _identity), do: false
+
+  defp file_matches_doc?(path, uuid, store) do
+    case load_doc(uuid, store) do
+      {:ok, doc} ->
+        case ContentType.get_type(doc) do
+          :binary -> binary_file_matches?(path, ContentType.get_content(doc))
+          :text -> File.read(path) == {:ok, ContentType.get_content(doc) || ""}
+          _ -> false
+        end
+
+      :none ->
+        false
+    end
+  end
+
+  defp binary_file_matches?(path, %{cid: cid, mode: mode}) do
+    with {:ok, digest, _size} <- ArtifactStore.digest(File.stream!(path, [], 64 * 1024)),
+         {:ok, stat} <- File.stat(path) do
+      digest == cid and Bitwise.band(stat.mode, 0o7777) == mode
+    else
+      _ -> false
+    end
+  end
+
+  defp binary_file_matches?(_path, _envelope), do: false
+
+  defp load_doc(uuid, store) do
+    case CommitStoreClient.latest_commit(store, uuid) do
+      {:ok, commit} ->
+        doc = Yelixer.Doc.new()
+
+        case Yelixer.Encoding.apply_update(doc, commit.update) do
+          {:ok, doc} -> {:ok, doc}
+          _ -> :none
+        end
+
+      :none ->
+        :none
+    end
+  end
+
+  defp artifact_store(opts) do
+    Keyword.get_lazy(opts, :artifact_store, fn ->
+      data_dir = Application.get_env(:commonplace, :data_dir, "data")
+      ArtifactStore.new(data_dir)
+    end)
   end
 
   # CX-pyi: stable client_id for writers — repeated load+mutate cycles

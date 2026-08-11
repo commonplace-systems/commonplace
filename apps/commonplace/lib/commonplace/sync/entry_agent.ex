@@ -19,7 +19,7 @@ defmodule Commonplace.Sync.EntryAgent do
   sees a "changed" file and commits again, and so on. EntryAgent breaks
   the loop with two pieces of remembered state, one per axis:
 
-  - `known_hash` — an MD5 of the content we believe is currently mirrored
+  - `known_hash` — a streaming SHA-256 of the content we believe is currently mirrored
     on *both* sides. Outbound skips when the disk content still hashes to
     `known_hash` (nothing new to push); inbound skips the file write when
     a new commit's content hashes to `known_hash` (a metadata-only change
@@ -81,14 +81,16 @@ defmodule Commonplace.Sync.EntryAgent do
   use GenServer
 
   alias Commonplace.SnapshotTrigger
-  alias Commonplace.Store.CommitStoreClient
+  alias Commonplace.Store.{ArtifactStore, CommitStoreClient}
   alias Commonplace.Document.{ContentType, Diff}
-  alias Commonplace.Sync.Export
+  alias Commonplace.Sync.{BinaryClassifier, BinaryWriteBack, Export}
 
   defstruct [
     :doc_uuid,
     :file_path,
     :store,
+    :artifact_store,
+    :binary_extensions,
     :last_written_commit_id,
     :known_hash,
     :shadow_dir,
@@ -125,6 +127,9 @@ defmodule Commonplace.Sync.EntryAgent do
       doc_uuid: Keyword.fetch!(opts, :doc_uuid),
       file_path: Keyword.fetch!(opts, :file_path),
       store: Keyword.get(opts, :store, CommitStoreClient),
+      artifact_store: Keyword.get(opts, :artifact_store, default_artifact_store()),
+      binary_extensions:
+        Keyword.get(opts, :binary_extensions, BinaryClassifier.declared_extensions()),
       last_written_commit_id: nil,
       known_hash: nil,
       shadow_dir: Keyword.get(opts, :shadow_dir),
@@ -150,53 +155,83 @@ defmodule Commonplace.Sync.EntryAgent do
   # --- Outbound sync (disk → CRDT) ---
 
   defp sync_outbound(state) do
-    case Commonplace.Sync.Flock.with_shared_lock(state.file_path, 30_000, fn ->
-      File.read(state.file_path)
-    end) do
-      {:ok, content} ->
-        disk_hash = :erlang.md5(content)
+    case file_hash(state.file_path) do
+      nil ->
+        state
 
-        if disk_hash == state.known_hash do
-          # No disk changes — skip
-          state
-        else
-          # CX-pyi: load + mutate. Reconstruct the existing CRDT under
-          # a stable client_id, compute the text diff against the disk
-          # content, apply incremental Yjs ops. Avoids state-vector
-          # bloat and preserves Yjs item identity.
-          doc =
-            case CommitStoreClient.latest_commit(state.store, state.doc_uuid) do
-              {:ok, commit} ->
-                d = Yelixer.Doc.new(client_id: stable_client_id(state.doc_uuid))
-                {:ok, d} = Yelixer.Encoding.apply_update(d, commit.update)
-                d
+      disk_hash when disk_hash == state.known_hash ->
+        state
 
-              :none ->
-                d = Yelixer.Doc.new(client_id: stable_client_id(state.doc_uuid))
-                ContentType.create(d, :text, Path.basename(state.file_path))
-            end
-
-          old_content = ContentType.get_content(doc) || ""
-          doc = Diff.apply_diff(doc, old_content, content)
-          update = Yelixer.Encoding.encode_update(doc)
-
-          commit = CommitStoreClient.create_chained_commit(state.store, state.doc_uuid, update)
-
-          # CX-tvyb: producer-side snapshot hook. After persisting the
-          # writer's edit, check the chain-length threshold and cut a
-          # snapshot if crossed. Safe to call concurrently with other
-          # peers' triggers — CAS dedup in `write_snapshot_cas` lets the
-          # first deterministic-anyone caller win and turns the rest into
-          # a no-op (CX-umz parallel).
-          maybe_trigger_snapshot(state)
-
-          %{state | last_written_commit_id: commit.id, known_hash: disk_hash}
+      disk_hash ->
+        case BinaryClassifier.classify(state.file_path,
+               binary_extensions: state.binary_extensions
+             ) do
+          :text -> persist_text(state, disk_hash)
+          {:binary, classified_by} -> persist_binary(state, disk_hash, classified_by)
+          {:error, _reason} -> state
         end
+    end
+  end
 
-      {:error, _} ->
-        # File doesn't exist — skip outbound
+  defp persist_text(state, disk_hash) do
+    case File.read(state.file_path) do
+      {:ok, content} ->
+        doc = load_writable_doc(state, :text)
+
+        old_content =
+          if ContentType.get_type(doc) == :text, do: ContentType.get_content(doc) || "", else: ""
+
+        doc = ContentType.create(doc, :text, Path.basename(state.file_path))
+        doc = Diff.apply_diff(doc, old_content, content)
+        persist_outbound_doc(state, doc, disk_hash)
+
+      {:error, _reason} ->
         state
     end
+  end
+
+  defp persist_binary(state, disk_hash, classified_by) do
+    with {:ok, stat} <- File.stat(state.file_path),
+         {:ok, cid} <-
+           ArtifactStore.put(state.artifact_store, File.stream!(state.file_path, [], 64 * 1024)) do
+      envelope = %{
+        cid: cid,
+        size: stat.size,
+        mode: Bitwise.band(stat.mode, 0o7777),
+        classified_by: classified_by
+      }
+
+      doc =
+        state
+        |> load_writable_doc(:binary)
+        |> ContentType.create(:binary, Path.basename(state.file_path))
+        |> ContentType.put_binary_envelope(envelope)
+
+      persist_outbound_doc(state, doc, disk_hash)
+    else
+      _ -> state
+    end
+  end
+
+  defp load_writable_doc(state, type) do
+    case Commonplace.Tree.DocBuilder.reconstruct_doc(state.store, state.doc_uuid,
+           client_id: stable_client_id(state.doc_uuid),
+           mint: false
+         ) do
+      {:ok, doc} ->
+        doc
+
+      :none ->
+        Yelixer.Doc.new(client_id: stable_client_id(state.doc_uuid))
+        |> ContentType.create(type, Path.basename(state.file_path))
+    end
+  end
+
+  defp persist_outbound_doc(state, doc, disk_hash) do
+    update = Yelixer.Encoding.encode_update(doc)
+    commit = CommitStoreClient.create_chained_commit(state.store, state.doc_uuid, update)
+    maybe_trigger_snapshot(state)
+    %{state | last_written_commit_id: commit.id, known_hash: disk_hash}
   end
 
   # CX-tvyb: dispatch maybe_snapshot with the per-agent threshold (when
@@ -234,9 +269,8 @@ defmodule Commonplace.Sync.EntryAgent do
           state
         else
           # New commit — extract content from latest commit
-          content = extract_content(commit)
-
-          content_hash = :erlang.md5(content)
+          materialized = extract_content(commit)
+          content_hash = materialized_hash(materialized)
 
           if content_hash == state.known_hash do
             # Content unchanged despite new commit (metadata-only change)
@@ -251,10 +285,7 @@ defmodule Commonplace.Sync.EntryAgent do
             # a commit yet (e.g. it lands between outbound's read and this
             # write), writing here would silently clobber it.
             disk_hash =
-              case File.read(state.file_path) do
-                {:ok, disk} -> :erlang.md5(disk)
-                _ -> nil
-              end
+              file_hash(state.file_path)
 
             cond do
               # Disk already holds exactly the CRDT content — record it as
@@ -273,8 +304,10 @@ defmodule Commonplace.Sync.EntryAgent do
               # Disk is stale (absent, or equals what we last reconciled) and
               # the CRDT is ahead — write the CRDT content out.
               true ->
-                Export.atomic_write(state.file_path, content)
-                %{state | last_written_commit_id: commit.id, known_hash: content_hash}
+                case write_materialized(state, materialized) do
+                  :ok -> %{state | last_written_commit_id: commit.id, known_hash: content_hash}
+                  {:skipped, _reason} -> state
+                end
             end
           end
         end
@@ -297,8 +330,9 @@ defmodule Commonplace.Sync.EntryAgent do
     {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
 
     case ContentType.get_type(doc) do
-      :text -> ContentType.get_content(doc) || ""
-      _ -> ContentType.get_content(doc) |> inspect()
+      :text -> {:text, ContentType.get_content(doc) || ""}
+      :binary -> {:binary, ContentType.get_content(doc)}
+      _ -> {:text, ContentType.get_content(doc) |> inspect()}
     end
   end
 
@@ -307,5 +341,30 @@ defmodule Commonplace.Sync.EntryAgent do
   # never re-encode (no bloat possible).
   defp stable_client_id(uuid) when is_binary(uuid) do
     :erlang.phash2(uuid, 0xFFFF_FFFF)
+  end
+
+  defp materialized_hash({:text, content}), do: hash_bytes(content)
+  defp materialized_hash({:binary, %{cid: cid}}), do: cid
+
+  defp write_materialized(state, {:text, content}),
+    do: Export.atomic_write(state.file_path, content)
+
+  defp write_materialized(state, {:binary, envelope}) do
+    BinaryWriteBack.write(state.artifact_store, envelope, state.file_path)
+  end
+
+  defp file_hash(path) do
+    case ArtifactStore.digest(File.stream!(path, [], 64 * 1024)) do
+      {:ok, cid, _size} -> cid
+      {:error, _reason} -> nil
+    end
+  rescue
+    _ -> nil
+  end
+
+  defp hash_bytes(content), do: Base.encode16(:crypto.hash(:sha256, content), case: :lower)
+
+  defp default_artifact_store do
+    Application.get_env(:commonplace, :data_dir, "data") |> ArtifactStore.new()
   end
 end

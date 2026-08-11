@@ -50,11 +50,12 @@ defmodule Commonplace.Sync.EntryAgentTest do
 
       create_text_commit(store, doc_uuid, "hello from CRDT")
 
-      {:ok, pid} = EntryAgent.start_link(
-        doc_uuid: doc_uuid,
-        file_path: file_path,
-        store: store
-      )
+      {:ok, pid} =
+        EntryAgent.start_link(
+          doc_uuid: doc_uuid,
+          file_path: file_path,
+          store: store
+        )
 
       EntryAgent.sync_once(pid)
 
@@ -72,11 +73,12 @@ defmodule Commonplace.Sync.EntryAgentTest do
 
       create_text_commit(store, doc_uuid, "created by CRDT")
 
-      {:ok, pid} = EntryAgent.start_link(
-        doc_uuid: doc_uuid,
-        file_path: file_path,
-        store: store
-      )
+      {:ok, pid} =
+        EntryAgent.start_link(
+          doc_uuid: doc_uuid,
+          file_path: file_path,
+          store: store
+        )
 
       EntryAgent.sync_once(pid)
 
@@ -93,11 +95,12 @@ defmodule Commonplace.Sync.EntryAgentTest do
 
       create_text_commit(store, doc_uuid, "stable content")
 
-      {:ok, pid} = EntryAgent.start_link(
-        doc_uuid: doc_uuid,
-        file_path: file_path,
-        store: store
-      )
+      {:ok, pid} =
+        EntryAgent.start_link(
+          doc_uuid: doc_uuid,
+          file_path: file_path,
+          store: store
+        )
 
       # First sync writes the file
       EntryAgent.sync_once(pid)
@@ -139,11 +142,12 @@ defmodule Commonplace.Sync.EntryAgentTest do
 
       create_text_commit(store, doc_uuid, "v1")
 
-      {:ok, pid} = EntryAgent.start_link(
-        doc_uuid: doc_uuid,
-        file_path: file_path,
-        store: store
-      )
+      {:ok, pid} =
+        EntryAgent.start_link(
+          doc_uuid: doc_uuid,
+          file_path: file_path,
+          store: store
+        )
 
       EntryAgent.sync_once(pid)
       assert File.read!(file_path) == "v1"
@@ -185,11 +189,12 @@ defmodule Commonplace.Sync.EntryAgentTest do
 
       create_text_commit(store, doc_uuid, "v1")
 
-      {:ok, pid} = EntryAgent.start_link(
-        doc_uuid: doc_uuid,
-        file_path: file_path,
-        store: store
-      )
+      {:ok, pid} =
+        EntryAgent.start_link(
+          doc_uuid: doc_uuid,
+          file_path: file_path,
+          store: store
+        )
 
       EntryAgent.sync_once(pid)
       state = :sys.get_state(pid)
@@ -203,7 +208,10 @@ defmodule Commonplace.Sync.EntryAgentTest do
       new_state = EntryAgent.sync_inbound(state)
 
       assert File.stat!(file_path).mtime == stat_before.mtime
-      assert new_state.known_hash == :erlang.md5("v1")
+
+      assert new_state.known_hash ==
+               Base.encode16(:crypto.hash(:sha256, "v1"), case: :lower)
+
       refute new_state.last_written_commit_id == state.last_written_commit_id
 
       EntryAgent.stop(pid)
@@ -218,11 +226,12 @@ defmodule Commonplace.Sync.EntryAgentTest do
       # First: create CRDT content, sync to disk
       create_text_commit(store, doc_uuid, "original")
 
-      {:ok, pid} = EntryAgent.start_link(
-        doc_uuid: doc_uuid,
-        file_path: file_path,
-        store: store
-      )
+      {:ok, pid} =
+        EntryAgent.start_link(
+          doc_uuid: doc_uuid,
+          file_path: file_path,
+          store: store
+        )
 
       EntryAgent.sync_once(pid)
       assert File.read!(file_path) == "original"
@@ -245,11 +254,12 @@ defmodule Commonplace.Sync.EntryAgentTest do
       # Write the file to disk first (no CRDT content yet)
       File.write!(file_path, "brand new file")
 
-      {:ok, pid} = EntryAgent.start_link(
-        doc_uuid: doc_uuid,
-        file_path: file_path,
-        store: store
-      )
+      {:ok, pid} =
+        EntryAgent.start_link(
+          doc_uuid: doc_uuid,
+          file_path: file_path,
+          store: store
+        )
 
       EntryAgent.sync_once(pid)
 
@@ -268,11 +278,12 @@ defmodule Commonplace.Sync.EntryAgentTest do
 
       create_text_commit(store, doc_uuid, "immutable content")
 
-      {:ok, pid} = EntryAgent.start_link(
-        doc_uuid: doc_uuid,
-        file_path: file_path,
-        store: store
-      )
+      {:ok, pid} =
+        EntryAgent.start_link(
+          doc_uuid: doc_uuid,
+          file_path: file_path,
+          store: store
+        )
 
       # First sync
       EntryAgent.sync_once(pid)
@@ -304,11 +315,12 @@ defmodule Commonplace.Sync.EntryAgentTest do
       # Start with CRDT content
       create_text_commit(store, doc_uuid, "version 1")
 
-      {:ok, pid} = EntryAgent.start_link(
-        doc_uuid: doc_uuid,
-        file_path: file_path,
-        store: store
-      )
+      {:ok, pid} =
+        EntryAgent.start_link(
+          doc_uuid: doc_uuid,
+          file_path: file_path,
+          store: store
+        )
 
       EntryAgent.sync_once(pid)
       assert File.read!(file_path) == "version 1"
@@ -375,11 +387,12 @@ defmodule Commonplace.Sync.EntryAgentTest do
       doc_uuid = UUID.uuid4()
       file_path = Path.join(dir, "lifecycle.txt")
 
-      {:ok, pid} = EntryAgent.start_link(
-        doc_uuid: doc_uuid,
-        file_path: file_path,
-        store: store
-      )
+      {:ok, pid} =
+        EntryAgent.start_link(
+          doc_uuid: doc_uuid,
+          file_path: file_path,
+          store: store
+        )
 
       assert Process.alive?(pid)
       EntryAgent.stop(pid)
