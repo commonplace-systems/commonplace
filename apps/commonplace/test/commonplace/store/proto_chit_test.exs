@@ -206,8 +206,82 @@ defmodule Commonplace.Store.ProtoChitTest do
     assert RedLog.load(event_log_uuid, store) |> RedLog.read() |> List.last() == event
   end
 
+  test "post-exec annotation witnesses the resulting commit without advancing predecessor",
+       context do
+    %{repo: repo, state_dir: state_dir, store: store, signing_context: signing_context} = context
+    configure_git(repo)
+    File.write!(Path.join(repo, "hello.txt"), "parent\n")
+    git!(repo, ["add", "hello.txt"])
+    git!(repo, ["commit", "-m", "parent"])
+    parent_sha = git!(repo, ["rev-parse", "HEAD"])
+
+    File.write!(Path.join(repo, "hello.txt"), "child\n")
+    git!(repo, ["add", "hello.txt"])
+
+    root_uuid = UUID.uuid4()
+    event_log_uuid = UUID.uuid4()
+
+    assert {:ok, %{event: main_event, event_ref: main_ref}} =
+             Commonplace.ProtoChit.emit(repo, ["commit", "-m", "witnessed child"],
+               root_uuid: root_uuid,
+               event_log_uuid: event_log_uuid,
+               state_dir: state_dir,
+               sync_excludes: [],
+               signing_context: signing_context,
+               store: store
+             )
+
+    assert main_event["git-sha"] == parent_sha
+    assert RedLog.load(event_log_uuid, store) |> RedLog.read() == [main_event]
+    predecessor_bytes = File.read!(Path.join(state_dir, "predecessors.json"))
+
+    git!(repo, ["commit", "-m", "witnessed child"])
+    resulting_sha = git!(repo, ["rev-parse", "HEAD"])
+
+    assert {:ok, %{event: annotation}} =
+             apply(Commonplace.ProtoChit, :annotate, [
+               repo,
+               main_ref,
+               0,
+               ["commit", "-m", "witnessed child"],
+               [
+                 event_log_uuid: event_log_uuid,
+                 signing_context: signing_context,
+                 store: store
+               ]
+             ])
+
+    assert annotation == %{
+             "kind" => "post-exec",
+             "author-principal" => signing_context.identity_uuid,
+             "main-event-ref" => main_ref,
+             "resulting-git-sha" => resulting_sha,
+             "exit-status" => 0,
+             "message" => "witnessed child"
+           }
+
+    assert RedLog.load(event_log_uuid, store) |> RedLog.read() == [main_event, annotation]
+    assert File.read!(Path.join(state_dir, "predecessors.json")) == predecessor_bytes
+
+    checkpoint = main_event["proto-pin"]["checkpoint"]
+    assert latest_hex(store, checkpoint["doc"]) == checkpoint["commit"]
+    assert {:ok, annotation_commit} = CommitStore.latest_commit(store, event_log_uuid)
+    assert String.starts_with?(annotation_commit.signer_id, signing_context.identity_uuid <> "@")
+  end
+
   defp init_git(repo) do
     assert {_, 0} = System.cmd("/usr/bin/git", ["init", "-b", "main"], cd: repo)
+  end
+
+  defp configure_git(repo) do
+    init_git(repo)
+    git!(repo, ["config", "user.name", "Proto Chit Test"])
+    git!(repo, ["config", "user.email", "proto@example.invalid"])
+  end
+
+  defp git!(repo, args) do
+    {output, 0} = System.cmd("/usr/bin/git", args, cd: repo, stderr_to_stdout: true)
+    String.trim(output)
   end
 
   defp latest_hex(store, uuid) do

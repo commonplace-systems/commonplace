@@ -6,6 +6,9 @@ defmodule Commonplace.CLI.ProtoChit do
     commonplace proto-chit emit --repo DIR --state-dir DIR --event-log UUID
       [--real-git PATH] [--trace FILE]
       [--sync-exclude NAME]... [--declare-empty-sync-excludes] -- <git argv...>
+    commonplace proto-chit annotate --repo DIR --event-log UUID
+      --main-event-ref HEX --exit-status INTEGER [--real-git PATH] [--trace FILE]
+      -- <git argv...>
 
   `--sync-exclude` is repeatable. The names given are APPENDED to the emitter's
   own default exclusions (`.git`, `.commonplace`, ...) — an operator cannot drop
@@ -23,7 +26,9 @@ defmodule Commonplace.CLI.ProtoChit do
     real_git: :string,
     trace: :string,
     sync_exclude: :keep,
-    declare_empty_sync_excludes: :boolean
+    declare_empty_sync_excludes: :boolean,
+    main_event_ref: :string,
+    exit_status: :integer
   ]
 
   # Mirrors `@sync_excludes` in `Commonplace.ProtoChit`. Operator-supplied names
@@ -44,6 +49,30 @@ defmodule Commonplace.CLI.ProtoChit do
              repo,
              git_args,
              emit_opts(opts, root_uuid, event_log_uuid, state_dir, signing_context)
+           ) do
+      IO.puts(:stderr, "proto-chit: tap fired #{result.event_ref}")
+      0
+    else
+      {_opts, _args, invalid} -> fail({:invalid_options, invalid})
+      {:error, reason} -> fail(reason)
+      other -> fail(other)
+    end
+  end
+
+  def run(data_dir, _relative_path, ["annotate" | args]) do
+    with :ok <- Commonplace.CLI.ensure_started(data_dir),
+         {opts, git_args, []} <- OptionParser.parse(args, strict: @switches),
+         {:ok, repo} <- required(opts, :repo),
+         {:ok, event_log_uuid} <- required(opts, :event_log),
+         {:ok, main_event_ref} <- required(opts, :main_event_ref),
+         {:ok, exit_status} <- required_non_negative_integer(opts, :exit_status),
+         {:ok, signing_context} <- signing_context(),
+         {:ok, result} <-
+           Commonplace.ProtoChit.annotate(repo, main_event_ref, exit_status, git_args,
+             event_log_uuid: event_log_uuid,
+             real_git: Keyword.get(opts, :real_git, "/usr/bin/git"),
+             trace_file: opts[:trace],
+             signing_context: signing_context
            ) do
       IO.puts(:stderr, "proto-chit: tap fired #{result.event_ref}")
       0
@@ -101,6 +130,13 @@ defmodule Commonplace.CLI.ProtoChit do
   defp required(opts, key) do
     case Keyword.get(opts, key) do
       value when is_binary(value) and value != "" -> {:ok, value}
+      _ -> {:error, {:missing_option, key}}
+    end
+  end
+
+  defp required_non_negative_integer(opts, key) do
+    case Keyword.get(opts, key) do
+      value when is_integer(value) and value >= 0 -> {:ok, value}
       _ -> {:error, {:missing_option, key}}
     end
   end
