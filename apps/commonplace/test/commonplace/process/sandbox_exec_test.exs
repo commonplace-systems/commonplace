@@ -13,6 +13,9 @@ defmodule Commonplace.Process.SandboxExecTest do
   alias Commonplace.Store.CommitStore
   alias Commonplace.Document.ContentType
 
+  @orchestrator_interval_ms 100
+  @crdt_ready_attempts 50
+
   setup do
     dir = Path.join(System.tmp_dir!(), "cp_sexec_#{:rand.uniform(1_000_000)}")
     File.mkdir_p!(dir)
@@ -41,23 +44,23 @@ defmodule Commonplace.Process.SandboxExecTest do
         }
       })
 
-      {:ok, orch} = Orchestrator.start_link(root_uuid: root, store: store, interval: 100)
-      Process.sleep(800)
+      {:ok, orch} =
+        Orchestrator.start_link(
+          root_uuid: root,
+          store: store,
+          interval: @orchestrator_interval_ms
+        )
 
-      # The output file should have flowed back to CRDT
-      root_doc = load_schema(root, store)
+      # CX-6kxv: replace the fixed 800 ms window with readiness polling. The
+      # 100 ms step matches the orchestrator interval; 50 steps (5 s) give the
+      # nominal launch + write-back pair of intervals 25x scheduling headroom.
+      entry = await_crdt_entry(root, store, "output.txt")
 
-      case Schema.get_entry(root_doc, "output.txt") do
-        {:ok, entry} ->
-          {:ok, commit} = CommitStore.latest_commit(store, entry.node_id)
-          doc = Yelixer.Doc.new()
-          {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
-          content = ContentType.get_content(doc)
-          assert String.trim(content) == "hello from sandbox"
-
-        :error ->
-          flunk("output.txt not found in CRDT after sandbox-exec")
-      end
+      {:ok, commit} = CommitStore.latest_commit(store, entry.node_id)
+      doc = Yelixer.Doc.new()
+      {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
+      content = ContentType.get_content(doc)
+      assert String.trim(content) == "hello from sandbox"
 
       Process.unlink(orch)
       GenServer.stop(orch)
@@ -77,21 +80,22 @@ defmodule Commonplace.Process.SandboxExecTest do
         }
       })
 
-      {:ok, orch} = Orchestrator.start_link(root_uuid: root, store: store, interval: 100)
-      Process.sleep(800)
+      {:ok, orch} =
+        Orchestrator.start_link(
+          root_uuid: root,
+          store: store,
+          interval: @orchestrator_interval_ms
+        )
 
-      root_doc = load_schema(root, store)
+      # CX-6kxv: replace the fixed 800 ms window with readiness polling. The
+      # 100 ms step matches the orchestrator interval; 50 steps (5 s) give the
+      # nominal launch + write-back pair of intervals 25x scheduling headroom.
+      entry = await_crdt_entry(root, store, "doubled.txt")
 
-      case Schema.get_entry(root_doc, "doubled.txt") do
-        {:ok, entry} ->
-          {:ok, commit} = CommitStore.latest_commit(store, entry.node_id)
-          doc = Yelixer.Doc.new()
-          {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
-          assert String.trim(ContentType.get_content(doc)) == "84"
-
-        :error ->
-          flunk("doubled.txt not found in CRDT after sandbox-exec")
-      end
+      {:ok, commit} = CommitStore.latest_commit(store, entry.node_id)
+      doc = Yelixer.Doc.new()
+      {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
+      assert String.trim(ContentType.get_content(doc)) == "84"
 
       Process.unlink(orch)
       GenServer.stop(orch)
@@ -99,6 +103,23 @@ defmodule Commonplace.Process.SandboxExecTest do
   end
 
   # Helpers
+
+  defp await_crdt_entry(root, store, filename) do
+    Enum.reduce_while(1..@crdt_ready_attempts, :error, fn _, _ ->
+      case root |> load_schema(store) |> Schema.get_entry(filename) do
+        {:ok, entry} ->
+          {:halt, {:ok, entry}}
+
+        :error ->
+          Process.sleep(@orchestrator_interval_ms)
+          {:cont, :error}
+      end
+    end)
+    |> case do
+      {:ok, entry} -> entry
+      :error -> flunk("#{filename} not found in CRDT after sandbox-exec")
+    end
+  end
 
   defp create_doc(store, root, filename, content) do
     uuid = UUID.uuid4()
@@ -148,6 +169,7 @@ defmodule Commonplace.Process.SandboxExecTest do
         doc = Schema.new_schema()
         {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
         doc
+
       :none ->
         Schema.new_schema()
     end
