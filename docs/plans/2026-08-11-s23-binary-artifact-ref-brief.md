@@ -88,3 +88,27 @@ artifact — never delete it; no repo-wide formatting; work UNCOMMITTED.
 Report: the envelope as shipped, the declared-extension list and its
 provenance, all five arms' evidence (red-firsts verbatim, the RSS
 measurement with file size), test counts, deviations.
+
+## ADDENDUM (post-hatch, plan's blob-home ruling — supersedes the CAS premise above)
+
+The first dispatch hatch-stopped CORRECTLY: no raw-artifact CAS exists
+(CommitStore stores %Commit{} records only — the doc's "existing CAS"
+premise addressed commits, not blobs). Plan ruled (ii) and amended the
+design doc @1f51115 (plan repo): **build the small raw-CAS tier** —
+the "no new storage tier" line is STRUCK by amendment.
+
+The tier (§2b, transcribed):
+- Content-addressed file store at
+  `<data_dir>/artifacts/<sha256[0..2]>/<sha256>` — the address IS the
+  hash; dedup free.
+- PUT = hash-while-streaming to a temp file with a UNIQUE SUFFIX
+  (CX-37d9's fixed-name race is the paid lesson), then rename. Target
+  already present = NO-OP SUCCESS by definition.
+- GET/EXISTS? stream — no whole-blob in the BEAM heap, ever.
+- Append-only v1. GC DEFERRED, named, together with the pin-off-root
+  liveness question (same reachability family).
+
+The extension inventory is now CARRIED in the amended doc (sourced
+from commonplace-rs content_type.rs:89 BINARY_EXTENSIONS; svg
+corrected to TEXT — it is XML; .cub added from the measured S1
+population). Use the doc's carried list; do not hunt the rs repo.
