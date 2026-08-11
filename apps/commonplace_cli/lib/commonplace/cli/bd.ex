@@ -22,6 +22,7 @@ defmodule Commonplace.CLI.Bd do
   alias Commonplace.Bd.CLI, as: BdQuery
   alias Commonplace.Bd.RetiredGraphError
   alias Commonplace.CLI
+  alias Commonplace.Crypto.NodeIdentity
   alias Commonplace.Store.CommitStoreClient
 
   def run(data_dir, _relative_path, args) do
@@ -37,26 +38,66 @@ defmodule Commonplace.CLI.Bd do
 
     result =
       case args do
-        ["create" | rest] -> cmd_create(root, rest)
-        ["show", id] -> cmd_show(root, id)
-        ["update", id | rest] -> cmd_update(root, id, rest)
-        ["close", id | rest] -> cmd_close(root, id, rest)
-        ["list" | rest] -> cmd_list(root, rest)
-        ["ready"] -> cmd_ready(root)
-        ["blocked"] -> cmd_blocked(root)
-        ["comment", "add", id | rest] -> cmd_comment_add(root, id, rest)
-        ["comment", "list", id] -> cmd_comment_list(root, id)
-        ["comment", "edit", id, comment_id | rest] -> cmd_comment_edit(root, id, comment_id, rest)
-        ["comment", "delete", id, comment_id] -> cmd_comment_delete(root, id, comment_id)
-        ["dep", "add", from, to | rest] -> cmd_dep_add(root, from, to, rest)
-        ["dep", "remove", from, to | rest] -> cmd_dep_remove(root, from, to, rest)
-        ["dep", "list"] -> cmd_dep_list(root)
-        ["label", "create", name | rest] -> cmd_label_create(root, name, rest)
-        ["label", "list"] -> cmd_label_list(root)
-        ["label", "assign", id, name] -> cmd_label_assign(root, id, name)
-        ["label", "unassign", id, name] -> cmd_label_unassign(root, id, name)
-        ["import", "issues", path] -> cmd_import_issues(root, path)
-        ["import", "deps", path] -> cmd_import_deps(root, path)
+        ["create" | rest] ->
+          cmd_create(root, rest)
+
+        ["show", id] ->
+          cmd_show(root, id)
+
+        ["update", id | rest] ->
+          cmd_update(root, id, rest)
+
+        ["close", id | rest] ->
+          cmd_close(root, id, rest)
+
+        ["list" | rest] ->
+          cmd_list(root, rest)
+
+        ["ready"] ->
+          cmd_ready(root)
+
+        ["blocked"] ->
+          cmd_blocked(root)
+
+        ["comment", "add", id | rest] ->
+          cmd_comment_add(root, id, rest)
+
+        ["comment", "list", id] ->
+          cmd_comment_list(root, id)
+
+        ["comment", "edit", id, comment_id | rest] ->
+          cmd_comment_edit(root, id, comment_id, rest)
+
+        ["comment", "delete", id, comment_id] ->
+          cmd_comment_delete(root, id, comment_id)
+
+        ["dep", "add", from, to | rest] ->
+          cmd_dep_add(root, from, to, rest)
+
+        ["dep", "remove", from, to | rest] ->
+          cmd_dep_remove(root, from, to, rest)
+
+        ["dep", "list"] ->
+          cmd_dep_list(root)
+
+        ["label", "create", name | rest] ->
+          cmd_label_create(root, name, rest)
+
+        ["label", "list"] ->
+          cmd_label_list(root)
+
+        ["label", "assign", id, name] ->
+          cmd_label_assign(root, id, name)
+
+        ["label", "unassign", id, name] ->
+          cmd_label_unassign(root, id, name)
+
+        ["import", "issues", path] ->
+          cmd_import_issues(root, path)
+
+        ["import", "deps", path] ->
+          cmd_import_deps(root, path)
+
         _ ->
           IO.puts(:stderr, usage())
           System.halt(1)
@@ -96,7 +137,10 @@ defmodule Commonplace.CLI.Bd do
     end
 
     attrs = %{title: title}
-    attrs = if opts[:description], do: Map.put(attrs, :description, opts[:description]), else: attrs
+
+    attrs =
+      if opts[:description], do: Map.put(attrs, :description, opts[:description]), else: attrs
+
     attrs = if opts[:status], do: Map.put(attrs, :status, opts[:status]), else: attrs
     attrs = if opts[:priority], do: Map.put(attrs, :priority, opts[:priority]), else: attrs
     attrs = if opts[:type], do: Map.put(attrs, :type, opts[:type]), else: attrs
@@ -135,22 +179,66 @@ defmodule Commonplace.CLI.Bd do
         strict: [
           title: :string,
           status: :string,
+          reason: :string,
           priority: :string,
           type: :string,
           owner: :string
         ]
       )
 
-    attrs = Enum.into(opts, %{})
+    attrs = opts |> Keyword.drop([:reason]) |> Enum.into(%{})
 
     if attrs == %{} do
       IO.puts(:stderr, "No update flags provided.")
       System.halt(1)
     end
 
-    case Issue.update(root, id, attrs) do
-      {:ok, issue} -> IO.puts("Updated #{issue.id}")
+    with {:ok, signing_context} <- status_signing_context(attrs),
+         {:ok, issue} <- update_ticket(root, id, attrs, opts[:reason], signing_context) do
+      IO.puts("Updated #{issue.id}")
+    else
       {:error, reason} -> error_exit("Update failed", reason)
+    end
+  end
+
+  defp status_signing_context(%{status: _status}), do: NodeIdentity.signing_context()
+  defp status_signing_context(_attrs), do: {:ok, nil}
+
+  @doc """
+  Applies the legacy `bd update` field bag. If it includes `:status`,
+  that field is removed from the generic update and routed through
+  `ticket_set_status`; there is no permissive CLI-only status door.
+
+  Public for the CLI single-door regression test. Production callers
+  resolve the node signing context in `cmd_update/3`; tests inject a
+  fixture context and store.
+  """
+  def update_ticket(root, id, attrs, reason, signing_context, store \\ CommitStoreClient)
+      when is_map(attrs) do
+    {status, ordinary_attrs} = Map.pop(attrs, :status)
+
+    with :ok <- maybe_set_status(root, id, status, reason, signing_context, store),
+         {:ok, issue} <- maybe_update_ordinary_fields(root, id, ordinary_attrs, store) do
+      {:ok, issue}
+    end
+  end
+
+  defp maybe_set_status(_root, _id, nil, _reason, _signing_context, _store), do: :ok
+
+  defp maybe_set_status(root, id, status, reason, signing_context, store) do
+    case BdQuery.set_status(root, id, status, reason, signing_context, store) do
+      {:ok, _status} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp maybe_update_ordinary_fields(root, id, attrs, store) when map_size(attrs) == 0,
+    do: Issue.show(root, id, store)
+
+  defp maybe_update_ordinary_fields(root, id, attrs, store) do
+    case Issue.update(root, id, attrs, store) do
+      {:ok, issue} -> {:ok, issue}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -297,7 +385,9 @@ defmodule Commonplace.CLI.Bd do
 
   defp cmd_label_list(root) do
     Label.list(root)
-    |> Enum.each(fn l -> IO.puts("#{l.name}#{if l.color, do: " (#{l.color})", else: ""}: #{l.description}") end)
+    |> Enum.each(fn l ->
+      IO.puts("#{l.name}#{if l.color, do: " (#{l.color})", else: ""}: #{l.description}")
+    end)
   end
 
   defp cmd_label_assign(root, id, name) do
@@ -320,7 +410,10 @@ defmodule Commonplace.CLI.Bd do
         case Importer.import_issues_jsonl(root, text) do
           {:ok, %{imported: i, updated: u, errors: errs}} ->
             IO.puts("Imported #{i}, updated #{u}, errors #{length(errs)}")
-            Enum.each(errs, fn {idx, reason} -> IO.puts(:stderr, "  line #{idx}: #{inspect(reason)}") end)
+
+            Enum.each(errs, fn {idx, reason} ->
+              IO.puts(:stderr, "  line #{idx}: #{inspect(reason)}")
+            end)
         end
 
       {:error, reason} ->
@@ -392,7 +485,7 @@ defmodule Commonplace.CLI.Bd do
     Issues:
       bd create [--title T] [--description D] [--priority p0..p3] [--type T] [--owner O]
       bd show <id>
-      bd update <id> [--title T] [--status S] [--priority P] [--type T] [--owner O]
+      bd update <id> [--title T] [--status S --reason R] [--priority P] [--type T] [--owner O]
       bd close <id> [--reason R]
       bd list [--status S] [--priority P] [--label L] [--owner O]
       bd ready      tickets whose every prerequisite is satisfied

@@ -50,11 +50,16 @@ defmodule Commonplace.Bd.WriteGuard do
       no-op (same type, same params) is always accepted.
     * **post-close freeze** — once `issue.status == "closed"`,
       `done_when`, `done_witness`, and `status` itself are frozen:
-      refused regardless of `allow`. A ticket closes once in v1; there
-      is no reopen path. This is checked FIRST (before protected-field
-      `allow`-list enforcement) precisely because it must NOT be
-      bypassable by any caller's `allow` list, unlike the ordinary
-      protected-field gate below.
+      refused regardless of `allow`. Reopen is the freeze's ONE named
+      exit: an explicit `reopen: true` option admits only the complete,
+      shape-validated closed-to-open status + decision-record write.
+      Every other delta remains frozen. This is checked FIRST (before
+      protected-field `allow`-list enforcement) precisely because an
+      `allow` list cannot bypass it.
+
+  The freeze currently matches `"closed"` but not `"wontfix"`. That
+  asymmetry is intentionally unchanged here and remains a later census
+  question; it is not broadened by the named closed-ticket reopen exit.
   """
 
   alias Commonplace.Bd.Schemas
@@ -75,6 +80,11 @@ defmodule Commonplace.Bd.WriteGuard do
   gate is authorized to write (default `[]` — nothing protected is
   writable).
 
+  `opts[:reopen]` names the closed-ticket freeze's sole exit. It is a
+  shape request, not an authorization token: when true, the full
+  `changes` map must be exactly the governed closed-to-open transition
+  and its one appended decision record.
+
   Returns `:ok` or `{:error, reason_string}`.
   """
   @spec check(Issue.t(), map(), String.t(), module() | atom(), keyword()) ::
@@ -83,7 +93,7 @@ defmodule Commonplace.Bd.WriteGuard do
       when is_map(changes) and is_binary(root_uuid) do
     allow = Keyword.get(opts, :allow, [])
 
-    with :ok <- check_frozen(issue, changes),
+    with :ok <- check_frozen(issue, changes, opts),
          :ok <- check_protected(changes, allow),
          :ok <- check_ref_types(changes, root_uuid),
          :ok <- check_done_when_monotonic(issue, changes),
@@ -177,15 +187,16 @@ defmodule Commonplace.Bd.WriteGuard do
   end
 
   ## Post-close freeze (S3) — runs BEFORE protected-field enforcement so
-  ## it can never be bypassed by an `allow` list. A closed ticket never
-  ## reopens in v1: `status`, `done_when`, and `done_witness` are frozen
+  ## it can never be bypassed by an `allow` list. The only exit is an
+  ## explicit, full-delta, shape-validated closed-to-open decision;
+  ## `status`, `done_when`, and `done_witness` otherwise remain frozen
   ## solid once `issue.status == "closed"`.
 
   @frozen_after_close [:status, :done_when, :done_witness]
 
   @doc """
   The single declared set of fields frozen once a ticket closes.
-  `check_frozen/2` (below) and `Commonplace.Bd.Invariants`'s
+  `check_frozen/3` (below) and `Commonplace.Bd.Invariants`'s
   closed-matches-pin comparison both read THIS list rather than each
   keeping their own copy — a widened set only has to change here, and
   a second silently-narrower copy can't drift back out of sync with
@@ -194,20 +205,86 @@ defmodule Commonplace.Bd.WriteGuard do
   @spec frozen_after_close() :: [atom()]
   def frozen_after_close, do: @frozen_after_close
 
-  defp check_frozen(%Issue{status: "closed"}, changes) do
+  defp check_frozen(%Issue{status: "closed"} = issue, changes, opts) do
+    if Keyword.get(opts, :reopen, false) and valid_reopen_delta?(issue, changes) do
+      :ok
+    else
+      frozen_change(changes, Keyword.get(opts, :reopen, false))
+    end
+  end
+
+  defp check_frozen(%Issue{}, _changes, _opts), do: :ok
+
+  defp frozen_change(changes, reopen?) do
     changes
     |> Map.keys()
     |> Enum.filter(&(&1 in @frozen_after_close))
     |> case do
+      [] when reopen? ->
+        frozen_error(:status)
+
       [] ->
         :ok
 
       [field | _] ->
-        {:error, "field #{inspect(field)} is frozen: ticket is closed (no reopen in v1)"}
+        frozen_error(field)
     end
   end
 
-  defp check_frozen(%Issue{}, _changes), do: :ok
+  defp frozen_error(field),
+    do: {:error, "field #{inspect(field)} is frozen: ticket is closed; the one exit is ticket_set_status's closed→open reopen decision"}
+
+  defp valid_reopen_delta?(
+         %Issue{extra: current_extra},
+         %{
+           status: "open",
+           extra: proposed_extra
+         } = changes
+       )
+       when map_size(changes) == 2 and is_map(current_extra) and is_map(proposed_extra) do
+    with {:ok, current_decisions} <- status_decisions(current_extra),
+         {:ok, proposed_decisions} <- status_decisions(proposed_extra),
+         true <-
+           Map.delete(proposed_extra, "status_decisions") ==
+             Map.delete(current_extra, "status_decisions"),
+         true <- length(proposed_decisions) == length(current_decisions) + 1,
+         true <- Enum.take(proposed_decisions, length(current_decisions)) == current_decisions,
+         decision when is_map(decision) <- List.last(proposed_decisions) do
+      valid_reopen_decision?(decision)
+    else
+      _ -> false
+    end
+  end
+
+  defp valid_reopen_delta?(%Issue{}, _changes), do: false
+
+  defp status_decisions(extra) do
+    case Map.fetch(extra, "status_decisions") do
+      :error -> {:ok, []}
+      {:ok, decisions} when is_list(decisions) -> {:ok, decisions}
+      {:ok, _other} -> :error
+    end
+  end
+
+  defp valid_reopen_decision?(decision) do
+    MapSet.new(Map.keys(decision)) ==
+      MapSet.new(~w(type name from to actor reason at)) and
+      decision["type"] == "DECISION" and
+      decision["name"] == "reopen-with-reason" and
+      decision["from"] == "closed" and
+      decision["to"] == "open" and
+      is_binary(decision["actor"]) and
+      non_empty_binary?(decision["reason"]) and
+      iso8601_timestamp?(decision["at"])
+  end
+
+  defp non_empty_binary?(value), do: is_binary(value) and String.trim(value) != ""
+
+  defp iso8601_timestamp?(value) when is_binary(value) do
+    match?({:ok, %DateTime{}, _offset}, DateTime.from_iso8601(value))
+  end
+
+  defp iso8601_timestamp?(_value), do: false
 
   ## Protected-field enforcement
 
@@ -266,7 +343,8 @@ defmodule Commonplace.Bd.WriteGuard do
 
   @need_entry_keys MapSet.new(["ticket", "repo"])
 
-  defp validate_need_entry(%{"ticket" => ticket} = m, root_uuid) when is_binary(ticket) and ticket != "" do
+  defp validate_need_entry(%{"ticket" => ticket} = m, root_uuid)
+       when is_binary(ticket) and ticket != "" do
     keys = m |> Map.keys() |> MapSet.new()
 
     cond do

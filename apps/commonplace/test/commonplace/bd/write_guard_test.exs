@@ -43,12 +43,15 @@ defmodule Commonplace.Bd.WriteGuardTest do
       {:ok, a} = Issue.update(ctx.root, a.id, %{needs: [%{"ticket" => b.id}]}, ctx.store)
 
       assert {:error, reason} =
-               WriteGuard.check(b, %{needs: [%{"ticket" => a.id}]}, ctx.root, ctx.store, allow: [])
+               WriteGuard.check(b, %{needs: [%{"ticket" => a.id}]}, ctx.root, ctx.store,
+                 allow: []
+               )
 
       assert reason =~ "cycle"
     end
 
-    test "a longer loop back to the dependent is refused (A needs B, B needs C, then C needs A)", ctx do
+    test "a longer loop back to the dependent is refused (A needs B, B needs C, then C needs A)",
+         ctx do
       {:ok, a, _} = Issue.create(ctx.root, %{title: "A"}, ctx.store)
       {:ok, b, _} = Issue.create(ctx.root, %{title: "B"}, ctx.store)
       {:ok, c, _} = Issue.create(ctx.root, %{title: "C"}, ctx.store)
@@ -57,7 +60,9 @@ defmodule Commonplace.Bd.WriteGuardTest do
       {:ok, _} = Issue.update(ctx.root, b.id, %{needs: [%{"ticket" => c.id}]}, ctx.store)
 
       assert {:error, reason} =
-               WriteGuard.check(c, %{needs: [%{"ticket" => a.id}]}, ctx.root, ctx.store, allow: [])
+               WriteGuard.check(c, %{needs: [%{"ticket" => a.id}]}, ctx.root, ctx.store,
+                 allow: []
+               )
 
       assert reason =~ "cycle"
     end
@@ -237,7 +242,8 @@ defmodule Commonplace.Bd.WriteGuardTest do
                )
     end
 
-    test "freely-writable fields (title, priority, needs, legacy_id) succeed with allow: []", ctx do
+    test "freely-writable fields (title, priority, needs, legacy_id) succeed with allow: []",
+         ctx do
       {:ok, a, _} = Issue.create(ctx.root, %{title: "A"}, ctx.store)
 
       assert :ok =
@@ -332,7 +338,11 @@ defmodule Commonplace.Bd.WriteGuardTest do
 
     test "pr_merge -> manual (downgrade) is refused", ctx do
       {:ok, a, _} =
-        Issue.create(ctx.root, %{title: "A", done_when: %{"type" => "pr_merge", "target" => UUID.uuid4()}}, ctx.store)
+        Issue.create(
+          ctx.root,
+          %{title: "A", done_when: %{"type" => "pr_merge", "target" => UUID.uuid4()}},
+          ctx.store
+        )
 
       assert {:error, reason} =
                WriteGuard.check(a, %{done_when: "manual"}, ctx.root, ctx.store, allow: [])
@@ -345,7 +355,11 @@ defmodule Commonplace.Bd.WriteGuardTest do
       target_b = UUID.uuid4()
 
       {:ok, a, _} =
-        Issue.create(ctx.root, %{title: "A", done_when: %{"type" => "pr_merge", "target" => target_a}}, ctx.store)
+        Issue.create(
+          ctx.root,
+          %{title: "A", done_when: %{"type" => "pr_merge", "target" => target_a}},
+          ctx.store
+        )
 
       assert {:error, reason} =
                WriteGuard.check(
@@ -363,7 +377,11 @@ defmodule Commonplace.Bd.WriteGuardTest do
       target = UUID.uuid4()
 
       {:ok, a, _} =
-        Issue.create(ctx.root, %{title: "A", done_when: %{"type" => "pr_merge", "target" => target}}, ctx.store)
+        Issue.create(
+          ctx.root,
+          %{title: "A", done_when: %{"type" => "pr_merge", "target" => target}},
+          ctx.store
+        )
 
       assert :ok =
                WriteGuard.check(
@@ -383,6 +401,73 @@ defmodule Commonplace.Bd.WriteGuardTest do
   end
 
   describe "post-close freeze (Bd P2 S3)" do
+    test "the reopen option admits exactly one shape-validated closed-to-open decision", ctx do
+      {:ok, a, _} = Issue.create(ctx.root, %{title: "A"}, ctx.store)
+      closed = %{a | status: "closed"}
+      decision = reopen_decision()
+
+      changes = %{
+        status: "open",
+        extra: Map.put(closed.extra, "status_decisions", [decision])
+      }
+
+      assert :ok =
+               WriteGuard.check(closed, changes, ctx.root, ctx.store,
+                 allow: [:status],
+                 reopen: true
+               )
+    end
+
+    test "the reopen option is a shape, not a token: smuggled deltas remain frozen", ctx do
+      {:ok, a, _} = Issue.create(ctx.root, %{title: "A"}, ctx.store)
+      closed = %{a | status: "closed"}
+      decision = reopen_decision()
+      reopened_extra = Map.put(closed.extra, "status_decisions", [decision])
+
+      smuggled_changes = [
+        %{status: "open", extra: Map.put(reopened_extra, "rider", true)},
+        %{status: "open", extra: Map.put(closed.extra, "status_decisions", [decision, decision])},
+        %{status: "open", extra: reopened_extra, title: "riding title edit"},
+        %{status: "review", extra: reopened_extra}
+      ]
+
+      for changes <- smuggled_changes do
+        assert {:error, "field :status is frozen: ticket is closed; the one exit is ticket_set_status's closed→open reopen decision"} =
+                 WriteGuard.check(closed, changes, ctx.root, ctx.store,
+                   allow: [:status],
+                   reopen: true
+                 )
+      end
+    end
+
+    test "the reopen option refuses malformed decision records", ctx do
+      {:ok, a, _} = Issue.create(ctx.root, %{title: "A"}, ctx.store)
+      closed = %{a | status: "closed"}
+
+      malformed = [
+        Map.put(reopen_decision(), "name", "decision"),
+        Map.put(reopen_decision(), "from", "wontfix"),
+        Map.put(reopen_decision(), "to", "review"),
+        Map.put(reopen_decision(), "actor", nil),
+        Map.put(reopen_decision(), "reason", "  "),
+        Map.put(reopen_decision(), "at", "not-a-timestamp"),
+        Map.put(reopen_decision(), "rider", true)
+      ]
+
+      for decision <- malformed do
+        changes = %{
+          status: "open",
+          extra: Map.put(closed.extra, "status_decisions", [decision])
+        }
+
+        assert {:error, "field :status is frozen: ticket is closed; the one exit is ticket_set_status's closed→open reopen decision"} =
+                 WriteGuard.check(closed, changes, ctx.root, ctx.store,
+                   allow: [:status],
+                   reopen: true
+                 )
+      end
+    end
+
     test "a closed ticket refuses a done_when write even with allow", ctx do
       {:ok, a, _} = Issue.create(ctx.root, %{title: "A"}, ctx.store)
       closed = %{a | status: "closed"}
@@ -439,5 +524,17 @@ defmodule Commonplace.Bd.WriteGuardTest do
       assert :ok =
                WriteGuard.check(a, %{status: "closed"}, ctx.root, ctx.store, allow: [:status])
     end
+  end
+
+  defp reopen_decision do
+    %{
+      "type" => "DECISION",
+      "name" => "reopen-with-reason",
+      "from" => "closed",
+      "to" => "open",
+      "actor" => "identity@pub",
+      "reason" => "new evidence",
+      "at" => DateTime.utc_now() |> DateTime.to_iso8601()
+    }
   end
 end

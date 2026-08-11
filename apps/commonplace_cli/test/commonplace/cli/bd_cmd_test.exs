@@ -22,6 +22,7 @@ defmodule Commonplace.CLI.BdCmdTest do
 
   alias Commonplace.Bd.Issue
   alias Commonplace.CLI.Bd, as: BdCmd
+  alias Commonplace.Crypto.{Signing, SigningContext}
   alias Commonplace.Store.CommitStore
   alias Commonplace.Tree.Schema
 
@@ -36,7 +37,52 @@ defmodule Commonplace.CLI.BdCmdTest do
     update = Yelixer.Encoding.encode_update(Schema.new_schema())
     CommitStore.create_commit(store, root, update, nil)
 
-    %{store: store, root: root}
+    {pub, priv} = Signing.generate_keypair()
+
+    signing_context = %SigningContext{
+      identity_uuid: "cli-status-test",
+      private_key: priv,
+      public_key: pub
+    }
+
+    %{store: store, root: root, signing_context: signing_context}
+  end
+
+  describe "bd update --status uses the decision table" do
+    test "the former permissive arm refuses in_progress and records an allowed decision", ctx do
+      {:ok, ticket, _} = Issue.create(ctx.root, %{title: "CLI status"}, ctx.store)
+
+      assert {:error, refusal} =
+               BdCmd.update_ticket(
+                 ctx.root,
+                 ticket.id,
+                 %{status: "in_progress"},
+                 "legacy CLI attempt",
+                 ctx.signing_context,
+                 ctx.store
+               )
+
+      assert refusal ==
+               "ticket_set_status refuses transition from \"open\" to \"in_progress\": " <>
+                 "in_progress is EXIT-ONLY and has no inbound edges; custody is represented by the claim token; " <>
+                 "legal targets from open: open, blocked, review, wontfix"
+
+      {:ok, unchanged} = Issue.show(ctx.root, ticket.id, ctx.store)
+      assert unchanged.status == "open"
+
+      assert {:ok, reviewed} =
+               BdCmd.update_ticket(
+                 ctx.root,
+                 ticket.id,
+                 %{status: "review"},
+                 "ready for review",
+                 ctx.signing_context,
+                 ctx.store
+               )
+
+      assert reviewed.status == "review"
+      assert List.last(reviewed.extra["status_decisions"])["reason"] == "ready for review"
+    end
   end
 
   describe "bd ready / bd blocked serve the live needs graph" do
@@ -64,7 +110,11 @@ defmodule Commonplace.CLI.BdCmdTest do
       {:ok, prereq, _} = Issue.create(ctx.root, %{title: "prereq"}, ctx.store)
 
       {:ok, dependent, _} =
-        Issue.create(ctx.root, %{title: "dependent", needs: [%{"ticket" => prereq.id}]}, ctx.store)
+        Issue.create(
+          ctx.root,
+          %{title: "dependent", needs: [%{"ticket" => prereq.id}]},
+          ctx.store
+        )
 
       {:ok, _} = Issue.update(ctx.root, prereq.id, %{status: "closed"}, ctx.store)
 
