@@ -1,99 +1,91 @@
 defmodule Commonplace.Presence.Reaper do
   @moduledoc """
-  Periodically scans for presence files with stale heartbeats.
+  Detects and executes owner-consented presence lease expiry.
 
-  Removes hot presence entries for crashed processes that didn't clean up.
-  A heartbeat is considered stale if it's older than the configured threshold.
+  This is the lease family's first janitor. Presence owners sign an explicit
+  TTL into each v1 presence record. The detector compares the signed heartbeat
+  with those per-entry terms; the node then signs a scoped removal carrying
+  `last_heartbeat`, `ttl_ms`, and `now`. `Commonplace.Trust` replays that commit
+  and verifies both the evidence and the exact one-entry removal, so the node is
+  an executor of pre-agreed authority rather than an ambient presence owner.
+
+  ## Lease-family extension seam
+
+  The named next member is **progress-witness lease expiry**. It plugs in at the
+  lease-record inspection/evidence boundary represented by `inspect_entry/4`:
+  provide its own signed terms and progress witness, then reuse the scoped
+  janitor outcome discipline. It must not weaken the presence gate or introduce
+  a generic node cleanup verb.
+
+  The heartbeat is the liveness assertion. This process's scan interval is the
+  detector cadence; it is not a TTL and never substitutes for owner terms.
   """
 
   use GenServer
+  require Logger
 
+  alias Commonplace.Crypto.NodeIdentity
   alias Commonplace.Presence
-  alias Commonplace.Tree.Schema
+  alias Commonplace.Store.Commit
   alias Commonplace.Store.CommitStoreClient
+  alias Commonplace.Tree.Schema
   alias Commonplace.Workspace
 
   @default_interval 15_000
-  @default_stale_threshold 30_000
 
-  # CX-4wl: `root_uuid` is the *static-override* fallback used by tests
-  # that want to pin the reaper to a specific root regardless of
-  # `<data_dir>/root`. Production omits this and the reaper re-resolves
-  # the workspace root on every scan tick (so `cp checkout` rerooting a
-  # long-running node is followed automatically).
-  defstruct [:root_uuid, :store, :interval, :stale_threshold]
+  defstruct [:root_uuid, :store, :interval]
 
-  def start_link(opts) do
-    GenServer.start_link(__MODULE__, opts)
+  def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
+
+  @doc "Return expired entries with the evidence a scoped janitor commit will carry."
+  def find_stale(root_uuid, store \\ CommitStoreClient, opts \\ []) do
+    root_uuid
+    |> inspect_entries(store, opts)
+    |> Enum.flat_map(fn
+      {:expired, candidate} -> [candidate]
+      _ -> []
+    end)
   end
 
   @doc """
-  The canonical staleness/TTL threshold (ms) for presence heartbeats.
+  Reap expired entries and return verify-by-effect outcomes.
 
-  Exposed so other consumers of presence liveness (e.g. the `list_peers`
-  MCP tool, CX-6sf2.5) derive online/offline status from the SAME
-  threshold the reaper uses to decide what to remove, instead of
-  inventing a second, possibly-inconsistent staleness window.
+  Each result is `%{outcome: :landed | :denied | :skipped, name: ..., reason: ...}`.
+  A name appears as `:landed` only when the commit store returned the commit that
+  actually advanced the schema head.
   """
-  def default_stale_threshold, do: @default_stale_threshold
+  def reap(root_uuid, store \\ CommitStoreClient, opts \\ []) do
+    signing_context =
+      Keyword.get_lazy(opts, :signing_context, fn ->
+        case NodeIdentity.signing_context() do
+          {:ok, ctx} -> ctx
+          {:error, reason} -> {:unavailable, reason}
+        end
+      end)
 
-  @doc "Get the list of stale presence entries without removing them."
-  def find_stale(root_uuid, store \\ CommitStoreClient, stale_threshold \\ @default_stale_threshold) do
-    root_doc = load_schema(root_uuid, store)
-    presence_entries = Presence.discover(root_doc, :all)
-    now = DateTime.utc_now()
+    root_uuid
+    |> inspect_entries(store, opts)
+    |> Enum.flat_map(fn
+      {:fresh, _entry} ->
+        []
 
-    Enum.filter(presence_entries, fn entry ->
-      case Presence.read(entry.node_id, store) do
-        %{"heartbeat" => heartbeat} ->
-          case DateTime.from_iso8601(heartbeat) do
-            {:ok, hb_time, _} ->
-              age_ms = DateTime.diff(now, hb_time, :millisecond)
-              age_ms > stale_threshold
+      {:skipped, entry, reason} ->
+        [%{outcome: :skipped, name: entry.name, reason: reason}]
 
-            _ ->
-              true
-          end
-
-        _ ->
-          false
-      end
+      {:expired, candidate} ->
+        [execute_candidate(candidate, root_uuid, store, signing_context)]
     end)
   end
 
-  @doc "Reap stale presence entries. Returns list of removed entry names."
-  def reap(root_uuid, store \\ CommitStoreClient, stale_threshold \\ @default_stale_threshold) do
-    stale = find_stale(root_uuid, store, stale_threshold)
-
-    # CX-i9w9 — DELIBERATELY still unsigned (a no-op under :enforce), NOT
-    # node-signed. Node-signing the reaper would make it ACTUALLY retract, but
-    # `find_stale` keys off the heartbeat timestamp — and MUD `PlayerSession`
-    # presences never heartbeat (frozen at create), so a signed reaper would
-    # reap LIVE players after `@default_stale_threshold` (30s). Enabling the
-    # reaper is therefore COUPLED to presence heartbeating (so live presences
-    # stay fresh and only truly-abandoned ones go stale). Both must land
-    # together — deferred to the heartbeat increment (CX-jiyi + a MUD-heartbeat
-    # follow-up). Clean-leave retraction is already fixed (PlayerSession
-    # terminate, player-signed via the carve); this is only the crash/abandon
-    # backstop, and leaving it a no-op is strictly safer than reaping the living.
-    Enum.map(stale, fn entry ->
-      Presence.remove(entry.name, root_uuid, store)
-      entry.name
-    end)
-  end
+  @doc false
+  def report_outcomes(outcomes), do: log_outcomes(outcomes)
 
   @impl true
   def init(opts) do
-    root_uuid = Keyword.get(opts, :root_uuid)
-    store = Keyword.get(opts, :store, CommitStoreClient)
-    interval = Keyword.get(opts, :interval, @default_interval)
-    stale_threshold = Keyword.get(opts, :stale_threshold, @default_stale_threshold)
-
     state = %__MODULE__{
-      root_uuid: root_uuid,
-      store: store,
-      interval: interval,
-      stale_threshold: stale_threshold
+      root_uuid: Keyword.get(opts, :root_uuid),
+      store: Keyword.get(opts, :store, CommitStoreClient),
+      interval: Keyword.get(opts, :interval, @default_interval)
     }
 
     schedule_scan(state)
@@ -104,20 +96,11 @@ defmodule Commonplace.Presence.Reaper do
   def handle_info(:scan, state) do
     case current_root_uuid(state) do
       {:ok, root_uuid} ->
-        reaped = reap(root_uuid, state.store, state.stale_threshold)
-
-        if length(reaped) > 0 do
-          require Logger
-
-          Logger.info(
-            "Presence reaper removed #{length(reaped)} stale entries: #{Enum.join(reaped, ", ")}"
-          )
-        end
+        root_uuid
+        |> reap(state.store)
+        |> log_outcomes()
 
       {:error, _reason} ->
-        # No workspace root configured this tick — skip silently and try
-        # again next interval. CX-4wl: we don't crash because the root
-        # may legitimately be absent during reroot windows.
         :ok
     end
 
@@ -125,17 +108,96 @@ defmodule Commonplace.Presence.Reaper do
     {:noreply, state}
   end
 
-  # CX-4wl: prefer the static override if one was passed at init time
-  # (test ergonomics, plus a way to pin the reaper for environments
-  # where the workspace root file isn't authoritative). Otherwise read
-  # the live workspace root each tick so a CLI-driven reroot is
-  # picked up without a restart.
+  defp inspect_entries(root_uuid, store, opts) do
+    root_doc = load_schema(root_uuid, store)
+    now = Keyword.get(opts, :now, DateTime.utc_now())
+
+    root_doc
+    |> Presence.discover(:all)
+    |> Enum.map(&inspect_entry(&1, root_uuid, store, now))
+  end
+
+  defp inspect_entry(entry, root_uuid, store, now) do
+    case Presence.read(entry.node_id, store) do
+      %{} = content -> inspect_presence(entry, root_uuid, content, now)
+      _ -> {:skipped, entry, :presence_document_missing}
+    end
+  end
+
+  defp inspect_presence(entry, root_uuid, content, now) do
+    with {:ok, terms} <- Presence.lease_terms(content),
+         heartbeat when is_binary(heartbeat) <- Map.get(content, "heartbeat"),
+         {:ok, heartbeat_at, _offset} <- DateTime.from_iso8601(heartbeat) do
+      age_ms = DateTime.diff(now, heartbeat_at, :millisecond)
+
+      if age_ms > terms.ttl_ms do
+        evidence = %{
+          entry_name: entry.name,
+          presence_uuid: entry.node_id,
+          root_uuid: root_uuid,
+          last_heartbeat: heartbeat,
+          ttl_ms: terms.ttl_ms,
+          now: DateTime.to_iso8601(now)
+        }
+
+        {:expired, %{entry: entry, evidence: evidence, lease: terms}}
+      else
+        {:fresh, entry}
+      end
+    else
+      {:error, reason} -> {:skipped, entry, reason}
+      _ -> {:skipped, entry, :presence_heartbeat_invalid}
+    end
+  end
+
+  defp execute_candidate(candidate, _root_uuid, _store, {:unavailable, reason}) do
+    %{outcome: :skipped, name: candidate.entry.name, reason: {:node_signer_unavailable, reason}}
+  end
+
+  defp execute_candidate(candidate, root_uuid, store, signing_context) do
+    opts = [signing_context: signing_context, janitor_evidence: candidate.evidence]
+
+    case Presence.remove(candidate.entry.name, root_uuid, store, opts) do
+      %Commit{} = commit ->
+        %{outcome: :landed, name: candidate.entry.name, commit_id: commit.id}
+
+      {:error, reason} ->
+        %{outcome: :denied, name: candidate.entry.name, reason: reason}
+
+      other ->
+        %{outcome: :denied, name: candidate.entry.name, reason: {:unexpected_write_result, other}}
+    end
+  end
+
+  defp log_outcomes(outcomes) do
+    landed = Enum.filter(outcomes, &(&1.outcome == :landed))
+
+    if landed != [] do
+      Logger.info(
+        "Presence reaper landed #{length(landed)} expired entries: " <>
+          Enum.map_join(landed, ", ", & &1.name)
+      )
+    end
+
+    outcomes
+    |> Enum.filter(&(&1.outcome == :denied))
+    |> Enum.each(fn outcome ->
+      Logger.error("Presence reaper DENIED #{outcome.name}: #{inspect(outcome.reason)}")
+    end)
+
+    outcomes
+    |> Enum.filter(&(&1.outcome == :skipped))
+    |> Enum.each(fn outcome ->
+      Logger.warning("Presence reaper skipped #{outcome.name}: #{inspect(outcome.reason)}")
+    end)
+
+    outcomes
+  end
+
   defp current_root_uuid(%{root_uuid: uuid}) when is_binary(uuid), do: {:ok, uuid}
   defp current_root_uuid(_state), do: Workspace.root_uuid()
 
-  defp schedule_scan(state) do
-    Process.send_after(self(), :scan, state.interval)
-  end
+  defp schedule_scan(state), do: Process.send_after(self(), :scan, state.interval)
 
   defp load_schema(uuid, store) do
     case CommitStoreClient.latest_commit(store, uuid) do

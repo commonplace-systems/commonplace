@@ -17,7 +17,6 @@ defmodule Commonplace.MCP.Tools.ListPeersTest do
   alias Commonplace.MCP.Tools
   alias Commonplace.MCP.Tools.ListPeers
   alias Commonplace.Presence
-  alias Commonplace.Presence.Reaper
   alias Commonplace.Store.{CommitStore, CommitStoreClient}
   alias Commonplace.Tree.Schema
   alias Commonplace.Document.ContentType
@@ -96,7 +95,8 @@ defmodule Commonplace.MCP.Tools.ListPeersTest do
       Presence.heartbeat(fresh_uuid, CommitStoreClient)
 
       old =
-        DateTime.utc_now() |> DateTime.add(-3 * Reaper.default_stale_threshold(), :millisecond)
+        DateTime.utc_now()
+        |> DateTime.add(-3 * Presence.default_lease_ttl_ms(:bot), :millisecond)
 
       set_heartbeat(stale_uuid, DateTime.to_iso8601(old), CommitStoreClient)
 

@@ -83,7 +83,7 @@ defmodule Commonplace.Presence.ReaperSupervisedTest do
       {:ok, _sup} =
         Supervisor.start_link(
           [
-            {Reaper, [store: store, interval: 50, stale_threshold: 30_000]}
+            {Reaper, [store: store, interval: 50]}
           ],
           strategy: :one_for_one,
           name: sup_name
@@ -102,7 +102,7 @@ defmodule Commonplace.Presence.ReaperSupervisedTest do
       root_doc_after = load_schema(root_b, store)
       {:ok, entry} = Schema.get_entry(root_doc_after, "ghost.exe")
 
-      old_time = DateTime.utc_now() |> DateTime.add(-60, :second) |> DateTime.to_iso8601()
+      old_time = DateTime.utc_now() |> DateTime.add(-180, :second) |> DateTime.to_iso8601()
       doc = load_doc(entry.node_id, store)
       doc = Commonplace.Document.ContentType.set_key(doc, "heartbeat", old_time)
       update = Yelixer.Encoding.encode_update(doc)
@@ -153,7 +153,7 @@ defmodule Commonplace.Presence.ReaperSupervisedTest do
       %{root: root_uuid, store: store_name}
     end
 
-    test "stale entries are removed within 30s by supervised reaper", %{
+    test "expired service entries are removed by the supervised reaper", %{
       root: root,
       store: store
     } do
@@ -164,7 +164,7 @@ defmodule Commonplace.Presence.ReaperSupervisedTest do
       {:ok, entry} = Schema.get_entry(root_doc, "dead-proc.exe")
 
       old_time =
-        DateTime.utc_now() |> DateTime.add(-60, :second) |> DateTime.to_iso8601()
+        DateTime.utc_now() |> DateTime.add(-180, :second) |> DateTime.to_iso8601()
 
       doc = load_doc(entry.node_id, store)
       doc = Commonplace.Document.ContentType.set_key(doc, "heartbeat", old_time)
@@ -183,8 +183,7 @@ defmodule Commonplace.Presence.ReaperSupervisedTest do
              [
                root_uuid: root,
                store: store,
-               interval: 50,
-               stale_threshold: 30_000
+               interval: 50
              ]}
           ],
           strategy: :one_for_one,

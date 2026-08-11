@@ -276,6 +276,15 @@ defmodule Commonplace.Trust do
   """
   @spec authorized_to_write?(Commit.t(), {:doc, String.t()}, config(), GenServer.server()) ::
           :ok | {:error, term()}
+  def authorized_to_write?(
+        %Commit{metadata: %{presence_janitor: evidence}} = commit,
+        {:doc, uuid},
+        _cfg,
+        store
+      ) do
+    presence_janitor_authorized?(commit, evidence, uuid, store)
+  end
+
   def authorized_to_write?(%Commit{} = commit, {:doc, uuid} = scope, cfg, store) do
     case required_write_verb(commit, uuid, store) do
       # CX-fogy L3 (OPTION 2): a sandboxed safe-verb's :define_verb coverage is
@@ -299,6 +308,78 @@ defmodule Commonplace.Trust do
       verb ->
         authorized?(commit, verb, scope, cfg, store)
     end
+  end
+
+  # S22 / CX-9jds: a node signature carrying `presence_janitor` is not the
+  # node's ambient root authority. It is a scoped executor signature and is
+  # valid only when the signed evidence exactly describes the one schema entry
+  # removed and the referenced presence is expired under its owner-issued TTL.
+  # Every uncertainty fails closed.
+  defp presence_janitor_authorized?(commit, evidence, root_uuid, store) do
+    with :ok <- verify_local_node_signature(commit),
+         {:ok, normalized} <- normalize_janitor_evidence(evidence),
+         true <- normalized.root_uuid == root_uuid,
+         {:ok, before} <- reconstruct_before(store, root_uuid),
+         {:ok, after_doc} <- Encoding.apply_update(before, commit.update),
+         true <- exact_janitor_removal?(before, after_doc, normalized),
+         %{} = presence <- Commonplace.Presence.read(normalized.presence_uuid, store),
+         {:ok, terms} <- Commonplace.Presence.lease_terms(presence),
+         true <- presence["heartbeat"] == normalized.last_heartbeat,
+         true <- terms.ttl_ms == normalized.ttl_ms,
+         {:ok, heartbeat, _offset} <- DateTime.from_iso8601(normalized.last_heartbeat),
+         {:ok, now, _offset} <- DateTime.from_iso8601(normalized.now),
+         true <- DateTime.diff(now, heartbeat, :millisecond) > normalized.ttl_ms do
+      :ok
+    else
+      _ -> {:error, :presence_janitor_scope_invalid}
+    end
+  rescue
+    _ -> {:error, :presence_janitor_scope_invalid}
+  catch
+    _, _ -> {:error, :presence_janitor_scope_invalid}
+  end
+
+  defp verify_local_node_signature(commit) do
+    with {:ok, node_id} <- Commonplace.Crypto.NodeIdentity.identity(),
+         {:ok, ^node_id, _fingerprint} <- Signing.parse_signer_id(commit.signer_id || ""),
+         {:ok, [_ | _] = public_keys} <- Commonplace.Crypto.NodeIdentity.public_keys(),
+         true <- Enum.any?(public_keys, &(Signing.verify_commit(commit, &1) == :ok)) do
+      :ok
+    else
+      _ -> {:error, :not_local_node_janitor}
+    end
+  end
+
+  defp normalize_janitor_evidence(%{
+         entry_name: entry_name,
+         presence_uuid: presence_uuid,
+         root_uuid: root_uuid,
+         last_heartbeat: last_heartbeat,
+         ttl_ms: ttl_ms,
+         now: now
+       })
+       when is_binary(entry_name) and is_binary(presence_uuid) and is_binary(root_uuid) and
+              is_binary(last_heartbeat) and is_integer(ttl_ms) and ttl_ms > 0 and is_binary(now) do
+    {:ok,
+     %{
+       entry_name: entry_name,
+       presence_uuid: presence_uuid,
+       root_uuid: root_uuid,
+       last_heartbeat: last_heartbeat,
+       ttl_ms: ttl_ms,
+       now: now
+     }}
+  end
+
+  defp normalize_janitor_evidence(_), do: {:error, :malformed_janitor_evidence}
+
+  defp exact_janitor_removal?(before_doc, after_doc, evidence) do
+    before_entries = entry_map(before_doc)
+    after_entries = entry_map(after_doc)
+
+    Map.get(before_entries, evidence.entry_name) == {:doc, evidence.presence_uuid} and
+      after_entries == Map.delete(before_entries, evidence.entry_name) and
+      match?({:ok, _name, _type}, Commonplace.Presence.parse_honorific(evidence.entry_name))
   end
 
   # CX-fogy L3 — the COMMITLESS host-membership predicate for a safe-verb CODE

@@ -14,6 +14,7 @@ defmodule Commonplace.BootWriterMeasurementTest do
 
   alias Commonplace.Crypto.{AgentKeys, NodeIdentity, Signing}
   alias Commonplace.GitBridge.{Inbound, Server}
+  alias Commonplace.Presence.Reaper
   alias Commonplace.Store.{CommitStoreClient, SecretStore}
   alias Commonplace.Tree.{DocBuilder, Schema}
   alias Yelixer.Encoding
@@ -81,6 +82,61 @@ defmodule Commonplace.BootWriterMeasurementTest do
       },
       label: "S13 SIGNED BOOT RECEIPT"
     )
+  end
+
+  test "bridge heartbeat advances as itself and the reaper stays quiet in enforce and permissive postures" do
+    fixture = fixture!(:legacy_default)
+    identity_uuid = Inbound.bridge_identity_uuid(fixture.root_uuid)
+    assert {:ok, pub} = AgentKeys.ensure(identity_uuid, fixture.secret_store)
+
+    server_id = :"s22_bridge_#{System.unique_integer([:positive])}"
+
+    server =
+      start_supervised!(
+        {Server,
+         mount_uuid: fixture.root_uuid,
+         repo_dir: fixture.repo_dir,
+         store: fixture.store,
+         secret_store: fixture.secret_store,
+         interval_ms: 3_600_000,
+         presence_heartbeat_interval_ms: 100},
+        id: server_id
+      )
+
+    presence_uuid = Server.status(server).presence_uuid
+    initial = Commonplace.Presence.read(presence_uuid, fixture.store)["heartbeat"]
+    parent = self()
+    handler = {__MODULE__, self(), :s22_heartbeat}
+
+    :telemetry.attach(
+      handler,
+      [:commonplace, :commit, :create],
+      fn _event, _measurements, metadata, _config ->
+        if metadata.doc_uuid == presence_uuid, do: send(parent, :bridge_heartbeat_landed)
+      end,
+      nil
+    )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+
+    assert_receive :bridge_heartbeat_landed, 1_000
+    advanced = Commonplace.Presence.read(presence_uuid, fixture.store)["heartbeat"]
+    assert advanced > initial
+
+    assert {:ok, heartbeat_commit} =
+             CommitStoreClient.latest_commit(fixture.store, presence_uuid)
+
+    assert heartbeat_commit.signer_id == Signing.signer_id(identity_uuid, pub)
+    assert :ok = Signing.verify_commit(heartbeat_commit, pub)
+
+    assert Reaper.reap(fixture.root_uuid, fixture.store) == []
+    Application.put_env(:commonplace, :local_write_gate, :off)
+    assert Reaper.reap(fixture.root_uuid, fixture.store) == []
+
+    assert {:ok, %{node_id: ^presence_uuid}} =
+             fixture.store
+             |> load_doc(fixture.root_uuid)
+             |> Schema.get_entry("__git-bridge.bot")
   end
 
   test "missing bridge key skips loudly once without a write or crash" do

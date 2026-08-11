@@ -48,7 +48,10 @@ defmodule Commonplace.Presence.SigningTest do
     on_exit(fn ->
       for {k, v} <- old do
         key = %{data_dir: :data_dir, trust: :trust, gate: :local_write_gate}[k]
-        if is_nil(v), do: Application.delete_env(:commonplace, key), else: Application.put_env(:commonplace, key, v)
+
+        if is_nil(v),
+          do: Application.delete_env(:commonplace, key),
+          else: Application.put_env(:commonplace, key, v)
       end
 
       File.rm_rf!(dir)
@@ -75,7 +78,13 @@ defmodule Commonplace.Presence.SigningTest do
     ctx = %SigningContext{identity_uuid: pid, public_key: pub, private_key: priv}
 
     {:ok, cap} =
-      Capability.issue(node_ctx, {pid, pub}, %{verbs: [:write], scope: {:presence, pid}, caveats: %{}}, nil, store: store)
+      Capability.issue(
+        node_ctx,
+        {pid, pub},
+        %{verbs: [:write], scope: {:presence, pid}, caveats: %{}},
+        nil,
+        store: store
+      )
 
     :ok = CommitStoreClient.store_capability(store, cap)
     %{id: pid, ctx: ctx, creds: [signing_context: ctx, cert_cids: [cap.id]]}
@@ -88,13 +97,17 @@ defmodule Commonplace.Presence.SigningTest do
 
   defp heartbeat_of(puuid, store) do
     {:ok, doc} = DocBuilder.reconstruct_doc(store, puuid)
+
     case ContentType.get_content(doc) do
       %{"heartbeat" => hb} -> hb
       _ -> nil
     end
   end
 
-  test "UNSIGNED presence create is refused under enforce (the ghost cause)", %{store: store, room: room} do
+  test "UNSIGNED presence create is refused under enforce (the ghost cause)", %{
+    store: store,
+    room: room
+  } do
     # create writes the presence doc AND the room-dir entry; unsigned → the
     # dir entry never lands, so no .usr appears.
     Presence.create("anon", :usr, room, store)
@@ -109,7 +122,9 @@ defmodule Commonplace.Presence.SigningTest do
     p = player_with_presence_cert(store, node_ctx)
 
     # CREATE (player-signed + presence cert) → .usr lands in the node-owned dir
-    {:ok, puuid} = Presence.create("player-#{p.id |> String.slice(0, 6)}", :usr, room, store, p.creds)
+    {:ok, puuid} =
+      Presence.create("player-#{p.id |> String.slice(0, 6)}", :usr, room, store, p.creds)
+
     assert length(usr_entries(room, store)) == 1
     hb0 = heartbeat_of(puuid, store)
     assert is_binary(hb0)
@@ -126,7 +141,11 @@ defmodule Commonplace.Presence.SigningTest do
     assert usr_entries(room, store) == []
   end
 
-  test "UNSIGNED heartbeat is refused; the frozen-timestamp symptom", %{store: store, node_ctx: node_ctx, room: room} do
+  test "UNSIGNED heartbeat is refused; the frozen-timestamp symptom", %{
+    store: store,
+    node_ctx: node_ctx,
+    room: room
+  } do
     p = player_with_presence_cert(store, node_ctx)
     {:ok, puuid} = Presence.create("frz", :usr, room, store, p.creds)
     hb0 = heartbeat_of(puuid, store)
@@ -141,9 +160,13 @@ defmodule Commonplace.Presence.SigningTest do
     room: room
   } do
     p = player_with_presence_cert(store, node_ctx)
-    {:ok, puuid} = Presence.create("actor-#{p.id |> String.slice(0, 6)}", :usr, room, store, p.creds)
 
-    assert %Commonplace.Store.Commit{} = Presence.set_activity(puuid, "writing tests", store, p.creds)
+    {:ok, puuid} =
+      Presence.create("actor-#{p.id |> String.slice(0, 6)}", :usr, room, store, p.creds)
+
+    assert %Commonplace.Store.Commit{} =
+             Presence.set_activity(puuid, "writing tests", store, p.creds)
+
     {:ok, doc} = DocBuilder.reconstruct_doc(store, puuid)
     assert %{"activity" => "writing tests"} = ContentType.get_content(doc)
 
@@ -160,10 +183,14 @@ defmodule Commonplace.Presence.SigningTest do
     room: room
   } do
     p = player_with_presence_cert(store, node_ctx)
-    {:ok, puuid} = Presence.create("silent-#{p.id |> String.slice(0, 6)}", :usr, room, store, p.creds)
+
+    {:ok, puuid} =
+      Presence.create("silent-#{p.id |> String.slice(0, 6)}", :usr, room, store, p.creds)
 
     assert {:error, {:trust_rejected, :unsigned}} = Presence.set_activity(puuid, "sneaky", store)
-    assert {:error, {:trust_rejected, :unsigned}} = Presence.set_attributes(puuid, %{owner: "eve"}, store)
+
+    assert {:error, {:trust_rejected, :unsigned}} =
+             Presence.set_attributes(puuid, %{owner: "eve"}, store)
 
     {:ok, doc} = DocBuilder.reconstruct_doc(store, puuid)
     content = ContentType.get_content(doc)
@@ -171,22 +198,19 @@ defmodule Commonplace.Presence.SigningTest do
     refute Map.get(content, "owner") == "eve"
   end
 
-  test "reaper stays a DELIBERATE no-op under enforce (unsigned) — must not reap the frozen-heartbeat living", %{
+  test "scoped reaper stays quiet for a fresh owner-leased player under enforce", %{
     store: store,
     node_ctx: node_ctx,
     room: room
   } do
-    # CX-i9w9 safety: node-signing the reaper would make it retract, but
-    # `find_stale` keys off the heartbeat, and MUD presences never heartbeat
-    # (frozen at create) → a signed reaper would reap LIVE players after the
-    # stale threshold. So the reaper stays unsigned (denied under enforce = a
-    # no-op) until heartbeating lands. This test PINS that safety: the entry
-    # must SURVIVE a reap, even at stale_threshold 0 (everything "stale").
     p = player_with_presence_cert(store, node_ctx)
-    {:ok, _puuid} = Presence.create("ghost", :usr, room, store, p.creds)
+    {:ok, puuid} = Presence.create("living", :usr, room, store, p.creds)
     assert length(usr_entries(room, store)) == 1
 
-    Reaper.reap(room, store, 0)
-    assert length(usr_entries(room, store)) == 1, "reaper must be a no-op under enforce (would reap living)"
+    {:ok, heartbeat, _offset} =
+      puuid |> Presence.read(store) |> Map.fetch!("heartbeat") |> DateTime.from_iso8601()
+
+    assert Reaper.reap(room, store, now: DateTime.add(heartbeat, 1_000, :millisecond)) == []
+    assert length(usr_entries(room, store)) == 1
   end
 end

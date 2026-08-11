@@ -63,6 +63,45 @@ defmodule Commonplace.PresenceTest do
       assert content["type"] == "exe"
       assert content["status"] == "starting"
       assert is_binary(content["started_at"])
+      assert content["lease_version"] == "1"
+      assert content["lease_ttl_ms"] == Presence.default_lease_ttl_ms(:exe)
+    end
+
+    test "declares interactive and service TTL classes and honors an explicit owner term", %{
+      store: store,
+      root: root
+    } do
+      assert Presence.lease_class(:usr) == :interactive
+      assert Presence.lease_class(:who) == :interactive
+      assert Presence.default_lease_ttl_ms(:usr) == 30_000
+      assert Presence.default_lease_ttl_ms(:who) == 30_000
+
+      assert Presence.lease_class(:exe) == :service
+      assert Presence.lease_class(:bot) == :service
+      assert Presence.default_lease_ttl_ms(:exe) == 120_000
+      assert Presence.default_lease_ttl_ms(:bot) == 120_000
+
+      {:ok, uuid} = Presence.create("custom", :bot, root, store, lease_ttl_ms: 175_000)
+      assert Presence.read(uuid, store)["lease_ttl_ms"] == 175_000
+    end
+
+    test "legacy-absent lease fields receive the declared temporal class default", %{
+      store: store,
+      root: root
+    } do
+      {:ok, uuid} = Presence.create("pre-v1", :bot, root, store)
+      doc = load_doc(uuid, store)
+
+      doc =
+        doc
+        |> Commonplace.Document.ContentType.delete_key("lease_version")
+        |> Commonplace.Document.ContentType.delete_key("lease_ttl_ms")
+
+      assert %Commonplace.Store.Commit{} =
+               CommitStore.create_chained_commit(store, uuid, Yelixer.Encoding.encode_update(doc))
+
+      assert {:ok, %{source: :temporal_default, class: :service, ttl_ms: 120_000}} =
+               uuid |> Presence.read(store) |> Presence.lease_terms()
     end
 
     test "handles name collision with hash suffix", %{store: store, root: root} do
@@ -307,11 +346,13 @@ defmodule Commonplace.PresenceTest do
       {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
 
       sv = Yelixer.BlockStore.state_vector(doc.store)
+
       assert map_size(sv.clocks) == 1,
              "expected single stable client_id in state vector, got #{map_size(sv.clocks)} entries: #{inspect(Map.keys(sv.clocks))}"
 
       # The stable client_id must match phash2(uuid)
       expected_client_id = :erlang.phash2(uuid, 0xFFFF_FFFF)
+
       assert Map.has_key?(sv.clocks, expected_client_id),
              "state vector should contain phash2-derived client_id #{expected_client_id}"
 
@@ -396,6 +437,8 @@ defmodule Commonplace.PresenceTest do
       # target), NOT the composite signer_id.
       content = Presence.read(uuid, store)
       assert content["bound_identity"] == ctx.identity_uuid
+      assert content["lease_version"] == Presence.lease_version()
+      assert content["lease_ttl_ms"] == Presence.default_lease_ttl_ms(:bot)
       refute content["bound_identity"] == signer_id
     end
 
@@ -448,5 +491,12 @@ defmodule Commonplace.PresenceTest do
       :none ->
         Schema.new_schema()
     end
+  end
+
+  defp load_doc(uuid, store) do
+    {:ok, commit} = CommitStore.latest_commit(store, uuid)
+    doc = Yelixer.Doc.new()
+    {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
+    doc
   end
 end

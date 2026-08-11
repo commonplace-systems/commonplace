@@ -14,11 +14,11 @@ defmodule CommonplaceWebWeb.PresenceCard do
     * Recent commits (bottom) — placeholder until per-signer commit feed
       lands (CX-4ba follow-up).
 
-  Liveness rule mirrors `Commonplace.Presence.Reaper`'s default
-  `@default_stale_threshold` (30s):
+  Liveness uses the presence record's owner-signed TTL (or the declared class
+  default for a legacy-absent record), matching `Commonplace.Presence.Reaper`:
 
-    * `< 30s` since last heartbeat -> green ("live")
-    * `30s..5m` -> yellow ("idle")
+    * younger than the entry TTL -> green ("live")
+    * entry TTL..5m -> yellow ("idle")
     * `> 5m` -> red ("stale")
 
   Inputs that may be `nil` or absent are tolerated — the component renders
@@ -28,7 +28,6 @@ defmodule CommonplaceWebWeb.PresenceCard do
 
   import CommonplaceWebWeb.CoreComponents, only: [icon: 1]
 
-  @live_threshold_ms 30_000
   @idle_threshold_ms 5 * 60_000
 
   @doc """
@@ -60,7 +59,14 @@ defmodule CommonplaceWebWeb.PresenceCard do
     honorific = honorific_string(assigns.honorific || presence["type"])
     heartbeat_dt = parse_iso8601(presence["heartbeat"])
     started_dt = parse_iso8601(presence["started_at"])
-    {liveness, liveness_label, heartbeat_age} = liveness(heartbeat_dt, now)
+
+    live_threshold_ms =
+      case Commonplace.Presence.lease_terms(presence) do
+        {:ok, terms} -> terms.ttl_ms
+        {:error, _reason} -> 0
+      end
+
+    {liveness, liveness_label, heartbeat_age} = liveness(heartbeat_dt, now, live_threshold_ms)
     uptime = humanize_age(started_dt, now)
 
     assigns =
@@ -120,7 +126,7 @@ defmodule CommonplaceWebWeb.PresenceCard do
           <% end %>
         </section>
 
-        <!-- Identity panel -->
+    <!-- Identity panel -->
         <aside class="cp-presence-identity bg-base-200/40 rounded-lg p-3 space-y-2 text-sm">
           <h3 class="text-xs font-semibold uppercase tracking-wide text-base-content/50">
             Identity
@@ -172,7 +178,7 @@ defmodule CommonplaceWebWeb.PresenceCard do
         </aside>
       </div>
 
-      <!-- Recent commits placeholder -->
+    <!-- Recent commits placeholder -->
       <section class="cp-presence-commits border-t border-base-300 pt-3">
         <h3 class="text-xs font-semibold uppercase tracking-wide text-base-content/50 mb-2">
           <.icon name="hero-clock-micro" class="size-3 inline" /> Recent commits by this actor
@@ -196,14 +202,14 @@ defmodule CommonplaceWebWeb.PresenceCard do
   defp liveness_dot_class(:red), do: "bg-error"
   defp liveness_dot_class(_), do: "bg-base-300"
 
-  defp liveness(nil, _now), do: {:red, "no heartbeat", nil}
+  defp liveness(nil, _now, _live_threshold_ms), do: {:red, "no heartbeat", nil}
 
-  defp liveness(%DateTime{} = hb, %DateTime{} = now) do
+  defp liveness(%DateTime{} = hb, %DateTime{} = now, live_threshold_ms) do
     age_ms = DateTime.diff(now, hb, :millisecond)
     label = humanize_ms(age_ms)
 
     cond do
-      age_ms < @live_threshold_ms -> {:green, "live", label}
+      age_ms < live_threshold_ms -> {:green, "live", label}
       age_ms < @idle_threshold_ms -> {:yellow, "idle", label}
       true -> {:red, "stale", label}
     end
@@ -280,7 +286,9 @@ defmodule CommonplaceWebWeb.PresenceCard do
   defp summarize_keys(_), do: "(unknown)"
 
   defp truncate_key(k) when is_binary(k) do
-    if byte_size(k) > 16, do: binary_part(k, 0, 8) <> "…" <> binary_part(k, byte_size(k) - 4, 4), else: k
+    if byte_size(k) > 16,
+      do: binary_part(k, 0, 8) <> "…" <> binary_part(k, byte_size(k) - 4, 4),
+      else: k
   end
 
   defp truncate_key(k), do: inspect(k)

@@ -21,6 +21,20 @@ defmodule Commonplace.Presence do
   fresh heartbeat says the actor is still alive, a stale one says it is
   probably gone.
 
+  ## Lease-family seam
+
+  Presence expiry is the first member of the lease family: the owner signs
+  `"lease_version"` and `"lease_ttl_ms"` into the presence map at issuance,
+  and a node janitor may later execute only the already-consented expiry.
+  `Commonplace.Presence.Reaper` carries the heartbeat, TTL, and observation
+  time in its removal commit; `Commonplace.Trust` verifies those terms against
+  the record before the write can land.
+
+  The named extension seam is **progress-witness lease expiry**. The coming
+  Green progress-witness work plugs a different lease-record reader into this
+  same owner-terms + scoped-janitor-evidence pattern; it must not invent an
+  ambient cleanup authority or a second notion of expiry.
+
   ## Single-writer invariant (load-bearing)
 
   Every write to a presence doc (create, status update, heartbeat,
@@ -59,6 +73,65 @@ defmodule Commonplace.Presence do
     bot: "bot",
     who: "who"
   }
+
+  @lease_version "1"
+  @interactive_ttl_ms 30_000
+  @service_ttl_ms 120_000
+
+  @doc "Current presence lease marker written into every newly-created entry."
+  def lease_version, do: @lease_version
+
+  @doc "Declared class for an honorific type."
+  def lease_class(type) when type in [:usr, :who], do: :interactive
+  def lease_class(type) when type in [:exe, :bot], do: :service
+
+  @doc "Declared default TTL for a presence class/type, in milliseconds."
+  def default_lease_ttl_ms(type) when type in [:usr, :who], do: @interactive_ttl_ms
+  def default_lease_ttl_ms(type) when type in [:exe, :bot], do: @service_ttl_ms
+
+  @doc """
+  Read owner-issued lease terms from presence content.
+
+  Absence of both fields is the versioned temporal exception for entries
+  created before lease v1 and receives the declared class default. Any
+  half-written or malformed combination is a torn-state finding, never a
+  legacy default.
+  """
+  def lease_terms(%{} = content) do
+    version = Map.get(content, "lease_version")
+    ttl_ms = Map.get(content, "lease_ttl_ms")
+
+    with {:ok, type} <- content_type(content) do
+      case {version, ttl_ms} do
+        {@lease_version, ttl} when is_integer(ttl) and ttl > 0 ->
+          {:ok,
+           %{version: @lease_version, ttl_ms: ttl, class: lease_class(type), source: :explicit}}
+
+        {nil, nil} ->
+          {:ok,
+           %{
+             version: :legacy_absent,
+             ttl_ms: default_lease_ttl_ms(type),
+             class: lease_class(type),
+             source: :temporal_default
+           }}
+
+        {nil, _ttl} ->
+          {:error, :presence_lease_torn_unversioned_ttl}
+
+        {_version, nil} ->
+          {:error, :presence_lease_torn_missing_ttl}
+
+        {other, _ttl} when other != @lease_version ->
+          {:error, {:presence_lease_unknown_version, other}}
+
+        {@lease_version, other} ->
+          {:error, {:presence_lease_invalid_ttl, other}}
+      end
+    end
+  end
+
+  def lease_terms(_), do: {:error, :presence_lease_invalid_content}
 
   @doc "Returns the type-to-extension map."
   def type_to_ext, do: @type_to_ext
@@ -104,6 +177,11 @@ defmodule Commonplace.Presence do
   """
   def create(name, type, dir_uuid, store \\ CommitStoreClient, opts \\ []) do
     fname = filename(name, type)
+    lease_ttl_ms = Keyword.get(opts, :lease_ttl_ms, default_lease_ttl_ms(type))
+
+    unless is_integer(lease_ttl_ms) and lease_ttl_ms > 0 do
+      raise ArgumentError, ":lease_ttl_ms must be a positive integer"
+    end
 
     # Check for collision
     dir_doc = load_schema(dir_uuid, store)
@@ -120,6 +198,8 @@ defmodule Commonplace.Presence do
     doc = ContentType.set_key(doc, "status", "starting")
     doc = ContentType.set_key(doc, "started_at", now)
     doc = ContentType.set_key(doc, "heartbeat", now)
+    doc = ContentType.set_key(doc, "lease_version", @lease_version)
+    doc = ContentType.set_key(doc, "lease_ttl_ms", lease_ttl_ms)
 
     # CX-0a9a (W4): bind the presence doc to the writer's BARE identity
     # uuid (the stable cryptographic principal), taken from the signing
@@ -235,8 +315,24 @@ defmodule Commonplace.Presence do
     dir_doc = Schema.remove_entry(dir_doc, fname)
     update = Yelixer.Encoding.encode_update(dir_doc)
     {metadata, commit_opts} = SignedWrite.opts_for(dir_uuid, Keyword.put(opts, :store, store))
+    metadata = janitor_metadata(metadata, Keyword.get(opts, :janitor_evidence))
     CommitStoreClient.create_chained_commit(store, dir_uuid, update, metadata, commit_opts)
   end
+
+  defp janitor_metadata(metadata, nil), do: metadata
+
+  defp janitor_metadata(metadata, evidence) when is_map(evidence) do
+    metadata
+    |> Map.put(:presence_janitor, evidence)
+    |> Map.put_new(:kind, :regular)
+  end
+
+  defp content_type(%{"type" => "usr"}), do: {:ok, :usr}
+  defp content_type(%{"type" => "who"}), do: {:ok, :who}
+  defp content_type(%{"type" => "exe"}), do: {:ok, :exe}
+  defp content_type(%{"type" => "bot"}), do: {:ok, :bot}
+  defp content_type(%{"type" => other}), do: {:error, {:presence_lease_invalid_type, other}}
+  defp content_type(_), do: {:error, :presence_lease_missing_type}
 
   defp resolve_collision(dir_doc, fname, name, type) do
     case Schema.get_entry(dir_doc, fname) do
