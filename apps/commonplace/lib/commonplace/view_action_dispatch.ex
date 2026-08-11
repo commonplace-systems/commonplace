@@ -715,7 +715,10 @@ defmodule Commonplace.ViewActionDispatch do
   # other way to close a ticket). Args: ticket id + `witnesses` (a list
   # of CANDIDATE proof cids, hex strings — the client proposes proofs,
   # it never gets to name requirements; the requirement is whatever
-  # `done_when` already says on the ticket).
+  # `done_when` already says on the ticket), plus an optional `reason`
+  # persisted as `closed_reason`. The whole args map is validated before
+  # any close work so misspellings and future unsupported keys cannot be
+  # silently dropped.
   #
   # Flow: require `status == "open"` -> dispatch on the ticket's OWN
   # `done_when` (`Commonplace.Bd.CloseGate.validate_witnesses/4`, which
@@ -728,53 +731,14 @@ defmodule Commonplace.ViewActionDispatch do
   # other ticket-mutating verb (`signing_opts(context)`); v1 has no
   # separate close-ACL — whoever can write the ticket (signed commit +
   # enforce-mode trust evaluation) may close it WITH valid witnesses.
-  defp do_dispatch("ticket_close", %{args: %{"ticket" => ticket_id} = args} = context)
-       when is_binary(ticket_id) do
-    witnesses = Map.get(args, "witnesses", [])
-
-    with {:ok, root_uuid} <- Workspace.root_uuid(),
-         {:ok, issue} <- load_bd_issue(root_uuid, ticket_id),
-         :ok <- require_ticket_open(issue),
-         {:ok, done_witness} <-
-           Commonplace.Bd.CloseGate.validate_witnesses(
-             issue.done_when,
-             witnesses,
-             root_uuid,
-             CommitStoreClient
-           ) do
-      changes = %{status: "closed", done_witness: done_witness}
-
-      case Commonplace.Bd.WriteGuard.check(issue, changes, root_uuid, CommitStoreClient,
-             allow: [:status, :done_witness]
-           ) do
-        :ok ->
-          close_opts = signing_opts(context) ++ [done_witness: done_witness]
-
-          case Commonplace.Bd.Issue.close(root_uuid, ticket_id, close_opts, CommitStoreClient) do
-            {:ok, updated} ->
-              {:ok, :tree_mutation,
-               %{
-                 action: "ticket_close",
-                 ticket: ticket_id,
-                 status: updated.status,
-                 done_witness: updated.done_witness
-               }}
-
-            {:error, reason} ->
-              {:error, "ticket_close failed: #{inspect(reason)}"}
-          end
-
-        {:error, reason} ->
-          {:error, reason}
-      end
-    else
-      {:error, reason} when is_binary(reason) -> {:error, reason}
-      {:error, reason} -> {:error, "ticket_close failed: #{inspect(reason)}"}
+  defp do_dispatch("ticket_close", %{args: args} = context) when is_map(args) do
+    with :ok <- validate_ticket_close_keys(args) do
+      dispatch_ticket_close(args, context)
     end
   end
 
   defp do_dispatch("ticket_close", _context) do
-    {:error, "ticket_close requires args map with ticket (+ optional witnesses)"}
+    {:error, "ticket_close requires args map with ticket (+ optional witnesses and reason)"}
   end
 
   # Bd P2 Slice S4: `ticket_claim` / `ticket_release` — claim/release via
@@ -1828,6 +1792,84 @@ defmodule Commonplace.ViewActionDispatch do
   @ticket_update_fields ~w(title status priority type owner labels needs done_when done_witness claimed_by legacy_id)
 
   @directly_updatable_ticket_fields ~w(title priority type owner labels needs done_when legacy_id)
+
+  @ticket_close_keys ~w(ticket witnesses reason)
+
+  defp dispatch_ticket_close(%{"ticket" => ticket_id} = args, context)
+       when is_binary(ticket_id) do
+    witnesses = Map.get(args, "witnesses", [])
+
+    with {:ok, root_uuid} <- Workspace.root_uuid(),
+         {:ok, issue} <- load_bd_issue(root_uuid, ticket_id),
+         :ok <- require_ticket_open(issue),
+         {:ok, done_witness} <-
+           Commonplace.Bd.CloseGate.validate_witnesses(
+             issue.done_when,
+             witnesses,
+             root_uuid,
+             CommitStoreClient
+           ) do
+      changes = %{status: "closed", done_witness: done_witness}
+
+      case Commonplace.Bd.WriteGuard.check(issue, changes, root_uuid, CommitStoreClient,
+             allow: [:status, :done_witness]
+           ) do
+        :ok ->
+          close_opts = signing_opts(context) ++ [done_witness: done_witness]
+
+          close_opts =
+            if Map.has_key?(args, "reason") do
+              Keyword.put(close_opts, :reason, Map.fetch!(args, "reason"))
+            else
+              close_opts
+            end
+
+          case Commonplace.Bd.Issue.close(root_uuid, ticket_id, close_opts, CommitStoreClient) do
+            {:ok, updated} ->
+              {:ok, :tree_mutation,
+               %{
+                 action: "ticket_close",
+                 ticket: ticket_id,
+                 status: updated.status,
+                 done_witness: updated.done_witness
+               }}
+
+            {:error, reason} ->
+              {:error, "ticket_close failed: #{inspect(reason)}"}
+          end
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
+      {:error, reason} when is_binary(reason) -> {:error, reason}
+      {:error, reason} -> {:error, "ticket_close failed: #{inspect(reason)}"}
+    end
+  end
+
+  defp dispatch_ticket_close(_args, _context) do
+    {:error, "ticket_close requires args map with ticket (+ optional witnesses and reason)"}
+  end
+
+  defp validate_ticket_close_keys(args) do
+    unknown_keys =
+      args
+      |> Map.keys()
+      |> Enum.reject(&(&1 in @ticket_close_keys))
+      |> Enum.sort_by(&inspect/1)
+
+    case unknown_keys do
+      [] ->
+        :ok
+
+      keys ->
+        names = Enum.map_join(keys, ", ", &inspect/1)
+
+        {:error,
+         "ticket_close refuses unknown argument keys: #{names}. " <>
+           "Accepted keys: #{Enum.join(@ticket_close_keys, ", ")}."}
+    end
+  end
 
   defp validate_ticket_change_keys(changes_map) do
     unknown_keys =
