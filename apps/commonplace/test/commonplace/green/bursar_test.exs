@@ -556,9 +556,24 @@ defmodule Commonplace.Green.BursarTest do
       # 200 DISTINCT permanent acquires — the bulk re-anchor shape that
       # OOM-wedged the live serve pre-fix. The run must complete promptly and
       # the final snapshot is O(200 tokens), not O(sum of prior op-logs).
+      # CX-7b53: the inner call timeout is a HANG DETECTOR, not a per-op
+      # performance assertion — it must sit far above the worst plausible
+      # SLOW op, or it recreates the spurious failure it replaces. Measured
+      # slow-op ceiling history: the 5 s default fired at op #152 under
+      # suite load (the original ticket), and a 2.5 s draft of this budget
+      # fired at op #173 under suite-plus-concurrent-build load (reviewer
+      # gate run, 2026-08-11). 30 s is ~6x the worst budget ever crossed:
+      # a genuine hang, never a slow op. Nesting: the OUTER 600 s ExUnit
+      # timeout bounds the TOTAL (and fires first if many ops go
+      # pathological — as it always did); the inner ceiling bounds a
+      # single hung call, so their product intentionally exceeds the
+      # outer. Call the GenServer directly so this scale-only budget does
+      # not change Bursar's production API or its callers' 5 s default.
       for i <- 1..200 do
         path = "item-#{String.pad_leading(Integer.to_string(i), 8, "0")}.obj"
-        assert {:ok, _} = Bursar.acquire(name, path, "owner-#{i}")
+
+        assert {:ok, _} =
+                 GenServer.call(name, {:acquire, path, "owner-#{i}", nil}, 30_000)
       end
 
       GenServer.stop(pid)
