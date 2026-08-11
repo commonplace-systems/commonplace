@@ -75,6 +75,52 @@ defmodule Commonplace.Bd.TicketVerbsTest do
     issue
   end
 
+  defp import_ticket(root_uuid, status, ctx) do
+    id = "CX-s5v2#{System.unique_integer([:positive])}"
+
+    assert {:ok, :tree_mutation, %{landed: [%{id: ^id}]}} =
+             ViewActionDispatch.dispatch("ticket_import", %{
+               args: %{
+                 "records" => [
+                   %{
+                     "id" => id,
+                     "title" => "S5v2 #{status}",
+                     "status" => status,
+                     "priority" => 2,
+                     "issue_type" => "task"
+                   }
+                 ]
+               },
+               root_uuid: root_uuid,
+               signing_context: ctx,
+               source: "test"
+             })
+
+    {:ok, issue} = Issue.show(root_uuid, id)
+    issue
+  end
+
+  defp set_status(ticket_id, status, reason, ctx) do
+    ViewActionDispatch.dispatch("ticket_set_status", %{
+      args: %{
+        "ticket" => ticket_id,
+        "status" => status,
+        "reason" => reason,
+        "actor" => "client-supplied-and-ignored"
+      },
+      signing_context: ctx,
+      source: "test"
+    })
+  end
+
+  defp close_ticket(ticket_id, ctx) do
+    ViewActionDispatch.dispatch("ticket_close", %{
+      args: %{"ticket" => ticket_id, "witnesses" => []},
+      signing_context: ctx,
+      source: "test"
+    })
+  end
+
   describe "ticket_add_needs" do
     test "adds a well-formed local prereq ref", %{root: root, signing_context: ctx} do
       a = create_ticket(root, "A")
@@ -254,4 +300,157 @@ defmodule Commonplace.Bd.TicketVerbsTest do
       assert reloaded.priority == "p0"
     end
   end
+
+  describe "ticket_set_status" do
+    test "the closed-ticket transition path has no bare WriteGuard bypass" do
+      source =
+        "../../../lib/commonplace/view_action_dispatch.ex"
+        |> Path.expand(__DIR__)
+        |> File.read!()
+
+      refute source =~
+               ~r/defp status_transition_write_guard\(\s*%Commonplace\.Bd\.Schemas\.Issue\{status: "closed"\}/
+    end
+
+    test "import-minted in_progress exits through a decision and can then close", %{
+      root: root,
+      signing_context: ctx
+    } do
+      ticket = import_ticket(root, "in_progress", ctx)
+
+      assert {:error, "ticket is not open"} = close_ticket(ticket.id, ctx)
+
+      assert {:ok, :tree_mutation, details} =
+               set_status(ticket.id, "open", "normalize imported custody artifact", ctx)
+
+      assert details.action == "ticket_set_status"
+      assert details.from == "in_progress"
+      assert details.status == "open"
+
+      assert {:ok, :tree_mutation, %{status: "closed"}} = close_ticket(ticket.id, ctx)
+
+      {:ok, reloaded} = Issue.show(root, ticket.id)
+      assert reloaded.status == "closed"
+    end
+
+    test "every named decision edge executes and records server actor plus reason", %{
+      root: root,
+      signing_context: ctx
+    } do
+      actor = Signing.signer_id(ctx.identity_uuid, ctx.public_key)
+
+      for from <- ~w(open in_progress blocked review),
+          to <- ~w(open blocked review wontfix) do
+        ticket = import_ticket(root, from, ctx)
+        reason = "decide #{from} to #{to}"
+
+        assert {:ok, :tree_mutation, %{decision: "decision", from: ^from, status: ^to}} =
+                 set_status(ticket.id, to, reason, ctx)
+
+        {:ok, reloaded} = Issue.show(root, ticket.id)
+        assert reloaded.status == to
+
+        assert List.last(reloaded.extra["status_decisions"]) == %{
+                 "type" => "DECISION",
+                 "name" => "decision",
+                 "from" => from,
+                 "to" => to,
+                 "actor" => actor,
+                 "reason" => reason,
+                 "at" => List.last(reloaded.extra["status_decisions"])["at"]
+               }
+      end
+    end
+
+    test "closed and wontfix reopen only to open and record reopen-with-reason", %{
+      root: root,
+      signing_context: ctx
+    } do
+      actor = Signing.signer_id(ctx.identity_uuid, ctx.public_key)
+
+      for from <- ~w(closed wontfix) do
+        ticket = import_ticket(root, from, ctx)
+        reason = "reopen #{from}"
+
+        assert {:ok, :tree_mutation,
+                %{decision: "reopen-with-reason", from: ^from, status: "open"}} =
+                 set_status(ticket.id, "open", reason, ctx)
+
+        {:ok, reopened} = Issue.show(root, ticket.id)
+
+        assert %{
+                 "type" => "DECISION",
+                 "name" => "reopen-with-reason",
+                 "from" => ^from,
+                 "to" => "open",
+                 "actor" => ^actor,
+                 "reason" => ^reason
+               } = List.last(reopened.extra["status_decisions"])
+
+        assert {:ok, :tree_mutation, %{status: "closed"}} = close_ticket(ticket.id, ctx)
+      end
+    end
+
+    test "in_progress has no inbound edge from any valid state", %{
+      root: root,
+      signing_context: ctx
+    } do
+      for from <- ~w(open in_progress blocked review closed wontfix) do
+        ticket = import_ticket(root, from, ctx)
+
+        assert {:error, reason} = set_status(ticket.id, "in_progress", "try inbound", ctx)
+
+        assert reason ==
+                 "ticket_set_status refuses transition from #{inspect(from)} to \"in_progress\": " <>
+                   "in_progress is EXIT-ONLY and has no inbound edges; custody is represented by the claim token; " <>
+                   "legal targets from #{from}: #{legal_targets_text(from)}"
+
+        {:ok, unchanged} = Issue.show(root, ticket.id)
+        assert unchanged.status == from
+      end
+    end
+
+    test "non-closed to closed points at ticket_close and all other unnamed edges name the legal set",
+         %{
+           root: root,
+           signing_context: ctx
+         } do
+      ticket = import_ticket(root, "blocked", ctx)
+
+      assert {:error,
+              "ticket_set_status refuses transition from \"blocked\" to \"closed\": " <>
+                "use ticket_close; closed keeps one door and ticket_close requires status open; " <>
+                "legal targets from blocked: open, blocked, review, wontfix"} =
+               set_status(ticket.id, "closed", "skip close gate", ctx)
+
+      closed = import_ticket(root, "closed", ctx)
+
+      assert {:error,
+              "ticket_set_status refuses transition from \"closed\" to \"review\": " <>
+                "the transition is not named in the closed-by-default table; " <>
+                "legal targets from closed: open"} =
+               set_status(closed.id, "review", "unnamed", ctx)
+    end
+
+    test "missing, empty, and whitespace-only reasons refuse without a write", %{
+      root: root,
+      signing_context: ctx
+    } do
+      ticket = import_ticket(root, "review", ctx)
+
+      for reason <- [nil, "", "   "] do
+        assert {:error, "ticket_set_status requires a non-empty reason"} =
+                 set_status(ticket.id, "open", reason, ctx)
+      end
+
+      {:ok, unchanged} = Issue.show(root, ticket.id)
+      assert unchanged.status == "review"
+      assert unchanged.extra["status_decisions"] == nil
+    end
+  end
+
+  defp legal_targets_text(from) when from in ~w(open in_progress blocked review),
+    do: "open, blocked, review, wontfix"
+
+  defp legal_targets_text(from) when from in ~w(closed wontfix), do: "open"
 end

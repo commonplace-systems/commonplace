@@ -4,8 +4,8 @@ defmodule Commonplace.Bd.CLI do
 
   A plain-function query/action API — no escript/IO framework. Queries
   read through `Commonplace.Bd.Frontier`; actions are thin wrappers
-  over `Commonplace.ViewActionDispatch`'s `ticket_claim`/`ticket_close`
-  verbs, threading a caller-supplied `signing_context`. This module is
+  over `Commonplace.ViewActionDispatch`'s ticket decision/custody verbs,
+  threading a caller-supplied `signing_context`. This module is
   the logic layer, cleanly testable against an isolated store; a mix
   task or an RPC shim (calling into a live serve) is a thin transport
   wrapper on top, not built here.
@@ -104,6 +104,25 @@ defmodule Commonplace.Bd.CLI do
 
     case ViewActionDispatch.dispatch("ticket_close", context) do
       {:ok, :tree_mutation, %{status: status}} -> {:ok, status}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Changes `id`'s decision status through the same closed-by-default
+  `ticket_set_status` table used by every other surface.
+  """
+  def set_status(root_uuid, id, status, reason, signing_context, store \\ CommitStoreClient) do
+    context =
+      dispatch_context(
+        %{"ticket" => id, "status" => status, "reason" => reason},
+        signing_context,
+        store
+      )
+      |> Map.put(:root_uuid, root_uuid)
+
+    case ViewActionDispatch.dispatch("ticket_set_status", context) do
+      {:ok, :tree_mutation, %{status: updated_status}} -> {:ok, updated_status}
       {:error, reason} -> {:error, reason}
     end
   end

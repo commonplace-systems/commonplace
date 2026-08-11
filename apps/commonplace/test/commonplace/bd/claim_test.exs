@@ -184,6 +184,40 @@ defmodule Commonplace.Bd.ClaimTest do
       assert Commonplace.Green.BursarClient.query(claim_path) == :available
     end
 
+    test "claim then release is status-silent", %{root: root, ctx_a: ctx_a} do
+      {:ok, ticket, _dir} =
+        Issue.create(root, %{title: "custody is not decision", status: "blocked"})
+
+      assert {:ok, :tree_mutation, _} = claim(ticket.id, ctx_a)
+      {:ok, claimed} = Issue.show(root, ticket.id)
+      assert claimed.status == "blocked"
+
+      assert {:ok, :tree_mutation, _} = release(ticket.id, ctx_a)
+      {:ok, released} = Issue.show(root, ticket.id)
+      assert released.status == "blocked"
+    end
+
+    test "claim does not make import-minted in_progress closeable", %{
+      root: root,
+      ctx_a: ctx_a
+    } do
+      {:ok, ticket, _dir} =
+        Issue.create(root, %{title: "legacy in progress", status: "in_progress"})
+
+      assert {:ok, :tree_mutation, _} = claim(ticket.id, ctx_a)
+
+      assert {:error, "ticket is not open"} =
+               ViewActionDispatch.dispatch("ticket_close", %{
+                 args: %{"ticket" => ticket.id, "witnesses" => []},
+                 signing_context: ctx_a,
+                 source: "test"
+               })
+
+      assert {:ok, :tree_mutation, _} = release(ticket.id, ctx_a)
+      {:ok, released} = Issue.show(root, ticket.id)
+      assert released.status == "in_progress"
+    end
+
     test "a non-holder release is refused", %{root: root, ctx_a: ctx_a, ctx_b: ctx_b} do
       ticket = create_ticket(root, "guarded")
       assert {:ok, :tree_mutation, _} = claim(ticket.id, ctx_a)

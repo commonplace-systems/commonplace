@@ -245,7 +245,9 @@ defmodule Commonplace.ViewActionDispatch do
       # bare atom stays internal (validate_common_ancestor) for reuse.
       {:error, :no_common_ancestor} ->
         {:error, "pr_open failed: no common ancestor — target is not fork-related to source"}
-      {:error, reason} -> {:error, "pr_open failed: #{inspect(reason)}"}
+
+      {:error, reason} ->
+        {:error, "pr_open failed: #{inspect(reason)}"}
     end
   end
 
@@ -533,8 +535,7 @@ defmodule Commonplace.ViewActionDispatch do
   end
 
   defp do_dispatch("delete_message", _context) do
-    {:error,
-     "delete_message requires args map with messages_uuid, room, author_path, message_id"}
+    {:error, "delete_message requires args map with messages_uuid, room, author_path, message_id"}
   end
 
   # Bd P2 graph-vocabulary lift, Slice S1 Part 4: ticket-mutating verbs
@@ -565,7 +566,9 @@ defmodule Commonplace.ViewActionDispatch do
       new_needs = (issue.needs || []) ++ [ref]
       changes = %{needs: new_needs}
 
-      case Commonplace.Bd.WriteGuard.check(issue, changes, root_uuid, CommitStoreClient, allow: []) do
+      case Commonplace.Bd.WriteGuard.check(issue, changes, root_uuid, CommitStoreClient,
+             allow: []
+           ) do
         :ok ->
           opts = signing_opts(context)
 
@@ -596,14 +599,19 @@ defmodule Commonplace.ViewActionDispatch do
   # (a change touching status/done_witness/claimed_by is refused) and
   # ref-type checks on any needs/done_witness/claimed_by field in the
   # same payload.
-  defp do_dispatch("ticket_update", %{args: %{"ticket" => ticket_id, "changes" => changes_map}} = context)
+  defp do_dispatch(
+         "ticket_update",
+         %{args: %{"ticket" => ticket_id, "changes" => changes_map}} = context
+       )
        when is_binary(ticket_id) and is_map(changes_map) do
     with :ok <- validate_ticket_change_keys(changes_map),
          {:ok, root_uuid} <- Workspace.root_uuid(),
          {:ok, issue} <- load_bd_issue(root_uuid, ticket_id) do
       changes = atomize_ticket_changes(changes_map)
 
-      case Commonplace.Bd.WriteGuard.check(issue, changes, root_uuid, CommitStoreClient, allow: []) do
+      case Commonplace.Bd.WriteGuard.check(issue, changes, root_uuid, CommitStoreClient,
+             allow: []
+           ) do
         :ok ->
           opts = signing_opts(context)
 
@@ -626,6 +634,80 @@ defmodule Commonplace.ViewActionDispatch do
 
   defp do_dispatch("ticket_update", _context) do
     {:error, "ticket_update requires args map with ticket + changes"}
+  end
+
+  # `ticket_set_status`: the ONE decision-axis transition verb. The
+  # table itself lives in `Bd.StatusTransition` so every caller,
+  # including the legacy bd CLI, enters the same closed-by-default
+  # grammar. A successful transition writes status and its DECISION
+  # record atomically into the existing issue field bag. The actor is
+  # always resolved from signing_context here; args can never supply it.
+  #
+  # Closed-ticket reopen is both table-gated here and admitted by
+  # WriteGuard's one named, shape-validated freeze exit. Every
+  # transition passes the complete status + extra map that will be
+  # written through WriteGuard. `ticket_close` remains unchanged and is
+  # still the sole inbound door to closed.
+  defp do_dispatch(
+         "ticket_set_status",
+         %{args: %{"ticket" => ticket_id, "status" => requested_status} = args} = context
+       )
+       when is_binary(ticket_id) and is_binary(requested_status) do
+    store = Map.get(context, :store) || CommitStoreClient
+
+    with {:ok, reason} <- fetch_non_empty_reason(args),
+         {:ok, root_uuid} <- resolve_bd_root(context),
+         {:ok, issue} <- load_bd_issue(root_uuid, ticket_id, store),
+         {:ok, decision_name} <-
+           Commonplace.Bd.StatusTransition.decide(issue.status, requested_status),
+         actor = resolve_principal(context),
+         decision = %{
+           "type" => "DECISION",
+           "name" => decision_name,
+           "from" => issue.status,
+           "to" => requested_status,
+           "actor" => actor,
+           "reason" => reason,
+           "at" => DateTime.utc_now() |> DateTime.to_iso8601()
+         },
+         prior_decisions =
+           (case Map.get(issue.extra, "status_decisions") do
+              decisions when is_list(decisions) -> decisions
+              _ -> []
+            end),
+         changes = %{
+           status: requested_status,
+           extra: Map.put(issue.extra, "status_decisions", prior_decisions ++ [decision])
+         },
+         :ok <- status_transition_write_guard(issue, changes, root_uuid, store) do
+      case Commonplace.Bd.Issue.update(
+             root_uuid,
+             ticket_id,
+             changes,
+             store,
+             signing_opts(context)
+           ) do
+        {:ok, _updated} ->
+          {:ok, :tree_mutation,
+           %{
+             action: "ticket_set_status",
+             ticket: ticket_id,
+             from: issue.status,
+             status: requested_status,
+             decision: decision_name
+           }}
+
+        {:error, reason} ->
+          {:error, "ticket_set_status failed: #{inspect(reason)}"}
+      end
+    else
+      {:error, reason} when is_binary(reason) -> {:error, reason}
+      {:error, reason} -> {:error, "ticket_set_status failed: #{inspect(reason)}"}
+    end
+  end
+
+  defp do_dispatch("ticket_set_status", _context) do
+    {:error, "ticket_set_status requires args map with ticket + status + non-empty reason"}
   end
 
   # Bd P2 Slice S3: `ticket_close` — the ONE status->closed path (S1's
@@ -654,7 +736,12 @@ defmodule Commonplace.ViewActionDispatch do
          {:ok, issue} <- load_bd_issue(root_uuid, ticket_id),
          :ok <- require_ticket_open(issue),
          {:ok, done_witness} <-
-           Commonplace.Bd.CloseGate.validate_witnesses(issue.done_when, witnesses, root_uuid, CommitStoreClient) do
+           Commonplace.Bd.CloseGate.validate_witnesses(
+             issue.done_when,
+             witnesses,
+             root_uuid,
+             CommitStoreClient
+           ) do
       changes = %{status: "closed", done_witness: done_witness}
 
       case Commonplace.Bd.WriteGuard.check(issue, changes, root_uuid, CommitStoreClient,
@@ -983,8 +1070,12 @@ defmodule Commonplace.ViewActionDispatch do
   defp run_outline_action("add_item", store, uuid, args, opts) do
     attrs =
       %{text: Map.get(args, "text", "")}
-      |> then(fn m -> if args["parent"] in [nil, ""], do: m, else: Map.put(m, :parent, args["parent"]) end)
-      |> then(fn m -> if args["after"] in [nil, ""], do: m, else: Map.put(m, :after, args["after"]) end)
+      |> then(fn m ->
+        if args["parent"] in [nil, ""], do: m, else: Map.put(m, :parent, args["parent"])
+      end)
+      |> then(fn m ->
+        if args["after"] in [nil, ""], do: m, else: Map.put(m, :after, args["after"])
+      end)
 
     with {:ok, id} <- Commonplace.Outline.add_item(store, uuid, attrs, opts), do: {:ok, %{id: id}}
   end
@@ -1001,7 +1092,8 @@ defmodule Commonplace.ViewActionDispatch do
   end
 
   defp run_outline_action("outdent_item", store, uuid, args, opts) do
-    with {:ok, id} <- fetch_arg(args, "id"), do: Commonplace.Outline.outdent(store, uuid, id, opts)
+    with {:ok, id} <- fetch_arg(args, "id"),
+         do: Commonplace.Outline.outdent(store, uuid, id, opts)
   end
 
   defp run_outline_action("reorder_item", store, uuid, args, opts) do
@@ -1035,11 +1127,31 @@ defmodule Commonplace.ViewActionDispatch do
   defp require_ticket_open(%Commonplace.Bd.Schemas.Issue{status: "open"}), do: :ok
   defp require_ticket_open(%Commonplace.Bd.Schemas.Issue{}), do: {:error, "ticket is not open"}
 
-  defp load_bd_issue(root_uuid, ticket_id) do
-    case Commonplace.Bd.Workspace.issue_dir_uuid(root_uuid, ticket_id) do
-      {:ok, dir_uuid} -> Commonplace.Bd.Schemas.load_issue(dir_uuid)
+  defp load_bd_issue(root_uuid, ticket_id, store \\ CommitStoreClient) do
+    case Commonplace.Bd.Workspace.issue_dir_uuid(root_uuid, ticket_id, store) do
+      {:ok, dir_uuid} -> Commonplace.Bd.Schemas.load_issue(dir_uuid, store)
       :error -> {:error, "ticket not found: #{ticket_id}"}
     end
+  end
+
+  defp fetch_non_empty_reason(args) do
+    case Map.get(args, "reason") do
+      reason when is_binary(reason) ->
+        case String.trim(reason) do
+          "" -> {:error, "ticket_set_status requires a non-empty reason"}
+          trimmed -> {:ok, trimmed}
+        end
+
+      _ ->
+        {:error, "ticket_set_status requires a non-empty reason"}
+    end
+  end
+
+  defp status_transition_write_guard(issue, changes, root_uuid, store) do
+    Commonplace.Bd.WriteGuard.check(issue, changes, root_uuid, store,
+      allow: [:status],
+      reopen: issue.status == "closed" and changes.status == "open"
+    )
   end
 
   # `ticket_claim`/`ticket_release` helpers (Bd P2 S4) — resolve the
@@ -1187,12 +1299,23 @@ defmodule Commonplace.ViewActionDispatch do
   # one would take the whole batch report with it.
   defp import_one_comment(record, idx, ticket_id, root_uuid, store, opts, {landed, refused, noop}) do
     try do
-      do_import_one_comment(record, idx, ticket_id, root_uuid, store, opts, {landed, refused, noop})
+      do_import_one_comment(
+        record,
+        idx,
+        ticket_id,
+        root_uuid,
+        store,
+        opts,
+        {landed, refused, noop}
+      )
     rescue
       e ->
         {landed,
          [
-           %{id: declared_comment_id(record, idx), reason: "write failed: #{Exception.message(e)}"}
+           %{
+             id: declared_comment_id(record, idx),
+             reason: "write failed: #{Exception.message(e)}"
+           }
            | refused
          ], noop}
     catch
@@ -1238,7 +1361,8 @@ defmodule Commonplace.ViewActionDispatch do
         end
 
       {:error, reason} ->
-        {landed, [%{id: name, reason: "cannot import comment record: #{inspect(reason)}"} | refused],
+        {landed,
+         [%{id: name, reason: "cannot import comment record: #{inspect(reason)}"} | refused],
          noop}
     end
   end
@@ -1325,7 +1449,11 @@ defmodule Commonplace.ViewActionDispatch do
   end
 
   defp parse_refusal({line, other}) do
-    %{line: line, id: "<line #{line}: unparseable>", reason: "cannot parse line: #{inspect(other)}"}
+    %{
+      line: line,
+      id: "<line #{line}: unparseable>",
+      reason: "cannot parse line: #{inspect(other)}"
+    }
   end
 
   # RULED reporting shape (CX-6cz3, ruling (b) + boss's denominator
@@ -1378,7 +1506,8 @@ defmodule Commonplace.ViewActionDispatch do
   # than putting all the casualties at the top. With no parse refusals
   # (the `records` form) this is exactly `declared_id/2` over the
   # records, unchanged.
-  defp declared_list(records, []), do: records |> Enum.with_index() |> Enum.map(fn {r, i} -> declared_id(r, i) end)
+  defp declared_list(records, []),
+    do: records |> Enum.with_index() |> Enum.map(fn {r, i} -> declared_id(r, i) end)
 
   defp declared_list(records, parse_refusals) do
     by_line = Map.new(parse_refusals, fn r -> {r.line, r.id} end)
@@ -1436,8 +1565,10 @@ defmodule Commonplace.ViewActionDispatch do
     rescue
       e ->
         {landed,
-         [%{id: declared_id(record, idx), reason: "write failed: #{Exception.message(e)}"} | refused],
-         noop}
+         [
+           %{id: declared_id(record, idx), reason: "write failed: #{Exception.message(e)}"}
+           | refused
+         ], noop}
     catch
       :exit, reason ->
         {landed,
@@ -1453,7 +1584,16 @@ defmodule Commonplace.ViewActionDispatch do
       {:ok, attrs, id} ->
         case Commonplace.Bd.Issue.show(root_uuid, id, store) do
           {:ok, current} ->
-            import_existing(record, current, id, attrs, root_uuid, store, opts, {landed, refused, noop})
+            import_existing(
+              record,
+              current,
+              id,
+              attrs,
+              root_uuid,
+              store,
+              opts,
+              {landed, refused, noop}
+            )
 
           {:error, _not_found} ->
             import_absent(record, id, attrs, root_uuid, store, opts, {landed, refused, noop})
@@ -1461,8 +1601,10 @@ defmodule Commonplace.ViewActionDispatch do
 
       {:error, reason} ->
         {landed,
-         [%{id: declared_id(record, idx), reason: "cannot import record: #{inspect(reason)}"} | refused],
-         noop}
+         [
+           %{id: declared_id(record, idx), reason: "cannot import record: #{inspect(reason)}"}
+           | refused
+         ], noop}
     end
   end
 
@@ -1475,7 +1617,9 @@ defmodule Commonplace.ViewActionDispatch do
 
     description = Map.get(attrs, :description) || ""
 
-    case Commonplace.Bd.WriteGuard.check_create(issue, root_uuid, store, allow: @import_allow_posture) do
+    case Commonplace.Bd.WriteGuard.check_create(issue, root_uuid, store,
+           allow: @import_allow_posture
+         ) do
       :ok ->
         write_opts = opts ++ [commit_metadata: import_commit_metadata(record, issue, description)]
 
@@ -1520,7 +1664,16 @@ defmodule Commonplace.ViewActionDispatch do
   # means a ticket edited locally since import will hash-differ and go
   # THROUGH the gate. That direction is the safe one: false negatives
   # cost a redundant guarded write, false positives would skip the gate.
-  defp import_existing(record, current, id, attrs, root_uuid, store, opts, {landed, refused, noop}) do
+  defp import_existing(
+         record,
+         current,
+         id,
+         attrs,
+         root_uuid,
+         store,
+         opts,
+         {landed, refused, noop}
+       ) do
     changes =
       attrs
       # `description` lives in a sibling doc, not the field bag; passing
@@ -1554,7 +1707,9 @@ defmodule Commonplace.ViewActionDispatch do
              allow: @import_allow_posture
            ) do
         :ok ->
-          write_opts = opts ++ [commit_metadata: import_commit_metadata(record, proposed, proposed_description)]
+          write_opts =
+            opts ++
+              [commit_metadata: import_commit_metadata(record, proposed, proposed_description)]
 
           case Commonplace.Bd.Issue.update(root_uuid, id, delta, store, write_opts) do
             {:ok, _updated} ->
@@ -1661,7 +1816,9 @@ defmodule Commonplace.ViewActionDispatch do
 
   defp build_need_ref(prereq_id, nil), do: %{"ticket" => prereq_id}
   defp build_need_ref(prereq_id, ""), do: %{"ticket" => prereq_id}
-  defp build_need_ref(prereq_id, repo) when is_binary(repo), do: %{"ticket" => prereq_id, "repo" => repo}
+
+  defp build_need_ref(prereq_id, repo) when is_binary(repo),
+    do: %{"ticket" => prereq_id, "repo" => repo}
 
   # Whitelist of `ticket_update` field names — mirrors
   # `Commonplace.Bd.Issue.apply_update_field/3`'s explicit clauses
@@ -1949,7 +2106,9 @@ defmodule Commonplace.ViewActionDispatch do
   # — without a fixed hand every refresh would mint a fresh random
   # client_id and bloat the doc's state vector one slot per refresh.
   defp reconstruct_pr_doc(pr_uuid) do
-    case DocBuilder.reconstruct_doc(CommitStoreClient, pr_uuid, client_id: WriterHand.for_doc(pr_uuid)) do
+    case DocBuilder.reconstruct_doc(CommitStoreClient, pr_uuid,
+           client_id: WriterHand.for_doc(pr_uuid)
+         ) do
       {:ok, doc} -> {:ok, doc}
       :none -> {:error, "PR doc not found: #{pr_uuid}"}
     end
@@ -2298,7 +2457,9 @@ defmodule Commonplace.ViewActionDispatch do
 
     if Regex.match?(@preview_section_re, old_content) do
       new_content =
-        Regex.replace(@preview_section_re, old_content, fn _whole -> new_section end, global: false)
+        Regex.replace(@preview_section_re, old_content, fn _whole -> new_section end,
+          global: false
+        )
 
       commit_pr_update(pr_uuid, doc, old_content, new_content, opts)
     else
@@ -2354,7 +2515,14 @@ defmodule Commonplace.ViewActionDispatch do
     # No writes happen before this gate.
     {identity_uuid, pub} = principal_identity(context)
 
-    if Trust.writer_authorized?(identity_uuid, pub, [], target_uuid, Trust.config(), CommitStoreClient) do
+    if Trust.writer_authorized?(
+         identity_uuid,
+         pub,
+         [],
+         target_uuid,
+         Trust.config(),
+         CommitStoreClient
+       ) do
       accept_authorized(pr_uuid, doc, content, source_uuid, target_uuid, context, opts)
     else
       {:error, "you are not authorized to accept into the target"}
@@ -2448,7 +2616,8 @@ defmodule Commonplace.ViewActionDispatch do
         {:error, "preview is stale — refreshed; review and accept again"}
 
       {:error, reason} ->
-        {:error, "pr_accept failed to auto-refresh stale preview: #{sanitize_write_error(reason)}"}
+        {:error,
+         "pr_accept failed to auto-refresh stale preview: #{sanitize_write_error(reason)}"}
     end
   end
 
