@@ -122,7 +122,8 @@ defmodule Commonplace.Application do
         Commonplace.Trust.AuditCanary,
         {Commonplace.Store.SecretStore, data_dir: data_dir},
         Commonplace.Tree.DocCache,
-        {DynamicSupervisor, name: Commonplace.SchemaCoordinator.Supervisor, strategy: :one_for_one},
+        {DynamicSupervisor,
+         name: Commonplace.SchemaCoordinator.Supervisor, strategy: :one_for_one},
         {DynamicSupervisor, name: Commonplace.Document.Supervisor, strategy: :one_for_one},
         {DynamicSupervisor, name: Commonplace.Checkout.Supervisor, strategy: :one_for_one},
         {Commonplace.Dataflow.GraphRegistry, []},
@@ -190,8 +191,8 @@ defmodule Commonplace.Application do
         bursar_children() ++
         reflog_children() ++
         ghost_reaper_children() ++
-          git_bridge_children() ++
-          workspace_lock_children(data_dir) ++ scheduler_children()
+        git_bridge_children() ++
+        workspace_lock_children(data_dir) ++ scheduler_children()
 
     opts = [strategy: :one_for_one, name: Commonplace.Supervisor]
 
@@ -311,10 +312,32 @@ defmodule Commonplace.Application do
     end
   end
 
-  defp ensure_chat_template_if_workspace_present do
+  @doc false
+  def ensure_chat_template_if_workspace_present(opts \\ []) do
     case Commonplace.Workspace.root_uuid() do
       {:ok, root_uuid} ->
-        Commonplace.Chat.TemplateBootstrap.ensure_template(root_uuid)
+        store = Keyword.get(opts, :store, Commonplace.Store.CommitStoreClient)
+
+        case Commonplace.Workspace.profile(root_uuid, store) do
+          {:ok, :minimal} ->
+            Logger.info(
+              "Commonplace.Application: skipping chat bootstrap — " <>
+                "workspace class 'minimal' does not accept root entry 'chat' — declared in profile"
+            )
+
+            :ok
+
+          {:error, reason} ->
+            Logger.error(
+              "Commonplace.Application: workspace profile unreadable for #{root_uuid}: " <>
+                inspect(reason)
+            )
+
+            :ok
+
+          _default_or_legacy ->
+            Commonplace.Chat.TemplateBootstrap.ensure_template(root_uuid, store: store)
+        end
 
       {:error, _} ->
         :ok
@@ -594,8 +617,10 @@ defmodule Commonplace.Application do
   def federation_pull_children do
     case Application.get_env(:commonplace, :federation_pull) do
       %{peers: [_ | _] = peers} = cfg ->
-        [{Commonplace.Federation.PullClient,
-          peers: peers, interval_ms: Map.get(cfg, :interval_ms, 30_000)}]
+        [
+          {Commonplace.Federation.PullClient,
+           peers: peers, interval_ms: Map.get(cfg, :interval_ms, 30_000)}
+        ]
 
       _ ->
         []

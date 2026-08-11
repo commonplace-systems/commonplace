@@ -48,6 +48,19 @@ defmodule Commonplace.CLI.IntegrationTest do
       assert Schema.entries(doc) == %{}
       assert Schema.version(doc) == 1
     end
+
+    test "records the minimal workspace profile", %{workspace: ws} do
+      output =
+        ExUnit.CaptureIO.capture_io(fn ->
+          Commonplace.CLI.Init.run(ws, ["--profile", "minimal"])
+        end)
+
+      root_uuid = CLI.root_uuid(ws)
+      assert is_binary(root_uuid)
+      assert output =~ "Initialized commonplace workspace"
+      assert {:ok, :minimal} = Commonplace.Workspace.profile(root_uuid)
+      assert Schema.entries(CLI.load_schema(root_uuid)) == %{}
+    end
   end
 
   describe "full import → ls → cat flow" do
@@ -199,6 +212,7 @@ defmodule Commonplace.CLI.IntegrationTest do
       CLI.set_root_uuid(ws, root_uuid)
 
       loader = &CLI.load_schema/1
+
       assert {:error, {:not_found, "missing.txt"}} =
                Walk.resolve_path(root_uuid, "missing.txt", loader)
     end

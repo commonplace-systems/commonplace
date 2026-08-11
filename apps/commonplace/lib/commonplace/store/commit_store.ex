@@ -1204,7 +1204,15 @@ defmodule Commonplace.Store.CommitStore do
       {:ok, db} ->
         case probe_integrity(db) do
           :ok ->
-            ready(name, db, trust_side_store, pending_imports, invariant_dispatcher, lock_ref)
+            ready(
+              name,
+              db,
+              data_dir,
+              trust_side_store,
+              pending_imports,
+              invariant_dispatcher,
+              lock_ref
+            )
 
           {:error, reason} ->
             CubDB.stop(db)
@@ -1495,7 +1503,15 @@ defmodule Commonplace.Store.CommitStore do
   # retry queue). This state only remembers WHICH instances of those
   # companion processes belong to this CommitStore, so the back-compat shims
   # below know where to delegate.
-  defp ready(name, db, trust_side_store, pending_imports, invariant_dispatcher, lock_ref) do
+  defp ready(
+         name,
+         db,
+         data_dir,
+         trust_side_store,
+         pending_imports,
+         invariant_dispatcher,
+         lock_ref
+       ) do
     ensure_doc_commit_index(db)
     :persistent_term.put({__MODULE__, :db, name}, db)
     :persistent_term.put({__MODULE__, :trust_side_store, name}, trust_side_store)
@@ -1505,6 +1521,7 @@ defmodule Commonplace.Store.CommitStore do
     {:ok,
      %{
        db: db,
+       data_dir: data_dir,
        name: name,
        queue_poller: queue_poller,
        trust_side_store: trust_side_store,
@@ -1645,7 +1662,15 @@ defmodule Commonplace.Store.CommitStore do
 
     write_fresh_reinit_fact(db, archive_path, fresh_reinit_reason)
 
-    ready(name, db, trust_side_store, pending_imports, invariant_dispatcher, lock_ref)
+    ready(
+      name,
+      db,
+      Path.dirname(path),
+      trust_side_store,
+      pending_imports,
+      invariant_dispatcher,
+      lock_ref
+    )
   end
 
   # CX-pm68 rider: when an operator overrode the refusal, the fresh store
@@ -2314,6 +2339,25 @@ defmodule Commonplace.Store.CommitStore do
   defp local_write_gate_check(%Commit{metadata: %{kind: :genesis}}, _state), do: :ok
 
   defp local_write_gate_check(commit, state) do
+    # Workspace class-gating at this root-attach seam also class-gates the
+    # auto-execution mint surface: a cell refuses __processes.json unless its
+    # class explicitly declares that root entry. Keeping this before the trust
+    # knob means `:local_write_gate = :off` cannot bypass workspace class.
+    with :ok <-
+           Commonplace.Workspace.RootWritePolicy.check(commit, state.name, state.data_dir) do
+      trust_local_write_gate_check(commit, state)
+    else
+      {:error, reason} ->
+        Logger.warning(
+          "CommitStore: root attach DENIED by workspace profile " <>
+            "doc_uuid=#{commit.doc_uuid} reason=#{inspect(reason)}"
+        )
+
+        {:error, {:trust_rejected, reason}}
+    end
+  end
+
+  defp trust_local_write_gate_check(commit, state) do
     case Application.get_env(:commonplace, :local_write_gate, :dry_run) do
       :off ->
         :ok

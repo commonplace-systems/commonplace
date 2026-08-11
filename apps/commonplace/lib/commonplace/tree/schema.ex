@@ -178,6 +178,8 @@ defmodule Commonplace.Tree.Schema do
 
   @schema_type "schema"
   @entries_type "entries"
+  @workspace_profile_key "workspace_profile"
+  @workspace_profile_version_key "workspace_profile_version"
 
   defmodule Entry do
     @moduledoc """
@@ -226,6 +228,39 @@ defmodule Commonplace.Tree.Schema do
       nil -> nil
       v when is_binary(v) -> String.to_integer(v)
       v -> v
+    end
+  end
+
+  @doc """
+  Record the workspace class declaration in the root schema's meta map.
+
+  Absence is accepted only for the closed population of workspaces created
+  before this field existed. That exception is temporal: every workspace
+  initialized by profile-aware code records both the version marker and the
+  profile, so a versioned root with no profile is corruption to surface, never
+  consent to the default class.
+  """
+  @spec put_workspace_profile(Doc.t(), :default | :minimal) :: Doc.t()
+  def put_workspace_profile(doc, profile) when profile in [:default, :minimal] do
+    doc = ensure_types(doc)
+
+    doc
+    |> YMap.set(@schema_type, @workspace_profile_version_key, "1")
+    |> YMap.set(@schema_type, @workspace_profile_key, Atom.to_string(profile))
+  end
+
+  @doc "Read the root schema's workspace profile declaration."
+  @spec workspace_profile(Doc.t()) :: {:ok, :default | :minimal} | :absent | {:error, term()}
+  def workspace_profile(doc) do
+    doc = ensure_types(doc)
+    version = YMap.get(doc, @schema_type, @workspace_profile_version_key)
+
+    case YMap.get(doc, @schema_type, @workspace_profile_key) do
+      "default" -> {:ok, :default}
+      "minimal" -> {:ok, :minimal}
+      nil when is_nil(version) -> :absent
+      nil -> {:error, :workspace_profile_missing}
+      other -> {:error, {:invalid_workspace_profile, other}}
     end
   end
 
