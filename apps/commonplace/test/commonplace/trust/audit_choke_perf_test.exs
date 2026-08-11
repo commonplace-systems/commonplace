@@ -2,7 +2,9 @@ defmodule Commonplace.Trust.AuditChokePerfTest do
   @moduledoc """
   CX-t3xv acceptance criterion 5: end-to-end write latency through the
   choke, p50/p99, against a baseline, **measured on the ALLOW path
-  especially** (brief §2, inheriting R2's acceptance datum).
+  especially** (brief §2, inheriting R2's acceptance datum). Each
+  percentile is a separately named ExUnit arm so a failure identifies
+  the property that went red.
 
   ## What is actually being defended
 
@@ -17,6 +19,8 @@ defmodule Commonplace.Trust.AuditChokePerfTest do
   map build and a `GenServer.cast`. Both are bounded and neither can
   block, which is the property that matters — the old inline persist
   was an unbounded synchronous write, and before that it was a deadlock.
+  That property is asserted structurally from `AuditLogCounter`, not
+  inferred from a wall-clock ratio.
 
   ## Why this is a self-baselined comparison
 
@@ -36,9 +40,19 @@ defmodule Commonplace.Trust.AuditChokePerfTest do
 
   @samples 200
 
+  # CX-dsqc empirical basis (five isolated runs, 2026-08-11): at n=200 the
+  # ALLOW-p99 ratios were 1.827, 1.172, 0.795, 1.091, and 0.603. Two impossible
+  # sub-1.0 results expose tail noise, while every run remains separated from
+  # the unchanged 3.0 budget. At n=1_000 the confirmation distribution was
+  # 0.959, 0.962, 0.871, 1.586, and 1.013: its range narrowed from 1.224 to
+  # 0.715 and its maximum is still well clear of 3.0. Use n=1_000 and let the
+  # impossibility guard name the three sub-1.0 runs as no-verdicts.
+  @allow_p99_samples 1_000
+
   # Generous on purpose: see the moduledoc. The failure this guards is
   # a synchronous store write back in the choke, which is ~100x, not 2x.
   @max_ratio 3.0
+  @max_counter_operations_per_denial 4
 
   setup do
     dir = Path.join(System.tmp_dir!(), "cp_audit_perf_#{:rand.uniform(1_000_000_000)}")
@@ -104,16 +118,46 @@ defmodule Commonplace.Trust.AuditChokePerfTest do
     %{p50: at.(0.50), p99: at.(0.99), n: n}
   end
 
-  defp measure(fun) do
+  defp measure(fun, sample_count \\ @samples) do
     # Warm up so the first-call costs (module load, CubDB file open) do
     # not land in either sample set.
     for _ <- 1..20, do: fun.()
 
-    for _ <- 1..@samples do
+    for _ <- 1..sample_count do
       {us, _} = :timer.tc(fun)
       us
     end
     |> percentiles()
+  end
+
+  defp measure_allow(store, dispatcher, sample_count \\ @samples) do
+    Application.put_env(:commonplace, :local_write_gate, :dry_run)
+    Application.delete_env(:commonplace, :trust)
+
+    write = fn ->
+      CommitStoreClient.create_chained_commit(store, UUID.uuid4(), text_update("hello"))
+    end
+
+    AuditLog.detach()
+    baseline = measure(write, sample_count)
+
+    AuditLog.attach(store, dispatcher: dispatcher)
+    with_audit = measure(write, sample_count)
+
+    AuditLog.detach()
+
+    ratio50 = with_audit.p50 / max(baseline.p50, 1)
+    ratio99 = with_audit.p99 / max(baseline.p99, 1)
+
+    report = """
+    ALLOW path, n=#{baseline.n} per arm
+      baseline    p50=#{baseline.p50}us p99=#{baseline.p99}us
+      with audit  p50=#{with_audit.p50}us p99=#{with_audit.p99}us
+      ratio       p50=#{Float.round(ratio50, 3)} p99=#{Float.round(ratio99, 3)}
+    """
+
+    IO.puts("\n" <> report)
+    %{p50: ratio50, p99: ratio99, report: report}
   end
 
   defp measure_offered(fun) do
@@ -136,100 +180,25 @@ defmodule Commonplace.Trust.AuditChokePerfTest do
 
   # ── the ALLOW path: must pay nothing ─────────────────────────────────
 
-  test "the ALLOW path is unaffected by audit wiring", %{store: store, dispatcher: dispatcher} do
-    # Permissive posture: every write lands. No denial ever fires, so
-    # the audit subsystem must be entirely absent from the cost.
-    Application.put_env(:commonplace, :local_write_gate, :dry_run)
-    Application.delete_env(:commonplace, :trust)
+  test "the ALLOW path p50 ratio is within budget", %{store: store, dispatcher: dispatcher} do
+    measurement = measure_allow(store, dispatcher)
 
-    write = fn ->
-      CommitStoreClient.create_chained_commit(store, UUID.uuid4(), text_update("hello"))
-    end
-
-    AuditLog.detach()
-    baseline = measure(write)
-
-    AuditLog.attach(store, dispatcher: dispatcher)
-    with_audit = measure(write)
-
-    AuditLog.detach()
-
-    ratio50 = with_audit.p50 / max(baseline.p50, 1)
-    ratio99 = with_audit.p99 / max(baseline.p99, 1)
-
-    report = """
-    ALLOW path, n=#{baseline.n} per arm
-      baseline    p50=#{baseline.p50}us p99=#{baseline.p99}us
-      with audit  p50=#{with_audit.p50}us p99=#{with_audit.p99}us
-      ratio       p50=#{Float.round(ratio50, 3)} p99=#{Float.round(ratio99, 3)}
-    """
-
-    IO.puts("\n" <> report)
-
-    assert ratio50 <= @max_ratio, "allow-path p50 regressed beyond budget\n" <> report
-    assert ratio99 <= @max_ratio, "allow-path p99 regressed beyond budget\n" <> report
+    assert_ratio_verdict!("ALLOW p50", measurement.p50, @max_ratio, measurement.report)
   end
 
-  # ── the DENY path: bounded, and never a store write in the choke ─────
+  test "the ALLOW path p99 ratio is within budget", %{store: store, dispatcher: dispatcher} do
+    measurement = measure_allow(store, dispatcher, @allow_p99_samples)
 
-  test "the DENY path adds only bounded work to the choke", %{store: store, dispatcher: dispatcher} do
-    Application.put_env(:commonplace, :trust, %{accept_unsigned: false, trusted_identities: %{}})
-    Application.put_env(:commonplace, :local_write_gate, :enforce)
-
-    deny = fn ->
-      CommitStore.create_commit(store, UUID.uuid4(), text_update("secret"), nil)
-    end
-
-    AuditLog.detach()
-    baseline = measure(deny)
-
-    AuditLog.attach(store, dispatcher: dispatcher)
-    with_audit = measure(deny)
-
-    AuditLog.detach()
-
-    ratio50 = with_audit.p50 / max(baseline.p50, 1)
-    ratio99 = with_audit.p99 / max(baseline.p99, 1)
-
-    report = """
-    DENY path, n=#{baseline.n} per arm
-      baseline    p50=#{baseline.p50}us p99=#{baseline.p99}us
-      with audit  p50=#{with_audit.p50}us p99=#{with_audit.p99}us
-      ratio       p50=#{Float.round(ratio50, 3)} p99=#{Float.round(ratio99, 3)}
-    """
-
-    IO.puts("\n" <> report)
-
-    assert ratio50 <= @max_ratio, "deny-path p50 regressed beyond budget\n" <> report
-
-    # p99 is REPORTED but not asserted on the deny arm: the dispatcher's
-    # batch flush writes audit records into the same store GenServer the
-    # timed calls go through, so a timed call that queues behind a flush
-    # pays several ms against a sub-ms baseline. That is queueing behind
-    # a legitimate async writer, not work in the choke — and one
-    # collision trips any tight p99 over n=200 (2nd-worst sample). The
-    # regression this test defends against (a synchronous store write
-    # back in the choke) inflates EVERY sample, so p50 catches it
-    # strictly better than p99 ever did.
-
-    # And the denials were actually recorded — a perf test that measured
-    # a no-op would pass trivially. The perf claim and the function claim
-    # must hold in the SAME run.
-    _ = AuditDispatcher.flush(dispatcher, 10_000)
-    status = AuditDispatcher.status(dispatcher)
-
-    # offered comes from the WARM-UP calls: the flood guard caps offers
-    # at 20 per window, so the warm-up consumes the bucket and all 200
-    # timed samples take the suppress path. That is the steady-state
-    # deny cost under a denial storm BY DESIGN, so it is the right thing
-    # to have timed; the guard below still proves the pipeline was live.
-    assert status.offered > 0, "the deny arm provoked no denials; the timing means nothing"
-    assert status.recorded > 0, "denials were timed but not recorded: #{inspect(status)}"
+    assert_ratio_verdict!("ALLOW p99", measurement.p99, @max_ratio, measurement.report)
   end
 
   # ── the ordinary DENY path: every denial is offered ─────────────────
 
-  test "the DENY path's OFFERED work is bounded", %{store: store, dispatcher: dispatcher} do
+  @tag capture_log: true
+  test "the DENY OFFERED path p50 ratio is within budget", %{
+    store: store,
+    dispatcher: dispatcher
+  } do
     Application.put_env(:commonplace, :trust, %{accept_unsigned: false, trusted_identities: %{}})
     Application.put_env(:commonplace, :local_write_gate, :enforce)
 
@@ -269,15 +238,111 @@ defmodule Commonplace.Trust.AuditChokePerfTest do
            "#{measured_calls - offered_delta} attached deny calls were suppressed; " <>
              "the OFFERED-path timing is vacuous\n" <> report
 
-    assert ratio50 <= @max_ratio, "deny OFFERED-path p50 regressed beyond budget\n" <> report
+    # This remains the original 3.0 budget. CX-dsqc forbids changing the
+    # DENY OFFERED budget while the structural discriminator is established.
+    assert_ratio_verdict!("DENY OFFERED p50", ratio50, @max_ratio, report)
 
-    # As in the storm arm above, p99 is reported but not asserted: one
+    # p99 is reported but not asserted: one
     # collision with the dispatcher's legitimate asynchronous flush can
     # trip a tight tail bound, while a synchronous regression inflates
     # every sample and is therefore caught more reliably by p50.
   end
 
-  # ── the structural claim, asserted structurally ──────────────────────
+  # ── the DENY path: bounded work asserted from exact counter deltas ───
+
+  @tag capture_log: true
+  test "the DENY OFFERED path adds a constant counter-operation signature per denial", %{
+    store: store,
+    dispatcher: dispatcher
+  } do
+    Application.put_env(:commonplace, :trust, %{accept_unsigned: false, trusted_identities: %{}})
+    Application.put_env(:commonplace, :local_write_gate, :enforce)
+
+    deny = fn ->
+      CommitStore.create_commit(store, UUID.uuid4(), text_update("secret"), nil)
+    end
+
+    AuditLog.attach(store, dispatcher: dispatcher)
+
+    curve =
+      for denials <- [1, 10, 100, 500] do
+        before_counts = AuditLog.counters()
+
+        for _ <- 1..denials do
+          AuditLog.reset_rate_table()
+          deny.()
+        end
+
+        delta = counter_delta(before_counts, AuditLog.counters())
+        operations = delta |> Map.values() |> Enum.sum()
+
+        %{
+          denials: denials,
+          operations: operations,
+          operations_per_denial: operations / denials,
+          delta: delta
+        }
+      end
+
+    IO.puts("\nDENY OFFERED counter-operation curve: #{inspect(curve)}")
+
+    for point <- curve do
+      assert point.delta == %{
+               built: point.denials,
+               entered: point.denials,
+               guarded: 0,
+               handler_failed: 0,
+               offer_events: point.denials,
+               offered: point.denials,
+               rate_suppressed: 0
+             }
+    end
+
+    assert_counter_curve!(
+      "DENY OFFERED structural",
+      curve,
+      @max_counter_operations_per_denial
+    )
+
+    _ = AuditDispatcher.flush(dispatcher, 10_000)
+    status = AuditDispatcher.status(dispatcher)
+    assert status.recorded > 0, "denials were counted but not recorded: #{inspect(status)}"
+  end
+
+  # ── positive controls: every reshaped arm can still go red ──────────
+
+  test "positive control: the ALLOW p50 ratio arm rejects over-budget work" do
+    assert_ratio_positive_control!("ALLOW p50", @max_ratio)
+  end
+
+  test "positive control: the ALLOW p99 ratio arm rejects over-budget work" do
+    assert_ratio_positive_control!("ALLOW p99", @max_ratio)
+  end
+
+  test "positive control: the DENY OFFERED p50 ratio arm rejects over-budget work" do
+    assert_ratio_positive_control!("DENY OFFERED p50", @max_ratio)
+  end
+
+  test "positive control: the DENY OFFERED structural arm rejects growing work" do
+    inflated_curve = [
+      %{denials: 1, operations_per_denial: 4.0},
+      %{denials: 10, operations_per_denial: 4.0},
+      %{denials: 100, operations_per_denial: 5.0}
+    ]
+
+    error =
+      assert_raise ExUnit.AssertionError, fn ->
+        assert_counter_curve!(
+          "DENY OFFERED structural control",
+          inflated_curve,
+          @max_counter_operations_per_denial
+        )
+      end
+
+    IO.puts("POSITIVE CONTROL DENY OFFERED structural: #{Exception.message(error)}")
+  end
+
+  # ── the synchronous call graph claim, asserted structurally ─────────
 
   test "no audit or red-log module is reachable from the store's synchronous write path" do
     source = File.read!(Path.join(__DIR__, "../../../lib/commonplace/store/commit_store.ex"))
@@ -294,5 +359,55 @@ defmodule Commonplace.Trust.AuditChokePerfTest do
 
     refute source =~ "Commonplace.Dataflow.RedLog",
            "CommitStore must never touch RedLog — that is a store write from inside the store"
+  end
+
+  defp counter_delta(before_counts, after_counts) do
+    before_counts
+    |> Map.drop([:boot_id])
+    |> Map.new(fn {key, was} -> {key, Map.fetch!(after_counts, key) - was} end)
+  end
+
+  defp assert_ratio_verdict!(arm, ratio, budget, report) do
+    if ratio < 1.0 do
+      IO.puts(
+        "NO VERDICT #{arm}: noise-dominated ratio=#{Float.round(ratio, 3)} " <>
+          "is below the physical floor 1.0; budget assertion skipped\n" <> report
+      )
+
+      :noise_dominated
+    else
+      assert ratio <= budget,
+             "#{arm} regressed beyond ratio budget #{budget}\n" <> report
+
+      :within_budget
+    end
+  end
+
+  defp assert_counter_curve!(arm, curve, budget) do
+    operations_per_denial = Enum.map(curve, & &1.operations_per_denial)
+
+    assert length(Enum.uniq(operations_per_denial)) == 1,
+           "#{arm} grew with denial count: #{inspect(curve)}"
+
+    assert Enum.all?(operations_per_denial, &(&1 <= budget)),
+           "#{arm} exceeded #{budget} counter operations per denial: #{inspect(curve)}"
+
+    :constant
+  end
+
+  defp assert_ratio_positive_control!(arm, budget) do
+    inflated_ratio = budget + 1.0
+
+    error =
+      assert_raise ExUnit.AssertionError, fn ->
+        assert_ratio_verdict!(
+          "#{arm} positive control",
+          inflated_ratio,
+          budget,
+          "deliberately inflated counted work"
+        )
+      end
+
+    IO.puts("POSITIVE CONTROL #{arm}: #{Exception.message(error)}")
   end
 end
