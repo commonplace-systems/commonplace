@@ -125,12 +125,50 @@ defmodule Commonplace.CLI.ProtoChitShimTest do
     assert argv =~ ~r/-- commit -m excluded$/
   end
 
-  test "no PROTO_CHIT_SYNC_EXCLUDES means no --sync-exclude flag at all", %{base: base} do
+  test "set-but-empty PROTO_CHIT_SYNC_EXCLUDES declares defaults-only scope", %{base: base} do
+    repo = create_ready_repo(Path.join(base, "empty-excludes-repo"))
+    argv = recording_emitter_argv(base, repo, [{"PROTO_CHIT_SYNC_EXCLUDES", ""}])
+
+    assert argv =~ "--declare-empty-sync-excludes"
+    refute argv =~ "--sync-exclude"
+    assert argv =~ ~r/-- commit -m excluded$/
+  end
+
+  test "unset PROTO_CHIT_SYNC_EXCLUDES sends no scope declaration", %{base: base} do
     repo = create_ready_repo(Path.join(base, "no-excludes-repo"))
     argv = recording_emitter_argv(base, repo, [])
 
     refute argv =~ "--sync-exclude"
+    refute argv =~ "--declare-empty-sync-excludes"
     assert argv =~ ~r/-- commit -m excluded$/
+  end
+
+  test "undeclared scope refusal WALs intent loudly and still runs git", %{base: base} do
+    repo = create_ready_repo(Path.join(base, "refused-scope-repo"))
+    state_dir = Path.join(base, "refused-scope-state")
+
+    emitter =
+      write_emitter!(
+        base,
+        "scope-refusing-emitter",
+        "echo 'proto-chit: emission failed: sync scope is undeclared; set " <>
+          "PROTO_CHIT_SYNC_EXCLUDES (set-but-empty declares defaults-only), repeat " <>
+          "--sync-exclude NAME, or pass --declare-empty-sync-excludes' >&2\nexit 1\n"
+      )
+
+    assert {output, 0} =
+             System.cmd(@shim, ["commit", "-m", "scope-refused"],
+               cd: repo,
+               env: shim_env(state_dir, emitter) ++ @fixed_env,
+               stderr_to_stdout: true
+             )
+
+    assert output =~ "PROTO_CHIT_SYNC_EXCLUDES"
+    assert output =~ "--sync-exclude"
+    assert output =~ "--declare-empty-sync-excludes"
+    assert [record] = read_wal(state_dir)
+    assert record["failure"] == "emitter-exit-1"
+    assert {_sha, 0} = System.cmd(@real_git, ["rev-parse", "HEAD"], cd: repo)
   end
 
   # Drives the real shim with an emitter that records the argv it was handed.
@@ -150,8 +188,15 @@ defmodule Commonplace.CLI.ProtoChitShimTest do
     env =
       shim_env(base, emitter) ++ [{"PROTO_CHIT_TEST_FIRED", fired}] ++ @fixed_env ++ extra_env
 
+    {command, args} =
+      if {"PROTO_CHIT_SYNC_EXCLUDES", ""} in extra_env do
+        {"/usr/bin/env", ["PROTO_CHIT_SYNC_EXCLUDES=", @shim, "commit", "-m", "excluded"]}
+      else
+        {@shim, ["commit", "-m", "excluded"]}
+      end
+
     assert {_output, 0} =
-             System.cmd(@shim, ["commit", "-m", "excluded"],
+             System.cmd(command, args,
                cd: repo,
                env: env,
                stderr_to_stdout: true
