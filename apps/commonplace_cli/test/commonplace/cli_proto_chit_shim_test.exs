@@ -22,7 +22,7 @@ defmodule Commonplace.CLI.ProtoChitShimTest do
 
     File.write!(
       emitter,
-      "#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$PROTO_CHIT_TEST_FIRED\"\n" <>
+      "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$PROTO_CHIT_TEST_FIRED\"\n" <>
         "echo 'proto-chit: tap fired recorded' >&2\n"
     )
 
@@ -40,6 +40,66 @@ defmodule Commonplace.CLI.ProtoChitShimTest do
     assert File.read!(fired) =~ "proto-chit emit"
     assert File.read!(fired) =~ "commit -m fired"
     assert {_sha, 0} = System.cmd(@real_git, ["rev-parse", "HEAD"], cd: repo)
+  end
+
+  test "a successful tap invokes the emitter again with the witnessed git outcome", %{base: base} do
+    repo = create_ready_repo(Path.join(base, "two-invocations-repo"))
+    fired = Path.join(base, "two-invocations-fired")
+    emitter = Path.join(base, "two-invocations-emitter")
+
+    File.write!(
+      emitter,
+      "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$PROTO_CHIT_TEST_FIRED\"\n" <>
+        "case \"$*\" in\n" <>
+        "  *'proto-chit annotate'*) echo 'proto-chit: tap fired witnessed' >&2 ;;\n" <>
+        "  *) echo 'proto-chit: tap fired main-ref' >&2 ;;\n" <>
+        "esac\n"
+    )
+
+    File.chmod!(emitter, 0o755)
+
+    assert {_output, 0} =
+             System.cmd(@shim, ["commit", "-m", "two calls"],
+               cd: repo,
+               env:
+                 shim_env(base, emitter) ++
+                   [{"PROTO_CHIT_TEST_FIRED", fired}, {"PROTO_CHIT_SYNC_EXCLUDES", ""}] ++
+                   @fixed_env,
+               stderr_to_stdout: true
+             )
+
+    [main_call, annotation_call] = File.read!(fired) |> String.split("\n", trim: true)
+    assert main_call =~ "proto-chit emit"
+    assert annotation_call =~ "proto-chit annotate"
+    assert annotation_call =~ "--main-event-ref main-ref"
+    assert annotation_call =~ "--exit-status 0"
+    assert annotation_call =~ "commit -m two calls"
+  end
+
+  test "the annotation receives and the shim preserves a failed git exit status", %{base: base} do
+    repo = create_ready_repo(Path.join(base, "failed-git-repo"))
+    git(repo, ["commit", "-m", "parent"])
+    fired = Path.join(base, "failed-git-fired")
+
+    emitter =
+      write_emitter!(
+        base,
+        "failed-git-emitter",
+        "printf '%s\\n' \"$*\" >> \"$PROTO_CHIT_TEST_FIRED\"\n" <>
+          "echo 'proto-chit: tap fired confirmed-ref' >&2\n"
+      )
+
+    assert {_output, git_status} =
+             System.cmd(@shim, ["commit", "-m", "nothing to commit"],
+               cd: repo,
+               env: shim_env(base, emitter) ++ [{"PROTO_CHIT_TEST_FIRED", fired}] ++ @fixed_env,
+               stderr_to_stdout: true
+             )
+
+    assert git_status != 0
+    [_, annotation_call] = File.read!(fired) |> String.split("\n", trim: true)
+    assert annotation_call =~ "proto-chit annotate"
+    assert annotation_call =~ "--exit-status #{git_status}"
   end
 
   test "exit zero without persist confirmation WALs and still runs git", %{base: base} do
@@ -81,6 +141,40 @@ defmodule Commonplace.CLI.ProtoChitShimTest do
     assert {_sha, 0} = System.cmd(@real_git, ["rev-parse", "HEAD"], cd: repo)
   end
 
+  test "a failed annotation gets its own replayable WAL envelope", %{base: base} do
+    repo = create_ready_repo(Path.join(base, "annotation-wal-repo"))
+    state_dir = Path.join(base, "annotation-wal-state")
+
+    emitter =
+      write_emitter!(
+        base,
+        "annotation-failing-emitter",
+        "case \"$*\" in\n" <>
+          "  *'proto-chit annotate'*) exit 4 ;;\n" <>
+          "  *) echo 'proto-chit: tap fired main-for-annotation-wal' >&2 ;;\n" <>
+          "esac\n"
+      )
+
+    assert {_output, 0} =
+             System.cmd(@shim, ["commit", "-m", "annotation wal"],
+               cd: repo,
+               env: shim_env(state_dir, emitter) ++ @fixed_env,
+               stderr_to_stdout: true
+             )
+
+    assert [record] = read_wal(state_dir)
+    assert record["failure"] == "annotation-emitter-exit-4"
+    assert record["replay-grade"] == "append-at-replay"
+    assert record["event"]["kind"] == "post-exec"
+    assert record["event"]["main-event-ref"] == "main-for-annotation-wal"
+    assert record["event"]["exit-status"] == 0
+
+    assert record["event"]["resulting-git-sha"] ==
+             git(repo, ["rev-parse", "HEAD"]) |> String.trim()
+
+    assert record["event"]["message"] == "annotation wal"
+  end
+
   test "nonzero emitter exit WALs and still runs git", %{base: base} do
     repo = create_ready_repo(Path.join(base, "nonzero-repo"))
     state_dir = Path.join(base, "nonzero-state")
@@ -95,6 +189,13 @@ defmodule Commonplace.CLI.ProtoChitShimTest do
 
     assert [record] = read_wal(state_dir)
     assert record["failure"] == "emitter-exit-3"
+    assert record["post-exec"]["disposition"] == "skipped-main-emission-failed"
+    assert record["post-exec"]["exit-status"] == 0
+
+    assert record["post-exec"]["resulting-git-sha"] ==
+             git(repo, ["rev-parse", "HEAD"]) |> String.trim()
+
+    assert record["post-exec"]["message"] == "nonzero"
     assert {_sha, 0} = System.cmd(@real_git, ["rev-parse", "HEAD"], cd: repo)
   end
 
@@ -179,7 +280,8 @@ defmodule Commonplace.CLI.ProtoChitShimTest do
 
     File.write!(
       emitter,
-      "#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$PROTO_CHIT_TEST_FIRED\"\n" <>
+      "#!/bin/sh\ncase \"$*\" in *'proto-chit emit'*) " <>
+        "printf '%s\\n' \"$*\" > \"$PROTO_CHIT_TEST_FIRED\" ;; esac\n" <>
         "echo 'proto-chit: tap fired argv' >&2\n"
     )
 

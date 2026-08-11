@@ -32,6 +32,12 @@ def message(argv):
     return " ".join(argv[1:])
 
 
+def final_message(repo, real_git, argv, exit_status):
+    if exit_status == 0 and argv and argv[0] in {"commit", "cherry-pick", "revert"}:
+        return git_value(repo, real_git, ["log", "-1", "--format=%B"], message(argv))
+    return message(argv)
+
+
 def git_value(repo, real_git, args, fallback=None):
     try:
         result = subprocess.run(
@@ -63,7 +69,99 @@ def content_hashes(repo):
     return dict(sorted(hashes.items()))
 
 
+def post_exec_facts(repo, real_git, argv, exit_status, disposition):
+    return {
+        "disposition": disposition,
+        "resulting-git-sha": git_value(repo, real_git, ["rev-parse", "--verify", "HEAD"]),
+        "exit-status": exit_status,
+        "message": final_message(repo, real_git, argv, exit_status),
+    }
+
+
+def append_record(state_dir, record):
+    os.makedirs(state_dir, mode=0o700, exist_ok=True)
+    wal_path = os.path.join(state_dir, "events.wal.ndjson")
+    with open(wal_path, "a", encoding="utf-8") as wal:
+        fcntl.flock(wal.fileno(), fcntl.LOCK_EX)
+        wal.write(json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n")
+        wal.flush()
+        os.fsync(wal.fileno())
+    print(f"proto-chit: unsigned intent WALed at {wal_path}", file=sys.stderr)
+
+
+def update_post_exec(repo, state_dir, invocation_id, exit_status, argv):
+    real_git = os.environ.get("PROTO_CHIT_REAL_GIT", "/usr/bin/git")
+    wal_path = os.path.join(state_dir, "events.wal.ndjson")
+
+    try:
+        with open(wal_path, "r+", encoding="utf-8") as wal:
+            fcntl.flock(wal.fileno(), fcntl.LOCK_EX)
+            lines = wal.readlines()
+            updated = False
+
+            for index in range(len(lines) - 1, -1, -1):
+                try:
+                    record = json.loads(lines[index])
+                except json.JSONDecodeError:
+                    continue
+                if record.get("invocation-id") == invocation_id:
+                    record["post-exec"] = post_exec_facts(
+                        repo, real_git, argv, exit_status, "skipped-main-emission-failed"
+                    )
+                    lines[index] = json.dumps(
+                        record, sort_keys=True, separators=(",", ":")
+                    ) + "\n"
+                    updated = True
+                    break
+
+            if not updated:
+                return 1
+
+            wal.seek(0)
+            wal.writelines(lines)
+            wal.truncate()
+            wal.flush()
+            os.fsync(wal.fileno())
+    except OSError:
+        return 1
+
+    return 0
+
+
+def append_annotation(repo, state_dir, failure, main_event_ref, exit_status, argv):
+    real_git = os.environ.get("PROTO_CHIT_REAL_GIT", "/usr/bin/git")
+    facts = post_exec_facts(repo, real_git, argv, exit_status, "annotation-emission-failed")
+    record = {
+        "wal-version": 1,
+        "status": "pending",
+        "replay-grade": "append-at-replay",
+        "failure": failure,
+        "recorded-at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "git-argv": argv,
+        "event": {
+            "kind": "post-exec",
+            "author-principal": os.environ.get("PROTO_CHIT_PRINCIPAL"),
+            "main-event-ref": main_event_ref,
+            "resulting-git-sha": facts["resulting-git-sha"],
+            "exit-status": exit_status,
+            "message": facts["message"],
+        },
+    }
+    append_record(state_dir, record)
+    return 0
+
+
 def main():
+    if len(sys.argv) >= 6 and sys.argv[1] == "post-exec":
+        repo, state_dir, invocation_id, exit_status, *argv = sys.argv[2:]
+        return update_post_exec(repo, state_dir, invocation_id, int(exit_status), argv)
+
+    if len(sys.argv) >= 7 and sys.argv[1] == "annotation":
+        repo, state_dir, failure, main_event_ref, exit_status, *argv = sys.argv[2:]
+        return append_annotation(
+            repo, state_dir, failure, main_event_ref, int(exit_status), argv
+        )
+
     if len(sys.argv) < 5:
         return 2
 
@@ -77,6 +175,7 @@ def main():
         "status": "pending",
         "replay-grade": "pin-cut-at-replay",
         "failure": failure,
+        "invocation-id": os.environ.get("PROTO_CHIT_INVOCATION_ID"),
         "recorded-at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "git-argv": argv,
         "content-hashes": content_hashes(repo),
@@ -88,16 +187,9 @@ def main():
             "predecessor-ref": {"branch": branch, "event-refs": []},
             "git-sha": sha,
         },
+        "post-exec": {"disposition": "pending"},
     }
-
-    os.makedirs(state_dir, mode=0o700, exist_ok=True)
-    wal_path = os.path.join(state_dir, "events.wal.ndjson")
-    with open(wal_path, "a", encoding="utf-8") as wal:
-        fcntl.flock(wal.fileno(), fcntl.LOCK_EX)
-        wal.write(json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n")
-        wal.flush()
-        os.fsync(wal.fileno())
-    print(f"proto-chit: unsigned intent WALed at {wal_path}", file=sys.stderr)
+    append_record(state_dir, record)
     return 0
 
 

@@ -51,6 +51,35 @@ defmodule Commonplace.ProtoChit do
     :exit, reason -> {:error, {:gated_write_unreachable, reason}}
   end
 
+  @doc "Append a cheap signed post-exec witness without syncing, pinning, or advancing refs."
+  @spec annotate(Path.t(), String.t(), non_neg_integer(), [String.t()], keyword()) ::
+          {:ok, %{event: event(), event_ref: String.t()}} | {:error, term()}
+  def annotate(repo, main_event_ref, exit_status, git_args, opts)
+      when is_binary(repo) and is_binary(main_event_ref) and is_integer(exit_status) and
+             exit_status >= 0 and is_list(git_args) do
+    with :ok <- validate_repo(repo),
+         {:ok, signing_context} <- fetch_signing_context(opts),
+         {:ok, event_log_uuid} <- fetch_binary(opts, :event_log_uuid),
+         {:ok, resulting_git_sha} <- resulting_git_sha(repo, opts),
+         {:ok, message} <- final_message(repo, git_args, exit_status, opts),
+         event <- %{
+           "kind" => "post-exec",
+           "author-principal" => signing_context.identity_uuid,
+           "main-event-ref" => main_event_ref,
+           "resulting-git-sha" => resulting_git_sha,
+           "exit-status" => exit_status,
+           "message" => message
+         },
+         {:ok, event_ref} <- persist_event(event_log_uuid, event, signing_context, opts),
+         :ok <- maybe_trace(opts[:trace_file], event) do
+      {:ok, %{event: event, event_ref: event_ref}}
+    end
+  rescue
+    error -> {:error, {:annotation_failed, Exception.message(error)}}
+  catch
+    :exit, reason -> {:error, {:gated_write_unreachable, reason}}
+  end
+
   @doc "Map an explicitly tapped git argv to the four schema verbs."
   def classify(["commit" | args]) do
     if Enum.any?(args, &(&1 == "--amend")), do: {:ok, "rewrite"}, else: {:ok, "commit"}
@@ -122,6 +151,19 @@ defmodule Commonplace.ProtoChit do
   rescue
     error -> {:error, {:real_git_unreachable, Exception.message(error)}}
   end
+
+  defp resulting_git_sha(repo, opts) do
+    real_git = Keyword.get(opts, :real_git, "/usr/bin/git")
+    git_output(real_git, repo, ["rev-parse", "--verify", "HEAD"], nil)
+  end
+
+  defp final_message(repo, [command | _] = git_args, 0, opts)
+       when command in ["commit", "cherry-pick", "revert"] do
+    real_git = Keyword.get(opts, :real_git, "/usr/bin/git")
+    git_output(real_git, repo, ["log", "-1", "--format=%B"], human_message(git_args))
+  end
+
+  defp final_message(_repo, git_args, _exit_status, _opts), do: {:ok, human_message(git_args)}
 
   defp sync_flush(repo, root_uuid, signing_context, opts) do
     store = Keyword.get(opts, :store, CommitStoreClient)

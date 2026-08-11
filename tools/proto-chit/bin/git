@@ -9,6 +9,10 @@ command_name=${1:-}
 shim_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 state_dir=${PROTO_CHIT_STATE_DIR:-"$shim_dir/../state"}
 wal_path="$state_dir/events.wal.ndjson"
+invocation_id="$$-$(date +%s 2>/dev/null || echo unknown)"
+tapped=0
+main_waled=0
+main_event_ref=""
 
 # Runs the emitter with the caller's git argv after `--`, prefixed by whatever
 # optional flags this invocation carries. Positional parameters set inside a
@@ -69,8 +73,31 @@ run_emitter() {
     "$@"
 }
 
+run_annotation() {
+  git_argv_count=$#
+
+  if [ -n "${PROTO_CHIT_TRACE_FILE:-}" ]; then
+    set -- "$@" --trace "$PROTO_CHIT_TRACE_FILE"
+  fi
+
+  set -- "$@" --
+
+  while [ "$git_argv_count" -gt 0 ]; do
+    arg=$1
+    shift
+    set -- "$@" "$arg"
+    git_argv_count=$((git_argv_count - 1))
+  done
+
+  "$emitter" --data-dir "$PROTO_CHIT_DATA_DIR" proto-chit annotate \
+    --repo "$PWD" --event-log "$PROTO_CHIT_EVENT_LOG_UUID" \
+    --real-git "$real_git" --main-event-ref "$main_event_ref" \
+    --exit-status "$git_status" "$@"
+}
+
 case "$command_name" in
   commit|merge|pull|branch|checkout|switch|tag|worktree|rebase|reset|filter-branch|replace|update-ref|notes|bisect|reflog|stash|cherry-pick|revert)
+    tapped=1
     emitter=${PROTO_CHIT_COMMONPLACE:-}
     emit_status=127
     emit_confirmed=0
@@ -92,6 +119,8 @@ case "$command_name" in
         if [ "$emit_status" -eq 0 ] &&
           grep -q '^proto-chit: tap fired ' "$emit_output" 2>/dev/null; then
           emit_confirmed=1
+          main_event_ref=$(sed -n 's/^proto-chit: tap fired \([^ ]*\).*$/\1/p' "$emit_output" |
+            tail -n 1)
         fi
 
         rm -f "$emit_output" || :
@@ -106,11 +135,15 @@ case "$command_name" in
     fi
 
     if [ "$emit_status" -ne 0 ]; then
-      "$shim_dir/proto-chit-wal" "$PWD" "$state_dir" "emitter-exit-$emit_status" "$@" ||
+      PROTO_CHIT_INVOCATION_ID="$invocation_id" \
+        "$shim_dir/proto-chit-wal" "$PWD" "$state_dir" "emitter-exit-$emit_status" "$@" ||
         echo "proto-chit: WAL APPEND FAILED; git remains advisory" >&2
+      main_waled=1
     elif [ "$emit_confirmed" -ne 1 ]; then
-      "$shim_dir/proto-chit-wal" "$PWD" "$state_dir" "emitter-exit-0-unconfirmed" "$@" ||
+      PROTO_CHIT_INVOCATION_ID="$invocation_id" \
+        "$shim_dir/proto-chit-wal" "$PWD" "$state_dir" "emitter-exit-0-unconfirmed" "$@" ||
         echo "proto-chit: WAL APPEND FAILED; git remains advisory" >&2
+      main_waled=1
     fi
     ;;
 esac
@@ -155,4 +188,52 @@ if [ -s "$wal_path" ]; then
   fi
 fi
 
-exec "$real_git" "$@"
+"$real_git" "$@"
+git_status=$?
+
+if [ "$tapped" -eq 1 ]; then
+  if [ "$main_waled" -eq 1 ]; then
+    "$shim_dir/proto-chit-wal" post-exec "$PWD" "$state_dir" "$invocation_id" \
+      "$git_status" "$@" ||
+      echo "proto-chit: WAL POST-EXEC UPDATE FAILED; git remains advisory" >&2
+  elif [ -n "$main_event_ref" ]; then
+    annotation_status=127
+    annotation_confirmed=0
+    annotation_output="${TMPDIR:-/tmp}/proto-chit-annotation.$$"
+
+    if ! (umask 077 && set -C && : >"$annotation_output") 2>/dev/null; then
+      annotation_output=""
+    fi
+
+    if [ -n "$annotation_output" ]; then
+      trap 'rm -f "$annotation_output"' 0
+      run_annotation "$@" >"$annotation_output" 2>&1
+      annotation_status=$?
+      cat "$annotation_output" >&2 || :
+
+      if [ "$annotation_status" -eq 0 ] &&
+        grep -q '^proto-chit: tap fired ' "$annotation_output" 2>/dev/null; then
+        annotation_confirmed=1
+      fi
+
+      rm -f "$annotation_output" || :
+      annotation_output=""
+      trap - 0
+    else
+      run_annotation "$@" >&2
+      annotation_status=$?
+    fi
+
+    if [ "$annotation_status" -ne 0 ]; then
+      "$shim_dir/proto-chit-wal" annotation "$PWD" "$state_dir" \
+        "annotation-emitter-exit-$annotation_status" "$main_event_ref" "$git_status" "$@" ||
+        echo "proto-chit: ANNOTATION WAL APPEND FAILED; git remains advisory" >&2
+    elif [ "$annotation_confirmed" -ne 1 ]; then
+      "$shim_dir/proto-chit-wal" annotation "$PWD" "$state_dir" \
+        "annotation-emitter-exit-0-unconfirmed" "$main_event_ref" "$git_status" "$@" ||
+        echo "proto-chit: ANNOTATION WAL APPEND FAILED; git remains advisory" >&2
+    fi
+  fi
+fi
+
+exit "$git_status"
