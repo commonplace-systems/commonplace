@@ -36,6 +36,7 @@ defmodule Commonplace.GitBridge.Supervisor do
   def init(opts) do
     data_dir = data_dir(opts)
     store = Keyword.fetch!(opts, :store)
+    secret_store = Keyword.get(opts, :secret_store, Commonplace.Store.SecretStore)
     File.mkdir_p!(data_dir)
 
     mappings = read_mappings(data_dir)
@@ -43,7 +44,7 @@ defmodule Commonplace.GitBridge.Supervisor do
     children =
       Enum.map(mappings, fn mapping ->
         Supervisor.child_spec(
-          {Server, server_opts(mapping, store)},
+          {Server, server_opts(mapping, store, secret_store)},
           id: child_id(mapping)
         )
       end)
@@ -64,6 +65,7 @@ defmodule Commonplace.GitBridge.Supervisor do
   def add_mapping(supervisor, mapping, opts \\ []) do
     data_dir = data_dir(opts)
     store = Keyword.fetch!(opts, :store)
+    secret_store = Keyword.get(opts, :secret_store, Commonplace.Store.SecretStore)
     mapping = normalize_mapping(mapping)
     mappings = read_mappings(data_dir)
 
@@ -81,7 +83,10 @@ defmodule Commonplace.GitBridge.Supervisor do
 
         case Supervisor.start_child(
                supervisor,
-               Supervisor.child_spec({Server, server_opts(mapping, store)}, id: child_id(mapping))
+               Supervisor.child_spec(
+                 {Server, server_opts(mapping, store, secret_store)},
+                 id: child_id(mapping)
+               )
              ) do
           {:ok, _pid} -> {:ok, mapping}
           {:error, reason} -> {:error, reason}
@@ -205,11 +210,12 @@ defmodule Commonplace.GitBridge.Supervisor do
     |> Map.put_new("interval_ms", 30_000)
   end
 
-  defp server_opts(mapping, store) do
+  defp server_opts(mapping, store, secret_store) do
     [
       mount_uuid: mapping["mount_uuid"],
       repo_dir: mapping["repo_dir"],
       store: store,
+      secret_store: secret_store,
       remote: mapping["remote"],
       branch: mapping["branch"] || "main",
       interval_ms: mapping["interval_ms"] || 30_000

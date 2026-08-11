@@ -140,16 +140,31 @@ defmodule Commonplace.Presence do
 
     update = Yelixer.Encoding.encode_update(doc)
     {metadata, commit_opts} = SignedWrite.opts_for(uuid, Keyword.put(opts, :store, store))
-    CommitStoreClient.create_commit(store, uuid, update, nil, metadata, commit_opts)
 
-    # Add to parent schema
-    dir_doc = load_schema(dir_uuid, store)
-    dir_doc = Schema.add_file(dir_doc, fname, uuid)
-    update = Yelixer.Encoding.encode_update(dir_doc)
-    {dir_metadata, dir_commit_opts} = SignedWrite.opts_for(dir_uuid, Keyword.put(opts, :store, store))
-    CommitStoreClient.create_chained_commit(store, dir_uuid, update, dir_metadata, dir_commit_opts)
+    with %Commonplace.Store.Commit{} <-
+           CommitStoreClient.create_commit(store, uuid, update, nil, metadata, commit_opts) do
+      # Add to parent schema only after the presence document landed. This
+      # prevents a denied genesis write from producing a dangling tree entry.
+      dir_doc = load_schema(dir_uuid, store)
+      dir_doc = Schema.add_file(dir_doc, fname, uuid)
+      update = Yelixer.Encoding.encode_update(dir_doc)
 
-    {:ok, uuid}
+      {dir_metadata, dir_commit_opts} =
+        SignedWrite.opts_for(dir_uuid, Keyword.put(opts, :store, store))
+
+      case CommitStoreClient.create_chained_commit(
+             store,
+             dir_uuid,
+             update,
+             dir_metadata,
+             dir_commit_opts
+           ) do
+        %Commonplace.Store.Commit{} -> {:ok, uuid}
+        {:error, _reason} = error -> error
+      end
+    else
+      {:error, _reason} = error -> error
+    end
   end
 
   @doc "Read the presence document contents."
@@ -348,7 +363,11 @@ defmodule Commonplace.Presence do
 
           _ ->
             require Logger
-            Logger.debug("Presence.set_attributes: ignoring unknown/typed key #{inspect(key)}=#{inspect(value)}")
+
+            Logger.debug(
+              "Presence.set_attributes: ignoring unknown/typed key #{inspect(key)}=#{inspect(value)}"
+            )
+
             acc
         end
       end)
