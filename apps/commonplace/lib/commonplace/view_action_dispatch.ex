@@ -598,7 +598,8 @@ defmodule Commonplace.ViewActionDispatch do
   # same payload.
   defp do_dispatch("ticket_update", %{args: %{"ticket" => ticket_id, "changes" => changes_map}} = context)
        when is_binary(ticket_id) and is_map(changes_map) do
-    with {:ok, root_uuid} <- Workspace.root_uuid(),
+    with :ok <- validate_ticket_change_keys(changes_map),
+         {:ok, root_uuid} <- Workspace.root_uuid(),
          {:ok, issue} <- load_bd_issue(root_uuid, ticket_id) do
       changes = atomize_ticket_changes(changes_map)
 
@@ -615,7 +616,7 @@ defmodule Commonplace.ViewActionDispatch do
           end
 
         {:error, reason} ->
-          {:error, reason}
+          {:error, ticket_update_guard_error(reason, changes)}
       end
     else
       {:error, reason} when is_binary(reason) -> {:error, reason}
@@ -1669,34 +1670,53 @@ defmodule Commonplace.ViewActionDispatch do
   # here because every name is already a `Schemas.Issue` struct field.
   @ticket_update_fields ~w(title status priority type owner labels needs done_when done_witness claimed_by legacy_id)
 
-  # ⚠️ CX-7smx: this filter SILENTLY DROPS non-updatable keys and the verb
-  # still returns `{:ok, :tree_mutation}`. Demonstrated by effect
-  # 2026-08-07: a `ticket_update` carrying only `"description"` reported
-  # success and changed nothing (body read back byte-identical). Note
-  # `description` is absent from `@ticket_update_fields` above, so TICKET
-  # BODIES ARE WRITE-ONCE THROUGH THIS SURFACE — which is *why* stale
-  # ticket bodies keep misleading readers: nobody reconciles them because
-  # nobody can, and anyone who tried was told it worked.
-  #
-  # THE FIX ALREADY EXISTS IN THIS MODULE. `import_existing/9` (~:1522-1543)
-  # handles the body correctly: `Map.drop([:description, ...])` BEFORE the
-  # field filter, read the current body via `Issue.description/3`, then
-  # PRESENT-KEY SEMANTICS — `Map.get(attrs, :description, current)` — so a
-  # field-only update can never blank an existing body, with both feeding
-  # `content_hash` for the no-op check. That present-key detail is the part
-  # a fresh implementation gets wrong. This is not a missing capability;
-  # it is a missing step the system already performs 150 lines above.
-  #
-  # Worth fixing even if bodies stay immutable by design: make unknown /
-  # non-updatable keys REJECT LOUDLY instead of being filtered. An error
-  # teaches; a silent drop misleads. Contrast `Bd.WriteGuard.check_protected/2`
-  # (bd/write_guard.ex:214), which uses the same `Enum.filter` idiom in the
-  # opposite direction — it filters to FIND offending keys and then refuses,
-  # naming the field. The idiom is innocent; the direction is everything.
+  @directly_updatable_ticket_fields ~w(title priority type owner labels needs done_when legacy_id)
+
+  defp validate_ticket_change_keys(changes_map) do
+    unknown_keys =
+      changes_map
+      |> Map.keys()
+      |> Enum.reject(&(&1 in @ticket_update_fields))
+      |> Enum.sort_by(&inspect/1)
+
+    case unknown_keys do
+      [] ->
+        :ok
+
+      keys ->
+        names = Enum.map_join(keys, ", ", &inspect/1)
+
+        guidance =
+          [
+            Enum.any?(keys, &(&1 in ["description", :description])) &&
+              "Use Bd.Issue.write_description/5 for description.",
+            Enum.any?(keys, &(&1 in ["status", :status])) &&
+              "Use ticket_close to change status."
+          ]
+          |> Enum.filter(&is_binary/1)
+          |> Enum.join(" ")
+          |> case do
+            "" -> ""
+            message -> message <> " "
+          end
+
+        {:error,
+         "ticket_update refuses non-updatable change keys: #{names}. #{guidance}" <>
+           "Updatable fields: #{Enum.join(@directly_updatable_ticket_fields, ", ")}."}
+    end
+  end
+
   defp atomize_ticket_changes(map) do
     map
-    |> Enum.filter(fn {k, _v} -> k in @ticket_update_fields end)
     |> Enum.into(%{}, fn {k, v} -> {String.to_existing_atom(k), v} end)
+  end
+
+  defp ticket_update_guard_error(reason, changes) do
+    if Map.has_key?(changes, :status) do
+      "#{reason}; use ticket_close to change status"
+    else
+      reason
+    end
   end
 
   defp fetch_arg(args, key) do

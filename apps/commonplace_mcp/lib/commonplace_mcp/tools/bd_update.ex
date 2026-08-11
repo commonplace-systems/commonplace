@@ -18,7 +18,7 @@ defmodule Commonplace.MCP.Tools.BdUpdate do
     %{
       "name" => "bd_update",
       "description" =>
-        "Update non-protected fields on a ticket (e.g. title, priority, type, owner, labels, description). The protected fields status/done_witness/claimed_by are refused here — use bd_close, bd_claim, or bd_release. Pass `changes` as a field→value map.",
+        "Update non-protected ticket fields (e.g. title, priority, type, owner, labels). Description and unknown fields are refused; descriptions use Bd.Issue.write_description/5. The protected fields status/done_witness/claimed_by are refused here — use bd_close, bd_claim, or bd_release. Pass `changes` as a field→value map.",
       "inputSchema" => %{
         "type" => "object",
         "properties" => %{

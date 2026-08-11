@@ -206,6 +206,17 @@ defmodule Commonplace.MCP.Tools.BdWriteToolsTest do
       assert reloaded.priority == "p0"
     end
 
+    test "surfaces a description refusal from ticket_update", %{root: root, ctx: ctx} do
+      t = create_ticket(root, %{title: "before", description: "original body"})
+
+      assert {:error, :invalid_params, msg} =
+               BdUpdate.run(%{"ticket" => t.id, "changes" => %{"description" => "x"}}, ctx)
+
+      assert msg =~ "description"
+      assert msg =~ "Bd.Issue.write_description/5"
+      assert {:ok, "original body"} = Issue.description(root, t.id, CommitStoreClient)
+    end
+
     test "a protected field (status) is refused cleanly", %{root: root, ctx: ctx} do
       t = create_ticket(root, %{title: "guarded"})
 
