@@ -8,12 +8,16 @@ defmodule Commonplace.GitBridge.InboundTest do
   """
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias Commonplace.GitBridge.Server
   alias Commonplace.Tree.{Schema, DocBuilder}
   alias Commonplace.Document.ContentType
   alias Commonplace.Store.CommitStore
   alias Commonplace.Dataflow.PubSub
   alias Commonplace.GitBridge.CanonicalXml
+  alias Commonplace.Crypto.AgentKeys
+  alias Commonplace.Store.SecretStore
   alias Yelixer.Types.{XMLFragment, XMLElement, XMLText}
 
   setup do
@@ -127,6 +131,16 @@ defmodule Commonplace.GitBridge.InboundTest do
 
   defp start_bridge(opts) do
     name = unique_name("gb_inbound")
+    mount_uuid = Keyword.fetch!(opts, :mount_uuid)
+    secret_store = Keyword.get(opts, :secret_store, SecretStore)
+
+    # Test provisioning happens before Server.start_link. Production bridge
+    # boot only reads custody and must never mint on demand.
+    assert {:ok, _pub} =
+             AgentKeys.ensure(
+               Commonplace.GitBridge.Inbound.bridge_identity_uuid(mount_uuid),
+               secret_store
+             )
 
     {:ok, _pid} =
       Server.start_link(
@@ -138,6 +152,55 @@ defmodule Commonplace.GitBridge.InboundTest do
 
     on_exit(fn -> if Process.whereis(name), do: GenServer.stop(name) end)
     name
+  end
+
+  test "missing bridge custody skips the inbound cycle loudly without unsigned fallback", %{
+    store: store,
+    repo_dir: repo_dir
+  } do
+    suffix = System.unique_integer([:positive])
+    secret_dir = Path.join(System.tmp_dir!(), "cp_gb_in_missing_key_#{suffix}")
+    secret_store = :"gb_in_missing_key_#{suffix}"
+
+    start_supervised!(
+      {SecretStore, data_dir: secret_dir, name: secret_store, auto_compact: false},
+      id: secret_store
+    )
+
+    mount_uuid = "missing-key-mount-#{suffix}"
+    before_docs = Commonplace.Store.CommitStoreClient.all_doc_uuids(store)
+
+    log =
+      capture_log(fn ->
+        assert {:ok, %{last_pushed_commit: nil, force_push_halted: false, ingested: []}} =
+                 Commonplace.GitBridge.Inbound.run(%{
+                   mount_uuid: mount_uuid,
+                   repo_dir: repo_dir,
+                   store: store,
+                   remote: "unused-because-custody-is-checked-first",
+                   branch: "main",
+                   last_pushed_commit: nil,
+                   secret_store: secret_store
+                 })
+      end)
+
+    assert log =~
+             "GitBridge.Inbound: cycle skipped for #{mount_uuid}: bridge_agent_signing_key_missing (unsigned fallback disabled)"
+
+    assert length(
+             :binary.matches(
+               log,
+               "GitBridge.Inbound: cycle skipped for #{mount_uuid}: bridge_agent_signing_key_missing (unsigned fallback disabled)"
+             )
+           ) == 1
+
+    assert Commonplace.Store.CommitStoreClient.all_doc_uuids(store) == before_docs
+
+    assert :not_found =
+             AgentKeys.signing_context_for(
+               Commonplace.GitBridge.Inbound.bridge_identity_uuid(mount_uuid),
+               secret_store
+             )
   end
 
   # --- "human" git helpers (raw git CLI against clone_dir) ---

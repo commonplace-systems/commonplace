@@ -1,132 +1,207 @@
 defmodule Commonplace.BootWriterMeasurementTest do
   @moduledoc """
-  Measurement-only fixture for the 2026-08-11 S13 boot-writer census.
+  S13 boot-writer regression fixture.
 
-  This file deliberately traces production functions without changing them. Each
-  boot gets a distinct tmp store containing a legacy-absent root whose schema has
-  both `chat` and `bd` entries. Strict local-write enforcement is enabled only
-  after seeding, with no trusted identities and no node key in the tmp data dir.
+  The pre-fix measurement recorded three unsigned GitBridge denials per boot:
+  presence genesis, workspace-root attach, and `set_activity`. These tests keep
+  that live-shaped root mapping, but pin the ruled signed behavior and both
+  fail-closed arms.
   """
 
   use ExUnit.Case, async: false
 
-  alias Commonplace.Document.ContentType
-  alias Commonplace.Store.{CommitStore, CommitStoreClient}
-  alias Commonplace.Tree.Schema
+  import ExUnit.CaptureLog
+
+  alias Commonplace.Crypto.{AgentKeys, NodeIdentity, Signing}
+  alias Commonplace.GitBridge.{Inbound, Server}
+  alias Commonplace.Store.{CommitStoreClient, SecretStore}
+  alias Commonplace.Tree.{DocBuilder, Schema}
   alias Yelixer.Encoding
 
-  @trace_mfas [
-    {Commonplace.Application, :ensure_chat_template_if_workspace_present, 1},
-    {Commonplace.Chat.TemplateBootstrap, :ensure_template, 2},
-    {Commonplace.MUD.Bootstrap, :ensure_doc_manifests, 1},
-    {Commonplace.Green.Bursar, :create_state_doc, 2},
-    {Commonplace.Green.Bursar, :create_log_doc, 2},
-    {Commonplace.GitBridge.Server, :safe_create_presence, 2},
-    {Commonplace.Presence, :create, 5},
-    {Commonplace.Presence, :set_activity, 4},
-    {CommitStoreClient, :create_commit, 6},
-    {CommitStoreClient, :create_chained_commit, 5}
-  ]
+  @missing_key_text "bridge-agent signing key missing (LBD-4: a principal that cannot provision must NOT appear)"
+  @minimal_text "workspace class 'minimal' does not accept root entry '__git-bridge.bot' — declared in profile"
 
   setup do
     old = %{
       data_dir: Application.get_env(:commonplace, :data_dir),
       gate: Application.get_env(:commonplace, :local_write_gate),
-      trust: Application.get_env(:commonplace, :trust),
-      manifest: Application.get_env(:commonplace, :mud_engine_manifest)
+      trust: Application.get_env(:commonplace, :trust)
     }
 
     on_exit(fn ->
-      Enum.each(@trace_mfas, &:erlang.trace_pattern(&1, false, [:local]))
-      :erlang.trace(:all, false, [:call])
       put_or_delete(:data_dir, old.data_dir)
       put_or_delete(:local_write_gate, old.gate)
       put_or_delete(:trust, old.trust)
-      put_or_delete(:mud_engine_manifest, old.manifest)
     end)
 
     :ok
   end
 
-  test "two live-shaped boots attribute every strict denial and re-mint fresh UUIDs" do
-    boots = Enum.map(1..2, &run_boot/1)
+  test "bridge presence and activity are bridge-agent signed with zero denials across two boots" do
+    fixture = fixture!(:legacy_default)
+    identity_uuid = Inbound.bridge_identity_uuid(fixture.root_uuid)
 
-    Enum.each(boots, fn boot ->
-      assert length(boot.denials) == 3
-      assert Enum.count(boot.denials, &(&1.doc_uuid == boot.root_uuid)) == 1
-      assert Enum.all?(boot.denials, &(&1.reason == :unsigned))
-      assert Enum.all?(boot.fresh_denials, &(not MapSet.member?(boot.schema_uuids, &1.doc_uuid)))
-      assert [fresh_uuid, fresh_uuid] = Enum.map(boot.fresh_denials, & &1.doc_uuid)
-    end)
+    # Operator/provisioning phase, before the bridge boots. Production boot is
+    # read-only against AgentKeys custody and must never call ensure/2.
+    assert {:ok, pub} = AgentKeys.ensure(identity_uuid, fixture.secret_store)
 
-    first_fresh = MapSet.new(Enum.map(Enum.at(boots, 0).fresh_denials, & &1.doc_uuid))
-    second_fresh = MapSet.new(Enum.map(Enum.at(boots, 1).fresh_denials, & &1.doc_uuid))
-    assert MapSet.disjoint?(first_fresh, second_fresh)
+    boot_1 = boot_bridge!(fixture, 1)
+    boot_2 = boot_bridge!(fixture, 2)
 
-    IO.puts("\nS13 BOOT WRITER MEASUREMENT RECEIPTS")
+    assert boot_1.denials == []
+    assert boot_2.denials == []
+    assert boot_1.presence_uuid == boot_2.presence_uuid
 
-    Enum.each(boots, fn boot ->
-      IO.inspect(
-        %{
-          boot: boot.boot,
-          root_uuid: boot.root_uuid,
-          schema_uuids: MapSet.to_list(boot.schema_uuids),
-          denials: boot.denials,
-          trace: boot.trace
-        },
-        pretty: true,
-        limit: :infinity
-      )
-    end)
+    root_doc = load_doc(fixture.store, fixture.root_uuid)
+    assert {:ok, entry} = Schema.get_entry(root_doc, "__git-bridge.bot")
+    assert entry.node_id == boot_2.presence_uuid
+
+    presence = Commonplace.Presence.read(entry.node_id, fixture.store)
+    assert presence["bound_identity"] == identity_uuid
+    assert presence["activity"] == "idle"
+
+    assert {:ok, latest_presence_commit} =
+             CommitStoreClient.latest_commit(fixture.store, entry.node_id)
+
+    assert latest_presence_commit.signer_id == Signing.signer_id(identity_uuid, pub)
+    assert :ok = Signing.verify_commit(latest_presence_commit, pub)
+
+    assert {:ok, root_attach_commit} =
+             CommitStoreClient.latest_commit(fixture.store, fixture.root_uuid)
+
+    assert root_attach_commit.signer_id == Signing.signer_id(identity_uuid, pub)
+    assert :ok = Signing.verify_commit(root_attach_commit, pub)
+
+    IO.inspect(
+      %{
+        before_denials_per_boot: 3,
+        after_denials: [length(boot_1.denials), length(boot_2.denials)],
+        attach: {fixture.root_uuid, "__git-bridge.bot", entry.node_id},
+        signer_id: latest_presence_commit.signer_id
+      },
+      label: "S13 SIGNED BOOT RECEIPT"
+    )
   end
 
-  defp run_boot(boot_number) do
-    suffix = System.unique_integer([:positive])
-    data_dir = Path.join(System.tmp_dir!(), "cp_s13_boot_writer_#{boot_number}_#{suffix}")
-    File.mkdir_p!(data_dir)
-    store = :"s13_boot_store_#{suffix}"
+  test "missing bridge key skips loudly once without a write or crash" do
+    fixture = fixture!(:legacy_default)
+    before_docs = CommitStoreClient.all_doc_uuids(fixture.store)
+    {:ok, before_root_head} = CommitStoreClient.latest_commit(fixture.store, fixture.root_uuid)
+    before_root_id = before_root_head.id
 
-    pid = start_supervised!({CommitStore, data_dir: data_dir, name: store}, id: store)
+    {log, boot} =
+      capture_boot_log(fn ->
+        boot_bridge!(fixture, :missing_key)
+      end)
+
+    assert boot.denials == []
+    assert boot.presence_uuid == nil
+    assert log =~ @missing_key_text
+    assert length(:binary.matches(log, @missing_key_text)) == 1
+    assert CommitStoreClient.all_doc_uuids(fixture.store) == before_docs
+
+    assert {:ok, %{id: ^before_root_id}} =
+             CommitStoreClient.latest_commit(fixture.store, fixture.root_uuid)
+
+    assert :error =
+             Schema.get_entry(load_doc(fixture.store, fixture.root_uuid), "__git-bridge.bot")
+  end
+
+  test "minimal workspace refuses the registered bridge attach loudly without failing boot" do
+    fixture = fixture!(:minimal)
+    identity_uuid = Inbound.bridge_identity_uuid(fixture.root_uuid)
+    assert {:ok, _pub} = AgentKeys.ensure(identity_uuid, fixture.secret_store)
+    before_docs = CommitStoreClient.all_doc_uuids(fixture.store)
+    {:ok, before_root_head} = CommitStoreClient.latest_commit(fixture.store, fixture.root_uuid)
+    before_root_id = before_root_head.id
+
+    {log, boot} = capture_boot_log(fn -> boot_bridge!(fixture, :minimal) end)
+
+    assert boot.denials == []
+    assert boot.presence_uuid == nil
+    assert log =~ @minimal_text
+    assert length(:binary.matches(log, @minimal_text)) == 1
+    assert CommitStoreClient.all_doc_uuids(fixture.store) == before_docs
+
+    assert {:ok, %{id: ^before_root_id}} =
+             CommitStoreClient.latest_commit(fixture.store, fixture.root_uuid)
+
+    assert :error =
+             Schema.get_entry(load_doc(fixture.store, fixture.root_uuid), "__git-bridge.bot")
+  end
+
+  defp fixture!(profile) do
+    suffix = System.unique_integer([:positive])
+    data_dir = Path.join(System.tmp_dir!(), "cp_s13_fix_#{suffix}")
+    repo_dir = Path.join(data_dir, "mirror")
+    bridge_data_dir = Path.join(data_dir, "git_bridges")
+    File.mkdir_p!(bridge_data_dir)
+
+    store = :"s13_fix_store_#{suffix}"
+    secrets = :"s13_fix_secrets_#{suffix}"
+
+    start_supervised!(
+      {Commonplace.Store.Supervisor,
+       data_dir: data_dir,
+       name: :"s13_fix_store_sup_#{suffix}",
+       commit_store_name: store,
+       trust_side_store_name: :"s13_fix_tss_#{suffix}",
+       pending_imports_name: :"s13_fix_pi_#{suffix}"},
+      id: :"s13_fix_store_sup_#{suffix}"
+    )
+
+    start_supervised!(
+      {SecretStore, data_dir: data_dir, name: secrets, auto_compact: false},
+      id: secrets
+    )
+
     Application.put_env(:commonplace, :data_dir, data_dir)
     Application.put_env(:commonplace, :local_write_gate, :off)
     Application.put_env(:commonplace, :trust, %{accept_unsigned: false, trusted_identities: %{}})
-    Application.put_env(:commonplace, :mud_engine_manifest, %{})
 
-    fixture = seed_live_shape!(store, data_dir)
+    # Provision the node anchor while this is still a genuine first boot. The
+    # GitBridge never provisions this or its own AgentKeys custody.
+    assert {:ok, _node_ctx} = NodeIdentity.signing_context()
 
-    assert {:error, {:node_signing_key_absent, :prior_world_present}} =
-             Commonplace.Crypto.NodeIdentity.signing_context()
+    root_uuid = UUID.uuid4()
+    chat_uuid = UUID.uuid4()
+    bd_uuid = UUID.uuid4()
 
-    trace_ref = make_ref()
-    attach_denial_probe!(trace_ref, pid)
-    enable_traces!()
+    for uuid <- [chat_uuid, bd_uuid] do
+      assert %Commonplace.Store.Commit{} =
+               CommitStoreClient.create_chained_commit(
+                 store,
+                 uuid,
+                 Encoding.encode_update(Schema.new_schema())
+               )
+    end
 
-    Application.put_env(:commonplace, :local_write_gate, :enforce)
+    root_doc =
+      case profile do
+        :legacy_default ->
+          Schema.new_schema()
+          |> Schema.add_directory("chat", chat_uuid)
+          |> Schema.add_directory("bd", bd_uuid)
 
-    assert :ok =
-             Commonplace.Application.ensure_chat_template_if_workspace_present(store: store)
+        :minimal ->
+          Schema.new_schema()
+          |> Schema.put_workspace_profile(:minimal)
+      end
 
-    assert :ok = Commonplace.MUD.Bootstrap.ensure_doc_manifests(store)
+    assert %Commonplace.Store.Commit{} =
+             CommitStoreClient.create_chained_commit(
+               store,
+               root_uuid,
+               Encoding.encode_update(root_doc)
+             )
 
-    bursar_name = :"s13_bursar_#{suffix}"
-
-    start_supervised!(
-      {Commonplace.Green.Bursar,
-       root_uuid: fixture.root_uuid, store: store, name: bursar_name, sweep_interval: 3_600_000},
-      id: bursar_name
-    )
-
-    _ = :sys.get_state(bursar_name)
-
-    bridge_data_dir = Path.join(data_dir, "git_bridges")
-    repo_dir = Path.join(data_dir, "mirror")
-    File.mkdir_p!(bridge_data_dir)
+    File.write!(Path.join(data_dir, "root"), root_uuid)
 
     File.write!(
       Path.join(bridge_data_dir, "git_bridges.json"),
       Jason.encode!([
         %{
-          "mount_uuid" => fixture.root_uuid,
+          "mount_uuid" => root_uuid,
           "repo_dir" => repo_dir,
           "remote" => nil,
           "branch" => "main",
@@ -135,175 +210,77 @@ defmodule Commonplace.BootWriterMeasurementTest do
       ])
     )
 
-    bridge_name = :"s13_git_bridge_#{suffix}"
-
-    start_supervised!(
-      {Commonplace.GitBridge.Supervisor,
-       name: bridge_name, store: store, data_dir: bridge_data_dir},
-      id: bridge_name
-    )
-
-    events = drain_events(trace_ref, [])
-    disable_traces!()
-    :telemetry.detach(trace_ref)
-    stop_supervised(bridge_name)
-    stop_supervised(bursar_name)
-    stop_supervised(store)
-    File.rm_rf!(data_dir)
-
-    denials =
-      for {:denial, receipt} <- events do
-        receipt
-      end
-
-    trace =
-      for {:trace, receipt} <- events do
-        receipt
-      end
-
-    fresh_denials = Enum.reject(denials, &(&1.doc_uuid == fixture.root_uuid))
+    Application.put_env(:commonplace, :local_write_gate, :enforce)
 
     %{
-      boot: boot_number,
-      root_uuid: fixture.root_uuid,
-      schema_uuids: fixture.schema_uuids,
-      denials: denials,
-      fresh_denials: fresh_denials,
-      trace: trace
-    }
-  end
-
-  defp seed_live_shape!(store, data_dir) do
-    compute_uuid = UUID.uuid4()
-    template_uuid = UUID.uuid4()
-    chat_uuid = UUID.uuid4()
-    bd_uuid = UUID.uuid4()
-    bursar_state_uuid = UUID.uuid4()
-    bursar_log_uuid = UUID.uuid4()
-    root_uuid = UUID.uuid4()
-
-    compute_doc =
-      Yelixer.Doc.new()
-      |> ContentType.create(:text, "_compute")
-      |> ContentType.insert_text(0, "defmodule ExistingTemplateCompute do\nend\n")
-
-    template_schema =
-      Schema.new_schema()
-      |> Schema.add_file("_compute", compute_uuid)
-
-    chat_schema =
-      Schema.new_schema()
-      |> Schema.add_directory("__template", template_uuid)
-
-    bd_schema = Schema.new_schema()
-
-    bursar_state_doc =
-      Yelixer.Doc.new()
-      |> ContentType.create(:text, "__bursar.json")
-      |> ContentType.insert_text(0, "{}")
-
-    bursar_log_doc =
-      Yelixer.Doc.new()
-      |> Yelixer.Doc.get_or_create_type("events", :array)
-      |> elem(0)
-
-    # Intentionally no Schema.put_workspace_profile/2: this is the live
-    # legacy-absent population named by the brief.
-    root_schema =
-      Schema.new_schema()
-      |> Schema.add_directory("chat", chat_uuid)
-      |> Schema.add_directory("bd", bd_uuid)
-      |> Schema.add_file("__bursar.json", bursar_state_uuid)
-      |> Schema.add_file("__bursar.log", bursar_log_uuid)
-
-    for {uuid, doc} <- [
-          {compute_uuid, compute_doc},
-          {template_uuid, template_schema},
-          {chat_uuid, chat_schema},
-          {bd_uuid, bd_schema},
-          {bursar_state_uuid, bursar_state_doc},
-          {bursar_log_uuid, bursar_log_doc},
-          {root_uuid, root_schema}
-        ] do
-      assert %Commonplace.Store.Commit{} =
-               CommitStoreClient.create_chained_commit(store, uuid, Encoding.encode_update(doc))
-    end
-
-    File.write!(Path.join(data_dir, "root"), root_uuid)
-
-    %{
+      data_dir: data_dir,
+      repo_dir: repo_dir,
+      bridge_data_dir: bridge_data_dir,
       root_uuid: root_uuid,
-      schema_uuids:
-        MapSet.new([
-          root_uuid,
-          chat_uuid,
-          template_uuid,
-          compute_uuid,
-          bd_uuid,
-          bursar_state_uuid,
-          bursar_log_uuid
-        ])
+      store: store,
+      secret_store: secrets
     }
   end
 
-  defp attach_denial_probe!(ref, store_pid) do
+  defp boot_bridge!(fixture, boot) do
+    ref = {__MODULE__, boot, System.unique_integer([:positive])}
     parent = self()
+    store_pid = Process.whereis(fixture.store)
 
     :telemetry.attach(
       ref,
       [:commonplace, :commit, :rejected, :local_trust],
       fn _event, _measurements, metadata, _config ->
-        send(parent, {
-          :measurement_denial,
-          ref,
-          %{
-            emitter_pid: self(),
-            store_pid: store_pid,
-            doc_uuid: metadata.doc_uuid,
-            reason: metadata.reason,
-            mode: metadata.mode
-          }
-        })
+        if self() == store_pid, do: send(parent, {:s13_denial, ref, metadata})
       end,
       nil
     )
+
+    supervisor = :"s13_bridge_sup_#{System.unique_integer([:positive])}"
+
+    start_supervised!(
+      {Commonplace.GitBridge.Supervisor,
+       name: supervisor,
+       store: fixture.store,
+       secret_store: fixture.secret_store,
+       data_dir: fixture.bridge_data_dir},
+      id: supervisor
+    )
+
+    [{_, server, :worker, _}] = Supervisor.which_children(supervisor)
+    _ = :sys.get_state(server)
+    presence_uuid = Server.status(server).presence_uuid
+    denials = drain_denials(ref, [])
+    :telemetry.detach(ref)
+    stop_supervised(supervisor)
+
+    %{presence_uuid: presence_uuid, denials: denials}
   end
 
-  defp enable_traces! do
-    :erlang.trace(:all, true, [:call, {:tracer, self()}])
-
-    Enum.each(@trace_mfas, fn {module, _function, _arity} = mfa ->
-      Code.ensure_loaded!(module)
-      :erlang.trace_pattern(mfa, true, [:local])
-    end)
-  end
-
-  defp disable_traces! do
-    Enum.each(@trace_mfas, &:erlang.trace_pattern(&1, false, [:local]))
-    :erlang.trace(:all, false, [:call])
-  end
-
-  defp drain_events(ref, acc) do
+  defp drain_denials(ref, acc) do
     receive do
-      {:measurement_denial, ^ref, receipt} ->
-        drain_events(ref, [{:denial, receipt} | acc])
-
-      {:trace, pid, :call, {module, function, args}} ->
-        receipt = %{
-          pid: pid,
-          writer: {module, function, length(args)},
-          doc_uuid: traced_doc_uuid(module, function, args)
-        }
-
-        drain_events(ref, [{:trace, receipt} | acc])
+      {:s13_denial, ^ref, metadata} -> drain_denials(ref, [metadata | acc])
     after
       100 -> Enum.reverse(acc)
     end
   end
 
-  defp traced_doc_uuid(CommitStoreClient, :create_commit, [_store, uuid | _]), do: uuid
-  defp traced_doc_uuid(CommitStoreClient, :create_chained_commit, [_store, uuid | _]), do: uuid
-  defp traced_doc_uuid(_module, _function, _args), do: nil
+  defp load_doc(store, uuid) do
+    {:ok, doc} = DocBuilder.reconstruct_snapshot(store, uuid)
+    doc
+  end
+
+  defp capture_boot_log(fun) do
+    parent = self()
+
+    log =
+      capture_log(fn ->
+        send(parent, {:boot_result, fun.()})
+      end)
+
+    assert_receive {:boot_result, result}
+    {log, result}
+  end
 
   defp put_or_delete(key, nil), do: Application.delete_env(:commonplace, key)
   defp put_or_delete(key, value), do: Application.put_env(:commonplace, key, value)

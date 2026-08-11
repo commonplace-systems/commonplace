@@ -32,12 +32,17 @@ defmodule Commonplace.GitBridge.Server do
   alias Commonplace.GitBridge.{Exporter, Sidecar, Git, Archive, Inbound}
   alias Commonplace.Tree.{Schema, DocBuilder}
   alias Commonplace.Dataflow.PubSub
+  alias Commonplace.Crypto.AgentKeys
+  alias Commonplace.MUD.Citizenship
+  alias Commonplace.Workspace.RootWritePolicy
   alias Commonplace.{Presence, Workspace}
 
   @default_branch "main"
   @default_interval_ms 30_000
   @max_reachability_depth 20
   @remote_name "origin"
+  @presence_name "__git-bridge"
+  @presence_filename "__git-bridge.bot"
 
   # --- Public API ---
 
@@ -69,15 +74,17 @@ defmodule Commonplace.GitBridge.Server do
     remote = Keyword.get(opts, :remote)
     branch = Keyword.get(opts, :branch, @default_branch)
     interval_ms = Keyword.get(opts, :interval_ms, @default_interval_ms)
+    secret_store = Keyword.get(opts, :secret_store, Commonplace.Store.SecretStore)
 
     :ok = ensure_repo!(repo_dir, branch, remote)
 
-    presence_uuid = safe_create_presence(mount_uuid, store)
+    presence_uuid = safe_create_presence(mount_uuid, store, secret_store)
 
     state = %{
       mount_uuid: mount_uuid,
       repo_dir: repo_dir,
       store: store,
+      secret_store: secret_store,
       remote: remote,
       branch: branch,
       interval_ms: interval_ms,
@@ -198,7 +205,8 @@ defmodule Commonplace.GitBridge.Server do
         store: state.store,
         remote: state.remote,
         branch: state.branch,
-        last_pushed_commit: state.last_pushed_commit
+        last_pushed_commit: state.last_pushed_commit,
+        secret_store: state.secret_store
       })
 
     new_conflicts =
@@ -225,7 +233,8 @@ defmodule Commonplace.GitBridge.Server do
     previous_manifest = state.last_manifest || Sidecar.read_previous_manifest(state.repo_dir)
 
     case Exporter.export(state.mount_uuid, state.repo_dir, state.store, previous_manifest) do
-      {:ok, %{manifest: manifest, authors: authors, warnings: warnings, schema_uuids: schema_uuids}} ->
+      {:ok,
+       %{manifest: manifest, authors: authors, warnings: warnings, schema_uuids: schema_uuids}} ->
         Sidecar.write(state.repo_dir, state.mount_uuid, manifest, previous_manifest)
         Sidecar.ensure_gitattributes(state.repo_dir)
 
@@ -239,14 +248,18 @@ defmodule Commonplace.GitBridge.Server do
           |> MapSet.new()
           |> MapSet.union(schema_uuids)
 
-        %{archived_count: archived_count} = Archive.archive(state.store, state.repo_dir, doc_uuids)
+        %{archived_count: archived_count} =
+          Archive.archive(state.store, state.repo_dir, doc_uuids)
 
         {result, new_state} = commit_and_push(state, manifest, authors, warnings, archived_count)
 
         {result, %{new_state | last_manifest: manifest}}
 
       {:error, reason} ->
-        Logger.warning("GitBridge.Server: export failed for #{state.mount_uuid}: #{inspect(reason)}")
+        Logger.warning(
+          "GitBridge.Server: export failed for #{state.mount_uuid}: #{inspect(reason)}"
+        )
+
         {{:error, reason}, state}
     end
   end
@@ -268,7 +281,10 @@ defmodule Commonplace.GitBridge.Server do
             {{:ok, Map.put(meta, :committed, true)}, new_state}
 
           {:error, reason} ->
-            Logger.warning("GitBridge.Server: commit failed for #{state.mount_uuid}: #{inspect(reason)}")
+            Logger.warning(
+              "GitBridge.Server: commit failed for #{state.mount_uuid}: #{inspect(reason)}"
+            )
+
             {{:error, reason}, state}
         end
 
@@ -282,7 +298,10 @@ defmodule Commonplace.GitBridge.Server do
           }}, state}
 
       {:error, reason} ->
-        Logger.warning("GitBridge.Server: git status failed for #{state.mount_uuid}: #{inspect(reason)}")
+        Logger.warning(
+          "GitBridge.Server: git status failed for #{state.mount_uuid}: #{inspect(reason)}"
+        )
+
         {{:error, reason}, state}
     end
   end
@@ -307,7 +326,11 @@ defmodule Commonplace.GitBridge.Server do
 
       {:error, reason} ->
         Logger.warning("GitBridge.Server: push failed for #{mount_uuid}: #{inspect(reason)}")
-        PubSub.broadcast_red(mount_uuid, {:git_bridge, :push_failed, Map.put(meta, :reason, reason)})
+
+        PubSub.broadcast_red(
+          mount_uuid,
+          {:git_bridge, :push_failed, Map.put(meta, :reason, reason)}
+        )
 
         # CX-b0ow.2 push-reject handling: our local commits are
         # disposable projections until pushed. Unless we've already
@@ -353,20 +376,61 @@ defmodule Commonplace.GitBridge.Server do
     :ok
   end
 
-  defp safe_create_presence(mount_uuid, store) do
-    case Presence.create("git-bridge", :bot, mount_uuid, store) do
-      {:ok, uuid} ->
-        _ = Presence.set_activity(uuid, "idle", store)
-        uuid
+  defp safe_create_presence(mount_uuid, store, secret_store) do
+    identity_uuid = Inbound.bridge_identity_uuid(mount_uuid)
+
+    with :ok <- presence_attach_allowed(mount_uuid, store),
+         {:ok, signing_context} <- AgentKeys.signing_context_for(identity_uuid, secret_store),
+         [cert_cid | _] <-
+           Citizenship.issue_presence_starter_cert(
+             identity_uuid,
+             signing_context.public_key,
+             store
+           ),
+         creds = [signing_context: signing_context, cert_cids: [cert_cid]],
+         {:ok, uuid} <- create_or_reuse_presence(mount_uuid, store, creds),
+         %Commonplace.Store.Commit{} <- Presence.set_activity(uuid, "idle", store, creds) do
+      uuid
+    else
+      :not_found ->
+        log_presence_skip(
+          mount_uuid,
+          "bridge-agent signing key missing (LBD-4: a principal that cannot provision must NOT appear)"
+        )
+
+      {:error, :corrupt_key} ->
+        log_presence_skip(mount_uuid, "bridge-agent signing key corrupt")
+
+      [] ->
+        log_presence_skip(mount_uuid, "bridge-agent presence capability unavailable")
+
+      {:error, reason} ->
+        log_presence_skip(mount_uuid, inspect(reason))
 
       other ->
-        Logger.warning("GitBridge.Server: could not create presence doc for #{mount_uuid}: #{inspect(other)}")
-        nil
+        log_presence_skip(mount_uuid, inspect(other))
     end
   rescue
     error ->
-      Logger.warning("GitBridge.Server: presence creation raised for #{mount_uuid}: #{inspect(error)}")
+      log_presence_skip(mount_uuid, "presence creation raised: #{inspect(error)}")
       nil
+  end
+
+  defp presence_attach_allowed(mount_uuid, store) do
+    data_dir = Application.get_env(:commonplace, :data_dir, "data")
+    RootWritePolicy.check_new_entry(mount_uuid, @presence_filename, store, data_dir)
+  end
+
+  defp create_or_reuse_presence(mount_uuid, store, creds) do
+    case Schema.get_entry(load_schema(mount_uuid, store), @presence_filename) do
+      {:ok, entry} -> {:ok, entry.node_id}
+      :error -> Presence.create(@presence_name, :bot, mount_uuid, store, creds)
+    end
+  end
+
+  defp log_presence_skip(mount_uuid, reason) do
+    Logger.warning("GitBridge.Server: presence skipped for #{mount_uuid}: #{reason}")
+    nil
   end
 
   defp schedule_tick(interval_ms) do

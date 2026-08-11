@@ -155,14 +155,16 @@ defmodule Commonplace.GitBridge.ArchiveTest do
     {:ok, result} = run_full_cycle(mount_uuid, repo_dir, store, name)
     assert result.committed == true
 
-    # Every doc in this tree was seeded with a single `create_commit(...,
-    # nil)` call, which CommitBuilder auto-resolves into TWO commits: a
-    # deterministic genesis row (parent_id nil, empty update) plus the
-    # regular commit chained on top — so the expected row count per doc
-    # is 2, one file per commit in the chain.
+    # Pin the archive to the store's reachable chain, not to boot-time
+    # presence side effects. In particular, the mount schema already existed
+    # when Alice's presence was attached; with the unsigned bridge fallback
+    # gone, missing bridge custody correctly adds no later mount commit.
     for uuid <- doc_uuids ++ schema_uuids do
       rows = archive_rows(repo_dir, uuid)
-      assert length(rows) == 2, "expected exactly 2 commit rows for #{uuid}, got #{inspect(rows)}"
+      reachable_commits = CommitStoreClient.commit_log(store, uuid, limit: 10_000)
+
+      assert length(rows) == length(reachable_commits),
+             "expected one archive row per reachable commit for #{uuid}, got #{inspect(rows)}"
 
       commits =
         Enum.map(rows, fn row ->
@@ -173,7 +175,8 @@ defmodule Commonplace.GitBridge.ArchiveTest do
           commit
         end)
 
-      assert Enum.any?(commits, &(&1.parent_id == nil)), "expected a genesis row for #{uuid}"
+      assert Enum.any?(commits, &(&1.parent_id == nil)) ==
+               Enum.any?(reachable_commits, &(&1.parent_id == nil))
     end
 
     watermarks_path = Path.join([repo_dir, ".commonplace", "archive", "watermarks.json"])

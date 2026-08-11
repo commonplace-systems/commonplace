@@ -8,6 +8,7 @@ defmodule Commonplace.Workspace.RootWritePolicy do
     * `chat` — `:default`
     * `__bursar.json` — `:default`
     * `__bursar.log` — `:default`
+    * `__git-bridge.bot` — `:default`
     * `__identities__` — `:default`
     * `__processes.json` — `:default`
     * `__pulls` — `:default`
@@ -33,6 +34,7 @@ defmodule Commonplace.Workspace.RootWritePolicy do
     "chat" => [:default],
     "__bursar.json" => [:default],
     "__bursar.log" => [:default],
+    "__git-bridge.bot" => [:default],
     "__identities__" => [:default],
     "__processes.json" => [:default],
     "__pulls" => [:default],
@@ -72,6 +74,33 @@ defmodule Commonplace.Workspace.RootWritePolicy do
     end
   end
 
+  @doc """
+  Preflight a prospective root entry through the same registered-name policy
+  used by `check/3`.
+
+  Non-root targets are outside this policy and return `:ok`. Existing root
+  entries also return `:ok`, because the commit-time policy only governs newly
+  attached names.
+  """
+  @spec check_new_entry(String.t(), String.t(), GenServer.server(), Path.t()) ::
+          :ok | {:error, term()}
+  def check_new_entry(target_uuid, entry, store, data_dir)
+      when is_binary(target_uuid) and is_binary(entry) and is_binary(data_dir) do
+    with {:ok, root_uuid} <- read_root_uuid(data_dir),
+         true <- target_uuid == root_uuid,
+         {:ok, root_doc} <- reconstruct_root(store, root_uuid),
+         :error <- Schema.get_entry(root_doc, entry),
+         {:ok, profile} <- workspace_profile(root_doc) do
+      if refused?(entry, profile),
+        do: {:error, refusal_reason(entry, profile)},
+        else: :ok
+    else
+      false -> :ok
+      {:ok, _existing_entry} -> :ok
+      {:error, _reason} = error -> error
+    end
+  end
+
   defp workspace_profile(doc) do
     case Schema.workspace_profile(doc) do
       {:ok, profile} -> {:ok, profile}
@@ -97,8 +126,7 @@ defmodule Commonplace.Workspace.RootWritePolicy do
         :ok
 
       entry ->
-        {:error,
-         "workspace class '#{profile}' does not accept root entry '#{entry}' — declared in profile"}
+        {:error, refusal_reason(entry, profile)}
     end
   end
 
@@ -107,6 +135,10 @@ defmodule Commonplace.Workspace.RootWritePolicy do
       {:ok, accepting_classes} -> profile not in accepting_classes
       :error -> String.starts_with?(entry, "__")
     end
+  end
+
+  defp refusal_reason(entry, profile) do
+    "workspace class '#{profile}' does not accept root entry '#{entry}' — declared in profile"
   end
 
   defp read_root_uuid(data_dir) do

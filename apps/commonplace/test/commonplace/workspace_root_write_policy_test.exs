@@ -168,6 +168,29 @@ defmodule Commonplace.WorkspaceRootWritePolicyTest do
     assert :error = Schema.get_entry(load_schema(ctx.store, root), "bd")
   end
 
+  test "bridge presence is registered for default and refused for minimal", ctx do
+    default_root = initialize!(ctx, :default)
+
+    assert :ok =
+             Commonplace.Workspace.RootWritePolicy.check_new_entry(
+               default_root,
+               "__git-bridge.bot",
+               ctx.store,
+               ctx.data_dir
+             )
+
+    minimal_root = initialize!(ctx, :minimal)
+
+    assert {:error,
+            "workspace class 'minimal' does not accept root entry '__git-bridge.bot' — declared in profile"} =
+             Commonplace.Workspace.RootWritePolicy.check_new_entry(
+               minimal_root,
+               "__git-bridge.bot",
+               ctx.store,
+               ctx.data_dir
+             )
+  end
+
   test "minimal checks only entries added by this root commit", ctx do
     root = initialize!(ctx, :minimal)
 

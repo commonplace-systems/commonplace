@@ -123,11 +123,11 @@ defmodule Commonplace.GitBridge.Inbound do
   persistent Ed25519 keypair — reusing `Commonplace.Crypto.AgentKeys`'
   existing custody pattern (node-local `SecretStore`, keyed by an
   identity uuid) rather than inventing a new key-file format: the
-  bridge's identity uuid is `"git-bridge:" <> mount_uuid`,
-  `AgentKeys.ensure/2` mints it idempotently, `signing_context_for/2`
-  hands back the `%SigningContext{}` threaded via the `:signing_context`
-  commit opt. Cert gating (proving the bridge's key is AUTHORIZED to
-  write) is mode-dependent and OUT of scope here — v1 runs permissive.
+  bridge's identity uuid is `"git-bridge:" <> mount_uuid`. Custody MUST
+  already exist: `signing_context_for/2` only reads the keypair and hands
+  back the `%SigningContext{}` threaded via the `:signing_context` commit
+  opt. A missing/corrupt key skips the cycle loudly; inbound never mints a
+  key and never falls back to an unsigned write.
 
   G2's minted commits are a NEW local-write ingress into the store
   (cross-ref CX-qat5.3's "fourth ingress" ledger). Every commit this
@@ -175,10 +175,22 @@ defmodule Commonplace.GitBridge.Inbound do
   """
   @spec run(map()) :: {:ok, map()}
   def run(%{remote: nil} = state) do
-    {:ok, %{last_pushed_commit: Map.get(state, :last_pushed_commit), force_push_halted: false, ingested: []}}
+    {:ok,
+     %{
+       last_pushed_commit: Map.get(state, :last_pushed_commit),
+       force_push_halted: false,
+       ingested: []
+     }}
   end
 
   def run(state) do
+    case bridge_signing_context(state) do
+      {:ok, signing_opts} -> do_run(Map.put(state, :bridge_signing_opts, signing_opts))
+      {:error, reason} -> skip_unsigned_cycle(state, reason)
+    end
+  end
+
+  defp do_run(state) do
     repo_dir = state.repo_dir
     branch = state.branch
 
@@ -190,13 +202,21 @@ defmodule Commonplace.GitBridge.Inbound do
         end
 
       {:error, reason} ->
-        Logger.warning("GitBridge.Inbound: fetch failed for #{state.mount_uuid}: #{inspect(reason)}")
+        Logger.warning(
+          "GitBridge.Inbound: fetch failed for #{state.mount_uuid}: #{inspect(reason)}"
+        )
+
         unchanged(state)
     end
   end
 
   defp unchanged(state) do
-    {:ok, %{last_pushed_commit: Map.get(state, :last_pushed_commit), force_push_halted: false, ingested: []}}
+    {:ok,
+     %{
+       last_pushed_commit: Map.get(state, :last_pushed_commit),
+       force_push_halted: false,
+       ingested: []
+     }}
   end
 
   defp run_with_fetched_head(state, fetched_head) do
@@ -229,7 +249,9 @@ defmodule Commonplace.GitBridge.Inbound do
         case Git.ancestor?(repo_dir, last_pushed, fetched_head) do
           {:ok, true} ->
             ingested = ingest_changed_files(state, last_pushed, fetched_head)
-            {:ok, %{last_pushed_commit: fetched_head, force_push_halted: false, ingested: ingested}}
+
+            {:ok,
+             %{last_pushed_commit: fetched_head, force_push_halted: false, ingested: ingested}}
 
           {:ok, false} ->
             PubSub.broadcast_red(
@@ -265,7 +287,10 @@ defmodule Commonplace.GitBridge.Inbound do
         |> Enum.reject(&is_nil/1)
 
       {:error, reason} ->
-        Logger.warning("GitBridge.Inbound: diff failed for #{state.mount_uuid}: #{inspect(reason)}")
+        Logger.warning(
+          "GitBridge.Inbound: diff failed for #{state.mount_uuid}: #{inspect(reason)}"
+        )
+
         []
     end
   end
@@ -299,7 +324,8 @@ defmodule Commonplace.GitBridge.Inbound do
     do: reject(state, rel_path, :rename_unsupported)
 
   # Mode changes, type changes, etc. — not v1 scope; conservative reject.
-  defp ingest_one(state, _manifest, _fetched_head, _status, rel_path), do: reject(state, rel_path, :unsupported_status)
+  defp ingest_one(state, _manifest, _fetched_head, _status, rel_path),
+    do: reject(state, rel_path, :unsupported_status)
 
   defp ingest_text(state, rel_path, %{"uuid" => uuid, "anchor" => anchor_hex}, fetched_head) do
     # Sidecar data is disk-controlled, not trusted to be well-formed: a
@@ -316,7 +342,8 @@ defmodule Commonplace.GitBridge.Inbound do
   defp ingest_text_with_anchor(state, rel_path, uuid, anchor, fetched_head) do
     repo_dir = state.repo_dir
 
-    with {:ok, base_doc} <- DocBuilder.reconstruct_doc_at(state.store, uuid, anchor) |> ok_or(:no_anchor),
+    with {:ok, base_doc} <-
+           DocBuilder.reconstruct_doc_at(state.store, uuid, anchor) |> ok_or(:no_anchor),
          base = ContentType.get_content(base_doc) || "",
          {:ok, theirs} <- Git.show(repo_dir, fetched_head, rel_path),
          {:ok, ours_doc} <- DocBuilder.reconstruct_doc(state.store, uuid) |> ok_or(:no_doc),
@@ -326,20 +353,45 @@ defmodule Commonplace.GitBridge.Inbound do
           nil
 
         max(byte_size(base), byte_size(theirs)) > max_inbound_bytes(state) ->
-          PubSub.broadcast_red(state.mount_uuid, {:git_bridge, :inbound_size_capped, %{rel_path: rel_path, uuid: uuid}})
+          PubSub.broadcast_red(
+            state.mount_uuid,
+            {:git_bridge, :inbound_size_capped, %{rel_path: rel_path, uuid: uuid}}
+          )
+
           marker_path = write_conflict_file(repo_dir, rel_path, fetched_head, theirs)
-          %{rel_path: rel_path, uuid: uuid, outcome: :conflict, reason: :too_large, conflict_path: marker_path, conflict_content: theirs}
+
+          %{
+            rel_path: rel_path,
+            uuid: uuid,
+            outcome: :conflict,
+            reason: :too_large,
+            conflict_path: marker_path,
+            conflict_content: theirs
+          }
 
         ours == base ->
-          case mint_edit(state.store, uuid, anchor, base, theirs, bridge_signing_context(state)) do
+          case mint_edit(state.store, uuid, anchor, base, theirs, state.bridge_signing_opts) do
             {:ok, commit} ->
               %{rel_path: rel_path, uuid: uuid, outcome: :clean, commit_id: commit.id}
 
             {:error, reason} ->
               Logger.warning("GitBridge.Inbound: mint failed for #{rel_path}: #{inspect(reason)}")
               marker_path = write_conflict_file(repo_dir, rel_path, fetched_head, theirs)
-              PubSub.broadcast_red(state.mount_uuid, {:git_bridge, :conflict_preserved, %{rel_path: rel_path, uuid: uuid, reason: :mint_failed}})
-              %{rel_path: rel_path, uuid: uuid, outcome: :conflict, reason: :mint_failed, conflict_path: marker_path, conflict_content: theirs}
+
+              PubSub.broadcast_red(
+                state.mount_uuid,
+                {:git_bridge, :conflict_preserved,
+                 %{rel_path: rel_path, uuid: uuid, reason: :mint_failed}}
+              )
+
+              %{
+                rel_path: rel_path,
+                uuid: uuid,
+                outcome: :conflict,
+                reason: :mint_failed,
+                conflict_path: marker_path,
+                conflict_content: theirs
+              }
           end
 
         true ->
@@ -356,14 +408,22 @@ defmodule Commonplace.GitBridge.Inbound do
           # rejection, once a merge actually lands. Only genuine
           # failure (CAS-redo bound exhausted, or a lower-level error)
           # falls back to v1's full reject-and-preserve behavior.
-          case mint_region_merge(state.store, uuid, anchor, base, theirs, bridge_signing_context(state)) do
+          case mint_region_merge(
+                 state.store,
+                 uuid,
+                 anchor,
+                 base,
+                 theirs,
+                 state.bridge_signing_opts
+               ) do
             {:ok, commit} ->
               if region_overlap?(base, ours, theirs) do
                 marker_path = write_conflict_file(repo_dir, rel_path, fetched_head, theirs)
 
                 PubSub.broadcast_red(
                   state.mount_uuid,
-                  {:git_bridge, :conflict_preserved, %{rel_path: rel_path, uuid: uuid, reason: :both_moved}}
+                  {:git_bridge, :conflict_preserved,
+                   %{rel_path: rel_path, uuid: uuid, reason: :both_moved}}
                 )
 
                 %{
@@ -379,10 +439,26 @@ defmodule Commonplace.GitBridge.Inbound do
               end
 
             {:error, reason} ->
-              Logger.warning("GitBridge.Inbound: region-merge failed for #{rel_path}: #{inspect(reason)}")
+              Logger.warning(
+                "GitBridge.Inbound: region-merge failed for #{rel_path}: #{inspect(reason)}"
+              )
+
               marker_path = write_conflict_file(repo_dir, rel_path, fetched_head, theirs)
-              PubSub.broadcast_red(state.mount_uuid, {:git_bridge, :conflict_preserved, %{rel_path: rel_path, uuid: uuid, reason: :both_moved}})
-              %{rel_path: rel_path, uuid: uuid, outcome: :conflict, reason: :both_moved, conflict_path: marker_path, conflict_content: theirs}
+
+              PubSub.broadcast_red(
+                state.mount_uuid,
+                {:git_bridge, :conflict_preserved,
+                 %{rel_path: rel_path, uuid: uuid, reason: :both_moved}}
+              )
+
+              %{
+                rel_path: rel_path,
+                uuid: uuid,
+                outcome: :conflict,
+                reason: :both_moved,
+                conflict_path: marker_path,
+                conflict_content: theirs
+              }
           end
       end
     else
@@ -416,27 +492,40 @@ defmodule Commonplace.GitBridge.Inbound do
     case Git.show(repo_dir, fetched_head, rel_path) do
       {:ok, content} ->
         name = Path.basename(rel_path)
-        signing_opts = bridge_signing_context(state)
+        signing_opts = state.bridge_signing_opts
 
         case mint_new_text_doc(state.store, name, content, signing_opts) do
           {:ok, uuid} ->
             case add_schema_entry(state.store, parent_schema_uuid, name, uuid, signing_opts) do
               :ok ->
-                PubSub.broadcast_red(state.mount_uuid, {:git_bridge, :file_added, %{rel_path: rel_path, uuid: uuid}})
+                PubSub.broadcast_red(
+                  state.mount_uuid,
+                  {:git_bridge, :file_added, %{rel_path: rel_path, uuid: uuid}}
+                )
+
                 %{rel_path: rel_path, uuid: uuid, outcome: :clean}
 
               {:error, reason} ->
-                Logger.warning("GitBridge.Inbound: schema add failed for #{rel_path}: #{inspect(reason)}")
+                Logger.warning(
+                  "GitBridge.Inbound: schema add failed for #{rel_path}: #{inspect(reason)}"
+                )
+
                 reject(state, rel_path, :schema_add_failed)
             end
 
           {:error, reason} ->
-            Logger.warning("GitBridge.Inbound: doc mint failed for #{rel_path}: #{inspect(reason)}")
+            Logger.warning(
+              "GitBridge.Inbound: doc mint failed for #{rel_path}: #{inspect(reason)}"
+            )
+
             reject(state, rel_path, :mint_failed)
         end
 
       {:error, reason} ->
-        Logger.warning("GitBridge.Inbound: could not read added file #{rel_path}: #{inspect(reason)}")
+        Logger.warning(
+          "GitBridge.Inbound: could not read added file #{rel_path}: #{inspect(reason)}"
+        )
+
         reject(state, rel_path, reason)
     end
   end
@@ -464,7 +553,13 @@ defmodule Commonplace.GitBridge.Inbound do
         update = Yelixer.Encoding.encode_update(schema_doc)
         metadata = %{kind: :git_bridge_inbound}
 
-        case CommitStoreClient.create_chained_commit(store, schema_uuid, update, metadata, signing_opts) do
+        case CommitStoreClient.create_chained_commit(
+               store,
+               schema_uuid,
+               update,
+               metadata,
+               signing_opts
+             ) do
           %Commonplace.Store.Commit{} -> :ok
           {:error, reason} -> {:error, reason}
         end
@@ -488,7 +583,8 @@ defmodule Commonplace.GitBridge.Inbound do
   defp add_safe_name?(name) when name in ["", ".", ".."], do: false
 
   defp add_safe_name?(name) do
-    not (String.contains?(name, "/") or String.contains?(name, "\\") or String.contains?(name, <<0>>))
+    not (String.contains?(name, "/") or String.contains?(name, "\\") or
+           String.contains?(name, <<0>>))
   end
 
   # --- DELETE (CX-b0ow.8) ---
@@ -501,16 +597,23 @@ defmodule Commonplace.GitBridge.Inbound do
       %{"uuid" => uuid} ->
         case resolve_parent_schema(state.store, state.mount_uuid, rel_path) do
           {:ok, parent_schema_uuid} ->
-            signing_opts = bridge_signing_context(state)
+            signing_opts = state.bridge_signing_opts
             name = Path.basename(rel_path)
 
             case remove_schema_entry(state.store, parent_schema_uuid, name, signing_opts) do
               :ok ->
-                PubSub.broadcast_red(state.mount_uuid, {:git_bridge, :file_removed, %{rel_path: rel_path, uuid: uuid}})
+                PubSub.broadcast_red(
+                  state.mount_uuid,
+                  {:git_bridge, :file_removed, %{rel_path: rel_path, uuid: uuid}}
+                )
+
                 %{rel_path: rel_path, uuid: uuid, outcome: :clean}
 
               {:error, reason} ->
-                Logger.warning("GitBridge.Inbound: schema remove failed for #{rel_path}: #{inspect(reason)}")
+                Logger.warning(
+                  "GitBridge.Inbound: schema remove failed for #{rel_path}: #{inspect(reason)}"
+                )
+
                 reject(state, rel_path, :schema_remove_failed)
             end
 
@@ -527,7 +630,13 @@ defmodule Commonplace.GitBridge.Inbound do
         update = Yelixer.Encoding.encode_update(schema_doc)
         metadata = %{kind: :git_bridge_inbound}
 
-        case CommitStoreClient.create_chained_commit(store, schema_uuid, update, metadata, signing_opts) do
+        case CommitStoreClient.create_chained_commit(
+               store,
+               schema_uuid,
+               update,
+               metadata,
+               signing_opts
+             ) do
           %Commonplace.Store.Commit{} -> :ok
           {:error, reason} -> {:error, reason}
         end
@@ -572,7 +681,11 @@ defmodule Commonplace.GitBridge.Inbound do
   defp ok_or(other, _tag), do: other
 
   defp reject(state, rel_path, reason) do
-    PubSub.broadcast_red(state.mount_uuid, {:git_bridge, :conflict_preserved, %{rel_path: rel_path, reason: reason}})
+    PubSub.broadcast_red(
+      state.mount_uuid,
+      {:git_bridge, :conflict_preserved, %{rel_path: rel_path, reason: reason}}
+    )
+
     %{rel_path: rel_path, uuid: nil, outcome: :conflict, reason: reason}
   end
 
@@ -619,16 +732,26 @@ defmodule Commonplace.GitBridge.Inbound do
   @spec mint_edit(GenServer.server(), String.t(), binary(), String.t(), String.t(), keyword()) ::
           {:ok, Commonplace.Store.Commit.t()} | {:error, term()}
   def mint_edit(store, doc_uuid, anchor_commit_id, base_text, theirs_text, opts \\ []) do
-    with {:ok, anchor_doc} <- DocBuilder.reconstruct_doc_at(store, doc_uuid, anchor_commit_id) |> ok_or(:no_anchor) do
+    with {:ok, anchor_doc} <-
+           DocBuilder.reconstruct_doc_at(store, doc_uuid, anchor_commit_id) |> ok_or(:no_anchor) do
       replica = Yelixer.Doc.new(client_id: stable_client_id(doc_uuid))
-      {:ok, replica} = Yelixer.Encoding.apply_update(replica, Yelixer.Encoding.encode_update(anchor_doc))
+
+      {:ok, replica} =
+        Yelixer.Encoding.apply_update(replica, Yelixer.Encoding.encode_update(anchor_doc))
 
       replica = Commonplace.Document.Diff.apply_diff(replica, base_text, theirs_text)
       update = Yelixer.Encoding.encode_update(replica)
 
       metadata = %{kind: :git_bridge_inbound}
 
-      case CommitStoreClient.create_commit(store, doc_uuid, update, anchor_commit_id, metadata, opts) do
+      case CommitStoreClient.create_commit(
+             store,
+             doc_uuid,
+             update,
+             anchor_commit_id,
+             metadata,
+             opts
+           ) do
         %Commonplace.Store.Commit{} = commit -> {:ok, commit}
         {:error, reason} -> {:error, reason}
       end
@@ -669,7 +792,14 @@ defmodule Commonplace.GitBridge.Inbound do
   fall back to v1's conflict-preservation path on error (the caller in
   this module, `ingest_text/4`, does exactly that).
   """
-  @spec mint_region_merge(GenServer.server(), String.t(), binary(), String.t(), String.t(), keyword()) ::
+  @spec mint_region_merge(
+          GenServer.server(),
+          String.t(),
+          binary(),
+          String.t(),
+          String.t(),
+          keyword()
+        ) ::
           {:ok, Commonplace.Store.Commit.t()} | {:error, term()}
   def mint_region_merge(store, doc_uuid, anchor_commit_id, base_text, theirs_text, opts \\ []) do
     hand = stable_client_id(doc_uuid)
@@ -677,7 +807,10 @@ defmodule Commonplace.GitBridge.Inbound do
     with {:ok, live_doc} <- DocBuilder.reconstruct_doc(store, doc_uuid) |> ok_or(:no_doc),
          floor = Yelixer.StateVector.get(Yelixer.Doc.state_vector(live_doc), hand),
          {:ok, replica} <-
-           DocBuilder.reconstruct_doc_at(store, doc_uuid, anchor_commit_id, client_id: hand, clock_floor: floor)
+           DocBuilder.reconstruct_doc_at(store, doc_uuid, anchor_commit_id,
+             client_id: hand,
+             clock_floor: floor
+           )
            |> ok_or(:no_anchor) do
       anchor_sv = Yelixer.Doc.state_vector(replica)
       replica_after = Commonplace.Document.Diff.apply_diff(replica, base_text, theirs_text)
@@ -696,11 +829,13 @@ defmodule Commonplace.GitBridge.Inbound do
   # encoded relative to the anchor's state vector, not `:latest`'s, so
   # replaying it against a freshly-moved live doc is exactly as valid
   # as the first attempt.
-  defp do_attempt_region_merge(_store, _doc_uuid, _u_bytes, _opts, 0), do: {:error, :redo_exhausted}
+  defp do_attempt_region_merge(_store, _doc_uuid, _u_bytes, _opts, 0),
+    do: {:error, :redo_exhausted}
 
   defp do_attempt_region_merge(store, doc_uuid, u_bytes, opts, attempts_left) do
     with {:ok, latest} <- CommitStoreClient.latest_commit(store, doc_uuid) |> none_or(:no_latest),
-         {:ok, live} <- DocBuilder.reconstruct_doc_at(store, doc_uuid, latest.id) |> ok_or(:no_latest),
+         {:ok, live} <-
+           DocBuilder.reconstruct_doc_at(store, doc_uuid, latest.id) |> ok_or(:no_latest),
          {:ok, merged} <- Yelixer.Encoding.apply_update(live, u_bytes) do
       full_bytes = Yelixer.Encoding.encode_update(merged)
 
@@ -717,7 +852,14 @@ defmodule Commonplace.GitBridge.Inbound do
 
       case CommitStoreClient.latest_commit(store, doc_uuid) do
         {:ok, %{id: id}} when id == latest.id ->
-          case CommitStoreClient.create_commit(store, doc_uuid, full_bytes, latest.id, metadata, commit_opts) do
+          case CommitStoreClient.create_commit(
+                 store,
+                 doc_uuid,
+                 full_bytes,
+                 latest.id,
+                 metadata,
+                 commit_opts
+               ) do
             %Commonplace.Store.Commit{} = commit -> {:ok, commit}
             {:error, reason} -> {:error, reason}
           end
@@ -789,16 +931,19 @@ defmodule Commonplace.GitBridge.Inbound do
     identity_uuid = bridge_identity_uuid(state.mount_uuid)
     secret_store = Map.get(state, :secret_store, Commonplace.Store.SecretStore)
 
-    case AgentKeys.ensure(identity_uuid, secret_store) do
-      {:ok, _pub} ->
-        case AgentKeys.signing_context_for(identity_uuid, secret_store) do
-          {:ok, ctx} -> [signing_context: ctx]
-          _ -> []
-        end
-
-      _ ->
-        []
+    case AgentKeys.signing_context_for(identity_uuid, secret_store) do
+      {:ok, ctx} -> {:ok, [signing_context: ctx]}
+      :not_found -> {:error, :bridge_agent_signing_key_missing}
+      {:error, :corrupt_key} -> {:error, :bridge_agent_signing_key_corrupt}
     end
+  end
+
+  defp skip_unsigned_cycle(state, reason) do
+    Logger.warning(
+      "GitBridge.Inbound: cycle skipped for #{state.mount_uuid}: #{reason} (unsigned fallback disabled)"
+    )
+
+    unchanged(state)
   end
 
   @doc "The bridge's persistent signing identity uuid for `mount_uuid` — stable custody slot key."
