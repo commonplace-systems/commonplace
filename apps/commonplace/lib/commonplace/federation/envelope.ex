@@ -55,25 +55,80 @@ defmodule Commonplace.Federation.Envelope do
   # `mix run --no-start` puller had no :doc_uuid/:snapshot_parent/...).
   # This module is necessarily loaded before decode runs, so listing the
   # wire format's CLOSED atom universe here interns it deterministically.
-  # Grow the list when the metadata vocabulary grows — the federation
-  # demo (fresh-VM puller) is the regression guard.
+  # CX-7cpf: every serving-side encode checks Commit fields and metadata
+  # recursively against this list, and EnvelopeTest's fresh-VM arm proves
+  # decode in a receiver that has not loaded any emitter. A new emitter or
+  # Commit field therefore turns the drift guard red before a peer refuses it.
   @wire_atoms [
-                # Commit struct fields
-                :id, :doc_uuid, :parent_id, :update, :timestamp, :signature,
-                :signer_id, :metadata, :merge_parents,
-                # commit metadata vocabulary
-                :kind, :regular, :snapshot, :merge, :genesis,
-                :snapshot_parent, :capability_proof, :derivation_map,
-                # Capability struct fields + claim vocabulary
-                :issuer, :audience, :claim, :proof, :sig,
-                :verbs, :scope, :caveats, :not_before, :not_after, :docs,
-                :write, :execute, :delegate,
-                # Revocation struct fields (CX-bepn)
-                :revoked_cid, :revoker_pubkey,
-                # DateTime fields (commit timestamps)
-                :year, :month, :day, :hour, :minute, :second, :microsecond,
-                :time_zone, :zone_abbr, :utc_offset, :std_offset, :calendar
-              ]
+    # Commit struct fields
+    :id,
+    :doc_uuid,
+    :parent_id,
+    :update,
+    :timestamp,
+    :signature,
+    :signer_id,
+    :post_state_hash,
+    :metadata,
+    :merge_parents,
+    # commit metadata vocabulary
+    :kind,
+    :regular,
+    :snapshot,
+    :merge,
+    :genesis,
+    :snapshot_parent,
+    :capability_proof,
+    :derivation_map,
+    :snapshot_parents,
+    :snapshotter_version,
+    :git_bridge_inbound,
+    :proto_chit,
+    :pr_merge,
+    :bd_issue_doc_created,
+    :bd_terminal_pin,
+    :bd_import,
+    :presence_janitor,
+    :entry_name,
+    :presence_uuid,
+    :root_uuid,
+    :last_heartbeat,
+    :ttl_ms,
+    :now,
+    :verb_section,
+    :via_verb,
+    # Capability struct fields + claim vocabulary
+    :issuer,
+    :audience,
+    :claim,
+    :proof,
+    :sig,
+    :verbs,
+    :scope,
+    :caveats,
+    :not_before,
+    :not_after,
+    :docs,
+    :write,
+    :execute,
+    :delegate,
+    # Revocation struct fields (CX-bepn)
+    :revoked_cid,
+    :revoker_pubkey,
+    # DateTime fields (commit timestamps)
+    :year,
+    :month,
+    :day,
+    :hour,
+    :minute,
+    :second,
+    :microsecond,
+    :time_zone,
+    :zone_abbr,
+    :utc_offset,
+    :std_offset,
+    :calendar
+  ]
 
   @doc "The closed atom universe of the wire format (interned at module load)."
   def wire_atoms, do: @wire_atoms
@@ -86,6 +141,8 @@ defmodule Commonplace.Federation.Envelope do
   @spec encode(Commit.t(), [Capability.t()], [Revocation.t()]) :: binary()
   def encode(%Commit{} = commit, certs, revocations \\ [])
       when is_list(certs) and is_list(revocations) do
+    ensure_declared_commit_atoms!(commit)
+
     Jason.encode!(%{
       v: @version,
       commit: pack(commit),
@@ -93,6 +150,55 @@ defmodule Commonplace.Federation.Envelope do
       revocations: Enum.map(revocations, &pack/1)
     })
   end
+
+  # CX-7cpf drift guard: validate at the serving boundary, where every commit
+  # that can actually cross federation must pass. This derives atoms from the
+  # real Commit struct and metadata term instead of maintaining a second test
+  # vocabulary. Booleans/nil are VM literals, not application vocabulary.
+  defp ensure_declared_commit_atoms!(%Commit{} = commit) do
+    atoms =
+      commit
+      |> Map.delete(:__struct__)
+      |> Map.take([:metadata])
+      |> collect_atoms(MapSet.new())
+      |> MapSet.union(Map.keys(commit) |> MapSet.new())
+      |> MapSet.difference(MapSet.new([:__struct__, nil, true, false]))
+
+    undeclared = MapSet.difference(atoms, MapSet.new(@wire_atoms))
+
+    if MapSet.size(undeclared) > 0 do
+      names = undeclared |> Enum.sort() |> Enum.map_join(", ", &inspect/1)
+
+      raise ArgumentError,
+            "commit carries atoms outside the declared federation wire vocabulary: #{names}"
+    end
+
+    :ok
+  end
+
+  defp collect_atoms(atom, acc) when is_atom(atom), do: MapSet.put(acc, atom)
+
+  defp collect_atoms(map, acc) when is_map(map) do
+    Enum.reduce(map, acc, fn {key, value}, inner ->
+      inner
+      |> then(&collect_atoms(key, &1))
+      |> then(&collect_atoms(value, &1))
+    end)
+  end
+
+  defp collect_atoms([head | tail], acc) do
+    acc
+    |> then(&collect_atoms(head, &1))
+    |> then(&collect_atoms(tail, &1))
+  end
+
+  defp collect_atoms(tuple, acc) when is_tuple(tuple) do
+    tuple
+    |> Tuple.to_list()
+    |> collect_atoms(acc)
+  end
+
+  defp collect_atoms(_other, acc), do: acc
 
   @doc """
   Build the envelope for a commit, inlining its full cert chain
