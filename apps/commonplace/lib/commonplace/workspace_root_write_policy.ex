@@ -8,6 +8,10 @@ defmodule Commonplace.Workspace.RootWritePolicy do
     * `chat` — `:default`
     * `__bursar.json` — `:default`
     * `__bursar.log` — `:default`
+    * `__cell.json` — `:default`, `:minimal` (CX-brxx amendment: bare
+      dunder names are directories, while suffixed dunder names are single
+      content documents whose suffix states their kind; the cell manifest is
+      one JSON text document)
     * `__git-bridge.bot` — `:default`
     * `__identities__` — `:default`
     * `__processes.json` — `:default`
@@ -19,7 +23,10 @@ defmodule Commonplace.Workspace.RootWritePolicy do
       workspace's inventory; cells were not in the measured population)
     * `__system` — `:default`
 
-  New substrate root entries use the `__` prefix.
+  New substrate root entries use the `__` prefix. Bare dunder names are
+  directories (`__recipes`, `__pulls`, `__system`, `__reflog`); suffixed
+  dunder names are single content documents whose suffix states their kind
+  (`__bursar.json`, `__processes.json`, `__git-bridge.bot`).
 
   The named residual is that an author who both skips registration and uses a
   bare name lands as content; the fadm torn-state refusal remains the existing
@@ -37,6 +44,7 @@ defmodule Commonplace.Workspace.RootWritePolicy do
     "chat" => [:default],
     "__bursar.json" => [:default],
     "__bursar.log" => [:default],
+    "__cell.json" => [:default, :minimal],
     "__git-bridge.bot" => [:default],
     "__identities__" => [:default],
     "__processes.json" => [:default],
