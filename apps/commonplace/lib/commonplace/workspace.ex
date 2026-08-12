@@ -163,9 +163,9 @@ defmodule Commonplace.Workspace do
 
   Returns `{:ok, id}` where `id` is a stable string scoped to the
   current `data_dir`. On first call for a workspace, generates a fresh
-  UUID, writes it atomically (temp + rename) at `<data_dir>/node_id`
-  with mode 0o600, and returns it. Subsequent calls re-read the same
-  value.
+  UUID, publishes it create-once (unique temp + hard link) at
+  `<data_dir>/node_id` with mode 0o600, and returns it. A racing loser
+  reads the winner's value. Subsequent calls re-read that same value.
 
   This is the prerequisite for derivations like
   `Identity.stable_client_id/1` that previously hashed `{node(), uuid}`
@@ -186,6 +186,12 @@ defmodule Commonplace.Workspace do
   @spec node_id() :: {:ok, String.t()} | {:error, term()}
   def node_id do
     data_dir = Application.get_env(:commonplace, :data_dir, "data")
+    node_id(data_dir)
+  end
+
+  @doc "Read or create the node id in an explicitly supplied workspace data directory."
+  @spec node_id(Path.t()) :: {:ok, String.t()} | {:error, term()}
+  def node_id(data_dir) when is_binary(data_dir) do
     path = Path.join(data_dir, "node_id")
 
     case File.read(path) do
@@ -202,17 +208,37 @@ defmodule Commonplace.Workspace do
 
   defp write_fresh_node_id(data_dir, path) do
     fresh = UUID.uuid4()
-    tmp = Path.join(data_dir, ".node_id.tmp")
+    tmp = Path.join(data_dir, ".node_id.#{node_id_temp_suffix()}.tmp")
 
-    with :ok <- File.mkdir_p(data_dir),
-         :ok <- File.write(tmp, fresh, [:write]),
-         :ok <- File.chmod(tmp, 0o600),
-         :ok <- File.rename(tmp, path),
-         {:ok, content} <- File.read(path) do
-      # Re-read after rename so concurrent first-boot races settle on
-      # whichever rename landed second (both callers see the same final
-      # value).
-      {:ok, String.trim(content)}
+    result =
+      with :ok <- File.mkdir_p(data_dir),
+           :ok <- File.write(tmp, fresh, [:write]),
+           :ok <- File.chmod(tmp, 0o600),
+           :ok <- link_node_id_into_place(tmp, path),
+           :ok <- drop_node_id_temp(tmp),
+           {:ok, content} <- File.read(path) do
+        {:ok, String.trim(content)}
+      end
+
+    _ = File.rm(tmp)
+    result
+  end
+
+  defp link_node_id_into_place(tmp, path) do
+    case File.ln(tmp, path) do
+      :ok -> :ok
+      {:error, :eexist} -> :ok
+      {:error, _} = error -> error
     end
+  end
+
+  defp drop_node_id_temp(tmp) do
+    _ = File.rm(tmp)
+    :ok
+  end
+
+  defp node_id_temp_suffix do
+    rand = 9 |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false)
+    "#{System.pid()}.#{System.unique_integer([:positive, :monotonic])}.#{rand}"
   end
 end

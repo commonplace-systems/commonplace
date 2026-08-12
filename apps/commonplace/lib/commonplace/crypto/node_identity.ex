@@ -241,10 +241,9 @@ defmodule Commonplace.Crypto.NodeIdentity do
     "#{System.pid()}.#{System.unique_integer([:positive, :monotonic])}.#{rand}"
   end
 
-  # This fix does NOT close the cold-start identity race. `Workspace`'s
-  # `write_fresh_node_id/2` (workspace.ex:125) still has exactly this defect —
-  # fixed temp name plus a clobbering rename — and races in the very same
-  # first-boot window. It is tracked as CX-kmtq and is not fixed here.
+  # The twin CX-kmtq cold-start identity race is fixed by CX-d59r in
+  # `Workspace.write_fresh_node_id/2` with the same create-once publication
+  # property used here.
   #
   # The asymmetry is the part worth carrying: the race fixed below was the LOUD
   # one, failing an :enoent straight out of `signing_context/0`. The node_id race

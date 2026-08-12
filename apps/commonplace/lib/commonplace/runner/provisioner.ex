@@ -1,6 +1,6 @@
 defmodule Commonplace.Runner.Provisioner do
   @moduledoc """
-  Provisions and verifies a local runner pod for CX-gkxa.
+  Provisions and verifies a local runner pod for CX-d59r.
 
   A pod lives below the caller's runner-owned `:pods_root`, in a directory
   named for the validated manifest id. It contains `checkout/`, a detached
@@ -15,19 +15,27 @@ defmodule Commonplace.Runner.Provisioner do
   `environments.requires_allowed` must be a subset of the pod profile's
   service keys. Version matching remains instance-time work for a later round.
 
+  The validated manifest is the ratified input; its provenance is the
+  provisioning caller's responsibility. At birth, the runner mints the one
+  authority cert named by `authors_code` against the pod-local store and writes
+  the actual stored CID into the born manifest. Birth certs deliberately have
+  no expiry in this round.
+
   Birth runs inside a node-global scope: `provision/3` temporarily repoints
   `:commonplace` application env (`:data_dir`, `:trust`, both gates) at the
   pod-local store, because trust resolution and the root-write policy read
   config rather than taking a store argument. On a node serving a live
   workspace, concurrent operations during that window would read the pod's
-  store. Do NOT call this on such a node; S33 replaces this seam before a
-  runner process hosts births.
+  store. Do NOT call this on such a node; the worker-launch round replaces this
+  seam before a runner process hosts births.
   """
 
+  alias Commonplace.CertMint
   alias Commonplace.Cell.Manifest
   alias Commonplace.Crypto.NodeIdentity
   alias Commonplace.Runner.PodProfile
-  alias Commonplace.Store.{Commit, CommitStore, CommitStoreClient}
+  alias Commonplace.Store.{Commit, CommitStoreClient}
+  alias Commonplace.Store.Supervisor, as: StoreSupervisor
   alias Commonplace.Tree.{DocBuilder, Schema}
   alias Commonplace.Workspace
   alias Commonplace.Workspace.RootWritePolicy
@@ -51,8 +59,9 @@ defmodule Commonplace.Runner.Provisioner do
          :ok <- safe_pod_id(manifest.id),
          :ok <- supported_sandbox(profile),
          :ok <- names_only_hosting_check(manifest, profile),
+         {:ok, principal_pubkey} <- birth_authority_input(manifest, opts),
          {:ok, paths} <- provision_paths(manifest, opts) do
-      build_pod(manifest, profile, paths)
+      build_pod(manifest, profile, paths, principal_pubkey)
     end
   end
 
@@ -150,10 +159,10 @@ defmodule Commonplace.Runner.Provisioner do
     end
   end
 
-  defp build_pod(manifest, profile, paths) do
+  defp build_pod(manifest, profile, paths, principal_pubkey) do
     case File.mkdir(paths.pod_home) do
       :ok ->
-        result = do_build_pod(manifest, profile, paths)
+        result = do_build_pod(manifest, profile, paths, principal_pubkey)
 
         if match?({:error, _reason}, result) do
           File.rm_rf(paths.pod_home)
@@ -169,12 +178,12 @@ defmodule Commonplace.Runner.Provisioner do
     end
   end
 
-  defp do_build_pod(manifest, profile, paths) do
+  defp do_build_pod(manifest, profile, paths, principal_pubkey) do
     with :ok <- mkdir_p(paths.data_dir, "workspace"),
          :ok <- mkdir_p(paths.home_dir, "sandbox.home"),
          :ok <- checkout(paths.repo, paths.sha, paths.checkout_dir),
          :ok <- write_birth_declarations(paths.data_dir, manifest),
-         {:ok, born} <- birth_workspace(paths, manifest),
+         {:ok, born} <- birth_workspace(paths, manifest, principal_pubkey),
          {:ok, declarations} <- read_declarations(paths.data_dir),
          :ok <- verify_declarations(declarations, manifest) do
       {:ok,
@@ -190,19 +199,28 @@ defmodule Commonplace.Runner.Provisioner do
     end
   end
 
-  defp birth_workspace(paths, manifest) do
+  defp birth_workspace(paths, manifest, principal_pubkey) do
     with_workspace_env(paths.data_dir, fn ->
-      with {:ok, store} <- GenServer.start_link(CommitStore, data_dir: paths.data_dir) do
+      names = store_names()
+
+      with {:ok, supervisor} <-
+             StoreSupervisor.start_link(
+               data_dir: paths.data_dir,
+               name: names.supervisor,
+               commit_store_name: names.store,
+               trust_side_store_name: names.trust_side_store,
+               pending_imports_name: names.pending_imports
+             ) do
         try do
-          initialize_and_verify(store, paths, manifest)
+          initialize_and_verify(names.store, paths, manifest, principal_pubkey)
         after
-          stop_store(store)
+          Supervisor.stop(supervisor)
         end
       end
     end)
   end
 
-  defp initialize_and_verify(store, paths, manifest) do
+  defp initialize_and_verify(store, paths, manifest, principal_pubkey) do
     profile = workspace_profile(manifest.workspace_class)
 
     case Workspace.initialize(paths.data_dir,
@@ -222,10 +240,16 @@ defmodule Commonplace.Runner.Provisioner do
                    paths.data_dir,
                    signing_context
                  ),
-               # CX-gkxa intentionally does not mint authority certs. S33 inserts
-               # manifest schema section 4 step 2 at this marked point.
+               {:ok, born_manifest} <-
+                 mint_birth_authority(
+                   initialized.root_uuid,
+                   manifest,
+                   principal_pubkey,
+                   store,
+                   signing_context
+                 ),
                {:ok, _stored} <-
-                 Manifest.create(initialized.root_uuid, manifest, store,
+                 Manifest.create(initialized.root_uuid, born_manifest, store,
                    signing_context: signing_context
                  ),
                {:ok, %{case: :stored}} <- Manifest.read(initialized.root_uuid, store) do
@@ -240,6 +264,55 @@ defmodule Commonplace.Runner.Provisioner do
 
       {:error, reason} ->
         invalid("workspace_class", "workspace initialization failed: #{inspect(reason)}")
+    end
+  end
+
+  defp mint_birth_authority(root_uuid, manifest, principal_pubkey, store, signing_context) do
+    verbs = birth_verbs(manifest)
+
+    with {:ok, minted} <-
+           CertMint.mint(":" <> root_uuid, verbs, manifest.principal, nil,
+             issuer_context: signing_context,
+             store: store,
+             root_uuid: root_uuid,
+             audience_resolver: fn audience_uuid ->
+               if audience_uuid == manifest.principal,
+                 do: {:ok, principal_pubkey},
+                 else: {:error, :unexpected_birth_audience}
+             end
+           ),
+         {:ok, stored} <- CommitStoreClient.get_capability(store, minted.id),
+         :ok <-
+           verify_birth_certificate(
+             stored,
+             manifest.principal,
+             principal_pubkey,
+             root_uuid,
+             verbs
+           ) do
+      actual_cid = Base.encode16(stored.id, case: :lower)
+      {:ok, put_in(manifest.authority.certs, [actual_cid])}
+    else
+      {:error, {:invalid_manifest, _field, _reason}} = error -> error
+      {:error, reason} -> invalid("authority.certs", "birth mint failed: #{inspect(reason)}")
+      :none -> invalid("authority.certs", "minted certificate was absent from the pod store")
+    end
+  end
+
+  defp birth_verbs(%Manifest{authority: %{authors_code: true}}),
+    do: [:write, :execute]
+
+  defp birth_verbs(%Manifest{authority: %{authors_code: false}}), do: [:write]
+
+  defp verify_birth_certificate(cert, principal, pubkey, root_uuid, verbs) do
+    expected_verbs = Enum.sort(verbs)
+
+    if cert.audience == {principal, pubkey} and cert.claim.verbs == expected_verbs and
+         cert.claim.scope == {:subtree, root_uuid} and
+         cert.claim.caveats == %{not_before: nil, not_after: nil} do
+      :ok
+    else
+      invalid("authority.certs", "stored birth certificate does not bind the ratified authority")
     end
   end
 
@@ -379,6 +452,40 @@ defmodule Commonplace.Runner.Provisioner do
     end
   end
 
+  defp birth_authority_input(manifest, opts) do
+    with :ok <- empty_birth_certs(manifest.authority.certs),
+         :ok <- uuid_principal(manifest.principal),
+         {:ok, pubkey} <- principal_pubkey(opts) do
+      {:ok, pubkey}
+    end
+  end
+
+  defp empty_birth_certs([]), do: :ok
+
+  defp empty_birth_certs(_certs) do
+    invalid("authority.certs", "must be empty for a fresh world")
+  end
+
+  defp uuid_principal(principal) do
+    if is_binary(principal) and
+         Regex.match?(
+           ~r/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+           principal
+         ) do
+      :ok
+    else
+      invalid("principal", "must be a UUID for birth authority")
+    end
+  end
+
+  defp principal_pubkey(opts) do
+    case Keyword.fetch(opts, :principal_pubkey) do
+      {:ok, pubkey} when is_binary(pubkey) -> {:ok, pubkey}
+      {:ok, _invalid} -> invalid("principal", "public key provided to provisioning is invalid")
+      :error -> invalid("principal", "public key not provided to provisioning")
+    end
+  end
+
   defp provision_paths(manifest, opts) do
     with {:ok, pods_root} <- required_path(opts, :pods_root),
          {:ok, repo} <- required_path(opts, :repo),
@@ -421,7 +528,7 @@ defmodule Commonplace.Runner.Provisioner do
       Path.extname(entry) != "" ->
         invalid(
           "root_entries",
-          "entry #{entry} needs content-document machinery not present in CX-gkxa"
+          "entry #{entry} needs content-document machinery not present at birth"
         )
 
       true ->
@@ -463,10 +570,15 @@ defmodule Commonplace.Runner.Provisioner do
     end
   end
 
-  defp stop_store(store) do
-    db = CommitStore.db_handle(store)
-    GenServer.stop(store)
-    CubDB.stop(db)
+  defp store_names do
+    nonce = make_ref()
+
+    %{
+      supervisor: {:global, {__MODULE__, :supervisor, nonce}},
+      store: {:global, {__MODULE__, :commit_store, nonce}},
+      trust_side_store: {:global, {__MODULE__, :trust_side_store, nonce}},
+      pending_imports: {:global, {__MODULE__, :pending_imports, nonce}}
+    }
   end
 
   defp with_workspace_env(data_dir, fun) do
