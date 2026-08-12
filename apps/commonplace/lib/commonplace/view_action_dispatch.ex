@@ -821,6 +821,48 @@ defmodule Commonplace.ViewActionDispatch do
     {:error, "ticket_release requires args map with ticket"}
   end
 
+  # S24: the on-demand CREATED-minus-VISIBLE tripwire. This action is
+  # deliberately read-only: v1 makes torn creates loud and returns their
+  # identities, but exposes NO auto-link branch. Completing one remains a
+  # separate, visible operator act after the mechanism has earned trust.
+  defp do_dispatch("ticket_torn_creates", context) do
+    store = Map.get(context, :store) || CommitStoreClient
+
+    with {:ok, root_uuid} <- resolve_bd_root(context) do
+      {:ok, :ui_transition,
+       %{
+         action: "ticket_torn_creates",
+         torn_creates: Commonplace.Bd.IssueDocIndex.scan(root_uuid, store),
+         auto_link: false,
+         warning: "TORN CREATES REQUIRE VISIBLE MANUAL RECOVERY; NOTHING WAS LINKED"
+       }}
+    end
+  end
+
+  # The one-time backfill is a durable write and therefore lives on the
+  # ViewActionDispatch surface, behind an explicit operator confirmation.
+  # Its whole-store walk is bounded inside IssueDocIndex; this verb never
+  # links an issue into the directory and is not a recovery shortcut.
+  defp do_dispatch(
+         "ticket_issue_index_backfill",
+         %{
+           args: %{"confirm" => "BACKFILL ISSUE DOC INDEX"}
+         } = context
+       ) do
+    store = Map.get(context, :store) || CommitStoreClient
+
+    with {:ok, root_uuid} <- resolve_bd_root(context),
+         {:ok, report} <- Commonplace.Bd.IssueDocIndex.backfill(root_uuid, store) do
+      {:ok, :tree_mutation, Map.put(report, :action, "ticket_issue_index_backfill")}
+    else
+      {:error, reason} -> {:error, "ticket issue-index backfill refused: #{inspect(reason)}"}
+    end
+  end
+
+  defp do_dispatch("ticket_issue_index_backfill", _context) do
+    {:error, "ticket issue-index backfill requires explicit operator confirmation"}
+  end
+
   # CX-6cz3 (tix-authority migration design §7, rulings @6418506) —
   # `ticket_create` / `ticket_import`: the GATED write surface for
   # ticket creation. Before this, creation had two doors and neither

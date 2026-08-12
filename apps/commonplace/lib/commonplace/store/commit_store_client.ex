@@ -484,6 +484,36 @@ defmodule Commonplace.Store.CommitStoreClient do
     end
   end
 
+  def all_doc_uuids_bounded(server \\ CommitStore, limit) do
+    case remote_node() do
+      {:ok, node} ->
+        GenServer.call({CommitStore, node}, {:all_doc_uuids_bounded, limit})
+
+      :local ->
+        CommitStore.all_doc_uuids_bounded(normalize_server(server), limit)
+    end
+  end
+
+  def bd_issue_doc_uuids(server \\ CommitStore) do
+    case remote_node() do
+      {:ok, node} ->
+        GenServer.call({CommitStore, node}, :bd_issue_doc_uuids)
+
+      :local ->
+        CommitStore.bd_issue_doc_uuids(normalize_server(server))
+    end
+  end
+
+  def append_bd_issue_doc(server \\ CommitStore, doc_uuid) do
+    case remote_node() do
+      {:ok, node} ->
+        GenServer.call({CommitStore, node}, {:append_bd_issue_doc, doc_uuid})
+
+      :local ->
+        CommitStore.append_bd_issue_doc(normalize_server(server), doc_uuid)
+    end
+  end
+
   def is_ancestor?(server \\ CommitStore, ancestor_id, descendant_id) do
     case remote_node() do
       {:ok, node} ->

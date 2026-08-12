@@ -43,6 +43,8 @@ defmodule Commonplace.Store.CommitStore do
                                               records (CX-9rl).
       {:latest_attestation, doc_uuid}       — head of the attestation
                                               chain for `doc_uuid`.
+      {:bd_issue_doc, doc_uuid}             — append-only CREATED intent
+                                              for a bd issue document.
 
   (Attestations are proof-of-authorship records on the **gold** color-
   channel — see `Commonplace.Dataflow.Channel` for the channel
@@ -988,6 +990,21 @@ defmodule Commonplace.Store.CommitStore do
   @doc "Return a MapSet of all document UUIDs that have a `:latest` entry."
   def all_doc_uuids(server \\ __MODULE__) do
     do_all_doc_uuids(resolve_db(server))
+  end
+
+  @doc "Return at most `limit` document UUIDs, refusing after reading one control row beyond it."
+  def all_doc_uuids_bounded(server \\ __MODULE__, limit) when is_integer(limit) and limit > 0 do
+    do_all_doc_uuids_bounded(resolve_db(server), limit)
+  end
+
+  @doc "Return the append-only set of bd issue-document UUIDs recorded as CREATED."
+  def bd_issue_doc_uuids(server \\ __MODULE__) do
+    do_bd_issue_doc_uuids(resolve_db(server))
+  end
+
+  @doc "Append one pre-existing issue document to the CREATED index (one-time backfill only)."
+  def append_bd_issue_doc(server \\ __MODULE__, doc_uuid) when is_binary(doc_uuid) do
+    GenServer.call(server, {:append_bd_issue_doc, doc_uuid})
   end
 
   @doc "Check if `ancestor_id` is an ancestor of `descendant_id` in the commit DAG."
@@ -1983,6 +2000,30 @@ defmodule Commonplace.Store.CommitStore do
   end
 
   @impl true
+  def handle_call({:all_doc_uuids_bounded, limit}, _from, state) do
+    {:reply, do_all_doc_uuids_bounded(state.db, limit), state}
+  end
+
+  @impl true
+  def handle_call(:bd_issue_doc_uuids, _from, state) do
+    {:reply, do_bd_issue_doc_uuids(state.db), state}
+  end
+
+  @impl true
+  def handle_call({:append_bd_issue_doc, doc_uuid}, _from, state) do
+    reply =
+      case CubDB.get(state.db, {:latest, doc_uuid}) do
+        nil ->
+          {:error, :missing_doc}
+
+        _commit_id ->
+          CubDB.put(state.db, {:bd_issue_doc, doc_uuid}, true)
+      end
+
+    {:reply, reply, state}
+  end
+
+  @impl true
   def handle_call({:is_ancestor, ancestor_id, descendant_id}, _from, state) do
     {:reply, do_is_ancestor(state.db, ancestor_id, descendant_id), state}
   end
@@ -2670,6 +2711,32 @@ defmodule Commonplace.Store.CommitStore do
     |> MapSet.new()
   end
 
+  defp do_all_doc_uuids_bounded(db, limit) do
+    uuids =
+      CubDB.select(db,
+        min_key: {:latest, ""},
+        max_key: {:latest, @max_key_binary}
+      )
+      |> Stream.map(fn {{:latest, uuid}, _commit_id} -> uuid end)
+      |> Enum.take(limit + 1)
+
+    if length(uuids) > limit do
+      {:error, {:limit_exceeded, limit}}
+    else
+      {:ok, MapSet.new(uuids)}
+    end
+  end
+
+  defp do_bd_issue_doc_uuids(db) do
+    CubDB.select(db,
+      min_key: {:bd_issue_doc, ""},
+      max_key: {:bd_issue_doc, @max_key_binary}
+    )
+    |> Enum.reduce(MapSet.new(), fn
+      {{:bd_issue_doc, doc_uuid}, true}, acc -> MapSet.put(acc, doc_uuid)
+    end)
+  end
+
   # CX-mg8s: the upper bound must EXCEED every possible commit id, and
   # `<<255>>` does not. Commit ids are raw 32-byte binaries, and Erlang
   # compares binaries lexicographically with a shorter prefix sorting
@@ -2770,7 +2837,13 @@ defmodule Commonplace.Store.CommitStore do
   # row structurally attached. Writers consume this pair as a unit; the index
   # is derived from the row, never from a head advance's subject.
   defp commit_rows(%{id: id, doc_uuid: doc_uuid} = commit) do
-    [{{:commit, id}, commit}, {{:doc_commit, doc_uuid, id}, true}]
+    rows = [{{:commit, id}, commit}, {{:doc_commit, doc_uuid, id}, true}]
+
+    if Map.get(commit.metadata, :bd_issue_doc_created) == true do
+      rows ++ [{{:bd_issue_doc, doc_uuid}, true}]
+    else
+      rows
+    end
   end
 
   # `ensure_genesis` and sibling import deliberately remain bare commit
@@ -2778,7 +2851,7 @@ defmodule Commonplace.Store.CommitStore do
   # between writing the commit and its attached index row. Missing call sites
   # are covered structurally by commit_rows/1, not inferred from this marker.
   defp put_bare_commit_with_index(db, commit) do
-    [commit_row, index_row] = commit_rows(commit)
+    [commit_row | attached_rows] = commit_rows(commit)
 
     CubDB.put(
       db,
@@ -2788,10 +2861,10 @@ defmodule Commonplace.Store.CommitStore do
 
     CubDB.put(db, elem(commit_row, 0), elem(commit_row, 1))
 
-    CubDB.put_multi(db, [
-      index_row,
-      {@doc_commit_index_state_key, @doc_commit_index_ready}
-    ])
+    CubDB.put_multi(
+      db,
+      attached_rows ++ [{@doc_commit_index_state_key, @doc_commit_index_ready}]
+    )
   end
 
   defp ensure_doc_commit_index(db) do

@@ -9,7 +9,7 @@ defmodule Commonplace.Bd.Issue do
   YText shapes are P3.
   """
 
-  alias Commonplace.Bd.{IdMint, Schemas, Workspace}
+  alias Commonplace.Bd.{IdMint, IssueDocIndex, Schemas, Workspace}
   alias Commonplace.Bd.Schemas.Issue
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.Schema
@@ -311,7 +311,16 @@ defmodule Commonplace.Bd.Issue do
     plain = plain_opts(opts)
 
     issue_json = Schemas.encode_issue(issue)
-    issue_meta_uuid = Schemas.create_text_doc(issue_json, store, opts)
+
+    issue_opts =
+      Keyword.update(
+        opts,
+        :commit_metadata,
+        IssueDocIndex.creation_metadata(),
+        &IssueDocIndex.creation_metadata/1
+      )
+
+    issue_meta_uuid = Schemas.create_text_doc(issue_json, store, issue_opts)
     desc_uuid = Schemas.create_text_doc(description, store, plain)
     comments_uuid = Schemas.create_dir_with_meta(nil, nil, store, plain)
 
