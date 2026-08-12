@@ -93,7 +93,14 @@ defmodule Commonplace.Store.CommitStoreClient do
   defp normalize_server(__MODULE__), do: CommitStore
   defp normalize_server(server), do: server
 
-  def create_commit(server \\ CommitStore, doc_uuid, update, parent_id, metadata \\ %{}, opts \\ []) do
+  def create_commit(
+        server \\ CommitStore,
+        doc_uuid,
+        update,
+        parent_id,
+        metadata \\ %{},
+        opts \\ []
+      ) do
     case remote_node() do
       {:ok, node} ->
         # CX-88mw: opts (notably :signing_context) ride along on the
@@ -114,7 +121,9 @@ defmodule Commonplace.Store.CommitStoreClient do
           metadata,
           opts,
           fn _observed_latest_id -> parent_id end,
-          fn -> CommitStore.create_commit(local_server, doc_uuid, update, parent_id, metadata, opts) end
+          fn ->
+            CommitStore.create_commit(local_server, doc_uuid, update, parent_id, metadata, opts)
+          end
         )
     end
   end
@@ -132,10 +141,12 @@ defmodule Commonplace.Store.CommitStoreClient do
         # primitive, which does not exist yet.
         opts = Keyword.delete(opts, :expect_parent)
 
-        parent_id = case GenServer.call({CommitStore, node}, {:latest_commit, doc_uuid}) do
-          {:ok, commit} -> commit.id
-          :none -> nil
-        end
+        parent_id =
+          case GenServer.call({CommitStore, node}, {:latest_commit, doc_uuid}) do
+            {:ok, commit} -> commit.id
+            :none -> nil
+          end
+
         # CX-o3r7: opts (notably :signing_context) carry through to the
         # remote create_commit call so signing-context-tagged writes don't
         # silently drop the context just because the local node is in
@@ -161,7 +172,9 @@ defmodule Commonplace.Store.CommitStoreClient do
             metadata,
             opts,
             fn observed_latest_id -> observed_latest_id end,
-            fn -> CommitStore.create_chained_commit(local_server, doc_uuid, update, metadata, opts) end
+            fn ->
+              CommitStore.create_chained_commit(local_server, doc_uuid, update, metadata, opts)
+            end
           )
         end
     end
@@ -221,7 +234,16 @@ defmodule Commonplace.Store.CommitStoreClient do
   # emission below so build/sign visibility isn't lost for the hoisted
   # path (which otherwise only shows up as :put_built_commit persist
   # time on the server side).
-  defp caller_side_write(verb, server, doc_uuid, update, metadata, opts, parent_fun, legacy_fallback) do
+  defp caller_side_write(
+         verb,
+         server,
+         doc_uuid,
+         update,
+         metadata,
+         opts,
+         parent_fun,
+         legacy_fallback
+       ) do
     db = CommitStore.db_handle(server)
 
     attempt_write(
@@ -238,35 +260,75 @@ defmodule Commonplace.Store.CommitStoreClient do
     )
   end
 
-  defp attempt_write(verb, _db, _server, doc_uuid, _update, _metadata, _opts, _parent_fun, legacy_fallback, 0) do
-    # CX-6bqk: CAS retries exhausted — falling back to the fully-serialized
-    # legacy path. This is the one place that transition happens, so emit
-    # telemetry + a debug log here (once) rather than at each individual
-    # retry loss, so contention hot spots are observable without being
-    # spammed per-attempt.
-    attempts = max_chain_attempts()
+  defp attempt_write(
+         verb,
+         db,
+         server,
+         doc_uuid,
+         update,
+         metadata,
+         opts,
+         parent_fun,
+         legacy_fallback,
+         0
+       ) do
+    if Keyword.has_key?(opts, :ticket_create_deadline) do
+      # CX-gc7q: the ticket-create chain keeps retrying its existing CAS
+      # seam only while its boundary deadline remains. Falling through to
+      # the legacy serialized verb here would discard that deadline.
+      attempt_write(
+        verb,
+        db,
+        server,
+        doc_uuid,
+        update,
+        metadata,
+        opts,
+        parent_fun,
+        legacy_fallback,
+        max_chain_attempts()
+      )
+    else
+      # CX-6bqk: CAS retries exhausted — falling back to the fully-serialized
+      # legacy path. This is the one place that transition happens, so emit
+      # telemetry + a debug log here (once) rather than at each individual
+      # retry loss, so contention hot spots are observable without being
+      # spammed per-attempt.
+      attempts = max_chain_attempts()
 
-    :telemetry.execute(
-      [:commonplace, :commit, :cas_exhausted],
-      %{attempts: attempts},
-      %{uuid: doc_uuid}
-    )
+      :telemetry.execute(
+        [:commonplace, :commit, :cas_exhausted],
+        %{attempts: attempts},
+        %{uuid: doc_uuid}
+      )
 
-    Logger.debug(
-      "CommitStoreClient: CAS exhausted after #{attempts} attempts for #{inspect(doc_uuid)} " <>
-        "(verb=#{inspect(verb)}), falling back to serialized write"
-    )
+      Logger.debug(
+        "CommitStoreClient: CAS exhausted after #{attempts} attempts for #{inspect(doc_uuid)} " <>
+          "(verb=#{inspect(verb)}), falling back to serialized write"
+      )
 
-    legacy_fallback.()
+      legacy_fallback.()
+    end
   end
 
-  defp attempt_write(verb, db, server, doc_uuid, update, metadata, opts, parent_fun, legacy_fallback, attempts_left) do
+  defp attempt_write(
+         verb,
+         db,
+         server,
+         doc_uuid,
+         update,
+         metadata,
+         opts,
+         parent_fun,
+         legacy_fallback,
+         attempts_left
+       ) do
     observed_latest_id = CubDB.get(db, {:latest, doc_uuid})
     parent_id = parent_fun.(observed_latest_id)
 
     built = CommitBuilder.build(db, doc_uuid, update, parent_id, metadata, opts)
 
-    case CommitStore.put_built_commit(server, built.commit, observed_latest_id, built.genesis) do
+    case put_built_commit(server, built.commit, observed_latest_id, built.genesis, opts) do
       {:ok, commit} ->
         # Emitted ONCE per successful write, with the final landed
         # attempt's timings — retried attempts' build costs are not
@@ -286,6 +348,9 @@ defmodule Commonplace.Store.CommitStoreClient do
       {:error, {:trust_rejected, _}} = error ->
         error
 
+      {:error, reason} = error when is_binary(reason) ->
+        error
+
       {:error, :parent_moved} ->
         attempt_write(
           verb,
@@ -300,6 +365,44 @@ defmodule Commonplace.Store.CommitStoreClient do
           attempts_left - 1
         )
     end
+  end
+
+  # CX-gc7q is intentionally scoped to the ticket-create chain. With no
+  # boundary deadline these exact four arguments preserve the prior bare
+  # GenServer.call/2 path (and its invisible 5,000ms default) byte-for-byte.
+  defp put_built_commit(server, commit, expected_parent, genesis, opts) do
+    case Keyword.get(opts, :ticket_create_deadline) do
+      nil ->
+        CommitStore.put_built_commit(server, commit, expected_parent, genesis)
+
+      deadline when is_integer(deadline) ->
+        document = Keyword.fetch!(opts, :ticket_create_document)
+        remaining = deadline - System.monotonic_time(:millisecond)
+
+        if remaining <= 0 do
+          deadline_error(document)
+        else
+          try do
+            case CommitStore.put_built_commit(
+                   server,
+                   commit,
+                   expected_parent,
+                   genesis,
+                   deadline,
+                   remaining
+                 ) do
+              {:error, :deadline_expired} -> deadline_error(document)
+              result -> result
+            end
+          catch
+            :exit, {:timeout, {GenServer, :call, _details}} -> deadline_error(document)
+          end
+        end
+    end
+  end
+
+  defp deadline_error(document) do
+    {:error, "deadline exhausted at put_built_commit(#{document})"}
   end
 
   @doc """

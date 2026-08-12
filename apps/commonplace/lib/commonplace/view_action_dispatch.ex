@@ -135,6 +135,17 @@ defmodule Commonplace.ViewActionDispatch do
     :ok
   end
 
+  # CX-gc7q: 200 healthy runs of the complete five-write post-mint chain
+  # measured min 33.097ms, p50 108.236ms, p95 373.121ms, p99 480.262ms,
+  # and max 579.644ms on 2026-08-12. The declared 600ms floor is that
+  # measured maximum rounded upward to the next 100ms, not a guessed
+  # timeout. A boundary-supplied deadline below it refuses before mint.
+  @ticket_create_floor_ms 600
+
+  @doc "The measured minimum remaining budget required before ticket-create minting (CX-gc7q)."
+  @spec ticket_create_floor_ms() :: pos_integer()
+  def ticket_create_floor_ms, do: @ticket_create_floor_ms
+
   # --- Action handlers ---
 
   defp do_dispatch("edit", %{view_uuid: uuid}) when is_binary(uuid) do
@@ -899,12 +910,14 @@ defmodule Commonplace.ViewActionDispatch do
   # skips the close gate entirely. The guard would refuse it anyway
   # (`allow: []`), but refusing a value we should never have read from
   # the client is worse than never reading it.
+  #
   defp do_dispatch("ticket_create", %{args: args} = context) when is_map(args) do
     store = Map.get(context, :store) || CommitStoreClient
 
     with {:ok, title} <- fetch_arg(args, "title"),
          {:ok, root_uuid} <- resolve_bd_root(context),
          {:ok, meta} <- Commonplace.Bd.Workspace.load_meta(root_uuid, store),
+         :ok <- require_ticket_create_budget(context),
          {:ok, id} <- Commonplace.Bd.IdMint.mint_issue_id(root_uuid, meta.prefix, store) do
       attrs = %{
         title: title,
@@ -919,16 +932,20 @@ defmodule Commonplace.ViewActionDispatch do
 
       case Commonplace.Bd.WriteGuard.check_create(issue, root_uuid, store, allow: []) do
         :ok ->
-          {:ok, created, _dir} =
-            Commonplace.Bd.Issue.create_with_id(
-              root_uuid,
-              issue,
-              Map.get(args, "description") || "",
-              store,
-              signing_opts(context)
-            )
+          case Commonplace.Bd.Issue.create_with_id(
+                 root_uuid,
+                 issue,
+                 Map.get(args, "description") || "",
+                 store,
+                 ticket_create_opts(context)
+               ) do
+            {:ok, created, _dir} ->
+              {:ok, :tree_mutation,
+               %{action: "ticket_create", ticket: created.id, issue: created}}
 
-          {:ok, :tree_mutation, %{action: "ticket_create", ticket: created.id, issue: created}}
+            {:error, reason} ->
+              {:error, reason}
+          end
 
         {:error, reason} ->
           {:error, reason}
@@ -1085,6 +1102,32 @@ defmodule Commonplace.ViewActionDispatch do
 
   defp do_dispatch(other, _context) do
     {:error, "unknown view action: #{other}"}
+  end
+
+  defp require_ticket_create_budget(context) do
+    case Map.get(context, :ticket_create_deadline) do
+      nil ->
+        :ok
+
+      deadline when is_integer(deadline) ->
+        remaining = deadline - System.monotonic_time(:millisecond)
+
+        if remaining < @ticket_create_floor_ms do
+          {:error,
+           "insufficient remaining budget for create: #{remaining} < floor #{@ticket_create_floor_ms}"}
+        else
+          :ok
+        end
+    end
+  end
+
+  defp ticket_create_opts(context) do
+    opts = signing_opts(context)
+
+    case Map.get(context, :ticket_create_deadline) do
+      deadline when is_integer(deadline) -> Keyword.put(opts, :ticket_create_deadline, deadline)
+      nil -> opts
+    end
   end
 
   defp run_outline_action("add_item", store, uuid, args, opts) do

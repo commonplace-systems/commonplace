@@ -74,6 +74,28 @@ defmodule Commonplace.MCP.Tools.BdToolsTest do
       assert BdRoute.call(Kernel, :+, [1, 2]) == 3
       assert BdRoute.call(String, :upcase, ["hi"]) == "HI"
     end
+
+    test "originates an absolute ticket-create deadline and leaves every other RPC unchanged" do
+      context = %{args: %{"title" => "boundary"}, source: "test"}
+      before_now = System.monotonic_time(:millisecond)
+
+      assert ["ticket_create", deadline_context] =
+               BdRoute.boundary_args(
+                 Commonplace.ViewActionDispatch,
+                 :dispatch,
+                 ["ticket_create", context],
+                 500
+               )
+
+      after_now = System.monotonic_time(:millisecond)
+      deadline = deadline_context.ticket_create_deadline
+      assert deadline >= before_now + 500
+      assert deadline <= after_now + 500
+
+      args = ["ticket_update", context]
+
+      assert BdRoute.boundary_args(Commonplace.ViewActionDispatch, :dispatch, args, 500) == args
+    end
   end
 
   describe "bd_ready" do

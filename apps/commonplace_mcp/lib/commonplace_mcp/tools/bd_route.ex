@@ -24,6 +24,15 @@ defmodule Commonplace.MCP.Tools.BdRoute do
   working unchanged (and the bd tool tests can build a real local bd
   workspace and assert against real data), and only a real
   escript-with-a-remote-serve takes the rpc path.
+
+  CX-gc7q narrows the `ticket_create` failure window by originating one
+  absolute monotonic deadline at this MCP-to-SERVE boundary. Only that
+  action receives it; local/CLI/internal calls remain deadline-absent.
+  The create chain derives remaining time from this one value at each
+  located write seam. This is structural narrowing, not an assertion
+  that tears are impossible: a process or host crash between commits
+  can still tear, and S24's issue-document index remains the recovery
+  path for that residual.
   """
 
   alias Commonplace.Store.CommitStoreClient
@@ -46,7 +55,10 @@ defmodule Commonplace.MCP.Tools.BdRoute do
         apply(mod, fun, args)
 
       {:ok, node} ->
-        case :rpc.call(node, mod, fun, args, rpc_timeout()) do
+        timeout = rpc_timeout()
+        args = boundary_args(mod, fun, args, timeout)
+
+        case :rpc.call(node, mod, fun, args, timeout) do
           {:badrpc, reason} -> {:error, {:serve_unreachable, reason}}
           result -> result
         end
@@ -56,4 +68,18 @@ defmodule Commonplace.MCP.Tools.BdRoute do
   defp rpc_timeout do
     Application.get_env(:commonplace_mcp, :bd_rpc_timeout, @default_rpc_timeout)
   end
+
+  @doc false
+  def boundary_args(
+        Commonplace.ViewActionDispatch,
+        :dispatch,
+        ["ticket_create", context],
+        timeout
+      )
+      when is_map(context) and is_integer(timeout) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+    ["ticket_create", Map.put(context, :ticket_create_deadline, deadline)]
+  end
+
+  def boundary_args(_mod, _fun, args, _timeout), do: args
 end

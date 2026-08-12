@@ -31,7 +31,13 @@ defmodule Commonplace.Bd.Issue do
     {:ok, meta} = Workspace.load_meta(root_uuid, store)
 
     with {:ok, id} <- IdMint.mint_issue_id(root_uuid, meta.prefix, store) do
-      create_with_id(root_uuid, build_with_id(id, attrs), Map.get(attrs, :description, ""), store, opts)
+      create_with_id(
+        root_uuid,
+        build_with_id(id, attrs),
+        Map.get(attrs, :description, ""),
+        store,
+        opts
+      )
     end
   end
 
@@ -96,15 +102,22 @@ defmodule Commonplace.Bd.Issue do
   (`:signing_context`) threads to every commit this create issues.
   """
   @spec create_with_id(String.t(), Issue.t(), String.t(), module() | atom(), keyword()) ::
-          {:ok, Issue.t(), String.t()}
+          {:ok, Issue.t(), String.t()} | {:error, term()}
   def create_with_id(root_uuid, issue, description \\ "", store \\ CommitStoreClient, opts \\ [])
 
   def create_with_id(root_uuid, %Issue{id: id} = issue, description, store, opts)
       when is_binary(id) and id != "" do
-    dir_uuid = build_issue_dir(issue, description, store, opts)
-    :ok = add_issue_entry(root_uuid, id, dir_uuid, store, plain_opts(opts))
+    if Keyword.has_key?(opts, :ticket_create_deadline) do
+      with {:ok, dir_uuid} <- build_issue_dir_deadline(issue, description, store, opts),
+           :ok <- add_issue_entry_deadline(root_uuid, id, dir_uuid, store, plain_opts(opts)) do
+        {:ok, issue, dir_uuid}
+      end
+    else
+      dir_uuid = build_issue_dir(issue, description, store, opts)
+      :ok = add_issue_entry(root_uuid, id, dir_uuid, store, plain_opts(opts))
 
-    {:ok, issue, dir_uuid}
+      {:ok, issue, dir_uuid}
+    end
   end
 
   @doc """
@@ -335,7 +348,71 @@ defmodule Commonplace.Bd.Issue do
     dir_uuid
   end
 
+  defp build_issue_dir_deadline(%Issue{} = issue, description, store, opts) do
+    dir_uuid = UUID.uuid4()
+    dir_doc = Schema.new_schema()
+    plain = plain_opts(opts)
+
+    issue_json = Schemas.encode_issue(issue)
+
+    issue_opts =
+      Keyword.update(
+        opts,
+        :commit_metadata,
+        IssueDocIndex.creation_metadata(),
+        &IssueDocIndex.creation_metadata/1
+      )
+
+    with {:ok, issue_meta_uuid} <-
+           Schemas.create_text_doc_checked(
+             issue_json,
+             store,
+             named_deadline_opts(issue_opts, "issue doc")
+           ),
+         {:ok, desc_uuid} <-
+           Schemas.create_text_doc_checked(
+             description,
+             store,
+             named_deadline_opts(plain, "description doc")
+           ),
+         {:ok, comments_uuid} <-
+           Schemas.create_dir_with_meta_checked(
+             nil,
+             nil,
+             store,
+             named_deadline_opts(plain, "comments dir")
+           ) do
+      dir_doc =
+        dir_doc
+        |> Schema.add_file(Schemas.issue_filename(), issue_meta_uuid)
+        |> Schema.add_file(Schemas.description_filename(), desc_uuid)
+        |> Schema.add_directory("comments", comments_uuid)
+
+      update = Encoding.encode_update(dir_doc)
+
+      case CommitStoreClient.create_commit(
+             store,
+             dir_uuid,
+             update,
+             nil,
+             %{},
+             named_deadline_opts(plain, "issue dir schema")
+           ) do
+        {:error, reason} -> {:error, reason}
+        _commit -> {:ok, dir_uuid}
+      end
+    end
+  end
+
   defp plain_opts(opts), do: Keyword.delete(opts, :commit_metadata)
+
+  defp named_deadline_opts(opts, document) do
+    if Keyword.has_key?(opts, :ticket_create_deadline) do
+      Keyword.put(opts, :ticket_create_document, document)
+    else
+      opts
+    end
+  end
 
   defp add_issue_entry(root_uuid, id, child_uuid, store, opts) do
     issues_uuid = Workspace.issues_dir_uuid(root_uuid, store)
@@ -344,6 +421,24 @@ defmodule Commonplace.Bd.Issue do
     update = Encoding.encode_update(schema)
     CommitStoreClient.create_chained_commit(store, issues_uuid, update, %{}, opts)
     :ok
+  end
+
+  defp add_issue_entry_deadline(root_uuid, id, child_uuid, store, opts) do
+    issues_uuid = Workspace.issues_dir_uuid(root_uuid, store)
+    {:ok, schema} = Schemas.load_dir_schema(issues_uuid, store)
+    schema = Schema.add_directory(schema, "#{id}.iss", child_uuid)
+    update = Encoding.encode_update(schema)
+
+    case CommitStoreClient.create_chained_commit(
+           store,
+           issues_uuid,
+           update,
+           %{},
+           named_deadline_opts(opts, "issues-dir link")
+         ) do
+      {:error, reason} -> {:error, reason}
+      _commit -> :ok
+    end
   end
 
   defp write_issue_meta(dir_uuid, %Issue{} = issue, store, opts) do
