@@ -79,12 +79,12 @@ defmodule Commonplace.Sync.MergeAdopterTest do
   end
 
   describe "maybe_adopt/2" do
-    test "non-merge commits are no-ops", %{store: store} do
-      {uuid, _c, l, _r} = seed_siblings(store, "madopt-nonmerge")
+    test "non-dominating non-merge commits are no-ops", %{store: store} do
+      {uuid, _c, l, r} = seed_siblings(store, "madopt-nonmerge")
 
       # Build a plain regular commit — not a merge.
       plain =
-        Commit.new(uuid, <<"plain">>, l.id, %{kind: :regular, snapshot_parent: l.id})
+        Commit.new(uuid, <<"plain">>, r.id, %{kind: :regular, snapshot_parent: r.id})
 
       assert :skipped = MergeAdopter.maybe_adopt(store, plain)
       {:ok, latest} = CommitStore.latest_commit(store, uuid)

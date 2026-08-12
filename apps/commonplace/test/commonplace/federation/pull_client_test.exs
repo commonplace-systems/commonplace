@@ -14,6 +14,8 @@ defmodule Commonplace.Federation.PullClientTest do
   alias Commonplace.Crypto.{Signing, SigningContext}
   alias Commonplace.Federation.{Envelope, PullClient}
   alias Commonplace.Store.{Commit, CommitStore}
+  alias Commonplace.Dataflow.RedLog
+  alias Commonplace.Tree.DocBuilder
   alias Commonplace.Trust.Capability
 
   setup do
@@ -67,7 +69,12 @@ defmodule Commonplace.Federation.PullClientTest do
       File.rm_rf!(dir)
     end)
 
-    root_ctx = %SigningContext{identity_uuid: root_uuid, private_key: root_priv, public_key: root_pub}
+    root_ctx = %SigningContext{
+      identity_uuid: root_uuid,
+      private_key: root_priv,
+      public_key: root_pub
+    }
+
     %{serving: serving, pulling: pulling, root: %{uuid: root_uuid, ctx: root_ctx, pub: root_pub}}
   end
 
@@ -108,11 +115,16 @@ defmodule Commonplace.Federation.PullClientTest do
     :ok = CommitStore.store_capability(store, cert)
 
     commit =
-      Commit.new(doc, Yelixer.Encoding.encode_update(Commonplace.Tree.Schema.new_schema()), nil, %{
-        kind: :regular,
-        snapshot_parent: :crypto.hash(:sha256, "epoch-" <> doc),
-        capability_proof: cert.id
-      })
+      Commit.new(
+        doc,
+        Yelixer.Encoding.encode_update(Commonplace.Tree.Schema.new_schema()),
+        nil,
+        %{
+          kind: :regular,
+          snapshot_parent: :crypto.hash(:sha256, "epoch-" <> doc),
+          capability_proof: cert.id
+        }
+      )
       |> Signing.sign_commit(agent_priv, Signing.signer_id(agent_uuid, agent_pub))
 
     :ok = CommitStore.import_commit(store, commit, validator: fn _ -> :ok end)
@@ -154,10 +166,15 @@ defmodule Commonplace.Federation.PullClientTest do
     doc = UUID.uuid4()
 
     unsigned =
-      Commit.new(doc, Yelixer.Encoding.encode_update(Commonplace.Tree.Schema.new_schema()), nil, %{
-        kind: :regular,
-        snapshot_parent: :crypto.hash(:sha256, "epoch-u")
-      })
+      Commit.new(
+        doc,
+        Yelixer.Encoding.encode_update(Commonplace.Tree.Schema.new_schema()),
+        nil,
+        %{
+          kind: :regular,
+          snapshot_parent: :crypto.hash(:sha256, "epoch-u")
+        }
+      )
 
     # Trust config is global to the node — open a permissive window to
     # seed the serving side, then restore strict for the pull.
@@ -180,5 +197,126 @@ defmodule Commonplace.Federation.PullClientTest do
 
     assert report.imported == 0
     assert [{_peer, _doc, :econnrefused} | _] = report.errors
+  end
+
+  test "possessed sibling is excluded from the missing set while a missing CID is requested",
+       %{pulling: pulling} do
+    previous_trust = Application.get_env(:commonplace, :trust)
+    Application.put_env(:commonplace, :trust, %{accept_unsigned: true, trusted_identities: %{}})
+    on_exit(fn -> Application.put_env(:commonplace, :trust, previous_trust) end)
+
+    doc = UUID.uuid4()
+    {:ok, genesis} = CommitStore.ensure_genesis(pulling, doc)
+    :ok = CommitStore.set_latest(pulling, doc, genesis.id)
+
+    local =
+      CommitStore.create_chained_commit(
+        pulling,
+        doc,
+        Yelixer.Encoding.encode_update(Commonplace.Tree.Schema.new_schema()),
+        %{kind: :regular, snapshot_parent: genesis.id}
+      )
+
+    sibling =
+      Commit.new(
+        doc,
+        Yelixer.Encoding.encode_update(Commonplace.Tree.Schema.new_schema()),
+        genesis.id,
+        %{kind: :regular, snapshot_parent: genesis.id, fixture: :possessed_sibling}
+      )
+
+    :ok = CommitStore.import_commit(pulling, sibling, validator: fn _ -> :ok end)
+    assert {:ok, %{id: id}} = CommitStore.latest_commit(pulling, doc)
+    assert id == local.id
+    assert MapSet.member?(CommitStore.all_commit_ids_for_doc(pulling, doc), sibling.id)
+    refute MapSet.member?(CommitStore.commit_ids_for_doc(pulling, doc), sibling.id)
+
+    missing_id = :crypto.hash(:sha256, "positive-control-missing")
+    sibling_b64 = Base.encode64(sibling.id)
+    missing_b64 = Base.encode64(missing_id)
+    test_pid = self()
+
+    transport = fn
+      :cids, _peer, ^doc ->
+        {:ok, %{"cids" => [sibling_b64, missing_b64]}}
+
+      :commits, _peer, {^doc, requested} ->
+        send(test_pid, {:requested, requested})
+        {:ok, %{"envelopes" => []}}
+    end
+
+    report = PullClient.pull_once([peer(doc)], store: pulling, transport: transport)
+
+    assert_receive {:requested, requested}
+    assert requested == [missing_b64]
+    assert report.errors == []
+  end
+
+  test "already-present first envelope does not block the second envelope",
+       %{serving: serving, pulling: pulling} do
+    previous_trust = Application.get_env(:commonplace, :trust)
+    Application.put_env(:commonplace, :trust, %{accept_unsigned: true, trusted_identities: %{}})
+    on_exit(fn -> Application.put_env(:commonplace, :trust, previous_trust) end)
+
+    doc = UUID.uuid4()
+    {:ok, genesis} = CommitStore.ensure_genesis(serving, doc)
+    :ok = CommitStore.set_latest(serving, doc, genesis.id)
+    :ok = CommitStore.import_commit(pulling, genesis, validator: fn _ -> :ok end)
+
+    log = RedLog.new(doc, serving) |> RedLog.append_raw(%{"cycle" => 2})
+    assert {:ok, _log} = RedLog.commit(log, [])
+    {:ok, event} = CommitStore.latest_commit(serving, doc)
+
+    first_envelope = Envelope.for_commit(serving, genesis)
+    second_envelope = Envelope.for_commit(serving, event)
+
+    transport = fn
+      :cids, _peer, ^doc ->
+        {:ok, %{"cids" => [Base.encode64(genesis.id), Base.encode64(event.id)]}}
+
+      :commits, _peer, {^doc, [requested]} ->
+        assert requested == Base.encode64(event.id)
+        {:ok, %{"envelopes" => [first_envelope, second_envelope]}}
+    end
+
+    report = PullClient.pull_once([peer(doc)], store: pulling, transport: transport)
+
+    assert report == %{imported: 1, deferred: 0, rejected: 0, errors: []}
+    assert {:ok, _} = CommitStore.get_commit(pulling, event.id)
+  end
+
+  test "genesis cycle, event cycle, then quiescent pull stays live and readable",
+       %{serving: serving, pulling: pulling} do
+    previous_trust = Application.get_env(:commonplace, :trust)
+    Application.put_env(:commonplace, :trust, %{accept_unsigned: true, trusted_identities: %{}})
+    on_exit(fn -> Application.put_env(:commonplace, :trust, previous_trust) end)
+
+    doc = UUID.uuid4()
+    {:ok, genesis} = CommitStore.ensure_genesis(serving, doc)
+    :ok = CommitStore.set_latest(serving, doc, genesis.id)
+    transport = stub_transport(serving)
+
+    assert %{imported: 1, errors: []} =
+             PullClient.pull_once([peer(doc)], store: pulling, transport: transport)
+
+    log = RedLog.new(doc, serving) |> RedLog.append_raw(%{"incident" => "reproduced"})
+    assert {:ok, _log} = RedLog.commit(log, [])
+
+    assert %{imported: 1, errors: []} =
+             PullClient.pull_once([peer(doc)], store: pulling, transport: transport)
+
+    assert MapSet.size(CommitStore.commit_ids_for_doc(pulling, doc)) == 2
+    assert length(CommitStore.commit_log(pulling, doc)) == 2
+    assert {:ok, _doc} = DocBuilder.reconstruct_doc(pulling, doc)
+    assert RedLog.load(doc, pulling) |> RedLog.read() == [%{"incident" => "reproduced"}]
+
+    assert PullClient.pull_once([peer(doc)], store: pulling, transport: transport) == %{
+             imported: 0,
+             deferred: 0,
+             rejected: 0,
+             errors: []
+           }
+
+    assert {:ok, _} = CommitStore.get_commit(pulling, genesis.id)
   end
 end

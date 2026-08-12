@@ -24,6 +24,7 @@ defmodule Commonplace.Sync.NodeSyncImportHookTest do
   use ExUnit.Case, async: false
 
   alias Commonplace.Sync.NodeSync
+  alias Commonplace.Sync.MergeAdopter
   alias Commonplace.Store.{Commit, CommitStore, Namespace}
   alias Yelixer.{BlockStore, Doc, Encoding}
   alias Yelixer.Types.Text
@@ -264,7 +265,11 @@ defmodule Commonplace.Sync.NodeSyncImportHookTest do
       {doc_l, _} = Doc.get_or_create_type(doc_l, "t", :text)
       {:ok, doc_l} = Encoding.apply_update(doc_l, c_snap.update)
       doc_l = Text.insert(doc_l, "t", 0, "L")
-      l = CommitStore.create_chained_commit(store, uuid, Encoding.encode_update(doc_l), %{kind: :regular})
+
+      l =
+        CommitStore.create_chained_commit(store, uuid, Encoding.encode_update(doc_l), %{
+          kind: :regular
+        })
 
       # R is a sibling of L, imported then promoted to :latest to
       # simulate peer B whose local head is R (not L).
@@ -319,7 +324,11 @@ defmodule Commonplace.Sync.NodeSyncImportHookTest do
       {doc_l, _} = Doc.get_or_create_type(doc_l, "t", :text)
       {:ok, doc_l} = Encoding.apply_update(doc_l, c_snap.update)
       doc_l = Text.insert(doc_l, "t", 0, "L")
-      l = CommitStore.create_chained_commit(store, uuid, Encoding.encode_update(doc_l), %{kind: :regular})
+
+      l =
+        CommitStore.create_chained_commit(store, uuid, Encoding.encode_update(doc_l), %{
+          kind: :regular
+        })
 
       doc_r = Doc.new(client_id: 3)
       {doc_r, _} = Doc.get_or_create_type(doc_r, "t", :text)
@@ -359,6 +368,64 @@ defmodule Commonplace.Sync.NodeSyncImportHookTest do
 
       {:ok, latest} = CommitStore.latest_commit(store, uuid)
       assert latest.id == x.id
+    end
+  end
+
+  describe "linear descendant adoption (CX-z5rm)" do
+    test "verified import of a linear descendant advances the readable chain",
+         %{store: store} do
+      uuid = "hook-linear-descendant"
+      {:ok, genesis} = CommitStore.ensure_genesis(store, uuid)
+      :ok = CommitStore.set_latest(store, uuid, genesis.id)
+
+      doc = Doc.new(client_id: 71)
+      {doc, _} = Doc.get_or_create_type(doc, "t", :text)
+      doc = Text.insert(doc, "t", 0, "landed")
+
+      descendant =
+        Commit.new(uuid, Encoding.encode_update(doc), genesis.id, %{
+          kind: :regular,
+          snapshot_parent: genesis.id
+        })
+
+      assert :ok = NodeSync.import_with_translation(store, descendant)
+
+      assert CommitStore.commit_ids_for_doc(store, uuid) ==
+               MapSet.new([genesis.id, descendant.id])
+    end
+
+    test "imported sibling does not clobber local latest and adopter reports skipped",
+         %{store: store} do
+      uuid = "hook-linear-sibling"
+      {:ok, genesis} = CommitStore.ensure_genesis(store, uuid)
+      :ok = CommitStore.set_latest(store, uuid, genesis.id)
+
+      local_doc = Doc.new(client_id: 72)
+      {local_doc, _} = Doc.get_or_create_type(local_doc, "t", :text)
+      local_doc = Text.insert(local_doc, "t", 0, "local")
+
+      local =
+        CommitStore.create_chained_commit(
+          store,
+          uuid,
+          Encoding.encode_update(local_doc),
+          %{kind: :regular, snapshot_parent: genesis.id}
+        )
+
+      sibling_doc = Doc.new(client_id: 73)
+      {sibling_doc, _} = Doc.get_or_create_type(sibling_doc, "t", :text)
+      sibling_doc = Text.insert(sibling_doc, "t", 0, "remote")
+
+      sibling =
+        Commit.new(uuid, Encoding.encode_update(sibling_doc), genesis.id, %{
+          kind: :regular,
+          snapshot_parent: genesis.id
+        })
+
+      assert :ok = NodeSync.import_with_translation(store, sibling)
+      assert :skipped = MergeAdopter.maybe_adopt(store, sibling)
+      assert {:ok, %{id: id}} = CommitStore.latest_commit(store, uuid)
+      assert id == local.id
     end
   end
 end

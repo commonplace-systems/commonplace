@@ -565,6 +565,22 @@ defmodule Commonplace.Store.CommitStoreClient do
   end
 
   @doc """
+  Every commit id persisted for the doc, including imported commits not on
+  the adopted `:latest` chain (see `CommitStore.all_commit_ids_for_doc/2`).
+  The pull-federation differ denominates from this set (CX-5983): "what I
+  possess", never "what I have adopted".
+  """
+  def all_commit_ids_for_doc(server \\ CommitStore, doc_uuid) do
+    case remote_node() do
+      {:ok, node} ->
+        GenServer.call({CommitStore, node}, {:all_commit_ids_for_doc, doc_uuid})
+
+      :local ->
+        CommitStore.all_commit_ids_for_doc(normalize_server(server), doc_uuid)
+    end
+  end
+
+  @doc """
   Import a peer's commit (CX-bv3 / CX-ch5). In LOCAL mode, CX-3erd
   hoists the pure id-verification gate (CX-gwz — re-hash the commit
   and compare to its claimed `id`) to THIS edge, so a tampered commit

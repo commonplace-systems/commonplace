@@ -49,6 +49,7 @@ defmodule Commonplace.Sync.TwoPeerMergeE2ETest do
     on_exit(fn ->
       if Process.alive?(pid_a), do: (try do GenServer.stop(pid_a) catch (:exit, _ -> :ok) end)
       if Process.alive?(pid_b), do: (try do GenServer.stop(pid_b) catch (:exit, _ -> :ok) end)
+
       File.rm_rf!(dir_a)
       File.rm_rf!(dir_b)
     end)
@@ -121,7 +122,8 @@ defmodule Commonplace.Sync.TwoPeerMergeE2ETest do
   # other's divergent commit; the hook invokes the late-edit
   # auto-translator (CX-atk3) when the incoming commit's
   # snapshot_parent doesn't match the local epoch, so cross-epoch
-  # peers auto-recover at sync time. Imports do NOT touch `:latest`.
+  # peers auto-recover at sync time. An imported commit advances
+  # `:latest` only when it strictly dominates the current local head.
   defp sibling_exchange(store_a, store_b, uuid) do
     ids_a = CommitStore.commit_ids_for_doc(store_a, uuid)
     ids_b = CommitStore.commit_ids_for_doc(store_b, uuid)
@@ -306,14 +308,21 @@ defmodule Commonplace.Sync.TwoPeerMergeE2ETest do
   end
 
   describe "cross-epoch two-peer merge (CX-hmkz)" do
-    test "peer A post-divergence snapshot + bilateral sibling-merger — no duplication",
+    test "peer A converges by linear adoption; peer B merges its genuine sibling — no duplication",
          %{store_a: store_a, store_b: store_b} do
       uuid = "e2e-hmkz-cross-epoch"
       {_snap_a, _snap_l, _r_commit} = seed_diverged_content_cross_epoch(store_a, store_b, uuid)
 
       :ok = sibling_exchange(store_a, store_b, uuid)
 
-      {:ok, :merged, _} = SiblingMerger.maybe_merge_siblings(store_a, uuid, strategy: :translate)
+      content_a_after_adoption = reconstruct_content(store_a, uuid)
+
+      assert String.contains?(content_a_after_adoption, "Y"),
+             "peer A must contain Y from import-time domination adoption before sibling merge: #{inspect(content_a_after_adoption)}"
+
+      assert {:ok, :no_siblings} =
+               SiblingMerger.maybe_merge_siblings(store_a, uuid, strategy: :translate)
+
       {:ok, :merged, _} = SiblingMerger.maybe_merge_siblings(store_b, uuid, strategy: :translate)
 
       content_a = reconstruct_content(store_a, uuid)
@@ -332,6 +341,47 @@ defmodule Commonplace.Sync.TwoPeerMergeE2ETest do
         refute String.length(content) > 5,
                "peer #{peer} duplication: #{inspect(content)}"
       end
+    end
+
+    test "peer A merges a genuine cross-epoch sibling after a post-snapshot local edit",
+         %{store_a: store_a, store_b: store_b} do
+      uuid = "e2e-hmkz-cross-epoch-true-sibling"
+
+      {_snap_a, _snap_l, _r_commit} =
+        seed_diverged_content_cross_epoch(store_a, store_b, uuid)
+
+      {:ok, doc_z} = DocBuilder.reconstruct_doc(store_a, uuid, client_id: 300)
+      doc_z = ContentType.insert_text(doc_z, 4, "Z")
+
+      _z_commit =
+        CommitStore.create_chained_commit(
+          store_a,
+          uuid,
+          Encoding.encode_update(doc_z),
+          %{kind: :regular}
+        )
+
+      :ok = sibling_exchange(store_a, store_b, uuid)
+
+      assert {:ok, :merged, _} =
+               SiblingMerger.maybe_merge_siblings(store_a, uuid, strategy: :translate)
+
+      content_a = reconstruct_content(store_a, uuid)
+
+      assert String.contains?(content_a, "abc"),
+             "peer A missing baseline: #{inspect(content_a)}"
+
+      assert String.contains?(content_a, "X"),
+             "peer A missing X: #{inspect(content_a)}"
+
+      assert String.contains?(content_a, "Y"),
+             "peer A missing Y: #{inspect(content_a)}"
+
+      assert String.contains?(content_a, "Z"),
+             "peer A missing Z: #{inspect(content_a)}"
+
+      refute String.length(content_a) > 6,
+             "peer A duplication: #{inspect(content_a)}"
     end
   end
 
