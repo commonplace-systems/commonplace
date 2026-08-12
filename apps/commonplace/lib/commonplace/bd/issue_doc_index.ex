@@ -32,6 +32,9 @@ defmodule Commonplace.Bd.IssueDocIndex do
   Corrected runs retain those immutable rows and append a separately visible
   supersession record. Effective entries and scans subtract recorded
   supersessions; no directory/VISIBLE entry is ever changed.
+
+  A pre-marker orphan is invisible to declared facts BY CONSTRUCTION; its
+  instrument is manual review of `supersessions/1`.
   """
 
   alias Commonplace.Bd.{Schemas, Workspace}

@@ -829,10 +829,24 @@ defmodule Commonplace.ViewActionDispatch do
     store = Map.get(context, :store) || CommitStoreClient
 
     with {:ok, root_uuid} <- resolve_bd_root(context) do
+      covered_declared_docs =
+        store
+        |> Commonplace.Bd.IssueDocIndex.entries()
+        |> MapSet.size()
+
+      outside_coverage =
+        store
+        |> Commonplace.Bd.IssueDocIndex.supersessions()
+        |> map_size()
+
       {:ok, :ui_transition,
        %{
          action: "ticket_torn_creates",
          torn_creates: Commonplace.Bd.IssueDocIndex.scan(root_uuid, store),
+         covered_declared_docs: covered_declared_docs,
+         outside_coverage: outside_coverage,
+         coverage_warning:
+           "ONLY DECLARED ISSUE DOCS ARE COVERED; MANUALLY REVIEW THE SUPERSEDED SET FOR UNDECLARED DOCS OUTSIDE THIS SCAN",
          auto_link: false,
          warning: "TORN CREATES REQUIRE VISIBLE MANUAL RECOVERY; NOTHING WAS LINKED"
        }}
