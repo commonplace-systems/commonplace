@@ -45,6 +45,9 @@ defmodule Commonplace.Store.CommitStore do
                                               chain for `doc_uuid`.
       {:bd_issue_doc, doc_uuid}             — append-only CREATED intent
                                               for a bd issue document.
+      {:bd_issue_doc_superseded, doc_uuid}  — append-only recorded correction
+                                              for a backfill row that lacked
+                                              an issue creation declaration.
 
   (Attestations are proof-of-authorship records on the **gold** color-
   channel — see `Commonplace.Dataflow.Channel` for the channel
@@ -1005,6 +1008,17 @@ defmodule Commonplace.Store.CommitStore do
   @doc "Append one pre-existing issue document to the CREATED index (one-time backfill only)."
   def append_bd_issue_doc(server \\ __MODULE__, doc_uuid) when is_binary(doc_uuid) do
     GenServer.call(server, {:append_bd_issue_doc, doc_uuid})
+  end
+
+  @doc "Return recorded issue-index backfill corrections keyed by document UUID."
+  def bd_issue_doc_supersessions(server \\ __MODULE__) do
+    do_bd_issue_doc_supersessions(resolve_db(server))
+  end
+
+  @doc "Record an immutable correction that supersedes a spurious backfill index row."
+  def append_bd_issue_doc_supersession(server \\ __MODULE__, doc_uuid, reason)
+      when is_binary(doc_uuid) do
+    GenServer.call(server, {:append_bd_issue_doc_supersession, doc_uuid, reason})
   end
 
   @doc "Check if `ancestor_id` is an ancestor of `descendant_id` in the commit DAG."
@@ -2024,6 +2038,28 @@ defmodule Commonplace.Store.CommitStore do
   end
 
   @impl true
+  def handle_call({:append_bd_issue_doc_supersession, doc_uuid, reason}, _from, state) do
+    key = {:bd_issue_doc_superseded, doc_uuid}
+
+    reply =
+      cond do
+        CubDB.get(state.db, {:bd_issue_doc, doc_uuid}) != true ->
+          {:error, :missing_issue_doc_row}
+
+        is_nil(CubDB.get(state.db, key)) ->
+          CubDB.put(state.db, key, reason)
+
+        CubDB.get(state.db, key) == reason ->
+          :ok
+
+        true ->
+          {:error, {:supersession_conflict, CubDB.get(state.db, key)}}
+      end
+
+    {:reply, reply, state}
+  end
+
+  @impl true
   def handle_call({:is_ancestor, ancestor_id, descendant_id}, _from, state) do
     {:reply, do_is_ancestor(state.db, ancestor_id, descendant_id), state}
   end
@@ -2735,6 +2771,14 @@ defmodule Commonplace.Store.CommitStore do
     |> Enum.reduce(MapSet.new(), fn
       {{:bd_issue_doc, doc_uuid}, true}, acc -> MapSet.put(acc, doc_uuid)
     end)
+  end
+
+  defp do_bd_issue_doc_supersessions(db) do
+    CubDB.select(db,
+      min_key: {:bd_issue_doc_superseded, ""},
+      max_key: {:bd_issue_doc_superseded, @max_key_binary}
+    )
+    |> Map.new(fn {{:bd_issue_doc_superseded, doc_uuid}, reason} -> {doc_uuid, reason} end)
   end
 
   # CX-mg8s: the upper bound must EXCEED every possible commit id, and

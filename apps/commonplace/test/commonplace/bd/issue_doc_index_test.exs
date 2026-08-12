@@ -1,10 +1,10 @@
 defmodule Commonplace.Bd.IssueDocIndexTest do
   use ExUnit.Case, async: false
 
-  alias Commonplace.Bd.{Issue, IssueDocIndex, Schemas, Workspace}
+  alias Commonplace.Bd.{Comment, Issue, IssueDocIndex, Schemas, Workspace}
   alias Commonplace.Bd.Schemas.Issue, as: IssueRecord
   alias Commonplace.Store.{CommitStore, CommitStoreClient}
-  alias Commonplace.Tree.Schema
+  alias Commonplace.Tree.{DocBuilder, Schema}
   alias Yelixer.{Doc, Encoding}
   alias Commonplace.Document.ContentType
 
@@ -38,11 +38,45 @@ defmodule Commonplace.Bd.IssueDocIndexTest do
 
   test "one-time gated backfill accounts LANDED union REFUSED exactly to declared issue docs",
        ctx do
-    linked = pre_index_issue_doc!(ctx.store, "legacy-linked-doc", "CX-legacy-linked")
-    orphan = pre_index_issue_doc!(ctx.store, "legacy-orphan-doc", "CX-legacy-orphan")
-    link_issue_doc!(ctx.root, ctx.store, "CX-legacy-linked", linked)
+    {linked_dir, linked} =
+      pre_index_issue_dir!(
+        ctx.store,
+        "legacy-linked-dir",
+        "legacy-linked-doc",
+        "CX-legacy-linked"
+      )
 
-    assert IssueDocIndex.entries(ctx.store) == MapSet.new()
+    {_orphan_dir, orphan} =
+      pre_index_issue_dir!(ctx.store, "legacy-orphan-dir", "legacy-orphan-doc", "CX-7cpf")
+
+    link_issue_dir!(ctx.root, ctx.store, "CX-legacy-linked", linked_dir)
+
+    comment_doc =
+      pre_index_json_doc!(ctx.store, "legacy-comment-doc", %{
+        "id" => "c-XXXX",
+        "created_at" => "2026-08-12T00:00:00Z",
+        "body" => "shape collision"
+      })
+
+    chat_doc =
+      pre_index_json_doc!(ctx.store, "legacy-chat-doc", %{
+        "id" => "019eb2d7-d95e-7184-a0d6-9de7a813d426",
+        "created_at" => "2026-08-12T00:00:00Z",
+        "text" => "shape collision"
+      })
+
+    assert old_shape_issue_doc?(comment_doc, ctx.store)
+    assert old_shape_issue_doc?(chat_doc, ctx.store)
+    assert old_shape_issue_doc?(orphan, ctx.store)
+
+    first_backfill_rows = MapSet.new([linked, orphan, comment_doc, chat_doc])
+
+    Enum.each(
+      first_backfill_rows,
+      &assert(:ok = CommitStoreClient.append_bd_issue_doc(ctx.store, &1))
+    )
+
+    assert IssueDocIndex.entries(ctx.store) == first_backfill_rows
 
     assert {:ok, :tree_mutation, report} =
              Commonplace.ViewActionDispatch.dispatch("ticket_issue_index_backfill", %{
@@ -64,11 +98,42 @@ defmodule Commonplace.Bd.IssueDocIndexTest do
     assert accounted == input
     assert report.refused == []
     assert report.unaccounted == []
+    assert MapSet.new(report.superseded) == MapSet.new([comment_doc, chat_doc])
+    assert report.supersession_refused == []
     assert IssueDocIndex.entries(ctx.store) == input
-    assert [{"CX-legacy-orphan", ^orphan, _created_at}] = IssueDocIndex.scan(ctx.root, ctx.store)
+
+    assert Map.keys(IssueDocIndex.supersessions(ctx.store)) |> MapSet.new() ==
+             MapSet.new([comment_doc, chat_doc])
+
+    assert [{"CX-7cpf", ^orphan, _created_at}] = IssueDocIndex.scan(ctx.root, ctx.store)
   end
 
-  defp pre_index_issue_doc!(store, uuid, id) do
+  test "fresh comment and issue-shaped chat docs are not backfilled or scanned", ctx do
+    issue = Issue.build_with_id("CX-fresh", %{title: "fresh"})
+    assert {:ok, ^issue, issue_dir} = Issue.create_with_id(ctx.root, issue, "", ctx.store)
+
+    assert {:ok, _comment} =
+             Comment.add(ctx.root, issue.id, %{id: "c-fresh", body: "fresh"}, ctx.store)
+
+    {:ok, issue_schema} = Schemas.load_dir_schema(issue_dir, ctx.store)
+    {:ok, comments_entry} = Schema.get_entry(issue_schema, "comments")
+    {:ok, comments_schema} = Schemas.load_dir_schema(comments_entry.node_id, ctx.store)
+    {:ok, comment_entry} = Schema.get_entry(comments_schema, "c-fresh.json")
+
+    chat_doc =
+      pre_index_json_doc!(ctx.store, "fresh-chat-doc", %{
+        "id" => "019eb2d7-d95e-7184-a0d6-9de7a813d426",
+        "created_at" => "2026-08-12T00:00:00Z",
+        "text" => "fresh"
+      })
+
+    assert {:ok, report} = IssueDocIndex.backfill(ctx.root, ctx.store)
+    refute comment_entry.node_id in report.input
+    refute chat_doc in report.input
+    assert IssueDocIndex.scan(ctx.root, ctx.store) == []
+  end
+
+  defp pre_index_issue_dir!(store, dir_uuid, doc_uuid, id) do
     issue = %IssueRecord{
       id: id,
       title: id,
@@ -84,19 +149,16 @@ defmodule Commonplace.Bd.IssueDocIndexTest do
       extra: %{}
     }
 
-    doc = Doc.new() |> ContentType.create(:text, "metadata")
-    doc = ContentType.insert_text(doc, 0, Schemas.encode_issue(issue))
-    _commit = CommitStoreClient.create_commit(store, uuid, Encoding.encode_update(doc), nil)
-    uuid
-  end
-
-  defp link_issue_doc!(root, store, id, issue_doc_uuid) do
-    dir_uuid = UUID.uuid4()
-    dir_schema = Schema.new_schema() |> Schema.add_file(Schemas.issue_filename(), issue_doc_uuid)
+    issue_doc = pre_index_json_doc!(store, doc_uuid, Schemas.encode_issue(issue))
+    dir_schema = Schema.new_schema() |> Schema.add_file(Schemas.issue_filename(), issue_doc)
 
     _commit =
       CommitStoreClient.create_commit(store, dir_uuid, Encoding.encode_update(dir_schema), nil)
 
+    {dir_uuid, issue_doc}
+  end
+
+  defp link_issue_dir!(root, store, id, dir_uuid) do
     issues_uuid = Workspace.issues_dir_uuid(root, store)
     {:ok, issues_schema} = Schemas.load_dir_schema(issues_uuid, store)
     issues_schema = Schema.add_directory(issues_schema, "#{id}.iss", dir_uuid)
@@ -109,5 +171,27 @@ defmodule Commonplace.Bd.IssueDocIndexTest do
       )
 
     :ok
+  end
+
+  defp pre_index_json_doc!(store, uuid, json) when is_map(json),
+    do: pre_index_json_doc!(store, uuid, Jason.encode!(json))
+
+  defp pre_index_json_doc!(store, uuid, json) when is_binary(json) do
+    doc = Doc.new() |> ContentType.create(:text, "metadata")
+    doc = ContentType.insert_text(doc, 0, json)
+    _commit = CommitStoreClient.create_commit(store, uuid, Encoding.encode_update(doc), nil)
+    uuid
+  end
+
+  defp old_shape_issue_doc?(doc_uuid, store) do
+    with {:ok, doc} <- DocBuilder.reconstruct_doc(store, doc_uuid),
+         json when is_binary(json) <- ContentType.get_content(doc),
+         {:ok, issue} <- Schemas.decode_issue(json),
+         id when is_binary(id) and id != "" <- issue.id,
+         created_at when is_binary(created_at) and created_at != "" <- issue.created_at do
+      true
+    else
+      _ -> false
+    end
   end
 end
