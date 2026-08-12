@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+#
+# Exercise apps/yelixer from the position the umbrella used to hide: copied
+# outside the umbrella with no inherited build or dependencies. CX-1wt1 is a
+# blocking-debt gate for the yelixer publish/flip/delete arc, so CI runs this
+# before any of those transitions can proceed.
+
+set -euo pipefail
+
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SOURCE="$PROJECT_ROOT/apps/yelixer"
+SCRATCH="$(mktemp -d -t cp-yelixer-standalone.XXXXXX)"
+STANDALONE="$SCRATCH/yelixer"
+ORIGINAL_LOCK="$SCRATCH/original.mix.lock"
+
+cleanup() {
+  rm -rf -- "$SCRATCH"
+}
+trap cleanup EXIT
+
+mkdir -p "$STANDALONE"
+cp -a "$SOURCE/." "$STANDALONE/"
+rm -rf -- \
+  "$STANDALONE/_build" \
+  "$STANDALONE/deps" \
+  "$STANDALONE/test/fixtures/node_modules"
+
+if [[ -f "$STANDALONE/mix.lock" ]]; then
+  cp "$STANDALONE/mix.lock" "$ORIGINAL_LOCK"
+fi
+
+(
+  cd "$STANDALONE"
+  export HEX_HOME="$SCRATCH/hex"
+  mix deps.get
+
+  if [[ "${YELIXER_REQUIRE_YJS_ORACLE:-}" == "1" ]]; then
+    npm ci --prefix test/fixtures
+  fi
+
+  if [[ -f "$ORIGINAL_LOCK" ]] && ! cmp -s "$ORIGINAL_LOCK" mix.lock; then
+    echo "cp-yelixer-standalone: FAILED — mix deps.get changed the app lockfile." >&2
+    echo "  Dependency declarations and the committed standalone lock disagree." >&2
+    exit 1
+  fi
+
+  "$PROJECT_ROOT/bin/cp-test-guard" --min 390 -- mix test
+)

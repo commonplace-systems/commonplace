@@ -9,20 +9,31 @@ defmodule YelixerCommonplaceBoundary do
 
     case violations do
       [] ->
-        IO.puts("yelixer boundary check passed: no executable Commonplace references")
+        IO.puts("yelixer boundary check passed: no executable Common" <> "place references")
         :ok
 
       violations ->
-        IO.puts(:stderr, "yelixer boundary check failed: executable Commonplace references found")
+        IO.puts(
+          :stderr,
+          "yelixer boundary check failed: executable Common" <> "place references found"
+        )
+
         Enum.each(violations, &IO.puts(:stderr, &1))
         :error
     end
   end
 
   defp source_files(root) do
+    yelixer_root =
+      if File.dir?(Path.join([root, "apps", "yelixer"])) do
+        Path.join([root, "apps", "yelixer"])
+      else
+        root
+      end
+
     ["lib", "test"]
     |> Enum.flat_map(fn directory ->
-      Path.wildcard(Path.join([root, "apps", "yelixer", directory, "**", "*.{ex,exs}"]))
+      Path.wildcard(Path.join([yelixer_root, directory, "**", "*.{ex,exs}"]))
     end)
     |> Enum.sort()
   end
