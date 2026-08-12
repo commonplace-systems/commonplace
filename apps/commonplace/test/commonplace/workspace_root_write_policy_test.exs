@@ -161,6 +161,28 @@ defmodule Commonplace.WorkspaceRootWritePolicyTest do
     end
   end
 
+  test "cell manifest registration refuses the bare directory spelling then accepts the JSON doc for both classes",
+       ctx do
+    results =
+      for profile <- [:default, :minimal] do
+        root = initialize!(ctx, profile)
+        bare_result = attach_file(ctx.store, root, "__cell")
+        doc_result = attach_file(ctx.store, root, "__cell.json")
+        {profile, root, bare_result, doc_result}
+      end
+
+    for {profile, root, bare_result, doc_result} <- results do
+      assert {:error, {:trust_rejected, bare_reason}} =
+               bare_result
+
+      assert bare_reason ==
+               "workspace class '#{profile}' does not accept root entry '__cell' — declared in profile"
+
+      assert %Commonplace.Store.Commit{} = doc_result
+      assert {:ok, _entry} = Schema.get_entry(load_schema(ctx.store, root), "__cell.json")
+    end
+  end
+
   test "minimal refuses a registered substrate name and names its class and entry", ctx do
     root = initialize!(ctx, :minimal)
 
