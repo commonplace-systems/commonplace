@@ -2,9 +2,11 @@ defmodule Commonplace.Runner.ProvisionerTest do
   use ExUnit.Case, async: false
 
   alias Commonplace.Cell.Manifest
+  alias Commonplace.Crypto.Signing
   alias Commonplace.Runner.{PodProfile, Provisioner}
-  alias Commonplace.Store.CommitStore
+  alias Commonplace.Store.{CommitStoreClient, Supervisor}
   alias Commonplace.Tree.{DocBuilder, Schema}
+  alias Commonplace.Trust.Capability
   alias Commonplace.Workspace
 
   @cid String.duplicate("a", 64)
@@ -25,20 +27,31 @@ defmodule Commonplace.Runner.ProvisionerTest do
     git!(source_repo, ["add", "README.md"])
     git!(source_repo, ["commit", "--quiet", "-m", "fixture"])
     sha = git!(source_repo, ["rev-parse", "HEAD"])
+    principal_uuid = UUID.uuid4()
+    {principal_pubkey, principal_private_key} = Signing.generate_keypair()
 
     on_exit(fn -> File.rm_rf!(fixture_root) end)
 
-    %{fixture_root: fixture_root, source_repo: source_repo, pods_root: pods_root, sha: sha}
+    %{
+      fixture_root: fixture_root,
+      source_repo: source_repo,
+      pods_root: pods_root,
+      sha: sha,
+      principal_uuid: principal_uuid,
+      principal_pubkey: principal_pubkey,
+      principal_private_key: principal_private_key
+    }
   end
 
   test "birth provisions and verifies the pod-local world by effect", ctx do
-    manifest = valid_manifest(%{root_entries: ["notes"]})
+    manifest = valid_manifest(ctx, %{root_entries: ["notes"]})
 
     assert {:ok, pod} =
              Provisioner.provision(manifest, profile(),
                pods_root: ctx.pods_root,
                repo: ctx.source_repo,
-               sha: ctx.sha
+               sha: ctx.sha,
+               principal_pubkey: ctx.principal_pubkey
              )
 
     assert pod.sha == ctx.sha
@@ -58,11 +71,55 @@ defmodule Commonplace.Runner.ProvisionerTest do
     with_store(pod.data_dir, fn store ->
       assert {:ok, :minimal} = Workspace.profile(pod.root_uuid, store)
 
-      assert {:ok, %{case: :stored, manifest: %Manifest{id: "cell-provisioned"}}} =
+      assert {:ok,
+              %{
+                case: :stored,
+                manifest: %Manifest{
+                  id: "cell-provisioned",
+                  authority: %{certs: [cert_cid], authors_code: false}
+                }
+              }} =
                Manifest.read(pod.root_uuid, store)
+
+      assert {:ok, cid} = Base.decode16(cert_cid, case: :lower)
+      assert {:ok, cert} = CommitStoreClient.get_capability(store, cid)
+      assert cert.id == cid
+      assert cert.audience == {ctx.principal_uuid, ctx.principal_pubkey}
+      assert cert.claim.verbs == [:write]
+      assert cert.claim.scope == {:subtree, pod.root_uuid}
+      assert cert.claim.caveats == %{not_before: nil, not_after: nil}
+
+      # Shape alone cannot prove the cert BINDS: the id must match the bytes
+      # and the signature must verify against the issuer key. The S4 pins
+      # supply the other half — any valid cert of this shape authorizes per
+      # the pinned policy.
+      assert :ok = Capability.verify_id(cert)
+      assert :ok = Capability.verify_sig(cert)
 
       assert {:ok, root_doc} = DocBuilder.reconstruct_snapshot(store, pod.root_uuid)
       assert {:ok, %{name: "notes", type: :dir}} = Schema.get_entry(root_doc, "notes")
+    end)
+  end
+
+  test "authors_code birth stores the actual w+x certificate CID", ctx do
+    manifest = valid_manifest(ctx, %{authority: authority(true)})
+
+    assert {:ok, pod} =
+             Provisioner.provision(manifest, profile(), provision_opts(ctx))
+
+    with_store(pod.data_dir, fn store ->
+      assert {:ok, %{case: :stored, manifest: %Manifest{authority: %{certs: [cert_cid]}}}} =
+               Manifest.read(pod.root_uuid, store)
+
+      assert {:ok, cid} = Base.decode16(cert_cid, case: :lower)
+      assert {:ok, cert} = CommitStoreClient.get_capability(store, cid)
+      assert cert.id == cid
+      assert cert.audience == {ctx.principal_uuid, ctx.principal_pubkey}
+      assert cert.claim.verbs == [:execute, :write]
+      assert cert.claim.scope == {:subtree, pod.root_uuid}
+      assert cert.claim.caveats == %{not_before: nil, not_after: nil}
+      assert :ok = Capability.verify_id(cert)
+      assert :ok = Capability.verify_sig(cert)
     end)
   end
 
@@ -115,14 +172,14 @@ defmodule Commonplace.Runner.ProvisionerTest do
   end
 
   test "absent sync scope refuses at birth with the field named", ctx do
-    manifest = valid_manifest() |> Map.delete(:sync_scope)
+    manifest = valid_manifest(ctx) |> Map.delete(:sync_scope)
 
     assert {:error, {:invalid_manifest, "sync_scope", "is required"}} =
              Provisioner.provision(manifest, profile(), provision_opts(ctx))
   end
 
   test "unknown workspace class refuses at birth with the field named", ctx do
-    manifest = valid_manifest(%{workspace_class: "unknown"})
+    manifest = valid_manifest(ctx, %{workspace_class: "unknown"})
 
     assert {:error, {:invalid_manifest, "workspace_class", _reason}} =
              Provisioner.provision(manifest, profile(), provision_opts(ctx))
@@ -130,7 +187,7 @@ defmodule Commonplace.Runner.ProvisionerTest do
 
   test "names-only hosting check refuses a missing service by field and service name", ctx do
     manifest =
-      valid_manifest(%{
+      valid_manifest(ctx, %{
         environments: %{may_declare: true, requires_allowed: ["postgres", "redis"]}
       })
 
@@ -140,20 +197,51 @@ defmodule Commonplace.Runner.ProvisionerTest do
              Provisioner.provision(manifest, profile(), provision_opts(ctx))
   end
 
-  defp provision_opts(ctx) do
-    [pods_root: ctx.pods_root, repo: ctx.source_repo, sha: ctx.sha]
+  test "fresh birth refuses pre-listed authority certs by field name", ctx do
+    manifest = valid_manifest(ctx, %{authority: %{authority(false) | certs: [@cid]}})
+
+    assert {:error, {:invalid_manifest, "authority.certs", _reason}} =
+             Provisioner.provision(manifest, profile(), provision_opts(ctx))
   end
 
-  defp valid_manifest(overrides \\ %{}) do
+  test "fresh birth refuses a missing principal public key by field name", ctx do
+    manifest = valid_manifest(ctx)
+    opts = Keyword.delete(provision_opts(ctx), :principal_pubkey)
+
+    assert {:error, {:invalid_manifest, "principal", "public key not provided to provisioning"}} =
+             Provisioner.provision(manifest, profile(), opts)
+  end
+
+  test "fresh birth refuses a non-UUID principal by field name", ctx do
+    manifest =
+      valid_manifest(ctx, %{
+        principal: "principal-a",
+        stewards: ["principal-a"]
+      })
+
+    assert {:error, {:invalid_manifest, "principal", _reason}} =
+             Provisioner.provision(manifest, profile(), provision_opts(ctx))
+  end
+
+  defp provision_opts(ctx) do
+    [
+      pods_root: ctx.pods_root,
+      repo: ctx.source_repo,
+      sha: ctx.sha,
+      principal_pubkey: ctx.principal_pubkey
+    ]
+  end
+
+  defp valid_manifest(ctx, overrides \\ %{}) do
     Map.merge(
       %{
         id: "cell-provisioned",
         parent: "commonplace-factory",
         mission: "Exercise local pod provisioning",
-        principal: "principal-a",
+        principal: ctx.principal_uuid,
         workspace_class: "minimal",
         root_entries: [],
-        authority: %{certs: [@cid], authors_code: false, scope_note: nil},
+        authority: authority(false),
         sync_scope: %{
           rule: "git-tracked-set",
           excludes: [".beads"],
@@ -161,14 +249,18 @@ defmodule Commonplace.Runner.ProvisionerTest do
         },
         sla: %{tier: "durable", retention: "indefinite", note: "pod-local"},
         environments: %{may_declare: false, requires_allowed: ["postgres"]},
-        stewards: ["principal-a"],
-        auditors: ["principal-b"],
+        stewards: [ctx.principal_uuid],
+        auditors: [UUID.uuid4()],
         escalate_to: "commonplace-factory",
         outputs: ["chits"],
         environment_faced: []
       },
       overrides
     )
+  end
+
+  defp authority(authors_code) do
+    %{certs: [], authors_code: authors_code, scope_note: nil}
   end
 
   defp profile do
@@ -181,14 +273,23 @@ defmodule Commonplace.Runner.ProvisionerTest do
   end
 
   defp with_store(data_dir, fun) do
-    {:ok, store} = GenServer.start_link(CommitStore, data_dir: data_dir)
+    nonce = make_ref()
+    supervisor = {:global, {__MODULE__, :supervisor, nonce}}
+    store = {:global, {__MODULE__, :commit_store, nonce}}
+
+    {:ok, supervisor_pid} =
+      Supervisor.start_link(
+        data_dir: data_dir,
+        name: supervisor,
+        commit_store_name: store,
+        trust_side_store_name: {:global, {__MODULE__, :trust_side_store, nonce}},
+        pending_imports_name: {:global, {__MODULE__, :pending_imports, nonce}}
+      )
 
     try do
       fun.(store)
     after
-      db = CommitStore.db_handle(store)
-      GenServer.stop(store)
-      CubDB.stop(db)
+      Elixir.Supervisor.stop(supervisor_pid)
     end
   end
 
