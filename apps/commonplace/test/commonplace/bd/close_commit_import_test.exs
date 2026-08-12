@@ -164,8 +164,12 @@ defmodule Commonplace.Bd.CloseCommitImportTest do
     IO.puts("update_commit.metadata = #{inspect(update_commit.metadata)}")
     IO.puts("close_commit.metadata = #{inspect(close_commit.metadata)}")
 
-    # Ordinary bd writes still carry legacy-empty metadata.
-    assert create_commit.metadata == %{}
+    # S24: CREATE is now deliberately kinded so the append-only issue-doc
+    # intent marker can atomically derive its index row in the same store
+    # put_multi. UPDATE remains a legacy-empty ordinary write.
+    assert create_commit.metadata[:kind] == :regular
+    assert create_commit.metadata[:bd_issue_doc_created] == true
+    assert is_binary(create_commit.metadata[:snapshot_parent])
     assert update_commit.metadata == %{}
 
     # CX-gvbf: the CLOSE commit deliberately carries KINDED metadata —
