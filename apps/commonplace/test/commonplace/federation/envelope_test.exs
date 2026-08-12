@@ -17,6 +17,30 @@ defmodule Commonplace.Federation.EnvelopeTest do
   alias Commonplace.Store.Commit
   alias Commonplace.Trust.Capability
 
+  @full_metadata %{
+    kind: :regular,
+    snapshot_parent: <<1>>,
+    capability_proof: <<2>>,
+    derivation_map: %{<<1>> => %{{1, 0} => {2, 0}}},
+    snapshot_parents: [<<1>>],
+    snapshotter_version: 1,
+    proto_chit: true,
+    pr_merge: "pr-doc",
+    bd_issue_doc_created: true,
+    bd_terminal_pin: "{}",
+    bd_import: %{"source" => "bd"},
+    presence_janitor: %{
+      entry_name: "agent.bot",
+      presence_uuid: "presence-doc",
+      root_uuid: "root-doc",
+      last_heartbeat: "2026-08-12T00:00:00Z",
+      ttl_ms: 1_000,
+      now: "2026-08-12T00:00:02Z"
+    },
+    verb_section: "host-doc",
+    via_verb: {"verb-doc", "owner"}
+  }
+
   defp fixture do
     {root_pub, root_priv} = Signing.generate_keypair()
     {agent_pub, _agent_priv} = Signing.generate_keypair()
@@ -62,6 +86,73 @@ defmodule Commonplace.Federation.EnvelopeTest do
     {commit, _} = fixture()
     assert {:ok, %{commit: decoded, certs: []}} = commit |> Envelope.encode([]) |> Envelope.decode()
     assert decoded == commit
+  end
+
+  test "CX-7cpf full measured metadata vocabulary round-trips" do
+    commit = Commit.new("full-vocabulary", "payload", nil, @full_metadata)
+
+    assert {:ok, %{commit: decoded}} = commit |> Envelope.encode([]) |> Envelope.decode()
+    assert decoded == commit
+
+    for kind <- [:snapshot, :merge, :genesis, :git_bridge_inbound] do
+      kind_commit = Commit.new("kind-#{kind}", "payload", nil, %{kind: kind})
+
+      assert {:ok, %{commit: %{metadata: %{kind: ^kind}}}} =
+               kind_commit |> Envelope.encode([]) |> Envelope.decode()
+    end
+  end
+
+  test "CX-7cpf serving-side drift guard rejects undeclared metadata atoms" do
+    declared = Commit.new("declared", "payload", nil, %{kind: :regular, proto_chit: true})
+    assert is_binary(Envelope.encode(declared, []))
+
+    undeclared =
+      Commit.new("undeclared", "payload", nil, %{
+        kind: :regular,
+        undeclared_wire_atom_fixture: true
+      })
+
+    assert_raise ArgumentError,
+                 "commit carries atoms outside the declared federation wire vocabulary: :undeclared_wire_atom_fixture",
+                 fn -> Envelope.encode(undeclared, []) end
+  end
+
+  @tag timeout: 30_000
+  test "CX-7cpf fresh receiver decodes proto-chit without loading its emitter" do
+    commit = Commit.new("proto-chit", "payload", nil, %{kind: :regular, proto_chit: true})
+    fixture = commit |> Envelope.encode([]) |> Base.encode64()
+
+    child = ~S"""
+    existing_before =
+      try do
+        :erlang.binary_to_existing_atom("proto_chit", :utf8)
+        "present"
+      rescue
+        ArgumentError -> "absent"
+    end
+
+    IO.puts("proto_chit_before_envelope=" <> existing_before)
+    envelope_module = Module.concat(["Commonplace", "Federation", "Envelope"])
+    {:module, ^envelope_module} = Code.ensure_loaded(envelope_module)
+    encoded = System.argv() |> hd() |> Base.decode64!()
+
+    case apply(envelope_module, :decode, [encoded]) do
+      {:ok, %{commit: commit}} ->
+        IO.puts("decode=ok metadata_keys=" <> inspect(Map.keys(commit.metadata) |> Enum.sort()))
+
+      other ->
+        IO.puts("decode=" <> inspect(other))
+    end
+    """
+
+    ebins = Path.wildcard(Path.join([Mix.Project.build_path(), "lib", "*", "ebin"]))
+    args = Enum.flat_map(ebins, &["-pa", &1]) ++ ["-e", child, fixture]
+
+    assert {output, 0} =
+             System.cmd(System.find_executable("elixir"), args, stderr_to_stdout: true)
+
+    assert output =~ "proto_chit_before_envelope=absent"
+    assert output =~ "decode=ok"
   end
 
   test "tampered payload bytes are rejected, not crashed on" do
