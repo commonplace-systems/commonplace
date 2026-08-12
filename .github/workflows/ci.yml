@@ -47,7 +47,10 @@ jobs:
         run: mix compile --warnings-as-errors
 
       - name: Enforce yelixer boundary
-        run: elixir scripts/check_yelixer_commonplace_refs.exs
+        run: elixir apps/yelixer/test/support/check_commonplace_refs.exs
+
+      - name: Run yelixer from a standalone checkout
+        run: bin/cp-yelixer-standalone
 
       - name: Run tests
         # Wrapped in cp-test-guard because `mix test` exits 0 when it selects
