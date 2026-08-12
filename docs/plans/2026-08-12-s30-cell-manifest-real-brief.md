@@ -33,16 +33,24 @@ trust root rejected at S2v3 and b38c.
    note}, environments{may_declare, requires_allowed[]}, stewards[],
    auditors[], escalate_to, outputs[], environment_faced[]` — stored as
    a JSON text doc, the substrate's standard content shape.
-2. **Registry amendment**: `__cell` is ABSENT from
-   `workspace_root_write_policy.ex` `@registered_entries` (:35) — add it
-   for `:default` AND `:minimal`, following the file's existing dunder
-   naming grammar (registry entries are bare names like `__recipes`,
-   `__reflog`; the schema doc writes `__cell.json` — follow the
-   REGISTRY's convention for the root entry name and state the
-   reconciliation in one comment line). Precedent: the S20 `__reflog`
-   row (e2a6e0e), including its comment style. Red-first: a `:minimal`
-   root attach of the manifest entry REFUSES before the amendment,
-   lands after — both directions in one test, the e2a6e0e shape.
+2. **Registry amendment**: the manifest entry is ABSENT from
+   `workspace_root_write_policy.ex` `@registered_entries` (:35) — add
+   **`"__cell.json"`** for `:default` AND `:minimal`. The name is
+   DECIDED, by the registry's measured semantic convention (2026-08-12,
+   reviewer-verified at the attach sites, not inferred from the list):
+   bare dunder names are DIRECTORIES (`__recipes`/`__pulls`/`__system`
+   attach via dir creation, `__reflog` is the snapshot branch dir);
+   suffixed names are SINGLE CONTENT DOCS with the suffix stating the
+   kind (`__processes.json` and `__bursar.json` are `:text` JSON docs,
+   `__git-bridge.bot` a presence doc). The manifest is a single JSON
+   doc, so it takes the doc convention — which also matches the schema
+   doc's `__cell.json` verbatim. State this rule in the registry's
+   moduledoc line for the new entry so the next addition inherits the
+   discrimination instead of the ambiguity. Precedent: the S20
+   `__reflog` row (e2a6e0e), including its comment style. Red-first: a
+   `:minimal` root attach of `__cell.json` REFUSES before the
+   amendment, lands after — both directions in one test, the e2a6e0e
+   shape.
 3. **Gated write path**: manifest create/amend threads
    `:signing_context` like every governed write; root attach goes
    through the existing chokepoint (no new write ingress, no new
@@ -115,7 +123,8 @@ case; no authority carried in the manifest (references only — reviewer
 greps for any capability construction in the module); backfill
 re-read-verified and confirmation-gated; real-store runs named
 UNVERIFIED-operator; undetermined governance fields reported not
-invented; naming reconciliation (`__cell` vs `__cell.json`) stated.
+invented; the registry moduledoc carries the dir-bare/doc-suffixed
+naming rule alongside the new `__cell.json` row.
 
 ## Filing path (standing)
 
