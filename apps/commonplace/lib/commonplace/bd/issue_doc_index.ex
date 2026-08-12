@@ -22,9 +22,16 @@ defmodule Commonplace.Bd.IssueDocIndex do
 
   `backfill/2` is the one-time exception to the standing no-whole-store-walk
   rule. It walks at most 100,000 current document heads in one operator-invoked
-  pass, classifies issue documents, and refuses a larger store. It reports the
-  declared issue-document denominator and enforces `LANDED ∪ REFUSED == input`;
-  the live run is an operator daylight step.
+  pass. Historic issue documents are declared by a directory schema entry named
+  `__issue.json`; going-forward documents are declared by their genesis commit's
+  creation marker. Content shape never declares a document's type. It reports
+  the declared issue-document denominator and enforces
+  `LANDED ∪ REFUSED == input`; the live run is an operator daylight step.
+
+  A prior shape-based backfill may already have appended spurious CREATED rows.
+  Corrected runs retain those immutable rows and append a separately visible
+  supersession record. Effective entries and scans subtract recorded
+  supersessions; no directory/VISIBLE entry is ever changed.
   """
 
   alias Commonplace.Bd.{Schemas, Workspace}
@@ -34,6 +41,12 @@ defmodule Commonplace.Bd.IssueDocIndex do
 
   @creation_marker :bd_issue_doc_created
   @backfill_doc_limit 100_000
+  @creation_log_limit 10_000
+  @supersession_reason %{
+    reason: :missing_issue_creation_declaration,
+    detector: :schema_entry_or_creation_marker,
+    schema_entry: "__issue.json"
+  }
 
   @doc "Metadata marker that makes the issue-doc index row ride the same commit."
   def creation_metadata(metadata \\ %{}) when is_map(metadata) do
@@ -42,9 +55,14 @@ defmodule Commonplace.Bd.IssueDocIndex do
     |> Map.put(@creation_marker, true)
   end
 
-  @doc "The append-only set of issue document UUIDs recorded as CREATED."
+  @doc "The effective CREATED set after subtracting visibly superseded backfill rows."
   def entries(store \\ CommitStoreClient) do
-    CommitStoreClient.bd_issue_doc_uuids(store)
+    MapSet.difference(raw_entries(store), Map.keys(supersessions(store)) |> MapSet.new())
+  end
+
+  @doc "The immutable correction records that visibly supersede spurious backfill rows."
+  def supersessions(store \\ CommitStoreClient) do
+    CommitStoreClient.bd_issue_doc_supersessions(store)
   end
 
   @doc "Resolve directory-visible tickets to their `__issue.json` document UUIDs."
@@ -79,7 +97,23 @@ defmodule Commonplace.Bd.IssueDocIndex do
     case CommitStoreClient.all_doc_uuids_bounded(store, @backfill_doc_limit) do
       {:ok, doc_uuid_set} ->
         doc_uuids = Enum.sort(doc_uuid_set)
-        input = Enum.filter(doc_uuids, &issue_doc?(&1, store))
+        historic_declared = historic_declared_issue_docs(doc_uuids, store)
+        indexed = raw_entries(store)
+
+        {creation_declared, marker_unknown} =
+          indexed
+          |> MapSet.difference(historic_declared)
+          |> Enum.sort()
+          |> Enum.reduce({MapSet.new(), []}, fn doc_uuid, {declared, unknown} ->
+            case creation_marker_status(doc_uuid, store) do
+              :marked -> {MapSet.put(declared, doc_uuid), unknown}
+              :unmarked -> {declared, unknown}
+              :unknown -> {declared, [doc_uuid | unknown]}
+            end
+          end)
+
+        declared = MapSet.union(historic_declared, creation_declared)
+        input = Enum.sort(declared)
 
         {landed, refused} =
           Enum.reduce(input, {[], []}, fn doc_uuid, {landed, refused} ->
@@ -93,12 +127,33 @@ defmodule Commonplace.Bd.IssueDocIndex do
         refused = Enum.reverse(refused)
         accounted = MapSet.new(landed ++ Enum.map(refused, & &1.doc_uuid))
 
+        correction_input =
+          indexed
+          |> MapSet.difference(declared)
+          |> MapSet.difference(MapSet.new(marker_unknown))
+          |> Enum.sort()
+
+        {superseded, supersession_refused} =
+          Enum.reduce(correction_input, {[], []}, fn doc_uuid, {superseded, refused} ->
+            case CommitStoreClient.append_bd_issue_doc_supersession(
+                   store,
+                   doc_uuid,
+                   @supersession_reason
+                 ) do
+              :ok -> {[doc_uuid | superseded], refused}
+              {:error, reason} -> {superseded, [%{doc_uuid: doc_uuid, reason: reason} | refused]}
+            end
+          end)
+
         {:ok,
          %{
            input: input,
            landed: landed,
            refused: refused,
            unaccounted: MapSet.difference(MapSet.new(input), accounted) |> Enum.sort(),
+           superseded: Enum.reverse(superseded),
+           supersession_refused: Enum.reverse(supersession_refused),
+           supersession_unknown: Enum.reverse(marker_unknown),
            walked: length(doc_uuids),
            walk_limit: @backfill_doc_limit
          }}
@@ -112,8 +167,41 @@ defmodule Commonplace.Bd.IssueDocIndex do
     MapSet.difference(entries(store), visible_issue_docs(root_uuid, store))
   end
 
-  defp issue_doc?(doc_uuid, store) do
-    match?({:ok, _identity}, load_identity(doc_uuid, store))
+  defp raw_entries(store) do
+    CommitStoreClient.bd_issue_doc_uuids(store)
+  end
+
+  defp historic_declared_issue_docs(doc_uuids, store) do
+    Enum.reduce(doc_uuids, MapSet.new(), fn doc_uuid, declared ->
+      with {:ok, schema} <- Schemas.load_dir_schema(doc_uuid, store),
+           {:ok, %{type: :doc, node_id: issue_doc_uuid}} <-
+             Schema.get_entry(schema, Schemas.issue_filename()),
+           true <- is_binary(issue_doc_uuid) do
+        MapSet.put(declared, issue_doc_uuid)
+      else
+        _ -> declared
+      end
+    end)
+  end
+
+  defp creation_marker_status(doc_uuid, store) do
+    commits = CommitStoreClient.commit_log(store, doc_uuid, limit: @creation_log_limit)
+
+    cond do
+      Enum.any?(commits, fn commit ->
+        commit.doc_uuid == doc_uuid and Map.get(commit.metadata, @creation_marker) == true
+      end) ->
+        :marked
+
+      length(commits) < @creation_log_limit ->
+        :unmarked
+
+      match?(%{parent_id: nil}, List.last(commits)) ->
+        :unmarked
+
+      true ->
+        :unknown
+    end
   end
 
   defp load_identity(doc_uuid, store) do

@@ -514,6 +514,26 @@ defmodule Commonplace.Store.CommitStoreClient do
     end
   end
 
+  def bd_issue_doc_supersessions(server \\ CommitStore) do
+    case remote_node() do
+      {:ok, node} ->
+        GenServer.call({CommitStore, node}, :bd_issue_doc_supersessions)
+
+      :local ->
+        CommitStore.bd_issue_doc_supersessions(normalize_server(server))
+    end
+  end
+
+  def append_bd_issue_doc_supersession(server \\ CommitStore, doc_uuid, reason) do
+    case remote_node() do
+      {:ok, node} ->
+        GenServer.call({CommitStore, node}, {:append_bd_issue_doc_supersession, doc_uuid, reason})
+
+      :local ->
+        CommitStore.append_bd_issue_doc_supersession(normalize_server(server), doc_uuid, reason)
+    end
+  end
+
   def is_ancestor?(server \\ CommitStore, ancestor_id, descendant_id) do
     case remote_node() do
       {:ok, node} ->
