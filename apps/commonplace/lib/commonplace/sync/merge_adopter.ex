@@ -2,28 +2,27 @@ defmodule Commonplace.Sync.MergeAdopter do
   @moduledoc """
   CX-8k1v: autonomous B-side convergence via import-hook adoption.
 
-  When a peer imports a merge commit it did not invoke locally, the
+  When a peer imports a commit it did not invoke locally, the
   commit lands in the store via `import_commit` but `:latest` is
   intentionally not touched (CX-m3x preserves local heads from being
   clobbered by background sync). That leaves a convergence gap: a peer
-  that only receives merges — never invokes one — never advances
-  `:latest` to the merge, even though the merge is a strictly newer
+  that only receives commits — never writes one locally — never advances
+  `:latest` to an imported descendant, even though it is a strictly newer
   and valid head.
 
   This module fills the gap with a conservative rule:
 
-    If the imported commit is a merge whose ancestor DAG (via
+    If the imported commit's ancestor DAG (via
     `parent_id` + `merge_parents`, transitively) reaches the local
-    `:latest`, then the merge dominates the local head and it is safe
-    to advance `:latest` to the merge.
+    `:latest`, then the commit dominates the local head and it is safe
+    to advance `:latest` to the imported commit.
 
-  Note the direction: the walk follows *ancestor* edges from the merge,
-  so "the merge reaches local `:latest`" means local `:latest` is an
-  ancestor of the merge — the merge descends from the local head, not
+  Note the direction: the walk follows *ancestor* edges from the imported
+  commit, so "the commit reaches local `:latest`" means local `:latest` is an
+  ancestor of the commit — the commit descends from the local head, not
   the other way around. That is exactly why domination guarantees no
-  local work is lost: since the local head is an ancestor of the merge,
-  every local commit is already in the merge's ancestral closure and so
-  its content is folded into the merge's product. When the merge does
+  local work is lost: since the local head is an ancestor of the imported
+  commit, every local commit is already in its ancestral closure. When the commit does
   NOT dominate local `:latest` (a sibling case — neither head is an
   ancestor of the other), this module is a no-op and some other
   mechanism (SiblingMerger sweep, explicit merge invocation) is
@@ -43,12 +42,12 @@ defmodule Commonplace.Sync.MergeAdopter do
   @type outcome :: :adopted | :skipped
 
   @doc """
-  Advance `:latest` to `commit` iff `commit` is a merge dominating the
+  Advance `:latest` to `commit` iff `commit` strictly dominates the
   current local `:latest` for its `doc_uuid`. Returns `:adopted` when
   it fired, `:skipped` otherwise.
   """
   @spec maybe_adopt(GenServer.server(), Commit.t()) :: outcome()
-  def maybe_adopt(store, %Commit{metadata: %{kind: :merge}} = commit) do
+  def maybe_adopt(store, %Commit{} = commit) do
     case CommitStoreClient.latest_commit(store, commit.doc_uuid) do
       {:ok, %Commit{id: same_id}} when same_id == commit.id ->
         :skipped
@@ -66,8 +65,6 @@ defmodule Commonplace.Sync.MergeAdopter do
         :skipped
     end
   end
-
-  def maybe_adopt(_store, %Commit{}), do: :skipped
 
   @doc """
   True iff `target_id` is reachable from `commit` by walking
@@ -115,6 +112,7 @@ defmodule Commonplace.Sync.MergeAdopter do
       %{
         commit_id: commit.id,
         doc_uuid: commit.doc_uuid,
+        kind: Map.get(commit.metadata || %{}, :kind),
         prev_latest: prev_latest
       }
     )

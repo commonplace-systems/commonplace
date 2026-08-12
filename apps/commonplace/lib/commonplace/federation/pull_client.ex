@@ -110,7 +110,7 @@ defmodule Commonplace.Federation.PullClient do
 
   defp diff_missing(store, doc, remote_b64) do
     local =
-      CommitStoreClient.commit_ids_for_doc(store, doc)
+      CommitStoreClient.all_commit_ids_for_doc(store, doc)
       |> Enum.map(&Base.encode64/1)
       |> MapSet.new()
 
@@ -118,10 +118,13 @@ defmodule Commonplace.Federation.PullClient do
   end
 
   defp fetch_missing(_transport, _peer, _doc, []), do: {:ok, %{"envelopes" => []}}
-  defp fetch_missing(transport, peer, doc, missing), do: transport.(:commits, peer, {doc, missing})
+
+  defp fetch_missing(transport, peer, doc, missing),
+    do: transport.(:commits, peer, {doc, missing})
 
   defp import_envelope(store, encoded, acc, peer, doc) do
-    with {:ok, %{commit: commit, certs: certs, revocations: revocations}} <- Envelope.decode(encoded),
+    with {:ok, %{commit: commit, certs: certs, revocations: revocations}} <-
+           Envelope.decode(encoded),
          :ok <- Envelope.verify_certs(certs),
          :ok <- Envelope.verify_revocations(revocations) do
       Enum.each(certs, &CommitStoreClient.store_capability(store, &1))
@@ -135,6 +138,9 @@ defmodule Commonplace.Federation.PullClient do
       case NodeSync.import_with_translation(store, commit) do
         :ok ->
           %{acc | imported: acc.imported + 1}
+
+        :already_exists ->
+          acc
 
         {:error, {:trust_rejected, :awaiting_capability}} ->
           %{acc | deferred: acc.deferred + 1}

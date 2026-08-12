@@ -34,14 +34,13 @@ defmodule Commonplace.Sync.NodeSync do
   Default `fallback: true` per design — cross-epoch peers should
   auto-recover; the caller can disable with `fallback: false`.
 
-  ## Merge adoption (CX-8k1v)
+  ## Imported-head adoption (CX-8k1v, CX-5983)
 
   After an import succeeds, `MergeAdopter.maybe_adopt/2` opportunistically
-  advances `:latest` to the imported commit iff the commit is a merge
-  whose ancestor DAG dominates the current local `:latest`. Lets peers
-  that only receive merges (never invoke one locally) converge on the
-  merge head autonomously. Non-merge imports and non-dominating merges
-  are no-ops. See `Commonplace.Sync.MergeAdopter` for the design
+  advances `:latest` to the imported commit iff its ancestor DAG dominates
+  the current local `:latest`. This covers both linear descendants and
+  merge descendants. Sibling imports remain no-ops because neither head
+  dominates the other. See `Commonplace.Sync.MergeAdopter` for the design
   rationale and alternative (c) that was considered and not taken.
   """
 

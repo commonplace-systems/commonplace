@@ -22,14 +22,15 @@ defmodule Commonplace.SiblingMerger do
 
   ## Why this bead exists
 
-  `CommitStore.import_commit/2` persists remote commits into CubDB but
-  deliberately does NOT advance `:latest` if a head is already set —
-  advancing would silently clobber the local head when two peers
-  wrote chained off the same parent. As a result, imported sibling
-  commits are reachable via id lookup but invisible to the linear
-  chain walk from `:latest` (see `commit_ids_for_doc/2`). CX-l7j
-  fixed the in-process version of this race via GenServer mailbox
-  serialization; distributed siblings require post-hoc reassembly.
+  Imports advance `:latest` when the imported commit strictly dominates
+  the current head, whether that commit is linear or a merge. Domination
+  means the imported state contains the current state, so this advancement
+  cannot discard local work. Genuine siblings — neither head dominating
+  the other — remain off the `:latest` DAG and require this module's
+  post-hoc reassembly. The same reassembly path also remains necessary for
+  historic stores that already contain unadopted child commits from before
+  adoption-on-domination. CX-l7j fixed the in-process version of the
+  sibling race via GenServer mailbox serialization.
 
   ## Scope
 
