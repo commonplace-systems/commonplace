@@ -5,8 +5,8 @@ defmodule Commonplace.Sync.TwoNodeSyncTest do
   alias Commonplace.Sync.NodeSync
 
   setup do
-    dir_a = Path.join(System.tmp_dir!(), "cp_node_a_#{:rand.uniform(999999)}")
-    dir_b = Path.join(System.tmp_dir!(), "cp_node_b_#{:rand.uniform(999999)}")
+    dir_a = Path.join(System.tmp_dir!(), "cp_node_a_#{:rand.uniform(999_999)}")
+    dir_b = Path.join(System.tmp_dir!(), "cp_node_b_#{:rand.uniform(999_999)}")
     File.mkdir_p!(dir_a)
     File.mkdir_p!(dir_b)
 
@@ -14,13 +14,165 @@ defmodule Commonplace.Sync.TwoNodeSyncTest do
     {:ok, store_b} = CommitStore.start_link(data_dir: dir_b, name: :node_b_store)
 
     on_exit(fn ->
-      if Process.alive?(store_a), do: (try do GenServer.stop(store_a) catch (:exit, _ -> :ok) end)
-      if Process.alive?(store_b), do: (try do GenServer.stop(store_b) catch (:exit, _ -> :ok) end)
+      if Process.alive?(store_a),
+        do:
+          (try do
+             GenServer.stop(store_a)
+           catch
+             (:exit, _ -> :ok)
+           end)
+
+      if Process.alive?(store_b),
+        do:
+          (try do
+             GenServer.stop(store_b)
+           catch
+             (:exit, _ -> :ok)
+           end)
+
       File.rm_rf!(dir_a)
       File.rm_rf!(dir_b)
     end)
 
     %{store_a: store_a, store_b: store_b}
+  end
+
+  defp remote_call_for(store, test_pid, override \\ fn _request -> :passthrough end) do
+    fn {CommitStore, :test_remote}, request ->
+      send(test_pid, {:remote_call, request})
+
+      case override.(request) do
+        :passthrough -> GenServer.call(store, request)
+        result -> result
+      end
+    end
+  end
+
+  describe "catch_up/4 possession denominators and outcome report (CX-vddv)" do
+    test "does not re-fetch a possessed sibling and still transfers genuinely missing commits",
+         %{store_a: store_a, store_b: store_b} do
+      uuid = UUID.uuid4()
+      base_a = CommitStore.create_commit(store_a, uuid, "base", nil)
+      base_b = CommitStore.create_commit(store_b, uuid, "base", nil)
+      assert base_a.id == base_b.id
+
+      local_only = CommitStore.create_commit(store_a, uuid, "local", base_a.id)
+      remote_sibling = CommitStore.create_commit(store_b, uuid, "remote sibling", base_b.id)
+      remote_only = CommitStore.create_commit(store_b, uuid, "remote tip", remote_sibling.id)
+      local_only_id = local_only.id
+      remote_sibling_id = remote_sibling.id
+      remote_only_id = remote_only.id
+
+      assert :ok = CommitStore.import_commit(store_a, remote_sibling)
+      assert {:ok, %{id: ^local_only_id}} = CommitStore.latest_commit(store_a, uuid)
+      assert MapSet.member?(CommitStore.all_commit_ids_for_doc(store_a, uuid), remote_sibling.id)
+
+      remote_call = remote_call_for(:node_b_store, self())
+
+      assert {:ok,
+              %{
+                fetched: %{landed: 1, already_present: 0, deferred: 0, rejected: 0},
+                sent: %{landed: 1, already_present: 0, deferred: 0, rejected: 0}
+              }} = NodeSync.catch_up(uuid, :test_remote, store_a, remote_call: remote_call)
+
+      assert_receive {:remote_call, {:all_commit_ids_for_doc, ^uuid}}
+      assert_receive {:remote_call, {:get_commit, ^remote_only_id}}
+      assert_receive {:remote_call, {:import_commit, %{id: ^local_only_id}}}
+      refute_receive {:remote_call, {:get_commit, ^remote_sibling_id}}
+
+      assert {:ok, %{id: ^remote_only_id}} = CommitStore.get_commit(store_a, remote_only.id)
+      assert {:ok, %{id: ^local_only_id}} = CommitStore.get_commit(store_b, local_only.id)
+      assert {:ok, %{id: ^local_only_id}} = CommitStore.latest_commit(store_a, uuid)
+    end
+
+    test "propagates an unadopted sibling and classifies every sent import outcome",
+         %{store_a: store_a, store_b: store_b} do
+      uuid = UUID.uuid4()
+      base_a = CommitStore.create_commit(store_a, uuid, "base", nil)
+      base_b = CommitStore.create_commit(store_b, uuid, "base", nil)
+      assert base_a.id == base_b.id
+      base_b_id = base_b.id
+
+      landed = CommitStore.create_commit(store_a, uuid, "landed", base_a.id)
+      already_present = CommitStore.create_commit(store_a, uuid, "already", base_a.id)
+      deferred = CommitStore.create_commit(store_a, uuid, "deferred", base_a.id)
+      rejected = CommitStore.create_commit(store_a, uuid, "rejected", base_a.id)
+      landed_id = landed.id
+      already_present_id = already_present.id
+      deferred_id = deferred.id
+      rejected_id = rejected.id
+
+      assert {:ok, %{id: ^rejected_id}} = CommitStore.latest_commit(store_a, uuid)
+      refute MapSet.member?(CommitStore.commit_ids_for_doc(store_a, uuid), landed.id)
+      assert MapSet.member?(CommitStore.all_commit_ids_for_doc(store_a, uuid), landed.id)
+
+      override = fn
+        {:import_commit, %{id: ^already_present_id} = commit} ->
+          :ok = CommitStore.import_commit(store_b, commit)
+          CommitStore.import_commit(store_b, commit)
+
+        {:import_commit, %{id: ^deferred_id}} ->
+          {:error, {:trust_rejected, :awaiting_capability}}
+
+        {:import_commit, %{id: ^rejected_id}} ->
+          {:error, :forced_rejection}
+
+        _request ->
+          :passthrough
+      end
+
+      remote_call = remote_call_for(:node_b_store, self(), override)
+
+      assert {:ok,
+              %{
+                fetched: %{landed: 0, already_present: 0, deferred: 0, rejected: 0},
+                sent: %{landed: 1, already_present: 1, deferred: 1, rejected: 1}
+              }} = NodeSync.catch_up(uuid, :test_remote, store_a, remote_call: remote_call)
+
+      assert_receive {:remote_call, {:import_commit, %{id: ^landed_id}}}
+      assert {:ok, %{id: ^landed_id}} = CommitStore.get_commit(store_b, landed.id)
+
+      assert {:ok, %{id: ^already_present_id}} =
+               CommitStore.get_commit(store_b, already_present.id)
+
+      assert :none = CommitStore.get_commit(store_b, deferred.id)
+      assert :none = CommitStore.get_commit(store_b, rejected.id)
+      assert {:ok, %{id: ^base_b_id}} = CommitStore.latest_commit(store_b, uuid)
+    end
+
+    test "reports an already-present fetched race separately from a landing",
+         %{store_a: store_a, store_b: store_b} do
+      uuid = UUID.uuid4()
+      {:ok, genesis_a} = CommitStore.ensure_genesis(store_a, uuid)
+      {:ok, genesis_b} = CommitStore.ensure_genesis(store_b, uuid)
+      assert genesis_a.id == genesis_b.id
+
+      raced = CommitStore.create_commit(store_b, uuid, "raced", genesis_b.id)
+      landed = CommitStore.create_commit(store_b, uuid, "landed", raced.id)
+      raced_id = raced.id
+      landed_id = landed.id
+
+      override = fn
+        {:get_commit, ^raced_id} ->
+          {:ok, commit} = CommitStore.get_commit(store_b, raced_id)
+          :ok = CommitStore.import_commit(store_a, commit)
+          {:ok, commit}
+
+        _request ->
+          :passthrough
+      end
+
+      remote_call = remote_call_for(:node_b_store, self(), override)
+
+      assert {:ok,
+              %{
+                fetched: %{landed: 1, already_present: 1, deferred: 0, rejected: 0},
+                sent: %{landed: 0, already_present: 0, deferred: 0, rejected: 0}
+              }} = NodeSync.catch_up(uuid, :test_remote, store_a, remote_call: remote_call)
+
+      assert {:ok, %{id: ^raced_id}} = CommitStore.get_commit(store_a, raced.id)
+      assert {:ok, %{id: ^landed_id}} = CommitStore.get_commit(store_a, landed.id)
+    end
   end
 
   test "catch-up syncs missing commits between two stores", %{store_a: store_a, store_b: store_b} do
@@ -192,8 +344,10 @@ defmodule Commonplace.Sync.TwoNodeSyncTest do
 
     # Post-CX-m3x: the chains also include the deterministic genesis
     # stamped on the fresh doc — 3 user commits + 1 genesis = 4.
-    assert MapSet.size(ids_a) == 4  # genesis, base, a1, a2
-    assert MapSet.size(ids_b) == 4  # genesis, base, b1, b2
+    # genesis, base, a1, a2
+    assert MapSet.size(ids_a) == 4
+    # genesis, base, b1, b2
+    assert MapSet.size(ids_b) == 4
 
     {missing_a, missing_b} = NodeSync.diff_commit_ids(ids_a, ids_b)
 

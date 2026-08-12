@@ -42,6 +42,13 @@ defmodule Commonplace.Sync.NodeSync do
   merge descendants. Sibling imports remain no-ops because neither head
   dominates the other. See `Commonplace.Sync.MergeAdopter` for the design
   rationale and alternative (c) that was considered and not taken.
+
+  ## Catch-up possession and outcomes (CX-vddv)
+
+  Catch-up diffs every commit each store possesses, including unadopted
+  siblings, on both sides of the BEAM boundary. Its per-direction report
+  counts import outcomes (`:landed`, `:already_present`, `:deferred`, and
+  `:rejected`) rather than transfer attempts.
   """
 
   alias Commonplace.LateEditAutoTranslator
@@ -67,17 +74,29 @@ defmodule Commonplace.Sync.NodeSync do
   @doc """
   Perform catch-up sync for a document with a remote node.
 
-  1. Get local CID set
-  2. Get remote CID set (via GenServer.call to remote CommitStore)
+  1. Get every locally possessed CID
+  2. Get every remotely possessed CID (via GenServer.call to remote CommitStore)
   3. Diff
   4. Fetch missing commits from remote, store locally via import_commit
   5. Send missing commits to remote via import_commit
   """
   def catch_up(doc_uuid, remote_node, local_store \\ CommitStore) do
-    local_ids = CommitStoreClient.commit_ids_for_doc(local_store, doc_uuid)
+    catch_up(doc_uuid, remote_node, local_store, [])
+  end
+
+  @doc """
+  Performs catch-up with an injectable remote-call function.
+
+  CX-vddv: `:remote_call` is an additive test seam. It accepts the same
+  `(server, request)` arguments as `GenServer.call/2`; when omitted, catch-up
+  uses `GenServer.call/2` exactly as before.
+  """
+  def catch_up(doc_uuid, remote_node, local_store, opts) do
+    remote_call = Keyword.get(opts, :remote_call, &GenServer.call/2)
+    local_ids = CommitStoreClient.all_commit_ids_for_doc(local_store, doc_uuid)
 
     remote_ids =
-      GenServer.call({CommitStore, remote_node}, {:commit_ids_for_doc, doc_uuid})
+      remote_call.({CommitStore, remote_node}, {:all_commit_ids_for_doc, doc_uuid})
 
     {missing_local, missing_remote} = diff_commit_ids(local_ids, remote_ids)
 
@@ -85,7 +104,7 @@ defmodule Commonplace.Sync.NodeSync do
     fetched =
       missing_local
       |> Enum.map(fn id ->
-        GenServer.call({CommitStore, remote_node}, {:get_commit, id})
+        remote_call.({CommitStore, remote_node}, {:get_commit, id})
       end)
       |> Enum.filter(&match?({:ok, _}, &1))
       |> Enum.map(fn {:ok, commit} -> commit end)
@@ -93,9 +112,10 @@ defmodule Commonplace.Sync.NodeSync do
     # Store fetched commits locally (import_commit avoids clobbering :latest).
     # Route through import_with_translation so cross-epoch peers auto-recover
     # instead of silently dropping edits written against stale snapshots.
-    Enum.each(fetched, fn commit ->
-      import_with_translation(local_store, commit)
-    end)
+    fetched_outcomes =
+      Enum.reduce(fetched, empty_outcomes(), fn commit, outcomes ->
+        increment_outcome(outcomes, import_with_translation(local_store, commit))
+      end)
 
     # Send commits the remote is missing
     missing_commits =
@@ -106,16 +126,33 @@ defmodule Commonplace.Sync.NodeSync do
       |> Enum.filter(&match?({:ok, _}, &1))
       |> Enum.map(fn {:ok, commit} -> commit end)
 
-    Enum.each(missing_commits, fn commit ->
-      GenServer.call({CommitStore, remote_node}, {:import_commit, commit})
-    end)
+    sent_outcomes =
+      Enum.reduce(missing_commits, empty_outcomes(), fn commit, outcomes ->
+        result = remote_call.({CommitStore, remote_node}, {:import_commit, commit})
+        increment_outcome(outcomes, result)
+      end)
 
     Logger.debug(
-      "NodeSync catch_up #{doc_uuid}: fetched #{length(fetched)}, sent #{length(missing_commits)}"
+      "NodeSync catch_up #{doc_uuid}: fetched #{inspect(fetched_outcomes)}, sent #{inspect(sent_outcomes)}"
     )
 
-    {:ok, %{fetched: length(fetched), sent: length(missing_commits)}}
+    {:ok, %{fetched: fetched_outcomes, sent: sent_outcomes}}
   end
+
+  defp empty_outcomes do
+    %{landed: 0, already_present: 0, deferred: 0, rejected: 0}
+  end
+
+  defp increment_outcome(outcomes, :ok), do: Map.update!(outcomes, :landed, &(&1 + 1))
+
+  defp increment_outcome(outcomes, :already_exists),
+    do: Map.update!(outcomes, :already_present, &(&1 + 1))
+
+  defp increment_outcome(outcomes, {:error, {:trust_rejected, :awaiting_capability}}),
+    do: Map.update!(outcomes, :deferred, &(&1 + 1))
+
+  defp increment_outcome(outcomes, _rejection),
+    do: Map.update!(outcomes, :rejected, &(&1 + 1))
 
   @doc """
   Import a commit, auto-translating if it was written against a stale
