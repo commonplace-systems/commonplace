@@ -52,11 +52,16 @@ defmodule Commonplace.Bd.TornCreateScanTest do
   test "on-demand torn-list action is loud and has NO auto-link path", ctx do
     issue = Issue.build_with_id("CX-7cpf", %{title: "torn create fixture"})
     write_indexed_issue_doc!(ctx.store, @cx_7cpf_doc, issue)
+    store_before = store_fingerprint(ctx.store)
 
     assert {:ok, :ui_transition,
             %{
               action: "ticket_torn_creates",
               torn_creates: [{"CX-7cpf", @cx_7cpf_doc, _created_at}],
+              covered_declared_docs: 1,
+              outside_coverage: 0,
+              coverage_warning:
+                "ONLY DECLARED ISSUE DOCS ARE COVERED; MANUALLY REVIEW THE SUPERSEDED SET FOR UNDECLARED DOCS OUTSIDE THIS SCAN",
               auto_link: false
             }} =
              Commonplace.ViewActionDispatch.dispatch("ticket_torn_creates", %{
@@ -65,8 +70,62 @@ defmodule Commonplace.Bd.TornCreateScanTest do
                args: %{}
              })
 
+    assert store_fingerprint(ctx.store) == store_before
     assert Workspace.issue_dir_uuid(ctx.root, "CX-7cpf", ctx.store) == :error
     assert IssueDocIndex.visible_issue_docs(ctx.root, ctx.store) == MapSet.new()
+  end
+
+  test "dispatch coverage counts are read from effective entries and supersessions", ctx do
+    covered_issue = Issue.build_with_id("CX-covered", %{title: "covered declaration"})
+    write_indexed_issue_doc!(ctx.store, "covered-doc", covered_issue)
+
+    superseded_issue = Issue.build_with_id("CX-superseded", %{title: "superseded declaration"})
+    write_indexed_issue_doc!(ctx.store, "superseded-doc", superseded_issue)
+
+    assert :ok =
+             CommitStoreClient.append_bd_issue_doc_supersession(
+               ctx.store,
+               "superseded-doc",
+               %{reason: :fixture}
+             )
+
+    assert {:ok, :ui_transition,
+            %{
+              covered_declared_docs: 1,
+              outside_coverage: 1,
+              coverage_warning:
+                "ONLY DECLARED ISSUE DOCS ARE COVERED; MANUALLY REVIEW THE SUPERSEDED SET FOR UNDECLARED DOCS OUTSIDE THIS SCAN"
+            }} = dispatch_scan(ctx)
+  end
+
+  test "fresh store reports full declared-doc coverage with zero supersessions", ctx do
+    assert {:ok, :ui_transition,
+            %{
+              torn_creates: [],
+              covered_declared_docs: 0,
+              outside_coverage: 0,
+              coverage_warning:
+                "ONLY DECLARED ISSUE DOCS ARE COVERED; MANUALLY REVIEW THE SUPERSEDED SET FOR UNDECLARED DOCS OUTSIDE THIS SCAN"
+            }} = dispatch_scan(ctx)
+  end
+
+  defp dispatch_scan(ctx) do
+    Commonplace.ViewActionDispatch.dispatch("ticket_torn_creates", %{
+      root_uuid: ctx.root,
+      store: ctx.store,
+      args: %{}
+    })
+  end
+
+  defp store_fingerprint(store) do
+    doc_uuids = CommitStoreClient.all_doc_uuids(store)
+
+    %{
+      doc_uuids: doc_uuids,
+      commit_ids: Map.new(doc_uuids, &{&1, CommitStoreClient.commit_ids_for_doc(store, &1)}),
+      issue_doc_entries: IssueDocIndex.entries(store),
+      supersessions: IssueDocIndex.supersessions(store)
+    }
   end
 
   defp write_indexed_issue_doc!(store, uuid, issue) do
