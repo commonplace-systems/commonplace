@@ -760,6 +760,38 @@ defmodule Commonplace.Store.CommitStore do
   end
 
   @doc """
+  Deadline-aware landing for the CX-gc7q ticket-create chain.
+
+  The caller supplies both the absolute monotonic deadline carried from
+  the MCP boundary and the remaining-time call timeout derived immediately
+  before this seam. The absolute value also rides in the request so queued
+  work can refuse without persisting after the caller's wait expires.
+  """
+  @spec put_built_commit(
+          GenServer.server(),
+          Commit.t(),
+          binary() | nil,
+          Commit.t() | nil,
+          integer(),
+          pos_integer()
+        ) :: {:ok, Commit.t()} | {:error, :parent_moved | :deadline_expired}
+  def put_built_commit(
+        server,
+        %Commit{} = commit,
+        expected_parent_id,
+        genesis,
+        deadline,
+        timeout
+      )
+      when is_integer(deadline) and is_integer(timeout) and timeout > 0 do
+    GenServer.call(
+      server,
+      {:put_built_commit, commit, expected_parent_id, genesis, deadline},
+      timeout
+    )
+  end
+
+  @doc """
   Expose the live CubDB handle for `server` (wraps `resolve_db/1`).
 
   Public so `Commonplace.Store.CommitStoreClient`'s CX-3erd caller-side
@@ -1742,6 +1774,20 @@ defmodule Commonplace.Store.CommitStore do
       commit = do_write_commit(:create_commit, state, doc_uuid, update, parent_id, metadata, [])
       {:reply, commit, state}
     end)
+  end
+
+  @impl true
+  def handle_call(
+        {:put_built_commit, %Commit{} = commit, expected_parent_id, genesis, deadline},
+        from,
+        state
+      )
+      when is_integer(deadline) do
+    if System.monotonic_time(:millisecond) >= deadline do
+      {:reply, {:error, :deadline_expired}, state}
+    else
+      handle_call({:put_built_commit, commit, expected_parent_id, genesis}, from, state)
+    end
   end
 
   @impl true
