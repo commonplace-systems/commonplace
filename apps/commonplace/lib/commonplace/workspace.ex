@@ -52,7 +52,13 @@ defmodule Commonplace.Workspace do
     root_doc = Schema.new_schema() |> Schema.put_workspace_profile(profile)
     update = Yelixer.Encoding.encode_update(root_doc)
 
-    with {:ok, node_context} <- NodeIdentity.signing_context() do
+    node_context_result =
+      case Keyword.fetch(opts, :signing_context) do
+        {:ok, context} -> {:ok, context}
+        :error -> NodeIdentity.signing_context()
+      end
+
+    with {:ok, node_context} <- node_context_result do
       initialize_root(data_dir, checkout_dir, store, root_uuid, update, node_context)
     end
   end

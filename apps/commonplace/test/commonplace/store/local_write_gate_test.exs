@@ -107,6 +107,48 @@ defmodule Commonplace.Store.LocalWriteGateTest do
   # ── Pin 2: strict + unsigned → rejected, red event, nothing persisted,
   #    no CAS retry ────────────────────────────────────────────────────
   describe "pin 2: strict + unsigned browser write is rejected in enforce mode" do
+    test "store-local gate and trust path override permissive ambient config" do
+      old_trust = Application.get_env(:commonplace, :trust)
+      old_gate = Application.get_env(:commonplace, :local_write_gate)
+      Application.put_env(:commonplace, :trust, %{accept_unsigned: true})
+      Application.put_env(:commonplace, :local_write_gate, :off)
+
+      dir =
+        Path.join(System.tmp_dir!(), "cp_explicit_write_gate_#{:rand.uniform(1_000_000_000)}")
+
+      File.mkdir_p!(dir)
+      File.write!(Path.join(dir, "trust.json"), Jason.encode!(%{accept_unsigned: false}))
+      n = :rand.uniform(1_000_000_000)
+      store = :"explicit_lwg_store_#{n}"
+
+      child =
+        Supervisor.child_spec(
+          {Commonplace.Store.Supervisor,
+           data_dir: dir,
+           name: :"explicit_lwg_sup_#{n}",
+           commit_store_name: store,
+           trust_side_store_name: :"explicit_lwg_tss_#{n}",
+           pending_imports_name: :"explicit_lwg_pi_#{n}",
+           local_write_gate: :enforce},
+          id: {:explicit_lwg, n}
+        )
+
+      start_supervised!(child)
+
+      on_exit(fn ->
+        restore_env(:trust, old_trust)
+        restore_env(:local_write_gate, old_gate)
+        File.rm_rf!(dir)
+      end)
+
+      uuid = UUID.uuid4()
+
+      assert {:error, {:trust_rejected, :unsigned}} =
+               CommitStore.create_commit(store, uuid, text_update("must not land"), nil)
+
+      assert :none = CommitStore.latest_commit(store, uuid)
+    end
+
     test "do_write_commit path rejects, persists nothing, emits telemetry", %{store: store} do
       strict!()
       enforce!()
@@ -203,6 +245,9 @@ defmodule Commonplace.Store.LocalWriteGateTest do
     end
   end
 
+  defp restore_env(key, nil), do: Application.delete_env(:commonplace, key)
+  defp restore_env(key, value), do: Application.put_env(:commonplace, key, value)
+
   # ── Pin 3: strict + player-signed write with pinned identity lands ───
   describe "pin 3: strict + pinned identity lands" do
     test "do_write_commit path", %{store: store, pub: pub, identity: identity, ctx: ctx} do
@@ -211,9 +256,7 @@ defmodule Commonplace.Store.LocalWriteGateTest do
       uuid = UUID.uuid4()
 
       commit =
-        CommitStore.create_commit(store, uuid, text_update("hi"), nil, %{},
-          signing_context: ctx
-        )
+        CommitStore.create_commit(store, uuid, text_update("hi"), nil, %{}, signing_context: ctx)
 
       assert %Commit{} = commit
       assert {:ok, _} = CommitStore.get_commit(store, commit.id)
@@ -443,7 +486,10 @@ defmodule Commonplace.Store.LocalWriteGateTest do
       assert {:ok, _} = CommitStore.get_commit(store, text_commit.id)
 
       code_doc = Yelixer.Doc.new() |> ContentType.create(:text, "code.ex")
-      code_doc = ContentType.insert_text(code_doc, 0, "defmodule Evil do\n  def run, do: :rm_rf\nend")
+
+      code_doc =
+        ContentType.insert_text(code_doc, 0, "defmodule Evil do\n  def run, do: :rm_rf\nend")
+
       code_update = Yelixer.Encoding.encode_update(code_doc)
 
       # The SAME :write-only signer writing RAW CODE is now DENIED at the local-

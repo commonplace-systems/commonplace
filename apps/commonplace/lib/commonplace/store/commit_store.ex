@@ -1304,6 +1304,8 @@ defmodule Commonplace.Store.CommitStore do
     invariant_dispatcher =
       Keyword.get(opts, :invariant_dispatcher, Commonplace.Invariants.Dispatcher)
 
+    local_write_gate = Keyword.get(opts, :local_write_gate, :ambient)
+
     case open_cubdb(path) do
       {:ok, db} ->
         case probe_integrity(db) do
@@ -1315,6 +1317,7 @@ defmodule Commonplace.Store.CommitStore do
               trust_side_store,
               pending_imports,
               invariant_dispatcher,
+              local_write_gate,
               lock_ref
             )
 
@@ -1330,6 +1333,7 @@ defmodule Commonplace.Store.CommitStore do
               trust_side_store,
               pending_imports,
               invariant_dispatcher,
+              local_write_gate,
               lock_ref
             )
         end
@@ -1344,6 +1348,7 @@ defmodule Commonplace.Store.CommitStore do
           trust_side_store,
           pending_imports,
           invariant_dispatcher,
+          local_write_gate,
           lock_ref
         )
     end
@@ -1407,6 +1412,7 @@ defmodule Commonplace.Store.CommitStore do
          trust_side_store,
          pending_imports,
          invariant_dispatcher,
+         local_write_gate,
          lock_ref
        ) do
     require Logger
@@ -1425,6 +1431,7 @@ defmodule Commonplace.Store.CommitStore do
           trust_side_store,
           pending_imports,
           invariant_dispatcher,
+          local_write_gate,
           lock_ref,
           nil
         )
@@ -1445,6 +1452,7 @@ defmodule Commonplace.Store.CommitStore do
           trust_side_store,
           pending_imports,
           invariant_dispatcher,
+          local_write_gate,
           lock_ref,
           reason
         )
@@ -1614,6 +1622,7 @@ defmodule Commonplace.Store.CommitStore do
          trust_side_store,
          pending_imports,
          invariant_dispatcher,
+         local_write_gate,
          lock_ref
        ) do
     ensure_doc_commit_index(db)
@@ -1631,6 +1640,7 @@ defmodule Commonplace.Store.CommitStore do
        trust_side_store: trust_side_store,
        pending_imports: pending_imports,
        invariant_dispatcher: invariant_dispatcher,
+       local_write_gate: local_write_gate,
        # CX-2479: the flock(2) hold on <data_dir>/commits.lock. Released
        # in terminate/2 — and by the kernel regardless, since the fd lives
        # in a NIF resource owned by this process's heap, which the VM frees
@@ -1746,6 +1756,7 @@ defmodule Commonplace.Store.CommitStore do
          trust_side_store,
          pending_imports,
          invariant_dispatcher,
+         local_write_gate,
          lock_ref,
          fresh_reinit_reason
        ) do
@@ -1773,6 +1784,7 @@ defmodule Commonplace.Store.CommitStore do
       trust_side_store,
       pending_imports,
       invariant_dispatcher,
+      local_write_gate,
       lock_ref
     )
   end
@@ -2526,7 +2538,7 @@ defmodule Commonplace.Store.CommitStore do
            commit,
            :write,
            {:doc, commit.doc_uuid},
-           Commonplace.Trust.config(),
+           resolved_trust_config(state),
            state.name
          ) do
       :ok -> :ok
@@ -2592,7 +2604,7 @@ defmodule Commonplace.Store.CommitStore do
   end
 
   defp trust_local_write_gate_check(commit, state) do
-    case Commonplace.Trust.local_write_gate() do
+    case resolved_local_write_gate(state) do
       :off ->
         :ok
 
@@ -2607,7 +2619,7 @@ defmodule Commonplace.Store.CommitStore do
         case Commonplace.Trust.authorized_to_write?(
                commit,
                {:doc, commit.doc_uuid},
-               Commonplace.Trust.config(),
+               resolved_trust_config(state),
                state.name
              ) do
           :ok -> :ok
@@ -2615,6 +2627,17 @@ defmodule Commonplace.Store.CommitStore do
         end
     end
   end
+
+  defp resolved_local_write_gate(%{local_write_gate: :ambient}),
+    do: Commonplace.Trust.local_write_gate()
+
+  defp resolved_local_write_gate(%{local_write_gate: gate})
+       when gate in [:off, :dry_run, :enforce],
+       do: gate
+
+  defp resolved_trust_config(%{local_write_gate: :ambient}), do: Commonplace.Trust.config()
+
+  defp resolved_trust_config(%{data_dir: data_dir}), do: Commonplace.Trust.config(data_dir)
 
   defp handle_local_write_denial(:dry_run, commit, reason) do
     Logger.warning(

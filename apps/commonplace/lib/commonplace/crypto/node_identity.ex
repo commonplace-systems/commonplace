@@ -50,9 +50,16 @@ defmodule Commonplace.Crypto.NodeIdentity do
   """
   @spec signing_context() :: {:ok, SigningContext.t()} | {:error, term()}
   def signing_context do
-    with {:ok, identity} <- Commonplace.Workspace.node_id(),
-         {:ok, {pub, priv}} <- load_or_mint_keypair(),
-         :ok <- publish_public_keys([pub]) do
+    data_dir = Application.get_env(:commonplace, :data_dir, "data")
+    signing_context(data_dir)
+  end
+
+  @doc "Return the node signing context for an explicitly supplied workspace."
+  @spec signing_context(Path.t()) :: {:ok, SigningContext.t()} | {:error, term()}
+  def signing_context(data_dir) when is_binary(data_dir) do
+    with {:ok, identity} <- Commonplace.Workspace.node_id(data_dir),
+         {:ok, {pub, priv}} <- load_or_mint_keypair(data_dir),
+         :ok <- publish_public_keys(data_dir, [pub]) do
       {:ok,
        %SigningContext{
          identity_uuid: identity,
@@ -74,9 +81,11 @@ defmodule Commonplace.Crypto.NodeIdentity do
   """
   @spec publish_public_keys_at_boot() :: :ok | {:error, term()}
   def publish_public_keys_at_boot do
+    data_dir = Application.get_env(:commonplace, :data_dir, "data")
+
     case public_keys() do
-      {:ok, keys} -> publish_public_keys(keys)
-      :absent -> publish_existing_public_key()
+      {:ok, keys} -> publish_public_keys(data_dir, keys)
+      :absent -> publish_existing_public_key(data_dir)
       {:error, _} = err -> err
     end
   end
@@ -103,7 +112,12 @@ defmodule Commonplace.Crypto.NodeIdentity do
   @spec public_keys() :: {:ok, [binary()]} | :absent | {:error, term()}
   def public_keys do
     data_dir = Application.get_env(:commonplace, :data_dir, "data")
+    public_keys(data_dir)
+  end
 
+  @doc "Read the node public-key artifact from an explicitly supplied workspace."
+  @spec public_keys(Path.t()) :: {:ok, [binary()]} | :absent | {:error, term()}
+  def public_keys(data_dir) when is_binary(data_dir) do
     case File.read(Path.join(data_dir, @public_keys_file)) do
       {:ok, contents} -> decode_public_keys(contents)
       {:error, :enoent} -> :absent
@@ -115,10 +129,13 @@ defmodule Commonplace.Crypto.NodeIdentity do
   @spec identity() :: {:ok, String.t()} | {:error, term()}
   def identity, do: Commonplace.Workspace.node_id()
 
+  @doc "Read the node signing identity from an explicitly supplied workspace."
+  @spec identity(Path.t()) :: {:ok, String.t()} | {:error, term()}
+  def identity(data_dir) when is_binary(data_dir), do: Commonplace.Workspace.node_id(data_dir)
+
   # --- key storage (mirrors Workspace.node_id's atomic-write discipline) ---
 
-  defp load_or_mint_keypair do
-    data_dir = Application.get_env(:commonplace, :data_dir, "data")
+  defp load_or_mint_keypair(data_dir) do
     path = Path.join(data_dir, @key_file)
 
     case File.read(path) do
@@ -137,8 +154,7 @@ defmodule Commonplace.Crypto.NodeIdentity do
     end
   end
 
-  defp publish_existing_public_key do
-    data_dir = Application.get_env(:commonplace, :data_dir, "data")
+  defp publish_existing_public_key(data_dir) do
     path = Path.join(data_dir, @key_file)
 
     case :file.open(path, [:read, :raw, :binary]) do
@@ -148,7 +164,7 @@ defmodule Commonplace.Crypto.NodeIdentity do
             {:ok, <<encoded_public_key::binary-size(44), "\n">>} ->
               with {:ok, public_key} <- Base.decode64(encoded_public_key),
                    true <- byte_size(public_key) == 32 do
-                publish_public_keys([public_key])
+                publish_public_keys(data_dir, [public_key])
               else
                 _ -> {:error, :corrupt_node_key}
               end
@@ -265,8 +281,7 @@ defmodule Commonplace.Crypto.NodeIdentity do
     end
   end
 
-  defp publish_public_keys(keys) do
-    data_dir = Application.get_env(:commonplace, :data_dir, "data")
+  defp publish_public_keys(data_dir, keys) do
     path = Path.join(data_dir, @public_keys_file)
     suffix = System.unique_integer([:positive, :monotonic])
     tmp = Path.join(data_dir, ".#{@public_keys_file}.#{suffix}.tmp")

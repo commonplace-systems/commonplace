@@ -57,6 +57,8 @@ defmodule Commonplace.Store.Supervisor do
       head-advance choke casts to. Omitting it leaves CommitStore's own
       default (`Commonplace.Invariants.Dispatcher`) in place; tests inject
       a probe process name here.
+    * `:local_write_gate` — optional store-local gate override. When absent,
+      the CommitStore preserves the ambient application configuration.
   """
   def start_link(opts) do
     name = Keyword.get(opts, :name, __MODULE__)
@@ -84,6 +86,10 @@ defmodule Commonplace.Store.Supervisor do
         trust_side_store: trust_side_store_name,
         pending_imports: pending_imports_name
       ] ++
+        case Keyword.fetch(opts, :local_write_gate) do
+          {:ok, gate} -> [local_write_gate: gate]
+          :error -> []
+        end ++
         case Keyword.fetch(opts, :invariant_dispatcher) do
           {:ok, dispatcher} -> [invariant_dispatcher: dispatcher]
           :error -> []
