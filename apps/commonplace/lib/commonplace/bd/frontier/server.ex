@@ -121,30 +121,35 @@ defmodule Commonplace.Bd.Frontier.Server do
     bd_uuid = Workspace.ensure_bd_dir(root_uuid, store)
     issues_dir_uuid = Workspace.issues_dir_uuid(root_uuid, store)
 
-    ready_uuid = ensure_json_file(bd_uuid, store, @ready_file)
-    blocked_uuid = ensure_json_file(bd_uuid, store, @blocked_file)
-    log_uuid = ensure_log_file(bd_uuid, store, @log_file, signing_context)
+    with ready_uuid when is_binary(ready_uuid) <-
+           ensure_json_file(bd_uuid, store, @ready_file),
+         blocked_uuid when is_binary(blocked_uuid) <-
+           ensure_json_file(bd_uuid, store, @blocked_file) do
+      log_uuid = ensure_log_file(bd_uuid, store, @log_file, signing_context)
 
-    Phoenix.PubSub.subscribe(Commonplace.PubSub, "commits:#{issues_dir_uuid}")
-    subscribed_issue_uuids = subscribe_all_issues(root_uuid, store)
+      Phoenix.PubSub.subscribe(Commonplace.PubSub, "commits:#{issues_dir_uuid}")
+      subscribed_issue_uuids = subscribe_all_issues(root_uuid, store)
 
-    frontier = Frontier.compute(root_uuid, store)
-    write_views(ready_uuid, blocked_uuid, frontier, store)
+      frontier = Frontier.compute(root_uuid, store)
+      write_views(ready_uuid, blocked_uuid, frontier, store)
 
-    state = %{
-      root_uuid: root_uuid,
-      store: store,
-      bd_uuid: bd_uuid,
-      issues_dir_uuid: issues_dir_uuid,
-      ready_uuid: ready_uuid,
-      blocked_uuid: blocked_uuid,
-      log_uuid: log_uuid,
-      signing_context: signing_context,
-      subscribed_issue_uuids: subscribed_issue_uuids,
-      prev_ready: frontier.ready
-    }
+      state = %{
+        root_uuid: root_uuid,
+        store: store,
+        bd_uuid: bd_uuid,
+        issues_dir_uuid: issues_dir_uuid,
+        ready_uuid: ready_uuid,
+        blocked_uuid: blocked_uuid,
+        log_uuid: log_uuid,
+        signing_context: signing_context,
+        subscribed_issue_uuids: subscribed_issue_uuids,
+        prev_ready: frontier.ready
+      }
 
-    {:ok, state}
+      {:ok, state}
+    else
+      {:error, reason} -> {:stop, reason}
+    end
   end
 
   @impl true
@@ -200,11 +205,13 @@ defmodule Commonplace.Bd.Frontier.Server do
 
       :error ->
         empty = Jason.encode!(%{"ready" => [], "blocked" => [], "computed_at" => nil})
-        uuid = Schemas.create_text_doc(empty, store)
-        schema = Schema.add_file(schema, filename, uuid)
-        update = Encoding.encode_update(schema)
-        CommitStoreClient.create_chained_commit(store, bd_uuid, update)
-        uuid
+
+        with {:ok, uuid} <- Schemas.create_text_doc_checked(empty, store) do
+          schema = Schema.add_file(schema, filename, uuid)
+          update = Encoding.encode_update(schema)
+          CommitStoreClient.create_chained_commit(store, bd_uuid, update)
+          uuid
+        end
     end
   end
 

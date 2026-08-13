@@ -333,21 +333,23 @@ defmodule Commonplace.Bd.Issue do
         &IssueDocIndex.creation_metadata/1
       )
 
-    issue_meta_uuid = Schemas.create_text_doc(issue_json, store, issue_opts)
-    desc_uuid = Schemas.create_text_doc(description, store, plain)
-    comments_uuid = Schemas.create_dir_with_meta(nil, nil, store, plain)
+    with {:ok, issue_meta_uuid} <-
+           Schemas.create_text_doc_checked(issue_json, store, issue_opts),
+         {:ok, desc_uuid} <- Schemas.create_text_doc_checked(description, store, plain) do
+      comments_uuid = Schemas.create_dir_with_meta(nil, nil, store, plain)
 
-    dir_doc =
-      dir_doc
-      |> Schema.add_file(Schemas.issue_filename(), issue_meta_uuid)
-      |> Schema.add_file(Schemas.description_filename(), desc_uuid)
-      |> Schema.add_directory("comments", comments_uuid)
+      dir_doc =
+        dir_doc
+        |> Schema.add_file(Schemas.issue_filename(), issue_meta_uuid)
+        |> Schema.add_file(Schemas.description_filename(), desc_uuid)
+        |> Schema.add_directory("comments", comments_uuid)
 
-    update = Encoding.encode_update(dir_doc)
+      update = Encoding.encode_update(dir_doc)
 
-    case CommitStoreClient.create_commit(store, dir_uuid, update, nil, %{}, plain) do
-      {:error, reason} -> {:error, reason}
-      _commit -> dir_uuid
+      case CommitStoreClient.create_commit(store, dir_uuid, update, nil, %{}, plain) do
+        {:error, reason} -> {:error, reason}
+        _commit -> dir_uuid
+      end
     end
   end
 

@@ -33,9 +33,10 @@ defmodule Commonplace.Bd.Label do
         {:ok, label, dir_uuid}
 
       :error ->
-        dir_uuid = build_label_dir(json, store)
-        :ok = add_label_entry(labels_dir, name, dir_uuid, store)
-        {:ok, label, dir_uuid}
+        with {:ok, dir_uuid} <- build_label_dir(json, store) do
+          :ok = add_label_entry(labels_dir, name, dir_uuid, store)
+          {:ok, label, dir_uuid}
+        end
     end
   end
 
@@ -82,11 +83,13 @@ defmodule Commonplace.Bd.Label do
   defp build_label_dir(json, store) do
     dir_uuid = UUID.uuid4()
     dir_doc = Schema.new_schema()
-    label_uuid = Schemas.create_text_doc(json, store)
-    dir_doc = Schema.add_file(dir_doc, "label.json", label_uuid)
-    update = Encoding.encode_update(dir_doc)
-    CommitStoreClient.create_commit(store, dir_uuid, update, nil)
-    dir_uuid
+
+    with {:ok, label_uuid} <- Schemas.create_text_doc_checked(json, store) do
+      dir_doc = Schema.add_file(dir_doc, "label.json", label_uuid)
+      update = Encoding.encode_update(dir_doc)
+      CommitStoreClient.create_commit(store, dir_uuid, update, nil)
+      {:ok, dir_uuid}
+    end
   end
 
   defp write_label_meta(dir_uuid, json, store) do

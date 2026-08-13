@@ -651,8 +651,10 @@ defmodule Commonplace.Bd.Schemas do
   end
 
   def create_dir_with_meta(meta_filename, json, store \\ CommitStoreClient, opts \\ []) do
-    {_result, dir_uuid} = do_create_dir_with_meta(meta_filename, json, store, opts)
-    dir_uuid
+    case do_create_dir_with_meta(meta_filename, json, store, opts) do
+      {{:error, reason}, _dir_uuid} -> {:error, reason}
+      {_landed, dir_uuid} -> dir_uuid
+    end
   end
 
   @doc "`create_dir_with_meta/4` with the store's answer kept."
@@ -669,16 +671,27 @@ defmodule Commonplace.Bd.Schemas do
     dir_uuid = UUID.uuid4()
     dir_doc = Schema.new_schema()
 
-    dir_doc =
+    meta_result =
       if json do
-        meta_uuid = create_text_doc(json, store, opts)
-        Schema.add_file(dir_doc, meta_filename, meta_uuid)
+        create_text_doc_checked(json, store, opts)
       else
-        dir_doc
+        {:ok, nil}
       end
 
-    update = Encoding.encode_update(dir_doc)
-    result = CommitStoreClient.create_commit(store, dir_uuid, update, nil, %{}, opts)
-    {result, dir_uuid}
+    case meta_result do
+      {:ok, nil} ->
+        update = Encoding.encode_update(dir_doc)
+        result = CommitStoreClient.create_commit(store, dir_uuid, update, nil, %{}, opts)
+        {result, dir_uuid}
+
+      {:ok, meta_uuid} ->
+        dir_doc = Schema.add_file(dir_doc, meta_filename, meta_uuid)
+        update = Encoding.encode_update(dir_doc)
+        result = CommitStoreClient.create_commit(store, dir_uuid, update, nil, %{}, opts)
+        {result, dir_uuid}
+
+      {:error, reason} ->
+        {{:error, reason}, dir_uuid}
+    end
   end
 end
