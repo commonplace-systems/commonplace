@@ -54,6 +54,8 @@ defmodule Commonplace.Cell.ManifestTest do
       {%{valid_manifest() | sla: %{tier: "best-effort", retention: nil, note: nil}}, "sla.tier"},
       {%{valid_manifest() | sla: %{tier: "ephemeral", retention: nil, note: nil}},
        "sla.retention"},
+      {%{valid_manifest() | sla: %{tier: "compactable", retention: nil, note: nil}},
+       "sla.retention"},
       {%{valid_manifest() | sync_scope: %{rule: "git-tracked-set", binary_extensions: []}},
        "sync_scope.excludes"},
       {%{
@@ -65,6 +67,49 @@ defmodule Commonplace.Cell.ManifestTest do
     for {manifest, field} <- cases do
       assert {:error, {:invalid_manifest, ^field, _reason}} = Manifest.validate(manifest)
     end
+  end
+
+  test "all three SLA tiers retain their declared validation behavior" do
+    assert :ok =
+             Manifest.validate(%{
+               valid_manifest()
+               | sla: %{tier: "durable", retention: nil, note: nil}
+             })
+
+    assert :ok =
+             Manifest.validate(%{
+               valid_manifest()
+               | sla: %{tier: "compactable", retention: "after-snapshot", note: nil}
+             })
+
+    assert :ok =
+             Manifest.validate(%{
+               valid_manifest()
+               | sla: %{tier: "ephemeral", retention: "30 days", note: nil}
+             })
+
+    assert {:error, {:invalid_manifest, "sla.retention", reason}} =
+             Manifest.validate(%{
+               valid_manifest()
+               | sla: %{tier: "ephemeral", retention: nil, note: nil}
+             })
+
+    assert reason == "is required for ephemeral SLA"
+  end
+
+  test "pin promotion and tier promises are observed answering both ways" do
+    protected = %{pinned?: true, snapshot?: false, tip?: false, witnessed?: false}
+
+    for tier <- ~w(durable compactable ephemeral) do
+      assert Manifest.survives_sla?(tier, protected)
+    end
+
+    refute Manifest.survives_sla?("ephemeral", %{
+             pinned?: false,
+             snapshot?: false,
+             tip?: false,
+             witnessed?: false
+           })
   end
 
   test "temporal read marks pre-field default and stored cases", ctx do
