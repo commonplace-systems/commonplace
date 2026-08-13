@@ -38,6 +38,13 @@ defmodule Commonplace.Runner.Provisioner do
 
   @declarations_file "runner-storage.json"
   @trust_file "trust.json"
+  @environment_contract %{
+    "COMMONPLACE_DATA_DIR" => :data_dir,
+    "HOME" => :home_dir,
+    "LANG" => {:literal, "C.UTF-8"},
+    "LC_ALL" => {:literal, "C.UTF-8"},
+    "PATH" => {:literal, "/usr/local/bin:/usr/bin:/bin"}
+  }
 
   @type posture :: %{
           required(:accept_unsigned) => boolean(),
@@ -60,6 +67,10 @@ defmodule Commonplace.Runner.Provisioner do
     end
   end
 
+  @doc "Return the environment-name set guaranteed by the pod contract."
+  @spec environment_names() :: MapSet.t(String.t())
+  def environment_names, do: @environment_contract |> Map.keys() |> MapSet.new()
+
   @doc """
   Construct the one safe bwrap specification for a pod.
 
@@ -73,13 +84,12 @@ defmodule Commonplace.Runner.Provisioner do
     home_dir = Path.join(pod_home, "home")
     uid = File.stat!("/proc/self").uid
 
-    environment = %{
-      "COMMONPLACE_DATA_DIR" => data_dir,
-      "HOME" => home_dir,
-      "LANG" => "C.UTF-8",
-      "LC_ALL" => "C.UTF-8",
-      "PATH" => "/usr/local/bin:/usr/bin:/bin"
-    }
+    environment =
+      environment_names()
+      |> Map.new(fn name ->
+        source = Map.get(@environment_contract, name)
+        {name, environment_value(source, data_dir, home_dir)}
+      end)
 
     masks = [
       %{
@@ -143,6 +153,10 @@ defmodule Commonplace.Runner.Provisioner do
       workdir: checkout_dir
     }
   end
+
+  defp environment_value(:data_dir, data_dir, _home_dir), do: data_dir
+  defp environment_value(:home_dir, _data_dir, home_dir), do: home_dir
+  defp environment_value({:literal, value}, _data_dir, _home_dir), do: value
 
   @doc "Assert the resolved posture required at the end of workspace birth."
   @spec assert_enforcing_posture(posture()) :: :ok | {:error, term()}

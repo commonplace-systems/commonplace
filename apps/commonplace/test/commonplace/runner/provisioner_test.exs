@@ -179,6 +179,14 @@ defmodule Commonplace.Runner.ProvisionerTest do
     end
   end
 
+  test "a real provisioned pod has exactly the pod-contract environment names", ctx do
+    assert {:ok, pod} =
+             Provisioner.provision(valid_manifest(ctx), profile(), provision_opts(ctx))
+
+    assert pod.sandbox_spec.environment |> Map.keys() |> MapSet.new() ==
+             Provisioner.environment_names()
+  end
+
   test "birth has no node-global application-env mutation seam" do
     source_path = Path.expand("../../../lib/commonplace/runner/provisioner.ex", __DIR__)
     source = File.read!(source_path)

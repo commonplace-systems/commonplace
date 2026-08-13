@@ -99,7 +99,7 @@ defmodule Commonplace.Runner.Launcher do
          :ok <-
            environment_available?(
              recipe_value(recipe, :env),
-             Provisioner.sandbox_spec(profile, state.pods_root).environment
+             Provisioner.environment_names()
            ),
          provision_opts = Keyword.merge(opts, pods_root: state.pods_root),
          {:ok, pod} <- Provisioner.provision(manifest, profile, provision_opts),
@@ -260,8 +260,8 @@ defmodule Commonplace.Runner.Launcher do
     end
   end
 
-  defp environment_available?(names, environment) do
-    missing = Enum.reject(names, &Map.has_key?(environment, &1))
+  defp environment_available?(names, available_names) do
+    missing = Enum.reject(names, &MapSet.member?(available_names, &1))
 
     case missing do
       [] ->
@@ -275,15 +275,8 @@ defmodule Commonplace.Runner.Launcher do
     end
   end
 
-  # `Map.fetch!` and not `Map.take`: the availability check above ran against
-  # `sandbox_spec(profile, pods_root)` while this resolves against the REAL
-  # pod's spec. Those are two different objects, and they agree only because
-  # the environment key set is a fixed literal independent of `pod_home`. A
-  # total function here would drop a declared variable SILENTLY if that ever
-  # lapses; this makes the disagreement loud. It does not remove it — one
-  # check against one object is a provisioning-order question, still open.
   defp resolve_environment(names, environment),
-    do: Map.new(names, fn name -> {name, Map.fetch!(environment, name)} end)
+    do: Map.take(environment, names)
 
   defp recipe_invocation(recipe, environment) do
     assignments =
