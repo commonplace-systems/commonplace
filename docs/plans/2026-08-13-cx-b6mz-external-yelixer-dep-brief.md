@@ -78,8 +78,27 @@ If they *can* coexist, continue below.
 
 ## What the flip is
 
+⭐ **RULED 2026-08-13 — THE URL MUST BE THE HTTPS FORM**,
+`https://github.com/commonplace-systems/yelixer.git`, **not
+`git@github.com:…`**. Three reasons, the first decisive:
+
+1. **CI has no SSH setup whatsoever** (verified: no key, no ssh-agent,
+   no deploy-key action in `.github/workflows/ci.yml`; `actions/checkout`
+   uses HTTPS). An SSH-form dep would fail in CI, so it is not a
+   preference — it is the only form that ships.
+2. **The gate proves the HTTPS form.** S37b's consumer runs inside a
+   sandbox whose `~/.ssh` is an empty tmpfs by design, so `git@` cannot
+   resolve there. ⛔ **A dep string the gate never exercised is exactly
+   the "working thing is misleading evidence" trap this round already
+   found twice** — the shipped string and the proven string must be the
+   same string.
+3. **A genuine third-party consumer has no push access** and would use
+   HTTPS precisely because they lack credentials. HTTPS is the more
+   faithful "can a stranger consume this," not a concession.
+
 - `{:yelixer, in_umbrella: true}` becomes a git dependency on
-  **`commonplace-systems/yelixer`**, pinned to a **LOCKED SHA**
+  **`https://github.com/commonplace-systems/yelixer.git`**, pinned to a
+  **LOCKED SHA**
   (`691a4f44a91039ecc02a8824a1a5fafa79d9c253` unless you have a reason
   to pin elsewhere — say the reason). ⛔ **Never `branch: "main"`, never
   floating.** CI must build the same bytes tomorrow as today.
