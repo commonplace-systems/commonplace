@@ -199,7 +199,7 @@ defmodule Commonplace.Store.CommitStoreClient do
     db = CommitStore.db_handle(server)
     built = CommitBuilder.build(db, doc_uuid, update, expected_parent, metadata, opts)
 
-    case CommitStore.put_built_commit(server, built.commit, expected_parent, built.genesis) do
+    case put_built_commit(server, built.commit, expected_parent, built.genesis, opts) do
       {:ok, commit} ->
         :telemetry.execute(
           [:commonplace, :commit_store, :write_cpu],
@@ -373,7 +373,11 @@ defmodule Commonplace.Store.CommitStoreClient do
   defp put_built_commit(server, commit, expected_parent, genesis, opts) do
     case Keyword.get(opts, :ticket_create_deadline) do
       nil ->
-        CommitStore.put_built_commit(server, commit, expected_parent, genesis)
+        if Keyword.has_key?(opts, :writer) do
+          CommitStore.put_built_commit(server, commit, expected_parent, genesis, opts)
+        else
+          CommitStore.put_built_commit(server, commit, expected_parent, genesis)
+        end
 
       deadline when is_integer(deadline) ->
         document = Keyword.fetch!(opts, :ticket_create_document)
@@ -383,14 +387,29 @@ defmodule Commonplace.Store.CommitStoreClient do
           deadline_error(document)
         else
           try do
-            case CommitStore.put_built_commit(
-                   server,
-                   commit,
-                   expected_parent,
-                   genesis,
-                   deadline,
-                   remaining
-                 ) do
+            result =
+              if Keyword.has_key?(opts, :writer) do
+                CommitStore.put_built_commit(
+                  server,
+                  commit,
+                  expected_parent,
+                  genesis,
+                  opts,
+                  deadline,
+                  remaining
+                )
+              else
+                CommitStore.put_built_commit(
+                  server,
+                  commit,
+                  expected_parent,
+                  genesis,
+                  deadline,
+                  remaining
+                )
+              end
+
+            case result do
               {:error, :deadline_expired} -> deadline_error(document)
               result -> result
             end

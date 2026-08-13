@@ -293,7 +293,11 @@ defmodule Commonplace.CommandRouter do
   commit with a specific key (CX-hoj — same forwarding as `write/2..4`).
   """
   def branch_activate(server \\ __MODULE__, parent_uuid, name, opts \\ []) do
-    commit_opts = Keyword.take(opts, [:signing_context])
+    commit_opts =
+      opts
+      |> Keyword.take([:signing_context])
+      |> Keyword.put(:writer, {__MODULE__, :branch_activate})
+
     GenServer.call(server, {:branch_set_sync, parent_uuid, name, true, commit_opts})
   end
 
@@ -306,7 +310,11 @@ defmodule Commonplace.CommandRouter do
   commit with a specific key (CX-hoj — same forwarding as `write/2..4`).
   """
   def branch_deactivate(server \\ __MODULE__, parent_uuid, name, opts \\ []) do
-    commit_opts = Keyword.take(opts, [:signing_context])
+    commit_opts =
+      opts
+      |> Keyword.take([:signing_context])
+      |> Keyword.put(:writer, {__MODULE__, :branch_deactivate})
+
     GenServer.call(server, {:branch_set_sync, parent_uuid, name, false, commit_opts})
   end
 
@@ -412,7 +420,11 @@ defmodule Commonplace.CommandRouter do
     # CX-o3r7: pass signing_context through to CommitStoreClient so
     # MCP-initiated writes can sign with the session's key. Absent →
     # CommitStore falls back to its default (global key or unsigned).
-    commit_opts = Keyword.take(opts, [:signing_context])
+    commit_opts =
+      opts
+      |> Keyword.take([:signing_context])
+      |> Keyword.put(:writer, {__MODULE__, :write})
+
     args = %{"uuid" => uuid, "new_bytes" => byte_size(new_content)}
 
     result =
@@ -427,7 +439,14 @@ defmodule Commonplace.CommandRouter do
                 old_content = ContentType.get_content(doc) || ""
                 doc = Diff.apply_diff(doc, old_content, new_content)
                 update = Yelixer.Encoding.encode_update(doc)
-                CommitStoreClient.create_chained_commit(state.store, uuid, update, %{}, commit_opts)
+
+                CommitStoreClient.create_chained_commit(
+                  state.store,
+                  uuid,
+                  update,
+                  %{},
+                  commit_opts
+                )
 
                 audit = %{
                   "uuid" => uuid,
@@ -448,7 +467,14 @@ defmodule Commonplace.CommandRouter do
                 fresh = ContentType.create(fresh, :text, "(forced)")
                 fresh = ContentType.insert_text(fresh, 0, new_content)
                 update = Yelixer.Encoding.encode_update(fresh)
-                CommitStoreClient.create_chained_commit(state.store, uuid, update, %{}, commit_opts)
+
+                CommitStoreClient.create_chained_commit(
+                  state.store,
+                  uuid,
+                  update,
+                  %{},
+                  commit_opts
+                )
 
                 audit = %{
                   "uuid" => uuid,

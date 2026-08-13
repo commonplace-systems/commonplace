@@ -11,6 +11,10 @@ defmodule Commonplace.Trust.AuditCanaryTest do
   """
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
+  alias Commonplace.Dataflow.RedLog
+  alias Commonplace.Store.CommitStore
   alias Commonplace.Trust.{AuditCanary, AuditDispatcher, AuditLog}
 
   setup do
@@ -115,33 +119,55 @@ defmodule Commonplace.Trust.AuditCanaryTest do
     assert status.handler_attached
   end
 
-  test "the canary provokes a REAL denial — it does not simulate one", ctx do
+  test "two production writers provoke real denials with distinct attribution", ctx do
+    red_log_uuid = UUID.uuid4()
+    red_log = RedLog.new(red_log_uuid, ctx.store) |> RedLog.append_raw(%{"probe" => true})
+
     AuditLog.attach(ctx.store, dispatcher: ctx.dispatcher)
     strict_enforce!()
     canary = start_canary!(ctx)
 
-    ref = make_ref()
-    parent = self()
+    log =
+      capture_log(fn ->
+        send(self(), {:canary_verdict, AuditCanary.tick_now(canary)})
+        send(self(), {:red_log_result, RedLog.commit(red_log, signing_context: :unsigned)})
+      end)
 
-    :telemetry.attach(
-      {:canary_denial_probe, ref},
-      [:commonplace, :commit, :rejected, :local_trust],
-      fn _e, _m, meta, _ -> send(parent, {:denied, ref, meta.doc_uuid}) end,
-      nil
-    )
-
-    on_exit(fn -> :telemetry.detach({:canary_denial_probe, ref}) end)
-
-    AuditCanary.tick_now(canary)
+    assert_receive {:canary_verdict, %{result: :ok}}
+    assert_receive {:red_log_result, {:error, {:trust_rejected, :unsigned}}}
 
     canary_uuid = AuditCanary.canary_uuid()
 
-    # Selective receive on the canary's OWN doc: any other denial in
-    # flight is not evidence about this one.
-    assert_receive {:denied, ^ref, ^canary_uuid}, 3_000
+    # Both are real gate refusals: neither attempted write lands.
+    assert :none = CommitStore.latest_commit(ctx.store, canary_uuid)
+    assert :none = CommitStore.latest_commit(ctx.store, red_log_uuid)
 
-    # LAYER 1: the provoked write really was refused, nothing landed.
-    assert :none = Commonplace.Store.CommitStore.latest_commit(ctx.store, canary_uuid)
+    _ = AuditDispatcher.flush(ctx.dispatcher, 5_000)
+    records = AuditLog.log_uuid() |> RedLog.load(ctx.store) |> RedLog.read()
+
+    assert records != [], "positive control: the audit corpus must be non-empty"
+
+    canary_record = Enum.find(records, &(&1["doc_uuid"] == canary_uuid))
+    red_log_record = Enum.find(records, &(&1["doc_uuid"] == red_log_uuid))
+
+    assert canary_record, "the real canary denial was not recorded"
+    assert red_log_record, "the real red-log-writer denial was not recorded"
+
+    assert canary_record["writer"] == %{
+             "status" => "identified",
+             "module" => "Commonplace.Trust.AuditCanary",
+             "function" => "provoke"
+           }
+
+    assert red_log_record["writer"] == %{
+             "status" => "identified",
+             "module" => "Commonplace.Dataflow.RedLog",
+             "function" => "commit"
+           }
+
+    refute canary_record["writer"] == red_log_record["writer"]
+    assert log =~ "Commonplace.Trust.AuditCanary"
+    assert log =~ "Commonplace.Dataflow.RedLog"
   end
 
   # ── RED: killing the auditor makes the canary fire ───────────────────

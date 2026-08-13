@@ -121,7 +121,10 @@ defmodule Commonplace.Dataflow.RedLog do
   defp do_commit(%__MODULE__{} = log, opts) do
     update = Yelixer.Encoding.encode_update(log.doc)
     {metadata, commit_opts} = Keyword.pop(opts, :metadata, %{})
-    result = CommitStoreClient.create_chained_commit(log.store, log.uuid, update, metadata, commit_opts)
+    commit_opts = Keyword.put_new(commit_opts, :writer, {__MODULE__, :commit})
+
+    result =
+      CommitStoreClient.create_chained_commit(log.store, log.uuid, update, metadata, commit_opts)
 
     case result do
       {:error, _} = error ->

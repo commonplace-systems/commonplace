@@ -308,6 +308,7 @@ defmodule Commonplace.Trust.AuditLog do
       # Advisory: a signer_id is what the commit CLAIMED, and on the
       # unsigned path it is nil precisely because the claim was absent.
       "signer_id_claimed" => encode_id(Map.get(metadata, :signer_id)),
+      "writer" => writer_payload(metadata),
       "check" => check_name(Map.get(metadata, :reason)),
       "reason" => inspect(Map.get(metadata, :reason)),
       "cert_chain" => cert_summary(Map.get(metadata, :cert_cids)),
@@ -420,6 +421,14 @@ defmodule Commonplace.Trust.AuditLog do
       "system_time" => Map.get(measurements, :system_time) || System.system_time()
     }
     |> Map.put("firing_process", firing_process())
+  end
+
+  defp writer_payload(metadata) do
+    case Map.fetch(metadata, :writer) do
+      :error -> %{"status" => "not_provided"}
+      {:ok, nil} -> %{"status" => "absent"}
+      {:ok, writer} -> writer
+    end
   end
 
   defp firing_process do

@@ -287,7 +287,8 @@ defmodule Commonplace.Trust.AuditCanary do
       # Explicitly unsigned: never let an ambient identity accidentally
       # give the canary rights, which would make it stop provoking a
       # denial and start silently passing for the wrong reason.
-      signing_context: :unsigned
+      signing_context: :unsigned,
+      writer: {__MODULE__, :provoke}
     )
   rescue
     e -> {:error, {:raised, Exception.message(e)}}

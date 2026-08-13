@@ -574,7 +574,9 @@ defmodule Commonplace.Store.CommitStore do
   is preserved.
 
   `opts[:signing_context]` selects the signing identity for this
-  commit; see the module-level "Signing" section.
+  commit; see the module-level "Signing" section. `opts[:writer]` accepts
+  `{module, function}` for local-write denial attribution. It is carried
+  only into a refusal record and is never inferred from `doc_uuid`.
   """
   def create_commit(
         server \\ __MODULE__,
@@ -600,6 +602,9 @@ defmodule Commonplace.Store.CommitStore do
   callers read the same `:latest`, both write chained to the same
   parent, and produce siblings — the second write's `:latest` bump won
   and the first was silently orphaned from linear walks.
+
+  `opts[:writer]` has the same denial-attribution contract as
+  `create_commit/6`.
   """
   def create_chained_commit(server \\ __MODULE__, doc_uuid, update, metadata \\ %{}, opts \\ []) do
     GenServer.call(server, {:create_chained_commit, doc_uuid, update, metadata, opts})
@@ -761,6 +766,12 @@ defmodule Commonplace.Store.CommitStore do
     GenServer.call(server, {:put_built_commit, commit, expected_parent_id, genesis})
   end
 
+  @doc false
+  def put_built_commit(server, %Commit{} = commit, expected_parent_id, genesis, opts)
+      when is_list(opts) do
+    GenServer.call(server, {:put_built_commit, commit, expected_parent_id, genesis, opts})
+  end
+
   @doc """
   Deadline-aware landing for the CX-gc7q ticket-create chain.
 
@@ -789,6 +800,24 @@ defmodule Commonplace.Store.CommitStore do
     GenServer.call(
       server,
       {:put_built_commit, commit, expected_parent_id, genesis, deadline},
+      timeout
+    )
+  end
+
+  @doc false
+  def put_built_commit(
+        server,
+        %Commit{} = commit,
+        expected_parent_id,
+        genesis,
+        opts,
+        deadline,
+        timeout
+      )
+      when is_list(opts) and is_integer(deadline) and is_integer(timeout) and timeout > 0 do
+    GenServer.call(
+      server,
+      {:put_built_commit, commit, expected_parent_id, genesis, opts, deadline},
       timeout
     )
   end
@@ -1827,7 +1856,21 @@ defmodule Commonplace.Store.CommitStore do
     if System.monotonic_time(:millisecond) >= deadline do
       {:reply, {:error, :deadline_expired}, state}
     else
-      handle_call({:put_built_commit, commit, expected_parent_id, genesis}, from, state)
+      handle_call({:put_built_commit, commit, expected_parent_id, genesis, []}, from, state)
+    end
+  end
+
+  @impl true
+  def handle_call(
+        {:put_built_commit, %Commit{} = commit, expected_parent_id, genesis, opts, deadline},
+        from,
+        state
+      )
+      when is_list(opts) and is_integer(deadline) do
+    if System.monotonic_time(:millisecond) >= deadline do
+      {:reply, {:error, :deadline_expired}, state}
+    else
+      handle_call({:put_built_commit, commit, expected_parent_id, genesis, opts}, from, state)
     end
   end
 
@@ -1934,9 +1977,19 @@ defmodule Commonplace.Store.CommitStore do
   @impl true
   def handle_call(
         {:put_built_commit, %Commit{} = commit, expected_parent_id, genesis},
-        _from,
+        from,
         state
       ) do
+    handle_call({:put_built_commit, commit, expected_parent_id, genesis, []}, from, state)
+  end
+
+  @impl true
+  def handle_call(
+        {:put_built_commit, %Commit{} = commit, expected_parent_id, genesis, opts},
+        _from,
+        state
+      )
+      when is_list(opts) do
     instrumented(:put_built_commit, commit.doc_uuid, fn ->
       {cas_result, persist_ns} =
         timed(fn ->
@@ -1946,8 +1999,8 @@ defmodule Commonplace.Store.CommitStore do
               # match (so a stale-parent retry never even reaches the trust
               # check) and BEFORE put_multi (so a rejection persists
               # nothing, including the piggy-backed genesis row — see
-              # local_write_gate_check/2).
-              case local_write_gate_check(commit, state) do
+              # local_write_gate_check/3).
+              case local_write_gate_check(commit, state, opts) do
                 :ok ->
                   extra_rows =
                     case genesis do
@@ -2584,16 +2637,16 @@ defmodule Commonplace.Store.CommitStore do
   # passes" true: the companion genesis row is written in the SAME
   # `put_multi` as the gated commit, so it never lands independently of
   # whether the gate accepted the write it rode in with.
-  defp local_write_gate_check(%Commit{metadata: %{kind: :genesis}}, _state), do: :ok
+  defp local_write_gate_check(%Commit{metadata: %{kind: :genesis}}, _state, _opts), do: :ok
 
-  defp local_write_gate_check(commit, state) do
+  defp local_write_gate_check(commit, state, opts) do
     # Workspace class-gating at this root-attach seam also class-gates the
     # auto-execution mint surface: a cell refuses __processes.json unless its
     # class explicitly declares that root entry. Keeping this before the trust
     # knob means `:local_write_gate = :off` cannot bypass workspace class.
     with :ok <-
            Commonplace.Workspace.RootWritePolicy.check(commit, state.name, state.data_dir) do
-      trust_local_write_gate_check(commit, state)
+      trust_local_write_gate_check(commit, state, opts)
     else
       {:error, reason} ->
         Logger.warning(
@@ -2605,7 +2658,7 @@ defmodule Commonplace.Store.CommitStore do
     end
   end
 
-  defp trust_local_write_gate_check(commit, state) do
+  defp trust_local_write_gate_check(commit, state, opts) do
     case resolved_local_write_gate(state) do
       :off ->
         :ok
@@ -2624,8 +2677,11 @@ defmodule Commonplace.Store.CommitStore do
                resolved_trust_config(state),
                state.name
              ) do
-          :ok -> :ok
-          {:error, reason} -> handle_local_write_denial(mode, commit, reason)
+          :ok ->
+            :ok
+
+          {:error, reason} ->
+            handle_local_write_denial(mode, commit, reason, writer_identity(opts))
         end
     end
   end
@@ -2641,11 +2697,11 @@ defmodule Commonplace.Store.CommitStore do
 
   defp resolved_trust_config(%{data_dir: data_dir}), do: Commonplace.Trust.config(data_dir)
 
-  defp handle_local_write_denial(:dry_run, commit, reason) do
+  defp handle_local_write_denial(:dry_run, commit, reason, writer) do
     Logger.warning(
       "CommitStore: local write would be DENIED by trust gate (dry_run — write still lands) " <>
         "doc_uuid=#{commit.doc_uuid} commit_id=#{Base.encode16(commit.id, case: :lower)} " <>
-        "reason=#{inspect(reason)}"
+        "reason=#{inspect(reason)} writer=#{inspect(writer)}"
     )
 
     Commonplace.Trust.DenialCounter.increment()
@@ -2653,17 +2709,17 @@ defmodule Commonplace.Store.CommitStore do
     :telemetry.execute(
       [:commonplace, :commit, :rejected, :local_trust],
       %{system_time: System.system_time()},
-      denial_metadata(:dry_run, commit, reason)
+      local_write_denial_metadata(:dry_run, commit, reason, writer)
     )
 
     :ok
   end
 
-  defp handle_local_write_denial(:enforce, commit, reason) do
+  defp handle_local_write_denial(:enforce, commit, reason, writer) do
     Logger.warning(
       "CommitStore: local write DENIED by trust gate (enforce) " <>
         "doc_uuid=#{commit.doc_uuid} commit_id=#{Base.encode16(commit.id, case: :lower)} " <>
-        "reason=#{inspect(reason)}"
+        "reason=#{inspect(reason)} writer=#{inspect(writer)}"
     )
 
     Commonplace.Trust.DenialCounter.increment()
@@ -2671,13 +2727,13 @@ defmodule Commonplace.Store.CommitStore do
     :telemetry.execute(
       [:commonplace, :commit, :rejected, :local_trust],
       %{system_time: System.system_time()},
-      denial_metadata(:enforce, commit, reason)
+      local_write_denial_metadata(:enforce, commit, reason, writer)
     )
 
     Commonplace.Dataflow.PubSub.broadcast_red(
       commit.doc_uuid,
       {:trust, :local_write_denied,
-       %{doc_uuid: commit.doc_uuid, signer_id: commit.signer_id, reason: reason}}
+       %{doc_uuid: commit.doc_uuid, signer_id: commit.signer_id, reason: reason, writer: writer}}
     )
 
     {:error, {:trust_rejected, reason}}
@@ -2702,6 +2758,32 @@ defmodule Commonplace.Store.CommitStore do
       content_digest: Commonplace.Trust.AuditLog.content_digest(commit.update),
       reason: reason
     }
+  end
+
+  defp local_write_denial_metadata(mode, commit, reason, writer) do
+    mode
+    |> denial_metadata(commit, reason)
+    |> Map.put(:writer, writer)
+  end
+
+  defp writer_identity(opts) do
+    case Keyword.fetch(opts, :writer) do
+      :error ->
+        %{"status" => "not_provided"}
+
+      {:ok, nil} ->
+        %{"status" => "absent"}
+
+      {:ok, {module, function}} when is_atom(module) and is_atom(function) ->
+        %{
+          "status" => "identified",
+          "module" => inspect(module),
+          "function" => Atom.to_string(function)
+        }
+
+      {:ok, invalid} ->
+        %{"status" => "invalid", "value" => inspect(invalid)}
+    end
   end
 
   # Cert-chain SUMMARY only — the leaf cid the commit presented, never
@@ -3162,9 +3244,9 @@ defmodule Commonplace.Store.CommitStore do
 
     # CX-qat5.3: local-write gate — post-build/sign (the commit id and
     # signature are final), pre-persist. Mirrors import_validation's
-    # trust_check (see that function below); see local_write_gate_check/2
+    # trust_check (see that function below); see local_write_gate_check/3
     # for the knob semantics and genesis exemption.
-    case local_write_gate_check(built.commit, state) do
+    case local_write_gate_check(built.commit, state, opts) do
       :ok ->
         {_, persist_ns} =
           timed(fn ->

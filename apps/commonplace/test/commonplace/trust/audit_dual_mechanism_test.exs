@@ -185,6 +185,37 @@ defmodule Commonplace.Trust.AuditDualMechanismTest do
     assert parity.in_parity, "mechanisms disagree: #{inspect(parity)}"
   end
 
+  test "explicitly absent writer differs from a callsite that did not provide one", %{
+    store: s,
+    n: n
+  } do
+    dispatcher = start_dispatcher!(s, n)
+    AuditLog.attach(s, dispatcher: dispatcher)
+    strict_enforce!()
+
+    unthreaded_uuid = UUID.uuid4()
+    absent_uuid = UUID.uuid4()
+
+    assert {:error, {:trust_rejected, :unsigned}} =
+             CommitStore.create_commit(s, unthreaded_uuid, text_update("unthreaded"), nil)
+
+    assert {:error, {:trust_rejected, :unsigned}} =
+             CommitStore.create_commit(s, absent_uuid, text_update("explicitly absent"), nil, %{},
+               writer: nil
+             )
+
+    _ = AuditDispatcher.flush(dispatcher, 5_000)
+    records = AuditLog.log_uuid() |> RedLog.load(s) |> RedLog.read()
+
+    assert records != [], "positive control: the audit corpus must be non-empty"
+
+    unthreaded = Enum.find(records, &(&1["doc_uuid"] == unthreaded_uuid))
+    absent = Enum.find(records, &(&1["doc_uuid"] == absent_uuid))
+
+    assert unthreaded["writer"] == %{"status" => "not_provided"}
+    assert absent["writer"] == %{"status" => "absent"}
+  end
+
   # ── RED CONTROL 1: reintroduce CX-t3xv (the :calling_self detach) ────
   #
   # The bug restored FAITHFULLY: a handler that persists INLINE, in the
