@@ -859,6 +859,33 @@ defmodule Commonplace.Store.CommitStore do
     do_get_commit(resolve_db(server), commit_id)
   end
 
+  @doc "Persist a verified, immutable SLA tombstone receipt; never removes commit rows."
+  def store_sla_tombstone(server \\ __MODULE__, %Commonplace.Store.SlaTombstone{} = tombstone) do
+    GenServer.call(server, {:store_sla_tombstone, tombstone})
+  end
+
+  @doc "Find and verify the SLA tombstone covering a commit id, or return `:none`."
+  def get_sla_tombstone_for_commit(server \\ __MODULE__, commit_id) do
+    db = resolve_db(server)
+
+    case CubDB.get(db, {:sla_tombstone_for_commit, commit_id}) do
+      nil ->
+        :none
+
+      tombstone_id ->
+        case CubDB.get(db, {:sla_tombstone, tombstone_id}) do
+          nil ->
+            {:error, {:sla_tombstone_index_corrupt, commit_id, tombstone_id}}
+
+          tombstone ->
+            case Commonplace.Store.SlaTombstone.verify(tombstone) do
+              :ok -> {:ok, tombstone}
+              {:error, reason} -> {:error, {:invalid_sla_tombstone, reason}}
+            end
+        end
+    end
+  end
+
   @doc """
   Persist a capability cert (CX-tdkq.22b). Content-addressed by its CID;
   idempotent. The cert is the immutable trust VALUE — not a CRDT doc.
@@ -2040,6 +2067,53 @@ defmodule Commonplace.Store.CommitStore do
   end
 
   @impl true
+  def handle_call({:get_sla_tombstone_for_commit, commit_id}, _from, state) do
+    reply =
+      case CubDB.get(state.db, {:sla_tombstone_for_commit, commit_id}) do
+        nil ->
+          :none
+
+        tombstone_id ->
+          case CubDB.get(state.db, {:sla_tombstone, tombstone_id}) do
+            nil ->
+              {:error, {:sla_tombstone_index_corrupt, commit_id, tombstone_id}}
+
+            tombstone ->
+              case Commonplace.Store.SlaTombstone.verify(tombstone) do
+                :ok -> {:ok, tombstone}
+                {:error, reason} -> {:error, {:invalid_sla_tombstone, reason}}
+              end
+          end
+      end
+
+    {:reply, reply, state}
+  end
+
+  @impl true
+  def handle_call(
+        {:store_sla_tombstone, %Commonplace.Store.SlaTombstone{} = tombstone},
+        _from,
+        state
+      ) do
+    reply =
+      with :ok <- Commonplace.Store.SlaTombstone.verify(tombstone),
+           :ok <- ensure_tombstone_indexes_available(state.db, tombstone) do
+        rows =
+          [{{:sla_tombstone, tombstone.id}, tombstone}] ++
+            Enum.map(tombstone.commit_ids, fn commit_id ->
+              {{:sla_tombstone_for_commit, commit_id}, tombstone.id}
+            end)
+
+        :ok = CubDB.put_multi(state.db, rows)
+      else
+        {:error, {:sla_tombstone_conflict, _commit_id, _existing_id}} = error -> error
+        {:error, reason} -> {:error, {:invalid_sla_tombstone, reason}}
+      end
+
+    {:reply, reply, state}
+  end
+
+  @impl true
   def handle_call({:latest_commit, doc_uuid}, _from, state) do
     {:reply, do_latest_commit(state.db, doc_uuid), state}
   end
@@ -2737,6 +2811,16 @@ defmodule Commonplace.Store.CommitStore do
       nil -> :none
       commit -> {:ok, commit}
     end
+  end
+
+  defp ensure_tombstone_indexes_available(db, tombstone) do
+    Enum.reduce_while(tombstone.commit_ids, :ok, fn commit_id, :ok ->
+      case CubDB.get(db, {:sla_tombstone_for_commit, commit_id}) do
+        nil -> {:cont, :ok}
+        existing_id when existing_id == tombstone.id -> {:cont, :ok}
+        existing_id -> {:halt, {:error, {:sla_tombstone_conflict, commit_id, existing_id}}}
+      end
+    end)
   end
 
   defp do_get_execute_clean(db, fp, commit_id) do

@@ -454,6 +454,23 @@ defmodule Commonplace.Store.CommitStoreClient do
     end
   end
 
+  def store_sla_tombstone(server \\ CommitStore, tombstone) do
+    case remote_node() do
+      {:ok, node} -> GenServer.call({CommitStore, node}, {:store_sla_tombstone, tombstone})
+      :local -> CommitStore.store_sla_tombstone(normalize_server(server), tombstone)
+    end
+  end
+
+  def get_sla_tombstone_for_commit(server \\ CommitStore, commit_id) do
+    case remote_node() do
+      {:ok, node} ->
+        GenServer.call({CommitStore, node}, {:get_sla_tombstone_for_commit, commit_id})
+
+      :local ->
+        CommitStore.get_sla_tombstone_for_commit(normalize_server(server), commit_id)
+    end
+  end
+
   # R4c carve-out: in LOCAL mode these route DIRECTLY to TrustSideStore —
   # local mode already has direct access to the companion process (via
   # `CommitStore.trust_side_store_name/1`, resolved per-instance so test

@@ -430,7 +430,22 @@ defmodule Commonplace.Projection do
         {:ok, commit}
 
       :none ->
-        {:error, {:commit_not_found, commit_id}}
+        case CommitStoreClient.get_sla_tombstone_for_commit(store, commit_id) do
+          {:ok, tombstone} ->
+            {:error,
+             {:evicted_per_sla,
+              %{
+                subtree_id: tombstone.subtree_id,
+                tombstone_id: tombstone.id,
+                commit_id: commit_id
+              }}}
+
+          :none ->
+            {:error, {:commit_not_found, commit_id}}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
     end
   end
 

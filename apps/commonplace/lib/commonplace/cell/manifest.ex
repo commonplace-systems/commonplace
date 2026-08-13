@@ -10,6 +10,18 @@ defmodule Commonplace.Cell.Manifest do
   Pre-field workspaces have no manifest entry. `read/2` reports that temporal
   exception explicitly as `:pre_field_default`; a stored post-field manifest is
   reported as `:stored`.
+
+  Storage SLA tiers record these promises:
+
+    * `durable` — every commit is kept, replicated, and hot.
+    * `compactable` — snapshots survive at durable grade; pre-snapshot history
+      may later demote and eventually be evicted, always with a signed tombstone.
+    * `ephemeral` — the declared retention window applies except that pins,
+      tips, and witnessed states survive regardless.
+
+  A pin promotes a state to durable regardless of its subtree's declared tier.
+  `survives_sla?/2` is the pure vocabulary predicate later storage-policy work
+  can consume; this module does not evict, demote, or move data.
   """
 
   alias Commonplace.Document.ContentType
@@ -20,7 +32,7 @@ defmodule Commonplace.Cell.Manifest do
 
   @filename "__cell.json"
   @workspace_classes ~w(default minimal)
-  @sla_tiers ~w(durable ephemeral)
+  @sla_tiers ~w(durable compactable ephemeral)
   @cid_pattern ~r/\A[0-9a-f]{64}\z/
 
   defstruct [
@@ -203,6 +215,22 @@ defmodule Commonplace.Cell.Manifest do
     end
   end
 
+  @doc "Whether a state is protected by the declared SLA vocabulary."
+  @spec survives_sla?(String.t(), map()) :: boolean()
+  def survives_sla?(tier, state) when tier in @sla_tiers and is_map(state) do
+    pinned? = Map.get(state, :pinned?, false)
+    snapshot? = Map.get(state, :snapshot?, false)
+    tip? = Map.get(state, :tip?, false)
+    witnessed? = Map.get(state, :witnessed?, false)
+
+    pinned? or
+      tier == "durable" or
+      (tier == "compactable" and snapshot?) or
+      (tier == "ephemeral" and (tip? or witnessed?))
+  end
+
+  def survives_sla?(_tier, _state), do: false
+
   defp validate_workspace_class(manifest) do
     with {:ok, value} <- fetch(manifest, :workspace_class),
          true <- value in @workspace_classes do
@@ -252,7 +280,7 @@ defmodule Commonplace.Cell.Manifest do
          true <- tier in @sla_tiers,
          :ok <- required_nullable_binary(sla, :retention, "sla.retention"),
          :ok <- required_nullable_binary(sla, :note, "sla.note"),
-         :ok <- validate_ephemeral_retention(tier, sla) do
+         :ok <- validate_tier_retention(tier, sla) do
       :ok
     else
       :error -> invalid("sla.tier", "is required")
@@ -261,14 +289,17 @@ defmodule Commonplace.Cell.Manifest do
     end
   end
 
-  defp validate_ephemeral_retention("ephemeral", sla) do
+  # Compactable history may eventually be demoted and evicted. Requiring a
+  # retention declaration keeps that governing window explicit rather than
+  # allowing the tier name alone to silently invent policy.
+  defp validate_tier_retention(tier, sla) when tier in ~w(compactable ephemeral) do
     case fetch(sla, :retention) do
       {:ok, value} when is_binary(value) and value != "" -> :ok
-      _ -> invalid("sla.retention", "is required for ephemeral SLA")
+      _ -> invalid("sla.retention", "is required for #{tier} SLA")
     end
   end
 
-  defp validate_ephemeral_retention(_tier, _sla), do: :ok
+  defp validate_tier_retention(_tier, _sla), do: :ok
 
   defp validate_environments(environments) do
     with :ok <- required_boolean(environments, :may_declare, "environments.may_declare"),
