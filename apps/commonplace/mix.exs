@@ -30,7 +30,9 @@ defmodule Commonplace.MixProject do
 
   defp deps do
     [
-      {:yelixer, in_umbrella: true},
+      {:yelixer,
+       git: "https://github.com/commonplace-systems/yelixer.git",
+       ref: "691a4f44a91039ecc02a8824a1a5fafa79d9c253"},
       {:phoenix_pubsub, "~> 2.1"},
       {:cubdb, "~> 2.0"},
       {:uuid, "~> 1.1"},

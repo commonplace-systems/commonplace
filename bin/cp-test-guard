@@ -4,15 +4,15 @@
 #
 # WHY THIS EXISTS (2026-08-08)
 #
-#   $ mix test apps/yelixer      # from the umbrella root
+#   $ mix test apps/nonexistent  # from the umbrella root
 #   $ echo $?
 #   0
 #   $ # ...and zero tests ran. No summary line. No warning. Clean exit.
 #
 # That is indistinguishable from a clean pass at every surface a caller
 # normally checks: exit status, absence of failures, absence of output.
-# The correct invocation is `mix test apps/yelixer/test`, and the two
-# differ by four characters.
+# A real app test path such as `mix test apps/commonplace/test` emits a
+# summary; the nonexistent path does not.
 #
 # The hazard was known, written down, and written down by the person who
 # then walked into it — which is the argument for a mechanical guard
@@ -37,7 +37,7 @@
 # USAGE
 #
 #   bin/cp-test-guard --min 3000 -- mix test --exclude diff_yjs
-#   bin/cp-test-guard --min 390  -- mix test apps/yelixer/test
+#   bin/cp-test-guard --min 3000 -- mix test apps/commonplace/test
 #
 # The wrapped command's exit status is preserved when the guard passes, so
 # this composes with everything that already treats a non-zero rc as red.
@@ -84,7 +84,7 @@ if [[ ${#COUNTS[@]} -eq 0 ]]; then
   echo "  is a failure here, not a pass." >&2
   echo "  Command: $*" >&2
   echo "  Most likely cause: an umbrella app path that selects no test files" >&2
-  echo "  (e.g. 'mix test apps/yelixer' instead of 'mix test apps/yelixer/test')." >&2
+  echo "  (e.g. 'mix test apps/nonexistent' instead of a real app test path)." >&2
   exit 1
 fi
 
@@ -106,8 +106,7 @@ if [[ "$INVALID" -gt 0 ]]; then
   echo "  modules ran, so this run's coverage is unknown — the summary line says" >&2
   echo "  \"0 failures\" because there was nothing left to fail." >&2
   echo "  Invalid almost always means a setup_all raised: check the ENVIRONMENT" >&2
-  echo "  before the test (a missing dependency, e.g. node_modules absent —" >&2
-  echo "  'npm ci --prefix apps/yelixer/test/fixtures')." >&2
+  echo "  before the test (for example, a missing runtime fixture)." >&2
   echo "  Command: $*" >&2
   exit 1
 fi

@@ -88,8 +88,8 @@ defmodule Commonplace.Store.Snapshotter do
   # destroying the other on a doc that had both a Y.Map key plane and an
   # ordered sequence plane under one name. It now replays both. Bytes
   # for SINGLE-plane docs are unchanged (each added plane-replay is a
-  # no-op on an empty plane, pinned by
-  # apps/yelixer/test/snapshot_single_plane_bytes_test.exs), so the
+  # no-op on an empty plane, pinned in the published yelixer repository by
+  # `test/snapshot_single_plane_bytes_test.exs` after CX-b6mz + CX-71m2), so the
   # pragmatic case for not bumping was that no mixed-doc snapshot bytes
   # are known to exist anywhere — the one armed doc in the live store
   # never snapshotted while mixed.
