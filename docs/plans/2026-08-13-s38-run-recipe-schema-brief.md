@@ -80,6 +80,56 @@ widen it to make a case fit; the widening IS the finding.
 - If a decision the design doc marks OPEN blocks you, **stop and name the
   question** — it is a fresh ask, not something to resolve locally.
 
+## ⛔ AMENDED 2026-08-13 — the tests must LAND AS A FILE
+
+The first attempt satisfied this brief as written and its tests did not
+persist: the arms were exercised in a throwaway harness, reported
+honestly with counts, and **no test file entered the tree.** ⚠️ **That is
+the brief's ambiguity, not the builder's error** — *"exercise these"* and
+*"land these"* are different instructions, and a Tests section listing
+arms reads as the first if you are looking for the smallest satisfying
+action.
+
+⭐⭐ **AND IT IS THE EXACT MIRROR OF THIS WEEK'S CENTRAL FINDING, which
+is why the requirement is now explicit:**
+
+| | review artifact |
+|---|---|
+| a test that **EXISTS** and has never **EXECUTED** (four rounds, earlier) | *"the property was verified"* |
+| a test that **EXECUTED** and does not **EXIST** (this round) | *"the property was verified"* |
+
+⇒ **Both produce the same artifact from opposite causes.** In the first,
+the file is there so reading the diff passes it. In the second, the run
+happened so reading the report passes it. ⛔ **Neither is a test.**
+
+⭐ **A test must EXIST *and* EXECUTE. Each half can be present without
+the other, and each half alone is enough to make a review pass.**
+
+⇒ **SO: the arms below must land as
+`apps/commonplace/test/commonplace/runner/run_recipe_test.exs`, and the
+round must report THAT FILE'S OWN COUNT** (`mix test <path>` → *N tests,
+0 failures*). A count from a harness that is not in the tree does not
+satisfy this.
+
+## ⭐ Stated decision: the recipe's PATH is caller knowledge, not schema data
+
+The first attempt reported a temptation it did not act on — *"the
+unspecified canonical recipe pathname could have tempted a `path` field;
+it remains an argument to `read/1`."* **That was the right call and it
+is now a ruling rather than a builder's judgement:**
+
+⇒ **`path` is NOT a seventh field.** A path in the schema would make the
+recipe describe its own location — **the one fact the repo already
+encodes by containing it.** The location is the caller's knowledge and
+stays an argument to `read/1`.
+⚠️ **Hatch:** if implementing this reveals a case where the recipe
+genuinely cannot be read without self-describing its location, **STOP
+AND REPORT** — that would be a real design finding, and it is the same
+tension the first round felt.
+
+⛔ **`run_recipe.ex` MUST NOT CHANGE.** It is correct as landed — six
+fields, one file, no companion. **This round adds exactly one file.**
+
 ## Tests (red-first; suites named with counts)
 
 Baseline: full core **3,458 / 0 failures / 1 skipped** @697a7a8c.
