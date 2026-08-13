@@ -18,8 +18,9 @@ defmodule Commonplace.Projection.PostState do
   ## Why the version tag, and why never a bare hash
 
   `Yelixer.Encoding.encode_update/1` is byte-deterministic *within one
-  encoder era* (`apps/yelixer/test/yelixer/encoder_determinism_test.exs`
-  is the standing gate). It is NOT promised stable across eras.
+  encoder era* (the published yelixer repository's
+  `test/yelixer/encoder_determinism_test.exs` is the standing gate after
+  CX-b6mz + CX-71m2). It is NOT promised stable across eras.
 
   76dcd3c is the cautionary precedent: a Yelixer canonical-encoding
   change that shipped hours before this module was designed. Had post-

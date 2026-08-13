@@ -22,12 +22,6 @@ jobs:
           otp-version: "27.3"
           elixir-version: "1.18.4"
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: apps/yelixer/test/fixtures/package-lock.json
-
       - name: Cache deps
         uses: actions/cache@v4
         with:
@@ -40,31 +34,19 @@ jobs:
       - name: Install dependencies
         run: mix deps.get
 
-      - name: Install Yjs test oracle
-        run: npm ci --prefix apps/yelixer/test/fixtures
-
       - name: Compile (warnings as errors)
         run: mix compile --warnings-as-errors
-
-      - name: Enforce yelixer boundary
-        run: elixir apps/yelixer/test/support/check_commonplace_refs.exs
-
-      - name: Run yelixer from a standalone checkout
-        run: bin/cp-yelixer-standalone
 
       - name: Run tests
         # Wrapped in cp-test-guard because `mix test` exits 0 when it selects
         # NOTHING — an umbrella app whose path stops matching is silently
         # untested, and nothing in the output says so. --apps is the
         # diagnostic half (a dropped app loses its whole summary line);
-        # --min is the backstop. Measured 2026-08-08 on main @1e4ae3b:
-        # 4263 tests across 6 apps (yelixer 390, commonplace 3215, cli 94,
-        # bots 274, mcp 156, web 134).
+        # --min is the backstop. Measured 2026-08-13 after CX-b6mz + CX-71m2:
+        # 4137 tests across 5 apps (commonplace 3449, cli 118, bots 276,
+        # mcp 158, web 136); yelixer's 390-test app moved to its published repo.
         #
         # If this trips: do NOT lower the numbers to get green. Either an app
         # is being skipped, or the suite legitimately changed — in which case
         # raise them deliberately, in the commit that changed it.
-        run: bin/cp-test-guard --min 4200 --apps 6 -- mix test
-
-      - name: Run Yjs stable and preview conformance matrix
-        run: bin/cp-yjs-matrix
+        run: bin/cp-test-guard --min 4100 --apps 5 -- mix test
