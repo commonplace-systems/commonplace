@@ -1255,6 +1255,8 @@ defmodule Commonplace.Trust do
   """
   @spec config() :: config()
   def config do
+    data_dir = Application.get_env(:commonplace, :data_dir, "data")
+
     base =
       case Application.get_env(:commonplace, :trust) do
         %{} = cfg ->
@@ -1269,7 +1271,7 @@ defmodule Commonplace.Trust do
           # Silently degrading a strict workspace to permissive would
           # turn a corrupt file into auto-RCE under an on-boot
           # orchestrator.
-          case config_from_file() do
+          case config_from_file(data_dir) do
             {:ok, cfg} ->
               cfg
 
@@ -1286,7 +1288,30 @@ defmodule Commonplace.Trust do
           end
       end
 
-    with_local_node_trust(base)
+    with_local_node_trust(base, data_dir)
+  end
+
+  @doc "Resolve trust only from an explicitly supplied workspace directory."
+  @spec config(Path.t()) :: config()
+  def config(data_dir) when is_binary(data_dir) do
+    base =
+      case config_from_file(data_dir) do
+        {:ok, cfg} ->
+          cfg
+
+        :absent ->
+          default_config()
+
+        {:error, reason} ->
+          Logger.error(
+            "trust.json is present but unreadable/unparseable (#{inspect(reason)}) — " <>
+              "FAILING CLOSED: rejecting all non-node-signed commits until the file is fixed or removed"
+          )
+
+          %{accept_unsigned: false, trusted_identities: %{}}
+      end
+
+    with_local_node_trust(base, data_dir)
   end
 
   # Phase 2.5 (CX-tdkq.24): the local node always trusts its OWN
@@ -1298,11 +1323,11 @@ defmodule Commonplace.Trust do
   # Best-effort: if the node identity or public keys can't be sourced,
   # log the specific degradation and leave the set unchanged. The node's
   # commits will then fail strict checks, but startup remains available.
-  defp with_local_node_trust(cfg) do
+  defp with_local_node_trust(cfg, data_dir) do
     with {:identity, {:ok, identity}} <-
-           {:identity, Commonplace.Crypto.NodeIdentity.identity()},
+           {:identity, Commonplace.Crypto.NodeIdentity.identity(data_dir)},
          {:public_keys, {:ok, [_ | _] = public_keys}} <-
-           {:public_keys, Commonplace.Crypto.NodeIdentity.public_keys()} do
+           {:public_keys, Commonplace.Crypto.NodeIdentity.public_keys(data_dir)} do
       encoded_keys = Enum.map(public_keys, &Signing.encode_key/1)
       trusted = Map.put_new(cfg.trusted_identities, identity, encoded_keys)
       %{cfg | trusted_identities: trusted}
@@ -1709,9 +1734,7 @@ defmodule Commonplace.Trust do
 
   # `:absent` (no file — permissive default applies) is distinct from
   # `{:error, reason}` (file exists but can't be trusted — fail closed).
-  defp config_from_file do
-    data_dir = Application.get_env(:commonplace, :data_dir, "data")
-
+  defp config_from_file(data_dir) do
     case File.read(Path.join(data_dir, "trust.json")) do
       {:error, :enoent} ->
         :absent

@@ -7,9 +7,9 @@ defmodule Commonplace.Runner.Provisioner do
   local clone at the requested SHA; `workspace/.commonplace/`, the pod-local
   store; and `home/`, the home directory represented in the sandbox spec.
 
-  This round constructs a bwrap invocation as data. It does not execute that
-  invocation or launch a worker. The six standing credential masks are owned
-  by `sandbox_spec/2`; callers cannot omit or replace them.
+  This module constructs a bwrap invocation as data. The standing credential
+  and live-process channel masks are owned by `sandbox_spec/2`; callers cannot
+  omit or replace them.
 
   Provision-time service matching is deliberately names-only:
   `environments.requires_allowed` must be a subset of the pod profile's
@@ -21,13 +21,8 @@ defmodule Commonplace.Runner.Provisioner do
   the actual stored CID into the born manifest. Birth certs deliberately have
   no expiry in this round.
 
-  Birth runs inside a node-global scope: `provision/3` temporarily repoints
-  `:commonplace` application env (`:data_dir`, `:trust`, both gates) at the
-  pod-local store, because trust resolution and the root-write policy read
-  config rather than taking a store argument. On a node serving a live
-  workspace, concurrent operations during that window would read the pod's
-  store. Do NOT call this on such a node; the worker-launch round replaces this
-  seam before a runner process hosts births.
+  Birth passes the pod-local store and trust posture explicitly. Provisioning
+  therefore does not repoint node-global application configuration.
   """
 
   alias Commonplace.CertMint
@@ -76,6 +71,15 @@ defmodule Commonplace.Runner.Provisioner do
     checkout_dir = Path.join(pod_home, "checkout")
     data_dir = Path.join([pod_home, "workspace", ".commonplace"])
     home_dir = Path.join(pod_home, "home")
+    uid = File.stat!("/proc/self").uid
+
+    environment = %{
+      "COMMONPLACE_DATA_DIR" => data_dir,
+      "HOME" => home_dir,
+      "LANG" => "C.UTF-8",
+      "LC_ALL" => "C.UTF-8",
+      "PATH" => "/usr/local/bin:/usr/bin:/bin"
+    }
 
     masks = [
       %{
@@ -91,7 +95,11 @@ defmodule Commonplace.Runner.Provisioner do
       },
       %{name: :ssh, operation: :tmpfs, path: Path.join(home_dir, ".ssh")},
       %{name: :github_cli, operation: :tmpfs, path: Path.join(home_dir, ".config/gh")},
-      %{name: :claude_channels, operation: :tmpfs, path: Path.join(home_dir, ".claude/channels")}
+      %{name: :claude_channels, operation: :tmpfs, path: Path.join(home_dir, ".claude/channels")},
+      %{name: :tmux_socket_dir, operation: :tmpfs, path: "/tmp/tmux-#{uid}"},
+      %{name: :claude_chat_socket_dir, operation: :tmpfs, path: "/tmp/claude-chat"},
+      %{name: :tsx_socket_dir, operation: :tmpfs, path: "/tmp/tsx-#{uid}"},
+      %{name: :user_runtime_ipc, operation: :tmpfs, path: "/run/user/#{uid}"}
     ]
 
     argv =
@@ -99,7 +107,15 @@ defmodule Commonplace.Runner.Provisioner do
         "--die-with-parent",
         "--new-session",
         "--unshare-all",
+        "--clearenv",
         "--ro-bind",
+        "/",
+        "/",
+        "--dev",
+        "/dev",
+        "--proc",
+        "/proc",
+        "--bind",
         checkout_dir,
         checkout_dir,
         "--bind",
@@ -108,17 +124,21 @@ defmodule Commonplace.Runner.Provisioner do
         "--bind",
         home_dir,
         home_dir
-      ] ++ Enum.flat_map(masks, &mask_argv/1) ++ ["--chdir", checkout_dir]
+      ] ++
+        Enum.flat_map(masks, &mask_argv/1) ++
+        Enum.flat_map(environment, fn {name, value} -> ["--setenv", name, value] end) ++
+        ["--chdir", checkout_dir]
 
     %{
       executable: "bwrap",
       argv: argv,
       binds: [
-        %{source: checkout_dir, target: checkout_dir, mode: :read_only},
+        %{source: checkout_dir, target: checkout_dir, mode: :read_write},
         %{source: data_dir, target: data_dir, mode: :read_write},
         %{source: home_dir, target: home_dir, mode: :read_write}
       ],
       masks: masks,
+      environment: environment,
       profile_sandbox: profile.sandbox,
       workdir: checkout_dir
     }
@@ -194,74 +214,74 @@ defmodule Commonplace.Runner.Provisioner do
          root_uuid: born.root_uuid,
          sha: paths.sha,
          sandbox_spec: sandbox_spec(profile, paths.pod_home),
-         worker: :not_started
+         worker: :ready
        }}
     end
   end
 
   defp birth_workspace(paths, manifest, principal_pubkey) do
-    with_workspace_env(paths.data_dir, fn ->
-      names = store_names()
+    names = store_names()
 
-      with {:ok, supervisor} <-
-             StoreSupervisor.start_link(
-               data_dir: paths.data_dir,
-               name: names.supervisor,
-               commit_store_name: names.store,
-               trust_side_store_name: names.trust_side_store,
-               pending_imports_name: names.pending_imports
-             ) do
-        try do
-          initialize_and_verify(names.store, paths, manifest, principal_pubkey)
-        after
-          Supervisor.stop(supervisor)
-        end
+    with {:ok, supervisor} <-
+           StoreSupervisor.start_link(
+             data_dir: paths.data_dir,
+             name: names.supervisor,
+             commit_store_name: names.store,
+             trust_side_store_name: names.trust_side_store,
+             pending_imports_name: names.pending_imports,
+             local_write_gate: :enforce
+           ) do
+      try do
+        initialize_and_verify(names.store, paths, manifest, principal_pubkey)
+      after
+        Supervisor.stop(supervisor)
       end
-    end)
+    end
   end
 
   defp initialize_and_verify(store, paths, manifest, principal_pubkey) do
     profile = workspace_profile(manifest.workspace_class)
 
-    case Workspace.initialize(paths.data_dir,
-           store: store,
-           checkout_dir: paths.checkout_dir,
-           profile: profile
-         ) do
-      {:ok, initialized} ->
-        try do
-          with :ok <- assert_enforcing_posture(resolved_posture()),
-               {:ok, signing_context} <- NodeIdentity.signing_context(),
-               :ok <-
-                 amend_root_entries(
-                   initialized.root_uuid,
-                   manifest,
-                   store,
-                   paths.data_dir,
-                   signing_context
-                 ),
-               {:ok, born_manifest} <-
-                 mint_birth_authority(
-                   initialized.root_uuid,
-                   manifest,
-                   principal_pubkey,
-                   store,
-                   signing_context
-                 ),
-               {:ok, _stored} <-
-                 Manifest.create(initialized.root_uuid, born_manifest, store,
-                   signing_context: signing_context
-                 ),
-               {:ok, %{case: :stored}} <- Manifest.read(initialized.root_uuid, store) do
-            {:ok, %{root_uuid: initialized.root_uuid}}
-          else
-            {:error, {:invalid_manifest, _field, _reason}} = error -> error
-            {:error, reason} -> invalid("manifest", "workspace birth failed: #{inspect(reason)}")
-          end
-        after
-          GenServer.stop(initialized.checkout_registry)
+    with {:ok, signing_context} <- NodeIdentity.signing_context(paths.data_dir),
+         {:ok, initialized} <-
+           Workspace.initialize(paths.data_dir,
+             store: store,
+             checkout_dir: paths.checkout_dir,
+             profile: profile,
+             signing_context: signing_context
+           ) do
+      try do
+        with :ok <- assert_enforcing_posture(resolved_posture(paths.data_dir)),
+             :ok <-
+               amend_root_entries(
+                 initialized.root_uuid,
+                 manifest,
+                 store,
+                 paths.data_dir,
+                 signing_context
+               ),
+             {:ok, born_manifest} <-
+               mint_birth_authority(
+                 initialized.root_uuid,
+                 manifest,
+                 principal_pubkey,
+                 store,
+                 signing_context
+               ),
+             {:ok, _stored} <-
+               Manifest.create(initialized.root_uuid, born_manifest, store,
+                 signing_context: signing_context
+               ),
+             {:ok, %{case: :stored}} <- Manifest.read(initialized.root_uuid, store) do
+          {:ok, %{root_uuid: initialized.root_uuid}}
+        else
+          {:error, {:invalid_manifest, _field, _reason}} = error -> error
+          {:error, reason} -> invalid("manifest", "workspace birth failed: #{inspect(reason)}")
         end
-
+      after
+        GenServer.stop(initialized.checkout_registry)
+      end
+    else
       {:error, reason} ->
         invalid("workspace_class", "workspace initialization failed: #{inspect(reason)}")
     end
@@ -545,9 +565,12 @@ defmodule Commonplace.Runner.Provisioner do
   defp workspace_profile("default"), do: :default
   defp workspace_profile("minimal"), do: :minimal
 
-  defp resolved_posture do
-    Commonplace.Trust.posture()
-    |> Map.take([:accept_unsigned, :local_write_gate, :local_read_gate])
+  defp resolved_posture(data_dir) do
+    %{
+      accept_unsigned: Commonplace.Trust.config(data_dir).accept_unsigned,
+      local_write_gate: :enforce,
+      local_read_gate: :enforce
+    }
   end
 
   defp posture_field(posture, key, expected, field) do
@@ -579,25 +602,6 @@ defmodule Commonplace.Runner.Provisioner do
       trust_side_store: {:global, {__MODULE__, :trust_side_store, nonce}},
       pending_imports: {:global, {__MODULE__, :pending_imports, nonce}}
     }
-  end
-
-  defp with_workspace_env(data_dir, fun) do
-    keys = [:data_dir, :trust, :local_write_gate, :local_read_gate]
-    prior = Map.new(keys, &{&1, Application.fetch_env(:commonplace, &1)})
-
-    Application.put_env(:commonplace, :data_dir, data_dir)
-    Application.delete_env(:commonplace, :trust)
-    Application.put_env(:commonplace, :local_write_gate, :enforce)
-    Application.put_env(:commonplace, :local_read_gate, :enforce)
-
-    try do
-      fun.()
-    after
-      Enum.each(prior, fn
-        {key, {:ok, value}} -> Application.put_env(:commonplace, key, value)
-        {key, :error} -> Application.delete_env(:commonplace, key)
-      end)
-    end
   end
 
   defp invalid(field, reason), do: {:error, {:invalid_manifest, field, reason}}

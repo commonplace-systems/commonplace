@@ -55,7 +55,7 @@ defmodule Commonplace.Runner.ProvisionerTest do
              )
 
     assert pod.sha == ctx.sha
-    assert pod.worker == :not_started
+    assert pod.worker == :ready
     refute Map.has_key?(pod, :pid)
     assert git!(pod.checkout_dir, ["rev-parse", "HEAD"]) == ctx.sha
 
@@ -155,6 +155,10 @@ defmodule Commonplace.Runner.ProvisionerTest do
     assert spec.executable == "bwrap"
     assert spec.profile_sandbox == "beam-isolate"
     assert spec.workdir == Path.join(pod_home, "checkout")
+    assert "--unshare-all" in spec.argv
+    assert "--clearenv" in spec.argv
+    assert ["--proc", "/proc"] in Enum.chunk_every(spec.argv, 2, 1, :discard)
+    assert map_size(spec.environment) == 5
 
     assert Enum.map(spec.masks, & &1.name) == [
              :node_signing_key,
@@ -162,13 +166,29 @@ defmodule Commonplace.Runner.ProvisionerTest do
              :erlang_cookie,
              :ssh,
              :github_cli,
-             :claude_channels
+             :claude_channels,
+             :tmux_socket_dir,
+             :claude_chat_socket_dir,
+             :tsx_socket_dir,
+             :user_runtime_ipc
            ]
 
     for mask <- spec.masks do
       assert mask.operation in [:ro_bind_null, :tmpfs]
       assert mask.path in spec.argv
     end
+  end
+
+  test "birth has no node-global application-env mutation seam" do
+    source_path = Path.expand("../../../lib/commonplace/runner/provisioner.ex", __DIR__)
+    source = File.read!(source_path)
+
+    assert String.length(source) > 0, "the scanned provisioner corpus must be non-empty"
+    refute source =~ "with_workspace_env"
+    refute Regex.match?(~r/Application\.(?:put_env|delete_env)/, source)
+
+    positive_control = "Application.put_env(:commonplace, :data_dir, pod_data_dir)"
+    assert Regex.match?(~r/Application\.(?:put_env|delete_env)/, positive_control)
   end
 
   test "absent sync scope refuses at birth with the field named", ctx do
