@@ -28,6 +28,26 @@ defmodule Commonplace.Bd.IssueDocIndex do
   the declared issue-document denominator and enforces
   `LANDED ∪ REFUSED == input`; the live run is an operator daylight step.
 
+  ## ⛔ What this index CANNOT see (measured 2026-08-13, CX-0hbs/CX-9wy4)
+
+  THE INDEX DETECTS REGISTRATION-DENIED ORPHANS AND CANNOT SEE
+  DOCUMENT-DENIED ONES. When only the parent-schema registration is refused,
+  the orphan is caught: the document exists, its index entry exists, the
+  parent link is absent, and `scan/2` returns it — measured
+  `parent_schema_linked=false`, `torn_create_detected=true`.
+
+  But the index marker rides atomically on the issue document's genesis
+  commit, and `Schemas.create_text_doc/3` DISCARDS that commit's result. So
+  under enforcement broad enough to deny the document write itself, the
+  document and its index entry are BOTH silently absent and nothing fires —
+  measured `new_docs=[]`, `issue_doc_index_delta=[]`.
+
+  This is the index's acceptance being narrower than its purpose, not a
+  configuration choice: a detector built to catch invisible tickets is blind
+  in the case that would produce the most loss. It closes when
+  `create_text_doc/3` binds and matches its commit result — the sixth site of
+  the CX-0hbs discarded-return class, and the only one still open.
+
   A prior shape-based backfill may already have appended spurious CREATED rows.
   Corrected runs retain those immutable rows and append a separately visible
   supersession record. Effective entries and scans subtract recorded

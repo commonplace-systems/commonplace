@@ -440,22 +440,26 @@ defmodule Commonplace.CommandRouter do
                 doc = Diff.apply_diff(doc, old_content, new_content)
                 update = Yelixer.Encoding.encode_update(doc)
 
-                CommitStoreClient.create_chained_commit(
-                  state.store,
-                  uuid,
-                  update,
-                  %{},
-                  commit_opts
-                )
+                case CommitStoreClient.create_chained_commit(
+                       state.store,
+                       uuid,
+                       update,
+                       %{},
+                       commit_opts
+                     ) do
+                  {:error, reason} ->
+                    {:error, reason}
 
-                audit = %{
-                  "uuid" => uuid,
-                  "old_bytes" => byte_size(old_content),
-                  "new_bytes" => byte_size(new_content),
-                  "forced" => false
-                }
+                  _commit ->
+                    audit = %{
+                      "uuid" => uuid,
+                      "old_bytes" => byte_size(old_content),
+                      "new_bytes" => byte_size(new_content),
+                      "forced" => false
+                    }
 
-                {:ok, audit, audit}
+                    {:ok, audit, audit}
+                end
 
               force? ->
                 # CX-yfva forced clobber. Myers-diff across a type boundary
@@ -468,23 +472,27 @@ defmodule Commonplace.CommandRouter do
                 fresh = ContentType.insert_text(fresh, 0, new_content)
                 update = Yelixer.Encoding.encode_update(fresh)
 
-                CommitStoreClient.create_chained_commit(
-                  state.store,
-                  uuid,
-                  update,
-                  %{},
-                  commit_opts
-                )
+                case CommitStoreClient.create_chained_commit(
+                       state.store,
+                       uuid,
+                       update,
+                       %{},
+                       commit_opts
+                     ) do
+                  {:error, reason} ->
+                    {:error, reason}
 
-                audit = %{
-                  "uuid" => uuid,
-                  "old_bytes" => 0,
-                  "new_bytes" => byte_size(new_content),
-                  "forced" => true,
-                  "previous_type" => Atom.to_string(type)
-                }
+                  _commit ->
+                    audit = %{
+                      "uuid" => uuid,
+                      "old_bytes" => 0,
+                      "new_bytes" => byte_size(new_content),
+                      "forced" => true,
+                      "previous_type" => Atom.to_string(type)
+                    }
 
-                {:ok, audit, audit}
+                    {:ok, audit, audit}
+                end
 
               true ->
                 # Default-refuse: silently clobbering views or JSON with raw
@@ -523,15 +531,19 @@ defmodule Commonplace.CommandRouter do
                 doc = Schema.set_sync(doc, name, sync?)
                 update = Yelixer.Encoding.encode_update(doc)
 
-                CommitStoreClient.create_chained_commit(
-                  state.store,
-                  parent_uuid,
-                  update,
-                  %{},
-                  commit_opts
-                )
+                case CommitStoreClient.create_chained_commit(
+                       state.store,
+                       parent_uuid,
+                       update,
+                       %{},
+                       commit_opts
+                     ) do
+                  {:error, reason} ->
+                    {:error, reason}
 
-                {:ok, %{"parent_uuid" => parent_uuid, "name" => name, "sync" => sync?}}
+                  _commit ->
+                    {:ok, %{"parent_uuid" => parent_uuid, "name" => name, "sync" => sync?}}
+                end
 
               :error ->
                 {:error, :not_found}

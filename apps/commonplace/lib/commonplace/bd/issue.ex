@@ -113,10 +113,10 @@ defmodule Commonplace.Bd.Issue do
         {:ok, issue, dir_uuid}
       end
     else
-      dir_uuid = build_issue_dir(issue, description, store, opts)
-      :ok = add_issue_entry(root_uuid, id, dir_uuid, store, plain_opts(opts))
-
-      {:ok, issue, dir_uuid}
+      with dir_uuid when is_binary(dir_uuid) <- build_issue_dir(issue, description, store, opts),
+           :ok <- add_issue_entry(root_uuid, id, dir_uuid, store, plain_opts(opts)) do
+        {:ok, issue, dir_uuid}
+      end
     end
   end
 
@@ -344,8 +344,11 @@ defmodule Commonplace.Bd.Issue do
       |> Schema.add_directory("comments", comments_uuid)
 
     update = Encoding.encode_update(dir_doc)
-    CommitStoreClient.create_commit(store, dir_uuid, update, nil, %{}, plain)
-    dir_uuid
+
+    case CommitStoreClient.create_commit(store, dir_uuid, update, nil, %{}, plain) do
+      {:error, reason} -> {:error, reason}
+      _commit -> dir_uuid
+    end
   end
 
   defp build_issue_dir_deadline(%Issue{} = issue, description, store, opts) do
@@ -419,8 +422,11 @@ defmodule Commonplace.Bd.Issue do
     {:ok, schema} = Schemas.load_dir_schema(issues_uuid, store)
     schema = Schema.add_directory(schema, "#{id}.iss", child_uuid)
     update = Encoding.encode_update(schema)
-    CommitStoreClient.create_chained_commit(store, issues_uuid, update, %{}, opts)
-    :ok
+
+    case CommitStoreClient.create_chained_commit(store, issues_uuid, update, %{}, opts) do
+      {:error, reason} -> {:error, reason}
+      _commit -> :ok
+    end
   end
 
   defp add_issue_entry_deadline(root_uuid, id, child_uuid, store, opts) do
