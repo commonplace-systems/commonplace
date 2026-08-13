@@ -64,6 +64,48 @@ FAIL, never an inspection of a pointer.**
    depends on the developer's environment is a test whose result is
    about the developer.**
 
+## ⛔ AMENDED 2026-08-13 — the channel list must be DERIVED, not written
+
+S40 built the inventory by hand and it was wrong in the way that matters:
+it masked `/tmp/cc-daemon-<uid>`, which holds **zero sockets**, and left
+`/run/user/<uid>/cc-socks`, which holds **six live Claude Code session
+sockets**. ⚠️ The masked path **exists** — it is a real directory that
+simply isn't where the sockets live, so `ls` succeeds and the mask looks
+right. **A handle check passes; only "can it reach a live session?"
+finds them one tree over.**
+
+⭐ **Three parties produced three incomplete lists in one night** — the
+builder found two channels the operator's wrapper missed, the operator's
+wrapper missed two more, and this brief asked for an inventory without
+saying how to derive one. ⇒ **A hand-maintained list of channels is the
+same defect as a denylist of secrets, one level up**, and "be more
+thorough" has now failed three times.
+
+**Derive it. The operator's derivation found 23 channels:**
+
+```
+find /run/user/$(id -u) /tmp -maxdepth 3 \( -type s -o -type p \) | xargs -n1 dirname | sort -u
+```
+
+Neither party's list had gnupg, systemd, or weechat. ⭐ **Among them is
+`S.gpg-agent.ssh` — an SSH *agent* socket, i.e. the exact capability the
+empty `~/.ssh` tmpfs exists to deny, reachable by a different path.
+Fencing the key file while leaving an agent that signs with it is the
+sharpest instance of this whole class.**
+
+⭐ **MASK CONTAINING DIRECTORIES, NOT INDIVIDUAL SOCKETS.** `--tmpfs
+/run/user/<uid>` covers cc-socks, gnupg, dbus, systemd and weechat at
+once. **A per-socket list goes stale the moment a new agent starts; a
+directory mask covers sockets that do not exist yet.** That is the
+structural form of derive-don't-recall.
+
+⭐⭐ **AND THE ACCEPTANCE TEST IS THAT SAME ENUMERATION, RUN FROM INSIDE
+THE POD, ASSERTED TO RETURN 0.** It cannot go stale and cannot pass
+vacuously, and it **fails loudly on a host where a new agent adds a
+socket directory** — which a named-path assertion never would. Verified
+on the operator's wrapper: 23 channels on the host, **0 reachable from
+inside**, `S.gpg-agent.ssh` gone.
+
 ## Tests — every one an attempted capability
 
 - ⭐ **Canary, demonstrated RED**: the test process sets a canary
