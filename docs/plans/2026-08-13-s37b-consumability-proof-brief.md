@@ -48,10 +48,24 @@ nothing else.
 
 1. **A fresh directory outside this repository** (a temp dir is fine —
    state where). A new `mix new` project, or a minimal `mix.exs`.
-2. **Dependency on the published ref**:
+2. **Dependency on the published ref, HTTPS FORM ONLY**:
    `{:yelixer, git: "https://github.com/commonplace-systems/yelixer.git", ref: "691a4f44a91039ecc02a8824a1a5fafa79d9c253"}`
-   — or the `git@` form if that is what resolves in this environment;
-   say which you used. ⛔ **Pin the SHA. Never `branch: "main"`.**
+   ⛔ **Pin the SHA. Never `branch: "main"`. Do NOT use the
+   `git@github.com:…` form.**
+
+   ⭐ **RULED 2026-08-13, and this line originally offered `git@` as an
+   alternative — that was wrong and is corrected here.** CI has no SSH
+   setup at all (no key, no agent, no deploy-key action; `actions/checkout`
+   uses HTTPS), so an SSH-form dep would fail in CI: HTTPS is not a
+   preference, it is the only form that ships. The sandbox's empty
+   `~/.ssh` cannot resolve `git@` either — which is the fence
+   **simulating a stranger**, since a third-party consumer has no
+   credentials, rather than narrowing the test.
+
+   ⛔ **The point of this gate is that the string it proves is the
+   string that ships.** A green result over a different URL form would
+   be a perfect false green: real fetch, real compile, real
+   convergence, wrong proposition.
 3. **Fetch and compile it** from the network, from that ref.
 4. ⭐ **Run a REAL CRDT call — not `Yelixer.hello/0`.** The proof must
    exercise the library's actual purpose:
