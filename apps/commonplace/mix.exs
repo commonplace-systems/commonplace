@@ -32,7 +32,7 @@ defmodule Commonplace.MixProject do
     [
       {:yelixer,
        git: "https://github.com/commonplace-systems/yelixer.git",
-       ref: "691a4f44a91039ecc02a8824a1a5fafa79d9c253"},
+       ref: "bc35a0e9"},
       {:phoenix_pubsub, "~> 2.1"},
       {:cubdb, "~> 2.0"},
       {:uuid, "~> 1.1"},
