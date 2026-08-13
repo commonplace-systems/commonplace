@@ -26,7 +26,7 @@ defmodule Commonplace.Runner.Launcher do
 
   use GenServer
 
-  alias Commonplace.Runner.{PodHandle, Provisioner}
+  alias Commonplace.Runner.{PodHandle, PodProfile, Provisioner, RunRecipe}
 
   @lock_file ".runner.lock"
 
@@ -38,6 +38,12 @@ defmodule Commonplace.Runner.Launcher do
           {:ok, PodHandle.t()} | {:error, term()}
   def launch(server, manifest, profile, opts) when is_list(opts),
     do: GenServer.call(server, {:launch, manifest, profile, opts}, :infinity)
+
+  @doc "Launch a pod whose invocation, environment, and placement come from a run recipe."
+  @spec launch_recipe(GenServer.server(), map(), map(), RunRecipe.t() | map(), keyword()) ::
+          {:ok, PodHandle.t()} | {:error, term()} | PodProfile.match_result()
+  def launch_recipe(server, manifest, profile, recipe, opts) when is_list(opts),
+    do: GenServer.call(server, {:launch_recipe, manifest, profile, recipe, opts}, :infinity)
 
   @spec reap(PodHandle.t()) :: :ok | {:error, :unknown_pod_handle}
   def reap(%PodHandle{launcher: launcher} = handle),
@@ -83,6 +89,42 @@ defmodule Commonplace.Runner.Launcher do
 
       {:error, reason} ->
         {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:launch_recipe, manifest, profile, recipe, opts}, _from, state) do
+    with :ok <- RunRecipe.validate(recipe),
+         {:ok, profile} <- PodProfile.validate(profile),
+         :ok <- PodProfile.match_requires(recipe_value(recipe, :requires), profile),
+         :ok <-
+           environment_available?(
+             recipe_value(recipe, :env),
+             Provisioner.sandbox_spec(profile, state.pods_root).environment
+           ),
+         provision_opts = Keyword.merge(opts, pods_root: state.pods_root),
+         {:ok, pod} <- Provisioner.provision(manifest, profile, provision_opts),
+         environment =
+           resolve_environment(recipe_value(recipe, :env), pod.sandbox_spec.environment),
+         invocation = recipe_invocation(recipe, environment),
+         {:ok, port, os_pid} <- open_pod(pod.sandbox_spec, invocation) do
+      ref = make_ref()
+
+      handle = %PodHandle{
+        launcher: self(),
+        ref: ref,
+        scope_pid: os_pid,
+        pod_home: pod.pod_home
+      }
+
+      running = %{port: port, os_pid: os_pid, pod_home: pod.pod_home}
+      {:reply, {:ok, handle}, put_in(state.pods[ref], running)}
+    else
+      {:error, {:launch_failed, pod_home, reason}} ->
+        _ = File.rm_rf(pod_home)
+        {:reply, {:error, reason}, state}
+
+      refusal_or_error ->
+        {:reply, refusal_or_error, state}
     end
   end
 
@@ -215,6 +257,48 @@ defmodule Commonplace.Runner.Launcher do
 
       _ ->
         {:error, {:invalid_invocation, :required_nonempty_argv}}
+    end
+  end
+
+  defp environment_available?(names, environment) do
+    missing = Enum.reject(names, &Map.has_key?(environment, &1))
+
+    case missing do
+      [] ->
+        :ok
+
+      names ->
+        {:refused,
+         Enum.map(names, fn name ->
+           "this placement does not supply declared environment variable #{name}"
+         end)}
+    end
+  end
+
+  # `Map.fetch!` and not `Map.take`: the availability check above ran against
+  # `sandbox_spec(profile, pods_root)` while this resolves against the REAL
+  # pod's spec. Those are two different objects, and they agree only because
+  # the environment key set is a fixed literal independent of `pod_home`. A
+  # total function here would drop a declared variable SILENTLY if that ever
+  # lapses; this makes the disagreement loud. It does not remove it — one
+  # check against one object is a provisioning-order question, still open.
+  defp resolve_environment(names, environment),
+    do: Map.new(names, fn name -> {name, Map.fetch!(environment, name)} end)
+
+  defp recipe_invocation(recipe, environment) do
+    assignments =
+      environment
+      |> Enum.sort()
+      |> Enum.map(fn {name, value} -> "#{name}=#{value}" end)
+
+    commands = recipe_value(recipe, :setup) ++ [recipe_value(recipe, :run)]
+    ["/usr/bin/env", "-i"] ++ assignments ++ ["/bin/sh", "-eu", "-c", Enum.join(commands, "\n")]
+  end
+
+  defp recipe_value(recipe, field) do
+    case Map.fetch(recipe, field) do
+      {:ok, value} -> value
+      :error -> Map.fetch!(recipe, Atom.to_string(field))
     end
   end
 
