@@ -27,23 +27,35 @@ defmodule Commonplace.ProtoChit do
   @spec emit(Path.t(), [String.t()], keyword()) ::
           {:ok, %{event: event(), event_ref: String.t()}} | {:error, term()}
   def emit(repo, git_args, opts) when is_binary(repo) and is_list(git_args) do
-    with :ok <- validate_sync_scope(opts),
-         :ok <- validate_repo(repo),
-         {:ok, signing_context} <- fetch_signing_context(opts),
-         {:ok, root_uuid} <- fetch_binary(opts, :root_uuid),
-         {:ok, event_log_uuid} <- fetch_binary(opts, :event_log_uuid),
-         {:ok, state_dir} <- fetch_binary(opts, :state_dir),
-         {:ok, verb} <- classify(git_args),
-         {:ok, observation} <- observe_git(repo, git_args, opts),
-         {:ok, exclusions} <- sync_flush(repo, root_uuid, signing_context, opts),
-         {:ok, proto_pin} <- cut_pin(root_uuid, signing_context, exclusions, opts),
-         {:ok, predecessor_ref} <- predecessor_ref(state_dir, observation, git_args),
+    with {:validate_sync_scope, :ok} <- {:validate_sync_scope, validate_sync_scope(opts)},
+         {:validate_repo, :ok} <- {:validate_repo, validate_repo(repo)},
+         {:fetch_signing_context, {:ok, signing_context}} <-
+           {:fetch_signing_context, fetch_signing_context(opts)},
+         {:fetch_root_uuid, {:ok, root_uuid}} <-
+           {:fetch_root_uuid, fetch_binary(opts, :root_uuid)},
+         {:fetch_event_log_uuid, {:ok, event_log_uuid}} <-
+           {:fetch_event_log_uuid, fetch_binary(opts, :event_log_uuid)},
+         {:fetch_state_dir, {:ok, state_dir}} <-
+           {:fetch_state_dir, fetch_binary(opts, :state_dir)},
+         {:classify, {:ok, verb}} <- {:classify, classify(git_args)},
+         {:observe_git, {:ok, observation}} <- {:observe_git, observe_git(repo, git_args, opts)},
+         {:sync_flush, {:ok, exclusions}} <-
+           {:sync_flush, sync_flush(repo, root_uuid, signing_context, opts)},
+         {:cut_pin, {:ok, proto_pin}} <-
+           {:cut_pin, cut_pin(root_uuid, signing_context, exclusions, opts)},
+         {:predecessor_ref, {:ok, predecessor_ref}} <-
+           {:predecessor_ref, predecessor_ref(state_dir, observation, git_args)},
          event <-
            build_event(verb, signing_context, git_args, observation, proto_pin, predecessor_ref),
-         {:ok, event_ref} <- persist_event(event_log_uuid, event, signing_context, opts),
-         :ok <- advance_predecessor(state_dir, observation, git_args, event_ref),
-         :ok <- maybe_trace(opts[:trace_file], event) do
+         {:persist_event, {:ok, event_ref}} <-
+           {:persist_event, persist_event(event_log_uuid, event, signing_context, opts)},
+         {:advance_predecessor, :ok} <-
+           {:advance_predecessor,
+            advance_predecessor(state_dir, observation, git_args, event_ref)},
+         {:maybe_trace, :ok} <- {:maybe_trace, maybe_trace(opts[:trace_file], event)} do
       {:ok, %{event: event, event_ref: event_ref}}
+    else
+      {step, value} -> {:error, {step, value}}
     end
   rescue
     error -> {:error, {:emission_failed, Exception.message(error)}}
@@ -57,11 +69,15 @@ defmodule Commonplace.ProtoChit do
   def annotate(repo, main_event_ref, exit_status, git_args, opts)
       when is_binary(repo) and is_binary(main_event_ref) and is_integer(exit_status) and
              exit_status >= 0 and is_list(git_args) do
-    with :ok <- validate_repo(repo),
-         {:ok, signing_context} <- fetch_signing_context(opts),
-         {:ok, event_log_uuid} <- fetch_binary(opts, :event_log_uuid),
-         {:ok, resulting_git_sha} <- resulting_git_sha(repo, opts),
-         {:ok, message} <- final_message(repo, git_args, exit_status, opts),
+    with {:validate_repo, :ok} <- {:validate_repo, validate_repo(repo)},
+         {:fetch_signing_context, {:ok, signing_context}} <-
+           {:fetch_signing_context, fetch_signing_context(opts)},
+         {:fetch_event_log_uuid, {:ok, event_log_uuid}} <-
+           {:fetch_event_log_uuid, fetch_binary(opts, :event_log_uuid)},
+         {:resulting_git_sha, {:ok, resulting_git_sha}} <-
+           {:resulting_git_sha, resulting_git_sha(repo, opts)},
+         {:final_message, {:ok, message}} <-
+           {:final_message, final_message(repo, git_args, exit_status, opts)},
          event <- %{
            "kind" => "post-exec",
            "author-principal" => signing_context.identity_uuid,
@@ -70,9 +86,12 @@ defmodule Commonplace.ProtoChit do
            "exit-status" => exit_status,
            "message" => message
          },
-         {:ok, event_ref} <- persist_event(event_log_uuid, event, signing_context, opts),
-         :ok <- maybe_trace(opts[:trace_file], event) do
+         {:persist_event, {:ok, event_ref}} <-
+           {:persist_event, persist_event(event_log_uuid, event, signing_context, opts)},
+         {:maybe_trace, :ok} <- {:maybe_trace, maybe_trace(opts[:trace_file], event)} do
       {:ok, %{event: event, event_ref: event_ref}}
+    else
+      {step, value} -> {:error, {step, value}}
     end
   rescue
     error -> {:error, {:annotation_failed, Exception.message(error)}}

@@ -63,7 +63,7 @@ defmodule Commonplace.Store.ProtoChitTest do
   test "refuses emission when sync scope was not declared", context do
     %{signing_context: signing_context} = context
 
-    assert {:error, {:sync_scope_undeclared, message}} =
+    assert {:error, {:validate_sync_scope, {:error, {:sync_scope_undeclared, message}}}} =
              Commonplace.ProtoChit.emit("/not/a/repository", ["commit", "-m", "undeclared"],
                root_uuid: UUID.uuid4(),
                event_log_uuid: UUID.uuid4(),
@@ -275,6 +275,80 @@ defmodule Commonplace.Store.ProtoChitTest do
     assert String.starts_with?(annotation_commit.signer_id, signing_context.identity_uuid <> "@")
   end
 
+  test "cut_pin's restore dependency produces a bare error when the snapshot entry is absent",
+       context do
+    %{repo: repo, state_dir: state_dir, store: store, signing_context: signing_context} = context
+    init_git(repo)
+
+    root_uuid = UUID.uuid4()
+    event_log_uuid = UUID.uuid4()
+
+    opts = [
+      root_uuid: root_uuid,
+      event_log_uuid: event_log_uuid,
+      state_dir: state_dir,
+      sync_excludes: [],
+      artifact_store: context.artifact_store,
+      signing_context: signing_context,
+      store: store
+    ]
+
+    assert {:ok, %{event: %{"proto-pin" => %{"entries" => %{}}}}} =
+             Commonplace.ProtoChit.emit(repo, ["commit", "-m", "prime cursor"], opts)
+
+    root_schema = load_schema(store, root_uuid)
+    {:ok, reflog_entry} = Schema.get_entry(root_schema, "__reflog")
+    reflog_schema = load_schema(store, reflog_entry.node_id)
+    {:ok, owner_entry} = Schema.get_entry(reflog_schema, "proto-chit")
+    owner_schema = load_schema(store, owner_entry.node_id)
+
+    assert {:ok, _snapshot_entry} = Schema.get_entry(owner_schema, "__snapshot")
+
+    owner_schema = Schema.remove_entry(owner_schema, "__snapshot")
+
+    assert %Commonplace.Store.Commit{} =
+             CommitStoreClient.create_chained_commit(
+               store,
+               owner_entry.node_id,
+               Yelixer.Encoding.encode_update(owner_schema),
+               %{},
+               signing_context: signing_context
+             )
+
+    assert :error =
+             Commonplace.Reflog.Restore.root_snapshot_uuid(store, root_uuid, "proto-chit")
+  end
+
+  test "emission names classify and preserves its returned value", context do
+    returned = {:error, {:untapped_git_argv, []}}
+
+    assert {:error, {:classify, ^returned}} =
+             Commonplace.ProtoChit.emit(context.repo, [],
+               root_uuid: UUID.uuid4(),
+               event_log_uuid: UUID.uuid4(),
+               state_dir: context.state_dir,
+               sync_excludes: [],
+               signing_context: context.signing_context,
+               store: context.store
+             )
+  end
+
+  test "annotation names validate_repo and preserves its returned value", context do
+    missing_repo = Path.join(context.repo, "missing")
+    returned = {:error, {:repo_not_found, missing_repo}}
+
+    assert {:error, {:validate_repo, ^returned}} =
+             Commonplace.ProtoChit.annotate(
+               missing_repo,
+               "main-event-ref",
+               1,
+               ["commit", "-m", "not reached"],
+               event_log_uuid: UUID.uuid4(),
+               signing_context: context.signing_context,
+               store: context.store
+             )
+  end
+
   defp init_git(repo) do
     assert {_, 0} = System.cmd("/usr/bin/git", ["init", "-b", "main"], cd: repo)
   end
@@ -293,6 +367,11 @@ defmodule Commonplace.Store.ProtoChitTest do
   defp latest_hex(store, uuid) do
     {:ok, commit} = CommitStore.latest_commit(store, uuid)
     Base.encode16(commit.id, case: :lower)
+  end
+
+  defp load_schema(store, uuid) do
+    {:ok, doc} = Commonplace.Tree.DocBuilder.reconstruct_snapshot(store, uuid)
+    doc
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:commonplace, key)
