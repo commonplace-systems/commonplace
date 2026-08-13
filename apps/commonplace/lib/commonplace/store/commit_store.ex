@@ -414,11 +414,13 @@ defmodule Commonplace.Store.CommitStore do
   :corruption_probe_timeout_ms, 5_000)` milliseconds. A raise during
   the scan means real corruption → archive-and-recover. A timeout
   means the store is just large — availability wins over paranoia, so
-  a timeout is logged as a partial scan and treated as HEALTHY rather
-  than triggering a lossy rename of a store that may be perfectly
-  fine. This keeps `init/1`'s boot-time cost bounded regardless of
-  store size while still catching corruption anywhere in a
-  store that scans within the timeout.
+  a timeout is logged as a partial scan, including its lower-bound entry
+  count and the fact that its covered fraction is unknown, and treated as
+  HEALTHY rather than triggering a lossy rename of a store that may be
+  perfectly fine. Completed scans log their entry count too, making
+  declining coverage visible across restarts. This keeps `init/1`'s
+  boot-time cost bounded regardless of store size while still catching
+  corruption anywhere in a store that scans within the timeout.
 
   Recovery granularity stays **whole-store**: `init/1` never attempts
   per-key quarantine of a corrupt CubDB (a materially bigger design —
@@ -3314,13 +3316,15 @@ defmodule Commonplace.Store.CommitStore do
   # section for the full rationale.
   defp probe_integrity(db) do
     timeout_ms = Application.get_env(:commonplace, :corruption_probe_timeout_ms, 5_000)
+    started_at = System.monotonic_time(:millisecond)
+    entries_walked = :atomics.new(1, signed: false)
 
     task =
       Task.async(fn ->
         try do
           db
           |> CubDB.select()
-          |> Enum.each(fn {_key, _value} -> :ok end)
+          |> Enum.each(fn {_key, _value} -> :atomics.add_get(entries_walked, 1, 1) end)
 
           :ok
         rescue
@@ -3330,8 +3334,28 @@ defmodule Commonplace.Store.CommitStore do
         end
       end)
 
-    case Task.yield(task, timeout_ms) || Task.shutdown(task, :brutal_kill) do
+    result =
+      if timeout_ms == 0 do
+        # A configured zero budget is useful for deterministic fixture tests and
+        # means exactly what it says: do not wait for any scan work to finish.
+        Task.shutdown(task, :brutal_kill)
+        nil
+      else
+        Task.yield(task, timeout_ms) || Task.shutdown(task, :brutal_kill)
+      end
+
+    elapsed_ms = System.monotonic_time(:millisecond) - started_at
+    walked = :atomics.get(entries_walked, 1)
+
+    case result do
       {:ok, :ok} ->
+        require Logger
+
+        Logger.info(
+          "CubDB integrity probe completed: entries_walked=#{walked} " <>
+            "elapsed_ms=#{elapsed_ms} budget_ms=#{timeout_ms}; coverage complete"
+        )
+
         :ok
 
       {:ok, {:error, _reason} = error} ->
@@ -3341,9 +3365,9 @@ defmodule Commonplace.Store.CommitStore do
         require Logger
 
         Logger.warning(
-          "CubDB integrity probe exceeded #{timeout_ms}ms (partial scan) — " <>
-            "treating store as healthy; availability wins over paranoia for a " <>
-            "large-but-fine store"
+          "CubDB integrity probe cut short: entries_walked=#{walked} " <>
+            "elapsed_ms=#{elapsed_ms} budget_ms=#{timeout_ms}; covered fraction UNKNOWN — " <>
+            "this is a LOWER BOUND on work done, not a percentage; treating store as healthy"
         )
 
         :ok
