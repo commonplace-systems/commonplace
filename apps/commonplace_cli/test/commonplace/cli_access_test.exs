@@ -41,7 +41,7 @@ defmodule Commonplace.CLI.AccessTest do
   end
 
   defp reachable(node), do: fn _dir -> {:ok, node} end
-  defp unreachable, do: fn _dir -> :not_running end
+  defp unreachable, do: fn _dir -> {:not_running, {:node_connect, false}} end
 
   # Effect stubs: record which branch ran instead of doing it.
   defp recording_effects do
@@ -50,7 +50,7 @@ defmodule Commonplace.CLI.AccessTest do
     [
       on_route: fn node -> send(me, {:effect, :route, node}) end,
       on_local: fn dir -> send(me, {:effect, :local, dir}) end,
-      on_refuse: fn dir -> send(me, {:effect, :refuse, dir}) end
+      on_refuse: fn dir, failure -> send(me, {:effect, :refuse, dir, failure}) end
     ]
   end
 
@@ -62,11 +62,12 @@ defmodule Commonplace.CLI.AccessTest do
     end
 
     test "no serve + lock held → refuse" do
-      assert :refuse = Access.decide(:not_running, :held)
+      assert {:refuse, {:node_connect, false}} =
+               Access.decide({:not_running, {:node_connect, false}}, :held)
     end
 
     test "no serve + lock free → local (the offline case must keep working)" do
-      assert :local = Access.decide(:not_running, :free)
+      assert :local = Access.decide({:not_running, {:node_connect, false}}, :free)
     end
   end
 
@@ -85,7 +86,8 @@ defmodule Commonplace.CLI.AccessTest do
       dir = tmp_dir("resolve_refuse")
       hold_flock(dir)
 
-      assert :refuse = Access.resolve(dir, connect: unreachable())
+      assert {:refuse, {:node_connect, false}} =
+               Access.resolve(dir, connect: unreachable())
     end
 
     test "opens locally when nothing holds the lock and no serve answers" do
@@ -173,7 +175,7 @@ defmodule Commonplace.CLI.AccessTest do
 
       Access.ensure_started(dir, [connect: unreachable()] ++ recording_effects())
 
-      assert_receive {:effect, :refuse, ^dir}
+      assert_receive {:effect, :refuse, ^dir, {:node_connect, false}}
       refute_receive {:effect, :local, _}, 50
       refute_receive {:effect, :route, _}, 50
     end
@@ -206,6 +208,27 @@ defmodule Commonplace.CLI.AccessTest do
       assert text =~ "NOT proof"
     end
 
+    test "names each reach step and its observed return value" do
+      dir = tmp_dir("refusal_reach_steps")
+      path = CommitStore.commits_lock_path(dir)
+      File.touch!(path)
+
+      cases = [
+        {{:read_node_name, nil}, "read_node_name(#{inspect(dir)}) returned nil"},
+        {{:node_start, {:error, :eaddrnotavail}},
+         "Node.start(cli_name, :shortnames) returned {:error, :eaddrnotavail}"},
+        {{:node_connect, false}, "Node.connect(serve_node) returned false"},
+        {{:verify_serves_this_dir, {:mismatch, "/other/data"}},
+         "verify_serves_this_dir(serve_node, data_dir) returned {:mismatch, \"/other/data\"}"}
+      ]
+
+      assert length(cases) == 4
+
+      for {failure, expected} <- cases do
+        assert LockRefusal.cli_refusal(dir, path, failure) =~ expected
+      end
+    end
+
     test "an empty lock file does not produce a blank hint" do
       dir = tmp_dir("refusal_empty")
       path = CommitStore.commits_lock_path(dir)
@@ -213,6 +236,82 @@ defmodule Commonplace.CLI.AccessTest do
 
       assert LockRefusal.holder_hint(path) == "(lock file empty or unreadable)"
       assert LockRefusal.cli_refusal(dir, path) =~ "(lock file empty or unreadable)"
+    end
+  end
+
+  describe "connect_to_serve/2 — step-level outcomes" do
+    test "four distinct failures preserve the step and actual return" do
+      dir = tmp_dir("reach_failures")
+      serve_node = :cx_a3fe_absent@commonplace
+      File.write!(Path.join(dir, "node_name"), Atom.to_string(serve_node))
+      started = fn _name -> {:ok, self()} end
+      not_stopped = fn -> :ok end
+
+      assert {:not_running, {:read_node_name, nil}} =
+               Access.connect_to_serve(dir, read_node_name: fn _ -> nil end)
+
+      assert {:not_running, {:node_start, {:error, :eaddrnotavail}}} =
+               Access.connect_to_serve(dir,
+                 start_node: fn _ -> {:error, :eaddrnotavail} end
+               )
+
+      assert {:not_running, {:node_connect, false}} =
+               Access.connect_to_serve(dir,
+                 start_node: started,
+                 connect_node: fn ^serve_node -> false end,
+                 stop_node: not_stopped
+               )
+
+      assert {:not_running, {:verify_serves_this_dir, {:mismatch, "/other/data"}}} =
+               Access.connect_to_serve(dir,
+                 start_node: started,
+                 connect_node: fn ^serve_node -> true end,
+                 verify_dir: fn ^serve_node, ^dir -> {:mismatch, "/other/data"} end,
+                 stop_node: not_stopped
+               )
+    end
+
+    test "a named fixture node is reachable while an absent node records false" do
+      peer_name = :cx_a3fe_fixture
+
+      peer =
+        start_supervised!(%{
+          id: :cx_a3fe_fixture_peer,
+          start:
+            {:peer, :start_link,
+             [
+               %{
+                 name: peer_name,
+                 connection: :standard_io,
+                 args: [~c"-setcookie", ~c"cx_a3fe_fixture_cookie"]
+               }
+             ]}
+        })
+
+      dir = tmp_dir("named_fixture")
+      peer_node = :peer.call(peer, :erlang, :node, [])
+      :ok = :peer.call(peer, :application, :set_env, [:commonplace, :data_dir, dir])
+      File.write!(Path.join(dir, "node_name"), Atom.to_string(peer_node))
+
+      opts = [
+        start_node: fn _ -> {:ok, self()} end,
+        connect_node: fn node -> :peer.call(peer, :erlang, :node, []) == node end,
+        verify_dir: fn node, expected_dir ->
+          if node == peer_node and
+               :peer.call(peer, :application, :get_env, [:commonplace, :data_dir]) ==
+                 {:ok, expected_dir},
+             do: :ok,
+             else: {:mismatch, :fixture_control_failed}
+        end,
+        stop_node: fn -> :ok end
+      ]
+
+      assert {:ok, ^peer_node} = Access.connect_to_serve(dir, opts)
+
+      File.write!(Path.join(dir, "node_name"), "cx_a3fe_absent@commonplace")
+
+      assert {:not_running, {:node_connect, false}} =
+               Access.connect_to_serve(dir, opts)
     end
   end
 end

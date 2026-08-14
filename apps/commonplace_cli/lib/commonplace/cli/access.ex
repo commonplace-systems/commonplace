@@ -68,9 +68,14 @@ defmodule Commonplace.CLI.Access do
   alias Commonplace.Store.{CommitStore, CommitStoreClient, LockRefusal}
   alias Commonplace.Sync.Flock
 
-  @type serve_result :: {:ok, node()} | :not_running
+  @type reach_failure ::
+          {:read_node_name, nil}
+          | {:node_start, {:error, term()}}
+          | {:node_connect, false | :ignored}
+          | {:verify_serves_this_dir, {:mismatch, String.t()}}
+  @type serve_result :: {:ok, node()} | {:not_running, reach_failure()}
   @type lock_state :: :held | :free | :not_probed
-  @type mode :: {:route, node()} | :refuse | :local
+  @type mode :: {:route, node()} | {:refuse, reach_failure()} | :local
 
   @doc """
   The decision table, pure. `flock_state` is ignored when a serve is
@@ -79,15 +84,15 @@ defmodule Commonplace.CLI.Access do
   """
   @spec decide(serve_result(), lock_state()) :: mode()
   def decide({:ok, node}, _flock_state), do: {:route, node}
-  def decide(:not_running, :held), do: :refuse
-  def decide(:not_running, :free), do: :local
+  def decide({:not_running, failure}, :held), do: {:refuse, failure}
+  def decide({:not_running, _failure}, :free), do: :local
 
   @doc """
   Resolve the access mode for `data_dir`.
 
   Options (all functions, for tests; every default is the real thing):
 
-    * `:connect` — `(data_dir -> {:ok, node} | :not_running)`
+    * `:connect` — `(data_dir -> serve_result())`
     * `:probe_lock` — `(data_dir -> :held | :free)`
 
   The lock is probed only when no serve is reachable: with a serve up we
@@ -101,7 +106,7 @@ defmodule Commonplace.CLI.Access do
 
     case connect.(data_dir) do
       {:ok, node} -> decide({:ok, node}, :not_probed)
-      :not_running -> decide(:not_running, probe.(data_dir))
+      {:not_running, _failure} = unavailable -> decide(unavailable, probe.(data_dir))
     end
   end
 
@@ -113,13 +118,14 @@ defmodule Commonplace.CLI.Access do
 
     * `:on_route` — `(node -> any)`, default `set_remote_node/1`
     * `:on_local` — `(data_dir -> any)`, default boot the local app
-    * `:on_refuse` — `(data_dir -> any)`, default print + `System.halt(1)`
+    * `:on_refuse` — `(data_dir, reach_failure -> any)`, default print +
+      `System.halt(1)`
   """
   @spec ensure_started(String.t(), keyword()) :: :ok | any()
   def ensure_started(data_dir, opts \\ []) do
     on_route = Keyword.get(opts, :on_route, &route/1)
     on_local = Keyword.get(opts, :on_local, &start_local/1)
-    on_refuse = Keyword.get(opts, :on_refuse, &refuse/1)
+    on_refuse = Keyword.get(opts, :on_refuse, &refuse/2)
 
     if already_attached?(data_dir) do
       :ok
@@ -127,7 +133,7 @@ defmodule Commonplace.CLI.Access do
       case resolve(data_dir, opts) do
         {:route, node} -> on_route.(node)
         :local -> on_local.(data_dir)
-        :refuse -> on_refuse.(data_dir)
+        {:refuse, failure} -> on_refuse.(data_dir, failure)
       end
     end
   end
@@ -196,11 +202,14 @@ defmodule Commonplace.CLI.Access do
   `data_dir`. Returns `{:ok, node}` only when the node answers AND does
   not positively contradict our data dir.
   """
-  @spec connect_to_serve(String.t()) :: serve_result()
-  def connect_to_serve(data_dir) do
-    case read_node_name(data_dir) do
+  @spec connect_to_serve(String.t(), keyword()) :: serve_result()
+  def connect_to_serve(data_dir, opts \\ []) do
+    read_name = Keyword.get(opts, :read_node_name, &read_node_name/1)
+    start_node = Keyword.get(opts, :start_node, &Node.start(&1, :shortnames))
+
+    case read_name.(data_dir) do
       nil ->
-        :not_running
+        {:not_running, {:read_node_name, nil}}
 
       serve_node ->
         # CX-y6uc: disable :global's overlapping-partition protection
@@ -211,36 +220,42 @@ defmodule Commonplace.CLI.Access do
 
         cli_name = :"commonplace_cli_#{:rand.uniform(999_999)}"
 
-        case Node.start(cli_name, :shortnames) do
-          {:ok, _} -> attach(serve_node, data_dir)
+        case start_node.(cli_name) do
+          {:ok, _} -> attach(serve_node, data_dir, opts)
           # Already distributed (e.g. `commonplace serve` started its own
           # named node before calling us) or epmd unavailable.
-          {:error, _} -> :not_running
+          {:error, _reason} = error -> {:not_running, {:node_start, error}}
         end
     end
   end
 
-  defp attach(serve_node, data_dir) do
+  defp attach(serve_node, data_dir, opts) do
+    connect_node = Keyword.get(opts, :connect_node, &Node.connect/1)
+    verify_dir = Keyword.get(opts, :verify_dir, &verify_serves_this_dir/2)
+    stop_node = Keyword.get(opts, :stop_node, &Node.stop/0)
+
     # Node.connect/1 returns true | false | :ignored (this node not alive).
-    if Node.connect(serve_node) == true do
-      case verify_serves_this_dir(serve_node, data_dir) do
-        :ok ->
-          {:ok, serve_node}
+    case connect_node.(serve_node) do
+      true ->
+        case verify_dir.(serve_node, data_dir) do
+          :ok ->
+            {:ok, serve_node}
 
-        {:mismatch, remote_dir} ->
-          IO.puts(:stderr, """
-          commonplace: #{inspect(serve_node)} (from #{Path.join(data_dir, "node_name")}) \
-          serves a DIFFERENT workspace — its data dir is #{inspect(remote_dir)}, not \
-          #{inspect(data_dir)}. Ignoring it; that node_name file probably points at an \
-          orphan serve.\
-          """)
+          {:mismatch, remote_dir} = mismatch ->
+            IO.puts(:stderr, """
+            commonplace: #{inspect(serve_node)} (from #{Path.join(data_dir, "node_name")}) \
+            serves a DIFFERENT workspace — its data dir is #{inspect(remote_dir)}, not \
+            #{inspect(data_dir)}. Ignoring it; that node_name file probably points at an \
+            orphan serve.\
+            """)
 
-          Node.stop()
-          :not_running
-      end
-    else
-      Node.stop()
-      :not_running
+            stop_node.()
+            {:not_running, {:verify_serves_this_dir, mismatch}}
+        end
+
+      result when result in [false, :ignored] ->
+        stop_node.()
+        {:not_running, {:node_connect, result}}
     end
   end
 
@@ -271,7 +286,8 @@ defmodule Commonplace.CLI.Access do
         if Path.expand(dir) == Path.expand(data_dir), do: :ok, else: {:mismatch, dir}
 
       other ->
-        IO.puts(:stderr,
+        IO.puts(
+          :stderr,
           "commonplace: could not verify that #{inspect(serve_node)} serves #{data_dir} " <>
             "(#{inspect(other)}); proceeding anyway."
         )
@@ -287,8 +303,12 @@ defmodule Commonplace.CLI.Access do
     :ok
   end
 
-  defp refuse(data_dir) do
-    IO.puts(:stderr, LockRefusal.cli_refusal(data_dir, CommitStore.commits_lock_path(data_dir)))
+  defp refuse(data_dir, failure) do
+    IO.puts(
+      :stderr,
+      LockRefusal.cli_refusal(data_dir, CommitStore.commits_lock_path(data_dir), failure)
+    )
+
     System.halt(1)
   end
 

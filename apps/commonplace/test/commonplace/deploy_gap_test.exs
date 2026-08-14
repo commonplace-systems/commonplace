@@ -3,21 +3,23 @@ defmodule Commonplace.DeployGapTest do
 
   @script Path.expand("../../../../bin/cp-deploy-gap", __DIR__)
 
-  test "CI build has no beams newer than the running test VM" do
-    build_dir = Path.join(Mix.Project.build_path(), "lib")
-    beams = Path.wildcard(Path.join([build_dir, "*", "ebin", "*.beam"]))
-
-    assert File.dir?(build_dir), "deploy-gap scan target does not exist: #{build_dir}"
-    assert beams != [], "deploy-gap positive-control corpus is empty under: #{build_dir}"
-
-    {output, status} =
-      System.cmd(@script, ["--assert-empty", "--since", test_vm_started_at()],
-        env: [{"CP_BUILD_DIR", build_dir}],
-        stderr_to_stdout: true
-      )
-
-    assert status == 0, output
-  end
+  # ⛔ REMOVED 2026-08-14, SAME DAY IT LANDED — it was RED ON CORRECT STATE.
+  #
+  # The arm asserted "no beam in the build is newer than the RUNNING TEST VM".
+  # That reference is wrong for this subject BY CONSTRUCTION: `mix test` boots
+  # the VM and THEN compiles, so every beam recompiled during the run is newer
+  # than the VM start. Measured: a clean tree, no source change to the flagged
+  # modules, 10 beams reported, rc 2. It passed only when nothing needed
+  # recompiling — i.e. intermittently, which is the worst property a gate can
+  # have, and `--no-compile` was already circulating as the workaround.
+  #
+  # The gauge itself is correct for the SERVE, which does not compile after it
+  # starts. The mechanism (`--assert-empty`, per-beam enumeration) is kept and
+  # is exercised by the synthetic test below. Re-landing a serve-side check is
+  # CX-beph; the false-positive analysis is its own row.
+  #
+  # A positive control proved this could fire; nothing proved it fires ONLY
+  # when it should.
 
   @tag :tmp_dir
   test "assertion failure enumerates every newer beam", %{tmp_dir: tmp_dir} do

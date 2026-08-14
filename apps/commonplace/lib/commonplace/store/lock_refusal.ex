@@ -56,7 +56,7 @@ defmodule Commonplace.Store.LockRefusal do
   route through. Ends with the operator's actual next move, because the
   common case is a running serve the CLI could not connect to.
   """
-  def cli_refusal(data_dir, lock_path) do
+  def cli_refusal(data_dir, lock_path, reach_failure \\ nil) do
     """
     commonplace: refusing to open the commits store at #{Path.join(data_dir, "commits")}.
 
@@ -68,11 +68,31 @@ defmodule Commonplace.Store.LockRefusal do
 
       #{sanctioned_access_message()}
 
-      If a serve IS running for this workspace, distributed Erlang could not
-      reach it: check <data_dir>/node_name, epmd, and ERL_INETRC/
+      Reach diagnostic: #{reach_failure_message(reach_failure, data_dir)}
+
+      If a serve IS running for this workspace, use that diagnostic to check
+      the named step; distribution failures commonly involve epmd and ERL_INETRC/
       ERL_EPMD_ADDRESS (see bin/commonplace-mcp for the loopback setup).
 
-    Nothing was opened and nothing on disk was touched. (CX-x8jk)
+    Nothing was opened and nothing on disk was touched. (CX-a3fe)
     """
   end
+
+  defp reach_failure_message({:read_node_name, nil}, data_dir) do
+    "read_node_name(#{inspect(data_dir)}) returned nil"
+  end
+
+  defp reach_failure_message({:node_start, result}, _data_dir) do
+    "Node.start(cli_name, :shortnames) returned #{inspect(result)}"
+  end
+
+  defp reach_failure_message({:node_connect, result}, _data_dir) do
+    "Node.connect(serve_node) returned #{inspect(result)}"
+  end
+
+  defp reach_failure_message({:verify_serves_this_dir, result}, _data_dir) do
+    "verify_serves_this_dir(serve_node, data_dir) returned #{inspect(result)}"
+  end
+
+  defp reach_failure_message(nil, _data_dir), do: "reach step unavailable"
 end
