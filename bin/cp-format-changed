@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+#
+# cp-format-changed — format-check only tracked Elixir files changed between
+# two explicit commits.
+#
+# The refs come from the CI event, not from an inferred local branch:
+#   pull_request: pull_request.base.sha -> pull_request.head.sha
+#   push:         event.before          -> github.sha
+#
+# A full-history checkout makes those objects available in the ordinary case.
+# Missing objects and a genuinely empty diff are refusals: neither is evidence
+# that a commit touched no files. A non-Elixir-only diff is different; it emits
+# a visible checked count of zero and succeeds because its file list is known.
+
+set -uo pipefail
+
+name="cp-format-changed"
+
+if [[ $# -ne 2 ]]; then
+  echo "$name: usage: $name <base-commit> <head-commit>" >&2
+  exit 64
+fi
+
+base="$1"
+head="$2"
+
+for ref_name in base head; do
+  ref="${!ref_name}"
+  if ! git cat-file -e "${ref}^{commit}" 2>/dev/null; then
+    echo "$name: REFUSING — cannot resolve ${ref_name} commit '$ref'." >&2
+    echo "  Checked 0 files; the changed-file list is underivable." >&2
+    echo "  Comparison requested: $base -> $head" >&2
+    exit 2
+  fi
+done
+
+diff_out="$(mktemp -t cp-format-changed.XXXXXX)"
+format_out="$(mktemp -t cp-format-changed-format.XXXXXX)"
+trap 'rm -f "$diff_out" "$format_out"' EXIT
+
+if ! git diff --name-only --diff-filter=ACMR -z "$base" "$head" -- >"$diff_out"; then
+  echo "$name: REFUSING — git could not determine the changed-file list." >&2
+  echo "  Checked 0 files; comparison: $base -> $head" >&2
+  exit 2
+fi
+
+mapfile -d '' -t changed <"$diff_out"
+
+if [[ ${#changed[@]} -eq 0 ]]; then
+  echo "$name: REFUSING — the comparison produced an empty changed-file list." >&2
+  echo "  Checked 0 files; identical or stale refs are not evidence of no work." >&2
+  echo "  Comparison: $base -> $head" >&2
+  exit 2
+fi
+
+elixir_files=()
+for path in "${changed[@]}"; do
+  case "$path" in
+    *.ex|*.exs) elixir_files+=("$path") ;;
+  esac
+done
+
+echo "$name: comparison $base -> $head"
+echo "$name: ${#changed[@]} changed file(s); ${#elixir_files[@]} tracked .ex/.exs file(s) selected"
+
+if [[ ${#elixir_files[@]} -eq 0 ]]; then
+  echo "$name: checked 0 files — the known diff contains no tracked .ex/.exs files"
+  exit 0
+fi
+
+printf '%s' "$name: command: mix format --check-formatted --"
+printf ' %q' "${elixir_files[@]}"
+printf '\n'
+
+mix format --check-formatted -- "${elixir_files[@]}" >"$format_out" 2>&1
+format_rc=$?
+cat "$format_out"
+
+if [[ $format_rc -ne 0 ]]; then
+  echo >&2
+  echo "$name: FAILED — format check exited ${format_rc} after checking ${#elixir_files[@]} file(s):" >&2
+  printf '  %s\n' "${elixir_files[@]}" >&2
+  exit "$format_rc"
+fi
+
+echo "$name: checked ${#elixir_files[@]} file(s); all are formatted"

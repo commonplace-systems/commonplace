@@ -129,6 +129,7 @@ defmodule Commonplace.Chat.Rooms do
 
     {:ok, doc} =
       DocBuilder.reconstruct_snapshot(store, view_uuid, client_id: WriterHand.for_doc(view_uuid))
+
     current = Commonplace.Document.ContentType.get_content(doc) || ""
     length = String.length(current)
 
