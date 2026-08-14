@@ -136,7 +136,16 @@ probe_error_file=$(mktemp "${TMPDIR:-/tmp}/$name.XXXXXX") || {
   exit 1
 }
 
-if LC_ALL=C exec 2>"$probe_error_file" {environ_fd}<"$environ_path"; then
+# ⛔ THE REDIRECT MUST BE SCOPED TO THIS ONE COMMAND.
+# `exec 2>file` redirects the SCRIPT's stderr permanently, so every later `>&2`
+# — including "layer A FAILED" and the COMBINED verdict — was written into
+# $probe_error_file and then deleted with it. Measured 2026-08-14 on a
+# no-user-namespace run: `layer A` appeared in NEITHER stdout NOR stderr, so the
+# single most severe outcome (both layers gone, environ readable) was
+# undiagnosable from outside while the exit code stayed correct.
+# ⭐ A correct check whose failure cannot be read is worse than a missing one:
+# you trust the acceptance, watch it fail, and have no thread to pull.
+if { LC_ALL=C exec {environ_fd}<"$environ_path"; } 2>"$probe_error_file"; then
   if environ_count=$(tr '\0' '\n' <&"$environ_fd" | awk 'END {print NR}'); then
     echo "$name: layer A FAILED — live target pid $target_pid has a readable environ ($environ_count entries)" >&2
   else
