@@ -197,7 +197,8 @@ defmodule Commonplace.Application do
         reflog_children() ++
         ghost_reaper_children() ++
         git_bridge_children() ++
-        workspace_lock_children(data_dir) ++ scheduler_children()
+        workspace_lock_children(data_dir) ++
+        deploy_gap_monitor_children() ++ scheduler_children()
 
     opts = [strategy: :one_for_one, name: Commonplace.Supervisor]
 
@@ -678,6 +679,28 @@ defmodule Commonplace.Application do
   def workspace_lock_children(data_dir) do
     if Application.get_env(:commonplace, :workspace_lock_on_boot, false) do
       [{Commonplace.Workspace.Lock, data_dir: data_dir}]
+    else
+      []
+    end
+  end
+
+  @doc false
+  # CX-beph: Phoenix-as-serve runs in interactive code-loading mode and does
+  # not compile after it starts. That makes the serve process start the right
+  # reference for this monitor: any newer beam was not part of the launched
+  # code, and a later lazy load would be an unplanned partial deploy.
+  #
+  # Explicitly serve-gated. config/runtime.exs enables it only for the Mode-B
+  # combination that owns a real workspace; tests, one-shot commands, and
+  # library embedding remain quiet. The monitor reports only non-empty gaps
+  # (or an inability to measure) into the serve log operators already watch.
+  def deploy_gap_monitor_children do
+    if Application.get_env(:commonplace, :deploy_gap_monitor_on_boot, false) do
+      [
+        {Commonplace.DeployGapMonitor,
+         interval_ms:
+           Application.get_env(:commonplace, :deploy_gap_monitor_interval_ms, 60_000)}
+      ]
     else
       []
     end
