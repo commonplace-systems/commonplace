@@ -75,6 +75,11 @@ end
 if serving? && data_dir do
   config :commonplace, workspace_lock_on_boot: true
   config :commonplace, bursar_on_boot: true
+  # CX-hzad: rehydrate chat view-computes only for a declared workspace serve.
+  # Application defaults this flag to refusal, so tests, one-shot commands,
+  # fresh installs, and incomplete serve wiring cannot be enabled by a stale
+  # root file.
+  config :commonplace, compute_rehydrator_on_boot: true
   # CX-beph: this serve does not compile after startup, so its process start
   # is the deploy-gap reference. A supervised periodic check logs only when a
   # newer beam exists (or the gauge cannot measure); an empty gap is silent.
