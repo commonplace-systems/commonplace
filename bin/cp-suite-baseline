@@ -82,7 +82,8 @@ stamp() {
 }
 
 if [[ "${1:-}" == "--stamp-only" ]]; then
-  echo "$name: environment stamp (attach this to any count you report)"
+  echo "$name: environment stamp — A POINT-IN-TIME READING, not a property of the checkout."
+  echo "  (the suite MUTATES tmp/test_data as it runs; take this BEFORE the run you are describing)"
   stamp "${2:-}"
   exit 0
 fi
@@ -106,9 +107,19 @@ shift
 SEED="${CP_SEED:-117514}"
 OUT="$(mktemp "${TMPDIR:-/tmp}/$name.XXXXXX")"
 
+# ⛔ THE STAMP MUST BE TAKEN BEFORE THE RUN, NOT ONLY AFTER.
+# Measured 2026-08-14: the suite MUTATES apps/commonplace/tmp/test_data while it
+# runs — a full-suite run deleted the `root` file and node_signing_public_keys.json
+# that were present when it started. So the state a run BEGAN in and the state it
+# ENDED in are different facts, and the one that explains the counts is the FIRST.
+# A comparison needs two readings and the first is only available before.
+BEFORE_STAMP="$(stamp "$APP_DIR")"
+
 echo "$name: running $APP suite at seed $SEED — this is a real run, not a cached number" >&2
 ( cd "$APP_DIR" && mix test --seed "$SEED" "$@" ) >"$OUT" 2>&1
 rc=$?
+
+AFTER_STAMP="$(stamp "$APP_DIR")"
 
 summary="$(grep -E '^[0-9]+ doctests?, |^[0-9]+ tests?, |doctests?, [0-9]+ tests?,' "$OUT" | tail -1)"
 
@@ -121,7 +132,15 @@ fi
 echo
 echo "BASELINE — paste this whole block into the brief, not just the numbers:"
 echo "  $summary  (seed $SEED, rc=$rc)"
-stamp "$APP_DIR"
+echo "  --- state the run STARTED in (this is what explains the counts) ---"
+printf '%s\n' "$BEFORE_STAMP"
+if [[ "$BEFORE_STAMP" != "$AFTER_STAMP" ]]; then
+  echo "  ⛔ STATE CHANGED DURING THE RUN — the suite mutated its own environment:"
+  echo "  --- state the run ENDED in ---"
+  printf '%s\n' "$AFTER_STAMP"
+  echo "  ⇒ Do NOT quote the ending state as the run's environment. And note that a"
+  echo "     LATER run in this directory starts from the ending state, not this one."
+fi
 echo "  ⚠️ A round measuring in a DIFFERENT state above may legitimately differ."
 echo "     Treat a mismatch as a scope difference to investigate, NOT as the round being wrong."
 echo
