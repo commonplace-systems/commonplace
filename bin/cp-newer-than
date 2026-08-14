@@ -36,8 +36,9 @@
 # stay QUIET. A control with only the first half is how the deploy-gap gate
 # shipped red-on-correct-state (CX-h062).
 #
-# Usage:  cp-newer-than <path> <ISO-8601-instant>
+# Usage:  cp-newer-than <path> <ISO-8601-instant | -N minutes | -N hours>
 #         cp-newer-than /home/jes/commonplace/.beads 2026-08-14T17:47:00
+#         cp-newer-than /home/jes/hermes/.beads '-60 minutes'   # converted for you
 #
 # Exit:   0  search ran, controls passed (count may be 0 and MEANS zero)
 #         3  the instrument failed its own control — result withheld
@@ -48,13 +49,28 @@ set -uo pipefail
 name="cp-newer-than"
 
 if [[ $# -ne 2 ]]; then
-  echo "$name: usage: $name PATH ISO_INSTANT" >&2
+  echo "$name: usage: $name PATH <ISO_INSTANT | '-N minutes' | '-N hours'>" >&2
   echo "  e.g. $name /home/jes/commonplace/.beads 2026-08-14T17:47:00" >&2
+  echo "       $name /home/jes/hermes/.beads '-60 minutes'" >&2
   exit 64
 fi
 
 target="$1"
 cutoff="$2"
+
+# ⭐ ACCEPT THE FORM PEOPLE ACTUALLY REACH FOR, and convert it ourselves.
+# The refusal below is correct but was incomplete: a bare prohibition on the
+# natural invocation invites the raw-`find` workaround it exists to prevent —
+# which is exactly what happened 90 minutes after this tool landed, when a
+# `find … -newermt '-60 minutes'` returned a clean zero on a directory that had
+# just been written. Offer the safe form rather than only banning the unsafe one.
+if [[ "$cutoff" =~ ^-?([0-9]+)[[:space:]]*(m|min|mins|minute|minutes)$ ]]; then
+  cutoff="$(date -d "${BASH_REMATCH[1]} minutes ago" +%Y-%m-%dT%H:%M:%S)"
+  echo "$name: '-${BASH_REMATCH[1]} minutes' resolved to $cutoff (absolute, so the search cannot silently no-match)" >&2
+elif [[ "$cutoff" =~ ^-?([0-9]+)[[:space:]]*(h|hr|hrs|hour|hours)$ ]]; then
+  cutoff="$(date -d "${BASH_REMATCH[1]} hours ago" +%Y-%m-%dT%H:%M:%S)"
+  echo "$name: '-${BASH_REMATCH[1]} hours' resolved to $cutoff (absolute, so the search cannot silently no-match)" >&2
+fi
 
 if [[ ! -e "$target" ]]; then
   echo "$name: REFUSING — path does not exist: $target" >&2
