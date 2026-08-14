@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+#
+# check-pidns-environ-isolation — assert that a live process outside the
+# current PID namespace cannot have its environment read through /proc.
+#
+# WHY THIS EXISTS (CX-v1zh)
+#
+# A sandbox can acquire this credential boundary accidentally when a private
+# procfs is mounted for an unrelated PID-isolation reason. This check makes
+# loss of the capability noisy without depending on particular bwrap flags or
+# on a credential-shaped variable happening to be present at check time.
+#
+# ⭐ TWO INDEPENDENT PROTECTIONS ARE STACKED HERE, AND THE STRONGER ONE IS
+# NAMED BY NO FLAG AT ALL. Measured on the host 2026-08-14, same uid on both
+# sides, uid_map identity-mapped 1000->1000:
+#
+#   no bwrap                          cmdline R   status R   environ R    -> FAIL(1)
+#   bwrap --unshare-pid --proc /proc   target absent from procfs           -> PASS(0)
+#   bwrap, --unshare-pid DROPPED       cmdline R   status R   environ EACCES
+#   bwrap, --proc /proc DROPPED        cmdline R   status R   environ EACCES
+#
+# cmdline and status need only same-uid; environ needs PTRACE_MODE_READ, which
+# fails across a USER namespace. Unprivileged bwrap always creates one. So the
+# credential protection survives removal of EITHER pid flag, and its actual
+# source is the user namespace -- implicit in using bwrap at all.
+#
+# ⛔ CONSEQUENCE FOR ANYONE MAINTAINING THIS: the exit-1 path is reachable only
+# when the fence stops being a user namespace (e.g. bwrap is replaced), NOT
+# when someone drops --unshare-pid or --proc /proc. Those drops yield exit 2,
+# CANNOT VERIFY -- correctly, because the environ is then unreadable for a real
+# protection reason that is not the one this check asserts.
+#
+# ⚠️ THE TICKET SAID --unshare-pid. THE BRIEF "CORRECTED" THAT TO --unshare-pid
+# PLUS --proc /proc. BOTH ATTRIBUTED THE PROTECTION TO FLAGS AND BOTH WERE
+# WRONG IN THE SAME DIRECTION. This script was right anyway, because it asserts
+# the CAPABILITY -- a flag grep would have been wrong twice. That is the whole
+# argument for testing what a thing can still DO.
+#
+# The caller must start the target before entering the sandbox. The target
+# writes its PID into WITNESS_LOCK and keeps an exclusive flock on that file
+# for its lifetime. The lock is the corpus control: unlike /proc, flock state
+# crosses the PID-namespace boundary, so this check can prove the target is
+# still alive before accepting an absent /proc/<pid> as isolation.
+#
+# Usage:
+#   bin/check-pidns-environ-isolation TARGET_PID WITNESS_LOCK
+#
+# Exit status:
+#   0  the live target is absent from this namespace's procfs
+#   1  the live target's environ was readable (the fence is open)
+#   2  the capability could not be verified
+#  64  invalid invocation
+#
+# The target process, not a helper, must retain the exclusive lock. A typical
+# outer-fence setup is:
+#
+#   (
+#     exec 9<>"$witness"
+#     flock --exclusive 9
+#     printf '%s\n' "$BASHPID" >"$witness"
+#     exec sleep 300
+#   ) &
+#   target_pid=$!
+#   # Launch the sandboxed check as a sibling, with $target_pid and $witness.
+#
+# For a red-arm test, the target must also permit the scratch sandbox to read
+# its environ when PID/proc isolation is absent. If another control such as a
+# nested user namespace or ptrace policy denies that read, this script reports
+# CANNOT VERIFY instead of misreporting a capability failure.
+
+set -uo pipefail
+
+name="check-pidns-environ-isolation"
+
+if [[ $# -ne 2 ]]; then
+  echo "$name: usage: $name TARGET_PID WITNESS_LOCK" >&2
+  exit 64
+fi
+
+target_pid="$1"
+witness_lock="$2"
+
+if [[ ! "$target_pid" =~ ^[0-9]+$ ]] || (( target_pid <= 1 )); then
+  echo "$name: CANNOT VERIFY — TARGET_PID must be an integer greater than 1; got '$target_pid'" >&2
+  exit 64
+fi
+
+if [[ ! -f "$witness_lock" ]]; then
+  echo "$name: CANNOT VERIFY — witness lock is not a regular file: $witness_lock" >&2
+  exit 2
+fi
+
+if ! IFS= read -r witnessed_pid <"$witness_lock"; then
+  echo "$name: CANNOT VERIFY — could not read witness lock: $witness_lock" >&2
+  exit 2
+fi
+
+if [[ "$witnessed_pid" != "$target_pid" ]]; then
+  echo "$name: CANNOT VERIFY — witness names pid '$witnessed_pid', expected '$target_pid'" >&2
+  exit 2
+fi
+
+if ! exec {witness_fd}<>"$witness_lock"; then
+  echo "$name: CANNOT VERIFY — could not open witness lock: $witness_lock" >&2
+  exit 2
+fi
+
+flock --exclusive --nonblock --conflict-exit-code 73 "$witness_fd"
+lock_rc=$?
+
+case "$lock_rc" in
+  73)
+    echo "$name: corpus control — target pid $target_pid is live (its exclusive witness lock is held)"
+    ;;
+  0)
+    flock --unlock "$witness_fd"
+    echo "$name: CANNOT VERIFY — target pid $target_pid is not holding its witness lock" >&2
+    exit 2
+    ;;
+  *)
+    echo "$name: CANNOT VERIFY — flock probe failed with status $lock_rc" >&2
+    exit 2
+    ;;
+esac
+
+proc_dir="/proc/$target_pid"
+environ_path="$proc_dir/environ"
+
+if [[ ! -e "$proc_dir" ]]; then
+  echo "$name: PASS — live target pid $target_pid is absent from this namespace's procfs; its environ is unreadable"
+  exit 0
+fi
+
+if environ_count=$(tr '\0' '\n' <"$environ_path" | awk 'END {print NR}'); then
+  echo "$name: FAIL — live target pid $target_pid has a readable environ ($environ_count entries)" >&2
+  exit 1
+fi
+
+echo "$name: CANNOT VERIFY — live target pid $target_pid is visible at $proc_dir, but reading its environ failed for a reason other than PID-namespace isolation" >&2
+exit 2
