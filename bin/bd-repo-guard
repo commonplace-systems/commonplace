@@ -1,0 +1,162 @@
+#!/usr/bin/env bash
+#
+# Repo-aware host-side guard for the bare `bd` command.
+#
+# This file is an installation candidate, not an installed command. Its policy
+# decision can be exercised without running bd:
+#
+#   bin/bd-repo-guard --classify DIRECTORY
+#   bin/bd-repo-guard --decide DIRECTORY
+#
+# Classification is rooted at the nearest enclosing Git worktree. A declared
+# .bd-archive-policy wins over filesystem shape. Supported declarations are
+# "frozen" and "live". Without a declaration, an existing .beads/dolt tree is
+# treated as live-shaped. Everything else is unclassifiable and fails closed.
+
+set -uo pipefail
+
+name="bd-repo-guard"
+policy_file=".bd-archive-policy"
+
+repo_root_for() {
+  local candidate="$1"
+
+  if [[ ! -d "$candidate" ]]; then
+    return 1
+  fi
+
+  candidate=$(cd -- "$candidate" 2>/dev/null && pwd -P) || return 1
+
+  while :; do
+    if [[ -d "$candidate/.git" || -f "$candidate/.git" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+
+    if [[ "$candidate" == "/" ]]; then
+      return 1
+    fi
+
+    candidate=${candidate%/*}
+    [[ -n "$candidate" ]] || candidate="/"
+  done
+}
+
+classify_repo() {
+  local directory="$1"
+  local root
+  local declaration
+
+  if ! root=$(repo_root_for "$directory"); then
+    printf 'unclassifiable\t%s\tno enclosing Git worktree\n' "$directory"
+    return 2
+  fi
+
+  if [[ -f "$root/$policy_file" ]]; then
+    declaration=$(<"$root/$policy_file")
+
+    case "$declaration" in
+      frozen)
+        printf 'frozen\t%s\tdeclared by %s\n' "$root" "$root/$policy_file"
+        return 0
+        ;;
+      live)
+        printf 'live\t%s\tdeclared by %s\n' "$root" "$root/$policy_file"
+        return 0
+        ;;
+      *)
+        printf 'unclassifiable\t%s\tinvalid declaration in %s (expected frozen or live)\n' \
+          "$root" "$root/$policy_file"
+        return 2
+        ;;
+    esac
+  fi
+
+  if [[ -d "$root/.beads/dolt" ]]; then
+    printf 'live\t%s\tlive-shaped .beads/dolt exists and no frozen declaration is present\n' "$root"
+    return 0
+  fi
+
+  printf 'unclassifiable\t%s\tno %s declaration and no live-shaped .beads/dolt\n' \
+    "$root" "$policy_file"
+  return 2
+}
+
+print_classification() {
+  local directory="$1"
+  local result
+  local rc
+  local class
+  local root
+  local reason
+
+  result=$(classify_repo "$directory")
+  rc=$?
+  IFS=$'\t' read -r class root reason <<<"$result"
+  printf '%s: CLASSIFICATION=%s repo=%s reason=%s\n' "$name" "$class" "$root" "$reason"
+  return "$rc"
+}
+
+decide() {
+  local directory="$1"
+  local result
+  local class
+  local root
+  local reason
+
+  result=$(classify_repo "$directory")
+  IFS=$'\t' read -r class root reason <<<"$result"
+
+  case "$class" in
+    live)
+      printf '%s: PERMITTED bd in repo=%s reason=%s\n' "$name" "$root" "$reason"
+      return 0
+      ;;
+    frozen)
+      printf '%s: REFUSED bd in repo=%s reason=archive is frozen (%s)\n' \
+        "$name" "$root" "$reason" >&2
+      return 1
+      ;;
+    *)
+      printf '%s: REFUSED bd in repo=%s reason=repository is unclassifiable (%s); failing closed\n' \
+        "$name" "$root" "$reason" >&2
+      return 1
+      ;;
+  esac
+}
+
+case "${1:-}" in
+  --classify)
+    if [[ $# -ne 2 ]]; then
+      echo "$name: --classify requires exactly one directory" >&2
+      exit 64
+    fi
+    print_classification "$2"
+    exit $?
+    ;;
+  --decide)
+    if [[ $# -ne 2 ]]; then
+      echo "$name: --decide requires exactly one directory" >&2
+      exit 64
+    fi
+    decide "$2"
+    exit $?
+    ;;
+esac
+
+decision_output=$(decide "$PWD" 2>&1)
+decision_rc=$?
+
+if [[ $decision_rc -ne 0 ]]; then
+  echo "$decision_output" >&2
+  exit "$decision_rc"
+fi
+
+real_bd="${BD_GUARD_REAL:-$HOME/.local/libexec/bd}"
+
+if [[ ! -x "$real_bd" ]]; then
+  echo "$name: CANNOT PERMIT bd in repo=$PWD reason=real binary is not executable at $real_bd; set BD_GUARD_REAL" >&2
+  exit 127
+fi
+
+exec "$real_bd" "$@"

@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# Exercise the repo-aware bd guard's pure classifier and decision paths.
+# This check creates complete synthetic worktrees and never invokes bd or the
+# guard's delegation path.
+
+set -uo pipefail
+
+name="check-bd-repo-guard"
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+guard="$script_dir/bd-repo-guard"
+fixture_root=$(mktemp -d)
+frozen="$fixture_root/frozen-repo"
+live="$fixture_root/live-repo"
+unknown="$fixture_root/unknown-repo"
+
+cleanup() {
+  rm -rf -- "$fixture_root"
+}
+trap cleanup EXIT
+
+fail() {
+  echo "$name: FAIL — $1" >&2
+  exit 1
+}
+
+if [[ ! -x "$guard" ]]; then
+  fail "guard corpus is missing or not executable: $guard"
+fi
+
+# Construct every path the classifier reads. Each fixture has a Git worktree
+# boundary. Frozen also has the live runtime shape, proving its declaration
+# takes precedence; live is deliberately unmarked and has .beads/dolt; unknown
+# has neither a declaration nor a Dolt tree.
+mkdir -p -- \
+  "$frozen/.git" "$frozen/.beads/dolt" "$frozen/work/nested" \
+  "$live/.git" "$live/.beads/dolt" "$live/work/nested" \
+  "$unknown/.git" "$unknown/work/nested"
+printf 'frozen\n' >"$frozen/.bd-archive-policy"
+
+fixture_count=0
+[[ -d "$frozen/.git" ]] || fail "frozen fixture lacks its Git boundary"
+[[ -d "$frozen/.beads/dolt" ]] || fail "frozen fixture lacks its Dolt-shaped archive"
+[[ "$(<"$frozen/.bd-archive-policy")" == "frozen" ]] || fail "frozen fixture lacks the exact frozen declaration"
+fixture_count=$((fixture_count + 1))
+echo "$name: FIXTURE CONTROL frozen=present repo=$frozen marker=frozen dolt=present"
+
+[[ -d "$live/.git" ]] || fail "live fixture lacks its Git boundary"
+[[ ! -e "$live/.bd-archive-policy" ]] || fail "live fixture unexpectedly has a policy declaration"
+[[ -d "$live/.beads/dolt" ]] || fail "live fixture lacks its Dolt-shaped archive"
+fixture_count=$((fixture_count + 1))
+echo "$name: FIXTURE CONTROL live=present repo=$live marker=absent dolt=present"
+
+[[ -d "$unknown/.git" ]] || fail "unknown fixture lacks its Git boundary"
+[[ ! -e "$unknown/.bd-archive-policy" ]] || fail "unknown fixture unexpectedly has a policy declaration"
+[[ ! -e "$unknown/.beads/dolt" ]] || fail "unknown fixture unexpectedly has a Dolt-shaped archive"
+fixture_count=$((fixture_count + 1))
+echo "$name: FIXTURE CONTROL unknown=present repo=$unknown marker=absent dolt=absent"
+
+[[ $fixture_count -eq 3 ]] || fail "fixture corpus count=$fixture_count, expected=3"
+echo "$name: FIXTURE CORPUS count=$fixture_count"
+
+frozen_class=$($guard --classify "$frozen/work/nested") || fail "frozen classifier returned non-zero: $frozen_class"
+[[ "$frozen_class" == *"CLASSIFICATION=frozen"* ]] || fail "frozen positive control misclassified: $frozen_class"
+echo "$name: POSITIVE CONTROL $frozen_class"
+
+live_class=$($guard --classify "$live/work/nested") || fail "live classifier returned non-zero: $live_class"
+[[ "$live_class" == *"CLASSIFICATION=live"* ]] || fail "live positive control misclassified: $live_class"
+echo "$name: POSITIVE CONTROL $live_class"
+
+set +e
+frozen_verdict=$($guard --decide "$frozen/work/nested" 2>&1)
+frozen_rc=$?
+set -e
+[[ $frozen_rc -eq 1 ]] || fail "frozen verdict rc=$frozen_rc, expected=1; output=$frozen_verdict"
+[[ "$frozen_verdict" == *"REFUSED bd"* && "$frozen_verdict" == *"repo=$frozen"* && "$frozen_verdict" == *"archive is frozen"* ]] || \
+  fail "frozen refusal lacks command, repo, or reason: $frozen_verdict"
+echo "$name: DISCRIMINATION frozen -> refuses rc=$frozen_rc output=$frozen_verdict"
+
+live_verdict=$($guard --decide "$live/work/nested" 2>&1) || fail "live verdict returned non-zero: $live_verdict"
+[[ "$live_verdict" == *"PERMITTED bd"* && "$live_verdict" == *"repo=$live"* && "$live_verdict" == *"live-shaped .beads/dolt"* ]] || \
+  fail "live permit lacks command, repo, or reason: $live_verdict"
+echo "$name: DISCRIMINATION live-shaped -> permits rc=0 output=$live_verdict"
+
+set +e
+unknown_verdict=$($guard --decide "$unknown/work/nested" 2>&1)
+unknown_rc=$?
+set -e
+[[ $unknown_rc -eq 1 ]] || fail "unknown verdict rc=$unknown_rc, expected=1; output=$unknown_verdict"
+[[ "$unknown_verdict" == *"REFUSED bd"* && "$unknown_verdict" == *"repo=$unknown"* && "$unknown_verdict" == *"unclassifiable"* && "$unknown_verdict" == *"failing closed"* ]] || \
+  fail "unknown refusal lacks command, repo, failure direction, or reason: $unknown_verdict"
+echo "$name: FAILURE DIRECTION unclassifiable -> refuses rc=$unknown_rc output=$unknown_verdict"
+
+echo "$name: PASS — fixture controls=3 classifications=2 discrimination arms=2 failure-direction arms=1"
