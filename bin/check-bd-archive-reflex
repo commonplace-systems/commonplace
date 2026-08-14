@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+#
+# check-bd-archive-reflex — verify that a bare `bd` invocation is intercepted
+# before it can reach the frozen Beads archive.
+#
+# This check deliberately exercises a READ (`ready`), never a write. A missing
+# Dolt database also makes the real CLI return non-zero, so status alone is not
+# evidence of protection: only the frozen-archive refusal is accepted.
+#
+# Exit status:
+#   0  bare bd was found and refused archive access
+#   1  bare bd reached something that did not issue the archive refusal
+#   2  the capability could not be verified
+#
+# ⛔⛔ THIS CHECK IS EXPECTED TO GO RED ON THE HOST TODAY. THAT IS THE FINDING,
+# NOT A BUG IN THE CHECK. DO NOT "FIX" IT BY LOOSENING THE PASS CONDITION.
+#
+# Measured 2026-08-14, same script, two positions:
+#
+#   inside sol-egress-run.sh   bd -> a guard   -> PASS(0)
+#   on the host                bd -> the real 178MB binary, no guard  -> FAIL(1)
+#
+# CX-v1zh filed this as "bin/bd is safe on Sol only because a fresh worktree
+# lacks a Dolt DB -- blocked by an absence, not by a refusal." Every part of
+# that is wrong, and it is wrong about WHICH PARTY IS AT RISK:
+#
+#   * There are TWO deliberate refusals, both predating the ticket. This repo's
+#     bin/bd (2026-08-08), and sol-egress-run.sh:245-246, which ro-binds the
+#     real binary aside to bd.real and shadows `bd` with a guard -- added
+#     because Sol typed `bd ready` on CX-3mj2 and reached the real binary.
+#   * SO SOL IS THE PROTECTED PARTY. The unprotected party is every agent on
+#     the HOST, where bare `bd` resolves straight to the real binary and this
+#     repo's bin/ is not on PATH.
+#
+# ⭐ The ticket worried about the sandbox and the exposure is outside it. The
+# check is position-sensitive on purpose: run it where you actually are, and
+# treat a red on the host as the live gap it is (see the successor ticket).
+#
+# ⚠️ Run it from a directory with NO .beads if you do not want a read against
+# the live archive: the probe is a read, but `bd ready` in a beads project
+# talks to the running Dolt server.
+
+set -uo pipefail
+
+name="check-bd-archive-reflex"
+
+if [[ -n "${CP_BD_ARCHIVE:-}" ]]; then
+  echo "$name: CANNOT VERIFY — CP_BD_ARCHIVE is set and deliberately bypasses the archive guard" >&2
+  exit 2
+fi
+
+resolved_bd=$(command -v bd 2>/dev/null)
+
+if [[ -z "$resolved_bd" ]]; then
+  echo "$name: CANNOT VERIFY — bare bd was not found on PATH; an empty corpus is not evidence of refusal" >&2
+  exit 2
+fi
+
+if [[ ! -x "$resolved_bd" ]]; then
+  echo "$name: CANNOT VERIFY — bare bd resolved to a non-executable path: $resolved_bd" >&2
+  exit 2
+fi
+
+canonical_bd=$(readlink -f -- "$resolved_bd" 2>/dev/null)
+
+if [[ -z "$canonical_bd" ]]; then
+  echo "$name: CANNOT VERIFY — could not canonicalize resolved bd path: $resolved_bd" >&2
+  exit 2
+fi
+
+echo "$name: corpus control — bare bd found at $resolved_bd (canonical: $canonical_bd)"
+
+probe_dir=$(mktemp -d)
+trap 'rm -f -- "$probe_dir/stdout" "$probe_dir/stderr"; rmdir -- "$probe_dir"' EXIT
+
+set +e
+"$resolved_bd" ready --json >"$probe_dir/stdout" 2>"$probe_dir/stderr"
+probe_rc=$?
+set -e
+
+probe_output=$(cat "$probe_dir/stdout" "$probe_dir/stderr")
+
+if [[ $probe_rc -eq 1 ]] &&
+   { [[ "$probe_output" == *"REFUSED: bd is the FROZEN ARCHIVE"* ]] ||
+     [[ "$probe_output" == *"bd is the FROZEN ARCHIVE (cutover 2026-08-05)"* ]]; }; then
+  refusal=$(printf '%s\n' "$probe_output" | awk '/REFUSED: bd is the FROZEN ARCHIVE|bd is the FROZEN ARCHIVE \(cutover 2026-08-05\)/ {print; exit}')
+  echo "$name: PASS — bare bd refused archive access: $refusal"
+  exit 0
+fi
+
+first_output=$(
+  printf '%s\n' "$probe_output" |
+    awk '
+      /"error":/ { print; found = 1; exit }
+      NF && !/^Warning:/ && fallback == "" { fallback = $0 }
+      END { if (!found) print fallback }
+    '
+)
+first_output=${first_output%%\\n*}
+if [[ -z "$first_output" ]]; then
+  first_output="<no output>"
+fi
+
+echo "$name: FAIL — bare bd reached an unguarded binary via $resolved_bd (canonical: $canonical_bd); ready probe rc=$probe_rc; expected the frozen-archive refusal, got: $first_output" >&2
+exit 1
