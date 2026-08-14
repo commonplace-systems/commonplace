@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+#
+# cp-suite-baseline — emit a suite baseline WITH the environment it was measured
+# in, so the scope travels attached to the number.
+#
+# WHY THIS EXISTS (CX-hzad, 2026-08-14)
+#
+# Six build briefs in one day quoted "core 3,494 / 0 failures / 1 skipped" as
+# the baseline a round must measure against. Every one of those numbers came
+# from a SANDBOXED round. Nobody had run the full suite on the host. The first
+# host run returned 3,502 / 1.
+#
+# ⛔ THE NUMBER WAS TRUE AND ITS SCOPE WAS NOT ATTACHED TO IT. A round that ran
+# the suite where it actually stood and honestly reported 3,502/1 would have
+# looked WRONG against the briefed baseline — and the natural reaction is to
+# suspect the round. A wrong baseline does not produce wrong answers; it
+# produces DISTRUST OF CORRECT ONES, and it is invisible because every round
+# that shares the environment agrees with it.
+#
+# ⭐ The cause was NOT sandbox-vs-host. It was CLEAN vs DIRTY tmp/test_data:
+# a leftover `root` file from 2026-04-27 makes Workspace.root_uuid() succeed,
+# which starts a rehydrator that application.ex documents as never starting on
+# test runs, which collides with a test's own start_link. Proven both ways —
+# move the file away, 0 failures; move it back, 1 failure. So the discriminator
+# is "has this checkout ever run tests", not "is this a sandbox".
+#
+# ⇒ So the stamp below reports the things that ACTUALLY DIFFER, not a guess at
+# which machine you are on. A bare "measured on the host" would have been the
+# same mistake with a different word.
+#
+# USAGE
+#   cp-suite-baseline --stamp-only          # just the environment fingerprint
+#   cp-suite-baseline apps/commonplace      # run that app's suite, emit stamped baseline
+#
+# The output line is meant to be PASTED INTO A BRIEF verbatim.
+
+set -uo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+name="cp-suite-baseline"
+
+stamp() {
+  local app_dir="${1:-$REPO_ROOT/apps/commonplace}"
+  local sha dirty test_data root_file root_age deps
+
+  sha="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo '?')"
+  # ⛔ --untracked-files=no, and scoped to apps/ and config/, ON PURPOSE.
+  # The first version of this used `-- '*.ex' '*.exs'` with untracked files
+  # included, and it reported DIRTY on a clean tree because a state-render
+  # scratch file sat at .commonplace-state/.state-render.*/probe.exs. A stamp
+  # that cries wolf is the CX-h062 defect — a check red on correct state trains
+  # everyone to ignore it — and it appeared in the tool written to prevent
+  # scope errors. Only TRACKED modifications to compiled sources can change
+  # what a suite measures. The built escript apps/commonplace_cli/commonplace_cli is
+  # excluded: it is a tracked BUILD ARTIFACT that is rebuilt routinely, and a
+  # stamp that reads DIRTY because a binary was regenerated is the same wolf-cry.
+  local changed
+  changed="$(git -C "$REPO_ROOT" status --porcelain --untracked-files=no \
+             -- apps config ':(exclude)apps/commonplace_cli/commonplace_cli' 2>/dev/null)"
+  if [[ -n "$changed" ]]; then
+    dirty="DIRTY — $(wc -l <<<"$changed") tracked file(s) under apps/ or config/ modified vs HEAD"
+  else
+    dirty="clean vs HEAD"
+  fi
+
+  # The discriminator that actually mattered. A checkout that has run tests
+  # carries state that changes which children the application starts.
+  root_file="$app_dir/tmp/test_data/root"
+  if [[ -f "$root_file" ]]; then
+    root_age="$(stat -c '%y' "$root_file" 2>/dev/null | cut -d' ' -f1)"
+    test_data="DIRTY — tmp/test_data/root present (written $root_age) ⇒ Workspace.root_uuid() SUCCEEDS ⇒ serve-gated children START"
+  else
+    test_data="CLEAN — no tmp/test_data/root ⇒ Workspace.root_uuid() fails ⇒ serve-gated children stay OFF"
+  fi
+
+  if [[ -d "$REPO_ROOT/deps" ]]; then deps="repo deps/"; else deps="NO repo deps/ (sandbox-style: deps copied elsewhere)"; fi
+
+  echo "  sha:        $sha ($dirty)"
+  echo "  test state: $test_data"
+  echo "  deps:       $deps"
+  echo "  cwd:        $app_dir"
+}
+
+if [[ "${1:-}" == "--stamp-only" ]]; then
+  echo "$name: environment stamp (attach this to any count you report)"
+  stamp "${2:-}"
+  exit 0
+fi
+
+APP="${1:-}"
+if [[ -z "$APP" ]]; then
+  echo "$name: usage: $name --stamp-only | $name apps/<app> [-- <extra mix test args>]" >&2
+  exit 64
+fi
+
+APP_DIR="$REPO_ROOT/$APP"
+if [[ ! -d "$APP_DIR" ]]; then
+  echo "$name: REFUSING — no such app directory: $APP_DIR" >&2
+  echo "  (a suite run against a missing path reports nothing and looks like a clean result)" >&2
+  exit 64
+fi
+
+shift
+[[ "${1:-}" == "--" ]] && shift
+
+SEED="${CP_SEED:-117514}"
+OUT="$(mktemp "${TMPDIR:-/tmp}/$name.XXXXXX")"
+
+echo "$name: running $APP suite at seed $SEED — this is a real run, not a cached number" >&2
+( cd "$APP_DIR" && mix test --seed "$SEED" "$@" ) >"$OUT" 2>&1
+rc=$?
+
+summary="$(grep -E '^[0-9]+ doctests?, |^[0-9]+ tests?, |doctests?, [0-9]+ tests?,' "$OUT" | tail -1)"
+
+if [[ -z "$summary" ]]; then
+  echo "$name: NO SUMMARY LINE — the suite did not report counts (rc=$rc)." >&2
+  echo "  Result WITHHELD: an absent count is not a passing count. Full output: $OUT" >&2
+  exit 3
+fi
+
+echo
+echo "BASELINE — paste this whole block into the brief, not just the numbers:"
+echo "  $summary  (seed $SEED, rc=$rc)"
+stamp "$APP_DIR"
+echo "  ⚠️ A round measuring in a DIFFERENT state above may legitimately differ."
+echo "     Treat a mismatch as a scope difference to investigate, NOT as the round being wrong."
+echo
+echo "(full output retained at $OUT)"
+exit "$rc"
