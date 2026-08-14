@@ -39,6 +39,28 @@
 # ⚠️ Run it from a directory with NO .beads if you do not want a read against
 # the live archive: the probe is a read, but `bd ready` in a beads project
 # talks to the running Dolt server.
+#
+# ⛔⛔ DO NOT "FIX" THE HOST RED BY PUTTING THIS REPO'S bin/ FIRST ON PATH.
+# RULED OUT BY THE HOST OWNER 2026-08-14, ON MEASUREMENT (CX-3zzx):
+#
+#   /home/jes/hermes/.beads/dolt      EXISTS — 50 paths modified since 2026-08-01
+#   /home/jes/commonplace/.beads      issues.jsonl untouched since 2026-06-13
+#
+# ⭐ `bd` IS FROZEN FOR COMMONPLACE AND LIVE FOR HERMES: one command name, two
+# archives, OPPOSITE POLICIES. A PATH reorder is GLOBAL, so it would intercept
+# `bd` in ~/hermes too and refuse writes to an archive that is supposed to take
+# them. "`bd` is the only name collision" is true and is exactly the problem —
+# the collision is with a LIVE tracker, not with nothing.
+#
+# ⭐⭐ CONSTRAINT ON ANY FUTURE FIX, which is the durable part: A HOST-SIDE GUARD
+# MUST KNOW WHICH REPO IT IS STANDING IN. A PATH REORDER STRUCTURALLY CANNOT —
+# PATH HAS NO IDEA WHERE YOU ARE. Anything that cannot discriminate the frozen
+# archive from the live one at invocation time will be correct for one repo and
+# destructive for the other.
+#
+# ⇒ A fix that greens this check by breaking hermes is the harm, not the remedy.
+# Any candidate must leave `cd ~/hermes && bd list` working, must still PASS
+# inside the Sol fence, and must not loosen the pass condition here.
 
 set -uo pipefail
 
