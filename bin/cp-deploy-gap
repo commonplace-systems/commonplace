@@ -36,6 +36,7 @@
 # USAGE
 #   bin/cp-deploy-gap                 # against the running serve
 #   bin/cp-deploy-gap --since <time>  # against an explicit reference time
+#   bin/cp-deploy-gap --assert-empty [--since <time>]
 #   CP_BUILD_DIR=... bin/cp-deploy-gap --since <time>   # for testing the gauge
 
 set -uo pipefail
@@ -43,6 +44,12 @@ cd "$(dirname "$0")/.." || exit 1
 
 BUILD_DIR="${CP_BUILD_DIR:-_build/dev/lib}"
 SINCE=""
+ASSERT_EMPTY=0
+
+if [[ "${1:-}" == "--assert-empty" ]]; then
+  ASSERT_EMPTY=1
+  shift
+fi
 
 if [[ "${1:-}" == "--since" ]]; then
   SINCE="${2:?--since needs a timestamp}"
@@ -83,21 +90,30 @@ fi
 
 [[ -d "$BUILD_DIR" ]] || { echo "cp-deploy-gap: no $BUILD_DIR" >&2; exit 2; }
 
-total="$(find "$BUILD_DIR" -name '*.beam' -newermt "$SINCE" 2>/dev/null | wc -l)"
+mapfile -t newer_beams < <(find "$BUILD_DIR" -name '*.beam' -newermt "$SINCE" 2>/dev/null | sort)
+total="${#newer_beams[@]}"
 
 echo "WOULD-DEPLOY-ON-RESTART: $total beam(s) newer than that start"
 echo "  (this is NOT a coherence check — see the header)"
 
 if (( total > 0 )); then
+  echo "  newer beams:"
+  printf '    %s\n' "${newer_beams[@]}"
+  echo
   echo "  by app:"
-  find "$BUILD_DIR" -name '*.beam' -newermt "$SINCE" 2>/dev/null \
-    | sed "s|^$BUILD_DIR/\([^/]*\)/.*|\1|" | sort | uniq -c | sort -rn \
+  printf '%s\n' "${newer_beams[@]}" \
+    | sed "s|^$BUILD_DIR/\([^/]*\)/.*|\1|" | uniq -c | sort -rn \
     | sed 's/^/    /'
   echo
   echo "  ⇒ A restart deploys all of these AT ONCE."
   echo "  ⇒ Until then, any incidental load of one is an unplanned partial deploy."
   echo "  ⇒ Run 'mix compile' DELIBERATELY before restarting, so what ships"
   echo "    corresponds to a commit rather than to whatever happens to be built."
+fi
+
+if (( ASSERT_EMPTY == 1 && total > 0 )); then
+  echo "cp-deploy-gap: ASSERTION FAILED — $total beam(s) are newer than the running process start." >&2
+  exit 1
 fi
 
 exit 0
