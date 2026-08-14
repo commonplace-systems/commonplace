@@ -14,12 +14,39 @@ defmodule Commonplace.DeployGapTest do
   # have, and `--no-compile` was already circulating as the workaround.
   #
   # The gauge itself is correct for the SERVE, which does not compile after it
-  # starts. The mechanism (`--assert-empty`, per-beam enumeration) is kept and
-  # is exercised by the synthetic test below. Re-landing a serve-side check is
-  # CX-beph; the false-positive analysis is its own row.
+  # starts. Its reference is the serve's start instant: a beam newer than that
+  # instant is code the lazily-loading serve did not start with. A test VM has
+  # no equivalent reference because compilation normally follows its start.
+  # The mechanism (`--assert-empty`, per-beam enumeration) is exercised below.
   #
   # A positive control proved this could fire; nothing proved it fires ONLY
   # when it should.
+
+  @tag :tmp_dir
+  test "assertion stays quiet when every beam predates the subject", %{tmp_dir: tmp_dir} do
+    build_dir = Path.join(tmp_dir, "lib")
+    older_beam = Path.join([build_dir, "older", "ebin", "Older.beam"])
+
+    File.mkdir_p!(Path.dirname(older_beam))
+    File.write!(older_beam, "older")
+    File.touch!(older_beam, {{2020, 1, 1}, {0, 0, 0}})
+
+    assert File.dir?(build_dir), "deploy-gap scan target does not exist: #{build_dir}"
+
+    assert Path.wildcard(Path.join([build_dir, "*", "ebin", "*.beam"])) == [older_beam],
+           "deploy-gap TRUE-NEGATIVE corpus is empty or pointed at the wrong build — a 0-beam scan would exit 0 for the wrong reason"
+
+    {output, status} =
+      System.cmd(@script, ["--assert-empty", "--since", "2025-01-01T00:00:00Z"],
+        env: [{"CP_BUILD_DIR", build_dir}],
+        stderr_to_stdout: true
+      )
+
+    assert status == 0, output
+    assert output =~ "WOULD-DEPLOY-ON-RESTART: 0 beam(s) newer than that start"
+    refute output =~ "ASSERTION FAILED"
+    refute output =~ "    #{older_beam}\n"
+  end
 
   @tag :tmp_dir
   test "assertion failure enumerates every newer beam", %{tmp_dir: tmp_dir} do
@@ -47,14 +74,5 @@ defmodule Commonplace.DeployGapTest do
     assert output =~ "ASSERTION FAILED — 1 beam(s)"
     assert output =~ newer_beam
     refute output =~ "    #{older_beam}\n"
-  end
-
-  defp test_vm_started_at do
-    {elapsed_ms, _since_last_call_ms} = :erlang.statistics(:wall_clock)
-
-    System.system_time(:millisecond)
-    |> Kernel.-(elapsed_ms)
-    |> DateTime.from_unix!(:millisecond)
-    |> DateTime.to_iso8601()
   end
 end
