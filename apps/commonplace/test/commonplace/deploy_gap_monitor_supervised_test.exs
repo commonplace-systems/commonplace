@@ -22,6 +22,8 @@ defmodule Commonplace.DeployGapMonitorSupervisedTest do
 
   import ExUnit.CaptureLog
 
+  require Logger
+
   alias Commonplace.DeployGapMonitor
 
   @missing "/does/not/exist/cp-deploy-gap"
@@ -68,5 +70,34 @@ defmodule Commonplace.DeployGapMonitorSupervisedTest do
 
     assert log =~ ":enoent",
            "the log must name WHAT went wrong; 'it failed' costs the next reader the investigation"
+  end
+
+  test "it announces itself at boot, so silence is distinguishable from death" do
+    # config/test.exs pins Logger to :warning, so an :info line is filtered
+    # before any handler sees it. The SERVE records :info (verified in the live
+    # log), so the line is real in production — this raises the level only to
+    # make it assertable here.
+    prior = Logger.level()
+    Logger.configure(level: :info)
+    on_exit(fn -> Logger.configure(level: prior) end)
+
+    log =
+      capture_log(fn ->
+        {:ok, pid} =
+          DeployGapMonitor.start_link(
+            command: @missing,
+            interval_ms: 60_000,
+            name: :deploy_gap_monitor_boot_line_test
+          )
+
+        Process.sleep(100)
+        GenServer.stop(pid)
+      end)
+
+    assert log =~ "DeployGapMonitor armed",
+           "no boot line — 'quiet because the gap is 0' and 'never started' would be the same observation"
+
+    assert log =~ @missing,
+           "the boot line must name the resolved gauge path, or a wrong path is invisible until the first check"
   end
 end
