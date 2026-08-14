@@ -764,16 +764,22 @@ defmodule Commonplace.Application do
   # CX-tdkq.3 (architecture-review R3): resume chat view-computes on boot so
   # computed views survive a BEAM restart without a human re-opening each
   # room. Appended after ChatViewComputeSupervisor (whose DynamicSupervisor +
-  # ETS index it drives) so the dependency is up first. Workspace-gated like
-  # the presence Reaper — no rehydrator on test runs / fresh installs. Root is
-  # resolved dynamically at scan time, so a `cp checkout` re-root is followed.
+  # ETS index it drives) so the dependency is up first. CX-hzad: explicitly
+  # serve-gated — no rehydrator on test runs / fresh installs. Flag absence is
+  # a named refusal, so a leftover test root cannot silently enable the child.
+  # Root is resolved dynamically at scan time, so a `cp checkout` re-root is
+  # followed.
   def compute_rehydrator_children do
-    case Commonplace.Workspace.root_uuid() do
-      {:ok, _root_uuid} ->
-        [{Commonplace.Chat.ComputeRehydrator, []}]
+    if Application.get_env(:commonplace, :compute_rehydrator_on_boot, false) do
+      case Commonplace.Workspace.root_uuid() do
+        {:ok, _root_uuid} ->
+          [{Commonplace.Chat.ComputeRehydrator, []}]
 
-      {:error, _} ->
-        []
+        {:error, _} ->
+          []
+      end
+    else
+      []
     end
   end
 end
