@@ -75,6 +75,12 @@ end
 if serving? && data_dir do
   config :commonplace, workspace_lock_on_boot: true
   config :commonplace, bursar_on_boot: true
+  # CX-beph: this serve does not compile after startup, so its process start
+  # is the deploy-gap reference. A supervised periodic check logs only when a
+  # newer beam exists (or the gauge cannot measure); an empty gap is silent.
+  # This makes accidental partial-deploy exposure noisy without restarting,
+  # loading modules, or otherwise changing the serve's deployed code.
+  config :commonplace, deploy_gap_monitor_on_boot: true
   # CX-3xwu (A): the continuous ghost-reaper runs on the Mode-B serve (it needs
   # the node identity + workspace root + the live SessionLimit/PresenceRegistry
   # trackers). Explicit-flag gated in application.ex; can be disabled by omitting
