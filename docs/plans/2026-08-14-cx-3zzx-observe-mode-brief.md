@@ -50,9 +50,14 @@ is sound AND the host is not ready — instead of one decaying into the other.**
    `bd ... --json` into parsers; one extra line breaks them silently.*
 3. ⭐⭐ **THE EXIT CODE MUST PASS THROUGH EXACTLY, INCLUDING NON-ZERO.** ⚠️ *A
    wrapper that swallows a failure is the classic form of this bug.*
-4. ⭐ **THE WOULD-BE VERDICT MUST BE RECORDED SO THE SET IS COUNTABLE PER REPO.**
-   ⇒ **Prescribing the property, not the mechanism: it must survive across
-   invocations and must NOT pollute stdout.** *Say what you chose and why.*
+4. ⭐⭐ **THE WOULD-BE VERDICT MUST BE RECORDED SO THE SET IS COUNTABLE PER REPO
+   — AND THE RECORD GOES TO NEITHER STDOUT NOR STDERR.**
+   ⛔ **BOTH STREAMS MUST BE BYTE-IDENTICAL TO THE UNWRAPPED BINARY'S.** ⚠️ *This
+   is stricter than "don't pollute stdout" and it is deliberate: the installer
+   will `cmp` BOTH streams, so a record written to stderr FAILS ACCEPTANCE even
+   though it looks harmless.* ⇒ **So the record needs a third destination that
+   survives across invocations.** *Prescribing the property, not the mechanism —
+   say what you chose and why, including where it lives and what cleans it up.*
 5. ⭐ **OBSERVE MUST BE THE DEFAULT**, so installing is safe. ⛔ **The flip to
    enforce must be ONE deliberate, reversible switch** — *say exactly what a
    person types to flip it, and what they type to flip it back.*
@@ -122,6 +127,28 @@ DEPENDENCY.**
 - ⭐ **Report the NEAR-MISS** — especially any temptation to invoke a real `bd`
   "just to check", or to let observe mode alter stdout "harmlessly".
 - ⭐⭐ **REQUIRE THE FAILURE TO BE READABLE:** *when each arm fails, WHAT PRINTS?*
+
+## ⭐⭐ THE INSTALLER HAS PRE-COMMITTED, AND THESE ARE HIS CHECKS VERBATIM
+
+**This is a YES IN ADVANCE, not a maybe: he installs in observe mode once these
+are demonstrated.** ⇒ ⭐ **So make each one checkable BY HIM, not just true.**
+
+```
+① stdout BYTE-IDENTICAL      cmp against the unwrapped binary, on a real command, not by eye
+② exit code passthrough      a stub exiting 7 → guard exits 7   (0 and 1 both = FAIL)
+③ observe truly silent       stdout AND stderr unchanged in a repo it would refuse
+④ the flip, BOTH directions  he types it, watches it enforce, types it back, watches it stop
+⑤ the 69 count REPRODUCES    from the INSTALLED copy, so the number is the guard's, not his survey's
+```
+
+⛔ **THE ONE THAT STOPS HIM EVEN WITH THE REST GREEN: any case where observe mode
+CHANGES A CALLER'S BYTES OR STATUS.**
+
+⚠️ **⑤ IS NOT YOURS AND MUST NOT BE ATTEMPTED — it requires the installed copy on
+the host and a survey of 84 real repos.** ⇒ ⭐ **What you owe it is the
+COUNTING COMMAND, working against your fixtures, in a form he can point at the
+real box afterwards.** ⛔ **Do not survey the box. Do not read other people's
+repos.**
 
 ## Review criteria
 
