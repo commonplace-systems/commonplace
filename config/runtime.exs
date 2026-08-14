@@ -80,7 +80,18 @@ if serving? && data_dir do
   # newer beam exists (or the gauge cannot measure); an empty gap is silent.
   # This makes accidental partial-deploy exposure noisy without restarting,
   # loading modules, or otherwise changing the serve's deployed code.
-  config :commonplace, deploy_gap_monitor_on_boot: true
+  # ⛔ KILL SWITCH, and it is boot-read: relaunch with
+  # COMMONPLACE_DEPLOY_GAP_MONITOR=0 to start this serve with NO monitor child,
+  # without editing a file or rebuilding. `runtime.exs` is evaluated at boot by
+  # construction (that is what separates it from `config.exs`), so the override
+  # takes effect on the next start — including for releases.
+  #
+  # This exists because a recovery instruction that is false is worse than none:
+  # it is consulted at the moment there is no time to discover it is wrong. The
+  # monitor runs a port command from a supervised child, so "how do I turn it
+  # off" must be answerable as something you TYPE, not as a file to find.
+  config :commonplace,
+    deploy_gap_monitor_on_boot: System.get_env("COMMONPLACE_DEPLOY_GAP_MONITOR") != "0"
   # CX-3xwu (A): the continuous ghost-reaper runs on the Mode-B serve (it needs
   # the node identity + workspace root + the live SessionLimit/PresenceRegistry
   # trackers). Explicit-flag gated in application.ex; can be disabled by omitting
