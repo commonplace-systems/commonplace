@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Exercise the repo-aware bd guard's pure classifier and decision paths.
-# This check creates complete synthetic worktrees and never invokes bd or the
-# guard's delegation path.
+# Exercise observe and enforce modes with complete synthetic worktrees and a
+# controlled delegate. This check never invokes a real bd.
 
 set -uo pipefail
 
@@ -12,6 +11,11 @@ fixture_root=$(mktemp -d)
 frozen="$fixture_root/frozen-repo"
 live="$fixture_root/live-repo"
 unknown="$fixture_root/unknown-repo"
+state_dir="$fixture_root/state"
+stub="$script_dir/bd-repo-guard-stub"
+call_log="$fixture_root/stub-called"
+expected_stdout="$fixture_root/expected.stdout"
+expected_stderr="$fixture_root/expected.stderr"
 
 cleanup() {
   rm -rf -- "$fixture_root"
@@ -23,9 +27,15 @@ fail() {
   exit 1
 }
 
-if [[ ! -x "$guard" ]]; then
-  fail "guard corpus is missing or not executable: $guard"
-fi
+[[ -x "$guard" ]] || fail "guard corpus is missing or not executable: $guard"
+[[ -x "$stub" ]] || fail "stub corpus is missing or not executable: $stub"
+
+BD_STUB_CALL_LOG="$call_log" BD_STUB_EXIT=0 "$stub" fixture-command --json \
+  >"$expected_stdout" 2>"$expected_stderr"
+expected_rc=$?
+[[ $expected_rc -eq 0 ]] || fail "stub output control rc=$expected_rc, expected=0"
+rm -f -- "$call_log"
+echo "$name: STUB CONTROL rc=$expected_rc stdout=$expected_stdout stderr=$expected_stderr"
 
 # Construct every path the classifier reads. Each fixture has a Git worktree
 # boundary. Frozen also has the live runtime shape, proving its declaration
@@ -90,4 +100,152 @@ set -e
   fail "unknown refusal lacks command, repo, failure direction, or reason: $unknown_verdict"
 echo "$name: FAILURE DIRECTION unclassifiable -> refuses rc=$unknown_rc output=$unknown_verdict"
 
-echo "$name: PASS — fixture controls=3 classifications=2 discrimination arms=2 failure-direction arms=1"
+observe_case() {
+  local label="$1"
+  local repo="$2"
+  local expected_record="$3"
+  local actual_stdout="$fixture_root/$label.stdout"
+  local actual_stderr="$fixture_root/$label.stderr"
+  local record
+  local record_text
+  local rc
+  local stdout_cmp
+  local stderr_cmp
+
+  rm -f -- "$call_log"
+  set +e
+  (cd -- "$repo/work/nested" && \
+    BD_GUARD_REAL="$stub" \
+    BD_GUARD_STATE_DIR="$state_dir" \
+    BD_STUB_CALL_LOG="$call_log" \
+    BD_STUB_EXIT=0 \
+    "$guard" fixture-command --json) >"$actual_stdout" 2>"$actual_stderr"
+  rc=$?
+  set -e
+
+  [[ $rc -eq 0 ]] || fail "$label observe refused or changed status: rc=$rc, expected=0; stderr=$(<"$actual_stderr")"
+  [[ -f "$call_log" ]] || fail "$label observe did not delegate; stub marker is absent"
+  [[ "$(wc -l <"$call_log")" -eq 1 ]] || fail "$label observe delegated more than once: $(<"$call_log")"
+
+  stdout_cmp=$(cmp "$expected_stdout" "$actual_stdout" 2>&1) || \
+    fail "$label observe changed stdout; cmp output=$stdout_cmp"
+  stderr_cmp=$(cmp "$expected_stderr" "$actual_stderr" 2>&1) || \
+    fail "$label observe changed stderr; cmp output=$stderr_cmp"
+
+  record=$(grep -Fl -- "$expected_record"$'\t'"$repo" "$state_dir/records"/*.record 2>/dev/null || true)
+  [[ -n "$record" && "$(wc -l <<<"$record")" -eq 1 ]] || \
+    fail "$label observation record missing or ambiguous: expected=$expected_record repo=$repo matches=$record"
+  record_text=$(<"$record")
+  [[ "$record_text" == "$expected_record"$'\t'"$repo" ]] || \
+    fail "$label observation record is unreadable or wrong: $record_text"
+
+  echo "$name: OBSERVE $label -> stub ran rc=$rc record=$expected_record"
+  echo "$name: CMP $label stdout=identical stderr=identical"
+}
+
+observe_case frozen "$frozen" "would refuse"
+observe_case live "$live" "would permit"
+observe_case unclassifiable "$unknown" "would refuse (unclassifiable)"
+
+rm -f -- "$call_log"
+set +e
+(cd -- "$unknown/work/nested" && \
+  BD_GUARD_REAL="$stub" \
+  BD_GUARD_STATE_DIR="$state_dir" \
+  BD_STUB_CALL_LOG="$call_log" \
+  BD_STUB_EXIT=7 \
+  "$guard" fixture-command --json) >"$fixture_root/exit7.stdout" 2>"$fixture_root/exit7.stderr"
+exit7_rc=$?
+set -e
+[[ $exit7_rc -ne 0 ]] || fail "exit-7 positive control unexpectedly returned zero"
+[[ $exit7_rc -eq 7 ]] || fail "observe did not pass through stub exit 7: rc=$exit7_rc"
+[[ -f "$call_log" ]] || fail "exit-7 observe control did not call the stub"
+echo "$name: POSITIVE CONTROL stub returned non-zero rc=$exit7_rc and observe passed it through exactly"
+
+rm -f -- "$call_log"
+set +e
+(cd -- "$frozen/work/nested" && \
+  BD_GUARD_MODE=enforce \
+  BD_GUARD_REAL="$stub" \
+  BD_GUARD_STATE_DIR="$state_dir" \
+  BD_STUB_CALL_LOG="$call_log" \
+  BD_STUB_EXIT=0 \
+  "$guard" fixture-command --json) >"$fixture_root/enforce-frozen.stdout" 2>"$fixture_root/enforce-frozen.stderr"
+enforce_frozen_rc=$?
+set -e
+[[ $enforce_frozen_rc -eq 1 ]] || \
+  fail "enforce frozen rc=$enforce_frozen_rc, expected=1; stderr=$(<"$fixture_root/enforce-frozen.stderr")"
+[[ ! -e "$call_log" ]] || fail "enforce frozen called the stub: $(<"$call_log")"
+enforce_frozen_error=$(<"$fixture_root/enforce-frozen.stderr")
+[[ "$enforce_frozen_error" == *"REFUSED bd"* && "$enforce_frozen_error" == *"archive is frozen"* ]] || \
+  fail "enforce frozen refusal is not readable: $enforce_frozen_error"
+echo "$name: ENFORCE frozen -> refuses rc=$enforce_frozen_rc stub_called=no output=$enforce_frozen_error"
+
+rm -f -- "$call_log"
+set +e
+(cd -- "$live/work/nested" && \
+  BD_GUARD_MODE=enforce \
+  BD_GUARD_REAL="$stub" \
+  BD_GUARD_STATE_DIR="$state_dir" \
+  BD_STUB_CALL_LOG="$call_log" \
+  BD_STUB_EXIT=7 \
+  "$guard" fixture-command --json) >"$fixture_root/enforce-live.stdout" 2>"$fixture_root/enforce-live.stderr"
+enforce_live_rc=$?
+set -e
+[[ $enforce_live_rc -ne 0 ]] || fail "enforce live positive control unexpectedly returned zero"
+[[ $enforce_live_rc -eq 7 ]] || fail "enforce live did not delegate exact rc=7: rc=$enforce_live_rc"
+[[ -f "$call_log" ]] || fail "enforce live did not call the stub"
+echo "$name: POSITIVE CONTROL enforce live delegated and preserved non-zero rc=$enforce_live_rc"
+
+rm -f -- "$call_log"
+set +e
+(cd -- "$unknown/work/nested" && \
+  BD_GUARD_MODE=enforce \
+  BD_GUARD_REAL="$stub" \
+  BD_GUARD_STATE_DIR="$state_dir" \
+  BD_STUB_CALL_LOG="$call_log" \
+  "$guard" fixture-command --json) >"$fixture_root/enforce-unknown.stdout" 2>"$fixture_root/enforce-unknown.stderr"
+enforce_unknown_rc=$?
+set -e
+[[ $enforce_unknown_rc -eq 1 ]] || \
+  fail "enforce unclassifiable rc=$enforce_unknown_rc, expected=1; stderr=$(<"$fixture_root/enforce-unknown.stderr")"
+[[ ! -e "$call_log" ]] || fail "enforce unclassifiable called the stub: $(<"$call_log")"
+enforce_unknown_error=$(<"$fixture_root/enforce-unknown.stderr")
+[[ "$enforce_unknown_error" == *"REFUSED bd"* && "$enforce_unknown_error" == *"unclassifiable"* ]] || \
+  fail "enforce unclassifiable refusal is not readable: $enforce_unknown_error"
+echo "$name: ENFORCE unclassifiable -> refuses rc=$enforce_unknown_rc stub_called=no output=$enforce_unknown_error"
+
+# The same frozen invocation is observed again with the switch absent, proving
+# the documented reversal restores delegation instead of retaining state.
+rm -f -- "$call_log"
+set +e
+(cd -- "$frozen/work/nested" && \
+  BD_GUARD_REAL="$stub" \
+  BD_GUARD_STATE_DIR="$state_dir" \
+  BD_STUB_CALL_LOG="$call_log" \
+  BD_STUB_EXIT=0 \
+  "$guard" fixture-command --json) >"$fixture_root/reversed.stdout" 2>"$fixture_root/reversed.stderr"
+reversed_rc=$?
+set -e
+[[ $reversed_rc -eq 0 && -f "$call_log" ]] || \
+  fail "unsetting enforce did not restore observe delegation: rc=$reversed_rc stub_called=$([[ -f "$call_log" ]] && echo yes || echo no)"
+echo "$name: FLIP CONTROL enforce with BD_GUARD_MODE=enforce; observe again with BD_GUARD_MODE unset rc=$reversed_rc stub_called=yes"
+
+would_refuse_count=$(BD_GUARD_STATE_DIR="$state_dir" "$guard" --count-would-refuse) || \
+  fail "would-refuse count command failed"
+[[ "$would_refuse_count" == "2" ]] || fail "would-refuse distinct repo count=$would_refuse_count, expected=2"
+echo "$name: COUNT COMMAND BD_GUARD_STATE_DIR=$state_dir $guard --count-would-refuse"
+echo "$name: COUNT OUTPUT distinct would-refuse repos=$would_refuse_count"
+
+printf 'would refuse\t/nonexistent/removed-worktree\n' >"$state_dir/records/stale.record"
+rm -f -- "$call_log"
+(cd -- "$live/work/nested" && \
+  BD_GUARD_REAL="$stub" \
+  BD_GUARD_STATE_DIR="$state_dir" \
+  BD_STUB_CALL_LOG="$call_log" \
+  BD_STUB_EXIT=0 \
+  "$guard" fixture-command --json) >"$fixture_root/prune.stdout" 2>"$fixture_root/prune.stderr"
+[[ ! -e "$state_dir/records/stale.record" ]] || fail "removed-worktree observation record was not pruned"
+echo "$name: RETENTION CONTROL records for removed worktrees are pruned on observation"
+
+echo "$name: PASS — fixtures=3 observe-arms=3 stdout-cmp=3 stderr-cmp=3 exit7=1 enforce-arms=3 flip-directions=2 distinct-would-refuse=2"

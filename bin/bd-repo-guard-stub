@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Controlled delegate for check-bd-repo-guard. Never invokes bd.
+
+set -u
+
+printf 'called\t%s\n' "$*" >>"$BD_STUB_CALL_LOG"
+printf 'stub stdout: {"fixture":true}\n'
+printf 'stub stderr: known diagnostic\n' >&2
+exit "${BD_STUB_EXIT:-0}"
