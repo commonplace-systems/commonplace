@@ -7,16 +7,29 @@
 #
 #   bin/bd-repo-guard --classify DIRECTORY
 #   bin/bd-repo-guard --decide DIRECTORY
+#   bin/bd-repo-guard --count-would-refuse
+#
+# Normal invocations observe by default. To flip an installed guard to enforce
+# for the current shell, and then reverse that switch:
+#
+#   export BD_GUARD_MODE=enforce
+#   unset BD_GUARD_MODE
+#
+# Observation records live under
+# ${XDG_STATE_HOME:-$HOME/.local/state}/bd-repo-guard/records by default.
 #
 # Classification is rooted at the nearest enclosing Git worktree. A declared
 # .bd-archive-policy wins over filesystem shape. Supported declarations are
 # "frozen" and "live". Without a declaration, an existing .beads/dolt tree is
-# treated as live-shaped. Everything else is unclassifiable and fails closed.
+# treated as live-shaped. Everything else is unclassifiable. Normal invocations
+# default to observe mode, which records the decision and delegates without
+# changing either output stream. Set BD_GUARD_MODE=enforce to fail closed.
 
 set -uo pipefail
 
 name="bd-repo-guard"
 policy_file=".bd-archive-policy"
+state_dir="${BD_GUARD_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/bd-repo-guard}"
 
 repo_root_for() {
   local candidate="$1"
@@ -125,6 +138,83 @@ decide() {
   esac
 }
 
+record_observation() {
+  local class="$1"
+  local root="$2"
+  local verdict
+  local records_dir="$state_dir/records"
+  local record_id
+  local temporary
+  local existing_record
+  local existing_verdict
+  local existing_root
+  local -a existing_records=()
+
+  case "$class" in
+    live) verdict="would permit" ;;
+    frozen) verdict="would refuse" ;;
+    *) verdict="would refuse (unclassifiable)" ;;
+  esac
+
+  # One replaceable record per repository makes the set shrink when a repo's
+  # declaration changes. Records whose worktrees no longer exist are removed,
+  # as are abandoned temporary files, so observation is not an append-only
+  # leak and an idle repository does not disappear from the measurement.
+  umask 077
+  mkdir -p -- "$records_dir" || return 1
+  find "$records_dir" -type f -name '*.tmp.*' -mmin +60 -delete || return 1
+
+  shopt -s nullglob
+  existing_records=("$records_dir"/*.record)
+  shopt -u nullglob
+  for existing_record in "${existing_records[@]}"; do
+    if ! IFS=$'\t' read -r existing_verdict existing_root <"$existing_record" || \
+        [[ ! -d "$existing_root" ]] || \
+        [[ ! -d "$existing_root/.git" && ! -f "$existing_root/.git" ]]; then
+      rm -f -- "$existing_record" || return 1
+    fi
+  done
+
+  record_id=$(printf '%s' "$root" | sha256sum) || return 1
+  record_id=${record_id%% *}
+  temporary="$records_dir/.$record_id.tmp.$$"
+  printf '%s\t%s\n' "$verdict" "$root" >"$temporary" || return 1
+  mv -f -- "$temporary" "$records_dir/$record_id.record"
+}
+
+count_would_refuse() {
+  local records_dir="$state_dir/records"
+  local record
+  local verdict
+  local root
+  local count=0
+  local -A seen=()
+  local -a records=()
+
+  if [[ ! -d "$records_dir" ]]; then
+    printf '0\n'
+    return 0
+  fi
+
+  shopt -s nullglob
+  records=("$records_dir"/*.record)
+  shopt -u nullglob
+
+  for record in "${records[@]}"; do
+    IFS=$'\t' read -r verdict root <"$record" || continue
+    case "$verdict" in
+      "would refuse"|"would refuse (unclassifiable)")
+        if [[ -z "${seen[$root]+present}" ]]; then
+          seen["$root"]=1
+          count=$((count + 1))
+        fi
+        ;;
+    esac
+  done
+
+  printf '%s\n' "$count"
+}
+
 case "${1:-}" in
   --classify)
     if [[ $# -ne 2 ]]; then
@@ -142,15 +232,38 @@ case "${1:-}" in
     decide "$2"
     exit $?
     ;;
+  --count-would-refuse)
+    if [[ $# -ne 1 ]]; then
+      echo "$name: --count-would-refuse takes no arguments" >&2
+      exit 64
+    fi
+    count_would_refuse
+    exit $?
+    ;;
 esac
 
-decision_output=$(decide "$PWD" 2>&1)
-decision_rc=$?
+mode="${BD_GUARD_MODE:-observe}"
 
-if [[ $decision_rc -ne 0 ]]; then
-  echo "$decision_output" >&2
-  exit "$decision_rc"
-fi
+case "$mode" in
+  observe)
+    classification=$(classify_repo "$PWD")
+    IFS=$'\t' read -r class root _reason <<<"$classification"
+    record_observation "$class" "$root" >/dev/null 2>&1 || :
+    ;;
+  enforce)
+    decision_output=$(decide "$PWD" 2>&1)
+    decision_rc=$?
+
+    if [[ $decision_rc -ne 0 ]]; then
+      echo "$decision_output" >&2
+      exit "$decision_rc"
+    fi
+    ;;
+  *)
+    echo "$name: invalid BD_GUARD_MODE=$mode (expected observe or enforce)" >&2
+    exit 64
+    ;;
+esac
 
 real_bd="${BD_GUARD_REAL:-$HOME/.local/libexec/bd}"
 
