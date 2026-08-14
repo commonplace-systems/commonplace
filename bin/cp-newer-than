@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+#
+# cp-newer-than — list files under PATH modified after an instant, with the
+# instrument's own positive control run FIRST, every time.
+#
+# WHY THIS EXISTS (2026-08-14)
+#
+# `find … -newermt '-20 minutes'` is valid GNU findutils syntax and is REJECTED
+# by bfs, which many systems install as `find`. The rejection prints to stderr
+# and yields NO MATCHES — so a broken invocation and a clean world produce the
+# same visible result: nothing.
+#
+#     $ find .beads -newermt '-20 minutes'
+#     bfs: error: Invalid timestamp.
+#     $                                    ← reads exactly like "nothing changed"
+#
+# ⛔ THIS HAS NOW BITTEN TWO AGENTS ON THIS BOX INDEPENDENTLY. The second one
+# had already written the conclusion "nothing was touched in the last 20
+# minutes" before a positive control overturned it. The first had filed a note
+# about it ~20h earlier — in a file the second agent's path does not include.
+# ⭐ A FILED ARTIFACT ONLY FIRES FOR THE PARTY THAT FILED IT. This is a command
+# instead of a note precisely so it fires for whoever runs it.
+#
+# WHAT IT GUARANTEES
+#
+#   1. It plants a canary NEWER than the cutoff and requires the search to FIND
+#      it. If the canary is missed, the instrument is blind and this exits 3
+#      WITHOUT reporting a count — an unusable instrument must never emit a
+#      number that could be read as an absence.
+#   2. It plants a canary OLDER than the cutoff and requires the search NOT to
+#      report it, so a matcher that returns everything cannot pass either.
+#   3. Only then does it search the real path, and it always prints the count
+#      together with what it searched.
+#
+# ⭐ Both controls, every run: one proves it can MATCH, the other proves it can
+# stay QUIET. A control with only the first half is how the deploy-gap gate
+# shipped red-on-correct-state (CX-h062).
+#
+# Usage:  cp-newer-than <path> <ISO-8601-instant>
+#         cp-newer-than /home/jes/commonplace/.beads 2026-08-14T17:47:00
+#
+# Exit:   0  search ran, controls passed (count may be 0 and MEANS zero)
+#         3  the instrument failed its own control — result withheld
+#        64  invalid invocation
+
+set -uo pipefail
+
+name="cp-newer-than"
+
+if [[ $# -ne 2 ]]; then
+  echo "$name: usage: $name PATH ISO_INSTANT" >&2
+  echo "  e.g. $name /home/jes/commonplace/.beads 2026-08-14T17:47:00" >&2
+  exit 64
+fi
+
+target="$1"
+cutoff="$2"
+
+if [[ ! -e "$target" ]]; then
+  echo "$name: REFUSING — path does not exist: $target" >&2
+  echo "  (a search of a missing path returns 0 and looks like a clean world)" >&2
+  exit 64
+fi
+
+# Reject the relative forms outright, with the reason, rather than letting the
+# underlying find decide. GNU accepts them; bfs does not; the caller cannot tell
+# which one they have.
+if [[ ! "$cutoff" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}([T ][0-9]{2}:[0-9]{2}(:[0-9]{2})?([+-][0-9]{2}:?[0-9]{2}|Z)?)?$ ]]; then
+  echo "$name: REFUSING — '$cutoff' is not an ISO-8601 instant." >&2
+  echo "  Relative forms like '-20 minutes' are GNU-only: bfs REJECTS them and" >&2
+  echo "  prints no matches, which is indistinguishable from a clean result." >&2
+  echo "  Use e.g. 2026-08-14T17:47:00" >&2
+  exit 64
+fi
+
+control_dir="$(mktemp -d "${TMPDIR:-/tmp}/$name.XXXXXX")" || {
+  echo "$name: CONTROL FAILED — could not create a control directory" >&2
+  exit 3
+}
+trap 'rm -rf "$control_dir"' EXIT
+
+newer_canary="$control_dir/canary-newer"
+older_canary="$control_dir/canary-older"
+
+: > "$newer_canary"
+: > "$older_canary"
+touch -d "2001-01-01T00:00:00" "$older_canary" 2>/dev/null || {
+  echo "$name: CONTROL FAILED — could not backdate the older canary" >&2
+  exit 3
+}
+
+# A cutoff in the future cannot be validated: the canary is created NOW, so it
+# can never be newer. Say that, rather than letting the generic control failure
+# blame blindness — a true message naming the wrong layer costs the next reader
+# the whole investigation.
+if [[ "$(date -d "$cutoff" +%s 2>/dev/null || echo 0)" -gt "$(date +%s)" ]]; then
+  echo "$name: REFUSING — cutoff $cutoff is in the FUTURE." >&2
+  echo "  This tool validates itself with a canary created now, which cannot be" >&2
+  echo "  newer than a future instant. It answers questions about the PAST only." >&2
+  exit 64
+fi
+
+control_hits="$(find "$control_dir" -type f -newermt "$cutoff" 2>/dev/null)"
+control_rc=$?
+
+if (( control_rc != 0 )); then
+  echo "$name: CONTROL FAILED — the search itself errored (rc=$control_rc)." >&2
+  echo "  Result WITHHELD: a failed search and an empty world look identical." >&2
+  exit 3
+fi
+
+if ! grep -qxF "$newer_canary" <<<"$control_hits"; then
+  echo "$name: CONTROL FAILED — the instrument did not find a file it was" >&2
+  echo "  guaranteed to find (canary newer than $cutoff)." >&2
+  echo "  Result WITHHELD: this search cannot distinguish absence from blindness." >&2
+  exit 3
+fi
+
+if grep -qxF "$older_canary" <<<"$control_hits"; then
+  echo "$name: CONTROL FAILED — the instrument reported a file OLDER than the" >&2
+  echo "  cutoff, so it is not discriminating on time at all." >&2
+  echo "  Result WITHHELD." >&2
+  exit 3
+fi
+
+echo "$name: controls passed — found the newer canary, excluded the older one"
+
+hits="$(find "$target" -newermt "$cutoff" 2>/dev/null)"
+if [[ -z "$hits" ]]; then
+  count=0
+else
+  count="$(wc -l <<<"$hits")"
+fi
+
+echo "$name: $count path(s) under $target modified after $cutoff"
+[[ -n "$hits" ]] && printf '%s\n' "$hits"
+exit 0
