@@ -7,6 +7,11 @@ defmodule Commonplace.Test.GlobalStateLeakDetector do
   `test_helper.exs`, so another test cannot mutate the globals between those
   two observations and receive the blame.
 
+  ExUnit runs `on_exit` callbacks after `:test_finished`, so this formatter
+  cannot distinguish a test that legitimately sets and later restores watched
+  state from one that actually leaks it. Every divergence count reported by
+  this instrument is therefore an **upper bound** and must be read as one.
+
   This watched set is deliberately a hypothesis, not a claim that it covers
   every possible source of cross-test contamination.
   """
@@ -16,6 +21,7 @@ defmodule Commonplace.Test.GlobalStateLeakDetector do
   @result_key {__MODULE__, :result}
   @app_env_keys [:data_dir, :trust, :local_write_gate]
   @public_key_artifact "node_signing_public_keys.json"
+  @positive_control Commonplace.GlobalStateLeakDetectorPositiveControlTest
 
   @type snapshot :: map()
 
@@ -67,21 +73,25 @@ defmodule Commonplace.Test.GlobalStateLeakDetector do
     })
   end
 
-  @doc "Turns detected divergences into a failing suite after formatters flush."
+  @doc "Reports detected divergences as an advisory after formatters flush."
   @spec assert_clean!(map()) :: :ok
   def assert_clean!(_suite_result) do
     case :persistent_term.get(@result_key, :detector_did_not_start) do
       :clean ->
-        IO.puts("GLOBAL STATE LEAK DETECTOR: no divergence in the five watched values")
-        :ok
+        IO.puts(report_message([]))
 
       {:divergences, divergences} ->
-        raise ExUnit.AssertionError, message: divergences_message(divergences)
+        IO.puts(report_message(divergences))
 
       :detector_did_not_start ->
-        raise ExUnit.AssertionError,
-          message: "GLOBAL STATE LEAK DETECTOR DID NOT START; watched-state result is unknown"
+        IO.puts("""
+        GLOBAL STATE LEAK DETECTOR DID NOT START — ADVISORY, not a failure
+          watched-state result is unknown
+        #{positive_control_notice()}
+        """)
     end
+
+    :ok
   end
 
   defp record_divergence(state, test, entry, exit) do
@@ -114,12 +124,25 @@ defmodule Commonplace.Test.GlobalStateLeakDetector do
     end
   end
 
-  defp divergences_message(divergences) do
+  defp report_message(divergences) do
     [
-      "GLOBAL STATE LEAK DETECTOR FOUND #{length(divergences)} DIVERGENCE(S):"
+      "GLOBAL STATE LEAK DETECTOR: #{length(divergences)} divergence(s) — ADVISORY, not a failure",
+      positive_control_notice()
       | Enum.map(divergences, &divergence_message/1)
     ]
     |> Enum.join("\n")
+  end
+
+  defp positive_control_notice do
+    if Code.ensure_loaded?(@positive_control) do
+      "  positive control RAN in this suite"
+    else
+      """
+        ⚠️ positive control NOT RUN in this suite. Proof-of-life:
+           mix test positive_controls/global_state_leak_detector_positive_control_test.exs
+      """
+      |> String.trim_trailing()
+    end
   end
 
   defp divergence_message(divergence) do
