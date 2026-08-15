@@ -37,8 +37,14 @@ defmodule Commonplace.Trust.CertMintTest do
       public_key: issuer_pub
     }
 
-    {audience_pub, _audience_priv} = Signing.generate_keypair()
+    {audience_pub, audience_priv} = Signing.generate_keypair()
     audience_uuid = UUID.uuid4()
+
+    audience_ctx = %SigningContext{
+      identity_uuid: audience_uuid,
+      private_key: audience_priv,
+      public_key: audience_pub
+    }
 
     %{
       store: store,
@@ -46,7 +52,8 @@ defmodule Commonplace.Trust.CertMintTest do
       doc_uuid: doc_uuid,
       commit_cid: commit_cid(store, doc_uuid),
       issuer_ctx: issuer_ctx,
-      audience: {audience_uuid, audience_pub}
+      audience: {audience_uuid, audience_pub},
+      audience_ctx: audience_ctx
     }
   end
 
@@ -87,11 +94,11 @@ defmodule Commonplace.Trust.CertMintTest do
              :erlang.term_to_binary(iex_cap, [:deterministic])
   end
 
-  test "chaining from a CLI-minted cert gets the named leaf-only refusal", ctx do
+  test "a CLI-minted subtree cert delegates only with its exact root", ctx do
     audience = ctx.audience
 
     assert {:ok, parent} =
-             CertMint.mint("notes.txt", [:write], elem(audience, 0), nil,
+             CertMint.mint("notes.txt", [:write, :delegate], elem(audience, 0), nil,
                root_uuid: ctx.root_uuid,
                store: ctx.store,
                issuer_context: ctx.issuer_ctx,
@@ -101,14 +108,26 @@ defmodule Commonplace.Trust.CertMintTest do
     {child_pub, _} = Signing.generate_keypair()
     child_claim = %{parent.claim | verbs: [:write]}
 
-    assert {:error, :subtree_scope_not_delegable} =
-             Capability.issue(ctx.issuer_ctx, {UUID.uuid4(), child_pub}, child_claim, parent.id,
+    assert {:ok, _child} =
+             Capability.issue(ctx.audience_ctx, {UUID.uuid4(), child_pub}, child_claim, parent.id,
                parent: parent,
                store: ctx.store
              )
 
-    assert CertMint.refusal_text(:subtree_scope_not_delegable) ==
-             "cert-mint refused: CLI-minted certificates are leaf-only because subtree delegation narrowing is not defined"
+    foreign_root_claim = %{child_claim | scope: {:subtree, UUID.uuid4()}}
+
+    assert {:error, :subtree_scope_root_mismatch} =
+             Capability.issue(
+               ctx.audience_ctx,
+               {UUID.uuid4(), child_pub},
+               foreign_root_claim,
+               parent.id,
+               parent: parent,
+               store: ctx.store
+             )
+
+    assert CertMint.refusal_text(:subtree_scope_root_mismatch) ==
+             "cert-mint refused: subtree delegation must keep exactly the parent's root"
   end
 
   defp seed_root(store, root_uuid, name, doc_uuid) do

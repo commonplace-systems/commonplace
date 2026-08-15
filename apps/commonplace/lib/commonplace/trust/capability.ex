@@ -121,7 +121,7 @@ defmodule Commonplace.Trust.Capability do
     claim = normalize_claim(claim)
 
     with :ok <- check_mint_policy(claim, opts),
-         :ok <- check_subtree_leaf_only(claim, opts[:parent]),
+         :ok <- check_subtree_delegation(claim, opts[:parent]),
          :ok <- check_attenuation(claim, opts[:parent]) do
       cap = new(issuer, audience, claim, parent_cid) |> sign(issuer_ctx.private_key)
       {:ok, cap}
@@ -222,25 +222,33 @@ defmodule Commonplace.Trust.Capability do
   # mint-time-guard audit in that module — this is the enumerated silent no-op.
   defp check_no_code_doc_in_scope({:subtree, _root}, _opts), do: :ok
 
-  # CX-4u03 / A1: {:subtree, R} certs are LEAF-ONLY in M2 — citizenship mints
-  # them root→player in a single link, never delegated further. Reject any
-  # DELEGATION (a non-nil parent) that involves a subtree scope on EITHER side,
-  # fail-EARLY at mint. Root issue (parent == nil, citizenship's case) is allowed.
+  # CX-4u03 / A1 + D1: {:subtree, R} certs may be delegated only when the child
+  # carries the parent's EXACT root. Root issue (parent == nil, citizenship's
+  # case) remains allowed; mixed scope types remain refused at mint when the
+  # parent is supplied.
   #
-  # ⚠️ This is a fail-EARLY convenience, NOT the load-bearing guard. The
-  # AUTHORITATIVE defense is VERIFY-TIME: `VerifyChain.combine_scope` rejects a
-  # subtree link mixed with any other scope type or a differing root. Do NOT
-  # mistake this mint check for the real protection — that is exactly the trap
-  # the #4 mint-guard audit exposed (a mint-time per-target scan that silently
-  # no-ops for a non-enumerable scope). A subtree scope-TYPE is knowable at mint
-  # (so this type-check does NOT silently no-op), but a future subtree-delegation
-  # feature must relax THIS *and* teach combine_scope the narrowing rule together.
-  defp check_subtree_leaf_only(_claim, nil), do: :ok
-  defp check_subtree_leaf_only(%{scope: {:subtree, _}}, _parent),
+  # The explicit equality below is load-bearing for MINT correctness. Do not
+  # replace it with `attenuates?`: `scope_set({:subtree, _})` is empty, making
+  # subtree scope attenuation vacuous. VerifyChain.combine_scope independently
+  # enforces this same-root invariant at verify time.
+  defp check_subtree_delegation(_claim, nil), do: :ok
+
+  defp check_subtree_delegation(
+         %{scope: {:subtree, child_root}},
+         %__MODULE__{claim: %{scope: {:subtree, parent_root}}}
+       ) do
+    if child_root == parent_root,
+      do: :ok,
+      else: {:error, :subtree_scope_root_mismatch}
+  end
+
+  defp check_subtree_delegation(%{scope: {:subtree, _}}, _parent),
     do: {:error, :subtree_scope_not_delegable}
-  defp check_subtree_leaf_only(_claim, %__MODULE__{claim: %{scope: {:subtree, _}}}),
+
+  defp check_subtree_delegation(_claim, %__MODULE__{claim: %{scope: {:subtree, _}}}),
     do: {:error, :subtree_scope_not_delegable}
-  defp check_subtree_leaf_only(_claim, _parent), do: :ok
+
+  defp check_subtree_delegation(_claim, _parent), do: :ok
 
   defp check_attenuation(_claim, nil), do: :ok
 
@@ -284,13 +292,12 @@ defmodule Commonplace.Trust.Capability do
   # chain (see VerifyChain.effective/1's type-homogeneity requirement).
   defp scope_set({:presence, _id}), do: MapSet.new([])
 
-  # CX-4u03 / A1 (subtree-scope): like {:presence}, a subtree cert is LEAF-ONLY
-  # in M2 (citizenship issues it root→player direct, single link, never
-  # delegated further), so it never participates in {:docs} subset/intersection
-  # attenuation math. An empty placeholder is safe by the same argument: a
-  # subtree scope is never mixed with a {:docs} scope in one chain (see
-  # VerifyChain.combine_scope's type-homogeneity requirement), and the real
-  # membership test is the verify-time zone-stamp carve, not attenuation.
+  # CX-4u03 / A1 + D1 (subtree-scope): subtree scopes do not participate in
+  # {:docs} subset/intersection math. This empty placeholder is safe only because
+  # check_subtree_delegation explicitly requires identical roots at mint and
+  # VerifyChain.combine_scope independently requires identical roots at verify;
+  # it must never be treated as proof of subtree scope attenuation. The real
+  # target-membership test remains the verify-time zone-stamp carve.
   defp scope_set({:subtree, _root}), do: MapSet.new([])
 
   # The child window must sit inside the parent window: child can only

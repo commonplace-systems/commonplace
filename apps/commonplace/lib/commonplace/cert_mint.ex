@@ -7,9 +7,9 @@ defmodule Commonplace.CertMint do
   call `Commonplace.Trust.Capability.issue/5` with the node signing context.
   The resulting certificate is stored without changing its bytes.
 
-  CLI-minted grants use `{:subtree, root_uuid}` scope. Subtree grants are
-  leaf-only until a safe subtree attenuation rule exists; `Capability.issue/5`
-  enforces that limit for every attempted child.
+  CLI-minted grants use `{:subtree, root_uuid}` scope. They may be delegated
+  only with that exact same root; `Capability.issue/5` refuses foreign-root or
+  mixed-scope children at mint.
   """
 
   alias Commonplace.Crypto.{AgentKeys, NodeIdentity, SigningContext}
@@ -17,9 +17,10 @@ defmodule Commonplace.CertMint do
   alias Commonplace.Tree.{DocBuilder, Walk}
   alias Commonplace.Trust.Capability
 
-  @leaf_only_refusal "cert-mint refused: CLI-minted certificates are leaf-only because subtree delegation narrowing is not defined"
+  @scope_type_refusal "cert-mint refused: subtree delegation cannot mix subtree and non-subtree scopes"
+  @root_mismatch_refusal "cert-mint refused: subtree delegation must keep exactly the parent's root"
 
-  @doc "Mint, node-sign, and store one leaf-only subtree capability."
+  @doc "Mint, node-sign, and store one subtree capability."
   @spec mint(String.t(), [atom()], String.t(), DateTime.t() | nil, keyword()) ::
           {:ok, Capability.t()} | {:error, term()}
   def mint(scope_ref, verbs, audience_uuid, expiry, opts \\ []) do
@@ -64,8 +65,9 @@ defmodule Commonplace.CertMint do
     Walk.resolve_path(root_uuid, path, fn uuid -> load_schema(store, uuid) end)
   end
 
-  @doc "The named refusal shown when chaining is attempted."
-  def refusal_text(:subtree_scope_not_delegable), do: @leaf_only_refusal
+  @doc "The named refusal shown when a subtree chaining constraint fails."
+  def refusal_text(:subtree_scope_not_delegable), do: @scope_type_refusal
+  def refusal_text(:subtree_scope_root_mismatch), do: @root_mismatch_refusal
   def refusal_text(reason), do: "cert-mint refused: #{inspect(reason)}"
 
   defp claim(scope_uuid, verbs, expiry) do
