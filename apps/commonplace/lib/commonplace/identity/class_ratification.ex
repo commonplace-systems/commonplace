@@ -4,7 +4,7 @@ defmodule Commonplace.Identity.ClassRatification do
 
   A class is an ordinary signed JSON document. The returned `DocRef` pins the
   ratification commit in its existing `cid` field; admission deliberately uses
-  `Projection.project_doc_at/3` because `DocRef.resolve/1` discards that pin.
+  `Projection.project_doc_at/3` because `DocRef.uuid/1` explicitly ignores that pin.
 
   The steward process is only the writer. Spawn admission and identity class
   reads use the committed document directly, so neither operation requires a

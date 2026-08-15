@@ -68,17 +68,17 @@ defmodule Commonplace.Document.DocRef do
   end
 
   @doc """
-  Resolve a DocRef to a UUID.
+  Return the document UUID, ignoring path and version pin.
   """
-  def resolve(%__MODULE__{uuid: uuid}) when is_binary(uuid) and uuid != "" do
+  def uuid(%__MODULE__{uuid: uuid}) when is_binary(uuid) and uuid != "" do
     {:ok, uuid}
   end
 
-  def resolve(%__MODULE__{path: path, uuid: nil}) when is_binary(path) do
+  def uuid(%__MODULE__{path: path, uuid: nil}) when is_binary(path) do
     {:error, :uuid_required}
   end
 
-  def resolve(%__MODULE__{}) do
+  def uuid(%__MODULE__{}) do
     {:error, :invalid_ref}
   end
 
