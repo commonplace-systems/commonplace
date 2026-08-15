@@ -5,7 +5,7 @@ defmodule Commonplace.Identity.ClassRatificationTest do
 
   It preserves I2's enforcing isolated store, explicit fixture signing context,
   and child-workspace key custody. The constructed red-first arm intentionally
-  passes a pinned ref through `DocRef.resolve/1`, then reads latest, to exhibit
+  passes a pinned ref through `DocRef.uuid/1`, then reads latest, to exhibit
   the amendment leak before the production pinned-read path is exercised.
   """
 
@@ -260,7 +260,7 @@ defmodule Commonplace.Identity.ClassRatificationTest do
   defp naive_latest_class_for_identity(identity_uuid, store) do
     with {:ok, root} <- Commonplace.Identity.Root.read(identity_uuid, store),
          {:ok, ref} <- DocRef.parse(get_in(root, ["genesis", "class_ref"])),
-         {:ok, bare_uuid} <- DocRef.resolve(ref),
+         {:ok, bare_uuid} <- DocRef.uuid(ref),
          {:ok, doc} <- DocBuilder.reconstruct_doc(store, bare_uuid),
          body when is_binary(body) <- ContentType.get_content(doc),
          {:ok, class} <- Jason.decode(body) do

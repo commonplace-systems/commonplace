@@ -101,10 +101,10 @@ defmodule Commonplace.Document.DocRefTest do
     end
   end
 
-  describe "resolve/1" do
-    test "resolves to UUID" do
-      ref = DocRef.new(@uuid, path: "test.txt")
-      assert {:ok, @uuid} = DocRef.resolve(ref)
+  describe "uuid/1" do
+    test "returns the UUID and explicitly ignores the version pin" do
+      ref = DocRef.new(@uuid, path: "test.txt", cid: @cid)
+      assert {:ok, @uuid} = DocRef.uuid(ref)
     end
   end
 end
