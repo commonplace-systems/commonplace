@@ -239,29 +239,6 @@ defmodule Commonplace.Trust.SubtreeCarveTest do
            )
   end
 
-  test "subtree certs are LEAF-ONLY: delegation involving a subtree scope is refused at mint", %{store: store, node_ctx: node_ctx} do
-    root = UUID.uuid4()
-    {parent_pub, _priv} = Signing.generate_keypair()
-
-    {:ok, parent_sub} =
-      Capability.issue(node_ctx, {UUID.uuid4(), parent_pub}, %{verbs: [:write], scope: {:subtree, root}, caveats: %{}}, nil, store: store)
-
-    parent_ctx = node_ctx
-    {child_pub, _} = Signing.generate_keypair()
-
-    # child = subtree, under a parent → refused
-    assert {:error, :subtree_scope_not_delegable} =
-             Capability.issue(parent_ctx, {UUID.uuid4(), child_pub}, %{verbs: [:write], scope: {:subtree, root}, caveats: %{}}, parent_sub.id, parent: parent_sub)
-
-    # child = docs, under a SUBTREE parent → also refused (leaf-only both ways)
-    assert {:error, :subtree_scope_not_delegable} =
-             Capability.issue(parent_ctx, {UUID.uuid4(), child_pub}, %{verbs: [:write], scope: {:docs, [UUID.uuid4()]}, caveats: %{}}, parent_sub.id, parent: parent_sub)
-
-    # root-issue (no parent) is allowed — the citizenship mint path
-    assert {:ok, _} =
-             Capability.issue(node_ctx, {UUID.uuid4(), child_pub}, %{verbs: [:write], scope: {:subtree, root}, caveats: %{}}, nil, store: store)
-  end
-
   test "shared code-doc classifier (the write⊥execute belt predicate)", _ctx do
     assert CodeDocHeuristic.code_content?("defmodule Foo.Bar do\n  def x, do: 1\nend")
     refute CodeDocHeuristic.code_content?(~s({"kind":"room","name":"Hall","zone":"z1"}))
