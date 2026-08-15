@@ -150,9 +150,9 @@ defmodule Commonplace.Runner.DeploymentRecord do
   @doc """
   Distinguish present, evicted-per-policy, and absence without a tombstone.
 
-  The evicted arm requires `:trusted_tombstone_signers`, a map from trusted
-  identity UUIDs to Ed25519 public keys. Signature verification without that
-  anchor would prove only that the tombstone agrees with the key it carries.
+  The evicted arm uses the workspace trust config's distinct
+  `eviction_anchors` set. Signature verification without that anchor would
+  prove only that the tombstone agrees with the key it carries.
   """
   @spec range_status(String.t(), binary(), GenServer.server(), keyword()) ::
           {:present, map()}
@@ -171,7 +171,12 @@ defmodule Commonplace.Runner.DeploymentRecord do
         CommitStoreClient.get_sla_tombstone_for_commit(store, id)
       end)
 
-    trusted_signers = Keyword.get(opts, :trusted_tombstone_signers)
+    trust_config = Keyword.get(opts, :trust_config, Commonplace.Trust.config())
+
+    verification_opts =
+      Keyword.take(opts, [:chain_position, :position_before?, :revocation_fetcher])
+
+    verification_opts = Keyword.put(verification_opts, :store, store)
 
     case commit_fetcher.(commit_id) do
       {:ok, %Commit{doc_uuid: ^log_uuid}} ->
@@ -181,7 +186,7 @@ defmodule Commonplace.Runner.DeploymentRecord do
         {:error, {:commit_doc_mismatch, expected: log_uuid, got: other}}
 
       :none ->
-        absent_status(log_uuid, commit_id, tombstone_fetcher, trusted_signers)
+        absent_status(log_uuid, commit_id, tombstone_fetcher, trust_config, verification_opts)
 
       {:error, _reason} = error ->
         error
@@ -193,10 +198,10 @@ defmodule Commonplace.Runner.DeploymentRecord do
 
   def range_status(_log_uuid, _commit_id, _store, _opts), do: {:error, :invalid_commit_range}
 
-  defp absent_status(log_uuid, commit_id, tombstone_fetcher, trusted_signers) do
+  defp absent_status(log_uuid, commit_id, tombstone_fetcher, trust_config, verification_opts) do
     case tombstone_fetcher.(commit_id) do
       {:ok, %SlaTombstone{} = tombstone} ->
-        with :ok <- SlaTombstone.verify(tombstone, trusted_signers),
+        with :ok <- SlaTombstone.verify(tombstone, trust_config, verification_opts),
              true <- tombstone.subtree_id == log_uuid or {:error, :tombstone_subtree_mismatch} do
           {:evicted_per_policy,
            %{
