@@ -47,6 +47,10 @@
 # Usage:
 #   bin/check-mcp-fresh          # exit 0 fresh, exit 1 stale, exit 2 could-not-verify
 #
+# Test overrides leave the tracked artifact and build untouched:
+#   MCP_CHECK_ESCRIPT=/path/to/escript bin/check-mcp-fresh
+#   MCP_CHECK_BUILD_DIR=/path/to/_build/dev/lib bin/check-mcp-fresh
+#
 # Intended as a deploy gate:
 #   bin/check-mcp-fresh || bin/rebuild-mcp
 #
@@ -54,31 +58,58 @@
 # visible at MCP session start. This script catches it earlier — at
 # deploy time, when it is still cheap to fix.
 
-set -euo pipefail
+set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-ESCRIPT="$PROJECT_DIR/apps/commonplace_mcp/commonplace_mcp"
+ESCRIPT="${MCP_CHECK_ESCRIPT:-$PROJECT_DIR/apps/commonplace_mcp/commonplace_mcp}"
+BUILD="${MCP_CHECK_BUILD_DIR:-${MIX_BUILD_PATH:-$PROJECT_DIR/_build/dev}/lib}"
 
-if [ ! -f "$ESCRIPT" ]; then
-  echo "check-mcp-fresh: no escript at $ESCRIPT — run bin/rebuild-mcp" >&2
-  exit 1
-fi
+cannot_verify() {
+  echo "check-mcp-fresh: CANNOT VERIFY — $1" >&2
+  echo "check-mcp-fresh: coverage: 0 modules compared" >&2
+  exit 2
+}
 
-cd "$PROJECT_DIR"
-exec elixir -e '
-escript = System.argv() |> List.first()
-# Overridable so the RED path can be exercised without mutating the real
-# build — point it at another build dir and the md5s legitimately
-# differ. A checker that has never been seen to fail is not a checker.
-build = System.get_env("MCP_CHECK_BUILD_DIR") || "_build/dev/lib"
+[[ -f "$ESCRIPT" ]] || cannot_verify "no MCP escript at $ESCRIPT"
+[[ -r "$ESCRIPT" ]] || cannot_verify "MCP escript is unreadable at $ESCRIPT"
+[[ -d "$BUILD" ]] || cannot_verify "no build library directory at $BUILD"
+[[ -r "$BUILD" ]] || cannot_verify "build library directory is unreadable at $BUILD"
+
+cd "$PROJECT_DIR" || cannot_verify "cannot enter project directory at $PROJECT_DIR"
+
+elixir -e '
+[escript, build, project] = System.argv()
+
+halt_cannot = fn detail, compared ->
+  IO.puts(:stderr, "check-mcp-fresh: CANNOT VERIFY — #{detail}")
+  IO.puts(:stderr, "check-mcp-fresh: coverage: #{compared} modules compared")
+  System.halt(12)
+end
 
 # An escript is NOT a plain zip: it carries a header before the archive,
 # so :zip.zip_open on the file fails with :bad_central_directory.
 # :escript.extract/2 hands back the archive section as a binary.
-{:ok, sections} = :escript.extract(String.to_charlist(escript), [])
-archive = Keyword.fetch!(sections, :archive)
-{:ok, entries} = :zip.extract(archive, [:memory])
+result =
+  try do
+    with {:ok, sections} <- :escript.extract(String.to_charlist(escript), []),
+         {:ok, archive} <- Keyword.fetch(sections, :archive),
+         {:ok, entries} <- :zip.extract(archive, [:memory]) do
+      {:ok, entries}
+    else
+      error -> {:error, inspect(error)}
+    end
+  rescue
+    error -> {:error, Exception.message(error)}
+  catch
+    kind, value -> {:error, "#{kind}: #{inspect(value)}"}
+  end
+
+entries =
+  case result do
+    {:ok, extracted} -> extracted
+    {:error, detail} -> halt_cannot.("cannot read MCP escript archive (#{detail})", 0)
+  end
 
 # :beam_lib.md5/1 takes the beam BINARY directly. Wrapping it as
 # {:binary, bin} silently fails for every input — which made this script
@@ -86,8 +117,8 @@ archive = Keyword.fetch!(sections, :archive)
 # It was caught only by insisting on a positive control before shipping.
 md5_of = fn bin ->
   case :beam_lib.md5(bin) do
-    {:ok, {_m, md5}} -> md5
-    _ -> :unreadable
+    {:ok, {_m, md5}} -> {:ok, md5}
+    other -> {:error, inspect(other)}
   end
 end
 
@@ -103,29 +134,34 @@ escript_by_app =
     end
   end)
 
-# Apps whose runtime comes from the OTP install rather than this tree
-# (elixir, logger, ...) have no directory under _build/dev/lib at all.
-# That is not staleness — skip them rather than manufacture noise.
-{apps_in_tree, apps_skipped} =
+# Identify project apps from the tree, then restrict the comparison to the
+# project apps actually bundled in this escript. Runtime apps are excluded by
+# identity, rather than inferred from whether the build happens to be complete.
+project_apps =
+  project
+  |> Path.join("apps/*/mix.exs")
+  |> Path.wildcard()
+  |> Enum.map(fn mix_file -> mix_file |> Path.dirname() |> Path.basename() end)
+  |> MapSet.new()
+
+bundled_project_apps =
   escript_by_app
   |> Map.keys()
+  |> Enum.filter(&MapSet.member?(project_apps, &1))
   |> Enum.sort()
-  |> Enum.split_with(fn app -> File.dir?(Path.join([build, app, "ebin"])) end)
 
-if apps_skipped != [] do
-  # Say what was OBSERVED (absent from the build dir), not what we assume
-  # caused it. Normally these are OTP/runtime-provided apps like `elixir`
-  # and `logger`, which is benign — but an incomplete or partially-wiped
-  # `_build` produces the identical symptom, and calling both
-  # "runtime-provided" would assert a cause this check never verified.
-  # That is the exact failure this script was rewritten to remove
-  # (CX-o1b9): coverage claimed rather than measured. The list is printed
-  # so an unexpectedly long one is visible rather than inferred.
-  IO.puts(
-    :stderr,
-    "check-mcp-fresh: NOT VERIFIED for #{length(apps_skipped)} app(s) — absent from #{build} " <>
-      "(usually OTP/runtime-provided; an incomplete build dir looks the same): " <>
-      Enum.join(apps_skipped, ", ")
+if bundled_project_apps == [] do
+  halt_cannot.("MCP escript contains no project apps, so freshness is underivable", 0)
+end
+
+missing_build_apps =
+  Enum.reject(bundled_project_apps, fn app -> File.dir?(Path.join([build, app, "ebin"])) end)
+
+if missing_build_apps != [] do
+  halt_cannot.(
+    "build is incomplete for #{length(missing_build_apps)} bundled project app(s): " <>
+      Enum.join(missing_build_apps, ", "),
+    0
   )
 end
 
@@ -142,62 +178,93 @@ end
 # actually shipped in this build — when one exists for that module.
 consolidated_dir = Path.join(Path.dirname(build), "consolidated")
 
-build_md5_for = fn app, mod ->
+reference_for = fn app, mod ->
   consolidated_path = Path.join(consolidated_dir, "#{mod}.beam")
   built_path = Path.join([build, app, "ebin", "#{mod}.beam"])
 
   cond do
-    File.exists?(consolidated_path) -> md5_of.(File.read!(consolidated_path))
-    File.exists?(built_path) -> md5_of.(File.read!(built_path))
-    true -> :missing
+    File.regular?(consolidated_path) -> {consolidated_path, File.read(consolidated_path)}
+    File.regular?(built_path) -> {built_path, File.read(built_path)}
+    true -> {built_path, {:error, :enoent}}
   end
 end
 
 # --- (1) compare every module the escript carries, for in-tree apps ---
 compared =
-  for app <- apps_in_tree, {mod, bin} <- Map.fetch!(escript_by_app, app) do
+  for app <- bundled_project_apps, {mod, bin} <- Map.fetch!(escript_by_app, app) do
+    {reference_path, reference_read} = reference_for.(app, mod)
     escript_md5 = md5_of.(bin)
-    build_md5 = build_md5_for.(app, mod)
-    {app, mod, escript_md5, build_md5}
+
+    build_md5 =
+      case reference_read do
+        {:ok, binary} -> md5_of.(binary)
+        {:error, :enoent} -> :missing
+        {:error, reason} -> {:error, inspect(reason)}
+      end
+
+    {app, mod, escript_md5, build_md5, reference_path}
   end
 
-# A pair that is :unreadable is NOT a match — it means the check did not
-# run for that module. Treating equal-but-broken as "fresh" is how a
-# checker becomes incapable of failing; that bug shipped once in this
-# very script and was caught by a positive control.
-broken = Enum.filter(compared, fn {_a, _m, e, b} -> e == :unreadable or b == :unreadable end)
+if compared == [] do
+  halt_cannot.("MCP escript yielded zero comparable project modules", 0)
+end
 
-if broken != [] do
-  IO.puts(:stderr, "check-mcp-fresh: CANNOT VERIFY — #{length(broken)} module(s) unreadable on one or both sides:")
-  Enum.each(broken, fn {a, m, e, b} -> IO.puts(:stderr, "      #{a}/#{m} escript=#{inspect(e)} build=#{inspect(b)}") end)
-  IO.puts(:stderr, "  Refusing to report freshness from a check that did not run.")
-  System.halt(2)
+unreadable =
+  Enum.filter(compared, fn {_app, _module, escript_md5, build_md5, _path} ->
+    match?({:error, _}, escript_md5) or match?({:error, _}, build_md5)
+  end)
+
+if unreadable != [] do
+  IO.puts(:stderr, "check-mcp-fresh: CANNOT VERIFY — #{length(unreadable)} module(s) unreadable")
+
+  Enum.each(unreadable, fn {app, mod, escript_md5, build_md5, path} ->
+    IO.puts(
+      :stderr,
+      "      #{app}/#{mod} escript=#{inspect(escript_md5)} build=#{inspect(build_md5)} path=#{path}"
+    )
+  end)
+
+  IO.puts(:stderr, "check-mcp-fresh: coverage: #{length(compared)} modules compared")
+  System.halt(12)
 end
 
 changed =
   compared
-  |> Enum.filter(fn {_a, _m, e, b} -> e != b end)
-  |> Enum.map(fn {a, m, e, b} -> {a, m, :changed, e, b} end)
+  |> Enum.filter(fn {_a, _m, e, b, _path} -> e != b end)
+  |> Enum.map(fn {a, m, e, b, _path} -> {a, m, :changed, e, b} end)
 
 # --- (2) modules _build has, for an in-tree bundled app, that the ---
 # --- escript never bundled at all (brand-new module, never rebuilt) ---
 missing_from_escript =
-  for app <- apps_in_tree,
-      ebin_dir = Path.join([build, app, "ebin"]),
-      file <- File.ls!(ebin_dir),
-      String.ends_with?(file, ".beam"),
-      mod = String.trim_trailing(file, ".beam"),
-      not Map.has_key?(Map.fetch!(escript_by_app, app), mod) do
-    {app, mod, :missing_from_escript, :missing, :"(in _build)"}
-  end
+  Enum.flat_map(bundled_project_apps, fn app ->
+    ebin_dir = Path.join([build, app, "ebin"])
+
+    files =
+      case File.ls(ebin_dir) do
+        {:ok, entries} -> entries
+        {:error, reason} ->
+          halt_cannot.(
+            "cannot list build modules for #{app} at #{ebin_dir} (#{inspect(reason)})",
+            length(compared)
+          )
+      end
+
+    for file <- files,
+        String.ends_with?(file, ".beam"),
+        mod = String.trim_trailing(file, ".beam"),
+        not Map.has_key?(Map.fetch!(escript_by_app, app), mod) do
+      {app, mod, :missing_from_escript, :missing, :"(in _build)"}
+    end
+  end)
 
 stale = changed ++ missing_from_escript
 
 n_modules = length(compared)
-n_apps = length(apps_in_tree)
+n_apps = length(bundled_project_apps)
 
 if stale == [] do
-  IO.puts("check-mcp-fresh: escript is FRESH (#{n_modules} modules across #{n_apps} apps match _build)")
+  IO.puts("check-mcp-fresh: escript is FRESH — #{n_modules} modules across #{n_apps} apps match the build")
+  IO.puts("check-mcp-fresh: coverage: #{n_modules} modules compared; 0 stale; 0 missing from escript")
   System.halt(0)
 else
   IO.puts(:stderr, """
@@ -210,10 +277,10 @@ else
   """)
 
   fmt = fn
+    {:ok, md5} -> Base.encode16(md5, case: :lower) |> String.slice(0, 12)
+    {:error, _reason} -> "unreadable"
     :missing -> "missing"
-    :unreadable -> "unreadable"
     :"(in _build)" -> "(in _build)"
-    md5 -> Base.encode16(md5, case: :lower) |> String.slice(0, 12)
   end
 
   stale
@@ -229,6 +296,18 @@ else
   end
 
   IO.puts(:stderr, "\n  Fix: bin/rebuild-mcp\n")
-  System.halt(1)
+  IO.puts(:stderr, "check-mcp-fresh: coverage: #{n_modules} modules compared; #{length(stale)} stale")
+  System.halt(11)
 end
-' "$ESCRIPT"
+' "$ESCRIPT" "$BUILD" "$PROJECT_DIR"
+
+rc=$?
+case "$rc" in
+  0) exit 0 ;;
+  11) exit 1 ;;
+  12) exit 2 ;;
+esac
+
+echo "check-mcp-fresh: CANNOT VERIFY — checker runtime exited unexpectedly with status $rc" >&2
+echo "check-mcp-fresh: coverage: 0 modules compared" >&2
+exit 2
