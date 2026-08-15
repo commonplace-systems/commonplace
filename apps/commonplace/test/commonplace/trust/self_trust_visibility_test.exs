@@ -135,7 +135,7 @@ defmodule Commonplace.Trust.SelfTrustVisibilityTest do
   end
 
   defp strict_config do
-    %{accept_unsigned: false, trusted_identities: %{}}
+    %{accept_unsigned: false, trusted_identities: %{}, eviction_anchors: []}
   end
 
   defp restore_env(key, nil), do: Application.delete_env(:commonplace, key)

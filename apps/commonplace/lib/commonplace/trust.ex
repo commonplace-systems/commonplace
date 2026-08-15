@@ -28,7 +28,7 @@ defmodule Commonplace.Trust do
 
   ## Phase-1 semantics (flat allowlist)
 
-  Config is two values, both **workspace-local** — never read from a
+  Config is three values, all **workspace-local** — never read from a
   synced document, because a federated peer can write any synced doc
   (including the `__identities__` key registry), so synced state cannot
   anchor trust:
@@ -40,6 +40,9 @@ defmodule Commonplace.Trust do
       (base64 keys, single or list per identity). Pinned locally for the
       same reason: the identity docs' own `public_keys` field is
       peer-writable.
+    * `eviction_anchors` — an append-only list of eviction-only principals,
+      kept separate from `trusted_identities`; entries carry a public key and
+      an optional commit-id `retired_at` marker.
 
   Decision table (verb/scope are accepted now so phase-3 doesn't reshape
   the call sites, but the allowlist body ignores them):
@@ -81,7 +84,8 @@ defmodule Commonplace.Trust do
   @type scope :: {:doc, String.t()}
   @type config :: %{
           accept_unsigned: boolean(),
-          trusted_identities: %{String.t() => String.t() | [String.t()]}
+          trusted_identities: %{String.t() => String.t() | [String.t()]},
+          eviction_anchors: [map()]
         }
 
   @doc """
@@ -1284,7 +1288,7 @@ defmodule Commonplace.Trust do
                   "FAILING CLOSED: rejecting all non-node-signed commits until the file is fixed or removed"
               )
 
-              %{accept_unsigned: false, trusted_identities: %{}}
+              %{accept_unsigned: false, trusted_identities: %{}, eviction_anchors: []}
           end
       end
 
@@ -1308,7 +1312,7 @@ defmodule Commonplace.Trust do
               "FAILING CLOSED: rejecting all non-node-signed commits until the file is fixed or removed"
           )
 
-          %{accept_unsigned: false, trusted_identities: %{}}
+          %{accept_unsigned: false, trusted_identities: %{}, eviction_anchors: []}
       end
 
     with_local_node_trust(base, data_dir)
@@ -1377,7 +1381,32 @@ defmodule Commonplace.Trust do
   @doc "The default (permissive, empty allowlist) trust config."
   @spec default_config() :: config()
   def default_config do
-    %{accept_unsigned: true, trusted_identities: %{}}
+    %{accept_unsigned: true, trusted_identities: %{}, eviction_anchors: []}
+  end
+
+  @doc "Append a distinct eviction anchor to a config without granting write authority."
+  @spec add_eviction_anchor(config(), String.t(), binary()) ::
+          {:ok, config()} | {:error, term()}
+  def add_eviction_anchor(cfg, identity_uuid, public_key) when is_map(cfg) do
+    with {:ok, anchor} <- Commonplace.Trust.EvictionAnchor.new(identity_uuid, public_key),
+         {:ok, anchors} <-
+           Commonplace.Trust.EvictionAnchor.append(Map.get(cfg, :eviction_anchors, []), anchor) do
+      {:ok, Map.put(cfg, :eviction_anchors, anchors)}
+    end
+  end
+
+  @doc "Mark an eviction anchor retired at a commit-chain position; never delete it."
+  @spec retire_eviction_anchor(config(), binary(), binary()) ::
+          {:ok, config()} | {:error, term()}
+  def retire_eviction_anchor(cfg, anchor_id, chain_position) when is_map(cfg) do
+    with {:ok, anchors} <-
+           Commonplace.Trust.EvictionAnchor.retire(
+             Map.get(cfg, :eviction_anchors, []),
+             anchor_id,
+             chain_position
+           ) do
+      {:ok, Map.put(cfg, :eviction_anchors, anchors)}
+    end
   end
 
   @local_write_gate_values [:off, :dry_run, :enforce]
@@ -1665,6 +1694,7 @@ defmodule Commonplace.Trust do
   @spec posture() :: %{
           accept_unsigned: boolean(),
           trusted_identities_count: non_neg_integer(),
+          eviction_anchors_count: non_neg_integer(),
           local_write_gate: atom(),
           local_read_gate: atom(),
           strict: boolean(),
@@ -1678,6 +1708,7 @@ defmodule Commonplace.Trust do
     %{
       accept_unsigned: cfg.accept_unsigned,
       trusted_identities_count: map_size(cfg.trusted_identities),
+      eviction_anchors_count: length(cfg.eviction_anchors),
       local_write_gate: local_write_gate,
       local_read_gate: local_read_gate,
       strict:
@@ -1760,7 +1791,8 @@ defmodule Commonplace.Trust do
   defp normalize(cfg) do
     %{
       accept_unsigned: fetch(cfg, :accept_unsigned, true),
-      trusted_identities: fetch(cfg, :trusted_identities, %{})
+      trusted_identities: fetch(cfg, :trusted_identities, %{}),
+      eviction_anchors: fetch(cfg, :eviction_anchors, [])
     }
   end
 

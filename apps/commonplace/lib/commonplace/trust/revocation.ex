@@ -42,6 +42,12 @@ defmodule Commonplace.Trust.Revocation do
   carries a timestamp of its own (P1, §3): a revocation has no
   "valid-when-signed" carve-out — revocation-record times aren't
   trustworthy and the complexity buys unsoundness, not safety.
+
+  SLA eviction anchors reuse this same value and the same per-store row family:
+  `revoked_cid` is the anchor declaration's stable content address, and
+  `Commonplace.Store.SlaTombstone` checks the anchored key's signed
+  self-renunciation at verify time. Retirement remains a separate chain-position
+  marker and never creates a revocation record.
   """
 
   @type t :: %__MODULE__{

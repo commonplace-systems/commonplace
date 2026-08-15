@@ -473,10 +473,26 @@ defmodule Commonplace.Store.CommitStoreClient do
     end
   end
 
-  def store_sla_tombstone(server \\ CommitStore, tombstone) do
+  def store_sla_tombstone(tombstone), do: store_sla_tombstone(CommitStore, tombstone, [])
+  def store_sla_tombstone(server, tombstone), do: store_sla_tombstone(server, tombstone, [])
+
+  def store_sla_tombstone(server, tombstone, opts) when is_list(opts) do
     case remote_node() do
-      {:ok, node} -> GenServer.call({CommitStore, node}, {:store_sla_tombstone, tombstone})
-      :local -> CommitStore.store_sla_tombstone(normalize_server(server), tombstone)
+      {:ok, node} ->
+        GenServer.call({CommitStore, node}, {:store_sla_tombstone, tombstone, opts})
+
+      :local ->
+        CommitStore.store_sla_tombstone(normalize_server(server), tombstone, opts)
+    end
+  end
+
+  def get_sla_tombstone_position(server \\ CommitStore, tombstone_id) do
+    case remote_node() do
+      {:ok, node} ->
+        GenServer.call({CommitStore, node}, {:get_sla_tombstone_position, tombstone_id})
+
+      :local ->
+        CommitStore.get_sla_tombstone_position(normalize_server(server), tombstone_id)
     end
   end
 

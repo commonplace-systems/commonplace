@@ -184,6 +184,37 @@ defmodule Commonplace.TrustTest do
       # User pin survives; config/0 also folds in the local node identity
       # (phase 2.5), so assert the user entry is present rather than exact.
       assert cfg.trusted_identities["some-uuid"] == "AAAA"
+      assert cfg.eviction_anchors == []
+    end
+
+    test "trust.json loads eviction_anchors as its own set without granting write trust" do
+      tmp =
+        Path.join(System.tmp_dir!(), "eviction-anchor-cfg-#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(tmp)
+      {public_key, _private_key} = Signing.generate_keypair()
+
+      anchor = %{
+        "identity_uuid" => "eviction-only-fixture",
+        "public_key" => Signing.encode_key(public_key),
+        "retired_at" => nil
+      }
+
+      File.write!(
+        Path.join(tmp, "trust.json"),
+        Jason.encode!(%{
+          "accept_unsigned" => false,
+          "trusted_identities" => %{},
+          "eviction_anchors" => [anchor]
+        })
+      )
+
+      cfg = Trust.config(tmp)
+
+      assert cfg.eviction_anchors == [anchor]
+      refute Map.has_key?(cfg.trusted_identities, "eviction-only-fixture")
+
+      File.rm_rf!(tmp)
     end
   end
 

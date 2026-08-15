@@ -16,6 +16,7 @@ defmodule Commonplace.Runner.DeploymentRecordTest do
   alias Commonplace.Document.DocRef
   alias Commonplace.Runner.DeploymentRecord
   alias Commonplace.Store.{Commit, CommitStoreClient, SlaTombstone}
+  alias Commonplace.Trust
 
   setup do
     data_dir = Path.join(System.tmp_dir!(), "cp_i4_deployment_#{:rand.uniform(1_000_000_000)}")
@@ -23,11 +24,22 @@ defmodule Commonplace.Runner.DeploymentRecordTest do
     n = :rand.uniform(1_000_000_000)
     store = :"i4_deployment_store_#{n}"
     runner = signing_context("fixture-runner")
-    prior_trusted_signers = Application.fetch_env(:commonplace, :trusted_tombstone_signers)
+    prior_trust = Application.fetch_env(:commonplace, :trust)
 
-    Application.put_env(:commonplace, :trusted_tombstone_signers, %{
-      runner.identity_uuid => runner.public_key
-    })
+    {:ok, trust_config} =
+      Trust.add_eviction_anchor(
+        %{
+          accept_unsigned: false,
+          trusted_identities: %{
+            runner.identity_uuid => Signing.encode_key(runner.public_key)
+          },
+          eviction_anchors: []
+        },
+        runner.identity_uuid,
+        runner.public_key
+      )
+
+    Application.put_env(:commonplace, :trust, trust_config)
 
     File.write!(
       Path.join(data_dir, "trust.json"),
@@ -35,7 +47,8 @@ defmodule Commonplace.Runner.DeploymentRecordTest do
         "accept_unsigned" => false,
         "trusted_identities" => %{
           runner.identity_uuid => Signing.encode_key(runner.public_key)
-        }
+        },
+        "eviction_anchors" => trust_config.eviction_anchors
       })
     )
 
@@ -51,10 +64,10 @@ defmodule Commonplace.Runner.DeploymentRecordTest do
 
     on_exit(fn ->
       File.rm_rf!(data_dir)
-      restore_trusted_signers(prior_trusted_signers)
+      restore_trust(prior_trust)
     end)
 
-    %{log_uuid: UUID.uuid4(), runner: runner, store: store}
+    %{log_uuid: UUID.uuid4(), runner: runner, store: store, trust_config: trust_config}
   end
 
   test "runner appends complete records and confirms the landed sequence by re-read", ctx do
@@ -146,13 +159,14 @@ defmodule Commonplace.Runner.DeploymentRecordTest do
 
     assert {:error, {:invalid_tombstone, :no_eviction_anchor_configured}} =
              DeploymentRecord.range_status(ctx.log_uuid, deployment_commit.id, ctx.store,
-               commit_fetcher: simulate_unavailable
+               commit_fetcher: simulate_unavailable,
+               trust_config: Map.delete(ctx.trust_config, :eviction_anchors)
              )
 
     evicted =
       DeploymentRecord.range_status(ctx.log_uuid, deployment_commit.id, ctx.store,
         commit_fetcher: simulate_unavailable,
-        trusted_tombstone_signers: %{ctx.runner.identity_uuid => ctx.runner.public_key}
+        trust_config: ctx.trust_config
       )
 
     never_written_id = :crypto.strong_rand_bytes(32)
@@ -217,7 +231,7 @@ defmodule Commonplace.Runner.DeploymentRecordTest do
       DeploymentRecord.range_status(ctx.log_uuid, commit_id, ctx.store,
         commit_fetcher: fn _ -> :none end,
         tombstone_fetcher: fn _ -> {:ok, tampered} end,
-        trusted_tombstone_signers: %{ctx.runner.identity_uuid => ctx.runner.public_key}
+        trust_config: ctx.trust_config
       )
 
     assert tampered_refusal == {:error, {:invalid_tombstone, :invalid_signature}}
@@ -243,7 +257,7 @@ defmodule Commonplace.Runner.DeploymentRecordTest do
       DeploymentRecord.range_status(ctx.log_uuid, commit_id, ctx.store,
         commit_fetcher: fn _ -> :none end,
         tombstone_fetcher: fn _ -> {:ok, forged} end,
-        trusted_tombstone_signers: %{ctx.runner.identity_uuid => ctx.runner.public_key}
+        trust_config: ctx.trust_config
       )
 
     assert forged_refusal ==
@@ -298,11 +312,9 @@ defmodule Commonplace.Runner.DeploymentRecordTest do
     }
   end
 
-  defp restore_trusted_signers({:ok, trusted_signers}),
-    do: Application.put_env(:commonplace, :trusted_tombstone_signers, trusted_signers)
+  defp restore_trust({:ok, trust}), do: Application.put_env(:commonplace, :trust, trust)
 
-  defp restore_trusted_signers(:error),
-    do: Application.delete_env(:commonplace, :trusted_tombstone_signers)
+  defp restore_trust(:error), do: Application.delete_env(:commonplace, :trust)
 
   defp stringify_keys(map),
     do: Map.new(map, fn {key, value} -> {to_string(key), stringify(value)} end)
