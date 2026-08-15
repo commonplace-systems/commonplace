@@ -8,12 +8,13 @@ defmodule Commonplace.Trust.EvictionAnchor do
   meaning: its key may sign an eviction receipt.
 
   The declaration is append-only. Rotation appends another declaration and
-  marks the old declaration with `retired_at`; it does not replace or delete
-  the old key. `retired_at` is a commit id, not a timestamp. Its ordering is
-  resolved by the commit store when a tombstone is verified.
+  retires the old anchor through the store's eviction-authority ledger; it does
+  not replace or delete the old key. The store assigns the retirement position
+  and resolves its ordering when a tombstone is verified.
 
-  `id` excludes `retired_at`, so marking an anchor retired does not change the
-  content address targeted by an existing `Commonplace.Trust.Revocation`.
+  `retired_at` remains decodable only as legacy config metadata and has no
+  verification authority. `id` excludes it, so old declarations continue to
+  name the same target for an existing `Commonplace.Trust.Revocation`.
   """
 
   alias Commonplace.Crypto.Signing
@@ -96,49 +97,6 @@ defmodule Commonplace.Trust.EvictionAnchor do
   end
 
   def append(_entries, %__MODULE__{}), do: {:error, :invalid_eviction_anchor_config}
-
-  @doc "Mark one declaration retired without removing or replacing any entry."
-  @spec retire([map()], binary(), binary()) :: {:ok, [map()]} | {:error, term()}
-  def retire(entries, anchor_id, chain_position)
-      when is_list(entries) and is_binary(anchor_id) and is_binary(chain_position) do
-    with {:ok, anchors} <- decode_all(entries),
-         {:ok, target} <- fetch_anchor(anchors, anchor_id),
-         :ok <- ensure_active(target) do
-      updated =
-        Enum.map(anchors, fn
-          %{id: ^anchor_id} = anchor -> %{anchor | retired_at: chain_position} |> to_config()
-          anchor -> to_config(anchor)
-        end)
-
-      {:ok, updated}
-    end
-  end
-
-  def retire(_entries, _anchor_id, _chain_position),
-    do: {:error, :invalid_eviction_anchor_retirement}
-
-  defp decode_all(entries) do
-    Enum.reduce_while(entries, {:ok, []}, fn entry, {:ok, anchors} ->
-      case from_config(entry) do
-        {:ok, anchor} -> {:cont, {:ok, [anchor | anchors]}}
-        {:error, _reason} -> {:halt, {:error, :invalid_eviction_anchor_config}}
-      end
-    end)
-    |> case do
-      {:ok, anchors} -> {:ok, Enum.reverse(anchors)}
-      error -> error
-    end
-  end
-
-  defp fetch_anchor(anchors, anchor_id) do
-    case Enum.find(anchors, &(&1.id == anchor_id)) do
-      nil -> {:error, :eviction_anchor_not_found}
-      anchor -> {:ok, anchor}
-    end
-  end
-
-  defp ensure_active(%__MODULE__{retired_at: nil}), do: :ok
-  defp ensure_active(%__MODULE__{}), do: {:error, :eviction_anchor_already_retired}
 
   defp fetch(map, key), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
 

@@ -473,16 +473,15 @@ defmodule Commonplace.Store.CommitStoreClient do
     end
   end
 
-  def store_sla_tombstone(tombstone), do: store_sla_tombstone(CommitStore, tombstone, [])
-  def store_sla_tombstone(server, tombstone), do: store_sla_tombstone(server, tombstone, [])
+  def store_sla_tombstone(tombstone), do: store_sla_tombstone(CommitStore, tombstone)
 
-  def store_sla_tombstone(server, tombstone, opts) when is_list(opts) do
+  def store_sla_tombstone(server, tombstone) do
     case remote_node() do
       {:ok, node} ->
-        GenServer.call({CommitStore, node}, {:store_sla_tombstone, tombstone, opts})
+        GenServer.call({CommitStore, node}, {:store_sla_tombstone, tombstone})
 
       :local ->
-        CommitStore.store_sla_tombstone(normalize_server(server), tombstone, opts)
+        CommitStore.store_sla_tombstone(normalize_server(server), tombstone)
     end
   end
 
@@ -493,6 +492,46 @@ defmodule Commonplace.Store.CommitStoreClient do
 
       :local ->
         CommitStore.get_sla_tombstone_position(normalize_server(server), tombstone_id)
+    end
+  end
+
+  def get_eviction_anchor_activation_position(server \\ CommitStore, anchor_id) do
+    case remote_node() do
+      {:ok, node} ->
+        GenServer.call({CommitStore, node}, {:get_eviction_anchor_activation_position, anchor_id})
+
+      :local ->
+        CommitStore.get_eviction_anchor_activation_position(normalize_server(server), anchor_id)
+    end
+  end
+
+  def get_eviction_anchor_retirement_position(server \\ CommitStore, anchor_id) do
+    case remote_node() do
+      {:ok, node} ->
+        GenServer.call({CommitStore, node}, {:get_eviction_anchor_retirement_position, anchor_id})
+
+      :local ->
+        CommitStore.get_eviction_anchor_retirement_position(normalize_server(server), anchor_id)
+    end
+  end
+
+  def retire_eviction_anchor(server \\ CommitStore, anchor_id) do
+    case remote_node() do
+      {:ok, node} ->
+        GenServer.call({CommitStore, node}, {:retire_eviction_anchor, anchor_id})
+
+      :local ->
+        CommitStore.retire_eviction_anchor(normalize_server(server), anchor_id)
+    end
+  end
+
+  def eviction_authority_position_before?(server \\ CommitStore, first, second) do
+    case remote_node() do
+      {:ok, node} ->
+        GenServer.call({CommitStore, node}, {:eviction_authority_position_before, first, second})
+
+      :local ->
+        CommitStore.eviction_authority_position_before?(normalize_server(server), first, second)
     end
   end
 
@@ -515,8 +554,14 @@ defmodule Commonplace.Store.CommitStoreClient do
   # name over BEAM distribution, which delegates server-side.
   def store_capability(server \\ CommitStore, cap) do
     case remote_node() do
-      {:ok, node} -> GenServer.call({CommitStore, node}, {:store_capability, cap})
-      :local -> TrustSideStore.store_capability(CommitStore.trust_side_store_name(normalize_server(server)), cap)
+      {:ok, node} ->
+        GenServer.call({CommitStore, node}, {:store_capability, cap})
+
+      :local ->
+        TrustSideStore.store_capability(
+          CommitStore.trust_side_store_name(normalize_server(server)),
+          cap
+        )
     end
   end
 
@@ -553,8 +598,13 @@ defmodule Commonplace.Store.CommitStoreClient do
 
   def flush_execute_clean(server \\ CommitStore) do
     case remote_node() do
-      {:ok, node} -> GenServer.call({CommitStore, node}, :flush_execute_clean)
-      :local -> TrustSideStore.flush_execute_clean(CommitStore.trust_side_store_name(normalize_server(server)))
+      {:ok, node} ->
+        GenServer.call({CommitStore, node}, :flush_execute_clean)
+
+      :local ->
+        TrustSideStore.flush_execute_clean(
+          CommitStore.trust_side_store_name(normalize_server(server))
+        )
     end
   end
 
@@ -577,8 +627,14 @@ defmodule Commonplace.Store.CommitStoreClient do
   # one.
   def store_revocation(server \\ CommitStore, rev) do
     case remote_node() do
-      {:ok, node} -> GenServer.call({CommitStore, node}, {:store_revocation, rev})
-      :local -> TrustSideStore.store_revocation(CommitStore.trust_side_store_name(normalize_server(server)), rev)
+      {:ok, node} ->
+        GenServer.call({CommitStore, node}, {:store_revocation, rev})
+
+      :local ->
+        TrustSideStore.store_revocation(
+          CommitStore.trust_side_store_name(normalize_server(server)),
+          rev
+        )
     end
   end
 
@@ -784,7 +840,10 @@ defmodule Commonplace.Store.CommitStoreClient do
   def set_merge_point(server \\ CommitStore, target_uuid, source_uuid, commit_id) do
     case remote_node() do
       {:ok, node} ->
-        GenServer.call({CommitStore, node}, {:set_merge_point, target_uuid, source_uuid, commit_id})
+        GenServer.call(
+          {CommitStore, node},
+          {:set_merge_point, target_uuid, source_uuid, commit_id}
+        )
 
       :local ->
         CommitStore.set_merge_point(normalize_server(server), target_uuid, source_uuid, commit_id)
@@ -804,10 +863,18 @@ defmodule Commonplace.Store.CommitStoreClient do
   def set_last_merge_commit(server \\ CommitStore, target_uuid, source_uuid, commit_id) do
     case remote_node() do
       {:ok, node} ->
-        GenServer.call({CommitStore, node}, {:set_last_merge_commit, target_uuid, source_uuid, commit_id})
+        GenServer.call(
+          {CommitStore, node},
+          {:set_last_merge_commit, target_uuid, source_uuid, commit_id}
+        )
 
       :local ->
-        CommitStore.set_last_merge_commit(normalize_server(server), target_uuid, source_uuid, commit_id)
+        CommitStore.set_last_merge_commit(
+          normalize_server(server),
+          target_uuid,
+          source_uuid,
+          commit_id
+        )
     end
   end
 

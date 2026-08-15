@@ -22,13 +22,17 @@ defmodule Commonplace.Store.SlaTombstone do
   `Commonplace.Trust` config's distinct `eviction_anchors` list. It never treats
   `trusted_identities` or the local node identity as eviction authority.
 
-  An active anchor needs no wall-clock or chain comparison. A retired anchor
-  requires a caller-supplied `:chain_position`, obtained from the store rather
-  than from any tombstone field, and verifies only when that commit is a strict
-  ancestor of the anchor's `retired_at` commit. Revocation is the separate,
-  verify-time CX-bepn rule: a valid self-renunciation record targeting the
-  anchor makes it terminally invalid for future verifies, including verifies of
-  historical tombstones.
+  Every stored tombstone has a registration position in the store-owned
+  eviction-authority ledger, including tombstones written while their anchor is
+  active. Anchor activation, tombstone registration, and anchor retirement use
+  that one ordering domain, so verification works across unrelated document
+  chains. Verification always re-reads the registration and retirement
+  positions and their ordering from the store; none can be supplied in options.
+
+  Revocation is the separate, verify-time CX-bepn rule: a valid
+  self-renunciation record targeting the anchor makes it terminally invalid for
+  future verifies, including verifies of historical tombstones. Revocations are
+  likewise read from the selected store rather than through a per-call fetcher.
   """
 
   alias Commonplace.Crypto.{Signing, SigningContext}
@@ -111,33 +115,36 @@ defmodule Commonplace.Store.SlaTombstone do
   def verify(_other, _cfg), do: {:error, :invalid_tombstone_shape}
 
   @doc """
-  Verify with explicit chain/store context.
+  Verify with explicit store context.
 
   Options:
 
-    * `:chain_position` — the store-supplied commit id at which the tombstone
-      was recorded; required to judge a retired anchor.
-    * `:store` — the commit/trust store used for ancestry and revocation reads.
-    * `:position_before?` — injectable two-argument fixture seam. Production
-      uses the store's strict `is_ancestor?/3` relation.
-    * `:revocation_fetcher` — injectable one-argument fixture seam. Production
-      reads CX-bepn records from the threaded store.
+    * `:store` — the store from which registration, activation, retirement,
+      ordering, and revocation evidence is derived.
+
+  No evidence seam survives on this path. In particular,
+  `:chain_position`, `:position_before?`, and `:revocation_fetcher` are refused.
   """
   @spec verify(t(), map(), keyword()) :: :ok | {:error, term()}
   def verify(%__MODULE__{} = tombstone, cfg, opts) when is_map(cfg) and is_list(opts) do
-    with :ok <- validate_shape(tombstone),
-         :ok <- verify_id(tombstone),
-         {:ok, anchors} <- eviction_anchors(cfg),
-         {:ok, anchor} <- trusted_anchor(tombstone, anchors),
-         :ok <- not_revoked(anchor, opts),
-         :ok <- valid_at_chain_position(anchor, tombstone, opts),
-         :ok <- verify_signature(tombstone, anchor.public_key) do
+    store = Keyword.get(opts, :store, CommitStore)
+
+    with :ok <- valid_verification_options(opts),
+         {:ok, anchor} <- verified_anchor(tombstone, cfg, store),
+         :ok <- valid_at_store_position(anchor, tombstone, store) do
       :ok
     end
   end
 
   def verify(%__MODULE__{}, _cfg, _opts), do: {:error, :invalid_tombstone_trust_anchors}
   def verify(_other, _cfg, _opts), do: {:error, :invalid_tombstone_shape}
+
+  @doc false
+  @spec authorize_registration(t(), map(), GenServer.server()) ::
+          {:ok, EvictionAnchor.t()} | {:error, term()}
+  def authorize_registration(%__MODULE__{} = tombstone, cfg, store) when is_map(cfg) do
+    verified_anchor(tombstone, cfg, store)
+  end
 
   defp validate_shape(tombstone) do
     attrs = Map.from_struct(tombstone)
@@ -201,15 +208,26 @@ defmodule Commonplace.Store.SlaTombstone do
     end) || {:error, {:untrusted_tombstone_signer, tombstone.signer_id}}
   end
 
-  defp not_revoked(anchor, opts) do
-    store = Keyword.get(opts, :store, CommitStore)
+  defp verified_anchor(tombstone, cfg, store) do
+    with :ok <- validate_shape(tombstone),
+         :ok <- verify_id(tombstone),
+         {:ok, anchors} <- eviction_anchors(cfg),
+         {:ok, anchor} <- trusted_anchor(tombstone, anchors),
+         :ok <- not_revoked(anchor, store),
+         :ok <- verify_signature(tombstone, anchor.public_key) do
+      {:ok, anchor}
+    end
+  end
 
-    fetcher =
-      Keyword.get(opts, :revocation_fetcher, fn anchor_id ->
-        CommitStoreClient.get_revocations(store, anchor_id)
-      end)
+  defp valid_verification_options(opts) do
+    case Keyword.keys(opts) -- [:store] do
+      [] -> :ok
+      unsupported -> {:error, {:unsupported_tombstone_verification_options, unsupported}}
+    end
+  end
 
-    case fetcher.(anchor.id) do
+  defp not_revoked(anchor, store) do
+    case CommitStoreClient.get_revocations(store, anchor.id) do
       revocations when is_list(revocations) ->
         if Enum.any?(revocations, &authorized_revocation?(&1, anchor)) do
           {:error, {:revoked_eviction_anchor, anchor.identity_uuid}}
@@ -229,40 +247,57 @@ defmodule Commonplace.Store.SlaTombstone do
 
   defp authorized_revocation?(_revocation, _anchor), do: false
 
-  defp valid_at_chain_position(%EvictionAnchor{retired_at: nil}, _tombstone, _opts), do: :ok
+  defp valid_at_store_position(anchor, tombstone, store) do
+    with {:ok, activation} <-
+           required_position(
+             CommitStoreClient.get_eviction_anchor_activation_position(store, anchor.id),
+             :eviction_anchor_activation_position_required
+           ),
+         {:ok, registration} <-
+           required_position(
+             CommitStoreClient.get_sla_tombstone_position(store, tombstone.id),
+             :tombstone_store_position_required
+           ),
+         :ok <-
+           position_before(
+             store,
+             activation,
+             registration,
+             {:tombstone_not_after_anchor_activation, activation, registration}
+           ) do
+      valid_before_retirement(anchor, registration, store)
+    end
+  end
 
-  defp valid_at_chain_position(%EvictionAnchor{} = anchor, tombstone, opts) do
-    case tombstone_chain_position(tombstone, opts) do
-      {:ok, position} when is_binary(position) ->
-        before? =
-          case Keyword.get(opts, :position_before?) do
-            fun when is_function(fun, 2) ->
-              fun.(position, anchor.retired_at)
+  defp valid_before_retirement(anchor, registration, store) do
+    case CommitStoreClient.get_eviction_anchor_retirement_position(store, anchor.id) do
+      :none ->
+        :ok
 
-            nil ->
-              store = Keyword.get(opts, :store, CommitStore)
-              CommitStoreClient.is_ancestor?(store, position, anchor.retired_at)
-          end
-
-        if before?,
-          do: :ok,
-          else: {:error, {:retired_eviction_anchor, tombstone.signer_id}}
+      {:ok, retirement} ->
+        position_before(
+          store,
+          registration,
+          retirement,
+          {:tombstone_not_before_anchor_retirement, registration, retirement}
+        )
 
       _other ->
-        {:error, :tombstone_chain_position_required}
+        {:error, :invalid_eviction_anchor_retirement_state}
     end
   end
 
-  defp tombstone_chain_position(tombstone, opts) do
-    case Keyword.fetch(opts, :chain_position) do
-      {:ok, position} when not is_nil(position) ->
-        {:ok, position}
-
-      _missing ->
-        store = Keyword.get(opts, :store, CommitStore)
-        CommitStoreClient.get_sla_tombstone_position(store, tombstone.id)
+  defp position_before(store, first, second, refusal) do
+    case CommitStoreClient.eviction_authority_position_before?(store, first, second) do
+      {:ok, true} -> :ok
+      {:ok, false} -> {:error, refusal}
+      {:error, reason} -> {:error, reason}
+      _other -> {:error, :invalid_eviction_authority_ordering_state}
     end
   end
+
+  defp required_position({:ok, position}, _reason) when is_binary(position), do: {:ok, position}
+  defp required_position(_other, reason), do: {:error, reason}
 
   defp verify_signature(tombstone, trusted_public_key) do
     case :crypto.verify(

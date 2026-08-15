@@ -151,9 +151,12 @@ defmodule Commonplace.Runner.DeploymentRecordTest do
                ctx.runner
              )
 
-    signature_verification = SlaTombstone.verify(tombstone)
-    assert signature_verification == :ok
     assert :ok = CommitStoreClient.store_sla_tombstone(ctx.store, tombstone)
+
+    signature_verification =
+      SlaTombstone.verify(tombstone, ctx.trust_config, store: ctx.store)
+
+    assert signature_verification == :ok
 
     simulate_unavailable = fn _commit_id -> :none end
 

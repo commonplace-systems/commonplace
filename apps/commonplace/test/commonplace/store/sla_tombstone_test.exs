@@ -48,6 +48,103 @@ defmodule Commonplace.Store.SlaTombstoneTest do
     %{store: store, signing_context: signing_context, trust: trust}
   end
 
+  test "store derives every position and public verification refuses evidence seams", ctx do
+    tombstone = tombstone(ctx, [commit_id(90)])
+    [anchor_entry] = ctx.trust.eviction_anchors
+    {:ok, anchor} = EvictionAnchor.from_config(anchor_entry)
+
+    refute function_exported?(CommitStoreClient, :store_sla_tombstone, 3)
+    refute function_exported?(Trust, :retire_eviction_anchor, 3)
+    assert :ok = CommitStoreClient.store_sla_tombstone(ctx.store, tombstone)
+
+    assert {:ok, registration_position} =
+             CommitStoreClient.get_sla_tombstone_position(ctx.store, tombstone.id)
+
+    assert {:ok, activation_position} =
+             CommitStoreClient.get_eviction_anchor_activation_position(ctx.store, anchor.id)
+
+    assert {:ok, true} =
+             CommitStoreClient.eviction_authority_position_before?(
+               ctx.store,
+               activation_position,
+               registration_position
+             )
+
+    injected_position = commit_id(91)
+
+    injected_result =
+      SlaTombstone.verify(tombstone, ctx.trust,
+        store: ctx.store,
+        chain_position: injected_position,
+        position_before?: fn _supplied_position, _supplied_retirement ->
+          send(self(), :injected_relation_called)
+          true
+        end,
+        revocation_fetcher: fn _anchor_id ->
+          send(self(), :injected_revocation_fetcher_called)
+          []
+        end
+      )
+
+    assert injected_result ==
+             {:error,
+              {:unsupported_tombstone_verification_options,
+               [:chain_position, :position_before?, :revocation_fetcher]}}
+
+    refute_receive :injected_relation_called
+    refute_receive :injected_revocation_fetcher_called
+    assert :ok = SlaTombstone.verify(tombstone, ctx.trust, store: ctx.store)
+
+    assert {:ok, retirement_position} =
+             CommitStoreClient.retire_eviction_anchor(ctx.store, anchor.id)
+
+    assert :ok = SlaTombstone.verify(tombstone, ctx.trust, store: ctx.store)
+
+    assert {:ok, ^tombstone} =
+             CommitStoreClient.get_sla_tombstone_for_commit(ctx.store, commit_id(90))
+
+    # The public writer cannot create this state: a registration after
+    # retirement is refused below. Mutate only the position index, then re-read
+    # it, to prove the public verifier fails closed on at-retirement evidence.
+    db = Commonplace.Store.CommitStore.db_handle(ctx.store)
+    :ok = CubDB.put(db, {:sla_tombstone_position, tombstone.id}, retirement_position)
+
+    assert {:ok, ^retirement_position} =
+             CommitStoreClient.get_sla_tombstone_position(ctx.store, tombstone.id)
+
+    at_retirement = SlaTombstone.verify(tombstone, ctx.trust, store: ctx.store)
+
+    assert at_retirement ==
+             {:error,
+              {:tombstone_not_before_anchor_retirement, retirement_position, retirement_position}}
+
+    refused_after_retirement =
+      ctx
+      |> tombstone([commit_id(92)])
+      |> then(&CommitStoreClient.store_sla_tombstone(ctx.store, &1))
+
+    assert {:error,
+            {:invalid_sla_tombstone,
+             {:eviction_anchor_already_retired, anchor_id, ^retirement_position}}} =
+             refused_after_retirement
+
+    assert anchor_id == anchor.id
+    assert injected_result != :ok
+    assert at_retirement != :ok
+
+    IO.puts("CX_TADF_AFTER_WRITE_API_ARITY_3=false")
+    IO.puts("CX_TADF_AFTER_RETIREMENT_API_ARITY_3=false")
+    IO.puts("CX_TADF_AFTER_ACTIVATION_POSITION=#{Base.encode16(activation_position)}")
+    IO.puts("CX_TADF_AFTER_REGISTRATION_POSITION=#{Base.encode16(registration_position)}")
+    IO.puts("CX_TADF_AFTER_INJECTED_POSITION=#{Base.encode16(injected_position)}")
+    IO.puts("CX_TADF_AFTER_INJECTED_EVIDENCE_RESULT=#{inspect(injected_result)}")
+    IO.puts("CX_TADF_AFTER_RETIREMENT_POSITION=#{Base.encode16(retirement_position)}")
+    IO.puts("CX_TADF_AFTER_HISTORICAL_VERIFY=:ok")
+    IO.puts("CX_TADF_AFTER_AT_RETIREMENT_RESULT=#{inspect(at_retirement)}")
+    IO.puts("CX_TADF_AFTER_REGISTRATION_REFUSAL=#{inspect(refused_after_retirement)}")
+    IO.puts("CX_TADF_AFTER_ARM_PAIRS_DIFFER=true")
+  end
+
   test "six eviction-anchor acceptance arms differ by authority and chain position", ctx do
     anchor_context = fixture_signing_context("fixture-eviction-only", 17)
     other_context = fixture_signing_context("trusted-writer-not-anchored", 29)
@@ -77,6 +174,9 @@ defmodule Commonplace.Store.SlaTombstoneTest do
     self_named_tombstone =
       tombstone(%{ctx | signing_context: other_context}, [commit_id(2)])
 
+    Application.put_env(:commonplace, :trust, active_trust)
+    assert :ok = CommitStoreClient.store_sla_tombstone(ctx.store, anchored_tombstone)
+
     arm1_anchored = SlaTombstone.verify(anchored_tombstone, active_trust, store: ctx.store)
 
     arm1_other =
@@ -85,45 +185,8 @@ defmodule Commonplace.Store.SlaTombstoneTest do
     arm2_self_named = arm1_other
     arm3_trusted_not_anchored = arm1_other
 
-    before =
-      CommitStoreClient.create_commit(
-        ctx.store,
-        "eviction-policy-chain",
-        "before",
-        nil,
-        %{},
-        signing_context: other_context
-      )
-
-    retirement =
-      CommitStoreClient.create_chained_commit(
-        ctx.store,
-        "eviction-policy-chain",
-        "retire",
-        %{},
-        signing_context: other_context
-      )
-
-    after_retirement =
-      CommitStoreClient.create_chained_commit(
-        ctx.store,
-        "eviction-policy-chain",
-        "after",
-        %{},
-        signing_context: other_context
-      )
-
     [anchor_entry] = active_trust.eviction_anchors
     {:ok, anchor} = EvictionAnchor.from_config(anchor_entry)
-
-    {:ok, retired_trust} =
-      Trust.retire_eviction_anchor(active_trust, anchor.id, retirement.id)
-
-    [retired_entry] = retired_trust.eviction_anchors
-    {:ok, retired_anchor} = EvictionAnchor.from_config(retired_entry)
-    assert length(retired_trust.eviction_anchors) == length(active_trust.eviction_anchors)
-    assert retired_anchor.id == anchor.id
-    assert retired_anchor.retired_at == retirement.id
 
     assert {:error, :eviction_anchor_already_exists} =
              Trust.add_eviction_anchor(
@@ -132,14 +195,8 @@ defmodule Commonplace.Store.SlaTombstoneTest do
                anchor_context.public_key
              )
 
-    Application.put_env(:commonplace, :trust, active_trust)
-
-    assert :ok =
-             CommitStoreClient.store_sla_tombstone(ctx.store, anchored_tombstone,
-               chain_position: before.id
-             )
-
-    Application.put_env(:commonplace, :trust, retired_trust)
+    assert {:ok, retirement_position} =
+             CommitStoreClient.retire_eviction_anchor(ctx.store, anchor.id)
 
     assert {:ok, reread_before_retirement} =
              CommitStoreClient.get_sla_tombstone_for_commit(ctx.store, commit_id(1))
@@ -147,16 +204,13 @@ defmodule Commonplace.Store.SlaTombstoneTest do
     assert reread_before_retirement.id == anchored_tombstone.id
 
     arm4_before =
-      SlaTombstone.verify(anchored_tombstone, retired_trust,
-        store: ctx.store,
-        chain_position: before.id
-      )
+      SlaTombstone.verify(anchored_tombstone, active_trust, store: ctx.store)
 
     arm4_after =
-      SlaTombstone.verify(anchored_tombstone, retired_trust,
-        store: ctx.store,
-        chain_position: after_retirement.id
-      )
+      ctx
+      |> Map.put(:signing_context, anchor_context)
+      |> tombstone([commit_id(3)])
+      |> then(&CommitStoreClient.store_sla_tombstone(ctx.store, &1))
 
     revocation =
       Revocation.new(anchor.id, anchor_context.public_key)
@@ -169,10 +223,7 @@ defmodule Commonplace.Store.SlaTombstoneTest do
              CommitStoreClient.get_sla_tombstone_for_commit(ctx.store, commit_id(1))
 
     arm5_revoked =
-      SlaTombstone.verify(anchored_tombstone, retired_trust,
-        store: ctx.store,
-        chain_position: before.id
-      )
+      SlaTombstone.verify(anchored_tombstone, active_trust, store: ctx.store)
 
     arm6_absent =
       SlaTombstone.verify(anchored_tombstone, Map.delete(active_trust, :eviction_anchors),
@@ -194,7 +245,12 @@ defmodule Commonplace.Store.SlaTombstoneTest do
            )
 
     assert arm4_before == :ok
-    assert arm4_after == {:error, {:retired_eviction_anchor, anchored_tombstone.signer_id}}
+
+    assert arm4_after ==
+             {:error,
+              {:invalid_sla_tombstone,
+               {:eviction_anchor_already_retired, anchor.id, retirement_position}}}
+
     assert arm5_revoked == {:error, {:revoked_eviction_anchor, anchor.identity_uuid}}
     assert arm6_absent == {:error, :no_eviction_anchor_configured}
 
@@ -212,14 +268,17 @@ defmodule Commonplace.Store.SlaTombstoneTest do
     IO.puts("ARM_5_REVOKED=#{inspect(arm5_revoked)}")
     IO.puts("ARM_6_ABSENT_CONFIG=#{inspect(arm6_absent)}")
     IO.puts("ARM_PAIRS_DIFFER=true")
-    IO.puts("RETIREMENT_AXIS=CommitStoreClient.is_ancestor?/3")
+    IO.puts("RETIREMENT_AXIS=EvictionAuthorityLedger.before?/3")
   end
 
   test "writer constructs a signed receipt that verifies and tampering fails", ctx do
     tombstone = tombstone(ctx, [commit_id(1), commit_id(2)])
 
-    assert :ok = SlaTombstone.verify(tombstone)
+    assert {:error, :eviction_anchor_activation_position_required} =
+             SlaTombstone.verify(tombstone, ctx.trust, store: ctx.store)
+
     assert :ok = CommitStoreClient.store_sla_tombstone(ctx.store, tombstone)
+    assert :ok = SlaTombstone.verify(tombstone, ctx.trust, store: ctx.store)
 
     signature_tampered = %{tombstone | signature: :binary.copy(<<0>>, 64)}
     assert {:error, :invalid_signature} = SlaTombstone.verify(signature_tampered)
