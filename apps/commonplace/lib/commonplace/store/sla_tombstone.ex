@@ -17,6 +17,12 @@ defmodule Commonplace.Store.SlaTombstone do
   records the governing SLA, eviction time, and SHA-256 hash of the dropped
   bytes. Its content address covers every field except the signature, and its
   Ed25519 signature covers that address.
+
+  Verification is authorization-bearing: `verify/1` requires the
+  `:trusted_tombstone_signers` application setting, using the same map shape as
+  `Commonplace.Runner.DeploymentRecord.range_status/4` (identity UUIDs to
+  Ed25519 public keys). Provisioning that setting is a production precondition;
+  this module deliberately supplies no default anchor.
   """
 
   alias Commonplace.Crypto.{Signing, SigningContext}
@@ -78,17 +84,31 @@ defmodule Commonplace.Store.SlaTombstone do
     end
   end
 
-  @doc "Verify field shape, content address, and Ed25519 signature."
+  @doc "Verify against the configured trusted eviction-signer set."
   @spec verify(t()) :: :ok | {:error, term()}
   def verify(%__MODULE__{} = tombstone) do
-    with :ok <- validate_shape(tombstone),
-         :ok <- verify_id(tombstone),
-         :ok <- verify_signature(tombstone) do
-      :ok
+    case Application.fetch_env(:commonplace, :trusted_tombstone_signers) do
+      {:ok, trusted_signers} -> verify(tombstone, trusted_signers)
+      :error -> {:error, :no_eviction_anchor_configured}
     end
   end
 
   def verify(_other), do: {:error, :invalid_tombstone_shape}
+
+  @doc "Verify against an explicit trusted eviction-signer set."
+  @spec verify(t(), map()) :: :ok | {:error, term()}
+  def verify(%__MODULE__{} = tombstone, trusted_signers) when is_map(trusted_signers) do
+    with :ok <- validate_shape(tombstone),
+         :ok <- verify_id(tombstone),
+         {:ok, trusted_public_key} <- trusted_signer_key(tombstone, trusted_signers),
+         :ok <- verify_signature(tombstone, trusted_public_key) do
+      :ok
+    end
+  end
+
+  def verify(%__MODULE__{}, nil), do: {:error, :no_eviction_anchor_configured}
+  def verify(%__MODULE__{}, _trusted_signers), do: {:error, :invalid_tombstone_trust_anchors}
+  def verify(_other, _trusted_signers), do: {:error, :invalid_tombstone_shape}
 
   defp validate_shape(tombstone) do
     attrs = Map.from_struct(tombstone)
@@ -121,13 +141,22 @@ defmodule Commonplace.Store.SlaTombstone do
       else: {:error, {:id_mismatch, computed, tombstone.id}}
   end
 
-  defp verify_signature(tombstone) do
+  defp trusted_signer_key(tombstone, trusted_signers) do
+    Enum.find_value(trusted_signers, fn {identity_uuid, public_key} ->
+      if tombstone.signer_public_key == public_key and
+           tombstone.signer_id == Signing.signer_id(to_string(identity_uuid), public_key) do
+        {:ok, public_key}
+      end
+    end) || {:error, {:untrusted_tombstone_signer, tombstone.signer_id}}
+  end
+
+  defp verify_signature(tombstone, trusted_public_key) do
     case :crypto.verify(
            :eddsa,
            :none,
            tombstone.id,
            tombstone.signature,
-           [tombstone.signer_public_key, :ed25519]
+           [trusted_public_key, :ed25519]
          ) do
       true -> :ok
       false -> {:error, :invalid_signature}
