@@ -1,11 +1,14 @@
 defmodule Commonplace.Identity.SpawnCeremony do
   @moduledoc """
-  The I2 identity spawn ceremony, deliberately excluding steward ratification.
+  The I2 identity spawn ceremony with I3's pinned class-ratification admission.
 
   A deterministic proposal receipt is the transaction's idempotency gate. The
   receipt is written before key minting and binds one child UUID to the digest
   of one named request. An identical retry resumes that receipt; a different
   request for the same parent/name returns `:spawn_request_conflict`.
+
+  After the parent-signed birth, I3 admits the request against the exact class
+  commit named by `class_ref`; no live steward participates in this read.
 
   Child keys are minted through `AgentKeys` in the caller-supplied child
   workspace SecretStore. Parent and issuer signing contexts are explicit
@@ -21,14 +24,14 @@ defmodule Commonplace.Identity.SpawnCeremony do
 
   alias Commonplace.Crypto.{AgentKeys, Signing, SigningContext}
   alias Commonplace.Document.{ContentType, DocRef}
-  alias Commonplace.Identity.Root
+  alias Commonplace.Identity.{ClassRatification, Root}
   alias Commonplace.Store.{Commit, CommitStoreClient}
   alias Commonplace.Tree.DocBuilder
   alias Commonplace.Trust.Capability
   alias Commonplace.WriterHand
   alias Yelixer.{Doc, Encoding}
 
-  @request_fields ~w(budget child_workspace_id class_ref context_seed delegation_depth initial_cell lifetime mission name parent_delegation_depth)a
+  @request_fields ~w(auditor_role budget child_workspace_id class_ref context_seed delegation_depth escalation_parent initial_cell lifetime mission name parent_delegation_depth sla)a
   @statuses ~w(proposed key_minted birth_signed activated active)
 
   @doc "Start a parent-side ceremony coordinator with explicit fixture-compatible signing contexts."
@@ -94,6 +97,8 @@ defmodule Commonplace.Identity.SpawnCeremony do
          :ok <- same_request(receipt, digest, canonical.name),
          {:ok, receipt} <- mint_child_key(receipt, opts, state),
          {:ok, receipt} <- sign_birth(receipt, canonical, state),
+         {:ok, _ratified_class} <-
+           ClassRatification.authorize_spawn(canonical.class_ref, canonical, state.store),
          {:continue, receipt} <- halt_or_continue(receipt, opts),
          {:ok, receipt} <- sign_activation(receipt, canonical, opts, state),
          {:ok, snapshot} <- land_identity_root(receipt, canonical, state),
