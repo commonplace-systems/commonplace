@@ -20,7 +20,7 @@ defmodule Commonplace.Runner.DeploymentRecord do
   store directly. A supplied tombstone is always verified.
   """
 
-  alias Commonplace.Crypto.{Signing, SigningContext}
+  alias Commonplace.Crypto.SigningContext
   alias Commonplace.Dataflow.RedLog
   alias Commonplace.Document.{ContentType, DocRef}
   alias Commonplace.Projection
@@ -196,8 +196,7 @@ defmodule Commonplace.Runner.DeploymentRecord do
   defp absent_status(log_uuid, commit_id, tombstone_fetcher, trusted_signers) do
     case tombstone_fetcher.(commit_id) do
       {:ok, %SlaTombstone{} = tombstone} ->
-        with :ok <- SlaTombstone.verify(tombstone),
-             :ok <- verify_trusted_tombstone(tombstone, trusted_signers),
+        with :ok <- SlaTombstone.verify(tombstone, trusted_signers),
              true <- tombstone.subtree_id == log_uuid or {:error, :tombstone_subtree_mismatch} do
           {:evicted_per_policy,
            %{
@@ -224,24 +223,6 @@ defmodule Commonplace.Runner.DeploymentRecord do
         {:error, {:invalid_tombstone_fetch_result, other}}
     end
   end
-
-  defp verify_trusted_tombstone(_tombstone, nil),
-    do: {:error, :tombstone_trust_required}
-
-  defp verify_trusted_tombstone(tombstone, trusted_signers) when is_map(trusted_signers) do
-    trusted? =
-      Enum.any?(trusted_signers, fn {identity_uuid, public_key} ->
-        tombstone.signer_public_key == public_key and
-          tombstone.signer_id == Signing.signer_id(to_string(identity_uuid), public_key)
-      end)
-
-    if trusted?,
-      do: :ok,
-      else: {:error, {:untrusted_tombstone_signer, tombstone.signer_id}}
-  end
-
-  defp verify_trusted_tombstone(_tombstone, _trusted_signers),
-    do: {:error, :invalid_tombstone_trust_anchors}
 
   defp validate_record(record) do
     record = stringify_keys(record)

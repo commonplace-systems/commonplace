@@ -23,6 +23,11 @@ defmodule Commonplace.Runner.DeploymentRecordTest do
     n = :rand.uniform(1_000_000_000)
     store = :"i4_deployment_store_#{n}"
     runner = signing_context("fixture-runner")
+    prior_trusted_signers = Application.fetch_env(:commonplace, :trusted_tombstone_signers)
+
+    Application.put_env(:commonplace, :trusted_tombstone_signers, %{
+      runner.identity_uuid => runner.public_key
+    })
 
     File.write!(
       Path.join(data_dir, "trust.json"),
@@ -44,7 +49,10 @@ defmodule Commonplace.Runner.DeploymentRecordTest do
        local_write_gate: :enforce}
     )
 
-    on_exit(fn -> File.rm_rf!(data_dir) end)
+    on_exit(fn ->
+      File.rm_rf!(data_dir)
+      restore_trusted_signers(prior_trusted_signers)
+    end)
 
     %{log_uuid: UUID.uuid4(), runner: runner, store: store}
   end
@@ -136,7 +144,7 @@ defmodule Commonplace.Runner.DeploymentRecordTest do
 
     simulate_unavailable = fn _commit_id -> :none end
 
-    assert {:error, {:invalid_tombstone, :tombstone_trust_required}} =
+    assert {:error, {:invalid_tombstone, :no_eviction_anchor_configured}} =
              DeploymentRecord.range_status(ctx.log_uuid, deployment_commit.id, ctx.store,
                commit_fetcher: simulate_unavailable
              )
@@ -228,7 +236,8 @@ defmodule Commonplace.Runner.DeploymentRecordTest do
                attacker
              )
 
-    assert :ok = SlaTombstone.verify(forged)
+    assert SlaTombstone.verify(forged) ==
+             {:error, {:untrusted_tombstone_signer, forged.signer_id}}
 
     forged_refusal =
       DeploymentRecord.range_status(ctx.log_uuid, commit_id, ctx.store,
@@ -241,7 +250,7 @@ defmodule Commonplace.Runner.DeploymentRecordTest do
              {:error, {:invalid_tombstone, {:untrusted_tombstone_signer, forged.signer_id}}}
 
     IO.puts("TAMPERED_TOMBSTONE_REFUSAL=#{inspect(tampered_refusal)}")
-    IO.puts("FORGED_TOMBSTONE_SELF_SIGNATURE=#{inspect(SlaTombstone.verify(forged))}")
+    IO.puts("FORGED_TOMBSTONE_VERIFICATION=#{inspect(SlaTombstone.verify(forged))}")
     IO.puts("FORGED_TOMBSTONE_REFUSAL=#{inspect(forged_refusal)}")
   end
 
@@ -288,6 +297,12 @@ defmodule Commonplace.Runner.DeploymentRecordTest do
       private_key: private_key
     }
   end
+
+  defp restore_trusted_signers({:ok, trusted_signers}),
+    do: Application.put_env(:commonplace, :trusted_tombstone_signers, trusted_signers)
+
+  defp restore_trusted_signers(:error),
+    do: Application.delete_env(:commonplace, :trusted_tombstone_signers)
 
   defp stringify_keys(map),
     do: Map.new(map, fn {key, value} -> {to_string(key), stringify(value)} end)
