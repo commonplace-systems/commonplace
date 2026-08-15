@@ -892,24 +892,39 @@ defmodule Commonplace.Store.CommitStore do
 
   @doc "Persist a verified, immutable SLA tombstone receipt; never removes commit rows."
   def store_sla_tombstone(%Commonplace.Store.SlaTombstone{} = tombstone) do
-    store_sla_tombstone(__MODULE__, tombstone, [])
+    store_sla_tombstone(__MODULE__, tombstone)
   end
 
   def store_sla_tombstone(server, %Commonplace.Store.SlaTombstone{} = tombstone) do
-    store_sla_tombstone(server, tombstone, [])
+    GenServer.call(server, {:store_sla_tombstone, tombstone})
   end
 
-  def store_sla_tombstone(server, %Commonplace.Store.SlaTombstone{} = tombstone, opts)
-      when is_list(opts) do
-    GenServer.call(server, {:store_sla_tombstone, tombstone, opts})
-  end
-
-  @doc "Read the store-attested commit-chain position for a tombstone."
+  @doc "Read the store-assigned eviction-authority position for a tombstone."
   def get_sla_tombstone_position(server \\ __MODULE__, tombstone_id) do
-    case CubDB.get(resolve_db(server), {:sla_tombstone_position, tombstone_id}) do
-      nil -> :none
-      position -> {:ok, position}
-    end
+    Commonplace.Store.EvictionAuthorityLedger.tombstone_position(
+      resolve_db(server),
+      tombstone_id
+    )
+  end
+
+  @doc "Read the store-assigned activation position for an eviction anchor."
+  def get_eviction_anchor_activation_position(server \\ __MODULE__, anchor_id) do
+    Commonplace.Store.EvictionAuthorityLedger.activation_position(resolve_db(server), anchor_id)
+  end
+
+  @doc "Read the store-assigned retirement position for an eviction anchor."
+  def get_eviction_anchor_retirement_position(server \\ __MODULE__, anchor_id) do
+    Commonplace.Store.EvictionAuthorityLedger.retirement_position(resolve_db(server), anchor_id)
+  end
+
+  @doc "Retire a configured eviction anchor at the next store-assigned ledger position."
+  def retire_eviction_anchor(server \\ __MODULE__, anchor_id) when is_binary(anchor_id) do
+    GenServer.call(server, {:retire_eviction_anchor, anchor_id})
+  end
+
+  @doc "Compare two positions in the store-owned eviction-authority ordering domain."
+  def eviction_authority_position_before?(server \\ __MODULE__, first, second) do
+    Commonplace.Store.EvictionAuthorityLedger.before?(resolve_db(server), first, second)
   end
 
   @doc "Find and verify the SLA tombstone covering a commit id, or return `:none`."
@@ -2183,10 +2198,41 @@ defmodule Commonplace.Store.CommitStore do
 
   @impl true
   def handle_call({:get_sla_tombstone_position, tombstone_id}, _from, state) do
+    reply = Commonplace.Store.EvictionAuthorityLedger.tombstone_position(state.db, tombstone_id)
+
+    {:reply, reply, state}
+  end
+
+  @impl true
+  def handle_call({:get_eviction_anchor_activation_position, anchor_id}, _from, state) do
     reply =
-      case CubDB.get(state.db, {:sla_tombstone_position, tombstone_id}) do
-        nil -> :none
-        position -> {:ok, position}
+      Commonplace.Store.EvictionAuthorityLedger.activation_position(state.db, anchor_id)
+
+    {:reply, reply, state}
+  end
+
+  @impl true
+  def handle_call({:get_eviction_anchor_retirement_position, anchor_id}, _from, state) do
+    reply =
+      Commonplace.Store.EvictionAuthorityLedger.retirement_position(state.db, anchor_id)
+
+    {:reply, reply, state}
+  end
+
+  @impl true
+  def handle_call({:eviction_authority_position_before, first, second}, _from, state) do
+    reply = Commonplace.Store.EvictionAuthorityLedger.before?(state.db, first, second)
+    {:reply, reply, state}
+  end
+
+  @impl true
+  def handle_call({:retire_eviction_anchor, anchor_id}, _from, state) do
+    reply =
+      with {:ok, _anchor} <- configured_eviction_anchor(Commonplace.Trust.config(), anchor_id),
+           {:ok, position, rows} <-
+             Commonplace.Store.EvictionAuthorityLedger.prepare_retirement(state.db, anchor_id) do
+        if rows != [], do: :ok = CubDB.put_multi(state.db, rows)
+        {:ok, position}
       end
 
     {:reply, reply, state}
@@ -2194,52 +2240,66 @@ defmodule Commonplace.Store.CommitStore do
 
   @impl true
   def handle_call(
-        {:store_sla_tombstone, %Commonplace.Store.SlaTombstone{} = tombstone, opts},
+        {:store_sla_tombstone, %Commonplace.Store.SlaTombstone{} = tombstone},
         _from,
         state
       ) do
-    chain_position = Keyword.get(opts, :chain_position)
-
-    reply =
-      with :ok <- valid_tombstone_chain_position(chain_position),
-           :ok <- known_tombstone_chain_position(state.db, chain_position),
-           :ok <-
-             Commonplace.Store.SlaTombstone.verify(
-               tombstone,
-               Commonplace.Trust.config(),
-               store: state.name,
-               chain_position: chain_position
-             ),
-           :ok <- ensure_tombstone_indexes_available(state.db, tombstone),
-           :ok <- ensure_tombstone_position_available(state.db, tombstone.id, chain_position) do
-        rows =
-          [{{:sla_tombstone, tombstone.id}, tombstone}] ++
-            Enum.map(tombstone.commit_ids, fn commit_id ->
-              {{:sla_tombstone_for_commit, commit_id}, tombstone.id}
-            end)
-
-        rows =
-          if chain_position do
-            [{{:sla_tombstone_position, tombstone.id}, chain_position} | rows]
-          else
-            rows
+    result =
+      case CubDB.get(state.db, {:sla_tombstone, tombstone.id}) do
+        ^tombstone ->
+          with :ok <-
+                 Commonplace.Store.SlaTombstone.verify(
+                   tombstone,
+                   Commonplace.Trust.config(),
+                   store: state.name
+                 ),
+               :ok <- ensure_tombstone_indexes_available(state.db, tombstone) do
+            :ok
           end
 
-        :ok = CubDB.put_multi(state.db, rows)
-      else
+        nil ->
+          with {:ok, anchor} <-
+                 Commonplace.Store.SlaTombstone.authorize_registration(
+                   tombstone,
+                   Commonplace.Trust.config(),
+                   state.name
+                 ),
+               :ok <- ensure_tombstone_indexes_available(state.db, tombstone),
+               {:ok, _position, ledger_rows} <-
+                 Commonplace.Store.EvictionAuthorityLedger.prepare_registration(
+                   state.db,
+                   anchor.id,
+                   tombstone.id
+                 ) do
+            index_rows =
+              [{{:sla_tombstone, tombstone.id}, tombstone}] ++
+                Enum.map(tombstone.commit_ids, fn commit_id ->
+                  {{:sla_tombstone_for_commit, commit_id}, tombstone.id}
+                end)
+
+            :ok = CubDB.put_multi(state.db, ledger_rows ++ index_rows)
+          end
+
+        _other ->
+          with {:ok, _anchor} <-
+                 Commonplace.Store.SlaTombstone.authorize_registration(
+                   tombstone,
+                   Commonplace.Trust.config(),
+                   state.name
+                 ) do
+            {:error, :sla_tombstone_id_collision}
+          end
+      end
+
+    reply =
+      case result do
+        :ok -> :ok
         {:error, {:sla_tombstone_conflict, _commit_id, _existing_id}} = error -> error
         {:error, reason} -> {:error, {:invalid_sla_tombstone, reason}}
+        other -> other
       end
 
     {:reply, reply, state}
-  end
-
-  def handle_call(
-        {:store_sla_tombstone, %Commonplace.Store.SlaTombstone{} = tombstone},
-        from,
-        state
-      ) do
-    handle_call({:store_sla_tombstone, tombstone, []}, from, state)
   end
 
   @impl true
@@ -2992,29 +3052,18 @@ defmodule Commonplace.Store.CommitStore do
     end)
   end
 
-  defp valid_tombstone_chain_position(nil), do: :ok
+  defp configured_eviction_anchor(cfg, anchor_id) do
+    case Map.get(cfg, :eviction_anchors, Map.get(cfg, "eviction_anchors", [])) do
+      entries when is_list(entries) ->
+        Enum.find_value(entries, {:error, :eviction_anchor_not_configured}, fn entry ->
+          case Commonplace.Trust.EvictionAnchor.from_config(entry) do
+            {:ok, %{id: ^anchor_id} = anchor} -> {:ok, anchor}
+            _other -> nil
+          end
+        end)
 
-  defp valid_tombstone_chain_position(position)
-       when is_binary(position) and byte_size(position) == 32,
-       do: :ok
-
-  defp valid_tombstone_chain_position(_position), do: {:error, :invalid_tombstone_chain_position}
-
-  defp known_tombstone_chain_position(_db, nil), do: :ok
-
-  defp known_tombstone_chain_position(db, position) do
-    case CubDB.get(db, {:commit, position}) do
-      nil -> {:error, :unknown_tombstone_chain_position}
-      _commit -> :ok
-    end
-  end
-
-  defp ensure_tombstone_position_available(db, tombstone_id, chain_position) do
-    case CubDB.get(db, {:sla_tombstone_position, tombstone_id}) do
-      nil -> :ok
-      _existing when is_nil(chain_position) -> :ok
-      ^chain_position -> :ok
-      existing -> {:error, {:sla_tombstone_position_conflict, existing, chain_position}}
+      _other ->
+        {:error, :invalid_eviction_anchor_config}
     end
   end
 

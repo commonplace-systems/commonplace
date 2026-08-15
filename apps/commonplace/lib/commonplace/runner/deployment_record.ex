@@ -173,10 +173,7 @@ defmodule Commonplace.Runner.DeploymentRecord do
 
     trust_config = Keyword.get(opts, :trust_config, Commonplace.Trust.config())
 
-    verification_opts =
-      Keyword.take(opts, [:chain_position, :position_before?, :revocation_fetcher])
-
-    verification_opts = Keyword.put(verification_opts, :store, store)
+    verification_opts = [store: store]
 
     case commit_fetcher.(commit_id) do
       {:ok, %Commit{doc_uuid: ^log_uuid}} ->

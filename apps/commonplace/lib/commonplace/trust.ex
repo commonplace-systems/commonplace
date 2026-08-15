@@ -41,8 +41,9 @@ defmodule Commonplace.Trust do
       same reason: the identity docs' own `public_keys` field is
       peer-writable.
     * `eviction_anchors` — an append-only list of eviction-only principals,
-      kept separate from `trusted_identities`; entries carry a public key and
-      an optional commit-id `retired_at` marker.
+      kept separate from `trusted_identities`; entries carry a public key.
+      A decoded legacy `retired_at` value is metadata only. Effective
+      retirement is store-derived from the eviction-authority ledger.
 
   Decision table (verb/scope are accepted now so phase-3 doesn't reshape
   the call sites, but the allowlist body ignores them):
@@ -1391,20 +1392,6 @@ defmodule Commonplace.Trust do
     with {:ok, anchor} <- Commonplace.Trust.EvictionAnchor.new(identity_uuid, public_key),
          {:ok, anchors} <-
            Commonplace.Trust.EvictionAnchor.append(Map.get(cfg, :eviction_anchors, []), anchor) do
-      {:ok, Map.put(cfg, :eviction_anchors, anchors)}
-    end
-  end
-
-  @doc "Mark an eviction anchor retired at a commit-chain position; never delete it."
-  @spec retire_eviction_anchor(config(), binary(), binary()) ::
-          {:ok, config()} | {:error, term()}
-  def retire_eviction_anchor(cfg, anchor_id, chain_position) when is_map(cfg) do
-    with {:ok, anchors} <-
-           Commonplace.Trust.EvictionAnchor.retire(
-             Map.get(cfg, :eviction_anchors, []),
-             anchor_id,
-             chain_position
-           ) do
       {:ok, Map.put(cfg, :eviction_anchors, anchors)}
     end
   end
