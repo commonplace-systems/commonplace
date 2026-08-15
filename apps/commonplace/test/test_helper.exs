@@ -1,5 +1,15 @@
 ExUnit.start()
 Code.require_file("../../../test/support/file_rm_rf_guard.exs", __DIR__)
+
+leak_detector = Commonplace.Test.GlobalStateLeakDetector
+formatters = ExUnit.configuration() |> Keyword.fetch!(:formatters) |> Enum.uniq()
+
+# CX-0ktk: formatter events only attribute global mutations correctly when tests
+# cannot overlap. The reproducer is already known to survive max_cases 1, so the
+# permanent detector observes the whole population serially at its requested
+# seed instead of blaming whichever concurrent test happens to finish first.
+ExUnit.configure(max_cases: 1, formatters: Enum.uniq(formatters ++ [leak_detector]))
+ExUnit.after_suite(&leak_detector.assert_clean!/1)
 # CX-tdkq.9 (R9): scale benchmarks are excluded by default — they're a
 # measurement harness, not correctness tests, and scale up to slow/
 # memory-heavy magnitudes. Run them explicitly with:
@@ -17,4 +27,7 @@ Code.require_file("../../../test/support/file_rm_rf_guard.exs", __DIR__)
 # CX-q9sa: :rm_rf_guard_positive_control is deliberately NOT excluded. It is the
 # rm_rf guard's only proof-of-life, and it now asserts that the guard raised AND
 # that the live CommitStore directory survived — so GREEN means the guard works.
-ExUnit.configure(exclude: [:scale, :corpus])
+# The positive control performs a real, un-restored leak. It is enabled only for
+# its proof run so it cannot become the permanent first finding and mask leaks
+# in the ordinary suite.
+ExUnit.configure(exclude: [:scale, :corpus, :global_state_leak_detector_positive_control])
