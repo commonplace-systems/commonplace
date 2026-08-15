@@ -121,7 +121,12 @@ rc=$?
 
 AFTER_STAMP="$(stamp "$APP_DIR")"
 
-summary="$(grep -E '^[0-9]+ doctests?, |^[0-9]+ tests?, |doctests?, [0-9]+ tests?,' "$OUT" | tail -1)"
+# CX-zvqg's round hit this: a GREEN web run was WITHHELD (exit 3) because its
+# summary starts "12 features, 136 tests, ..." and none of the anchored
+# alternatives matched. The round's near-miss was reading that exit 3 as a suite
+# FAILURE — a false red from this tool. The last alternative matches the true
+# ExUnit invariant ("N tests, M failures") regardless of what precedes it.
+summary="$(grep -E '^[0-9]+ doctests?, |^[0-9]+ tests?, |doctests?, [0-9]+ tests?,|[0-9]+ tests?, [0-9]+ failures?' "$OUT" | tail -1)"
 
 if [[ -z "$summary" ]]; then
   echo "$name: NO SUMMARY LINE — the suite did not report counts (rc=$rc)." >&2
