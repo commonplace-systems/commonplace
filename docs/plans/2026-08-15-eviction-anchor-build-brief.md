@@ -76,9 +76,30 @@ recorded on the identity doc (`held_by`, `role`, `minted_by`, `minted_at`),
 exactly as the reviewer identity was minted on 2026-08-13.** ⛔ **NO new custody
 mechanism.** ⭐ *An identity with ambiguous custody cannot audit, and equally
 cannot evict.*
-⚠️ **Adding an anchor to the trust config is a constitutional-tier act** — it
-grants a new KIND of authority. ⛔ **If landing that ratification is beyond what
-you can do in-sandbox, mark it UNVERIFIED and STOP rather than approximating it.**
+⚠️ **Adding a REAL anchor to the trust config is a constitutional-tier act** — it
+grants a new KIND of authority.
+
+⛔⛔ **SCOPE SPLIT — READ THIS TWICE. AN EARLIER VERSION OF THIS BRIEF SAID
+"mark it UNVERIFIED and STOP" WITHOUT SAYING **STOP WHAT**, AND A ROUND
+CORRECTLY READ IT AS "stop the whole round" AND BUILT NOTHING. That ambiguity
+was the brief's defect, not the round's.**
+
+**✅ BUILD ALL OF THIS — it is code, and it is fully testable in-sandbox with
+fixture signing contexts:**
+- the `eviction_anchors` config surface and its load path
+- verification against that set, with the trusted-but-not-anchored refusal
+- append-only anchors with `retired_at`
+- **chain-position** validity comparison
+- the retirement-vs-revocation distinction, distinguishable in the refusal
+- every acceptance arm below
+
+**⛔ DO NOT DO THIS — and mark ONLY THIS as UNVERIFIED:**
+- provisioning an actual anchor key/identity, minting custody, or writing a real
+  anchor into the live trust config
+
+⇒ ⭐ **"I built the mechanism; provisioning a real anchor is UNVERIFIED because it
+is a constitutional act I cannot ratify in-sandbox" IS THE EXPECTED SHAPE OF A
+COMPLETE ROUND.** ⛔ **Stopping the whole round is NOT.**
 
 ## ⛔ Acceptance — six arms, artifact-checkable
 
@@ -125,8 +146,16 @@ BLOCK, not from here.** ⭐ *The tool was fixed today so it no longer withholds 
 green `commonplace_web` result; if it still exits 3 on a passing run, that is a
 finding.*
 ⚠️ **`CX-s9kc`: sandbox `chat_view_compute_supervisor_test.exs` flake, NOT yours.**
-⚠️ **`CX-kx6d`: `GitBridge.ServerTest` has a check-then-act teardown race that
-goes red under load, NOT yours.** ⛔ **Anything else IS yours.**
+⚠️⚠️ **`GitBridge.ServerTest` has TWO DISTINCT load-sensitive failures. NAMED BY
+TEST AND MECHANISM, because an exemption scoped to a MODULE absorbs any future
+failure in that file — which already happened once:**
+- **`CX-kx6d`** — test *"filters: __ / nosync / presence … across two cycles"*,
+  a teardown check-then-act race: `Process.whereis` then `GenServer.stop` →
+  `no process`.
+- **unticketed** — test *"push: failure to an unreachable remote … retries"*,
+  `{:error, :already_registered}` from `WorkspaceFixture.complete_workspace!/2`.
+⛔ **ANY OTHER failure in that module — or either of those with a DIFFERENT error
+shape — IS YOURS. Say which you saw, verbatim.**
 
 ## ⛔ Standing discipline
 
