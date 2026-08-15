@@ -11,7 +11,7 @@ defmodule Commonplace.Identity.SpawnCeremonyTest do
 
   alias Commonplace.Crypto.{AgentKeys, Signing, SigningContext}
   alias Commonplace.Document.{ContentType, DocRef}
-  alias Commonplace.Identity.{Root, SpawnCeremony}
+  alias Commonplace.Identity.{ClassRatification, Root, SpawnCeremony}
   alias Commonplace.Store.{Commit, CommitStoreClient, SecretStore}
   alias Commonplace.Tree.{DocBuilder, Schema}
   alias Commonplace.Trust.Capability
@@ -104,6 +104,17 @@ defmodule Commonplace.Identity.SpawnCeremonyTest do
 
     :ok = CommitStoreClient.store_capability(store, parent_capability)
 
+    {:ok, class_writer} =
+      start_supervised(
+        {ClassRatification,
+         name: "platform-watch",
+         class: class_contract([allowed_ref.uuid, extra_uuid], parent.identity_uuid),
+         store: store,
+         signing_context: parent}
+      )
+
+    class_ref = class_writer |> ClassRatification.snapshot() |> Map.fetch!(:class_ref)
+
     {:ok, ceremony} =
       start_supervised(
         {SpawnCeremony,
@@ -113,7 +124,7 @@ defmodule Commonplace.Identity.SpawnCeremonyTest do
          issuer_signing_context: parent}
       )
 
-    request = request("platform-watch-2", allowed_ref, parent_capability)
+    request = request("platform-watch-2", allowed_ref, parent_capability, class_ref)
 
     %{
       allowed_ref: allowed_ref,
@@ -324,13 +335,15 @@ defmodule Commonplace.Identity.SpawnCeremonyTest do
     IO.puts("KEY_SEARCH_OUTCOMES_DIFFER=#{child_matches != parent_matches}")
   end
 
-  defp request(name, allowed_ref, parent_capability) do
+  defp request(name, allowed_ref, parent_capability, class_ref) do
     %{
+      auditor_role: "fixture-auditor",
       budget: "fixture-budget",
       child_workspace_id: "fixture-child-workspace",
-      class_ref: "classes/platform-watch:00000000-0000-0000-0000-000000000001@fixture-class-cid",
+      class_ref: DocRef.to_string(class_ref),
       context_seed: [DocRef.to_string(allowed_ref)],
       delegation_depth: 0,
+      escalation_parent: "fixture-anchor",
       grant: %{
         verbs: [:write],
         scope: {:docs, [allowed_ref.uuid]},
@@ -341,7 +354,18 @@ defmodule Commonplace.Identity.SpawnCeremonyTest do
       mission: "observe the fixture",
       name: name,
       parent_capability: parent_capability,
-      parent_delegation_depth: 1
+      parent_delegation_depth: 1,
+      sla: "durable"
+    }
+  end
+
+  defp class_contract(scope_envelope, escalation_parent) do
+    %{
+      auditor_role: "fixture-auditor",
+      escalation_parent: escalation_parent,
+      mission_template: "observe the fixture",
+      scope_envelope: scope_envelope,
+      sla: "durable"
     }
   end
 
