@@ -133,6 +133,8 @@ defmodule Commonplace.Identity.Root do
     understanding = Keyword.get(opts, :understanding, %{})
     store = Keyword.get(opts, :store, CommitStoreClient)
 
+    identity_uuid = Keyword.get(opts, :identity_uuid, UUID.uuid4())
+
     with :ok <- validate_name(name),
          :ok <- validate_genesis(genesis),
          :ok <- validate_understanding(understanding),
@@ -146,7 +148,15 @@ defmodule Commonplace.Identity.Root do
          {:ok, understanding_ref} <-
            create_record(name, "understanding", understanding, store, signing_context),
          {:ok, root_uuid} <-
-           create_root(name, genesis, understanding_ref, identities_uuid, store, signing_context),
+           create_root(
+             identity_uuid,
+             name,
+             genesis,
+             understanding_ref,
+             identities_uuid,
+             store,
+             signing_context
+           ),
          {:ok, root} <- read(root_uuid, store),
          :ok <- verify_landed_root(root, genesis, understanding_ref) do
       {:ok,
@@ -177,8 +187,15 @@ defmodule Commonplace.Identity.Root do
     end
   end
 
-  defp create_root(name, genesis, understanding_ref, identities_uuid, store, signing_context) do
-    root_uuid = UUID.uuid4()
+  defp create_root(
+         root_uuid,
+         name,
+         genesis,
+         understanding_ref,
+         identities_uuid,
+         store,
+         signing_context
+       ) do
     filename = "#{name}.json"
 
     body =
