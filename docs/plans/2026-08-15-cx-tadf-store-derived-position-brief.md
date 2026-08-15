@@ -60,8 +60,8 @@ rows land atomically.**
    position from birth.** ⚠️ *Otherwise a tombstone written under an active
    anchor has no position, and becomes unreadable the moment that anchor
    retires — which is the rotation inversion this whole line of work exists to
-   prevent, arriving through routine housekeeping rather than through anything
-   adversarial.*
+   prevent, arriving through ROUTINE HOUSEKEEPING — a key rotation doing exactly
+   its job.*
 3. ⭐⭐ **NO CALLER-SUPPLIED ORDERING RELATION.** ⛔ **`:position_before?` must
    go, or become unreachable from the public verify path.** ***It is the same
    property as (1) with a function instead of a value, and closing (1) while
