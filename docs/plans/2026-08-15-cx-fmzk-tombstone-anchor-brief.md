@@ -1,4 +1,4 @@
-# CX-fmzk build brief: a check whose evidence is produced by its own subject
+# CX-fmzk build brief: verify the signer against a configured trusted set
 
 > **The work's ticket is `CX-fmzk`.** Base: **the commit that adds this brief**
 > — ⚠️ *not a sha; committing a brief moves HEAD past any sha it records.*
@@ -14,20 +14,18 @@ signer_public_key   # 32 bytes, A FIELD ON THE STRUCT
 ```
 
 ⇒ ⭐⭐⭐ **`verify_signature` TAKES THE KEY FROM A FIELD ON THE STRUCT IT IS
-VERIFYING.** ⇒ ⛔ ***IT IS NOT A WEAK CHECK. IT IS A VACUOUS ONE*** — **a check
-whose evidence is produced by its own subject.** ⚠️ *Generate a keypair, name
-yourself the signer, sign: `validate_shape`, `verify_id` AND `verify_signature`
-all pass. Every field is internally consistent, which is exactly what a forgery
-achieves.*
+VERIFYING.** ⇒ ⛔ ***IT IS NOT A WEAK CHECK. IT IS A VACUOUS ONE*** — **a check whose evidence is supplied by its own input.** ⚠️ *A tombstone whose `signer_public_key` is ANY keypair passes `validate_shape`,
+`verify_id` AND `verify_signature`, because the check reads the key from the
+record it is checking. Internal consistency is all that is established.*
 
-⭐ **The artifact proves it was not TAMPERED WITH. It proves nothing about
-whether it was AUTHORIZED.** *Measured by `I4`'s round: a tombstone signed by an
-attacker-controlled fresh key returned `:ok`.*
+⭐ **The record proves INTEGRITY (it was not altered after signing). It does not
+establish AUTHORIZATION (that the signer was permitted to evict).** *Measured by
+`I4`'s round: a tombstone signed by an unrelated keypair returned `:ok`.*
 
-⭐⭐ **AND WHY IT MATTERS MORE THAN A SIGNATURE BUG: a tombstone's JOB is to
-distinguish EVICTED-PER-POLICY from MISSING.** ⇒ ⛔ ***A forgeable tombstone
-INVERTS that — it lets someone manufacture the REASSURING explanation for data
-that is simply gone.***
+⭐⭐ **WHY IT MATTERS: a tombstone's JOB is to distinguish EVICTED-PER-POLICY from
+MISSING.** ⇒ ⛔ ***If any signer's tombstone is accepted, the reassuring
+explanation becomes the cheap one to produce, and the distinction the record
+exists for stops holding.***
 
 ## The round is TWO parts, and ⓑ does not wait on ⓐ
 
@@ -69,18 +67,18 @@ check wearing a fix's clothes.***
 
 ## ⛔ Acceptance — artifacts, red-first
 
-1. ⭐⭐ **RED FIRST, AND THE FIXTURE MUST ATTEMPT THE FORBIDDEN ACT: construct a
-   tombstone signed by an attacker-controlled fresh key, and SHOW the CURRENT
-   `SlaTombstone.verify/1` RETURNS `:ok`.** ⛔ **Verbatim output.** *This is the
-   arm the ticket exists for.*
-2. ⭐⭐ **AFTER THE FIX, THE SAME FORGERY IS REFUSED AND THE REFUSAL NAMES WHY.**
-   ⛔ **Same forgery — not a second, weaker one.**
+1. ⭐⭐ **RED FIRST — a fixture in the state the check must reject: build a
+   tombstone whose `signer_public_key` is a DIFFERENT keypair from the
+   configured trusted signer, and SHOW the CURRENT `SlaTombstone.verify/1`
+   RETURNS `:ok`.** ⛔ **Verbatim output.** *This is the arm the ticket exists for.*
+2. ⭐⭐ **AFTER THE FIX, THE SAME FIXTURE IS REFUSED AND THE REFUSAL NAMES WHY.**
+   ⛔ **The same fixture — not a second, weaker one.**
 3. ⭐⭐ **THE QUIET HALF: a legitimately-signed tombstone from a TRUSTED signer
    still verifies, and the existing `sla_tombstone_test.exs` arms still pass.**
    ⚠️ ***A fix that makes everything fail passes arm 2 and is worse than the
    bug.***
 4. ⭐ **NO ANCHOR CONFIGURED ⇒ LOUD REFUSAL**, demonstrated, not asserted.
-   ⛔ **Show it does NOT fall back to the embedded key.**
+   ⛔ **Show it does NOT fall back to the key on the record.**
 5. **`ⓐ`'s answer, stated plainly with what you read to get it** — *"gated at X"*
    or *"reachable from Y"*, naming the path. ⛔ **"Probably gated" is not an
    answer.**
@@ -126,15 +124,15 @@ yours.**
   their briefs.*
 - ⭐⭐ **CITE BEHAVIOUR AND A GREP-ABLE STRING, NEVER A LINE NUMBER.**
 - ⭐ **Report the NEAR-MISS** — especially any temptation to invent an anchor set,
-  or to let the no-anchor case fall back to the embedded key "for compatibility".
+  or to let the no-anchor case fall back to the record's own key "for compatibility".
 - ⭐⭐ **WHAT WAS THIS COPIED FROM, AND WHAT HAS BEEN COPIED FROM THIS?** ⚠️ *If
   any other verifier in this tree takes its key from its own subject, that is
   the same defect and worth naming even if you do not fix it.*
 
 ## Review criteria
 
-The forgery shown accepted BEFORE and refused AFTER, same fixture; the refusal
-naming why; the quiet half preserved with existing arms green; a loud refusal
+The untrusted-signer fixture shown accepted BEFORE and refused AFTER, same
+fixture; the refusal naming why; the quiet half preserved with existing arms green; a loud refusal
 when no anchor is configured with no silent fallback; `ⓐ`'s reachability answer
 stated with the path that supports it; the anchor's provisioning named as a
 precondition rather than invented; and arms printed and shown to differ.
