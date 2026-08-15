@@ -1,0 +1,35 @@
+### A
+A_OS_PID="1931906"
+A_IDENTITY_ROOT="92274bc3-898c-445c-9762-ef93e442ba06"
+A_UNDERSTANDING_AT_A=%{"state" => "fresh", "written_by" => "deployment-a", "zone" => "33738231-9331-4dfd-8d4c-ac4ff41a78fe"}
+A_RECORD_COMMIT="86a4fd7fa986"
+A_EXITS_NOW=true
+### B
+B_OS_PID="1932189"
+B_RECORDS_FOUND=1
+B_RESOLVED_YIELD_FROM_STORE=%{"next_step" => "resolve the finding and record understanding", "priority" => 1}
+B_UNDERSTANDING_BEFORE=%{"state" => "fresh", "written_by" => "deployment-a", "zone" => "33738231-9331-4dfd-8d4c-ac4ff41a78fe"}
+B_UNDERSTANDING_WRITE=:ok
+B_UNDERSTANDING_AFTER=%{"resolved_from_yield" => "resolve the finding and record understanding", "state" => "resolved", "written_by" => "deployment-b", "zone" => "33738231-9331-4dfd-8d4c-ac4ff41a78fe"}
+B_RECORD_COMMIT="08f8ceed19b9"
+B_RESULT=:SUCCEEDED
+### CONTROL
+B_OS_PID="1932448"
+B_RECORDS_FOUND=0
+B_RECONSTRUCTION=:impossible_no_record_of_a
+B_RESULT=:FAILED
+control_rc=0
+### D (is the cert load-bearing?)
+D_REAL_CERT=:WROTE
+D_PROOF_IS_CHECKED=true
+### C (revocation)
+C_OS_PID="1932970"
+C_WRITE_BEFORE_REVOCATION=:ok
+C_REVOCATION_STORED=1
+C_WRITE_AFTER_REVOCATION=:REFUSED
+C_WRITE_OUTCOMES_DIFFER=true
+C_IDENTITY_READABLE_AFTER=true
+C_UNDERSTANDING_READABLE_AFTER=%{"probe" => "D_REAL_CERT", "resolved_from_yield" => "resolve the finding and record understanding", "state" => "pre-revocation probe", "written_by" => "deployment-b", "zone" => "33738231-9331-4dfd-8d4c-ac4ff41a78fe"}
+C_HISTORY_READABLE_AFTER=["deployment-a", "deployment-b"]
+C_FINDING_READABLE_AFTER=%{"observed" => "the artifact names three call sites", "severity" => "p1"}
+C_FINDING_ATTRIBUTABLE_TO="deployment-a"
