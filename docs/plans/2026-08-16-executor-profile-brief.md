@@ -110,32 +110,88 @@ standing up a real `SpawnCeremony` under `:enforce`).
 
 ## ⛔⛔ SUITES — AND WHAT MAIN'S GREEN DOES NOT MEAN
 
+⛔⛔ **THE BLOCK BELOW IS THE OUTPUT OF `bin/cp-brief-known-reds`, WHICH READS
+`/home/jes/boss-clod/KNOWN-REDS.md`.** ⚠️ *An earlier revision of this brief
+RETYPED it from the previous brief: it INVENTED a `GitBridge.ServerTest` entry
+that is not in the file and OMITTED three that are. The builder caught it.*
+⇒ ⭐ **Verify with `bin/cp-brief-known-reds --check <this file>`.**
+
 ```
-ON MAIN, seed 117514:  5 doctests, 3553 tests, 0 failures, 12 excluded, 1 skipped
+KNOWN REDS ON main (as of e397021c, 2026-08-16 18:08Z) — NOT YOURS. Anything else IS.
 
-⚠️ MAIN IS CURRENTLY GREEN AND THAT IS NOT THE WHOLE STORY:
+① STANDING — MUD render defect. ⚠️ CURRENTLY NOT FIRING. THE ENTRY STAYS.
+   MUD.RoomVisibilityTest     — owner's own look on their gated room
+   MUD.WebPlayIntegrationTest — citizen spawns in owned home
+   Symptom: "(this place has no description)".
+   Full suite at seed 117514, CURRENT (e397021c): 5 doctests, 3553 tests,
+   0 FAILURES, 12 excluded, 1 skipped — measured by commonplace, population
+   predicted by hand (3548 + 5) BEFORE measuring and matched exactly.
+   ⛔⛔ THIS IS NOT FIXED, RESOLVED, OR CLOSED, AND THE ENTRY MUST NOT BE DELETED
+      FOR BEING GREEN. Observed sequence:
+          population 3541 → 2 failures
+          population 3546 → 1
+          population 3548 → 1
+          population 3553 → 0     ← a green that proves nothing
+      THE ENTRY'S CLAIM IS THAT THE COUNT IS ARRANGEMENT-DEPENDENT, SO A ZERO IS
+      EXACTLY AS UNINFORMATIVE AS A ONE. Neither a zero nor a nonzero is a signal.
+   ⛔ A KNOWN-RED DELETED WHILE GREEN IS A TRAP ARMED FOR WHOEVER ARRIVES NEXT:
+      the next round that adds tests and sees it red has no block to check, is
+      told by our own rule that unlisted failures are ITS, and hunts a defect
+      that is days old.
+   ✅ STILL DETERMINISTICALLY REPRODUCIBLE at seed 117514 / population 3541 via
+      the recipe (fc7d4bf6). The handle is intact; it is simply not firing here.
+   MECHANISM: ARRANGEMENT, not count and not code — the same tests at seed 424242 are GREEN.
+   Reproducer + eight dead leads: dba2e59e, d19361f7, deaa6464. Landed red at cf430433
+   under commonplace-plan's escape condition; the red is the documented MUD mechanism,
+   NOT S94 (per-file S94: 10 tests, 0 failures, boot verified).
+   ⛔ DO NOT CHANGE THE SEED TO MAKE IT PASS. That trades a DETERMINISTIC red for an
+      INTERMITTENT one, which gets attributed to whoever is unlucky rather than to the
+      defect — and it destroys the only handle anyone has on this class.
+   ⛔ MECHANISM IS UNMEASURED and the one named closing condition is SPENT (lead ⑧: the
+      CX_LOOKDENY name=:look denial is fixture background — RED 117514 and GREEN 424242
+      are IDENTICAL, 11 lookdeny / 2 name=:look / signer not in trusted set, both arms).
+      No further round on this without a NEW FACT. A measurement is a fact; an idea is not.
+   ⛔ A failure with a DIFFERENT symptom in these files IS yours.
+   ⛔⛔ IF YOUR ROUND ADDS TESTS, THE POPULATION CHANGES AND SO DOES THE ARRANGEMENT.
+      At 3553 + N this pair MAY COME BACK RED OR GREEN, and NEITHER IS A SIGNAL ABOUT
+      YOUR WORK. Do not report "I fixed the MUD red" and do not report "I caused it" —
+      both are available, both are plausible, and both are false. Report your per-file
+      counts and the suite total WITH ITS POPULATION, and say nothing about causation.
 
-① STANDING — MUD render defect. CURRENTLY NOT FIRING. NOT FIXED.
-   MUD.RoomVisibilityTest / MUD.WebPlayIntegrationTest — ONE mechanism, two tests.
-   symptom "(this place has no description)". Mechanism UNMEASURED.
-   observed:  3541 → 2 failures · 3546 → 1 · 3548 → 1 · 3553 → 0
-   ⛔⛔ THE COUNT IS ARRANGEMENT-DEPENDENT, SO A ZERO IS EXACTLY AS UNINFORMATIVE
-       AS A ONE. ADDING TESTS CHANGES THE POPULATION, WHICH CHANGES THE ORDERING.
-       AT YOUR POPULATION THIS MAY GO RED. ⛔ THAT IS NOT YOURS AND IT IS NOT NEW.
-   ⛔ DO NOT CHANGE THE SEED. ⛔ Do not report that you fixed or caused it.
-   RECIPE: docs/measurements/2026-08-16-mud-render-ordering-reproducer.md
-   ⛔ A DIFFERENT symptom in those two files IS yours.
+② KNOWN TRIGGER — Runner.LauncherTest, "pod cannot read a canary injected by its
+   launching BEAM". Environment-sensitive (CX-kacr); a stray tmux socket has triggered it.
+   Fails as canary_result == "" where "absent" is expected — an EMPTY probe result, not a
+   wrong one. Passes in isolation.
+   ⛔ DO NOT "FIX" BY LOOSENING THE ASSERTION. That test refuses to treat "" as "absent",
+      which is exactly why it goes red instead of quietly passing.
+   ⛔ A DIFFERENT error shape there is yours.
 
-② CI-ONLY, UNATTRIBUTED — GitHub CI red since 2026-08-13 in
-   Runner.Launcher* / TwoDeploymentPodProofTest. GREEN ON HOST (measured:
-   56 tests, 0 failures under apps/commonplace/test/commonplace/runner/).
-   ⛔ If one fails ON HOST, that IS yours.
-
-③ GitBridge.ServerTest — teardown check-then-act, THREE distinct tests.
-   ⛔ Any OTHER error shape in that module IS yours.
+③ STANDING RED IN GITHUB CI ONLY — UNATTRIBUTED. GREEN ON HOST.
+   ⚠️ SCOPE IS LOAD-BEARING: these fail in the GitHub Actions runner and PASS ON HOST.
+      If you see them fail ON HOST, that is NEW and it IS yours — say so.
+   GitHub CI on main: 100 of the last 100 runs failed. Last green 2026-08-13 08:54Z.
+   Newest run: 3541 tests, 9 failures, seed 172334 (CI does NOT pin a seed).
+     Commonplace.Runner.LauncherTest
+       · pod holds its own signing key and not the durable key, proven by effect
+       · wrong handle fails while captured handle reaps the process unit
+       · live-process channels are unreachable behind containing-directory masks
+       · executes by effect with its five-variable constructed environment
+       · pod cannot read a canary injected by its launching BEAM      (= ② above)
+     Commonplace.Runner.LauncherRecipeTest
+       · recipe requires gates placement before launch, with a satisfying control
+       · changing only recipe run changes the observed worker effect
+       · recipe env names resolve only from the constructed placement allowlist
+     Commonplace.Runner.TwoDeploymentPodProofTest
+       · two deployments in separate pods: B resolves A's yield, and cannot without it
+   ⛔ UNATTRIBUTED — NOBODY HAS EXPLAINED THESE. Recording them is NOT accepting them.
+      An unexplained red RECORDED as unexplained cannot mis-blame the next round.
+   ⛔ THE MUD PAIR (① above) IS ABSENT FROM CI — 0 occurrences, positive control:
+      the same grep hits LauncherTest 9×. CI rolls a fresh arrangement every run and
+      has never met ①. ⇒ FIXING ① WILL NOT TURN CI GREEN. They are different defects.
+   ⚠️ TODAY'S NINE ARE NOT THE ORIGINAL SET. The first red run (31687219046,
+      2026-08-13 09:34Z, seed 198228) was 3456 tests, 4 failures, ALL LauncherTest.
+      The other suites did not exist yet. Do not brief a fix against today's list.
 ```
-⚠️ **The authoritative block is `/home/jes/boss-clod/KNOWN-REDS.md` — it is a
-file so it cannot go stale in anyone's context.**
 
 ### ⭐⭐ MEASUREMENT DISCIPLINE
 ```

@@ -72,9 +72,20 @@ and the remedy is the only part a builder acts on.***
 
 ## Suites — name them with their on-main counts
 
-⛔ **PASTE THE KNOWN-REDS BLOCK FROM `/home/jes/boss-clod/KNOWN-REDS.md`.**
-⚠️ **DO NOT RETYPE IT FROM MEMORY OR FROM THE PREVIOUS BRIEF** — it is a file
-precisely so it cannot go stale in someone's context.
+⛔⛔ **RUN `bin/cp-brief-known-reds` AND PASTE ITS OUTPUT. THEN VERIFY WITH
+`bin/cp-brief-known-reds --check <your brief>`.**
+
+⚠️ **THIS USED TO SAY "paste the block from `/home/jes/boss-clod/KNOWN-REDS.md`,
+do not retype it from memory or from the previous brief". THE FIRST BRIEF
+WRITTEN FROM THIS TEMPLATE RETYPED IT FROM THE PREVIOUS BRIEF** — inventing a
+`GitBridge.ServerTest` entry that is not in the file (measured: 0 occurrences)
+and omitting THREE that are. The builder caught it.
+⇒ ⭐ **THE RULE WAS CORRECT AND WAS NOT EXECUTED, WHICH MAKES IT A REMEMBERED
+RULE. SO IT IS NOW A COMMAND WITH A CHECK.**
+⛔ **AND THE HARM IS THE INVERSE OF THE OBVIOUS ONE: an INVENTED entry tells a
+round "not yours" about a failure that WOULD have been theirs.** *An omission
+makes a round claim a defect that was never its own; an invention makes it
+disown one that is.*
 
 ⭐⭐ **IF THE ROUND ADDS TESTS, THE ARRANGEMENT CAVEAT IS MANDATORY:** *adding
 tests changes the population, which changes the ordering, so an arrangement-

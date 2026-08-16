@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+#
+# cp-brief-known-reds — print the authoritative known-reds block for a brief.
+#
+# WHY THIS EXISTS (2026-08-16)
+#
+# BRIEF-TEMPLATE.md said, in bold: "PASTE THE KNOWN-REDS BLOCK FROM
+# /home/jes/boss-clod/KNOWN-REDS.md. DO NOT RETYPE IT FROM MEMORY OR FROM THE
+# PREVIOUS BRIEF."
+#
+# The FIRST brief written from that template retyped it from the previous
+# brief. It invented a GitBridge.ServerTest entry that is not in the file
+# (measured: 0 occurrences) and dropped the canary trigger that is.
+#
+# The builder caught it. Had it not, the brief would have told a round
+# "not yours" about a failure that WOULD have been theirs -- which is the
+# precise harm KNOWN-REDS.md exists to prevent.
+#
+# The rule was correct and I did not execute it. A rule you must remember to
+# follow is a remembered rule. So this is a command.
+#
+# USAGE
+#   bin/cp-brief-known-reds            # print the block
+#   bin/cp-brief-known-reds --check FILE   # does FILE's block match the source?
+set -uo pipefail
+SRC=/home/jes/boss-clod/KNOWN-REDS.md
+
+[[ -r "$SRC" ]] || { echo "cp-brief-known-reds: cannot read $SRC" >&2; exit 1; }
+
+# The block is delimited by the paste markers boss maintains.
+block() {
+  awk '/▼▼ THE BLOCK/{f=1; next} /▲▲/{f=0} f' "$SRC"
+}
+
+OUT="$(block)"
+[[ -n "$OUT" ]] || { echo "cp-brief-known-reds: block markers not found in $SRC -- READ IT BY HAND, do not guess" >&2; exit 2; }
+
+if [[ "${1:-}" == "--check" ]]; then
+  FILE="${2:?usage: cp-brief-known-reds --check FILE}"
+  # ⛔ SCOPE: compare the brief's PASTED BLOCK, never the whole file. The first
+  # version of this check grepped the entire brief and flagged a test name that
+  # appeared only in PROSE explaining the defect -- the same prose-counting trap
+  # this repo has hit five times in one day. A gate that fires on correct state
+  # is worse than no gate.
+  FILEBLOCK="$(awk '/^KNOWN REDS ON main/{f=1} f' "$FILE")"
+  if [[ -z "$FILEBLOCK" ]]; then
+    echo "  NO KNOWN-REDS BLOCK FOUND in $FILE (expected a line starting 'KNOWN REDS ON main')"
+    exit 3
+  fi
+  miss=0
+  # Every test name named in the source block must appear in FILE.
+  while read -r t; do
+    printf '%s\n' "$FILEBLOCK" | grep -qF "$t" || { echo "  MISSING from $FILE block: $t"; miss=1; }
+  done < <(printf '%s\n' "$OUT" | grep -oE '[A-Z][A-Za-z]*\.[A-Za-z]+Test' | sort -u)
+  # And FILE must not name a *Test that the source block does not.
+  while read -r t; do
+    printf '%s\n' "$OUT" | grep -qF "$t" || { echo "  INVENTED in $FILE (not in KNOWN-REDS.md): $t"; miss=1; }
+  done < <(printf '%s\n' "$FILEBLOCK" | grep -oE '[A-Z][A-Za-z]*\.[A-Za-z]+Test' | sort -u)
+  [[ $miss -eq 0 ]] && echo "  known-reds block matches the source" || exit 3
+  exit 0
+fi
+
+printf '%s\n' "$OUT"
