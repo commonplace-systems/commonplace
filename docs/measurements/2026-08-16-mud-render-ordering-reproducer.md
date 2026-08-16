@@ -1,6 +1,7 @@
 # A reproducer for the MUD render defect — ARRANGEMENT, not count, not code
 
-**Date:** 2026-08-16 · **Status:** the MECHANISM IS UNMEASURED. Only the TRIGGER
+**Date:** 2026-08-16 · **Status:** the MECHANISM IS UNMEASURED, and the ONE named
+closing condition is now SPENT (lead ⑧, both arms). Only the TRIGGER
 is characterised.
 
 ## The observation
@@ -106,8 +107,65 @@ would each have bought a round.**
 | `local node self-trust was not added: … artifact is absent` | **~1380 occurrences in every run.** A complete, observed causal chain that is present when everything passes. |
 | The `look` verb's own fallback reason | Same classes in both arms (`:compile, :not_found` · `:compile_error` · `:execution_denied`), including a stable uuid `100ca11b-…` identical in each. |
 
+| **⑧ The `:look` denial's contributor is outside the trusted set** | **MEASURED, both arms, verdict lines present. RED 117514: 11 lookdeny, 2 `name=:look`. GREEN 424242: 11 lookdeny, 2 `name=:look`. IDENTICAL.** ⇒ the denial is fixture background. |
+
 ⭐ **Every one died to the same habit: CHECK THE GREEN RUN BEFORE BELIEVING THE
-RED ONE.** *One sentence; today it was worth seven rounds.*
+RED ONE.** *One sentence; today it was worth eight rounds.*
+
+### ⛔⛔ LEAD ⑧ CLOSED THE AUTHORISED ROUND — AND ITS ANSWER WAS "NEITHER"
+
+**The within-run observation below was RUN.** At the `EngineModule :look` fallback,
+logging that run's own trusted set beside the denied signer produced:
+
+```
+CX_LOOKDENY name=:look reason={:untrusted_signer, "b0b22222-…"} trusted_set=["eea11111-…"]
+```
+
+⇒ **The signer is NOT in the trusted set — but the same is true, at the same
+count, in a run with ZERO failures.** ⭐⭐ ***A field that differs from
+expectation in the red arm is not evidence until you have looked at the green
+arm.*** ⇒ **Both pre-declared branches assumed the denial belonged to the defect.
+It does not. The mechanism remains UNMEASURED.**
+
+### ⛔⛔⛔ AND THE ROUND'S MOST EXPENSIVE FINDING IS ABOUT INSTRUMENTS, NOT MUD
+
+**Reaching that one valid comparison took FOUR broken instruments, each of which
+reported a confident, well-formed answer:**
+
+```
+1. green run DIED AT BOOT (`port 4002 in use`, prior VM still releasing it).
+   541-byte file. `grep -c name=:look` → 0.
+2. wait loop had NO liveness arm — could conclude "finished", never "died".
+   It polled a corpse for 20 minutes.
+3. added an `eaddrinuse` control. It PASSED while the run died another way.
+4. `setsid nohup … &` makes `$!` the WRAPPER, which exits instantly.
+   The liveness check reported PROCESS GONE on a perfectly healthy run.
+5. a stall detector (two `stat`s, 25s apart, equal) fired on a QUIET GAP
+   between tests — "slow" and "dead" are the same observation.
+```
+
+⇒ ⭐⭐⭐ ***A DEAD RUN'S ZERO AND A REAL ZERO ARE THE SAME BYTE.*** **Step 1's
+zero was, verbatim, the branch pre-declared as *"the look denial IS the defect's
+signature — the hunt closes on a real, named site."*** ⛔ **The hunt would have
+closed on a run that never executed a test.**
+
+⚠️⚠️ **AND THE SUBTLE HALF: PRE-REGISTRATION WAS NEARLY THE VECTOR.** *A
+pre-declared branch names a specific expected observation and ratifies its
+meaning IN ADVANCE — so a broken instrument that happens to emit that observation
+is MORE dangerous, because the interpretation is already agreed and nobody
+re-examines it.* ⇒ ***Pre-registration defends against choosing an interpretation
+LATE. It does not defend against a FAKE MEASUREMENT ARRIVING ON TIME.***
+
+⇒ ⭐⭐ **THE REQUIRED SHAPE FOR ANY SUITE MEASUREMENT IN THIS DOCUMENT:**
+```
+① the VERDICT LINE ("N tests, M failures") must be PRESENT — its absence
+   VOIDS every count derived from that file. Never infer completion.
+② a CORPUS CONTROL — prove the instrument fired at all in THAT run.
+③ liveness by the REAL pid (setsid's child), never the wrapper's `$!`.
+⛔ A poll that can only detect success is a false-green generator with a timer.
+```
+*What saved this round was not vigilance: the verdict line never appeared, so the
+loop HUNG instead of LYING.*
 
 ### ⛔ And two traps specific to this defect
 
@@ -123,17 +181,16 @@ from every grep for two hours; extracting it ended the hunt in one read.
 have made.*** *Every control run on the commit-id comparison was correct — about
 a meaningless difference.*
 
-## ⭐ What would close this
+## ⛔ What would close this — THE OBVIOUS ROUND IS SPENT
 
-**ONE within-run observation: at the `EngineModule :look` fallback, log THAT
-RUN'S OWN trusted set beside THAT doc's contributor.**
-```
-contributor IS in the trusted set  ⇒ the TRUST DECISION is wrong — a defect with a site
-contributor is NOT in it           ⇒ the verb was authored by an untrusted principal,
-                                     and the question becomes WHICH SETUP PRODUCED THAT
-```
-✅ **This is cheap: the defect REPRODUCES UNDER `--trace` (3540 tests, 2 failures),
-so instrumentation does not suppress it.**
+⚠️ **The within-run trusted-set observation WAS the named closing condition. It
+was run, both arms, and it came back NEITHER (lead ⑧).** ⇒ ***Do not re-propose
+it; it is measured, and the measurement is in this document.***
+
+⇒ **The next round needs a NEW FACT, and a new fact is a MEASUREMENT, NOT AN
+IDEA.** ⭐ **The unexamined surface is what makes a room's description READABLE at
+render time — the denial path is now excluded by control, so the question is no
+longer "who was refused" but "what did the renderer actually read".**
 
 ## ⛔ Why the seed must NOT simply be changed
 
