@@ -196,8 +196,14 @@ defmodule Commonplace.Trust.AuditDualMechanismTest do
     unthreaded_uuid = UUID.uuid4()
     absent_uuid = UUID.uuid4()
 
+    assert AuditLog.attached?(),
+           "precondition: the audit handler exists before the unthreaded denial"
+
     assert {:error, {:trust_rejected, :unsigned}} =
              CommitStore.create_commit(s, unthreaded_uuid, text_update("unthreaded"), nil)
+
+    assert AuditLog.attached?(),
+           "precondition: the audit handler still exists before the explicitly absent denial"
 
     assert {:error, {:trust_rejected, :unsigned}} =
              CommitStore.create_commit(s, absent_uuid, text_update("explicitly absent"), nil, %{},
@@ -270,9 +276,13 @@ defmodule Commonplace.Trust.AuditDualMechanismTest do
   # as "deliberately do not sign"). The audit write is then refused by
   # the very gate whose denial it is trying to record.
   test "RED CONTROL: reintroducing unsigned audit writes kills the check", %{store: s, n: n} do
-    dispatcher = start_dispatcher!(s, n, signing_context_fn: fn -> {:ok, :unsigned} end)
+    unsigned_signing_context_fn = fn -> {:ok, :unsigned} end
+    dispatcher = start_dispatcher!(s, n, signing_context_fn: unsigned_signing_context_fn)
     AuditLog.attach(s, dispatcher: dispatcher)
     strict_enforce!()
+
+    assert AuditLog.attached?() and unsigned_signing_context_fn.() == {:ok, :unsigned},
+           "precondition: the audit handler exists and its persistence is explicitly unsigned"
 
     assert {:error, why} = acceptance_check(s, dispatcher)
 
@@ -301,9 +311,14 @@ defmodule Commonplace.Trust.AuditDualMechanismTest do
   # a write that will be refused is not an audit trail.
   test "RED CONTROL: no node signing context => counted failure, never a silent unsigned write",
        %{store: s, n: n} do
-    dispatcher = start_dispatcher!(s, n, signing_context_fn: fn -> {:error, :no_node_key} end)
+    missing_signing_context_fn = fn -> {:error, :no_node_key} end
+    dispatcher = start_dispatcher!(s, n, signing_context_fn: missing_signing_context_fn)
     AuditLog.attach(s, dispatcher: dispatcher)
     strict_enforce!()
+
+    assert AuditLog.attached?() and
+             match?({:error, :no_node_key}, missing_signing_context_fn.()),
+           "precondition: the audit handler exists and its signing context is unavailable"
 
     assert {:error, _} = acceptance_check(s, dispatcher)
 
@@ -327,6 +342,9 @@ defmodule Commonplace.Trust.AuditDualMechanismTest do
     # `:id_mismatch` (an exempt, non-trust deny site) and this test would
     # be measuring the wrong refusal entirely.
     commit = Commit.new(uuid, text_update("from a peer"), nil)
+
+    assert :ok = Commit.verify_id(commit),
+           "precondition: the imported commit exists with a valid content id"
 
     # LAYER 1: Gate A always verifies, regardless of the local knob.
     assert {:error, {:trust_rejected, _}} = CommitStore.import_commit(s, commit)
@@ -411,6 +429,9 @@ defmodule Commonplace.Trust.AuditDualMechanismTest do
     marker = "TOPSECRET-#{:rand.uniform(1_000_000_000)}"
     update = text_update(marker)
     uuid = UUID.uuid4()
+
+    assert AuditLog.attached?(),
+           "precondition: the audit handler exists before the payload-bearing denial"
 
     assert {:error, {:trust_rejected, :unsigned}} =
              CommitStore.create_commit(s, uuid, update, nil)
@@ -508,6 +529,9 @@ defmodule Commonplace.Trust.AuditDualMechanismTest do
     _ = dir
 
     strict_enforce!()
+
+    assert AuditLog.attached?(),
+           "precondition: the default application audit handler exists before the denial"
 
     assert {:error, {:trust_rejected, _}} =
              Commonplace.Store.CommitStoreClient.create_chained_commit(

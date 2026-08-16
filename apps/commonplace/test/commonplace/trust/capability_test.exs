@@ -13,7 +13,7 @@ defmodule Commonplace.Trust.CapabilityTest do
   use ExUnit.Case, async: true
 
   alias Commonplace.Crypto.{Signing, SigningContext}
-  alias Commonplace.Trust.Capability
+  alias Commonplace.Trust.{Capability, CodeDocHeuristic}
 
   setup do
     {ipub, ipriv} = Signing.generate_keypair()
@@ -48,6 +48,10 @@ defmodule Commonplace.Trust.CapabilityTest do
     test "verify_id rejects a tampered claim", ctx do
       cap = Capability.new(ctx.issuer, ctx.audience, ctx.claim, nil)
       tampered = %{cap | claim: put_in(cap.claim.verbs, [:write, :delegate, :execute])}
+
+      assert :ok = Capability.verify_id(cap),
+             "precondition: the untampered capability exists and verifies"
+
       assert {:error, {:id_mismatch, _, _}} = Capability.verify_id(tampered)
     end
 
@@ -55,6 +59,10 @@ defmodule Commonplace.Trust.CapabilityTest do
       cap = Capability.new(ctx.issuer, ctx.audience, ctx.claim, nil)
       {other, _} = Signing.generate_keypair()
       tampered = %{cap | audience: {"alice-id", other}}
+
+      assert :ok = Capability.verify_id(cap),
+             "precondition: the capability exists and verifies before its audience is swapped"
+
       assert {:error, {:id_mismatch, _, _}} = Capability.verify_id(tampered)
     end
   end
@@ -83,6 +91,10 @@ defmodule Commonplace.Trust.CapabilityTest do
     test "a different proof changes the CID", ctx do
       c1 = Capability.new(ctx.issuer, ctx.audience, ctx.claim, nil)
       c2 = Capability.new(ctx.issuer, ctx.audience, ctx.claim, <<1, 2, 3>>)
+
+      assert Capability.verify_id(c1) == :ok and Capability.verify_id(c2) == :ok,
+             "precondition: both independently minted capabilities exist and verify"
+
       refute c1.id == c2.id
     end
   end
@@ -105,11 +117,19 @@ defmodule Commonplace.Trust.CapabilityTest do
       {_other_pub, other_priv} = Signing.generate_keypair()
       # Signed by the wrong key — issuer still claims ipub, so verify fails.
       signed = Capability.new(ctx.issuer, ctx.audience, ctx.claim, nil) |> Capability.sign(other_priv)
+
+      assert :ok = Capability.verify_id(signed),
+             "precondition: the wrong-key-signed capability exists with a valid content id"
+
       assert {:error, :invalid_signature} = Capability.verify_sig(signed)
     end
 
     test "verify_sig errors on an unsigned cert", ctx do
       cap = Capability.new(ctx.issuer, ctx.audience, ctx.claim, nil)
+
+      assert :ok = Capability.verify_id(cap),
+             "precondition: the unsigned capability exists with a valid content id"
+
       assert {:error, :unsigned} = Capability.verify_sig(cap)
     end
   end
@@ -133,6 +153,7 @@ defmodule Commonplace.Trust.CapabilityTest do
       {alice, alice_ctx} = ident("alice-id")
       {bob, _} = ident("bob-id")
       {:ok, parent} = Capability.issue(ctx.issuer_ctx, alice, ctx.claim, nil)
+
       child_claim = %{verbs: [:write], scope: {:docs, ["doc-a"]}, caveats: %{not_before: nil, not_after: nil}}
 
       assert {:ok, child} =
@@ -146,7 +167,11 @@ defmodule Commonplace.Trust.CapabilityTest do
       {alice, alice_ctx} = ident("alice-id")
       {bob, _} = ident("bob-id")
       {:ok, parent} = Capability.issue(ctx.issuer_ctx, alice, ctx.claim, nil)
+
       wider = %{verbs: [:write, :delegate, :execute], scope: {:docs, ["doc-a"]}, caveats: %{not_before: nil, not_after: nil}}
+
+      assert Capability.verify_id(parent) == :ok and Capability.verify_sig(parent) == :ok,
+             "precondition: the parent capability exists and verifies before wider verbs are delegated"
 
       assert {:error, {:not_attenuation, _}} =
                Capability.issue(alice_ctx, bob, wider, parent.id, parent: parent)
@@ -156,7 +181,11 @@ defmodule Commonplace.Trust.CapabilityTest do
       {alice, alice_ctx} = ident("alice-id")
       {bob, _} = ident("bob-id")
       {:ok, parent} = Capability.issue(ctx.issuer_ctx, alice, ctx.claim, nil)
+
       wider = %{verbs: [:write], scope: {:docs, ["doc-a", "doc-c"]}, caveats: %{not_before: nil, not_after: nil}}
+
+      assert Capability.verify_id(parent) == :ok and Capability.verify_sig(parent) == :ok,
+             "precondition: the parent capability exists and verifies before a wider scope is delegated"
 
       assert {:error, {:not_attenuation, _}} =
                Capability.issue(alice_ctx, bob, wider, parent.id, parent: parent)
@@ -182,6 +211,9 @@ defmodule Commonplace.Trust.CapabilityTest do
     test "refuses write-without-execute scoped to a code doc", ctx do
       c = ctx.code_uuid
       claim = %{verbs: [:write], scope: {:docs, [c]}, caveats: %{not_before: nil, not_after: nil}}
+
+      assert CodeDocHeuristic.code_doc?(c, ctx.store),
+             "precondition: the scoped document exists and is classified as code"
 
       assert {:error, {:write_without_execute_on_code_doc, ^c}} =
                Capability.issue(ctx.issuer_ctx, ctx.audience, claim, nil, store: ctx.store)
@@ -216,6 +248,10 @@ defmodule Commonplace.Trust.CapabilityTest do
       {_child, child_ctx} = ident("delegatee-id")
       narrowed = %{verbs: [:write], scope: {:docs, [ctx.code_uuid]}, caveats: %{not_before: nil, not_after: nil}}
 
+      assert Capability.verify_id(parent) == :ok and Capability.verify_sig(parent) == :ok and
+               CodeDocHeuristic.code_doc?(ctx.code_uuid, ctx.store),
+             "precondition: the parent verifies and its populated scope contains a code document"
+
       assert {:error, {:write_without_execute_on_code_doc, _}} =
                Capability.delegate(child_ctx, ctx.audience, narrowed, parent.id,
                  parent: parent,
@@ -244,6 +280,10 @@ defmodule Commonplace.Trust.CapabilityTest do
       claim_b = %{verbs: [:write], scope: {:presence, "identity-b"}, caveats: %{}}
       c1 = Capability.new(ctx.issuer, ctx.audience, claim_a, nil)
       c2 = Capability.new(ctx.issuer, ctx.audience, claim_b, nil)
+
+      assert Capability.verify_id(c1) == :ok and Capability.verify_id(c2) == :ok,
+             "precondition: both presence-scoped capabilities exist and verify"
+
       refute c1.id == c2.id
     end
 
