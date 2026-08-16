@@ -1,9 +1,19 @@
 defmodule Commonplace.Store.SlaTombstoneTest do
+  @moduledoc """
+  The twelve-arm ceremony rehearsal is copied from this file's earlier
+  `six eviction-anchor acceptance arms differ by authority and chain position`
+  rehearsal and its `store derives every position and public verification
+  refuses evidence seams` proof. The distinct authority fixtures and explicit
+  signing contexts come from the former; the restart-safe, store-owned position
+  checks come from the latter. No downstream copy was found when this rehearsal
+  was written.
+  """
+
   use ExUnit.Case, async: false
 
   alias Commonplace.Crypto.{Signing, SigningContext}
   alias Commonplace.Projection
-  alias Commonplace.Store.{CommitStoreClient, SlaTombstone}
+  alias Commonplace.Store.{Commit, CommitStoreClient, SlaTombstone}
   alias Commonplace.Trust
   alias Commonplace.Trust.{EvictionAnchor, Revocation}
 
@@ -13,12 +23,13 @@ defmodule Commonplace.Store.SlaTombstoneTest do
 
     nonce = System.unique_integer([:positive])
     store = :"sla_tombstone_store_#{nonce}"
+    supervisor = :"sla_tombstone_supervisor_#{nonce}"
 
     start_supervised!(
       Supervisor.child_spec(
         {Commonplace.Store.Supervisor,
          data_dir: data_dir,
-         name: :"sla_tombstone_supervisor_#{nonce}",
+         name: supervisor,
          commit_store_name: store,
          trust_side_store_name: :"sla_tombstone_trust_store_#{nonce}",
          pending_imports_name: :"sla_tombstone_pending_#{nonce}"},
@@ -45,7 +56,13 @@ defmodule Commonplace.Store.SlaTombstoneTest do
 
     on_exit(fn -> restore_trust(prior_trust) end)
 
-    %{store: store, signing_context: signing_context, trust: trust}
+    %{
+      data_dir: data_dir,
+      store: store,
+      supervisor: supervisor,
+      signing_context: signing_context,
+      trust: trust
+    }
   end
 
   test "store derives every position and public verification refuses evidence seams", ctx do
@@ -145,130 +162,309 @@ defmodule Commonplace.Store.SlaTombstoneTest do
     IO.puts("CX_TADF_AFTER_ARM_PAIRS_DIFFER=true")
   end
 
-  test "six eviction-anchor acceptance arms differ by authority and chain position", ctx do
-    anchor_context = fixture_signing_context("fixture-eviction-only", 17)
-    other_context = fixture_signing_context("trusted-writer-not-anchored", 29)
+  test "ceremony rehearsal prints twelve distinct acceptance arms from isolated state", ctx do
+    anchor_context = fixture_signing_context("throwaway-eviction-anchor", 17)
+    untrusted_context = fixture_signing_context("self-named-untrusted", 23)
+    writer_context = fixture_signing_context("ordinary-writer-not-anchor", 29)
+    preactivation_context = fixture_signing_context("preactivation-anchor", 31)
 
     strict = %{
       Trust.default_config()
       | accept_unsigned: false,
         trusted_identities: %{
-          other_context.identity_uuid => Signing.encode_key(other_context.public_key)
-        }
+          writer_context.identity_uuid => Signing.encode_key(writer_context.public_key)
+        },
+        eviction_anchors: []
     }
 
     {:ok, active_trust} =
+      Trust.add_eviction_anchor(strict, anchor_context.identity_uuid, anchor_context.public_key)
+
+    Application.put_env(:commonplace, :trust, active_trust)
+
+    history_a =
+      CommitStoreClient.create_commit(
+        ctx.store,
+        "ceremony-unrelated-history-a",
+        <<1>>,
+        nil,
+        %{},
+        signing_context: writer_context
+      )
+
+    history_b =
+      CommitStoreClient.create_commit(
+        ctx.store,
+        "ceremony-unrelated-history-b",
+        <<2>>,
+        nil,
+        %{},
+        signing_context: writer_context
+      )
+
+    assert history_a.doc_uuid != history_b.doc_uuid
+    assert history_a.parent_id != history_b.parent_id
+    refute history_a.id == history_b.id
+    refute history_a.parent_id == history_b.id
+    refute history_b.parent_id == history_a.id
+
+    assert {:ok, history_a_root} =
+             CommitStoreClient.get_commit(ctx.store, history_a.parent_id)
+
+    assert {:ok, history_b_root} =
+             CommitStoreClient.get_commit(ctx.store, history_b.parent_id)
+
+    assert is_nil(history_a_root.parent_id)
+    assert is_nil(history_b_root.parent_id)
+    refute history_a_root.id == history_b_root.id
+
+    first = tombstone(%{ctx | signing_context: anchor_context}, [history_a.id])
+    second = tombstone(%{ctx | signing_context: anchor_context}, [history_b.id])
+
+    arm1 = CommitStoreClient.store_sla_tombstone(ctx.store, first)
+
+    untrusted = tombstone(%{ctx | signing_context: untrusted_context}, [commit_id(2)])
+    arm2_registration = CommitStoreClient.store_sla_tombstone(ctx.store, untrusted)
+
+    arm2 = %{
+      fixture: :self_named_untrusted,
+      ordinary_write_authorization:
+        Trust.authorized?(
+          signed_commit(untrusted_context, "arm-2-ordinary-write"),
+          :write,
+          {:doc, "arm-2-ordinary-write"},
+          strict
+        ),
+      registration: arm2_registration
+    }
+
+    trusted_writer = tombstone(%{ctx | signing_context: writer_context}, [commit_id(3)])
+    arm3_registration = CommitStoreClient.store_sla_tombstone(ctx.store, trusted_writer)
+
+    arm3 = %{
+      fixture: :trusted_ordinary_writer_not_anchor,
+      ordinary_write_authorization:
+        Trust.authorized?(
+          signed_commit(writer_context, "arm-3-ordinary-write"),
+          :write,
+          {:doc, "arm-3-ordinary-write"},
+          strict
+        ),
+      registration: arm3_registration
+    }
+
+    arm2_3_differ =
+      untrusted_context.identity_uuid != writer_context.identity_uuid and
+        arm2.ordinary_write_authorization != arm3.ordinary_write_authorization
+
+    identical_commit = signed_commit(anchor_context, "arm-4-identical-commit")
+    permissive_before = Trust.default_config()
+
+    {:ok, permissive_after} =
       Trust.add_eviction_anchor(
-        strict,
+        permissive_before,
         anchor_context.identity_uuid,
         anchor_context.public_key
       )
 
-    anchored_tombstone =
-      tombstone(%{ctx | signing_context: anchor_context}, [commit_id(1)])
+    arm4_before =
+      Trust.authorized?(
+        identical_commit,
+        :write,
+        {:doc, identical_commit.doc_uuid},
+        permissive_before
+      )
 
-    # This is the CX-fmzk reproduction: the record names and signs with a
-    # generated keypair of its own. Internal consistency holds; authority does
-    # not. The same signer is deliberately trusted for ordinary commits, which
-    # also proves the two config sets are independent.
-    self_named_tombstone =
-      tombstone(%{ctx | signing_context: other_context}, [commit_id(2)])
+    arm4_after =
+      Trust.authorized?(
+        identical_commit,
+        :write,
+        {:doc, identical_commit.doc_uuid},
+        permissive_after
+      )
 
+    arm4 = %{
+      identical_commit_id: Base.encode16(identical_commit.id),
+      before_anchor_addition: arm4_before,
+      after_anchor_addition: arm4_after
+    }
+
+    absent_trust = %{strict | eviction_anchors: []}
+    Application.put_env(:commonplace, :trust, absent_trust)
+    arm5 = CommitStoreClient.store_sla_tombstone(ctx.store, untrusted)
     Application.put_env(:commonplace, :trust, active_trust)
-    assert :ok = CommitStoreClient.store_sla_tombstone(ctx.store, anchored_tombstone)
 
-    arm1_anchored = SlaTombstone.verify(anchored_tombstone, active_trust, store: ctx.store)
+    assert :ok = CommitStoreClient.store_sla_tombstone(ctx.store, second)
 
-    arm1_other =
-      SlaTombstone.verify(self_named_tombstone, active_trust, store: ctx.store)
+    assert {:ok, first_position} =
+             CommitStoreClient.get_sla_tombstone_position(ctx.store, first.id)
 
-    arm2_self_named = arm1_other
-    arm3_trusted_not_anchored = arm1_other
+    arm6 = {:store_assigned_position, Base.encode16(first_position)}
+
+    assert {:ok, second_position} =
+             CommitStoreClient.get_sla_tombstone_position(ctx.store, second.id)
 
     [anchor_entry] = active_trust.eviction_anchors
     {:ok, anchor} = EvictionAnchor.from_config(anchor_entry)
 
-    assert {:error, :eviction_anchor_already_exists} =
-             Trust.add_eviction_anchor(
-               active_trust,
-               anchor_context.identity_uuid,
-               anchor_context.public_key
-             )
-
     assert {:ok, retirement_position} =
              CommitStoreClient.retire_eviction_anchor(ctx.store, anchor.id)
 
-    assert {:ok, reread_before_retirement} =
-             CommitStoreClient.get_sla_tombstone_for_commit(ctx.store, commit_id(1))
+    old_store_pid = Process.whereis(ctx.store)
+    restart_ref = Process.monitor(old_store_pid)
+    Process.exit(old_store_pid, :kill)
+    assert_receive {:DOWN, ^restart_ref, :process, ^old_store_pid, :killed}
+    _ = :sys.get_state(ctx.supervisor)
+    restarted_store_pid = Process.whereis(ctx.store)
+    assert is_pid(restarted_store_pid)
+    refute restarted_store_pid == old_store_pid
+    _ = :sys.get_state(restarted_store_pid)
 
-    assert reread_before_retirement.id == anchored_tombstone.id
+    arm7 = SlaTombstone.verify(first, active_trust, store: ctx.store)
 
-    arm4_before =
-      SlaTombstone.verify(anchored_tombstone, active_trust, store: ctx.store)
+    after_retirement =
+      tombstone(%{ctx | signing_context: anchor_context}, [commit_id(8)])
 
-    arm4_after =
-      ctx
-      |> Map.put(:signing_context, anchor_context)
-      |> tombstone([commit_id(3)])
-      |> then(&CommitStoreClient.store_sla_tombstone(ctx.store, &1))
+    arm8 = CommitStoreClient.store_sla_tombstone(ctx.store, after_retirement)
+
+    arm9_relation =
+      CommitStoreClient.eviction_authority_position_before?(
+        ctx.store,
+        first_position,
+        second_position
+      )
+
+    arm9 = %{
+      histories: {history_a.doc_uuid, history_b.doc_uuid},
+      parent_ids: {history_a.parent_id, history_b.parent_id},
+      registration_positions: {Base.encode16(first_position), Base.encode16(second_position)},
+      first_before_second: arm9_relation,
+      first_verifies_after_retirement: SlaTombstone.verify(first, active_trust, store: ctx.store),
+      second_verifies_after_retirement:
+        SlaTombstone.verify(second, active_trust, store: ctx.store)
+    }
+
+    preactivation =
+      tombstone(%{ctx | signing_context: preactivation_context}, [commit_id(10)])
+
+    Application.put_env(:commonplace, :trust, strict)
+    arm10_before_activation = CommitStoreClient.store_sla_tombstone(ctx.store, preactivation)
+
+    {:ok, preactivation_trust} =
+      Trust.add_eviction_anchor(
+        strict,
+        preactivation_context.identity_uuid,
+        preactivation_context.public_key
+      )
+
+    Application.put_env(:commonplace, :trust, preactivation_trust)
+
+    arm10_after_anchor_addition =
+      SlaTombstone.verify(preactivation, preactivation_trust, store: ctx.store)
+
+    arm10_production_registration_after_anchor_addition =
+      CommitStoreClient.store_sla_tombstone(ctx.store, preactivation)
+
+    arm10 = %{
+      registration_before_activation: arm10_before_activation,
+      verification_after_anchor_addition: arm10_after_anchor_addition,
+      production_registration_after_anchor_addition:
+        arm10_production_registration_after_anchor_addition
+    }
+
+    Application.put_env(:commonplace, :trust, active_trust)
+
+    isolated_tombstone_reread =
+      case CommitStoreClient.get_sla_tombstone_for_commit(ctx.store, history_a.id) do
+        {:ok, %SlaTombstone{id: id}} -> id == first.id
+        _other -> false
+      end
 
     revocation =
       Revocation.new(anchor.id, anchor_context.public_key)
       |> Revocation.sign(anchor_context.private_key)
 
     :ok = CommitStoreClient.store_revocation(ctx.store, revocation)
-    anchor_identity_uuid = anchor.identity_uuid
 
-    assert {:error, {:invalid_sla_tombstone, {:revoked_eviction_anchor, ^anchor_identity_uuid}}} =
-             CommitStoreClient.get_sla_tombstone_for_commit(ctx.store, commit_id(1))
+    arm11_retirement = arm8
+    arm11_revocation = SlaTombstone.verify(first, active_trust, store: ctx.store)
+    arm11 = %{retirement: arm11_retirement, revocation: arm11_revocation}
 
-    arm5_revoked =
-      SlaTombstone.verify(anchored_tombstone, active_trust, store: ctx.store)
+    isolated_commits_dir = Path.join(ctx.data_dir, "commits")
 
-    arm6_absent =
-      SlaTombstone.verify(anchored_tombstone, Map.delete(active_trust, :eviction_anchors),
-        store: ctx.store
-      )
+    arm12 = %{
+      isolated_data_dir: ctx.data_dir,
+      isolated_commits_dir: isolated_commits_dir,
+      live_commits_dir: "/home/jes/commonplace/workspace/.commonplace/commits",
+      paths_distinct:
+        Path.expand(isolated_commits_dir) !=
+          "/home/jes/commonplace/workspace/.commonplace/commits",
+      first_tombstone_reread_from_isolated_store: isolated_tombstone_reread
+    }
 
-    assert arm1_anchored == :ok
+    assert arm1 == :ok
 
-    assert arm1_other ==
-             {:error, {:untrusted_tombstone_signer, self_named_tombstone.signer_id}}
+    assert arm2_registration ==
+             {:error,
+              {:invalid_sla_tombstone, {:untrusted_tombstone_signer, untrusted.signer_id}}}
 
-    assert arm2_self_named == arm1_other
-    assert arm3_trusted_not_anchored == arm1_other
-    assert Map.has_key?(active_trust.trusted_identities, other_context.identity_uuid)
+    assert arm3.ordinary_write_authorization == :ok
 
-    refute Enum.any?(
-             active_trust.eviction_anchors,
-             &(&1.identity_uuid == other_context.identity_uuid)
-           )
+    assert arm3_registration ==
+             {:error,
+              {:invalid_sla_tombstone, {:untrusted_tombstone_signer, trusted_writer.signer_id}}}
 
+    assert arm2_3_differ
+    assert arm4_before == arm4_after
     assert arm4_before == :ok
+    assert arm5 == {:error, {:invalid_sla_tombstone, :no_eviction_anchor_configured}}
+    assert arm7 == :ok
 
-    assert arm4_after ==
+    assert arm8 ==
              {:error,
               {:invalid_sla_tombstone,
                {:eviction_anchor_already_retired, anchor.id, retirement_position}}}
 
-    assert arm5_revoked == {:error, {:revoked_eviction_anchor, anchor.identity_uuid}}
-    assert arm6_absent == {:error, :no_eviction_anchor_configured}
+    assert arm9_relation == {:ok, true}
+    assert arm9.first_verifies_after_retirement == :ok
+    assert arm9.second_verifies_after_retirement == :ok
 
-    assert arm1_anchored != arm1_other
-    assert arm4_before != arm4_after
-    assert arm4_after != arm5_revoked
-    assert arm5_revoked != arm6_absent
+    assert arm10_before_activation ==
+             {:error, {:invalid_sla_tombstone, :no_eviction_anchor_configured}}
 
-    IO.puts("ARM_1_ANCHORED=#{inspect(arm1_anchored)}")
-    IO.puts("ARM_1_OTHER=#{inspect(arm1_other)}")
-    IO.puts("ARM_2_CX_FMZK_SELF_NAMED=#{inspect(arm2_self_named)}")
-    IO.puts("ARM_3_TRUSTED_NOT_ANCHORED=#{inspect(arm3_trusted_not_anchored)}")
-    IO.puts("ARM_4_BEFORE_RETIREMENT=#{inspect(arm4_before)}")
-    IO.puts("ARM_4_AFTER_RETIREMENT=#{inspect(arm4_after)}")
-    IO.puts("ARM_5_REVOKED=#{inspect(arm5_revoked)}")
-    IO.puts("ARM_6_ABSENT_CONFIG=#{inspect(arm6_absent)}")
-    IO.puts("ARM_PAIRS_DIFFER=true")
-    IO.puts("RETIREMENT_AXIS=EvictionAuthorityLedger.before?/3")
+    assert arm10_after_anchor_addition == {:error, :eviction_anchor_activation_position_required}
+    assert arm10_production_registration_after_anchor_addition == :ok
+    assert arm10_before_activation != arm10_production_registration_after_anchor_addition
+
+    assert arm11_revocation ==
+             {:error, {:revoked_eviction_anchor, anchor_context.identity_uuid}}
+
+    assert arm11_retirement != arm11_revocation
+    assert arm12.paths_distinct
+    assert arm12.first_tombstone_reread_from_isolated_store
+
+    IO.puts("EVICTION_CEREMONY_ARM_1=#{inspect(arm1)}")
+    IO.puts("EVICTION_CEREMONY_ARM_2=#{inspect(arm2)}")
+    IO.puts("EVICTION_CEREMONY_ARM_3=#{inspect(arm3)}")
+    IO.puts("EVICTION_CEREMONY_ARM_4=#{inspect(arm4)}")
+    IO.puts("EVICTION_CEREMONY_ARM_5=#{inspect(arm5)}")
+    IO.puts("EVICTION_CEREMONY_ARM_6=#{inspect(arm6)}")
+    IO.puts("EVICTION_CEREMONY_ARM_7=#{inspect(arm7)}")
+    IO.puts("EVICTION_CEREMONY_ARM_8=#{inspect(arm8)}")
+    IO.puts("EVICTION_CEREMONY_ARM_9=#{inspect(arm9)}")
+    IO.puts("EVICTION_CEREMONY_ARM_10=#{inspect(arm10)}")
+    IO.puts("EVICTION_CEREMONY_ARM_11=#{inspect(arm11)}")
+    IO.puts("EVICTION_CEREMONY_ARM_12=#{inspect(arm12)}")
+    IO.puts("EVICTION_CEREMONY_PAIR_2_3_DIFFER=#{inspect(arm2_3_differ)}")
+    IO.puts("EVICTION_CEREMONY_PAIR_4_AUTHORIZATION_SAME=#{inspect(arm4_before == arm4_after)}")
+
+    IO.puts(
+      "EVICTION_CEREMONY_PAIR_10_PRE_POST_DIFFER=#{inspect(arm10_before_activation != arm10_production_registration_after_anchor_addition)}"
+    )
+
+    IO.puts(
+      "EVICTION_CEREMONY_PAIR_11_RETIREMENT_REVOCATION_DIFFER=#{inspect(arm11_retirement != arm11_revocation)}"
+    )
   end
 
   test "writer constructs a signed receipt that verifies and tampering fails", ctx do
@@ -327,6 +523,15 @@ defmodule Commonplace.Store.SlaTombstoneTest do
   end
 
   defp commit_id(byte), do: :binary.copy(<<byte>>, 32)
+
+  defp signed_commit(signing_context, doc_uuid) do
+    signer_id =
+      Signing.signer_id(signing_context.identity_uuid, signing_context.public_key)
+
+    doc_uuid
+    |> Commit.new("ceremony-write", nil)
+    |> Signing.sign_commit(signing_context.private_key, signer_id)
+  end
 
   defp fixture_signing_context(identity_uuid, seed_byte) do
     {public_key, private_key} =
