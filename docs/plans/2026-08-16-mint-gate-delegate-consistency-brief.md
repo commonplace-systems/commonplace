@@ -108,9 +108,17 @@ finding.**
 baseline WITH ITS STATE STAMP — the stamp is part of the number:**
 ```
   5 doctests, 3528 tests, 0 failures, 12 excluded, 1 skipped  (seed 117514, rc=0)
-  sha:        7f7d6c53 (clean)   test state: DIRTY — tmp/test_data/root present
-  deps:       repo deps/                       cwd: /home/jes/commonplace/apps/commonplace
+  sha:        b3c4aae9 (clean vs HEAD)
+  test state: DIRTY — tmp/test_data/root present (written 2026-04-27)
+  deps:       repo deps/   cwd: /home/jes/commonplace/apps/commonplace
 ```
+⚠️⚠️ **READ THAT STAMP'S OWN LIE BEFORE YOU TRUST IT: it says `clean vs HEAD`,
+and the tree was NOT clean — the 7 new tests were in an UNTRACKED file, which
+`cp-suite-baseline` cannot see (`--untracked-files=no`). The same content is
+TRACKED as of `403727f6`, so `3528` is the correct expectation for your base.**
+⇒ ⭐ **This is pasted verbatim rather than hand-edited to match your base,
+because a stamp that was retyped is not a measurement.**
+
 ⚠️ **A run in a DIFFERENT state may legitimately differ — that is a scope
 difference to investigate, NOT the round being wrong.** ⭐ *A suite total without
 its state stamp is not a baseline.*
