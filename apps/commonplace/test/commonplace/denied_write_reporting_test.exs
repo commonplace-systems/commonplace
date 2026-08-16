@@ -144,12 +144,26 @@ defmodule Commonplace.DeniedWriteReportingTest do
     tracker = start_supervised!({Agent, fn -> %{count: 0, doc_uuids: []} end})
     handler_id = "deny-parent-link-#{System.unique_integer([:positive])}"
 
+    # CX-7rjn: [:commonplace, :commit_store, :write_cpu] is a VM-WIDE stream, and a
+    # VM-WIDE TELEMETRY STREAM IS NOT A PER-OPERATION COUNTER. The trust audit log
+    # writes into it too -- measured: a signed write to
+    # uuid5(:url, "urn:commonplace:trust-audit-log") interleaved among this test's
+    # unsigned issue writes, shifting every ordinal after it. The audit log writes
+    # BECAUSE trust events are happening, and this test's subject is causing trust
+    # events, so the interference is CAUSAL rather than incidental and will recur.
+    #
+    # Telemetry handlers execute in the EMITTING process, so filtering on the test's
+    # own pid counts exactly the writes this operation makes on the caller side.
+    # This is a principled filter, not a denylist of one known intruder: any future
+    # out-of-band writer is excluded by construction rather than by enumeration.
+    writer_pid = self()
+
     :ok =
       :telemetry.attach(
         handler_id,
         [:commonplace, :commit_store, :write_cpu],
         fn _event, _measurements, metadata, agent ->
-          if metadata.site == :caller do
+          if metadata.site == :caller and self() == writer_pid do
             count =
               Agent.get_and_update(agent, fn state ->
                 next = state.count + 1
