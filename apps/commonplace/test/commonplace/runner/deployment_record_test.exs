@@ -303,6 +303,7 @@ defmodule Commonplace.Runner.DeploymentRecordTest do
         sandbox_profile: String.duplicate("b", 64),
         tools_hash: String.duplicate("c", 64)
       },
+      signer_id: Signing.signer_id("fixture-worker", elem(Signing.generate_keypair(), 0)),
       started_at: "2026-08-15T12:00:00Z",
       yields: []
     }

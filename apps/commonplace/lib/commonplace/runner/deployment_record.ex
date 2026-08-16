@@ -20,7 +20,7 @@ defmodule Commonplace.Runner.DeploymentRecord do
   store directly. A supplied tombstone is always verified.
   """
 
-  alias Commonplace.Crypto.SigningContext
+  alias Commonplace.Crypto.{Signing, SigningContext}
   alias Commonplace.Dataflow.RedLog
   alias Commonplace.Document.{ContentType, DocRef}
   alias Commonplace.Projection
@@ -35,7 +35,7 @@ defmodule Commonplace.Runner.DeploymentRecord do
   @record_fields ~w(
     ask_ref budget capability_proofs cell_manifest_ref class_ref context_inputs
     decision_refs deployment_id ended_at finding_refs identity_ref outputs
-    runtime_profile started_at yields
+    runtime_profile signer_id started_at yields
   )
 
   @single_ref_fields ~w(ask_ref cell_manifest_ref class_ref identity_ref)
@@ -84,6 +84,40 @@ defmodule Commonplace.Runner.DeploymentRecord do
   def read(log_uuid, store \\ CommitStoreClient) when is_binary(log_uuid) do
     {:ok, log_uuid |> RedLog.load(store) |> RedLog.read()}
   end
+
+  @doc """
+  Resolve a signed ephemeral principal to the durable identity named by its
+  deployment record.
+
+  A nonempty deployment log without a matching record is the named
+  `:ephemeral_principal_deployment_not_found` refusal. It is intentionally
+  distinct from `:deployment_record_lookup_empty`, so an unattributable signer
+  cannot look like a lookup that returned no records at all.
+  """
+  @spec resolve_signer(Commit.t(), String.t(), GenServer.server()) ::
+          {:ok, String.t()} | {:error, term()}
+  def resolve_signer(%Commit{signature: signature}, _log_uuid, _store)
+      when not is_binary(signature) or byte_size(signature) == 0 do
+    {:error, :ephemeral_principal_has_no_signed_commit}
+  end
+
+  def resolve_signer(%Commit{signer_id: signer_id}, log_uuid, store)
+      when is_binary(signer_id) and signer_id != "" and is_binary(log_uuid) do
+    with {:ok, records} <- read(log_uuid, store) do
+      case records do
+        [] ->
+          {:error, :deployment_record_lookup_empty}
+
+        records ->
+          resolve_from_records(records, signer_id)
+      end
+    end
+  end
+
+  def resolve_signer(%Commit{}, _log_uuid, _store),
+    do: {:error, :invalid_ephemeral_principal}
+
+  def resolve_signer(_commit, _log_uuid, _store), do: {:error, :signed_commit_required}
 
   @doc "Write a promoted durable artifact and return a commit-pinned reference."
   @spec promote(atom(), String.t(), map(), String.t(), keyword()) ::
@@ -236,6 +270,7 @@ defmodule Commonplace.Runner.DeploymentRecord do
          :ok <- validate_runtime_profile(record["runtime_profile"]),
          :ok <- validate_budget(record["budget"]),
          :ok <- validate_capability_proofs(record["capability_proofs"]),
+         :ok <- validate_signer_id(record["signer_id"]),
          :ok <- validate_ref_fields(record) do
       {:ok, record}
     else
@@ -312,6 +347,15 @@ defmodule Commonplace.Runner.DeploymentRecord do
 
   defp validate_capability_proofs(_proofs), do: {:error, :invalid_capability_proofs}
 
+  defp validate_signer_id(signer_id) when is_binary(signer_id) and signer_id != "" do
+    case Signing.parse_signer_id(signer_id) do
+      {:ok, identity_uuid, fingerprint} when identity_uuid != "" and fingerprint != "" -> :ok
+      _ -> {:error, :invalid_ephemeral_principal}
+    end
+  end
+
+  defp validate_signer_id(_signer_id), do: {:error, :invalid_ephemeral_principal}
+
   defp validate_timestamp(timestamp) when is_binary(timestamp) do
     case DateTime.from_iso8601(timestamp) do
       {:ok, _datetime, 0} -> :ok
@@ -340,6 +384,20 @@ defmodule Commonplace.Runner.DeploymentRecord do
     if after_records == before ++ [record],
       do: :ok,
       else: {:error, :deployment_record_reread_mismatch}
+  end
+
+  defp resolve_from_records(records, signer_id) do
+    case Enum.find(records, &(&1["signer_id"] == signer_id)) do
+      nil ->
+        {:error, :ephemeral_principal_deployment_not_found}
+
+      record ->
+        with {:ok, %DocRef{uuid: durable_identity}} <- DocRef.parse(record["identity_ref"]) do
+          {:ok, durable_identity}
+        else
+          _ -> {:error, :invalid_deployment_identity_ref}
+        end
+    end
   end
 
   defp create_promotion(uuid, body, store, signing_context) do
