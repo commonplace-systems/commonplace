@@ -16,7 +16,8 @@ defmodule Commonplace.Identity.ClassRatificationTest do
   alias Commonplace.Identity.{ClassRatification, SpawnCeremony}
   alias Commonplace.Store.{Commit, CommitStoreClient, SecretStore}
   alias Commonplace.Tree.{DocBuilder, Schema}
-  alias Commonplace.Trust.Capability
+  alias Commonplace.Trust
+  alias Commonplace.Trust.{Capability, VerifyChain}
   alias Commonplace.WriterHand
   alias Yelixer.{Doc, Encoding}
 
@@ -134,6 +135,7 @@ defmodule Commonplace.Identity.ClassRatificationTest do
     assert {:ok, active} = spawn_outcome
     assert active.status == :active
     assert {:ok, class} = ClassRatification.class_for_identity(active.child_uuid, ctx.store)
+    assert_write_gate_arms(active, ctx.allowed_ref.uuid, ctx.steward, ctx.store)
 
     observed = %{
       class_sla: class["sla"],
@@ -278,6 +280,58 @@ defmodule Commonplace.Identity.ClassRatificationTest do
     }
   end
 
+  defp assert_write_gate_arms(active, target_uuid, anchor, store) do
+    [cert_cid] = Enum.map(active.capability_proofs, &decode_cid/1)
+
+    assert {:ok, cert} = CommitStoreClient.get_capability(store, cert_cid)
+    child_uuid = active.child_uuid
+    assert {^child_uuid, child_public_key} = cert.audience
+
+    assert {:ok, %{verbs: verbs, scope: {:docs, scope}}} =
+             VerifyChain.verify_chain(cert_cid, MapSet.new([anchor.public_key]), store)
+
+    assert :write in verbs
+    assert target_uuid in scope
+    assert {:ok, _target_doc} = DocBuilder.reconstruct_doc(store, target_uuid)
+
+    cfg = %{
+      accept_unsigned: false,
+      trusted_identities: %{
+        anchor.identity_uuid => Signing.encode_key(anchor.public_key)
+      }
+    }
+
+    assert Trust.writer_authorized?(
+             child_uuid,
+             child_public_key,
+             [cert_cid],
+             target_uuid,
+             cfg,
+             store
+           )
+
+    ungranted = signing_context("ungranted-class-principal")
+    assert ungranted.identity_uuid != child_uuid
+    assert ungranted.public_key != child_public_key
+    assert {:ok, ^cert} = CommitStoreClient.get_capability(store, cert_cid)
+
+    assert {:ok, %{verbs: refusal_verbs, scope: {:docs, refusal_scope}}} =
+             VerifyChain.verify_chain(cert_cid, MapSet.new([anchor.public_key]), store)
+
+    assert :write in refusal_verbs
+    assert target_uuid in refusal_scope
+    assert {:ok, _target_doc} = DocBuilder.reconstruct_doc(store, target_uuid)
+
+    refute Trust.writer_authorized?(
+             ungranted.identity_uuid,
+             ungranted.public_key,
+             [cert_cid],
+             target_uuid,
+             cfg,
+             store
+           )
+  end
+
   defp create_record(store, signer, name, contents) do
     uuid = UUID.uuid4()
     body = contents |> Map.put("zone", uuid) |> Jason.encode!()
@@ -296,5 +350,10 @@ defmodule Commonplace.Identity.ClassRatificationTest do
              )
 
     DocRef.new(uuid, path: "fixture/#{name}")
+  end
+
+  defp decode_cid(hex) do
+    {:ok, cid} = Base.decode16(hex, case: :mixed)
+    cid
   end
 end

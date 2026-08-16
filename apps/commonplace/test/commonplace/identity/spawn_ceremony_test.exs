@@ -14,7 +14,8 @@ defmodule Commonplace.Identity.SpawnCeremonyTest do
   alias Commonplace.Identity.{ClassRatification, Root, SpawnCeremony}
   alias Commonplace.Store.{Commit, CommitStoreClient, SecretStore}
   alias Commonplace.Tree.{DocBuilder, Schema}
-  alias Commonplace.Trust.Capability
+  alias Commonplace.Trust
+  alias Commonplace.Trust.{Capability, VerifyChain}
   alias Commonplace.WriterHand
   alias Yelixer.{Doc, Encoding}
 
@@ -235,6 +236,8 @@ defmodule Commonplace.Identity.SpawnCeremonyTest do
              |> decode_cid()
              |> then(&CommitStoreClient.get_capability(ctx.store, &1))
 
+    assert_write_gate_arms(first, ctx.allowed_ref.uuid, ctx.parent, ctx.store)
+
     IO.puts("IDEMPOTENT_FIRST_ID=#{first.child_uuid}")
     IO.puts("IDEMPOTENT_RETRY_ID=#{retry.child_uuid}")
     IO.puts("IDEMPOTENT_AFTER_RESTART_ID=#{after_restart.child_uuid}")
@@ -377,6 +380,58 @@ defmodule Commonplace.Identity.SpawnCeremonyTest do
       public_key: public_key,
       private_key: private_key
     }
+  end
+
+  defp assert_write_gate_arms(active, target_uuid, anchor, store) do
+    [cert_cid] = Enum.map(active.capability_proofs, &decode_cid/1)
+
+    assert {:ok, cert} = CommitStoreClient.get_capability(store, cert_cid)
+    child_uuid = active.child_uuid
+    assert {^child_uuid, child_public_key} = cert.audience
+
+    assert {:ok, %{verbs: verbs, scope: {:docs, scope}}} =
+             VerifyChain.verify_chain(cert_cid, MapSet.new([anchor.public_key]), store)
+
+    assert :write in verbs
+    assert target_uuid in scope
+    assert {:ok, _target_doc} = DocBuilder.reconstruct_doc(store, target_uuid)
+
+    cfg = %{
+      accept_unsigned: false,
+      trusted_identities: %{
+        anchor.identity_uuid => Signing.encode_key(anchor.public_key)
+      }
+    }
+
+    assert Trust.writer_authorized?(
+             child_uuid,
+             child_public_key,
+             [cert_cid],
+             target_uuid,
+             cfg,
+             store
+           )
+
+    ungranted = signing_context("ungranted-spawn-principal")
+    assert ungranted.identity_uuid != child_uuid
+    assert ungranted.public_key != child_public_key
+    assert {:ok, ^cert} = CommitStoreClient.get_capability(store, cert_cid)
+
+    assert {:ok, %{verbs: refusal_verbs, scope: {:docs, refusal_scope}}} =
+             VerifyChain.verify_chain(cert_cid, MapSet.new([anchor.public_key]), store)
+
+    assert :write in refusal_verbs
+    assert target_uuid in refusal_scope
+    assert {:ok, _target_doc} = DocBuilder.reconstruct_doc(store, target_uuid)
+
+    refute Trust.writer_authorized?(
+             ungranted.identity_uuid,
+             ungranted.public_key,
+             [cert_cid],
+             target_uuid,
+             cfg,
+             store
+           )
   end
 
   defp create_record(store, signer, name, contents) do
