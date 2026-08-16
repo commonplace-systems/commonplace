@@ -171,6 +171,19 @@ defmodule Commonplace.DeniedWriteReportingTest do
     assert landed_count == 4
     assert is_binary(dir_uuid)
     {:ok, dir_schema} = Schemas.load_dir_schema(dir_uuid, ctx.store)
+
+    # CX-7rjn: `dir_uuid` is selected BY POSITION (`Enum.at(landed_docs, 3)`) from a
+    # write sequence whose length is NONDETERMINISTIC -- observed as both 4 and 5 on
+    # an unmodified tree. The `is_binary/1` check above is shape, not identity: any
+    # uuid satisfies it. So a shifted sequence silently selects the WRONG document.
+    # This assertion makes that case fail HERE, naming what was selected, instead of
+    # surfacing as a bare MatchError on the next line.
+    assert match?({:ok, _}, Schema.get_entry(dir_schema, Schemas.issue_filename())),
+           "CX-7rjn: ordinal selection picked a document with no #{Schemas.issue_filename()} " <>
+             "entry, so it is not this issue's directory. landed_count=#{landed_count}, " <>
+             "dir_uuid=#{inspect(dir_uuid)}. The write-sequence length is nondeterministic, " <>
+             "so Enum.at(landed_docs, 3) does not reliably identify the directory doc."
+
     {:ok, issue_entry} = Schema.get_entry(dir_schema, Schemas.issue_filename())
     issue_doc_uuid = issue_entry.node_id
 
