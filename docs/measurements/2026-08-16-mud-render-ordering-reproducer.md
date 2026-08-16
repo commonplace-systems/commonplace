@@ -92,10 +92,10 @@ count hypothesis survives and is wrong.**
 - **That the two tests share a root cause beyond the symptom.** One symptom, two
   tests: corroboration, not a proven shared mechanism.
 
-## ⛔⛔ SEVEN DEAD LEADS — each killed by a control, each worth a round
+## ⛔⛔ EIGHT DEAD LEADS — each killed by a control, each worth a round
 
-**Read this before investigating. Five of the seven were topically perfect and
-would each have bought a round.**
+**Read this before investigating. Six of the eight were topically perfect and
+would each have bought a round — ⑧ was the one plan AUTHORISED.**
 
 | lead | how it died |
 | --- | --- |
@@ -106,7 +106,6 @@ would each have bought a round.**
 | The denied contributor differs between runs | **Green-vs-green is equally disjoint.** And the field is a `commit.id`, not an identity — content-addressed hashes differ by construction. |
 | `local node self-trust was not added: … artifact is absent` | **~1380 occurrences in every run.** A complete, observed causal chain that is present when everything passes. |
 | The `look` verb's own fallback reason | Same classes in both arms (`:compile, :not_found` · `:compile_error` · `:execution_denied`), including a stable uuid `100ca11b-…` identical in each. |
-
 | **⑧ The `:look` denial's contributor is outside the trusted set** | **MEASURED, both arms, verdict lines present. RED 117514: 11 lookdeny, 2 `name=:look`. GREEN 424242: 11 lookdeny, 2 `name=:look`. IDENTICAL.** ⇒ the denial is fixture background. |
 
 ⭐ **Every one died to the same habit: CHECK THE GREEN RUN BEFORE BELIEVING THE
