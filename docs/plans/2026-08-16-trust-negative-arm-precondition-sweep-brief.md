@@ -122,7 +122,30 @@ and that is deliberate. If an arm needs more, that is a finding.**
 ## Suites
 
 ⛔ **`bin/cp-suite-baseline apps/commonplace`; report ITS BLOCK.** **On-main
-baseline: see the commit that adds this brief.** ⚠️ **BUILD FROM THAT BASE.**
+baseline, WITH ITS STATE STAMP — the stamp is part of the number:**
+```
+  5 doctests, 3521 tests, 0 failures, 12 excluded, 1 skipped  (seed 117514, rc=0)
+  sha:        be3d57bf (clean vs HEAD)
+  test state: DIRTY — tmp/test_data/root present (written 2026-04-27)
+  deps:       repo deps/     cwd: /home/jes/commonplace/apps/commonplace
+```
+⚠️ **BUILD FROM THE BASE THIS BRIEF IS ADDED IN.** ⭐ **A suite total without its
+state stamp is not a baseline — a run in a DIFFERENT state may legitimately
+differ, and that is a scope difference to investigate, not a round being wrong.**
+
+### ⛔ TWO KNOWN-NONDETERMINISTIC TESTS — proven on a CLEAN tree, NOT yours
+
+**Both reproduce on an unmodified tree via `--repeat-until-failure`:**
+```
+GitBridge.ServerTest  "pause/resume: paused sync_now …"   rep 13  GenServer.stop → no process
+DeniedWriteReportingTest "parent-schema registration …"   rep  5  assert landed_count == 4
+                                                                  left: 5  right: 4
+```
+⚠️ **`DeniedWriteReportingTest`'s write count is NONDETERMINISTIC (observed 4 and
+5) — `CX-7rjn`. It can also fail as a MatchError on
+`Schema.get_entry(dir_schema, Schemas.issue_filename())` returning `:error`;
+BOTH shapes are the same root.** ⛔ **If you see either, it is NOT yours — but
+say which you saw, verbatim.**
 ⚠️⚠️ **THE LEAK DETECTOR'S NUMBER IS NOT A BASELINE — it has read
 `0 · 58 · 68 · 72 · 115 · 117 · 118 · 122 · 127 · 149 · 152` across populations
 and the movement is UNATTRIBUTED. A different number is EXPECTED and is not a
