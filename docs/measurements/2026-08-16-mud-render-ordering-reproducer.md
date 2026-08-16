@@ -91,6 +91,50 @@ count hypothesis survives and is wrong.**
 - **That the two tests share a root cause beyond the symptom.** One symptom, two
   tests: corroboration, not a proven shared mechanism.
 
+## ⛔⛔ SEVEN DEAD LEADS — each killed by a control, each worth a round
+
+**Read this before investigating. Five of the seven were topically perfect and
+would each have bought a round.**
+
+| lead | how it died |
+| --- | --- |
+| `CommitStore: doc commit index interrupted (state={:dirty,…})` | Present in GREEN runs at the same rate — and the HIGHEST count was in a green run. |
+| `EngineLook.run/2` `FunctionClauseError` runtime crash | **19 in every run**, red and green. |
+| A test leaks `:trust` config | **NOT elevated in red** — and `GlobalStateLeakDetector` watches `[:data_dir, :trust, :local_write_gate]`, so this is a real negative, not a blind one. |
+| The leak-detector formatter is participating | It **observes only** — `Application.fetch_env` and two `handle_cast` clauses. No `put_env`, no restore. It cannot cause a denial. |
+| The denied contributor differs between runs | **Green-vs-green is equally disjoint.** And the field is a `commit.id`, not an identity — content-addressed hashes differ by construction. |
+| `local node self-trust was not added: … artifact is absent` | **~1380 occurrences in every run.** A complete, observed causal chain that is present when everything passes. |
+| The `look` verb's own fallback reason | Same classes in both arms (`:compile, :not_found` · `:compile_error` · `:execution_denied`), including a stable uuid `100ca11b-…` identical in each. |
+
+⭐ **Every one died to the same habit: CHECK THE GREEN RUN BEFORE BELIEVING THE
+RED ONE.** *One sentence; today it was worth seven rounds.*
+
+### ⛔ And two traps specific to this defect
+
+**① THE DENIAL CORPUS IS DOMINATED BY TESTS THAT INTEND DENIALS.** The `reason`
+field reads `{:untrusted_signer, "b0b22222-…"}` — stable **fixture** identities,
+an identical set in red and green. ⇒ ***Counting denials measures deliberate test
+behaviour, not the defect.*** **Instrument the `EngineModule :look` fallback
+SPECIFICALLY — one site, not the ~119-per-run class.**
+
+**② THE DISCRIMINATING FIELD IS THE ONE THAT GETS TRUNCATED.** `reason` was cut
+from every grep for two hours; extracting it ended the hunt in one read.
+⇒ ⛔ ***A control validates the comparison you made, never the one you should
+have made.*** *Every control run on the commit-id comparison was correct — about
+a meaningless difference.*
+
+## ⭐ What would close this
+
+**ONE within-run observation: at the `EngineModule :look` fallback, log THAT
+RUN'S OWN trusted set beside THAT doc's contributor.**
+```
+contributor IS in the trusted set  ⇒ the TRUST DECISION is wrong — a defect with a site
+contributor is NOT in it           ⇒ the verb was authored by an untrusted principal,
+                                     and the question becomes WHICH SETUP PRODUCED THAT
+```
+✅ **This is cheap: the defect REPRODUCES UNDER `--trace` (3540 tests, 2 failures),
+so instrumentation does not suppress it.**
+
 ## ⛔ Why the seed must NOT simply be changed
 
 **Changing the seed makes this green and is a RE-ROLL, not a fix:**
