@@ -46,7 +46,7 @@ defmodule Commonplace.Cell.DeclarationReconcilerTest do
              DeclarationReconciler.reconcile(ceremony, ctx.declaration["name"], ctx.path)
   end
 
-  test "a field disagreement goes red with the divergence named", ctx do
+  test "a different child makes the comparison inconclusive by name", ctx do
     write_declaration!(ctx.path, ctx.declaration)
 
     receipt =
@@ -57,7 +57,7 @@ defmodule Commonplace.Cell.DeclarationReconcilerTest do
 
     ceremony = start_receipt_server(%{ctx.declaration["name"] => {:ok, receipt}})
 
-    assert {:ok,
+    assert {:inconclusive,
             [
               %{
                 kind: :child_uuid_mismatch,
@@ -68,6 +68,53 @@ defmodule Commonplace.Cell.DeclarationReconcilerTest do
 
     assert declaration_uuid == ctx.declaration["child_uuid"]
     assert receipt_uuid == receipt["child_uuid"]
+  end
+
+  test "an inconsistent declaration name makes the comparison inconclusive by name", ctx do
+    declaration = Map.put(ctx.declaration, "name", "other-name")
+    write_declaration!(ctx.path, declaration)
+
+    receipt =
+      ctx.declaration
+      |> Map.put("request_digest", "receipt-only-digest")
+      |> Map.put("status", "active")
+
+    ceremony = start_receipt_server(%{ctx.declaration["name"] => {:ok, receipt}})
+
+    assert {:inconclusive,
+            [
+              %{
+                kind: :name_mismatch,
+                declaration: "other-name",
+                receipt: "platform-watch"
+              }
+            ]} = DeclarationReconciler.reconcile(ceremony, ctx.declaration["name"], ctx.path)
+  end
+
+  test "a key disagreement between the same child is a real divergence", ctx do
+    write_declaration!(ctx.path, ctx.declaration)
+    {other_public_key, _private_key} = Signing.generate_keypair()
+    other_public_key = Signing.encode_key(other_public_key)
+
+    receipt =
+      ctx.declaration
+      |> Map.put("public_key", other_public_key)
+      |> Map.put("request_digest", "receipt-only-digest")
+      |> Map.put("status", "active")
+
+    ceremony = start_receipt_server(%{ctx.declaration["name"] => {:ok, receipt}})
+
+    assert {:ok,
+            [
+              %{
+                kind: :public_key_mismatch,
+                declaration: declaration_key,
+                receipt: receipt_key
+              }
+            ]} = DeclarationReconciler.reconcile(ceremony, ctx.declaration["name"], ctx.path)
+
+    assert declaration_key == ctx.declaration["public_key"]
+    assert receipt_key == other_public_key
   end
 
   test "a never-spawned cell is distinguished from a healthy one", ctx do
@@ -106,7 +153,7 @@ defmodule Commonplace.Cell.DeclarationReconcilerTest do
              )
   end
 
-  test "an invalid declaration is a named divergence", ctx do
+  test "an invalid declaration is a named inability to compare", ctx do
     File.write!(ctx.path, "not-json")
 
     receipt =
@@ -116,13 +163,36 @@ defmodule Commonplace.Cell.DeclarationReconcilerTest do
 
     ceremony = start_receipt_server(%{ctx.declaration["name"] => {:ok, receipt}})
 
-    assert {:ok,
+    assert {:inconclusive,
             [
               %{
                 kind: :declaration_invalid,
                 reason: {:invalid_declaration, "declaration", "must be valid JSON"}
               }
             ]} = DeclarationReconciler.reconcile(ceremony, ctx.declaration["name"], ctx.path)
+
+    missing_receipt_ceremony = start_receipt_server(%{})
+
+    assert {:inconclusive, [%{kind: :declaration_invalid}]} =
+             DeclarationReconciler.reconcile(
+               missing_receipt_ceremony,
+               ctx.declaration["name"],
+               ctx.path
+             )
+  end
+
+  test "an inability result cannot also carry a real divergence", ctx do
+    declaration = Map.put(ctx.declaration, "child_uuid", UUID.uuid4())
+
+    write_declaration!(ctx.path, declaration)
+    {other_public_key, _private_key} = Signing.generate_keypair()
+    receipt = Map.put(ctx.declaration, "public_key", Signing.encode_key(other_public_key))
+    ceremony = start_receipt_server(%{ctx.declaration["name"] => {:ok, receipt}})
+
+    result = DeclarationReconciler.reconcile(ceremony, ctx.declaration["name"], ctx.path)
+
+    assert {:inconclusive, [%{kind: :child_uuid_mismatch}]} = result
+    refute match?({:ok, divergences} when is_list(divergences), result)
   end
 
   test "a real SpawnCeremony receipt reconciles clean against its own declaration" do
@@ -256,15 +326,42 @@ defmodule Commonplace.Cell.DeclarationReconcilerTest do
              DeclarationReconciler.reconcile(ceremony, request.name, declaration_path)
   end
 
-  test "the divergence vocabulary is closed and enumerated" do
+  test "the comparison vocabulary is closed and partitioned" do
     assert DeclarationReconciler.divergence_kinds() == [
              :declaration_missing,
              :receipt_missing,
-             :declaration_invalid,
-             :child_uuid_mismatch,
-             :name_mismatch,
              :public_key_mismatch
            ]
+
+    assert DeclarationReconciler.non_divergence_kinds() == [
+             :child_uuid_mismatch,
+             :name_mismatch,
+             :declaration_invalid
+           ]
+  end
+
+  test "real divergences have closed dispositions and key mismatch is never permissive" do
+    assert DeclarationReconciler.disposition_names() == [
+             :wait,
+             :update_from_receipt,
+             :refuse
+           ]
+
+    assert DeclarationReconciler.disposition(%{kind: :receipt_missing}) == :wait
+
+    assert DeclarationReconciler.disposition(%{kind: :declaration_missing}) ==
+             :update_from_receipt
+
+    key_disposition = DeclarationReconciler.disposition(%{kind: :public_key_mismatch})
+
+    assert key_disposition == {:refuse, :public_key_mismatch}
+    refute key_disposition == :update_from_receipt
+    refute key_disposition == :launch
+  end
+
+  test "an unknown divergence is refused by name" do
+    assert DeclarationReconciler.disposition(%{kind: :future_divergence}) ==
+             {:refuse, :future_divergence}
   end
 
   defp write_declaration!(path, declaration) do
