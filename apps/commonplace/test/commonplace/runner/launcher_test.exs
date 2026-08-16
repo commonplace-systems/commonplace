@@ -83,9 +83,38 @@ defmodule Commonplace.Runner.LauncherTest do
     }
   end
 
+  test "serve configuration cannot start a launcher without the dedicated runner declaration",
+       ctx do
+    serve_configuration = Application.get_all_env(:commonplace)
+    refute Keyword.has_key?(serve_configuration, :dedicated_runner_service)
+    supervisor = start_supervised!({DynamicSupervisor, strategy: :one_for_one})
+
+    undeclared_pods_root = Path.join(ctx.pods_root, "undeclared")
+    declared_pods_root = Path.join(ctx.pods_root, "declared")
+
+    undeclared =
+      DynamicSupervisor.start_child(
+        supervisor,
+        {Launcher, Keyword.put(serve_configuration, :pods_root, undeclared_pods_root)}
+      )
+
+    declared =
+      DynamicSupervisor.start_child(supervisor, {
+        Launcher,
+        pods_root: declared_pods_root, dedicated_runner_service: true
+      })
+
+    IO.puts("undeclared serve configuration: #{inspect(undeclared)}")
+    IO.puts("declared runner configuration: #{inspect(declared)}")
+
+    assert {:error, {:invalid_launcher, :dedicated_runner_service}} = undeclared
+    assert {:ok, _launcher} = declared
+    refute elem(undeclared, 0) == elem(declared, 0)
+  end
+
   test "pod cannot read a canary injected by its launching BEAM", ctx do
     System.put_env(@canary_name, @canary_value)
-    launcher = start_supervised!({Launcher, pods_root: ctx.pods_root})
+    launcher = start_launcher!(ctx.pods_root)
     handle = launch!(launcher, ctx)
     data_dir = data_dir(handle)
 
@@ -96,7 +125,7 @@ defmodule Commonplace.Runner.LauncherTest do
   end
 
   test "executes by effect with its five-variable constructed environment", ctx do
-    launcher = start_supervised!({Launcher, pods_root: ctx.pods_root})
+    launcher = start_launcher!(ctx.pods_root)
     handle = launch!(launcher, ctx)
     data_dir = data_dir(handle)
 
@@ -157,7 +186,7 @@ defmodule Commonplace.Runner.LauncherTest do
     assert %{operation: :tmpfs, path: ^runtime_dir} =
              Enum.find(spec.masks, &(&1.name == :user_runtime_ipc))
 
-    launcher = start_supervised!({Launcher, pods_root: ctx.pods_root})
+    launcher = start_launcher!(ctx.pods_root)
     handle = launch!(launcher, ctx, "channel-worker.sh")
     data_dir = data_dir(handle)
 
@@ -180,7 +209,7 @@ defmodule Commonplace.Runner.LauncherTest do
   end
 
   test "wrong handle fails while captured handle reaps the process unit", ctx do
-    launcher = start_supervised!({Launcher, pods_root: ctx.pods_root})
+    launcher = start_launcher!(ctx.pods_root)
     handle = launch!(launcher, ctx)
     assert {:ok, _effect} = await_file(Path.join(data_dir(handle), "worker-effect"))
     assert Launcher.alive?(handle)
@@ -237,6 +266,10 @@ defmodule Commonplace.Runner.LauncherTest do
              )
 
     handle
+  end
+
+  defp start_launcher!(pods_root) do
+    start_supervised!({Launcher, pods_root: pods_root, dedicated_runner_service: true})
   end
 
   defp manifest(ctx) do

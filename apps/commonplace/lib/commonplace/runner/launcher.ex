@@ -10,6 +10,10 @@ defmodule Commonplace.Runner.Launcher do
   service scope. The launcher is deliberately not installed in
   `Commonplace.Application`, because that is the live-workspace serve.
 
+  Startup requires the positive configuration declaration
+  `dedicated_runner_service: true`. A launcher refuses at birth when that field
+  is absent or has any other value.
+
   `pods_root` is exclusive to one launcher. An advisory lock enforces that
   ownership. On launcher startup, directories left by a prior runner process
   are stale: bubblewrap's `--die-with-parent` has already killed those PID
@@ -55,7 +59,8 @@ defmodule Commonplace.Runner.Launcher do
 
   @impl true
   def init(opts) do
-    with {:ok, pods_root} <- required_path(opts, :pods_root),
+    with :ok <- require_dedicated_runner_service(opts),
+         {:ok, pods_root} <- required_path(opts, :pods_root),
          :ok <- File.mkdir_p(pods_root),
          {:ok, lock} <- lock_root(pods_root),
          :ok <- reap_stale_homes(pods_root) do
@@ -299,6 +304,13 @@ defmodule Commonplace.Runner.Launcher do
     case Keyword.fetch(opts, key) do
       {:ok, path} when is_binary(path) and path != "" -> {:ok, Path.expand(path)}
       _ -> {:error, {:invalid_launcher, key}}
+    end
+  end
+
+  defp require_dedicated_runner_service(opts) do
+    case Keyword.fetch(opts, :dedicated_runner_service) do
+      {:ok, true} -> :ok
+      _ -> {:error, {:invalid_launcher, :dedicated_runner_service}}
     end
   end
 

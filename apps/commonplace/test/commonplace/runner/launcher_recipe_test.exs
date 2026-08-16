@@ -75,7 +75,7 @@ defmodule Commonplace.Runner.LauncherRecipeTest do
   end
 
   test "changing only recipe run changes the observed worker effect", ctx do
-    launcher = start_supervised!({Launcher, pods_root: ctx.pods_root})
+    launcher = start_launcher!(ctx.pods_root)
     recipe_one = read_recipe!(Path.join(ctx.source_repo, "recipe-one.json"))
     recipe_two = read_recipe!(Path.join(ctx.source_repo, "recipe-two.json"))
 
@@ -93,7 +93,7 @@ defmodule Commonplace.Runner.LauncherRecipeTest do
   end
 
   test "recipe env names resolve only from the constructed placement allowlist", ctx do
-    launcher = start_supervised!({Launcher, pods_root: ctx.pods_root})
+    launcher = start_launcher!(ctx.pods_root)
     recipe = read_recipe!(Path.join(ctx.source_repo, "recipe-one.json"))
 
     handle = launch_recipe!(launcher, ctx, recipe)
@@ -120,7 +120,7 @@ defmodule Commonplace.Runner.LauncherRecipeTest do
   end
 
   test "recipe requires gates placement before launch, with a satisfying control", ctx do
-    launcher = start_supervised!({Launcher, pods_root: ctx.pods_root})
+    launcher = start_launcher!(ctx.pods_root)
     recipe = read_recipe!(Path.join(ctx.source_repo, "recipe-one.json"))
 
     satisfying_handle = launch_recipe!(launcher, ctx, recipe)
@@ -164,6 +164,10 @@ defmodule Commonplace.Runner.LauncherRecipeTest do
              Launcher.launch_recipe(launcher, manifest(ctx), profile(), recipe, launch_opts(ctx))
 
     handle
+  end
+
+  defp start_launcher!(pods_root) do
+    start_supervised!({Launcher, pods_root: pods_root, dedicated_runner_service: true})
   end
 
   defp launch_opts(ctx) do
