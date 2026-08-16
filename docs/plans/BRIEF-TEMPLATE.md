@@ -56,6 +56,25 @@ entirely whether the gap is NAMED.*
 ⚠️ ***The symptom half of a brief can be right while the remedy half is wrong —
 and the remedy is the only part a builder acts on.***
 
+## ⛔⛔ PROHIBITIONS NEED SCOPE TOO — the same discipline as escape hatches
+
+⚠️ **BOUNDING THE ESCAPE HATCH IS HALF THE JOB. A PROHIBITION WITH NO SCOPE
+STOPS MORE THAN YOU MEANT, AND THE BUILDER IS READING IT CORRECTLY.**
+
+```
+BAD   "NO PROCESS SPAWNING."
+      ⇒ read as covering the EXISTING SUITE, which really does spawn pods.
+        Cost the full-suite measurement in that round.
+GOOD  "Do not spawn a process AS THE ACT under test. Running the existing
+       suite is expected and its launcher tests spawning pods is normal."
+```
+⇒ ⭐⭐ **SAY WHAT THE PROHIBITION DOES *NOT* COVER, especially when the forbidden
+verb also describes something routine the round must still do.**
+⚠️ *Twice in one day a constraint of mine had unbounded scope: an escape hatch
+that stopped the round ("report it and stop"), and a prohibition that stopped
+the measurement. Symptom half right, scope half missing — and the builder acts
+on the words.*
+
 ## Acceptance — ARTIFACTS, not assurances
 
 - **Red-first, and in BOTH directions where a gate is involved:** the right
