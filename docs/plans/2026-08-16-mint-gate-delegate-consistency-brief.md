@@ -108,7 +108,7 @@ finding.**
 baseline WITH ITS STATE STAMP — the stamp is part of the number:**
 ```
   5 doctests, 3528 tests, 0 failures, 12 excluded, 1 skipped  (seed 117514, rc=0)
-  sha:        <the commit adding this brief>   test state: DIRTY — tmp/test_data/root present
+  sha:        7f7d6c53 (clean)   test state: DIRTY — tmp/test_data/root present
   deps:       repo deps/                       cwd: /home/jes/commonplace/apps/commonplace
 ```
 ⚠️ **A run in a DIFFERENT state may legitimately differ — that is a scope
