@@ -50,15 +50,41 @@ stamp() {
   # scratch file sat at .commonplace-state/.state-render.*/probe.exs. A stamp
   # that cries wolf is the CX-h062 defect — a check red on correct state trains
   # everyone to ignore it — and it appeared in the tool written to prevent
-  # scope errors. Only TRACKED modifications to compiled sources can change
-  # what a suite measures. The built escript apps/commonplace_cli/commonplace_cli is
+  # scope errors.
+  #
+  # ⛔ CX-jyjc, 2026-08-16: the sentence that used to sit here — "only TRACKED
+  # modifications to compiled sources can change what a suite measures" — WAS
+  # FALSE, and it was the defect. An UNTRACKED TEST FILE changes the population:
+  # a run whose only change was a new untracked test file read 3521 → 3528 tests
+  # and stamped "clean vs HEAD". The stamp is what makes a total usable as a
+  # baseline, so a stamp that can say CLEAN while the population grew can
+  # MISLABEL one.
+  #
+  # ⭐ The remedy is to NARROW, never to revert: reverting --untracked-files=no
+  # resurrects the scratch-file wolf-cry above, which is how this class
+  # ping-pongs forever. Fixing the false POSITIVE created a false NEGATIVE, and
+  # the false negative is the worse direction — a spurious DIRTY gets
+  # investigated, a spurious CLEAN gets banked. So untracked files are still
+  # ignored everywhere EXCEPT under test paths, where they add tests.
+  #
+  # The built escript apps/commonplace_cli/commonplace_cli is
   # excluded: it is a tracked BUILD ARTIFACT that is rebuilt routinely, and a
   # stamp that reads DIRTY because a binary was regenerated is the same wolf-cry.
   local changed
   changed="$(git -C "$REPO_ROOT" status --porcelain --untracked-files=no \
              -- apps config ':(exclude)apps/commonplace_cli/commonplace_cli' 2>/dev/null)"
-  if [[ -n "$changed" ]]; then
+  # CX-jyjc: untracked TEST files change the population and must be visible.
+  # Scoped to test dirs so untracked scratch elsewhere still cannot cry wolf.
+  local new_tests
+  new_tests="$(git -C "$REPO_ROOT" ls-files --others --exclude-standard \
+               -- 'apps/*/test/*.exs' 2>/dev/null)"
+
+  if [[ -n "$changed" && -n "$new_tests" ]]; then
+    dirty="DIRTY — $(wc -l <<<"$changed") tracked file(s) under apps/ or config/ modified, AND $(wc -l <<<"$new_tests") UNTRACKED test file(s) adding tests"
+  elif [[ -n "$changed" ]]; then
     dirty="DIRTY — $(wc -l <<<"$changed") tracked file(s) under apps/ or config/ modified vs HEAD"
+  elif [[ -n "$new_tests" ]]; then
+    dirty="DIRTY — $(wc -l <<<"$new_tests") UNTRACKED test file(s) under apps/*/test/ — these ADD TESTS and change the population"
   else
     dirty="clean vs HEAD"
   fi
@@ -137,7 +163,11 @@ fi
 echo
 echo "BASELINE — paste this whole block into the brief, not just the numbers:"
 echo "  $summary  (seed $SEED, rc=$rc)"
-echo "  --- state the run STARTED in (this is what explains the counts) ---"
+# CX-jyjc: the stamp names its own version. Stamps emitted BEFORE stamp-v2 could
+# not see untracked test files, so any "clean vs HEAD" from a v1 stamp means
+# "clean except possibly for untracked tests" — which is exactly how a 3521→3528
+# run came to be stamped clean. A stamp that cannot be dated cannot be compared.
+echo "  --- state the run STARTED in (this is what explains the counts) [stamp-v2] ---"
 printf '%s\n' "$BEFORE_STAMP"
 if [[ "$BEFORE_STAMP" != "$AFTER_STAMP" ]]; then
   echo "  ⛔ STATE CHANGED DURING THE RUN — the suite mutated its own environment:"
