@@ -17,6 +17,7 @@ defmodule Commonplace.Runner.DeploymentRecordTest do
   alias Commonplace.Runner.DeploymentRecord
   alias Commonplace.Store.{Commit, CommitStoreClient, SlaTombstone}
   alias Commonplace.Trust
+  alias Commonplace.Trust.EvictionAnchor
 
   setup do
     data_dir = Path.join(System.tmp_dir!(), "cp_i4_deployment_#{:rand.uniform(1_000_000_000)}")
@@ -61,6 +62,16 @@ defmodule Commonplace.Runner.DeploymentRecordTest do
        pending_imports_name: :"i4_deployment_pi_#{n}",
        local_write_gate: :enforce}
     )
+
+    [anchor_entry] = trust_config.eviction_anchors
+    {:ok, anchor} = EvictionAnchor.from_config(anchor_entry)
+
+    assert {:ok, _activation_position} =
+             CommitStoreClient.activate_eviction_anchor(
+               store,
+               anchor.id,
+               :crypto.hash(:sha256, "deployment-record-ratification")
+             )
 
     on_exit(fn ->
       File.rm_rf!(data_dir)

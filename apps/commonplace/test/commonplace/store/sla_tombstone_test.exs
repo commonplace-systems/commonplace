@@ -6,7 +6,9 @@ defmodule Commonplace.Store.SlaTombstoneTest do
   refuses evidence seams` proof. The distinct authority fixtures and explicit
   signing contexts come from the former; the restart-safe, store-owned position
   checks come from the latter. No downstream copy was found when this rehearsal
-  was written.
+  was written. The ratification-citing activation proof copies those same
+  fixtures and the latter test's deliberate historical position mutation; no
+  downstream copy of that proof exists in this round.
   """
 
   use ExUnit.Case, async: false
@@ -54,6 +56,13 @@ defmodule Commonplace.Store.SlaTombstoneTest do
 
     Application.put_env(:commonplace, :trust, trust)
 
+    [anchor_entry] = trust.eviction_anchors
+    {:ok, anchor} = EvictionAnchor.from_config(anchor_entry)
+    ratification_cid = commit_id(61)
+
+    assert {:ok, _activation_position} =
+             CommitStoreClient.activate_eviction_anchor(store, anchor.id, ratification_cid)
+
     on_exit(fn -> restore_trust(prior_trust) end)
 
     %{
@@ -61,8 +70,159 @@ defmodule Commonplace.Store.SlaTombstoneTest do
       store: store,
       supervisor: supervisor,
       signing_context: signing_context,
-      trust: trust
+      trust: trust,
+      anchor: anchor,
+      ratification_cid: ratification_cid
     }
+  end
+
+  test "activation cites ratification and explicitly enforces both sides of ordering", ctx do
+    anchor_context = fixture_signing_context("red-first-anchor", 41)
+
+    {:ok, trust} =
+      Trust.add_eviction_anchor(
+        ctx.trust,
+        anchor_context.identity_uuid,
+        anchor_context.public_key
+      )
+
+    Application.put_env(:commonplace, :trust, trust)
+    anchor_entry = Enum.find(trust.eviction_anchors, &(&1[:identity_uuid] == "red-first-anchor"))
+    {:ok, anchor} = EvictionAnchor.from_config(anchor_entry)
+    tombstone = tombstone(%{ctx | signing_context: anchor_context}, [commit_id(40)])
+
+    before_registration =
+      CommitStoreClient.get_eviction_anchor_activation_position(ctx.store, anchor.id)
+
+    registration_before_activation =
+      CommitStoreClient.store_sla_tombstone(ctx.store, tombstone)
+
+    expected_activation_refusal =
+      {:error, {:invalid_sla_tombstone, {:eviction_anchor_activation_required, anchor.id}}}
+
+    assert registration_before_activation == expected_activation_refusal
+
+    ratification_cid = commit_id(62)
+
+    {:ok, activation_position} =
+      CommitStoreClient.activate_eviction_anchor(ctx.store, anchor.id, ratification_cid)
+
+    assert {:ok,
+            %{
+              anchor_id: anchor_id,
+              kind: :activation,
+              position: ^activation_position,
+              ratification_cid: reread_ratification_cid
+            }} =
+             CommitStoreClient.get_eviction_anchor_activation(ctx.store, anchor.id)
+
+    assert anchor_id == anchor.id
+    assert reread_ratification_cid == ratification_cid
+    refute function_exported?(CommitStoreClient, :activate_eviction_anchor, 4)
+    registration_after_activation = CommitStoreClient.store_sla_tombstone(ctx.store, tombstone)
+    verification_after_activation = SlaTombstone.verify(tombstone, trust, store: ctx.store)
+    assert registration_after_activation == :ok
+    assert verification_after_activation == :ok
+
+    assert {:ok, registration_position} =
+             CommitStoreClient.get_sla_tombstone_position(ctx.store, tombstone.id)
+
+    assert {:ok, true} =
+             CommitStoreClient.eviction_authority_position_before?(
+               ctx.store,
+               activation_position,
+               registration_position
+             )
+
+    historical_context = fixture_signing_context("historical-anchor", 43)
+
+    {:ok, historical_trust} =
+      Trust.add_eviction_anchor(
+        trust,
+        historical_context.identity_uuid,
+        historical_context.public_key
+      )
+
+    Application.put_env(:commonplace, :trust, historical_trust)
+
+    historical_entry =
+      Enum.find(
+        historical_trust.eviction_anchors,
+        &(&1[:identity_uuid] == "historical-anchor")
+      )
+
+    {:ok, historical_anchor} = EvictionAnchor.from_config(historical_entry)
+
+    historical_tombstone =
+      tombstone(%{ctx | signing_context: historical_context}, [commit_id(41)])
+
+    db = Commonplace.Store.CommitStore.db_handle(ctx.store)
+    historical_registration_position = commit_id(63)
+    historical_registration_sequence = CubDB.get(db, :eviction_authority_ledger_sequence) + 1
+
+    :ok =
+      CubDB.put_multi(db, [
+        {:eviction_authority_ledger_sequence, historical_registration_sequence},
+        {{:eviction_authority_position_sequence, historical_registration_position},
+         historical_registration_sequence},
+        {{:eviction_authority_event, historical_registration_sequence},
+         %{
+           anchor_id: historical_anchor.id,
+           kind: :registration,
+           position: historical_registration_position,
+           sequence: historical_registration_sequence,
+           subject_id: historical_tombstone.id
+         }},
+        {{:sla_tombstone_position, historical_tombstone.id}, historical_registration_position}
+      ])
+
+    historical_ratification_cid = commit_id(64)
+
+    assert {:ok, historical_activation_position} =
+             CommitStoreClient.activate_eviction_anchor(
+               ctx.store,
+               historical_anchor.id,
+               historical_ratification_cid
+             )
+
+    before_activation_result =
+      SlaTombstone.verify(historical_tombstone, historical_trust, store: ctx.store)
+
+    expected_ordering_refusal =
+      {:error,
+       {:tombstone_registered_before_anchor_activation, historical_registration_position,
+        historical_activation_position}}
+
+    assert before_activation_result == expected_ordering_refusal
+
+    ordering_pair_differ = before_activation_result != verification_after_activation
+    refusal_pair_differ = registration_before_activation != registration_after_activation
+    assert ordering_pair_differ
+    assert refusal_pair_differ
+
+    IO.puts("EVICTION_ACTIVATION_RED_BEFORE_REGISTRATION=#{inspect(before_registration)}")
+
+    IO.puts(
+      "EVICTION_ACTIVATION_CONFIG_ONLY_REGISTRATION=#{inspect(registration_before_activation)}"
+    )
+
+    IO.puts("EVICTION_ACTIVATION_RATIFICATION_REREAD=#{Base.encode16(reread_ratification_cid)}")
+
+    IO.puts("EVICTION_ACTIVATION_AFTER_POSITION=#{Base.encode16(activation_position)}")
+
+    IO.puts(
+      "EVICTION_ACTIVATION_AFTER_REGISTRATION_RESULT=#{inspect(registration_after_activation)}"
+    )
+
+    IO.puts("EVICTION_ACTIVATION_AFTER_VERIFICATION=#{inspect(verification_after_activation)}")
+
+    IO.puts(
+      "EVICTION_ACTIVATION_BEFORE_POSITION=#{Base.encode16(historical_registration_position)}"
+    )
+
+    IO.puts("EVICTION_ACTIVATION_BEFORE_RESULT=#{inspect(before_activation_result)}")
+    IO.puts("EVICTION_ACTIVATION_ORDERING_PAIR_DIFFER=#{inspect(ordering_pair_differ)}")
+    IO.puts("EVICTION_ACTIVATION_REFUSAL_PAIR_DIFFER=#{inspect(refusal_pair_differ)}")
   end
 
   test "store derives every position and public verification refuses evidence seams", ctx do
@@ -181,6 +341,16 @@ defmodule Commonplace.Store.SlaTombstoneTest do
       Trust.add_eviction_anchor(strict, anchor_context.identity_uuid, anchor_context.public_key)
 
     Application.put_env(:commonplace, :trust, active_trust)
+
+    [active_anchor_entry] = active_trust.eviction_anchors
+    {:ok, active_anchor} = EvictionAnchor.from_config(active_anchor_entry)
+
+    assert {:ok, _active_activation_position} =
+             CommitStoreClient.activate_eviction_anchor(
+               ctx.store,
+               active_anchor.id,
+               commit_id(65)
+             )
 
     history_a =
       CommitStoreClient.create_commit(
@@ -359,6 +529,16 @@ defmodule Commonplace.Store.SlaTombstoneTest do
 
     Application.put_env(:commonplace, :trust, preactivation_trust)
 
+    [preactivation_anchor_entry] = preactivation_trust.eviction_anchors
+    {:ok, preactivation_anchor} = EvictionAnchor.from_config(preactivation_anchor_entry)
+
+    arm10_activation =
+      CommitStoreClient.activate_eviction_anchor(
+        ctx.store,
+        preactivation_anchor.id,
+        commit_id(66)
+      )
+
     arm10_after_anchor_addition =
       SlaTombstone.verify(preactivation, preactivation_trust, store: ctx.store)
 
@@ -367,6 +547,7 @@ defmodule Commonplace.Store.SlaTombstoneTest do
 
     arm10 = %{
       registration_before_activation: arm10_before_activation,
+      activation_at_anchor_addition: arm10_activation,
       verification_after_anchor_addition: arm10_after_anchor_addition,
       production_registration_after_anchor_addition:
         arm10_production_registration_after_anchor_addition
@@ -432,7 +613,7 @@ defmodule Commonplace.Store.SlaTombstoneTest do
     assert arm10_before_activation ==
              {:error, {:invalid_sla_tombstone, :no_eviction_anchor_configured}}
 
-    assert arm10_after_anchor_addition == {:error, :eviction_anchor_activation_position_required}
+    assert arm10_after_anchor_addition == {:error, :tombstone_store_position_required}
     assert arm10_production_registration_after_anchor_addition == :ok
     assert arm10_before_activation != arm10_production_registration_after_anchor_addition
 
@@ -470,7 +651,7 @@ defmodule Commonplace.Store.SlaTombstoneTest do
   test "writer constructs a signed receipt that verifies and tampering fails", ctx do
     tombstone = tombstone(ctx, [commit_id(1), commit_id(2)])
 
-    assert {:error, :eviction_anchor_activation_position_required} =
+    assert {:error, :tombstone_store_position_required} =
              SlaTombstone.verify(tombstone, ctx.trust, store: ctx.store)
 
     assert :ok = CommitStoreClient.store_sla_tombstone(ctx.store, tombstone)
