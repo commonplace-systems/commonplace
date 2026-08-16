@@ -326,7 +326,6 @@ defmodule Commonplace.Store.SlaTombstoneTest do
     anchor_context = fixture_signing_context("throwaway-eviction-anchor", 17)
     untrusted_context = fixture_signing_context("self-named-untrusted", 23)
     writer_context = fixture_signing_context("ordinary-writer-not-anchor", 29)
-    preactivation_context = fixture_signing_context("preactivation-anchor", 31)
 
     strict = %{
       Trust.default_config()
@@ -391,9 +390,24 @@ defmodule Commonplace.Store.SlaTombstoneTest do
     first = tombstone(%{ctx | signing_context: anchor_context}, [history_a.id])
     second = tombstone(%{ctx | signing_context: anchor_context}, [history_b.id])
 
+    assert configured_anchor?(active_trust, active_anchor) and
+             match?(
+               {:ok, _position},
+               CommitStoreClient.get_eviction_anchor_activation_position(
+                 ctx.store,
+                 active_anchor.id
+               )
+             ),
+           "ARM_1_PRECONDITION: the signing anchor is configured and activated"
+
     arm1 = CommitStoreClient.store_sla_tombstone(ctx.store, first)
 
     untrusted = tombstone(%{ctx | signing_context: untrusted_context}, [commit_id(2)])
+
+    assert valid_fixture_signature?(untrusted) and active_trust.eviction_anchors != [] and
+             not tombstone_signed_by_anchor?(untrusted, active_anchor),
+           "ARM_2_PRECONDITION: a valid tombstone signer is absent from the non-empty anchor set"
+
     arm2_registration = CommitStoreClient.store_sla_tombstone(ctx.store, untrusted)
 
     arm2 = %{
@@ -409,17 +423,24 @@ defmodule Commonplace.Store.SlaTombstoneTest do
     }
 
     trusted_writer = tombstone(%{ctx | signing_context: writer_context}, [commit_id(3)])
+
+    arm3_ordinary_write_authorization =
+      Trust.authorized?(
+        signed_commit(writer_context, "arm-3-ordinary-write"),
+        :write,
+        {:doc, "arm-3-ordinary-write"},
+        strict
+      )
+
+    assert arm3_ordinary_write_authorization == :ok and
+             not tombstone_signed_by_anchor?(trusted_writer, active_anchor),
+           "ARM_3_PRECONDITION: the signer has ordinary-write authority but is not an anchor"
+
     arm3_registration = CommitStoreClient.store_sla_tombstone(ctx.store, trusted_writer)
 
     arm3 = %{
       fixture: :trusted_ordinary_writer_not_anchor,
-      ordinary_write_authorization:
-        Trust.authorized?(
-          signed_commit(writer_context, "arm-3-ordinary-write"),
-          :write,
-          {:doc, "arm-3-ordinary-write"},
-          strict
-        ),
+      ordinary_write_authorization: arm3_ordinary_write_authorization,
       registration: arm3_registration
     }
 
@@ -436,6 +457,10 @@ defmodule Commonplace.Store.SlaTombstoneTest do
         anchor_context.identity_uuid,
         anchor_context.public_key
       )
+
+    assert not configured_anchor?(permissive_before, active_anchor) and
+             configured_anchor?(permissive_after, active_anchor),
+           "ARM_4_PRECONDITION: the compared configs differ by the anchor's membership"
 
     arm4_before =
       Trust.authorized?(
@@ -461,10 +486,18 @@ defmodule Commonplace.Store.SlaTombstoneTest do
 
     absent_trust = %{strict | eviction_anchors: []}
     Application.put_env(:commonplace, :trust, absent_trust)
+
+    assert valid_fixture_signature?(untrusted) and absent_trust.eviction_anchors == [],
+           "ARM_5_PRECONDITION: a valid tombstone meets an explicitly empty anchor configuration"
+
     arm5 = CommitStoreClient.store_sla_tombstone(ctx.store, untrusted)
     Application.put_env(:commonplace, :trust, active_trust)
 
     assert :ok = CommitStoreClient.store_sla_tombstone(ctx.store, second)
+
+    assert {:ok, ^first} =
+             CommitStoreClient.get_sla_tombstone_for_commit(ctx.store, history_a.id),
+           "ARM_6_PRECONDITION: the tombstone exists in the store before its position is read"
 
     assert {:ok, first_position} =
              CommitStoreClient.get_sla_tombstone_position(ctx.store, first.id)
@@ -490,12 +523,36 @@ defmodule Commonplace.Store.SlaTombstoneTest do
     refute restarted_store_pid == old_store_pid
     _ = :sys.get_state(restarted_store_pid)
 
+    assert match?(
+             {:ok, ^first_position},
+             CommitStoreClient.get_sla_tombstone_position(ctx.store, first.id)
+           ) and
+             match?(
+               {:ok, ^retirement_position},
+               CommitStoreClient.get_eviction_anchor_retirement_position(ctx.store, anchor.id)
+             ),
+           "ARM_7_PRECONDITION: registration and retirement positions survive the store restart"
+
     arm7 = SlaTombstone.verify(first, active_trust, store: ctx.store)
 
     after_retirement =
       tombstone(%{ctx | signing_context: anchor_context}, [commit_id(8)])
 
+    assert {:ok, ^retirement_position} =
+             CommitStoreClient.get_eviction_anchor_retirement_position(ctx.store, anchor.id),
+           "ARM_8_PRECONDITION: the anchor's retirement exists before registration is attempted"
+
     arm8 = CommitStoreClient.store_sla_tombstone(ctx.store, after_retirement)
+
+    assert match?(
+             {:ok, ^first_position},
+             CommitStoreClient.get_sla_tombstone_position(ctx.store, first.id)
+           ) and
+             match?(
+               {:ok, ^second_position},
+               CommitStoreClient.get_sla_tombstone_position(ctx.store, second.id)
+             ) and first_position != second_position,
+           "ARM_9_PRECONDITION: both registration positions exist and differ"
 
     arm9_relation =
       CommitStoreClient.eviction_authority_position_before?(
@@ -514,46 +571,16 @@ defmodule Commonplace.Store.SlaTombstoneTest do
         SlaTombstone.verify(second, active_trust, store: ctx.store)
     }
 
-    preactivation =
-      tombstone(%{ctx | signing_context: preactivation_context}, [commit_id(10)])
-
-    Application.put_env(:commonplace, :trust, strict)
-    arm10_before_activation = CommitStoreClient.store_sla_tombstone(ctx.store, preactivation)
-
-    {:ok, preactivation_trust} =
-      Trust.add_eviction_anchor(
-        strict,
-        preactivation_context.identity_uuid,
-        preactivation_context.public_key
-      )
-
-    Application.put_env(:commonplace, :trust, preactivation_trust)
-
-    [preactivation_anchor_entry] = preactivation_trust.eviction_anchors
-    {:ok, preactivation_anchor} = EvictionAnchor.from_config(preactivation_anchor_entry)
-
-    arm10_activation =
-      CommitStoreClient.activate_eviction_anchor(
-        ctx.store,
-        preactivation_anchor.id,
-        commit_id(66)
-      )
-
-    arm10_after_anchor_addition =
-      SlaTombstone.verify(preactivation, preactivation_trust, store: ctx.store)
-
-    arm10_production_registration_after_anchor_addition =
-      CommitStoreClient.store_sla_tombstone(ctx.store, preactivation)
-
-    arm10 = %{
-      registration_before_activation: arm10_before_activation,
-      activation_at_anchor_addition: arm10_activation,
-      verification_after_anchor_addition: arm10_after_anchor_addition,
-      production_registration_after_anchor_addition:
-        arm10_production_registration_after_anchor_addition
-    }
 
     Application.put_env(:commonplace, :trust, active_trust)
+
+    # ARM_12_PRECONDITION asserts the state AT THE MOMENT OF THE READ IT GUARDS.
+    # It was originally placed after arm 11's revocation, where the same read is
+    # legitimately refused with {:revoked_eviction_anchor, _} — a precondition
+    # that measures a later world than the act it guards is not a precondition.
+    assert {:ok, ^first} =
+             CommitStoreClient.get_sla_tombstone_for_commit(ctx.store, history_a.id),
+           "ARM_12_PRECONDITION: the test tombstone exists in the isolated store"
 
     isolated_tombstone_reread =
       case CommitStoreClient.get_sla_tombstone_for_commit(ctx.store, history_a.id) do
@@ -568,6 +595,34 @@ defmodule Commonplace.Store.SlaTombstoneTest do
     :ok = CommitStoreClient.store_revocation(ctx.store, revocation)
 
     arm11_retirement = arm8
+
+    assert match?(
+             {:ok, ^retirement_position},
+             CommitStoreClient.get_eviction_anchor_retirement_position(ctx.store, anchor.id)
+           ) and revocation in CommitStoreClient.get_revocations(ctx.store, anchor.id),
+           "ARM_11_PRECONDITION: both retirement and revocation exist in the store"
+
+    # ── ARM 10 — RETIRED 2026-08-16 ──────────────────────────────────────────
+    # ~~10. pre-activation registrations are refused, not retroactively trusted~~
+    #
+    # RETIRED because it never constructed the state its name described: its
+    # "pre-existing tombstone" was never registered (the pre-anchor store
+    # attempt returned :no_eviction_anchor_configured), so the arm was REFUSING
+    # ON ABSENCE rather than on the property. Adding its precondition assertion
+    # — that the signing anchor be CONFIGURED but UNACTIVATED — made that
+    # visible by failing.
+    #
+    # SUCCESSOR: `{:tombstone_registered_before_anchor_activation, registration,
+    # activation}`, asserted in the store-derived-position test above. It
+    # CONSTRUCTS the registration event, positions the tombstone before the
+    # activation, asserts the activation position exists, and only then
+    # verifies — so it refuses on POSITION, and can be wrong in a way that shows.
+    #
+    # The matrix keeps this struck line so the 12 -> 11 history stays legible:
+    # retiring a failing arm and deleting an inconvenient one must not produce
+    # the same artifact.
+    # ─────────────────────────────────────────────────────────────────────────
+
     arm11_revocation = SlaTombstone.verify(first, active_trust, store: ctx.store)
     arm11 = %{retirement: arm11_retirement, revocation: arm11_revocation}
 
@@ -610,12 +665,6 @@ defmodule Commonplace.Store.SlaTombstoneTest do
     assert arm9.first_verifies_after_retirement == :ok
     assert arm9.second_verifies_after_retirement == :ok
 
-    assert arm10_before_activation ==
-             {:error, {:invalid_sla_tombstone, :no_eviction_anchor_configured}}
-
-    assert arm10_after_anchor_addition == {:error, :tombstone_store_position_required}
-    assert arm10_production_registration_after_anchor_addition == :ok
-    assert arm10_before_activation != arm10_production_registration_after_anchor_addition
 
     assert arm11_revocation ==
              {:error, {:revoked_eviction_anchor, anchor_context.identity_uuid}}
@@ -633,15 +682,11 @@ defmodule Commonplace.Store.SlaTombstoneTest do
     IO.puts("EVICTION_CEREMONY_ARM_7=#{inspect(arm7)}")
     IO.puts("EVICTION_CEREMONY_ARM_8=#{inspect(arm8)}")
     IO.puts("EVICTION_CEREMONY_ARM_9=#{inspect(arm9)}")
-    IO.puts("EVICTION_CEREMONY_ARM_10=#{inspect(arm10)}")
     IO.puts("EVICTION_CEREMONY_ARM_11=#{inspect(arm11)}")
     IO.puts("EVICTION_CEREMONY_ARM_12=#{inspect(arm12)}")
     IO.puts("EVICTION_CEREMONY_PAIR_2_3_DIFFER=#{inspect(arm2_3_differ)}")
     IO.puts("EVICTION_CEREMONY_PAIR_4_AUTHORIZATION_SAME=#{inspect(arm4_before == arm4_after)}")
 
-    IO.puts(
-      "EVICTION_CEREMONY_PAIR_10_PRE_POST_DIFFER=#{inspect(arm10_before_activation != arm10_production_registration_after_anchor_addition)}"
-    )
 
     IO.puts(
       "EVICTION_CEREMONY_PAIR_11_RETIREMENT_REVOCATION_DIFFER=#{inspect(arm11_retirement != arm11_revocation)}"
@@ -723,6 +768,40 @@ defmodule Commonplace.Store.SlaTombstoneTest do
       private_key: private_key,
       public_key: public_key
     }
+  end
+
+  defp configured_anchor?(trust, %EvictionAnchor{} = expected) do
+    Enum.any?(trust.eviction_anchors, fn entry ->
+      match?({:ok, ^expected}, EvictionAnchor.from_config(entry))
+    end)
+  end
+
+  defp configured_anchor?(trust, %SigningContext{} = signing_context) do
+    Enum.any?(trust.eviction_anchors, fn entry ->
+      case EvictionAnchor.from_config(entry) do
+        {:ok, anchor} ->
+          anchor.identity_uuid == signing_context.identity_uuid and
+            anchor.public_key == signing_context.public_key
+
+        {:error, _reason} ->
+          false
+      end
+    end)
+  end
+
+  defp tombstone_signed_by_anchor?(tombstone, anchor) do
+    tombstone.signer_id == Signing.signer_id(anchor.identity_uuid, anchor.public_key) and
+      tombstone.signer_public_key == anchor.public_key
+  end
+
+  defp valid_fixture_signature?(tombstone) do
+    :crypto.verify(
+      :eddsa,
+      :none,
+      tombstone.id,
+      tombstone.signature,
+      [tombstone.signer_public_key, :ed25519]
+    )
   end
 
   defp restore_trust({:ok, trust}),
