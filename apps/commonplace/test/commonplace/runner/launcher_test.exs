@@ -6,6 +6,7 @@ defmodule Commonplace.Runner.LauncherTest do
 
   @canary_name "CX_POD_ENV_CANARY"
   @canary_value "pod-must-not-inherit-this-value"
+  @custody_challenge "commonplace-pod-custody-v1"
 
   setup do
     fixture_root =
@@ -59,10 +60,66 @@ defmodule Commonplace.Runner.LauncherTest do
       """
     )
 
+    File.write!(
+      Path.join(source_repo, "custody-worker.exs"),
+      ~S"""
+      data_dir = System.fetch_env!("COMMONPLACE_DATA_DIR")
+      secrets_dir = Path.join(data_dir, "secrets")
+      key_path = Path.join(secrets_dir, "pod_signing_key")
+      challenge = "commonplace-pod-custody-v1"
+
+      File.mkdir_p!(secrets_dir)
+      {public_key, private_key} = :crypto.generate_key(:eddsa, :ed25519)
+
+      File.write!(
+        key_path,
+        Base.encode64(public_key) <> "\n" <> Base.encode64(private_key) <> "\n"
+      )
+
+      File.chmod!(key_path, 0o600)
+
+      [stored_public_key, stored_private_key] =
+        key_path
+        |> File.read!()
+        |> String.split("\n", trim: true)
+        |> Enum.map(&Base.decode64!/1)
+
+      signature =
+        :crypto.sign(:eddsa, :none, challenge, [stored_private_key, :ed25519])
+
+      durable_key_observation =
+        case File.read(Path.join(data_dir, "node_signing_key")) do
+          {:ok, ""} -> "masked:empty-device"
+          {:error, :eacces} -> "masked:eacces"
+          {:ok, contents} -> "readable:" <> Base.encode64(contents)
+          {:error, reason} -> "check_failed:" <> inspect(reason)
+        end
+
+      report =
+        [
+          "schema=pod-custody-v1",
+          "durable_key=" <> durable_key_observation,
+          "pod_public_key=" <> Base.encode64(stored_public_key),
+          "signature=" <> Base.encode64(signature)
+        ]
+        |> Enum.join("\n")
+        |> Kernel.<>("\n")
+
+      report_path = Path.join(data_dir, "pod-custody-report")
+      File.write!(report_path <> ".tmp", report)
+      File.rename!(report_path <> ".tmp", report_path)
+
+      receive do
+      after
+        300_000 -> :ok
+      end
+      """
+    )
+
     git!(source_repo, ["init", "--quiet"])
     git!(source_repo, ["config", "user.email", "launcher@example.invalid"])
     git!(source_repo, ["config", "user.name", "Launcher Fixture"])
-    git!(source_repo, ["add", "worker.sh", "channel-worker.sh"])
+    git!(source_repo, ["add", "worker.sh", "channel-worker.sh", "custody-worker.exs"])
     git!(source_repo, ["commit", "--quiet", "-m", "fixture"])
 
     {principal_pubkey, _principal_private_key} = Signing.generate_keypair()
@@ -121,6 +178,51 @@ defmodule Commonplace.Runner.LauncherTest do
     assert {:ok, canary_result} = await_file(Path.join(data_dir, "environment-canary"))
     assert String.trim(canary_result) == "absent"
     refute canary_result =~ @canary_value
+    assert :ok = Launcher.reap(handle)
+  end
+
+  test "pod holds its own signing key and not the durable key, proven by effect", ctx do
+    launcher = start_launcher!(ctx.pods_root)
+
+    assert {:ok, handle} =
+             Launcher.launch(launcher, manifest(ctx), profile(),
+               repo: ctx.source_repo,
+               sha: ctx.sha,
+               principal_pubkey: ctx.principal_pubkey,
+               invocation: custody_invocation()
+             )
+
+    data_dir = data_dir(handle)
+    durable_key_contents = File.read!(Path.join(data_dir, "node_signing_key"))
+
+    [durable_public_key_encoded, durable_private_key_encoded] =
+      String.split(durable_key_contents, "\n", trim: true)
+
+    assert durable_private_key_encoded != ""
+    durable_public_key = Base.decode64!(durable_public_key_encoded)
+
+    assert {:ok, report_contents} = await_file(Path.join(data_dir, "pod-custody-report"))
+    report = custody_report(report_contents)
+
+    assert report["schema"] == "pod-custody-v1"
+    assert report["durable_key"] == "masked:eacces"
+    refute String.starts_with?(report["durable_key"], "check_failed:")
+
+    pod_public_key = Base.decode64!(report["pod_public_key"])
+    signature = Base.decode64!(report["signature"])
+
+    assert pod_public_key != durable_public_key
+
+    assert :crypto.verify(:eddsa, :none, @custody_challenge, signature, [pod_public_key, :ed25519])
+
+    refute :crypto.verify(
+             :eddsa,
+             :none,
+             @custody_challenge,
+             signature,
+             [durable_public_key, :ed25519]
+           )
+
     assert :ok = Launcher.reap(handle)
   end
 
@@ -266,6 +368,54 @@ defmodule Commonplace.Runner.LauncherTest do
              )
 
     handle
+  end
+
+  defp custody_invocation do
+    elixir = runtime_executable!("elixir")
+    erl = runtime_executable!("erl")
+
+    runtime_path =
+      [Path.dirname(erl), "/usr/local/bin", "/usr/bin", "/bin"]
+      |> Enum.uniq()
+      |> Enum.join(":")
+
+    [
+      "/usr/bin/env",
+      "PATH=#{runtime_path}",
+      elixir,
+      "--erl",
+      "+S 1:1 +SDio 1 +SDcpu 1",
+      "custody-worker.exs"
+    ]
+  end
+
+  defp runtime_executable!(name) do
+    executable = System.find_executable(name) || flunk("#{name} executable is required")
+
+    if Path.basename(Path.dirname(executable)) == "shims" do
+      {resolved, 0} = System.cmd("asdf", ["which", name], stderr_to_stdout: true)
+      String.trim(resolved)
+    else
+      executable
+    end
+  end
+
+  defp custody_report(contents) do
+    pairs =
+      contents
+      |> String.split("\n", trim: true)
+      |> Enum.map(fn line ->
+        case String.split(line, "=", parts: 2) do
+          [name, value] when name != "" and value != "" -> {name, value}
+          _ -> flunk("pod custody report contains an empty or malformed result: #{inspect(line)}")
+        end
+      end)
+
+    assert length(pairs) == 4
+    report = Map.new(pairs)
+    assert map_size(report) == 4
+    assert Map.keys(report) |> Enum.sort() == ~w(durable_key pod_public_key schema signature)
+    report
   end
 
   defp start_launcher!(pods_root) do
