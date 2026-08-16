@@ -1,7 +1,15 @@
 # The reconciler reads, compares, and REPAIRS NOTHING
 
-> **Ruled by `commonplace-plan`, joining arc §4e, rung ②.** Base: **`cf430433`
-> on `main`** — the commit that landed the producer.
+> **Ruled by `commonplace-plan`, joining arc §4e, rung ②.** Base: **the commit
+> that adds this brief** — ⚠️ *not a sha.*
+>
+> ⛔ **WHY NOT A SHA, corrected after S95 caught it: a brief CANNOT NAME ITS OWN
+> COMMIT.** *This brief originally said `cf430433` — the producer landing — and
+> the builder actually started from `6e981434`, the commit adding this file. The
+> discrepancy was harmless here and reported honestly, but the number is wrong
+> BY CONSTRUCTION every time.* ⇒ ⭐ **A BRIEF MUST NAME THE RELATION, NOT THE
+> NUMBER.** *(The producer brief carried this convention; this one regressed
+> from it, which is why it is now written down as a reason rather than a habit.)*
 >
 > ⛔ **THIS ROUND RECONCILES NOTHING. It reads declarations, compares them to
 > receipts, and REPORTS disagreement.**
@@ -26,7 +34,10 @@ encoding it.** ⛔ ***A call site is not a dataflow.*** *(Same correction the
 producer brief carried about `Provisioner.Manifest.read`; it cost a re-measure
 there, so it is stated up front here.)*
 
-⚠️ **`reconcil*` ALREADY APPEARS IN 21 lib FILES** — sync agents, `store/merger`,
+⚠️ **`reconcil*` ALREADY APPEARS IN 21 FILES UNDER `apps/*/lib` — 20 of them in
+`apps/commonplace/lib`, plus one in `commonplace_bots`** *(selector:
+`grep -rl 'reconcil' apps --include=*.ex | grep /lib/`, measured on the base
+commit)* — sync agents, `store/merger`,
 `tree/merge`, `process/sweep`, `git_bridge/inbound`. **They are a DIFFERENT sense
 of the word and none of them is related to cells.** ⛔ **Do not import from them,
 do not extend them, and do not assume a shared vocabulary. Grep hits on
