@@ -71,8 +71,15 @@ stamp() {
   # excluded: it is a tracked BUILD ARTIFACT that is rebuilt routinely, and a
   # stamp that reads DIRTY because a binary was regenerated is the same wolf-cry.
   local changed
+  # CX-jyjc follow-up: `bin` is in scope because THE SUITE EXERCISES bin/ SCRIPTS
+  # -- measured: version_handshake_test, deploy_gap_test and deploy_gap_monitor_test
+  # invoke them, so a modified script can change what the suite measures. The
+  # stamp was previously blind to bin/ INCLUDING TO THIS FILE, and printed
+  # "clean vs HEAD" on a run where cp-suite-baseline itself was modified.
+  # Erring toward DIRTY is the safe direction: a spurious DIRTY gets
+  # investigated, a spurious CLEAN gets banked.
   changed="$(git -C "$REPO_ROOT" status --porcelain --untracked-files=no \
-             -- apps config ':(exclude)apps/commonplace_cli/commonplace_cli' 2>/dev/null)"
+             -- apps config bin ':(exclude)apps/commonplace_cli/commonplace_cli' 2>/dev/null)"
   # CX-jyjc: untracked TEST files change the population and must be visible.
   # Scoped to test dirs so untracked scratch elsewhere still cannot cry wolf.
   local new_tests
@@ -80,9 +87,9 @@ stamp() {
                -- 'apps/*/test/*.exs' 2>/dev/null)"
 
   if [[ -n "$changed" && -n "$new_tests" ]]; then
-    dirty="DIRTY — $(wc -l <<<"$changed") tracked file(s) under apps/ or config/ modified, AND $(wc -l <<<"$new_tests") UNTRACKED test file(s) adding tests"
+    dirty="DIRTY — $(wc -l <<<"$changed") tracked file(s) under apps/, config/ or bin/ modified, AND $(wc -l <<<"$new_tests") UNTRACKED test file(s) adding tests"
   elif [[ -n "$changed" ]]; then
-    dirty="DIRTY — $(wc -l <<<"$changed") tracked file(s) under apps/ or config/ modified vs HEAD"
+    dirty="DIRTY — $(wc -l <<<"$changed") tracked file(s) under apps/, config/ or bin/ modified vs HEAD"
   elif [[ -n "$new_tests" ]]; then
     dirty="DIRTY — $(wc -l <<<"$new_tests") UNTRACKED test file(s) under apps/*/test/ — these ADD TESTS and change the population"
   else
