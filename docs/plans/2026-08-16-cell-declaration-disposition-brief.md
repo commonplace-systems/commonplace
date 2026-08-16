@@ -50,7 +50,7 @@ this rung must not hand it back.*
 `:nothing_to_compare`.** ⇒ ⭐ **THE UNKNOWN IS WHETHER THE VOCABULARY PARTITIONS
 CLEANLY ONTO THE RULING.**
 
-**Two map by direct reading, and you should check even these:**
+**THREE map by direct reading, and you should check even these:**
 ```
 receipt_missing       declaration exists, ceremony has not finished  ⇒ row 1, WAIT
 declaration_missing   ceremony done, intent's record is stale        ⇒ row 2
@@ -64,12 +64,26 @@ name_mismatch         the declaration is AUTHORITATIVE for name (intent) — yet
                       receipt is LOOKED UP BY name, so what does disagreement even
                       denote here?
 declaration_invalid   unparseable. Not a race, not a lag, not a key conflict.
+
+AND ONE MORE THE EARLIER DRAFT OMITTED ENTIRELY:
+nothing_to_compare    reconcile/3 returns this (NOT a divergence list) when neither
+                      side exists. It is part of the result vocabulary, so the
+                      function must say what it is — or say why it has no row.
 ```
 
 ⇒ ⛔⛔ **PRE-DECLARED AS LEGITIMATE, SO THE ROUND CAN REACH IT WITHOUT IT LOOKING
 LIKE FAILURE: *"kind X does not belong to any of the three rows, and here is
-why"* IS A RESULT.** ⭐ **REPORT IT AND STOP — do not invent a fourth disposition
-to make the table close, and do not force a kind into a row it does not fit.**
+why"* IS A RESULT** — do not invent a fourth disposition to make the table close,
+and do not force a kind into a row it does not fit.
+
+⛔⛔ **BUT THE ESCAPE HATCH IS BOUNDED, AND THIS SENTENCE IS THE FIX FOR A REAL
+DEFECT IN AN EARLIER DRAFT: "report it and stop" MEANT *STOP MAPPING THAT KIND*,
+AND IT WAS READ — CORRECTLY, AS WRITTEN — AS *STOP THE ROUND*.** ⇒ ⭐ **REPORT
+THE UNMAPPABLE KINDS **AND STILL BUILD** THE FUNCTION FOR THE ONES THAT DO MAP.
+An unmappable kind is REFUSED BY NAME in the code, not an excuse to produce no
+code.** ⚠️ *An unbounded escape hatch is the remedy half of a brief being wrong
+while its symptom half is right — and the remedy is the only part a builder acts
+on.*
 ⚠️ ***A round that believes only a complete mapping counts will manufacture one.***
 ⭐ *The same shape as `HOST-ONLY IS THE CORRECT ANSWER` being pre-declared for the
 CI check: the difference between a correct answer and a cop-out is entirely
