@@ -9,6 +9,7 @@ defmodule Commonplace.Identity.SpawnCeremonyTest do
 
   use ExUnit.Case, async: false
 
+  alias Commonplace.Cell.{Declaration, DeclarationProducer}
   alias Commonplace.Crypto.{AgentKeys, Signing, SigningContext}
   alias Commonplace.Document.{ContentType, DocRef}
   alias Commonplace.Identity.{ClassRatification, Root, SpawnCeremony}
@@ -131,6 +132,7 @@ defmodule Commonplace.Identity.SpawnCeremonyTest do
       allowed_ref: allowed_ref,
       ceremony: ceremony,
       child_secrets: child_secrets,
+      data_dir: data_dir,
       extra_uuid: extra_uuid,
       parent: parent,
       parent_capability: parent_capability,
@@ -291,6 +293,83 @@ defmodule Commonplace.Identity.SpawnCeremonyTest do
     )
 
     IO.puts("ACTION_OUTCOMES_DIFFER=#{refusal != :ok}")
+  end
+
+  test "public receipt fields refuse proposed by status name and differ after key mint", ctx do
+    request = %{ctx.request | name: "public-receipt-watch"}
+    missing_secret_store = :"missing_child_secrets_#{System.unique_integer([:positive])}"
+
+    assert catch_exit(
+             SpawnCeremony.spawn_child(ctx.ceremony, request,
+               child_secret_store: missing_secret_store
+             )
+           )
+
+    reader =
+      start_supervised!(%{
+        id: :"i2_receipt_reader_#{System.unique_integer([:positive])}",
+        start:
+          {SpawnCeremony, :start_link,
+           [
+             [
+               root_uuid: ctx.root_uuid,
+               store: ctx.store,
+               signing_context: ctx.parent,
+               issuer_signing_context: ctx.parent
+             ]
+           ]}
+      })
+
+    proposed_outcome = SpawnCeremony.read_public_receipt(reader, request.name)
+
+    assert proposed_outcome ==
+             {:error, {:receipt_not_ready, "status", "requires key_minted or later"}}
+
+    assert {:ok, %{status: :active}} =
+             SpawnCeremony.spawn_child(reader, request, child_secret_store: ctx.child_secrets)
+
+    success_outcome = SpawnCeremony.read_public_receipt(reader, request.name)
+
+    assert {:ok,
+            %{
+              "child_uuid" => child_uuid,
+              "name" => "public-receipt-watch",
+              "public_key" => public_key,
+              "request_digest" => request_digest,
+              "status" => "active"
+            }} = success_outcome
+
+    assert is_binary(child_uuid)
+    assert is_binary(public_key)
+    assert is_binary(request_digest)
+
+    assert Map.keys(elem(success_outcome, 1)) ==
+             ~w(child_uuid name public_key request_digest status)
+
+    refute function_exported?(SpawnCeremony, :receipt_uuid, 2)
+    refute proposed_outcome == success_outcome
+
+    declaration_path = Path.join(ctx.data_dir, "public-receipt-watch.json")
+
+    assert {:ok,
+            %Declaration{
+              child_uuid: ^child_uuid,
+              name: "public-receipt-watch",
+              public_key: ^public_key
+            }} = DeclarationProducer.write(reader, request.name, declaration_path)
+
+    assert {:ok, declaration_document} = File.read(declaration_path)
+
+    assert {:ok,
+            %Declaration{
+              child_uuid: ^child_uuid,
+              name: "public-receipt-watch",
+              public_key: ^public_key
+            }} = Declaration.decode(declaration_document)
+
+    IO.puts("PROPOSED_PUBLIC_RECEIPT_OUTCOME=#{inspect(proposed_outcome)}")
+    IO.puts("ACTIVE_PUBLIC_RECEIPT_OUTCOME=#{inspect(success_outcome)}")
+    IO.puts("PUBLIC_RECEIPT_OUTCOMES_DIFFER=#{proposed_outcome != success_outcome}")
   end
 
   test "an over-broad requested scope refuses at certificate mint", ctx do

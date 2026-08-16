@@ -33,6 +33,8 @@ defmodule Commonplace.Identity.SpawnCeremony do
 
   @request_fields ~w(auditor_role budget child_workspace_id class_ref context_seed delegation_depth escalation_parent initial_cell lifetime mission name parent_delegation_depth sla)a
   @statuses ~w(proposed key_minted birth_signed activated active)
+  @public_receipt_fields ~w(child_uuid name request_digest status public_key)
+  @public_key_statuses ~w(key_minted birth_signed activated active)
 
   @doc "Start a parent-side ceremony coordinator with explicit fixture-compatible signing contexts."
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
@@ -40,6 +42,12 @@ defmodule Commonplace.Identity.SpawnCeremony do
   @doc "Run or resume one named spawn transaction."
   def spawn_child(server, request, opts \\ []),
     do: GenServer.call(server, {:spawn_child, request, opts}, :infinity)
+
+  @doc "Read the five named public receipt fields once key minting has landed."
+  @spec read_public_receipt(GenServer.server(), String.t()) ::
+          {:ok, %{required(String.t()) => term()}} | {:error, term()}
+  def read_public_receipt(server, name) when is_binary(name),
+    do: GenServer.call(server, {:read_public_receipt, name})
 
   @doc "The lifecycle gate used by writes and first-deployment admission."
   def authorize_action(server, request), do: GenServer.call(server, {:authorize_action, request})
@@ -69,6 +77,17 @@ defmodule Commonplace.Identity.SpawnCeremony do
   @impl true
   def handle_call({:spawn_child, request, opts}, _from, state) do
     {:reply, run(request, opts, state), state}
+  end
+
+  def handle_call({:read_public_receipt, name}, _from, state) do
+    result =
+      with {:ok, receipt} <- read_receipt(name, state),
+           :ok <- require_public_receipt_status(receipt),
+           {:ok, public_fields} <- select_public_receipt_fields(receipt) do
+        {:ok, public_fields}
+      end
+
+    {:reply, result, state}
   end
 
   def handle_call({:authorize_action, request}, _from, state) do
@@ -469,6 +488,22 @@ defmodule Commonplace.Identity.SpawnCeremony do
       {:error, :not_found} -> {:error, :receipt_not_found}
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  defp require_public_receipt_status(%{"status" => status})
+       when status in @public_key_statuses,
+       do: :ok
+
+  defp require_public_receipt_status(_receipt),
+    do: {:error, {:receipt_not_ready, "status", "requires key_minted or later"}}
+
+  defp select_public_receipt_fields(receipt) do
+    Enum.reduce_while(@public_receipt_fields, {:ok, %{}}, fn field, {:ok, selected} ->
+      case Map.fetch(receipt, field) do
+        {:ok, value} -> {:cont, {:ok, Map.put(selected, field, value)}}
+        :error -> {:halt, {:error, {:receipt_field_missing, field}}}
+      end
+    end)
   end
 
   defp update_receipt(receipt, state) do
