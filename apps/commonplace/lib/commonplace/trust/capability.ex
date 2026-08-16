@@ -53,7 +53,10 @@ defmodule Commonplace.Trust.Capability do
   @type claim :: %{
           verbs: [atom()],
           scope: scope(),
-          caveats: %{optional(:not_before) => DateTime.t() | nil, optional(:not_after) => DateTime.t() | nil}
+          caveats: %{
+            optional(:not_before) => DateTime.t() | nil,
+            optional(:not_after) => DateTime.t() | nil
+          }
         }
 
   defstruct [:issuer, :audience, :claim, :proof, :sig, :id]
@@ -109,10 +112,9 @@ defmodule Commonplace.Trust.Capability do
 
   @doc """
   Mint and sign a cert. Root issue: `parent_cid = nil`. For a delegation,
-  pass the parent struct as `opts[:parent]` to enforce
-  `child.claim ⊆ parent.claim` at mint time (defense-in-depth;
-  `verify_chain` re-checks). Returns `{:ok, cap}` or
-  `{:error, {:not_attenuation, reason}}`.
+  pass the parent struct as `opts[:parent]` to enforce the delegated-mint
+  rules at mint time (defense-in-depth; `verify_chain` re-checks). Returns
+  `{:ok, cap}` or `{:error, term()}`.
   """
   @spec issue(SigningContext.t(), keyed_identity(), claim(), binary() | nil, keyword()) ::
           {:ok, t()} | {:error, term()}
@@ -120,9 +122,12 @@ defmodule Commonplace.Trust.Capability do
     issuer = {issuer_ctx.identity_uuid, issuer_ctx.public_key}
     claim = normalize_claim(claim)
 
+    # A delegated mint has three parent/child gates: the parent may delegate,
+    # subtree scopes keep the same root, and the child attenuates verbs/scope/window.
     with :ok <- check_mint_policy(claim, opts),
          :ok <- check_subtree_delegation(claim, opts[:parent]),
-         :ok <- check_attenuation(claim, opts[:parent]) do
+         :ok <- check_attenuation(claim, opts[:parent]),
+         :ok <- check_delegation_permission(opts[:parent]) do
       cap = new(issuer, audience, claim, parent_cid) |> sign(issuer_ctx.private_key)
       {:ok, cap}
     end
@@ -222,6 +227,12 @@ defmodule Commonplace.Trust.Capability do
   # mint-time-guard audit in that module — this is the enumerated silent no-op.
   defp check_no_code_doc_in_scope({:subtree, _root}, _opts), do: :ok
 
+  defp check_delegation_permission(nil), do: :ok
+
+  defp check_delegation_permission(%__MODULE__{claim: %{verbs: verbs}}) do
+    if :delegate in verbs, do: :ok, else: {:error, :delegation_not_permitted}
+  end
+
   # CX-4u03 / A1 + D1: {:subtree, R} certs may be delegated only when the child
   # carries the parent's EXACT root. Root issue (parent == nil, citizenship's
   # case) remains allowed; mixed scope types remain refused at mint when the
@@ -270,7 +281,8 @@ defmodule Commonplace.Trust.Capability do
 
   # CX-0a9a (presence-carve, W1): a {:presence, identity_uuid} scope is a
   # single opaque identity, not a list — no sort/de-dup applies.
-  defp normalize_scope({:presence, identity_uuid} = scope) when is_binary(identity_uuid), do: scope
+  defp normalize_scope({:presence, identity_uuid} = scope) when is_binary(identity_uuid),
+    do: scope
 
   # CX-4u03 / A1 (subtree-scope): a {:subtree, root_uuid} scope is a single
   # opaque subtree-root uuid, not a list — like {:presence}, no sort/de-dup.
@@ -338,6 +350,7 @@ defmodule Commonplace.Trust.Capability do
   # Claim canonicalized to sorted lists (already normalized at new/4, but
   # re-applied so verify_id is robust against a hand-built struct).
   defp canonical_claim(claim) do
-    {Enum.sort(Enum.uniq(claim.verbs)), normalize_scope(claim.scope), normalize_caveats(claim.caveats)}
+    {Enum.sort(Enum.uniq(claim.verbs)), normalize_scope(claim.scope),
+     normalize_caveats(claim.caveats)}
   end
 end

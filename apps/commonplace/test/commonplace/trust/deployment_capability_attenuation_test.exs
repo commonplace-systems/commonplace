@@ -173,14 +173,16 @@ defmodule Commonplace.Trust.DeploymentCapabilityAttenuationTest do
              )
   end
 
-  test "arm 5: a child of a cell lacking delegate is not honoured", ctx do
+  test "arm 5: a child of a cell lacking delegate is refused at mint and verify", ctx do
     cell = mint_cell!(ctx, verbs: [:write])
     deployment_claim = deployment_claim(ctx)
 
     assert :delegate not in cell.claim.verbs and
-             Capability.attenuates?(deployment_claim, cell.claim)
+             same_root?(deployment_claim, cell.claim) and
+             verbs_subset?(deployment_claim, cell.claim) and
+             window_within?(deployment_claim, cell.claim)
 
-    assert {:ok, deployment} =
+    assert {:error, :delegation_not_permitted} =
              Capability.issue(
                ctx.cell_ctx,
                keyed(ctx.deployment_ctx),
@@ -188,6 +190,12 @@ defmodule Commonplace.Trust.DeploymentCapabilityAttenuationTest do
                cell.id,
                parent: cell
              )
+
+    deployment =
+      ctx.cell_ctx
+      |> keyed()
+      |> Capability.new(keyed(ctx.deployment_ctx), deployment_claim, cell.id)
+      |> Capability.sign(ctx.cell_ctx.private_key)
 
     :ok = store_capabilities(ctx.store, [cell, deployment])
 

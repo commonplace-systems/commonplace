@@ -197,7 +197,17 @@ defmodule Commonplace.Trust.SubtreeDelegationTest do
         parent: no_delegate_parent
       )
 
-    assert {:ok, no_delegate_child} = no_delegate_mint
+    assert {:error, :delegation_not_permitted} = no_delegate_mint
+
+    no_delegate_child =
+      Capability.new(
+        {no_delegate_ctx.identity_uuid, no_delegate_ctx.public_key},
+        {no_delegate_leaf_ctx.identity_uuid, no_delegate_leaf_ctx.public_key},
+        child_claim,
+        no_delegate_parent.id
+      )
+      |> Capability.sign(no_delegate_ctx.private_key)
+
     :ok = CommitStoreClient.store_capability(store, no_delegate_child)
 
     no_delegate_verify =
@@ -238,7 +248,7 @@ defmodule Commonplace.Trust.SubtreeDelegationTest do
       {2, "foreign-root child", foreign_root_mint},
       {3, "verb-widening child", widening_mint},
       {4, "looser-window child", looser_window_mint},
-      {5, "parent lacking :delegate", %{mint: :ok, verify: no_delegate_verify}},
+      {5, "parent lacking :delegate", %{mint: no_delegate_mint, verify: no_delegate_verify}},
       {6, "mixed scope chain",
        %{
          guarded_mint: mixed_scope_guarded_mint,

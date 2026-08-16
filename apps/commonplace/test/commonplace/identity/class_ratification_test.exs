@@ -81,7 +81,7 @@ defmodule Commonplace.Identity.ClassRatificationTest do
         steward,
         {steward.identity_uuid, steward.public_key},
         %{
-          verbs: [:read, :write],
+          verbs: [:read, :write, :delegate],
           scope: {:docs, [allowed_ref.uuid]},
           caveats: %{not_before: nil, not_after: nil}
         }
