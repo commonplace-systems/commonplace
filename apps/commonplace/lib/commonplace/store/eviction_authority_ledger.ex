@@ -16,6 +16,43 @@ defmodule Commonplace.Store.EvictionAuthorityLedger do
 
   @type position :: <<_::256>>
 
+  @spec prepare_activation(CubDB.t(), binary(), <<_::256>>) ::
+          {:ok, position(), [tuple()]} | {:error, term()}
+  def prepare_activation(db, anchor_id, ratification_cid)
+      when is_binary(anchor_id) and is_binary(ratification_cid) and
+             byte_size(ratification_cid) == 32 do
+    case activation(db, anchor_id) do
+      {:ok, %{position: position, ratification_cid: ^ratification_cid}} ->
+        {:ok, position, []}
+
+      {:ok, %{ratification_cid: existing_ratification_cid}} ->
+        {:error, {:eviction_anchor_already_activated, anchor_id, existing_ratification_cid}}
+
+      :none ->
+        sequence = current_sequence(db) + 1
+
+        {position, event_rows} =
+          event_rows(sequence, :activation, anchor_id, anchor_id, %{
+            ratification_cid: ratification_cid
+          })
+
+        rows =
+          event_rows ++
+            [
+              {@sequence_key, sequence},
+              {{:eviction_anchor_activation_position, anchor_id}, position}
+            ]
+
+        {:ok, position, rows}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  def prepare_activation(_db, _anchor_id, _ratification_cid),
+    do: {:error, :invalid_eviction_anchor_ratification_cid}
+
   @spec prepare_registration(CubDB.t(), binary(), binary()) ::
           {:ok, position(), [tuple()]} | {:error, term()}
   def prepare_registration(db, anchor_id, tombstone_id) do
@@ -24,16 +61,15 @@ defmodule Commonplace.Store.EvictionAuthorityLedger do
         {:ok, position, []}
 
       :none ->
-        with :none <- retirement_position(db, anchor_id) do
-          {sequence, activation_rows} = prepare_activation(db, anchor_id)
-          registration_sequence = sequence + 1
+        with :none <- retirement_position(db, anchor_id),
+             {:ok, _activation} <- require_anchor_activation(db, anchor_id) do
+          registration_sequence = current_sequence(db) + 1
 
           {position, registration_rows} =
             event_rows(registration_sequence, :registration, anchor_id, tombstone_id)
 
           rows =
-            activation_rows ++
-              registration_rows ++
+            registration_rows ++
               [
                 {@sequence_key, registration_sequence},
                 {{:sla_tombstone_position, tombstone_id}, position}
@@ -43,6 +79,9 @@ defmodule Commonplace.Store.EvictionAuthorityLedger do
         else
           {:ok, retirement} ->
             {:error, {:eviction_anchor_already_retired, anchor_id, retirement}}
+
+          {:error, reason} ->
+            {:error, reason}
         end
     end
   end
@@ -55,21 +94,37 @@ defmodule Commonplace.Store.EvictionAuthorityLedger do
         {:ok, position, []}
 
       :none ->
-        {sequence, activation_rows} = prepare_activation(db, anchor_id)
-        retirement_sequence = sequence + 1
+        with {:ok, _activation} <- require_anchor_activation(db, anchor_id) do
+          retirement_sequence = current_sequence(db) + 1
 
-        {position, retirement_rows} =
-          event_rows(retirement_sequence, :retirement, anchor_id, anchor_id)
+          {position, retirement_rows} =
+            event_rows(retirement_sequence, :retirement, anchor_id, anchor_id)
 
-        rows =
-          activation_rows ++
+          rows =
             retirement_rows ++
-            [
-              {@sequence_key, retirement_sequence},
-              {{:eviction_anchor_retirement_position, anchor_id}, position}
-            ]
+              [
+                {@sequence_key, retirement_sequence},
+                {{:eviction_anchor_retirement_position, anchor_id}, position}
+              ]
 
-        {:ok, position, rows}
+          {:ok, position, rows}
+        end
+    end
+  end
+
+  @spec activation(CubDB.t(), binary()) :: {:ok, map()} | :none | {:error, term()}
+  def activation(db, anchor_id) do
+    with {:ok, position} <- activation_position(db, anchor_id),
+         sequence when is_integer(sequence) <-
+           CubDB.get(db, {:eviction_authority_position_sequence, position}),
+         %{kind: :activation, anchor_id: ^anchor_id, position: ^position} = event <-
+           CubDB.get(db, {:eviction_authority_event, sequence}),
+         ratification_cid when is_binary(ratification_cid) and byte_size(ratification_cid) == 32 <-
+           Map.get(event, :ratification_cid) do
+      {:ok, event}
+    else
+      :none -> :none
+      _other -> {:error, :invalid_eviction_anchor_activation_state}
     end
   end
 
@@ -103,23 +158,20 @@ defmodule Commonplace.Store.EvictionAuthorityLedger do
 
   def before?(_db, _first, _second), do: {:error, :unknown_eviction_authority_position}
 
-  defp prepare_activation(db, anchor_id) do
-    case activation_position(db, anchor_id) do
-      {:ok, _position} ->
-        {current_sequence(db), []}
-
-      :none ->
-        sequence = current_sequence(db) + 1
-        {position, rows} = event_rows(sequence, :activation, anchor_id, anchor_id)
-
-        {sequence,
-         rows ++
-           [{{:eviction_anchor_activation_position, anchor_id}, position}]}
+  defp require_anchor_activation(db, anchor_id) do
+    case activation(db, anchor_id) do
+      {:ok, activation} -> {:ok, activation}
+      :none -> {:error, {:eviction_anchor_activation_required, anchor_id}}
+      {:error, reason} -> {:error, reason}
     end
   end
 
-  defp event_rows(sequence, kind, anchor_id, subject_id) do
-    event = %{sequence: sequence, kind: kind, anchor_id: anchor_id, subject_id: subject_id}
+  defp event_rows(sequence, kind, anchor_id, subject_id, attributes \\ %{}) do
+    event =
+      Map.merge(
+        %{sequence: sequence, kind: kind, anchor_id: anchor_id, subject_id: subject_id},
+        attributes
+      )
 
     position =
       :crypto.hash(

@@ -248,25 +248,32 @@ defmodule Commonplace.Store.SlaTombstone do
   defp authorized_revocation?(_revocation, _anchor), do: false
 
   defp valid_at_store_position(anchor, tombstone, store) do
-    with {:ok, activation} <-
-           required_position(
-             CommitStoreClient.get_eviction_anchor_activation_position(store, anchor.id),
-             :eviction_anchor_activation_position_required
-           ),
+    with {:ok, activation} <- require_anchor_activation(anchor, store),
          {:ok, registration} <-
            required_position(
              CommitStoreClient.get_sla_tombstone_position(store, tombstone.id),
              :tombstone_store_position_required
            ),
-         :ok <-
-           position_before(
-             store,
-             activation,
-             registration,
-             {:tombstone_not_after_anchor_activation, activation, registration}
-           ) do
+         :ok <- registered_after_anchor_activation(store, registration, activation) do
       valid_before_retirement(anchor, registration, store)
     end
+  end
+
+  defp require_anchor_activation(anchor, store) do
+    case CommitStoreClient.get_eviction_anchor_activation_position(store, anchor.id) do
+      {:ok, activation} when is_binary(activation) -> {:ok, activation}
+      :none -> {:error, {:eviction_anchor_activation_required, anchor.id}}
+      _other -> {:error, :invalid_eviction_anchor_activation_state}
+    end
+  end
+
+  defp registered_after_anchor_activation(store, registration, activation) do
+    position_before(
+      store,
+      activation,
+      registration,
+      {:tombstone_registered_before_anchor_activation, registration, activation}
+    )
   end
 
   defp valid_before_retirement(anchor, registration, store) do

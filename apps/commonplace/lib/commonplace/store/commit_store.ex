@@ -912,6 +912,16 @@ defmodule Commonplace.Store.CommitStore do
     Commonplace.Store.EvictionAuthorityLedger.activation_position(resolve_db(server), anchor_id)
   end
 
+  @doc "Activate a configured eviction anchor, citing the ratification CID."
+  def activate_eviction_anchor(server \\ __MODULE__, anchor_id, ratification_cid) do
+    GenServer.call(server, {:activate_eviction_anchor, anchor_id, ratification_cid})
+  end
+
+  @doc "Read an eviction anchor's ratification-citing activation event."
+  def get_eviction_anchor_activation(server \\ __MODULE__, anchor_id) do
+    Commonplace.Store.EvictionAuthorityLedger.activation(resolve_db(server), anchor_id)
+  end
+
   @doc "Read the store-assigned retirement position for an eviction anchor."
   def get_eviction_anchor_retirement_position(server \\ __MODULE__, anchor_id) do
     Commonplace.Store.EvictionAuthorityLedger.retirement_position(resolve_db(server), anchor_id)
@@ -2207,6 +2217,29 @@ defmodule Commonplace.Store.CommitStore do
   def handle_call({:get_eviction_anchor_activation_position, anchor_id}, _from, state) do
     reply =
       Commonplace.Store.EvictionAuthorityLedger.activation_position(state.db, anchor_id)
+
+    {:reply, reply, state}
+  end
+
+  @impl true
+  def handle_call({:get_eviction_anchor_activation, anchor_id}, _from, state) do
+    reply = Commonplace.Store.EvictionAuthorityLedger.activation(state.db, anchor_id)
+    {:reply, reply, state}
+  end
+
+  @impl true
+  def handle_call({:activate_eviction_anchor, anchor_id, ratification_cid}, _from, state) do
+    reply =
+      with {:ok, _anchor} <- configured_eviction_anchor(Commonplace.Trust.config(), anchor_id),
+           {:ok, position, rows} <-
+             Commonplace.Store.EvictionAuthorityLedger.prepare_activation(
+               state.db,
+               anchor_id,
+               ratification_cid
+             ) do
+        if rows != [], do: :ok = CubDB.put_multi(state.db, rows)
+        {:ok, position}
+      end
 
     {:reply, reply, state}
   end

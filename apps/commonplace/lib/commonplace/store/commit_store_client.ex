@@ -505,6 +505,33 @@ defmodule Commonplace.Store.CommitStoreClient do
     end
   end
 
+  def activate_eviction_anchor(server \\ CommitStore, anchor_id, ratification_cid) do
+    case remote_node() do
+      {:ok, node} ->
+        GenServer.call(
+          {CommitStore, node},
+          {:activate_eviction_anchor, anchor_id, ratification_cid}
+        )
+
+      :local ->
+        CommitStore.activate_eviction_anchor(
+          normalize_server(server),
+          anchor_id,
+          ratification_cid
+        )
+    end
+  end
+
+  def get_eviction_anchor_activation(server \\ CommitStore, anchor_id) do
+    case remote_node() do
+      {:ok, node} ->
+        GenServer.call({CommitStore, node}, {:get_eviction_anchor_activation, anchor_id})
+
+      :local ->
+        CommitStore.get_eviction_anchor_activation(normalize_server(server), anchor_id)
+    end
+  end
+
   def get_eviction_anchor_retirement_position(server \\ CommitStore, anchor_id) do
     case remote_node() do
       {:ok, node} ->
