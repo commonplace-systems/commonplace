@@ -188,7 +188,17 @@ defmodule Commonplace.Runner.Launcher do
 
   @impl true
   def terminate(_reason, state) do
-    Enum.each(state.pods, fn {_ref, %{port: port, os_pid: os_pid, pod_home: pod_home}} ->
+    Enum.each(state.pods, fn {_ref, %{port: port, os_pid: os_pid, pod_home: pod_home} = running} ->
+      # A pod alive at launcher termination never exited on its own: the caller gave
+      # up on it. exit-status reporting cannot fire for it (it is about to be killed,
+      # not to exit), so this is the only place its captured output can surface.
+      # A HANGING pod was previously as invisible as a failing one used to be.
+      # Explicit `reap/1` stays silent -- it is the normal end of a healthy pod.
+      Logger.error(
+        "runner pod still running at launcher termination (pod_home=#{pod_home}); " <>
+          "captured output tail: #{inspect(String.trim(Map.get(running, :output, "")))}"
+      )
+
       _ = stop_namespace(port, os_pid)
       _ = File.rm_rf(pod_home)
     end)

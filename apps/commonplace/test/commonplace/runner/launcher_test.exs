@@ -363,6 +363,28 @@ defmodule Commonplace.Runner.LauncherTest do
   # a test timeout. Both arms are asserted here: a failing pod must SAY WHY, and a
   # succeeding pod must stay quiet -- a reporter that fires on healthy exits is
   # noise that trains readers to ignore it.
+  test "a pod still running when the launcher stops has its output surfaced", ctx do
+    launcher = start_launcher!(ctx.pods_root)
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:ok, _handle} =
+                 Launcher.launch(launcher, manifest(ctx), profile(),
+                   repo: ctx.source_repo,
+                   sha: ctx.sha,
+                   principal_pubkey: ctx.principal_pubkey,
+                   invocation: ["/bin/sh", "-c", "echo HANG-MARKER >&2; sleep 300"]
+                 )
+
+        # Give the launcher a chance to consume the port's output before stopping it.
+        Process.sleep(200)
+        :ok = GenServer.stop(launcher)
+      end)
+
+    assert log =~ "still running at launcher termination"
+    assert log =~ "HANG-MARKER"
+  end
+
   test "a pod that exits non-zero reports its status and its own output", ctx do
     launcher = start_launcher!(ctx.pods_root)
 
@@ -445,15 +467,43 @@ defmodule Commonplace.Runner.LauncherTest do
                invocation: [
                  "/bin/sh",
                  "-c",
+                 # Write, then STAY ALIVE until reaped. The launcher removes the whole
+                 # pod home -- data_dir included -- the moment the pod exits, so a pod
+                 # that exits right after writing races the test's read and loses it
+                 # roughly one time in six. Every other fixture worker already sleeps
+                 # for exactly this reason; this one exited instantly and paid for it.
                  "ls -a /tmp > \"$COMMONPLACE_DATA_DIR/tmp-listing\"; " <>
-                   "echo ran > \"$COMMONPLACE_DATA_DIR/probe-done\""
+                   "echo ran > \"$COMMONPLACE_DATA_DIR/probe-done\"; sleep 300"
                ]
              )
 
     data_dir = data_dir(handle)
 
     # POSITIVE CONTROL: until this file exists, the listing below proves nothing.
-    assert {:ok, _} = await_file(Path.join(data_dir, "probe-done"))
+    # Deadline deliberately under ExUnit's 60s: a timeout here must fail as an
+    # ASSERTION -- leaving budget for teardown, where a still-running pod's captured
+    # output is the only diagnostic this test can leave behind in CI.
+    case await_file(
+           Path.join(data_dir, "probe-done"),
+           System.monotonic_time(:millisecond) + 30_000
+         ) do
+      {:ok, _} ->
+        :ok
+
+      {:error, :timeout} ->
+        # Diagnostic dump for an intermittent: enumerate every observable before dying,
+        # because "probe-done absent" has more than one cause and they all look alike.
+        pod_home = Path.dirname(data_dir)
+
+        flunk("""
+        probe-done never appeared. Observables at failure:
+          pod alive?      #{inspect(Launcher.alive?(handle))}
+          data_dir ls     #{inspect(File.ls(data_dir))}
+          pod_home ls     #{inspect(File.ls(pod_home))}
+          pods_root ls    #{inspect(File.ls(ctx.pods_root))}
+        """)
+    end
+
     assert {:ok, listing} = await_file(Path.join(data_dir, "tmp-listing"))
 
     entries = String.split(listing, "\n", trim: true)
@@ -461,6 +511,8 @@ defmodule Commonplace.Runner.LauncherTest do
     refute marker in entries,
            "host /tmp leaked into the pod: #{length(entries)} entries, " <>
              "including #{inspect(Enum.take(entries, 5))}"
+
+    assert :ok = Launcher.reap(handle)
   end
 
   defp launch!(launcher, ctx, worker \\ "worker.sh") do
