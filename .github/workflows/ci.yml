@@ -158,30 +158,44 @@ jobs:
 
         continue-on-error: true
 
-      # ⛔⛔ THIS STEP CHANGES THE RUNNER'S SECURITY POSTURE. IT IS NOT A PROBE.
+      # ⛔ jes 2026-08-17: "don't relax AppArmor. find another way or remove
+      # that test." The sysctl -w step that lived here is GONE. Its removal puts
+      # the pod tests back to failing on this runner until a decision is made —
+      # that cost is declared, not discovered.
       #
-      # It was briefly hidden inside the step above, which is named
-      # "diagnostic, never a gate" and marked continue-on-error — while
-      # `sysctl -w` MUTATES the machine and every later step inherits it. A name
-      # asserting a property the thing does not have, in my own workflow, on the
-      # same night that law was banked twice. The pod tests were passing because
-      # of a side effect of a step whose name said it only observed.
+      # CANDIDATE TEST for "another way", diagnostic only. Ubuntu's restriction
+      # is not "userns forbidden" — it is "userns for PROFILED binaries only":
+      # this box ships 93 AppArmor profiles whose content is `userns,` under
+      # flags=(unconfined), which is the distro's own grant mechanism. This step
+      # measures whether that mechanism works for bwrap on the runner.
       #
-      # WHY IT IS NEEDED, measured: the pod fence requires an unprivileged user
-      # namespace. ubuntu-latest ships kernel.apparmor_restrict_unprivileged_userns=1
-      # and bwrap --unshare-user fails outright; with it at 0 the same arm passes.
-      # The dev host is the same Ubuntu 24.04 with the sysctl already relaxed —
-      # which is the whole reason "green on host, red in CI" existed.
-      #
-      # ⚠️ THIS RELAXES AN APPARMOR HARDENING DEFAULT ON THE RUNNER. That is a
-      # posture decision, not a repair. It is here so the decision is VISIBLE and
-      # revertible in one step, rather than an invisible consequence of a probe.
-      - name: Relax unprivileged-userns restriction (POSTURE CHANGE, required by the pod fence)
+      # ⚠️ IT MUTATES AND THEN RESTORES: loads a scoped profile, tests, REMOVES
+      # it, and proves the removal with a must-fail control — so the test step
+      # below runs on the runner AS FOUND, and this step's name does not lie
+      # about a side effect. (A step here previously mutated the runner under a
+      # "diagnostic" label; that is the defect this shape exists to avoid.)
+      - name: Candidate test — scoped AppArmor userns grant for bwrap (loads, tests, REMOVES)
+        continue-on-error: true
         run: |
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          echo "now: $(sysctl -n kernel.apparmor_restrict_unprivileged_userns)"
+          BW="$(command -v bwrap)"
+          cat > /tmp/bwrap-userns.profile <<EOF
+          abi <abi/4.0>,
+          include <tunables/global>
+          profile bwrap-userns $BW flags=(unconfined) {
+            userns,
+          }
+          EOF
+          sudo apparmor_parser -r /tmp/bwrap-userns.profile \
+            && echo "PROFILE_LOAD: OK" || echo "PROFILE_LOAD: FAILED"
+          bwrap --unshare-user --ro-bind / / -- true \
+            && echo "SCOPED_NS_USER: OK" || echo "SCOPED_NS_USER: FAILED"
           bwrap --unshare-all --ro-bind / / -- true \
-            && echo "POSTURE_NS_ALL: OK" || { echo "POSTURE_NS_ALL: FAILED"; exit 1; }
+            && echo "SCOPED_NS_ALL: OK" || echo "SCOPED_NS_ALL: FAILED"
+          sudo apparmor_parser -R /tmp/bwrap-userns.profile \
+            && echo "PROFILE_REMOVED: OK" || echo "PROFILE_REMOVED: FAILED"
+          bwrap --unshare-user --ro-bind / / -- true \
+            && echo "POSTREMOVE_NS_USER: OK (⛔ REMOVAL DID NOT TAKE)" \
+            || echo "POSTREMOVE_NS_USER: FAILED (✅ control — runner restored as found)"
 
       - name: Compile (warnings as errors)
         run: mix compile --warnings-as-errors
