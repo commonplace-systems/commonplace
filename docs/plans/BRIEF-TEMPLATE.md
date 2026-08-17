@@ -42,6 +42,19 @@
   finding. LINE 2 OF THE FILE READ "Sol runner WITH EGRESS — approved by jes".
   Reading ONE hit would have inverted the conclusion.** ⇒ ⭐ *Seventh instance
   that day; the first six inflated a number, this one REVERSED A CONCLUSION.*
+- ⛔⛔⛔ **YOU CANNOT MEASURE AUTHORIZATION FROM A MECHANISM. A fence tells you
+  what it DOES; it can never tell you whether anyone APPROVED it doing that —
+  that fact lives in the RECORD, not in the code.** ⇒ **Any claim that something
+  is unexamined, unratified, or "privilege by proximity" owes a second step:
+  FIND THE DECISION RECORD, OR STATE THAT YOU LOOKED AND THERE WAS NONE.**
+  *Absence of an approval is a finding; not having looked for one is not.*
+- ⛔⛔ **AND THE TRAP THAT DEFEATS "read the hits": THE FILTER THAT MAKES CODE
+  READABLE IS THE FILTER THAT DELETES THE RECORD.** ⚠️ *2026-08-17: `sed -n
+  '120,160p' file | grep -v '^\s*#'` discarded 26 comment lines — including the
+  two that read "~/.codex/auth.json is deliberately NOT masked: codex needs it
+  to authenticate, so it is a known, accepted residual." The claim built on that
+  reading was retracted.* ⇒ ⭐ **WHEN THE QUESTION IS *WHY* RATHER THAN *WHAT*,
+  READ IT RAW.** *Nothing in the command announces which question you are asking.*
 - ⛔⛔ **AND THE WARNING THAT MAKES IT DANGEROUS: A RIGOROUS MEASUREMENT OF THE
   WRONG QUESTION IS MORE PERSUASIVE THAN A SLOPPY ONE.** *That finding shipped
   with a correct must-fail control attached — the control validated the
