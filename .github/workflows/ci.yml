@@ -202,6 +202,27 @@ jobs:
             && { echo "SCOPE_CONTROL: FAILED — an UNPROFILED binary got a userns; the machine is open"; exit 1; } \
             || echo "SCOPE_CONTROL: OK — the grant names one binary; everything unprofiled stays denied"
 
+      # ARM 4 — the mediator relay's LAST unmeasured dependency: can a process
+      # INSIDE the pod's network namespace bind, connect, and echo on
+      # 127.0.0.1? The relay design (pod-local TCP → host unix socket) requires
+      # exactly this, and nothing else on the board measures it.
+      #
+      # Runs AFTER the grant step on purpose: without the userns grant this
+      # runner cannot create the namespace at all, and the arm would report on
+      # the grant rather than on loopback. Read-only: everything happens inside
+      # a throwaway namespace. Diagnostic, never a gate.
+      - name: Probe pod loopback usability (arm 4, diagnostic)
+        continue-on-error: true
+        run: |
+          bwrap --unshare-all --ro-bind / / --dev /dev --proc /proc -- python3 -c '
+          import socket
+          s=socket.socket(); s.bind(("127.0.0.1",0)); s.listen(1)
+          port=s.getsockname()[1]
+          c=socket.socket(); c.connect(("127.0.0.1",port))
+          conn,_=s.accept(); c.send(b"x"); assert conn.recv(1)==b"x"
+          print("ARM4_LOOPBACK: USABLE (bound, connected, echoed on 127.0.0.1:%d)"%port)
+          ' || echo "ARM4_LOOPBACK: UNUSABLE (exit $?)"
+
       - name: Compile (warnings as errors)
         run: mix compile --warnings-as-errors
 
