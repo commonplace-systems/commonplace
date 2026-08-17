@@ -35,6 +35,18 @@
   entries; another quoted a ruling naming three causes that mapped to two kinds.
   Cheapest review there is, and it applies to QUOTED RULINGS as well as your own
   prose.*
+- ⛔⛔ **A COUNT IS EVIDENCE OF QUANTITY, NEVER OF MEANING.** *If a conclusion
+  depends on what the hits SAY, the hits are the evidence and the count is not.*
+  ⚠️ **2026-08-16: `grep -ci egress` → 6, no `--unshare-net` anywhere ⇒ concluded
+  "the word lives only in prose and the filename" and escalated it as a security
+  finding. LINE 2 OF THE FILE READ "Sol runner WITH EGRESS — approved by jes".
+  Reading ONE hit would have inverted the conclusion.** ⇒ ⭐ *Seventh instance
+  that day; the first six inflated a number, this one REVERSED A CONCLUSION.*
+- ⛔⛔ **AND THE WARNING THAT MAKES IT DANGEROUS: A RIGOROUS MEASUREMENT OF THE
+  WRONG QUESTION IS MORE PERSUASIVE THAN A SLOPPY ONE.** *That finding shipped
+  with a correct must-fail control attached — the control validated the
+  comparison MADE, never the one that should have been made, and its rigour is
+  what made the wrong claim credible.*
 - ⚠️ **A call site is not a dataflow.** *Check whether a "reader" is really
   verifying its own write.*
 - ⚠️ **Name collisions:** if a word already means something else in this tree,
