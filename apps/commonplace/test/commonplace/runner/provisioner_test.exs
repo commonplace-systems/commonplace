@@ -299,6 +299,19 @@ defmodule Commonplace.Runner.ProvisionerTest do
     %{certs: [], authors_code: authors_code, scope_note: nil}
   end
 
+  # The spec carries the profile's declared posture, and "none" means the argv
+  # NEVER re-shares the network: --unshare-all present, --share-net absent. The
+  # absence assertion is the enforcement -- it is what a future posture must
+  # deliberately break when it arrives with its mechanism.
+  test "network posture none: spec carries it and the argv re-shares nothing", ctx do
+    pod_home = Path.join(ctx.pods_root, "cell-network-none")
+    spec = Provisioner.sandbox_spec(profile(), pod_home)
+
+    assert spec.network == "none"
+    assert "--unshare-all" in spec.argv
+    refute "--share-net" in spec.argv
+  end
+
   defp profile do
     %PodProfile{
       id: "runner-local",

@@ -21,6 +21,41 @@ defmodule Commonplace.Runner.PodProfileTest do
               }} = PodProfile.decode(Jason.encode!(@valid_document))
     end
 
+    # The network posture is a CLOSED SET, never a boolean, and the profile -- not
+    # the launch caller -- selects it. Three arms: absent normalizes to the strictest
+    # posture explicitly (no consumer ever reasons about a missing key); a member of
+    # the set decodes; a non-member is REFUSED AT VALIDATION with the set named --
+    # so a posture the provisioner cannot build dies at decode, not at launch.
+    test "absent network normalizes to the explicit strictest posture" do
+      assert {:ok, %PodProfile{network: "none"}} =
+               PodProfile.decode(Jason.encode!(@valid_document))
+    end
+
+    test "a declared member of the posture set decodes" do
+      document = Map.put(@valid_document, "network", "none")
+      assert {:ok, %PodProfile{network: "none"}} = PodProfile.decode(Jason.encode!(document))
+    end
+
+    test "a posture outside the closed set is refused with the set named" do
+      # "mediator-socket" is the RULED next member; it is refused today because the
+      # mechanism that would enforce it does not exist yet. When that mechanism lands,
+      # this test changes DELIBERATELY, in the same commit.
+      document = Map.put(@valid_document, "network", "mediator-socket")
+
+      assert {:error, {:invalid_profile, "network", reason}} =
+               PodProfile.decode(Jason.encode!(document))
+
+      assert reason =~ ~s(["none"])
+      assert reason =~ "mediator-socket"
+    end
+
+    test "a boolean network posture is refused, not coerced" do
+      document = Map.put(@valid_document, "network", true)
+
+      assert {:error, {:invalid_profile, "network", _reason}} =
+               PodProfile.decode(Jason.encode!(document))
+    end
+
     test "invalid JSON is refused as a decode error" do
       assert {:error, reason} = PodProfile.decode("{not-json")
       assert reason =~ "pod profile document"

@@ -6,6 +6,16 @@ defmodule Commonplace.Runner.PodProfile do
   `sandbox`, and `services`. The first three are non-empty strings. `services`
   is a map from a non-empty service name to its declared version string.
 
+  `network` is optional and declares the pod's network posture from a closed
+  set. It is never a boolean and never a free-form value: a posture is a NAMED
+  arrangement the provisioner knows how to build, and the profile -- not the
+  launch caller -- is what selects it. An absent field means `"none"`, which is
+  the strictest posture and the only one that exists today (`--unshare-all`,
+  no network re-shared). The vocabulary is deliberately closed so that a new
+  posture can only arrive together with the mechanism that enforces it --
+  a value the provisioner cannot build is refused at validation, not
+  discovered at launch.
+
   `match_requires/2` compares a declared `requires` map with that declared
   inventory. It does not inspect, probe, start, or provision services. It
   returns `:ok` only when every requirement is satisfied; otherwise it returns
@@ -21,14 +31,25 @@ defmodule Commonplace.Runner.PodProfile do
   """
 
   @enforce_keys [:id, :harness, :sandbox, :services]
-  defstruct [:id, :harness, :sandbox, :services]
+  defstruct [:id, :harness, :sandbox, :services, network: "none"]
+
+  # The closed set of network postures. Extend ONLY together with the
+  # provisioner mechanism that builds the new posture (see
+  # commonplace-plan docs/plans/2026-08-17-pod-model-credential.md for the
+  # ruled next member, "mediator-socket": --unshare-net plus one bind-mounted
+  # pathname socket -- its admission here waits on that mechanism landing).
+  @network_postures ~w(none)
 
   @type t :: %__MODULE__{
           id: String.t(),
           harness: String.t(),
           sandbox: String.t(),
-          services: %{String.t() => String.t()}
+          services: %{String.t() => String.t()},
+          network: String.t()
         }
+
+  @spec network_postures() :: [String.t()]
+  def network_postures, do: @network_postures
 
   @type match_result :: :ok | {:refused, [String.t()]}
 
@@ -49,13 +70,15 @@ defmodule Commonplace.Runner.PodProfile do
     with {:ok, id} <- required_string(document, "id"),
          {:ok, harness} <- required_string(document, "harness"),
          {:ok, sandbox} <- required_string(document, "sandbox"),
-         {:ok, services} <- required_services(document) do
+         {:ok, services} <- required_services(document),
+         {:ok, network} <- optional_network(document) do
       {:ok,
        %__MODULE__{
          id: id,
          harness: harness,
          sandbox: sandbox,
-         services: services
+         services: services,
+         network: network
        }}
     end
   end
@@ -110,6 +133,24 @@ defmodule Commonplace.Runner.PodProfile do
       {:ok, services}
     else
       invalid("services", "must contain non-empty service names and version strings")
+    end
+  end
+
+  defp optional_network(document) do
+    case fetch(document, "network") do
+      :error ->
+        # Absence selects the STRICTEST posture, explicitly normalized here so no
+        # consumer ever reasons about a missing key.
+        {:ok, "none"}
+
+      {:ok, value} when value in @network_postures ->
+        {:ok, value}
+
+      {:ok, value} ->
+        invalid(
+          "network",
+          "must be one of #{inspect(@network_postures)}, got #{inspect(value)}"
+        )
     end
   end
 

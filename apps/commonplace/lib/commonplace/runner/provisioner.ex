@@ -60,6 +60,7 @@ defmodule Commonplace.Runner.Provisioner do
          {:ok, profile} <- PodProfile.validate(profile),
          :ok <- safe_pod_id(manifest.id),
          :ok <- supported_sandbox(profile),
+         :ok <- supported_network(profile),
          :ok <- names_only_hosting_check(manifest, profile),
          {:ok, principal_pubkey} <- birth_authority_input(manifest, opts),
          {:ok, paths} <- provision_paths(manifest, opts) do
@@ -164,6 +165,7 @@ defmodule Commonplace.Runner.Provisioner do
       masks: masks,
       environment: environment,
       profile_sandbox: profile.sandbox,
+      network: profile.network,
       workdir: checkout_dir
     }
   end
@@ -582,6 +584,15 @@ defmodule Commonplace.Runner.Provisioner do
       true ->
         :ok
     end
+  end
+
+  # The posture "none" is enforced by the base argv itself: `--unshare-all` with no
+  # network re-shared. Every other name is refused here until the mechanism that
+  # builds it exists -- a posture must never be a label the argv does not implement.
+  defp supported_network(%PodProfile{network: "none"}), do: :ok
+
+  defp supported_network(%PodProfile{network: network}) do
+    {:error, {:invalid_profile, "network", "unsupported network posture #{inspect(network)}"}}
   end
 
   defp supported_sandbox(%PodProfile{sandbox: "beam-isolate"}), do: :ok
