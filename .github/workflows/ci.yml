@@ -155,19 +155,33 @@ jobs:
           bwrap --unshare-all  --ro-bind / / -- true \
             && echo "NS_ALL: OK"  || echo "NS_ALL: FAILED"
 
-          # ⭐ THE LEVER TEST — does relaxing the sysctl actually restore the
-          # capability on THIS runner? Proving it here, diagnostically, before
-          # anyone writes it into the workflow as policy. Relaxing an AppArmor
-          # hardening default is a decision, not a fix, and it should be made
-          # against a measurement rather than an expectation.
-          echo "--- flipping kernel.apparmor_restrict_unprivileged_userns to 0 ---"
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || echo "FLIP: REFUSED"
-          echo "after: $(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo UNSET)"
-          bwrap --unshare-user --ro-bind / / -- true \
-            && echo "POSTFLIP_NS_USER: OK" || echo "POSTFLIP_NS_USER: FAILED"
-          bwrap --unshare-all  --ro-bind / / -- true \
-            && echo "POSTFLIP_NS_ALL: OK"  || echo "POSTFLIP_NS_ALL: FAILED"
+
         continue-on-error: true
+
+      # ⛔⛔ THIS STEP CHANGES THE RUNNER'S SECURITY POSTURE. IT IS NOT A PROBE.
+      #
+      # It was briefly hidden inside the step above, which is named
+      # "diagnostic, never a gate" and marked continue-on-error — while
+      # `sysctl -w` MUTATES the machine and every later step inherits it. A name
+      # asserting a property the thing does not have, in my own workflow, on the
+      # same night that law was banked twice. The pod tests were passing because
+      # of a side effect of a step whose name said it only observed.
+      #
+      # WHY IT IS NEEDED, measured: the pod fence requires an unprivileged user
+      # namespace. ubuntu-latest ships kernel.apparmor_restrict_unprivileged_userns=1
+      # and bwrap --unshare-user fails outright; with it at 0 the same arm passes.
+      # The dev host is the same Ubuntu 24.04 with the sysctl already relaxed —
+      # which is the whole reason "green on host, red in CI" existed.
+      #
+      # ⚠️ THIS RELAXES AN APPARMOR HARDENING DEFAULT ON THE RUNNER. That is a
+      # posture decision, not a repair. It is here so the decision is VISIBLE and
+      # revertible in one step, rather than an invisible consequence of a probe.
+      - name: Relax unprivileged-userns restriction (POSTURE CHANGE, required by the pod fence)
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          echo "now: $(sysctl -n kernel.apparmor_restrict_unprivileged_userns)"
+          bwrap --unshare-all --ro-bind / / -- true \
+            && echo "POSTURE_NS_ALL: OK" || { echo "POSTURE_NS_ALL: FAILED"; exit 1; }
 
       - name: Compile (warnings as errors)
         run: mix compile --warnings-as-errors
