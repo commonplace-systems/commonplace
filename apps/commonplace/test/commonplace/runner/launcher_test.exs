@@ -418,6 +418,51 @@ defmodule Commonplace.Runner.LauncherTest do
     end
   end
 
+  # The spec-level mask tests assert that an argv ENTRY EXISTS. That is shape equality,
+  # and a mask that FAILS TO APPLY satisfies it just as well as one that applied: for
+  # four days every pod died with "bwrap: Can't mkdir /tmp/tmux-1001: Read-only file
+  # system" while those assertions stayed green. This asserts the EFFECT, and it is
+  # machine-independent -- it holds where the host directory exists and where it does
+  # not, which is exactly the difference that hid the bug.
+  #
+  # The pod writes its listing to data_dir rather than to stderr, and the test awaits a
+  # separate done-marker FIRST. That ordering is the point: a bare `refute leaked` would
+  # pass if the pod never ran at all, which is an absence with more than one cause.
+  test "the pod sees an empty /tmp regardless of what the host has there", ctx do
+    marker = "cp-fence-marker-#{System.unique_integer([:positive])}"
+    host_marker = Path.join("/tmp", marker)
+    File.mkdir_p!(host_marker)
+    on_exit(fn -> File.rm_rf(host_marker) end)
+    assert File.dir?(host_marker), "positive control: the marker must exist ON THE HOST"
+
+    launcher = start_launcher!(ctx.pods_root)
+
+    assert {:ok, handle} =
+             Launcher.launch(launcher, manifest(ctx), profile(),
+               repo: ctx.source_repo,
+               sha: ctx.sha,
+               principal_pubkey: ctx.principal_pubkey,
+               invocation: [
+                 "/bin/sh",
+                 "-c",
+                 "ls -a /tmp > \"$COMMONPLACE_DATA_DIR/tmp-listing\"; " <>
+                   "echo ran > \"$COMMONPLACE_DATA_DIR/probe-done\""
+               ]
+             )
+
+    data_dir = data_dir(handle)
+
+    # POSITIVE CONTROL: until this file exists, the listing below proves nothing.
+    assert {:ok, _} = await_file(Path.join(data_dir, "probe-done"))
+    assert {:ok, listing} = await_file(Path.join(data_dir, "tmp-listing"))
+
+    entries = String.split(listing, "\n", trim: true)
+
+    refute marker in entries,
+           "host /tmp leaked into the pod: #{length(entries)} entries, " <>
+             "including #{inspect(Enum.take(entries, 5))}"
+  end
+
   defp launch!(launcher, ctx, worker \\ "worker.sh") do
     assert {:ok, handle} =
              Launcher.launch(launcher, manifest(ctx), profile(),

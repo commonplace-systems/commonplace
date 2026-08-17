@@ -106,9 +106,6 @@ defmodule Commonplace.Runner.Provisioner do
       %{name: :ssh, operation: :tmpfs, path: Path.join(home_dir, ".ssh")},
       %{name: :github_cli, operation: :tmpfs, path: Path.join(home_dir, ".config/gh")},
       %{name: :claude_channels, operation: :tmpfs, path: Path.join(home_dir, ".claude/channels")},
-      %{name: :tmux_socket_dir, operation: :tmpfs, path: "/tmp/tmux-#{uid}"},
-      %{name: :claude_chat_socket_dir, operation: :tmpfs, path: "/tmp/claude-chat"},
-      %{name: :tsx_socket_dir, operation: :tmpfs, path: "/tmp/tsx-#{uid}"},
       %{name: :user_runtime_ipc, operation: :tmpfs, path: "/run/user/#{uid}"}
     ]
 
@@ -125,6 +122,23 @@ defmodule Commonplace.Runner.Provisioner do
         "/dev",
         "--proc",
         "/proc",
+        # `/tmp` is emptied wholesale, and it must happen HERE -- before the pod's own
+        # binds, which may live under `/tmp` and would otherwise be covered by it.
+        #
+        # This replaces per-socket masks for `/tmp/tmux-<uid>`, `/tmp/claude-chat` and
+        # `/tmp/tsx-<uid>`. Those enumerated a parent they could mask outright, which
+        # was wrong twice over:
+        #
+        #   FRAGILE     `--tmpfs <path>` needs its mount point to EXIST, and under
+        #               `--ro-bind / /` bwrap cannot mkdir one. Those directories exist
+        #               on a developer box only because a tmux or a chat socket happens
+        #               to be running. On a machine without them the pod died with
+        #               "bwrap: Can't mkdir /tmp/tmux-1001: Read-only file system" --
+        #               i.e. the fence depended on ambient state nothing declared.
+        #   INCOMPLETE  an enumeration hides only what someone remembered. Emptying the
+        #               parent hides every present and future channel under it.
+        "--tmpfs",
+        "/tmp",
         "--bind",
         checkout_dir,
         checkout_dir,

@@ -145,7 +145,7 @@ defmodule Commonplace.Runner.ProvisionerTest do
     assert :ok = Provisioner.assert_enforcing_posture(enforcing)
   end
 
-  test "sandbox spec constructs in all six standing masks and the profile shape", ctx do
+  test "sandbox spec constructs in the standing masks and the profile shape", ctx do
     pod_home = Path.join(ctx.pods_root, "cell-provisioned")
     spec = Provisioner.sandbox_spec(profile(), pod_home)
 
@@ -167,11 +167,19 @@ defmodule Commonplace.Runner.ProvisionerTest do
              :ssh,
              :github_cli,
              :claude_channels,
-             :tmux_socket_dir,
-             :claude_chat_socket_dir,
-             :tsx_socket_dir,
              :user_runtime_ipc
            ]
+
+    # The three /tmp socket masks are gone because `--tmpfs /tmp` in the base subsumes
+    # them. Assert the ORDER, not just the presence: the pod's own binds may live under
+    # /tmp, so a tmpfs applied after them would cover the pod's data directory instead
+    # of the host's channels.
+    tmp_at =
+      Enum.find_index(Enum.chunk_every(spec.argv, 2, 1, :discard), &(&1 == ["--tmpfs", "/tmp"]))
+
+    first_bind = Enum.find_index(spec.argv, &(&1 == "--bind"))
+    assert tmp_at, "the base must empty /tmp wholesale"
+    assert tmp_at < first_bind, "/tmp must be emptied BEFORE the pod's binds land under it"
 
     for mask <- spec.masks do
       assert mask.operation in [:ro_bind_null, :tmpfs]
