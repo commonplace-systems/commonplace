@@ -6,13 +6,30 @@ on:
   pull_request:
     branches: [main]
 
+# TWO JOBS, DELIBERATELY. They were one until 2026-08-17, and the single job ran
+# the cheap format gate BEFORE the expensive test gate — so a formatting slip
+# ABORTED the run before a single test executed, and presented as the same red
+# dot as a test failure. Two entirely different failures, one indistinguishable
+# signal.
+#
+# That is not a nuisance, it is a masking GENERATOR: it hid a real formatting
+# break inside a four-day-old test red on 2026-08-17, and it would keep doing so
+# after any repair. Format and tests must be able to fail INDEPENDENTLY and
+# report INDEPENDENTLY.
+#
+# ⛔ Do not re-merge these jobs to save a deps.get.
+#
+# ⚠️ NOTE FOR WHOEVER ADDS BRANCH PROTECTION: as of 2026-08-17 `main` has NO
+# protection rules and NO rulesets, so nothing is keyed to a job name and this
+# split broke nothing. If required status checks are ever added, there are now
+# TWO jobs to name — `format` and `test` — not one.
+
 jobs:
-  test:
+  format:
     runs-on: ubuntu-latest
 
     env:
       MIX_ENV: test
-      YELIXER_REQUIRE_YJS_ORACLE: "1"
 
     steps:
       - uses: actions/checkout@v4
@@ -35,6 +52,8 @@ jobs:
           key: ${{ runner.os }}-mix-${{ hashFiles('mix.lock') }}
           restore-keys: ${{ runner.os }}-mix-
 
+      # apps/commonplace_web/.formatter.exs uses import_deps, so the formatter
+      # needs deps fetched even though it compiles nothing.
       - name: Install dependencies
         run: mix deps.get
 
@@ -48,6 +67,58 @@ jobs:
       - name: Check formatting of pushed files
         if: github.event_name == 'push'
         run: bin/cp-format-changed "${{ github.event.before }}" "${{ github.sha }}"
+
+  test:
+    runs-on: ubuntu-latest
+
+    env:
+      MIX_ENV: test
+      YELIXER_REQUIRE_YJS_ORACLE: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27.3"
+          elixir-version: "1.18.4"
+
+      - name: Cache deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-${{ hashFiles('mix.lock') }}
+          restore-keys: ${{ runner.os }}-mix-
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      # THE POD FENCE SHELLS OUT TO bwrap AND ubuntu-latest DOES NOT SHIP IT.
+      #
+      # Measured 2026-08-17: CI was 71.2% green over the 66 runs before
+      # dfa6fd99 ("Merge the pod fence"), and 0.0% green over the 134 runs
+      # after it — not one green run in four days. 100% of those failures were
+      # {:error, :bubblewrap_not_found}, first-red and current alike. The
+      # binary was simply absent and this workflow never installed it.
+      #
+      # ⛔ The verify line is not ceremony. The whole reason that red survived
+      # four days is that a missing binary reported itself accurately, deep
+      # inside a test summary nobody opened. A silent install failure must fail
+      # HERE, by name, not 3500 tests later as an unexplained suite red.
+      - name: Install bubblewrap (the pod fence requires it)
+        # update and install in ONE step on purpose: a separate update step
+        # whose failure is tolerated leaves a stale index for the install
+        # that follows.
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          bwrap --version
 
       - name: Compile (warnings as errors)
         run: mix compile --warnings-as-errors
