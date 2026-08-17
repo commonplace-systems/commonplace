@@ -158,24 +158,32 @@ jobs:
 
         continue-on-error: true
 
-      # ⛔ jes 2026-08-17: "don't relax AppArmor. find another way or remove
-      # that test." The sysctl -w step that lived here is GONE. Its removal puts
-      # the pod tests back to failing on this runner until a decision is made —
-      # that cost is declared, not discovered.
+      # ⛔⛔ THIS STEP CHANGES WHAT bwrap MAY DO. IT IS A POSTURE STEP, NAMED AS ONE.
       #
-      # CANDIDATE TEST for "another way", diagnostic only. Ubuntu's restriction
-      # is not "userns forbidden" — it is "userns for PROFILED binaries only":
-      # this box ships 93 AppArmor profiles whose content is `userns,` under
-      # flags=(unconfined), which is the distro's own grant mechanism. This step
-      # measures whether that mechanism works for bwrap on the runner.
+      # THE FULL SEQUENCE, because a bare "we load an AppArmor profile in CI" is
+      # exactly the line a careful person reverts:
+      #   · the pod fence needs an unprivileged user namespace; ubuntu-latest
+      #     ships apparmor_restrict_unprivileged_userns=1 and bwrap fails outright
+      #   · sysctl -w …=0 was measured working and DECLINED by jes ("don't relax
+      #     AppArmor")
+      #   · THIS approach — a profile granting `userns,` to bwrap alone, the
+      #     restriction's own grant mechanism, 93 shipped precedents on the dev
+      #     box — was measured working with a restore control, offered, and
+      #     APPROVED by jes 2026-08-17 ("if commonplace's idea is safe let's do it").
       #
-      # ⚠️ IT MUTATES AND THEN RESTORES: loads a scoped profile, tests, REMOVES
-      # it, and proves the removal with a must-fail control — so the test step
-      # below runs on the runner AS FOUND, and this step's name does not lie
-      # about a side effect. (A step here previously mutated the runner under a
-      # "diagnostic" label; that is the defect this shape exists to avoid.)
-      - name: Candidate test — scoped AppArmor userns grant for bwrap (loads, tests, REMOVES)
-        continue-on-error: true
+      # THE SAFETY CASE, each point measured not asserted:
+      #   ① the hardening default is untouched — the sysctl is never written
+      #   ② the grant names ONE binary; the SCOPE_CONTROL below re-proves it
+      #     EVERY RUN by showing an unprofiled copy of bwrap is still denied
+      #   ③ bwrap was unconfined before this profile and is unconfined-but-named
+      #     after it: flags=(unconfined) confines nothing new and releases
+      #     nothing — the ONLY delta is the userns grant
+      #   ④ the runner is ephemeral and per-job; the grant dies with the VM
+      #
+      # ⛔ NOT continue-on-error: if the grant does not take, every pod test
+      # after it would fail for a reason unrelated to the code — so this step
+      # fails the build ITSELF, by name, at the point of failure.
+      - name: Register bwrap under AppArmor's userns grant (posture step, approved by jes 2026-08-17)
         run: |
           BW="$(command -v bwrap)"
           cat > /tmp/bwrap-userns.profile <<EOF
@@ -185,17 +193,14 @@ jobs:
             userns,
           }
           EOF
-          sudo apparmor_parser -r /tmp/bwrap-userns.profile \
-            && echo "PROFILE_LOAD: OK" || echo "PROFILE_LOAD: FAILED"
+          sudo apparmor_parser -r /tmp/bwrap-userns.profile
           bwrap --unshare-user --ro-bind / / -- true \
-            && echo "SCOPED_NS_USER: OK" || echo "SCOPED_NS_USER: FAILED"
-          bwrap --unshare-all --ro-bind / / -- true \
-            && echo "SCOPED_NS_ALL: OK" || echo "SCOPED_NS_ALL: FAILED"
-          sudo apparmor_parser -R /tmp/bwrap-userns.profile \
-            && echo "PROFILE_REMOVED: OK" || echo "PROFILE_REMOVED: FAILED"
-          bwrap --unshare-user --ro-bind / / -- true \
-            && echo "POSTREMOVE_NS_USER: OK (⛔ REMOVAL DID NOT TAKE)" \
-            || echo "POSTREMOVE_NS_USER: FAILED (✅ control — runner restored as found)"
+            && echo "GRANT_TOOK: OK" \
+            || { echo "GRANT_TOOK: FAILED — pod tests below would fail for a non-code reason"; exit 1; }
+          cp "$BW" /tmp/bwrap-unprofiled
+          /tmp/bwrap-unprofiled --unshare-user --ro-bind / / -- true \
+            && { echo "SCOPE_CONTROL: FAILED — an UNPROFILED binary got a userns; the machine is open"; exit 1; } \
+            || echo "SCOPE_CONTROL: OK — the grant names one binary; everything unprofiled stays denied"
 
       - name: Compile (warnings as errors)
         run: mix compile --warnings-as-errors
