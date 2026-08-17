@@ -358,6 +358,66 @@ defmodule Commonplace.Runner.LauncherTest do
     assert Regex.match?(prohibited, positive_control)
   end
 
+  # A pod's stdout/stderr and exit status were captured by the port and discarded,
+  # so bubblewrap could refuse with a precise diagnostic and the only observable was
+  # a test timeout. Both arms are asserted here: a failing pod must SAY WHY, and a
+  # succeeding pod must stay quiet -- a reporter that fires on healthy exits is
+  # noise that trains readers to ignore it.
+  test "a pod that exits non-zero reports its status and its own output", ctx do
+    launcher = start_launcher!(ctx.pods_root)
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:ok, handle} =
+                 Launcher.launch(launcher, manifest(ctx), profile(),
+                   repo: ctx.source_repo,
+                   sha: ctx.sha,
+                   principal_pubkey: ctx.principal_pubkey,
+                   invocation: ["/bin/sh", "-c", "echo POD-DIAGNOSTIC-MARKER >&2; exit 3"]
+                 )
+
+        wait_until_dead!(handle)
+      end)
+
+    assert log =~ "exited with status 3"
+    assert log =~ "POD-DIAGNOSTIC-MARKER"
+  end
+
+  test "a pod that exits zero reports nothing", ctx do
+    launcher = start_launcher!(ctx.pods_root)
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:ok, handle} =
+                 Launcher.launch(launcher, manifest(ctx), profile(),
+                   repo: ctx.source_repo,
+                   sha: ctx.sha,
+                   principal_pubkey: ctx.principal_pubkey,
+                   invocation: ["/bin/sh", "-c", "exit 0"]
+                 )
+
+        wait_until_dead!(handle)
+      end)
+
+    refute log =~ "exited with status"
+  end
+
+  defp wait_until_dead!(handle, deadline \\ nil) do
+    deadline = deadline || System.monotonic_time(:millisecond) + 15_000
+
+    cond do
+      not Launcher.alive?(handle) ->
+        :ok
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        flunk("pod never exited; the reporter under test could not have run")
+
+      true ->
+        Process.sleep(20)
+        wait_until_dead!(handle, deadline)
+    end
+  end
+
   defp launch!(launcher, ctx, worker \\ "worker.sh") do
     assert {:ok, handle} =
              Launcher.launch(launcher, manifest(ctx), profile(),

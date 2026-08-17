@@ -30,9 +30,12 @@ defmodule Commonplace.Runner.Launcher do
 
   use GenServer
 
+  require Logger
+
   alias Commonplace.Runner.{PodHandle, PodProfile, Provisioner, RunRecipe}
 
   @lock_file ".runner.lock"
+  @output_tail_bytes 4096
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) when is_list(opts),
@@ -85,7 +88,7 @@ defmodule Commonplace.Runner.Launcher do
         pod_home: pod.pod_home
       }
 
-      running = %{port: port, os_pid: os_pid, pod_home: pod.pod_home}
+      running = %{port: port, os_pid: os_pid, pod_home: pod.pod_home, output: ""}
       {:reply, {:ok, handle}, put_in(state.pods[ref], running)}
     else
       {:error, {:launch_failed, pod_home, reason}} ->
@@ -121,7 +124,7 @@ defmodule Commonplace.Runner.Launcher do
         pod_home: pod.pod_home
       }
 
-      running = %{port: port, os_pid: os_pid, pod_home: pod.pod_home}
+      running = %{port: port, os_pid: os_pid, pod_home: pod.pod_home, output: ""}
       {:reply, {:ok, handle}, put_in(state.pods[ref], running)}
     else
       {:error, {:launch_failed, pod_home, reason}} ->
@@ -161,16 +164,23 @@ defmodule Commonplace.Runner.Launcher do
   end
 
   @impl true
-  def handle_info({port, {:data, _output}}, state) do
-    if pod_port?(state.pods, port), do: {:noreply, state}, else: {:noreply, state}
+  def handle_info({port, {:data, output}}, state) do
+    case find_ref(state.pods, port) do
+      nil ->
+        {:noreply, state}
+
+      ref ->
+        {:noreply, update_in(state.pods[ref].output, &append_tail(&1, output))}
+    end
   end
 
-  def handle_info({port, {:exit_status, _status}}, state) do
+  def handle_info({port, {:exit_status, status}}, state) do
     case pop_port(state.pods, port) do
       {nil, _pods} ->
         {:noreply, state}
 
-      {%{pod_home: pod_home}, pods} ->
+      {%{pod_home: pod_home} = running, pods} ->
+        _ = report_exit(pod_home, status, Map.get(running, :output, ""))
         :ok = remove_pod_home(pod_home)
         {:noreply, %{state | pods: pods}}
     end
@@ -340,7 +350,37 @@ defmodule Commonplace.Runner.Launcher do
     end
   end
 
-  defp pod_port?(pods, port), do: Enum.any?(pods, fn {_ref, pod} -> pod.port == port end)
+  defp find_ref(pods, port) do
+    case Enum.find(pods, fn {_ref, pod} -> pod.port == port end) do
+      nil -> nil
+      {ref, _pod} -> ref
+    end
+  end
+
+  # A pod's stdout and stderr are merged by `:stderr_to_stdout` and were previously
+  # discarded. They are the only channel through which bubblewrap can explain a
+  # refusal, so the tail is retained -- bounded, because a chatty pod must not grow
+  # a long-lived launcher's heap.
+  defp append_tail(existing, chunk) do
+    combined = existing <> chunk
+    size = byte_size(combined)
+
+    if size > @output_tail_bytes,
+      do: binary_part(combined, size - @output_tail_bytes, @output_tail_bytes),
+      else: combined
+  end
+
+  # A non-zero exit is the pod telling us why it could not run. Reporting it is the
+  # difference between a diagnosis and `{:error, :timeout}`: the pod home is removed
+  # immediately after, so anything not said here is unrecoverable.
+  defp report_exit(_pod_home, 0, _output), do: :ok
+
+  defp report_exit(pod_home, status, output) do
+    Logger.error(
+      "runner pod exited with status #{status} (pod_home=#{pod_home}); " <>
+        "captured output tail: #{inspect(String.trim(output))}"
+    )
+  end
 
   defp pop_port(pods, port) do
     case Enum.find(pods, fn {_ref, pod} -> pod.port == port end) do
