@@ -595,10 +595,44 @@ defmodule Commonplace.Runner.Provisioner do
       else: invalid(field, "must be #{inspect(expected)} at birth; got #{inspect(actual)}")
   end
 
+  @doc false
+  # Test-only accessor: mask_argv/1 is private and the operation set is the
+  # security-relevant surface, so it is exercised directly rather than inferred
+  # from a full spec.
+  def mask_argv_for_test(mask), do: mask_argv(mask)
+
   defp mask_argv(%{operation: :ro_bind_null, path: path}),
     do: ["--ro-bind", "/dev/null", path]
 
   defp mask_argv(%{operation: :tmpfs, path: path}), do: ["--tmpfs", path]
+
+  # `:ro_bind_source` — bind SOURCE read-only over PATH.
+  #
+  # WHY THIS IS NOT A CAPABILITY INCREASE, AND WHAT THAT DEPENDS ON.
+  #
+  # The other two operations can only ever REMOVE access: `:ro_bind_null` binds
+  # /dev/null over a path, `:tmpfs` blanks a directory. This one REDIRECTS A
+  # NAME, which sounds like it can grant. Under this sandbox it cannot, for one
+  # reason and one reason only:
+  #
+  #   THE BASE IS `--ro-bind / /` — EVERY HOST PATH IS ALREADY READABLE INSIDE.
+  #
+  # So binding X over Y exposes nothing that was not already exposed, and
+  # `--ro-bind` forces read-only so it cannot grant a write either. It changes
+  # what a NAME RESOLVES TO, nothing more.
+  #
+  # ⛔ THAT ARGUMENT IS LOAD-BEARING AND IT IS ABOUT THE BASE, NOT ABOUT THIS
+  # CLAUSE. If `sandbox_spec/2` ever stops binding all of `/` read-only — moving
+  # to a selective allowlist, say — THIS OPERATION BECOMES A GRANT and must be
+  # re-reviewed. `sandbox_spec_ro_root_test` fails on purpose if that happens.
+  #
+  # It exists because the Sol wrapper's eleventh mask entry is a SUBSTITUTION
+  # (a guard script bound over a binary) and this spec could not express it, so
+  # the two mask lists could not converge. They are the same list maintained
+  # twice and had already diverged by exactly that one item.
+  defp mask_argv(%{operation: :ro_bind_source, source: source, path: path})
+       when is_binary(source) and is_binary(path),
+       do: ["--ro-bind", source, path]
 
   defp mkdir_p(path, field) do
     case File.mkdir_p(path) do

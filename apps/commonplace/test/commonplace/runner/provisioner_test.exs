@@ -325,4 +325,32 @@ defmodule Commonplace.Runner.ProvisionerTest do
     {output, 0} = System.cmd("git", args, cd: dir, stderr_to_stdout: true)
     String.trim(output)
   end
+  test "ro_bind_source binds a source read-only over a path" do
+    argv =
+      Provisioner.mask_argv_for_test(%{
+        operation: :ro_bind_source,
+        source: "/opt/guard/bd-guard.sh",
+        path: "/usr/local/bin/bd"
+      })
+
+    assert argv == ["--ro-bind", "/opt/guard/bd-guard.sh", "/usr/local/bin/bd"]
+  end
+
+  test "sandbox_spec_ro_root: the base binds ALL of / read-only" do
+    # ⛔ THIS TEST GUARDS AN ARGUMENT, NOT A BEHAVIOUR.
+    #
+    # `:ro_bind_source` is safe ONLY because every host path is already readable
+    # inside the sandbox, so redirecting a name exposes nothing new. That premise
+    # is `--ro-bind / /` in the base argv. If the base ever becomes selective,
+    # the premise dies and `:ro_bind_source` silently becomes a GRANT.
+    #
+    # So this fails on purpose at the moment the argument stops holding, rather
+    # than leaving the reasoning in a comment nobody re-derives.
+    spec = Provisioner.sandbox_spec(profile(), "/tmp/pod-ro-root-premise")
+
+    assert ["--ro-bind", "/", "/"] in Enum.chunk_every(spec.argv, 3, 1, :discard),
+           "the base no longer binds all of / read-only — :ro_bind_source is now a GRANT " <>
+             "and must be re-reviewed before this test is changed"
+  end
+
 end
