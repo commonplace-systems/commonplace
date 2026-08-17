@@ -120,6 +120,34 @@ jobs:
           sudo apt-get install -y bubblewrap
           bwrap --version
 
+      # DIAGNOSTIC ONLY — never a gate. `|| true` on the smoke test is deliberate:
+      # the tests are the gate, and a probe that can fail the build is a second
+      # gate nobody ratified.
+      #
+      # WHY THIS EXISTS: the pod fence needs an unprivileged USER namespace
+      # (`--unshare-all` implies `--unshare-user`). Ubuntu 23.10+ restricts that
+      # by AppArmor policy, and ubuntu-latest is 24.04. The dev host is also
+      # 24.04 but has kernel.apparmor_restrict_unprivileged_userns EXPLICITLY
+      # SET TO 0 — i.e. relaxed away from the distro default of 1.
+      #
+      # So "green on host, red in CI" has a candidate cause that is ONE SYSCTL,
+      # and this prints it by name rather than leaving it to be inferred from a
+      # timeout. If the smoke test fails here, the pod cannot run on this runner
+      # and the failing pod tests are a HOST-CAPABILITY question, not a defect.
+      - name: Probe sandbox capabilities (diagnostic, never a gate)
+        run: |
+          . /etc/os-release; echo "os: $PRETTY_NAME"
+          for k in kernel.apparmor_restrict_unprivileged_userns \
+                   kernel.unprivileged_userns_clone \
+                   user.max_user_namespaces; do
+            printf '%s = %s\n' "$k" "$(sysctl -n $k 2>/dev/null || echo UNSET)"
+          done
+          echo "--- bwrap user-namespace smoke test (the fence's actual requirement) ---"
+          bwrap --unshare-all --ro-bind / / -- true \
+            && echo "USERNS_SMOKE: OK" \
+            || echo "USERNS_SMOKE: FAILED (exit $?)"
+        continue-on-error: true
+
       - name: Compile (warnings as errors)
         run: mix compile --warnings-as-errors
 
