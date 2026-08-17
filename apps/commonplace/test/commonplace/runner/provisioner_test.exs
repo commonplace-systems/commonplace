@@ -325,6 +325,7 @@ defmodule Commonplace.Runner.ProvisionerTest do
     {output, 0} = System.cmd("git", args, cd: dir, stderr_to_stdout: true)
     String.trim(output)
   end
+
   test "ro_bind_source binds a source read-only over a path" do
     argv =
       Provisioner.mask_argv_for_test(%{
@@ -352,5 +353,4 @@ defmodule Commonplace.Runner.ProvisionerTest do
            "the base no longer binds all of / read-only — :ro_bind_source is now a GRANT " <>
              "and must be re-reviewed before this test is changed"
   end
-
 end
