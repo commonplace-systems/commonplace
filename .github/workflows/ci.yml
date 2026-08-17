@@ -142,10 +142,18 @@ jobs:
                    user.max_user_namespaces; do
             printf '%s = %s\n' "$k" "$(sysctl -n $k 2>/dev/null || echo UNSET)"
           done
-          echo "--- bwrap user-namespace smoke test (the fence's actual requirement) ---"
-          bwrap --unshare-all --ro-bind / / -- true \
-            && echo "USERNS_SMOKE: OK" \
-            || echo "USERNS_SMOKE: FAILED (exit $?)"
+          # ⛔ ONE ARM PER NAMESPACE. The first version of this probe was named
+          # USERNS_SMOKE and ran `--unshare-all`, which bundles user AND net AND
+          # the rest — so its failure was fully explained by a LOOPBACK error
+          # with userns never implicated. A name asserting a property nothing
+          # enforces, in the one place a mislabel becomes a wrong diagnosis.
+          echo "--- bwrap namespace arms, one per namespace ---"
+          bwrap --unshare-user --ro-bind / / -- true \
+            && echo "NS_USER: OK" || echo "NS_USER: FAILED"
+          bwrap --unshare-net  --ro-bind / / -- true \
+            && echo "NS_NET: OK"  || echo "NS_NET: FAILED"
+          bwrap --unshare-all  --ro-bind / / -- true \
+            && echo "NS_ALL: OK"  || echo "NS_ALL: FAILED"
         continue-on-error: true
 
       - name: Compile (warnings as errors)
