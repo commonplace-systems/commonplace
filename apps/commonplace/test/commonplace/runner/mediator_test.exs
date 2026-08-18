@@ -60,7 +60,7 @@ defmodule Commonplace.Runner.MediatorTest do
 
     response = request(sockets["deployment-a"], token(ctx, "deployment-b"))
 
-    assert_refusal(response, 409, "identity_mismatch")
+    assert_refusal(response, 400, "identity_mismatch")
     assert vendor_requests(vendor_state, "/v1/responses") == []
   end
 
@@ -69,7 +69,7 @@ defmodule Commonplace.Runner.MediatorTest do
 
     response = request(sockets["deployment-a"], token(ctx, "deployment-a", -1))
 
-    assert_refusal(response, 403, "expired_token")
+    assert_refusal(response, 400, "expired_token")
     assert vendor_requests(vendor_state, "/v1/responses") == []
   end
 
@@ -80,7 +80,7 @@ defmodule Commonplace.Runner.MediatorTest do
 
     response = request(sockets["deployment-a"], revoked)
 
-    assert_refusal(response, 401, "revoked_token")
+    assert_refusal(response, 400, "revoked_token")
     assert vendor_requests(vendor_state, "/v1/responses") == []
   end
 
@@ -110,7 +110,7 @@ defmodule Commonplace.Runner.MediatorTest do
     assert refresh_tokens(vendor_state) == ["refresh-old"]
 
     Agent.update(vendor_state, &Map.put(&1, :mode, :always_401))
-    assert_refusal(request(sockets["deployment-a"], valid), 422, "vendor_unauthorized")
+    assert_refusal(request(sockets["deployment-a"], valid), 400, "vendor_unauthorized")
     assert refresh_tokens(vendor_state) == ["refresh-old", "refresh-new"]
     assert Mediator.request_count(mediator, "deployment-a") == 3
   end
@@ -151,7 +151,7 @@ defmodule Commonplace.Runner.MediatorTest do
           retry: false
         )
 
-      assert_refusal(response, 404, "unmapped_request")
+      assert_refusal(response, 400, "unmapped_request")
     end)
 
     assert vendor_requests(vendor_state, "/v1/responses") == []

@@ -110,7 +110,7 @@ defmodule Commonplace.Runner.Mediator do
     result =
       cond do
         MapSet.member?(state.revoked_tokens, token) ->
-          {:refusal, 401, "revoked_token"}
+          {:refusal, 400, "revoked_token"}
 
         true ->
           verify_signed_token(token, state.public_key)
@@ -145,11 +145,11 @@ defmodule Commonplace.Runner.Mediator do
     if "text/event-stream" in Plug.Conn.get_req_header(conn, "accept") do
       :ok
     else
-      {:refusal, 404, "unmapped_request"}
+      {:refusal, 400, "unmapped_request"}
     end
   end
 
-  defp mapped_request(_conn), do: {:refusal, 404, "unmapped_request"}
+  defp mapped_request(_conn), do: {:refusal, 400, "unmapped_request"}
 
   defp bearer_token(conn) do
     case Plug.Conn.get_req_header(conn, "authorization") do
@@ -171,7 +171,7 @@ defmodule Commonplace.Runner.Mediator do
       if expires_at > System.system_time(:second) do
         {:ok, deployment_id}
       else
-        {:refusal, 403, "expired_token"}
+        {:refusal, 400, "expired_token"}
       end
     else
       _other -> {:refusal, 400, "invalid_token"}
@@ -181,7 +181,7 @@ defmodule Commonplace.Runner.Mediator do
   end
 
   defp same_deployment(deployment_id, deployment_id), do: :ok
-  defp same_deployment(_token_id, _socket_id), do: {:refusal, 409, "identity_mismatch"}
+  defp same_deployment(_token_id, _socket_id), do: {:refusal, 400, "identity_mismatch"}
 
   defp read_entire_body(conn, acc \\ []) do
     case Plug.Conn.read_body(conn) do
@@ -201,7 +201,7 @@ defmodule Commonplace.Runner.Mediator do
         case GenServer.call(mediator, {:refresh, access}) do
           {:ok, refreshed_access} -> retry_after_refresh(mediator, conn, body, refreshed_access)
           {:error, :unreachable} -> refusal(conn, 424, "vendor_unreachable")
-          {:error, _reason} -> refusal(conn, 422, "vendor_unauthorized")
+          {:error, _reason} -> refusal(conn, 400, "vendor_unauthorized")
         end
 
       {:ok, response} ->
@@ -216,7 +216,7 @@ defmodule Commonplace.Runner.Mediator do
     case vendor_request(mediator, conn, body, access) do
       {:ok, %Req.Response{status: 401} = response} ->
         Req.cancel_async_response(response)
-        refusal(conn, 422, "vendor_unauthorized")
+        refusal(conn, 400, "vendor_unauthorized")
 
       {:ok, response} ->
         stream_response(conn, response)
@@ -270,6 +270,16 @@ defmodule Commonplace.Runner.Mediator do
     end)
   end
 
+  # STATUS 400 FOR EVERY DETERMINISTIC REFUSAL IS A MEASURED DECISION, NOT AN
+  # HTTP-CORRECTNESS OVERSIGHT — do not "fix" these back to 401/403/404/409/422.
+  # Measured 2026-08-18 against the real client (8 arms, requests counted at the
+  # listener, n=2 on the terminal claim): the client treats EXACTLY status 400
+  # as terminal; 401/403/404/409/422/424 each drew initial + 5 rapid retries.
+  # The refusal NAME in the body carries the semantics; the STATUS carries the
+  # retry behavior — two observables, two channels. The one deliberate
+  # exception: vendor_unreachable stays 424 (retriable-shaped) because it is
+  # genuinely transient and retries terminate here, never at the vendor.
+  # Ruling: commonplace-plan @a1a0efc.
   defp refusal(conn, status, name) do
     conn
     |> Plug.Conn.put_resp_content_type("application/json")
