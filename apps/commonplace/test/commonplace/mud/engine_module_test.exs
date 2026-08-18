@@ -108,6 +108,14 @@ defmodule Commonplace.MUD.EngineModuleTest do
 
   # A valid doc-hosted parser. `extra` injects extra verb aliases (for the
   # hot-reload test). Behaviour mirrors the compiled-in Parser floor.
+  defp poisoned_parser_source do
+    ~s'''
+    defmodule Commonplace.MUD.EngineParserFixture do
+      def parse(_line), do: %Commonplace.MUD.Parser.Command{verb: "poisoned"}
+    end
+    '''
+  end
+
   defp parser_source(extra \\ "") do
     ~s'''
     defmodule Commonplace.MUD.EngineParserFixture do
@@ -141,7 +149,8 @@ defmodule Commonplace.MUD.EngineModuleTest do
     '''
   end
 
-  defp broken_source, do: "defmodule Commonplace.MUD.EngineParserFixture do  def parse(  # unbalanced\n"
+  defp broken_source,
+    do: "defmodule Commonplace.MUD.EngineParserFixture do  def parse(  # unbalanced\n"
 
   defp content_update(source) do
     Yelixer.Doc.new()
@@ -252,6 +261,35 @@ defmodule Commonplace.MUD.EngineModuleTest do
              EngineModule.parse("take orrery", @store)
 
     assert_receive {:engine_fallback, ^ref, %{name: :parser}}, 500
+  end
+
+  # --- (b) verify-at-serve: a redefined atom must be REFUSED (md5 proof: 0bf50a30) ---
+
+  test "verify-at-serve: last-good REFUSES an atom whose code was redefined since it was remembered" do
+    permissive!()
+    ref = attach_fallback_alarm()
+    uuid = mint(parser_source(), [])
+    set_manifest(uuid)
+
+    # A good compile establishes last-good for `uuid` (the atom + its code identity).
+    assert %Parser.Command{verb: "take"} = EngineModule.parse("take orrery", @store)
+
+    # REDEFINE the remembered atom's code out-of-band: a DIFFERENT doc whose
+    # source defmodules the SAME name with poisoned behavior — the exact
+    # cross-test substitution shape proven by md5 at 0bf50a30.
+    poison_uuid = mint(poisoned_parser_source(), [])
+    set_manifest(poison_uuid)
+    assert %Parser.Command{verb: "poisoned"} = EngineModule.parse("take orrery", @store)
+
+    # Back on the original doc, now broken → the source-failure path reaches
+    # last_good(uuid): the atom — whose CODE is now the poison.
+    set_manifest(uuid)
+    :ok = edit(uuid, broken_source(), [])
+
+    # ⛔ THE PROPERTY: substituted code is NEVER served. The floor's correct
+    # parse is the proof — the poisoned code would return verb "poisoned".
+    assert EngineModule.parse("take orrery", @store) == Parser.parse("take orrery")
+    assert_receive {:engine_fallback, ^ref, _}, 500
   end
 
   # --- NON-BRICK tier 2: compiled-in floor (broken from the start) ---
@@ -1852,8 +1890,20 @@ defmodule Commonplace.MUD.EngineModuleTest do
       end
 
       bursar_root = UUID.uuid4()
-      {:ok, bursar_pid} = Bursar.start_link(root_uuid: bursar_root, store: @store, sweep_interval: 60_000)
-      on_exit(fn -> if Process.alive?(bursar_pid), do: (try do GenServer.stop(bursar_pid) catch (:exit, _ -> :ok) end) end)
+
+      {:ok, bursar_pid} =
+        Bursar.start_link(root_uuid: bursar_root, store: @store, sweep_interval: 60_000)
+
+      on_exit(fn ->
+        if Process.alive?(bursar_pid),
+          do:
+            (try do
+               GenServer.stop(bursar_pid)
+             catch
+               (:exit, _ -> :ok)
+             end)
+      end)
+
       :ok
     end
 
@@ -1863,7 +1913,13 @@ defmodule Commonplace.MUD.EngineModuleTest do
     # (it moves the NAMED schema entry, checking it's still `player_uuid`).
     defp build_go_ctx(name \\ "alice") do
       root_uuid = UUID.uuid4()
-      CommitStore.create_commit(CommitStore, root_uuid, Yelixer.Encoding.encode_update(Schema.new_schema()), nil)
+
+      CommitStore.create_commit(
+        CommitStore,
+        root_uuid,
+        Yelixer.Encoding.encode_update(Schema.new_schema()),
+        nil
+      )
 
       {:ok, dest_uuid} =
         Schemas.create_dir_with_meta(
@@ -1875,7 +1931,11 @@ defmodule Commonplace.MUD.EngineModuleTest do
       {:ok, src_uuid} =
         Schemas.create_dir_with_meta(
           Schemas.room_filename(),
-          Schemas.encode_room(%Room{name: "Src", description: "A src room.", exits: %{"north" => dest_uuid}}),
+          Schemas.encode_room(%Room{
+            name: "Src",
+            description: "A src room.",
+            exits: %{"north" => dest_uuid}
+          }),
           @store
         )
 
@@ -1974,12 +2034,27 @@ defmodule Commonplace.MUD.EngineModuleTest do
 
     defp mint_go(source, opts) do
       uuid = UUID.uuid4()
-      CommitStore.create_chained_commit(CommitStore, uuid, go_content_update(source), %{kind: :regular}, opts)
+
+      CommitStore.create_chained_commit(
+        CommitStore,
+        uuid,
+        go_content_update(source),
+        %{kind: :regular},
+        opts
+      )
+
       uuid
     end
 
     defp edit_go(uuid, source, opts) do
-      CommitStore.create_chained_commit(CommitStore, uuid, go_content_update(source), %{kind: :regular}, opts)
+      CommitStore.create_chained_commit(
+        CommitStore,
+        uuid,
+        go_content_update(source),
+        %{kind: :regular},
+        opts
+      )
+
       SourceDoc.reset_cache()
       :ok
     end
@@ -2056,7 +2131,8 @@ defmodule Commonplace.MUD.EngineModuleTest do
       assert EngineModule.run_verb(:go, go_cmd(["nonexistent"]), ctx, @store) ==
                GoFloor.run(go_cmd(["nonexistent"]), ctx)
 
-      assert {:error, "You can't go nonexistent."} = EngineModule.run_verb(:go, go_cmd(["nonexistent"]), ctx, @store)
+      assert {:error, "You can't go nonexistent."} =
+               EngineModule.run_verb(:go, go_cmd(["nonexistent"]), ctx, @store)
     end
 
     test "Bootstrap.ensure_engine_go_verb: a valid move succeeds identically to the floor (CX-avzp chokepoint honored)" do
@@ -2077,10 +2153,18 @@ defmodule Commonplace.MUD.EngineModuleTest do
 
       # Presence actually transferred identically on both paths.
       {:ok, doc_dest_schema} = Schemas.load_dir_schema(doc_ctx.dest_uuid, @store)
-      assert Enum.any?(Schema.list_entries(doc_dest_schema), &(&1.name == doc_ctx.presence_filename))
+
+      assert Enum.any?(
+               Schema.list_entries(doc_dest_schema),
+               &(&1.name == doc_ctx.presence_filename)
+             )
 
       {:ok, floor_dest_schema} = Schemas.load_dir_schema(floor_ctx.dest_uuid, @store)
-      assert Enum.any?(Schema.list_entries(floor_dest_schema), &(&1.name == floor_ctx.presence_filename))
+
+      assert Enum.any?(
+               Schema.list_entries(floor_dest_schema),
+               &(&1.name == floor_ctx.presence_filename)
+             )
     end
   end
 
@@ -2103,8 +2187,20 @@ defmodule Commonplace.MUD.EngineModuleTest do
       end
 
       bursar_root = UUID.uuid4()
-      {:ok, bursar_pid} = Bursar.start_link(root_uuid: bursar_root, store: @store, sweep_interval: 60_000)
-      on_exit(fn -> if Process.alive?(bursar_pid), do: (try do GenServer.stop(bursar_pid) catch (:exit, _ -> :ok) end) end)
+
+      {:ok, bursar_pid} =
+        Bursar.start_link(root_uuid: bursar_root, store: @store, sweep_interval: 60_000)
+
+      on_exit(fn ->
+        if Process.alive?(bursar_pid),
+          do:
+            (try do
+               GenServer.stop(bursar_pid)
+             catch
+               (:exit, _ -> :ok)
+             end)
+      end)
+
       :ok
     end
 
@@ -2115,7 +2211,13 @@ defmodule Commonplace.MUD.EngineModuleTest do
     # since nothing is written.
     defp build_no_home_ctx(name \\ "bob") do
       root_uuid = UUID.uuid4()
-      CommitStore.create_commit(CommitStore, root_uuid, Yelixer.Encoding.encode_update(Schema.new_schema()), nil)
+
+      CommitStore.create_commit(
+        CommitStore,
+        root_uuid,
+        Yelixer.Encoding.encode_update(Schema.new_schema()),
+        nil
+      )
 
       {:ok, room_uuid} =
         Schemas.create_dir_with_meta(
@@ -2139,7 +2241,13 @@ defmodule Commonplace.MUD.EngineModuleTest do
     # player's presence seeded in it — the shape a real move needs.
     defp build_home_ctx(name) do
       root_uuid = UUID.uuid4()
-      CommitStore.create_commit(CommitStore, root_uuid, Yelixer.Encoding.encode_update(Schema.new_schema()), nil)
+
+      CommitStore.create_commit(
+        CommitStore,
+        root_uuid,
+        Yelixer.Encoding.encode_update(Schema.new_schema()),
+        nil
+      )
 
       {:ok, home_uuid} =
         Schemas.create_dir_with_meta(
@@ -2157,7 +2265,13 @@ defmodule Commonplace.MUD.EngineModuleTest do
 
       players_uuid = UUID.uuid4()
       players_schema = Schema.add_directory(Schema.new_schema(), name, home_uuid)
-      CommitStore.create_commit(CommitStore, players_uuid, Yelixer.Encoding.encode_update(players_schema), nil)
+
+      CommitStore.create_commit(
+        CommitStore,
+        players_uuid,
+        Yelixer.Encoding.encode_update(players_schema),
+        nil
+      )
 
       {:ok, root_schema} = Schemas.load_dir_schema(root_uuid, @store)
       root_schema = Schema.add_directory(root_schema, "players", players_uuid)
@@ -2259,12 +2373,27 @@ defmodule Commonplace.MUD.EngineModuleTest do
 
     defp mint_home(source, opts) do
       uuid = UUID.uuid4()
-      CommitStore.create_chained_commit(CommitStore, uuid, home_content_update(source), %{kind: :regular}, opts)
+
+      CommitStore.create_chained_commit(
+        CommitStore,
+        uuid,
+        home_content_update(source),
+        %{kind: :regular},
+        opts
+      )
+
       uuid
     end
 
     defp edit_home(uuid, source, opts) do
-      CommitStore.create_chained_commit(CommitStore, uuid, home_content_update(source), %{kind: :regular}, opts)
+      CommitStore.create_chained_commit(
+        CommitStore,
+        uuid,
+        home_content_update(source),
+        %{kind: :regular},
+        opts
+      )
+
       SourceDoc.reset_cache()
       :ok
     end
@@ -2297,7 +2426,8 @@ defmodule Commonplace.MUD.EngineModuleTest do
 
       :ok = edit_home(uuid, home_source("No home yet, adventurer."), [])
 
-      assert {:error, "No home yet, adventurer."} = EngineModule.run_verb(:home, home_cmd(), ctx, @store)
+      assert {:error, "No home yet, adventurer."} =
+               EngineModule.run_verb(:home, home_cmd(), ctx, @store)
     end
 
     test "RCE guard: a player-signed edit to the home doc is REFUSED (Gate B) -> trusted last-good survives",
@@ -2341,7 +2471,8 @@ defmodule Commonplace.MUD.EngineModuleTest do
 
       assert :ok = Commonplace.MUD.Bootstrap.ensure_engine_home_verb(@store)
 
-      assert EngineModule.run_verb(:home, home_cmd(), ctx, @store) == HomeFloor.run(home_cmd(), ctx)
+      assert EngineModule.run_verb(:home, home_cmd(), ctx, @store) ==
+               HomeFloor.run(home_cmd(), ctx)
 
       assert {:error, "You don't seem to have a home to return to yet."} =
                EngineModule.run_verb(:home, home_cmd(), ctx, @store)
@@ -2361,10 +2492,18 @@ defmodule Commonplace.MUD.EngineModuleTest do
       assert floor_home == floor_ctx.home_uuid
 
       {:ok, doc_home_schema} = Schemas.load_dir_schema(doc_ctx.home_uuid, @store)
-      assert Enum.any?(Schema.list_entries(doc_home_schema), &(&1.name == doc_ctx.presence_filename))
+
+      assert Enum.any?(
+               Schema.list_entries(doc_home_schema),
+               &(&1.name == doc_ctx.presence_filename)
+             )
 
       {:ok, floor_home_schema} = Schemas.load_dir_schema(floor_ctx.home_uuid, @store)
-      assert Enum.any?(Schema.list_entries(floor_home_schema), &(&1.name == floor_ctx.presence_filename))
+
+      assert Enum.any?(
+               Schema.list_entries(floor_home_schema),
+               &(&1.name == floor_ctx.presence_filename)
+             )
     end
   end
 end

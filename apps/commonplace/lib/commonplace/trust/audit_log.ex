@@ -128,7 +128,11 @@ defmodule Commonplace.Trust.AuditLog do
     [:commonplace, :process, :rejected, :trust],
     [:commonplace, :federation, :rejected, :auth],
     [:commonplace, :trust, :revocation, :ignored],
-    [:commonplace, :trust, :read, :would_refuse]
+    [:commonplace, :trust, :read, :would_refuse],
+    # (b) verify-at-serve (0bf50a30): a last-good engine module whose CODE was
+    # redefined since it was remembered is REFUSED and the floor served. A
+    # refusal of substituted code is a security audit record, not diagnostics.
+    [:commonplace, :mud, :engine_module, :md5_refused]
   ]
 
   @rate_table :commonplace_trust_audit_log_rate
@@ -396,6 +400,25 @@ defmodule Commonplace.Trust.AuditLog do
       "reader" => Map.get(metadata, :reader),
       "surface" => Map.get(metadata, :surface),
       "visibility" => Map.get(metadata, :visibility),
+      "count" => Map.get(measurements, :count, 1)
+    }
+    |> Map.put("firing_process", firing_process())
+  end
+
+  # (b) verify-at-serve (mechanism proof: 0bf50a30): the last-good engine-module
+  # cache refused an atom whose code was redefined since it was remembered.
+  # Substituted code was NOT served; the compiled-in floor was.
+  defp build_payload(
+         [:commonplace, :mud, :engine_module, :md5_refused] = event_name,
+         measurements,
+         metadata
+       ) do
+    %{
+      "event" => Enum.join(event_name, "."),
+      "gate" => "engine_module_last_good",
+      "check" => "code_identity",
+      "doc_uuid" => Map.get(metadata, :uuid),
+      "engine_name" => inspect(Map.get(metadata, :name)),
       "count" => Map.get(measurements, :count, 1)
     }
     |> Map.put("firing_process", firing_process())

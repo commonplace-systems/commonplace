@@ -195,7 +195,23 @@ defmodule Commonplace.MUD.EngineModule do
           # non-brick continuity tier. Falls to floor if nothing ever compiled.
           {:error, reason} ->
             alarm(name, uuid, {:compile, reason})
-            last_good(uuid) || floor_module(name)
+
+            case last_good_verified(uuid) do
+              {:ok, module} ->
+                module
+
+              {:refused, expected_md5, found_md5} ->
+                # (b) verify-at-serve (mechanism proof: 0bf50a30). The cache
+                # stores an ATOM, and an atom's code is whatever was compiled
+                # under that name LAST, by anyone — so the identity remembered
+                # at store time proves nothing about serve time. Substituted
+                # code is NEVER served: floor + a named alarm.
+                md5_alarm(name, uuid, expected_md5, found_md5)
+                floor_module(name)
+
+              :none ->
+                floor_module(name)
+            end
         end
     end
   end
@@ -291,20 +307,86 @@ defmodule Commonplace.MUD.EngineModule do
   defp remember_last_good(uuid, module) do
     key = last_good_key(uuid)
 
-    if :persistent_term.get(key, nil) != module do
-      :persistent_term.put(key, module)
+    entry = {module, :erlang.get_module_info(module, :md5)}
+
+    if :persistent_term.get(key, nil) != entry do
+      :persistent_term.put(key, entry)
     end
   end
 
-  defp last_good(uuid), do: :persistent_term.get(last_good_key(uuid), nil)
+  # (b) verify-at-serve: the stored entry is {module, md5-at-store-time}. The
+  # module is served ONLY if its CURRENT code identity equals the stored one —
+  # a name is shape; the md5 is the artifact proving itself. Unloaded or
+  # unverifiable entries are refused (fail closed), never served.
+  defp last_good_verified(uuid) do
+    case :persistent_term.get(last_good_key(uuid), nil) do
+      {module, stored_md5} when is_atom(module) ->
+        case :code.is_loaded(module) do
+          {:file, _} ->
+            found = :erlang.get_module_info(module, :md5)
+
+            if found == stored_md5,
+              do: {:ok, module},
+              else: {:refused, stored_md5, found}
+
+          false ->
+            {:refused, stored_md5, :not_loaded}
+        end
+
+      nil ->
+        :none
+
+      _legacy ->
+        # Pre-(b) bare-module entries cannot be verified → refused, not served.
+        {:refused, :unknown, :unverifiable}
+    end
+  end
+
+  # Loud once per (uuid, found-identity) per node lifetime, counted always —
+  # resolve/2 sits in a render path a busy caller hits repeatedly, and an alarm
+  # that prints on every serve is the constancy trap wearing a siren.
+  defp md5_alarm(name, uuid, expected, found) do
+    :telemetry.execute(
+      [:commonplace, :mud, :engine_module, :md5_refused],
+      %{count: 1},
+      %{name: name, uuid: uuid}
+    )
+
+    dedup_key = {__MODULE__, :md5_alarmed, uuid, found}
+
+    unless :persistent_term.get(dedup_key, false) do
+      :persistent_term.put(dedup_key, true)
+
+      Logger.warning(
+        "EngineModule #{inspect(name)} REFUSED last-good for #{uuid}: module code was " <>
+          "redefined since it was remembered (expected md5 #{inspect(expected)}, found " <>
+          "#{inspect(found)}). Serving the compiled-in floor."
+      )
+    end
+  end
 
   # Generalized from Inc-1's parser-only `last_good_for_parser/0`: last-good
   # is keyed by DOC-UUID, so resolving it for any engine `name` is the same
   # "look up this name's manifest uuid, then that uuid's last-good" walk.
   defp last_good_for(name) do
     case manifest_uuid(name) do
-      nil -> nil
-      uuid -> last_good(uuid)
+      nil ->
+        nil
+
+      uuid ->
+        # Same verify-at-serve rule as resolve/2's fallback: a crash-containment
+        # tier must not become the door substituted code walks through.
+        case last_good_verified(uuid) do
+          {:ok, module} ->
+            module
+
+          {:refused, expected, found} ->
+            md5_alarm(name, uuid, expected, found)
+            nil
+
+          :none ->
+            nil
+        end
     end
   end
 

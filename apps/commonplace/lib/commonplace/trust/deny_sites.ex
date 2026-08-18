@@ -69,7 +69,8 @@ defmodule Commonplace.Trust.DenySites do
         event: [:commonplace, :commit, :rejected, :local_trust],
         where: "Commonplace.Store.CommitStore.handle_local_write_denial/3",
         gate: "local write gate (:local_write_gate)",
-        reason: "the local write gate refuses a commit under :enforce (and logs a would-deny under :dry_run)"
+        reason:
+          "the local write gate refuses a commit under :enforce (and logs a would-deny under :dry_run)"
       },
       %{
         event: [:commonplace, :commit, :rejected, :trust],
@@ -81,7 +82,8 @@ defmodule Commonplace.Trust.DenySites do
         event: [:commonplace, :commit, :rejected, :code_doc_delta_merge],
         where: "Commonplace.Store.CommitStore.handle_validated_import/4",
         gate: "Gate A (code-doc delta merge)",
-        reason: "CX-obfb defense-in-depth: a delta-merge onto a code doc is a HARD reject, never resolves by waiting"
+        reason:
+          "CX-obfb defense-in-depth: a delta-merge onto a code doc is a HARD reject, never resolves by waiting"
       },
       %{
         event: [:commonplace, :code, :rejected, :trust],
@@ -105,7 +107,8 @@ defmodule Commonplace.Trust.DenySites do
         event: [:commonplace, :trust, :revocation, :ignored],
         where: "Commonplace.Trust.VerifyChain",
         gate: "revocation",
-        reason: "a revocation did NOT take effect — the absence of a refusal that should have happened"
+        reason:
+          "a revocation did NOT take effect — the absence of a refusal that should have happened"
       },
       %{
         event: [:commonplace, :trust, :read, :would_refuse],
@@ -120,6 +123,15 @@ defmodule Commonplace.Trust.DenySites do
         reason:
           "CX-t3xv wired this: the 403 surface previously emitted NOTHING, so a peer " <>
             "hammering the federation endpoint with a bad token left no trace anywhere"
+      },
+      %{
+        event: [:commonplace, :mud, :engine_module, :md5_refused],
+        where: "Commonplace.MUD.EngineModule.md5_alarm/4 (via last_good_verified/1)",
+        gate: "verify-at-serve on the last-good engine-module cache",
+        reason:
+          "a cached engine module whose CODE was redefined since it was remembered " <>
+            "(BEAM-global name collision, mechanism proven by md5 at 0bf50a30) is " <>
+            "refused and the compiled-in floor served — substituted code never runs"
       }
     ]
   end
