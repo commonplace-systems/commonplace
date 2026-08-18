@@ -1,5 +1,6 @@
 ExUnit.start()
 Code.require_file("../../../test/support/file_rm_rf_guard.exs", __DIR__)
+Code.require_file("../../../test/support/store_identity_assertion.exs", __DIR__)
 
 leak_detector = Commonplace.Test.GlobalStateLeakDetector
 formatters = ExUnit.configuration() |> Keyword.fetch!(:formatters) |> Enum.uniq()

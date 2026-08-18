@@ -84,11 +84,7 @@ defmodule Commonplace.Bd.ClaimTest do
       assert Process.alive?(restored_pid)
       assert Process.whereis(Commonplace.Store.CommitStore) == restored_pid
 
-      # sol/s-snapshot-fresh-s3: the store expands its data_dir at init (the
-      # relative-path/cwd-split fix), so assert the EXPANDED path — the intent
-      # is "the restored singleton points at this store", not a string form.
-      assert CubDB.data_dir(CommitStore.db_handle(CommitStore)) ==
-               Path.expand(Path.join(restored_data_dir, "commits"))
+      Commonplace.Test.StoreIdentityAssertion.assert_restored_store!(restored_data_dir)
     end)
 
     {pub_a, priv_a} = Signing.generate_keypair()
