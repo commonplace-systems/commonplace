@@ -1088,8 +1088,19 @@ defmodule Commonplace.MUD.PlayerSession do
     case Keyword.get(write_opts, :spawn_room_uuid) do
       uuid when is_binary(uuid) ->
         case World.get_room(uuid, store) do
-          {:ok, _room} -> {:ok, uuid}
-          _ -> ensure_start_room(root_uuid, store)
+          {:ok, _room} ->
+            {:ok, uuid}
+
+          _ ->
+            # A requested room that does not resolve is a silent rehoming
+            # unless it is named: the S-mechanism trace rounds had to
+            # instrument exactly this arm to see it (ruled 2026-08-18 ~01:30).
+            Logger.warning(
+              "PlayerSession spawn fallback: requested spawn_room_uuid #{uuid} " <>
+                "did not resolve to a room; falling back to the start room"
+            )
+
+            ensure_start_room(root_uuid, store)
         end
 
       _ ->

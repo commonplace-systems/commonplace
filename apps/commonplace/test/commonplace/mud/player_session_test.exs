@@ -35,7 +35,15 @@ defmodule Commonplace.MUD.PlayerSessionTest do
         sweep_interval: 60_000
       )
 
-    on_exit(fn -> if Process.alive?(bursar_pid), do: (try do GenServer.stop(bursar_pid) catch (:exit, _ -> :ok) end) end)
+    on_exit(fn ->
+      if Process.alive?(bursar_pid),
+        do:
+          (try do
+             GenServer.stop(bursar_pid)
+           catch
+             (:exit, _ -> :ok)
+           end)
+    end)
 
     root_uuid = UUID.uuid4()
     update = Encoding.encode_update(Schema.new_schema())
@@ -76,6 +84,52 @@ defmodule Commonplace.MUD.PlayerSessionTest do
     Process.sleep(50)
   end
 
+  test "a requested spawn_room_uuid that does not resolve falls back LOUDLY, naming the uuid",
+       ctx do
+    ghost = UUID.uuid4()
+    parent = self()
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        {:ok, session} =
+          PlayerSession.start_link(
+            player_name: "drifter",
+            root_uuid: ctx.root,
+            store: ctx.store,
+            output_fn: fn text -> send(parent, {:out, "drifter", text}) end,
+            owner_pid: parent,
+            spawn_room_uuid: ghost
+          )
+
+        assert Process.alive?(session)
+        GenServer.stop(session)
+      end)
+
+    assert log =~ "spawn fallback"
+    assert log =~ ghost
+  end
+
+  test "an ordinary start (no requested spawn room) emits no spawn-fallback line", ctx do
+    parent = self()
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        {:ok, session} =
+          PlayerSession.start_link(
+            player_name: "settler",
+            root_uuid: ctx.root,
+            store: ctx.store,
+            output_fn: fn text -> send(parent, {:out, "settler", text}) end,
+            owner_pid: parent
+          )
+
+        assert Process.alive?(session)
+        GenServer.stop(session)
+      end)
+
+    refute log =~ "spawn fallback"
+  end
+
   test "player can look around in seeded world", ctx do
     alice = start_player("alice", ctx)
     send_input(alice, "look")
@@ -86,7 +140,8 @@ defmodule Commonplace.MUD.PlayerSessionTest do
     assert output =~ "east"
   end
 
-  test "CX-3xwu: stopping a session retracts the player's presence — no ghost in the room roster", ctx do
+  test "CX-3xwu: stopping a session retracts the player's presence — no ghost in the room roster",
+       ctx do
     alice = start_player("alice", ctx)
     room = :sys.get_state(alice).current_room_uuid
     fname = Commonplace.Presence.filename("alice", :usr)
