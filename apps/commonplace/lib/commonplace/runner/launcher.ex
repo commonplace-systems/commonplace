@@ -209,6 +209,8 @@ defmodule Commonplace.Runner.Launcher do
 
   defp open_pod(spec, invocation) do
     with executable when is_binary(executable) <- System.find_executable(spec.executable) do
+      invocation = pod_invocation(spec, invocation)
+
       port =
         Port.open(
           {:spawn_executable, executable},
@@ -230,6 +232,71 @@ defmodule Commonplace.Runner.Launcher do
     end
   rescue
     error -> {:error, {:launch_failed, Path.dirname(spec.workdir), Exception.message(error)}}
+  end
+
+  defp pod_invocation(%{relay: nil}, invocation), do: invocation
+
+  defp pod_invocation(%{relay: relay, workdir: workdir}, invocation) do
+    erl = System.find_executable("erl") || "erl"
+    elixir_ebin = Application.app_dir(:elixir, "ebin")
+    commonplace_ebin = Application.app_dir(:commonplace, "ebin")
+    ready_path = Path.join(workdir, ".mediator-relay-ready")
+
+    [
+      "/bin/bash",
+      "-c",
+      relay_supervisor_script(),
+      "mediator-relay-supervisor",
+      erl,
+      elixir_ebin,
+      commonplace_ebin,
+      relay.socket_path,
+      Integer.to_string(relay.port),
+      ready_path
+      | invocation
+    ]
+  end
+
+  defp relay_supervisor_script do
+    """
+    erl_bin="$1"
+    elixir_ebin="$2"
+    commonplace_ebin="$3"
+    socket_path="$4"
+    relay_port="$5"
+    ready_path="$6"
+    shift 6
+    rm -f "$ready_path"
+    "$erl_bin" -noshell -pa "$elixir_ebin" -pa "$commonplace_ebin" \
+      -eval "application:ensure_all_started(elixir), \
+        'Elixir.Commonplace.Runner.MediatorRelay':main_erl(init:get_plain_arguments())." \
+      -extra \
+      "$socket_path" "$relay_port" "$ready_path" &
+    relay_pid=$!
+    for _attempt in $(seq 1 100); do
+      test -f "$ready_path" && break
+      kill -0 "$relay_pid" 2>/dev/null || break
+      sleep 0.01
+    done
+    if ! test -f "$ready_path"; then
+      echo mediator_relay_start_failed >&2
+      wait "$relay_pid"
+      exit 70
+    fi
+    "$@" &
+    payload_pid=$!
+    wait -n -p finished_pid "$relay_pid" "$payload_pid"
+    status=$?
+    if test "$finished_pid" = "$relay_pid"; then
+      echo mediator_relay_died >&2
+      kill -TERM "$payload_pid" 2>/dev/null || true
+      wait "$payload_pid" 2>/dev/null || true
+      exit 70
+    fi
+    kill -TERM "$relay_pid" 2>/dev/null || true
+    wait "$relay_pid" 2>/dev/null || true
+    exit "$status"
+    """
   end
 
   defp stop_namespace(port, os_pid) do

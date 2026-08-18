@@ -149,7 +149,10 @@ defmodule Commonplace.Runner.ProvisionerTest do
     pod_home = Path.join(ctx.pods_root, "cell-provisioned")
     spec = Provisioner.sandbox_spec(profile(), pod_home)
 
-    refute function_exported?(Provisioner, :sandbox_spec, 3),
+    assert function_exported?(Provisioner, :sandbox_spec, 3),
+           "the declared relay configuration reaches the sandbox constructor"
+
+    refute function_exported?(Provisioner, :sandbox_spec, 4),
            "callers must not have a constructor that accepts a mask list"
 
     assert spec.executable == "bwrap"
@@ -306,10 +309,57 @@ defmodule Commonplace.Runner.ProvisionerTest do
   test "network posture none: spec carries it and the argv re-shares nothing", ctx do
     pod_home = Path.join(ctx.pods_root, "cell-network-none")
     spec = Provisioner.sandbox_spec(profile(), pod_home)
+    socket_path = Path.join(ctx.fixture_root, "mediator.sock")
 
     assert spec.network == "none"
     assert "--unshare-all" in spec.argv
     refute "--share-net" in spec.argv
+    refute socket_path in spec.argv
+    assert spec.relay == nil
+  end
+
+  test "mediator-socket retains isolation and binds its one declared socket exactly once", ctx do
+    socket_path = Path.join(ctx.fixture_root, "mediator.sock")
+    mediator_profile = %{profile() | network: "mediator-socket"}
+
+    spec =
+      Provisioner.sandbox_spec(mediator_profile, Path.join(ctx.pods_root, "cell-mediator"),
+        mediator_socket: [path: socket_path, port: 43127]
+      )
+
+    assert spec.network == "mediator-socket"
+    assert "--unshare-all" in spec.argv
+    refute "--share-net" in spec.argv
+
+    assert Enum.count(
+             Enum.chunk_every(spec.argv, 3, 1, :discard),
+             &(&1 == ["--bind", socket_path, socket_path])
+           ) == 1
+
+    assert spec.relay == %{socket_path: socket_path, port: 43127}
+  end
+
+  test "mediator-socket is refused when its declared relay configuration is absent", ctx do
+    mediator_profile = %{profile() | network: "mediator-socket"}
+
+    assert {:error,
+            {:invalid_profile, "network", "mediator-socket requires a socket path and relay port"}} =
+             Provisioner.provision(valid_manifest(ctx), mediator_profile, provision_opts(ctx))
+  end
+
+  test "mediator-socket refuses a declared path that is not a Unix socket", ctx do
+    mediator_profile = %{profile() | network: "mediator-socket"}
+    ordinary_file = Path.join(ctx.fixture_root, "not-a-socket")
+    File.write!(ordinary_file, "not a socket\n")
+
+    assert {:error,
+            {:invalid_profile, "network", "mediator-socket path must be an existing Unix socket"}} =
+             Provisioner.provision(
+               valid_manifest(ctx),
+               mediator_profile,
+               provision_opts(ctx) ++
+                 [mediator_socket: [path: ordinary_file, port: 43127]]
+             )
   end
 
   defp profile do

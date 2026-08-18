@@ -10,8 +10,10 @@ defmodule Commonplace.Runner.PodProfile do
   set. It is never a boolean and never a free-form value: a posture is a NAMED
   arrangement the provisioner knows how to build, and the profile -- not the
   launch caller -- is what selects it. An absent field means `"none"`, which is
-  the strictest posture and the only one that exists today (`--unshare-all`,
-  no network re-shared). The vocabulary is deliberately closed so that a new
+  the strictest posture (`--unshare-all`, no network re-shared).
+  `"mediator-socket"` retains that namespace isolation while binding exactly
+  one deployment socket for an in-pod loopback relay. The vocabulary is
+  deliberately closed so that a new
   posture can only arrive together with the mechanism that enforces it --
   a value the provisioner cannot build is refused at validation, not
   discovered at launch.
@@ -36,9 +38,9 @@ defmodule Commonplace.Runner.PodProfile do
   # The closed set of network postures. Extend ONLY together with the
   # provisioner mechanism that builds the new posture (see
   # commonplace-plan docs/plans/2026-08-17-pod-model-credential.md for the
-  # ruled next member, "mediator-socket": --unshare-net plus one bind-mounted
-  # pathname socket -- its admission here waits on that mechanism landing).
-  @network_postures ~w(none)
+  # ruled member, "mediator-socket": isolated network plus one bind-mounted
+  # pathname socket and its in-pod loopback relay).
+  @network_postures ~w(none mediator-socket)
 
   @type t :: %__MODULE__{
           id: String.t(),
