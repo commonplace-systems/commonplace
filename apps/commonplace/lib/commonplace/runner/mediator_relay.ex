@@ -106,7 +106,21 @@ defmodule Commonplace.Runner.MediatorRelay do
 
       {:error, _reason} ->
         _ = :gen_tcp.send(client, @unreachable_response)
+        # Half-close and drain before closing: an immediate close can tear
+        # the canned refusal away before the client reads it (measured
+        # 2026-08-18, ~1-in-19 under --repeat-until-failure: the client saw
+        # "socket closed" instead of the 502). The shutdown flushes our
+        # bytes; the bounded drain waits for the peer to finish reading.
+        _ = :gen_tcp.shutdown(client, :write)
+        drain_until_closed(client)
         :gen_tcp.close(client)
+    end
+  end
+
+  defp drain_until_closed(socket, deadline_ms \\ 1_000) do
+    case :gen_tcp.recv(socket, 0, deadline_ms) do
+      {:ok, _bytes} -> drain_until_closed(socket, deadline_ms)
+      {:error, _closed_or_timeout} -> :ok
     end
   end
 

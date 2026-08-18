@@ -70,6 +70,14 @@ defmodule Commonplace.Runner.MediatorRelayTest do
     start_supervised!({MediatorRelay, socket_path: ctx.sockets["deployment-a"], port: port})
     GenServer.stop(ctx.mediator)
 
+    # GenServer.stop returning does not mean the OS socket is down: the
+    # listener dies asynchronously, and a connect racing into its dying
+    # backlog gets piped into a mid-stream close instead of ever reaching
+    # the relay's refusal path (measured: the residual 1-in-50 flake after
+    # the relay's own torn-write fix). The arm's claim is about an
+    # UNREACHABLE mediator, so establish unreachability by observation.
+    wait_until_unreachable!(ctx.sockets["deployment-a"])
+
     task = Task.async(fn -> request(port, token(ctx, "deployment-a")) end)
 
     assert %{status: 502, body: %{"refusal" => "mediator_unreachable"}} =
@@ -86,6 +94,23 @@ defmodule Commonplace.Runner.MediatorRelayTest do
       body: ~s({"input":"hello"}),
       retry: false
     )
+  end
+
+  defp wait_until_unreachable!(socket_path, attempts \\ 100) do
+    case :gen_tcp.connect({:local, socket_path}, 0, [:binary, active: false], 100) do
+      {:ok, probe} ->
+        :gen_tcp.close(probe)
+
+        if attempts == 0 do
+          flunk("mediator socket still accepting after the stop")
+        end
+
+        Process.sleep(10)
+        wait_until_unreachable!(socket_path, attempts - 1)
+
+      {:error, _refused_or_gone} ->
+        :ok
+    end
   end
 
   defp unused_tcp_port do
