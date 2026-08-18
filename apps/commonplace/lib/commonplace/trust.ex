@@ -70,7 +70,7 @@ defmodule Commonplace.Trust do
   not-synced-not-peer-writable surface the anchor decision requires.
   """
 
-  alias Commonplace.Crypto.Signing
+  alias Commonplace.Crypto.{DelegationRoot, Signing}
   alias Commonplace.Store.Commit
 
   # CX-0a9a (presence-carve, W3): the content-check reconstructs and
@@ -115,30 +115,47 @@ defmodule Commonplace.Trust do
   end
 
   def authorized?(%Commit{} = commit, verb, scope, cfg, store) do
-    case Signing.parse_signer_id(commit.signer_id || "") do
-      {:ok, identity_uuid, _fingerprint} ->
-        case Map.fetch(cfg.trusted_identities, identity_uuid) do
-          {:ok, pinned} ->
-            # (a) degenerate fast-path: a locally-pinned identity is an
-            # unattenuated root — R1/R2 behavior, unchanged.
-            verify_against_pinned(commit, pinned)
+    with :ok <- delegation_root_commit_allowed?(commit) do
+      case Signing.parse_signer_id(commit.signer_id || "") do
+        {:ok, identity_uuid, _fingerprint} ->
+          case Map.fetch(cfg.trusted_identities, identity_uuid) do
+            {:ok, pinned} ->
+              # (a) degenerate fast-path: a locally-pinned identity is an
+              # unattenuated root — R1/R2 behavior, unchanged.
+              verify_against_pinned(commit, pinned)
 
-          :error ->
-            # (b) not pinned: if the commit carries a capability proof,
-            # walk the cert chain; else (c) fall to the existing logic.
-            case Map.get(commit.metadata, :capability_proof) do
-              nil ->
-                if cfg.accept_unsigned,
-                  do: :ok,
-                  else: {:error, {:untrusted_signer, identity_uuid}}
+            :error ->
+              # (b) not pinned: if the commit carries a capability proof,
+              # walk the cert chain; else (c) fall to the existing logic.
+              case Map.get(commit.metadata, :capability_proof) do
+                nil ->
+                  if cfg.accept_unsigned,
+                    do: :ok,
+                    else: {:error, {:untrusted_signer, identity_uuid}}
 
-              leaf_cid ->
-                capability_path(commit, verb, scope, leaf_cid, cfg, store)
-            end
+                leaf_cid ->
+                  capability_path(commit, verb, scope, leaf_cid, cfg, store)
+              end
+          end
+
+        {:error, :invalid_signer_id} ->
+          if cfg.accept_unsigned, do: :ok, else: {:error, :invalid_signer_id}
+      end
+    end
+  end
+
+  defp delegation_root_commit_allowed?(commit) do
+    data_dir = Application.get_env(:commonplace, :data_dir, "data")
+
+    case DelegationRoot.public_key(data_dir) do
+      {:ok, public_key} ->
+        case Signing.verify_commit(commit, public_key) do
+          :ok -> {:error, :delegation_root_signs_only_certificates}
+          {:error, _reason} -> :ok
         end
 
-      {:error, :invalid_signer_id} ->
-        if cfg.accept_unsigned, do: :ok, else: {:error, :invalid_signer_id}
+      {:error, _reason} ->
+        :ok
     end
   end
 
@@ -898,11 +915,11 @@ defmodule Commonplace.Trust do
   @doc """
   Build the locally-pinned cert-chain root anchors for a resolved trust config.
 
-  An absent node public-key artifact contributes no node keys, preserving the
-  configured-anchor fallback. A present artifact that cannot be read or decoded
-  is operationally distinct: verification still degrades to the configured
-  anchors, but the loss is logged so a resulting denial cannot look like an
-  ordinary policy decision.
+  Absent node and delegation-root public-key artifacts contribute no keys,
+  preserving the configured-anchor fallback. A present artifact that cannot be
+  read or decoded is operationally distinct: verification still degrades to the
+  remaining anchors, but the loss is logged so a resulting denial cannot look
+  like an ordinary policy decision.
   """
   @spec anchor_keys(config()) :: MapSet.t(binary())
   def anchor_keys(cfg) do
@@ -934,7 +951,26 @@ defmodule Commonplace.Trust do
           []
       end
 
-    MapSet.new(configured_keys ++ public_node_keys)
+    data_dir = Application.get_env(:commonplace, :data_dir, "data")
+
+    delegation_root_keys =
+      case DelegationRoot.public_key(data_dir) do
+        {:ok, key} ->
+          [key]
+
+        {:error, {:delegation_root_public_key_absent, _path}} ->
+          []
+
+        {:error, reason} ->
+          Logger.error(
+            "delegation-root public-key artifact is present but unreadable " <>
+              "(#{inspect(reason)}) — DEGRADING to remaining trust anchors"
+          )
+
+          []
+      end
+
+    MapSet.new(configured_keys ++ public_node_keys ++ delegation_root_keys)
   end
 
   # A trusted identity's signature must verify against one of its pinned
