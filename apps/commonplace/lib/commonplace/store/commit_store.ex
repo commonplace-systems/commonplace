@@ -1342,7 +1342,9 @@ defmodule Commonplace.Store.CommitStore do
   @impl true
   def init(opts) do
     name = Keyword.get(opts, :name, __MODULE__)
-    data_dir = Keyword.fetch!(opts, :data_dir)
+    # sol/s-snapshot-fresh-s3: freeze the caller's cwd before join/lock/CubDB use;
+    # compaction creates by path and otherwise re-resolves a relative store under mix.
+    data_dir = opts |> Keyword.fetch!(:data_dir) |> Path.expand()
     flock_module = Keyword.get(opts, :flock_module, Commonplace.Sync.Flock)
     path = Path.join(data_dir, "commits")
 
