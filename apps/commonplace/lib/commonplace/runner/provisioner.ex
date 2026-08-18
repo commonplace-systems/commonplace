@@ -60,11 +60,11 @@ defmodule Commonplace.Runner.Provisioner do
          {:ok, profile} <- PodProfile.validate(profile),
          :ok <- safe_pod_id(manifest.id),
          :ok <- supported_sandbox(profile),
-         :ok <- supported_network(profile),
+         :ok <- supported_network(profile, opts),
          :ok <- names_only_hosting_check(manifest, profile),
          {:ok, principal_pubkey} <- birth_authority_input(manifest, opts),
          {:ok, paths} <- provision_paths(manifest, opts) do
-      build_pod(manifest, profile, paths, principal_pubkey)
+      build_pod(manifest, profile, paths, principal_pubkey, opts)
     end
   end
 
@@ -78,8 +78,9 @@ defmodule Commonplace.Runner.Provisioner do
   There is intentionally no masks argument. The credential floor is part of
   construction, not a convention a caller must remember.
   """
-  @spec sandbox_spec(PodProfile.t(), Path.t()) :: map()
-  def sandbox_spec(%PodProfile{} = profile, pod_home) when is_binary(pod_home) do
+  @spec sandbox_spec(PodProfile.t(), Path.t(), keyword()) :: map()
+  def sandbox_spec(%PodProfile{} = profile, pod_home, opts \\ [])
+      when is_binary(pod_home) and is_list(opts) do
     checkout_dir = Path.join(pod_home, "checkout")
     data_dir = Path.join([pod_home, "workspace", ".commonplace"])
     home_dir = Path.join(pod_home, "home")
@@ -109,6 +110,17 @@ defmodule Commonplace.Runner.Provisioner do
       %{name: :claude_channels, operation: :tmpfs, path: Path.join(home_dir, ".claude/channels")},
       %{name: :user_runtime_ipc, operation: :tmpfs, path: "/run/user/#{uid}"}
     ]
+
+    relay = relay_config(profile, opts)
+
+    socket_argv =
+      case relay do
+        nil ->
+          []
+
+        %{socket_path: socket_path} ->
+          ["--dir", Path.dirname(socket_path), "--bind", socket_path, socket_path]
+      end
 
     argv =
       [
@@ -150,6 +162,7 @@ defmodule Commonplace.Runner.Provisioner do
         home_dir,
         home_dir
       ] ++
+        socket_argv ++
         Enum.flat_map(masks, &mask_argv/1) ++
         Enum.flat_map(environment, fn {name, value} -> ["--setenv", name, value] end) ++
         ["--chdir", checkout_dir]
@@ -157,14 +170,16 @@ defmodule Commonplace.Runner.Provisioner do
     %{
       executable: "bwrap",
       argv: argv,
-      binds: [
-        %{source: checkout_dir, target: checkout_dir, mode: :read_write},
-        %{source: data_dir, target: data_dir, mode: :read_write},
-        %{source: home_dir, target: home_dir, mode: :read_write}
-      ],
+      binds:
+        [
+          %{source: checkout_dir, target: checkout_dir, mode: :read_write},
+          %{source: data_dir, target: data_dir, mode: :read_write},
+          %{source: home_dir, target: home_dir, mode: :read_write}
+        ] ++ relay_binds(relay),
       masks: masks,
       environment: environment,
       profile_sandbox: profile.sandbox,
+      relay: relay,
       network: profile.network,
       workdir: checkout_dir
     }
@@ -209,10 +224,10 @@ defmodule Commonplace.Runner.Provisioner do
     end
   end
 
-  defp build_pod(manifest, profile, paths, principal_pubkey) do
+  defp build_pod(manifest, profile, paths, principal_pubkey, opts) do
     case File.mkdir(paths.pod_home) do
       :ok ->
-        result = do_build_pod(manifest, profile, paths, principal_pubkey)
+        result = do_build_pod(manifest, profile, paths, principal_pubkey, opts)
 
         if match?({:error, _reason}, result) do
           File.rm_rf(paths.pod_home)
@@ -228,7 +243,7 @@ defmodule Commonplace.Runner.Provisioner do
     end
   end
 
-  defp do_build_pod(manifest, profile, paths, principal_pubkey) do
+  defp do_build_pod(manifest, profile, paths, principal_pubkey, opts) do
     with :ok <- mkdir_p(paths.data_dir, "workspace"),
          :ok <- mkdir_p(paths.home_dir, "sandbox.home"),
          :ok <- checkout(paths.repo, paths.sha, paths.checkout_dir),
@@ -243,7 +258,7 @@ defmodule Commonplace.Runner.Provisioner do
          data_dir: paths.data_dir,
          root_uuid: born.root_uuid,
          sha: paths.sha,
-         sandbox_spec: sandbox_spec(profile, paths.pod_home),
+         sandbox_spec: sandbox_spec(profile, paths.pod_home, opts),
          worker: :ready
        }}
     end
@@ -586,13 +601,57 @@ defmodule Commonplace.Runner.Provisioner do
     end
   end
 
-  # The posture "none" is enforced by the base argv itself: `--unshare-all` with no
-  # network re-shared. Every other name is refused here until the mechanism that
-  # builds it exists -- a posture must never be a label the argv does not implement.
-  defp supported_network(%PodProfile{network: "none"}), do: :ok
+  # Both ruled postures retain `--unshare-all`. The mediator posture additionally
+  # requires the one socket/port declaration consumed by sandbox_spec/3 and the
+  # launch wrapper; a posture must never be a label the argv does not implement.
+  defp supported_network(%PodProfile{network: "none"}, _opts), do: :ok
 
-  defp supported_network(%PodProfile{network: network}) do
+  defp supported_network(%PodProfile{network: "mediator-socket"}, opts) do
+    case Keyword.get(opts, :mediator_socket) do
+      config when is_list(config) -> validate_relay_config(config)
+      _other -> invalid_profile_network("mediator-socket requires a socket path and relay port")
+    end
+  end
+
+  defp supported_network(%PodProfile{network: network}, _opts) do
     {:error, {:invalid_profile, "network", "unsupported network posture #{inspect(network)}"}}
+  end
+
+  defp validate_relay_config(config) do
+    path = Keyword.get(config, :path)
+    port = Keyword.get(config, :port)
+
+    with true <- is_binary(path) and path != "" and Path.type(path) == :absolute,
+         true <- is_integer(port) and port in 1..65_535,
+         {:ok, stat} <- File.stat(path),
+         true <- unix_socket?(stat) do
+      :ok
+    else
+      false when is_binary(path) and is_integer(port) ->
+        invalid_profile_network("mediator-socket path must be an existing Unix socket")
+
+      _other ->
+        invalid_profile_network("mediator-socket requires a socket path and relay port")
+    end
+  end
+
+  # File.Stat reports Unix-domain sockets as :other; the POSIX file-type bits
+  # discriminate sockets from ordinary files without opening the endpoint.
+  defp unix_socket?(%File.Stat{mode: mode}), do: Bitwise.band(mode, 0o170000) == 0o140000
+
+  defp invalid_profile_network(reason), do: {:error, {:invalid_profile, "network", reason}}
+
+  defp relay_config(%PodProfile{network: "none"}, _opts), do: nil
+
+  defp relay_config(%PodProfile{network: "mediator-socket"}, opts) do
+    config = Keyword.fetch!(opts, :mediator_socket)
+    %{socket_path: Keyword.fetch!(config, :path), port: Keyword.fetch!(config, :port)}
+  end
+
+  defp relay_binds(nil), do: []
+
+  defp relay_binds(%{socket_path: socket_path}) do
+    [%{source: socket_path, target: socket_path, mode: :read_write}]
   end
 
   defp supported_sandbox(%PodProfile{sandbox: "beam-isolate"}), do: :ok

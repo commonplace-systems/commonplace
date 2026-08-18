@@ -36,17 +36,21 @@ defmodule Commonplace.Runner.PodProfileTest do
       assert {:ok, %PodProfile{network: "none"}} = PodProfile.decode(Jason.encode!(document))
     end
 
-    test "a posture outside the closed set is refused with the set named" do
-      # "mediator-socket" is the RULED next member; it is refused today because the
-      # mechanism that would enforce it does not exist yet. When that mechanism lands,
-      # this test changes DELIBERATELY, in the same commit.
+    test "mediator-socket is admitted with its mechanism" do
       document = Map.put(@valid_document, "network", "mediator-socket")
+
+      assert {:ok, %PodProfile{network: "mediator-socket"}} =
+               PodProfile.decode(Jason.encode!(document))
+    end
+
+    test "a posture outside the closed set is refused with the set named" do
+      document = Map.put(@valid_document, "network", "open")
 
       assert {:error, {:invalid_profile, "network", reason}} =
                PodProfile.decode(Jason.encode!(document))
 
-      assert reason =~ ~s(["none"])
-      assert reason =~ "mediator-socket"
+      assert reason =~ ~s(["none", "mediator-socket"])
+      assert reason =~ "open"
     end
 
     test "a boolean network posture is refused, not coerced" do
