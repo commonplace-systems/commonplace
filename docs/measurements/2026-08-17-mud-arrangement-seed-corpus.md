@@ -62,3 +62,50 @@ run_id       sha       seed    CI failing tests
 31653172022  1f94c46b  357890  Commonplace.MUD.HumanWebPlayTest
 31659178371  e30b0efb  494991  Commonplace.MUD.HumanWebPlayTest
 ```
+
+## S-loadsep results (2026-08-17/18): load varied at FIXED (sha, seed) — 8 runs
+
+**Design:** row `cb703e81`/181261, 4 quiet + 4 loaded (8 CPU burners, 2×nproc),
+interleaved. All 8 runs valid: seed 181261 confirmed from ExUnit's line,
+population 3389 every run, verdict lines present. Raw dirs preserved.
+
+| run | arm | failures | identities | symptom occurrences |
+|----:|:---:|---------:|---|---:|
+| 1,3,5,7 | Q | 1 each | MUD.RoomVisibilityTest (same test, all four) | 1 each |
+| 2,8 | L | 1 each | MUD.RoomVisibilityTest (same test) | 1 each |
+| 4 | L | 2 | + Process.HotReloadTest | 1 |
+| 6 | L | 4 | + Green.BursarTest, Process.HotReloadTest, Presence.CompactorTest | **2** |
+
+**Three findings, in order of strength:**
+
+① ⭐⭐ **THE MUD FAILURE'S IDENTITY IS LOAD-STABLE ON THIS BOX: 8/8 runs, the
+same single test** (`RoomVisibilityTest` "owner's own look… (self-read)").
+⇒ ⛔ **CPU load does NOT reproduce the CI-vs-local manifestation delta** (CI
+saw 2 failures at this same (sha, seed)). The machine-state selector that
+differs between CI and this box is NOT plain CPU contention.
+
+② ⭐⭐⭐ **BUT THE MANIFESTATION *SHAPE* MOVED WITH LOAD, ONCE (run 6): SAME
+test, SAME assertion (`assert out =~ "Owner's Den"`), DIFFERENT left value:**
+```
+quiet   "(this place has no description)"
+loaded  "Welcome, owner.\n\n(this place has no description)\n(this place has no description)"
+```
+⇒ **Under load the render pipeline emits a different STRUCTURE — a greeting
+plus a DOUBLED room render — at a fixed arrangement.** *The timing component
+is inside the render path itself, not only in which test trips.*
+
+③ ⭐ **LOAD KNOCKED OVER THREE ORTHOGONAL TIMING TESTS** — HotReloadTest (runs
+4 and 6), BursarTest, CompactorTest — none of which appear in the pre-fence CI
+census residue (GhostReaper, AuditChokePerf). ⇒ **The load-sensitive test set
+is LARGER than CI's history shows; the census reflects CI's load profile, the
+burners a harsher one.** These are S-timing observations under controlled load.
+
+**Small-N honesty:** 4v4 gives direction, not significance. Q arm 4/4
+identical; L arm 2/4 with extra failures, 1/4 with the shape change. "Moves
+with load" is YES for orthogonal failures and manifestation shape; **NO for
+the MUD failure's identity on this box.**
+
+*Reviewer note: one instrument disagreement during verification — the summary
+counted symptom OCCURRENCES (run6 = 2), the reviewer's `grep -c` counted LINES
+(= 1). The builder was right: both occurrences sit on one line. Count
+occurrences, not lines.*
