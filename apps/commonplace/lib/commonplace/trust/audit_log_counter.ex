@@ -7,11 +7,11 @@ defmodule Commonplace.Trust.AuditLogCounter do
     * `offered`      — calls to `AuditDispatcher.offer/2`, i.e. RECORDS
     * `offer_events` — EVENTS that reached the offer stage
 
-  They differ because the `{:log, summary}` branch of `handle_event/4` offers
-  TWICE for one event (a rate-limit summary, then the payload). So `offered`
-  answers "how many records did the dispatcher get" and `offer_events` answers
-  "how many events got that far", and only the second one belongs in a sum with
-  `guarded` / `rate_suppressed` / `handler_failed`.
+  They differ because `AuditRateLimiter` offers expired-window summaries from
+  its supervised timer, outside any input event. So `offered` answers "how many
+  records did the dispatcher get" and `offer_events` answers "how many input
+  events got that far", and only the second one belongs in a sum with `guarded`
+  / `rate_suppressed` / `handler_failed`.
 
   ⛔ **THE STAGE IDENTITY IS OVER EVENTS, NEVER OVER `offered`:**
 
@@ -19,8 +19,8 @@ defmodule Commonplace.Trust.AuditLogCounter do
 
   Using `offered` there is arithmetic across two populations. It holds only
   while no summary has ever been emitted, which is the common case and is
-  exactly why it survives casual testing — then breaks on the first window
-  rollover that had suppressions, in a direction that looks like a lost event.
+  exactly why it survives casual testing — then breaks on the first timer flush
+  with suppressions, in a direction that looks like a lost event.
 
   ⭐ This is the same defect `Trust.capture_rate/1` shipped as a RATIO and had
   to be fixed after deploy. It is recorded here because an equality makes it

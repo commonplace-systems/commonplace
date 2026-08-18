@@ -206,10 +206,10 @@ defmodule Commonplace.Trust.AuditLogTest do
     } do
       event_name = [:commonplace, :trust, :read, :would_refuse]
 
-      for i <- 1..25 do
+      for _i <- 1..25 do
         :telemetry.execute(event_name, %{count: 1}, %{
           surface: :test,
-          target: "doc-#{i}",
+          target: "one-storm-doc",
           reader: "r",
           visibility: :public
         })
@@ -223,9 +223,10 @@ defmodule Commonplace.Trust.AuditLogTest do
       # Cap is 20 per window (see Commonplace.Trust.AuditLog moduledoc).
       assert length(logged) == 20
 
-      [{^event_name, _window_start, count, suppressed}] = :ets.lookup(@rate_table, event_name)
-      assert count == 20
-      assert suppressed == 5
+      [{{^event_name, "one-storm-doc", _window_start}, driven, ^d}] =
+        :ets.match_object(@rate_table, {{event_name, "one-storm-doc", :_}, :_, :_})
+
+      assert driven == 25
     end
 
     test "window rollover emits one summary record for what was suppressed", %{
@@ -234,49 +235,53 @@ defmodule Commonplace.Trust.AuditLogTest do
     } do
       event_name = [:commonplace, :trust, :read, :would_refuse]
 
-      for i <- 1..25 do
+      for _i <- 1..25 do
         :telemetry.execute(event_name, %{count: 1}, %{
           surface: :test,
-          target: "doc-#{i}",
+          target: "one-rollover-doc",
           reader: "r",
           visibility: :public
         })
       end
 
-      # Force the window to look expired (as if 61s had passed) so the
-      # next event triggers rollover, without a real sleep.
-      [{^event_name, window_start, count, suppressed}] = :ets.lookup(@rate_table, event_name)
-      :ets.insert(@rate_table, {event_name, window_start - 61_000, count, suppressed})
-      counters_before_rollover = AuditLog.counters()
+      # Force the window to look expired (as if 61s had passed), then ask the
+      # supervised timer owner to sweep. No later event in this bucket exists.
+      [{{^event_name, "one-rollover-doc", window_start} = key, driven, ^d}] =
+        :ets.match_object(@rate_table, {{event_name, "one-rollover-doc", :_}, :_, :_})
 
-      :telemetry.execute(event_name, %{count: 1}, %{
-        surface: :test,
-        target: "doc-rollover",
-        reader: "r",
-        visibility: :public
-      })
+      stale_window = window_start - 61_000
+      :ets.delete(@rate_table, key)
+      :ets.insert(@rate_table, {{event_name, "one-rollover-doc", stale_window}, driven, d})
+
+      :ets.insert(
+        @rate_table,
+        {{:current, event_name, "one-rollover-doc"}, stale_window}
+      )
+
+      counters_before_rollover = AuditLog.counters()
+      owner = Process.whereis(Commonplace.Trust.AuditRateLimiter)
+      send(owner, :flush_rate_windows)
+      _ = :sys.get_state(owner)
 
       counters_after_rollover = AuditLog.counters()
-      assert counters_after_rollover.entered == counters_before_rollover.entered + 1
-      assert counters_after_rollover.built == counters_before_rollover.built + 1
-
-      # `offered` counts records handed to the dispatcher, not input events:
-      # the rollover produces one summary record and one payload record.
-      assert counters_after_rollover.offered == counters_before_rollover.offered + 2
+      assert counters_after_rollover.entered == counters_before_rollover.entered
+      assert counters_after_rollover.built == counters_before_rollover.built
+      assert counters_after_rollover.offered == counters_before_rollover.offered + 1
 
       events = read_log(store, d)
 
       summaries = Enum.filter(events, &(&1["event"] == "audit_log.rate_limited"))
       assert [summary] = summaries
       assert summary["suppressed"] == 5
+      assert summary["driven"] == 25
+      assert summary["admitted"] == 20
+      assert summary["doc_uuid"] == "one-rollover-doc"
       assert summary["suppressed_event"] == "commonplace.trust.read.would_refuse"
 
-      # The event that triggered the rollover is itself logged (first in
-      # the new window), on top of the earlier capped 20.
       would_refuse_events =
         Enum.filter(events, &(&1["event"] == "commonplace.trust.read.would_refuse"))
 
-      assert length(would_refuse_events) == 21
+      assert length(would_refuse_events) == 20
     end
   end
 

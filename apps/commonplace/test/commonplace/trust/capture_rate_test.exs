@@ -95,8 +95,9 @@ defmodule Commonplace.Trust.CaptureRateTest do
     AuditLog.attach(store, dispatcher: dispatcher)
     before = Commonplace.Trust.capture_rate(dispatcher: dispatcher)
     denials = 25
+    storm_doc = UUID.uuid4()
 
-    drive_denials(store, denials)
+    drive_denials(store, denials, storm_doc)
     assert :ok = AuditDispatcher.flush(dispatcher, 5_000)
 
     rate = Commonplace.Trust.capture_rate(dispatcher: dispatcher, since: before)
@@ -278,6 +279,13 @@ defmodule Commonplace.Trust.CaptureRateTest do
     for i <- 1..count do
       assert {:error, {:trust_rejected, :unsigned}} =
                CommitStore.create_commit(store, UUID.uuid4(), text_update("denial #{i}"), nil)
+    end
+  end
+
+  defp drive_denials(store, count, doc_uuid) do
+    for i <- 1..count do
+      assert {:error, {:trust_rejected, :unsigned}} =
+               CommitStore.create_commit(store, doc_uuid, text_update("denial #{i}"), nil)
     end
   end
 
