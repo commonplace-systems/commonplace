@@ -110,7 +110,7 @@ defmodule Commonplace.MUD.EngineModuleTest do
   # hot-reload test). Behaviour mirrors the compiled-in Parser floor.
   defp parser_source(extra \\ "") do
     ~s'''
-    defmodule Commonplace.MUD.EngineParser do
+    defmodule Commonplace.MUD.EngineParserFixture do
       @aliases Map.merge(%{"n" => "north", "l" => "look", "i" => "inventory"}, %{#{extra}})
       def parse(line) when is_binary(line) do
         line = String.trim(line)
@@ -135,13 +135,13 @@ defmodule Commonplace.MUD.EngineModuleTest do
 
   defp crashing_source do
     ~s'''
-    defmodule Commonplace.MUD.EngineParser do
+    defmodule Commonplace.MUD.EngineParserFixture do
       def parse(_line), do: raise("boom from a doc-hosted parser")
     end
     '''
   end
 
-  defp broken_source, do: "defmodule Commonplace.MUD.EngineParser do  def parse(  # unbalanced\n"
+  defp broken_source, do: "defmodule Commonplace.MUD.EngineParserFixture do  def parse(  # unbalanced\n"
 
   defp content_update(source) do
     Yelixer.Doc.new()
@@ -402,7 +402,7 @@ defmodule Commonplace.MUD.EngineModuleTest do
 
     defp look_source(extra_clause \\ "") do
       ~s'''
-      defmodule Commonplace.MUD.EngineLook do
+      defmodule Commonplace.MUD.EngineLookFixture do
         alias Commonplace.MUD.Schemas
         alias Commonplace.MUD.Schemas.Player
         alias Commonplace.MUD.World
@@ -438,7 +438,7 @@ defmodule Commonplace.MUD.EngineModuleTest do
 
     defp crashing_look_source do
       ~s'''
-      defmodule Commonplace.MUD.EngineLook do
+      defmodule Commonplace.MUD.EngineLookFixture do
         def run(_cmd, _ctx), do: raise("boom from a doc-hosted look verb")
       end
       '''
@@ -758,7 +758,7 @@ defmodule Commonplace.MUD.EngineModuleTest do
 
     defp inventory_source do
       ~s'''
-      defmodule Commonplace.MUD.EngineInventory do
+      defmodule Commonplace.MUD.EngineInventoryFixture do
         alias Commonplace.MUD.Schemas
         alias Commonplace.MUD.Schemas.Object
         alias Commonplace.MUD.World
@@ -787,7 +787,7 @@ defmodule Commonplace.MUD.EngineModuleTest do
 
     defp crashing_inventory_source do
       ~s'''
-      defmodule Commonplace.MUD.EngineInventory do
+      defmodule Commonplace.MUD.EngineInventoryFixture do
         def run(_cmd, _ctx), do: raise("boom from a doc-hosted inventory verb")
       end
       '''
@@ -1027,7 +1027,7 @@ defmodule Commonplace.MUD.EngineModuleTest do
 
     defp say_source do
       ~s'''
-      defmodule Commonplace.MUD.EngineSay do
+      defmodule Commonplace.MUD.EngineSayFixture do
         alias Commonplace.MUD.World
 
         def run(%Commonplace.MUD.Parser.Command{args: ""}, _ctx), do: {:error, "Say what?"}
@@ -1042,7 +1042,7 @@ defmodule Commonplace.MUD.EngineModuleTest do
 
     defp emote_source do
       ~s'''
-      defmodule Commonplace.MUD.EngineEmote do
+      defmodule Commonplace.MUD.EngineEmoteFixture do
         alias Commonplace.MUD.World
 
         def run(%Commonplace.MUD.Parser.Command{args: ""}, _ctx), do: {:error, "Emote what?"}
@@ -1057,7 +1057,7 @@ defmodule Commonplace.MUD.EngineModuleTest do
 
     defp crashing_say_source do
       ~s'''
-      defmodule Commonplace.MUD.EngineSay do
+      defmodule Commonplace.MUD.EngineSayFixture do
         def run(_cmd, _ctx), do: raise("boom from a doc-hosted say verb")
       end
       '''
@@ -1314,7 +1314,7 @@ defmodule Commonplace.MUD.EngineModuleTest do
         end
 
       ~s'''
-      defmodule Commonplace.MUD.EngineWhere do
+      defmodule Commonplace.MUD.EngineWhereFixture do
         alias Commonplace.MUD.Schemas.Room
         alias Commonplace.MUD.World
 
@@ -1329,7 +1329,7 @@ defmodule Commonplace.MUD.EngineModuleTest do
 
     defp crashing_where_source do
       ~s'''
-      defmodule Commonplace.MUD.EngineWhere do
+      defmodule Commonplace.MUD.EngineWhereFixture do
         def run(_cmd, _ctx), do: raise("boom from a doc-hosted where verb")
       end
       '''
@@ -1493,7 +1493,7 @@ defmodule Commonplace.MUD.EngineModuleTest do
 
     defp examine_source do
       ~s'''
-      defmodule Commonplace.MUD.EngineExamine do
+      defmodule Commonplace.MUD.EngineExamineFixture do
         alias Commonplace.MUD.Schemas.{Object, Player}
         alias Commonplace.MUD.Verbs
 
@@ -1520,7 +1520,7 @@ defmodule Commonplace.MUD.EngineModuleTest do
 
     defp crashing_examine_source do
       ~s'''
-      defmodule Commonplace.MUD.EngineExamine do
+      defmodule Commonplace.MUD.EngineExamineFixture do
         def run(_cmd, _ctx), do: raise("boom from a doc-hosted examine verb")
       end
       '''
@@ -1683,7 +1683,7 @@ defmodule Commonplace.MUD.EngineModuleTest do
         end
 
       ~s'''
-      defmodule Commonplace.MUD.EngineWho do
+      defmodule Commonplace.MUD.EngineWhoFixture do
         alias Commonplace.MUD.Verbs
 
         def run(_cmd, ctx) do
@@ -1711,7 +1711,7 @@ defmodule Commonplace.MUD.EngineModuleTest do
 
     defp crashing_who_source do
       ~s'''
-      defmodule Commonplace.MUD.EngineWho do
+      defmodule Commonplace.MUD.EngineWhoFixture do
         def run(_cmd, _ctx), do: raise("boom from a doc-hosted who verb")
       end
       '''
@@ -1916,7 +1916,7 @@ defmodule Commonplace.MUD.EngineModuleTest do
         end
 
       ~s'''
-      defmodule Commonplace.MUD.EngineGo do
+      defmodule Commonplace.MUD.EngineGoFixture do
         alias Commonplace.MUD.{Parser, Verbs, World}
         alias Commonplace.MUD.Schemas.Room
 
@@ -1959,7 +1959,7 @@ defmodule Commonplace.MUD.EngineModuleTest do
 
     defp crashing_go_source do
       ~s'''
-      defmodule Commonplace.MUD.EngineGo do
+      defmodule Commonplace.MUD.EngineGoFixture do
         def run(_cmd, _ctx), do: raise("boom from a doc-hosted go verb")
       end
       '''
@@ -2205,7 +2205,7 @@ defmodule Commonplace.MUD.EngineModuleTest do
         end
 
       ~s'''
-      defmodule Commonplace.MUD.EngineHome do
+      defmodule Commonplace.MUD.EngineHomeFixture do
         alias Commonplace.MUD.{Verbs, World}
         alias Commonplace.MUD.Schemas.Room
 
@@ -2244,7 +2244,7 @@ defmodule Commonplace.MUD.EngineModuleTest do
 
     defp crashing_home_source do
       ~s'''
-      defmodule Commonplace.MUD.EngineHome do
+      defmodule Commonplace.MUD.EngineHomeFixture do
         def run(_cmd, _ctx), do: raise("boom from a doc-hosted home verb")
       end
       '''
