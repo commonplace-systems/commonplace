@@ -115,7 +115,12 @@ defmodule Commonplace.Bd.StrandedDetectorCoverageTest do
       # `build_adjacency/1` is symmetric regardless of which side
       # names the other.
       {:ok, a2} =
-        Issue.update(ctx.root, a.id, %{needs: [%{"ticket" => b.id}, %{"ticket" => c.id}]}, ctx.store)
+        Issue.update(
+          ctx.root,
+          a.id,
+          %{needs: [%{"ticket" => b.id}, %{"ticket" => c.id}]},
+          ctx.store
+        )
 
       assert length(a2.needs) == 2
 
@@ -144,7 +149,8 @@ defmodule Commonplace.Bd.StrandedDetectorCoverageTest do
       # SAME adjacency map entry for A, so `connected_components/2`'s
       # BFS walks A -> B -> (back to A, already visited) and A -> C in
       # one traversal, producing one 3-member component, not two.
-      matching_abc = Enum.filter(components, fn comp -> MapSet.new(comp) == MapSet.new([a.id, b.id, c.id]) end)
+      matching_abc =
+        Enum.filter(components, fn comp -> MapSet.new(comp) == MapSet.new([a.id, b.id, c.id]) end)
 
       # THE VERDICT: `stranded_components/2` filters each component by
       # `has_open and not has_ready` — component-WIDE, not per-cycle.
@@ -180,10 +186,33 @@ defmodule Commonplace.Bd.StrandedDetectorCoverageTest do
 
   describe "Q2 (cost) — 786-issue-scale corpus" do
     @describetag :scale
-    @tag timeout: 600_000
+    # 600_000 was a fixed budget sitting ~13% above the actual cost: the
+    # corpus build alone measured 522s on the scale lane's first CI run
+    # (2026-08-18) and crossed 600s outright on a loaded local host. A
+    # budget that close to the workload is the flake class the S-timing
+    # round retired — 2.3× the measured build cost, still well inside the
+    # lane's 60-minute job bound.
+    @tag timeout: 1_200_000
 
     test "stranded_components/2 and the ready/blocked walk over a realistic-scale corpus", ctx do
       n = scale("SCALE_STRANDED_N", 800)
+
+      # The CREATE calls below carry the CX-gc7q boundary deadline instead
+      # of GenServer.call's invisible 5,000ms default. At this scale a
+      # single late create legitimately crosses 5s on a loaded host
+      # (measured 2026-08-18: the default fired ~601s into the build,
+      # inside add_issue_entry — the CX-7b53 budget-nesting shape, the
+      # raised test budget revealing the one beneath). Creates ONLY:
+      # CX-gc7q is scoped to the ticket-create chain, and Issue.update
+      # forwards the deadline WITHOUT its :ticket_create_document
+      # companion — Keyword.fetch! crashes (measured same day). Updates
+      # here write short per-issue chains whose cost does not grow with
+      # the corpus, so the 5s default is honest for them. The deadline
+      # sits just under the test's own budget so exhaustion produces the
+      # NAMED deadline error, not an anonymous ExUnit timeout.
+      write_opts = [
+        ticket_create_deadline: System.monotonic_time(:millisecond) + 1_140_000
+      ]
 
       # Build N issues. Every 5th issue needs the previous one (a
       # sparse chain of satisfied edges: earlier tickets get closed as
@@ -192,15 +221,23 @@ defmodule Commonplace.Bd.StrandedDetectorCoverageTest do
       # graph), plus ONE deliberate 2-cycle at the end (mirrors
       # CX-di2m) to keep `stranded_components/2` doing real work, not
       # just walking an all-isolated-nodes graph.
-      {ids, elapsed_build_us} =
+      # :timer.tc returns {elapsed_us, result} — TIME FIRST. The original
+      # destructure here was reversed, and no run ever reached it to say so:
+      # the corpus build alone crossed the old 600s budget on every loaded
+      # local run, so the first execution of the line below was the scale
+      # lane's first CI dispatch (2026-08-18, Enumerable-on-522394522).
+      {elapsed_build_us, ids} =
         :timer.tc(fn ->
           Enum.reduce(1..n, [], fn i, acc ->
-            {:ok, issue, _} = Issue.create(ctx.root, %{title: "T#{i}"}, ctx.store)
+            {:ok, issue, _} = Issue.create(ctx.root, %{title: "T#{i}"}, ctx.store, write_opts)
 
             issue =
               if rem(i, 5) == 0 and acc != [] do
                 prev_id = hd(acc)
-                {:ok, updated} = Issue.update(ctx.root, issue.id, %{needs: [%{"ticket" => prev_id}]}, ctx.store)
+
+                {:ok, updated} =
+                  Issue.update(ctx.root, issue.id, %{needs: [%{"ticket" => prev_id}]}, ctx.store)
+
                 updated
               else
                 issue
@@ -225,16 +262,23 @@ defmodule Commonplace.Bd.StrandedDetectorCoverageTest do
       # sprinkle above, isolated from the rest so it is guaranteed to
       # still show up as a stranded component regardless of what the
       # random-ish sprinkle above produced.
-      {:ok, cyc_a, _} = Issue.create(ctx.root, %{title: "CYC-A"}, ctx.store)
-      {:ok, cyc_b, _} = Issue.create(ctx.root, %{title: "CYC-B"}, ctx.store)
+      {:ok, cyc_a, _} = Issue.create(ctx.root, %{title: "CYC-A"}, ctx.store, write_opts)
+      {:ok, cyc_b, _} = Issue.create(ctx.root, %{title: "CYC-B"}, ctx.store, write_opts)
+
       {:ok, _} = Issue.update(ctx.root, cyc_a.id, %{needs: [%{"ticket" => cyc_b.id}]}, ctx.store)
+
       {:ok, _} = Issue.update(ctx.root, cyc_b.id, %{needs: [%{"ticket" => cyc_a.id}]}, ctx.store)
 
       total_n = actual_n + 2
 
-      IO.puts(:stderr, "  [scale] built #{total_n} issues in #{Float.round(elapsed_build_us / 1_000_000, 2)} s")
+      IO.puts(
+        :stderr,
+        "  [scale] built #{total_n} issues in #{Float.round(elapsed_build_us / 1_000_000, 2)} s"
+      )
 
-      {stranded_us, components} = :timer.tc(fn -> Frontier.stranded_components(ctx.root, ctx.store) end)
+      {stranded_us, components} =
+        :timer.tc(fn -> Frontier.stranded_components(ctx.root, ctx.store) end)
+
       {ready_us, _ready} = :timer.tc(fn -> Frontier.ready_walk(ctx.root, ctx.store) end)
       {blocked_us, _blocked} = :timer.tc(fn -> Frontier.blocked_walk(ctx.root, ctx.store) end)
 
@@ -245,7 +289,9 @@ defmodule Commonplace.Bd.StrandedDetectorCoverageTest do
       # The deliberate isolated cycle must still be caught (sanity
       # check that the timed calls above did real, correct work, not
       # just fast-pathing on an empty/degenerate graph).
-      assert Enum.any?(components, fn comp -> MapSet.new(comp) == MapSet.new([cyc_a.id, cyc_b.id]) end)
+      assert Enum.any?(components, fn comp ->
+               MapSet.new(comp) == MapSet.new([cyc_a.id, cyc_b.id])
+             end)
     end
 
     defp scale(env, default) do
