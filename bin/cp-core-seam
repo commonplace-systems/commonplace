@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+#
+# cp-core-seam — the filesystem-seam ratchet (S1, CX-27vt).
+#
+# Compiles apps/commonplace's extractable CORE (the :coreseam env — see
+# elixirc_paths(:coreseam) in apps/commonplace/mix.exs for the excluded
+# above-seam set and the why of each exclusion) and gates on the DECLARED
+# debt list below: the known core -> sync|process references. The seam is
+# CX-27vt's — core must not reach into sync/ or process/ — and this ratchet
+# is GREEN on the existing world by construction, red only on GROWTH.
+#
+# THE RULES (commonplace-plan ruling 2026-08-18, ratchet-with-declared-
+# exclusions, three conditions):
+#   ① every debt below carries its why, at this point of use.
+#   ② both arms demonstrated: --prove-red plants a synthetic reference and
+#      asserts the gate fires; the plain run is the green arm.
+#   ③ ⛔ THE DEBT LIST MAY ONLY SHRINK. A cleared debt whose entry remains
+#      is a RED (stale entry), not a quiet pass — an entry must not survive
+#      its own green. Adding an entry to silence a new reference is the
+#      coupling this ratchet exists to stop; a genuinely ruled new debt
+#      needs the ruling cited in its why line.
+#
+# Non-sync/process undefined-module warnings (e.g. core -> git_bridge) are
+# REPORTED as info, not gated: they are layering facts outside CX-27vt's
+# seam. If one grows into a subject, it gets its own ratchet, not a quiet
+# seat in this one.
+
+set -uo pipefail
+
+cd "$(dirname "$0")/.." || exit 64
+APP_DIR="apps/commonplace"
+
+# THE DECLARED DEBT LIST — "referencing file -> referenced module", one per
+# line. Sorted; the comparison is exact.
+#
+#   workspace.ex -> Sync.CheckoutRegistry   Workspace.initialize_root
+#     registers the fresh checkout with the sync layer (lines ~97,102).
+#     Debt: either the registry is a core concern misplaced in sync/ (the
+#     Flock shape) or the registration belongs to a caller above the seam.
+#     Plan's CheckoutRegistry design look is queued on exactly this.
+#   tree/fork.ex -> Process.Config          maybe_filter_processes strips
+#     process docs on fork via Process.Config.filter_json_for_fork/1.
+#   tree/merge.ex -> Process.Config         the merge-side twin of fork's.
+#     Debt (both): the FILTER is core policy implemented above the seam —
+#     the function wants to move down, or the policy wants a core seam.
+DECLARED_DEBTS=$(cat <<'EOF' | sort
+lib/commonplace/tree/fork.ex -> Commonplace.Process.Config
+lib/commonplace/tree/merge.ex -> Commonplace.Process.Config
+lib/commonplace/workspace.ex -> Commonplace.Sync.CheckoutRegistry
+EOF
+)
+
+OUT="$(mktemp -t cp-core-seam.XXXXXX)"
+PROBE="$APP_DIR/lib/commonplace/seam_extractor_probe.ex"
+PROBE_PAIR="lib/commonplace/seam_extractor_probe.ex -> Commonplace.Sync.Watcher"
+PLANTED=""
+trap 'rm -f "$OUT" "$PROBE"; [ -n "$PLANTED" ] && rm -f "$PLANTED"' EXIT
+
+# Startup sweep: a SIGKILL (OOM is not hypothetical on this box) can strand
+# the synthetic files a prior run planted; a leftover would poison this
+# run's comparison, so remove both known names before anything compiles.
+rm -f "$PROBE" "$APP_DIR/lib/commonplace/seam_prove_red_control.ex"
+
+# THE EXTRACTOR'S PER-RUN POSITIVE CONTROL: a probe file referencing sync is
+# planted on EVERY run and must appear in the extracted pairs, or the
+# extractor is blind. Unlike a guard keyed on the debt list, this control
+# survives the day the list empties — which is exactly when a blind
+# extractor would otherwise become indistinguishable from a clean seam.
+cat > "$PROBE" <<'EOF_PROBE'
+defmodule Commonplace.SeamExtractorProbe do
+  @moduledoc false
+  def fire, do: Commonplace.Sync.Watcher.detect_changes(nil, nil, nil, nil)
+end
+EOF_PROBE
+[ -f "$PROBE" ] || { echo "cp-core-seam: probe file did not land" >&2; exit 64; }
+
+if [ "${1:-}" = "--prove-red" ]; then
+  # The red arm: a synthetic core file referencing sync. Verified tamper —
+  # assert the target location is real and the file lands before compiling.
+  PLANTED="$APP_DIR/lib/commonplace/seam_prove_red_control.ex"
+  [ -d "$APP_DIR/lib/commonplace" ] || { echo "cp-core-seam: tamper target dir missing" >&2; exit 64; }
+  cat > "$PLANTED" <<'EOF'
+defmodule Commonplace.SeamProveRedControl do
+  @moduledoc false
+  def fire, do: Commonplace.Sync.Watcher.detect_changes(nil, nil, nil, nil)
+end
+EOF
+  [ -f "$PLANTED" ] || { echo "cp-core-seam: tamper file did not land" >&2; exit 64; }
+fi
+
+# The excluded world must exist, or "no references into sync/" is a claim
+# about a corpus that is not there.
+for d in sync process; do
+  [ -d "$APP_DIR/lib/commonplace/$d" ] || {
+    echo "cp-core-seam: FAILED — $APP_DIR/lib/commonplace/$d does not exist; the seam's excluded side is gone and this gate is measuring nothing" >&2
+    exit 1
+  }
+done
+
+(cd "$APP_DIR" && MIX_ENV=coreseam mix compile --force) > "$OUT" 2>&1
+RC=$?
+
+if [ "$RC" -ne 0 ]; then
+  cat "$OUT"
+  echo "" >&2
+  echo "cp-core-seam: FAILED — the core-seam build itself did not compile (rc=$RC)." >&2
+  echo "  A compile ERROR here usually means a compile-time dependency (a struct" >&2
+  echo "  or macro) on an excluded module — a coupling harder than the warning" >&2
+  echo "  class this gate normally reports. Read the error above." >&2
+  exit 1
+fi
+
+# Assert the build RAN: a floor on produced modules. mix test's exit-0-on-
+# nothing lesson applied to compiles — count artifacts, not exit codes.
+BEAMS=$(find _build/coreseam -name "*.beam" 2>/dev/null | wc -l)
+if [ "$BEAMS" -lt 300 ]; then
+  echo "cp-core-seam: FAILED — only $BEAMS beam files in _build/coreseam (floor 300); the build did not actually cover the core" >&2
+  exit 1
+fi
+
+# Extract "file -> module" pairs for undefined SYNC/PROCESS references.
+FOUND=$(grep -aA8 "warning: Commonplace\.\(Sync\|Process\)\." "$OUT" | awk '
+  /warning: Commonplace\.(Sync|Process)\./ {
+    match($0, /Commonplace\.(Sync|Process)\.[A-Za-z_]+/)
+    mod = substr($0, RSTART, RLENGTH); next
+  }
+  /└─/ {
+    match($0, /lib\/[a-z_\/]+\.ex/)
+    if (RSTART && mod != "") { print substr($0, RSTART, RLENGTH) " -> " mod; mod = "" }
+  }
+' | sort -u)
+
+# The probe must be SEEN, or nothing downstream means anything: a blind
+# extractor's empty set would otherwise read as "all debts cleared" (with
+# an instruction to delete the records) or, once the list empties for
+# real, as a clean seam forever.
+if ! echo "$FOUND" | grep -qxF "$PROBE_PAIR"; then
+  echo "cp-core-seam: FAILED — THE EXTRACTOR IS BLIND: the planted probe" >&2
+  echo "  ($PROBE_PAIR)" >&2
+  echo "  did not appear in the extracted pairs. Nothing this run reports about" >&2
+  echo "  the seam can be trusted; the warning format or the pipeline changed." >&2
+  echo "  Inspect: $OUT" >&2
+  exit 1
+fi
+
+# The probe is the instrument check, not a debt: subtract it before comparing.
+FOUND=$(echo "$FOUND" | grep -vxF "$PROBE_PAIR")
+
+INFO=$(grep -ac "warning:" "$OUT")
+
+if [ "$FOUND" != "$DECLARED_DEBTS" ]; then
+  echo "cp-core-seam: FAILED — the core->sync|process reference set changed." >&2
+  echo "" >&2
+  echo "  NEW references (coupling growth — the thing this ratchet stops):" >&2
+  comm -13 <(echo "$DECLARED_DEBTS") <(echo "$FOUND") | sed 's/^/    /' >&2
+  echo "  CLEARED debts still declared (stale entries — SHRINK the list in bin/cp-core-seam):" >&2
+  comm -23 <(echo "$DECLARED_DEBTS") <(echo "$FOUND") | sed 's/^/    /' >&2
+  exit 1
+fi
+
+if [ -n "$PLANTED" ]; then
+  echo "cp-core-seam: PROVE-RED DEFECTIVE — a planted core->sync reference did not fire the gate" >&2
+  exit 1
+fi
+
+echo "cp-core-seam: OK — core compiled ($BEAMS modules), core->sync|process references exactly the $(echo "$DECLARED_DEBTS" | wc -l) declared debts ($INFO total warnings; non-seam ones informational)"

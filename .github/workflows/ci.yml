@@ -242,6 +242,16 @@ jobs:
       - name: Compile (warnings as errors)
         run: mix compile --warnings-as-errors
 
+      # THE FILESYSTEM-SEAM RATCHET (S1, CX-27vt; ruled 2026-08-18). Compiles
+      # the extractable core (MIX_ENV=coreseam) and refuses any core->sync or
+      # core->process reference beyond the three declared debts the script
+      # carries. Green on the existing world by construction, red only on
+      # GROWTH — and red on a STALE debt entry too (the list may only shrink).
+      # Both arms demonstrated at landing; `bin/cp-core-seam --prove-red`
+      # re-fires the red arm on demand.
+      - name: Core-seam ratchet (core must not grow sync/process coupling)
+        run: bin/cp-core-seam
+
       - name: Run tests
         # Wrapped in cp-test-guard because `mix test` exits 0 when it selects
         # NOTHING — an umbrella app whose path stops matching is silently
