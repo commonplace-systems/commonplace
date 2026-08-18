@@ -35,6 +35,10 @@ git worktree add /tmp/wt <sha>
 cd /tmp/wt && mix deps.get
 mix test apps/commonplace/test --seed <seed>
 expect: a MUD-family failure; the EXACT member may differ from CI's (above)
+count symptom OCCURRENCES, never lines: grep -o 'this place has no description' f | wc -l
+   ⛔ NOT `grep -c` — run6 of S-loadsep put TWO occurrences on ONE line and
+   the reviewer's line-count read 1; the trap is recorded twice now. Use the
+   command above verbatim.
 ⛔ the verdict line must be PRESENT and the population must MATCH the row's
    era before any conclusion is drawn — a dead run's zero is the same byte.
 ```
