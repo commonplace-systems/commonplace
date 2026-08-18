@@ -7,7 +7,7 @@ defmodule Commonplace.Store.CommitStoreExclusionTest do
   use ExUnit.Case, async: false
 
   alias Commonplace.Store.CommitStore
-  alias Commonplace.Sync.Flock
+  alias Commonplace.Flock
 
   defp tmp_dir(tag) do
     dir = Path.join(System.tmp_dir!(), "cx2479_#{tag}_#{:rand.uniform(1_000_000_000)}")

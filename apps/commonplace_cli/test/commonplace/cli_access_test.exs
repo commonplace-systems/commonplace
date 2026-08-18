@@ -11,7 +11,7 @@ defmodule Commonplace.CLI.AccessTest do
 
   alias Commonplace.CLI.Access
   alias Commonplace.Store.{CommitStore, LockRefusal}
-  alias Commonplace.Sync.Flock
+  alias Commonplace.Flock
 
   defp tmp_dir(tag) do
     dir = Path.join(System.tmp_dir!(), "cx_x8jk_#{tag}_#{:rand.uniform(1_000_000_000)}")

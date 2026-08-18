@@ -1,10 +1,10 @@
-defmodule Commonplace.Sync.FlockTest do
+defmodule Commonplace.FlockTest do
   @moduledoc """
   Tests for OS-level advisory file locks via flock(2) NIF.
   """
   use ExUnit.Case, async: true
 
-  alias Commonplace.Sync.Flock
+  alias Commonplace.Flock
 
   setup do
     dir = Path.join(System.tmp_dir!(), "cp_flock_test_#{:rand.uniform(1_000_000)}")

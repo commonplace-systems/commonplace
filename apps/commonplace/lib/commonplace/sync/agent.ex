@@ -696,7 +696,7 @@ defmodule Commonplace.Sync.Agent do
 
   # Hash under the shared-lock discipline without retaining whole-file bytes.
   defp hash_locked(path) do
-    Commonplace.Sync.Flock.with_shared_lock(path, 30_000, fn ->
+    Commonplace.Flock.with_shared_lock(path, 30_000, fn ->
       file_hash(path)
     end)
   end

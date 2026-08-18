@@ -351,7 +351,7 @@ defmodule Commonplace.Store.CommitStore do
   ## Single-opener exclusion (`<data_dir>/commits.lock`, CX-2479)
 
   Before `init/1` opens CubDB at all it takes a **non-blocking exclusive
-  `flock(2)`** on `<data_dir>/commits.lock` via `Commonplace.Sync.Flock`.
+  `flock(2)`** on `<data_dir>/commits.lock` via `Commonplace.Flock`.
   If another live process holds it, `init/1` returns
   `{:stop, {:commits_store_locked, detail}}` — it does not open, does not
   probe, does not archive, does not touch a byte on disk.
@@ -1345,7 +1345,7 @@ defmodule Commonplace.Store.CommitStore do
     # sol/s-snapshot-fresh-s3: freeze the caller's cwd before join/lock/CubDB use;
     # compaction creates by path and otherwise re-resolves a relative store under mix.
     data_dir = opts |> Keyword.fetch!(:data_dir) |> Path.expand()
-    flock_module = Keyword.get(opts, :flock_module, Commonplace.Sync.Flock)
+    flock_module = Keyword.get(opts, :flock_module, Commonplace.Flock)
     path = Path.join(data_dir, "commits")
 
     # CX-2479: take the exclusion BEFORE any CubDB open. See
@@ -1788,7 +1788,7 @@ defmodule Commonplace.Store.CommitStore do
   defp release_commits_lock(state) when is_map(state) do
     case Map.get(state, :lock_ref) do
       nil -> :ok
-      ref -> Commonplace.Sync.Flock.unlock(ref)
+      ref -> Commonplace.Flock.unlock(ref)
     end
 
     :ok

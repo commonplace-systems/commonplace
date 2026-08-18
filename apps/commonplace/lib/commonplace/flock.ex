@@ -1,4 +1,4 @@
-defmodule Commonplace.Sync.Flock do
+defmodule Commonplace.Flock do
   @moduledoc """
   OS-level advisory file locks via flock(2) NIF.
 

@@ -13,7 +13,7 @@ defmodule Commonplace.Workspace.Lock do
   ## Crash safety, not stale-lock cleanup
 
   The lock's file descriptor lives inside this GenServer's NIF resource
-  (see `Commonplace.Sync.Flock`), which the OS keeps open for as long as
+  (see `Commonplace.Flock`), which the OS keeps open for as long as
   the resource is reachable. When the VM dies — cleanly or via crash —
   the OS itself closes every fd belonging to the dead process and
   `flock(2)`'s hold releases with it. There is no lock file to clean up
@@ -22,7 +22,7 @@ defmodule Commonplace.Workspace.Lock do
 
   ## Why not `Flock.with_exclusive_lock/3`
 
-  `Commonplace.Sync.Flock` already ships a scoped helper
+  `Commonplace.Flock` already ships a scoped helper
   (`with_exclusive_lock/3` / `with_shared_lock/3`), but it is
   deliberately **fail-open**: on timeout or any acquisition error it logs
   a warning and runs the caller's function anyway, unlocked. That's the
@@ -64,7 +64,7 @@ defmodule Commonplace.Workspace.Lock do
   use GenServer
   require Logger
 
-  alias Commonplace.Sync.Flock
+  alias Commonplace.Flock
 
   @lock_file "serve.lock"
 

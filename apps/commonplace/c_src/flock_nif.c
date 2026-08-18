@@ -132,4 +132,4 @@ static ErlNifFunc nif_funcs[] = {
     {"nif_close", 1, nif_close, 0},
 };
 
-ERL_NIF_INIT(Elixir.Commonplace.Sync.Flock, nif_funcs, on_load, NULL, NULL, NULL)
+ERL_NIF_INIT(Elixir.Commonplace.Flock, nif_funcs, on_load, NULL, NULL, NULL)

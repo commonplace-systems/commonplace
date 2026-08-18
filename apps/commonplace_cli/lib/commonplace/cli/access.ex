@@ -66,7 +66,7 @@ defmodule Commonplace.CLI.Access do
   """
 
   alias Commonplace.Store.{CommitStore, CommitStoreClient, LockRefusal}
-  alias Commonplace.Sync.Flock
+  alias Commonplace.Flock
 
   @type reach_failure ::
           {:read_node_name, nil}
