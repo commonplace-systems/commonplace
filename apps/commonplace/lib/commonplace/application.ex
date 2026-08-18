@@ -72,7 +72,9 @@ defmodule Commonplace.Application do
     # etiology, the flood guard, and the recursion guard.
     _ = Commonplace.Trust.AuditLog.attach()
 
-    data_dir = Application.get_env(:commonplace, :data_dir, "data")
+    # sol/s-snapshot-fresh-s3: freeze the boot cwd before mix changes it; otherwise
+    # CubDB compaction creates by path and re-resolves a relative store elsewhere.
+    data_dir = Application.get_env(:commonplace, :data_dir, "data") |> Path.expand()
 
     children =
       [
@@ -303,7 +305,9 @@ defmodule Commonplace.Application do
         :env_set
 
       :error ->
-        data_dir = Application.get_env(:commonplace, :data_dir, "data")
+        # sol/s-snapshot-fresh-s3: freeze the boot cwd before mix changes it; otherwise
+        # CubDB compaction creates by path and re-resolves a relative store elsewhere.
+        data_dir = Application.get_env(:commonplace, :data_dir, "data") |> Path.expand()
 
         if File.exists?(Path.join(data_dir, "trust.json")),
           do: :trust_json,
@@ -698,8 +702,7 @@ defmodule Commonplace.Application do
     if Application.get_env(:commonplace, :deploy_gap_monitor_on_boot, false) do
       [
         {Commonplace.DeployGapMonitor,
-         interval_ms:
-           Application.get_env(:commonplace, :deploy_gap_monitor_interval_ms, 60_000)}
+         interval_ms: Application.get_env(:commonplace, :deploy_gap_monitor_interval_ms, 60_000)}
       ]
     else
       []
