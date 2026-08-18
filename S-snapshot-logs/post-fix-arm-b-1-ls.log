@@ -1,0 +1,22 @@
+VERDICT COUNT
+201
+NONZERO FAILURE LINES
+WORKTREE ROOT
+total 32
+drwxrwxr-x 4 jes jes 4096 Aug 18 06:31 .
+drwxrwxr-x 3 jes jes 4096 Aug 18 06:31 ..
+drwxrwxr-x 2 jes jes 4096 Aug 18 06:31 commits
+-rw-rw-r-- 1 jes jes   16 Aug 18 06:31 commits.lock
+-rw------- 1 jes jes   36 Aug 18 06:31 node_id
+-rw------- 1 jes jes   90 Aug 18 06:31 node_signing_key
+-rw-r--r-- 1 jes jes   49 Aug 18 06:31 node_signing_public_keys.json
+drwxrwxr-x 2 jes jes 4096 Aug 18 06:31 secrets
+total 2632
+drwxrwxr-x 2 jes jes    4096 Aug 18 06:31 .
+drwxrwxr-x 4 jes jes    4096 Aug 18 06:31 ..
+-rw-rw-r-- 1 jes jes 2679831 Aug 18 06:31 9.cub
+APP DIRECTORY
+ls: cannot access 'apps/commonplace_cli/tmp/test_data/commits': No such file or directory
+drwxrwxr-x 3 jes jes 4096 Aug 18 06:31 apps/commonplace_cli/tmp
+drwxrwxr-x 2 jes jes 4096 Aug 18 06:31 apps/commonplace_cli/tmp/test_data
+STORE_TREE_COUNT=2 ROOT=1 APP=1

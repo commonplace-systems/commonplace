@@ -1,0 +1,12 @@
+WORKTREE ROOT
+ls: cannot access 'tmp': No such file or directory
+ls: cannot access 'tmp/test_data': No such file or directory
+ls: cannot access 'tmp/test_data/commits': No such file or directory
+APP DIRECTORY
+ls: cannot access 'apps/commonplace_cli/tmp': No such file or directory
+ls: cannot access 'apps/commonplace_cli/tmp/test_data': No such file or directory
+ls: cannot access 'apps/commonplace_cli/tmp/test_data/commits': No such file or directory
+QUARANTINE
+drwxrwxr-x 4 jes jes 4096 Aug 18 06:31 /tmp/S-snapshot-reset
+drwxrwxr-x 3 jes jes 4096 Aug 18 06:28 /tmp/S-snapshot-reset/app-tmp
+drwxrwxr-x 3 jes jes 4096 Aug 18 06:28 /tmp/S-snapshot-reset/worktree-tmp

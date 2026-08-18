@@ -1,0 +1,48 @@
+Unchecked dependencies for environment test:
+* telemetry_metrics (Hex package)
+  the dependency is not available, run "mix deps.get"
+* bandit (Hex package)
+  the dependency is not available, run "mix deps.get"
+* phoenix_live_view (Hex package)
+  the dependency is not available, run "mix deps.get"
+* file_system (Hex package)
+  the dependency is not available, run "mix deps.get"
+* anubis_mcp (Hex package)
+  the dependency is not available, run "mix deps.get"
+* telemetry_poller (Hex package)
+  the dependency is not available, run "mix deps.get"
+* libcluster (Hex package)
+  the dependency is not available, run "mix deps.get"
+* esbuild (Hex package)
+  the dependency is not available, run "mix deps.get"
+* telemetry (Hex package)
+  the dependency is not available, run "mix deps.get"
+* jason (Hex package)
+  the dependency is not available, run "mix deps.get"
+* phoenix_html (Hex package)
+  the dependency is not available, run "mix deps.get"
+* phoenix_pubsub (Hex package)
+  the dependency is not available, run "mix deps.get"
+* phoenix (Hex package)
+  the dependency is not available, run "mix deps.get"
+* dns_cluster (Hex package)
+  the dependency is not available, run "mix deps.get"
+* heroicons (https://github.com/tailwindlabs/heroicons.git - v2.2.0)
+  the dependency is not available, run "mix deps.get"
+* cubdb (Hex package)
+  the dependency is not available, run "mix deps.get"
+* lazy_html (Hex package)
+  the dependency is not available, run "mix deps.get"
+* yelixer (https://github.com/commonplace-systems/yelixer.git - bc35a0e9)
+  the dependency is not available, run "mix deps.get"
+* req (Hex package)
+  the dependency is not available, run "mix deps.get"
+* tailwind (Hex package)
+  the dependency is not available, run "mix deps.get"
+* elixir_make (Hex package)
+  the dependency is not available, run "mix deps.get"
+* wallaby (Hex package)
+  the dependency is not available, run "mix deps.get"
+* uuid (Hex package)
+  the dependency is not available, run "mix deps.get"
+** (Mix) Can't continue due to errors on dependencies

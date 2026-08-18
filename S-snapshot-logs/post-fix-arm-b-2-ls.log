@@ -1,0 +1,22 @@
+VERDICT COUNT
+201
+NONZERO FAILURE LINES
+WORKTREE ROOT
+total 32
+drwxrwxr-x 4 jes jes 4096 Aug 18 06:32 .
+drwxrwxr-x 3 jes jes 4096 Aug 18 06:31 ..
+drwxrwxr-x 2 jes jes 4096 Aug 18 06:32 commits
+-rw-rw-r-- 1 jes jes   16 Aug 18 06:32 commits.lock
+-rw------- 1 jes jes   36 Aug 18 06:31 node_id
+-rw------- 1 jes jes   90 Aug 18 06:31 node_signing_key
+-rw-r--r-- 1 jes jes   49 Aug 18 06:32 node_signing_public_keys.json
+drwxrwxr-x 2 jes jes 4096 Aug 18 06:31 secrets
+total 4828
+drwxrwxr-x 2 jes jes    4096 Aug 18 06:32 .
+drwxrwxr-x 4 jes jes    4096 Aug 18 06:32 ..
+-rw-rw-r-- 1 jes jes 4932631 Aug 18 06:32 B.cub
+APP DIRECTORY
+d apps/commonplace_cli/tmp/test_data 4096 bytes
+f apps/commonplace_cli/tmp/test_data/node_id 36 bytes
+STORE_TREE_COUNT=2 ROOT=1 APP=1
+COMMITS_STORE_COUNT=1 ROOT=1 APP=0

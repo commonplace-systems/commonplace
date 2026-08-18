@@ -1,0 +1,29 @@
+WORKTREE ROOT
+total 12
+drwxrwxr-x  3 jes jes 4096 Aug 18 06:28 .
+drwxrwxr-x 21 jes jes 4096 Aug 18 06:30 ..
+drwxrwxr-x  4 jes jes 4096 Aug 18 06:28 test_data
+total 32
+drwxrwxr-x 4 jes jes 4096 Aug 18 06:28 .
+drwxrwxr-x 3 jes jes 4096 Aug 18 06:28 ..
+drwxrwxr-x 2 jes jes 4096 Aug 18 06:28 commits
+-rw-rw-r-- 1 jes jes   16 Aug 18 06:28 commits.lock
+-rw------- 1 jes jes   36 Aug 18 06:28 node_id
+-rw------- 1 jes jes   90 Aug 18 06:28 node_signing_key
+-rw-r--r-- 1 jes jes   49 Aug 18 06:28 node_signing_public_keys.json
+drwxrwxr-x 2 jes jes 4096 Aug 18 06:28 secrets
+total 224
+drwxrwxr-x 2 jes jes   4096 Aug 18 06:28 .
+drwxrwxr-x 4 jes jes   4096 Aug 18 06:28 ..
+-rw-rw-r-- 1 jes jes 213009 Aug 18 06:28 0.cub
+APP DIRECTORY
+total 12
+drwxrwxr-x 3 jes jes 4096 Aug 18 06:28 .
+drwxrwxr-x 5 jes jes 4096 Aug 18 06:28 ..
+drwxrwxr-x 2 jes jes 4096 Aug 18 06:28 test_data
+total 12
+drwxrwxr-x 2 jes jes 4096 Aug 18 06:28 .
+drwxrwxr-x 3 jes jes 4096 Aug 18 06:28 ..
+-rw-rw-r-- 1 jes jes    0 Aug 18 06:28 commits.lock
+-rw------- 1 jes jes   36 Aug 18 06:28 node_id
+ls: cannot access 'apps/commonplace_cli/tmp/test_data/commits': No such file or directory

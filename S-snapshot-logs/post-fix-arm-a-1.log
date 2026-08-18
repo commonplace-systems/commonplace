@@ -1,0 +1,2229 @@
+==> commonplace
+make: Nothing to be done for 'all'.
+Compiling 5 files (.ex)
+Generated commonplace app
+==> commonplace_cli
+Compiling 2 files (.ex)
+Generated commonplace_cli app
+==> commonplace_bots
+Compiling 4 files (.ex)
+Generated commonplace_bots app
+==> commonplace_mcp
+Compiling 11 files (.ex)
+Generated commonplace_mcp app
+==> commonplace_web
+Compiling 4 files (.ex)
+Generated commonplace_web app
+==> commonplace_cli
+06:31:18.426 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+Running ExUnit with seed: 788030, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:18.956 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:18.973 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:18.977 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:18.999 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.1 seconds (0.00s async, 0.1s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 9529, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:19.011 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.015 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.018 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.023 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 28102, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:19.029 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.033 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.037 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.041 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 46455, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:19.048 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.051 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.054 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.058 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 63717, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:19.065 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.068 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.072 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.077 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 81842, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:19.083 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.089 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.091 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.096 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 100525, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:19.101 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.108 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.117 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.125 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.03 seconds (0.00s async, 0.03s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 135613, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:19.137 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.152 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.163 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.177 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.05 seconds (0.00s async, 0.05s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 187299, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:19.193 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.197 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.200 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.204 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 208817, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:19.210 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.214 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.217 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.222 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 228112, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:19.229 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.234 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.237 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.244 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 249329, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:19.251 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.256 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.259 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.265 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 273500, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:19.275 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.280 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.283 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.291 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 300043, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:19.305 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.312 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.318 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.326 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 333133, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:19.335 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.339 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.342 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.352 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 358888, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:19.364 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.369 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.372 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.378 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 383161, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:19.384 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.388 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.392 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.402 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 408549, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:19.409 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.420 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.425 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.434 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.03 seconds (0.00s async, 0.03s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 441550, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:19.443 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.447 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.450 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.454 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 458229, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:19.460 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.464 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.467 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.472 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 477465, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:19.479 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.487 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.495 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.502 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 508750, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:19.512 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.517 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.523 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.532 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 540409, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:19.545 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.550 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.555 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.563 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 568340, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:19.572 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.575 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.578 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.581 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 585110, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:19.587 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.591 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.597 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.604 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 608360, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:19.610 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.615 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.621 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.627 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 633495, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:19.635 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.639 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.642 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.647 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 651265, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:19.652 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.654 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.657 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.664 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 670420, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:19.672 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.676 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.679 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.685 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 690788, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:19.692 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.696 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.701 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.708 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 712452, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:19.714 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.719 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.726 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.733 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 738741, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:19.740 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.744 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.752 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.766 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.03 seconds (0.00s async, 0.03s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 775373, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:19.781 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.786 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.789 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.795 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 801668, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:19.804 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.807 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.810 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.815 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 819192, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:19.820 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.827 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.830 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.835 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 838437, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:19.839 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.842 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.846 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.852 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 857450, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:19.859 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.862 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.866 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.870 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 873912, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:19.874 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.877 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.880 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.885 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 888737, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:19.890 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.893 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.897 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.903 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 907020, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:19.908 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.912 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.916 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.924 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 933079, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:19.936 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.943 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.948 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.956 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 963914, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:19.966 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.971 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.978 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.986 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 991004, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:19.992 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:19.997 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.001 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.009 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 15733, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:20.017 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.025 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.033 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.041 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 47163, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:20.048 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.055 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.061 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.072 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.03 seconds (0.00s async, 0.03s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 84507, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:20.091 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.102 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.110 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.124 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.04 seconds (0.00s async, 0.04s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 137310, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:20.149 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.157 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.164 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.179 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.05 seconds (0.00s async, 0.05s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 196227, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:20.203 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.211 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.217 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.226 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.03 seconds (0.00s async, 0.03s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 232402, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:20.234 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.238 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.242 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.252 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 257762, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:20.259 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.264 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.270 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.274 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 279902, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:20.282 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.286 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.288 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.293 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 297702, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:20.299 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.302 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.306 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.311 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 316907, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:20.318 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.322 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.325 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.331 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 335522, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:20.336 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.340 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.345 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.350 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 357154, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:20.359 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.363 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.367 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.371 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 375880, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:20.377 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.380 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.383 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.387 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 391073, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:20.392 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.394 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.398 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.402 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 406597, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:20.407 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.410 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.417 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.425 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 433135, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:20.436 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.443 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.449 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.467 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.03 seconds (0.00s async, 0.03s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 473839, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:20.475 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.484 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.489 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.503 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.03 seconds (0.00s async, 0.03s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 508720, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:20.510 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.516 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.521 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.529 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 536633, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:20.538 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.544 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.549 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.557 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 566894, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:20.571 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.579 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.587 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.598 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.03 seconds (0.00s async, 0.03s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 606697, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:20.609 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.615 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.620 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.630 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 637566, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:20.639 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.648 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.654 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.674 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.04 seconds (0.00s async, 0.04s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 687165, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:20.697 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.701 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.704 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.709 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 714934, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:20.717 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.722 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.727 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.733 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 738340, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:20.739 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.745 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.752 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.760 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 766046, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:20.767 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.771 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.775 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.779 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 785456, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:20.790 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.793 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.796 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.801 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 806576, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:20.809 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.813 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.817 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.822 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 826249, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:20.827 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.830 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.833 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.837 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 842699, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:20.844 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.849 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.852 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.858 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 862592, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:20.863 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.866 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.870 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.875 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 879043, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:20.880 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.883 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.887 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.896 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 900427, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:20.901 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.904 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.907 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.913 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 918040, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:20.919 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.922 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.925 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.929 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 934084, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:20.935 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.938 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.941 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.946 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 951176, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:20.952 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.956 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.960 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.965 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 970559, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:20.972 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.976 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.980 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.984 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 990232, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:20.992 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:20.997 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.002 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.014 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 22712, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:21.025 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.029 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.033 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.042 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 50476, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:21.053 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.059 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.066 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.080 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.03 seconds (0.00s async, 0.03s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 89766, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:21.092 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.105 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.112 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.126 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.04 seconds (0.00s async, 0.04s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 141820, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:21.146 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.159 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.172 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.192 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.05 seconds (0.00s async, 0.05s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 204134, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:21.207 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.217 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.225 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.239 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.04 seconds (0.00s async, 0.04s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 248530, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:21.252 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.260 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.268 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.284 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.04 seconds (0.00s async, 0.04s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 294081, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:21.295 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.301 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.308 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.321 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.03 seconds (0.00s async, 0.03s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 329226, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:21.330 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.336 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.344 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.353 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.03 seconds (0.00s async, 0.03s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 364142, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:21.368 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.375 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.380 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.391 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.03 seconds (0.00s async, 0.03s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 399705, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:21.402 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.408 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.414 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.430 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.03 seconds (0.00s async, 0.03s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 439327, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:21.442 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.449 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.455 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.475 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.04 seconds (0.00s async, 0.04s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 488355, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:21.490 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.496 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.501 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.510 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 516159, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:21.518 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.523 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.531 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.543 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.03 seconds (0.00s async, 0.03s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 551539, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:21.553 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.559 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.564 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.580 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.03 seconds (0.00s async, 0.03s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 590092, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:21.595 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.600 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.605 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.615 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 621082, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:21.622 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.629 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.637 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.646 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.03 seconds (0.00s async, 0.03s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 653800, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:21.656 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.659 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.663 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.668 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 673069, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:21.674 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.678 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.682 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.688 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 693641, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:21.695 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.699 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.704 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.709 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 714193, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:21.716 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.720 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.723 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.732 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 737271, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:21.741 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.747 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.751 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.756 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 761132, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:21.763 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.767 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.771 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.779 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 784886, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:21.787 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.792 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.797 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.802 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 807847, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:21.810 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.814 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.818 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.824 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 830040, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:21.831 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.835 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.838 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.847 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 853152, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:21.854 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.857 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.860 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.866 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 871440, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:21.872 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.876 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.879 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.884 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 888389, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:21.889 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.893 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.897 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.903 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 908033, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:21.908 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.912 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.914 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.918 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 922661, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:21.924 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.927 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.931 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.936 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 941084, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:21.942 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.946 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.952 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.960 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 964286, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:21.965 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.968 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.971 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.976 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 980909, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:21.982 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.985 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.989 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:21.993 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 997893, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:21.998 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.001 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.004 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.008 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 13762, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:22.014 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.019 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.023 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.029 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 34944, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:22.036 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.039 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.042 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.048 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 54026, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:22.055 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.063 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.069 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.087 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.04 seconds (0.00s async, 0.04s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 101341, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:22.102 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.108 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.113 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.123 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 130572, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:22.132 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.137 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.145 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.163 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.04 seconds (0.00s async, 0.04s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 175386, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:22.177 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.185 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.190 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.205 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.03 seconds (0.00s async, 0.03s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 214236, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:22.216 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.223 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.229 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.238 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 244915, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:22.247 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.254 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.259 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.267 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.03 seconds (0.00s async, 0.03s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 284555, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:22.288 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.296 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.302 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.314 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.03 seconds (0.00s async, 0.03s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 325685, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:22.327 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.335 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.343 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.356 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.03 seconds (0.00s async, 0.03s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 367115, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:22.369 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.377 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.383 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.396 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.03 seconds (0.00s async, 0.03s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 403835, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:22.406 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.411 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.415 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.425 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 432373, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:22.433 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.439 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.442 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.449 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 455106, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:22.456 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.460 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.467 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.476 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 484893, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:22.486 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.492 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.498 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.505 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 513111, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:22.515 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.521 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.525 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.537 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 544960, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:22.546 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.552 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.558 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.575 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.03 seconds (0.00s async, 0.03s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 582761, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:22.586 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.599 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.608 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.629 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.05 seconds (0.00s async, 0.05s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 641613, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:22.645 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.651 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.655 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.671 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.03 seconds (0.00s async, 0.03s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 681848, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:22.685 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.693 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.701 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.719 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.04 seconds (0.00s async, 0.04s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 726820, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:22.732 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.739 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.747 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.756 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.03 seconds (0.00s async, 0.03s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 764483, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:22.768 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.776 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.780 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.785 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 791671, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:22.793 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.796 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.799 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.803 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 809274, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:22.811 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.816 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.820 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.827 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 832164, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:22.833 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.836 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.844 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.855 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 860205, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:22.863 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.872 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.881 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.887 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.04 seconds (0.00s async, 0.04s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 905526, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:22.906 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.913 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.918 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.926 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 932454, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:22.934 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.942 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.947 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.953 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 957637, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:22.958 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.962 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.966 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.972 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 976483, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:22.978 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.983 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.986 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:22.997 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 1409, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:23.002 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.007 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.010 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.019 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 24606, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:23.026 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.030 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.033 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.039 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 43992, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:23.045 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.048 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.051 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.056 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 63609, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:23.065 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.069 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.073 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.080 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 86452, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:23.090 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.096 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.100 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.105 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 109462, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:23.111 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.115 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.120 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.128 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 137076, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:23.140 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.147 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.156 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.167 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.03 seconds (0.00s async, 0.03s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 172164, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:23.174 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.178 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.181 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.186 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 191414, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:23.192 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.196 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.199 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.204 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 208948, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:23.211 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.216 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.220 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.228 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 234332, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:23.236 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.240 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.243 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.250 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 253954, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:23.255 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.258 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.262 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.267 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 275955, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:23.283 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.287 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.291 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.297 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 301550, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:23.302 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.306 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.310 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.315 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 319038, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:23.320 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.324 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.327 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.335 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 341782, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:23.343 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.350 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.353 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.358 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 364940, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:23.367 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.371 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.374 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.381 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 388120, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:23.390 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.394 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.398 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.403 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 407503, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:23.409 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.412 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.415 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.419 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 423676, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:23.425 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.428 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.432 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.441 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 448621, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:23.450 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.453 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.456 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.461 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 468230, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:23.471 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.475 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.479 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.484 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 489787, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:23.491 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.494 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.498 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.505 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 509919, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:23.511 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.515 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.518 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.524 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 529346, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:23.530 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.534 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.537 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.545 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 553822, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:23.556 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.560 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.565 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.577 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 584733, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:23.587 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.592 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.600 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.613 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.03 seconds (0.00s async, 0.03s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 621578, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:23.625 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.633 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.642 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.656 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.04 seconds (0.00s async, 0.04s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 668897, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:23.671 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.675 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.680 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.691 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 698541, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:23.700 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.705 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.710 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.720 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.03 seconds (0.00s async, 0.03s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 733718, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:23.736 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.743 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.749 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.764 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.03 seconds (0.00s async, 0.03s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 771915, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:23.774 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.781 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.788 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.798 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.03 seconds (0.00s async, 0.03s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 806869, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:23.808 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.815 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.819 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.827 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 833454, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:23.837 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.844 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.853 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.869 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.04 seconds (0.00s async, 0.04s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 878807, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:23.883 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.889 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.894 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.907 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.03 seconds (0.00s async, 0.03s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 913182, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:23.915 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.919 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.924 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.934 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 940228, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:23.942 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.946 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.951 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.964 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.03 seconds (0.00s async, 0.03s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 975126, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:23.977 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.982 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.986 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:23.996 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 1707, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:24.003 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.009 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.014 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.022 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 29216, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:24.030 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.034 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.037 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.045 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 53336, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:24.056 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.060 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.064 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.075 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 83258, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:24.085 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.089 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.093 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.105 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 114134, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:24.116 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.125 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.139 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.162 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.05 seconds (0.00s async, 0.05s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 169086, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:24.170 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.178 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.186 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.197 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.03 seconds (0.00s async, 0.03s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 210045, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:24.214 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.223 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.233 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.258 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.06 seconds (0.00s async, 0.06s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 276058, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:24.283 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.291 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.303 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.319 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.04 seconds (0.00s async, 0.04s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 332498, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:24.337 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.345 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.353 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.369 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.04 seconds (0.00s async, 0.04s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 380585, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:24.386 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.397 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.407 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.430 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.05 seconds (0.00s async, 0.05s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 442368, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:24.447 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.460 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.469 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.492 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.06 seconds (0.00s async, 0.06s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 507823, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:24.510 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.523 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.533 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.549 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.04 seconds (0.00s async, 0.04s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 557526, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:24.558 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.568 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.575 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.588 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.03 seconds (0.00s async, 0.03s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 595578, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:24.609 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.621 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.628 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.638 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.04 seconds (0.00s async, 0.04s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 645581, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:24.649 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.656 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.660 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.665 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 671923, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:24.673 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.677 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.681 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.690 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 695450, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:24.699 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.704 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.711 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.721 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 726362, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:31:24.727 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.732 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.736 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:31:24.742 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded

@@ -1,0 +1,272 @@
+==> file_system
+Compiling 7 files (.ex)
+Generated file_system app
+==> mime
+Compiling 1 file (.ex)
+Generated mime app
+==> nimble_options
+Compiling 3 files (.ex)
+Generated nimble_options app
+==> fine
+Compiling 1 file (.ex)
+Generated fine app
+===> Analyzing applications...
+===> Compiling unicode_util_compat
+===> Analyzing applications...
+===> Compiling idna
+===> Analyzing applications...
+===> Compiling telemetry
+==> telemetry_metrics
+Compiling 7 files (.ex)
+Generated telemetry_metrics app
+===> Analyzing applications...
+===> Compiling telemetry_poller
+==> thousand_island
+Compiling 18 files (.ex)
+Generated thousand_island app
+==> jason
+Compiling 10 files (.ex)
+Generated jason app
+==> libcluster
+Compiling 13 files (.ex)
+Generated libcluster app
+==> esbuild
+Compiling 4 files (.ex)
+Generated esbuild app
+==> phoenix_html
+Compiling 6 files (.ex)
+Generated phoenix_html app
+==> phoenix_template
+Compiling 4 files (.ex)
+Generated phoenix_template app
+==> phoenix_pubsub
+Compiling 12 files (.ex)
+Generated phoenix_pubsub app
+==> plug_crypto
+Compiling 5 files (.ex)
+Generated plug_crypto app
+==> hpax
+Compiling 4 files (.ex)
+Generated hpax app
+==> mint
+Compiling 1 file (.erl)
+Compiling 20 files (.ex)
+Generated mint app
+==> peri
+Compiling 7 files (.ex)
+Generated peri app
+===> Analyzing applications...
+===> Compiling mimerl
+==> dns_cluster
+Compiling 1 file (.ex)
+Generated dns_cluster app
+==> ssl_verify_fun
+Compiling 7 files (.erl)
+Generated ssl_verify_fun app
+==> cubdb
+Compiling 14 files (.ex)
+Generated cubdb app
+===> Analyzing applications...
+===> Compiling certifi
+==> yelixer
+Compiling 19 files (.ex)
+Generated yelixer app
+==> plug
+Compiling 1 file (.erl)
+Compiling 42 files (.ex)
+Generated plug app
+===> Analyzing applications...
+===> Compiling parse_trans
+==> nimble_pool
+Compiling 2 files (.ex)
+Generated nimble_pool app
+==> finch
+Compiling 14 files (.ex)
+Generated finch app
+==> req
+Compiling 19 files (.ex)
+Generated req app
+==> anubis_mcp
+Compiling 73 files (.ex)
+Generated anubis_mcp app
+===> Analyzing applications...
+===> Compiling metrics
+===> Analyzing applications...
+===> Compiling hackney
+==> tesla
+Compiling 41 files (.ex)
+Generated tesla app
+==> web_driver_client
+Compiling 97 files (.ex)
+Generated web_driver_client app
+==> tailwind
+Compiling 3 files (.ex)
+Generated tailwind app
+==> elixir_make
+Compiling 8 files (.ex)
+Generated elixir_make app
+==> cc_precompiler
+Compiling 3 files (.ex)
+Generated cc_precompiler app
+==> lazy_html
+Compiling 3 files (.ex)
+Generated lazy_html app
+==> websock
+Compiling 1 file (.ex)
+Generated websock app
+==> bandit
+Compiling 54 files (.ex)
+Generated bandit app
+==> websock_adapter
+Compiling 4 files (.ex)
+Generated websock_adapter app
+==> phoenix
+Compiling 74 files (.ex)
+Generated phoenix app
+==> phoenix_live_view
+Compiling 49 files (.ex)
+Generated phoenix_live_view app
+==> httpoison
+Compiling 3 files (.ex)
+Generated httpoison app
+==> wallaby
+Compiling 29 files (.ex)
+Generated wallaby app
+==> uuid
+Compiling 1 file (.ex)
+    warning: use Bitwise is deprecated. import Bitwise instead
+    │
+  2 │   use Bitwise, only_operators: true
+    │   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    │
+    └─ lib/uuid.ex:2: UUID (module)
+
+Generated uuid app
+==> commonplace
+cc -O2 -Wall -Wextra -fPIC -I/home/jes/.asdf/installs/erlang/27.3.4.8/erts-15.2.7.6/include -shared -o /home/jes/sol-snapshot-fix/wt/_build/test/lib/commonplace/priv/flock_nif.so c_src/flock_nif.c
+Compiling 278 files (.ex)
+Generated commonplace app
+==> commonplace_cli
+Compiling 40 files (.ex)
+Generated commonplace_cli app
+==> commonplace_bots
+Compiling 46 files (.ex)
+Generated commonplace_bots app
+==> commonplace_mcp
+Compiling 38 files (.ex)
+Generated commonplace_mcp app
+==> commonplace_web
+Compiling 32 files (.ex)
+Generated commonplace_web app
+==> commonplace_cli
+06:28:09.032 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+Running ExUnit with seed: 403424, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:28:09.545 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:28:09.549 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:28:09.557 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:28:09.561 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.09 seconds (0.00s async, 0.09s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 571346, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:28:09.572 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:28:09.577 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:28:09.580 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:28:09.586 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 591029, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:28:09.592 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:28:09.595 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:28:09.599 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:28:09.605 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 611651, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:28:09.613 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:28:09.619 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:28:09.622 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:28:09.630 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 634984, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:28:09.636 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:28:09.640 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:28:09.642 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:28:09.646 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 651879, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:28:09.653 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:28:09.655 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:28:09.660 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:28:09.669 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 673043, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+06:28:09.674 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:28:09.679 [error] GenServer #PID<0.8535.0> terminating
+** (MatchError) no match of right hand side value: {:error, :enoent}
+    (cubdb 2.0.2) lib/cubdb.ex:1499: CubDB.trigger_compaction/1
+    (cubdb 2.0.2) lib/cubdb.ex:1523: CubDB.do_compact/1
+    (cubdb 2.0.2) lib/cubdb.ex:1358: CubDB.handle_call/3
+    (stdlib 6.2.2.3) gen_server.erl:2381: :gen_server.try_handle_call/4
+    (stdlib 6.2.2.3) gen_server.erl:2410: :gen_server.handle_msg/6
+    (stdlib 6.2.2.3) proc_lib.erl:329: :proc_lib.init_p_do_apply/3
+Last message (from Commonplace.Store.CommitStore): {:commit_transaction, %CubDB.Tx{btree: %CubDB.Btree{root: {:b, [{{:commit, <<3, 70, 240, 7, 215, 208, 93, 96, 70, 138, 192, 198, 116, 163, 83, 245, 148, 56, 211, 153, 147, 142, 51, 221, 176, 112, 206, 224, 97, 106, 18, 44>>}, 205848}, {{:commit, <<169, 63, 204, 37, 90, 221, 120, 27, 130, 246, 166, 154, 217, 88, 195, 192, 202, 168, 61, 43, 214, 12, 23, 55, 98, 1, 100, 26, 145, 117, 4, 209>>}, 199198}, {{:latest, "7d222110-e8bd-4278-a76c-907a033072d7"}, 210028}, {{:doc_commit, "9d33aa5e-e2ba-4cd4-a900-cc09f3d9524c", <<56, 165, 87, 28, 100, 53, 145, 64, 24, 102, 48, 201, 185, 35, 0, 182, 246, 232, 27, 45, 107, 236, 199, 255, 126, 238, 176, 136, 71, 211, 251, 90>>}, 207404}]}, root_loc: 212111, size: 90, dirt: 103, store: %CubDB.Store.File{pid: #PID<0.8536.0>, file_path: "tmp/test_data/commits/0.cub"}, capacity: 32}, compacting: false, owner: {#PID<0.8532.0>, #Reference<0.1229886449.3383492610.150408>}, db: #PID<0.8535.0>, recompact: false}}
+06:28:09.702 [error] GenServer #PID<0.8538.0> terminating
+** (MatchError) no match of right hand side value: {:error, :enoent}
+    (cubdb 2.0.2) lib/cubdb.ex:1499: CubDB.trigger_compaction/1
+    (cubdb 2.0.2) lib/cubdb.ex:1523: CubDB.do_compact/1
+    (cubdb 2.0.2) lib/cubdb.ex:1358: CubDB.handle_call/3
+    (stdlib 6.2.2.3) gen_server.erl:2381: :gen_server.try_handle_call/4
+    (stdlib 6.2.2.3) gen_server.erl:2410: :gen_server.handle_msg/6
+    (stdlib 6.2.2.3) proc_lib.erl:329: :proc_lib.init_p_do_apply/3
+Last message: {:EXIT, #PID<0.8535.0>, {{:badmatch, {:error, :enoent}}, [{CubDB, :trigger_compaction, 1, [file: ~c"lib/cubdb.ex", line: 1499]}, {CubDB, :do_compact, 1, [file: ~c"lib/cubdb.ex", line: 1523]}, {CubDB, :handle_call, 3, [file: ~c"lib/cubdb.ex", line: 1358]}, {:gen_server, :try_handle_call, 4, [file: ~c"gen_server.erl", line: 2381]}, {:gen_server, :handle_msg, 6, [file: ~c"gen_server.erl", line: 2410]}, {:proc_lib, :init_p_do_apply, 3, [file: ~c"proc_lib.erl", line: 329]}]}}
+
+
+  1) test snapshot command writes a snapshot commit for the resolved doc (Commonplace.CLI.SnapshotTest)
+     apps/commonplace_cli/test/commonplace/cli/snapshot_test.exs:71
+     ** (exit) exited in: GenServer.call(Commonplace.Store.CommitStore, {:create_commit, "cf05747f-ca26-4607-a285-0bc58d5626b2", <<1, 3, 217, 140, 248, 209, 3, 0, 40, 1, 4, 114, 111, 111, 116, 5, 95, 116, 121, 112, 101, 1, 119, 4, 116, 101, 120, 116, 40, 1, 4, 114, 111, 111, 116, 5, 95, 110, 97, 109, 101, 1, 119, 9, 110, 111, 116, ...>>, nil, %{}, []}, 5000)
+         ** (EXIT) an exception was raised:
+             ** (MatchError) no match of right hand side value: {:error, :enoent}
+                 (cubdb 2.0.2) lib/cubdb.ex:1499: CubDB.trigger_compaction/1
+                 (cubdb 2.0.2) lib/cubdb.ex:1523: CubDB.do_compact/1
+                 (cubdb 2.0.2) lib/cubdb.ex:1358: CubDB.handle_call/3
+                 (stdlib 6.2.2.3) gen_server.erl:2381: :gen_server.try_handle_call/4
+                 (stdlib 6.2.2.3) gen_server.erl:2410: :gen_server.handle_msg/6
+                 (stdlib 6.2.2.3) proc_lib.erl:329: :proc_lib.init_p_do_apply/3
+     stacktrace:
+       (elixir 1.18.4) lib/gen_server.ex:1128: GenServer.call/3
+       test/commonplace/cli/snapshot_test.exs:41: Commonplace.CLI.SnapshotTest.__ex_unit_setup_0/1
+       test/commonplace/cli/snapshot_test.exs:1: Commonplace.CLI.SnapshotTest.__ex_unit__/2
+
+
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 1 failure, 2 excluded

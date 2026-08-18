@@ -1,0 +1,16 @@
+==> commonplace
+make: Nothing to be done for 'all'.
+Compiling 5 files (.ex)
+Generated commonplace app
+==> commonplace_cli
+Compiling 2 files (.ex)
+Generated commonplace_cli app
+==> commonplace_bots
+Compiling 4 files (.ex)
+Generated commonplace_bots app
+==> commonplace_mcp
+Compiling 11 files (.ex)
+Generated commonplace_mcp app
+==> commonplace_web
+Compiling 4 files (.ex)
+Generated commonplace_web app
