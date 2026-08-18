@@ -113,3 +113,46 @@ the MUD failure's identity on this box.**
 counted symptom OCCURRENCES (run6 = 2), the reviewer's `grep -c` counted LINES
 (= 1). The builder was right: both occurrences sit on one line. Count
 occurrences, not lines.*
+
+## 2026-08-18 — THE MECHANISM, PROVEN BY MODULE-CODE IDENTITY
+
+**The family's defect is a BEAM-global module-name collision between a test
+fixture and the doc-hosted look verb, served through a cache that stores
+ATOMS.** Proof: an instrumented full run at (cb703e81, seed 181261) logging
+`:erlang.get_module_info(module, :md5)` at every `EngineModule.resolve/2` tier:
+
+```
+real seed EngineLook (all 416 doc_good servings of 100ca11b)  md5 <<38, 28, 189, 112, …>>
+THE FAILING TEST WAS SERVED                                   md5 <<249, 227, 84, 106, …>>
+identical md5: doc_good compiles of engine_module_test's FIXTURE uuids
+```
+
+**The chain:**
+1. ~23 test files run `Bootstrap`, which `put_env`s the GLOBAL
+   `:mud_engine_manifest` (`:look → 100ca11b`) and leaves it set — the leak
+   detector's watchlist does not include it.
+2. A bootstrap test compiles the real look doc →
+   `remember_last_good(100ca11b, Commonplace.MUD.EngineLook)` — **an ATOM**.
+3. `engine_module_test`'s fixtures `defmodule Commonplace.MUD.EngineLook`
+   under their own doc uuids — **module names are BEAM-global, so each fixture
+   compile REDEFINES the atom's code for everyone.** Its manifest save/restore
+   is irrelevant; the poison is the namespace.
+4. A victim whose own store lacks 100ca11b: manifest → `:not_found` →
+   `last_good` → the atom → **fixture code** → `room_snapshot(..., [])` with
+   **NO viewer** → gated room → `:read_denied` → the fixture's `_ ->` swallows
+   it → `"(this place has no description)"`.
+
+**Why only gated rooms fail:** the fixture renders ungated rooms fine. All 9
+failures in the proof run were gated/private-room tests. The fixture's crasher
+variant explains the 19×-per-run crash background (crash → containment → floor
+→ healthy render → masked).
+
+⚠️ **FOUR minimal reproducers (2-file, 3-file, forced order, 14 seeds) stayed
+GREEN before the proof** — small sets happened to leave the atom benign at
+victim time. ⇒ ***The md5 was the discriminator narrative could not fake;
+order-fishing was the wrong instrument.***
+
+**Fix seams (ruling pending):** (a) fixtures must not reuse production module
+names · (b) last_good must verify code identity at serve time — cache-by-atom
+is cache-poisoning-by-redefinition · (c) the manifest leak belongs on the leak
+detector's watchlist.
