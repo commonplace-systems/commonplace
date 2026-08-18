@@ -35,10 +35,34 @@ defmodule Commonplace.Bd.IssueTest do
   test "update modifies fields and bumps updated_at", ctx do
     {:ok, issue, _} = Issue.create(ctx.root, %{title: "x"}, ctx.store)
     Process.sleep(15)
-    {:ok, updated} = Issue.update(ctx.root, issue.id, %{status: "in_progress", owner: "alice"}, ctx.store)
+
+    {:ok, updated} =
+      Issue.update(ctx.root, issue.id, %{status: "in_progress", owner: "alice"}, ctx.store)
+
     assert updated.status == "in_progress"
     assert updated.owner == "alice"
     assert updated.updated_at != issue.updated_at
+  end
+
+  test "update REFUSES ticket_create_deadline by name — a create-ceremony bound, void on update",
+       ctx do
+    {:ok, issue, _} = Issue.create(ctx.root, %{title: "z"}, ctx.store)
+
+    # CX-gc7q's deadline is scoped to the create chain deliberately. Handed
+    # to update it must be a NAMED refusal at the front door — not the deep
+    # KeyError it was (client Keyword.fetch! on the missing
+    # :ticket_create_document companion, measured 2026-08-18), and not a
+    # silent ignore (the caller would believe the deadline is armed).
+    assert {:error, msg} =
+             Issue.update(ctx.root, issue.id, %{status: "in_progress"}, ctx.store,
+               ticket_create_deadline: System.monotonic_time(:millisecond) + 60_000
+             )
+
+    assert msg =~ "ticket_create_deadline applies only to the create chain"
+
+    # The refusal wrote nothing: the issue is unchanged.
+    {:ok, fetched} = Issue.show(ctx.root, issue.id, ctx.store)
+    assert fetched.status == "open"
   end
 
   test "close sets closed_at and closed_reason", ctx do
@@ -98,7 +122,10 @@ defmodule Commonplace.Bd.IssueTest do
     assert updated.status == "in_progress"
 
     {:ok, schema} = Commonplace.Bd.Schemas.load_dir_schema(dir_uuid, ctx.store)
-    {:ok, entry} = Commonplace.Tree.Schema.get_entry(schema, Commonplace.Bd.Schemas.issue_filename())
+
+    {:ok, entry} =
+      Commonplace.Tree.Schema.get_entry(schema, Commonplace.Bd.Schemas.issue_filename())
+
     {:ok, commit} = CommitStore.latest_commit(ctx.store, entry.node_id)
 
     assert is_binary(commit.signature)
@@ -110,7 +137,10 @@ defmodule Commonplace.Bd.IssueTest do
     {:ok, _updated} = Issue.update(ctx.root, issue.id, %{status: "in_progress"}, ctx.store)
 
     {:ok, schema} = Commonplace.Bd.Schemas.load_dir_schema(dir_uuid, ctx.store)
-    {:ok, entry} = Commonplace.Tree.Schema.get_entry(schema, Commonplace.Bd.Schemas.issue_filename())
+
+    {:ok, entry} =
+      Commonplace.Tree.Schema.get_entry(schema, Commonplace.Bd.Schemas.issue_filename())
+
     {:ok, commit} = CommitStore.latest_commit(ctx.store, entry.node_id)
 
     assert commit.signature == nil

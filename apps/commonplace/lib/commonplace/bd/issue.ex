@@ -199,6 +199,22 @@ defmodule Commonplace.Bd.Issue do
   # prior (unsigned) behavior, same byte-compatible pattern as
   # `Tree.Merge.merge/4` / `Tree.Fork.fork/2`.
   def update(root_uuid, id, attrs, store \\ CommitStoreClient, opts \\ []) do
+    # CX-gc7q's boundary deadline is semantically a CREATE-CEREMONY bound
+    # and its scoping to the create chain is deliberate; update has no
+    # create ceremony, so the opt is VOID here and is refused BY NAME.
+    # Before this clause it crashed instead: the opt was forwarded to the
+    # client, which Keyword.fetch!ed the :ticket_create_document companion
+    # only the create chain sets (measured 2026-08-18). Silently ignoring
+    # it would be worse than either — the caller would believe a deadline
+    # is armed when nothing enforces it.
+    if Keyword.has_key?(opts, :ticket_create_deadline) do
+      {:error, "ticket_create_deadline applies only to the create chain"}
+    else
+      do_update(root_uuid, id, attrs, store, opts)
+    end
+  end
+
+  defp do_update(root_uuid, id, attrs, store, opts) do
     with {:ok, dir_uuid} <- Workspace.issue_dir_uuid(root_uuid, id, store) |> wrap_lookup(),
          {:ok, issue} <- Schemas.load_issue(dir_uuid, store) do
       issue = apply_attrs(issue, attrs)
@@ -516,8 +532,12 @@ defmodule Commonplace.Bd.Issue do
   # incoming map REPLACES `extra` (an import is a derivation from the
   # source record, so the source record is authoritative over it).
   defp apply_update_field(issue, :extra, v) when is_map(v), do: %{issue | extra: v}
-  defp apply_update_field(issue, key, v) when is_atom(key), do: %{issue | extra: Map.put(issue.extra, Atom.to_string(key), v)}
-  defp apply_update_field(issue, key, v) when is_binary(key), do: %{issue | extra: Map.put(issue.extra, key, v)}
+
+  defp apply_update_field(issue, key, v) when is_atom(key),
+    do: %{issue | extra: Map.put(issue.extra, Atom.to_string(key), v)}
+
+  defp apply_update_field(issue, key, v) when is_binary(key),
+    do: %{issue | extra: Map.put(issue.extra, key, v)}
 
   defp wrap_lookup({:ok, _} = ok), do: ok
   defp wrap_lookup(:error), do: {:error, :not_found}
