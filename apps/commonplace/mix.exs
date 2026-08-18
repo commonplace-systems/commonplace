@@ -30,9 +30,7 @@ defmodule Commonplace.MixProject do
 
   defp deps do
     [
-      {:yelixer,
-       git: "https://github.com/commonplace-systems/yelixer.git",
-       ref: "bc35a0e9"},
+      {:yelixer, git: "https://github.com/commonplace-systems/yelixer.git", ref: "bc35a0e9"},
       {:phoenix_pubsub, "~> 2.1"},
       {:cubdb, "~> 2.0"},
       {:uuid, "~> 1.1"},
@@ -40,6 +38,8 @@ defmodule Commonplace.MixProject do
       {:jason, "~> 1.4"},
       {:telemetry, "~> 1.0"},
       {:req, "~> 0.5"},
+      {:bandit, "~> 1.0"},
+      {:plug, "~> 1.0"},
       {:elixir_make, "~> 0.9", runtime: false},
       {:libcluster, "~> 3.3"}
     ]
