@@ -21,6 +21,7 @@ defmodule Commonplace.FlockAtomicWriteTest do
         send(parent, :shared_acquired)
         Process.sleep(500)
       end)
+
       send(parent, :shared_released)
     end)
 
