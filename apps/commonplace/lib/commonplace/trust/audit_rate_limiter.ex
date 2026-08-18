@@ -17,9 +17,10 @@ defmodule Commonplace.Trust.AuditRateLimiter do
 
   use GenServer
 
-  alias Commonplace.Trust.{AuditDispatcher, AuditLogCounter}
+  alias Commonplace.Trust.{AuditDispatcher, AuditLogCounter, DenialCounter}
 
   @table :commonplace_trust_audit_log_rate
+  @failed_open_counter_key {__MODULE__, :failed_open_boot_counter}
   @window_ms 60_000
   @cap 20
   @sweep_ms 1_000
@@ -36,6 +37,13 @@ defmodule Commonplace.Trust.AuditRateLimiter do
 
   @doc "The public ETS table owned by this supervised process."
   def table, do: @table
+
+  @doc "Return the fail-open rescue count for this BEAM boot."
+  @spec failed_open_snapshot() :: %{boot_id: String.t(), failed_open: non_neg_integer()}
+  def failed_open_snapshot do
+    {boot_id, counter} = failed_open_counter()
+    %{boot_id: boot_id, failed_open: :atomics.get(counter, 1)}
+  end
 
   @doc """
   Count an event at its emitting site and return its admission decision.
@@ -56,7 +64,44 @@ defmodule Commonplace.Trust.AuditRateLimiter do
     # narrow table-less interval, fail open for AUDIT RECORDING (the denial
     # itself remains enforced): never make an arbitrary emitting caller create
     # or own the table, and never turn lifecycle churn into silent audit loss.
-    ArgumentError -> :log
+    ArgumentError ->
+      increment_failed_open_counter()
+
+      :telemetry.execute(
+        [:commonplace, :trust, :audit, :rate_limiter, :failed_open],
+        %{count: 1},
+        %{event_name: event_name, doc_uuid: doc_uuid}
+      )
+
+      :log
+  end
+
+  defp increment_failed_open_counter do
+    {_boot_id, counter} = failed_open_counter()
+    :atomics.add_get(counter, 1, 1)
+  end
+
+  defp failed_open_counter do
+    case :persistent_term.get(@failed_open_counter_key, :missing) do
+      :missing ->
+        init_failed_open_counter()
+        :persistent_term.get(@failed_open_counter_key)
+
+      state ->
+        state
+    end
+  end
+
+  defp init_failed_open_counter do
+    case :persistent_term.get(@failed_open_counter_key, :missing) do
+      :missing ->
+        counter = :atomics.new(1, signed: false)
+        :persistent_term.put(@failed_open_counter_key, {DenialCounter.boot_id(), counter})
+        :ok
+
+      {_boot_id, _counter} ->
+        :ok
+    end
   end
 
   defp current_window(event_name, doc_uuid, now) do
@@ -92,6 +137,7 @@ defmodule Commonplace.Trust.AuditRateLimiter do
 
   @impl true
   def init(opts) do
+    :ok = init_failed_open_counter()
     table = Keyword.get(opts, :table, @table)
     sweep_ms = Keyword.get(opts, :sweep_ms, @sweep_ms)
     window_ms = Keyword.get(opts, :window_ms, @window_ms)
