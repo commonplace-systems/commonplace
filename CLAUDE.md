@@ -4,7 +4,7 @@
 
 <!-- state-projection:begin -->
 Read STATE.md before scoping any work.
-Rendered at: 2026-08-10T16:50Z.
+Rendered at: 2026-08-18T17:46Z.
 <!-- state-projection:end -->
 
 Commonplace is a CRDT document store built on Elixir/OTP. Every piece of data is a Y.js-compatible CRDT document identified by a UUID, organized in a tree via schema documents. The system provides branching (deep-copy fork), three-way merging, a Merkle-CRDT commit DAG, and bidirectional filesystem sync.
@@ -13,9 +13,9 @@ This is a port from a Rust version at `/home/jes/commonplace-rs/`. The Elixir ve
 
 ## Architecture
 
-Elixir umbrella with six apps:
+Elixir umbrella with five apps, plus one external library:
 
-- **yelixer** — Pure Elixir Y.js CRDT library. Wire-compatible with Yjs V1 binary protocol. Supports Text, Map, Array, XML types. Also maintained as a standalone repo at `commonplace-systems/yelixer` (transferred from `jes5199/` on 2026-08-08, along with `commonplace` and `commonplace-plan`). ⚠️ That standalone repo is **4.5 months stale** — last commit 2026-03-24, `encoding.ex` 1,012 lines vs the umbrella's 1,940. Re-converging it is CX-1mn4 → CX-fbah; do not treat it as a current mirror.
+- **yelixer** — Pure Elixir Y.js CRDT library. Wire-compatible with Yjs V1 binary protocol. Supports Text, Map, Array, XML types. ⚠️ **No longer an umbrella app**: since the CX-b6mz/CX-71m2 extraction (merged `226eb8f5`, 2026-08), the umbrella consumes it as a git dependency of `commonplace` pinned by ref in `apps/commonplace/mix.exs` (see `mix.lock` for the resolved sha). The standalone repo `commonplace-systems/yelixer` is the AUTHORITY now — the old "stale mirror" warning is dead; change yelixer there, then bump the pin.
 - **commonplace** — Core library: CommitStore (CubDB), document tree (Schema, Fork, Merge, DocBuilder), sync agent, inode tracking.
 - **commonplace_cli** — CLI escript for init, sync, checkout, branch, merge operations.
 - **commonplace_web** — Phoenix LiveView UI with invite-token auth (two-phase: `require_auth` plug for dead-render + `on_mount ensure_authenticated` for the websocket mount), wiki/tree/outline/chat LiveViews, a browser MUD client (`MudLive`), and a bearer-token federation endpoint.
@@ -43,10 +43,14 @@ Rooms, objects, and verbs are CRDT docs under the workspace tree (`lib/commonpla
 ## Running tests
 
 ```bash
-mix test                          # all apps
-mix test apps/yelixer/test        # yelixer only (includes the 5,320-case yrs dataset)
+mix test                          # all five umbrella apps
 mix test apps/commonplace/test    # core only
 ```
+
+Yelixer's suite (including the 5,320-case yrs dataset) lives in the
+`commonplace-systems/yelixer` repo and runs there; the umbrella exercises
+yelixer only through the pinned dep. To run it locally:
+`cd deps/yelixer && mix test`.
 
 CI uses `--warnings-as-errors` — fix all compiler warnings before pushing.
 
