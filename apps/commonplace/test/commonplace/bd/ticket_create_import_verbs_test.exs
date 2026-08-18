@@ -206,6 +206,54 @@ defmodule Commonplace.Bd.TicketCreateImportVerbsTest do
     end
   end
 
+  describe "boundary deadline on import (uniform-coverage ruling)" do
+    test "an expired deadline refuses EVERY record by the distinct name and lands NOTHING",
+         %{root: root, signing_context: ctx} do
+      records = [record("CX-dl01"), record("CX-dl02")]
+
+      assert {:ok, :tree_mutation, report} =
+               ViewActionDispatch.dispatch("ticket_import", %{
+                 args: %{"records" => records},
+                 signing_context: ctx,
+                 source: "test",
+                 ticket_create_deadline: System.monotonic_time(:millisecond) - 1
+               })
+
+      assert report.landed == []
+      assert length(report.refused) == 2
+
+      for refusal <- report.refused do
+        assert refusal.reason =~ "boundary deadline exceeded"
+      end
+
+      # The refusal landed NOTHING: neither record exists in the store.
+      assert {:error, :not_found} = Issue.show(root, "CX-dl01", CommitStoreClient)
+      assert {:error, :not_found} = Issue.show(root, "CX-dl02", CommitStoreClient)
+    end
+
+    test "a live deadline does not disturb the existing-record UPDATE path (create-scoped, stripped before update)",
+         %{root: root, signing_context: ctx} do
+      # Land a record plainly first.
+      assert {:ok, :tree_mutation, first} = import_batch([record("CX-dl10")], ctx)
+      assert [%{id: "CX-dl10", op: :created}] = first.landed
+
+      # Re-import the same id with a changed title and a generous deadline:
+      # the update path must proceed (Issue.update refuses the deadline opt
+      # by name, so reaching it un-stripped would refuse this record).
+      assert {:ok, :tree_mutation, second} =
+               ViewActionDispatch.dispatch("ticket_import", %{
+                 args: %{"records" => [record("CX-dl10", %{"title" => "renamed"})]},
+                 signing_context: ctx,
+                 source: "test",
+                 ticket_create_deadline: System.monotonic_time(:millisecond) + 60_000
+               })
+
+      assert second.refused == []
+      assert {:ok, updated} = Issue.show(root, "CX-dl10", CommitStoreClient)
+      assert updated.title == "renamed"
+    end
+  end
+
   describe "ticket_import: the declared-denominator reporting shape (ruling (b))" do
     test "LANDED ∪ REFUSED ∪ NOOP == the declared input set, never a bare count", %{
       signing_context: ctx

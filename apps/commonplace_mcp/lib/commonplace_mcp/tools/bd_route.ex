@@ -81,5 +81,17 @@ defmodule Commonplace.MCP.Tools.BdRoute do
     ["ticket_create", Map.put(context, :ticket_create_deadline, deadline)]
   end
 
+  @doc false
+  def boundary_args(
+        Commonplace.ViewActionDispatch,
+        :dispatch,
+        ["ticket_import", context],
+        timeout
+      )
+      when is_map(context) and is_integer(timeout) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+    ["ticket_import", Map.put(context, :ticket_create_deadline, deadline)]
+  end
+
   def boundary_args(_mod, _fun, args, _timeout), do: args
 end

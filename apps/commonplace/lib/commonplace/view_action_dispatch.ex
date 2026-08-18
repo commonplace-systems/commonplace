@@ -970,8 +970,14 @@ defmodule Commonplace.ViewActionDispatch do
 
     with {:ok, records, parse_refusals} <- import_records(args),
          {:ok, root_uuid} <- resolve_bd_root(context) do
+      # Uniform boundary-deadline coverage (plan ruling 2026-08-18): import
+      # creates are creates, so the batch opts carry the same
+      # :ticket_create_deadline the create verb gets — checked per record in
+      # the create chain. Landed stays landed: the importer is idempotent, so
+      # a deadline-truncated batch is a RESUMABLE PREFIX, and a re-run
+      # completes the remainder (no-op count showing what already landed).
       {:ok, :tree_mutation,
-       run_import_batch(records, parse_refusals, root_uuid, store, signing_opts(context))}
+       run_import_batch(records, parse_refusals, root_uuid, store, ticket_create_opts(context))}
     else
       {:error, reason} when is_binary(reason) -> {:error, reason}
       {:error, reason} -> {:error, "ticket_import failed: #{inspect(reason)}"}
@@ -1703,6 +1709,17 @@ defmodule Commonplace.ViewActionDispatch do
         case Commonplace.Bd.Issue.create_with_id(root_uuid, issue, description, store, write_opts) do
           {:ok, _created, _dir} ->
             {[%{id: id, op: :created} | landed], refused, noop}
+
+          # The deadline branch of create_with_id (CX-gc7q) is the one path
+          # that returns an error VALUE; its refusal gets the DISTINCT name so
+          # a deadline truncation is never confusable with a validation
+          # refusal. Any other error value (a future contract widening) is
+          # refused by its own words, not absorbed.
+          {:error, "deadline exhausted" <> _rest = reason} ->
+            {landed, [%{id: id, reason: "boundary deadline exceeded: #{reason}"} | refused], noop}
+
+          {:error, reason} ->
+            {landed, [%{id: id, reason: "write refused: #{inspect(reason)}"} | refused], noop}
         end
 
       {:error, reason} ->
@@ -1770,9 +1787,15 @@ defmodule Commonplace.ViewActionDispatch do
              allow: @import_allow_posture
            ) do
         :ok ->
+          # The boundary deadline is scoped to the CREATE chain; Issue.update
+          # refuses the opt by name (CX-gc7q's front door), so an un-stripped
+          # deadline here would refuse every existing-record update.
           write_opts =
-            opts ++
-              [commit_metadata: import_commit_metadata(record, proposed, proposed_description)]
+            opts
+            |> Keyword.delete(:ticket_create_deadline)
+            |> Kernel.++(
+              commit_metadata: import_commit_metadata(record, proposed, proposed_description)
+            )
 
           case Commonplace.Bd.Issue.update(root_uuid, id, delta, store, write_opts) do
             {:ok, _updated} ->
