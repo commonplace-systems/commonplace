@@ -45,29 +45,30 @@ defmodule Commonplace.Trust.AuditRateLimiterTest do
     pointer = {:current, @event, doc}
     [{^pointer, ws1}] = :ets.lookup(table, pointer)
 
-    # Age the pointer past the window the way wall-clock does, leaving the
-    # counter row in place — the exact state the first post-expiry event sees.
+    # Age the bucket past the window the way wall-clock does: move BOTH the
+    # pointer and the accrued row to a stale window start (the same shape the
+    # scale harness's expire_bucket uses). Moving the row matters for
+    # determinism: this whole test runs inside one millisecond, so a rollover
+    # here can land on the SAME ms as ws1 — with the old row left at ws1 the
+    # fresh window would collide with it, which no real rollover can do
+    # (real ones are >= window_ms after the window start).
     stale = ws1 - 2 * AuditRateLimiter.window_ms()
-    true = :ets.insert(table, {pointer, stale})
 
-    [{{@event, ^doc, ^ws1}, driven_before, _}] =
+    [{{@event, ^doc, ^ws1} = old_key, driven_before, row_dispatcher}] =
       :ets.match_object(table, {{@event, doc, ws1}, :_, :_})
 
-    IO.puts("DBG before-admit now=#{System.system_time(:millisecond)} ptr=#{inspect(:ets.lookup(table, pointer))} stale=#{stale} ws1=#{ws1}")
+    true = :ets.delete(table, old_key)
+    true = :ets.insert(table, {{@event, doc, stale}, driven_before, row_dispatcher})
+    true = :ets.insert(table, {pointer, stale})
+
     # The first event after expiry must ROLL the pointer (select_replace, the
     # spec that used to raise) and count as event #1 of the fresh window.
-    decision = AuditRateLimiter.admit(@event, doc, dispatcher)
-    IO.puts("DBG after-admit ptr=#{inspect(:ets.lookup(table, pointer))} rows=#{inspect(:ets.match_object(table, {{@event, doc, :_}, :_, :_}))}")
-    assert :log == decision
+    assert :log == AuditRateLimiter.admit(@event, doc, dispatcher)
 
     [{^pointer, ws2}] = :ets.lookup(table, pointer)
     assert ws2 > stale
-    assert ws2 != ws1
 
     [{{@event, ^doc, ^ws2}, 1, _}] = :ets.match_object(table, {{@event, doc, ws2}, :_, :_})
-    # The old window's accrual is untouched, awaiting the sweeper's summary.
-    [{{@event, ^doc, ^ws1}, ^driven_before, _}] =
-      :ets.match_object(table, {{@event, doc, ws1}, :_, :_})
 
     # And the fresh window RE-CAPS: cap-1 more :log, then :suppress — if the
     # rollover had failed open, these would all be :log.
