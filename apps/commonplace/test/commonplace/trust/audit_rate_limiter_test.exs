@@ -36,6 +36,82 @@ defmodule Commonplace.Trust.AuditRateLimiterTest do
     assert Enum.count(decisions, &(&1 == :suppress)) == 5
   end
 
+  test "the fail-open snapshot carries its boot identity and count" do
+    assert %{boot_id: boot_id, failed_open: failed_open} =
+             AuditRateLimiter.failed_open_snapshot()
+
+    assert is_binary(boot_id)
+    assert is_integer(failed_open) and failed_open >= 0
+  end
+
+  test "a table-less admit fails open loudly and ordinary admission resumes",
+       %{table: table, dispatcher: dispatcher} do
+    handler_id = {:audit_rate_limiter_failed_open, make_ref()}
+    test_pid = self()
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:commonplace, :trust, :audit, :rate_limiter, :failed_open],
+        fn event, measurements, metadata, _config ->
+          send(test_pid, {:failed_open, event, measurements, metadata})
+        end,
+        nil
+      )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+
+    before = AuditRateLimiter.failed_open_snapshot()
+
+    owner = Process.whereis(AuditRateLimiter)
+    owner_ref = Process.monitor(owner)
+
+    on_exit(fn ->
+      if Process.whereis(AuditRateLimiter) == nil do
+        {:ok, _owner} = Supervisor.restart_child(Commonplace.Supervisor, AuditRateLimiter)
+      end
+    end)
+
+    assert :ok = Supervisor.terminate_child(Commonplace.Supervisor, AuditRateLimiter)
+    assert_receive {:DOWN, ^owner_ref, :process, ^owner, :shutdown}
+    assert :undefined == :ets.whereis(table)
+
+    rescued_doc = UUID.uuid4()
+
+    rescued =
+      for _ <- 1..3,
+          do: AuditRateLimiter.admit(@event, rescued_doc, dispatcher)
+
+    assert rescued == [:log, :log, :log]
+
+    for _ <- 1..3 do
+      assert_receive {:failed_open, [:commonplace, :trust, :audit, :rate_limiter, :failed_open],
+                      %{count: 1}, %{event_name: @event, doc_uuid: ^rescued_doc}}
+    end
+
+    refute_receive {:failed_open, _, _, _}
+    assert Process.whereis(AuditRateLimiter) == nil
+
+    after_rescue = AuditRateLimiter.failed_open_snapshot()
+    assert after_rescue.boot_id == before.boot_id
+    assert after_rescue.failed_open == before.failed_open + 3
+
+    assert {:ok, restarted_owner} =
+             Supervisor.restart_child(Commonplace.Supervisor, AuditRateLimiter)
+
+    assert Process.whereis(AuditRateLimiter) == restarted_owner
+    assert :ets.whereis(table) != :undefined
+
+    fresh_doc = UUID.uuid4()
+
+    ordinary =
+      for _ <- 1..(AuditRateLimiter.cap() + 1),
+          do: AuditRateLimiter.admit(@event, fresh_doc, dispatcher)
+
+    assert Enum.count(ordinary, &(&1 == :log)) == AuditRateLimiter.cap()
+    assert List.last(ordinary) == :suppress
+  end
+
   test "natural rollover replaces the expired pointer atomically and re-caps — never fail-open",
        %{table: table, dispatcher: dispatcher} do
     doc = UUID.uuid4()

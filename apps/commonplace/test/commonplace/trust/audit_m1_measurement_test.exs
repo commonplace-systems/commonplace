@@ -168,6 +168,8 @@ defmodule Commonplace.Trust.AuditM1MeasurementTest do
     # a durable record or durably accounted suppression. This is the exact
     # property the incident boot lacked (5 records, zero summaries,
     # 148,642 unaccounted).
+    # Blind spot: leaked admissions reduce suppression one-for-one, so this law
+    # cannot detect cap bypass; the elapsed-time admission ceiling is that guard.
     assert measurement.captured.organic + measurement.suppressed_in_summaries ==
              @organic_driven
 
