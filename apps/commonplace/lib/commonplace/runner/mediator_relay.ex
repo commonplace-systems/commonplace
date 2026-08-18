@@ -7,6 +7,19 @@ defmodule Commonplace.Runner.MediatorRelay do
   transport failure so a TCP-only caller does not hang or lose the cause.
   """
 
+  # THE RELAY STAYS POLICY-FREE, AND THIS 502 IS DELIBERATELY RETRIABLE-SHAPED.
+  # Measured 2026-08-18 (ruled by commonplace-plan @63ef3b6): the real client
+  # drew 30 requests in 45s against this response with no terminal give-up —
+  # effectively unbounded retry. That is ACCEPTED: the hammering terminates
+  # here (no vendor, no credential, only the pod's own bounded wall-clock),
+  # and self-heal is real — the mediator is runner-supervised and a restart
+  # is the recovery. Do not "fix" this by counting failures and flipping to a
+  # terminal status: a relay that counts and decides is a small mediator, and
+  # the holds-nothing-decides-nothing property enumerated in-test dies.
+  # GIVE-UP IS A LIFECYCLE DECISION — if unbounded hammering ever matters,
+  # the fix is RUNNER-side (end or re-home a pod whose mediator stays down),
+  # never relay-side policy. The runner holds lifecycle authority; a byte
+  # pipe never does.
   @unreachable_response IO.iodata_to_binary([
                           "HTTP/1.1 502 Bad Gateway\r\n",
                           "content-type: application/json\r\n",
