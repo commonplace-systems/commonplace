@@ -1,0 +1,54 @@
+diff --git a/apps/commonplace_cli/test/commonplace/cli/snapshot_test.exs b/apps/commonplace_cli/test/commonplace/cli/snapshot_test.exs
+index d7f13f64..f49189c5 100644
+--- a/apps/commonplace_cli/test/commonplace/cli/snapshot_test.exs
++++ b/apps/commonplace_cli/test/commonplace/cli/snapshot_test.exs
+@@ -28,6 +28,49 @@ defmodule Commonplace.CLI.SnapshotTest do
+       {:ok, _} = Application.ensure_all_started(:commonplace)
+     end
+ 
++    cwd = File.cwd!()
++    configured_data_dir = Application.get_env(:commonplace, :data_dir, "data")
++    commit_store_pid = Process.whereis(Commonplace.Store.CommitStore)
++    commit_store_state = :sys.get_state(commit_store_pid)
++
++    cubdb_pid =
++      case commit_store_state do
++        %{db: pid} when is_pid(pid) -> pid
++        _other -> nil
++      end
++
++    cubdb_state = if cubdb_pid, do: :sys.get_state(cubdb_pid), else: nil
++
++    cubdb_data_dir =
++      case cubdb_state do
++        %{data_dir: path} -> path
++        _other -> nil
++      end
++
++    read_path = fn path ->
++      exists? = is_binary(path) && File.exists?(path)
++      entries = if exists?, do: File.ls(path), else: :absent
++
++      compact_names =
++        case entries do
++          {:ok, names} -> Enum.filter(names, &String.ends_with?(&1, ".compact"))
++          _other -> []
++        end
++
++      count =
++        case entries do
++          {:ok, names} -> length(names)
++          _other -> nil
++        end
++
++      %{exists?: exists?, ls: entries, count: count, compact: compact_names}
++    end
++
++    IO.puts(
++      :stderr,
++      "CX_SNAPMECH cwd=#{inspect(cwd)} configured=#{inspect(configured_data_dir)} configured_read=#{inspect(read_path.(configured_data_dir))} commit_store_pid=#{inspect(commit_store_pid)} commit_store_state_shape=#{inspect({is_map(commit_store_state), if(is_map(commit_store_state), do: Map.keys(commit_store_state) |> Enum.sort(), else: commit_store_state)})} cubdb_pid=#{inspect(cubdb_pid)} cubdb_state_shape=#{inspect(if(is_struct(cubdb_state), do: cubdb_state.__struct__, else: cubdb_state))} cubdb_data_dir=#{inspect(cubdb_data_dir)} cubdb_read=#{inspect(read_path.(cubdb_data_dir))}"
++    )
++
+     File.mkdir_p!(data_dir)
+ 
+     root_uuid = UUID.uuid4()
