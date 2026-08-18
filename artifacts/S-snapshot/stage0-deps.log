@@ -1,0 +1,76 @@
+* anubis_mcp (Hex package) (mix)
+  locked at 1.1.1 (anubis_mcp) a9f06afc
+  the dependency is not available, run "mix deps.get"
+* bandit (Hex package) (mix)
+  locked at 1.10.3 (bandit) 99a52d90
+  the dependency is not available, run "mix deps.get"
+* commonplace (apps/commonplace) (mix)
+  could not find an app file at "_build/dev/lib/commonplace/ebin/commonplace.app". This may happen if the dependency was not yet compiled or the dependency indeed has no app file (then you can pass app: false as option)
+* commonplace_bots (apps/commonplace_bots) (mix)
+  could not find an app file at "_build/dev/lib/commonplace_bots/ebin/commonplace_bots.app". This may happen if the dependency was not yet compiled or the dependency indeed has no app file (then you can pass app: false as option)
+* commonplace_cli (apps/commonplace_cli) (mix)
+  could not find an app file at "_build/dev/lib/commonplace_cli/ebin/commonplace_cli.app". This may happen if the dependency was not yet compiled or the dependency indeed has no app file (then you can pass app: false as option)
+* commonplace_mcp (apps/commonplace_mcp) (mix)
+  could not find an app file at "_build/dev/lib/commonplace_mcp/ebin/commonplace_mcp.app". This may happen if the dependency was not yet compiled or the dependency indeed has no app file (then you can pass app: false as option)
+* commonplace_web (apps/commonplace_web) (mix)
+  could not find an app file at "_build/dev/lib/commonplace_web/ebin/commonplace_web.app". This may happen if the dependency was not yet compiled or the dependency indeed has no app file (then you can pass app: false as option)
+* cubdb (Hex package) (mix)
+  locked at 2.0.2 (cubdb) c99cc8f9
+  the dependency is not available, run "mix deps.get"
+* dns_cluster (Hex package) (mix)
+  locked at 0.2.0 (dns_cluster) ba6f1893
+  the dependency is not available, run "mix deps.get"
+* elixir_make (Hex package) (mix)
+  locked at 0.9.0 (elixir_make) db23d4fd
+  the dependency is not available, run "mix deps.get"
+* esbuild (Hex package) (mix)
+  locked at 0.10.0 (esbuild) 468489cd
+  the dependency is not available, run "mix deps.get"
+* file_system (Hex package) (mix)
+  locked at 1.1.1 (file_system) 7a15ff97
+  the dependency is not available, run "mix deps.get"
+* heroicons (https://github.com/tailwindlabs/heroicons.git - v2.2.0)
+  locked at 0435d4c (tag: v2.2.0)
+  the dependency is not available, run "mix deps.get"
+* jason (Hex package) (mix)
+  locked at 1.4.4 (jason) c5eb0cab
+  the dependency is not available, run "mix deps.get"
+* libcluster (Hex package) (mix)
+  locked at 3.5.0 (libcluster) ebf6561f
+  the dependency is not available, run "mix deps.get"
+* phoenix (Hex package) (mix)
+  locked at 1.8.5 (phoenix) 83b2bb12
+  the dependency is not available, run "mix deps.get"
+* phoenix_html (Hex package) (mix)
+  locked at 4.3.0 (phoenix_html) 3eaa290a
+  the dependency is not available, run "mix deps.get"
+* phoenix_live_reload (Hex package) (mix)
+  locked at 1.6.2 (phoenix_live_reload) d1f89c18
+  the dependency is not available, run "mix deps.get"
+* phoenix_live_view (Hex package) (mix)
+  locked at 1.1.27 (phoenix_live_view) 415735d0
+  the dependency is not available, run "mix deps.get"
+* phoenix_pubsub (Hex package) (mix)
+  locked at 2.2.0 (phoenix_pubsub) adc313a5
+  the dependency is not available, run "mix deps.get"
+* req (Hex package) (mix)
+  locked at 0.5.17 (req) 0b8bc6ff
+  the dependency is not available, run "mix deps.get"
+* tailwind (Hex package) (mix)
+  locked at 0.4.1 (tailwind) 6249d4f9
+  the dependency is not available, run "mix deps.get"
+* telemetry (Hex package) (rebar3)
+  locked at 1.4.1 (telemetry) 2172e05a
+  the dependency is not available, run "mix deps.get"
+* telemetry_metrics (Hex package) (mix)
+  locked at 1.1.0 (telemetry_metrics) e7b79e8d
+  the dependency is not available, run "mix deps.get"
+* telemetry_poller (Hex package) (rebar3)
+  locked at 1.3.0 (telemetry_poller) 51f18bed
+  the dependency is not available, run "mix deps.get"
+* uuid (Hex package) (mix)
+  locked at 1.1.8 (uuid) c790593b
+  the dependency is not available, run "mix deps.get"
+* yelixer (https://github.com/commonplace-systems/yelixer.git - bc35a0e9)
+  locked at bc35a0e (ref)
+  the dependency is not available, run "mix deps.get"

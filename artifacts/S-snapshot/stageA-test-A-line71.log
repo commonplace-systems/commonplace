@@ -1,0 +1,83 @@
+==> commonplace
+make: Nothing to be done for 'all'.
+==> commonplace_cli
+Running ExUnit with seed: 736192, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+05:48:27.941 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+05:48:27.958 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+05:48:27.961 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+05:48:27.975 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.1 seconds (0.00s async, 0.1s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 980870, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+05:48:27.981 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+05:48:27.984 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+05:48:27.986 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+05:48:27.989 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.01 seconds (0.00s async, 0.01s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 991755, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+05:48:27.992 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+05:48:27.994 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+05:48:27.996 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+05:48:27.999 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.00 seconds (0.00s async, 0.00s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 1745, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 71}]
+
+05:48:28.002 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+05:48:28.005 [error] GenServer #PID<0.282.0> terminating
+** (MatchError) no match of right hand side value: {:error, :enoent}
+    (cubdb 2.0.2) lib/cubdb.ex:1499: CubDB.trigger_compaction/1
+    (cubdb 2.0.2) lib/cubdb.ex:1523: CubDB.do_compact/1
+    (cubdb 2.0.2) lib/cubdb.ex:1358: CubDB.handle_call/3
+    (stdlib 6.2.2.3) gen_server.erl:2381: :gen_server.try_handle_call/4
+    (stdlib 6.2.2.3) gen_server.erl:2410: :gen_server.handle_msg/6
+    (stdlib 6.2.2.3) proc_lib.erl:329: :proc_lib.init_p_do_apply/3
+Last message (from Commonplace.Store.CommitStore): {:commit_transaction, %CubDB.Tx{btree: %CubDB.Btree{root: {:b, [{{:commit, <<5, 169, 69, 53, 251, 139, 249, 195, 43, 218, 96, 96, 119, 169, 130, 67, 240, 224, 250, 205, 81, 51, 195, 114, 121, 148, 145, 69, 23, 231, 20, 5>>}, 196156}, {{:commit, <<170, 19, 164, 90, 226, 14, 210, 153, 125, 246, 125, 164, 68, 22, 86, 201, 149, 174, 247, 89, 151, 115, 174, 93, 143, 223, 246, 248, 23, 47, 38, 192>>}, 200971}, {{:latest, "82032f15-cf1d-492e-a02b-b60302169a12"}, 205278}, {{:doc_commit, "9324e214-007a-45e2-882a-5559afa89d99", <<233, 220, 57, 142, 59, 136, 82, 72, 252, 47, 107, 109, 25, 187, 150, 223, 107, 98, 1, 221, 99, 115, 72, 18, 196, 127, 188, 182, 219, 132, 89, 128>>}, 202357}]}, root_loc: 206965, size: 88, dirt: 101, store: %CubDB.Store.File{pid: #PID<0.283.0>, file_path: "tmp/test_data/commits/0.cub"}, capacity: 32}, compacting: false, owner: {#PID<0.279.0>, #Reference<0.3553679897.1498415108.114734>}, db: #PID<0.282.0>, recompact: false}}
+05:48:28.023 [error] GenServer #PID<0.285.0> terminating
+** (MatchError) no match of right hand side value: {:error, :enoent}
+    (cubdb 2.0.2) lib/cubdb.ex:1499: CubDB.trigger_compaction/1
+    (cubdb 2.0.2) lib/cubdb.ex:1523: CubDB.do_compact/1
+    (cubdb 2.0.2) lib/cubdb.ex:1358: CubDB.handle_call/3
+    (stdlib 6.2.2.3) gen_server.erl:2381: :gen_server.try_handle_call/4
+    (stdlib 6.2.2.3) gen_server.erl:2410: :gen_server.handle_msg/6
+    (stdlib 6.2.2.3) proc_lib.erl:329: :proc_lib.init_p_do_apply/3
+Last message: {:EXIT, #PID<0.282.0>, {{:badmatch, {:error, :enoent}}, [{CubDB, :trigger_compaction, 1, [file: ~c"lib/cubdb.ex", line: 1499]}, {CubDB, :do_compact, 1, [file: ~c"lib/cubdb.ex", line: 1523]}, {CubDB, :handle_call, 3, [file: ~c"lib/cubdb.ex", line: 1358]}, {:gen_server, :try_handle_call, 4, [file: ~c"gen_server.erl", line: 2381]}, {:gen_server, :handle_msg, 6, [file: ~c"gen_server.erl", line: 2410]}, {:proc_lib, :init_p_do_apply, 3, [file: ~c"proc_lib.erl", line: 329]}]}}
+
+
+  1) test snapshot command writes a snapshot commit for the resolved doc (Commonplace.CLI.SnapshotTest)
+     apps/commonplace_cli/test/commonplace/cli/snapshot_test.exs:71
+     ** (exit) exited in: GenServer.call(Commonplace.Store.CommitStore, {:create_commit, "f0f75a8d-6ee2-49eb-a034-d733e6a2deae", <<1, 3, 178, 181, 248, 221, 1, 0, 40, 1, 4, 114, 111, 111, 116, 5, 95, 116, 121, 112, 101, 1, 119, 4, 116, 101, 120, 116, 40, 1, 4, 114, 111, 111, 116, 5, 95, 110, 97, 109, 101, 1, 119, 9, 110, 111, 116, ...>>, nil, %{}, []}, 5000)
+         ** (EXIT) an exception was raised:
+             ** (MatchError) no match of right hand side value: {:error, :enoent}
+                 (cubdb 2.0.2) lib/cubdb.ex:1499: CubDB.trigger_compaction/1
+                 (cubdb 2.0.2) lib/cubdb.ex:1523: CubDB.do_compact/1
+                 (cubdb 2.0.2) lib/cubdb.ex:1358: CubDB.handle_call/3
+                 (stdlib 6.2.2.3) gen_server.erl:2381: :gen_server.try_handle_call/4
+                 (stdlib 6.2.2.3) gen_server.erl:2410: :gen_server.handle_msg/6
+                 (stdlib 6.2.2.3) proc_lib.erl:329: :proc_lib.init_p_do_apply/3
+     stacktrace:
+       (elixir 1.18.4) lib/gen_server.ex:1128: GenServer.call/3
+       test/commonplace/cli/snapshot_test.exs:41: Commonplace.CLI.SnapshotTest.__ex_unit_setup_0/1
+       test/commonplace/cli/snapshot_test.exs:1: Commonplace.CLI.SnapshotTest.__ex_unit__/2
+
+
+Finished in 0.02 seconds (0.00s async, 0.02s sync)
+3 tests, 1 failure, 2 excluded
+real 2.19
+user 2.44
+sys 0.66

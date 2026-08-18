@@ -1,0 +1,15 @@
+  1) test snapshot command writes a snapshot commit for the resolved doc (Commonplace.CLI.SnapshotTest)
+     apps/commonplace_cli/test/commonplace/cli/snapshot_test.exs:71
+     ** (exit) exited in: GenServer.call(Commonplace.Store.CommitStore, {:create_commit, "f0f75a8d-6ee2-49eb-a034-d733e6a2deae", <<1, 3, 178, 181, 248, 221, 1, 0, 40, 1, 4, 114, 111, 111, 116, 5, 95, 116, 121, 112, 101, 1, 119, 4, 116, 101, 120, 116, 40, 1, 4, 114, 111, 111, 116, 5, 95, 110, 97, 109, 101, 1, 119, 9, 110, 111, 116, ...>>, nil, %{}, []}, 5000)
+         ** (EXIT) an exception was raised:
+             ** (MatchError) no match of right hand side value: {:error, :enoent}
+                 (cubdb 2.0.2) lib/cubdb.ex:1499: CubDB.trigger_compaction/1
+                 (cubdb 2.0.2) lib/cubdb.ex:1523: CubDB.do_compact/1
+                 (cubdb 2.0.2) lib/cubdb.ex:1358: CubDB.handle_call/3
+                 (stdlib 6.2.2.3) gen_server.erl:2381: :gen_server.try_handle_call/4
+                 (stdlib 6.2.2.3) gen_server.erl:2410: :gen_server.handle_msg/6
+                 (stdlib 6.2.2.3) proc_lib.erl:329: :proc_lib.init_p_do_apply/3
+     stacktrace:
+       (elixir 1.18.4) lib/gen_server.ex:1128: GenServer.call/3
+       test/commonplace/cli/snapshot_test.exs:41: Commonplace.CLI.SnapshotTest.__ex_unit_setup_0/1
+       test/commonplace/cli/snapshot_test.exs:1: Commonplace.CLI.SnapshotTest.__ex_unit__/2

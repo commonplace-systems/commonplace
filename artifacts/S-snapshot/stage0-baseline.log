@@ -1,0 +1,181 @@
+==> file_system
+Compiling 7 files (.ex)
+Generated file_system app
+==> mime
+Compiling 1 file (.ex)
+Generated mime app
+==> nimble_options
+Compiling 3 files (.ex)
+Generated nimble_options app
+==> fine
+Compiling 1 file (.ex)
+Generated fine app
+===> Analyzing applications...
+===> Compiling unicode_util_compat
+===> Analyzing applications...
+===> Compiling idna
+===> Analyzing applications...
+===> Compiling telemetry
+==> telemetry_metrics
+Compiling 7 files (.ex)
+Generated telemetry_metrics app
+===> Analyzing applications...
+===> Compiling telemetry_poller
+==> thousand_island
+Compiling 18 files (.ex)
+Generated thousand_island app
+==> jason
+Compiling 10 files (.ex)
+Generated jason app
+==> libcluster
+Compiling 13 files (.ex)
+Generated libcluster app
+==> esbuild
+Compiling 4 files (.ex)
+Generated esbuild app
+==> phoenix_html
+Compiling 6 files (.ex)
+Generated phoenix_html app
+==> phoenix_template
+Compiling 4 files (.ex)
+Generated phoenix_template app
+==> phoenix_pubsub
+Compiling 12 files (.ex)
+Generated phoenix_pubsub app
+==> plug_crypto
+Compiling 5 files (.ex)
+Generated plug_crypto app
+==> hpax
+Compiling 4 files (.ex)
+Generated hpax app
+==> mint
+Compiling 1 file (.erl)
+Compiling 20 files (.ex)
+Generated mint app
+==> peri
+Compiling 7 files (.ex)
+Generated peri app
+===> Analyzing applications...
+===> Compiling mimerl
+==> dns_cluster
+Compiling 1 file (.ex)
+Generated dns_cluster app
+==> ssl_verify_fun
+Compiling 7 files (.erl)
+Generated ssl_verify_fun app
+==> cubdb
+Compiling 14 files (.ex)
+Generated cubdb app
+===> Analyzing applications...
+===> Compiling certifi
+==> yelixer
+Compiling 19 files (.ex)
+Generated yelixer app
+==> plug
+Compiling 1 file (.erl)
+Compiling 42 files (.ex)
+Generated plug app
+===> Analyzing applications...
+===> Compiling parse_trans
+==> nimble_pool
+Compiling 2 files (.ex)
+Generated nimble_pool app
+==> finch
+Compiling 14 files (.ex)
+Generated finch app
+==> req
+Compiling 19 files (.ex)
+Generated req app
+==> anubis_mcp
+Compiling 73 files (.ex)
+Generated anubis_mcp app
+===> Analyzing applications...
+===> Compiling metrics
+===> Analyzing applications...
+===> Compiling hackney
+==> tesla
+Compiling 41 files (.ex)
+Generated tesla app
+==> web_driver_client
+Compiling 97 files (.ex)
+Generated web_driver_client app
+==> tailwind
+Compiling 3 files (.ex)
+Generated tailwind app
+==> elixir_make
+Compiling 8 files (.ex)
+Generated elixir_make app
+==> cc_precompiler
+Compiling 3 files (.ex)
+Generated cc_precompiler app
+==> lazy_html
+Compiling 3 files (.ex)
+Generated lazy_html app
+==> websock
+Compiling 1 file (.ex)
+Generated websock app
+==> bandit
+Compiling 54 files (.ex)
+Generated bandit app
+==> websock_adapter
+Compiling 4 files (.ex)
+Generated websock_adapter app
+==> phoenix
+Compiling 74 files (.ex)
+Generated phoenix app
+==> phoenix_live_view
+Compiling 49 files (.ex)
+Generated phoenix_live_view app
+==> httpoison
+Compiling 3 files (.ex)
+Generated httpoison app
+==> wallaby
+Compiling 29 files (.ex)
+Generated wallaby app
+==> uuid
+Compiling 1 file (.ex)
+    warning: use Bitwise is deprecated. import Bitwise instead
+    │
+  2 │   use Bitwise, only_operators: true
+    │   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    │
+    └─ lib/uuid.ex:2: UUID (module)
+
+Generated uuid app
+==> commonplace
+make: Nothing to be done for 'all'.
+Compiling 278 files (.ex)
+Generated commonplace app
+==> commonplace_cli
+Compiling 40 files (.ex)
+Generated commonplace_cli app
+==> commonplace_bots
+Compiling 46 files (.ex)
+Generated commonplace_bots app
+==> commonplace_mcp
+Compiling 38 files (.ex)
+Generated commonplace_mcp app
+==> commonplace_web
+Compiling 32 files (.ex)
+Generated commonplace_web app
+==> commonplace_cli
+05:48:07.859 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+Running ExUnit with seed: 183193, max_cases: 8
+
+05:48:08.304 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+05:48:08.306 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+05:48:08.308 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.05:48:08.311 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+05:48:08.312 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+05:48:08.314 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+05:48:08.317 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.05:48:08.319 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+05:48:08.321 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+05:48:08.323 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+05:48:08.327 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.1 seconds (0.00s async, 0.1s sync)
+3 tests, 0 failures
+real 88.03
+user 112.25
+sys 9.66

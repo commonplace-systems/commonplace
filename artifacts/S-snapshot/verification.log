@@ -1,0 +1,11 @@
+A seed lines: 4
+A failure verdicts: 1
+B seed lines: 201
+B zero-failure verdicts: 201
+C seed lines: 201
+C zero-failure verdicts: 201
+B unique seeds: 201
+C unique seeds: 201
+Stage B rows: 30
+Stage B unique seeds: 30
+Stage B red verdicts: Stage B missing verdicts: 0
