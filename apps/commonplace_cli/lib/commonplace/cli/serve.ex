@@ -12,7 +12,15 @@ defmodule Commonplace.CLI.Serve do
   alias Commonplace.Document.ContentType
   alias Commonplace.Process.Orchestrator
 
+  @serve_formatter_config %{
+    template: [:time, " [", :level, "] ", :msg, "\n"],
+    time_offset: 0,
+    time_designator: "T",
+    single_line: true
+  }
+
   def run(data_dir, _relative_path, _args) do
+    :ok = configure_logger_sink()
     start_named_node(data_dir)
 
     topology = Commonplace.Cluster.topology()
@@ -115,6 +123,20 @@ defmodule Commonplace.CLI.Serve do
     # going. Only a restart that doesn't happen (supervisor gave up)
     # ends the daemon.
     wait_on_orchestrator(Process.monitor(orch), orch, data_dir, pid_file)
+  end
+
+  @doc false
+  def configure_logger_sink do
+    :logger.update_handler_config(
+      :default,
+      :formatter,
+      {:logger_formatter, @serve_formatter_config}
+    )
+  end
+
+  @doc false
+  def format_log_event(event) do
+    :logger_formatter.format(event, @serve_formatter_config)
   end
 
   defp start_supervised_orchestrator do
@@ -283,7 +305,9 @@ defmodule Commonplace.CLI.Serve do
 
   defp ensure_epmd do
     case System.cmd("epmd", ["-names"], stderr_to_stdout: true) do
-      {_, 0} -> :ok
+      {_, 0} ->
+        :ok
+
       _ ->
         # Start epmd as a daemon
         System.cmd("epmd", ["-daemon"], stderr_to_stdout: true)

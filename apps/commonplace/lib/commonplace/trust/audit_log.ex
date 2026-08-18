@@ -101,17 +101,20 @@ defmodule Commonplace.Trust.AuditLog do
   `[:commonplace, :trust, :read, :would_refuse]` fires on every refused
   read while `:local_read_gate` is `:dry_run` — a citizen polling a
   denied resource in a loop could emit hundreds a second. Each event
-  name gets its own token bucket: at most `@cap` events per 60-second
-  window; the rest are counted, and a single summary record
-  (`"summary" => true, "suppressed" => n`) is written when the window
-  rolls over. Suppression is therefore visible in the log, in the same
-  spirit as the dispatcher's shed counter — bounded volume, never a
-  silent zero.
+  `{event_name, doc_uuid}` gets its own fixed-window bucket: at most 20
+  records per 60-second window. The emitting process atomically increments a
+  public ETS counter; it never waits for the supervised owner. The owner
+  sweeps expired rows and writes a truthful summary (`"driven"`, `"admitted"`,
+  and `"suppressed"`) through the dispatcher without requiring a later event
+  and without passing through this admission gate. A storm on one document
+  therefore cannot starve an independent document, and suppression is bounded
+  volume rather than a silent zero. See `AuditRateLimiter` for lifecycle and
+  the one-window hard-kill exposure bound.
   """
 
   require Logger
 
-  alias Commonplace.Trust.{AuditDispatcher, AuditLogCounter}
+  alias Commonplace.Trust.{AuditDispatcher, AuditLogCounter, AuditRateLimiter}
 
   @handler_id "commonplace-trust-audit-log"
 
@@ -135,10 +138,6 @@ defmodule Commonplace.Trust.AuditLog do
     [:commonplace, :mud, :engine_module, :md5_refused]
   ]
 
-  @rate_table :commonplace_trust_audit_log_rate
-  @window_ms 60_000
-  @cap 20
-
   @doc "The telemetry events this module audits."
   def events, do: @events
 
@@ -155,7 +154,7 @@ defmodule Commonplace.Trust.AuditLog do
   def counters, do: AuditLogCounter.snapshot()
 
   @doc false
-  def rate_cap, do: @cap
+  def rate_cap, do: AuditRateLimiter.cap()
 
   @doc "The deterministic red-log doc UUID this module writes into."
   def log_uuid do
@@ -175,7 +174,6 @@ defmodule Commonplace.Trust.AuditLog do
   record is written to must not be decided inside the emitting process.
   """
   def attach(store \\ Commonplace.Store.CommitStoreClient, opts \\ []) do
-    ensure_rate_table()
     _ = :telemetry.detach(@handler_id)
 
     :telemetry.attach_many(
@@ -224,22 +222,13 @@ defmodule Commonplace.Trust.AuditLog do
         GenServer.cast(dispatcher, {:guarded, payload})
 
       true ->
-        case rate_gate(event_name) do
-          {:log, nil} ->
+        case rate_gate(event_name, payload, dispatcher) do
+          :log ->
             # `offer_events` counts EVENTS reaching this stage; `offered` counts
-            # RECORDS handed to the dispatcher. They diverge in the clause below,
-            # and only `offer_events` belongs in the stage identity. See
-            # AuditLogCounter's moduledoc.
+            # RECORDS handed to the dispatcher. The timer owner also increments
+            # `offered` for summaries without inventing an input event, so only
+            # `offer_events` belongs in the stage identity. See AuditLogCounter.
             AuditLogCounter.increment(:offer_events)
-            AuditLogCounter.increment(:offered)
-            AuditDispatcher.offer(dispatcher, payload)
-
-          {:log, summary} ->
-            # ⚠️ ONE event, TWO records. This is the clause that makes
-            # `entered == … + offered + …` false.
-            AuditLogCounter.increment(:offer_events)
-            AuditLogCounter.increment(:offered)
-            AuditDispatcher.offer(dispatcher, summary)
             AuditLogCounter.increment(:offered)
             AuditDispatcher.offer(dispatcher, payload)
 
@@ -508,7 +497,7 @@ defmodule Commonplace.Trust.AuditLog do
 
   defp encode_id(other), do: other
 
-  # --- flood guard: per-event-name token bucket + window summary ---
+  # --- flood guard: per-{event-name, doc} bucket + out-of-band summary ---
 
   @doc false
   # Test support: the rate table is global, named, and shared across the
@@ -518,63 +507,12 @@ defmodule Commonplace.Trust.AuditLog do
   # the ONE sanctioned way to clear it — tests must not reach into the
   # named table themselves.
   def reset_rate_table do
-    if :ets.whereis(@rate_table) != :undefined, do: :ets.delete_all_objects(@rate_table)
+    table = AuditRateLimiter.table()
+    if :ets.whereis(table) != :undefined, do: :ets.delete_all_objects(table)
     :ok
   end
 
-  defp ensure_rate_table do
-    if :ets.whereis(@rate_table) == :undefined do
-      :ets.new(@rate_table, [:named_table, :public, :set])
-    end
-
-    :ok
-  rescue
-    # Two processes can race the create; the loser sees ArgumentError
-    # and the table exists either way.
-    ArgumentError -> :ok
-  end
-
-  # Returns {:log, nil} to persist normally, {:log, summary_map} to
-  # persist a summary for the window just closed AND persist this
-  # event, or :suppress to drop this event (already over cap this
-  # window).
-  defp rate_gate(event_name) do
-    ensure_rate_table()
-    now = System.system_time(:millisecond)
-
-    case :ets.lookup(@rate_table, event_name) do
-      [{^event_name, window_start, count, suppressed}] when now - window_start < @window_ms ->
-        if count < @cap do
-          :ets.insert(@rate_table, {event_name, window_start, count + 1, suppressed})
-          {:log, nil}
-        else
-          :ets.insert(@rate_table, {event_name, window_start, count, suppressed + 1})
-          :suppress
-        end
-
-      [{^event_name, window_start, _count, suppressed}] ->
-        # Window rolled over — start a fresh one, this event is #1 in it.
-        :ets.insert(@rate_table, {event_name, now, 1, 0})
-
-        summary =
-          if suppressed > 0 do
-            %{
-              "event" => "audit_log.rate_limited",
-              "gate" => "audit_log",
-              "check" => "rate_limit",
-              "suppressed_event" => Enum.join(event_name, "."),
-              "window_start_ms" => window_start,
-              "window_ms" => @window_ms,
-              "suppressed" => suppressed,
-              "summary" => true
-            }
-          end
-
-        {:log, summary}
-
-      [] ->
-        :ets.insert(@rate_table, {event_name, now, 1, 0})
-        {:log, nil}
-    end
+  defp rate_gate(event_name, payload, dispatcher) do
+    AuditRateLimiter.admit(event_name, Map.get(payload, "doc_uuid"), dispatcher)
   end
 end

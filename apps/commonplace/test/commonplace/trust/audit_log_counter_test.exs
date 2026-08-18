@@ -1,7 +1,7 @@
 defmodule Commonplace.Trust.AuditLogCounterTest do
   use ExUnit.Case, async: false
 
-  alias Commonplace.Trust.{AuditLog, DenialCounter}
+  alias Commonplace.Trust.{AuditLog, AuditRateLimiter, DenialCounter}
 
   @event [:commonplace, :commit, :rejected, :local_trust]
   @rate_table :commonplace_trust_audit_log_rate
@@ -54,8 +54,8 @@ defmodule Commonplace.Trust.AuditLogCounterTest do
     assert is_integer(cap_at_call_site) and cap_at_call_site > 0
     before = AuditLog.counters()
 
-    for sequence <- 1..(cap_at_call_site + 1) do
-      assert :ok = deny("rate-doc-#{sequence}")
+    for _sequence <- 1..(cap_at_call_site + 1) do
+      assert :ok = deny("rate-doc")
     end
 
     after_counts = AuditLog.counters()
@@ -74,37 +74,27 @@ defmodule Commonplace.Trust.AuditLogCounterTest do
              delta.guarded + delta.rate_suppressed + delta.offer_events + delta.handler_failed
   end
 
-  # ⭐ THE CLAUSE THAT SEPARATES THE TWO COUNTERS, AND THE REASON THE STAGE
-  # IDENTITY IS NOT WRITTEN OVER `offered`.
-  #
-  # `{:log, summary}` offers TWICE for ONE event. Every test above fires inside
-  # a single window, so it never reaches this clause — which is exactly why an
-  # identity written over `offered` passes the whole suite and is still wrong.
-  # Here the window is rolled with suppressions outstanding, which is the state
-  # that produces a summary.
-  test "a rate-limit summary offers twice for one event, so offered and offer_events diverge" do
-    # Pre-load a window that has already rolled and had suppressions.
+  test "an out-of-band summary increments offered without inventing an input event" do
     stale_window = System.system_time(:millisecond) - 3_600_000
-    :ets.insert(@rate_table, {@event, stale_window, 999, 7})
+    key = {@event, "summary-doc", stale_window}
+    :ets.insert(@rate_table, {key, 27, self()})
+    :ets.insert(@rate_table, {{:current, @event, "summary-doc"}, stale_window})
 
     before = AuditLog.counters()
-    assert :ok = deny("summary-doc")
+    owner = Process.whereis(AuditRateLimiter)
+    send(owner, :flush_rate_windows)
+    _ = :sys.get_state(owner)
     after_counts = AuditLog.counters()
     report("rate_limit_summary", before, after_counts)
 
     delta = delta(before, after_counts)
 
-    # Control: this really did take the summary branch, not the ordinary one.
-    assert delta.offered == 2, "expected the summary branch (2 offers), got #{delta.offered}"
-    assert delta.entered == 1
-    assert delta.offer_events == 1
+    assert_receive {:"$gen_cast", {:audit, summary}}
+    assert summary["suppressed"] == 7
+    assert delta.offered == 1
+    assert delta.entered == 0
+    assert delta.offer_events == 0
 
-    # ⛔ THE OLD, WRONG IDENTITY — asserted here as an INEQUALITY so that if
-    # anyone "fixes" offered to make the sum close, this test says so.
-    refute delta.entered ==
-             delta.guarded + delta.rate_suppressed + delta.offered + delta.handler_failed
-
-    # ✅ The identity over EVENTS holds.
     assert delta.entered ==
              delta.guarded + delta.rate_suppressed + delta.offer_events + delta.handler_failed
   end

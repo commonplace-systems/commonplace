@@ -56,28 +56,17 @@ defmodule Commonplace.Application do
     # supervised process; the denial decision site increments it directly.
     :ok = Commonplace.Trust.DenialCounter.init()
 
-    # CX-hilo / CX-t3xv: durable trust-decision audit trail. Bridges the
-    # denial telemetry events enumerated in `Commonplace.Trust.DenySites`
-    # into a red-log doc, so a security-incident review has a data source
-    # beyond "who was tailing the live log at the time." Idempotent
-    # attach, same detach/attach idiom as the reflog dirty-tracker above.
-    #
-    # The handler only builds a record and casts it to
-    # `Commonplace.Trust.AuditDispatcher` (started below). It deliberately
-    # does NO store work: telemetry handlers run in the process that fired
-    # the event, and the loudest denial event fires from inside
-    # CommitStore's `handle_call`, where any call back into the store is
-    # `:calling_self` — an EXIT, which `:telemetry` answers by permanently
-    # detaching the handler. See `Commonplace.Trust.AuditLog` for the full
-    # etiology, the flood guard, and the recursion guard.
-    _ = Commonplace.Trust.AuditLog.attach()
-
     # sol/s-snapshot-fresh-s3: freeze the boot cwd before mix changes it; otherwise
     # CubDB compaction creates by path and re-resolves a relative store elsewhere.
     data_dir = Application.get_env(:commonplace, :data_dir, "data") |> Path.expand()
 
     children =
       [
+        # AUDIT-M2: permanent owner of the public admission table. It starts
+        # before any possible denial emitter; callers only perform atomic ETS
+        # increments and can never become the table owner. Its timer flushes
+        # expired suppression summaries out-of-band through AuditDispatcher.
+        Commonplace.Trust.AuditRateLimiter,
         {Registry, keys: :unique, name: Commonplace.Document.Registry},
         {Registry, keys: :unique, name: Commonplace.SchemaCoordinator.Registry},
         {Phoenix.PubSub, name: Commonplace.PubSub},
@@ -206,6 +195,11 @@ defmodule Commonplace.Application do
 
     case Supervisor.start_link(children, opts) do
       {:ok, pid} ->
+        # Attach only after the supervised rate owner and dispatcher exist.
+        # The handler remains fire-and-forget at the denial site; persistence
+        # and expired-window summary writes are both out of that hot process.
+        :ok = Commonplace.Trust.AuditLog.attach()
+
         # CX-vyrs: log the resolved effective-enforcement posture once per
         # boot — cheap (one Application.get_env read apiece + a trust.json
         # read), unconditional (it's just a log line), and it's the one
