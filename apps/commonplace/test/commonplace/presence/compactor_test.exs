@@ -86,6 +86,12 @@ defmodule Commonplace.Presence.CompactorTest do
       assert Compactor.state_vector_size(uuid, store) == 1
     end
 
+    # This is deliberately a wall-clock ratio, not a behavioral assertion.
+    # Keep it as a blocking benchmark under `mix test --include scale`; the
+    # ordinary suite excludes `:scale` because CPU contention changes the
+    # measurement without changing compaction correctness. All content,
+    # chaining, and state-vector assertions above remain ordinary-suite pins.
+    @tag :scale
     test "post-compaction apply_update is significantly faster", %{store: store} do
       uuid = UUID.uuid4()
 

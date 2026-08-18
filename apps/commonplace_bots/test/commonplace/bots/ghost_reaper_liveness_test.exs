@@ -83,7 +83,6 @@ defmodule Commonplace.Bots.GhostReaperLivenessTest do
     on_exit(fn ->
       _ = Supervisor.terminate_child(bots_sup, Dispatcher)
       _ = Supervisor.delete_child(bots_sup, Dispatcher)
-      Process.sleep(50)
 
       {:ok, _pid} =
         Supervisor.start_child(bots_sup, Supervisor.child_spec({Dispatcher, []}, id: Dispatcher))
@@ -283,7 +282,12 @@ defmodule Commonplace.Bots.GhostReaperLivenessTest do
     # membership — this is the mechanism the fix actually relies on.
     ref = Process.monitor(dispatcher_pid)
     Process.exit(dispatcher_pid, :kill)
-    assert_receive {:DOWN, ^ref, :process, ^dispatcher_pid, _}, 1000
+
+    # This is a hang detector around the deterministic monitor signal, not a
+    # performance assertion. The former 1 s ceiling was crossed six times in
+    # the loaded CI census; 10 s leaves an order of magnitude of scheduler
+    # headroom while still failing a dispatcher that does not die.
+    assert_receive {:DOWN, ^ref, :process, ^dispatcher_pid, _}, 10_000
 
     {:ok, reaped2} = GhostReaper.run_once(reaper_state(root, store, node_ctx, node_identity))
     assert "camillo.usr" in reaped2

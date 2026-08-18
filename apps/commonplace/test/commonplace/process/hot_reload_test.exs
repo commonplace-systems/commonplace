@@ -49,7 +49,7 @@ defmodule Commonplace.Process.HotReloadTest do
       })
 
       {:ok, orch} = Orchestrator.start_link(root_uuid: root, store: store, interval: 100)
-      Process.sleep(300)
+      reconcile(orch)
 
       pids = Orchestrator.running_processes(orch)
       assert Map.has_key?(pids, "hot_target")
@@ -67,7 +67,7 @@ defmodule Commonplace.Process.HotReloadTest do
       end
       """)
 
-      Process.sleep(300)
+      reconcile(orch)
 
       # PID must be the same — hot reload, not restart
       pids = Orchestrator.running_processes(orch)
@@ -101,7 +101,7 @@ defmodule Commonplace.Process.HotReloadTest do
       })
 
       {:ok, orch} = Orchestrator.start_link(root_uuid: root, store: store, interval: 100)
-      Process.sleep(300)
+      reconcile(orch)
 
       pid = Orchestrator.running_processes(orch)["stateful"]
 
@@ -127,7 +127,7 @@ defmodule Commonplace.Process.HotReloadTest do
       end
       """)
 
-      Process.sleep(300)
+      reconcile(orch)
 
       # State must be preserved
       assert Commonplace.UserProcess.Stateful.get_counter(pid) == 3
@@ -142,6 +142,15 @@ defmodule Commonplace.Process.HotReloadTest do
   end
 
   # Helpers (duplicated from orchestrator_test — same setup pattern)
+
+  defp reconcile(orch) do
+    # The reconciler is message-driven. Sending its real trigger and then
+    # synchronizing with the GenServer proves convergence without assuming
+    # that a 100 ms timer gets scheduled inside an arbitrary sleep budget.
+    send(orch, :reconcile)
+    _ = :sys.get_state(orch)
+    :ok
+  end
 
   defp create_source_doc(store, root, filename, source_code) do
     uuid = UUID.uuid4()
@@ -197,6 +206,7 @@ defmodule Commonplace.Process.HotReloadTest do
         doc = Schema.new_schema()
         {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
         doc
+
       :none ->
         Schema.new_schema()
     end

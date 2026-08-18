@@ -25,14 +25,18 @@ defmodule Commonplace.Green.BursarTest do
 
   defp start_bursar(ctx, name \\ nil, opts \\ []) do
     name = name || :"bursar_#{:rand.uniform(1_000_000)}"
-    {:ok, pid} = Bursar.start_link(
-      [root_uuid: ctx.root,
-       store: ctx.store,
-       name: name] ++ opts
-    )
+    {:ok, pid} = Bursar.start_link([root_uuid: ctx.root, store: ctx.store, name: name] ++ opts)
+
     on_exit(fn ->
-      if Process.alive?(pid), do: (try do GenServer.stop(pid) catch (:exit, _ -> :ok) end)
+      if Process.alive?(pid),
+        do:
+          (try do
+             GenServer.stop(pid)
+           catch
+             (:exit, _ -> :ok)
+           end)
     end)
+
     {pid, name}
   end
 
@@ -143,11 +147,12 @@ defmodule Commonplace.Green.BursarTest do
       GenServer.stop(pid)
 
       # Start a new bursar with the same root — should reload tokens
-      {:ok, _pid2} = Bursar.start_link(
-        root_uuid: ctx.root,
-        store: ctx.store,
-        name: :persist_test2
-      )
+      {:ok, _pid2} =
+        Bursar.start_link(
+          root_uuid: ctx.root,
+          store: ctx.store,
+          name: :persist_test2
+        )
 
       tokens = Bursar.list_tokens(:persist_test2)
       assert tokens["readme.txt"].holder == "alice"
@@ -189,8 +194,7 @@ defmodule Commonplace.Green.BursarTest do
       assert {:ok, _} = Bursar.acquire(name, "readme.txt", "alice", ttl: 100)
       Process.sleep(200)
       send(pid, :sweep_ttl)
-      # Give the GenServer time to process the sweep message
-      Process.sleep(50)
+      _ = :sys.get_state(pid)
 
       assert :available = Bursar.query(name, "readme.txt")
     end
@@ -200,8 +204,7 @@ defmodule Commonplace.Green.BursarTest do
 
       assert {:ok, _} = Bursar.acquire(name, "readme.txt", "alice", ttl: 10_000)
       send(pid, :sweep_ttl)
-      # Give the GenServer time to process the sweep message
-      Process.sleep(50)
+      _ = :sys.get_state(pid)
 
       assert {:held, %{holder: "alice"}} = Bursar.query(name, "readme.txt")
     end
@@ -212,8 +215,7 @@ defmodule Commonplace.Green.BursarTest do
       assert {:ok, _} = Bursar.acquire(name, "readme.txt", "alice", ttl: 100)
       Process.sleep(200)
       send(pid, :sweep_ttl)
-      # Give the GenServer time to process the sweep message
-      Process.sleep(50)
+      _ = :sys.get_state(pid)
 
       # Read the red log by finding the __bursar.log UUID from the root schema
       {:ok, schema} = DocBuilder.reconstruct_snapshot(ctx.store, ctx.root)
@@ -245,8 +247,10 @@ defmodule Commonplace.Green.BursarTest do
       {_pid, name} = start_bursar(ctx)
 
       assert {:ok, _} = Bursar.acquire(name, "readme.txt", "alice")
+
       assert {:error, {:not_holder, "alice"}} =
                Bursar.transfer(name, "readme.txt", "bob", "carol")
+
       assert {:held, %{holder: "alice"}} = Bursar.query(name, "readme.txt")
     end
 
@@ -292,18 +296,19 @@ defmodule Commonplace.Green.BursarTest do
       Bursar.transfer(:xfer_persist, "readme.txt", "alice", "bob")
       GenServer.stop(pid)
 
-      {:ok, _pid2} = Bursar.start_link(
-        root_uuid: ctx.root,
-        store: ctx.store,
-        name: :xfer_persist2
-      )
+      {:ok, _pid2} =
+        Bursar.start_link(
+          root_uuid: ctx.root,
+          store: ctx.store,
+          name: :xfer_persist2
+        )
 
       assert {:held, %{holder: "bob"}} = Bursar.query(:xfer_persist2, "readme.txt")
       GenServer.stop(:xfer_persist2)
     end
 
     test "transfer via magenta", ctx do
-      {_pid, name} = start_bursar(ctx)
+      {pid, name} = start_bursar(ctx)
 
       Bursar.acquire(name, "readme.txt", "alice")
 
@@ -316,7 +321,7 @@ defmodule Commonplace.Green.BursarTest do
         )
       )
 
-      Process.sleep(50)
+      _ = :sys.get_state(pid)
       assert {:held, %{holder: "bob"}} = Bursar.query(name, "readme.txt")
     end
   end
@@ -385,13 +390,27 @@ defmodule Commonplace.Green.BursarTest do
       GenServer.stop(pid)
 
       {:ok, pid2} =
-        Bursar.start_link(root_uuid: ctx.root, store: ctx.store,
-          name: :ephem_dst, sweep_interval: 60_000)
-      on_exit(fn -> if Process.alive?(pid2), do: (try do GenServer.stop(pid2) catch (:exit, _ -> :ok) end) end)
+        Bursar.start_link(
+          root_uuid: ctx.root,
+          store: ctx.store,
+          name: :ephem_dst,
+          sweep_interval: 60_000
+        )
+
+      on_exit(fn ->
+        if Process.alive?(pid2),
+          do:
+            (try do
+               GenServer.stop(pid2)
+             catch
+               (:exit, _ -> :ok)
+             end)
+      end)
 
       # The lease is GONE after reload (not carried across, not re-clocked) —
       # and immediately re-acquirable by anyone (re-election), no TTL wait.
       assert :available = Bursar.query(:ephem_dst, "lease.txt")
+
       assert {:ok, %{holder: "bob"}} =
                Bursar.acquire(:ephem_dst, "lease.txt", "bob", ttl: 200)
     end
@@ -406,18 +425,33 @@ defmodule Commonplace.Green.BursarTest do
       GenServer.stop(pid)
 
       {:ok, pid2} =
-        Bursar.start_link(root_uuid: ctx.root, store: ctx.store,
-          name: :perm_dst, sweep_interval: 60_000)
-      on_exit(fn -> if Process.alive?(pid2), do: (try do GenServer.stop(pid2) catch (:exit, _ -> :ok) end) end)
+        Bursar.start_link(
+          root_uuid: ctx.root,
+          store: ctx.store,
+          name: :perm_dst,
+          sweep_interval: 60_000
+        )
+
+      on_exit(fn ->
+        if Process.alive?(pid2),
+          do:
+            (try do
+               GenServer.stop(pid2)
+             catch
+               (:exit, _ -> :ok)
+             end)
+      end)
 
       assert {:held, %{holder: "alice"}} =
                Bursar.query(:perm_dst, "sword-abcd1234.obj")
+
       # A contender is still denied post-restart — ownership is intact.
       assert {:denied, %{holder: "alice"}} =
                Bursar.acquire(:perm_dst, "sword-abcd1234.obj", "bob")
     end
 
-    test "INVARIANT (CX-i9ca): dead holder + bursar restart → immediate re-election, single holder", ctx do
+    test "INVARIANT (CX-i9ca): dead holder + bursar restart → immediate re-election, single holder",
+         ctx do
       ttl = 300
       {pid, _name} = start_bursar(ctx, :invariant_src, sweep_interval: 60_000)
 
@@ -430,21 +464,37 @@ defmodule Commonplace.Green.BursarTest do
       GenServer.stop(pid)
 
       {:ok, pid2} =
-        Bursar.start_link(root_uuid: ctx.root, store: ctx.store,
-          name: :invariant_dst, sweep_interval: 50)
-      on_exit(fn -> if Process.alive?(pid2), do: (try do GenServer.stop(pid2) catch (:exit, _ -> :ok) end) end)
-      restarted_at = System.monotonic_time(:millisecond)
+        Bursar.start_link(
+          root_uuid: ctx.root,
+          store: ctx.store,
+          name: :invariant_dst,
+          sweep_interval: 50
+        )
+
+      on_exit(fn ->
+        if Process.alive?(pid2),
+          do:
+            (try do
+               GenServer.stop(pid2)
+             catch
+               (:exit, _ -> :ok)
+             end)
+      end)
+
+      # Ephemeral leases are absent from the restarted state. This is the
+      # property that makes re-election immediate; measuring wall time here
+      # also measures scheduler and CubDB delay and can cross one TTL under
+      # CPU load even though no lease is blocking the acquire.
+      assert :available = Bursar.query(:invariant_dst, "lease.txt")
 
       assert {:ok, %{holder: "bob"}} =
                Bursar.acquire(:invariant_dst, "lease.txt", "bob", ttl: ttl)
-      elapsed = System.monotonic_time(:millisecond) - restarted_at
-      assert elapsed < ttl,
-             "re-election took #{elapsed}ms — should be immediate, no 2×TTL wait"
 
       # The never-two-concurrent-holders invariant still holds: bob is now the
       # SOLE holder, and a third contender against the single-writer Bursar is
       # denied — leadership is exclusive whether inherited or re-elected.
       assert {:held, %{holder: "bob"}} = Bursar.query(:invariant_dst, "lease.txt")
+
       assert {:denied, %{holder: "bob"}} =
                Bursar.acquire(:invariant_dst, "lease.txt", "carol", ttl: ttl)
     end
@@ -580,9 +630,21 @@ defmodule Commonplace.Green.BursarTest do
 
       # All 200 durable tokens reload after a restart (ownership at scale).
       {:ok, pid2} =
-        Bursar.start_link(root_uuid: ctx.root, store: ctx.store,
-          name: :"scale_dst_#{:rand.uniform(1_000_000)}")
-      on_exit(fn -> if Process.alive?(pid2), do: (try do GenServer.stop(pid2) catch (:exit, _ -> :ok) end) end)
+        Bursar.start_link(
+          root_uuid: ctx.root,
+          store: ctx.store,
+          name: :"scale_dst_#{:rand.uniform(1_000_000)}"
+        )
+
+      on_exit(fn ->
+        if Process.alive?(pid2),
+          do:
+            (try do
+               GenServer.stop(pid2)
+             catch
+               (:exit, _ -> :ok)
+             end)
+      end)
 
       assert map_size(Bursar.list_tokens(pid2)) == 200
     end
@@ -599,7 +661,7 @@ defmodule Commonplace.Green.BursarTest do
 
       # Sweep at this point — should NOT expire because renew reset acquired_at
       send(pid, :sweep_ttl)
-      Process.sleep(50)
+      _ = :sys.get_state(pid)
       assert {:held, %{holder: "alice"}} = Bursar.query(name, "readme.txt")
     end
 
@@ -662,9 +724,9 @@ defmodule Commonplace.Green.BursarTest do
         )
       )
 
-      Process.sleep(50)
+      _ = :sys.get_state(pid)
       send(pid, :sweep_ttl)
-      Process.sleep(50)
+      _ = :sys.get_state(pid)
       assert {:held, %{holder: "alice", ttl_ms: 10_000}} = Bursar.query(name, "readme.txt")
     end
   end

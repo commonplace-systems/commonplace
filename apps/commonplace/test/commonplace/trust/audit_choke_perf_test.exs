@@ -192,6 +192,12 @@ defmodule Commonplace.Trust.AuditChokePerfTest do
 
   # ── the ALLOW path: must pay nothing ─────────────────────────────────
 
+  # These three arms intentionally compare wall-clock distributions. They
+  # remain blocking performance gates when explicitly run with
+  # `--include scale`, but the ordinary suite excludes `:scale` because CPU
+  # contention changes the instrument rather than the choke property. The
+  # structural DENY signature below remains in every ordinary suite run.
+  @tag :scale
   test "the ALLOW path p50 ratio is within budget", %{store: store, dispatcher: dispatcher} do
     with_wall_clock_enclosure("ALLOW p50", fn ->
       measurement = measure_allow(store, dispatcher)
@@ -200,6 +206,7 @@ defmodule Commonplace.Trust.AuditChokePerfTest do
     end)
   end
 
+  @tag :scale
   test "the ALLOW path p99 ratio is within budget", %{store: store, dispatcher: dispatcher} do
     with_wall_clock_enclosure("ALLOW p99", fn ->
       measurement = measure_allow(store, dispatcher, @allow_p99_samples)
@@ -211,6 +218,7 @@ defmodule Commonplace.Trust.AuditChokePerfTest do
   # ── the ordinary DENY path: every denial is offered ─────────────────
 
   @tag capture_log: true
+  @tag :scale
   test "the DENY OFFERED path p50 ratio is within budget", %{
     store: store,
     dispatcher: dispatcher
