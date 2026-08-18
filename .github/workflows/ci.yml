@@ -5,6 +5,17 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # THE SCALE LANE'S CLOCK (S-scalelane, 2026-08-18). `:scale` tests are
+  # excluded from the default run on purpose (CX-tdkq.9) — but an exclusion
+  # needs a place where it still fires, or it outlives its reason. Before
+  # this schedule existed, NOTHING ran `--include scale` anywhere: the four
+  # perf arms moved to :scale by 1d502586 went from noisy-gate to NO-GATE.
+  # Cron is UTC; 06:43 avoids the on-the-hour thundering herd.
+  schedule:
+    - cron: "43 6 * * *"
+  # Manual trigger runs ONLY the scale lane (see job conditions) — it exists
+  # so the lane can be exercised without waiting a day for cron.
+  workflow_dispatch: {}
 
 # TWO JOBS, DELIBERATELY. They were one until 2026-08-17, and the single job ran
 # the cheap format gate BEFORE the expensive test gate — so a formatting slip
@@ -26,6 +37,10 @@ on:
 
 jobs:
   format:
+    # push/PR only: the scheduled and manual triggers belong to the scale
+    # lane, and running the format gate there would attach an unrelated red
+    # to it.
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
 
     env:
@@ -69,6 +84,7 @@ jobs:
         run: bin/cp-format-changed "${{ github.event.before }}" "${{ github.sha }}"
 
   test:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
 
     env:
@@ -239,3 +255,87 @@ jobs:
         # is being skipped, or the suite legitimately changed — in which case
         # raise them deliberately, in the commit that changed it.
         run: bin/cp-test-guard --min 4100 --apps 5 -- mix test
+
+  # THE SCALE LANE (S-scalelane, 2026-08-18). Runs the :scale-tagged cohort
+  # that the default suite deliberately excludes — as of this commit, 11
+  # tests: the scale-benchmark module (6), the stranded-detector coverage
+  # test (1), and the four perf arms moved by 1d502586 (AuditChokePerf
+  # ratios ×3, Compactor 10× ×1). Local run 2026-08-18: ~11.5 minutes.
+  # Perf tests cannot be load-robust and still measure performance (the
+  # S-timing ruling), so their gate lives HERE, on a scheduled runner, where
+  # a scale regression becomes A RED SOMEWHERE rather than a note nowhere.
+  #
+  # · Its red must not share a dot with anything else's: this job runs ONLY
+  #   on schedule/manual dispatch, and format/test run only on push/PR.
+  # · No bubblewrap steps: none of the cohort's files touch the pod fence
+  #   (grepped 2026-08-18 — bwrap/Pod/sandbox appear in none of them).
+  # · :corpus is ALSO excluded by default and deliberately NOT here — its
+  #   input is 537 MB of production history that cannot exist in CI; see
+  #   corpus_regression_test.exs's moduledoc. Do not "complete" this lane
+  #   by adding it.
+  # · --min-executed, not --min, carries the floor: in a tag-selected lane
+  #   the summary's total counts EXCLUDED tests too, so the plain floor is
+  #   blind to the cohort shrinking. `mix test --only` exits 1 only when the
+  #   tag matches nothing at all.
+  scale:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    # The cohort ran in ~10 minutes locally; a hung benchmark on the default
+    # 6-hour job timeout would burn a runner all night on a lane nobody is
+    # watching live. Bounded, generously.
+    timeout-minutes: 60
+
+    env:
+      MIX_ENV: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27.3"
+          elixir-version: "1.18.4"
+
+      - name: Cache deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-${{ hashFiles('mix.lock') }}
+          restore-keys: ${{ runner.os }}-mix-
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Compile (warnings as errors)
+        run: mix compile --warnings-as-errors
+
+      # THE LANE'S OWN DRIFT GATE (boss's review finding, 2026-08-18): the
+      # test command below is scoped to apps/commonplace/test, and nothing
+      # else enforces that scope. A :scale tag in another umbrella app sits
+      # outside the lane — and since only apps/commonplace's test_helper
+      # excludes :scale, it would either run in the DEFAULT suite as the
+      # noisy gate S-timing removed (apps without the exclusion) or run
+      # NOWHERE (apps that add it). Both are the defect this lane exists to
+      # end, so either reds the lane by name here. The in-scope count is the
+      # positive control: a grep that finds zero tags even in scope is a
+      # blind instrument, not a clean tree.
+      - name: Refuse :scale tags outside the lane's load scope
+        run: |
+          IN_SCOPE=$(grep -rl "tag :scale" apps/commonplace/test --include="*.exs" | wc -l)
+          if [ "$IN_SCOPE" -eq 0 ]; then
+            echo "DRIFT_GATE: BLIND — zero :scale tags found even in scope; the pattern or tree layout changed, fix the gate"; exit 1
+          fi
+          STRAYS=$(grep -rl "tag :scale" apps/*/test --include="*.exs" | grep -v "^apps/commonplace/test/" || true)
+          if [ -n "$STRAYS" ]; then
+            echo "DRIFT_GATE: FAILED — :scale tag(s) outside apps/commonplace/test; they run in the default suite as a noisy gate, or nowhere at all — never in this lane:"
+            echo "$STRAYS"
+            exit 1
+          fi
+          echo "DRIFT_GATE: OK — ${IN_SCOPE} in-scope file(s), zero strays"
+
+      - name: Run the :scale cohort
+        run: >-
+          bin/cp-test-guard --min 3000 --min-executed 11 --
+          mix test apps/commonplace/test --only scale

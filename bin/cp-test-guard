@@ -51,10 +51,12 @@ set -uo pipefail
 
 MIN=1
 APPS=0
+MIN_EXEC=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --min) MIN="$2"; shift 2 ;;
     --apps) APPS="$2"; shift 2 ;;
+    --min-executed) MIN_EXEC="$2"; shift 2 ;;
     --) shift; break ;;
     *) echo "cp-test-guard: unexpected argument '$1' (did you forget '--'?)" >&2; exit 64 ;;
   esac
@@ -141,7 +143,39 @@ if [[ "$APPS" -gt 0 && "${#COUNTS[@]}" -ne "$APPS" ]]; then
   exit 1
 fi
 
+# --min-executed is for TAG-SELECTED lanes (e.g. `mix test --only scale`),
+# where --min is BLIND: the summary's "N tests" counts every test in the
+# loaded files INCLUDING the excluded ones, so a lane whose selection
+# quietly shrinks from 13 to 2 still reports the same total. `mix test
+# --only` does exit 1 when the tag matches NOTHING (measured 2026-08-18),
+# but partial shrinkage passes every check except this one.
+# Executed = (tests + doctests) − excluded − skipped, summed across summary
+# lines. The doctest term is not decoration: ExUnit's "N doctests, M tests"
+# are DISJOINT counts and "excluded" spans BOTH (measured 2026-08-18 on a
+# controlled file: "2 doctests, 9 tests, 0 failures, 11 excluded" under an
+# --only that matched nothing). Without it, executed undercounts by the
+# doctest count and a correct floor reads as red.
+if [[ "$MIN_EXEC" -gt 0 ]]; then
+  DOCTESTS=0
+  while read -r n; do DOCTESTS=$((DOCTESTS + n)); done < <(grep -oE '[0-9]+ doctests?,' "$OUT" | grep -oE '[0-9]+')
+  EXCLUDED=0
+  while read -r n; do EXCLUDED=$((EXCLUDED + n)); done < <(grep -oE '[0-9]+ excluded' "$OUT" | grep -oE '[0-9]+')
+  SKIPPED=0
+  while read -r n; do SKIPPED=$((SKIPPED + n)); done < <(grep -oE '[0-9]+ skipped' "$OUT" | grep -oE '[0-9]+')
+  EXECUTED=$((TOTAL + DOCTESTS - EXCLUDED - SKIPPED))
+  if [[ "$EXECUTED" -lt "$MIN_EXEC" ]]; then
+    echo "" >&2
+    echo "cp-test-guard: FAILED — ${EXECUTED} tests EXECUTED (${TOTAL} tests + ${DOCTESTS} doctests − ${EXCLUDED} excluded − ${SKIPPED} skipped), executed floor is ${MIN_EXEC}." >&2
+    echo "  Command: $*" >&2
+    echo "  A tag-selected lane shrank: tests were untagged, moved, or their" >&2
+    echo "  files stopped loading. If the cohort legitimately changed, adjust" >&2
+    echo "  the floor DELIBERATELY, in the commit that changed it." >&2
+    exit 1
+  fi
+fi
+
 SHAPE="floor ${MIN}"
 [[ "$APPS" -gt 0 ]] && SHAPE="${SHAPE}, expected apps ${APPS}"
+[[ "$MIN_EXEC" -gt 0 ]] && SHAPE="${SHAPE}, executed floor ${MIN_EXEC}"
 echo "cp-test-guard: selected ${TOTAL} tests across ${#COUNTS[@]} summary line(s) (${SHAPE}) — command rc=${CMD_RC}"
 exit "$CMD_RC"
