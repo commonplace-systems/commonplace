@@ -203,7 +203,7 @@ defmodule Commonplace.Runner.Launcher do
       _ = File.rm_rf(pod_home)
     end)
 
-    _ = Commonplace.Sync.Flock.unlock(state.lock)
+    _ = Commonplace.Flock.unlock(state.lock)
     :ok
   end
 
@@ -405,7 +405,7 @@ defmodule Commonplace.Runner.Launcher do
     lock_path = Path.join(pods_root, @lock_file)
 
     with :ok <- File.touch(lock_path),
-         {:ok, lock} <- Commonplace.Sync.Flock.try_lock(lock_path, :exclusive) do
+         {:ok, lock} <- Commonplace.Flock.try_lock(lock_path, :exclusive) do
       {:ok, lock}
     end
   end

@@ -31,7 +31,7 @@ defmodule Commonplace.Workspace.LockTest do
     # the open file description, not the calling process, so a second
     # acquire from within the same test process reproduces the actual
     # two-serve-processes race faithfully (verified directly against
-    # Commonplace.Sync.Flock in flock_test.exs's "would_block" case) —
+    # Commonplace.Flock in flock_test.exs's "would_block" case) —
     # no need for a separate System.cmd/port-based flock probe.
     Process.flag(:trap_exit, true)
 

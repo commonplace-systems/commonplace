@@ -1,7 +1,8 @@
-defmodule Commonplace.Sync.FlockAtomicWriteTest do
+defmodule Commonplace.FlockAtomicWriteTest do
   use ExUnit.Case
 
-  alias Commonplace.Sync.{Export, Flock}
+  alias Commonplace.Flock
+  alias Commonplace.Sync.Export
 
   setup do
     dir = Path.join(System.tmp_dir!(), "flock_aw_#{:rand.uniform(1_000_000)}")
