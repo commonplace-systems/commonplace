@@ -19,7 +19,14 @@ defmodule Commonplace.Test.GlobalStateLeakDetector do
   use GenServer
 
   @result_key {__MODULE__, :result}
-  @app_env_keys [:data_dir, :trust, :local_write_gate]
+  @app_env_keys [:data_dir, :trust, :local_write_gate, :mud_engine_manifest]
+  # :mud_engine_manifest (2026-08-18): ~23 test files run MUD Bootstrap, whose
+  # ensure_* helpers put_env the GLOBAL engine manifest and leave it set. That
+  # leak was one of the three legs of the arrangement-triggered MUD render
+  # defect (docs/measurements/2026-08-17-mud-arrangement-seed-corpus.md, "THE
+  # MECHANISM") — and it was invisible BY CONSTRUCTION, because this list did
+  # not carry the key. Advisory visibility first; whether Bootstrap should
+  # clean up after itself in tests is a separate decision.
   @public_key_artifact "node_signing_public_keys.json"
   @positive_control Commonplace.GlobalStateLeakDetectorPositiveControlTest
 
