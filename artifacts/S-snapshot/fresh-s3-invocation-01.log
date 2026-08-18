@@ -1,0 +1,280 @@
+==> file_system
+Compiling 7 files (.ex)
+Generated file_system app
+==> mime
+Compiling 1 file (.ex)
+Generated mime app
+==> nimble_options
+Compiling 3 files (.ex)
+Generated nimble_options app
+==> fine
+Compiling 1 file (.ex)
+Generated fine app
+===> Analyzing applications...
+===> Compiling unicode_util_compat
+===> Analyzing applications...
+===> Compiling idna
+===> Analyzing applications...
+===> Compiling telemetry
+==> telemetry_metrics
+Compiling 7 files (.ex)
+Generated telemetry_metrics app
+===> Analyzing applications...
+===> Compiling telemetry_poller
+==> thousand_island
+Compiling 18 files (.ex)
+Generated thousand_island app
+==> jason
+Compiling 10 files (.ex)
+Generated jason app
+==> libcluster
+Compiling 13 files (.ex)
+Generated libcluster app
+==> esbuild
+Compiling 4 files (.ex)
+Generated esbuild app
+==> phoenix_html
+Compiling 6 files (.ex)
+Generated phoenix_html app
+==> phoenix_template
+Compiling 4 files (.ex)
+Generated phoenix_template app
+==> phoenix_pubsub
+Compiling 12 files (.ex)
+Generated phoenix_pubsub app
+==> plug_crypto
+Compiling 5 files (.ex)
+Generated plug_crypto app
+==> hpax
+Compiling 4 files (.ex)
+Generated hpax app
+==> mint
+Compiling 1 file (.erl)
+Compiling 20 files (.ex)
+Generated mint app
+==> peri
+Compiling 7 files (.ex)
+Generated peri app
+===> Analyzing applications...
+===> Compiling mimerl
+==> dns_cluster
+Compiling 1 file (.ex)
+Generated dns_cluster app
+==> ssl_verify_fun
+Compiling 7 files (.erl)
+Generated ssl_verify_fun app
+==> cubdb
+Compiling 14 files (.ex)
+Generated cubdb app
+===> Analyzing applications...
+===> Compiling certifi
+==> yelixer
+Compiling 19 files (.ex)
+Generated yelixer app
+==> plug
+Compiling 1 file (.erl)
+Compiling 42 files (.ex)
+Generated plug app
+===> Analyzing applications...
+===> Compiling parse_trans
+==> nimble_pool
+Compiling 2 files (.ex)
+Generated nimble_pool app
+==> finch
+Compiling 14 files (.ex)
+Generated finch app
+==> req
+Compiling 19 files (.ex)
+Generated req app
+==> anubis_mcp
+Compiling 73 files (.ex)
+Generated anubis_mcp app
+===> Analyzing applications...
+===> Compiling metrics
+===> Analyzing applications...
+===> Compiling hackney
+==> tesla
+Compiling 41 files (.ex)
+Generated tesla app
+==> web_driver_client
+Compiling 97 files (.ex)
+Generated web_driver_client app
+==> tailwind
+Compiling 3 files (.ex)
+Generated tailwind app
+==> elixir_make
+Compiling 8 files (.ex)
+Generated elixir_make app
+==> cc_precompiler
+Compiling 3 files (.ex)
+Generated cc_precompiler app
+==> lazy_html
+Compiling 3 files (.ex)
+Generated lazy_html app
+==> websock
+Compiling 1 file (.ex)
+Generated websock app
+==> bandit
+Compiling 54 files (.ex)
+Generated bandit app
+==> websock_adapter
+Compiling 4 files (.ex)
+Generated websock_adapter app
+==> phoenix
+Compiling 74 files (.ex)
+Generated phoenix app
+==> phoenix_live_view
+Compiling 49 files (.ex)
+Generated phoenix_live_view app
+==> httpoison
+Compiling 3 files (.ex)
+Generated httpoison app
+==> wallaby
+Compiling 29 files (.ex)
+Generated wallaby app
+==> uuid
+Compiling 1 file (.ex)
+    warning: use Bitwise is deprecated. import Bitwise instead
+    │
+  2 │   use Bitwise, only_operators: true
+    │   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    │
+    └─ lib/uuid.ex:2: UUID (module)
+
+Generated uuid app
+==> commonplace
+make: Nothing to be done for 'all'.
+Compiling 278 files (.ex)
+Generated commonplace app
+==> commonplace_cli
+Compiling 40 files (.ex)
+Generated commonplace_cli app
+==> commonplace_bots
+Compiling 46 files (.ex)
+Generated commonplace_bots app
+==> commonplace_mcp
+Compiling 38 files (.ex)
+Generated commonplace_mcp app
+==> commonplace_web
+Compiling 32 files (.ex)
+Generated commonplace_web app
+==> commonplace_cli
+06:17:03.636 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+Running ExUnit with seed: 148145, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 114}]
+
+CX_SNAPMECH cwd="/home/jes/sol-snapshot-fresh/wt/apps/commonplace_cli" configured="tmp/test_data" configured_read=%{compact: [], count: nil, ls: :absent, exists?: false} commit_store_pid=#PID<0.8532.0> commit_store_state_shape={true, [:data_dir, :db, :invariant_dispatcher, :local_write_gate, :lock_ref, :name, :pending_imports, :queue_poller, :trust_side_store]} cubdb_pid=#PID<0.8535.0> cubdb_state_shape=CubDB.State cubdb_data_dir="tmp/test_data/commits" cubdb_read=%{compact: [], count: nil, ls: :absent, exists?: false}
+06:17:04.423 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:17:04.428 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:17:04.435 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:17:04.442 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.2 seconds (0.00s async, 0.2s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 449780, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 114}]
+
+CX_SNAPMECH cwd="/home/jes/sol-snapshot-fresh/wt/apps/commonplace_cli" configured="tmp/test_data" configured_read=%{compact: [], count: 1, ls: {:ok, ["node_id"]}, exists?: true} commit_store_pid=#PID<0.8532.0> commit_store_state_shape={true, [:data_dir, :db, :invariant_dispatcher, :local_write_gate, :lock_ref, :name, :pending_imports, :queue_poller, :trust_side_store]} cubdb_pid=#PID<0.8535.0> cubdb_state_shape=CubDB.State cubdb_data_dir="tmp/test_data/commits" cubdb_read=%{compact: [], count: nil, ls: :absent, exists?: false}
+06:17:04.453 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:17:04.459 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:17:04.466 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:17:04.491 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.04 seconds (0.00s async, 0.04s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 500593, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 114}]
+
+CX_SNAPMECH cwd="/home/jes/sol-snapshot-fresh/wt/apps/commonplace_cli" configured="tmp/test_data" configured_read=%{compact: [], count: 1, ls: {:ok, ["node_id"]}, exists?: true} commit_store_pid=#PID<0.8532.0> commit_store_state_shape={true, [:data_dir, :db, :invariant_dispatcher, :local_write_gate, :lock_ref, :name, :pending_imports, :queue_poller, :trust_side_store]} cubdb_pid=#PID<0.8535.0> cubdb_state_shape=CubDB.State cubdb_data_dir="tmp/test_data/commits" cubdb_read=%{compact: [], count: nil, ls: :absent, exists?: false}
+06:17:04.505 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:17:04.512 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:17:04.517 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:17:04.527 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.03 seconds (0.00s async, 0.03s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 534959, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 114}]
+
+CX_SNAPMECH cwd="/home/jes/sol-snapshot-fresh/wt/apps/commonplace_cli" configured="tmp/test_data" configured_read=%{compact: [], count: 1, ls: {:ok, ["node_id"]}, exists?: true} commit_store_pid=#PID<0.8532.0> commit_store_state_shape={true, [:data_dir, :db, :invariant_dispatcher, :local_write_gate, :lock_ref, :name, :pending_imports, :queue_poller, :trust_side_store]} cubdb_pid=#PID<0.8535.0> cubdb_state_shape=CubDB.State cubdb_data_dir="tmp/test_data/commits" cubdb_read=%{compact: [], count: nil, ls: :absent, exists?: false}
+06:17:04.543 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:17:04.552 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:17:04.562 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:17:04.578 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.05 seconds (0.00s async, 0.05s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 590726, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 114}]
+
+CX_SNAPMECH cwd="/home/jes/sol-snapshot-fresh/wt/apps/commonplace_cli" configured="tmp/test_data" configured_read=%{compact: [], count: 1, ls: {:ok, ["node_id"]}, exists?: true} commit_store_pid=#PID<0.8532.0> commit_store_state_shape={true, [:data_dir, :db, :invariant_dispatcher, :local_write_gate, :lock_ref, :name, :pending_imports, :queue_poller, :trust_side_store]} cubdb_pid=#PID<0.8535.0> cubdb_state_shape=CubDB.State cubdb_data_dir="tmp/test_data/commits" cubdb_read=%{compact: [], count: nil, ls: :absent, exists?: false}
+06:17:04.595 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:17:04.604 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:17:04.614 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:17:04.631 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.05 seconds (0.00s async, 0.05s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 644210, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 114}]
+
+CX_SNAPMECH cwd="/home/jes/sol-snapshot-fresh/wt/apps/commonplace_cli" configured="tmp/test_data" configured_read=%{compact: [], count: 1, ls: {:ok, ["node_id"]}, exists?: true} commit_store_pid=#PID<0.8532.0> commit_store_state_shape={true, [:data_dir, :db, :invariant_dispatcher, :local_write_gate, :lock_ref, :name, :pending_imports, :queue_poller, :trust_side_store]} cubdb_pid=#PID<0.8535.0> cubdb_state_shape=CubDB.State cubdb_data_dir="tmp/test_data/commits" cubdb_read=%{compact: [], count: nil, ls: :absent, exists?: false}
+06:17:04.649 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:17:04.655 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:17:04.665 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:17:04.679 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+.
+Finished in 0.04 seconds (0.00s async, 0.04s sync)
+3 tests, 0 failures, 2 excluded
+Running ExUnit with seed: 689518, max_cases: 8
+Excluding tags: [:test]
+Including tags: [location: {"test/commonplace/cli/snapshot_test.exs", 114}]
+
+CX_SNAPMECH cwd="/home/jes/sol-snapshot-fresh/wt/apps/commonplace_cli" configured="tmp/test_data" configured_read=%{compact: [], count: 1, ls: {:ok, ["node_id"]}, exists?: true} commit_store_pid=#PID<0.8532.0> commit_store_state_shape={true, [:data_dir, :db, :invariant_dispatcher, :local_write_gate, :lock_ref, :name, :pending_imports, :queue_poller, :trust_side_store]} cubdb_pid=#PID<0.8535.0> cubdb_state_shape=CubDB.State cubdb_data_dir="tmp/test_data/commits" cubdb_read=%{compact: [], count: nil, ls: :absent, exists?: false}
+06:17:04.698 [error] local node self-trust was not added: node signing public-key artifact is absent — continuing with configured trusted identities
+06:17:04.704 [error] GenServer #PID<0.8535.0> terminating
+** (MatchError) no match of right hand side value: {:error, :enoent}
+    (cubdb 2.0.2) lib/cubdb.ex:1499: CubDB.trigger_compaction/1
+    (cubdb 2.0.2) lib/cubdb.ex:1523: CubDB.do_compact/1
+    (cubdb 2.0.2) lib/cubdb.ex:1358: CubDB.handle_call/3
+    (stdlib 6.2.2.3) gen_server.erl:2381: :gen_server.try_handle_call/4
+    (stdlib 6.2.2.3) gen_server.erl:2410: :gen_server.handle_msg/6
+    (stdlib 6.2.2.3) proc_lib.erl:329: :proc_lib.init_p_do_apply/3
+Last message (from Commonplace.Store.CommitStore): {:commit_transaction, %CubDB.Tx{btree: %CubDB.Btree{root: {:b, [{{:commit, <<5, 13, 176, 34, 212, 1, 220, 180, 58, 105, 164, 29, 74, 171, 76, 100, 41, 50, 87, 72, 242, 242, 71, 119, 17, 250, 108, 19, 105, 124, 142, 160>>}, 188265}, {{:commit, <<165, 211, 142, 82, 139, 111, 183, 16, 226, 0, 128, 214, 15, 220, 80, 78, 44, 248, 235, 219, 118, 231, 130, 205, 148, 162, 152, 205, 165, 199, 107, 161>>}, 212492}, {{:latest, "75c2346b-a25b-43b1-8ccb-c68469ec4ead"}, 209602}, {{:doc_commit, "ac361fc1-cb1f-4ec8-a05a-168a3c46ad27", <<244, 139, 185, 238, 140, 100, 21, 148, 85, 25, 124, 87, 4, 179, 57, 230, 241, 132, 199, 48, 192, 38, 55, 108, 154, 20, 111, 55, 98, 146, 116, 180>>}, 140964}]}, root_loc: 213751, size: 90, dirt: 103, store: %CubDB.Store.File{pid: #PID<0.8536.0>, file_path: "tmp/test_data/commits/0.cub"}, capacity: 32}, compacting: false, owner: {#PID<0.8532.0>, #Reference<0.3579115979.4187488258.159932>}, db: #PID<0.8535.0>, recompact: false}}
+06:17:04.737 [error] GenServer #PID<0.8538.0> terminating
+** (MatchError) no match of right hand side value: {:error, :enoent}
+    (cubdb 2.0.2) lib/cubdb.ex:1499: CubDB.trigger_compaction/1
+    (cubdb 2.0.2) lib/cubdb.ex:1523: CubDB.do_compact/1
+    (cubdb 2.0.2) lib/cubdb.ex:1358: CubDB.handle_call/3
+    (stdlib 6.2.2.3) gen_server.erl:2381: :gen_server.try_handle_call/4
+    (stdlib 6.2.2.3) gen_server.erl:2410: :gen_server.handle_msg/6
+    (stdlib 6.2.2.3) proc_lib.erl:329: :proc_lib.init_p_do_apply/3
+Last message: {:EXIT, #PID<0.8535.0>, {{:badmatch, {:error, :enoent}}, [{CubDB, :trigger_compaction, 1, [file: ~c"lib/cubdb.ex", line: 1499]}, {CubDB, :do_compact, 1, [file: ~c"lib/cubdb.ex", line: 1523]}, {CubDB, :handle_call, 3, [file: ~c"lib/cubdb.ex", line: 1358]}, {:gen_server, :try_handle_call, 4, [file: ~c"gen_server.erl", line: 2381]}, {:gen_server, :handle_msg, 6, [file: ~c"gen_server.erl", line: 2410]}, {:proc_lib, :init_p_do_apply, 3, [file: ~c"proc_lib.erl", line: 329]}]}}
+
+
+  1) test snapshot command writes a snapshot commit for the resolved doc (Commonplace.CLI.SnapshotTest)
+     apps/commonplace_cli/test/commonplace/cli/snapshot_test.exs:114
+     ** (exit) exited in: GenServer.call(Commonplace.Store.CommitStore, {:create_commit, "61792c23-9df1-4d02-8652-8a90c2d09a3c", <<1, 3, 153, 206, 209, 159, 2, 0, 40, 1, 4, 114, 111, 111, 116, 5, 95, 116, 121, 112, 101, 1, 119, 4, 116, 101, 120, 116, 40, 1, 4, 114, 111, 111, 116, 5, 95, 110, 97, 109, 101, 1, 119, 9, 110, 111, 116, ...>>, nil, %{}, []}, 5000)
+         ** (EXIT) an exception was raised:
+             ** (MatchError) no match of right hand side value: {:error, :enoent}
+                 (cubdb 2.0.2) lib/cubdb.ex:1499: CubDB.trigger_compaction/1
+                 (cubdb 2.0.2) lib/cubdb.ex:1523: CubDB.do_compact/1
+                 (cubdb 2.0.2) lib/cubdb.ex:1358: CubDB.handle_call/3
+                 (stdlib 6.2.2.3) gen_server.erl:2381: :gen_server.try_handle_call/4
+                 (stdlib 6.2.2.3) gen_server.erl:2410: :gen_server.handle_msg/6
+                 (stdlib 6.2.2.3) proc_lib.erl:329: :proc_lib.init_p_do_apply/3
+     stacktrace:
+       (elixir 1.18.4) lib/gen_server.ex:1128: GenServer.call/3
+       test/commonplace/cli/snapshot_test.exs:84: Commonplace.CLI.SnapshotTest.__ex_unit_setup_0/1
+       test/commonplace/cli/snapshot_test.exs:1: Commonplace.CLI.SnapshotTest.__ex_unit__/2
+
+
+Finished in 0.04 seconds (0.00s async, 0.04s sync)
+3 tests, 1 failure, 2 excluded
+INVOCATION_EXIT=2

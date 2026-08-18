@@ -1,0 +1,21 @@
+WORKTREE_STORE:
+d tmp/test_data
+d tmp/test_data/commits
+d tmp/test_data/secrets
+f tmp/test_data/commits.lock
+f tmp/test_data/commits/0.cub
+f tmp/test_data/node_id
+f tmp/test_data/node_signing_key
+f tmp/test_data/node_signing_public_keys.json
+f tmp/test_data/secrets/0.cub
+APP_STORE:
+d apps/commonplace_cli/tmp/test_data
+d apps/commonplace_cli/tmp/test_data/commits
+f apps/commonplace_cli/tmp/test_data/commits.lock
+f apps/commonplace_cli/tmp/test_data/commits/0.cub
+f apps/commonplace_cli/tmp/test_data/node_id
+BOOT_ARTIFACTS:
+apps/commonplace_cli/tmp/test_data/node_id
+tmp/test_data/node_id
+tmp/test_data/node_signing_key
+tmp/test_data/node_signing_public_keys.json
