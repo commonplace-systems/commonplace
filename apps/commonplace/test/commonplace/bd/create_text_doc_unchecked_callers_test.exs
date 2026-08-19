@@ -42,13 +42,13 @@ defmodule Commonplace.Bd.CreateTextDocUncheckedCallersTest do
 
     assert MapSet.member?(
              checked,
-             {"apps/commonplace/lib/commonplace/bd/comment.ex", 182}
+             {"apps/commonplace/lib/commonplace/bd/comment.ex", 186}
            ),
            "the wrapped Commonplace.Bd.Schemas call was not resolved"
 
     assert MapSet.member?(
              checked,
-             {"apps/commonplace/lib/commonplace/bd/schemas.ex", 676}
+             {"apps/commonplace/lib/commonplace/bd/schemas.ex", 683}
            ),
            "the unqualified self-call inside Commonplace.Bd.Schemas was not resolved"
 
