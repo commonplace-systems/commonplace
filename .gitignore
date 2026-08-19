@@ -66,3 +66,6 @@ workspace/
 # bin/cp-verify-deploy, bin/tix-migrate, bin/tix-drift). Runtime artifacts of
 # running a diagnostic, never content.
 .*.lock
+
+# state-render cron scratch (boss-clod hourly projection probes) — never track
+.commonplace-state/.state-render.*/
