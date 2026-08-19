@@ -53,15 +53,50 @@ if [[ ${#changed[@]} -eq 0 ]]; then
   exit 2
 fi
 
+# FROZEN MEASUREMENT ARTIFACTS — exempt from the format gate BY NAME, ruled by
+# commonplace-plan 2026-08-19 ("freeze-exclude the 5, format the 2").
+# These are the I5 identity-slice measurement records: reformatting a frozen
+# measurement record mutates the artifact the measurement is the record OF.
+# The exemption is thing-keyed (what the file IS), not observer-keyed; a skip
+# is PRINTED, never silent; and any file NOT on this list still reds the gate.
+# A .formatter.exs inputs exclusion cannot do this job: this script passes
+# changed files to `mix format` EXPLICITLY, and explicit file args are checked
+# regardless of inputs (measured 2026-08-19 on the census that found these).
+# ⛔ GROWTH RULE (plan's condition ①, the ratchet's rule transplanted): this
+# list grows ONLY with a freeze reason cited in the adding commit — adding a
+# file here is FREEZING A NEW RECORD, a reviewable act, not an edit.
+FROZEN_ARTIFACTS=(
+  docs/measurements/i5-scripts/a.exs
+  docs/measurements/i5-scripts/b.exs
+  docs/measurements/i5-scripts/c.exs
+  docs/measurements/i5-scripts/d.exs
+  docs/measurements/i5-scripts/lib.exs
+)
+
 elixir_files=()
+skipped_frozen=()
 for path in "${changed[@]}"; do
   case "$path" in
-    *.ex|*.exs) elixir_files+=("$path") ;;
+    *.ex|*.exs)
+      frozen=0
+      for f in "${FROZEN_ARTIFACTS[@]}"; do
+        if [[ "$path" == "$f" ]]; then frozen=1; break; fi
+      done
+      if [[ $frozen -eq 1 ]]; then
+        skipped_frozen+=("$path")
+      else
+        elixir_files+=("$path")
+      fi
+      ;;
   esac
 done
 
 echo "$name: comparison $base -> $head"
 echo "$name: ${#changed[@]} changed file(s); ${#elixir_files[@]} tracked .ex/.exs file(s) selected"
+if [[ ${#skipped_frozen[@]} -gt 0 ]]; then
+  echo "$name: SKIPPED ${#skipped_frozen[@]} frozen measurement artifact(s) by name (plan ruling 2026-08-19):"
+  printf '  frozen: %s\n' "${skipped_frozen[@]}"
+fi
 
 if [[ ${#elixir_files[@]} -eq 0 ]]; then
   echo "$name: checked 0 files — the known diff contains no tracked .ex/.exs files"

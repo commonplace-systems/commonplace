@@ -132,7 +132,12 @@ end
 docs = 200
 
 for i <- 1..warmup do
-  Commonplace.Store.CommitStore.create_chained_commit(store, "bench-spread-#{rem(i, docs)}", payload, %{})
+  Commonplace.Store.CommitStore.create_chained_commit(
+    store,
+    "bench-spread-#{rem(i, docs)}",
+    payload,
+    %{}
+  )
 end
 
 report.("spread-#{docs}-docs", measure.(fn i -> "bench-spread-#{rem(i, docs)}" end))
@@ -145,8 +150,11 @@ report.("spread-#{docs}-docs", measure.(fn i -> "bench-spread-#{rem(i, docs)}" e
 # busy.
 if System.get_env("BENCH_MODES") == "spread" do
   IO.puts("(single-doc mode skipped: BENCH_MODES=spread)")
+
   if dispatcher_pid do
-    IO.inspect(Commonplace.Invariants.Dispatcher.status(dispatcher_name), label: "dispatcher status")
+    IO.inspect(Commonplace.Invariants.Dispatcher.status(dispatcher_name),
+      label: "dispatcher status"
+    )
   end
 
   File.rm_rf!(dir)
@@ -165,7 +173,9 @@ end
 report.("single-doc", measure.(fn _ -> "bench-doc-0000" end))
 
 if dispatcher_pid do
-  IO.inspect(Commonplace.Invariants.Dispatcher.status(dispatcher_name), label: "dispatcher status")
+  IO.inspect(Commonplace.Invariants.Dispatcher.status(dispatcher_name),
+    label: "dispatcher status"
+  )
 end
 
 File.rm_rf!(dir)
