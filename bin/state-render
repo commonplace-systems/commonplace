@@ -50,7 +50,12 @@ fi
 
 mkdir -p "$TARGET_ROOT/.commonplace-state"
 RAW_INPUT=""
-TMP_DIR="$(mktemp -d "$TARGET_ROOT/.commonplace-state/.state-render.XXXXXX")"
+# Scratch lives OUTSIDE the repo: a run killed before its cleanup trap fires
+# (measured: an OOM-killed run left .state-render.R5uxmF/ behind, 2026-08-18)
+# would otherwise strand an untracked .exs inside the working tree, where a
+# glob `git add` can sweep it into an unrelated commit — which happened at
+# 76cda3ab and redded CI. .commonplace-state/ keeps only the intended outputs.
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/state-render.XXXXXX")"
 cleanup() { rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
 
