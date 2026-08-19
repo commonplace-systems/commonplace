@@ -2,6 +2,7 @@ defmodule Commonplace.CLI.Init do
   @moduledoc "Initialize a new commonplace workspace."
 
   alias Commonplace.CLI
+  alias Commonplace.Sync.CheckoutRegistry
 
   def run(data_dir, args) do
     if CLI.root_uuid(data_dir) do
@@ -21,6 +22,15 @@ defmodule Commonplace.CLI.Init do
 
     {:ok, %{root_uuid: root_uuid}} =
       Commonplace.Workspace.initialize(data_dir, profile: profile)
+
+    {:ok, registry} =
+      CheckoutRegistry.start_link(
+        config_path: Path.join(data_dir, "checkouts.json"),
+        store: Commonplace.Store.CommitStore
+      )
+
+    {:ok, _checkout} =
+      CheckoutRegistry.register(registry, Path.dirname(data_dir), root_uuid, :dir)
 
     IO.puts("Initialized commonplace workspace at #{data_dir}")
     IO.puts("Root: #{root_uuid}")

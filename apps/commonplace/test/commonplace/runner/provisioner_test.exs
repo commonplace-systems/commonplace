@@ -123,6 +123,13 @@ defmodule Commonplace.Runner.ProvisionerTest do
     end)
   end
 
+  test "birth leaves checkout registration to a lifetime owner above the core seam", ctx do
+    assert {:ok, pod} =
+             Provisioner.provision(valid_manifest(ctx), profile(), provision_opts(ctx))
+
+    refute File.exists?(Path.join(pod.data_dir, "checkouts.json"))
+  end
+
   test "enforce-from-birth assertion refuses permissive and names the posture field" do
     permissive = %{
       accept_unsigned: true,

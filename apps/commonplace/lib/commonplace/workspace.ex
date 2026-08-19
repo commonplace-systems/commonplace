@@ -24,7 +24,6 @@ defmodule Commonplace.Workspace do
 
   alias Commonplace.Crypto.NodeIdentity
   alias Commonplace.Store.CommitStoreClient
-  alias Commonplace.Sync.CheckoutRegistry
   alias Commonplace.Tree.Schema
 
   @doc """
@@ -34,18 +33,15 @@ defmodule Commonplace.Workspace do
   The commit store must already be running against `data_dir`. Creating the
   root commit before writing the `root` prior-world marker is intentional: the
   normal commit builder mints and publishes the node signing identity while
-  this is still a genuine first boot. The returned checkout registry is linked
-  to the caller, matching the CLI command's lifetime.
+  this is still a genuine first boot.
 
-  Tests may supply a store pid/name and a contained checkout directory while
-  exercising this same path; production init uses the normal store client and
-  the directory containing `.commonplace`.
+  Tests may supply a store pid/name while exercising this same path; production
+  init uses the normal store client.
   """
   @spec initialize(Path.t(), keyword()) ::
-          {:ok, %{root_uuid: String.t(), checkout_registry: pid()}} | {:error, term()}
+          {:ok, %{root_uuid: String.t()}} | {:error, term()}
   def initialize(data_dir, opts \\ []) when is_binary(data_dir) do
     store = Keyword.get(opts, :store, Commonplace.Store.CommitStore)
-    checkout_dir = Keyword.get(opts, :checkout_dir, Path.dirname(data_dir))
     profile = Keyword.get(opts, :profile, :default)
     validate_profile!(profile)
     root_uuid = UUID.uuid4()
@@ -59,7 +55,7 @@ defmodule Commonplace.Workspace do
       end
 
     with {:ok, node_context} <- node_context_result do
-      initialize_root(data_dir, checkout_dir, store, root_uuid, update, node_context)
+      initialize_root(data_dir, store, root_uuid, update, node_context)
     end
   end
 
@@ -87,20 +83,13 @@ defmodule Commonplace.Workspace do
     end
   end
 
-  defp initialize_root(data_dir, checkout_dir, store, root_uuid, update, node_context) do
+  defp initialize_root(data_dir, store, root_uuid, update, node_context) do
     case CommitStoreClient.create_chained_commit(store, root_uuid, update, %{},
            signing_context: node_context
          ) do
       %Commonplace.Store.Commit{} ->
-        with :ok <- File.write(Path.join(data_dir, "root"), root_uuid),
-             {:ok, registry} <-
-               CheckoutRegistry.start_link(
-                 config_path: Path.join(data_dir, "checkouts.json"),
-                 store: store
-               ),
-             {:ok, _checkout} <-
-               CheckoutRegistry.register(registry, checkout_dir, root_uuid, :dir) do
-          {:ok, %{root_uuid: root_uuid, checkout_registry: registry}}
+        with :ok <- File.write(Path.join(data_dir, "root"), root_uuid) do
+          {:ok, %{root_uuid: root_uuid}}
         end
 
       {:error, _reason} = error ->

@@ -6,7 +6,7 @@ defmodule Commonplace.Test.WorkspaceFixture do
   `:data_dir`, and pass that store here. The helper delegates to
   `Commonplace.Workspace.initialize/2`, the same function used by CLI `init`,
   so signing identity, published public keys, root/prior-world marker,
-  checkout metadata, and commit-store layout evolve together.
+  and commit-store layout evolve together.
   """
 
   @type degradation ::
@@ -24,8 +24,7 @@ defmodule Commonplace.Test.WorkspaceFixture do
 
     {:ok, initialized} =
       Commonplace.Workspace.initialize(data_dir,
-        store: store,
-        checkout_dir: checkout_dir
+        store: store
       )
 
     Enum.each(degradations, &degrade!(data_dir, &1))
