@@ -291,40 +291,35 @@ defmodule Commonplace.Runner.Provisioner do
          {:ok, initialized} <-
            Workspace.initialize(paths.data_dir,
              store: store,
-             checkout_dir: paths.checkout_dir,
              profile: profile,
              signing_context: signing_context
            ) do
-      try do
-        with :ok <- assert_enforcing_posture(resolved_posture(paths.data_dir)),
-             :ok <-
-               amend_root_entries(
-                 initialized.root_uuid,
-                 manifest,
-                 store,
-                 paths.data_dir,
-                 signing_context
-               ),
-             {:ok, born_manifest} <-
-               mint_birth_authority(
-                 initialized.root_uuid,
-                 manifest,
-                 principal_pubkey,
-                 store,
-                 signing_context
-               ),
-             {:ok, _stored} <-
-               Manifest.create(initialized.root_uuid, born_manifest, store,
-                 signing_context: signing_context
-               ),
-             {:ok, %{case: :stored}} <- Manifest.read(initialized.root_uuid, store) do
-          {:ok, %{root_uuid: initialized.root_uuid}}
-        else
-          {:error, {:invalid_manifest, _field, _reason}} = error -> error
-          {:error, reason} -> invalid("manifest", "workspace birth failed: #{inspect(reason)}")
-        end
-      after
-        GenServer.stop(initialized.checkout_registry)
+      with :ok <- assert_enforcing_posture(resolved_posture(paths.data_dir)),
+           :ok <-
+             amend_root_entries(
+               initialized.root_uuid,
+               manifest,
+               store,
+               paths.data_dir,
+               signing_context
+             ),
+           {:ok, born_manifest} <-
+             mint_birth_authority(
+               initialized.root_uuid,
+               manifest,
+               principal_pubkey,
+               store,
+               signing_context
+             ),
+           {:ok, _stored} <-
+             Manifest.create(initialized.root_uuid, born_manifest, store,
+               signing_context: signing_context
+             ),
+           {:ok, %{case: :stored}} <- Manifest.read(initialized.root_uuid, store) do
+        {:ok, %{root_uuid: initialized.root_uuid}}
+      else
+        {:error, {:invalid_manifest, _field, _reason}} = error -> error
+        {:error, reason} -> invalid("manifest", "workspace birth failed: #{inspect(reason)}")
       end
     else
       {:error, reason} ->

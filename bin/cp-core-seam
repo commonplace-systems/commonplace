@@ -33,11 +33,6 @@ APP_DIR="apps/commonplace"
 # THE DECLARED DEBT LIST — "referencing file -> referenced module", one per
 # line. Sorted; the comparison is exact.
 #
-#   workspace.ex -> Sync.CheckoutRegistry   Workspace.initialize_root
-#     registers the fresh checkout with the sync layer (lines ~97,102).
-#     Debt: either the registry is a core concern misplaced in sync/ (the
-#     Flock shape) or the registration belongs to a caller above the seam.
-#     Plan's CheckoutRegistry design look is queued on exactly this.
 #   tree/fork.ex -> Process.Config          maybe_filter_processes strips
 #     process docs on fork via Process.Config.filter_json_for_fork/1.
 #   tree/merge.ex -> Process.Config         the merge-side twin of fork's.
@@ -46,7 +41,6 @@ APP_DIR="apps/commonplace"
 DECLARED_DEBTS=$(cat <<'EOF' | sort
 lib/commonplace/tree/fork.ex -> Commonplace.Process.Config
 lib/commonplace/tree/merge.ex -> Commonplace.Process.Config
-lib/commonplace/workspace.ex -> Commonplace.Sync.CheckoutRegistry
 EOF
 )
 

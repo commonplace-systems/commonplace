@@ -1,7 +1,42 @@
 defmodule Commonplace.WorkspaceTest do
   use ExUnit.Case, async: false
 
+  alias Commonplace.Crypto.{Signing, SigningContext}
+  alias Commonplace.Store.{CommitStore, CommitStoreClient}
   alias Commonplace.Workspace
+
+  describe "initialize/2" do
+    test "creates the world and returns only its root UUID" do
+      data_dir =
+        Path.join(
+          System.tmp_dir!(),
+          "cp_workspace_initialize_#{System.unique_integer([:positive])}"
+        )
+
+      File.mkdir_p!(data_dir)
+      store = :"workspace_initialize_store_#{System.unique_integer([:positive])}"
+      start_supervised!({CommitStore, data_dir: data_dir, name: store})
+      {public_key, private_key} = Signing.generate_keypair()
+
+      signing_context = %SigningContext{
+        identity_uuid: UUID.uuid4(),
+        public_key: public_key,
+        private_key: private_key
+      }
+
+      on_exit(fn -> File.rm_rf!(data_dir) end)
+
+      assert {:ok, %{root_uuid: root_uuid} = initialized} =
+               Workspace.initialize(data_dir,
+                 store: store,
+                 signing_context: signing_context
+               )
+
+      assert Map.keys(initialized) == [:root_uuid]
+      assert File.read!(Path.join(data_dir, "root")) == root_uuid
+      assert {:ok, _root_commit} = CommitStoreClient.latest_commit(store, root_uuid)
+    end
+  end
 
   describe "root_uuid/0" do
     setup do
