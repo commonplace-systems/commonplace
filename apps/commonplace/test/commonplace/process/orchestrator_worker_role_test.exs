@@ -6,6 +6,7 @@ defmodule Commonplace.Process.OrchestratorWorkerRoleTest do
   alias Commonplace.Process.Orchestrator
 
   @refusal_name :worker_role_requires_strict_trust
+  @unknown_role_refusal_name :unrecognized_node_role
 
   setup do
     data_dir =
@@ -38,10 +39,26 @@ defmodule Commonplace.Process.OrchestratorWorkerRoleTest do
   test "declared worker role refuses to start with permissive trust" do
     Application.put_env(:commonplace, :node_role, :worker)
 
-    assert {:error, {@refusal_name, message}} = start_orchestrator()
+    {result, log} = with_log(fn -> start_orchestrator() end)
+
+    assert {:error, {@refusal_name, message}} = result
     assert message =~ "role=worker declared"
     assert message =~ "trust config permissive"
     assert message =~ "write trust.json or remove the role"
+    assert log =~ "role=worker declared"
+    assert log =~ "trust config permissive"
+    assert log =~ "write trust.json or remove the role"
+  end
+
+  test "unrecognized role refuses instead of taking the permissive warning arm" do
+    Application.put_env(:commonplace, :node_role, :wroker)
+
+    {result, log} = with_log(fn -> start_orchestrator() end)
+
+    assert {:error, {@unknown_role_refusal_name, message}} = result
+    assert message =~ "unrecognized node_role=:wroker"
+    assert log =~ "unrecognized node_role=:wroker"
+    refute log =~ "Orchestrator running with a permissive trust config"
   end
 
   test "declared worker role starts with explicit strict trust config", %{data_dir: data_dir} do

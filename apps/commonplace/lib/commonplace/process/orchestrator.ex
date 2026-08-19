@@ -190,9 +190,13 @@ defmodule Commonplace.Process.Orchestrator do
       # Worker status is only this positive declaration. Do not infer it
       # from the host, runtime environment, sandbox, or filesystem.
       {:worker, true} ->
+        Logger.error(@worker_permissive_refusal)
         {:stop, {:worker_role_requires_strict_trust, @worker_permissive_refusal}}
 
-      {_role, true} ->
+      {:worker, false} ->
+        :ok
+
+      {nil, true} ->
         Logger.warning(
           "Orchestrator running with a permissive trust config: declared processes " <>
             "(including code docs synced from peers) will auto-execute ungated. " <>
@@ -201,8 +205,15 @@ defmodule Commonplace.Process.Orchestrator do
 
         :ok
 
-      {_role, false} ->
+      {nil, false} ->
         :ok
+
+      {role, _accept_unsigned} ->
+        message =
+          "unrecognized node_role=#{inspect(role)}; expected nil or :worker — refusing to start."
+
+        Logger.error(message)
+        {:stop, {:unrecognized_node_role, message}}
     end
   end
 
