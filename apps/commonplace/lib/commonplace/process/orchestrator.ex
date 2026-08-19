@@ -110,11 +110,28 @@ defmodule Commonplace.Process.Orchestrator do
 
   @worker_permissive_refusal "role=worker declared and trust config permissive — write trust.json or remove the role."
 
-  defstruct [:root_uuid, :store, :interval, :processes, :current_config, :source_hashes, :started_at]
+  defstruct [
+    :root_uuid,
+    :store,
+    :interval,
+    :processes,
+    :current_config,
+    :source_hashes,
+    :started_at
+  ]
 
   defmodule ProcessInfo do
     @moduledoc "Info about a managed process."
-    defstruct [:pid, :mode, :sandbox_dir, :os_pid, :started_at, :scope_uuid, :wiring_info, :resolved_ports]
+    defstruct [
+      :pid,
+      :mode,
+      :sandbox_dir,
+      :os_pid,
+      :started_at,
+      :scope_uuid,
+      :wiring_info,
+      :resolved_ports
+    ]
   end
 
   # Unnamed by default (tests start ad-hoc instances); the supervised
@@ -152,7 +169,9 @@ defmodule Commonplace.Process.Orchestrator do
       {:ok, swept} = Commonplace.Process.Sweep.sweep_status_file(data_dir)
 
       if swept > 0 do
-        Logger.info("Orchestrator: swept #{swept} prior-generation process entr#{if swept == 1, do: "y", else: "ies"} before reconciling")
+        Logger.info(
+          "Orchestrator: swept #{swept} prior-generation process entr#{if swept == 1, do: "y", else: "ies"} before reconciling"
+        )
       end
 
       state = %__MODULE__{
@@ -190,9 +209,13 @@ defmodule Commonplace.Process.Orchestrator do
       # Worker status is only this positive declaration. Do not infer it
       # from the host, runtime environment, sandbox, or filesystem.
       {:worker, true} ->
+        Logger.error(@worker_permissive_refusal)
         {:stop, {:worker_role_requires_strict_trust, @worker_permissive_refusal}}
 
-      {_role, true} ->
+      {:worker, false} ->
+        :ok
+
+      {nil, true} ->
         Logger.warning(
           "Orchestrator running with a permissive trust config: declared processes " <>
             "(including code docs synced from peers) will auto-execute ungated. " <>
@@ -201,8 +224,15 @@ defmodule Commonplace.Process.Orchestrator do
 
         :ok
 
-      {_role, false} ->
+      {nil, false} ->
         :ok
+
+      {role, _accept_unsigned} ->
+        message =
+          "unrecognized node_role=#{inspect(role)}; expected nil or :worker — refusing to start."
+
+        Logger.error(message)
+        {:stop, {:unrecognized_node_role, message}}
     end
   end
 
@@ -214,16 +244,18 @@ defmodule Commonplace.Process.Orchestrator do
 
   @impl true
   def handle_call(:process_info, _from, state) do
-    info = Map.new(state.processes, fn {name, proc} ->
-      {name, %{
-        pid: proc.pid,
-        mode: proc.mode,
-        sandbox_dir: proc.sandbox_dir,
-        os_pid: get_os_pid(proc),
-        started_at: proc.started_at,
-        alive: Process.alive?(proc.pid)
-      }}
-    end)
+    info =
+      Map.new(state.processes, fn {name, proc} ->
+        {name,
+         %{
+           pid: proc.pid,
+           mode: proc.mode,
+           sandbox_dir: proc.sandbox_dir,
+           os_pid: get_os_pid(proc),
+           started_at: proc.started_at,
+           alive: Process.alive?(proc.pid)
+         }}
+      end)
 
     {:reply, info, state}
   end
@@ -392,9 +424,10 @@ defmodule Commonplace.Process.Orchestrator do
                 %{name: name, mode: config.mode}
               )
 
-              acc = %{acc |
-                processes: Map.put(acc.processes, name, info),
-                source_hashes: Map.put(acc.source_hashes, name, source_hash)
+              acc = %{
+                acc
+                | processes: Map.put(acc.processes, name, info),
+                  source_hashes: Map.put(acc.source_hashes, name, source_hash)
               }
 
               # CX-tdkq.12 (sweep completeness): record the start
@@ -439,14 +472,16 @@ defmodule Commonplace.Process.Orchestrator do
   # + :code.purge mechanic moves to SourceDoc, including the two-ETS-
   # table cache (round-1 audit (A) — no stale-entry leak).
   defp hot_reload_module(config, state) do
-    with {:ok, _source_code, source_hash, source_uuid} <- read_source_with_uuid(config.source, state),
+    with {:ok, _source_code, source_hash, source_uuid} <-
+           read_source_with_uuid(config.source, state),
          {:ok, _module} <- SourceDoc.compile(source_uuid, state.store) do
       {:ok, source_hash}
     end
   end
 
   defp start_process(%Config{mode: :elixir} = config, state) do
-    with {:ok, _source_code, source_hash, source_uuid} <- read_source_with_uuid(config.source, state),
+    with {:ok, _source_code, source_hash, source_uuid} <-
+           read_source_with_uuid(config.source, state),
          {:ok, _module} <- SourceDoc.compile(source_uuid, state.store) do
       module_name = module_for(config.name)
 
@@ -480,25 +515,29 @@ defmodule Commonplace.Process.Orchestrator do
       sandbox_uuid = config.scope_uuid || state.root_uuid
 
       # Resolve $secret:KEY references in env before passing to runner
-      resolved_env = case Commonplace.Store.SecretStore.resolve_env(config.env) do
-        {:ok, env} -> env
-        {:error, {:missing_secrets, names}} ->
-          Logger.warning("Process #{config.name}: missing secrets: #{inspect(names)}")
-          config.env
-      end
+      resolved_env =
+        case Commonplace.Store.SecretStore.resolve_env(config.env) do
+          {:ok, env} ->
+            env
 
-      {:ok, pid} = Commonplace.Process.SandboxExecRunner.start_link(
-        root_uuid: sandbox_uuid,
-        store: state.store,
-        command: config.command,
-        args: config.args,
-        name: config.name,
-        env: resolved_env,
-        identity_uuid: config.identity_uuid,
-        event_log_uuid: config.event_log_uuid,
-        capability_cid: config.capability_cid,
-        sync_interval: 50
-      )
+          {:error, {:missing_secrets, names}} ->
+            Logger.warning("Process #{config.name}: missing secrets: #{inspect(names)}")
+            config.env
+        end
+
+      {:ok, pid} =
+        Commonplace.Process.SandboxExecRunner.start_link(
+          root_uuid: sandbox_uuid,
+          store: state.store,
+          command: config.command,
+          args: config.args,
+          name: config.name,
+          env: resolved_env,
+          identity_uuid: config.identity_uuid,
+          event_log_uuid: config.event_log_uuid,
+          capability_cid: config.capability_cid,
+          sync_interval: 50
+        )
 
       Process.unlink(pid)
       {:ok, pid, nil}
@@ -576,19 +615,21 @@ defmodule Commonplace.Process.Orchestrator do
     entries = Schema.list_entries(dir_doc)
 
     # Check for __processes.json in this directory
-    local_configs = case Schema.get_entry(dir_doc, "__processes.json") do
-      {:ok, entry} -> parse_processes_doc(entry.node_id, dir_uuid, root_uuid, store)
-      :error -> []
-    end
+    local_configs =
+      case Schema.get_entry(dir_doc, "__processes.json") do
+        {:ok, entry} -> parse_processes_doc(entry.node_id, dir_uuid, root_uuid, store)
+        :error -> []
+      end
 
     # Recurse into subdirectories
-    sub_configs = Enum.flat_map(entries, fn entry ->
-      if entry.type == :dir do
-        collect_processes_recursive(entry.node_id, root_uuid, store)
-      else
-        []
-      end
-    end)
+    sub_configs =
+      Enum.flat_map(entries, fn entry ->
+        if entry.type == :dir do
+          collect_processes_recursive(entry.node_id, root_uuid, store)
+        else
+          []
+        end
+      end)
 
     local_configs ++ sub_configs
   end
@@ -655,14 +696,23 @@ defmodule Commonplace.Process.Orchestrator do
          {:ok, node_ctx} <- NodeIdentity.signing_context() do
       log_uuid = process_log_uuid(identity_uuid)
       claim = log_write_claim(log_uuid)
-      cid = Capability.new({node_ctx.identity_uuid, node_ctx.public_key},
-                           {identity_uuid, agent_ctx.public_key}, claim, nil).id
+
+      cid =
+        Capability.new(
+          {node_ctx.identity_uuid, node_ctx.public_key},
+          {identity_uuid, agent_ctx.public_key},
+          claim,
+          nil
+        ).id
 
       # Store only if genuinely absent — never unconditionally.
       cid =
         case CommitStoreClient.get_capability(store, cid) do
-          {:ok, _cap} -> cid
-          :none -> delegate_log_write(node_ctx, identity_uuid, agent_ctx.public_key, log_uuid, store)
+          {:ok, _cap} ->
+            cid
+
+          :none ->
+            delegate_log_write(node_ctx, identity_uuid, agent_ctx.public_key, log_uuid, store)
         end
 
       %{config | identity_uuid: identity_uuid, event_log_uuid: log_uuid, capability_cid: cid}
@@ -800,21 +850,23 @@ defmodule Commonplace.Process.Orchestrator do
       "pid" => System.pid(),
       "started_at" => DateTime.to_iso8601(state.started_at),
       "updated_at" => DateTime.to_iso8601(DateTime.utc_now()),
-      "processes" => Map.new(state.processes, fn {name, proc} ->
-        {name, %{
-          "mode" => to_string(proc.mode),
-          "sandbox_dir" => proc.sandbox_dir,
-          "os_pid" => get_os_pid(proc),
-          # CX-tdkq.12: the sweep's intra-VM handle on a prior
-          # generation's managed processes (they're unnamed+unlinked by
-          # design, so this file is the only way a restarted
-          # orchestrator can find them). Local-node pids only — exactly
-          # what sweep needs.
-          "beam_pid" => String.trim_leading(inspect(proc.pid), "#PID"),
-          "started_at" => DateTime.to_iso8601(proc.started_at),
-          "alive" => Process.alive?(proc.pid)
-        }}
-      end)
+      "processes" =>
+        Map.new(state.processes, fn {name, proc} ->
+          {name,
+           %{
+             "mode" => to_string(proc.mode),
+             "sandbox_dir" => proc.sandbox_dir,
+             "os_pid" => get_os_pid(proc),
+             # CX-tdkq.12: the sweep's intra-VM handle on a prior
+             # generation's managed processes (they're unnamed+unlinked by
+             # design, so this file is the only way a restarted
+             # orchestrator can find them). Local-node pids only — exactly
+             # what sweep needs.
+             "beam_pid" => String.trim_leading(inspect(proc.pid), "#PID"),
+             "started_at" => DateTime.to_iso8601(proc.started_at),
+             "alive" => Process.alive?(proc.pid)
+           }}
+        end)
     }
 
     File.write!(tmp_file, Jason.encode!(status, pretty: true))
@@ -858,7 +910,12 @@ defmodule Commonplace.Process.Orchestrator do
   end
 
   defp dispatch_to_processes(uuid, commit_id, _meta, state) do
-    Enum.each(state.processes, fn {name, %ProcessInfo{pid: pid, resolved_ports: resolved_ports, wiring_info: wiring_info}} ->
+    Enum.each(state.processes, fn {name,
+                                   %ProcessInfo{
+                                     pid: pid,
+                                     resolved_ports: resolved_ports,
+                                     wiring_info: wiring_info
+                                   }} ->
       if Process.alive?(pid) && resolved_ports && wiring_info do
         # Check if this uuid matches any blue input (including cyan-implied blue)
         blue_uuids = Map.get(wiring_info, :blue_uuids, MapSet.new())
