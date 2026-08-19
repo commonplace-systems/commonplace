@@ -37,18 +37,22 @@ defmodule Commonplace.Store.SnapshotParentAutostampTest do
     end
 
     test "returns metadata.snapshot_parent for :regular" do
-      reg = Commit.new("uuid-a", <<1, 2, 3>>, "parent-id", %{
-        kind: :regular,
-        snapshot_parent: "trust-root"
-      })
+      reg =
+        Commit.new("uuid-a", <<1, 2, 3>>, "parent-id", %{
+          kind: :regular,
+          snapshot_parent: "trust-root"
+        })
+
       assert Namespace.current_namespace(reg) == "trust-root"
     end
 
     test "returns metadata.snapshot_parent for :merge" do
-      m = Commit.new("uuid-a", <<1, 2, 3>>, "parent-id", %{
-        kind: :merge,
-        snapshot_parent: "trust-root"
-      })
+      m =
+        Commit.new("uuid-a", <<1, 2, 3>>, "parent-id", %{
+          kind: :merge,
+          snapshot_parent: "trust-root"
+        })
+
       assert Namespace.current_namespace(m) == "trust-root"
     end
 
@@ -81,7 +85,9 @@ defmodule Commonplace.Store.SnapshotParentAutostampTest do
       refute legacy.metadata[:kind] == :snapshot
       assert snap.metadata[:kind] == :snapshot
 
-      reg = CommitStore.create_chained_commit(store, uuid, update_from(1, "after"), %{kind: :regular})
+      reg =
+        CommitStore.create_chained_commit(store, uuid, update_from(1, "after"), %{kind: :regular})
+
       assert reg.metadata[:snapshot_parent] == snap.id
     end
 
@@ -101,10 +107,11 @@ defmodule Commonplace.Store.SnapshotParentAutostampTest do
 
       # Caller sets an (artificial) snapshot_parent — auto-stamp must not
       # overwrite it.
-      commit = CommitStore.create_commit(store, uuid, update_from(1, "a"), nil, %{
-        kind: :regular,
-        snapshot_parent: "explicit-parent"
-      })
+      commit =
+        CommitStore.create_commit(store, uuid, update_from(1, "a"), nil, %{
+          kind: :regular,
+          snapshot_parent: "explicit-parent"
+        })
 
       assert commit.metadata[:snapshot_parent] == "explicit-parent"
     end
@@ -191,14 +198,17 @@ defmodule Commonplace.Store.SnapshotParentAutostampTest do
       assert :ok = CommitStore.import_commit(store, legacy)
     end
 
-    test "a :regular commit WITH snapshot_parent and bootstrap-empty namespace still accepts", %{store: store} do
+    test "a :regular commit WITH snapshot_parent and bootstrap-empty namespace still accepts", %{
+      store: store
+    } do
       uuid = "bootstrap-still-ok"
       {:ok, genesis} = CommitStore.ensure_genesis(store, uuid)
 
-      good = Commit.new(uuid, update_from(7, "first"), genesis.id, %{
-        kind: :regular,
-        snapshot_parent: genesis.id
-      })
+      good =
+        Commit.new(uuid, update_from(7, "first"), genesis.id, %{
+          kind: :regular,
+          snapshot_parent: genesis.id
+        })
 
       assert :ok = CommitStore.import_commit(store, good)
     end

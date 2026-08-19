@@ -106,7 +106,10 @@ defmodule Commonplace.Sync.InodeTrackerTest do
   end
 
   describe "track_and_check" do
-    test "full flow: create shadow, atomic write, detect stale write", %{dir: dir, shadow_dir: shadow_dir} do
+    test "full flow: create shadow, atomic write, detect stale write", %{
+      dir: dir,
+      shadow_dir: shadow_dir
+    } do
       path = Path.join(dir, "tracked.txt")
       File.write!(path, "v1")
 

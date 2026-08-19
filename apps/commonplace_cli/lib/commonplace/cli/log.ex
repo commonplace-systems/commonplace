@@ -39,11 +39,14 @@ defmodule Commonplace.CLI.Log do
 
               Enum.each(log, fn commit ->
                 id_hex = Base.encode16(commit.id, case: :lower) |> String.slice(0, 12)
-                parent_hex = if commit.parent_id do
-                  Base.encode16(commit.parent_id, case: :lower) |> String.slice(0, 12)
-                else
-                  "(root)"
-                end
+
+                parent_hex =
+                  if commit.parent_id do
+                    Base.encode16(commit.parent_id, case: :lower) |> String.slice(0, 12)
+                  else
+                    "(root)"
+                  end
+
                 ts = DateTime.to_iso8601(commit.timestamp)
                 update_size = byte_size(commit.update)
 

@@ -73,7 +73,9 @@ defmodule Commonplace.MUD.VerbFollowsObjectTest do
 
     on_exit(fn ->
       restore = fn key, v ->
-        if is_nil(v), do: Application.delete_env(:commonplace, key), else: Application.put_env(:commonplace, key, v)
+        if is_nil(v),
+          do: Application.delete_env(:commonplace, key),
+          else: Application.put_env(:commonplace, key, v)
       end
 
       restore.(:data_dir, old_data_dir)
@@ -87,8 +89,18 @@ defmodule Commonplace.MUD.VerbFollowsObjectTest do
       pid -> GenServer.stop(pid)
     end
 
-    {:ok, bursar_pid} = Bursar.start_link(root_uuid: UUID.uuid4(), store: store, sweep_interval: 60_000)
-    on_exit(fn -> if Process.alive?(bursar_pid), do: (try do GenServer.stop(bursar_pid) catch (:exit, _ -> :ok) end) end)
+    {:ok, bursar_pid} =
+      Bursar.start_link(root_uuid: UUID.uuid4(), store: store, sweep_interval: 60_000)
+
+    on_exit(fn ->
+      if Process.alive?(bursar_pid),
+        do:
+          (try do
+             GenServer.stop(bursar_pid)
+           catch
+             (:exit, _ -> :ok)
+           end)
+    end)
 
     {:ok, node_ctx} = NodeIdentity.signing_context()
     {:ok, node_identity} = NodeIdentity.identity()

@@ -44,7 +44,6 @@ defmodule Commonplace.CLI.Cat do
   defp print_content(uuid) do
     case Commonplace.Tree.DocBuilder.reconstruct_doc(CommitStore, uuid) do
       {:ok, doc} ->
-
         case ContentType.get_type(doc) do
           nil ->
             if Yelixer.Doc.has_type?(doc, "text") do

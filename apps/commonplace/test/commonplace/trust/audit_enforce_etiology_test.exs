@@ -96,7 +96,10 @@ defmodule Commonplace.Trust.AuditEnforceEtiologyTest do
   defp restore(key, nil), do: Application.delete_env(:commonplace, key)
   defp restore(key, v), do: Application.put_env(:commonplace, key, v)
 
-  defp strict!, do: Application.put_env(:commonplace, :trust, %{accept_unsigned: false, trusted_identities: %{}})
+  defp strict!,
+    do:
+      Application.put_env(:commonplace, :trust, %{accept_unsigned: false, trusted_identities: %{}})
+
   defp enforce!, do: Application.put_env(:commonplace, :local_write_gate, :enforce)
 
   defp text_update(body) do
@@ -139,7 +142,10 @@ defmodule Commonplace.Trust.AuditEnforceEtiologyTest do
   #
   # This is the property the whole subsystem exists for, asserted in the
   # posture it exists for. Independent of WHICH mechanism kills it.
-  test "an enforce-mode denial is recorded in the substrate audit log", %{store: store, dispatcher: d} do
+  test "an enforce-mode denial is recorded in the substrate audit log", %{
+    store: store,
+    dispatcher: d
+  } do
     attach!(store, d)
     strict!()
     enforce!()
@@ -181,7 +187,9 @@ defmodule Commonplace.Trust.AuditEnforceEtiologyTest do
     logged = Enum.map(records, & &1["doc_uuid"])
 
     assert first in logged, "denial #1 unaudited. logged=#{inspect(logged)}"
-    assert second in logged, "denial #2 unaudited (the detach signature). logged=#{inspect(logged)}"
+
+    assert second in logged,
+           "denial #2 unaudited (the detach signature). logged=#{inspect(logged)}"
   end
 
   # ── Etiology 4: CX-oc30's mechanism, isolated ────────────────────────

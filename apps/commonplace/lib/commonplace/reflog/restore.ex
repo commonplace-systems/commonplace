@@ -461,7 +461,12 @@ defmodule Commonplace.Reflog.Restore do
   the freshly attached root.
   """
   @spec materialize_branch(GenServer.server(), String.t(), binary(), String.t(), keyword()) ::
-          {:ok, %{root_entry: String.t(), docs: non_neg_integer(), derivation_record: DerivationRecord.t()}}
+          {:ok,
+           %{
+             root_entry: String.t(),
+             docs: non_neg_integer(),
+             derivation_record: DerivationRecord.t()
+           }}
           | {:error, term()}
   def materialize_branch(
         store \\ CommitStoreClient,
@@ -595,12 +600,22 @@ defmodule Commonplace.Reflog.Restore do
     end)
   end
 
-  defp resolve_anchored_entry(_store, %Schema.Entry{type: :doc, node_id: node_id, name: name}, hex, acc) do
+  defp resolve_anchored_entry(
+         _store,
+         %Schema.Entry{type: :doc, node_id: node_id, name: name},
+         hex,
+         acc
+       ) do
     commit_id = Base.decode16!(hex, case: :lower)
     {:cont, {:ok, put_in(acc, [:files, name], {node_id, commit_id})}}
   end
 
-  defp resolve_anchored_entry(store, %Schema.Entry{type: :dir, node_id: node_id, name: name}, hex, acc) do
+  defp resolve_anchored_entry(
+         store,
+         %Schema.Entry{type: :dir, node_id: node_id, name: name},
+         hex,
+         acc
+       ) do
     commit_id = Base.decode16!(hex, case: :lower)
 
     case CommitStoreClient.get_commit(store, commit_id) do
@@ -622,9 +637,14 @@ defmodule Commonplace.Reflog.Restore do
   # remapped child uuids already exist in the store when the parent
   # schema references them — same ordering Fork uses. Returns
   # `{new_dir_uuid, doc_count}`.
-  defp materialize_anchored_tree(store, %{files: files, dirs: dirs, schema_commit_id: parent_id}, signing_opts) do
+  defp materialize_anchored_tree(
+         store,
+         %{files: files, dirs: dirs, schema_commit_id: parent_id},
+         signing_opts
+       ) do
     {schema, count} =
-      Enum.reduce(files, {Schema.new_schema(), 0}, fn {name, {doc_uuid, commit_id}}, {schema_acc, count_acc} ->
+      Enum.reduce(files, {Schema.new_schema(), 0}, fn {name, {doc_uuid, commit_id}},
+                                                      {schema_acc, count_acc} ->
         {new_uuid, added} = materialize_file(store, doc_uuid, commit_id, signing_opts)
         {Schema.add_file(schema_acc, name, new_uuid), count_acc + added}
       end)
@@ -713,7 +733,9 @@ defmodule Commonplace.Reflog.Restore do
 
   defp attach_to_root(store, root_uuid, name, new_root_uuid, signing_opts) do
     schema =
-      case DocBuilder.reconstruct_snapshot(store, root_uuid, client_id: WriterHand.for_doc(root_uuid)) do
+      case DocBuilder.reconstruct_snapshot(store, root_uuid,
+             client_id: WriterHand.for_doc(root_uuid)
+           ) do
         {:ok, doc} -> doc
         :none -> Schema.new_schema()
       end
@@ -983,7 +1005,9 @@ defmodule Commonplace.Reflog.Restore do
       old_paths
       |> MapSet.intersection(new_paths)
       |> Enum.sort()
-      |> Enum.map(fn path -> {path, entry_change(Map.fetch!(resolved, path), Map.fetch!(other, path))} end)
+      |> Enum.map(fn path ->
+        {path, entry_change(Map.fetch!(resolved, path), Map.fetch!(other, path))}
+      end)
       |> Enum.reject(fn {_path, kind} -> is_nil(kind) end)
 
     %{added: added, removed: removed, changed: changed}

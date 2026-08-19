@@ -18,6 +18,7 @@ defmodule Commonplace.MUD.RateLimitTest do
 
   setup do
     old = Application.get_env(:commonplace, :mud_rate_limit)
+
     on_exit(fn ->
       if is_nil(old),
         do: Application.delete_env(:commonplace, :mud_rate_limit),
@@ -204,8 +205,16 @@ defmodule Commonplace.MUD.RateLimitTest do
 
   # ---- cleanup: watch/1 reaps the session bucket on session-down ----
 
-  test "watch/1 reaps the per-session bucket + drop-counter when the session dies", %{principal: p} do
-    put_cfg(session_rate: 1, session_burst: 1, principal_rate: 1, principal_burst: 100_000, disconnect_after_drops: 100)
+  test "watch/1 reaps the per-session bucket + drop-counter when the session dies", %{
+    principal: p
+  } do
+    put_cfg(
+      session_rate: 1,
+      session_burst: 1,
+      principal_rate: 1,
+      principal_burst: 100_000,
+      disconnect_after_drops: 100
+    )
 
     session = spawn(fn -> Process.sleep(:infinity) end)
     RateLimit.watch(session)
@@ -234,8 +243,12 @@ defmodule Commonplace.MUD.RateLimitTest do
   # fixed, racy sleep.
   defp eventually(fun, retries \\ 100) do
     cond do
-      fun.() -> true
-      retries == 0 -> false
+      fun.() ->
+        true
+
+      retries == 0 ->
+        false
+
       true ->
         Process.sleep(10)
         eventually(fun, retries - 1)

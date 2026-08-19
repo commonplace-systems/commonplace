@@ -51,7 +51,9 @@ defmodule Commonplace.MUD.TakeTest do
 
     on_exit(fn ->
       restore = fn key, v ->
-        if is_nil(v), do: Application.delete_env(:commonplace, key), else: Application.put_env(:commonplace, key, v)
+        if is_nil(v),
+          do: Application.delete_env(:commonplace, key),
+          else: Application.put_env(:commonplace, key, v)
       end
 
       restore.(:data_dir, old_data_dir)
@@ -65,8 +67,18 @@ defmodule Commonplace.MUD.TakeTest do
       pid -> GenServer.stop(pid)
     end
 
-    {:ok, bursar_pid} = Bursar.start_link(root_uuid: UUID.uuid4(), store: store, sweep_interval: 60_000)
-    on_exit(fn -> if Process.alive?(bursar_pid), do: (try do GenServer.stop(bursar_pid) catch (:exit, _ -> :ok) end) end)
+    {:ok, bursar_pid} =
+      Bursar.start_link(root_uuid: UUID.uuid4(), store: store, sweep_interval: 60_000)
+
+    on_exit(fn ->
+      if Process.alive?(bursar_pid),
+        do:
+          (try do
+             GenServer.stop(bursar_pid)
+           catch
+             (:exit, _ -> :ok)
+           end)
+    end)
 
     {:ok, node_ctx} = NodeIdentity.signing_context()
     {:ok, node_identity} = NodeIdentity.identity()
@@ -168,9 +180,17 @@ defmodule Commonplace.MUD.TakeTest do
     {:ok, schema} = Schemas.load_dir_schema(parent_uuid, store)
     schema = Schema.add_directory(schema, name, child_uuid)
     update = Encoding.encode_update(schema)
-    {metadata, commit_opts} = SignedWrite.opts_for(parent_uuid, store: store, signing_context: signing_ctx)
 
-    case CommitStoreClient.create_chained_commit(store, parent_uuid, update, metadata, commit_opts) do
+    {metadata, commit_opts} =
+      SignedWrite.opts_for(parent_uuid, store: store, signing_context: signing_ctx)
+
+    case CommitStoreClient.create_chained_commit(
+           store,
+           parent_uuid,
+           update,
+           metadata,
+           commit_opts
+         ) do
       {:error, _} = err -> raise "seed write failed: #{inspect(err)}"
       _commit -> :ok
     end
@@ -180,9 +200,17 @@ defmodule Commonplace.MUD.TakeTest do
     {:ok, schema} = Schemas.load_dir_schema(parent_uuid, store)
     schema = Schema.add_file(schema, name, child_uuid)
     update = Encoding.encode_update(schema)
-    {metadata, commit_opts} = SignedWrite.opts_for(parent_uuid, store: store, signing_context: signing_ctx)
 
-    case CommitStoreClient.create_chained_commit(store, parent_uuid, update, metadata, commit_opts) do
+    {metadata, commit_opts} =
+      SignedWrite.opts_for(parent_uuid, store: store, signing_context: signing_ctx)
+
+    case CommitStoreClient.create_chained_commit(
+           store,
+           parent_uuid,
+           update,
+           metadata,
+           commit_opts
+         ) do
       {:error, _} = err -> raise "seed write failed: #{inspect(err)}"
       _commit -> :ok
     end
@@ -214,7 +242,11 @@ defmodule Commonplace.MUD.TakeTest do
 
     {taker_id, _taker_ctx} = fresh_identity()
 
-    assert :ok = Take.take(item, "widget.obj", room, inventory, taker_id, store: store, root_uuid: root)
+    assert :ok =
+             Take.take(item, "widget.obj", room, inventory, taker_id,
+               store: store,
+               root_uuid: root
+             )
 
     refute "widget.obj" in entry_names(store, room)
     assert "widget.obj" in entry_names(store, inventory)
@@ -224,7 +256,10 @@ defmodule Commonplace.MUD.TakeTest do
 
   # ---- 2. Fixed scenery ----
 
-  test "fixed object refuses take, no token transfer, item stays", %{store: store, node_ctx: node_ctx} do
+  test "fixed object refuses take, no token transfer, item stays", %{
+    store: store,
+    node_ctx: node_ctx
+  } do
     room = mk_room!(store, node_ctx)
     inventory = mk_inventory!(store, node_ctx)
     item = mk_object!(store, node_ctx, name: "statue", fixed: true)
@@ -267,8 +302,15 @@ defmodule Commonplace.MUD.TakeTest do
     {id_a, _} = fresh_identity()
     {id_b, _} = fresh_identity()
 
-    task_a = Task.async(fn -> Take.take(item, "gem", room, inv_a, id_a, store: store, root_uuid: root) end)
-    task_b = Task.async(fn -> Take.take(item, "gem", room, inv_b, id_b, store: store, root_uuid: root) end)
+    task_a =
+      Task.async(fn ->
+        Take.take(item, "gem", room, inv_a, id_a, store: store, root_uuid: root)
+      end)
+
+    task_b =
+      Task.async(fn ->
+        Take.take(item, "gem", room, inv_b, id_b, store: store, root_uuid: root)
+      end)
 
     result_a = Task.await(task_a)
     result_b = Task.await(task_b)
@@ -334,7 +376,8 @@ defmodule Commonplace.MUD.TakeTest do
 
     {taker_id, _} = fresh_identity()
 
-    assert {:error, :collision} = Take.take(item, "coin", room, inventory, taker_id, store: store, root_uuid: root)
+    assert {:error, :collision} =
+             Take.take(item, "coin", room, inventory, taker_id, store: store, root_uuid: root)
 
     # item entry unchanged in the room.
     assert "coin" in entry_names(store, room)
@@ -361,7 +404,8 @@ defmodule Commonplace.MUD.TakeTest do
 
     {taker_id, _} = fresh_identity()
 
-    assert {:error, :not_takeable_here} = Take.take(item, "trinket", room, inventory, taker_id, store: store)
+    assert {:error, :not_takeable_here} =
+             Take.take(item, "trinket", room, inventory, taker_id, store: store)
 
     assert "trinket" in entry_names(store, room)
     assert :available = BursarClient.query(Bursar, item)
@@ -395,7 +439,12 @@ defmodule Commonplace.MUD.TakeTest do
       signer_id: Signing.signer_id(taker_id, taker_sc.public_key)
     }
 
-    cmd = %Parser.Command{verb: "get", args: "crown from wooden box", argv: ["crown", "from", "wooden", "box"]}
+    cmd = %Parser.Command{
+      verb: "get",
+      args: "crown from wooden box",
+      argv: ["crown", "from", "wooden", "box"]
+    }
+
     assert {:reply, msg} = Verbs.dispatch(cmd, ctx)
     assert msg =~ "You get crown from wooden box."
 
@@ -433,7 +482,12 @@ defmodule Commonplace.MUD.TakeTest do
       signer_id: Signing.signer_id(taker_id, taker_sc.public_key)
     }
 
-    cmd = %Parser.Command{verb: "get", args: "crown from wooden box", argv: ["crown", "from", "wooden", "box"]}
+    cmd = %Parser.Command{
+      verb: "get",
+      args: "crown from wooden box",
+      argv: ["crown", "from", "wooden", "box"]
+    }
+
     assert {:error, msg} = Verbs.dispatch(cmd, ctx)
     assert msg =~ "is locked"
 
@@ -442,10 +496,11 @@ defmodule Commonplace.MUD.TakeTest do
     assert :available = BursarClient.query(Bursar, item)
   end
 
-  test "fixed-guard chokepoint: Take.take refuses a fixed item directly, bypassing the verb layer", %{
-    store: store,
-    node_ctx: node_ctx
-  } do
+  test "fixed-guard chokepoint: Take.take refuses a fixed item directly, bypassing the verb layer",
+       %{
+         store: store,
+         node_ctx: node_ctx
+       } do
     room = mk_room!(store, node_ctx)
     inventory = mk_inventory!(store, node_ctx)
     item = mk_object!(store, node_ctx, name: "statue2", fixed: true)
@@ -453,7 +508,8 @@ defmodule Commonplace.MUD.TakeTest do
 
     {taker_id, _} = fresh_identity()
 
-    assert {:error, :fixed} = Take.take(item, "statue2.obj", room, inventory, taker_id, store: store)
+    assert {:error, :fixed} =
+             Take.take(item, "statue2.obj", room, inventory, taker_id, store: store)
 
     assert "statue2.obj" in entry_names(store, room)
     refute "statue2.obj" in entry_names(store, inventory)
@@ -496,7 +552,12 @@ defmodule Commonplace.MUD.TakeTest do
     {taker_id, _} = fresh_identity()
 
     # Pre-fix this refused (:not_takeable_here); the item-keyed gate elevates.
-    assert :ok = Take.take(item, "vault key.obj", room, inventory, taker_id, store: store, root_uuid: root)
+    assert :ok =
+             Take.take(item, "vault key.obj", room, inventory, taker_id,
+               store: store,
+               root_uuid: root
+             )
+
     refute "vault key.obj" in entry_names(store, room)
     assert "vault key.obj" in entry_names(store, inventory)
     assert {:held, %{holder: ^taker_id}} = BursarClient.query(Bursar, item)
@@ -508,11 +569,12 @@ defmodule Commonplace.MUD.TakeTest do
   # or occupancy of its room). The item-keyed elevation ignores the source
   # container's chain state entirely, so a node-owned item in a re-chained
   # container is still takeable.
-  test "container-take elevates even when the container schema was re-chained by a non-node write", %{
-    store: store,
-    node_ctx: node_ctx,
-    root: root
-  } do
+  test "container-take elevates even when the container schema was re-chained by a non-node write",
+       %{
+         store: store,
+         node_ctx: node_ctx,
+         root: root
+       } do
     room = share!(store, root, mk_room!(store, node_ctx), node_ctx)
     inventory = mk_inventory!(store, node_ctx)
     container = mk_container!(store, node_ctx, name: "wooden box")
@@ -545,7 +607,12 @@ defmodule Commonplace.MUD.TakeTest do
       signer_id: Signing.signer_id(taker_id, taker_sc.public_key)
     }
 
-    cmd = %Parser.Command{verb: "get", args: "crown from wooden box", argv: ["crown", "from", "wooden", "box"]}
+    cmd = %Parser.Command{
+      verb: "get",
+      args: "crown from wooden box",
+      argv: ["crown", "from", "wooden", "box"]
+    }
+
     assert {:reply, msg} = Verbs.dispatch(cmd, ctx)
     assert msg =~ "You get crown from wooden box."
     refute "crown.obj" in entry_names(store, container)
@@ -580,7 +647,10 @@ defmodule Commonplace.MUD.TakeTest do
     {bob_id, _} = fresh_identity()
 
     assert {:error, :not_takeable_here} =
-             Take.take(item, "sword", alice.home, bob.inventory, bob_id, store: store, root_uuid: root)
+             Take.take(item, "sword", alice.home, bob.inventory, bob_id,
+               store: store,
+               root_uuid: root
+             )
 
     assert "sword" in entry_names(store, alice.home)
     assert :available = BursarClient.query(Bursar, item)
@@ -598,7 +668,10 @@ defmodule Commonplace.MUD.TakeTest do
     {alice_id, _} = fresh_identity()
 
     assert :ok =
-             Take.take(item, "trinket", alice.home, alice.inventory, alice_id, store: store, root_uuid: root)
+             Take.take(item, "trinket", alice.home, alice.inventory, alice_id,
+               store: store,
+               root_uuid: root
+             )
 
     refute "trinket" in entry_names(store, alice.home)
     assert "trinket" in entry_names(store, alice.inventory)
@@ -617,7 +690,9 @@ defmodule Commonplace.MUD.TakeTest do
     {taker_id, _} = fresh_identity()
 
     # No :root_uuid opt -> the location cannot be POSITIVELY classified -> refuse.
-    assert {:error, :not_takeable_here} = Take.take(item, "orb", room, inventory, taker_id, store: store)
+    assert {:error, :not_takeable_here} =
+             Take.take(item, "orb", room, inventory, taker_id, store: store)
+
     assert "orb" in entry_names(store, room)
     assert :available = BursarClient.query(Bursar, item)
   end

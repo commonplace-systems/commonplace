@@ -8,7 +8,9 @@ defmodule Commonplace.GitBridge.ExporterTest do
   alias Commonplace.Presence
 
   setup do
-    store_dir = Path.join(System.tmp_dir!(), "cp_gb_exporter_store_#{:rand.uniform(1_000_000_000)}")
+    store_dir =
+      Path.join(System.tmp_dir!(), "cp_gb_exporter_store_#{:rand.uniform(1_000_000_000)}")
+
     repo_dir = Path.join(System.tmp_dir!(), "cp_gb_exporter_repo_#{:rand.uniform(1_000_000_000)}")
     File.mkdir_p!(store_dir)
     File.mkdir_p!(repo_dir)
@@ -48,7 +50,10 @@ defmodule Commonplace.GitBridge.ExporterTest do
     CommitStore.create_commit(store, uuid, update, nil)
   end
 
-  test "exports text and map docs, skips __ / nosync / presence entries", %{store: store, repo_dir: dir} do
+  test "exports text and map docs, skips __ / nosync / presence entries", %{
+    store: store,
+    repo_dir: dir
+  } do
     create_text(store, "uuid-a", "a.txt", "hello world")
     create_map(store, "uuid-b", "b.json", %{"k" => "v", "z" => 1})
     create_text(store, "uuid-nosync", "nosync.txt", "should not appear")
@@ -120,7 +125,8 @@ defmodule Commonplace.GitBridge.ExporterTest do
       {"g", "7"}
     ]
 
-    doc = Enum.reduce(attrs, doc, fn {k, v}, acc -> XMLElement.set_attribute(acc, item_name, k, v) end)
+    doc =
+      Enum.reduce(attrs, doc, fn {k, v}, acc -> XMLElement.set_attribute(acc, item_name, k, v) end)
 
     doc = XMLElement.insert_child(doc, item_name, 0, :text)
     [{:text, text_name}] = XMLElement.children(doc, item_name)
@@ -182,7 +188,10 @@ defmodule Commonplace.GitBridge.ExporterTest do
     assert MapSet.member?(result.authors, signer_id)
   end
 
-  test "prunes files removed from previous_manifest but not the new manifest", %{store: store, repo_dir: dir} do
+  test "prunes files removed from previous_manifest but not the new manifest", %{
+    store: store,
+    repo_dir: dir
+  } do
     create_text(store, "uuid-a", "a.txt", "hello")
     root = Schema.new_schema() |> Schema.add_file("a.txt", "uuid-a")
     create_schema(store, "uuid-root", root)
@@ -200,10 +209,11 @@ defmodule Commonplace.GitBridge.ExporterTest do
     refute Map.has_key?(result2.manifest, "a.txt")
   end
 
-  test "never prunes .git or .commonplace even if their keys somehow appear in previous_manifest", %{
-    store: store,
-    repo_dir: dir
-  } do
+  test "never prunes .git or .commonplace even if their keys somehow appear in previous_manifest",
+       %{
+         store: store,
+         repo_dir: dir
+       } do
     File.mkdir_p!(Path.join(dir, ".git"))
     File.write!(Path.join(dir, ".git/HEAD"), "ref: refs/heads/main\n")
     File.mkdir_p!(Path.join(dir, ".commonplace"))
@@ -274,7 +284,10 @@ defmodule Commonplace.GitBridge.ExporterTest do
     assert File.read!(outside) == "precious"
   end
 
-  test "unrenderable content types are skipped with a warning, not written", %{store: store, repo_dir: dir} do
+  test "unrenderable content types are skipped with a warning, not written", %{
+    store: store,
+    repo_dir: dir
+  } do
     # XML doc: renders fine via the tuple-tree JSON rendering (documented
     # deviation), so use a doc with no commits to trigger the true skip path.
     root = Schema.new_schema() |> Schema.add_file("ghost.txt", "uuid-ghost-no-commits")

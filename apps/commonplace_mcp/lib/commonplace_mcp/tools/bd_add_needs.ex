@@ -60,8 +60,7 @@ defmodule Commonplace.MCP.Tools.BdAddNeeds do
         {:ok, :tree_mutation, details} ->
           fields = %{"ticket" => ticket, "needs" => details[:needs] || details["needs"]}
 
-          {:ok,
-           Response.text("Added edge: #{ticket} needs #{needs_ticket}.", fields)}
+          {:ok, Response.text("Added edge: #{ticket} needs #{needs_ticket}.", fields)}
 
         {:error, msg} when is_binary(msg) ->
           {:error, :invalid_params, msg}

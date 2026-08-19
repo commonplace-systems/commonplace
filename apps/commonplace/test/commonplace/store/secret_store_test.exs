@@ -4,12 +4,21 @@ defmodule Commonplace.Store.SecretStoreTest do
   alias Commonplace.Store.SecretStore
 
   setup do
-    dir = Path.join(System.tmp_dir!(), "cp_secrets_#{:rand.uniform(999999)}")
+    dir = Path.join(System.tmp_dir!(), "cp_secrets_#{:rand.uniform(999_999)}")
     File.mkdir_p!(dir)
-    {:ok, store} = SecretStore.start_link(data_dir: dir, name: :"secret_test_#{:rand.uniform(999999)}")
+
+    {:ok, store} =
+      SecretStore.start_link(data_dir: dir, name: :"secret_test_#{:rand.uniform(999_999)}")
 
     on_exit(fn ->
-      if Process.alive?(store), do: (try do GenServer.stop(store) catch (:exit, _ -> :ok) end)
+      if Process.alive?(store),
+        do:
+          (try do
+             GenServer.stop(store)
+           catch
+             (:exit, _ -> :ok)
+           end)
+
       File.rm_rf!(dir)
     end)
 

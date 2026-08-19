@@ -42,7 +42,7 @@ defmodule Mix.Tasks.Bots.Tail do
 
   use Mix.Task
 
-  @default_node :"botdemo@localhost"
+  @default_node :botdemo@localhost
   @default_cookie :"commonplace-bots-demo"
   @default_history 20
   @default_interval_ms 1_000

@@ -30,7 +30,11 @@ defmodule Commonplace.Presence.MailboxTest do
       result = Mailbox.log_uuid_for_identity("550e8400-e29b-41d4-a716-446655440000")
       assert is_binary(result)
       assert String.length(result) == 36
-      assert Regex.match?(~r/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/, result)
+
+      assert Regex.match?(
+               ~r/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+               result
+             )
     end
   end
 

@@ -80,7 +80,9 @@ defmodule Commonplace.CLI.Cap do
     with {:ok, verbs} <- parse_verbs(opts[:verbs]),
          {:ok, not_after} <- parse_ts(opts[:not_after]) do
       docs = (opts[:docs] || "") |> String.split(",", trim: true)
-      {:ok, %{verbs: verbs, scope: {:docs, docs}, caveats: %{not_before: nil, not_after: not_after}}}
+
+      {:ok,
+       %{verbs: verbs, scope: {:docs, docs}, caveats: %{not_before: nil, not_after: not_after}}}
     end
   end
 
@@ -91,7 +93,10 @@ defmodule Commonplace.CLI.Cap do
     |> String.split(",", trim: true)
     |> Enum.reduce_while({:ok, []}, fn v, {:ok, acc} ->
       atom = String.to_atom(v)
-      if atom in @verbs, do: {:cont, {:ok, [atom | acc]}}, else: {:halt, {:error, {:unknown_verb, v}}}
+
+      if atom in @verbs,
+        do: {:cont, {:ok, [atom | acc]}},
+        else: {:halt, {:error, {:unknown_verb, v}}}
     end)
     |> case do
       {:ok, list} -> {:ok, Enum.sort(list)}
@@ -227,7 +232,13 @@ defmodule Commonplace.CLI.Cap do
          # Step 1 (P3, design §5): mint + store the NEW cert FIRST — the
          # holder must never cross a deny-gap between old and new.
          {:ok, new_cap} <-
-           Capability.delegate(ctx, audience, claim, parent_cid, [parent: parent] ++ mint_opts(opts)),
+           Capability.delegate(
+             ctx,
+             audience,
+             claim,
+             parent_cid,
+             [parent: parent] ++ mint_opts(opts)
+           ),
          :ok <- CommitStoreClient.store_capability(CommitStoreClient, new_cap),
          # Step 2: ONLY THEN revoke the old cert.
          {:ok, rev} <- Capability.revoke(ctx, old_cid),
@@ -266,10 +277,11 @@ defmodule Commonplace.CLI.Cap do
          {:ok, priv} <- Base.decode64(enc_priv),
          {:ok, enc_pub} <- SecretStore.get("signing_pub:default"),
          {:ok, pub} <- Base.decode64(enc_pub) do
-      uuid = case SecretStore.get("signing_identity") do
-        {:ok, id} -> id
-        :not_found -> "anonymous"
-      end
+      uuid =
+        case SecretStore.get("signing_identity") do
+          {:ok, id} -> id
+          :not_found -> "anonymous"
+        end
 
       {:ok, %SigningContext{identity_uuid: uuid, private_key: priv, public_key: pub}}
     else

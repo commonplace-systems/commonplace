@@ -101,9 +101,10 @@ defmodule Commonplace.Black.QueryTest do
   end
 
   describe "pin honesty (b, the load-bearing one)" do
-    test "mutating a matched doc and adding a new match after the pin does not change an old-pin re-run", %{
-      store: store
-    } do
+    test "mutating a matched doc and adding a new match after the pin does not change an old-pin re-run",
+         %{
+           store: store
+         } do
       root = mint_root(store)
       inv1 = mint_map_file(store, root, "inv-1.json", %{"status" => "open"})
 
@@ -186,14 +187,21 @@ defmodule Commonplace.Black.QueryTest do
       refute "amount" in all_keys
     end
 
-    test "witness/2 with a signing_context mints a real signed doc and returns its uuid", %{store: store} do
+    test "witness/2 with a signing_context mints a real signed doc and returns its uuid", %{
+      store: store
+    } do
       root = mint_root(store)
       mint_map_file(store, root, "inv-1.json", %{"status" => "open"})
 
       {:ok, result} = Query.run(root, "*.json", store: store)
 
       {pub, priv} = Signing.generate_keypair()
-      sc = %SigningContext{identity_uuid: "test-witness-signer", private_key: priv, public_key: pub}
+
+      sc = %SigningContext{
+        identity_uuid: "test-witness-signer",
+        private_key: priv,
+        public_key: pub
+      }
 
       assert {:ok, witness_uuid} =
                Query.witness(result, query: "*.json", store: store, signing_context: sc)
@@ -241,9 +249,23 @@ defmodule Commonplace.Black.QueryTest do
          %{store: store} do
       root = mint_root(store)
       sub = UUID.uuid4()
-      CommitStore.create_commit(store, sub, Yelixer.Encoding.encode_update(Schema.new_schema()), nil)
+
+      CommitStore.create_commit(
+        store,
+        sub,
+        Yelixer.Encoding.encode_update(Schema.new_schema()),
+        nil
+      )
+
       root_doc = load_schema(store, root) |> Schema.add_directory("sub", sub)
-      CommitStore.create_commit(store, root, Yelixer.Encoding.encode_update(root_doc), latest(store, root))
+
+      CommitStore.create_commit(
+        store,
+        root,
+        Yelixer.Encoding.encode_update(root_doc),
+        latest(store, root)
+      )
+
       mint_map_file(store, sub, "inv-1.json", %{"status" => "open"})
 
       {:ok, result} = Query.run(root, "**/*.json", store: store, max_depth: 0)
@@ -307,14 +329,22 @@ defmodule Commonplace.Black.QueryTest do
       refute Map.has_key?(replay.pin, inv1)
     end
 
-    test "a directory not in the pin map resolves as empty (not present), never :latest", %{store: store} do
+    test "a directory not in the pin map resolves as empty (not present), never :latest", %{
+      store: store
+    } do
       root = mint_root(store)
       sub_uuid = UUID.uuid4()
       update = Yelixer.Encoding.encode_update(Schema.new_schema())
       CommitStore.create_commit(store, sub_uuid, update, nil)
 
       root_doc = load_schema(store, root) |> Schema.add_directory("sub", sub_uuid)
-      CommitStore.create_commit(store, root, Yelixer.Encoding.encode_update(root_doc), latest(store, root))
+
+      CommitStore.create_commit(
+        store,
+        root,
+        Yelixer.Encoding.encode_update(root_doc),
+        latest(store, root)
+      )
 
       mint_map_file(store, sub_uuid, "inv-1.json", %{"status" => "open"})
 

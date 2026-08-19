@@ -78,7 +78,9 @@ defmodule Commonplace.Bots.AutonomousRootTest do
       {:ok, _pid} =
         Supervisor.start_child(
           bots_sup,
-          Supervisor.child_spec({Commonplace.Bots.Dispatcher, []}, id: Commonplace.Bots.Dispatcher)
+          Supervisor.child_spec({Commonplace.Bots.Dispatcher, []},
+            id: Commonplace.Bots.Dispatcher
+          )
         )
 
       Application.put_env(:commonplace, :data_dir, old_data_dir || "tmp/test_data")
@@ -165,7 +167,8 @@ defmodule Commonplace.Bots.AutonomousRootTest do
     {prov, mud_ctx}
   end
 
-  defp tick(name), do: send(Process.whereis(Commonplace.Bots.Dispatcher), {:autonomous_tick, name})
+  defp tick(name),
+    do: send(Process.whereis(Commonplace.Bots.Dispatcher), {:autonomous_tick, name})
 
   defp tool_use(id, name, input) do
     %{

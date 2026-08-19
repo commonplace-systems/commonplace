@@ -147,6 +147,7 @@ defmodule Commonplace.View.ArgResolverTest do
       action = parse_action(xml)
 
       assert {:ok, resolved} = ArgResolver.resolve(action, %{}, %{})
+
       refute Map.has_key?(resolved, "user"),
              "nil from $session.X should drop arg, not insert nil"
     end

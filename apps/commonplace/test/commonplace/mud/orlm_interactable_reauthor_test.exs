@@ -36,7 +36,18 @@ defmodule Commonplace.MUD.OrlmInteractableReauthorTest do
   alias Commonplace.Crypto.{NodeIdentity, Signing, SigningContext}
   alias Commonplace.Document.ContentType
   alias Commonplace.Green.Bursar
-  alias Commonplace.MUD.{ChildMutation, Parser, Schemas, Sections, SignedWrite, VerbSource, Verbs, World}
+
+  alias Commonplace.MUD.{
+    ChildMutation,
+    Parser,
+    Schemas,
+    Sections,
+    SignedWrite,
+    VerbSource,
+    Verbs,
+    World
+  }
+
   alias Commonplace.MUD.Schemas.{Object, Room}
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.{DocBuilder, Schema}
@@ -67,11 +78,21 @@ defmodule Commonplace.MUD.OrlmInteractableReauthorTest do
 
     {root_pub, root_priv} = Signing.generate_keypair()
     root_identity = "orlm-root-#{n}"
-    root_ctx = %SigningContext{identity_uuid: root_identity, private_key: root_priv, public_key: root_pub}
+
+    root_ctx = %SigningContext{
+      identity_uuid: root_identity,
+      private_key: root_priv,
+      public_key: root_pub
+    }
 
     {editor_pub, editor_priv} = Signing.generate_keypair()
     editor_identity = "orlm-editor-#{n}"
-    editor_ctx = %SigningContext{identity_uuid: editor_identity, private_key: editor_priv, public_key: editor_pub}
+
+    editor_ctx = %SigningContext{
+      identity_uuid: editor_identity,
+      private_key: editor_priv,
+      public_key: editor_pub
+    }
 
     old_data_dir = Application.get_env(:commonplace, :data_dir)
     old_trust = Application.get_env(:commonplace, :trust)
@@ -90,7 +111,9 @@ defmodule Commonplace.MUD.OrlmInteractableReauthorTest do
 
     on_exit(fn ->
       restore = fn key, v ->
-        if is_nil(v), do: Application.delete_env(:commonplace, key), else: Application.put_env(:commonplace, key, v)
+        if is_nil(v),
+          do: Application.delete_env(:commonplace, key),
+          else: Application.put_env(:commonplace, key, v)
       end
 
       restore.(:data_dir, old_data_dir)
@@ -104,8 +127,18 @@ defmodule Commonplace.MUD.OrlmInteractableReauthorTest do
       pid -> GenServer.stop(pid)
     end
 
-    {:ok, bursar_pid} = Bursar.start_link(root_uuid: UUID.uuid4(), store: store, sweep_interval: 60_000)
-    on_exit(fn -> if Process.alive?(bursar_pid), do: (try do GenServer.stop(bursar_pid) catch (:exit, _ -> :ok) end) end)
+    {:ok, bursar_pid} =
+      Bursar.start_link(root_uuid: UUID.uuid4(), store: store, sweep_interval: 60_000)
+
+    on_exit(fn ->
+      if Process.alive?(bursar_pid),
+        do:
+          (try do
+             GenServer.stop(bursar_pid)
+           catch
+             (:exit, _ -> :ok)
+           end)
+    end)
 
     {:ok, node_ctx} = NodeIdentity.signing_context()
     {:ok, node_identity} = NodeIdentity.identity()
@@ -135,7 +168,16 @@ defmodule Commonplace.MUD.OrlmInteractableReauthorTest do
     {:ok, schema} = Schemas.load_dir_schema(parent, store)
     schema = Schema.add_directory(schema, name, child)
     {metadata, commit_opts} = SignedWrite.opts_for(parent, store: store, signing_context: sc)
-    _ = CommitStoreClient.create_chained_commit(store, parent, Encoding.encode_update(schema), metadata, commit_opts)
+
+    _ =
+      CommitStoreClient.create_chained_commit(
+        store,
+        parent,
+        Encoding.encode_update(schema),
+        metadata,
+        commit_opts
+      )
+
     :ok
   end
 
@@ -262,7 +304,12 @@ defmodule Commonplace.MUD.OrlmInteractableReauthorTest do
     assert meta_latest_signer(store, orrery) == node_identity
 
     # Visitor A spins the curated object → elevated to node → lands.
-    assert :ok = Verbs.dispatch(Parser.parse("spin orrery"), visitor_ctx(store, root, observatory, "ada"))
+    assert :ok =
+             Verbs.dispatch(
+               Parser.parse("spin orrery"),
+               visitor_ctx(store, root, observatory, "ada")
+             )
+
     assert spun_by(store, orrery) == "ada"
 
     # An AUTHORIZED non-node curator @descs the object (section cert over the
@@ -270,10 +317,17 @@ defmodule Commonplace.MUD.OrlmInteractableReauthorTest do
     {:ok, child} = World.meta_doc_uuid(orrery, Schemas.object_filename(), store)
 
     {:ok, cap} =
-      Sections.issue_section(root_ctx, {editor_identity, editor_pub}, [child], store: store, verbs: [:write])
+      Sections.issue_section(root_ctx, {editor_identity, editor_pub}, [child],
+        store: store,
+        verbs: [:write]
+      )
 
     assert :ok =
-             World.set_meta(orrery, Schemas.object_filename(), "description", "an ornate brass orrery",
+             World.set_meta(
+               orrery,
+               Schemas.object_filename(),
+               "description",
+               "an ornate brass orrery",
                store,
                signing_context: editor_ctx,
                cert_cids: [cap.id]
@@ -285,14 +339,25 @@ defmodule Commonplace.MUD.OrlmInteractableReauthorTest do
 
     # Visitor B spins the SAME still-curated object → STILL elevates (AXIS 1
     # reads the frozen genesis, AXIS 2 no-ops on the nil zone) → lands.
-    assert :ok = Verbs.dispatch(Parser.parse("spin orrery"), visitor_ctx(store, root, observatory, "boris"))
+    assert :ok =
+             Verbs.dispatch(
+               Parser.parse("spin orrery"),
+               visitor_ctx(store, root, observatory, "boris")
+             )
+
     assert spun_by(store, orrery) == "boris"
   end
 
   # ---- PIN 2: ISOLATED AXIS 2 — node-genesis object under players/ is vetoed --
 
   test "PIN 2 (ISOLATED AXIS 2): a node-genesis object zoned under players/ is NOT node-elevated for a visitor",
-       %{store: store, node_ctx: node_ctx, node_identity: node_identity, root: root, players: players} do
+       %{
+         store: store,
+         node_ctx: node_ctx,
+         node_identity: node_identity,
+         root: root,
+         players: players
+       } do
     # A player home zone-root under players/ (node-signed genesis, zone == self).
     {:ok, home} =
       ChildMutation.create_zone_root(
@@ -315,7 +380,9 @@ defmodule Commonplace.MUD.OrlmInteractableReauthorTest do
 
     # A visitor spins it → the elevation veto fires → the write is refused →
     # state never lands (no node-god-write onto a player-zoned object).
-    assert :ok = Verbs.dispatch(Parser.parse("spin trap"), visitor_ctx(store, root, home, "mallory"))
+    assert :ok =
+             Verbs.dispatch(Parser.parse("spin trap"), visitor_ctx(store, root, home, "mallory"))
+
     assert spun_by(store, trap) == nil
   end
 end

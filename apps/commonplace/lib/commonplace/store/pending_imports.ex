@@ -116,7 +116,11 @@ defmodule Commonplace.Store.PendingImports do
       Keyword.get(
         opts,
         :sweep_interval_ms,
-        Application.get_env(:commonplace, :pending_imports_sweep_interval_ms, @default_sweep_interval_ms)
+        Application.get_env(
+          :commonplace,
+          :pending_imports_sweep_interval_ms,
+          @default_sweep_interval_ms
+        )
       )
 
     timer_ref = schedule_sweep(interval)
@@ -159,7 +163,10 @@ defmodule Commonplace.Store.PendingImports do
   end
 
   defp schedule_sweep(:infinity), do: nil
-  defp schedule_sweep(ms) when is_integer(ms) and ms > 0, do: Process.send_after(self(), :sweep, ms)
+
+  defp schedule_sweep(ms) when is_integer(ms) and ms > 0,
+    do: Process.send_after(self(), :sweep, ms)
+
   defp schedule_sweep(_), do: nil
 
   defp maybe_queue_pending(commit, opts, reason, state) do

@@ -50,7 +50,9 @@ defmodule Commonplace.Invariants.Registry do
       Invariant.new!(
         name: :bd_parses,
         scope: %{domain: :bd, granularity: :per_subject},
-        enumerate: fn %{root_uuid: root_uuid, store: store} -> BdInvariants.ticket_ids(root_uuid, store) end,
+        enumerate: fn %{root_uuid: root_uuid, store: store} ->
+          BdInvariants.ticket_ids(root_uuid, store)
+        end,
         check: fn %{root_uuid: root_uuid, store: store}, subject ->
           BdInvariants.parses(root_uuid, subject, store)
         end,
@@ -71,7 +73,9 @@ defmodule Commonplace.Invariants.Registry do
       Invariant.new!(
         name: :bd_ref_typed,
         scope: %{domain: :bd, granularity: :per_subject},
-        enumerate: fn %{root_uuid: root_uuid, store: store} -> BdInvariants.ticket_ids(root_uuid, store) end,
+        enumerate: fn %{root_uuid: root_uuid, store: store} ->
+          BdInvariants.ticket_ids(root_uuid, store)
+        end,
         check: fn %{root_uuid: root_uuid, store: store}, subject ->
           BdInvariants.ref_typed(root_uuid, subject, store)
         end,
@@ -90,7 +94,9 @@ defmodule Commonplace.Invariants.Registry do
       Invariant.new!(
         name: :bd_closed_matches_pin,
         scope: %{domain: :bd, granularity: :per_subject},
-        enumerate: fn %{root_uuid: root_uuid, store: store} -> BdInvariants.ticket_ids(root_uuid, store) end,
+        enumerate: fn %{root_uuid: root_uuid, store: store} ->
+          BdInvariants.ticket_ids(root_uuid, store)
+        end,
         check: fn %{root_uuid: root_uuid, store: store}, subject ->
           BdInvariants.closed_matches_pin(root_uuid, subject, store)
         end,
@@ -123,7 +129,9 @@ defmodule Commonplace.Invariants.Registry do
         name: :bd_acyclic,
         scope: %{domain: :bd, granularity: :whole},
         enumerate: nil,
-        check: fn %{root_uuid: root_uuid, store: store} -> BdInvariants.acyclic(root_uuid, store) end,
+        check: fn %{root_uuid: root_uuid, store: store} ->
+          BdInvariants.acyclic(root_uuid, store)
+        end,
         responses: [:alarm],
         deferral: :immediate,
         owner: "commonplace",

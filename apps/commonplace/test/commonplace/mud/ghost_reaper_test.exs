@@ -69,7 +69,9 @@ defmodule Commonplace.MUD.GhostReaperTest do
 
     on_exit(fn ->
       restore = fn key, v ->
-        if is_nil(v), do: Application.delete_env(:commonplace, key), else: Application.put_env(:commonplace, key, v)
+        if is_nil(v),
+          do: Application.delete_env(:commonplace, key),
+          else: Application.put_env(:commonplace, key, v)
       end
 
       restore.(:data_dir, old_data_dir)
@@ -112,7 +114,11 @@ defmodule Commonplace.MUD.GhostReaperTest do
     schema = Schema.add_directory(schema, name, dir)
     update = Encoding.encode_update(schema)
 
-    r = CommitStoreClient.create_chained_commit(store, parent, update, %{kind: :regular}, signing_context: node_ctx)
+    r =
+      CommitStoreClient.create_chained_commit(store, parent, update, %{kind: :regular},
+        signing_context: node_ctx
+      )
+
     refute match?({:error, _}, r), "dir entry must land"
     dir
   end
@@ -132,7 +138,12 @@ defmodule Commonplace.MUD.GhostReaperTest do
     doc = ContentType.set_key(doc, "heartbeat", heartbeat_iso)
 
     update = Encoding.encode_update(doc)
-    r = CommitStoreClient.create_commit(store, uuid, update, nil, %{kind: :regular}, signing_context: node_ctx)
+
+    r =
+      CommitStoreClient.create_commit(store, uuid, update, nil, %{kind: :regular},
+        signing_context: node_ctx
+      )
+
     refute match?({:error, _}, r), "presence doc create must land"
 
     {:ok, schema} = Schemas.load_dir_schema(dir_uuid, store)
@@ -164,7 +175,12 @@ defmodule Commonplace.MUD.GhostReaperTest do
     doc = ContentType.set_key(doc, "last_seen", now)
 
     update = Encoding.encode_update(doc)
-    r = CommitStoreClient.create_commit(store, uuid, update, nil, %{kind: :regular}, signing_context: node_ctx)
+
+    r =
+      CommitStoreClient.create_commit(store, uuid, update, nil, %{kind: :regular},
+        signing_context: node_ctx
+      )
+
     refute match?({:error, _}, r), "identity doc create must land"
 
     {:ok, schema} = Schemas.load_dir_schema(dir_uuid, store)
@@ -251,12 +267,13 @@ defmodule Commonplace.MUD.GhostReaperTest do
 
   # ---- PIN 2 — fail-closed per run ---------------------------------------
 
-  test "PIN 2: a healthy run reaps a dead ghost, but the SAME shape survives a degraded (aborted) run", %{
-    store: store,
-    node_ctx: node_ctx,
-    node_identity: node_identity,
-    root: root
-  } do
+  test "PIN 2: a healthy run reaps a dead ghost, but the SAME shape survives a degraded (aborted) run",
+       %{
+         store: store,
+         node_ctx: node_ctx,
+         node_identity: node_identity,
+         root: root
+       } do
     hb = stale_hb()
     create_presence_usr(root, "willdie", hb, store, node_ctx)
 
@@ -288,12 +305,13 @@ defmodule Commonplace.MUD.GhostReaperTest do
 
   # ---- PIN 3 — identity records excluded, contrasted with a real reap ----
 
-  test "PIN 3: identity .usr records (root-level and under __identities__) are never reaped, while a real ghost is", %{
-    store: store,
-    node_ctx: node_ctx,
-    node_identity: node_identity,
-    root: root
-  } do
+  test "PIN 3: identity .usr records (root-level and under __identities__) are never reaped, while a real ghost is",
+       %{
+         store: store,
+         node_ctx: node_ctx,
+         node_identity: node_identity,
+         root: root
+       } do
     identities_dir = create_room_dir!(root, "__identities__", store, node_ctx)
 
     create_identity_usr(root, "rootidentity", store, node_ctx)

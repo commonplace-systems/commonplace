@@ -67,7 +67,8 @@ defmodule Commonplace.Flock do
     case nif_open(String.to_charlist(path), mode) do
       {:ok, ref} ->
         case nif_flock(ref, type) do
-          :ok -> {:ok, ref}
+          :ok ->
+            {:ok, ref}
 
           {:error, _} = err ->
             nif_close(ref)

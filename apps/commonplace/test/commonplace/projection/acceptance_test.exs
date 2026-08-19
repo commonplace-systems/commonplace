@@ -366,7 +366,14 @@ defmodule Commonplace.Projection.AcceptanceTest do
       # Mint the commit over `real`'s bytes but carry `other`'s hash. The
       # id covers both, so this is a well-formed commit that simply lies.
       c =
-        Commit.new(u, Encoding.encode_update(real), nil, %{kind: :regular}, [], PostState.mint(other))
+        Commit.new(
+          u,
+          Encoding.encode_update(real),
+          nil,
+          %{kind: :regular},
+          [],
+          PostState.mint(other)
+        )
         |> put(db, u, true)
 
       assert {:error, {:hash_mismatch, %{carried: _, direct: _, replay: _}}} =
@@ -803,6 +810,5 @@ defmodule Commonplace.Projection.AcceptanceTest do
 
       {u, head}
     end
-
   end
 end

@@ -67,7 +67,11 @@ defmodule Commonplace.Store.SecretStore do
     # writes). Allow callers to disable auto_compact via opts; default
     # follows the application config (off in test, on otherwise).
     auto_compact =
-      Keyword.get(opts, :auto_compact, Application.get_env(:commonplace, :secret_store_auto_compact, true))
+      Keyword.get(
+        opts,
+        :auto_compact,
+        Application.get_env(:commonplace, :secret_store_auto_compact, true)
+      )
 
     {:ok, db} = CubDB.start_link(data_dir: path, auto_compact: auto_compact)
     {:ok, %{db: db}}

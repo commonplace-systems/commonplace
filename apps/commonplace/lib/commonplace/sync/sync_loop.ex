@@ -77,7 +77,9 @@ defmodule Commonplace.Sync.SyncLoop do
       SyncAgent.sync_once(state.agent_pid)
     catch
       :exit, reason ->
-        Logger.warning("SyncLoop: sync_once failed (#{inspect(reason)}); agent will be restarted on :DOWN")
+        Logger.warning(
+          "SyncLoop: sync_once failed (#{inspect(reason)}); agent will be restarted on :DOWN"
+        )
     end
 
     count = state.cycle_count + 1

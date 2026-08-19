@@ -95,7 +95,7 @@ defmodule Commonplace.Audit.LwwLoss do
           not intentionally_deleted?(deletes, w),
           status_full = replay_status(full_replay, w.id),
           status_prod = item_status(production, w.id),
-          (status_full not in [:visible, :skipped]) or status_prod != :visible do
+          status_full not in [:visible, :skipped] or status_prod != :visible do
         %{
           key: key,
           expected_content: content_value(w.content),

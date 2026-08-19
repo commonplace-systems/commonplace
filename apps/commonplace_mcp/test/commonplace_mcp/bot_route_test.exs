@@ -11,7 +11,7 @@ defmodule Commonplace.MCP.Tools.BotRouteTest do
   alias Commonplace.Store.CommitStoreClient
 
   test "routes to the serve and fails fast with {:serve_unreachable, _} when it's unreachable" do
-    CommitStoreClient.set_remote_node(:"cx_z0v7_nonexistent@nowhere")
+    CommitStoreClient.set_remote_node(:cx_z0v7_nonexistent@nowhere)
     on_exit(fn -> CommitStoreClient.clear_remote_node() end)
 
     # A bogus serve node -> :rpc.call returns {:badrpc, :nodedown}, surfaced

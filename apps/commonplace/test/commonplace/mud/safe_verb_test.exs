@@ -31,7 +31,10 @@ defmodule Commonplace.MUD.SafeVerbTest do
       _ = Supervisor.terminate_child(sup, Commonplace.Store.CommitStore)
       _ = Supervisor.delete_child(sup, Commonplace.Store.CommitStore)
       Application.put_env(:commonplace, :data_dir, "tmp/test_data")
-      {:ok, _pid} = Supervisor.start_child(sup, {Commonplace.Store.CommitStore, data_dir: "tmp/test_data"})
+
+      {:ok, _pid} =
+        Supervisor.start_child(sup, {Commonplace.Store.CommitStore, data_dir: "tmp/test_data"})
+
       Commonplace.Tree.DocCache.clear()
       SourceDoc.reset_cache()
       File.rm_rf!(dir)
@@ -114,7 +117,13 @@ defmodule Commonplace.MUD.SafeVerbTest do
       target_dir_uuid: target_dir_uuid
     } do
       assert {:error, {:lint_violation, _}} =
-               VerbSource.save_safe_verb(target_dir_uuid, "evil", "File.rm_rf!(\"/\")", [target_dir_uuid], store)
+               VerbSource.save_safe_verb(
+                 target_dir_uuid,
+                 "evil",
+                 "File.rm_rf!(\"/\")",
+                 [target_dir_uuid],
+                 store
+               )
 
       assert :not_found = VerbSource.find_safe_source(target_dir_uuid, "evil", store)
     end
@@ -138,12 +147,20 @@ defmodule Commonplace.MUD.SafeVerbTest do
       Enum.each(1..1_000_000_000_000, fn _ -> :ok end)
       """
 
-      assert :ok = VerbSource.save_safe_verb(target_dir_uuid, "spin", body, [target_dir_uuid], store)
+      assert :ok =
+               VerbSource.save_safe_verb(target_dir_uuid, "spin", body, [target_dir_uuid], store)
 
       facade = Facade.new(%{}, target_dir_uuid, [target_dir_uuid], nil, store)
 
       assert {:error, :timeout} =
-               VerbSource.run_safe_verb(target_dir_uuid, "spin", [target_dir_uuid], facade, %{}, store)
+               VerbSource.run_safe_verb(
+                 target_dir_uuid,
+                 "spin",
+                 [target_dir_uuid],
+                 facade,
+                 %{},
+                 store
+               )
 
       # The caller (this test process) is alive and the store is
       # responsive — the bounded Task's death didn't take anything else
@@ -173,12 +190,20 @@ defmodule Commonplace.MUD.SafeVerbTest do
       end)
       """
 
-      assert :ok = VerbSource.save_safe_verb(target_dir_uuid, "bomb", body, [target_dir_uuid], store)
+      assert :ok =
+               VerbSource.save_safe_verb(target_dir_uuid, "bomb", body, [target_dir_uuid], store)
 
       facade = Facade.new(%{}, target_dir_uuid, [target_dir_uuid], nil, store)
 
       assert {:error, {:runtime_error, _}} =
-               VerbSource.run_safe_verb(target_dir_uuid, "bomb", [target_dir_uuid], facade, %{}, store)
+               VerbSource.run_safe_verb(
+                 target_dir_uuid,
+                 "bomb",
+                 [target_dir_uuid],
+                 facade,
+                 %{},
+                 store
+               )
 
       assert Process.alive?(self())
       assert {:ok, _} = CommitStoreClient.latest_commit(store, target_dir_uuid)
@@ -237,21 +262,44 @@ defmodule Commonplace.MUD.SafeVerbTest do
       # check_wrapped re-scans the stored body → System.cmd is disallowed →
       # refused before any BEAM compile / execution. NOT run.
       assert {:error, {:unsafe_verb, {:disallowed, _}}} =
-               VerbSource.run_safe_verb(target_dir_uuid, "tick", [target_dir_uuid], facade, %{}, store)
+               VerbSource.run_safe_verb(
+                 target_dir_uuid,
+                 "tick",
+                 [target_dir_uuid],
+                 facade,
+                 %{},
+                 store
+               )
     end
 
     test "a clean safe verb only ever sees world/args and can call the facade", %{
       store: store,
       target_dir_uuid: target_dir_uuid
     } do
-      body = "Commonplace.MUD.World.Facade.put_state(world, \"poked_by\", Map.get(args, \"who\", \"someone\"))"
+      body =
+        "Commonplace.MUD.World.Facade.put_state(world, \"poked_by\", Map.get(args, \"who\", \"someone\"))"
 
-      assert :ok = VerbSource.save_safe_verb(target_dir_uuid, "poke", body, [target_dir_uuid], store)
+      assert :ok =
+               VerbSource.save_safe_verb(target_dir_uuid, "poke", body, [target_dir_uuid], store)
 
-      facade = Facade.new(%{}, target_dir_uuid, [target_dir_uuid], {"verbs/poke.safe.elx", "owner"}, store)
+      facade =
+        Facade.new(
+          %{},
+          target_dir_uuid,
+          [target_dir_uuid],
+          {"verbs/poke.safe.elx", "owner"},
+          store
+        )
 
       assert {:ok, :ok} =
-               VerbSource.run_safe_verb(target_dir_uuid, "poke", [target_dir_uuid], facade, %{"who" => "alice"}, store)
+               VerbSource.run_safe_verb(
+                 target_dir_uuid,
+                 "poke",
+                 [target_dir_uuid],
+                 facade,
+                 %{"who" => "alice"},
+                 store
+               )
     end
   end
 
@@ -286,10 +334,11 @@ defmodule Commonplace.MUD.SafeVerbTest do
       assert Facade.get_state(f, "name") == "hacked"
     end
 
-    test "bounds (CX-qexv): structured values OK; oversize/non-JSON/oversized-key/>64-keys → :state_bounds", %{
-      store: store,
-      target_dir_uuid: dir
-    } do
+    test "bounds (CX-qexv): structured values OK; oversize/non-JSON/oversized-key/>64-keys → :state_bounds",
+         %{
+           store: store,
+           target_dir_uuid: dir
+         } do
       f = Facade.new(%{}, dir, [dir], nil, store)
 
       # CX-qexv — lists and string-keyed maps of JSON values now PERSIST.
@@ -301,7 +350,10 @@ defmodule Commonplace.MUD.SafeVerbTest do
       # ...but the total serialized value still can't exceed 1024 bytes,
       # and non-JSON shapes (tuple/atom/atom-keyed map) fail closed.
       assert {:error, :too_large} = Facade.put_state(f, "big", String.duplicate("x", 1025))
-      assert {:error, :too_large} = Facade.put_state(f, "biglist", List.duplicate("xxxxxxxx", 200))
+
+      assert {:error, :too_large} =
+               Facade.put_state(f, "biglist", List.duplicate("xxxxxxxx", 200))
+
       assert {:error, :too_large} = Facade.put_state(f, "tuple", {1, 2})
       assert {:error, :too_large} = Facade.put_state(f, "atom", :nope)
       assert {:error, :too_large} = Facade.put_state(f, "atomkey", %{a: 1})
@@ -338,7 +390,10 @@ defmodule Commonplace.MUD.SafeVerbTest do
       assert {:error, :bad_arg} = Facade.random(f, "x")
     end
 
-    test "pick returns a list element; nil on empty / non-list", %{store: store, target_dir_uuid: dir} do
+    test "pick returns a list element; nil on empty / non-list", %{
+      store: store,
+      target_dir_uuid: dir
+    } do
       f = Facade.new(%{}, dir, [dir], nil, store)
 
       assert Facade.pick(f, [:only]) == :only
@@ -365,10 +420,11 @@ defmodule Commonplace.MUD.SafeVerbTest do
       assert {:ok, :legacy_ok} = VerbSource.run_verb(target_dir_uuid, "bow", %{}, store)
     end
 
-    test "legacy (<name>.elx) and safe (<name>.safe.elx) verbs coexist under the SAME verb name without colliding", %{
-      store: store,
-      target_dir_uuid: target_dir_uuid
-    } do
+    test "legacy (<name>.elx) and safe (<name>.safe.elx) verbs coexist under the SAME verb name without colliding",
+         %{
+           store: store,
+           target_dir_uuid: target_dir_uuid
+         } do
       legacy_src = """
       defmodule Commonplace.UserCode.Mud.Verb.DualLegacy do
         def run(_ctx), do: :from_legacy
@@ -378,12 +434,29 @@ defmodule Commonplace.MUD.SafeVerbTest do
       safe_body = ":from_safe"
 
       assert :ok = VerbSource.save_verb(target_dir_uuid, "dual", legacy_src, store)
-      assert :ok = VerbSource.save_safe_verb(target_dir_uuid, "dual", safe_body, [target_dir_uuid], store)
+
+      assert :ok =
+               VerbSource.save_safe_verb(
+                 target_dir_uuid,
+                 "dual",
+                 safe_body,
+                 [target_dir_uuid],
+                 store
+               )
 
       assert {:ok, :from_legacy} = VerbSource.run_verb(target_dir_uuid, "dual", %{}, store)
 
       facade = Facade.new(%{}, target_dir_uuid, [target_dir_uuid], nil, store)
-      assert {:ok, :from_safe} = VerbSource.run_safe_verb(target_dir_uuid, "dual", [target_dir_uuid], facade, %{}, store)
+
+      assert {:ok, :from_safe} =
+               VerbSource.run_safe_verb(
+                 target_dir_uuid,
+                 "dual",
+                 [target_dir_uuid],
+                 facade,
+                 %{},
+                 store
+               )
     end
 
     test "the safe path is gated on :define_verb, not :execute — a define-denied contributor's safe verb is refused",
@@ -391,6 +464,7 @@ defmodule Commonplace.MUD.SafeVerbTest do
       alias Commonplace.Crypto.{Signing, SigningContext}
 
       Application.put_env(:commonplace, :trust, %{accept_unsigned: false, trusted_identities: %{}})
+
       on_exit(fn -> Application.delete_env(:commonplace, :trust) end)
 
       {pub, priv} = Signing.generate_keypair()
@@ -406,7 +480,12 @@ defmodule Commonplace.MUD.SafeVerbTest do
       # persist-then-deny-at-dispatch. Either way the define-denied author's verb
       # is refused and never dispatches.
       assert {:error, _} =
-               VerbSource.save_safe_verb(target_dir_uuid, "denied", ":ok", [target_dir_uuid], store,
+               VerbSource.save_safe_verb(
+                 target_dir_uuid,
+                 "denied",
+                 ":ok",
+                 [target_dir_uuid],
+                 store,
                  signing_context: ctx
                )
     end

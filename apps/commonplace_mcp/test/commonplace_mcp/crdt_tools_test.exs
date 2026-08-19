@@ -58,7 +58,13 @@ defmodule Commonplace.MCP.CrdtToolsTest do
           system_uuid = UUID.uuid4()
           system_schema = Schema.new_schema()
           {:ok, _} = CommitStore.ensure_genesis(store, system_uuid)
-          CommitStore.create_chained_commit(store, system_uuid, Encoding.encode_update(system_schema))
+
+          CommitStore.create_chained_commit(
+            store,
+            system_uuid,
+            Encoding.encode_update(system_schema)
+          )
+
           {Schema.add_directory(root, "__system", system_uuid), system_uuid}
       end
 
@@ -71,7 +77,13 @@ defmodule Commonplace.MCP.CrdtToolsTest do
           tools_uuid = UUID.uuid4()
           tools_schema = Schema.new_schema()
           {:ok, _} = CommitStore.ensure_genesis(store, tools_uuid)
-          CommitStore.create_chained_commit(store, tools_uuid, Encoding.encode_update(tools_schema))
+
+          CommitStore.create_chained_commit(
+            store,
+            tools_uuid,
+            Encoding.encode_update(tools_schema)
+          )
+
           system = load_schema(store, system_uuid)
           {Schema.add_directory(system, "tools", tools_uuid), tools_uuid}
       end
@@ -92,7 +104,7 @@ defmodule Commonplace.MCP.CrdtToolsTest do
 
   defp seed_handler_doc(store, root_uuid, target_path) do
     # Just create a doc at target_path so Walk.resolve_path succeeds.
-    [ "__system", "handlers", handler_name ] = String.split(target_path, "/")
+    ["__system", "handlers", handler_name] = String.split(target_path, "/")
 
     handler_uuid = UUID.uuid4()
     handler_doc = Doc.new()
@@ -101,9 +113,12 @@ defmodule Commonplace.MCP.CrdtToolsTest do
 
     # Ensure __system/handlers/<handler_name> is registered
     root = load_schema(store, root_uuid)
+
     {root, system_uuid} =
       case Schema.get_entry(root, "__system") do
-        {:ok, %{node_id: u}} -> {root, u}
+        {:ok, %{node_id: u}} ->
+          {root, u}
+
         :error ->
           su = UUID.uuid4()
           ss = Schema.new_schema()
@@ -114,7 +129,9 @@ defmodule Commonplace.MCP.CrdtToolsTest do
 
     {system, handlers_uuid} =
       case Schema.get_entry(load_schema(store, system_uuid), "handlers") do
-        {:ok, %{node_id: u}} -> {load_schema(store, system_uuid), u}
+        {:ok, %{node_id: u}} ->
+          {load_schema(store, system_uuid), u}
+
         :error ->
           hu = UUID.uuid4()
           hs = Schema.new_schema()
@@ -140,6 +157,7 @@ defmodule Commonplace.MCP.CrdtToolsTest do
         doc = Schema.new_schema()
         {:ok, doc} = Encoding.apply_update(doc, commit.update)
         doc
+
       :none ->
         Schema.new_schema()
     end
@@ -160,6 +178,7 @@ defmodule Commonplace.MCP.CrdtToolsTest do
 
       assert "alpha" in names
       assert "beta" in names
+
       for tool <- tools do
         assert is_binary(tool["description"])
         assert is_map(tool["inputSchema"])
@@ -172,7 +191,12 @@ defmodule Commonplace.MCP.CrdtToolsTest do
 
       # Seed a malformed entry directly
       bad_uuid = UUID.uuid4()
-      bad_doc = Doc.new() |> ContentType.create(:text, "bad.json") |> ContentType.insert_text(0, "not json {[")
+
+      bad_doc =
+        Doc.new()
+        |> ContentType.create(:text, "bad.json")
+        |> ContentType.insert_text(0, "not json {[")
+
       {:ok, _} = CommitStore.ensure_genesis(store, bad_uuid)
       CommitStore.create_chained_commit(store, bad_uuid, Encoding.encode_update(bad_doc))
 
@@ -182,7 +206,12 @@ defmodule Commonplace.MCP.CrdtToolsTest do
       {:ok, tools_entry} = Schema.get_entry(system_doc, "tools")
       tools_doc = load_schema(store, tools_entry.node_id)
       tools_doc = Schema.add_file(tools_doc, "bad", bad_uuid)
-      CommitStore.create_chained_commit(store, tools_entry.node_id, Encoding.encode_update(tools_doc))
+
+      CommitStore.create_chained_commit(
+        store,
+        tools_entry.node_id,
+        Encoding.encode_update(tools_doc)
+      )
 
       tools = CrdtTools.list(store, root)
       names = Enum.map(tools, & &1["name"])
@@ -197,18 +226,16 @@ defmodule Commonplace.MCP.CrdtToolsTest do
          %{store: store, root: root} do
       seed_handler_doc(store, root, "__system/handlers/echo")
 
-      seed_interface(store, root, "echo",
-        %{
-          "target_path" => "__system/handlers/echo",
-          "send_type" => "echo",
-          "send_payload_template" => %{"text" => "{{text}}"},
-          "reply" => %{
-            "success_type" => "echoed",
-            "error_type" => "echo_failed",
-            "timeout_ms" => 1_000
-          }
+      seed_interface(store, root, "echo", %{
+        "target_path" => "__system/handlers/echo",
+        "send_type" => "echo",
+        "send_payload_template" => %{"text" => "{{text}}"},
+        "reply" => %{
+          "success_type" => "echoed",
+          "error_type" => "echo_failed",
+          "timeout_ms" => 1_000
         }
-      )
+      })
 
       topic = "commands/__system/handlers/echo/echo"
 
@@ -221,11 +248,19 @@ defmodule Commonplace.MCP.CrdtToolsTest do
         end)
 
       # Receive the dispatcher's outbound request, extract correlation_id, reply.
-      assert_receive {:magenta, ^topic, %Magenta{type: "echo", payload: %{"text" => "hello", "correlation_id" => cid}}}, 1_000
+      assert_receive {:magenta, ^topic,
+                      %Magenta{
+                        type: "echo",
+                        payload: %{"text" => "hello", "correlation_id" => cid}
+                      }},
+                     1_000
 
       Magenta.send(
         topic,
-        Magenta.message("echoed", "test_handler", %{"correlation_id" => cid, "result" => "hello-back"})
+        Magenta.message("echoed", "test_handler", %{
+          "correlation_id" => cid,
+          "result" => "hello-back"
+        })
       )
 
       assert {:ok, result} = Task.await(task, 2_000)
@@ -236,18 +271,16 @@ defmodule Commonplace.MCP.CrdtToolsTest do
     test "error reply maps to in-band MCP tool error", %{store: store, root: root} do
       seed_handler_doc(store, root, "__system/handlers/fails")
 
-      seed_interface(store, root, "fails",
-        %{
-          "target_path" => "__system/handlers/fails",
-          "send_type" => "fail",
-          "send_payload_template" => %{},
-          "reply" => %{
-            "success_type" => "ok",
-            "error_type" => "failed",
-            "timeout_ms" => 1_000
-          }
+      seed_interface(store, root, "fails", %{
+        "target_path" => "__system/handlers/fails",
+        "send_type" => "fail",
+        "send_payload_template" => %{},
+        "reply" => %{
+          "success_type" => "ok",
+          "error_type" => "failed",
+          "timeout_ms" => 1_000
         }
-      )
+      })
 
       topic = "commands/__system/handlers/fails/fail"
       Magenta.subscribe(topic)
@@ -257,7 +290,9 @@ defmodule Commonplace.MCP.CrdtToolsTest do
           CrdtTools.call("fails", %{}, store: store, root_uuid: root)
         end)
 
-      assert_receive {:magenta, ^topic, %Magenta{type: "fail", payload: %{"correlation_id" => cid}}}, 1_000
+      assert_receive {:magenta, ^topic,
+                      %Magenta{type: "fail", payload: %{"correlation_id" => cid}}},
+                     1_000
 
       Magenta.send(
         topic,
@@ -278,14 +313,12 @@ defmodule Commonplace.MCP.CrdtToolsTest do
 
     test "interface present but handler doc path doesn't resolve",
          %{store: store, root: root} do
-      seed_interface(store, root, "orphan",
-        %{
-          "target_path" => "__system/handlers/missing",
-          "send_type" => "x",
-          "send_payload_template" => %{},
-          "reply" => %{"success_type" => "ok", "error_type" => "ko", "timeout_ms" => 1_000}
-        }
-      )
+      seed_interface(store, root, "orphan", %{
+        "target_path" => "__system/handlers/missing",
+        "send_type" => "x",
+        "send_payload_template" => %{},
+        "reply" => %{"success_type" => "ok", "error_type" => "ko", "timeout_ms" => 1_000}
+      })
 
       assert {:error, {:handler_not_found, "__system/handlers/missing"}} =
                CrdtTools.call("orphan", %{}, store: store, root_uuid: root)
@@ -294,14 +327,12 @@ defmodule Commonplace.MCP.CrdtToolsTest do
     test "no reply within timeout → in-band tool error", %{store: store, root: root} do
       seed_handler_doc(store, root, "__system/handlers/silent")
 
-      seed_interface(store, root, "silent",
-        %{
-          "target_path" => "__system/handlers/silent",
-          "send_type" => "ping",
-          "send_payload_template" => %{},
-          "reply" => %{"success_type" => "pong", "error_type" => "boom", "timeout_ms" => 100}
-        }
-      )
+      seed_interface(store, root, "silent", %{
+        "target_path" => "__system/handlers/silent",
+        "send_type" => "ping",
+        "send_payload_template" => %{},
+        "reply" => %{"success_type" => "pong", "error_type" => "boom", "timeout_ms" => 100}
+      })
 
       assert {:ok, result} = CrdtTools.call("silent", %{}, store: store, root_uuid: root)
       assert result["isError"] == true
@@ -313,14 +344,12 @@ defmodule Commonplace.MCP.CrdtToolsTest do
     test "missing template variable → in-band tool error", %{store: store, root: root} do
       seed_handler_doc(store, root, "__system/handlers/strict")
 
-      seed_interface(store, root, "strict",
-        %{
-          "target_path" => "__system/handlers/strict",
-          "send_type" => "go",
-          "send_payload_template" => %{"required_field" => "{{missing}}"},
-          "reply" => %{"success_type" => "done", "error_type" => "fail", "timeout_ms" => 1_000}
-        }
-      )
+      seed_interface(store, root, "strict", %{
+        "target_path" => "__system/handlers/strict",
+        "send_type" => "go",
+        "send_payload_template" => %{"required_field" => "{{missing}}"},
+        "reply" => %{"success_type" => "done", "error_type" => "fail", "timeout_ms" => 1_000}
+      })
 
       assert {:ok, result} =
                CrdtTools.call("strict", %{"present" => "x"}, store: store, root_uuid: root)
@@ -335,27 +364,28 @@ defmodule Commonplace.MCP.CrdtToolsTest do
     test "full-value substitution preserves typed JSON values", %{store: store, root: root} do
       seed_handler_doc(store, root, "__system/handlers/typed")
 
-      seed_interface(store, root, "typed",
-        %{
-          "target_path" => "__system/handlers/typed",
-          "send_type" => "send",
-          "send_payload_template" => %{
-            "n" => "{{n}}",
-            "flag" => "{{flag}}",
-            "nested" => "{{nested}}"
-          },
-          "reply" => %{"success_type" => "ok", "error_type" => "ko", "timeout_ms" => 1_000}
-        }
-      )
+      seed_interface(store, root, "typed", %{
+        "target_path" => "__system/handlers/typed",
+        "send_type" => "send",
+        "send_payload_template" => %{
+          "n" => "{{n}}",
+          "flag" => "{{flag}}",
+          "nested" => "{{nested}}"
+        },
+        "reply" => %{"success_type" => "ok", "error_type" => "ko", "timeout_ms" => 1_000}
+      })
 
       topic = "commands/__system/handlers/typed/send"
       Magenta.subscribe(topic)
 
       task =
         Task.async(fn ->
-          CrdtTools.call("typed",
+          CrdtTools.call(
+            "typed",
             %{"n" => 42, "flag" => true, "nested" => %{"x" => [1, 2]}},
-            store: store, root_uuid: root)
+            store: store,
+            root_uuid: root
+          )
         end)
 
       assert_receive {:magenta, ^topic, %Magenta{payload: payload}}, 1_000
@@ -363,7 +393,11 @@ defmodule Commonplace.MCP.CrdtToolsTest do
       assert payload["flag"] == true
       assert payload["nested"] == %{"x" => [1, 2]}
 
-      Magenta.send(topic, Magenta.message("ok", "h", %{"correlation_id" => payload["correlation_id"]}))
+      Magenta.send(
+        topic,
+        Magenta.message("ok", "h", %{"correlation_id" => payload["correlation_id"]})
+      )
+
       Task.await(task, 2_000)
     end
 
@@ -371,14 +405,12 @@ defmodule Commonplace.MCP.CrdtToolsTest do
          %{store: store, root: root} do
       seed_handler_doc(store, root, "__system/handlers/interp")
 
-      seed_interface(store, root, "interp",
-        %{
-          "target_path" => "__system/handlers/interp",
-          "send_type" => "send",
-          "send_payload_template" => %{"label" => "branch-{{name}}"},
-          "reply" => %{"success_type" => "ok", "error_type" => "ko", "timeout_ms" => 1_000}
-        }
-      )
+      seed_interface(store, root, "interp", %{
+        "target_path" => "__system/handlers/interp",
+        "send_type" => "send",
+        "send_payload_template" => %{"label" => "branch-{{name}}"},
+        "reply" => %{"success_type" => "ok", "error_type" => "ko", "timeout_ms" => 1_000}
+      })
 
       topic = "commands/__system/handlers/interp/send"
       Magenta.subscribe(topic)
@@ -391,7 +423,11 @@ defmodule Commonplace.MCP.CrdtToolsTest do
       assert_receive {:magenta, ^topic, %Magenta{payload: payload}}, 1_000
       assert payload["label"] == "branch-feature-x"
 
-      Magenta.send(topic, Magenta.message("ok", "h", %{"correlation_id" => payload["correlation_id"]}))
+      Magenta.send(
+        topic,
+        Magenta.message("ok", "h", %{"correlation_id" => payload["correlation_id"]})
+      )
+
       Task.await(task, 2_000)
     end
   end
@@ -401,14 +437,12 @@ defmodule Commonplace.MCP.CrdtToolsTest do
          %{store: store, root: root} do
       seed_handler_doc(store, root, "__system/handlers/forge")
 
-      seed_interface(store, root, "forge",
-        %{
-          "target_path" => "__system/handlers/forge",
-          "send_type" => "go",
-          "send_payload_template" => %{"correlation_id" => "{{forged}}"},
-          "reply" => %{"success_type" => "ok", "error_type" => "ko", "timeout_ms" => 1_000}
-        }
-      )
+      seed_interface(store, root, "forge", %{
+        "target_path" => "__system/handlers/forge",
+        "send_type" => "go",
+        "send_payload_template" => %{"correlation_id" => "{{forged}}"},
+        "reply" => %{"success_type" => "ok", "error_type" => "ko", "timeout_ms" => 1_000}
+      })
 
       topic = "commands/__system/handlers/forge/go"
       Magenta.subscribe(topic)
@@ -422,7 +456,11 @@ defmodule Commonplace.MCP.CrdtToolsTest do
       refute payload["correlation_id"] == "EVIL_ID"
       assert is_binary(payload["correlation_id"])
 
-      Magenta.send(topic, Magenta.message("ok", "h", %{"correlation_id" => payload["correlation_id"]}))
+      Magenta.send(
+        topic,
+        Magenta.message("ok", "h", %{"correlation_id" => payload["correlation_id"]})
+      )
+
       Task.await(task, 2_000)
     end
 
@@ -430,14 +468,12 @@ defmodule Commonplace.MCP.CrdtToolsTest do
          %{store: store, root: root} do
       seed_handler_doc(store, root, "__system/handlers/strict_cid")
 
-      seed_interface(store, root, "strict_cid",
-        %{
-          "target_path" => "__system/handlers/strict_cid",
-          "send_type" => "go",
-          "send_payload_template" => %{},
-          "reply" => %{"success_type" => "ok", "error_type" => "ko", "timeout_ms" => 300}
-        }
-      )
+      seed_interface(store, root, "strict_cid", %{
+        "target_path" => "__system/handlers/strict_cid",
+        "send_type" => "go",
+        "send_payload_template" => %{},
+        "reply" => %{"success_type" => "ok", "error_type" => "ko", "timeout_ms" => 300}
+      })
 
       topic = "commands/__system/handlers/strict_cid/go"
       Magenta.subscribe(topic)

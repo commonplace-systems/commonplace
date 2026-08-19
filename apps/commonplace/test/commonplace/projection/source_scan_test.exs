@@ -56,8 +56,7 @@ defmodule Commonplace.Projection.SourceScanTest do
   @pin_read_allowlist %{
     "apps/commonplace/lib/commonplace/tree/doc_builder.ex" =>
       "defines the primitive; Projection's tier (iii) replay and chain_to/3 are its callers",
-    "apps/commonplace/lib/commonplace/projection.ex" =>
-      "IS the chokepoint",
+    "apps/commonplace/lib/commonplace/projection.ex" => "IS the chokepoint",
     "apps/commonplace/lib/commonplace/document/server.ex" =>
       "rebase baseline at the doc's OWN parent_commit, inside the write path — " <>
         "it reconstructs the state it is about to extend, not a historical pin a " <>

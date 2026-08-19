@@ -69,7 +69,14 @@ defmodule Commonplace.MUD.SectionsTest do
         v -> Application.put_env(:commonplace, :local_write_gate, v)
       end
 
-      if Process.alive?(secrets_pid), do: (try do GenServer.stop(secrets_pid) catch (:exit, _ -> :ok) end)
+      if Process.alive?(secrets_pid),
+        do:
+          (try do
+             GenServer.stop(secrets_pid)
+           catch
+             (:exit, _ -> :ok)
+           end)
+
       File.rm_rf!(data_dir)
       File.rm_rf!(store_dir)
       File.rm_rf!(secrets_dir)
@@ -148,12 +155,13 @@ defmodule Commonplace.MUD.SectionsTest do
              )
   end
 
-  test "issue_section: :execute alone (no :write) is still refused — the guard is unconditional", %{
-    store: store,
-    node_ctx: node_ctx,
-    context_room: context_room,
-    owner: owner
-  } do
+  test "issue_section: :execute alone (no :write) is still refused — the guard is unconditional",
+       %{
+         store: store,
+         node_ctx: node_ctx,
+         context_room: context_room,
+         owner: owner
+       } do
     assert {:error, :execute_forbidden_in_section_cert} =
              Sections.issue_section(node_ctx, {owner.uuid, owner.pub}, [context_room],
                store: store,
@@ -163,12 +171,13 @@ defmodule Commonplace.MUD.SectionsTest do
 
   # ---- reject_execute/1 — delegate_section ----
 
-  test "delegate_section: refuses to mint an :execute-scoped delegation even under a [:write, :delegate] parent", %{
-    store: store,
-    node_ctx: node_ctx,
-    context_room: context_room,
-    owner: owner
-  } do
+  test "delegate_section: refuses to mint an :execute-scoped delegation even under a [:write, :delegate] parent",
+       %{
+         store: store,
+         node_ctx: node_ctx,
+         context_room: context_room,
+         owner: owner
+       } do
     assert {:ok, root_cap} =
              Sections.issue_section(node_ctx, {owner.uuid, owner.pub}, [context_room],
                store: store,
@@ -197,17 +206,21 @@ defmodule Commonplace.MUD.SectionsTest do
     sub_uuid = UUID.uuid4()
 
     assert {:error, :missing_parent_capability} =
-             Sections.delegate_section(owner.ctx, {sub_uuid, sub_pub}, [context_room], store: store, verbs: [:write])
+             Sections.delegate_section(owner.ctx, {sub_uuid, sub_pub}, [context_room],
+               store: store,
+               verbs: [:write]
+             )
   end
 
   # ---- CX-cl65: {:subtree, _} candidate is skipped, never fed to scope_uuids/1 ----
 
-  test "auto_extend_for_new_room: a {:subtree, _} candidate cert is skipped as :not_section_cert, no crash", %{
-    store: store,
-    node_ctx: node_ctx,
-    context_room: context_room,
-    owner: owner
-  } do
+  test "auto_extend_for_new_room: a {:subtree, _} candidate cert is skipped as :not_section_cert, no crash",
+       %{
+         store: store,
+         node_ctx: node_ctx,
+         context_room: context_room,
+         owner: owner
+       } do
     some_root = UUID.uuid4()
 
     assert {:ok, subtree_cap} =
@@ -222,25 +235,36 @@ defmodule Commonplace.MUD.SectionsTest do
     assert :ok = CommitStoreClient.store_capability(store, subtree_cap)
 
     assert %Commonplace.Store.Commit{} =
-             land_candidate_commit!(store, context_room, subtree_cap.id, node_ctx, "subtree-proof commit")
+             land_candidate_commit!(
+               store,
+               context_room,
+               subtree_cap.id,
+               node_ctx,
+               "subtree-proof commit"
+             )
 
     new_room = UUID.uuid4()
 
-    CommitStore.create_commit(store, new_room, room_update("freshly dug"), nil, %{}, signing_context: node_ctx)
+    CommitStore.create_commit(store, new_room, room_update("freshly dug"), nil, %{},
+      signing_context: node_ctx
+    )
 
     # Must not crash (the CX-cl65 regression: scope_uuids/1 pattern-matches
     # {:docs,_} only and would raise on this shape if fed to it directly).
-    assert {:ok, results} = Sections.auto_extend_for_new_room(new_room, context_room, store: store)
+    assert {:ok, results} =
+             Sections.auto_extend_for_new_room(new_room, context_room, store: store)
+
     assert [{:skipped, cap_id, :not_section_cert}] = results
     assert cap_id == subtree_cap.id
   end
 
-  test "auto_extend_for_new_room: a {:presence, _} candidate cert is likewise skipped as :not_section_cert, no crash", %{
-    store: store,
-    node_ctx: node_ctx,
-    context_room: context_room,
-    owner: owner
-  } do
+  test "auto_extend_for_new_room: a {:presence, _} candidate cert is likewise skipped as :not_section_cert, no crash",
+       %{
+         store: store,
+         node_ctx: node_ctx,
+         context_room: context_room,
+         owner: owner
+       } do
     assert {:ok, presence_cap} =
              Capability.issue(
                node_ctx,
@@ -253,25 +277,39 @@ defmodule Commonplace.MUD.SectionsTest do
     assert :ok = CommitStoreClient.store_capability(store, presence_cap)
 
     assert %Commonplace.Store.Commit{} =
-             land_candidate_commit!(store, context_room, presence_cap.id, node_ctx, "presence-proof commit")
+             land_candidate_commit!(
+               store,
+               context_room,
+               presence_cap.id,
+               node_ctx,
+               "presence-proof commit"
+             )
 
     new_room = UUID.uuid4()
 
-    CommitStore.create_commit(store, new_room, room_update("freshly dug"), nil, %{}, signing_context: node_ctx)
+    CommitStore.create_commit(store, new_room, room_update("freshly dug"), nil, %{},
+      signing_context: node_ctx
+    )
 
-    assert {:ok, results} = Sections.auto_extend_for_new_room(new_room, context_room, store: store)
+    assert {:ok, results} =
+             Sections.auto_extend_for_new_room(new_room, context_room, store: store)
+
     assert [{:skipped, cap_id, :not_section_cert}] = results
     assert cap_id == presence_cap.id
   end
 
-  test "auto_extend_for_new_room: a {:subtree,_} candidate alongside a real {:docs,_} section cert — the docs cert still reissues, the subtree cert is skipped, and neither crashes the other", %{
-    store: store,
-    node_ctx: node_ctx,
-    context_room: context_room,
-    owner: owner
-  } do
+  test "auto_extend_for_new_room: a {:subtree,_} candidate alongside a real {:docs,_} section cert — the docs cert still reissues, the subtree cert is skipped, and neither crashes the other",
+       %{
+         store: store,
+         node_ctx: node_ctx,
+         context_room: context_room,
+         owner: owner
+       } do
     assert {:ok, root_cap} =
-             Sections.issue_section(node_ctx, {owner.uuid, owner.pub}, [context_room], store: store, verbs: [:write])
+             Sections.issue_section(node_ctx, {owner.uuid, owner.pub}, [context_room],
+               store: store,
+               verbs: [:write]
+             )
 
     assert %Commonplace.Store.Commit{} =
              CommitStoreClient.create_chained_commit(
@@ -296,29 +334,41 @@ defmodule Commonplace.MUD.SectionsTest do
     assert :ok = CommitStoreClient.store_capability(store, subtree_cap)
 
     assert %Commonplace.Store.Commit{} =
-             land_candidate_commit!(store, context_room, subtree_cap.id, node_ctx, "subtree-proof commit")
+             land_candidate_commit!(
+               store,
+               context_room,
+               subtree_cap.id,
+               node_ctx,
+               "subtree-proof commit"
+             )
 
     new_room = UUID.uuid4()
 
-    CommitStore.create_commit(store, new_room, room_update("freshly dug"), nil, %{}, signing_context: node_ctx)
+    CommitStore.create_commit(store, new_room, room_update("freshly dug"), nil, %{},
+      signing_context: node_ctx
+    )
 
-    assert {:ok, results} = Sections.auto_extend_for_new_room(new_room, context_room, store: store)
+    assert {:ok, results} =
+             Sections.auto_extend_for_new_room(new_room, context_room, store: store)
 
     assert {:reissued, reissued_id, _new_cap} = Enum.find(results, &match?({:reissued, _, _}, &1))
     assert reissued_id == root_cap.id
 
-    assert {:skipped, skipped_id, :not_section_cert} = Enum.find(results, &match?({:skipped, _, :not_section_cert}, &1))
+    assert {:skipped, skipped_id, :not_section_cert} =
+             Enum.find(results, &match?({:skipped, _, :not_section_cert}, &1))
+
     assert skipped_id == subtree_cap.id
   end
 
   # ---- build_claim: :ttl_seconds computes a relative not_after ----
 
-  test "issue_section: :ttl_seconds mints a caveat window relative to now (no explicit :not_after given)", %{
-    store: store,
-    node_ctx: node_ctx,
-    context_room: context_room,
-    owner: owner
-  } do
+  test "issue_section: :ttl_seconds mints a caveat window relative to now (no explicit :not_after given)",
+       %{
+         store: store,
+         node_ctx: node_ctx,
+         context_room: context_room,
+         owner: owner
+       } do
     before_call = DateTime.utc_now()
 
     assert {:ok, cap} =

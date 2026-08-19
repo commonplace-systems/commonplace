@@ -53,7 +53,10 @@ defmodule Commonplace.MUD.OpenExitTest do
     on_exit(fn ->
       for {k, v} <- old do
         key = %{data_dir: :data_dir, trust: :trust, knob: :local_write_gate}[k]
-        if is_nil(v), do: Application.delete_env(:commonplace, key), else: Application.put_env(:commonplace, key, v)
+
+        if is_nil(v),
+          do: Application.delete_env(:commonplace, key),
+          else: Application.put_env(:commonplace, key, v)
       end
 
       File.rm_rf!(dir)
@@ -64,7 +67,10 @@ defmodule Commonplace.MUD.OpenExitTest do
 
     # world root (node-signed empty schema)
     root = UUID.uuid4()
-    CommitStore.create_commit(store, root, Encoding.encode_update(Schema.new_schema()), nil, %{}, signing_context: node_ctx)
+
+    CommitStore.create_commit(store, root, Encoding.encode_update(Schema.new_schema()), nil, %{},
+      signing_context: node_ctx
+    )
 
     # curated/public rooms reachable from root (NOT under players/)
     commons = mk_room!(store, node_ctx, "The Commons")
@@ -76,6 +82,7 @@ defmodule Commonplace.MUD.OpenExitTest do
 
     # two real citizens with homes under players/ (private zones) + write certs
     {alice_id, alice_ctx, alice_pub} = fresh_ctx()
+
     {:ok, %{home_room_uuid: alice_home, cert_cids: alice_cids}} =
       Citizenship.ensure(alice_id, alice_pub, "alice", root, store)
 
@@ -122,7 +129,10 @@ defmodule Commonplace.MUD.OpenExitTest do
     {:ok, schema} = Schemas.load_dir_schema(parent, store)
     schema = Schema.add_directory(schema, name, child)
     update = Encoding.encode_update(schema)
-    {metadata, commit_opts} = Commonplace.MUD.SignedWrite.opts_for(parent, store: store, signing_context: signing_ctx)
+
+    {metadata, commit_opts} =
+      Commonplace.MUD.SignedWrite.opts_for(parent, store: store, signing_context: signing_ctx)
+
     {_, _} = {metadata, commit_opts}
 
     case CommitStoreClient.create_chained_commit(store, parent, update, metadata, commit_opts) do
@@ -136,11 +146,20 @@ defmodule Commonplace.MUD.OpenExitTest do
   defp room_facade(source_room, owner_grant, ctx_fields, store) do
     ctx =
       Map.merge(
-        %{cert_cids: [], signer_id: nil, current_room_uuid: source_room, root_uuid: nil, player_name: "p"},
+        %{
+          cert_cids: [],
+          signer_id: nil,
+          current_room_uuid: source_room,
+          root_uuid: nil,
+          player_name: "p"
+        },
         ctx_fields
       )
 
-    %{Facade.new(ctx, source_room, owner_grant, {"verbs/x.safe.elx", "owner-x"}, store) | host_kind: :room}
+    %{
+      Facade.new(ctx, source_room, owner_grant, {"verbs/x.safe.elx", "owner-x"}, store)
+      | host_kind: :room
+    }
   end
 
   defp exits_of(store, room) do
@@ -150,13 +169,19 @@ defmodule Commonplace.MUD.OpenExitTest do
 
   # ---- Gate A: citizen opens in OWN zone ----
 
-  test "Gate A: a citizen opens an exit in their OWN home to a curated room (invoker-signed)", ctx do
+  test "Gate A: a citizen opens an exit in their OWN home to a curated room (invoker-signed)",
+       ctx do
     f =
-      room_facade(ctx.alice_home, [ctx.alice_home], %{
-        signing_context: ctx.alice_ctx,
-        cert_cids: ctx.alice_cids,
-        root_uuid: ctx.root
-      }, ctx.store)
+      room_facade(
+        ctx.alice_home,
+        [ctx.alice_home],
+        %{
+          signing_context: ctx.alice_ctx,
+          cert_cids: ctx.alice_cids,
+          root_uuid: ctx.root
+        },
+        ctx.store
+      )
 
     assert :ok = Facade.open_exit(f, "north", ctx.commons)
     assert %{"north" => dest} = exits_of(ctx.store, ctx.alice_home)
@@ -165,17 +190,23 @@ defmodule Commonplace.MUD.OpenExitTest do
 
   # ---- Gate A: node-authored CURATED-room verb elevates + opens ----
 
-  test "Gate A: a visitor triggering a CURATED room's verb elevates (node) and opens an exit", ctx do
+  test "Gate A: a visitor triggering a CURATED room's verb elevates (node) and opens an exit",
+       ctx do
     # visitor holds NO cert; the curated source room is node-owned → object_owner
     # _authority elevates. owner_grant = [curated_source] (the room's own verb).
     {_vid, vctx, _} = fresh_ctx()
 
     f =
-      room_facade(ctx.curated_source, [ctx.curated_source], %{
-        signing_context: vctx,
-        cert_cids: [],
-        root_uuid: ctx.root
-      }, ctx.store)
+      room_facade(
+        ctx.curated_source,
+        [ctx.curated_source],
+        %{
+          signing_context: vctx,
+          cert_cids: [],
+          root_uuid: ctx.root
+        },
+        ctx.store
+      )
 
     assert :ok = Facade.open_exit(f, "down", ctx.reward)
     assert %{"down" => dest} = exits_of(ctx.store, ctx.curated_source)
@@ -189,16 +220,22 @@ defmodule Commonplace.MUD.OpenExitTest do
 
   # ---- Gate A: visitor in a room they don't own is DENIED ----
 
-  test "Gate A DENY: a visitor cannot open an exit in a room not in their owner_grant (reach)", ctx do
+  test "Gate A DENY: a visitor cannot open an exit in a room not in their owner_grant (reach)",
+       ctx do
     {_vid, vctx, _} = fresh_ctx()
 
     # owner_grant is the visitor's own (empty-ish) grant, NOT the curated source.
     f =
-      room_facade(ctx.curated_source, [UUID.uuid4()], %{
-        signing_context: vctx,
-        cert_cids: [],
-        root_uuid: ctx.root
-      }, ctx.store)
+      room_facade(
+        ctx.curated_source,
+        [UUID.uuid4()],
+        %{
+          signing_context: vctx,
+          cert_cids: [],
+          root_uuid: ctx.root
+        },
+        ctx.store
+      )
 
     # reach fails (source ∉ owner_grant) → owner_grant_exceeded, sanitized to the
     # generic :refused at the facade boundary (permission-class); the raw reason
@@ -207,18 +244,24 @@ defmodule Commonplace.MUD.OpenExitTest do
     refute Map.has_key?(exits_of(ctx.store, ctx.curated_source), "down")
   end
 
-  test "Gate A DENY: a visitor triggering a PLAYER-owned room's own verb is refused (no node elevation)", ctx do
+  test "Gate A DENY: a visitor triggering a PLAYER-owned room's own verb is refused (no node elevation)",
+       ctx do
     # Bob's home is player-authored (NOT node-owned) → object_owner_authority :none
     # → invoker-signed → the visitor's write is denied at the gate. owner_grant =
     # [bob_home] (as if bob's home hosted the verb), but no elevation applies.
     {_vid, vctx, _} = fresh_ctx()
 
     f =
-      room_facade(ctx.bob_home, [ctx.bob_home], %{
-        signing_context: vctx,
-        cert_cids: [],
-        root_uuid: ctx.root
-      }, ctx.store)
+      room_facade(
+        ctx.bob_home,
+        [ctx.bob_home],
+        %{
+          signing_context: vctx,
+          cert_cids: [],
+          root_uuid: ctx.root
+        },
+        ctx.store
+      )
 
     # invoker-signed write denied at the trust gate → {:trust_rejected}, sanitized
     # to :refused (permission-class) at the facade boundary.
@@ -228,7 +271,8 @@ defmodule Commonplace.MUD.OpenExitTest do
 
   # ---- Gate B: anti-intrusion — cannot wire into another player's private home ----
 
-  test "Gate B: opening an exit whose DEST is another player's PRIVATE home is REFUSED (even under node elevation)", ctx do
+  test "Gate B: opening an exit whose DEST is another player's PRIVATE home is REFUSED (even under node elevation)",
+       ctx do
     # A CURATED source verb (elevates to node via Gate A) tries to wire a passage
     # INTO bob's private home. Gate B judges the dest on the INVOKER (visitor,
     # can't write bob's home) + bob's home is under players/ (not curated_public)
@@ -236,11 +280,16 @@ defmodule Commonplace.MUD.OpenExitTest do
     {_vid, vctx, _} = fresh_ctx()
 
     f =
-      room_facade(ctx.curated_source, [ctx.curated_source], %{
-        signing_context: vctx,
-        cert_cids: [],
-        root_uuid: ctx.root
-      }, ctx.store)
+      room_facade(
+        ctx.curated_source,
+        [ctx.curated_source],
+        %{
+          signing_context: vctx,
+          cert_cids: [],
+          root_uuid: ctx.root
+        },
+        ctx.store
+      )
 
     assert {:error, :dest_forbidden} = Facade.open_exit(f, "secret", ctx.bob_home)
     refute Map.has_key?(exits_of(ctx.store, ctx.curated_source), "secret")
@@ -254,11 +303,16 @@ defmodule Commonplace.MUD.OpenExitTest do
     # AND alice can also point at a room she can write (her own home, self-loop ok
     # structurally — Gate B self-owned branch).
     f =
-      room_facade(ctx.alice_home, [ctx.alice_home], %{
-        signing_context: ctx.alice_ctx,
-        cert_cids: ctx.alice_cids,
-        root_uuid: ctx.root
-      }, ctx.store)
+      room_facade(
+        ctx.alice_home,
+        [ctx.alice_home],
+        %{
+          signing_context: ctx.alice_ctx,
+          cert_cids: ctx.alice_cids,
+          root_uuid: ctx.root
+        },
+        ctx.store
+      )
 
     # self-owned dest (alice's own home) passes Gate B via invoker_can_write(dest)
     assert :ok = Facade.open_exit(f, "mirror", ctx.alice_home)
@@ -270,11 +324,16 @@ defmodule Commonplace.MUD.OpenExitTest do
 
   test "Gate C: re-opening the SAME dir=>dest is an idempotent no-op", ctx do
     f =
-      room_facade(ctx.alice_home, [ctx.alice_home], %{
-        signing_context: ctx.alice_ctx,
-        cert_cids: ctx.alice_cids,
-        root_uuid: ctx.root
-      }, ctx.store)
+      room_facade(
+        ctx.alice_home,
+        [ctx.alice_home],
+        %{
+          signing_context: ctx.alice_ctx,
+          cert_cids: ctx.alice_cids,
+          root_uuid: ctx.root
+        },
+        ctx.store
+      )
 
     assert :ok = Facade.open_exit(f, "north", ctx.commons)
     assert :ok = Facade.open_exit(f, "north", ctx.commons)
@@ -283,13 +342,19 @@ defmodule Commonplace.MUD.OpenExitTest do
     assert c == ctx.commons
   end
 
-  test "Gate C: opening a TAKEN dir to a DIFFERENT dest is refused :exit_exists (no silent reroute)", ctx do
+  test "Gate C: opening a TAKEN dir to a DIFFERENT dest is refused :exit_exists (no silent reroute)",
+       ctx do
     f =
-      room_facade(ctx.alice_home, [ctx.alice_home], %{
-        signing_context: ctx.alice_ctx,
-        cert_cids: ctx.alice_cids,
-        root_uuid: ctx.root
-      }, ctx.store)
+      room_facade(
+        ctx.alice_home,
+        [ctx.alice_home],
+        %{
+          signing_context: ctx.alice_ctx,
+          cert_cids: ctx.alice_cids,
+          root_uuid: ctx.root
+        },
+        ctx.store
+      )
 
     assert :ok = Facade.open_exit(f, "north", ctx.commons)
     assert {:error, :exit_exists} = Facade.open_exit(f, "north", ctx.reward)
@@ -302,24 +367,35 @@ defmodule Commonplace.MUD.OpenExitTest do
 
   test "dest must be a valid room (a non-room uuid is refused :no_such_dest)", ctx do
     f =
-      room_facade(ctx.alice_home, [ctx.alice_home], %{
-        signing_context: ctx.alice_ctx,
-        cert_cids: ctx.alice_cids,
-        root_uuid: ctx.root
-      }, ctx.store)
+      room_facade(
+        ctx.alice_home,
+        [ctx.alice_home],
+        %{
+          signing_context: ctx.alice_ctx,
+          cert_cids: ctx.alice_cids,
+          root_uuid: ctx.root
+        },
+        ctx.store
+      )
 
     assert {:error, :no_such_dest} = Facade.open_exit(f, "void", UUID.uuid4())
   end
 
-  test "SURGICAL: opening an exit leaves the room's other meta fields (name/description) intact", ctx do
+  test "SURGICAL: opening an exit leaves the room's other meta fields (name/description) intact",
+       ctx do
     {:ok, before} = World.get_room(ctx.alice_home, ctx.store)
 
     f =
-      room_facade(ctx.alice_home, [ctx.alice_home], %{
-        signing_context: ctx.alice_ctx,
-        cert_cids: ctx.alice_cids,
-        root_uuid: ctx.root
-      }, ctx.store)
+      room_facade(
+        ctx.alice_home,
+        [ctx.alice_home],
+        %{
+          signing_context: ctx.alice_ctx,
+          cert_cids: ctx.alice_cids,
+          root_uuid: ctx.root
+        },
+        ctx.store
+      )
 
     assert :ok = Facade.open_exit(f, "north", ctx.commons)
     {:ok, after_room} = World.get_room(ctx.alice_home, ctx.store)

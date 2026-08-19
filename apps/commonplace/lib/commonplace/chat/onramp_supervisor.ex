@@ -141,7 +141,13 @@ defmodule Commonplace.Chat.OnrampSupervisor do
   defp lookup_pid(room) do
     case :ets.lookup(@table, room) do
       [{^room, pid}] ->
-        if Process.alive?(pid), do: {:ok, pid}, else: (unregister_room(room); :none)
+        if Process.alive?(pid),
+          do: {:ok, pid},
+          else:
+            (
+              unregister_room(room)
+              :none
+            )
 
       [] ->
         :none

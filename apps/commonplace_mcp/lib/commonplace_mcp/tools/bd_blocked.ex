@@ -28,7 +28,8 @@ defmodule Commonplace.MCP.Tools.BdBlocked do
 
   def run(_args, _context) do
     with {:ok, root} <- BdRows.resolve_root(),
-         rows when is_list(rows) <- BdRoute.call(Commonplace.Bd.CLI, :blocked, [root, CommitStoreClient]) do
+         rows when is_list(rows) <-
+           BdRoute.call(Commonplace.Bd.CLI, :blocked, [root, CommitStoreClient]) do
       json_rows = Enum.map(rows, &BdRows.row_to_json/1)
       {:ok, Response.text(BdRows.rows_summary("blocked", json_rows), %{"blocked" => json_rows})}
     else

@@ -133,9 +133,14 @@ defmodule Commonplace.SmartDoc do
     if uuid do
       msg =
         case event do
-          %Magenta{} -> event
-          %{type: type, source: source} -> Magenta.message(type, source, Map.get(event, :payload, %{}))
-          %{} -> Magenta.message("event", docref, event)
+          %Magenta{} ->
+            event
+
+          %{type: type, source: source} ->
+            Magenta.message(type, source, Map.get(event, :payload, %{}))
+
+          %{} ->
+            Magenta.message("event", docref, event)
         end
 
       Magenta.send(uuid, msg)

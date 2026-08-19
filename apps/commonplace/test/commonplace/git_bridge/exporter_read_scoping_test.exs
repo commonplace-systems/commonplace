@@ -64,7 +64,14 @@ defmodule Commonplace.GitBridge.ExporterReadScopingTest do
   test "no-regression: a PUBLIC tree (with a public __room.json dir) exports EXACTLY as expected",
        %{store: store, repo_dir: dir} do
     create_text(store, "u-top", "top.txt", "top level")
-    create_text(store, "u-plaza-meta", Schemas.room_filename(), Schemas.encode_room(%Room{name: "Plaza", description: "open", visibility: :public}))
+
+    create_text(
+      store,
+      "u-plaza-meta",
+      Schemas.room_filename(),
+      Schemas.encode_room(%Room{name: "Plaza", description: "open", visibility: :public})
+    )
+
     create_text(store, "u-sign", "sign.txt", "welcome")
     create_text(store, "u-note", "note.txt", "annex note")
 

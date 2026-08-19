@@ -46,7 +46,12 @@ defmodule Commonplace.Trust.VerifyChainTest do
     %{verbs: verbs, scope: {:docs, docs}, caveats: caveats}
   end
 
-  defp put(store, cap), do: (:ok = CommitStore.store_capability(store, cap); cap)
+  defp put(store, cap),
+    do:
+      (
+        :ok = CommitStore.store_capability(store, cap)
+        cap
+      )
 
   test "1-link root cert: effective capability returned", %{store: store} do
     {root, root_ctx, root_pub} = ident("root")
@@ -67,8 +72,10 @@ defmodule Commonplace.Trust.VerifyChainTest do
 
     {:ok, parent} = Capability.issue(root_ctx, alice, claim([:write, :delegate], ["d1", "d2"]))
     put(store, parent)
+
     {:ok, child} =
       Capability.issue(alice_ctx, bob, claim([:write], ["d1"]), parent.id, parent: parent)
+
     put(store, child)
 
     assert {:ok, eff} = VerifyChain.verify_chain(child.id, MapSet.new([root_pub]), store)
@@ -79,6 +86,7 @@ defmodule Commonplace.Trust.VerifyChainTest do
 
   test "rejects a missing cert with :awaiting_capability", %{store: store} do
     {root_pub, _} = Signing.generate_keypair()
+
     assert {:error, :awaiting_capability} =
              VerifyChain.verify_chain(<<7::256>>, MapSet.new([root_pub]), store)
   end
@@ -110,6 +118,7 @@ defmodule Commonplace.Trust.VerifyChainTest do
 
     assert {:error, :broken_key_link} =
              VerifyChain.verify_chain(child.id, MapSet.new([root_pub]), store)
+
     _ = imp
   end
 
@@ -145,8 +154,14 @@ defmodule Commonplace.Trust.VerifyChainTest do
     {_root, root_ctx, root_pub} = ident("root")
     {alice, _, _} = ident("alice")
     past = DateTime.add(DateTime.utc_now(), -3600, :second)
+
     {:ok, cap} =
-      Capability.issue(root_ctx, alice, claim([:write], ["d1"], %{not_before: nil, not_after: past}))
+      Capability.issue(
+        root_ctx,
+        alice,
+        claim([:write], ["d1"], %{not_before: nil, not_after: past})
+      )
+
     put(store, cap)
 
     assert {:error, :expired} = VerifyChain.verify_chain(cap.id, MapSet.new([root_pub]), store)
@@ -176,15 +191,19 @@ defmodule Commonplace.Trust.VerifyChainTest do
 
       {:ok, parent} = Capability.issue(root_ctx, alice, claim([:write, :delegate], ["d1", "d2"]))
       put(store, parent)
+
       {:ok, child} =
         Capability.issue(alice_ctx, bob, claim([:write], ["d1"]), parent.id, parent: parent)
+
       put(store, child)
 
       assert {:ok, eff} = VerifyChain.verify_chain(child.id, MapSet.new([root_pub]), store)
       assert eff.scope == {:docs, ["d1"]}
     end
 
-    test "mixed {:docs}/{:presence} chain is rejected as undefined (M1 forward-flag)", %{store: store} do
+    test "mixed {:docs}/{:presence} chain is rejected as undefined (M1 forward-flag)", %{
+      store: store
+    } do
       # Build a 2-link chain by hand where the parent is {:docs}-scoped
       # and grants :delegate, but the child (bypassing mint-time
       # attenuation by not passing :parent) claims a {:presence} scope —

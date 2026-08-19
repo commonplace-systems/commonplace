@@ -181,6 +181,7 @@ defmodule Commonplace.Store.SnapshotAncestryTest do
     test "finds common genesis ancestor for two regulars in the same uuid", %{store: store} do
       uuid = "same-uuid"
       {:ok, genesis} = CommitStore.ensure_genesis(store, uuid)
+
       c1 =
         CommitStore.create_chained_commit(store, uuid, update_from(1, "a"), %{kind: :regular})
 

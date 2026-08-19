@@ -31,7 +31,10 @@ alias Commonplace.Trust.Capability
 {:ok, _} = Application.ensure_all_started(:phoenix_pubsub)
 {:ok, _} = Application.ensure_all_started(:telemetry)
 {:ok, _} = Application.ensure_all_started(:bandit)
-{:ok, _} = Supervisor.start_link([{Phoenix.PubSub, name: Commonplace.PubSub}], strategy: :one_for_one)
+
+{:ok, _} =
+  Supervisor.start_link([{Phoenix.PubSub, name: Commonplace.PubSub}], strategy: :one_for_one)
+
 {:ok, _} = CommitStore.start_link(data_dir: data_dir, name: CommitStore)
 {:ok, _} = SecretStore.start_link(data_dir: data_dir, name: SecretStore)
 {:ok, _} = CommonplaceWebWeb.FederationPeerBudget.start_link([])
@@ -51,7 +54,14 @@ Application.put_env(:commonplace, :trust, %{
 
 # Workspace root schema.
 ws_root = UUID.uuid4()
-_ = CommitStore.create_commit(CommitStore, ws_root, Yelixer.Encoding.encode_update(Schema.new_schema()), nil)
+
+_ =
+  CommitStore.create_commit(
+    CommitStore,
+    ws_root,
+    Yelixer.Encoding.encode_update(Schema.new_schema()),
+    nil
+  )
 
 # --- 1. the root registers the agent (creator-signed birth, CX-88mw) ---
 {:ok, agent_uuid, agent_pub} =
@@ -74,7 +84,11 @@ doc_out_of_scope = UUID.uuid4()
   })
 
 :ok = CommitStore.store_capability(CommitStore, cert)
-say.("root delegated {write, [#{String.slice(doc_in_scope, 0, 8)}…]} → agent  (cert #{Base.encode16(cert.id, case: :lower) |> String.slice(0, 12)}…)")
+
+say.(
+  "root delegated {write, [#{String.slice(doc_in_scope, 0, 8)}…]} → agent  (cert #{Base.encode16(cert.id, case: :lower) |> String.slice(0, 12)}…)"
+)
+
 say.("  (CLI equivalent: commonplace cap delegate --audience #{String.slice(agent_uuid, 0, 8)}…)")
 
 # --- 3. the agent authors commits with ITS OWN key ---
@@ -89,30 +103,48 @@ end
 
 in_scope_commit =
   CommitStore.create_commit(
-    CommitStore, doc_in_scope, mkdoc.("hello from the federated agent"), nil,
+    CommitStore,
+    doc_in_scope,
+    mkdoc.("hello from the federated agent"),
+    nil,
     %{kind: :regular, capability_proof: cert.id},
     signing_context: agent_ctx
   )
 
-say.("agent authored doc #{String.slice(doc_in_scope, 0, 8)}… (IN scope, proof stamped) signer=#{in_scope_commit.signer_id}")
+say.(
+  "agent authored doc #{String.slice(doc_in_scope, 0, 8)}… (IN scope, proof stamped) signer=#{in_scope_commit.signer_id}"
+)
 
 # OUT-of-scope: same agent, same cert proof — but a doc the cert never granted.
 out_of_scope_commit =
   CommitStore.create_commit(
-    CommitStore, doc_out_of_scope, mkdoc.("the agent overreaches"), nil,
+    CommitStore,
+    doc_out_of_scope,
+    mkdoc.("the agent overreaches"),
+    nil,
     %{kind: :regular, capability_proof: cert.id},
     signing_context: agent_ctx
   )
 
-say.("agent authored doc #{String.slice(doc_out_of_scope, 0, 8)}… (OUT of scope — A's gate should refuse)")
+say.(
+  "agent authored doc #{String.slice(doc_out_of_scope, 0, 8)}… (OUT of scope — A's gate should refuse)"
+)
 
 # An UNCERTIFIED bot: validly signed, but nobody delegated it anything.
 {mallory_pub, mallory_priv} = Signing.generate_keypair()
-mallory_ctx = %SigningContext{identity_uuid: "mallory-bot", private_key: mallory_priv, public_key: mallory_pub}
+
+mallory_ctx = %SigningContext{
+  identity_uuid: "mallory-bot",
+  private_key: mallory_priv,
+  public_key: mallory_pub
+}
 
 uncertified_commit =
   CommitStore.create_commit(
-    CommitStore, doc_uncertified, mkdoc.("no cert, no entry"), nil,
+    CommitStore,
+    doc_uncertified,
+    mkdoc.("no cert, no entry"),
+    nil,
     %{kind: :regular},
     signing_context: mallory_ctx
   )
@@ -126,12 +158,15 @@ Application.put_env(:commonplace_web, :federation_peers, %{token => "node-a"})
 
 defmodule FedDemo.Pipeline do
   use Plug.Builder
-  plug Plug.Parsers, parsers: [:json], pass: ["*/*"], json_decoder: Jason
-  plug CommonplaceWebWeb.Router
+  plug(Plug.Parsers, parsers: [:json], pass: ["*/*"], json_decoder: Jason)
+  plug(CommonplaceWebWeb.Router)
 end
 
 {:ok, _} = Bandit.start_link(plug: FedDemo.Pipeline, scheme: :http, port: port)
-say.("federation surface up on http://127.0.0.1:#{port}  (bearer-token gated; no cookie, no epmd, no distribution)")
+
+say.(
+  "federation surface up on http://127.0.0.1:#{port}  (bearer-token gated; no cookie, no epmd, no distribution)"
+)
 
 manifest = %{
   port: port,

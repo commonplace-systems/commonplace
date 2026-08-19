@@ -45,7 +45,13 @@ defmodule Commonplace.Store.StoreSupervisorTest do
 
   defp issue_cap do
     {root_pub, root_priv} = Signing.generate_keypair()
-    root_ctx = %SigningContext{identity_uuid: "root", private_key: root_priv, public_key: root_pub}
+
+    root_ctx = %SigningContext{
+      identity_uuid: "root",
+      private_key: root_priv,
+      public_key: root_pub
+    }
+
     {alice_pub, _} = Signing.generate_keypair()
 
     {:ok, cap} =
@@ -59,7 +65,12 @@ defmodule Commonplace.Store.StoreSupervisorTest do
   end
 
   test ":rest_for_one — killing CommitStore restarts TrustSideStore and PendingImports too",
-       %{sup: sup, commit_store: commit_store, trust_side_store: trust_side_store, pending_imports: pending_imports} do
+       %{
+         sup: sup,
+         commit_store: commit_store,
+         trust_side_store: trust_side_store,
+         pending_imports: pending_imports
+       } do
     cs_pid_before = Process.whereis(commit_store)
     tss_pid_before = Process.whereis(trust_side_store)
     pi_pid_before = Process.whereis(pending_imports)
@@ -87,11 +98,13 @@ defmodule Commonplace.Store.StoreSupervisorTest do
     end)
 
     wait_until(fn ->
-      is_pid(Process.whereis(trust_side_store)) and Process.whereis(trust_side_store) != tss_pid_before
+      is_pid(Process.whereis(trust_side_store)) and
+        Process.whereis(trust_side_store) != tss_pid_before
     end)
 
     wait_until(fn ->
-      is_pid(Process.whereis(pending_imports)) and Process.whereis(pending_imports) != pi_pid_before
+      is_pid(Process.whereis(pending_imports)) and
+        Process.whereis(pending_imports) != pi_pid_before
     end)
 
     # All still under the same Supervisor.

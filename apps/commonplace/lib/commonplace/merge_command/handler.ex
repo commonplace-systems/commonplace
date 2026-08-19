@@ -136,6 +136,7 @@ defmodule Commonplace.MergeCommand.Handler do
 
   alias Commonplace.Dataflow.{Magenta, RedLog}
   alias Commonplace.MergeCommand.MergeLog
+
   alias Commonplace.Store.{
     CommitBuilder,
     CommitStore,
@@ -143,6 +144,7 @@ defmodule Commonplace.MergeCommand.Handler do
     Merger,
     MergePolicy
   }
+
   alias Commonplace.Tree.{DocBuilder, Schema, Walk}
   alias Yelixer.{Doc, Encoding}
 
@@ -318,6 +320,7 @@ defmodule Commonplace.MergeCommand.Handler do
         RedLog.commit(log)
 
         updated_schema = Schema.add_file(schema, @merge_log_entry, log_uuid)
+
         CommitStore.create_chained_commit(
           store,
           target_uuid,

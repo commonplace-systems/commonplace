@@ -137,7 +137,9 @@ defmodule Commonplace.Tree.ForkAtTest do
 
       create_text_doc(store, child_a, "a")
       create_text_doc(store, child_b, "b")
-      root_commit = create_schema_with_files(store, root, [{"a.txt", child_a}, {"b.txt", child_b}])
+
+      root_commit =
+        create_schema_with_files(store, root, [{"a.txt", child_a}, {"b.txt", child_b}])
 
       {:ok, new_root} = Fork.fork_directory_at(root, root_commit.id, store)
       assert new_root != root

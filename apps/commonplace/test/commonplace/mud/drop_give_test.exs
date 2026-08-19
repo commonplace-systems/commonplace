@@ -53,7 +53,9 @@ defmodule Commonplace.MUD.DropGiveTest do
 
     on_exit(fn ->
       restore = fn key, v ->
-        if is_nil(v), do: Application.delete_env(:commonplace, key), else: Application.put_env(:commonplace, key, v)
+        if is_nil(v),
+          do: Application.delete_env(:commonplace, key),
+          else: Application.put_env(:commonplace, key, v)
       end
 
       restore.(:data_dir, old_data_dir)
@@ -67,8 +69,18 @@ defmodule Commonplace.MUD.DropGiveTest do
       pid -> GenServer.stop(pid)
     end
 
-    {:ok, bursar_pid} = Bursar.start_link(root_uuid: UUID.uuid4(), store: store, sweep_interval: 60_000)
-    on_exit(fn -> if Process.alive?(bursar_pid), do: (try do GenServer.stop(bursar_pid) catch (:exit, _ -> :ok) end) end)
+    {:ok, bursar_pid} =
+      Bursar.start_link(root_uuid: UUID.uuid4(), store: store, sweep_interval: 60_000)
+
+    on_exit(fn ->
+      if Process.alive?(bursar_pid),
+        do:
+          (try do
+             GenServer.stop(bursar_pid)
+           catch
+             (:exit, _ -> :ok)
+           end)
+    end)
 
     {:ok, node_ctx} = NodeIdentity.signing_context()
     {:ok, node_identity} = NodeIdentity.identity()
@@ -142,9 +154,20 @@ defmodule Commonplace.MUD.DropGiveTest do
     {:ok, schema} = Schemas.load_dir_schema(parent_uuid, store)
     schema = Schema.add_directory(schema, name, child_uuid)
     update = Encoding.encode_update(schema)
-    {metadata, commit_opts} = Commonplace.MUD.SignedWrite.opts_for(parent_uuid, store: store, signing_context: signing_ctx)
 
-    case CommitStoreClient.create_chained_commit(store, parent_uuid, update, metadata, commit_opts) do
+    {metadata, commit_opts} =
+      Commonplace.MUD.SignedWrite.opts_for(parent_uuid,
+        store: store,
+        signing_context: signing_ctx
+      )
+
+    case CommitStoreClient.create_chained_commit(
+           store,
+           parent_uuid,
+           update,
+           metadata,
+           commit_opts
+         ) do
       {:error, _} = err -> raise "seed write failed: #{inspect(err)}"
       _commit -> :ok
     end
@@ -154,9 +177,20 @@ defmodule Commonplace.MUD.DropGiveTest do
     {:ok, schema} = Schemas.load_dir_schema(parent_uuid, store)
     schema = Schema.add_file(schema, name, child_uuid)
     update = Encoding.encode_update(schema)
-    {metadata, commit_opts} = Commonplace.MUD.SignedWrite.opts_for(parent_uuid, store: store, signing_context: signing_ctx)
 
-    case CommitStoreClient.create_chained_commit(store, parent_uuid, update, metadata, commit_opts) do
+    {metadata, commit_opts} =
+      Commonplace.MUD.SignedWrite.opts_for(parent_uuid,
+        store: store,
+        signing_context: signing_ctx
+      )
+
+    case CommitStoreClient.create_chained_commit(
+           store,
+           parent_uuid,
+           update,
+           metadata,
+           commit_opts
+         ) do
       {:error, _} = err -> raise "seed write failed: #{inspect(err)}"
       _commit -> :ok
     end
@@ -191,7 +225,9 @@ defmodule Commonplace.MUD.DropGiveTest do
     doc = ContentType.set_key(doc, "type", "usr")
     doc = ContentType.set_key(doc, "bound_identity", identity)
     update = Encoding.encode_update(doc)
-    {metadata, commit_opts} = Commonplace.MUD.SignedWrite.opts_for(uuid, store: store, signing_context: node_ctx)
+
+    {metadata, commit_opts} =
+      Commonplace.MUD.SignedWrite.opts_for(uuid, store: store, signing_context: node_ctx)
 
     case CommitStoreClient.create_commit(store, uuid, update, nil, metadata, commit_opts) do
       {:error, _} = err -> raise "seed write failed: #{inspect(err)}"
@@ -213,7 +249,9 @@ defmodule Commonplace.MUD.DropGiveTest do
     doc = ContentType.set_key(doc, "name", name)
     doc = ContentType.set_key(doc, "type", "usr")
     update = Encoding.encode_update(doc)
-    {metadata, commit_opts} = Commonplace.MUD.SignedWrite.opts_for(uuid, store: store, signing_context: node_ctx)
+
+    {metadata, commit_opts} =
+      Commonplace.MUD.SignedWrite.opts_for(uuid, store: store, signing_context: node_ctx)
 
     case CommitStoreClient.create_commit(store, uuid, update, nil, metadata, commit_opts) do
       {:error, _} = err -> raise "seed write failed: #{inspect(err)}"
@@ -238,7 +276,12 @@ defmodule Commonplace.MUD.DropGiveTest do
     add_dir_entry!(store, room, "widget.obj", item, node_ctx)
 
     {player_id, _} = fresh_identity()
-    assert :ok = Take.take(item, "widget.obj", room, inventory, player_id, store: store, root_uuid: root)
+
+    assert :ok =
+             Take.take(item, "widget.obj", room, inventory, player_id,
+               store: store,
+               root_uuid: root
+             )
 
     assert :ok = World.drop_item(item, "widget.obj", inventory, room, player_id, store: store)
 
@@ -274,12 +317,13 @@ defmodule Commonplace.MUD.DropGiveTest do
 
   # ---- CX-5c78: PUT (deposit) into a curated node-owned container ----
 
-  test "deposit: a visitor can put a held item into a curated (node-owned) container — elevates (was refused loot-only)", %{
-    store: store,
-    node_ctx: node_ctx,
-    node_identity: node_identity,
-    root: root
-  } do
+  test "deposit: a visitor can put a held item into a curated (node-owned) container — elevates (was refused loot-only)",
+       %{
+         store: store,
+         node_ctx: node_ctx,
+         node_identity: node_identity,
+         root: root
+       } do
     room = share!(store, root, mk_room!(store, node_ctx), node_ctx)
     container = mk_object!(store, node_ctx, name: "reliquary.obj")
     add_dir_entry!(store, room, "reliquary.obj", container, node_ctx)
@@ -292,9 +336,18 @@ defmodule Commonplace.MUD.DropGiveTest do
     # {:trust_rejected} (loot-only). Now it routes through the HolderMove
     # push-to-node path (like drop) → elevates → lands.
     {player_id, _} = fresh_identity()
-    assert :ok = Take.take(item, "coin.obj", room, inventory, player_id, store: store, root_uuid: root)
 
-    assert :ok = World.deposit_item(item, "coin.obj", inventory, container, player_id, store: store, root_uuid: root)
+    assert :ok =
+             Take.take(item, "coin.obj", room, inventory, player_id,
+               store: store,
+               root_uuid: root
+             )
+
+    assert :ok =
+             World.deposit_item(item, "coin.obj", inventory, container, player_id,
+               store: store,
+               root_uuid: root
+             )
 
     refute "coin.obj" in entry_names(store, inventory)
     assert "coin.obj" in entry_names(store, container)
@@ -302,11 +355,12 @@ defmodule Commonplace.MUD.DropGiveTest do
     assert {:held, %{holder: ^node_identity}} = BursarClient.query(Bursar, item)
   end
 
-  test "deposit: a visitor who never held the item cannot put it in a container (token not theirs)", %{
-    store: store,
-    node_ctx: node_ctx,
-    root: root
-  } do
+  test "deposit: a visitor who never held the item cannot put it in a container (token not theirs)",
+       %{
+         store: store,
+         node_ctx: node_ctx,
+         root: root
+       } do
     room = share!(store, root, mk_room!(store, node_ctx), node_ctx)
     container = mk_object!(store, node_ctx, name: "chest.obj")
     add_dir_entry!(store, room, "chest.obj", container, node_ctx)
@@ -318,7 +372,10 @@ defmodule Commonplace.MUD.DropGiveTest do
     {player_id, _} = fresh_identity()
 
     assert {:error, :not_holder} =
-             World.deposit_item(item, "phantom.obj", inventory, container, player_id, store: store, root_uuid: root)
+             World.deposit_item(item, "phantom.obj", inventory, container, player_id,
+               store: store,
+               root_uuid: root
+             )
 
     assert "phantom.obj" in entry_names(store, inventory)
     refute "phantom.obj" in entry_names(store, container)
@@ -341,10 +398,13 @@ defmodule Commonplace.MUD.DropGiveTest do
     {giver_id, _} = fresh_identity()
     {recipient_id, _} = fresh_identity()
 
-    assert :ok = Take.take(item, "coin.obj", room, giver_inv, giver_id, store: store, root_uuid: root)
+    assert :ok =
+             Take.take(item, "coin.obj", room, giver_inv, giver_id, store: store, root_uuid: root)
 
     assert :ok =
-             World.give_item(item, "coin.obj", giver_inv, recipient_inv, giver_id, recipient_id, store: store)
+             World.give_item(item, "coin.obj", giver_inv, recipient_inv, giver_id, recipient_id,
+               store: store
+             )
 
     refute "coin.obj" in entry_names(store, giver_inv)
     assert "coin.obj" in entry_names(store, recipient_inv)
@@ -366,7 +426,15 @@ defmodule Commonplace.MUD.DropGiveTest do
     {recipient_id, _} = fresh_identity()
 
     assert {:error, :not_holder} =
-             World.give_item(item, "trinket.obj", giver_inv, recipient_inv, giver_id, recipient_id, store: store)
+             World.give_item(
+               item,
+               "trinket.obj",
+               giver_inv,
+               recipient_inv,
+               giver_id,
+               recipient_id,
+               store: store
+             )
 
     assert "trinket.obj" in entry_names(store, giver_inv)
     refute "trinket.obj" in entry_names(store, recipient_inv)
@@ -382,12 +450,13 @@ defmodule Commonplace.MUD.DropGiveTest do
   # (jes's live bug). It now routes through `World.give_item/7`, so the token
   # transfers giver → recipient exactly like the `give` command.
 
-  test "give_from_inventory (facade): a held gift transfers its token to the recipient — the CX-j2wt fix (droppable, not a ghost)", %{
-    store: store,
-    node_ctx: node_ctx,
-    root: root,
-    players: players
-  } do
+  test "give_from_inventory (facade): a held gift transfers its token to the recipient — the CX-j2wt fix (droppable, not a ghost)",
+       %{
+         store: store,
+         node_ctx: node_ctx,
+         root: root,
+         players: players
+       } do
     room = share!(store, root, mk_room!(store, node_ctx), node_ctx)
 
     # Giver: a fresh visitor who TAKES an item, so they hold its token.
@@ -395,7 +464,9 @@ defmodule Commonplace.MUD.DropGiveTest do
     giver_inv = mk_inventory!(store, node_ctx)
     item = mk_object!(store, node_ctx, name: "coin.obj")
     add_dir_entry!(store, room, "coin.obj", item, node_ctx)
-    assert :ok = Take.take(item, "coin.obj", room, giver_inv, giver_id, store: store, root_uuid: root)
+
+    assert :ok =
+             Take.take(item, "coin.obj", room, giver_inv, giver_id, store: store, root_uuid: root)
 
     # Recipient bob: resolvable at players/bob/inventory AND present in the
     # room with a bound identity (so the token can transfer to them).
@@ -428,12 +499,13 @@ defmodule Commonplace.MUD.DropGiveTest do
     assert {:held, %{holder: ^bob_id}} = BursarClient.query(Bursar, item)
   end
 
-  test "give_from_inventory (facade): gifting a token-less ghost is refused :not_carrying — no silent desynced deposit", %{
-    store: store,
-    node_ctx: node_ctx,
-    root: root,
-    players: players
-  } do
+  test "give_from_inventory (facade): gifting a token-less ghost is refused :not_carrying — no silent desynced deposit",
+       %{
+         store: store,
+         node_ctx: node_ctx,
+         root: root,
+         players: players
+       } do
     room = share!(store, root, mk_room!(store, node_ctx), node_ctx)
 
     # A visitor whose inventory dir CONTAINS an item they never held the
@@ -488,7 +560,9 @@ defmodule Commonplace.MUD.DropGiveTest do
     add_dir_entry!(store, room, "trigger", item, node_ctx)
 
     {player_id, _} = fresh_identity()
-    assert :ok = Take.take(item, "trigger", room, inventory, player_id, store: store, root_uuid: root)
+
+    assert :ok =
+             Take.take(item, "trigger", room, inventory, player_id, store: store, root_uuid: root)
 
     # collide: an entry named "coin" already lives in the destination room.
     other_item = mk_object!(store, node_ctx, name: "coin")
@@ -499,14 +573,17 @@ defmodule Commonplace.MUD.DropGiveTest do
     inv_schema = Schema.remove_entry(inv_schema, "trigger")
     inv_schema = Schema.add_file(inv_schema, "coin", item)
     update = Encoding.encode_update(inv_schema)
-    {metadata, commit_opts} = Commonplace.MUD.SignedWrite.opts_for(inventory, store: store, signing_context: node_ctx)
+
+    {metadata, commit_opts} =
+      Commonplace.MUD.SignedWrite.opts_for(inventory, store: store, signing_context: node_ctx)
 
     case CommitStoreClient.create_chained_commit(store, inventory, update, metadata, commit_opts) do
       {:error, _} = err -> raise "seed write failed: #{inspect(err)}"
       _commit -> :ok
     end
 
-    assert {:error, :collision} = World.drop_item(item, "coin", inventory, room, player_id, store: store)
+    assert {:error, :collision} =
+             World.drop_item(item, "coin", inventory, room, player_id, store: store)
 
     assert "coin" in entry_names(store, inventory)
     assert {:held, %{holder: ^player_id}} = BursarClient.query(Bursar, item)
@@ -529,7 +606,8 @@ defmodule Commonplace.MUD.DropGiveTest do
     {alice_id, alice_sc} = fresh_identity()
     {bob_id, _} = fresh_identity()
 
-    assert :ok = Take.take(item, "ring.obj", room, alice_inv, alice_id, store: store, root_uuid: root)
+    assert :ok =
+             Take.take(item, "ring.obj", room, alice_inv, alice_id, store: store, root_uuid: root)
 
     seed_presence!(store, room, "bob", bob_id, node_ctx)
 
@@ -555,12 +633,13 @@ defmodule Commonplace.MUD.DropGiveTest do
 
   # ---- 7. THE COUPLING PROOF: DROP + TAKE-zone-gate close the home-raid ----
 
-  test "coupling proof: a visitor cannot take a dropped item from another player's home, but the owner can", %{
-    store: store,
-    node_ctx: node_ctx,
-    root: root,
-    players: players
-  } do
+  test "coupling proof: a visitor cannot take a dropped item from another player's home, but the owner can",
+       %{
+         store: store,
+         node_ctx: node_ctx,
+         root: root,
+         players: players
+       } do
     alice = mk_home!(store, players, "alice", node_ctx)
     bob = mk_home!(store, players, "bob", node_ctx)
 
@@ -574,20 +653,31 @@ defmodule Commonplace.MUD.DropGiveTest do
     # Alice takes the gem from the shared room into her own inventory,
     # then drops it in her own home.
     assert :ok =
-             Take.take(item, "gem.obj", shared_room, alice.inventory, alice_id, store: store, root_uuid: root)
+             Take.take(item, "gem.obj", shared_room, alice.inventory, alice_id,
+               store: store,
+               root_uuid: root
+             )
 
-    assert :ok = World.drop_item(item, "gem.obj", alice.inventory, alice.home, alice_id, store: store)
+    assert :ok =
+             World.drop_item(item, "gem.obj", alice.inventory, alice.home, alice_id, store: store)
+
     assert "gem.obj" in entry_names(store, alice.home)
 
     # Bob (a visitor) cannot take it from Alice's home — the TAKE-zone-gate refuses.
     assert {:error, :not_takeable_here} =
-             Take.take(item, "gem.obj", alice.home, bob.inventory, bob_id, store: store, root_uuid: root)
+             Take.take(item, "gem.obj", alice.home, bob.inventory, bob_id,
+               store: store,
+               root_uuid: root
+             )
 
     assert "gem.obj" in entry_names(store, alice.home)
 
     # Alice CAN take it back from her own home.
     assert :ok =
-             Take.take(item, "gem.obj", alice.home, alice.inventory, alice_id, store: store, root_uuid: root)
+             Take.take(item, "gem.obj", alice.home, alice.inventory, alice_id,
+               store: store,
+               root_uuid: root
+             )
 
     refute "gem.obj" in entry_names(store, alice.home)
     assert "gem.obj" in entry_names(store, alice.inventory)
@@ -611,7 +701,12 @@ defmodule Commonplace.MUD.DropGiveTest do
     add_dir_entry!(store, room, "amulet.obj", item, node_ctx)
 
     {alice_id, alice_sc} = fresh_identity()
-    assert :ok = Take.take(item, "amulet.obj", room, alice_inv, alice_id, store: store, root_uuid: root)
+
+    assert :ok =
+             Take.take(item, "amulet.obj", room, alice_inv, alice_id,
+               store: store,
+               root_uuid: root
+             )
 
     # Bob is present, but his presence doc carries NO bound_identity ->
     # resolve_recipient_identity/2 returns nil -> the enforce push guard
@@ -654,12 +749,13 @@ defmodule Commonplace.MUD.DropGiveTest do
   # server-resolved `:invoker_inventory_uuid` (the verb dispatch's `possession_opts`
   # does; direct callers like test #2 above do NOT, which is why that still refuses).
 
-  test "CX-j2wt pin 1a (DROP): an :available item in the invoker's OWN inventory re-anchors → drops", %{
-    store: store,
-    node_ctx: node_ctx,
-    node_identity: node_identity,
-    root: root
-  } do
+  test "CX-j2wt pin 1a (DROP): an :available item in the invoker's OWN inventory re-anchors → drops",
+       %{
+         store: store,
+         node_ctx: node_ctx,
+         node_identity: node_identity,
+         root: root
+       } do
     room = share!(store, root, mk_room!(store, node_ctx), node_ctx)
     inventory = mk_inventory!(store, node_ctx)
     item = mk_object!(store, node_ctx, name: "orphan.obj")
@@ -681,10 +777,11 @@ defmodule Commonplace.MUD.DropGiveTest do
     assert {:held, %{holder: ^node_identity}} = BursarClient.query(Bursar, item)
   end
 
-  test "CX-j2wt pin 1b (GIVE): an :available item in the giver's OWN inventory re-anchors → gives", %{
-    store: store,
-    node_ctx: node_ctx
-  } do
+  test "CX-j2wt pin 1b (GIVE): an :available item in the giver's OWN inventory re-anchors → gives",
+       %{
+         store: store,
+         node_ctx: node_ctx
+       } do
     giver_inv = mk_inventory!(store, node_ctx)
     recipient_inv = mk_inventory!(store, node_ctx)
     item = mk_object!(store, node_ctx, name: "orphan-coin.obj")
@@ -694,7 +791,13 @@ defmodule Commonplace.MUD.DropGiveTest do
     assert :available = BursarClient.query(Bursar, item)
 
     assert :ok =
-             World.give_item(item, "orphan-coin.obj", giver_inv, recipient_inv, giver_id, recipient_id,
+             World.give_item(
+               item,
+               "orphan-coin.obj",
+               giver_inv,
+               recipient_inv,
+               giver_id,
+               recipient_id,
                store: store,
                invoker_inventory_uuid: giver_inv
              )
@@ -704,12 +807,13 @@ defmodule Commonplace.MUD.DropGiveTest do
     assert {:held, %{holder: ^recipient_id}} = BursarClient.query(Bursar, item)
   end
 
-  test "CX-j2wt pin 1c (PUT): an :available item in the invoker's OWN inventory re-anchors → deposits into a curated container", %{
-    store: store,
-    node_ctx: node_ctx,
-    node_identity: node_identity,
-    root: root
-  } do
+  test "CX-j2wt pin 1c (PUT): an :available item in the invoker's OWN inventory re-anchors → deposits into a curated container",
+       %{
+         store: store,
+         node_ctx: node_ctx,
+         node_identity: node_identity,
+         root: root
+       } do
     room = share!(store, root, mk_room!(store, node_ctx), node_ctx)
     container = mk_object!(store, node_ctx, name: "reliquary.obj")
     add_dir_entry!(store, room, "reliquary.obj", container, node_ctx)
@@ -731,11 +835,12 @@ defmodule Commonplace.MUD.DropGiveTest do
     assert {:held, %{holder: ^node_identity}} = BursarClient.query(Bursar, item)
   end
 
-  test "CX-j2wt pin 2 (ADVERSARIAL ISOLATION): an :available item in ANOTHER player's inventory does NOT re-anchor — self-inventory only", %{
-    store: store,
-    node_ctx: node_ctx,
-    root: root
-  } do
+  test "CX-j2wt pin 2 (ADVERSARIAL ISOLATION): an :available item in ANOTHER player's inventory does NOT re-anchor — self-inventory only",
+       %{
+         store: store,
+         node_ctx: node_ctx,
+         root: root
+       } do
     room = share!(store, root, mk_room!(store, node_ctx), node_ctx)
     victim_inv = mk_inventory!(store, node_ctx)
     attacker_inv = mk_inventory!(store, node_ctx)
@@ -760,11 +865,12 @@ defmodule Commonplace.MUD.DropGiveTest do
     assert :available = BursarClient.query(Bursar, item)
   end
 
-  test "CX-j2wt pin 3 (ANTI-RAID intact): a token HELD BY ANOTHER still refuses, even with the own-inventory opt (re-anchor is :available-only)", %{
-    store: store,
-    node_ctx: node_ctx,
-    root: root
-  } do
+  test "CX-j2wt pin 3 (ANTI-RAID intact): a token HELD BY ANOTHER still refuses, even with the own-inventory opt (re-anchor is :available-only)",
+       %{
+         store: store,
+         node_ctx: node_ctx,
+         root: root
+       } do
     room = share!(store, root, mk_room!(store, node_ctx), node_ctx)
     attacker_inv = mk_inventory!(store, node_ctx)
     item = mk_object!(store, node_ctx, name: "held.obj")
@@ -772,7 +878,8 @@ defmodule Commonplace.MUD.DropGiveTest do
     {attacker_id, _} = fresh_identity()
     {victim_id, _} = fresh_identity()
     # the token is genuinely HELD by the victim (not :available)
-    assert {:ok, _} = BursarClient.acquire(Bursar, item, victim_id, authenticated_as: victim_id, ttl: nil)
+    assert {:ok, _} =
+             BursarClient.acquire(Bursar, item, victim_id, authenticated_as: victim_id, ttl: nil)
 
     # Even though the item sits in the attacker's own inventory + they pass the
     # own-inventory opt, the token is held-by-OTHER → the :available branch is
@@ -787,11 +894,12 @@ defmodule Commonplace.MUD.DropGiveTest do
     assert {:held, %{holder: ^victim_id}} = BursarClient.query(Bursar, item)
   end
 
-  test "CX-j2wt pin 4 (FAIL-CLOSED): a non-durable session (nil inventory_uuid) does NOT re-anchor — no cert check needed", %{
-    store: store,
-    node_ctx: node_ctx,
-    root: root
-  } do
+  test "CX-j2wt pin 4 (FAIL-CLOSED): a non-durable session (nil inventory_uuid) does NOT re-anchor — no cert check needed",
+       %{
+         store: store,
+         node_ctx: node_ctx,
+         root: root
+       } do
     room = share!(store, root, mk_room!(store, node_ctx), node_ctx)
     inventory = mk_inventory!(store, node_ctx)
     item = mk_object!(store, node_ctx, name: "orphan.obj")

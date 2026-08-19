@@ -43,6 +43,7 @@ defmodule Commonplace.MCP.WorkspaceVerifyTest do
   end
 
   test "unexpected remote shape (not a binary, not nil) → workspace_unverifiable" do
-    assert {:error, {:workspace_unverifiable, _}} = MCP.compare_workspace(:not_a_path, "/home/jes/ws")
+    assert {:error, {:workspace_unverifiable, _}} =
+             MCP.compare_workspace(:not_a_path, "/home/jes/ws")
   end
 end

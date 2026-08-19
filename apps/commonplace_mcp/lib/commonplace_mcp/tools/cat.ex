@@ -135,7 +135,9 @@ defmodule Commonplace.MCP.Tools.Cat do
   end
 
   defp preview_for(nil), do: "(empty)"
-  defp preview_for(bin) when is_binary(bin), do: binary_part(bin, 0, min(byte_size(bin), @preview_bytes))
+
+  defp preview_for(bin) when is_binary(bin),
+    do: binary_part(bin, 0, min(byte_size(bin), @preview_bytes))
 
   defp preview_for(other) do
     case Jason.encode(other, pretty: true) do

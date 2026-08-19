@@ -48,7 +48,9 @@ defmodule Commonplace.MUD.WebPlayIntegrationTest do
 
     on_exit(fn ->
       restore = fn key, v ->
-        if is_nil(v), do: Application.delete_env(:commonplace, key), else: Application.put_env(:commonplace, key, v)
+        if is_nil(v),
+          do: Application.delete_env(:commonplace, key),
+          else: Application.put_env(:commonplace, key, v)
       end
 
       restore.(:data_dir, old_data_dir)
@@ -66,18 +68,48 @@ defmodule Commonplace.MUD.WebPlayIntegrationTest do
     end
 
     {:ok, bursar_pid} =
-      Commonplace.Green.Bursar.start_link(root_uuid: UUID.uuid4(), store: store, sweep_interval: 60_000)
+      Commonplace.Green.Bursar.start_link(
+        root_uuid: UUID.uuid4(),
+        store: store,
+        sweep_interval: 60_000
+      )
 
-    on_exit(fn -> if Process.alive?(bursar_pid), do: (try do GenServer.stop(bursar_pid) catch (:exit, _ -> :ok) end) end)
+    on_exit(fn ->
+      if Process.alive?(bursar_pid),
+        do:
+          (try do
+             GenServer.stop(bursar_pid)
+           catch
+             (:exit, _ -> :ok)
+           end)
+    end)
 
     {:ok, node_ctx} = NodeIdentity.signing_context()
 
     # world root + a shared, UNOWNED `start` room (node-signed).
     root = UUID.uuid4()
-    CommitStore.create_commit(store, root, Yelixer.Encoding.encode_update(Schema.new_schema()), nil, %{}, signing_context: node_ctx)
 
-    start_json = Schemas.encode_room(%Room{name: "The Commons", description: "A shared square. Nobody owns it.", exits: %{}})
-    {:ok, start_dir} = Schemas.create_dir_with_meta(Schemas.room_filename(), start_json, store, signing_context: node_ctx)
+    CommitStore.create_commit(
+      store,
+      root,
+      Yelixer.Encoding.encode_update(Schema.new_schema()),
+      nil,
+      %{},
+      signing_context: node_ctx
+    )
+
+    start_json =
+      Schemas.encode_room(%Room{
+        name: "The Commons",
+        description: "A shared square. Nobody owns it.",
+        exits: %{}
+      })
+
+    {:ok, start_dir} =
+      Schemas.create_dir_with_meta(Schemas.room_filename(), start_json, store,
+        signing_context: node_ctx
+      )
+
     add_child(store, root, "start", start_dir, node_ctx)
 
     %{store: store, root: root, start_dir: start_dir}
@@ -90,7 +122,8 @@ defmodule Commonplace.MUD.WebPlayIntegrationTest do
     identity = UUID.uuid4()
     player_ctx = %SigningContext{identity_uuid: identity, public_key: pub, private_key: priv}
 
-    assert {:ok, %{cert_cids: cert_cids, home_room_uuid: home_uuid, home_room_meta_uuid: home_meta}} =
+    assert {:ok,
+            %{cert_cids: cert_cids, home_room_uuid: home_uuid, home_room_meta_uuid: home_meta}} =
              Citizenship.ensure(identity, pub, "arwen", root, store)
 
     {:ok, pid} =

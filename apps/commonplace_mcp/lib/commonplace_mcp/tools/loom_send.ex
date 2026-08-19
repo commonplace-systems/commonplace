@@ -58,8 +58,7 @@ defmodule Commonplace.MCP.Tools.LoomSend do
 
       case Actions.post_message(room.messages_uuid, text, opts) do
         {:ok, %{message_id: id, ts: ts}} ->
-          {:ok,
-           Response.text("Posted to #loom (#{id}).", %{"message_id" => id, "ts" => ts})}
+          {:ok, Response.text("Posted to #loom (#{id}).", %{"message_id" => id, "ts" => ts})}
 
         {:error, reason} ->
           {:error, :invalid_params, "loom_send failed: #{inspect(reason)}"}

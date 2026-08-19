@@ -72,7 +72,9 @@ defmodule Commonplace.MUD.CxE8xjGiftedStateTest do
 
     on_exit(fn ->
       restore = fn key, v ->
-        if is_nil(v), do: Application.delete_env(:commonplace, key), else: Application.put_env(:commonplace, key, v)
+        if is_nil(v),
+          do: Application.delete_env(:commonplace, key),
+          else: Application.put_env(:commonplace, key, v)
       end
 
       restore.(:data_dir, old_data_dir)
@@ -86,8 +88,18 @@ defmodule Commonplace.MUD.CxE8xjGiftedStateTest do
       pid -> GenServer.stop(pid)
     end
 
-    {:ok, bursar_pid} = Bursar.start_link(root_uuid: UUID.uuid4(), store: store, sweep_interval: 60_000)
-    on_exit(fn -> if Process.alive?(bursar_pid), do: (try do GenServer.stop(bursar_pid) catch (:exit, _ -> :ok) end) end)
+    {:ok, bursar_pid} =
+      Bursar.start_link(root_uuid: UUID.uuid4(), store: store, sweep_interval: 60_000)
+
+    on_exit(fn ->
+      if Process.alive?(bursar_pid),
+        do:
+          (try do
+             GenServer.stop(bursar_pid)
+           catch
+             (:exit, _ -> :ok)
+           end)
+    end)
 
     {:ok, node_ctx} = NodeIdentity.signing_context()
     {:ok, node_identity} = NodeIdentity.identity()
@@ -96,7 +108,13 @@ defmodule Commonplace.MUD.CxE8xjGiftedStateTest do
     {:ok, players} = Schemas.create_dir_with_meta(nil, nil, store, signing_context: node_ctx)
     add_dir_entry!(store, root, "players", players, node_ctx)
 
-    %{store: store, node_ctx: node_ctx, node_identity: node_identity, root: root, players: players}
+    %{
+      store: store,
+      node_ctx: node_ctx,
+      node_identity: node_identity,
+      root: root,
+      players: players
+    }
   end
 
   # ---- helpers ----
@@ -105,7 +123,16 @@ defmodule Commonplace.MUD.CxE8xjGiftedStateTest do
     {:ok, schema} = Schemas.load_dir_schema(parent, store)
     schema = Schema.add_directory(schema, name, child)
     {metadata, commit_opts} = SignedWrite.opts_for(parent, store: store, signing_context: sc)
-    _ = CommitStoreClient.create_chained_commit(store, parent, Encoding.encode_update(schema), metadata, commit_opts)
+
+    _ =
+      CommitStoreClient.create_chained_commit(
+        store,
+        parent,
+        Encoding.encode_update(schema),
+        metadata,
+        commit_opts
+      )
+
     :ok
   end
 
@@ -155,7 +182,11 @@ defmodule Commonplace.MUD.CxE8xjGiftedStateTest do
       presence_filename: "#{name}.usr",
       root_uuid: root,
       store: store,
-      signing_context: %SigningContext{identity_uuid: identity, private_key: priv, public_key: pub},
+      signing_context: %SigningContext{
+        identity_uuid: identity,
+        private_key: priv,
+        public_key: pub
+      },
       signer_id: nil,
       cert_cids: []
     }
@@ -178,7 +209,13 @@ defmodule Commonplace.MUD.CxE8xjGiftedStateTest do
   # ---- PIN 1: the gift works for the recipient who HOLDS it ----
 
   test "PIN 1: a gifted object's verb state-write persists for the recipient who HOLDS it",
-       %{store: store, node_ctx: node_ctx, node_identity: node_identity, root: root, players: players} do
+       %{
+         store: store,
+         node_ctx: node_ctx,
+         node_identity: node_identity,
+         root: root,
+         players: players
+       } do
     {home, glowbug} = gift_scaffold(store, node_ctx, players)
     save_verb!(store, glowbug, node_ctx, "rub", @rub)
 
@@ -197,7 +234,13 @@ defmodule Commonplace.MUD.CxE8xjGiftedStateTest do
   # ---- PIN 2: anti-grief — a non-holder non-author is refused ----
 
   test "PIN 2 (ANTI-GRIEF): a non-holder non-author cannot drive a player-zoned object's state",
-       %{store: store, node_ctx: node_ctx, node_identity: node_identity, root: root, players: players} do
+       %{
+         store: store,
+         node_ctx: node_ctx,
+         node_identity: node_identity,
+         root: root,
+         players: players
+       } do
     {home, glowbug} = gift_scaffold(store, node_ctx, players)
     save_verb!(store, glowbug, node_ctx, "rub", @rub)
 
@@ -213,13 +256,26 @@ defmodule Commonplace.MUD.CxE8xjGiftedStateTest do
   # ---- PIN 3: scope isolation — a holder can't possession-elevate a move ----
 
   test "PIN 3 (SCOPE ISOLATION): a holder cannot possession-elevate a non-state write (move_object)",
-       %{store: store, node_ctx: node_ctx, node_identity: node_identity, root: root, players: players} do
+       %{
+         store: store,
+         node_ctx: node_ctx,
+         node_identity: node_identity,
+         root: root,
+         players: players
+       } do
     {home, glowbug} = gift_scaffold(store, node_ctx, players)
     {:ok, dest} = Schemas.create_dir_with_meta(nil, nil, store, signing_context: node_ctx)
     add_dir_entry!(store, root, "dest", dest, node_ctx)
 
     save_verb!(store, glowbug, node_ctx, "rub", @rub)
-    save_verb!(store, glowbug, node_ctx, "teleport", ~s|Commonplace.MUD.World.Facade.move_object(world, "#{dest}")|)
+
+    save_verb!(
+      store,
+      glowbug,
+      node_ctx,
+      "teleport",
+      ~s|Commonplace.MUD.World.Facade.move_object(world, "#{dest}")|
+    )
 
     quill_id = "quill-#{:rand.uniform(1_000_000_000)}"
     give!(glowbug, node_identity, quill_id)
@@ -240,11 +296,23 @@ defmodule Commonplace.MUD.CxE8xjGiftedStateTest do
   # ---- PIN 4: firewall — a holder's state-write can't touch the zone stamp ----
 
   test "PIN 4 (FIREWALL): a holder's state-write cannot re-stamp the object, and the state_only firewall refuses a non-state write",
-       %{store: store, node_ctx: node_ctx, node_identity: node_identity, root: root, players: players} do
+       %{
+         store: store,
+         node_ctx: node_ctx,
+         node_identity: node_identity,
+         root: root,
+         players: players
+       } do
     {home, glowbug} = gift_scaffold(store, node_ctx, players)
     # A verb that TRIES to write "zone" — but put_state nests everything under the
     # "state" submap, so it can only ever reach state["zone"], never meta["zone"].
-    save_verb!(store, glowbug, node_ctx, "tamper", ~s|Commonplace.MUD.World.Facade.put_state(world, "zone", "evil-zone")|)
+    save_verb!(
+      store,
+      glowbug,
+      node_ctx,
+      "tamper",
+      ~s|Commonplace.MUD.World.Facade.put_state(world, "zone", "evil-zone")|
+    )
 
     quill_id = "quill-#{:rand.uniform(1_000_000_000)}"
     give!(glowbug, node_identity, quill_id)

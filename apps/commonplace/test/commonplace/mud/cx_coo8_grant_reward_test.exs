@@ -83,7 +83,12 @@ defmodule Commonplace.MUD.CxCoo8GrantRewardTest do
     # anti-farm PIN 1 host).
     {citizen_pub, citizen_priv} = Signing.generate_keypair()
     citizen_identity = "coo8-citizen-#{n}"
-    citizen_ctx = %SigningContext{identity_uuid: citizen_identity, private_key: citizen_priv, public_key: citizen_pub}
+
+    citizen_ctx = %SigningContext{
+      identity_uuid: citizen_identity,
+      private_key: citizen_priv,
+      public_key: citizen_pub
+    }
 
     old_data_dir = Application.get_env(:commonplace, :data_dir)
     old_trust = Application.get_env(:commonplace, :trust)
@@ -101,7 +106,9 @@ defmodule Commonplace.MUD.CxCoo8GrantRewardTest do
 
     on_exit(fn ->
       restore = fn key, v ->
-        if is_nil(v), do: Application.delete_env(:commonplace, key), else: Application.put_env(:commonplace, key, v)
+        if is_nil(v),
+          do: Application.delete_env(:commonplace, key),
+          else: Application.put_env(:commonplace, key, v)
       end
 
       restore.(:data_dir, old_data_dir)
@@ -115,8 +122,18 @@ defmodule Commonplace.MUD.CxCoo8GrantRewardTest do
       pid -> GenServer.stop(pid)
     end
 
-    {:ok, bursar_pid} = Bursar.start_link(root_uuid: UUID.uuid4(), store: store, sweep_interval: 60_000)
-    on_exit(fn -> if Process.alive?(bursar_pid), do: (try do GenServer.stop(bursar_pid) catch (:exit, _ -> :ok) end) end)
+    {:ok, bursar_pid} =
+      Bursar.start_link(root_uuid: UUID.uuid4(), store: store, sweep_interval: 60_000)
+
+    on_exit(fn ->
+      if Process.alive?(bursar_pid),
+        do:
+          (try do
+             GenServer.stop(bursar_pid)
+           catch
+             (:exit, _ -> :ok)
+           end)
+    end)
 
     {:ok, node_ctx} = NodeIdentity.signing_context()
     {:ok, node_identity} = NodeIdentity.identity()
@@ -149,7 +166,12 @@ defmodule Commonplace.MUD.CxCoo8GrantRewardTest do
     # own authority is irrelevant to grant's anti-farm/anti-forge gates).
     {invoker_pub, invoker_priv} = Signing.generate_keypair()
     invoker_id = "coo8-invoker-#{n}"
-    invoker_sc = %SigningContext{identity_uuid: invoker_id, private_key: invoker_priv, public_key: invoker_pub}
+
+    invoker_sc = %SigningContext{
+      identity_uuid: invoker_id,
+      private_key: invoker_priv,
+      public_key: invoker_pub
+    }
 
     # A NODE-owned host (curated) — the success-path HOST.
     node_host = curated_object!(store, node_ctx, "warded vault")
@@ -179,7 +201,16 @@ defmodule Commonplace.MUD.CxCoo8GrantRewardTest do
     {:ok, schema} = Schemas.load_dir_schema(parent, store)
     schema = Schema.add_directory(schema, name, child)
     {metadata, commit_opts} = SignedWrite.opts_for(parent, store: store, signing_context: sc)
-    _ = CommitStoreClient.create_chained_commit(store, parent, Encoding.encode_update(schema), metadata, commit_opts)
+
+    _ =
+      CommitStoreClient.create_chained_commit(
+        store,
+        parent,
+        Encoding.encode_update(schema),
+        metadata,
+        commit_opts
+      )
+
     :ok
   end
 
@@ -242,16 +273,20 @@ defmodule Commonplace.MUD.CxCoo8GrantRewardTest do
   end
 
   defp grant_facade(ctx, host_uuid, store) do
-    %{Facade.new(ctx, host_uuid, MapSet.new([host_uuid]), {host_uuid, "reward"}, store) | host_kind: :object}
+    %{
+      Facade.new(ctx, host_uuid, MapSet.new([host_uuid]), {host_uuid, "reward"}, store)
+      | host_kind: :object
+    }
   end
 
   # ---- PIN 1: anti-farm — citizen host is refused, no mint ----
 
-  test "PIN 1: a CITIZEN-owned host is refused (anti-farm host-gate), no mint", %{
-    store: store,
-    citizen_host: citizen_host,
-    inventory: inventory
-  } = ctx do
+  test "PIN 1: a CITIZEN-owned host is refused (anti-farm host-gate), no mint",
+       %{
+         store: store,
+         citizen_host: citizen_host,
+         inventory: inventory
+       } = ctx do
     before_count = inv_count(store, inventory)
 
     facade = grant_facade(grant_ctx(ctx), citizen_host, store)
@@ -300,11 +335,12 @@ defmodule Commonplace.MUD.CxCoo8GrantRewardTest do
 
   # ---- PIN 2: invoker POSSESSES the reward ----
 
-  test "PIN 2: the invoker holds the reward's possession token", %{
-    store: store,
-    node_host: node_host,
-    invoker_id: invoker_id
-  } = ctx do
+  test "PIN 2: the invoker holds the reward's possession token",
+       %{
+         store: store,
+         node_host: node_host,
+         invoker_id: invoker_id
+       } = ctx do
     facade = grant_facade(grant_ctx(ctx), node_host, store)
 
     assert {:ok, reward} = Facade.grant(facade, "gold ingot")
@@ -314,11 +350,12 @@ defmodule Commonplace.MUD.CxCoo8GrantRewardTest do
 
   # ---- PIN 4: fail-CLOSED on no recipient zone ----
 
-  test "PIN 4a: nil player_dir_uuid -> {:error, :no_recipient_zone}, no mint even though the host would allow", %{
-    store: store,
-    node_host: node_host,
-    inventory: inventory
-  } = ctx do
+  test "PIN 4a: nil player_dir_uuid -> {:error, :no_recipient_zone}, no mint even though the host would allow",
+       %{
+         store: store,
+         node_host: node_host,
+         inventory: inventory
+       } = ctx do
     before_count = inv_count(store, inventory)
 
     ctx_map = %{grant_ctx(ctx) | player_dir_uuid: nil}
@@ -330,11 +367,12 @@ defmodule Commonplace.MUD.CxCoo8GrantRewardTest do
     assert inv_count(store, inventory) == before_count
   end
 
-  test "PIN 4b: a fresh players/-unreachable player_dir_uuid -> {:error, :recipient_not_zoned}, no mint", %{
-    store: store,
-    node_host: node_host,
-    inventory: inventory
-  } = ctx do
+  test "PIN 4b: a fresh players/-unreachable player_dir_uuid -> {:error, :recipient_not_zoned}, no mint",
+       %{
+         store: store,
+         node_host: node_host,
+         inventory: inventory
+       } = ctx do
     before_count = inv_count(store, inventory)
 
     stray_uuid = UUID.uuid4()
@@ -349,13 +387,14 @@ defmodule Commonplace.MUD.CxCoo8GrantRewardTest do
 
   # ---- PIN 5: the zone stamp is DURABLE across a later legit meta write ----
 
-  test "PIN 5: a later node-signed surgical meta merge preserves the zone stamp (delayed-forge check)", %{
-    store: store,
-    root: root,
-    node_ctx: node_ctx,
-    node_host: node_host,
-    player_dir: player_dir
-  } = ctx do
+  test "PIN 5: a later node-signed surgical meta merge preserves the zone stamp (delayed-forge check)",
+       %{
+         store: store,
+         root: root,
+         node_ctx: node_ctx,
+         node_host: node_host,
+         player_dir: player_dir
+       } = ctx do
     facade = grant_facade(grant_ctx(ctx), node_host, store)
 
     assert {:ok, reward} = Facade.grant(facade, "gold ingot")

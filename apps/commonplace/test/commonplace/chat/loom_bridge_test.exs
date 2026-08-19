@@ -31,7 +31,9 @@ defmodule Commonplace.Chat.LoomBridgeTest do
     start_supervised!({CommitStore, data_dir: dir, name: store_name})
     on_exit(fn -> File.rm_rf!(dir) end)
 
-    secret_dir = Path.join(System.tmp_dir!(), "cp_loom_bridge_secrets_#{:rand.uniform(1_000_000)}")
+    secret_dir =
+      Path.join(System.tmp_dir!(), "cp_loom_bridge_secrets_#{:rand.uniform(1_000_000)}")
+
     File.mkdir_p!(secret_dir)
     secret_store_name = :"loom_bridge_secrets_#{:rand.uniform(1_000_000)}"
 

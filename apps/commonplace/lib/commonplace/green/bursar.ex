@@ -148,8 +148,10 @@ defmodule Commonplace.Green.Bursar do
     :state_uuid,
     :log_uuid,
     :log,
-    tokens: %{},  # %{path => %{holder: string, acquired_at: DateTime, ttl_ms: integer | nil}}
-    sweep_interval: 10_000,  # ms between TTL sweep checks
+    # %{path => %{holder: string, acquired_at: DateTime, ttl_ms: integer | nil}}
+    tokens: %{},
+    # ms between TTL sweep checks
+    sweep_interval: 10_000,
     # CX-sqyc: memory-only memo of denials already persisted to the red
     # log — %{path => MapSet of {holder, current_holder, op}}. A retry
     # loop denied at 1Hz otherwise writes ~86k identical red events/day
@@ -438,7 +440,12 @@ defmodule Commonplace.Green.Bursar do
         tokens = Map.put(state.tokens, path, new_info)
         state = %{state | tokens: tokens} |> clear_denials(path)
         state = persist_state(state)
-        state = log_event(state, "transfer", path, to_holder, %{"from" => from_holder, "to" => to_holder})
+
+        state =
+          log_event(state, "transfer", path, to_holder, %{
+            "from" => from_holder,
+            "to" => to_holder
+          })
 
         broadcast_green_event("transferred", path, to_holder, %{"from" => from_holder})
         {:reply, {:ok, new_info}, state}
@@ -511,7 +518,10 @@ defmodule Commonplace.Green.Bursar do
           state = %{state | tokens: tokens} |> clear_denials(path)
           state = persist_state(state)
           ttl_extra = if ttl_ms, do: %{ttl_ms: ttl_ms}, else: %{}
-          state = log_event(state, "acquire", path, holder, Map.merge(%{via: "magenta"}, ttl_extra))
+
+          state =
+            log_event(state, "acquire", path, holder, Map.merge(%{via: "magenta"}, ttl_extra))
+
           broadcast_green_event("acquired", path, holder)
           {:noreply, state}
 
@@ -520,7 +530,9 @@ defmodule Commonplace.Green.Bursar do
           {:noreply, state}
 
         %{holder: current_holder} ->
-          state = log_denied(state, path, holder, %{current_holder: current_holder, via: "magenta"})
+          state =
+            log_denied(state, path, holder, %{current_holder: current_holder, via: "magenta"})
+
           broadcast_green_event("denied", path, holder, %{current_holder: current_holder})
           {:noreply, state}
       end
@@ -572,12 +584,14 @@ defmodule Commonplace.Green.Bursar do
             tokens = Map.put(state.tokens, path, new_info)
             state = %{state | tokens: tokens} |> clear_denials(path)
             state = persist_state(state)
+
             state =
               log_event(state, "transfer", path, to_holder, %{
                 "from" => from_holder,
                 "to" => to_holder,
                 "via" => "magenta"
               })
+
             broadcast_green_event("transferred", path, to_holder, %{"from" => from_holder})
             {:noreply, state}
 
@@ -588,6 +602,7 @@ defmodule Commonplace.Green.Bursar do
                 via: "magenta",
                 op: "transfer"
               })
+
             {:noreply, state}
         end
     end
@@ -620,6 +635,7 @@ defmodule Commonplace.Green.Bursar do
               via: "magenta",
               op: "renew"
             })
+
           {:noreply, state}
       end
     else
@@ -633,12 +649,19 @@ defmodule Commonplace.Green.Bursar do
     reply_to = msg.source
 
     if path do
-      status = case Map.get(state.tokens, path) do
-        nil -> %{status: "available", path: path}
-        %{holder: h, acquired_at: at} -> %{status: "held", path: path, holder: h, acquired_at: DateTime.to_iso8601(at)}
-      end
+      status =
+        case Map.get(state.tokens, path) do
+          nil ->
+            %{status: "available", path: path}
 
-      Magenta.send(@magenta_topic, Magenta.message("green:status", "bursar", Map.put(status, "reply_to", reply_to)))
+          %{holder: h, acquired_at: at} ->
+            %{status: "held", path: path, holder: h, acquired_at: DateTime.to_iso8601(at)}
+        end
+
+      Magenta.send(
+        @magenta_topic,
+        Magenta.message("green:status", "bursar", Map.put(status, "reply_to", reply_to))
+      )
     end
 
     {:noreply, state}
@@ -651,7 +674,9 @@ defmodule Commonplace.Green.Bursar do
     expired =
       Enum.filter(state.tokens, fn {_path, info} ->
         case info.ttl_ms do
-          nil -> false
+          nil ->
+            false
+
           ttl ->
             elapsed = DateTime.diff(now, info.acquired_at, :millisecond)
             elapsed >= ttl
@@ -692,6 +717,7 @@ defmodule Commonplace.Green.Bursar do
           case DocBuilder.reconstruct_snapshot(state.store, entry.node_id) do
             {:ok, doc} ->
               json_str = ContentType.get_content(doc) || "{}"
+
               case Jason.decode(json_str) do
                 {:ok, map} when is_map(map) ->
                   # CX-i9ca: only permanent (ttl_ms == nil) tokens are ever
@@ -705,17 +731,21 @@ defmodule Commonplace.Green.Bursar do
                   # defensive uniform load for any legacy ttl_ms found on disk.
                   now = DateTime.utc_now()
 
-                  tokens = Map.new(map, fn {path, info} ->
-                    {path, %{holder: info["holder"], acquired_at: now, ttl_ms: info["ttl_ms"]}}
-                  end)
+                  tokens =
+                    Map.new(map, fn {path, info} ->
+                      {path, %{holder: info["holder"], acquired_at: now, ttl_ms: info["ttl_ms"]}}
+                    end)
 
                   {entry.node_id, tokens}
+
                 _ ->
                   {entry.node_id, %{}}
               end
+
             :none ->
               {entry.node_id, %{}}
           end
+
         :error ->
           uuid = create_state_doc(state, schema)
           {uuid, %{}}
@@ -811,7 +841,14 @@ defmodule Commonplace.Green.Bursar do
     doc = ContentType.insert_text(doc, 0, new_content)
 
     update = Yelixer.Encoding.encode_update(doc)
-    CommitStoreClient.create_chained_commit(state.store, state.state_uuid, update, %{}, sign_opts(state))
+
+    CommitStoreClient.create_chained_commit(
+      state.store,
+      state.state_uuid,
+      update,
+      %{},
+      sign_opts(state)
+    )
 
     %{state | persisted_content: new_content}
   end
@@ -822,12 +859,13 @@ defmodule Commonplace.Green.Bursar do
   defp sign_opts(%__MODULE__{node_ctx: ctx}), do: [signing_context: ctx]
 
   defp log_event(state, event_type, path, holder, extra \\ %{}) do
-    event = Map.merge(extra, %{
-      "event" => event_type,
-      "path" => path,
-      "holder" => holder,
-      "timestamp" => DateTime.to_iso8601(DateTime.utc_now())
-    })
+    event =
+      Map.merge(extra, %{
+        "event" => event_type,
+        "path" => path,
+        "holder" => holder,
+        "timestamp" => DateTime.to_iso8601(DateTime.utc_now())
+      })
 
     log = RedLog.append_raw(state.log, event)
 
@@ -897,7 +935,14 @@ defmodule Commonplace.Green.Bursar do
     # Add to schema
     schema = Schema.add_file(schema, @state_doc, uuid)
     schema_update = Yelixer.Encoding.encode_update(schema)
-    CommitStoreClient.create_chained_commit(state.store, state.root_uuid, schema_update, %{}, sign_opts(state))
+
+    CommitStoreClient.create_chained_commit(
+      state.store,
+      state.root_uuid,
+      schema_update,
+      %{},
+      sign_opts(state)
+    )
 
     uuid
   end
@@ -912,7 +957,14 @@ defmodule Commonplace.Green.Bursar do
         schema = load_root_schema(state)
         schema = Schema.add_file(schema, @log_doc, uuid)
         schema_update = Yelixer.Encoding.encode_update(schema)
-        CommitStoreClient.create_chained_commit(state.store, state.root_uuid, schema_update, %{}, sign_opts(state))
+
+        CommitStoreClient.create_chained_commit(
+          state.store,
+          state.root_uuid,
+          schema_update,
+          %{},
+          sign_opts(state)
+        )
 
         uuid
 

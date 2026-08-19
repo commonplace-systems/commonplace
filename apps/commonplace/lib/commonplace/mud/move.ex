@@ -166,7 +166,8 @@ defmodule Commonplace.MUD.Move do
   `#{@move_ttl_ms}ms`) so a crashed craft never wedges the crafter's
   inventory. Keep the saga well under the TTL (it's a handful of commits).
   """
-  @spec with_lock([String.t()], (-> result), keyword()) :: result | {:error, :busy} when result: term()
+  @spec with_lock([String.t()], (-> result), keyword()) :: result | {:error, :busy}
+        when result: term()
   def with_lock(paths, fun, opts \\ []) when is_list(paths) and is_function(fun, 0) do
     bursar = Keyword.get(opts, :bursar, Bursar)
     ttl = Keyword.get(opts, :ttl, @move_ttl_ms)
@@ -292,7 +293,13 @@ defmodule Commonplace.MUD.Move do
     end
   end
 
-  defp add_to_dest(dest_dir_uuid, name, %Schema.Entry{type: type, node_id: node_id}, store, write_opts) do
+  defp add_to_dest(
+         dest_dir_uuid,
+         name,
+         %Schema.Entry{type: type, node_id: node_id},
+         store,
+         write_opts
+       ) do
     {:ok, doc} = MudSchemas.load_dir_schema(dest_dir_uuid, store)
 
     doc =
@@ -306,7 +313,13 @@ defmodule Commonplace.MUD.Move do
     {metadata, commit_opts} =
       Commonplace.MUD.SignedWrite.opts_for(dest_dir_uuid, Keyword.put(write_opts, :store, store))
 
-    case CommitStoreClient.create_chained_commit(store, dest_dir_uuid, update, metadata, commit_opts) do
+    case CommitStoreClient.create_chained_commit(
+           store,
+           dest_dir_uuid,
+           update,
+           metadata,
+           commit_opts
+         ) do
       {:error, _} = err -> err
       _commit -> :ok
     end
@@ -318,9 +331,18 @@ defmodule Commonplace.MUD.Move do
     update = Encoding.encode_update(doc)
 
     {metadata, commit_opts} =
-      Commonplace.MUD.SignedWrite.opts_for(source_dir_uuid, Keyword.put(write_opts, :store, store))
+      Commonplace.MUD.SignedWrite.opts_for(
+        source_dir_uuid,
+        Keyword.put(write_opts, :store, store)
+      )
 
-    case CommitStoreClient.create_chained_commit(store, source_dir_uuid, update, metadata, commit_opts) do
+    case CommitStoreClient.create_chained_commit(
+           store,
+           source_dir_uuid,
+           update,
+           metadata,
+           commit_opts
+         ) do
       {:error, _} = err -> err
       _commit -> :ok
     end

@@ -68,12 +68,21 @@ defmodule Commonplace.Sync.LiveSyncIntegrationTest do
   describe "peer-to-peer sync via shared CRDT" do
     test "file created on peer A appears on peer B",
          %{store: store, root: root, dir_a: dir_a, dir_b: dir_b} do
-      {:ok, loop_a} = SyncLoop.start_link(
-        dir: dir_a, root_uuid: root, store: store, interval: 50
-      )
-      {:ok, loop_b} = SyncLoop.start_link(
-        dir: dir_b, root_uuid: root, store: store, interval: 50
-      )
+      {:ok, loop_a} =
+        SyncLoop.start_link(
+          dir: dir_a,
+          root_uuid: root,
+          store: store,
+          interval: 50
+        )
+
+      {:ok, loop_b} =
+        SyncLoop.start_link(
+          dir: dir_b,
+          root_uuid: root,
+          store: store,
+          interval: 50
+        )
 
       File.write!(Path.join(dir_a, "from_a.txt"), "hello from A")
 
@@ -87,12 +96,21 @@ defmodule Commonplace.Sync.LiveSyncIntegrationTest do
 
     test "file created on peer B appears on peer A",
          %{store: store, root: root, dir_a: dir_a, dir_b: dir_b} do
-      {:ok, loop_a} = SyncLoop.start_link(
-        dir: dir_a, root_uuid: root, store: store, interval: 50
-      )
-      {:ok, loop_b} = SyncLoop.start_link(
-        dir: dir_b, root_uuid: root, store: store, interval: 50
-      )
+      {:ok, loop_a} =
+        SyncLoop.start_link(
+          dir: dir_a,
+          root_uuid: root,
+          store: store,
+          interval: 50
+        )
+
+      {:ok, loop_b} =
+        SyncLoop.start_link(
+          dir: dir_b,
+          root_uuid: root,
+          store: store,
+          interval: 50
+        )
 
       File.write!(Path.join(dir_b, "from_b.txt"), "hello from B")
 
@@ -106,12 +124,21 @@ defmodule Commonplace.Sync.LiveSyncIntegrationTest do
 
     test "both peers create files and both receive each other's",
          %{store: store, root: root, dir_a: dir_a, dir_b: dir_b} do
-      {:ok, loop_a} = SyncLoop.start_link(
-        dir: dir_a, root_uuid: root, store: store, interval: 50
-      )
-      {:ok, loop_b} = SyncLoop.start_link(
-        dir: dir_b, root_uuid: root, store: store, interval: 50
-      )
+      {:ok, loop_a} =
+        SyncLoop.start_link(
+          dir: dir_a,
+          root_uuid: root,
+          store: store,
+          interval: 50
+        )
+
+      {:ok, loop_b} =
+        SyncLoop.start_link(
+          dir: dir_b,
+          root_uuid: root,
+          store: store,
+          interval: 50
+        )
 
       File.write!(Path.join(dir_a, "a_file.txt"), "from A")
       File.write!(Path.join(dir_b, "b_file.txt"), "from B")
@@ -129,15 +156,23 @@ defmodule Commonplace.Sync.LiveSyncIntegrationTest do
 
     test "file modification on one peer propagates to the other",
          %{store: store, root: root, dir_a: dir_a, dir_b: dir_b} do
-      {:ok, loop_a} = SyncLoop.start_link(
-        dir: dir_a, root_uuid: root, store: store, interval: 50
-      )
+      {:ok, loop_a} =
+        SyncLoop.start_link(
+          dir: dir_a,
+          root_uuid: root,
+          store: store,
+          interval: 50
+        )
 
       File.write!(Path.join(dir_a, "shared.txt"), "version 1")
 
-      {:ok, loop_b} = SyncLoop.start_link(
-        dir: dir_b, root_uuid: root, store: store, interval: 50
-      )
+      {:ok, loop_b} =
+        SyncLoop.start_link(
+          dir: dir_b,
+          root_uuid: root,
+          store: store,
+          interval: 50
+        )
 
       eventually(fn ->
         assert File.read!(Path.join(dir_b, "shared.txt")) == "version 1"

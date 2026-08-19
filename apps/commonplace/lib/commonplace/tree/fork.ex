@@ -298,7 +298,16 @@ defmodule Commonplace.Tree.Fork do
         entries = Schema.list_entries(source_doc)
 
         if length(entries) > 0 do
-          fork_directory_node_at(source_uuid, source_doc, entries, reference_time, store, uuid_map, target_commit_id, opts)
+          fork_directory_node_at(
+            source_uuid,
+            source_doc,
+            entries,
+            reference_time,
+            store,
+            uuid_map,
+            target_commit_id,
+            opts
+          )
         else
           fork_leaf_node_at(source_uuid, source_doc, target_commit_id, store, uuid_map, opts)
         end
@@ -310,7 +319,16 @@ defmodule Commonplace.Tree.Fork do
     end
   end
 
-  defp fork_directory_node_at(source_uuid, source_doc, entries, reference_time, store, uuid_map, target_commit_id, opts) do
+  defp fork_directory_node_at(
+         source_uuid,
+         source_doc,
+         entries,
+         reference_time,
+         store,
+         uuid_map,
+         target_commit_id,
+         opts
+       ) do
     new_uuid = UUID.uuid4()
     uuid_map = Map.put(uuid_map, source_uuid, new_uuid)
 
@@ -322,7 +340,10 @@ defmodule Commonplace.Tree.Fork do
     {uuid_map, _} =
       Enum.reduce(entries, {uuid_map, []}, fn entry, {map, _} ->
         child_target = commit_at_or_before(store, entry.node_id, reference_time)
-        {_child_new_uuid, map} = fork_node_at(entry.node_id, child_target, reference_time, store, map, opts)
+
+        {_child_new_uuid, map} =
+          fork_node_at(entry.node_id, child_target, reference_time, store, map, opts)
+
         {map, []}
       end)
 
@@ -505,9 +526,22 @@ defmodule Commonplace.Tree.Fork do
                     new_doc = Doc.new()
                     new_doc = ContentType.create(new_doc, :text, "__processes.json")
                     filtered_json = Jason.encode!(filtered)
-                    new_doc = if filtered_json != "", do: ContentType.insert_text(new_doc, 0, filtered_json), else: new_doc
+
+                    new_doc =
+                      if filtered_json != "",
+                        do: ContentType.insert_text(new_doc, 0, filtered_json),
+                        else: new_doc
+
                     update = Encoding.encode_update(new_doc)
-                    CommitStoreClient.create_commit(store, new_proc_uuid, update, branch_commit.parent_id, %{}, opts)
+
+                    CommitStoreClient.create_commit(
+                      store,
+                      new_proc_uuid,
+                      update,
+                      branch_commit.parent_id,
+                      %{},
+                      opts
+                    )
 
                   :none ->
                     :ok

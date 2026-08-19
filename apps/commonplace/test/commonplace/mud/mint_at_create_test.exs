@@ -57,7 +57,10 @@ defmodule Commonplace.MUD.MintAtCreateTest do
     on_exit(fn ->
       for {k, v} <- old do
         key = %{data_dir: :data_dir, trust: :trust, gate: :local_write_gate}[k]
-        if is_nil(v), do: Application.delete_env(:commonplace, key), else: Application.put_env(:commonplace, key, v)
+
+        if is_nil(v),
+          do: Application.delete_env(:commonplace, key),
+          else: Application.put_env(:commonplace, key, v)
       end
 
       File.rm_rf!(dir)
@@ -68,8 +71,18 @@ defmodule Commonplace.MUD.MintAtCreateTest do
       pid -> GenServer.stop(pid)
     end
 
-    {:ok, bursar_pid} = Bursar.start_link(root_uuid: UUID.uuid4(), store: store, sweep_interval: 60_000)
-    on_exit(fn -> if Process.alive?(bursar_pid), do: (try do GenServer.stop(bursar_pid) catch (:exit, _ -> :ok) end) end)
+    {:ok, bursar_pid} =
+      Bursar.start_link(root_uuid: UUID.uuid4(), store: store, sweep_interval: 60_000)
+
+    on_exit(fn ->
+      if Process.alive?(bursar_pid),
+        do:
+          (try do
+             GenServer.stop(bursar_pid)
+           catch
+             (:exit, _ -> :ok)
+           end)
+    end)
 
     {:ok, node_ctx} = NodeIdentity.signing_context()
     {:ok, node_identity} = NodeIdentity.identity()
@@ -78,7 +91,13 @@ defmodule Commonplace.MUD.MintAtCreateTest do
     players = mk_dir!(store, node_ctx)
     add_dir_entry!(store, root, "players", players, node_ctx)
 
-    %{store: store, node_ctx: node_ctx, node_identity: node_identity, root: root, players: players}
+    %{
+      store: store,
+      node_ctx: node_ctx,
+      node_identity: node_identity,
+      root: root,
+      players: players
+    }
   end
 
   # ---- helpers (mirror DropGiveTest) ----
@@ -111,9 +130,20 @@ defmodule Commonplace.MUD.MintAtCreateTest do
     {:ok, schema} = Schemas.load_dir_schema(parent_uuid, store)
     schema = Schema.add_directory(schema, name, child_uuid)
     update = Encoding.encode_update(schema)
-    {metadata, commit_opts} = Commonplace.MUD.SignedWrite.opts_for(parent_uuid, store: store, signing_context: signing_ctx)
 
-    case CommitStoreClient.create_chained_commit(store, parent_uuid, update, metadata, commit_opts) do
+    {metadata, commit_opts} =
+      Commonplace.MUD.SignedWrite.opts_for(parent_uuid,
+        store: store,
+        signing_context: signing_ctx
+      )
+
+    case CommitStoreClient.create_chained_commit(
+           store,
+           parent_uuid,
+           update,
+           metadata,
+           commit_opts
+         ) do
       {:error, _} = err -> raise "seed write failed: #{inspect(err)}"
       _commit -> :ok
     end
@@ -132,10 +162,17 @@ defmodule Commonplace.MUD.MintAtCreateTest do
 
   # @create-object, but at the primitive: node-sign a new OBJECT under `room`.
   defp create_object!(store, node_ctx, room, name, container? \\ false) do
-    obj_json = Schemas.encode_object(%Object{name: name, description: "(no description yet)", container?: container?})
+    obj_json =
+      Schemas.encode_object(%Object{
+        name: name,
+        description: "(no description yet)",
+        container?: container?
+      })
 
     {:ok, uuid} =
-      ChildMutation.create_zoned_child(room, name, Schemas.object_filename(), obj_json, store, signing_context: node_ctx)
+      ChildMutation.create_zoned_child(room, name, Schemas.object_filename(), obj_json, store,
+        signing_context: node_ctx
+      )
 
     uuid
   end
@@ -167,7 +204,14 @@ defmodule Commonplace.MUD.MintAtCreateTest do
     home = share!(store, root, mk_room!(store, node_ctx), node_ctx)
 
     {:ok, study} =
-      ChildMutation.create_zoned_child(home, "study", Schemas.room_filename(), Schemas.encode_room(%Room{name: "Study", description: "a room"}), store, signing_context: node_ctx)
+      ChildMutation.create_zoned_child(
+        home,
+        "study",
+        Schemas.room_filename(),
+        Schemas.encode_room(%Room{name: "Study", description: "a room"}),
+        store,
+        signing_context: node_ctx
+      )
 
     # No possession token was minted for the room.
     assert :available = BursarClient.query(Bursar, study)
@@ -211,11 +255,24 @@ defmodule Commonplace.MUD.MintAtCreateTest do
     root: root
   } do
     room = share!(store, root, mk_room!(store, node_ctx), node_ctx)
-    original = %Object{name: "gilded chalice", description: "(no description yet)", aliases: ["chalice"]}
+
+    original = %Object{
+      name: "gilded chalice",
+      description: "(no description yet)",
+      aliases: ["chalice"]
+    }
+
     obj_json = Schemas.encode_object(original)
 
     {:ok, item} =
-      ChildMutation.create_zoned_child(room, "chalice.obj", Schemas.object_filename(), obj_json, store, signing_context: node_ctx)
+      ChildMutation.create_zoned_child(
+        room,
+        "chalice.obj",
+        Schemas.object_filename(),
+        obj_json,
+        store,
+        signing_context: node_ctx
+      )
 
     # token minted (possession axis)...
     assert {:held, _} = BursarClient.query(Bursar, item)
@@ -236,12 +293,13 @@ defmodule Commonplace.MUD.MintAtCreateTest do
 
   # ---- 5. FULL LIFECYCLE regression: create → take → drop → take → give ----
 
-  test "lifecycle: @create-object → take → drop → take → give, droppable by the current holder throughout", %{
-    store: store,
-    node_ctx: node_ctx,
-    node_identity: node_identity,
-    root: root
-  } do
+  test "lifecycle: @create-object → take → drop → take → give, droppable by the current holder throughout",
+       %{
+         store: store,
+         node_ctx: node_ctx,
+         node_identity: node_identity,
+         root: root
+       } do
     room = share!(store, root, mk_room!(store, node_ctx), node_ctx)
     alice_inv = mk_inventory!(store, node_ctx)
     bob_inv = mk_inventory!(store, node_ctx)
@@ -254,7 +312,9 @@ defmodule Commonplace.MUD.MintAtCreateTest do
     assert {:held, %{holder: ^node_identity}} = BursarClient.query(Bursar, item)
 
     # TAKE — node → alice.
-    assert :ok = Take.take(item, "coin.obj", room, alice_inv, alice_id, store: store, root_uuid: root)
+    assert :ok =
+             Take.take(item, "coin.obj", room, alice_inv, alice_id, store: store, root_uuid: root)
+
     assert {:held, %{holder: ^alice_id}} = BursarClient.query(Bursar, item)
 
     # DROP — the crux of CX-j2wt: a freshly-created-then-taken item is droppable
@@ -264,11 +324,15 @@ defmodule Commonplace.MUD.MintAtCreateTest do
     assert {:held, %{holder: ^node_identity}} = BursarClient.query(Bursar, item)
 
     # TAKE again — node → alice.
-    assert :ok = Take.take(item, "coin.obj", room, alice_inv, alice_id, store: store, root_uuid: root)
+    assert :ok =
+             Take.take(item, "coin.obj", room, alice_inv, alice_id, store: store, root_uuid: root)
+
     assert {:held, %{holder: ^alice_id}} = BursarClient.query(Bursar, item)
 
     # GIVE — alice → bob (token follows the item).
-    assert :ok = World.give_item(item, "coin.obj", alice_inv, bob_inv, alice_id, bob_id, store: store)
+    assert :ok =
+             World.give_item(item, "coin.obj", alice_inv, bob_inv, alice_id, bob_id, store: store)
+
     refute "coin.obj" in entry_names(store, alice_inv)
     assert "coin.obj" in entry_names(store, bob_inv)
     assert {:held, %{holder: ^bob_id}} = BursarClient.query(Bursar, item)
@@ -301,12 +365,19 @@ defmodule Commonplace.MUD.MintAtCreateTest do
 
     # PUT the gem INTO the container: the deposit move-locks the container dir.
     # Pre-fix this raced its own permanent possession token → :busy forever.
-    assert :ok = World.deposit_item(item, "gem.obj", inv, container, player_id, store: store, root_uuid: root)
+    assert :ok =
+             World.deposit_item(item, "gem.obj", inv, container, player_id,
+               store: store,
+               root_uuid: root
+             )
+
     assert "gem.obj" in entry_names(store, container)
 
     # GET it back OUT of the container: the take move-locks the container as the
     # SOURCE dir — the other half of the same collision.
-    assert :ok = Take.take(item, "gem.obj", container, inv, player_id, store: store, root_uuid: root)
+    assert :ok =
+             Take.take(item, "gem.obj", container, inv, player_id, store: store, root_uuid: root)
+
     assert "gem.obj" in entry_names(store, inv)
     refute "gem.obj" in entry_names(store, container)
   end

@@ -160,7 +160,9 @@ defmodule Commonplace.Bd.TixMigration do
     do: {from, to, Map.get(raw, "kind", EdgeMapping.blocks_kind())}
 
   defp dedupe_key(%{"depends_on_id" => blocker, "issue_id" => blocked} = raw, _idx),
-    do: {blocker, blocked, Map.get(raw, "type") || Map.get(raw, "kind") || EdgeMapping.blocks_kind()}
+    do:
+      {blocker, blocked,
+       Map.get(raw, "type") || Map.get(raw, "kind") || EdgeMapping.blocks_kind()}
 
   defp dedupe_key(_raw, idx), do: {:unreadable, idx}
 
@@ -329,8 +331,7 @@ defmodule Commonplace.Bd.TixMigration do
        landed: landed,
        mapped: mapped,
        refused: refused,
-       unaccounted:
-         MapSet.difference(MapSet.new(edges_in_names), accounted) |> Enum.sort()
+       unaccounted: MapSet.difference(MapSet.new(edges_in_names), accounted) |> Enum.sort()
      }}
   end
 
@@ -397,8 +398,7 @@ defmodule Commonplace.Bd.TixMigration do
       edges_in: fold_report.edges_in,
       landed: landed,
       refused: refused,
-      unaccounted:
-        MapSet.difference(MapSet.new(fold_report.edges_in), accounted) |> Enum.sort()
+      unaccounted: MapSet.difference(MapSet.new(fold_report.edges_in), accounted) |> Enum.sort()
     }
   end
 

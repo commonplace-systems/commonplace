@@ -94,7 +94,8 @@ defmodule Commonplace.Store.DocCommitIndexTest do
       File.cp_r!(source, destination)
     end
 
-    tamper_path = Path.join([temp_root, "apps", "commonplace_web", "lib", "stray_commit_writer.ex"])
+    tamper_path =
+      Path.join([temp_root, "apps", "commonplace_web", "lib", "stray_commit_writer.ex"])
 
     File.write!(
       tamper_path,

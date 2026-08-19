@@ -144,7 +144,17 @@ defmodule Commonplace.GitBridge.Exporter do
               sub_dir = Path.join(dir_path, entry.name)
               File.mkdir_p!(sub_dir)
               schema_uuids = MapSet.put(schema_uuids, entry.node_id)
-              walk(sub_schema, sub_dir, rel_path, store, manifest, authors, warnings, schema_uuids)
+
+              walk(
+                sub_schema,
+                sub_dir,
+                rel_path,
+                store,
+                manifest,
+                authors,
+                warnings,
+                schema_uuids
+              )
             end
 
           :doc ->
@@ -225,9 +235,11 @@ defmodule Commonplace.GitBridge.Exporter do
 
   defp render(:text, doc), do: {:ok, ContentType.get_content(doc) || "", nil}
 
-  defp render(:map, doc), do: {:ok, CanonicalJson.encode(ContentType.get_content(doc) || %{}), nil}
+  defp render(:map, doc),
+    do: {:ok, CanonicalJson.encode(ContentType.get_content(doc) || %{}), nil}
 
-  defp render(:array, doc), do: {:ok, CanonicalJson.encode(ContentType.get_content(doc) || []), nil}
+  defp render(:array, doc),
+    do: {:ok, CanonicalJson.encode(ContentType.get_content(doc) || []), nil}
 
   defp render(:xml, doc) do
     tree = ContentType.get_content(doc) || []
@@ -280,7 +292,7 @@ defmodule Commonplace.GitBridge.Exporter do
   defp prune(repo_dir, previous_manifest, new_manifest) do
     previous_manifest
     |> Map.keys()
-    |> Enum.reject(&(Map.has_key?(new_manifest, &1)))
+    |> Enum.reject(&Map.has_key?(new_manifest, &1))
     |> Enum.each(fn rel_path -> prune_one(repo_dir, rel_path) end)
   end
 

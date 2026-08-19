@@ -89,6 +89,7 @@ defmodule Commonplace.Tree.MergeTest do
 
       # Should report the rename
       assert length(report.auto_renamed) == 1
+
       [{:auto_renamed, "notes.txt", "notes.txt.merge-conflict", _source_nid, _new_uuid}] =
         report.auto_renamed
 
@@ -103,7 +104,8 @@ defmodule Commonplace.Tree.MergeTest do
 
       # Renamed entry is a fork of the source
       {:ok, renamed} = Schema.get_entry(target_schema, "notes.txt.merge-conflict")
-      assert renamed.node_id != source_file  # forked, so new uuid
+      # forked, so new uuid
+      assert renamed.node_id != source_file
       assert renamed.node_id != target_file
     end
 
@@ -127,6 +129,7 @@ defmodule Commonplace.Tree.MergeTest do
 
       assert report.conflicts == []
       assert length(report.auto_renamed) == 1
+
       [{:auto_renamed, "data.txt", "data.txt.merge-conflict-2", _source_nid, _new_uuid}] =
         report.auto_renamed
 
@@ -208,9 +211,9 @@ defmodule Commonplace.Tree.MergeTest do
 
       # Should detect a conflict: source deleted it, target modified it
       assert Enum.any?(report.conflicts, fn
-        {:delete_vs_modify, "important.txt", _} -> true
-        _ -> false
-      end)
+               {:delete_vs_modify, "important.txt", _} -> true
+               _ -> false
+             end)
 
       # The entry should still be in target schema (not deleted)
       {:ok, target_schema} = reconstruct_schema(store, root_uuid)
@@ -263,17 +266,21 @@ defmodule Commonplace.Tree.MergeTest do
       assert content =~ "edited"
     end
 
-    test "__processes.json filtering: non-forkable processes are removed after merge", %{store: store} do
+    test "__processes.json filtering: non-forkable processes are removed after merge", %{
+      store: store
+    } do
       # Start with an empty target (no __processes.json on target initially)
       root_uuid = create_schema(store, %{})
 
       fork_root = Fork.fork_directory(root_uuid, store)
 
       # Add __processes.json with both forkable and non-forkable processes on the fork
-      proc_json = Jason.encode!(%{
-        "safe_proc" => %{"mode" => "elixir", "source" => "SomeModule"},
-        "unsafe_proc" => %{"mode" => "command", "command" => "bash", "fork" => "skip"}
-      })
+      proc_json =
+        Jason.encode!(%{
+          "safe_proc" => %{"mode" => "elixir", "source" => "SomeModule"},
+          "unsafe_proc" => %{"mode" => "command", "command" => "bash", "fork" => "skip"}
+        })
+
       proc_uuid = create_text_doc(store, "__processes.json", proc_json)
       add_to_schema(store, fork_root, "__processes.json", :doc, proc_uuid)
 
@@ -297,7 +304,9 @@ defmodule Commonplace.Tree.MergeTest do
       refute Map.has_key?(decoded, "unsafe_proc")
     end
 
-    test "merge-point deletion: entry added by prior merge is removed when source deletes it", %{store: store} do
+    test "merge-point deletion: entry added by prior merge is removed when source deletes it", %{
+      store: store
+    } do
       root_uuid = create_schema(store, %{})
       fork_root = Fork.fork_directory(root_uuid, store)
 
@@ -388,9 +397,9 @@ defmodule Commonplace.Tree.MergeTest do
       {:ok, report} = Merge.merge(fork_root, root_uuid, store)
 
       assert Enum.any?(report.conflicts, fn
-        {:delete_vs_modify, "shared.txt", _} -> true
-        _ -> false
-      end)
+               {:delete_vs_modify, "shared.txt", _} -> true
+               _ -> false
+             end)
 
       # Original entry should still be in target schema (not replaced)
       {:ok, target_schema} = reconstruct_schema(store, root_uuid)
@@ -445,7 +454,9 @@ defmodule Commonplace.Tree.MergeTest do
       Application.put_env(:commonplace, :data_dir, node_dir)
 
       {:ok, node_ctx} = Commonplace.Crypto.NodeIdentity.signing_context()
-      node_signer_id = Commonplace.Crypto.Signing.signer_id(node_ctx.identity_uuid, node_ctx.public_key)
+
+      node_signer_id =
+        Commonplace.Crypto.Signing.signer_id(node_ctx.identity_uuid, node_ctx.public_key)
 
       Application.put_env(:commonplace, :trust, %{
         accept_unsigned: false,
@@ -593,7 +604,10 @@ defmodule Commonplace.Tree.MergeTest do
       |> Enum.reject(&match?(%{metadata: %{kind: :genesis}}, &1))
 
     doc = Yelixer.Doc.new()
-    Enum.reduce(commits, {:ok, doc}, fn c, {:ok, d} -> Yelixer.Encoding.apply_update(d, c.update) end)
+
+    Enum.reduce(commits, {:ok, doc}, fn c, {:ok, d} ->
+      Yelixer.Encoding.apply_update(d, c.update)
+    end)
   end
 
   defp reconstruct_schema(store, uuid) do

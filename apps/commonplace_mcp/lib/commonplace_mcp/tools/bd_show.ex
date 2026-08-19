@@ -38,7 +38,8 @@ defmodule Commonplace.MCP.Tools.BdShow do
         show(String.trim(id))
 
       _ ->
-        {:error, :invalid_params, "bd_show requires a non-empty string \"id\" (e.g. \"CX-f1c8\")."}
+        {:error, :invalid_params,
+         "bd_show requires a non-empty string \"id\" (e.g. \"CX-f1c8\")."}
     end
   end
 

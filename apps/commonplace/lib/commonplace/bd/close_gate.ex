@@ -101,7 +101,12 @@ defmodule Commonplace.Bd.CloseGate do
 
   def validate_witnesses("manual", _candidates, _root_uuid, _store), do: {:ok, []}
 
-  def validate_witnesses(%{"type" => "pr_merge", "target" => target}, candidates, _root_uuid, store)
+  def validate_witnesses(
+        %{"type" => "pr_merge", "target" => target},
+        candidates,
+        _root_uuid,
+        store
+      )
       when is_binary(target) and is_list(candidates) do
     case Enum.find(candidates, &valid_pr_merge_witness?(&1, target, store)) do
       nil ->

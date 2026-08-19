@@ -70,7 +70,10 @@ defmodule Commonplace.Gold.AttestationTest do
     assert DateTime.compare(att.timestamp, after_time) in [:eq, :lt]
   end
 
-  test "different commit_ids produce different attestation ids", %{priv: priv, signer_id: signer_id} do
+  test "different commit_ids produce different attestation ids", %{
+    priv: priv,
+    signer_id: signer_id
+  } do
     c1 = :crypto.strong_rand_bytes(32)
     c2 = :crypto.strong_rand_bytes(32)
 
@@ -82,7 +85,10 @@ defmodule Commonplace.Gold.AttestationTest do
     assert att1.id != att2.id
   end
 
-  test "same inputs but different prev_attestation_id produce different ids", %{priv: priv, signer_id: signer_id} do
+  test "same inputs but different prev_attestation_id produce different ids", %{
+    priv: priv,
+    signer_id: signer_id
+  } do
     commit_id = :crypto.strong_rand_bytes(32)
     prev1 = :crypto.strong_rand_bytes(32)
     prev2 = :crypto.strong_rand_bytes(32)

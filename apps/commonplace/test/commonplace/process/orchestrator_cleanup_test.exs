@@ -12,10 +12,12 @@ defmodule Commonplace.Process.OrchestratorCleanupTest do
     start_supervised!({CommitStore, data_dir: dir, name: store_name})
     old_data_dir = Application.get_env(:commonplace, :data_dir)
     Application.put_env(:commonplace, :data_dir, dir)
+
     on_exit(fn ->
       Application.put_env(:commonplace, :data_dir, old_data_dir || "tmp/test_data")
       File.rm_rf!(dir)
     end)
+
     Process.flag(:trap_exit, true)
 
     root_uuid = UUID.uuid4()
@@ -27,7 +29,11 @@ defmodule Commonplace.Process.OrchestratorCleanupTest do
   end
 
   describe "status file" do
-    test "write uses atomic rename (no .tmp file left behind)", %{dir: dir, store: store, root: root} do
+    test "write uses atomic rename (no .tmp file left behind)", %{
+      dir: dir,
+      store: store,
+      root: root
+    } do
       {:ok, orch} = Orchestrator.start_link(root_uuid: root, store: store, interval: 100_000)
 
       # Trigger a reconcile to write the status file
@@ -54,13 +60,16 @@ defmodule Commonplace.Process.OrchestratorCleanupTest do
       proc_uuid = UUID.uuid4()
       doc = Yelixer.Doc.new()
       doc = Commonplace.Document.ContentType.create(doc, :text, "__processes.json")
-      content = Jason.encode!(%{
-        "sleeper" => %{
-          "mode" => "sandbox-exec",
-          "command" => "sleep",
-          "args" => ["3600"]
-        }
-      })
+
+      content =
+        Jason.encode!(%{
+          "sleeper" => %{
+            "mode" => "sandbox-exec",
+            "command" => "sleep",
+            "args" => ["3600"]
+          }
+        })
+
       doc = Commonplace.Document.ContentType.insert_text(doc, 0, content)
       update = Yelixer.Encoding.encode_update(doc)
       CommitStore.create_commit(store, proc_uuid, update, nil)
@@ -92,8 +101,11 @@ defmodule Commonplace.Process.OrchestratorCleanupTest do
 
   defp poll_for_os_pid(orch, name, retries) when retries > 0 do
     info = Orchestrator.process_info(orch)
+
     case info do
-      %{^name => %{os_pid: pid}} when not is_nil(pid) -> pid
+      %{^name => %{os_pid: pid}} when not is_nil(pid) ->
+        pid
+
       _ ->
         Process.sleep(200)
         poll_for_os_pid(orch, name, retries - 1)

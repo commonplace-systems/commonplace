@@ -124,7 +124,9 @@ defmodule Commonplace.Bd.Schemas do
           }
 
     def key(%__MODULE__{from: f, to: t, kind: k}), do: "#{f}::#{t}::#{k}"
-    def key(from, to, kind) when is_binary(from) and is_binary(to) and is_binary(kind), do: "#{from}::#{to}::#{kind}"
+
+    def key(from, to, kind) when is_binary(from) and is_binary(to) and is_binary(kind),
+      do: "#{from}::#{to}::#{kind}"
   end
 
   defmodule Label do
@@ -430,8 +432,12 @@ defmodule Commonplace.Bd.Schemas do
 
   # ---- Loading ----
 
-  def load_issue(dir_uuid, store \\ CommitStoreClient), do: load_meta(dir_uuid, @issue_file, &decode_issue/1, store)
-  def load_comment(dir_uuid, filename, store \\ CommitStoreClient), do: load_meta(dir_uuid, filename, &decode_comment/1, store)
+  def load_issue(dir_uuid, store \\ CommitStoreClient),
+    do: load_meta(dir_uuid, @issue_file, &decode_issue/1, store)
+
+  def load_comment(dir_uuid, filename, store \\ CommitStoreClient),
+    do: load_meta(dir_uuid, filename, &decode_comment/1, store)
+
   def load_label(dir_uuid, store \\ CommitStoreClient) do
     case load_dir_schema(dir_uuid, store) do
       {:ok, schema} ->
@@ -550,7 +556,8 @@ defmodule Commonplace.Bd.Schemas do
   """
   @spec create_text_doc_checked(String.t(), term(), keyword()) ::
           {:ok, String.t()} | {:error, term()}
-  def create_text_doc_checked(json, store \\ CommitStoreClient, opts \\ []) when is_binary(json) do
+  def create_text_doc_checked(json, store \\ CommitStoreClient, opts \\ [])
+      when is_binary(json) do
     case do_create_text_doc(json, store, opts) do
       {{:error, reason}, _uuid} -> {:error, reason}
       {_landed, uuid} -> {:ok, uuid}

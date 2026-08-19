@@ -20,7 +20,13 @@ defmodule Commonplace.OutlineTest do
     start_supervised!({CommitStore, data_dir: dir, name: store})
 
     root_uuid = UUID.uuid4()
-    CommitStore.create_commit(store, root_uuid, Yelixer.Encoding.encode_update(Schema.new_schema()), nil)
+
+    CommitStore.create_commit(
+      store,
+      root_uuid,
+      Yelixer.Encoding.encode_update(Schema.new_schema()),
+      nil
+    )
 
     on_exit(fn -> File.rm_rf!(dir) end)
     %{store: store, root: root_uuid}
@@ -163,7 +169,13 @@ defmodule Commonplace.OutlineTest do
   # --- helpers for the pure-CRDT test ---
 
   defp ok(v), do: {:ok, v}
-  defp apply!(doc, update), do: ({:ok, d} = Yelixer.Encoding.apply_update(doc, update); d)
+
+  defp apply!(doc, update),
+    do:
+      (
+        {:ok, d} = Yelixer.Encoding.apply_update(doc, update)
+        d
+      )
 
   defp base_outline_doc do
     doc = Commonplace.Document.ContentType.create(Yelixer.Doc.new(client_id: 1), :xml, "_outline")

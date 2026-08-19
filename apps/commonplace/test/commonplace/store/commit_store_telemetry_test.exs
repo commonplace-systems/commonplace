@@ -180,7 +180,8 @@ defmodule Commonplace.Store.CommitStoreTelemetryTest do
     Application.put_env(:commonplace, :commit_store_queue_poll_ms, 20)
 
     on_exit(fn ->
-      if old, do: Application.put_env(:commonplace, :commit_store_queue_poll_ms, old),
+      if old,
+        do: Application.put_env(:commonplace, :commit_store_queue_poll_ms, old),
         else: Application.delete_env(:commonplace, :commit_store_queue_poll_ms)
 
       File.rm_rf!(dir)
@@ -193,8 +194,9 @@ defmodule Commonplace.Store.CommitStoreTelemetryTest do
       start: {CommitStore, :start_link, [[data_dir: dir, name: name]]}
     })
 
-    assert_receive {:telemetry, [:commonplace, :commit_store, :queue_depth], measurements, metadata},
-                    1_000
+    assert_receive {:telemetry, [:commonplace, :commit_store, :queue_depth], measurements,
+                    metadata},
+                   1_000
 
     assert metadata.store == name
     assert is_integer(measurements.queue_len)

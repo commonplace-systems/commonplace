@@ -188,7 +188,9 @@ defmodule CommonplaceWebWeb.Features.ChatBugHuntTest do
     Process.sleep(200)
 
     # NO entries should have landed. Verify at the YArray level.
-    {:ok, doc} = DocBuilder.reconstruct_snapshot(Commonplace.Store.CommitStoreClient, room.messages_uuid)
+    {:ok, doc} =
+      DocBuilder.reconstruct_snapshot(Commonplace.Store.CommitStoreClient, room.messages_uuid)
+
     entries = Commonplace.Chat.Messages.list(doc)
 
     assert entries == [],

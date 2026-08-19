@@ -86,7 +86,15 @@ defmodule Commonplace.MUD.HolderMove do
   transfers the possession token first (gate (a)), then elevates the
   tree move to node authority, rolling the token back on move failure.
   """
-  @spec push(String.t(), String.t(), String.t(), String.t(), String.t() | nil, String.t() | nil, keyword()) ::
+  @spec push(
+          String.t(),
+          String.t(),
+          String.t(),
+          String.t(),
+          String.t() | nil,
+          String.t() | nil,
+          keyword()
+        ) ::
           :ok | {:error, term()}
   def push(item_uuid, name, from_dir, to_dir, from_holder, to_holder, opts \\ []) do
     store = Keyword.get(opts, :store, CommitStoreClient)
@@ -95,16 +103,47 @@ defmodule Commonplace.MUD.HolderMove do
     if invoker_can_write_all?(opts, [from_dir, to_dir], store) do
       Move.move(item_uuid, name, from_dir, to_dir, invoker_move_opts(opts, store))
     else
-      elevated_push(item_uuid, name, from_dir, to_dir, from_holder, to_holder, store, bursar, opts)
+      elevated_push(
+        item_uuid,
+        name,
+        from_dir,
+        to_dir,
+        from_holder,
+        to_holder,
+        store,
+        bursar,
+        opts
+      )
     end
   end
 
-  defp elevated_push(_item_uuid, _name, _from_dir, _to_dir, from_holder, to_holder, _store, _bursar, _opts)
-       when not is_binary(from_holder) or from_holder == "" or not is_binary(to_holder) or to_holder == "" do
+  defp elevated_push(
+         _item_uuid,
+         _name,
+         _from_dir,
+         _to_dir,
+         from_holder,
+         to_holder,
+         _store,
+         _bursar,
+         _opts
+       )
+       when not is_binary(from_holder) or from_holder == "" or not is_binary(to_holder) or
+              to_holder == "" do
     {:error, :bad_arg}
   end
 
-  defp elevated_push(item_uuid, name, from_dir, to_dir, from_holder, to_holder, store, bursar, opts) do
+  defp elevated_push(
+         item_uuid,
+         name,
+         from_dir,
+         to_dir,
+         from_holder,
+         to_holder,
+         store,
+         bursar,
+         opts
+       ) do
     with {:ok, node_ctx} <- NodeIdentity.signing_context(),
          {:ok, node_identity} <- NodeIdentity.identity(),
          # CX-cogd — an item legitimately in the mover's own source dir may carry
@@ -114,9 +153,27 @@ defmodule Commonplace.MUD.HolderMove do
          # mirror of Take's `ensure_node_holds` acquiring an :available room item.
          # Returns `acquired?` so a downstream failure releases the acquire.
          {:ok, acquired?} <-
-           ensure_mover_holds(item_uuid, from_holder, from_dir, node_identity, store, bursar, opts) do
+           ensure_mover_holds(
+             item_uuid,
+             from_holder,
+             from_dir,
+             node_identity,
+             store,
+             bursar,
+             opts
+           ) do
       do_transfer_and_move(
-        item_uuid, name, from_dir, to_dir, from_holder, to_holder, acquired?, node_ctx, store, bursar, opts
+        item_uuid,
+        name,
+        from_dir,
+        to_dir,
+        from_holder,
+        to_holder,
+        acquired?,
+        node_ctx,
+        store,
+        bursar,
+        opts
       )
     else
       {:error, {:not_holder, _}} -> {:error, :not_holder}
@@ -199,8 +256,22 @@ defmodule Commonplace.MUD.HolderMove do
     is_binary(inv) and from_dir == inv
   end
 
-  defp do_transfer_and_move(item_uuid, name, from_dir, to_dir, from_holder, to_holder, acquired?, node_ctx, store, bursar, opts) do
-    case BursarClient.transfer(bursar, item_uuid, from_holder, to_holder, authenticated_as: from_holder) do
+  defp do_transfer_and_move(
+         item_uuid,
+         name,
+         from_dir,
+         to_dir,
+         from_holder,
+         to_holder,
+         acquired?,
+         node_ctx,
+         store,
+         bursar,
+         opts
+       ) do
+    case BursarClient.transfer(bursar, item_uuid, from_holder, to_holder,
+           authenticated_as: from_holder
+         ) do
       {:ok, _} ->
         elevated_opts =
           [store: store, signing_context: node_ctx, cert_cids: []]
@@ -214,14 +285,24 @@ defmodule Commonplace.MUD.HolderMove do
             # Move failed after the token moved to `to_holder` — roll BOTH back:
             # transfer the token back, then release the acquire if we made one
             # (net: the item stays put and the token returns to :available).
-            BursarClient.transfer(bursar, item_uuid, to_holder, from_holder, authenticated_as: to_holder)
-            if acquired?, do: BursarClient.release(bursar, item_uuid, from_holder, authenticated_as: from_holder)
+            BursarClient.transfer(bursar, item_uuid, to_holder, from_holder,
+              authenticated_as: to_holder
+            )
+
+            if acquired?,
+              do:
+                BursarClient.release(bursar, item_uuid, from_holder,
+                  authenticated_as: from_holder
+                )
+
             {:error, reason}
         end
 
       {:error, terr} ->
         # Transfer failed after a fresh acquire — release it so no token leaks.
-        if acquired?, do: BursarClient.release(bursar, item_uuid, from_holder, authenticated_as: from_holder)
+        if acquired?,
+          do: BursarClient.release(bursar, item_uuid, from_holder, authenticated_as: from_holder)
+
         normalize_holder_error(terr)
     end
   end
@@ -243,7 +324,16 @@ defmodule Commonplace.MUD.HolderMove do
   defp invoker_move_opts(opts, store) do
     [store: store]
     |> Keyword.merge(
-      Keyword.take(opts, [:signing_context, :cert_cids, :signer_id, :bursar, :ttl, :retries, :retry_ms, :precheck])
+      Keyword.take(opts, [
+        :signing_context,
+        :cert_cids,
+        :signer_id,
+        :bursar,
+        :ttl,
+        :retries,
+        :retry_ms,
+        :precheck
+      ])
     )
   end
 end

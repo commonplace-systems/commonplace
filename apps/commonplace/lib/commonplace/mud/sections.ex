@@ -213,7 +213,13 @@ defmodule Commonplace.MUD.Sections do
         context_room_uuid
         |> candidate_certs(store)
         |> Enum.map(
-          &handle_candidate(&1, new_room_uuid, context_room_uuid, {node_identity, node_pub}, store)
+          &handle_candidate(
+            &1,
+            new_room_uuid,
+            context_room_uuid,
+            {node_identity, node_pub},
+            store
+          )
         )
 
       {:ok, results}

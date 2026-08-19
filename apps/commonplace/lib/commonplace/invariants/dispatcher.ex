@@ -107,7 +107,12 @@ defmodule Commonplace.Invariants.Dispatcher do
   @impl true
   def init(opts) do
     state = %{
-      enabled: Keyword.get(opts, :enabled, Application.get_env(:commonplace, :invariant_dispatch_enabled, true)),
+      enabled:
+        Keyword.get(
+          opts,
+          :enabled,
+          Application.get_env(:commonplace, :invariant_dispatch_enabled, true)
+        ),
       debounce_ms: Keyword.get(opts, :debounce_ms, @default_debounce_ms),
       min_interval_ms: Keyword.get(opts, :min_interval_ms, @default_min_interval_ms),
       context_fn: Keyword.get(opts, :context_fn, &default_context/0),

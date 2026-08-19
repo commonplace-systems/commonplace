@@ -77,8 +77,12 @@ defmodule Commonplace.Outline.Tree do
 
   defp walk_cycle(by_id, start, current, seen) do
     cond do
-      current == start -> true
-      MapSet.member?(seen, current) -> false
+      current == start ->
+        true
+
+      MapSet.member?(seen, current) ->
+        false
+
       true ->
         case Map.get(by_id, current) do
           nil -> false

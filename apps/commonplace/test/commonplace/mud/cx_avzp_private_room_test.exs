@@ -55,7 +55,9 @@ defmodule Commonplace.MUD.CxAvzpPrivateRoomTest do
 
     on_exit(fn ->
       restore = fn key, v ->
-        if is_nil(v), do: Application.delete_env(:commonplace, key), else: Application.put_env(:commonplace, key, v)
+        if is_nil(v),
+          do: Application.delete_env(:commonplace, key),
+          else: Application.put_env(:commonplace, key, v)
       end
 
       restore.(:data_dir, old_data_dir)
@@ -84,11 +86,15 @@ defmodule Commonplace.MUD.CxAvzpPrivateRoomTest do
     end
 
     defp mint_room(store, room) do
-      {:ok, dir_uuid} = Schemas.create_dir_with_meta(Schemas.room_filename(), Schemas.encode_room(room), store)
+      {:ok, dir_uuid} =
+        Schemas.create_dir_with_meta(Schemas.room_filename(), Schemas.encode_room(room), store)
+
       dir_uuid
     end
 
-    test "a gated dest DENIES a stranger viewer BEFORE any move (no presence needed)", %{store: store} do
+    test "a gated dest DENIES a stranger viewer BEFORE any move (no presence needed)", %{
+      store: store
+    } do
       owner = fresh_ctx()
       src = mint_room(store, %Room{name: "Src", description: "."})
 
@@ -122,7 +128,12 @@ defmodule Commonplace.MUD.CxAvzpPrivateRoomTest do
 
       # No presence seeded in `src`, so `move` fails downstream — but the point
       # is the OWNER cleared the READ gate: the result is NOT :read_denied.
-      result = World.move_presence("player-uuid", "owner.usr", src, dest, store: store, viewer: owner.identity_uuid)
+      result =
+        World.move_presence("player-uuid", "owner.usr", src, dest,
+          store: store,
+          viewer: owner.identity_uuid
+        )
+
       refute result == {:error, :read_denied}
     end
 
@@ -130,8 +141,11 @@ defmodule Commonplace.MUD.CxAvzpPrivateRoomTest do
       src = mint_room(store, %Room{name: "Src", description: "."})
       dest = mint_room(store, %Room{name: "Commons", description: "Open."})
 
-      refute World.move_presence("p", "x.usr", src, dest, store: store, viewer: "stranger-id") == {:error, :read_denied}
-      refute World.move_presence("p", "x.usr", src, dest, store: store, viewer: nil) == {:error, :read_denied}
+      refute World.move_presence("p", "x.usr", src, dest, store: store, viewer: "stranger-id") ==
+               {:error, :read_denied}
+
+      refute World.move_presence("p", "x.usr", src, dest, store: store, viewer: nil) ==
+               {:error, :read_denied}
     end
 
     test "a DIR-ABSENT dest (structural absence) fails OPEN — move fails cleanly on its own",
@@ -139,7 +153,10 @@ defmodule Commonplace.MUD.CxAvzpPrivateRoomTest do
       src = mint_room(store, %Room{name: "Src", description: "."})
       # A random uuid with no dir doc at all: true structural absence → the gate
       # must not deny (the underlying move fails cleanly instead).
-      refute World.move_presence("p", "x.usr", src, UUID.uuid4(), store: store, viewer: "stranger-id") ==
+      refute World.move_presence("p", "x.usr", src, UUID.uuid4(),
+               store: store,
+               viewer: "stranger-id"
+             ) ==
                {:error, :read_denied}
     end
 
@@ -161,7 +178,10 @@ defmodule Commonplace.MUD.CxAvzpPrivateRoomTest do
       assert {:error, {:no_doc, _}} = Commonplace.MUD.Schemas.load_room(dir_uuid, store)
 
       assert {:error, :read_denied} =
-               World.move_presence("p", "x.usr", src, dir_uuid, store: store, viewer: "stranger-id")
+               World.move_presence("p", "x.usr", src, dir_uuid,
+                 store: store,
+                 viewer: "stranger-id"
+               )
     end
   end
 
@@ -190,9 +210,21 @@ defmodule Commonplace.MUD.CxAvzpPrivateRoomTest do
       root_uuid = UUID.uuid4()
 
       {:ok, bursar_pid} =
-        Commonplace.Green.Bursar.start_link(root_uuid: root_uuid, store: store, sweep_interval: 60_000)
+        Commonplace.Green.Bursar.start_link(
+          root_uuid: root_uuid,
+          store: store,
+          sweep_interval: 60_000
+        )
 
-      on_exit(fn -> if Process.alive?(bursar_pid), do: (try do GenServer.stop(bursar_pid) catch (:exit, _ -> :ok) end) end)
+      on_exit(fn ->
+        if Process.alive?(bursar_pid),
+          do:
+            (try do
+               GenServer.stop(bursar_pid)
+             catch
+               (:exit, _ -> :ok)
+             end)
+      end)
 
       update = Encoding.encode_update(Schema.new_schema())
       CommitStore.create_commit(store, root_uuid, update, nil)
@@ -236,7 +268,13 @@ defmodule Commonplace.MUD.CxAvzpPrivateRoomTest do
       {:ok, session} =
         PlayerSession.start_link(
           Keyword.merge(
-            [player_name: name, root_uuid: ctx.root, store: ctx.store, output_fn: output_fn, owner_pid: parent],
+            [
+              player_name: name,
+              root_uuid: ctx.root,
+              store: ctx.store,
+              output_fn: output_fn,
+              owner_pid: parent
+            ],
             opts
           )
         )
@@ -260,26 +298,43 @@ defmodule Commonplace.MUD.CxAvzpPrivateRoomTest do
 
     defp presence_in_room?(room_uuid, presence_filename, store) do
       case Schemas.load_dir_schema(room_uuid, store) do
-        {:ok, schema} -> Enum.any?(Schema.list_entries(schema), fn e -> e.name == presence_filename end)
-        _ -> false
+        {:ok, schema} ->
+          Enum.any?(Schema.list_entries(schema), fn e -> e.name == presence_filename end)
+
+        _ ->
+          false
       end
     end
 
     test "CONTROL + PIN: stranger hears a say when co-located, but NOT after a refused @teleport into the private room",
          ctx do
-      owner = start_player("owner", ctx, signing_context: ctx.owner_ctx, spawn_room_uuid: ctx.public_uuid)
+      owner =
+        start_player("owner", ctx,
+          signing_context: ctx.owner_ctx,
+          spawn_room_uuid: ctx.public_uuid
+        )
+
       stranger_ctx = fresh_ctx()
-      stranger = start_player("stranger", ctx, signing_context: stranger_ctx, spawn_room_uuid: ctx.public_uuid)
+
+      stranger =
+        start_player("stranger", ctx,
+          signing_context: stranger_ctx,
+          spawn_room_uuid: ctx.public_uuid
+        )
 
       # --- CONTROL (non-vacuity): both in the PUBLIC room; stranger hears owner ---
       send_input(owner, "say hello-neighbours")
       control = drain("stranger") |> Enum.join("\n")
-      assert control =~ "hello-neighbours", "plumbing check: a co-located say must reach the stranger"
+
+      assert control =~ "hello-neighbours",
+             "plumbing check: a co-located say must reach the stranger"
 
       # owner enters their OWN private room (authorized → move + subscribe)
       send_input(owner, "@teleport #{ctx.private_uuid}")
       drain("owner")
-      assert presence_in_room?(ctx.private_uuid, "owner.usr", ctx.store), "owner should be admitted to their own room"
+
+      assert presence_in_room?(ctx.private_uuid, "owner.usr", ctx.store),
+             "owner should be admitted to their own room"
 
       # --- stranger is REFUSED at the door (atomic deny) ---
       send_input(stranger, "@teleport #{ctx.private_uuid}")
@@ -314,9 +369,16 @@ defmodule Commonplace.MUD.CxAvzpPrivateRoomTest do
           ctx.store
         )
 
-      owner = start_player("owner", ctx, signing_context: ctx.owner_ctx, spawn_room_uuid: ctx.private_uuid)
+      owner =
+        start_player("owner", ctx,
+          signing_context: ctx.owner_ctx,
+          spawn_room_uuid: ctx.private_uuid
+        )
+
       stranger_ctx = fresh_ctx()
-      stranger = start_player("scout", ctx, signing_context: stranger_ctx, spawn_room_uuid: staging_uuid)
+
+      stranger =
+        start_player("scout", ctx, signing_context: stranger_ctx, spawn_room_uuid: staging_uuid)
 
       send_input(stranger, "down")
       refused = drain("scout") |> Enum.join("\n")
@@ -327,7 +389,9 @@ defmodule Commonplace.MUD.CxAvzpPrivateRoomTest do
 
       send_input(owner, "say vault code is four-four-two")
       leaked = drain("scout") |> Enum.join("\n")
-      refute leaked =~ "four-four-two", "EAVESDROP LEAK: refused scout received the private room's say"
+
+      refute leaked =~ "four-four-two",
+             "EAVESDROP LEAK: refused scout received the private room's say"
     end
 
     # CX-wkau (MUD-as-documents Inc-1, tranche 3) — `go` is now doc-hosted
@@ -369,9 +433,19 @@ defmodule Commonplace.MUD.CxAvzpPrivateRoomTest do
           ctx.store
         )
 
-      owner = start_player("owner-doc", ctx, signing_context: ctx.owner_ctx, spawn_room_uuid: ctx.private_uuid)
+      owner =
+        start_player("owner-doc", ctx,
+          signing_context: ctx.owner_ctx,
+          spawn_room_uuid: ctx.private_uuid
+        )
+
       stranger_ctx = fresh_ctx()
-      stranger = start_player("scout-doc", ctx, signing_context: stranger_ctx, spawn_room_uuid: staging_uuid)
+
+      stranger =
+        start_player("scout-doc", ctx,
+          signing_context: stranger_ctx,
+          spawn_room_uuid: staging_uuid
+        )
 
       send_input(stranger, "down")
       refused = drain("scout-doc") |> Enum.join("\n")

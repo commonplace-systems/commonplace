@@ -187,9 +187,11 @@ defmodule Commonplace.GitBridge.CanonicalXmlTest do
 
   test "round-trip stability: encoding the same tree twice is byte-identical" do
     tree = [
-      {:element, "item", %{"id" => "1", "collapsed" => "false", "parent" => "root", "order" => "a0"},
+      {:element, "item",
+       %{"id" => "1", "collapsed" => "false", "parent" => "root", "order" => "a0"},
        [{:text, "first bullet"}]},
-      {:element, "item", %{"id" => "2", "collapsed" => "false", "parent" => "root", "order" => "a1"},
+      {:element, "item",
+       %{"id" => "2", "collapsed" => "false", "parent" => "root", "order" => "a1"},
        [{:text, "second bullet"}]}
     ]
 

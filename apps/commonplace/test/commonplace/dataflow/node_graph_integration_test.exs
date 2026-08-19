@@ -56,7 +56,10 @@ defmodule Commonplace.Dataflow.NodeGraphIntegrationTest do
   end
 
   describe "SmartDoc reacts to blue input" do
-    test "handle_blue fires when a watched document gets a new commit", %{store: store, root: root} do
+    test "handle_blue fires when a watched document gets a new commit", %{
+      store: store,
+      root: root
+    } do
       # Use an Agent as a side-channel to detect callback firing (avoids ETS naming issues)
       {:ok, agent} = Agent.start_link(fn -> nil end)
 
@@ -68,23 +71,24 @@ defmodule Commonplace.Dataflow.NodeGraphIntegrationTest do
       data_uuid = create_source_doc(store, root, "data.txt", "initial")
 
       # Create SmartDoc source: writes to agent when handle_blue fires
-      _watcher_uuid = create_source_doc(store, root, "watcher.exs", """
-      defmodule Commonplace.UserProcess.Watcher do
-        use GenServer
-        use Commonplace.SmartDoc
+      _watcher_uuid =
+        create_source_doc(store, root, "watcher.exs", """
+        defmodule Commonplace.UserProcess.Watcher do
+          use GenServer
+          use Commonplace.SmartDoc
 
-        @blue_inputs ["data.txt"]
+          @blue_inputs ["data.txt"]
 
-        def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
-        def init(opts), do: {:ok, opts}
+          def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
+          def init(opts), do: {:ok, opts}
 
-        def handle_blue("data.txt", doc) do
-          content = Commonplace.Document.ContentType.get_content(doc) || ""
-          agent = :persistent_term.get(:integ_test_watcher_agent)
-          Agent.update(agent, fn _ -> content end)
+          def handle_blue("data.txt", doc) do
+            content = Commonplace.Document.ContentType.get_content(doc) || ""
+            agent = :persistent_term.get(:integ_test_watcher_agent)
+            Agent.update(agent, fn _ -> content end)
+          end
         end
-      end
-      """)
+        """)
 
       # Create __processes.json referencing the watcher
       create_processes_doc(store, root, %{
@@ -95,9 +99,10 @@ defmodule Commonplace.Dataflow.NodeGraphIntegrationTest do
       {:ok, orch} = Orchestrator.start_link(root_uuid: root, store: store, interval: 100)
 
       # Wait until the watcher process is running
-      assert :ok = wait_until(fn ->
-        Map.has_key?(Orchestrator.running_processes(orch), "watcher")
-      end)
+      assert :ok =
+               wait_until(fn ->
+                 Map.has_key?(Orchestrator.running_processes(orch), "watcher")
+               end)
 
       # Now create a new commit on data.txt to trigger the watcher
       new_doc = Yelixer.Doc.new()
@@ -107,32 +112,37 @@ defmodule Commonplace.Dataflow.NodeGraphIntegrationTest do
       CommitStore.create_chained_commit(store, data_uuid, new_update)
 
       # Wait until the watcher callback fires
-      assert :ok = wait_until(fn ->
-        content = Agent.get(agent, & &1)
-        content != nil and String.contains?(content, "updated content")
-      end)
+      assert :ok =
+               wait_until(fn ->
+                 content = Agent.get(agent, & &1)
+                 content != nil and String.contains?(content, "updated content")
+               end)
 
       GenServer.stop(orch)
     end
   end
 
   describe "GraphRegistry shows correct edges" do
-    test "blue edges are registered after Orchestrator wires a SmartDoc", %{store: store, root: root} do
+    test "blue edges are registered after Orchestrator wires a SmartDoc", %{
+      store: store,
+      root: root
+    } do
       # Create "data.txt"
       data_uuid = create_source_doc(store, root, "data.txt", "hello")
 
       # Create SmartDoc with blue input on data.txt
-      _watcher_uuid = create_source_doc(store, root, "observer.exs", """
-      defmodule Commonplace.UserProcess.Observer do
-        use GenServer
-        use Commonplace.SmartDoc
+      _watcher_uuid =
+        create_source_doc(store, root, "observer.exs", """
+        defmodule Commonplace.UserProcess.Observer do
+          use GenServer
+          use Commonplace.SmartDoc
 
-        @blue_inputs ["data.txt"]
+          @blue_inputs ["data.txt"]
 
-        def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
-        def init(opts), do: {:ok, opts}
-      end
-      """)
+          def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
+          def init(opts), do: {:ok, opts}
+        end
+        """)
 
       create_processes_doc(store, root, %{
         "observer" => %{"mode" => "elixir", "source" => "observer.exs"}
@@ -141,13 +151,17 @@ defmodule Commonplace.Dataflow.NodeGraphIntegrationTest do
       {:ok, orch} = Orchestrator.start_link(root_uuid: root, store: store, interval: 100)
 
       # Wait until blue edges appear in GraphRegistry
-      assert :ok = wait_until(fn ->
-        graph = GraphRegistry.get_graph()
-        blue_edges = Enum.filter(graph, fn e ->
-          e.color == :blue and e.from == data_uuid and e.to == "observer"
-        end)
-        length(blue_edges) == 1
-      end)
+      assert :ok =
+               wait_until(fn ->
+                 graph = GraphRegistry.get_graph()
+
+                 blue_edges =
+                   Enum.filter(graph, fn e ->
+                     e.color == :blue and e.from == data_uuid and e.to == "observer"
+                   end)
+
+                 length(blue_edges) == 1
+               end)
 
       # dependents(data_uuid) should include the observer
       deps = GraphRegistry.dependents(data_uuid)
@@ -159,42 +173,47 @@ defmodule Commonplace.Dataflow.NodeGraphIntegrationTest do
   end
 
   describe "depth protection prevents infinite loops" do
-    test "cyclic SmartDoc wiring produces cross-color edges in the graph", %{store: store, root: root} do
+    test "cyclic SmartDoc wiring produces cross-color edges in the graph", %{
+      store: store,
+      root: root
+    } do
       # Create documents that the two processes will read/write
       a_uuid = create_source_doc(store, root, "a.txt", "a-init")
       b_uuid = create_source_doc(store, root, "b.txt", "b-init")
 
       # Process A: reads b.txt, writes to a.txt
-      _proc_a_uuid = create_source_doc(store, root, "proc_a.exs", """
-      defmodule Commonplace.UserProcess.ProcA do
-        use GenServer
-        use Commonplace.SmartDoc
+      _proc_a_uuid =
+        create_source_doc(store, root, "proc_a.exs", """
+        defmodule Commonplace.UserProcess.ProcA do
+          use GenServer
+          use Commonplace.SmartDoc
 
-        @blue_inputs ["b.txt"]
-        @cyan_outputs ["a.txt"]
+          @blue_inputs ["b.txt"]
+          @cyan_outputs ["a.txt"]
 
-        def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
-        def init(opts), do: {:ok, opts}
+          def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
+          def init(opts), do: {:ok, opts}
 
-        def handle_blue("b.txt", _doc), do: :ok
-      end
-      """)
+          def handle_blue("b.txt", _doc), do: :ok
+        end
+        """)
 
       # Process B: reads a.txt, writes to b.txt
-      _proc_b_uuid = create_source_doc(store, root, "proc_b.exs", """
-      defmodule Commonplace.UserProcess.ProcB do
-        use GenServer
-        use Commonplace.SmartDoc
+      _proc_b_uuid =
+        create_source_doc(store, root, "proc_b.exs", """
+        defmodule Commonplace.UserProcess.ProcB do
+          use GenServer
+          use Commonplace.SmartDoc
 
-        @blue_inputs ["a.txt"]
-        @cyan_outputs ["b.txt"]
+          @blue_inputs ["a.txt"]
+          @cyan_outputs ["b.txt"]
 
-        def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
-        def init(opts), do: {:ok, opts}
+          def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
+          def init(opts), do: {:ok, opts}
 
-        def handle_blue("a.txt", _doc), do: :ok
-      end
-      """)
+          def handle_blue("a.txt", _doc), do: :ok
+        end
+        """)
 
       create_processes_doc(store, root, %{
         "proc_a" => %{"mode" => "elixir", "source" => "proc_a.exs"},
@@ -204,24 +223,42 @@ defmodule Commonplace.Dataflow.NodeGraphIntegrationTest do
       {:ok, orch} = Orchestrator.start_link(root_uuid: root, store: store, interval: 100)
 
       # Wait until both processes are running
-      assert :ok = wait_until(fn ->
-        pids = Orchestrator.running_processes(orch)
-        Map.has_key?(pids, "proc_a") and Map.has_key?(pids, "proc_b")
-      end)
+      assert :ok =
+               wait_until(fn ->
+                 pids = Orchestrator.running_processes(orch)
+                 Map.has_key?(pids, "proc_a") and Map.has_key?(pids, "proc_b")
+               end)
 
       # Wait until the graph has the expected cross-color feedback loop
-      assert :ok = wait_until(fn ->
-        graph = GraphRegistry.get_graph()
-        Enum.any?(graph, fn e -> e.color == :blue and e.from == b_uuid and e.to == "proc_a" end) and
-        Enum.any?(graph, fn e -> e.color == :cyan and e.from == "proc_a" and e.to == a_uuid end)
-      end)
+      assert :ok =
+               wait_until(fn ->
+                 graph = GraphRegistry.get_graph()
+
+                 Enum.any?(graph, fn e ->
+                   e.color == :blue and e.from == b_uuid and e.to == "proc_a"
+                 end) and
+                   Enum.any?(graph, fn e ->
+                     e.color == :cyan and e.from == "proc_a" and e.to == a_uuid
+                   end)
+               end)
 
       graph = GraphRegistry.get_graph()
 
-      assert Enum.any?(graph, fn e -> e.color == :blue and e.from == b_uuid and e.to == "proc_a" end)
-      assert Enum.any?(graph, fn e -> e.color == :cyan and e.from == "proc_a" and e.to == a_uuid end)
-      assert Enum.any?(graph, fn e -> e.color == :blue and e.from == a_uuid and e.to == "proc_b" end)
-      assert Enum.any?(graph, fn e -> e.color == :cyan and e.from == "proc_b" and e.to == b_uuid end)
+      assert Enum.any?(graph, fn e ->
+               e.color == :blue and e.from == b_uuid and e.to == "proc_a"
+             end)
+
+      assert Enum.any?(graph, fn e ->
+               e.color == :cyan and e.from == "proc_a" and e.to == a_uuid
+             end)
+
+      assert Enum.any?(graph, fn e ->
+               e.color == :blue and e.from == a_uuid and e.to == "proc_b"
+             end)
+
+      assert Enum.any?(graph, fn e ->
+               e.color == :cyan and e.from == "proc_b" and e.to == b_uuid
+             end)
 
       # Both docs are dependencies of the other process
       assert "proc_a" in Enum.map(GraphRegistry.dependents(b_uuid), & &1.process)
@@ -238,22 +275,23 @@ defmodule Commonplace.Dataflow.NodeGraphIntegrationTest do
 
       data_uuid = create_source_doc(store, root, "watched.txt", "start")
 
-      _watcher_uuid = create_source_doc(store, root, "depth_watcher.exs", """
-      defmodule Commonplace.UserProcess.DepthWatcher do
-        use GenServer
-        use Commonplace.SmartDoc
+      _watcher_uuid =
+        create_source_doc(store, root, "depth_watcher.exs", """
+        defmodule Commonplace.UserProcess.DepthWatcher do
+          use GenServer
+          use Commonplace.SmartDoc
 
-        @blue_inputs ["watched.txt"]
+          @blue_inputs ["watched.txt"]
 
-        def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
-        def init(opts), do: {:ok, opts}
+          def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
+          def init(opts), do: {:ok, opts}
 
-        def handle_blue("watched.txt", _doc) do
-          counter = :persistent_term.get(:integ_test_depth_counter)
-          Agent.update(counter, &(&1 + 1))
+          def handle_blue("watched.txt", _doc) do
+            counter = :persistent_term.get(:integ_test_depth_counter)
+            Agent.update(counter, &(&1 + 1))
+          end
         end
-      end
-      """)
+        """)
 
       create_processes_doc(store, root, %{
         "depth_watcher" => %{"mode" => "elixir", "source" => "depth_watcher.exs"}
@@ -262,9 +300,10 @@ defmodule Commonplace.Dataflow.NodeGraphIntegrationTest do
       {:ok, orch} = Orchestrator.start_link(root_uuid: root, store: store, interval: 100)
 
       # Wait until depth_watcher process is running and wired
-      assert :ok = wait_until(fn ->
-        Map.has_key?(Orchestrator.running_processes(orch), "depth_watcher")
-      end)
+      assert :ok =
+               wait_until(fn ->
+                 Map.has_key?(Orchestrator.running_processes(orch), "depth_watcher")
+               end)
 
       # Send a commit with depth=0 — should be dispatched
       new_doc = Yelixer.Doc.new()

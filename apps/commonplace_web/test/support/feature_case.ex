@@ -65,6 +65,7 @@ defmodule CommonplaceWebWeb.FeatureCase do
     root_uuid = UUID.uuid4()
     root_doc = Commonplace.Tree.Schema.new_schema()
     update = Yelixer.Encoding.encode_update(root_doc)
+
     Commonplace.Store.CommitStore.create_commit(
       Commonplace.Store.CommitStore,
       root_uuid,

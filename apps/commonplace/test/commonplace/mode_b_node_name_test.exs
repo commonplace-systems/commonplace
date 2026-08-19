@@ -51,14 +51,14 @@ defmodule Commonplace.ModeBNodeNameTest do
   end
 
   test "gate on but node not alive → no file written", %{dir: dir} do
-    assert Commonplace.Application.do_maybe_write_node_name(dir, false, true, :"fake@nowhere") ==
+    assert Commonplace.Application.do_maybe_write_node_name(dir, false, true, :fake@nowhere) ==
              :ok
 
     refute File.exists?(Path.join(dir, "node_name"))
   end
 
   test "gate on and node alive → file written containing the node name", %{dir: dir} do
-    assert Commonplace.Application.do_maybe_write_node_name(dir, true, true, :"fake@nowhere") ==
+    assert Commonplace.Application.do_maybe_write_node_name(dir, true, true, :fake@nowhere) ==
              :ok
 
     path = Path.join(dir, "node_name")
@@ -69,7 +69,7 @@ defmodule Commonplace.ModeBNodeNameTest do
   test "gate on, node alive, but neither flag true together → no file (both must hold)", %{
     dir: dir
   } do
-    assert Commonplace.Application.do_maybe_write_node_name(dir, true, false, :"fake@nowhere") ==
+    assert Commonplace.Application.do_maybe_write_node_name(dir, true, false, :fake@nowhere) ==
              :ok
 
     refute File.exists?(Path.join(dir, "node_name"))
@@ -88,7 +88,7 @@ defmodule Commonplace.ModeBNodeNameTest do
              nonexistent,
              true,
              true,
-             :"fake@nowhere"
+             :fake@nowhere
            ) == :ok
 
     refute File.exists?(Path.join(nonexistent, "node_name"))

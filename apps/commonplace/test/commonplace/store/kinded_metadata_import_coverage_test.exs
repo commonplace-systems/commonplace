@@ -46,7 +46,11 @@ defmodule Commonplace.Store.KindedMetadataImportCoverageTest do
     dir = Path.join(System.tmp_dir!(), "cp_kmic_#{tag}_#{:rand.uniform(1_000_000)}")
     File.mkdir_p!(dir)
     name = :"kmic_store_#{tag}_#{:rand.uniform(1_000_000)}"
-    start_supervised!({CommitStore, data_dir: dir, name: name}, id: :"store_#{tag}_#{:rand.uniform(1_000_000)}")
+
+    start_supervised!({CommitStore, data_dir: dir, name: name},
+      id: :"store_#{tag}_#{:rand.uniform(1_000_000)}"
+    )
+
     on_exit(fn -> File.rm_rf!(dir) end)
     name
   end
@@ -55,7 +59,11 @@ defmodule Commonplace.Store.KindedMetadataImportCoverageTest do
     dir = Path.join(System.tmp_dir!(), "cp_kmic_target_#{tag}_#{:rand.uniform(1_000_000)}")
     File.mkdir_p!(dir)
     name = :"kmic_target_#{tag}_#{:rand.uniform(1_000_000)}"
-    start_supervised!({CommitStore, data_dir: dir, name: name}, id: :"target_#{tag}_#{:rand.uniform(1_000_000)}")
+
+    start_supervised!({CommitStore, data_dir: dir, name: name},
+      id: :"target_#{tag}_#{:rand.uniform(1_000_000)}"
+    )
+
     on_exit(fn -> File.rm_rf!(dir) end)
     name
   end
@@ -266,14 +274,20 @@ defmodule Commonplace.Store.KindedMetadataImportCoverageTest do
       pr_uuid = UUID.uuid4()
 
       {:ok, latest_before} = CommitStore.latest_commit(store, file_uuid)
-      IO.puts("SITE A: target file's parent (pre-merge) metadata = #{inspect(latest_before.metadata)}")
+
+      IO.puts(
+        "SITE A: target file's parent (pre-merge) metadata = #{inspect(latest_before.metadata)}"
+      )
 
       {:ok, _report} =
         Merge.merge(fork_root, root_uuid, store, metadata: %{kind: :regular, pr_merge: pr_uuid})
 
       {:ok, merge_commit} = CommitStore.latest_commit(store, file_uuid)
       IO.puts("SITE A merge commit.metadata = #{inspect(merge_commit.metadata)}")
-      IO.puts("SITE A snapshot_parent present? #{Map.has_key?(merge_commit.metadata, :snapshot_parent)}")
+
+      IO.puts(
+        "SITE A snapshot_parent present? #{Map.has_key?(merge_commit.metadata, :snapshot_parent)}"
+      )
 
       result = round_trip("site_a", store, merge_commit)
       IO.puts("SITE A import_commit/3 result: #{inspect(result)}")
@@ -351,7 +365,9 @@ defmodule Commonplace.Store.KindedMetadataImportCoverageTest do
       Identity.touch_last_seen(uuid, store)
       {:ok, touch_commit} = CommitStore.latest_commit(store, uuid)
 
-      IO.puts("SITE B (legacy head) touch_last_seen commit.metadata = #{inspect(touch_commit.metadata)}")
+      IO.puts(
+        "SITE B (legacy head) touch_last_seen commit.metadata = #{inspect(touch_commit.metadata)}"
+      )
 
       # The guard: write_metadata only emits %{kind: :regular} when
       # current_namespace(head) is non-nil. A legacy %{} head has nil
@@ -419,7 +435,8 @@ defmodule Commonplace.Store.KindedMetadataImportCoverageTest do
       cap
     end
 
-    test "SAFE case: capability_proof write onto a fresh (genesis-parented) doc round-trips", ctx do
+    test "SAFE case: capability_proof write onto a fresh (genesis-parented) doc round-trips",
+         ctx do
       target_uuid = UUID.uuid4()
       cap = mint_and_store(ctx, target_uuid)
 
@@ -440,10 +457,20 @@ defmodule Commonplace.Store.KindedMetadataImportCoverageTest do
       assert metadata.capability_proof == cap.id
 
       commit =
-        CommitStoreClient.create_commit(ctx.store, target_uuid, update, nil, metadata, commit_opts)
+        CommitStoreClient.create_commit(
+          ctx.store,
+          target_uuid,
+          update,
+          nil,
+          metadata,
+          commit_opts
+        )
 
       IO.puts("SITE C (fresh parent) commit.metadata = #{inspect(commit.metadata)}")
-      IO.puts("SITE C (fresh parent) snapshot_parent present? #{Map.has_key?(commit.metadata, :snapshot_parent)}")
+
+      IO.puts(
+        "SITE C (fresh parent) snapshot_parent present? #{Map.has_key?(commit.metadata, :snapshot_parent)}"
+      )
 
       result = round_trip_plain(commit, ctx.store)
       IO.puts("SITE C (fresh parent) result: #{inspect(result)}")
@@ -481,10 +508,19 @@ defmodule Commonplace.Store.KindedMetadataImportCoverageTest do
       assert metadata.capability_proof == cap.id
 
       commit =
-        CommitStoreClient.create_chained_commit(ctx.store, target_uuid, update2, metadata, commit_opts)
+        CommitStoreClient.create_chained_commit(
+          ctx.store,
+          target_uuid,
+          update2,
+          metadata,
+          commit_opts
+        )
 
       IO.puts("SITE C (legacy parent) commit.metadata = #{inspect(commit.metadata)}")
-      IO.puts("SITE C (legacy parent) snapshot_parent present? #{Map.has_key?(commit.metadata, :snapshot_parent)}")
+
+      IO.puts(
+        "SITE C (legacy parent) snapshot_parent present? #{Map.has_key?(commit.metadata, :snapshot_parent)}"
+      )
 
       result = round_trip_plain(commit, ctx.store)
       IO.puts("SITE C (legacy parent) result: #{inspect(result)}")

@@ -22,6 +22,7 @@ defmodule Commonplace.CLI.Ps do
 
     # Verify the orchestrator process is actually alive
     os_pid = status["pid"]
+
     unless os_pid && os_process_alive?(os_pid) do
       IO.puts("Orchestrator status file is stale (PID #{os_pid} not running).")
       IO.puts("Start with: commonplace serve")
@@ -37,11 +38,12 @@ defmodule Commonplace.CLI.Ps do
     else
       IO.puts(
         String.pad_trailing("NAME", 25) <>
-        String.pad_trailing("PID", 10) <>
-        String.pad_trailing("MODE", 15) <>
-        String.pad_trailing("STATUS", 10) <>
-        "SANDBOX"
+          String.pad_trailing("PID", 10) <>
+          String.pad_trailing("MODE", 15) <>
+          String.pad_trailing("STATUS", 10) <>
+          "SANDBOX"
       )
+
       IO.puts(String.duplicate("-", 90))
 
       processes
@@ -54,10 +56,10 @@ defmodule Commonplace.CLI.Ps do
 
         IO.puts(
           String.pad_trailing(name, 25) <>
-          String.pad_trailing(os_pid_str, 10) <>
-          String.pad_trailing(mode, 15) <>
-          String.pad_trailing(status_str, 10) <>
-          sandbox
+            String.pad_trailing(os_pid_str, 10) <>
+            String.pad_trailing(mode, 15) <>
+            String.pad_trailing(status_str, 10) <>
+            sandbox
         )
       end)
     end

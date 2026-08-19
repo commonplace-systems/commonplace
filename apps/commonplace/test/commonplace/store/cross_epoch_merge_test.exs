@@ -116,9 +116,7 @@ defmodule Commonplace.Store.CrossEpochMergeTest do
         })
 
       :ok =
-        CommitStore.import_commit(store, r_commit,
-          validator: fn _ -> :ok end
-        )
+        CommitStore.import_commit(store, r_commit, validator: fn _ -> :ok end)
 
       assert {:ok, merge} = CrossEpochMerge.merge(store, l_commit.id, r_commit.id)
       assert %Commit{} = merge
@@ -443,6 +441,7 @@ defmodule Commonplace.Store.CrossEpochMergeTest do
       doc_l = Doc.new(client_id: 2)
       {:ok, doc_l} = Encoding.apply_update(doc_l, c_update)
       doc_l = ContentType.insert_text(doc_l, 0, "X")
+
       _l_commit =
         CommitStore.create_chained_commit(
           store,

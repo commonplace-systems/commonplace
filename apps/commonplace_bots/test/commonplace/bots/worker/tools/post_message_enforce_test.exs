@@ -41,7 +41,9 @@ defmodule Commonplace.Bots.Worker.Tools.PostMessageEnforceTest do
     {:ok, _pid} = Supervisor.start_child(sup, {Commonplace.Store.CommitStore, data_dir: dir})
     Commonplace.Tree.DocCache.clear()
 
-    secrets_dir = Path.join(System.tmp_dir!(), "cp_bots_pm_enforce_secrets_#{:rand.uniform(1_000_000_000)}")
+    secrets_dir =
+      Path.join(System.tmp_dir!(), "cp_bots_pm_enforce_secrets_#{:rand.uniform(1_000_000_000)}")
+
     File.mkdir_p!(secrets_dir)
     secrets = :"cp_bots_pm_enforce_secrets_#{:rand.uniform(1_000_000_000)}"
     {:ok, secrets_pid} = SecretStore.start_link(data_dir: secrets_dir, name: secrets)
@@ -51,18 +53,25 @@ defmodule Commonplace.Bots.Worker.Tools.PostMessageEnforceTest do
     # under enforce.
     {reg_pub, reg_priv} = Signing.generate_keypair()
     registrar_id = UUID.uuid4()
-    registrar = %SigningContext{identity_uuid: registrar_id, private_key: reg_priv, public_key: reg_pub}
+
+    registrar = %SigningContext{
+      identity_uuid: registrar_id,
+      private_key: reg_priv,
+      public_key: reg_pub
+    }
 
     put_trust(%{registrar_id => Signing.encode_key(reg_pub)})
 
     root = UUID.uuid4()
     root_update = Yelixer.Encoding.encode_update(Schema.new_schema())
+
     CommitStore.create_commit(Commonplace.Store.CommitStore, root, root_update, nil, %{},
       signing_context: registrar
     )
 
     messages_uuid = UUID.uuid4()
     msgs_update = Yelixer.Encoding.encode_update(Messages.new())
+
     CommitStore.create_commit(Commonplace.Store.CommitStore, messages_uuid, msgs_update, nil, %{},
       signing_context: registrar
     )
@@ -81,7 +90,10 @@ defmodule Commonplace.Bots.Worker.Tools.PostMessageEnforceTest do
       Application.put_env(:commonplace, :data_dir, prior_data_dir || "tmp/test_data")
 
       {:ok, _pid} =
-        Supervisor.start_child(sup, {Commonplace.Store.CommitStore, data_dir: prior_data_dir || "tmp/test_data"})
+        Supervisor.start_child(
+          sup,
+          {Commonplace.Store.CommitStore, data_dir: prior_data_dir || "tmp/test_data"}
+        )
 
       case prior_trust do
         nil -> Application.delete_env(:commonplace, :trust)
@@ -98,11 +110,20 @@ defmodule Commonplace.Bots.Worker.Tools.PostMessageEnforceTest do
       File.rm_rf!(secrets_dir)
     end)
 
-    %{root: root, secrets: secrets, registrar: registrar, registrar_id: registrar_id, messages_uuid: messages_uuid}
+    %{
+      root: root,
+      secrets: secrets,
+      registrar: registrar,
+      registrar_id: registrar_id,
+      messages_uuid: messages_uuid
+    }
   end
 
   defp put_trust(identities) do
-    Application.put_env(:commonplace, :trust, %{accept_unsigned: false, trusted_identities: identities})
+    Application.put_env(:commonplace, :trust, %{
+      accept_unsigned: false,
+      trusted_identities: identities
+    })
   end
 
   defp pin(identity_uuid, pub, ctx) do
@@ -141,15 +162,22 @@ defmodule Commonplace.Bots.Worker.Tools.PostMessageEnforceTest do
     sc = provision("camillo", ctx)
     pin(sc.identity_uuid, sc.public_key, ctx)
 
-    assert {:ok, json} = PostMessage.call(state_for(sc, ctx.messages_uuid), %{"text" => "hello under enforce"})
+    assert {:ok, json} =
+             PostMessage.call(state_for(sc, ctx.messages_uuid), %{"text" => "hello under enforce"})
+
     assert %{"message_id" => _} = Jason.decode!(json)
 
     assert "hello under enforce" in room_texts(ctx.messages_uuid)
 
     # The landed message carries the bot's REAL signer, not a placeholder.
     {:ok, doc} = DocBuilder.reconstruct_snapshot(CommitStoreClient, ctx.messages_uuid)
-    entry = doc |> Messages.materialize() |> Enum.find(&(Map.get(&1, "text") == "hello under enforce"))
-    assert Map.get(entry, "author_signer_id") == Signing.signer_id(sc.identity_uuid, sc.public_key)
+
+    entry =
+      doc |> Messages.materialize() |> Enum.find(&(Map.get(&1, "text") == "hello under enforce"))
+
+    assert Map.get(entry, "author_signer_id") ==
+             Signing.signer_id(sc.identity_uuid, sc.public_key)
+
     refute String.starts_with?(Map.get(entry, "author_signer_id"), "bot:")
   end
 
@@ -157,7 +185,9 @@ defmodule Commonplace.Bots.Worker.Tools.PostMessageEnforceTest do
     sc = provision("stranger", ctx)
     # NOT pinned: trust config still holds only the registrar.
 
-    assert {:error, _reason} = PostMessage.call(state_for(sc, ctx.messages_uuid), %{"text" => "should be denied"})
+    assert {:error, _reason} =
+             PostMessage.call(state_for(sc, ctx.messages_uuid), %{"text" => "should be denied"})
+
     refute "should be denied" in room_texts(ctx.messages_uuid)
   end
 end

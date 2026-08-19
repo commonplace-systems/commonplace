@@ -51,10 +51,12 @@ defmodule Commonplace.Bd.TicketCommentVerbsTest do
     old_trust = Application.get_env(:commonplace, :trust)
 
     on_exit(fn ->
-      if old_gate, do: Application.put_env(:commonplace, :local_write_gate, old_gate),
+      if old_gate,
+        do: Application.put_env(:commonplace, :local_write_gate, old_gate),
         else: Application.delete_env(:commonplace, :local_write_gate)
 
-      if old_trust, do: Application.put_env(:commonplace, :trust, old_trust),
+      if old_trust,
+        do: Application.put_env(:commonplace, :trust, old_trust),
         else: Application.delete_env(:commonplace, :trust)
 
       File.rm_rf!(dir)
@@ -382,7 +384,12 @@ defmodule Commonplace.Bd.TicketCommentVerbsTest do
   describe "the ungated door is retired (CX-xmsd layer 2)" do
     test "import_comments_jsonl/4 raises and names its replacement", ctx do
       assert_raise RetiredGraphError, ~r/ticket_comments_import/, fn ->
-        Importer.import_comments_jsonl(ctx.root, ctx.ticket, ~s({"id":"c-1","text":"x"}), ctx.store)
+        Importer.import_comments_jsonl(
+          ctx.root,
+          ctx.ticket,
+          ~s({"id":"c-1","text":"x"}),
+          ctx.store
+        )
       end
 
       assert Comment.list(ctx.root, ctx.ticket, ctx.store) == []

@@ -28,8 +28,15 @@ defmodule Commonplace.Trust.CapabilityTest do
       caveats: %{not_before: nil, not_after: nil}
     }
 
-    %{issuer: issuer, audience: audience, issuer_ctx: issuer_ctx, claim: claim,
-      ipub: ipub, ipriv: ipriv, apub: apub}
+    %{
+      issuer: issuer,
+      audience: audience,
+      issuer_ctx: issuer_ctx,
+      claim: claim,
+      ipub: ipub,
+      ipriv: ipriv,
+      apub: apub
+    }
   end
 
   describe "new/4 + content addressing" do
@@ -82,7 +89,12 @@ defmodule Commonplace.Trust.CapabilityTest do
     end
 
     test "duplicate scope/verb entries are normalized out", ctx do
-      dup = %{ctx.claim | verbs: [:write, :write, :delegate], scope: {:docs, ["doc-a", "doc-a", "doc-b"]}}
+      dup = %{
+        ctx.claim
+        | verbs: [:write, :write, :delegate],
+          scope: {:docs, ["doc-a", "doc-a", "doc-b"]}
+      }
+
       c1 = Capability.new(ctx.issuer, ctx.audience, ctx.claim, nil)
       c2 = Capability.new(ctx.issuer, ctx.audience, dup, nil)
       assert c1.id == c2.id
@@ -109,14 +121,17 @@ defmodule Commonplace.Trust.CapabilityTest do
     end
 
     test "verify_sig succeeds against the issuer key", ctx do
-      signed = Capability.new(ctx.issuer, ctx.audience, ctx.claim, nil) |> Capability.sign(ctx.ipriv)
+      signed =
+        Capability.new(ctx.issuer, ctx.audience, ctx.claim, nil) |> Capability.sign(ctx.ipriv)
+
       assert :ok = Capability.verify_sig(signed)
     end
 
     test "verify_sig fails when issuer.pubkey doesn't match the signing key", ctx do
       {_other_pub, other_priv} = Signing.generate_keypair()
       # Signed by the wrong key — issuer still claims ipub, so verify fails.
-      signed = Capability.new(ctx.issuer, ctx.audience, ctx.claim, nil) |> Capability.sign(other_priv)
+      signed =
+        Capability.new(ctx.issuer, ctx.audience, ctx.claim, nil) |> Capability.sign(other_priv)
 
       assert :ok = Capability.verify_id(signed),
              "precondition: the wrong-key-signed capability exists with a valid content id"
@@ -154,7 +169,11 @@ defmodule Commonplace.Trust.CapabilityTest do
       {bob, _} = ident("bob-id")
       {:ok, parent} = Capability.issue(ctx.issuer_ctx, alice, ctx.claim, nil)
 
-      child_claim = %{verbs: [:write], scope: {:docs, ["doc-a"]}, caveats: %{not_before: nil, not_after: nil}}
+      child_claim = %{
+        verbs: [:write],
+        scope: {:docs, ["doc-a"]},
+        caveats: %{not_before: nil, not_after: nil}
+      }
 
       assert {:ok, child} =
                Capability.issue(alice_ctx, bob, child_claim, parent.id, parent: parent)
@@ -168,7 +187,11 @@ defmodule Commonplace.Trust.CapabilityTest do
       {bob, _} = ident("bob-id")
       {:ok, parent} = Capability.issue(ctx.issuer_ctx, alice, ctx.claim, nil)
 
-      wider = %{verbs: [:write, :delegate, :execute], scope: {:docs, ["doc-a"]}, caveats: %{not_before: nil, not_after: nil}}
+      wider = %{
+        verbs: [:write, :delegate, :execute],
+        scope: {:docs, ["doc-a"]},
+        caveats: %{not_before: nil, not_after: nil}
+      }
 
       assert Capability.verify_id(parent) == :ok and Capability.verify_sig(parent) == :ok,
              "precondition: the parent capability exists and verifies before wider verbs are delegated"
@@ -182,7 +205,11 @@ defmodule Commonplace.Trust.CapabilityTest do
       {bob, _} = ident("bob-id")
       {:ok, parent} = Capability.issue(ctx.issuer_ctx, alice, ctx.claim, nil)
 
-      wider = %{verbs: [:write], scope: {:docs, ["doc-a", "doc-c"]}, caveats: %{not_before: nil, not_after: nil}}
+      wider = %{
+        verbs: [:write],
+        scope: {:docs, ["doc-a", "doc-c"]},
+        caveats: %{not_before: nil, not_after: nil}
+      }
 
       assert Capability.verify_id(parent) == :ok and Capability.verify_sig(parent) == :ok,
              "precondition: the parent capability exists and verifies before a wider scope is delegated"
@@ -220,17 +247,33 @@ defmodule Commonplace.Trust.CapabilityTest do
     end
 
     test "allows write-without-execute on a non-code doc", ctx do
-      claim = %{verbs: [:write], scope: {:docs, [ctx.data_uuid]}, caveats: %{not_before: nil, not_after: nil}}
-      assert {:ok, _} = Capability.issue(ctx.issuer_ctx, ctx.audience, claim, nil, store: ctx.store)
+      claim = %{
+        verbs: [:write],
+        scope: {:docs, [ctx.data_uuid]},
+        caveats: %{not_before: nil, not_after: nil}
+      }
+
+      assert {:ok, _} =
+               Capability.issue(ctx.issuer_ctx, ctx.audience, claim, nil, store: ctx.store)
     end
 
     test "allows write+execute on a code doc", ctx do
-      claim = %{verbs: [:write, :execute], scope: {:docs, [ctx.code_uuid]}, caveats: %{not_before: nil, not_after: nil}}
-      assert {:ok, _} = Capability.issue(ctx.issuer_ctx, ctx.audience, claim, nil, store: ctx.store)
+      claim = %{
+        verbs: [:write, :execute],
+        scope: {:docs, [ctx.code_uuid]},
+        caveats: %{not_before: nil, not_after: nil}
+      }
+
+      assert {:ok, _} =
+               Capability.issue(ctx.issuer_ctx, ctx.audience, claim, nil, store: ctx.store)
     end
 
     test "override flag allows write-without-execute on a code doc", ctx do
-      claim = %{verbs: [:write], scope: {:docs, [ctx.code_uuid]}, caveats: %{not_before: nil, not_after: nil}}
+      claim = %{
+        verbs: [:write],
+        scope: {:docs, [ctx.code_uuid]},
+        caveats: %{not_before: nil, not_after: nil}
+      }
 
       assert {:ok, _} =
                Capability.issue(ctx.issuer_ctx, ctx.audience, claim, nil,
@@ -242,11 +285,22 @@ defmodule Commonplace.Trust.CapabilityTest do
     test "delegate inherits the guard", ctx do
       # Parent grants write+execute on the code doc; the delegation narrows to
       # write-only on the same code doc → refused at mint (delegate funnels to issue).
-      parent_claim = %{verbs: [:write, :execute], scope: {:docs, [ctx.code_uuid]}, caveats: %{not_before: nil, not_after: nil}}
-      {:ok, parent} = Capability.issue(ctx.issuer_ctx, ctx.audience, parent_claim, nil, store: ctx.store)
+      parent_claim = %{
+        verbs: [:write, :execute],
+        scope: {:docs, [ctx.code_uuid]},
+        caveats: %{not_before: nil, not_after: nil}
+      }
+
+      {:ok, parent} =
+        Capability.issue(ctx.issuer_ctx, ctx.audience, parent_claim, nil, store: ctx.store)
 
       {_child, child_ctx} = ident("delegatee-id")
-      narrowed = %{verbs: [:write], scope: {:docs, [ctx.code_uuid]}, caveats: %{not_before: nil, not_after: nil}}
+
+      narrowed = %{
+        verbs: [:write],
+        scope: {:docs, [ctx.code_uuid]},
+        caveats: %{not_before: nil, not_after: nil}
+      }
 
       assert Capability.verify_id(parent) == :ok and Capability.verify_sig(parent) == :ok and
                CodeDocHeuristic.code_doc?(ctx.code_uuid, ctx.store),
@@ -261,7 +315,8 @@ defmodule Commonplace.Trust.CapabilityTest do
   end
 
   describe "CX-0a9a presence-carve (W1): {:presence, identity_uuid} scope" do
-    test "new/4 accepts and normalizes a presence scope (identity uuid unchanged, no list-sort)", ctx do
+    test "new/4 accepts and normalizes a presence scope (identity uuid unchanged, no list-sort)",
+         ctx do
       claim = %{verbs: [:write], scope: {:presence, "identity-123"}, caveats: %{}}
       cap = Capability.new(ctx.issuer, ctx.audience, claim, nil)
       assert cap.claim.scope == {:presence, "identity-123"}
@@ -295,7 +350,8 @@ defmodule Commonplace.Trust.CapabilityTest do
       assert :ok = Capability.verify_sig(cap)
     end
 
-    test "issue/5 does NOT refuse write-without-execute on a presence scope (no code-doc risk)", ctx do
+    test "issue/5 does NOT refuse write-without-execute on a presence scope (no code-doc risk)",
+         ctx do
       {audience, _} = ident_helper("bot-id")
       claim = %{verbs: [:write], scope: {:presence, "identity-123"}, caveats: %{}}
       # No :store passed at all — if check_no_code_doc_in_scope tried to

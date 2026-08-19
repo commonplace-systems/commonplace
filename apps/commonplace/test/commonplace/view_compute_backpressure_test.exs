@@ -45,7 +45,7 @@ defmodule Commonplace.ViewComputeBackpressureTest do
 
   defp wait_until(fun, n \\ 100) do
     Enum.reduce_while(1..n, false, fn _, _ ->
-      if fun.(), do: {:halt, true}, else: (Process.sleep(20) && {:cont, false})
+      if fun.(), do: {:halt, true}, else: Process.sleep(20) && {:cont, false}
     end)
     |> case do
       true -> :ok

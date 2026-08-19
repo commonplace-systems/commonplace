@@ -58,7 +58,9 @@ defmodule Commonplace.MUD.CxSfj8SessionProvisionTest do
 
     on_exit(fn ->
       restore = fn key, v ->
-        if is_nil(v), do: Application.delete_env(:commonplace, key), else: Application.put_env(:commonplace, key, v)
+        if is_nil(v),
+          do: Application.delete_env(:commonplace, key),
+          else: Application.put_env(:commonplace, key, v)
       end
 
       restore.(:data_dir, old_data_dir)
@@ -84,7 +86,15 @@ defmodule Commonplace.MUD.CxSfj8SessionProvisionTest do
     {:ok, root_schema} = Schemas.load_dir_schema(root, store)
     root_schema = Schema.add_directory(root_schema, "start", start)
     {metadata, commit_opts} = SignedWrite.opts_for(root, store: store, signing_context: node_ctx)
-    _ = CommitStoreClient.create_chained_commit(store, root, Encoding.encode_update(root_schema), metadata, commit_opts)
+
+    _ =
+      CommitStoreClient.create_chained_commit(
+        store,
+        root,
+        Encoding.encode_update(root_schema),
+        metadata,
+        commit_opts
+      )
 
     %{store: store, root: root, start: start}
   end
@@ -130,7 +140,12 @@ defmodule Commonplace.MUD.CxSfj8SessionProvisionTest do
     claimed = "victim-#{UUID.uuid4()}"
 
     session =
-      start_session(player_name: "claimant", root_uuid: root, store: store, player_identity_uuid: claimed)
+      start_session(
+        player_name: "claimant",
+        root_uuid: root,
+        store: store,
+        player_identity_uuid: claimed
+      )
 
     st = :sys.get_state(session)
 

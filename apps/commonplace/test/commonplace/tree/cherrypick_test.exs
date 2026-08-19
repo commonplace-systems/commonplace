@@ -63,6 +63,7 @@ defmodule Commonplace.Tree.CherrypickTest do
       # Source advances after the fork: "hello world".
       {:ok, source_base} = DocBuilder.reconstruct_doc(store, source)
       source_extended = ContentType.insert_text(source_base, 5, " world")
+
       second_commit =
         CommitStore.create_chained_commit(store, source, Encoding.encode_update(source_extended))
 

@@ -46,7 +46,10 @@ defmodule Commonplace.Trust.SubtreeCarveTest do
     on_exit(fn ->
       for {k, v} <- old do
         key = %{data_dir: :data_dir, trust: :trust, gate: :local_write_gate}[k]
-        if is_nil(v), do: Application.delete_env(:commonplace, key), else: Application.put_env(:commonplace, key, v)
+
+        if is_nil(v),
+          do: Application.delete_env(:commonplace, key),
+          else: Application.put_env(:commonplace, key, v)
       end
 
       File.rm_rf!(dir)
@@ -70,7 +73,10 @@ defmodule Commonplace.Trust.SubtreeCarveTest do
   # Node-signs a `zone` stamp onto the room's meta child (stands in for A1c's
   # chokepoint, which will mint it by-construction).
   defp stamp_zone(room, zone, store, node_ctx) do
-    :ok = World.set_meta(room, Schemas.room_filename(), "zone", zone, store, signing_context: node_ctx)
+    :ok =
+      World.set_meta(room, Schemas.room_filename(), "zone", zone, store,
+        signing_context: node_ctx
+      )
   end
 
   # A fresh player identity + a node-issued {:subtree, root} [:write] cert.
@@ -80,10 +86,23 @@ defmodule Commonplace.Trust.SubtreeCarveTest do
     ctx = %SigningContext{identity_uuid: pid, public_key: pub, private_key: priv}
 
     {:ok, cap} =
-      Capability.issue(node_ctx, {pid, pub}, %{verbs: [:write], scope: {:subtree, root}, caveats: %{}}, nil, store: store)
+      Capability.issue(
+        node_ctx,
+        {pid, pub},
+        %{verbs: [:write], scope: {:subtree, root}, caveats: %{}},
+        nil,
+        store: store
+      )
 
     :ok = CommitStoreClient.store_capability(store, cap)
-    %{id: pid, pub: pub, ctx: ctx, cid: cap.id, creds: [signing_context: ctx, cert_cids: [cap.id]]}
+
+    %{
+      id: pid,
+      pub: pub,
+      ctx: ctx,
+      cid: cap.id,
+      creds: [signing_context: ctx, cert_cids: [cap.id]]
+    }
   end
 
   defp fresh_reader do
@@ -101,43 +120,78 @@ defmodule Commonplace.Trust.SubtreeCarveTest do
     uuid
   end
 
-  test "member write LANDS: a {:subtree,R} cert writes game content of a doc stamped R", %{store: store, node_ctx: node_ctx, room: room} do
+  test "member write LANDS: a {:subtree,R} cert writes game content of a doc stamped R", %{
+    store: store,
+    node_ctx: node_ctx,
+    room: room
+  } do
     zone = UUID.uuid4()
     stamp_zone(room, zone, store, node_ctx)
     p = player_with_subtree_cert(store, node_ctx, zone)
 
-    assert :ok = World.set_meta(room, Schemas.room_filename(), "description", "player edit", store, p.creds)
+    assert :ok =
+             World.set_meta(
+               room,
+               Schemas.room_filename(),
+               "description",
+               "player edit",
+               store,
+               p.creds
+             )
+
     assert meta_field(room, "description", store) == "player edit"
     # the stamp is untouched
     assert meta_field(room, "zone", store) == zone
   end
 
-  test "MISMATCH rejected: a {:subtree,OTHER} cert cannot write a doc stamped R", %{store: store, node_ctx: node_ctx, room: room} do
+  test "MISMATCH rejected: a {:subtree,OTHER} cert cannot write a doc stamped R", %{
+    store: store,
+    node_ctx: node_ctx,
+    room: room
+  } do
     zone = UUID.uuid4()
     stamp_zone(room, zone, store, node_ctx)
     p = player_with_subtree_cert(store, node_ctx, UUID.uuid4())
 
-    assert {:error, _} = World.set_meta(room, Schemas.room_filename(), "description", "nope", store, p.creds)
+    assert {:error, _} =
+             World.set_meta(room, Schemas.room_filename(), "description", "nope", store, p.creds)
+
     refute meta_field(room, "description", store) == "nope"
   end
 
-  test "UNSTAMPED rejected (fail-closed): a subtree cert cannot write a doc with no zone", %{store: store, node_ctx: node_ctx, room: room} do
+  test "UNSTAMPED rejected (fail-closed): a subtree cert cannot write a doc with no zone", %{
+    store: store,
+    node_ctx: node_ctx,
+    room: room
+  } do
     # never stamp the room
     p = player_with_subtree_cert(store, node_ctx, UUID.uuid4())
-    assert {:error, _} = World.set_meta(room, Schemas.room_filename(), "description", "nope", store, p.creds)
+
+    assert {:error, _} =
+             World.set_meta(room, Schemas.room_filename(), "description", "nope", store, p.creds)
   end
 
-  test "STAMP PROTECTION: a subtree cert cannot rewrite the protected zone field", %{store: store, node_ctx: node_ctx, room: room} do
+  test "STAMP PROTECTION: a subtree cert cannot rewrite the protected zone field", %{
+    store: store,
+    node_ctx: node_ctx,
+    room: room
+  } do
     zone = UUID.uuid4()
     stamp_zone(room, zone, store, node_ctx)
     p = player_with_subtree_cert(store, node_ctx, zone)
 
     # attempt to move this doc into a different zone by rewriting its stamp
-    assert {:error, _} = World.set_meta(room, Schemas.room_filename(), "zone", UUID.uuid4(), store, p.creds)
+    assert {:error, _} =
+             World.set_meta(room, Schemas.room_filename(), "zone", UUID.uuid4(), store, p.creds)
+
     assert meta_field(room, "zone", store) == zone
   end
 
-  test "commitless elevation mirror: writer_authorized? tracks subtree membership", %{store: store, node_ctx: node_ctx, room: room} do
+  test "commitless elevation mirror: writer_authorized? tracks subtree membership", %{
+    store: store,
+    node_ctx: node_ctx,
+    room: room
+  } do
     zone = UUID.uuid4()
     stamp_zone(room, zone, store, node_ctx)
     member = player_with_subtree_cert(store, node_ctx, zone)

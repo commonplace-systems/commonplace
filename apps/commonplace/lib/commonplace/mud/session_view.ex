@@ -222,7 +222,9 @@ defmodule Commonplace.MUD.SessionView do
     # notably CommitStoreClient itself, which a raw CommitStore.create_commit
     # would choke on (GenServer.call to the unregistered client module). Local
     # mode normalizes back to CommitStore; remote mode routes to the serve.
-    commit = CommitStoreClient.create_commit(store, uuid, update, nil, %{}, signing_context: node_ctx)
+    commit =
+      CommitStoreClient.create_commit(store, uuid, update, nil, %{}, signing_context: node_ctx)
+
     ensure_committed!(commit, :genesis)
 
     %__MODULE__{
@@ -432,7 +434,8 @@ defmodule Commonplace.MUD.SessionView do
   Returns `{:ok, %{owner: owner_uuid | nil, visibility: atom}}` or
   `{:error, reason}`.
   """
-  @spec read_meta(String.t(), term()) :: {:ok, %{owner: String.t() | nil, visibility: atom()}} | {:error, term()}
+  @spec read_meta(String.t(), term()) ::
+          {:ok, %{owner: String.t() | nil, visibility: atom()}} | {:error, term()}
   def read_meta(uuid, store) do
     case DocBuilder.reconstruct_doc(store, uuid) do
       {:ok, doc} ->

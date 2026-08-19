@@ -53,7 +53,8 @@ defmodule Commonplace.CLI.LnTest do
     end
 
     test "returns error when source doesn't exist", %{store: store, root: root} do
-      assert {:error, :source_not_found} = Commonplace.CLI.Ln.link("ghost.txt", "alias.txt", root, store)
+      assert {:error, :source_not_found} =
+               Commonplace.CLI.Ln.link("ghost.txt", "alias.txt", root, store)
     end
 
     test "refuses to link to a reserved honorific extension (CX-edy)",
@@ -113,6 +114,7 @@ defmodule Commonplace.CLI.LnTest do
         doc = Schema.new_schema()
         {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
         doc
+
       :none ->
         Schema.new_schema()
     end

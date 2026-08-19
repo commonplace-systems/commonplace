@@ -139,7 +139,12 @@ defmodule Commonplace.MUD.WorldCorruptMetaRecoveryTest do
 
     # ...and once recovered, ordinary writes work again.
     assert :ok =
-             World.merge_meta(dir_uuid, Schemas.room_filename(), %{"description" => "after"}, store)
+             World.merge_meta(
+               dir_uuid,
+               Schemas.room_filename(),
+               %{"description" => "after"},
+               store
+             )
 
     assert {:ok, %Room{description: "after"}} = Schemas.load_room(dir_uuid, store)
   end

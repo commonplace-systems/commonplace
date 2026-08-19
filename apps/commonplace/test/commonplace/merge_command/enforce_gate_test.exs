@@ -115,8 +115,7 @@ defmodule Commonplace.MergeCommand.EnforceGateTest do
     handler_name = :"mge_handler_#{n}"
 
     start_supervised!(
-      {Commonplace.MergeCommand.Handler,
-       store: name, name: handler_name, root_uuid: root_uuid}
+      {Commonplace.MergeCommand.Handler, store: name, name: handler_name, root_uuid: root_uuid}
     )
 
     %{store: name, root: root_uuid, node_dir: node_dir}

@@ -31,7 +31,13 @@ defmodule Commonplace.MUD.WorldMergeMetaCasTest do
     json = Schemas.encode_room(%Room{name: "Start", description: "A room."})
     {:ok, dir_uuid} = Schemas.create_dir_with_meta(Schemas.room_filename(), json, store)
 
-    assert :ok = World.merge_meta(dir_uuid, Schemas.room_filename(), %{"description" => "Second."}, store)
+    assert :ok =
+             World.merge_meta(
+               dir_uuid,
+               Schemas.room_filename(),
+               %{"description" => "Second."},
+               store
+             )
 
     {:ok, %Room{description: "Second."}} = Schemas.load_room(dir_uuid, store)
   end
@@ -79,7 +85,12 @@ defmodule Commonplace.MUD.WorldMergeMetaCasTest do
 
     # The doc moves out from under the stale token via an ordinary merge_meta.
     assert :ok =
-             World.merge_meta(dir_uuid, Schemas.room_filename(), %{"description" => "Second."}, store)
+             World.merge_meta(
+               dir_uuid,
+               Schemas.room_filename(),
+               %{"description" => "Second."},
+               store
+             )
 
     {:ok, %Room{description: "Second."}} = Schemas.load_room(dir_uuid, store)
 
@@ -87,7 +98,9 @@ defmodule Commonplace.MUD.WorldMergeMetaCasTest do
     losing_json = Schemas.encode_room(%Room{name: "Start", description: "Should not land."})
 
     assert {:error, :parent_moved} =
-             Schemas.write_meta_doc(entry.node_id, losing_json, store, expect_parent: stale_parent)
+             Schemas.write_meta_doc(entry.node_id, losing_json, store,
+               expect_parent: stale_parent
+             )
 
     # The doc content is unchanged by the losing write.
     {:ok, %Room{description: "Second."}} = Schemas.load_room(dir_uuid, store)

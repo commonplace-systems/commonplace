@@ -331,8 +331,12 @@ defmodule Commonplace.Store.Namespace do
     case Yelixer.Encoding.update_client_ids_by_role(commit.update) do
       {:ok, %{reference: reference_ids}} ->
         cond do
-          MapSet.size(namespace) == 0 -> :ok
-          MapSet.subset?(reference_ids, namespace) -> :ok
+          MapSet.size(namespace) == 0 ->
+            :ok
+
+          MapSet.subset?(reference_ids, namespace) ->
+            :ok
+
           true ->
             outside = MapSet.difference(reference_ids, namespace) |> MapSet.to_list()
             {:error, {:unknown_reference, outside}}

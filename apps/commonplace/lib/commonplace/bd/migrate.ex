@@ -87,7 +87,13 @@ defmodule Commonplace.Bd.Migrate do
   Returns `{:ok, %{imported: n, skipped_closed: n, manifest: [...],
   edges_added: n}}`.
   """
-  def import_from_export(root_uuid, export_jsonl, store \\ CommitStoreClient, deps_jsonl \\ nil, opts \\ []) do
+  def import_from_export(
+        root_uuid,
+        export_jsonl,
+        store \\ CommitStoreClient,
+        deps_jsonl \\ nil,
+        opts \\ []
+      ) do
     # The /bd/ skeleton is created here, with `opts`, so its commits
     # carry the migration's signing context (CX-6cz3 kept this
     # explicit when supplied-id creation moved to
@@ -103,7 +109,6 @@ defmodule Commonplace.Bd.Migrate do
   end
 
   defp do_import_from_export(root_uuid, export_jsonl, store, deps_jsonl, opts) do
-
     lines =
       export_jsonl
       |> String.split("\n", trim: true)

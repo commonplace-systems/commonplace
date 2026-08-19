@@ -272,7 +272,10 @@ defmodule Commonplace.ViewCompute do
 
   # R6: the async compute task finished (or was killed by the timeout).
   @impl true
-  def handle_info({:DOWN, ref, :process, _down_pid, reason}, %{computing: {_pid, ref, timer}} = state) do
+  def handle_info(
+        {:DOWN, ref, :process, _down_pid, reason},
+        %{computing: {_pid, ref, timer}} = state
+      ) do
     if is_reference(timer), do: Process.cancel_timer(timer)
 
     case reason do
@@ -280,9 +283,7 @@ defmodule Commonplace.ViewCompute do
         :ok
 
       other ->
-        Logger.error(
-          "ViewCompute #{inspect(state.name)}: compute task exited #{inspect(other)}"
-        )
+        Logger.error("ViewCompute #{inspect(state.name)}: compute task exited #{inspect(other)}")
     end
 
     state = %{state | computing: nil, last_computed_at: DateTime.utc_now()}
@@ -376,7 +377,10 @@ defmodule Commonplace.ViewCompute do
   # source commits into one recompute against the latest state — the read
   # side tolerates this). Otherwise start one.
   defp request_compute(%__MODULE__{tripped: true} = state), do: state
-  defp request_compute(%__MODULE__{computing: c} = state) when c != nil, do: %{state | pending: true}
+
+  defp request_compute(%__MODULE__{computing: c} = state) when c != nil,
+    do: %{state | pending: true}
+
   defp request_compute(%__MODULE__{} = state), do: start_compute(state)
 
   defp start_compute(%__MODULE__{} = state) do
@@ -444,9 +448,7 @@ defmodule Commonplace.ViewCompute do
       :ok
     rescue
       e ->
-        Logger.error(
-          "ViewCompute #{inspect(state.name)}: compute raised #{Exception.message(e)}"
-        )
+        Logger.error("ViewCompute #{inspect(state.name)}: compute raised #{Exception.message(e)}")
 
         :ok
     end

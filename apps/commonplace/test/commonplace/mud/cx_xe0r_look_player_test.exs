@@ -40,7 +40,15 @@ defmodule Commonplace.MUD.CxXe0rLookPlayerTest do
         sweep_interval: 60_000
       )
 
-    on_exit(fn -> if Process.alive?(bursar_pid), do: (try do GenServer.stop(bursar_pid) catch (:exit, _ -> :ok) end) end)
+    on_exit(fn ->
+      if Process.alive?(bursar_pid),
+        do:
+          (try do
+             GenServer.stop(bursar_pid)
+           catch
+             (:exit, _ -> :ok)
+           end)
+    end)
 
     root_uuid = UUID.uuid4()
     update = Encoding.encode_update(Schema.new_schema())
@@ -102,7 +110,9 @@ defmodule Commonplace.MUD.CxXe0rLookPlayerTest do
 
     out = send_input(alice, "alice", "examine bob")
 
-    refute out =~ ~r/don't see/i, "examine <player> lied that a co-present player isn't here: #{out}"
+    refute out =~ ~r/don't see/i,
+           "examine <player> lied that a co-present player isn't here: #{out}"
+
     assert out =~ "bob"
   end
 
@@ -111,7 +121,8 @@ defmodule Commonplace.MUD.CxXe0rLookPlayerTest do
   # player_session: ephemeral sessions provision no players/ dir). look/examine
   # matched the presence but `load_player_for_lookup` couldn't load a Player
   # doc, so it fell through to the lying "You don't see X here."
-  test "look <homeless presence>: a co-present player without a players/ home is still visible, not denied", ctx do
+  test "look <homeless presence>: a co-present player without a players/ home is still visible, not denied",
+       ctx do
     alice = start_player("alice", ctx)
     seed_homeless_presence!(ctx, ctx.room, "wraith")
 
@@ -135,13 +146,25 @@ defmodule Commonplace.MUD.CxXe0rLookPlayerTest do
     doc = ContentType.set_key(doc, "type", "usr")
     doc = ContentType.set_key(doc, "bound_identity", UUID.uuid4())
     update = Encoding.encode_update(doc)
-    {metadata, commit_opts} = SignedWrite.opts_for(uuid, store: ctx.store, signing_context: node_ctx)
+
+    {metadata, commit_opts} =
+      SignedWrite.opts_for(uuid, store: ctx.store, signing_context: node_ctx)
+
     _ = CommitStoreClient.create_commit(ctx.store, uuid, update, nil, metadata, commit_opts)
 
     {:ok, schema} = Commonplace.MUD.Schemas.load_dir_schema(room_uuid, ctx.store)
     schema = Schema.add_file(schema, fname, uuid)
     {rmeta, ropts} = SignedWrite.opts_for(room_uuid, store: ctx.store, signing_context: node_ctx)
-    _ = CommitStoreClient.create_chained_commit(ctx.store, room_uuid, Encoding.encode_update(schema), rmeta, ropts)
+
+    _ =
+      CommitStoreClient.create_chained_commit(
+        ctx.store,
+        room_uuid,
+        Encoding.encode_update(schema),
+        rmeta,
+        ropts
+      )
+
     :ok
   end
 end

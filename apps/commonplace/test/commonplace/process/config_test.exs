@@ -59,7 +59,11 @@ defmodule Commonplace.Process.ConfigTest do
     end
 
     test "handles restart strategies" do
-      for {str, atom} <- [{"permanent", :permanent}, {"transient", :transient}, {"temporary", :temporary}] do
+      for {str, atom} <- [
+            {"permanent", :permanent},
+            {"transient", :transient},
+            {"temporary", :temporary}
+          ] do
         json = %{"p" => %{"mode" => "elixir", "source" => "p.exs", "restart" => str}}
         [entry] = Config.parse(json)
         assert entry.restart == atom

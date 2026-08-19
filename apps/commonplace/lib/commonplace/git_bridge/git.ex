@@ -102,7 +102,13 @@ defmodule Commonplace.GitBridge.Git do
   """
   @spec commit_all(String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def commit_all(repo_dir, opts \\ []) do
-    authors = opts |> Keyword.get(:authors, []) |> Enum.to_list() |> Enum.reject(&is_nil/1) |> Enum.uniq() |> Enum.sort()
+    authors =
+      opts
+      |> Keyword.get(:authors, [])
+      |> Enum.to_list()
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+      |> Enum.sort()
 
     message =
       Keyword.get_lazy(opts, :message, fn ->

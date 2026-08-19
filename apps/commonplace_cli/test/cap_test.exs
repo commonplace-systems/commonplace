@@ -46,7 +46,9 @@ defmodule Commonplace.CLI.CapTest do
   end
 
   test "parse_mint_argv recognizes the --allow-write-without-execute boolean flag (CX-tdkq.28)" do
-    assert Cap.parse_mint_argv(["--allow-write-without-execute"])[:allow_write_without_execute] == true
+    assert Cap.parse_mint_argv(["--allow-write-without-execute"])[:allow_write_without_execute] ==
+             true
+
     refute Cap.parse_mint_argv([])[:allow_write_without_execute]
   end
 

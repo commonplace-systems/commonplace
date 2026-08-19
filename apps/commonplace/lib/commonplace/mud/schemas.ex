@@ -158,7 +158,9 @@ defmodule Commonplace.MUD.Schemas do
   defp maybe_put_owner(map, owner) when is_binary(owner), do: Map.put(map, "owner", owner)
 
   defp maybe_put_visibility(map, :public), do: map
-  defp maybe_put_visibility(map, :capability_gated), do: Map.put(map, "visibility", "capability_gated")
+
+  defp maybe_put_visibility(map, :capability_gated),
+    do: Map.put(map, "visibility", "capability_gated")
 
   def encode_object(%Object{} = o) do
     Jason.encode!(%{
@@ -262,8 +264,11 @@ defmodule Commonplace.MUD.Schemas do
   `__room.json` (or other metadata file). Returns `{:ok, struct}` on
   success, `{:error, reason}` otherwise.
   """
-  def load_room(dir_uuid, store \\ CommitStoreClient), do: load_meta(dir_uuid, @room_file, &decode_room/1, store)
-  def load_recipe(dir_uuid, store \\ CommitStoreClient), do: load_meta(dir_uuid, @recipe_file, &decode_recipe/1, store)
+  def load_room(dir_uuid, store \\ CommitStoreClient),
+    do: load_meta(dir_uuid, @room_file, &decode_room/1, store)
+
+  def load_recipe(dir_uuid, store \\ CommitStoreClient),
+    do: load_meta(dir_uuid, @recipe_file, &decode_recipe/1, store)
 
   def encode_recipe(%Recipe{} = r) do
     Jason.encode!(%{
@@ -290,8 +295,12 @@ defmodule Commonplace.MUD.Schemas do
         err
     end
   end
-  def load_object(dir_uuid, store \\ CommitStoreClient), do: load_meta(dir_uuid, @obj_file, &decode_object/1, store)
-  def load_player(dir_uuid, store \\ CommitStoreClient), do: load_meta(dir_uuid, @player_file, &decode_player/1, store)
+
+  def load_object(dir_uuid, store \\ CommitStoreClient),
+    do: load_meta(dir_uuid, @obj_file, &decode_object/1, store)
+
+  def load_player(dir_uuid, store \\ CommitStoreClient),
+    do: load_meta(dir_uuid, @player_file, &decode_player/1, store)
 
   defp load_meta(dir_uuid, filename, decoder, store) do
     with {:ok, schema} <- load_dir_schema(dir_uuid, store),
@@ -426,7 +435,9 @@ defmodule Commonplace.MUD.Schemas do
     cur_g = String.graphemes(current)
     new_g = String.graphemes(new)
     p = common_run(cur_g, new_g)
-    s = common_run(Enum.reverse(cur_g), Enum.reverse(new_g), min(length(cur_g), length(new_g)) - p)
+
+    s =
+      common_run(Enum.reverse(cur_g), Enum.reverse(new_g), min(length(cur_g), length(new_g)) - p)
 
     cond do
       current == "" ->

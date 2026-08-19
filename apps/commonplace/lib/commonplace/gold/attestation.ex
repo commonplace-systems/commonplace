@@ -60,7 +60,9 @@ defmodule Commonplace.Gold.Attestation do
   @doc "Verify the attestation's content address (id matches content)."
   def verify_id(%__MODULE__{} = att) do
     timestamp_str = DateTime.to_iso8601(att.timestamp)
-    expected = content_address(att.commit_id, att.prev_attestation_id, att.signer_id, timestamp_str)
+
+    expected =
+      content_address(att.commit_id, att.prev_attestation_id, att.signer_id, timestamp_str)
 
     if expected == att.id do
       :ok

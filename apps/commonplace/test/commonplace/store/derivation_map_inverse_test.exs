@@ -85,9 +85,8 @@ defmodule Commonplace.Store.DerivationMapInverseTest do
         }
       }
 
-      assert Namespace.inverse_derivation_map(
-               Namespace.inverse_derivation_map(original)
-             ) == original
+      assert Namespace.inverse_derivation_map(Namespace.inverse_derivation_map(original)) ==
+               original
     end
 
     test "does not mutate outer keys" do

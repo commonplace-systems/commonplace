@@ -51,8 +51,8 @@ defmodule CommonplaceWebWeb.Features.ChatFeatureTest do
     |> assert_text("Send")
     |> assert_has(css(".cp-text", text: "hello from claude (via MCP)"))
     |> fill_in(css(~s(form[phx-value-action="post_message"] input[name="text"])),
-        with: "hello back from the browser"
-      )
+      with: "hello back from the browser"
+    )
     |> click(css(~s(form[phx-value-action="post_message"] button[type="submit"])))
     # The phx-submit dispatches → ChatRoomLive handle_event("view_action") →
     # ArgResolver → ViewActionDispatch → Chat.Actions.post_message → commit

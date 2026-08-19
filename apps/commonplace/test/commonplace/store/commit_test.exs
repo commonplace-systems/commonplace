@@ -205,10 +205,12 @@ defmodule Commonplace.Store.CommitTest do
 
     test "genesis hash matches the spec formula" do
       uuid = "doc-a"
+
       expected =
         :crypto.hash(
           :sha256,
-          <<>> <> <<>> <> :erlang.term_to_binary(%{kind: :genesis, doc_uuid: uuid}, [:deterministic])
+          <<>> <>
+            <<>> <> :erlang.term_to_binary(%{kind: :genesis, doc_uuid: uuid}, [:deterministic])
         )
 
       assert Commit.genesis(uuid).id == expected

@@ -27,7 +27,13 @@ defmodule Commonplace.Process.OrchestratorRestartTest do
 
     root_uuid = UUID.uuid4()
     root_doc = Schema.new_schema()
-    CommitStore.create_commit(store_name, root_uuid, Yelixer.Encoding.encode_update(root_doc), nil)
+
+    CommitStore.create_commit(
+      store_name,
+      root_uuid,
+      Yelixer.Encoding.encode_update(root_doc),
+      nil
+    )
 
     Process.flag(:trap_exit, true)
 
@@ -45,7 +51,10 @@ defmodule Commonplace.Process.OrchestratorRestartTest do
     doc = Yelixer.Doc.new()
     doc = ContentType.create(doc, :text, filename)
     doc = ContentType.insert_text(doc, 0, content)
-    CommitStore.create_chained_commit(store, uuid, Yelixer.Encoding.encode_update(doc), %{kind: :regular})
+
+    CommitStore.create_chained_commit(store, uuid, Yelixer.Encoding.encode_update(doc), %{
+      kind: :regular
+    })
 
     root_doc = load_schema(root, store)
     root_doc = Schema.add_file(root_doc, filename, uuid)
@@ -154,7 +163,11 @@ defmodule Commonplace.Process.OrchestratorRestartTest do
         "pid" => "999999",
         "processes" => %{
           "long_gone" => %{"mode" => "elixir", "beam_pid" => "<0.99999999.0>", "os_pid" => nil},
-          "half_gone" => %{"mode" => "sandbox_exec", "beam_pid" => "not even a pid", "os_pid" => nil}
+          "half_gone" => %{
+            "mode" => "sandbox_exec",
+            "beam_pid" => "not even a pid",
+            "os_pid" => nil
+          }
         }
       })
     )

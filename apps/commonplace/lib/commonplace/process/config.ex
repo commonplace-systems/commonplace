@@ -6,9 +6,22 @@ defmodule Commonplace.Process.Config do
   and optional ownership of output documents.
   """
 
-  defstruct [:name, :mode, :source, :command, :args, :owns, :scope_uuid, :fork,
-             :identity_uuid, :event_log_uuid, :capability_cid,
-             restart: :permanent, depends_on: [], env: %{}]
+  defstruct [
+    :name,
+    :mode,
+    :source,
+    :command,
+    :args,
+    :owns,
+    :scope_uuid,
+    :fork,
+    :identity_uuid,
+    :event_log_uuid,
+    :capability_cid,
+    restart: :permanent,
+    depends_on: [],
+    env: %{}
+  ]
 
   @type t :: %__MODULE__{
           name: String.t(),

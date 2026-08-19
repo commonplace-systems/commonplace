@@ -59,13 +59,28 @@ defmodule Commonplace.MUD.ChildMutation do
   reachable from the player build path. Returns `{:ok, child_uuid}` or
   `{:error, reason}`.
   """
-  def create_zone_root(parent_dir, entry_name, meta_filename, base_json, store \\ CommitStoreClient) do
+  def create_zone_root(
+        parent_dir,
+        entry_name,
+        meta_filename,
+        base_json,
+        store \\ CommitStoreClient
+      ) do
     with {:ok, node_ctx} <- NodeIdentity.signing_context() do
       child_uuid = UUID.uuid4()
       # zone == self: a fresh zone root. Node-signed entry-add (a zone root is
       # linked into a node-owned dir, e.g. players/<name>).
-      mint_and_link(parent_dir, entry_name, child_uuid, meta_filename, base_json,
-        child_uuid, node_ctx, store, signing_context: node_ctx)
+      mint_and_link(
+        parent_dir,
+        entry_name,
+        child_uuid,
+        meta_filename,
+        base_json,
+        child_uuid,
+        node_ctx,
+        store,
+        signing_context: node_ctx
+      )
     end
   end
 
@@ -77,7 +92,14 @@ defmodule Commonplace.MUD.ChildMutation do
   caller cannot supply a zone — it is DERIVED from the parent (the escalation
   bound). Returns `{:ok, child_uuid}` or `{:error, reason}`.
   """
-  def create_zoned_child(parent_dir, entry_name, meta_filename, base_json, store \\ CommitStoreClient, entry_opts) do
+  def create_zoned_child(
+        parent_dir,
+        entry_name,
+        meta_filename,
+        base_json,
+        store \\ CommitStoreClient,
+        entry_opts
+      ) do
     with {:ok, node_ctx} <- NodeIdentity.signing_context() do
       child_uuid = UUID.uuid4()
       # DERIVED from the actual parent — never caller input (nil if the parent is
@@ -86,8 +108,17 @@ defmodule Commonplace.MUD.ChildMutation do
       zone = Commonplace.Trust.doc_zone(parent_dir, store)
 
       with {:ok, ^child_uuid} <-
-             mint_and_link(parent_dir, entry_name, child_uuid, meta_filename, base_json,
-               zone, node_ctx, store, entry_opts) do
+             mint_and_link(
+               parent_dir,
+               entry_name,
+               child_uuid,
+               meta_filename,
+               base_json,
+               zone,
+               node_ctx,
+               store,
+               entry_opts
+             ) do
         # CX-j2wt MINT-AT-CREATE: an ITEM-object is born already holding a
         # NODE-held possession token, so it can never enter play token-less (the
         # un-droppable-gift bug). See `maybe_mint_possession_token/2`.
@@ -107,7 +138,13 @@ defmodule Commonplace.MUD.ChildMutation do
       update = Encoding.encode_update(Schema.remove_entry(schema, entry_name))
       {metadata, commit_opts} = SignedWrite.opts_for(parent_dir, Keyword.put(opts, :store, store))
 
-      case CommitStoreClient.create_chained_commit(store, parent_dir, update, metadata, commit_opts) do
+      case CommitStoreClient.create_chained_commit(
+             store,
+             parent_dir,
+             update,
+             metadata,
+             commit_opts
+           ) do
         {:error, _} = err -> err
         _commit -> :ok
       end
@@ -147,7 +184,11 @@ defmodule Commonplace.MUD.ChildMutation do
   defp mint_node_token(item_uuid, node_identity) do
     case BursarClient.query(Bursar, item_uuid) do
       :available ->
-        BursarClient.acquire(Bursar, item_uuid, node_identity, authenticated_as: node_identity, ttl: nil)
+        BursarClient.acquire(Bursar, item_uuid, node_identity,
+          authenticated_as: node_identity,
+          ttl: nil
+        )
+
         :ok
 
       # already node-held (idempotent re-entry) — nothing to do.
@@ -171,7 +212,17 @@ defmodule Commonplace.MUD.ChildMutation do
   # leaves an orphan (unreachable, benign) — there is never a writable child with
   # a wrong/missing stamp (the stamp is set at the child's own genesis or the
   # child does not exist).
-  defp mint_and_link(parent_dir, entry_name, child_uuid, meta_filename, base_json, zone, node_ctx, store, entry_opts) do
+  defp mint_and_link(
+         parent_dir,
+         entry_name,
+         child_uuid,
+         meta_filename,
+         base_json,
+         zone,
+         node_ctx,
+         store,
+         entry_opts
+       ) do
     stamped_json = stamp(base_json, zone)
 
     # Hygiene (plan #7265): pre-check the caller's link-authority against the
@@ -181,7 +232,8 @@ defmodule Commonplace.MUD.ChildMutation do
     # the write-gate applies to the link commit. Not security (the link commit is
     # still gate-checked); it just avoids orphan-litter on the rejected path.
     with :ok <- precheck_link(parent_dir, entry_opts, store),
-         {:ok, meta_uuid} <- Schemas.create_meta_doc(stamped_json, store, signing_context: node_ctx),
+         {:ok, meta_uuid} <-
+           Schemas.create_meta_doc(stamped_json, store, signing_context: node_ctx),
          :ok <- mint_dir(child_uuid, meta_filename, meta_uuid, node_ctx, store),
          :ok <- link_entry(parent_dir, entry_name, child_uuid, store, entry_opts) do
       {:ok, child_uuid}
@@ -224,7 +276,9 @@ defmodule Commonplace.MUD.ChildMutation do
   defp mint_dir(dir_uuid, meta_filename, meta_uuid, node_ctx, store) do
     dir_doc = Schema.new_schema() |> Schema.add_file(meta_filename, meta_uuid)
     update = Encoding.encode_update(dir_doc)
-    {metadata, commit_opts} = SignedWrite.opts_for(dir_uuid, signing_context: node_ctx, store: store)
+
+    {metadata, commit_opts} =
+      SignedWrite.opts_for(dir_uuid, signing_context: node_ctx, store: store)
 
     case CommitStoreClient.create_commit(store, dir_uuid, update, nil, metadata, commit_opts) do
       {:error, _} = err -> err
@@ -242,9 +296,17 @@ defmodule Commonplace.MUD.ChildMutation do
 
     with {:ok, schema} <- Schemas.load_dir_schema(parent_dir, store) do
       update = Encoding.encode_update(Schema.add_directory(schema, name, child_uuid))
-      {metadata, commit_opts} = SignedWrite.opts_for(parent_dir, Keyword.put(entry_opts, :store, store))
 
-      case CommitStoreClient.create_chained_commit(store, parent_dir, update, metadata, commit_opts) do
+      {metadata, commit_opts} =
+        SignedWrite.opts_for(parent_dir, Keyword.put(entry_opts, :store, store))
+
+      case CommitStoreClient.create_chained_commit(
+             store,
+             parent_dir,
+             update,
+             metadata,
+             commit_opts
+           ) do
         {:error, _} = err -> err
         _commit -> :ok
       end

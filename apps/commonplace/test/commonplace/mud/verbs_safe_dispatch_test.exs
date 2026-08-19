@@ -55,7 +55,11 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
     root_uuid = UUID.uuid4()
 
     {:ok, bursar_pid} =
-      Commonplace.Green.Bursar.start_link(root_uuid: root_uuid, store: store, sweep_interval: 60_000)
+      Commonplace.Green.Bursar.start_link(
+        root_uuid: root_uuid,
+        store: store,
+        sweep_interval: 60_000
+      )
 
     old_trust = Application.get_env(:commonplace, :trust)
 
@@ -65,7 +69,14 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
         v -> Application.put_env(:commonplace, :trust, v)
       end
 
-      if Process.alive?(bursar_pid), do: (try do GenServer.stop(bursar_pid) catch (:exit, _ -> :ok) end)
+      if Process.alive?(bursar_pid),
+        do:
+          (try do
+             GenServer.stop(bursar_pid)
+           catch
+             (:exit, _ -> :ok)
+           end)
+
       File.rm_rf!(dir)
     end)
 
@@ -80,7 +91,13 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
 
     {:ok, inventory_uuid} = Schemas.create_dir_with_meta(nil, nil, store)
 
-    %{dir: dir, store: store, root_uuid: root_uuid, room_uuid: room_uuid, inventory_uuid: inventory_uuid}
+    %{
+      dir: dir,
+      store: store,
+      root_uuid: root_uuid,
+      room_uuid: room_uuid,
+      inventory_uuid: inventory_uuid
+    }
   end
 
   # ---- test helpers ----
@@ -107,7 +124,13 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
     update = Encoding.encode_update(schema)
     {metadata, commit_opts} = SignedWrite.opts_for(parent_uuid, Keyword.put(opts, :store, store))
 
-    case CommitStoreClient.create_chained_commit(store, parent_uuid, update, metadata, commit_opts) do
+    case CommitStoreClient.create_chained_commit(
+           store,
+           parent_uuid,
+           update,
+           metadata,
+           commit_opts
+         ) do
       {:error, _} = err -> err
       _commit -> :ok
     end
@@ -134,11 +157,12 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
 
   # ---- pin 1: builtins win (CX-66ca) ----
 
-  test "pin 1: a `take` safe verb on a room object never fires — the builtin pickup runs instead", %{
-    store: store,
-    room_uuid: room_uuid,
-    inventory_uuid: inventory_uuid
-  } do
+  test "pin 1: a `take` safe verb on a room object never fires — the builtin pickup runs instead",
+       %{
+         store: store,
+         room_uuid: room_uuid,
+         inventory_uuid: inventory_uuid
+       } do
     bell_uuid = create_object(store, "bell")
     :ok = add_dir_entry(store, room_uuid, "bell.obj", bell_uuid)
 
@@ -163,11 +187,12 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
 
   # ---- pin 2: target resolution by direct-object noun (CX-mczs) ----
 
-  test "pin 2: `poke stick` fires stick's verb, `poke rock` fires rock's — never the other object's", %{
-    store: store,
-    room_uuid: room_uuid,
-    inventory_uuid: inventory_uuid
-  } do
+  test "pin 2: `poke stick` fires stick's verb, `poke rock` fires rock's — never the other object's",
+       %{
+         store: store,
+         room_uuid: room_uuid,
+         inventory_uuid: inventory_uuid
+       } do
     rock_uuid = create_object(store, "rock")
     stick_uuid = create_object(store, "stick")
     :ok = add_dir_entry(store, room_uuid, "rock.obj", rock_uuid)
@@ -231,11 +256,12 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
 
   # ---- pin 3: safe path wired + legacy verb refused (CX-qom0) ----
 
-  test "pin 3: a safe verb runs through the Facade (invoker-signed, via_verb tagged); a legacy verb on a different object is refused", %{
-    store: store,
-    room_uuid: room_uuid,
-    inventory_uuid: inventory_uuid
-  } do
+  test "pin 3: a safe verb runs through the Facade (invoker-signed, via_verb tagged); a legacy verb on a different object is refused",
+       %{
+         store: store,
+         room_uuid: room_uuid,
+         inventory_uuid: inventory_uuid
+       } do
     {pub, priv} = Signing.generate_keypair()
     identity = "inv-#{:rand.uniform(999_999_999_999)}"
     inv_ctx = %SigningContext{identity_uuid: identity, private_key: priv, public_key: pub}
@@ -335,11 +361,12 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
 
   # ---- pin 5: intersection denial (owner_grant ceiling, default no-cert case) ----
 
-  test "pin 5: a safe verb attempting a facade write outside owner_grant is denied — nothing lands, no crash", %{
-    store: store,
-    room_uuid: room_uuid,
-    inventory_uuid: inventory_uuid
-  } do
+  test "pin 5: a safe verb attempting a facade write outside owner_grant is denied — nothing lands, no crash",
+       %{
+         store: store,
+         room_uuid: room_uuid,
+         inventory_uuid: inventory_uuid
+       } do
     box_uuid = create_object(store, "box")
     :ok = add_dir_entry(store, room_uuid, "box.obj", box_uuid)
 
@@ -359,7 +386,14 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
     # Direct call proves the exact denial shape (mirrors
     # `World.FacadeTest` pin 3, but exercised via the SAME owner_grant
     # default the dispatcher computes when no cert covers the host).
-    facade = Commonplace.MUD.World.Facade.new(ctx, box_uuid, [box_uuid], {"verbs/shove.safe.elx", "box.obj"}, store)
+    facade =
+      Commonplace.MUD.World.Facade.new(
+        ctx,
+        box_uuid,
+        [box_uuid],
+        {"verbs/shove.safe.elx", "box.obj"},
+        store
+      )
 
     assert {:ok, {:error, :refused}} =
              VerbSource.run_safe_verb(box_uuid, "shove", [box_uuid], facade, %{}, store)
@@ -406,12 +440,13 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
 
   # ---- pin 6b (RIDER 1): verified-chains-only owner ceiling ----
 
-  test "pin 6b: revoking the owner's section cert collapses owner_grant back to the host-only default", %{
-    dir: dir,
-    store: store,
-    room_uuid: room_uuid,
-    inventory_uuid: inventory_uuid
-  } do
+  test "pin 6b: revoking the owner's section cert collapses owner_grant back to the host-only default",
+       %{
+         dir: dir,
+         store: store,
+         room_uuid: room_uuid,
+         inventory_uuid: inventory_uuid
+       } do
     old_data_dir = Application.get_env(:commonplace, :data_dir)
     Application.put_env(:commonplace, :data_dir, dir)
 
@@ -428,7 +463,12 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
 
     {owner_pub, owner_priv} = Signing.generate_keypair()
     owner_identity = "owner-#{:rand.uniform(999_999_999_999)}"
-    owner_ctx = %SigningContext{identity_uuid: owner_identity, private_key: owner_priv, public_key: owner_pub}
+
+    owner_ctx = %SigningContext{
+      identity_uuid: owner_identity,
+      private_key: owner_priv,
+      public_key: owner_pub
+    }
 
     # Owner being pinned keeps this pin isolated to the OWNER-GRANT
     # (gate b) ceiling. The node root is deliberately unusable in config:
@@ -451,7 +491,10 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
     dest_uuid = create_object(store, "elsewhere")
 
     assert {:ok, cap} =
-             Sections.issue_section(root_ctx, {owner_identity, owner_pub}, [chest_uuid, room_uuid, dest_uuid],
+             Sections.issue_section(
+               root_ctx,
+               {owner_identity, owner_pub},
+               [chest_uuid, room_uuid, dest_uuid],
                store: store,
                verbs: [:write]
              )
@@ -538,10 +581,11 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
 
   # ---- FLAG-A pin: safe-vs-legacy SELECTION (plan pre-merge FIX 1) ----
 
-  test "FLAG A: legacy fallback fires ONLY on a clean :not_found — a store/read error surfaces, never downgrades to legacy", %{
-    store: store,
-    room_uuid: room_uuid
-  } do
+  test "FLAG A: legacy fallback fires ONLY on a clean :not_found — a store/read error surfaces, never downgrades to legacy",
+       %{
+         store: store,
+         room_uuid: room_uuid
+       } do
     gem_uuid = create_object(store, "gem")
     :ok = add_dir_entry(store, room_uuid, "gem.obj", gem_uuid)
 
@@ -580,11 +624,12 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
 
   # ---- M2 (CX-z6ub §3): OVERRIDABLE standard verbs (own-verb → node baseline) ----
 
-  test "pin M2.1a (CX-z6ub): a `look` override on the room FIRES — an OVERRIDABLE standard verb resolves the host's own verb first", %{
-    store: store,
-    room_uuid: room_uuid,
-    inventory_uuid: inventory_uuid
-  } do
+  test "pin M2.1a (CX-z6ub): a `look` override on the room FIRES — an OVERRIDABLE standard verb resolves the host's own verb first",
+       %{
+         store: store,
+         room_uuid: room_uuid,
+         inventory_uuid: inventory_uuid
+       } do
     body = ~s|Commonplace.MUD.World.Facade.put_state(world, "looked", "custom")|
     assert :ok = VerbSource.save_safe_verb(room_uuid, "look", body, [room_uuid], store)
 
@@ -597,11 +642,12 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
     assert get_in(room_meta, ["state", "looked"]) == "custom"
   end
 
-  test "pin M2.1b (CX-z6ub): a bare `look` is the ROOM's — an OBJECT's `look` verb never hijacks a bare look", %{
-    store: store,
-    room_uuid: room_uuid,
-    inventory_uuid: inventory_uuid
-  } do
+  test "pin M2.1b (CX-z6ub): a bare `look` is the ROOM's — an OBJECT's `look` verb never hijacks a bare look",
+       %{
+         store: store,
+         room_uuid: room_uuid,
+         inventory_uuid: inventory_uuid
+       } do
     gizmo_uuid = create_object(store, "gizmo")
     :ok = add_dir_entry(store, room_uuid, "gizmo.obj", gizmo_uuid)
     body = ~s|Commonplace.MUD.World.Facade.put_state(world, "peeked", "yes")|
@@ -616,11 +662,12 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
     refute get_in(gizmo_meta, ["state", "peeked"])
   end
 
-  test "pin M2.1c (CX-z6ub): a `go` override never fires — `go` is LOCKED (visitor anti-trap), the builtin runs", %{
-    store: store,
-    room_uuid: room_uuid,
-    inventory_uuid: inventory_uuid
-  } do
+  test "pin M2.1c (CX-z6ub): a `go` override never fires — `go` is LOCKED (visitor anti-trap), the builtin runs",
+       %{
+         store: store,
+         room_uuid: room_uuid,
+         inventory_uuid: inventory_uuid
+       } do
     # `go` is NOT in @overridable → builtins-first → a citizen's same-named safe
     # verb is structurally unreachable (a room owner can't trap a visitor by
     # overriding movement). Same guarantee pin 1 proves for `take` (anti-theft).
@@ -636,11 +683,12 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
 
   # ---- M2.2 (CX-z6ub §3): six OVERRIDABLE standard verb baselines ----
 
-  test "pin M2.2a (CX-z6ub): the `examine` node BASELINE runs on a fresh object — name + description, no override", %{
-    store: store,
-    room_uuid: room_uuid,
-    inventory_uuid: inventory_uuid
-  } do
+  test "pin M2.2a (CX-z6ub): the `examine` node BASELINE runs on a fresh object — name + description, no override",
+       %{
+         store: store,
+         room_uuid: room_uuid,
+         inventory_uuid: inventory_uuid
+       } do
     idol_uuid = create_object(store, "idol")
     :ok = add_dir_entry(store, room_uuid, "idol.obj", idol_uuid)
 
@@ -651,11 +699,12 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
     assert text =~ "idol"
   end
 
-  test "pin M2.2b (CX-z6ub): a citizen's `examine` override on the host FIRES instead of the node baseline", %{
-    store: store,
-    room_uuid: room_uuid,
-    inventory_uuid: inventory_uuid
-  } do
+  test "pin M2.2b (CX-z6ub): a citizen's `examine` override on the host FIRES instead of the node baseline",
+       %{
+         store: store,
+         room_uuid: room_uuid,
+         inventory_uuid: inventory_uuid
+       } do
     idol_uuid = create_object(store, "idol")
     :ok = add_dir_entry(store, room_uuid, "idol.obj", idol_uuid)
 
@@ -673,11 +722,12 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
 
   # ---- CX-mxxe / CX-hh70: casual examine hides freeform state; @dump shows it ----
 
-  test "CX-hh70: `examine` does NOT leak the object's freeform state (puzzle answer key stays hidden)", %{
-    store: store,
-    room_uuid: room_uuid,
-    inventory_uuid: inventory_uuid
-  } do
+  test "CX-hh70: `examine` does NOT leak the object's freeform state (puzzle answer key stays hidden)",
+       %{
+         store: store,
+         room_uuid: room_uuid,
+         inventory_uuid: inventory_uuid
+       } do
     altar_uuid = create_object(store, "altar")
     :ok = add_dir_entry(store, room_uuid, "altar.obj", altar_uuid)
 
@@ -722,10 +772,11 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
 
   # ---- CX-2o9o: compile errors surface the real diagnostic ----
 
-  test "CX-2o9o: a compile error surfaces the real diagnostic (undefined variable), not 'errors have been logged'", %{
-    store: store,
-    room_uuid: room_uuid
-  } do
+  test "CX-2o9o: a compile error surfaces the real diagnostic (undefined variable), not 'errors have been logged'",
+       %{
+         store: store,
+         room_uuid: room_uuid
+       } do
     idol_uuid = create_object(store, "idol")
     :ok = add_dir_entry(store, room_uuid, "idol.obj", idol_uuid)
 
@@ -733,7 +784,9 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
     # fails to COMPILE: mystery_variable is not in scope. Pre-fix the author got
     # only "cannot compile module ... (errors have been logged)".
     body = ~s|Commonplace.MUD.World.Facade.emit(world, mystery_variable)|
-    assert {:error, {:compile_error, msg}} = VerbSource.save_safe_verb(idol_uuid, "boom", body, [idol_uuid], store)
+
+    assert {:error, {:compile_error, msg}} =
+             VerbSource.save_safe_verb(idol_uuid, "boom", body, [idol_uuid], store)
 
     assert msg =~ "mystery_variable", "the real cause should name the undefined variable: #{msg}"
     refute msg =~ "errors have been logged", "the opaque log-pointer should be gone: #{msg}"
@@ -741,11 +794,12 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
 
   # ---- CX-cj3t.11: @verb resolves a multi-word object name ----
 
-  test "CX-cj3t.11: `@verb <multi-word obj>:<verb>` resolves the multi-word target (enters the editor)", %{
-    store: store,
-    room_uuid: room_uuid,
-    inventory_uuid: inventory_uuid
-  } do
+  test "CX-cj3t.11: `@verb <multi-word obj>:<verb>` resolves the multi-word target (enters the editor)",
+       %{
+         store: store,
+         room_uuid: room_uuid,
+         inventory_uuid: inventory_uuid
+       } do
     box_uuid = create_object(store, "brass strongbox")
     :ok = add_dir_entry(store, room_uuid, "brass strongbox.obj", box_uuid)
 
@@ -754,15 +808,17 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
     # Pre-fix, `@verb` resolved <target> as a single token so a spaced name
     # ("brass strongbox") never matched — it errored instead of opening.
     result = Verbs.dispatch(Parser.parse("@verb brass strongbox:swing"), ctx)
+
     assert match?({:enter_editor, %{verb_name: "swing"}}, result),
            "multi-word @verb target should open the editor, got: #{inspect(result)}"
   end
 
-  test "pin M2.2c (CX-z6ub): the `use` node BASELINE replies \"Nothing happens.\" on a fresh object", %{
-    store: store,
-    room_uuid: room_uuid,
-    inventory_uuid: inventory_uuid
-  } do
+  test "pin M2.2c (CX-z6ub): the `use` node BASELINE replies \"Nothing happens.\" on a fresh object",
+       %{
+         store: store,
+         room_uuid: room_uuid,
+         inventory_uuid: inventory_uuid
+       } do
     lever_uuid = create_object(store, "lever")
     :ok = add_dir_entry(store, room_uuid, "lever.obj", lever_uuid)
 
@@ -771,11 +827,12 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
     assert {:reply, "Nothing happens."} = Verbs.dispatch(Parser.parse("use lever"), ctx)
   end
 
-  test "pin M2.2d (CX-z6ub): a citizen's `use` override on the host FIRES instead of the node baseline", %{
-    store: store,
-    room_uuid: room_uuid,
-    inventory_uuid: inventory_uuid
-  } do
+  test "pin M2.2d (CX-z6ub): a citizen's `use` override on the host FIRES instead of the node baseline",
+       %{
+         store: store,
+         room_uuid: room_uuid,
+         inventory_uuid: inventory_uuid
+       } do
     lever_uuid = create_object(store, "lever")
     :ok = add_dir_entry(store, room_uuid, "lever.obj", lever_uuid)
 
@@ -800,11 +857,12 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
              Verbs.dispatch(Parser.parse("search"), ctx)
   end
 
-  test "pin M2.2f (CX-z6ub): `sit`/`stand` baselines reply and broadcast an emote-kind room action", %{
-    store: store,
-    room_uuid: room_uuid,
-    inventory_uuid: inventory_uuid
-  } do
+  test "pin M2.2f (CX-z6ub): `sit`/`stand` baselines reply and broadcast an emote-kind room action",
+       %{
+         store: store,
+         room_uuid: room_uuid,
+         inventory_uuid: inventory_uuid
+       } do
     player_uuid = UUID.uuid4()
     ctx = base_ctx(store, room_uuid, inventory_uuid, player_uuid: player_uuid)
 
@@ -813,17 +871,22 @@ defmodule Commonplace.MUD.VerbsSafeDispatchTest do
     Commonplace.MUD.Topics.subscribe_room(room_uuid)
 
     assert {:reply, "You sit down."} = Verbs.dispatch(Parser.parse("sit"), ctx)
-    assert_receive {_topic, %{kind: :emote, who: "alice", text: "sits down.", except: [^player_uuid]}}
+
+    assert_receive {_topic,
+                    %{kind: :emote, who: "alice", text: "sits down.", except: [^player_uuid]}}
 
     assert {:reply, "You stand up."} = Verbs.dispatch(Parser.parse("stand"), ctx)
-    assert_receive {_topic, %{kind: :emote, who: "alice", text: "stands up.", except: [^player_uuid]}}
+
+    assert_receive {_topic,
+                    %{kind: :emote, who: "alice", text: "stands up.", except: [^player_uuid]}}
   end
 
-  test "pin M2.2g (CX-z6ub): `read` baseline reads state.text over description, both over nothing", %{
-    store: store,
-    room_uuid: room_uuid,
-    inventory_uuid: inventory_uuid
-  } do
+  test "pin M2.2g (CX-z6ub): `read` baseline reads state.text over description, both over nothing",
+       %{
+         store: store,
+         room_uuid: room_uuid,
+         inventory_uuid: inventory_uuid
+       } do
     # A described sign with no state.text → reads its description.
     sign_uuid =
       Schemas.create_dir_with_meta(

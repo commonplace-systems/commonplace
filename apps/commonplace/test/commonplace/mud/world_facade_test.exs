@@ -88,11 +88,12 @@ defmodule Commonplace.MUD.World.FacadeTest do
     %{store: store, obj_uuid: obj_uuid, trusted_ctx: trusted_ctx, uncapped_ctx: uncapped_ctx}
   end
 
-  test "pin 1: invoker write-authorized + owner-grant covers → lands, signed by invoker, via_verb present", %{
-    store: store,
-    obj_uuid: obj_uuid,
-    trusted_ctx: trusted_ctx
-  } do
+  test "pin 1: invoker write-authorized + owner-grant covers → lands, signed by invoker, via_verb present",
+       %{
+         store: store,
+         obj_uuid: obj_uuid,
+         trusted_ctx: trusted_ctx
+       } do
     facade =
       Facade.new(
         %{signing_context: trusted_ctx, cert_cids: [], signer_id: nil},
@@ -119,11 +120,12 @@ defmodule Commonplace.MUD.World.FacadeTest do
     entry.node_id
   end
 
-  test "pin 2: intersection denial — invoker without :write on the target is DENIED (confused-deputy/setuid case)", %{
-    store: store,
-    obj_uuid: obj_uuid,
-    uncapped_ctx: uncapped_ctx
-  } do
+  test "pin 2: intersection denial — invoker without :write on the target is DENIED (confused-deputy/setuid case)",
+       %{
+         store: store,
+         obj_uuid: obj_uuid,
+         uncapped_ctx: uncapped_ctx
+       } do
     facade =
       Facade.new(
         %{signing_context: uncapped_ctx, cert_cids: [], signer_id: nil},
@@ -142,11 +144,12 @@ defmodule Commonplace.MUD.World.FacadeTest do
     refute head.metadata[:via_verb]
   end
 
-  test "pin 3: owner-grant narrowing — invoker COULD write directly, but the verb's grant doesn't cover this target", %{
-    store: store,
-    obj_uuid: obj_uuid,
-    trusted_ctx: trusted_ctx
-  } do
+  test "pin 3: owner-grant narrowing — invoker COULD write directly, but the verb's grant doesn't cover this target",
+       %{
+         store: store,
+         obj_uuid: obj_uuid,
+         trusted_ctx: trusted_ctx
+       } do
     other_uuid = UUID.uuid4()
 
     facade =
@@ -171,11 +174,12 @@ defmodule Commonplace.MUD.World.FacadeTest do
   # through the freeform path. It now DROPS every write, even for a would-be
   # AUTHORIZED author, returns :refused to the body, and records a steering
   # author-note (→ put_state / @desc / builder verbs). No reserved-list to drift.
-  test "CX-cj3t.6: set_attr is deprecated — drops the write (no typed-field clobber), returns :refused, accumulates a steering note", %{
-    store: store,
-    obj_uuid: obj_uuid,
-    trusted_ctx: trusted_ctx
-  } do
+  test "CX-cj3t.6: set_attr is deprecated — drops the write (no typed-field clobber), returns :refused, accumulates a steering note",
+       %{
+         store: store,
+         obj_uuid: obj_uuid,
+         trusted_ctx: trusted_ctx
+       } do
     facade =
       Facade.new(
         %{signing_context: trusted_ctx, cert_cids: [], signer_id: nil},
@@ -253,17 +257,31 @@ defmodule Commonplace.MUD.World.FacadeTest do
     end
 
     {:ok, bursar} =
-      Commonplace.Green.Bursar.start_link(root_uuid: UUID.uuid4(), store: store, sweep_interval: 60_000)
+      Commonplace.Green.Bursar.start_link(
+        root_uuid: UUID.uuid4(),
+        store: store,
+        sweep_interval: 60_000
+      )
 
-    on_exit(fn -> if Process.alive?(bursar), do: (try do GenServer.stop(bursar) catch (:exit, _ -> :ok) end) end)
+    on_exit(fn ->
+      if Process.alive?(bursar),
+        do:
+          (try do
+             GenServer.stop(bursar)
+           catch
+             (:exit, _ -> :ok)
+           end)
+    end)
+
     bursar
   end
 
-  test "spawn: DEFAULT-safe — a plain object cannot spawn into the room (room not in owner_grant)", %{
-    store: store,
-    obj_uuid: obj_uuid,
-    trusted_ctx: trusted_ctx
-  } do
+  test "spawn: DEFAULT-safe — a plain object cannot spawn into the room (room not in owner_grant)",
+       %{
+         store: store,
+         obj_uuid: obj_uuid,
+         trusted_ctx: trusted_ctx
+       } do
     room = lc_dir(store, trusted_ctx, "room")
     # owner_grant is the default {object}, which does NOT cover the room.
     f = lc_facade(trusted_ctx, obj_uuid, [obj_uuid], %{current_room_uuid: room}, store)
@@ -285,12 +303,13 @@ defmodule Commonplace.MUD.World.FacadeTest do
     assert has_item?(store, room, "rock")
   end
 
-  test "spawn: THE KEYSTONE — owner_grant covers the room but the INVOKER can't write it → BLOCKED (not setuid)", %{
-    store: store,
-    obj_uuid: obj_uuid,
-    trusted_ctx: trusted_ctx,
-    uncapped_ctx: uncapped_ctx
-  } do
+  test "spawn: THE KEYSTONE — owner_grant covers the room but the INVOKER can't write it → BLOCKED (not setuid)",
+       %{
+         store: store,
+         obj_uuid: obj_uuid,
+         trusted_ctx: trusted_ctx,
+         uncapped_ctx: uncapped_ctx
+       } do
     # Room dir owned by the trusted root; grant DOES cover it. A visitor
     # (uncapped_ctx) invoking the owner's verb must STILL be denied — the
     # write is signed by the visitor, and the local-write gate rejects it.
@@ -302,11 +321,12 @@ defmodule Commonplace.MUD.World.FacadeTest do
     refute has_item?(store, room, "rock")
   end
 
-  test "give_to_actor: happy path — writes the invoker's OWN inventory with an EMPTY owner_grant (the exception)", %{
-    store: store,
-    obj_uuid: obj_uuid,
-    trusted_ctx: trusted_ctx
-  } do
+  test "give_to_actor: happy path — writes the invoker's OWN inventory with an EMPTY owner_grant (the exception)",
+       %{
+         store: store,
+         obj_uuid: obj_uuid,
+         trusted_ctx: trusted_ctx
+       } do
     inv = lc_dir(store, trusted_ctx, "inv")
     # EMPTY grant: give_to_actor must NOT consult owner_grant.
     f = lc_facade(trusted_ctx, obj_uuid, [], %{inventory_uuid: inv}, store)
@@ -315,12 +335,13 @@ defmodule Commonplace.MUD.World.FacadeTest do
     assert has_item?(store, inv, "coin")
   end
 
-  test "give_to_actor: still gated by INVOKER-authority (drops owner_grant, not the write gate)", %{
-    store: store,
-    obj_uuid: obj_uuid,
-    trusted_ctx: trusted_ctx,
-    uncapped_ctx: uncapped_ctx
-  } do
+  test "give_to_actor: still gated by INVOKER-authority (drops owner_grant, not the write gate)",
+       %{
+         store: store,
+         obj_uuid: obj_uuid,
+         trusted_ctx: trusted_ctx,
+         uncapped_ctx: uncapped_ctx
+       } do
     # The inventory dir EXISTS (created by the trusted root); the invoker
     # is the uncapped visitor, who still can't write it under :enforce.
     inv = lc_dir(store, trusted_ctx, "inv")
@@ -331,11 +352,12 @@ defmodule Commonplace.MUD.World.FacadeTest do
     assert {:error, :refused} = Facade.give_to_actor(f, "coin")
   end
 
-  test "CX-lfo3: same-named mints get instance-unique keys — N creates never overwrite one entry", %{
-    store: store,
-    obj_uuid: obj_uuid,
-    trusted_ctx: trusted_ctx
-  } do
+  test "CX-lfo3: same-named mints get instance-unique keys — N creates never overwrite one entry",
+       %{
+         store: store,
+         obj_uuid: obj_uuid,
+         trusted_ctx: trusted_ctx
+       } do
     inv = lc_dir(store, trusted_ctx, "inv")
     f = lc_facade(trusted_ctx, obj_uuid, [], %{inventory_uuid: inv}, store)
 
@@ -351,11 +373,12 @@ defmodule Commonplace.MUD.World.FacadeTest do
     assert length(coin_entries) == 3
   end
 
-  test "CX-nyj9: configure_attr sets a real attribute on a JUST-MINTED object (husk -> real item)", %{
-    store: store,
-    obj_uuid: obj_uuid,
-    trusted_ctx: trusted_ctx
-  } do
+  test "CX-nyj9: configure_attr sets a real attribute on a JUST-MINTED object (husk -> real item)",
+       %{
+         store: store,
+         obj_uuid: obj_uuid,
+         trusted_ctx: trusted_ctx
+       } do
     inv = lc_dir(store, trusted_ctx, "inv")
     f = lc_facade(trusted_ctx, obj_uuid, [], %{inventory_uuid: inv}, store)
 
@@ -384,11 +407,12 @@ defmodule Commonplace.MUD.World.FacadeTest do
              Commonplace.MUD.World.get_meta_map(sword, Schemas.object_filename(), store)
   end
 
-  test "CX-nyj9 KEYSTONE: configure_* reject a uuid NOT minted this run (uuid is not a bearer token)", %{
-    store: store,
-    obj_uuid: obj_uuid,
-    trusted_ctx: trusted_ctx
-  } do
+  test "CX-nyj9 KEYSTONE: configure_* reject a uuid NOT minted this run (uuid is not a bearer token)",
+       %{
+         store: store,
+         obj_uuid: obj_uuid,
+         trusted_ctx: trusted_ctx
+       } do
     inv = lc_dir(store, trusted_ctx, "inv")
     f = lc_facade(trusted_ctx, obj_uuid, [], %{inventory_uuid: inv}, store)
 
@@ -405,11 +429,12 @@ defmodule Commonplace.MUD.World.FacadeTest do
     assert :ok = Facade.configure_attr(f, sword, "description", "real")
   end
 
-  test "CX-ssi6: configure_attr/configure_state with a mistyped arg → {:error, :bad_arg}, NOT a function-clause crash", %{
-    store: store,
-    obj_uuid: obj_uuid,
-    trusted_ctx: trusted_ctx
-  } do
+  test "CX-ssi6: configure_attr/configure_state with a mistyped arg → {:error, :bad_arg}, NOT a function-clause crash",
+       %{
+         store: store,
+         obj_uuid: obj_uuid,
+         trusted_ctx: trusted_ctx
+       } do
     f = lc_facade(trusted_ctx, obj_uuid, [obj_uuid], %{}, store)
 
     # A non-binary KEY (the agent's real bug — passed an integer where a
@@ -423,11 +448,12 @@ defmodule Commonplace.MUD.World.FacadeTest do
     assert {:error, :bad_arg} = Facade.configure_state(f, {:error, :nope}, "k", "v")
   end
 
-  test "CX-hbua: actor_carries? checks the invoker's OWN inventory (by name, substring, and uuid)", %{
-    store: store,
-    obj_uuid: obj_uuid,
-    trusted_ctx: trusted_ctx
-  } do
+  test "CX-hbua: actor_carries? checks the invoker's OWN inventory (by name, substring, and uuid)",
+       %{
+         store: store,
+         obj_uuid: obj_uuid,
+         trusted_ctx: trusted_ctx
+       } do
     inv = lc_dir(store, trusted_ctx, "inv")
     f = lc_facade(trusted_ctx, obj_uuid, [], %{inventory_uuid: inv}, store)
 
@@ -469,11 +495,12 @@ defmodule Commonplace.MUD.World.FacadeTest do
     assert {:error, :refused} = Facade.configure_attr(f, {:ok, obj_uuid}, "description", "hax")
   end
 
-  test "CX-cj3t.9: move_self moves the invoker's presence with an EMPTY grant (presence-self, NOT room-write)", %{
-    store: store,
-    obj_uuid: obj_uuid,
-    trusted_ctx: trusted_ctx
-  } do
+  test "CX-cj3t.9: move_self moves the invoker's presence with an EMPTY grant (presence-self, NOT room-write)",
+       %{
+         store: store,
+         obj_uuid: obj_uuid,
+         trusted_ctx: trusted_ctx
+       } do
     # move_self routes through World.move, which serializes via the Green
     # Bursar (same as the builtin go/take) — start one under its default name.
     case GenServer.whereis(Commonplace.Green.Bursar) do
@@ -482,9 +509,21 @@ defmodule Commonplace.MUD.World.FacadeTest do
     end
 
     {:ok, bursar} =
-      Commonplace.Green.Bursar.start_link(root_uuid: UUID.uuid4(), store: store, sweep_interval: 60_000)
+      Commonplace.Green.Bursar.start_link(
+        root_uuid: UUID.uuid4(),
+        store: store,
+        sweep_interval: 60_000
+      )
 
-    on_exit(fn -> if Process.alive?(bursar), do: (try do GenServer.stop(bursar) catch (:exit, _ -> :ok) end) end)
+    on_exit(fn ->
+      if Process.alive?(bursar),
+        do:
+          (try do
+             GenServer.stop(bursar)
+           catch
+             (:exit, _ -> :ok)
+           end)
+    end)
 
     room = lc_dir(store, trusted_ctx, "room")
     dest = lc_dir(store, trusted_ctx, "dest")
@@ -528,10 +567,11 @@ defmodule Commonplace.MUD.World.FacadeTest do
     assert pfile in lc_entry_names(store, dest)
   end
 
-  test "CX-v6j4: a ROOM-host verb persists state (bind) but is DENIED the object-only methods (setuid guard)", %{
-    store: store,
-    trusted_ctx: trusted_ctx
-  } do
+  test "CX-v6j4: a ROOM-host verb persists state (bind) but is DENIED the object-only methods (setuid guard)",
+       %{
+         store: store,
+         trusted_ctx: trusted_ctx
+       } do
     # CX-v6j4 — a REAL room (room_filename meta = __room.json), NOT an
     # object-meta dir; the bug was writing state to __object.json which a
     # room lacks. Build the room via its room meta.
@@ -545,7 +585,13 @@ defmodule Commonplace.MUD.World.FacadeTest do
 
     # A room-hosted verb: object_uuid = the room, host_kind = :room.
     f = %{
-      lc_facade(trusted_ctx, room, [room], %{current_room_uuid: room, inventory_uuid: "inv"}, store)
+      lc_facade(
+        trusted_ctx,
+        room,
+        [room],
+        %{current_room_uuid: room, inventory_uuid: "inv"},
+        store
+      )
       | host_kind: :room
     }
 
@@ -555,7 +601,13 @@ defmodule Commonplace.MUD.World.FacadeTest do
     assert :ok = Facade.put_state(f, "lit", true)
 
     f_fresh = %{
-      lc_facade(trusted_ctx, room, [room], %{current_room_uuid: room, inventory_uuid: "inv"}, store)
+      lc_facade(
+        trusted_ctx,
+        room,
+        [room],
+        %{current_room_uuid: room, inventory_uuid: "inv"},
+        store
+      )
       | host_kind: :room
     }
 
@@ -571,11 +623,12 @@ defmodule Commonplace.MUD.World.FacadeTest do
     assert {:error, :refused} = Facade.move_object(f, lc_dir(store, trusted_ctx, "dest"))
   end
 
-  test "CX-gs9e REPRO: two sequential put_state calls in one verb run BOTH persist (no read-after-write clobber)", %{
-    store: store,
-    obj_uuid: obj_uuid,
-    trusted_ctx: trusted_ctx
-  } do
+  test "CX-gs9e REPRO: two sequential put_state calls in one verb run BOTH persist (no read-after-write clobber)",
+       %{
+         store: store,
+         obj_uuid: obj_uuid,
+         trusted_ctx: trusted_ctx
+       } do
     # The suspected bug: within ONE verb run, put_state(a) chains a commit,
     # then put_state(b)'s read_state re-reads the meta — if that read is
     # STALE (doesn't see the a-commit), new_state = %{b} drops a. Reproduce
@@ -587,7 +640,10 @@ defmodule Commonplace.MUD.World.FacadeTest do
     assert :ok = Facade.put_state(f, "b", 2)
 
     f_fresh = lc_facade(trusted_ctx, obj_uuid, [obj_uuid], %{}, store)
-    assert Facade.get_state(f_fresh, "a") == 1, "first write clobbered by second (read-after-write stale)"
+
+    assert Facade.get_state(f_fresh, "a") == 1,
+           "first write clobbered by second (read-after-write stale)"
+
     assert Facade.get_state(f_fresh, "b") == 2
   end
 
@@ -678,11 +734,12 @@ defmodule Commonplace.MUD.World.FacadeTest do
     end
   end
 
-  test "CX-cj3t.9: move_object STILL grant-checks (empty grant → :owner_grant_exceeded — the intersection is intact)", %{
-    store: store,
-    obj_uuid: obj_uuid,
-    trusted_ctx: trusted_ctx
-  } do
+  test "CX-cj3t.9: move_object STILL grant-checks (empty grant → :owner_grant_exceeded — the intersection is intact)",
+       %{
+         store: store,
+         obj_uuid: obj_uuid,
+         trusted_ctx: trusted_ctx
+       } do
     room = lc_dir(store, trusted_ctx, "room")
     dest = lc_dir(store, trusted_ctx, "dest")
 
@@ -769,10 +826,11 @@ defmodule Commonplace.MUD.World.FacadeTest do
     assert "lever.obj" in lc_entry_names(store, room)
   end
 
-  test "orphan check (plan #5993): a gate-rejected spawn lands NO doc — rejection is at the first write", %{
-    store: store,
-    uncapped_ctx: uncapped_ctx
-  } do
+  test "orphan check (plan #5993): a gate-rejected spawn lands NO doc — rejection is at the first write",
+       %{
+         store: store,
+         uncapped_ctx: uncapped_ctx
+       } do
     # create_object_in creates the object's meta doc FIRST (create_meta_doc
     # → a signed, NON-genesis commit), then the dir doc, then links. Under
     # :enforce an unauthorized invoker is rejected at that FIRST write, so
@@ -892,11 +950,12 @@ defmodule Commonplace.MUD.World.FacadeTest do
     refute has_item?(store, inv, "apple")
   end
 
-  test "consume_from_inventory: not carrying → :not_carrying; blank/whitespace → :not_carrying (fail closed)", %{
-    store: store,
-    obj_uuid: obj_uuid,
-    trusted_ctx: trusted_ctx
-  } do
+  test "consume_from_inventory: not carrying → :not_carrying; blank/whitespace → :not_carrying (fail closed)",
+       %{
+         store: store,
+         obj_uuid: obj_uuid,
+         trusted_ctx: trusted_ctx
+       } do
     inv = lc_dir(store, trusted_ctx, "inv")
     f = lc_facade(trusted_ctx, obj_uuid, [], %{inventory_uuid: inv}, store)
     {:ok, _} = Facade.give_to_actor(f, "apple")
@@ -986,11 +1045,12 @@ defmodule Commonplace.MUD.World.FacadeTest do
     :ok
   end
 
-  test "give_from_inventory: same-room recipient with inventory → :ok, item moves giver→recipient", %{
-    store: store,
-    obj_uuid: obj_uuid,
-    trusted_ctx: trusted_ctx
-  } do
+  test "give_from_inventory: same-room recipient with inventory → :ok, item moves giver→recipient",
+       %{
+         store: store,
+         obj_uuid: obj_uuid,
+         trusted_ctx: trusted_ctx
+       } do
     ensure_bursar!(store)
     w = give_world(store, trusted_ctx, recipients: ["bob"], in_room: ["bob"])
 
@@ -1020,11 +1080,12 @@ defmodule Commonplace.MUD.World.FacadeTest do
     assert has_item?(store, w.invs["bob"], "coin")
   end
 
-  test "give_from_inventory: ADDITIVE — a recipient's PRE-EXISTING same-named item is NOT clobbered", %{
-    store: store,
-    obj_uuid: obj_uuid,
-    trusted_ctx: trusted_ctx
-  } do
+  test "give_from_inventory: ADDITIVE — a recipient's PRE-EXISTING same-named item is NOT clobbered",
+       %{
+         store: store,
+         obj_uuid: obj_uuid,
+         trusted_ctx: trusted_ctx
+       } do
     ensure_bursar!(store)
     w = give_world(store, trusted_ctx, recipients: ["bob"], in_room: ["bob"])
     # Recipient already holds a "coin" (a plain "coin.obj" key).
@@ -1035,7 +1096,12 @@ defmodule Commonplace.MUD.World.FacadeTest do
         trusted_ctx,
         obj_uuid,
         [],
-        %{inventory_uuid: w.giver_inv, current_room_uuid: w.room, root_uuid: w.root, player_name: "alice"},
+        %{
+          inventory_uuid: w.giver_inv,
+          current_room_uuid: w.room,
+          root_uuid: w.root,
+          player_name: "alice"
+        },
         store
       )
 
@@ -1044,15 +1110,18 @@ defmodule Commonplace.MUD.World.FacadeTest do
 
     # BOTH coins present — instance-unique deposit key never overwrote the
     # pre-existing item (additive-only, no-clobber).
-    coin_entries = Enum.filter(lc_entry_names(store, w.invs["bob"]), &String.starts_with?(&1, "coin"))
+    coin_entries =
+      Enum.filter(lc_entry_names(store, w.invs["bob"]), &String.starts_with?(&1, "coin"))
+
     assert length(coin_entries) == 2
   end
 
-  test "give_from_inventory: recipient NOT in room → :recipient_not_here (no-oracle: off-room name that EXISTS globally still :recipient_not_here)", %{
-    store: store,
-    obj_uuid: obj_uuid,
-    trusted_ctx: trusted_ctx
-  } do
+  test "give_from_inventory: recipient NOT in room → :recipient_not_here (no-oracle: off-room name that EXISTS globally still :recipient_not_here)",
+       %{
+         store: store,
+         obj_uuid: obj_uuid,
+         trusted_ctx: trusted_ctx
+       } do
     # carol is FULLY registered in the players tree (root→players→carol→
     # inventory) but is NOT present in the room. An off-room name must fail
     # identically to a nonexistent one — no global existence oracle.
@@ -1063,7 +1132,12 @@ defmodule Commonplace.MUD.World.FacadeTest do
         trusted_ctx,
         obj_uuid,
         [],
-        %{inventory_uuid: w.giver_inv, current_room_uuid: w.room, root_uuid: w.root, player_name: "alice"},
+        %{
+          inventory_uuid: w.giver_inv,
+          current_room_uuid: w.room,
+          root_uuid: w.root,
+          player_name: "alice"
+        },
         store
       )
 
@@ -1079,11 +1153,12 @@ defmodule Commonplace.MUD.World.FacadeTest do
     refute has_item?(store, w.invs["carol"], "coin")
   end
 
-  test "give_from_inventory: blank recipient → :recipient_not_here; not carrying → :not_carrying; no inventory → :no_inventory", %{
-    store: store,
-    obj_uuid: obj_uuid,
-    trusted_ctx: trusted_ctx
-  } do
+  test "give_from_inventory: blank recipient → :recipient_not_here; not carrying → :not_carrying; no inventory → :no_inventory",
+       %{
+         store: store,
+         obj_uuid: obj_uuid,
+         trusted_ctx: trusted_ctx
+       } do
     w = give_world(store, trusted_ctx, recipients: ["bob"], in_room: ["bob"])
 
     f =
@@ -1091,7 +1166,12 @@ defmodule Commonplace.MUD.World.FacadeTest do
         trusted_ctx,
         obj_uuid,
         [],
-        %{inventory_uuid: w.giver_inv, current_room_uuid: w.room, root_uuid: w.root, player_name: "alice"},
+        %{
+          inventory_uuid: w.giver_inv,
+          current_room_uuid: w.room,
+          root_uuid: w.root,
+          player_name: "alice"
+        },
         store
       )
 
@@ -1117,11 +1197,12 @@ defmodule Commonplace.MUD.World.FacadeTest do
   end
 
   describe "CX-a2gd: invoker identity accessors" do
-    test "actor_name returns the SERVER-SET invoker display name; actor_ref returns the stable player-dir ref", %{
-      store: store,
-      obj_uuid: obj_uuid,
-      trusted_ctx: trusted_ctx
-    } do
+    test "actor_name returns the SERVER-SET invoker display name; actor_ref returns the stable player-dir ref",
+         %{
+           store: store,
+           obj_uuid: obj_uuid,
+           trusted_ctx: trusted_ctx
+         } do
       f =
         lc_facade(
           trusted_ctx,
@@ -1135,15 +1216,31 @@ defmodule Commonplace.MUD.World.FacadeTest do
       assert Facade.actor_ref(f) == "player-dir-abc"
     end
 
-    test "the accessors read ONLY the bound ctx — a different invoker's facade yields THAT invoker (invoker-only, no cross-read)", %{
-      store: store,
-      obj_uuid: obj_uuid,
-      trusted_ctx: trusted_ctx
-    } do
+    test "the accessors read ONLY the bound ctx — a different invoker's facade yields THAT invoker (invoker-only, no cross-read)",
+         %{
+           store: store,
+           obj_uuid: obj_uuid,
+           trusted_ctx: trusted_ctx
+         } do
       # There is no parameter to name another player — each facade can only
       # ever surface its OWN bound invoker. Two facades, two identities.
-      alice = lc_facade(trusted_ctx, obj_uuid, [obj_uuid], %{player_name: "alice", player_dir_uuid: "pd-alice"}, store)
-      bob = lc_facade(trusted_ctx, obj_uuid, [obj_uuid], %{player_name: "bob", player_dir_uuid: "pd-bob"}, store)
+      alice =
+        lc_facade(
+          trusted_ctx,
+          obj_uuid,
+          [obj_uuid],
+          %{player_name: "alice", player_dir_uuid: "pd-alice"},
+          store
+        )
+
+      bob =
+        lc_facade(
+          trusted_ctx,
+          obj_uuid,
+          [obj_uuid],
+          %{player_name: "bob", player_dir_uuid: "pd-bob"},
+          store
+        )
 
       assert Facade.actor_name(alice) == "alice"
       assert Facade.actor_ref(alice) == "pd-alice"
@@ -1239,12 +1336,13 @@ defmodule Commonplace.MUD.World.FacadeTest do
       assert inspect(thin) == "#MUD.World.Facade<player: ?>"
     end
 
-    test "PIN 2: the verb-facing facade (via the real SafeVerb.run path) exposes no key; signing still works", %{
-      store: store,
-      trusted_ctx: trusted_ctx,
-      obj_uuid: obj_uuid,
-      facade: facade
-    } do
+    test "PIN 2: the verb-facing facade (via the real SafeVerb.run path) exposes no key; signing still works",
+         %{
+           store: store,
+           trusted_ctx: trusted_ctx,
+           obj_uuid: obj_uuid,
+           facade: facade
+         } do
       # A hostile verb tries to exfil: return inspect of world AND world.ctx.
       :ok =
         Commonplace.MUD.VerbSource.save_safe_verb(
@@ -1257,7 +1355,14 @@ defmodule Commonplace.MUD.World.FacadeTest do
         )
 
       {:ok, rendered} =
-        Commonplace.MUD.VerbSource.run_safe_verb(obj_uuid, "exfil", [obj_uuid], facade, %{}, store)
+        Commonplace.MUD.VerbSource.run_safe_verb(
+          obj_uuid,
+          "exfil",
+          [obj_uuid],
+          facade,
+          %{},
+          store
+        )
 
       # The verb ran with the SCRUBBED facade — no key bytes anywhere in what
       # it could see/render.
@@ -1277,10 +1382,19 @@ defmodule Commonplace.MUD.World.FacadeTest do
         )
 
       assert {:ok, :ok} =
-               Commonplace.MUD.VerbSource.run_safe_verb(obj_uuid, "poke", [obj_uuid], facade, %{}, store)
+               Commonplace.MUD.VerbSource.run_safe_verb(
+                 obj_uuid,
+                 "poke",
+                 [obj_uuid],
+                 facade,
+                 %{},
+                 store
+               )
     end
 
-    test "PIN 3: a representative RETURN value (get_attr) carries no signing material", %{facade: facade} do
+    test "PIN 3: a representative RETURN value (get_attr) carries no signing material", %{
+      facade: facade
+    } do
       # get_attr returns object metadata — assert it never carries a signer.
       case Facade.get_attr(facade, facade.object_uuid) do
         {:ok, attrs} ->
@@ -1391,7 +1505,12 @@ defmodule Commonplace.MUD.World.FacadeTest do
 
       full =
         Facade.new(
-          %{signing_context: trusted_ctx, cert_cids: [], signer_id: nil, player_uuid: player_uuid},
+          %{
+            signing_context: trusted_ctx,
+            cert_cids: [],
+            signer_id: nil,
+            player_uuid: player_uuid
+          },
           nil,
           [],
           {author_source_uuid, "some-host"},
@@ -1413,13 +1532,22 @@ defmodule Commonplace.MUD.World.FacadeTest do
     end
 
     test "NON-AUTHOR invoker (a different identity than the verb source's signer) → no player tell, but the drop IS logged",
-         %{store: store, uncapped_ctx: stranger_invoker_ctx, author_source_uuid: author_source_uuid} do
+         %{
+           store: store,
+           uncapped_ctx: stranger_invoker_ctx,
+           author_source_uuid: author_source_uuid
+         } do
       player_uuid = "player-#{:rand.uniform(999_999_999_999)}"
       Commonplace.MUD.Topics.subscribe_player_tell(player_uuid)
 
       full =
         Facade.new(
-          %{signing_context: stranger_invoker_ctx, cert_cids: [], signer_id: nil, player_uuid: player_uuid},
+          %{
+            signing_context: stranger_invoker_ctx,
+            cert_cids: [],
+            signer_id: nil,
+            player_uuid: player_uuid
+          },
           nil,
           [],
           {author_source_uuid, "some-host"},
@@ -1446,7 +1574,12 @@ defmodule Commonplace.MUD.World.FacadeTest do
 
       full =
         Facade.new(
-          %{signing_context: trusted_ctx, cert_cids: [], signer_id: nil, player_uuid: player_uuid},
+          %{
+            signing_context: trusted_ctx,
+            cert_cids: [],
+            signer_id: nil,
+            player_uuid: player_uuid
+          },
           nil,
           [],
           {unsigned_source_uuid, "some-host"},
@@ -1470,7 +1603,12 @@ defmodule Commonplace.MUD.World.FacadeTest do
 
       full =
         Facade.new(
-          %{signing_context: trusted_ctx, cert_cids: [], signer_id: nil, player_uuid: player_uuid},
+          %{
+            signing_context: trusted_ctx,
+            cert_cids: [],
+            signer_id: nil,
+            player_uuid: player_uuid
+          },
           nil,
           [],
           {"never-created-uuid", "curated-host"},
@@ -1496,7 +1634,12 @@ defmodule Commonplace.MUD.World.FacadeTest do
       # AUTHOR-class branch (emit_author_diagnostic) got audience scoping.
       full =
         Facade.new(
-          %{signing_context: trusted_ctx, cert_cids: [], signer_id: nil, player_uuid: player_uuid},
+          %{
+            signing_context: trusted_ctx,
+            cert_cids: [],
+            signer_id: nil,
+            player_uuid: player_uuid
+          },
           nil,
           [],
           {author_source_uuid, "some-host"},
@@ -1525,7 +1668,9 @@ defmodule Commonplace.MUD.World.FacadeTest do
     {metadata, commit_opts} =
       Commonplace.MUD.SignedWrite.opts_for(uuid, signing_context: signing_context, store: store)
 
-    %Commonplace.Store.Commit{} = CommitStore.create_commit(store, uuid, update, nil, metadata, commit_opts)
+    %Commonplace.Store.Commit{} =
+      CommitStore.create_commit(store, uuid, update, nil, metadata, commit_opts)
+
     uuid
   end
 

@@ -64,7 +64,13 @@ defmodule Commonplace.ApplicationOrchestratorGatingTest do
     root_uuid = write_root!(dir)
     store = :"orch_gate_store_#{:rand.uniform(1_000_000)}"
     start_supervised!({CommitStore, data_dir: dir, name: store})
-    CommitStore.create_commit(store, root_uuid, Yelixer.Encoding.encode_update(Schema.new_schema()), nil)
+
+    CommitStore.create_commit(
+      store,
+      root_uuid,
+      Yelixer.Encoding.encode_update(Schema.new_schema()),
+      nil
+    )
 
     Process.flag(:trap_exit, true)
     {:ok, orch} = Orchestrator.start_link(root_uuid: :workspace, store: store, interval: 60_000)
@@ -75,21 +81,32 @@ defmodule Commonplace.ApplicationOrchestratorGatingTest do
 
   test ":workspace sentinel with no root file stops cleanly" do
     Process.flag(:trap_exit, true)
-    assert {:error, :no_workspace_root} = Orchestrator.start_link(root_uuid: :workspace, interval: 60_000)
+
+    assert {:error, :no_workspace_root} =
+             Orchestrator.start_link(root_uuid: :workspace, interval: 60_000)
   end
 
   test "enabled + fully-permissive trust posture logs a loud warning", %{dir: dir} do
     root_uuid = write_root!(dir)
     store = :"orch_gate_store_#{:rand.uniform(1_000_000)}"
     start_supervised!({CommitStore, data_dir: dir, name: store})
-    CommitStore.create_commit(store, root_uuid, Yelixer.Encoding.encode_update(Schema.new_schema()), nil)
+
+    CommitStore.create_commit(
+      store,
+      root_uuid,
+      Yelixer.Encoding.encode_update(Schema.new_schema()),
+      nil
+    )
+
     Application.put_env(:commonplace, :trust, %{accept_unsigned: true, trusted_identities: %{}})
 
     Process.flag(:trap_exit, true)
 
     log =
       capture_log(fn ->
-        {:ok, orch} = Orchestrator.start_link(root_uuid: :workspace, store: store, interval: 60_000)
+        {:ok, orch} =
+          Orchestrator.start_link(root_uuid: :workspace, store: store, interval: 60_000)
+
         GenServer.stop(orch)
       end)
 
@@ -101,14 +118,23 @@ defmodule Commonplace.ApplicationOrchestratorGatingTest do
     root_uuid = write_root!(dir)
     store = :"orch_gate_store_#{:rand.uniform(1_000_000)}"
     start_supervised!({CommitStore, data_dir: dir, name: store})
-    CommitStore.create_commit(store, root_uuid, Yelixer.Encoding.encode_update(Schema.new_schema()), nil)
+
+    CommitStore.create_commit(
+      store,
+      root_uuid,
+      Yelixer.Encoding.encode_update(Schema.new_schema()),
+      nil
+    )
+
     Application.put_env(:commonplace, :trust, %{accept_unsigned: false, trusted_identities: %{}})
 
     Process.flag(:trap_exit, true)
 
     log =
       capture_log(fn ->
-        {:ok, orch} = Orchestrator.start_link(root_uuid: :workspace, store: store, interval: 60_000)
+        {:ok, orch} =
+          Orchestrator.start_link(root_uuid: :workspace, store: store, interval: 60_000)
+
         GenServer.stop(orch)
       end)
 

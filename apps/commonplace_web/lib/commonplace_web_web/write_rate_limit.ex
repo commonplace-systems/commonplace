@@ -96,8 +96,10 @@ defmodule CommonplaceWebWeb.WriteRateLimit do
     app_env = Application.get_env(:commonplace_web, :write_rate_limit, [])
 
     %{
-      max_writes: Keyword.get(opts, :max_writes, Keyword.get(app_env, :max_writes, @default_max_writes)),
-      window_ms: Keyword.get(opts, :window_ms, Keyword.get(app_env, :window_ms, @default_window_ms))
+      max_writes:
+        Keyword.get(opts, :max_writes, Keyword.get(app_env, :max_writes, @default_max_writes)),
+      window_ms:
+        Keyword.get(opts, :window_ms, Keyword.get(app_env, :window_ms, @default_window_ms))
     }
   end
 

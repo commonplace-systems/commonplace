@@ -73,7 +73,9 @@ defmodule Commonplace.MUD.Bootstrap do
   # `Commonplace.MUD.SeedWorld`'s bundle) — the beam carries the content,
   # no runtime priv lookup. Zero behavior change: this is still the
   # doc-hosted parser source seeded (once) into the tree at boot.
-  engine_parser_path = Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "parser.exs.seed"])
+  engine_parser_path =
+    Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "parser.exs.seed"])
+
   @external_resource engine_parser_path
   @engine_parser_source File.read!(engine_parser_path)
 
@@ -101,7 +103,9 @@ defmodule Commonplace.MUD.Bootstrap do
   # CX-6pbu (self-hosting slice 3): source body moved to
   # `priv/engine_verbs/look.exs.seed` — see the comment on
   # `@engine_parser_source` above for the pattern/rationale.
-  engine_look_verb_path = Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "look.exs.seed"])
+  engine_look_verb_path =
+    Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "look.exs.seed"])
+
   @external_resource engine_look_verb_path
   @engine_look_verb_source File.read!(engine_look_verb_path)
 
@@ -120,7 +124,9 @@ defmodule Commonplace.MUD.Bootstrap do
   # CX-6pbu (self-hosting slice 3): source body moved to
   # `priv/engine_verbs/inventory.exs.seed` — see the comment on
   # `@engine_parser_source` above for the pattern/rationale.
-  engine_inventory_verb_path = Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "inventory.exs.seed"])
+  engine_inventory_verb_path =
+    Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "inventory.exs.seed"])
+
   @external_resource engine_inventory_verb_path
   @engine_inventory_verb_source File.read!(engine_inventory_verb_path)
 
@@ -129,7 +135,9 @@ defmodule Commonplace.MUD.Bootstrap do
   # CX-6pbu (self-hosting slice 3): source body moved to
   # `priv/engine_verbs/emote.exs.seed` — see the comment on
   # `@engine_parser_source` above for the pattern/rationale.
-  engine_emote_verb_path = Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "emote.exs.seed"])
+  engine_emote_verb_path =
+    Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "emote.exs.seed"])
+
   @external_resource engine_emote_verb_path
   @engine_emote_verb_source File.read!(engine_emote_verb_path)
 
@@ -138,7 +146,9 @@ defmodule Commonplace.MUD.Bootstrap do
   # CX-6pbu (self-hosting slice 3): source body moved to
   # `priv/engine_verbs/say.exs.seed` — see the comment on
   # `@engine_parser_source` above for the pattern/rationale.
-  engine_say_verb_path = Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "say.exs.seed"])
+  engine_say_verb_path =
+    Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "say.exs.seed"])
+
   @external_resource engine_say_verb_path
   @engine_say_verb_source File.read!(engine_say_verb_path)
 
@@ -154,32 +164,44 @@ defmodule Commonplace.MUD.Bootstrap do
   # promoted `Verbs.resolve_target/2` surface (see that function's doc);
   # `where`/`sit`/`stand`/`search` are simple enough to mirror completely.
   @engine_where_verb_uuid "c2c16b7f-3b47-44d5-849f-7d522802a91e"
-  engine_where_verb_path = Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "where.exs.seed"])
+  engine_where_verb_path =
+    Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "where.exs.seed"])
+
   @external_resource engine_where_verb_path
   @engine_where_verb_source File.read!(engine_where_verb_path)
 
   @engine_sit_verb_uuid "9b002b18-37e4-4a31-a869-8849f9906761"
-  engine_sit_verb_path = Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "sit.exs.seed"])
+  engine_sit_verb_path =
+    Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "sit.exs.seed"])
+
   @external_resource engine_sit_verb_path
   @engine_sit_verb_source File.read!(engine_sit_verb_path)
 
   @engine_stand_verb_uuid "2b5eae29-f49e-4a85-a426-9342ac6c4b4d"
-  engine_stand_verb_path = Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "stand.exs.seed"])
+  engine_stand_verb_path =
+    Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "stand.exs.seed"])
+
   @external_resource engine_stand_verb_path
   @engine_stand_verb_source File.read!(engine_stand_verb_path)
 
   @engine_examine_verb_uuid "fdcb5f1e-a0f1-4fc3-82dc-1508bdf44b12"
-  engine_examine_verb_path = Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "examine.exs.seed"])
+  engine_examine_verb_path =
+    Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "examine.exs.seed"])
+
   @external_resource engine_examine_verb_path
   @engine_examine_verb_source File.read!(engine_examine_verb_path)
 
   @engine_search_verb_uuid "0521e66a-d36f-4c25-86bc-3f77c2fccdf8"
-  engine_search_verb_path = Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "search.exs.seed"])
+  engine_search_verb_path =
+    Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "search.exs.seed"])
+
   @external_resource engine_search_verb_path
   @engine_search_verb_source File.read!(engine_search_verb_path)
 
   @engine_read_verb_uuid "61f0cb2f-3676-445e-95ae-ce8585f3ef25"
-  engine_read_verb_path = Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "read.exs.seed"])
+  engine_read_verb_path =
+    Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "read.exs.seed"])
+
   @external_resource engine_read_verb_path
   @engine_read_verb_source File.read!(engine_read_verb_path)
 
@@ -192,17 +214,23 @@ defmodule Commonplace.MUD.Bootstrap do
   # doc); `recipes` wraps the already-public `Mint.list_recipes/2`; `use`
   # is a trivial constant-reply baseline.
   @engine_who_verb_uuid "39b0c13f-26af-4b39-ae18-428fbe124d51"
-  engine_who_verb_path = Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "who.exs.seed"])
+  engine_who_verb_path =
+    Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "who.exs.seed"])
+
   @external_resource engine_who_verb_path
   @engine_who_verb_source File.read!(engine_who_verb_path)
 
   @engine_recipes_verb_uuid "d824d05c-549d-4ba9-ada2-c2f8319f5d04"
-  engine_recipes_verb_path = Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "recipes.exs.seed"])
+  engine_recipes_verb_path =
+    Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "recipes.exs.seed"])
+
   @external_resource engine_recipes_verb_path
   @engine_recipes_verb_source File.read!(engine_recipes_verb_path)
 
   @engine_use_verb_uuid "9f14c802-1d85-4cb1-9e16-5e6179d0997b"
-  engine_use_verb_path = Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "use.exs.seed"])
+  engine_use_verb_path =
+    Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "use.exs.seed"])
+
   @external_resource engine_use_verb_path
   @engine_use_verb_source File.read!(engine_use_verb_path)
 
@@ -217,12 +245,16 @@ defmodule Commonplace.MUD.Bootstrap do
   # both call the promoted `Verbs.invoker_move_opts/1` (built from the
   # invoking session's OWN signing_context/cert_cids — no elevation).
   @engine_go_verb_uuid "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d"
-  engine_go_verb_path = Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "go.exs.seed"])
+  engine_go_verb_path =
+    Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "go.exs.seed"])
+
   @external_resource engine_go_verb_path
   @engine_go_verb_source File.read!(engine_go_verb_path)
 
   @engine_home_verb_uuid "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e"
-  engine_home_verb_path = Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "home.exs.seed"])
+  engine_home_verb_path =
+    Path.join([__DIR__, "..", "..", "..", "priv", "engine_verbs", "home.exs.seed"])
+
   @external_resource engine_home_verb_path
   @engine_home_verb_source File.read!(engine_home_verb_path)
 
@@ -431,7 +463,12 @@ defmodule Commonplace.MUD.Bootstrap do
       # The manifest is a TRUST ROOT — node-controlled app-env, never player
       # input. Pointing it here is what says "THIS doc is the parser".
       manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
-      Application.put_env(:commonplace, :mud_engine_manifest, Map.put(manifest, :parser, @engine_parser_uuid))
+
+      Application.put_env(
+        :commonplace,
+        :mud_engine_manifest,
+        Map.put(manifest, :parser, @engine_parser_uuid)
+      )
     end
 
     :ok
@@ -451,11 +488,22 @@ defmodule Commonplace.MUD.Bootstrap do
   def ensure_engine_look_verb(store \\ CommitStoreClient) do
     with {:ok, node_ctx} <- NodeIdentity.signing_context() do
       unless source_doc_present?(@engine_look_verb_uuid, store) do
-        seed_source_doc(@engine_look_verb_uuid, @engine_look_verb_source, node_ctx, store, "_engine_look.ex")
+        seed_source_doc(
+          @engine_look_verb_uuid,
+          @engine_look_verb_source,
+          node_ctx,
+          store,
+          "_engine_look.ex"
+        )
       end
 
       manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
-      Application.put_env(:commonplace, :mud_engine_manifest, Map.put(manifest, :look, @engine_look_verb_uuid))
+
+      Application.put_env(
+        :commonplace,
+        :mud_engine_manifest,
+        Map.put(manifest, :look, @engine_look_verb_uuid)
+      )
     end
 
     :ok
@@ -476,11 +524,22 @@ defmodule Commonplace.MUD.Bootstrap do
   def ensure_engine_inventory_verb(store \\ CommitStoreClient) do
     with {:ok, node_ctx} <- NodeIdentity.signing_context() do
       unless source_doc_present?(@engine_inventory_verb_uuid, store) do
-        seed_source_doc(@engine_inventory_verb_uuid, @engine_inventory_verb_source, node_ctx, store, "_engine_inventory.ex")
+        seed_source_doc(
+          @engine_inventory_verb_uuid,
+          @engine_inventory_verb_source,
+          node_ctx,
+          store,
+          "_engine_inventory.ex"
+        )
       end
 
       manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
-      Application.put_env(:commonplace, :mud_engine_manifest, Map.put(manifest, :inventory, @engine_inventory_verb_uuid))
+
+      Application.put_env(
+        :commonplace,
+        :mud_engine_manifest,
+        Map.put(manifest, :inventory, @engine_inventory_verb_uuid)
+      )
     end
 
     :ok
@@ -497,11 +556,22 @@ defmodule Commonplace.MUD.Bootstrap do
   def ensure_engine_emote_verb(store \\ CommitStoreClient) do
     with {:ok, node_ctx} <- NodeIdentity.signing_context() do
       unless source_doc_present?(@engine_emote_verb_uuid, store) do
-        seed_source_doc(@engine_emote_verb_uuid, @engine_emote_verb_source, node_ctx, store, "_engine_emote.ex")
+        seed_source_doc(
+          @engine_emote_verb_uuid,
+          @engine_emote_verb_source,
+          node_ctx,
+          store,
+          "_engine_emote.ex"
+        )
       end
 
       manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
-      Application.put_env(:commonplace, :mud_engine_manifest, Map.put(manifest, :emote, @engine_emote_verb_uuid))
+
+      Application.put_env(
+        :commonplace,
+        :mud_engine_manifest,
+        Map.put(manifest, :emote, @engine_emote_verb_uuid)
+      )
     end
 
     :ok
@@ -518,11 +588,22 @@ defmodule Commonplace.MUD.Bootstrap do
   def ensure_engine_say_verb(store \\ CommitStoreClient) do
     with {:ok, node_ctx} <- NodeIdentity.signing_context() do
       unless source_doc_present?(@engine_say_verb_uuid, store) do
-        seed_source_doc(@engine_say_verb_uuid, @engine_say_verb_source, node_ctx, store, "_engine_say.ex")
+        seed_source_doc(
+          @engine_say_verb_uuid,
+          @engine_say_verb_source,
+          node_ctx,
+          store,
+          "_engine_say.ex"
+        )
       end
 
       manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
-      Application.put_env(:commonplace, :mud_engine_manifest, Map.put(manifest, :say, @engine_say_verb_uuid))
+
+      Application.put_env(
+        :commonplace,
+        :mud_engine_manifest,
+        Map.put(manifest, :say, @engine_say_verb_uuid)
+      )
     end
 
     :ok
@@ -539,11 +620,22 @@ defmodule Commonplace.MUD.Bootstrap do
   def ensure_engine_where_verb(store \\ CommitStoreClient) do
     with {:ok, node_ctx} <- NodeIdentity.signing_context() do
       unless source_doc_present?(@engine_where_verb_uuid, store) do
-        seed_source_doc(@engine_where_verb_uuid, @engine_where_verb_source, node_ctx, store, "_engine_where.ex")
+        seed_source_doc(
+          @engine_where_verb_uuid,
+          @engine_where_verb_source,
+          node_ctx,
+          store,
+          "_engine_where.ex"
+        )
       end
 
       manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
-      Application.put_env(:commonplace, :mud_engine_manifest, Map.put(manifest, :where, @engine_where_verb_uuid))
+
+      Application.put_env(
+        :commonplace,
+        :mud_engine_manifest,
+        Map.put(manifest, :where, @engine_where_verb_uuid)
+      )
     end
 
     :ok
@@ -560,11 +652,22 @@ defmodule Commonplace.MUD.Bootstrap do
   def ensure_engine_sit_verb(store \\ CommitStoreClient) do
     with {:ok, node_ctx} <- NodeIdentity.signing_context() do
       unless source_doc_present?(@engine_sit_verb_uuid, store) do
-        seed_source_doc(@engine_sit_verb_uuid, @engine_sit_verb_source, node_ctx, store, "_engine_sit.ex")
+        seed_source_doc(
+          @engine_sit_verb_uuid,
+          @engine_sit_verb_source,
+          node_ctx,
+          store,
+          "_engine_sit.ex"
+        )
       end
 
       manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
-      Application.put_env(:commonplace, :mud_engine_manifest, Map.put(manifest, :sit, @engine_sit_verb_uuid))
+
+      Application.put_env(
+        :commonplace,
+        :mud_engine_manifest,
+        Map.put(manifest, :sit, @engine_sit_verb_uuid)
+      )
     end
 
     :ok
@@ -581,11 +684,22 @@ defmodule Commonplace.MUD.Bootstrap do
   def ensure_engine_stand_verb(store \\ CommitStoreClient) do
     with {:ok, node_ctx} <- NodeIdentity.signing_context() do
       unless source_doc_present?(@engine_stand_verb_uuid, store) do
-        seed_source_doc(@engine_stand_verb_uuid, @engine_stand_verb_source, node_ctx, store, "_engine_stand.ex")
+        seed_source_doc(
+          @engine_stand_verb_uuid,
+          @engine_stand_verb_source,
+          node_ctx,
+          store,
+          "_engine_stand.ex"
+        )
       end
 
       manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
-      Application.put_env(:commonplace, :mud_engine_manifest, Map.put(manifest, :stand, @engine_stand_verb_uuid))
+
+      Application.put_env(
+        :commonplace,
+        :mud_engine_manifest,
+        Map.put(manifest, :stand, @engine_stand_verb_uuid)
+      )
     end
 
     :ok
@@ -602,11 +716,22 @@ defmodule Commonplace.MUD.Bootstrap do
   def ensure_engine_examine_verb(store \\ CommitStoreClient) do
     with {:ok, node_ctx} <- NodeIdentity.signing_context() do
       unless source_doc_present?(@engine_examine_verb_uuid, store) do
-        seed_source_doc(@engine_examine_verb_uuid, @engine_examine_verb_source, node_ctx, store, "_engine_examine.ex")
+        seed_source_doc(
+          @engine_examine_verb_uuid,
+          @engine_examine_verb_source,
+          node_ctx,
+          store,
+          "_engine_examine.ex"
+        )
       end
 
       manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
-      Application.put_env(:commonplace, :mud_engine_manifest, Map.put(manifest, :examine, @engine_examine_verb_uuid))
+
+      Application.put_env(
+        :commonplace,
+        :mud_engine_manifest,
+        Map.put(manifest, :examine, @engine_examine_verb_uuid)
+      )
     end
 
     :ok
@@ -623,11 +748,22 @@ defmodule Commonplace.MUD.Bootstrap do
   def ensure_engine_search_verb(store \\ CommitStoreClient) do
     with {:ok, node_ctx} <- NodeIdentity.signing_context() do
       unless source_doc_present?(@engine_search_verb_uuid, store) do
-        seed_source_doc(@engine_search_verb_uuid, @engine_search_verb_source, node_ctx, store, "_engine_search.ex")
+        seed_source_doc(
+          @engine_search_verb_uuid,
+          @engine_search_verb_source,
+          node_ctx,
+          store,
+          "_engine_search.ex"
+        )
       end
 
       manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
-      Application.put_env(:commonplace, :mud_engine_manifest, Map.put(manifest, :search, @engine_search_verb_uuid))
+
+      Application.put_env(
+        :commonplace,
+        :mud_engine_manifest,
+        Map.put(manifest, :search, @engine_search_verb_uuid)
+      )
     end
 
     :ok
@@ -644,11 +780,22 @@ defmodule Commonplace.MUD.Bootstrap do
   def ensure_engine_read_verb(store \\ CommitStoreClient) do
     with {:ok, node_ctx} <- NodeIdentity.signing_context() do
       unless source_doc_present?(@engine_read_verb_uuid, store) do
-        seed_source_doc(@engine_read_verb_uuid, @engine_read_verb_source, node_ctx, store, "_engine_read.ex")
+        seed_source_doc(
+          @engine_read_verb_uuid,
+          @engine_read_verb_source,
+          node_ctx,
+          store,
+          "_engine_read.ex"
+        )
       end
 
       manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
-      Application.put_env(:commonplace, :mud_engine_manifest, Map.put(manifest, :read, @engine_read_verb_uuid))
+
+      Application.put_env(
+        :commonplace,
+        :mud_engine_manifest,
+        Map.put(manifest, :read, @engine_read_verb_uuid)
+      )
     end
 
     :ok
@@ -665,11 +812,22 @@ defmodule Commonplace.MUD.Bootstrap do
   def ensure_engine_who_verb(store \\ CommitStoreClient) do
     with {:ok, node_ctx} <- NodeIdentity.signing_context() do
       unless source_doc_present?(@engine_who_verb_uuid, store) do
-        seed_source_doc(@engine_who_verb_uuid, @engine_who_verb_source, node_ctx, store, "_engine_who.ex")
+        seed_source_doc(
+          @engine_who_verb_uuid,
+          @engine_who_verb_source,
+          node_ctx,
+          store,
+          "_engine_who.ex"
+        )
       end
 
       manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
-      Application.put_env(:commonplace, :mud_engine_manifest, Map.put(manifest, :who, @engine_who_verb_uuid))
+
+      Application.put_env(
+        :commonplace,
+        :mud_engine_manifest,
+        Map.put(manifest, :who, @engine_who_verb_uuid)
+      )
     end
 
     :ok
@@ -686,11 +844,22 @@ defmodule Commonplace.MUD.Bootstrap do
   def ensure_engine_recipes_verb(store \\ CommitStoreClient) do
     with {:ok, node_ctx} <- NodeIdentity.signing_context() do
       unless source_doc_present?(@engine_recipes_verb_uuid, store) do
-        seed_source_doc(@engine_recipes_verb_uuid, @engine_recipes_verb_source, node_ctx, store, "_engine_recipes.ex")
+        seed_source_doc(
+          @engine_recipes_verb_uuid,
+          @engine_recipes_verb_source,
+          node_ctx,
+          store,
+          "_engine_recipes.ex"
+        )
       end
 
       manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
-      Application.put_env(:commonplace, :mud_engine_manifest, Map.put(manifest, :recipes, @engine_recipes_verb_uuid))
+
+      Application.put_env(
+        :commonplace,
+        :mud_engine_manifest,
+        Map.put(manifest, :recipes, @engine_recipes_verb_uuid)
+      )
     end
 
     :ok
@@ -707,11 +876,22 @@ defmodule Commonplace.MUD.Bootstrap do
   def ensure_engine_use_verb(store \\ CommitStoreClient) do
     with {:ok, node_ctx} <- NodeIdentity.signing_context() do
       unless source_doc_present?(@engine_use_verb_uuid, store) do
-        seed_source_doc(@engine_use_verb_uuid, @engine_use_verb_source, node_ctx, store, "_engine_use.ex")
+        seed_source_doc(
+          @engine_use_verb_uuid,
+          @engine_use_verb_source,
+          node_ctx,
+          store,
+          "_engine_use.ex"
+        )
       end
 
       manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
-      Application.put_env(:commonplace, :mud_engine_manifest, Map.put(manifest, :use, @engine_use_verb_uuid))
+
+      Application.put_env(
+        :commonplace,
+        :mud_engine_manifest,
+        Map.put(manifest, :use, @engine_use_verb_uuid)
+      )
     end
 
     :ok
@@ -729,11 +909,22 @@ defmodule Commonplace.MUD.Bootstrap do
   def ensure_engine_go_verb(store \\ CommitStoreClient) do
     with {:ok, node_ctx} <- NodeIdentity.signing_context() do
       unless source_doc_present?(@engine_go_verb_uuid, store) do
-        seed_source_doc(@engine_go_verb_uuid, @engine_go_verb_source, node_ctx, store, "_engine_go.ex")
+        seed_source_doc(
+          @engine_go_verb_uuid,
+          @engine_go_verb_source,
+          node_ctx,
+          store,
+          "_engine_go.ex"
+        )
       end
 
       manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
-      Application.put_env(:commonplace, :mud_engine_manifest, Map.put(manifest, :go, @engine_go_verb_uuid))
+
+      Application.put_env(
+        :commonplace,
+        :mud_engine_manifest,
+        Map.put(manifest, :go, @engine_go_verb_uuid)
+      )
     end
 
     :ok
@@ -751,11 +942,22 @@ defmodule Commonplace.MUD.Bootstrap do
   def ensure_engine_home_verb(store \\ CommitStoreClient) do
     with {:ok, node_ctx} <- NodeIdentity.signing_context() do
       unless source_doc_present?(@engine_home_verb_uuid, store) do
-        seed_source_doc(@engine_home_verb_uuid, @engine_home_verb_source, node_ctx, store, "_engine_home.ex")
+        seed_source_doc(
+          @engine_home_verb_uuid,
+          @engine_home_verb_source,
+          node_ctx,
+          store,
+          "_engine_home.ex"
+        )
       end
 
       manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
-      Application.put_env(:commonplace, :mud_engine_manifest, Map.put(manifest, :home, @engine_home_verb_uuid))
+
+      Application.put_env(
+        :commonplace,
+        :mud_engine_manifest,
+        Map.put(manifest, :home, @engine_home_verb_uuid)
+      )
     end
 
     :ok
@@ -779,11 +981,22 @@ defmodule Commonplace.MUD.Bootstrap do
   def ensure_mud_help(store \\ CommitStoreClient) do
     with {:ok, node_ctx} <- NodeIdentity.signing_context() do
       unless source_doc_present?(@mud_help_uuid, store) do
-        seed_source_doc(@mud_help_uuid, Commonplace.MUD.HelpDoc.floor(), node_ctx, store, "_mud_help.txt")
+        seed_source_doc(
+          @mud_help_uuid,
+          Commonplace.MUD.HelpDoc.floor(),
+          node_ctx,
+          store,
+          "_mud_help.txt"
+        )
       end
 
       manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
-      Application.put_env(:commonplace, :mud_engine_manifest, Map.put(manifest, :help, @mud_help_uuid))
+
+      Application.put_env(
+        :commonplace,
+        :mud_engine_manifest,
+        Map.put(manifest, :help, @mud_help_uuid)
+      )
     end
 
     :ok
@@ -805,11 +1018,22 @@ defmodule Commonplace.MUD.Bootstrap do
   def ensure_home_template(store \\ CommitStoreClient) do
     with {:ok, node_ctx} <- NodeIdentity.signing_context() do
       unless source_doc_present?(@home_template_uuid, store) do
-        seed_source_doc(@home_template_uuid, Commonplace.MUD.HomeTemplate.floor_json(), node_ctx, store, "_home_template.json")
+        seed_source_doc(
+          @home_template_uuid,
+          Commonplace.MUD.HomeTemplate.floor_json(),
+          node_ctx,
+          store,
+          "_home_template.json"
+        )
       end
 
       manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
-      Application.put_env(:commonplace, :mud_engine_manifest, Map.put(manifest, :home_template, @home_template_uuid))
+
+      Application.put_env(
+        :commonplace,
+        :mud_engine_manifest,
+        Map.put(manifest, :home_template, @home_template_uuid)
+      )
     end
 
     :ok
@@ -827,11 +1051,22 @@ defmodule Commonplace.MUD.Bootstrap do
   def ensure_world_meta(store \\ CommitStoreClient) do
     with {:ok, node_ctx} <- NodeIdentity.signing_context() do
       unless source_doc_present?(@world_meta_uuid, store) do
-        seed_source_doc(@world_meta_uuid, Commonplace.MUD.WorldMeta.floor_json(), node_ctx, store, "_world_meta.json")
+        seed_source_doc(
+          @world_meta_uuid,
+          Commonplace.MUD.WorldMeta.floor_json(),
+          node_ctx,
+          store,
+          "_world_meta.json"
+        )
       end
 
       manifest = Application.get_env(:commonplace, :mud_engine_manifest, %{})
-      Application.put_env(:commonplace, :mud_engine_manifest, Map.put(manifest, :world_meta, @world_meta_uuid))
+
+      Application.put_env(
+        :commonplace,
+        :mud_engine_manifest,
+        Map.put(manifest, :world_meta, @world_meta_uuid)
+      )
     end
 
     :ok

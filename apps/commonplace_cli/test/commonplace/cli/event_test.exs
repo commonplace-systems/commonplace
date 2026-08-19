@@ -16,8 +16,21 @@ defmodule Commonplace.CLI.EventTest do
   test "RedLog read returns appended events", %{store: store} do
     uuid = UUID.uuid4()
     log = RedLog.new(uuid, store)
-    log = RedLog.append_raw(log, %{"type" => "stdout", "line" => "hello", "timestamp" => "2026-01-01T00:00:00Z"})
-    log = RedLog.append_raw(log, %{"type" => "stderr", "line" => "error!", "timestamp" => "2026-01-01T00:00:01Z"})
+
+    log =
+      RedLog.append_raw(log, %{
+        "type" => "stdout",
+        "line" => "hello",
+        "timestamp" => "2026-01-01T00:00:00Z"
+      })
+
+    log =
+      RedLog.append_raw(log, %{
+        "type" => "stderr",
+        "line" => "error!",
+        "timestamp" => "2026-01-01T00:00:01Z"
+      })
+
     RedLog.commit(log)
 
     # Reload and read
@@ -40,13 +53,14 @@ defmodule Commonplace.CLI.EventTest do
     uuid = UUID.uuid4()
     log = RedLog.new(uuid, store)
 
-    log = Enum.reduce(1..10, log, fn i, acc ->
-      RedLog.append_raw(acc, %{
-        "type" => "stdout",
-        "line" => "line #{i}",
-        "timestamp" => "2026-01-01T00:00:#{String.pad_leading(to_string(i), 2, "0")}Z"
-      })
-    end)
+    log =
+      Enum.reduce(1..10, log, fn i, acc ->
+        RedLog.append_raw(acc, %{
+          "type" => "stdout",
+          "line" => "line #{i}",
+          "timestamp" => "2026-01-01T00:00:#{String.pad_leading(to_string(i), 2, "0")}Z"
+        })
+      end)
 
     RedLog.commit(log)
 
@@ -63,8 +77,21 @@ defmodule Commonplace.CLI.EventTest do
   test "format_event handles stdout and stderr", %{store: store} do
     uuid = UUID.uuid4()
     log = RedLog.new(uuid, store)
-    log = RedLog.append_raw(log, %{"type" => "stdout", "line" => "ok", "timestamp" => "2026-01-01T12:30:45.123Z"})
-    log = RedLog.append_raw(log, %{"type" => "stderr", "line" => "fail", "timestamp" => "2026-01-01T12:30:46.456Z"})
+
+    log =
+      RedLog.append_raw(log, %{
+        "type" => "stdout",
+        "line" => "ok",
+        "timestamp" => "2026-01-01T12:30:45.123Z"
+      })
+
+    log =
+      RedLog.append_raw(log, %{
+        "type" => "stderr",
+        "line" => "fail",
+        "timestamp" => "2026-01-01T12:30:46.456Z"
+      })
+
     RedLog.commit(log)
 
     loaded = RedLog.load(uuid, store)

@@ -117,53 +117,120 @@ defmodule Commonplace.CLI do
 
   defp run_command(cmd, data_dir, relative_path, rest) do
     case cmd do
-      "ls" -> Commonplace.CLI.Ls.run(data_dir, relative_path, rest)
-      "cat" -> Commonplace.CLI.Cat.run(data_dir, relative_path, rest)
-      "import" -> Commonplace.CLI.Import.run(data_dir, rest)
-      "export" -> Commonplace.CLI.Export.run(data_dir, relative_path, rest)
-      "sync" -> Commonplace.CLI.Sync.run(data_dir, relative_path, rest)
-      "branch" -> Commonplace.CLI.Branch.run(data_dir, relative_path, rest)
-      "checkout" -> Commonplace.CLI.Checkout.run(data_dir, relative_path, rest)
-      "checkouts" -> Commonplace.CLI.Checkouts.run(data_dir, relative_path, rest)
-      "reroot" -> Commonplace.CLI.Reroot.run(data_dir, relative_path, rest)
-      "who" -> Commonplace.CLI.Who.run(data_dir, relative_path, rest)
-      "ln" -> Commonplace.CLI.Ln.run(data_dir, relative_path, rest)
-      "log" -> Commonplace.CLI.Log.run(data_dir, relative_path, rest)
-      "replay" -> Commonplace.CLI.Replay.run(data_dir, relative_path, rest)
-      "serve" -> Commonplace.CLI.Serve.run(data_dir, relative_path, rest)
-      "ps" -> Commonplace.CLI.Ps.run(data_dir, relative_path, rest)
+      "ls" ->
+        Commonplace.CLI.Ls.run(data_dir, relative_path, rest)
+
+      "cat" ->
+        Commonplace.CLI.Cat.run(data_dir, relative_path, rest)
+
+      "import" ->
+        Commonplace.CLI.Import.run(data_dir, rest)
+
+      "export" ->
+        Commonplace.CLI.Export.run(data_dir, relative_path, rest)
+
+      "sync" ->
+        Commonplace.CLI.Sync.run(data_dir, relative_path, rest)
+
+      "branch" ->
+        Commonplace.CLI.Branch.run(data_dir, relative_path, rest)
+
+      "checkout" ->
+        Commonplace.CLI.Checkout.run(data_dir, relative_path, rest)
+
+      "checkouts" ->
+        Commonplace.CLI.Checkouts.run(data_dir, relative_path, rest)
+
+      "reroot" ->
+        Commonplace.CLI.Reroot.run(data_dir, relative_path, rest)
+
+      "who" ->
+        Commonplace.CLI.Who.run(data_dir, relative_path, rest)
+
+      "ln" ->
+        Commonplace.CLI.Ln.run(data_dir, relative_path, rest)
+
+      "log" ->
+        Commonplace.CLI.Log.run(data_dir, relative_path, rest)
+
+      "replay" ->
+        Commonplace.CLI.Replay.run(data_dir, relative_path, rest)
+
+      "serve" ->
+        Commonplace.CLI.Serve.run(data_dir, relative_path, rest)
+
+      "ps" ->
+        Commonplace.CLI.Ps.run(data_dir, relative_path, rest)
+
       "process" ->
         case Commonplace.CLI.Process.run(data_dir, relative_path, rest) do
           0 -> :ok
           code -> System.halt(code)
         end
-      "uuid" -> Commonplace.CLI.Uuid.run(data_dir, relative_path, rest)
-      "inspect" -> Commonplace.CLI.InspectCmd.run(data_dir, relative_path, rest)
-      "event" -> Commonplace.CLI.Event.run(data_dir, relative_path, rest)
-      "gc" -> Commonplace.CLI.GC.run(data_dir, relative_path, rest)
-      "salvage" -> Commonplace.CLI.Salvage.run(data_dir, relative_path, rest)
-      "fork" -> Commonplace.CLI.Fork.run(data_dir, relative_path, rest)
-      "merge" -> Commonplace.CLI.Merge.run(data_dir, relative_path, rest)
-      "signal" -> Commonplace.CLI.Signal.run(data_dir, relative_path, rest)
-      "secret" -> Commonplace.CLI.Secret.run(data_dir, relative_path, rest)
-      "keygen" -> Commonplace.CLI.Keygen.run(data_dir, relative_path, rest)
-      "attest" -> Commonplace.CLI.Attest.run(data_dir, relative_path, rest)
-      "cap" -> Commonplace.CLI.Cap.run(data_dir, relative_path, rest)
-      "cert-mint" -> Commonplace.CLI.CertMint.run(data_dir, relative_path, rest)
-      "checkpoint" -> Commonplace.CLI.Checkpoint.run(data_dir, relative_path, rest)
-      "reflog" -> Commonplace.CLI.Reflog.run(data_dir, relative_path, rest)
-      "snapshot" -> Commonplace.CLI.Snapshot.run(data_dir, relative_path, rest)
-      "mud" -> Commonplace.CLI.Mud.run(data_dir, relative_path, rest)
+
+      "uuid" ->
+        Commonplace.CLI.Uuid.run(data_dir, relative_path, rest)
+
+      "inspect" ->
+        Commonplace.CLI.InspectCmd.run(data_dir, relative_path, rest)
+
+      "event" ->
+        Commonplace.CLI.Event.run(data_dir, relative_path, rest)
+
+      "gc" ->
+        Commonplace.CLI.GC.run(data_dir, relative_path, rest)
+
+      "salvage" ->
+        Commonplace.CLI.Salvage.run(data_dir, relative_path, rest)
+
+      "fork" ->
+        Commonplace.CLI.Fork.run(data_dir, relative_path, rest)
+
+      "merge" ->
+        Commonplace.CLI.Merge.run(data_dir, relative_path, rest)
+
+      "signal" ->
+        Commonplace.CLI.Signal.run(data_dir, relative_path, rest)
+
+      "secret" ->
+        Commonplace.CLI.Secret.run(data_dir, relative_path, rest)
+
+      "keygen" ->
+        Commonplace.CLI.Keygen.run(data_dir, relative_path, rest)
+
+      "attest" ->
+        Commonplace.CLI.Attest.run(data_dir, relative_path, rest)
+
+      "cap" ->
+        Commonplace.CLI.Cap.run(data_dir, relative_path, rest)
+
+      "cert-mint" ->
+        Commonplace.CLI.CertMint.run(data_dir, relative_path, rest)
+
+      "checkpoint" ->
+        Commonplace.CLI.Checkpoint.run(data_dir, relative_path, rest)
+
+      "reflog" ->
+        Commonplace.CLI.Reflog.run(data_dir, relative_path, rest)
+
+      "snapshot" ->
+        Commonplace.CLI.Snapshot.run(data_dir, relative_path, rest)
+
+      "mud" ->
+        Commonplace.CLI.Mud.run(data_dir, relative_path, rest)
+
       "bd" ->
         case Commonplace.CLI.Bd.run(data_dir, relative_path, rest) do
           {:error, _refusal} -> System.halt(1)
           result -> result
         end
+
       "proto-chit" ->
         case Commonplace.CLI.ProtoChit.run(data_dir, relative_path, rest) do
           0 -> :ok
           code -> System.halt(code)
         end
+
       _ ->
         IO.puts(:stderr, "Unknown command: #{cmd}")
         IO.puts(:stderr, "Run 'commonplace --help' for usage.")

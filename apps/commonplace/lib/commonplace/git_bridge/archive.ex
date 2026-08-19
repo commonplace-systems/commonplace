@@ -102,7 +102,9 @@ defmodule Commonplace.GitBridge.Archive do
   Returns `%{archived_count: non_neg_integer()}` — the number of row
   files newly written this call (already-existing rows don't count).
   """
-  @spec archive(GenServer.server(), String.t(), Enumerable.t()) :: %{archived_count: non_neg_integer()}
+  @spec archive(GenServer.server(), String.t(), Enumerable.t()) :: %{
+          archived_count: non_neg_integer()
+        }
   def archive(store, repo_dir, doc_uuids) do
     watermarks = read_watermarks(repo_dir)
 

@@ -106,14 +106,20 @@ defmodule CommonplaceWebWeb.OutlineLive do
   def handle_event("indent", %{"id" => id}, socket) do
     write_gate(socket, fn ->
       {:noreply,
-       apply_or_flash(socket, Outline.indent(store(), socket.assigns.uuid, id, mutate_opts(socket)))}
+       apply_or_flash(
+         socket,
+         Outline.indent(store(), socket.assigns.uuid, id, mutate_opts(socket))
+       )}
     end)
   end
 
   def handle_event("outdent", %{"id" => id}, socket) do
     write_gate(socket, fn ->
       {:noreply,
-       apply_or_flash(socket, Outline.outdent(store(), socket.assigns.uuid, id, mutate_opts(socket)))}
+       apply_or_flash(
+         socket,
+         Outline.outdent(store(), socket.assigns.uuid, id, mutate_opts(socket))
+       )}
     end)
   end
 
@@ -141,7 +147,13 @@ defmodule CommonplaceWebWeb.OutlineLive do
     write_gate(socket, fn ->
       item = Enum.find(Outline.items(store(), socket.assigns.uuid), &(&1.id == id))
 
-      case Outline.set_collapsed(store(), socket.assigns.uuid, id, not item.collapsed, mutate_opts(socket)) do
+      case Outline.set_collapsed(
+             store(),
+             socket.assigns.uuid,
+             id,
+             not item.collapsed,
+             mutate_opts(socket)
+           ) do
         :ok -> {:noreply, reload(socket)}
         {:error, _reason} -> {:noreply, permission_denied_flash(socket)}
       end
@@ -164,10 +176,18 @@ defmodule CommonplaceWebWeb.OutlineLive do
         item = Enum.find(Outline.items(store(), socket.assigns.uuid), &(&1.id == id))
         handle_event("new_item", %{"after" => id, "parent" => item.parent}, socket)
 
-      {"Tab", true, _} -> handle_event("outdent", %{"id" => id}, socket)
-      {"Tab", _, _} -> handle_event("indent", %{"id" => id}, socket)
-      {"ArrowUp", _, true} -> handle_event("move_up", %{"id" => id}, socket)
-      {"ArrowDown", _, true} -> handle_event("move_down", %{"id" => id}, socket)
+      {"Tab", true, _} ->
+        handle_event("outdent", %{"id" => id}, socket)
+
+      {"Tab", _, _} ->
+        handle_event("indent", %{"id" => id}, socket)
+
+      {"ArrowUp", _, true} ->
+        handle_event("move_up", %{"id" => id}, socket)
+
+      {"ArrowDown", _, true} ->
+        handle_event("move_down", %{"id" => id}, socket)
+
       {".", _, _} when is_map_key(params, "ctrlKey") ->
         handle_event("toggle_collapse", %{"id" => id}, socket)
 
@@ -206,7 +226,9 @@ defmodule CommonplaceWebWeb.OutlineLive do
   # limiter's sliding window once the connection goes quiet.
   defp write_gate(socket, fun) do
     case WriteRateLimit.check_and_record(self()) do
-      :ok -> fun.()
+      :ok ->
+        fun.()
+
       {:error, :rate_limited, _retry_after_ms} ->
         {:noreply, put_flash(socket, :error, "Too many edits — slow down")}
     end
@@ -267,7 +289,9 @@ defmodule CommonplaceWebWeb.OutlineLive do
           phx-click="toggle_collapse"
           phx-value-id={@node.item.id}
           class="w-4 text-xs opacity-60"
-        >{if @node.item.collapsed, do: "▸", else: "▾"}</button>
+        >
+          {if @node.item.collapsed, do: "▸", else: "▾"}
+        </button>
         <span :if={@node.children == []} class="w-4 text-xs opacity-40">•</span>
         <input
           class="bullet-input bg-transparent flex-1 outline-none"

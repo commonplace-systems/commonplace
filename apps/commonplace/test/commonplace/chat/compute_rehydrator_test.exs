@@ -113,7 +113,7 @@ defmodule Commonplace.Chat.ComputeRehydratorTest do
 
   defp wait_until(fun, attempts \\ 50) do
     Enum.reduce_while(1..attempts, false, fn _, _ ->
-      if fun.(), do: {:halt, true}, else: (Process.sleep(20) && {:cont, false})
+      if fun.(), do: {:halt, true}, else: Process.sleep(20) && {:cont, false}
     end)
     |> case do
       true -> :ok

@@ -14,7 +14,12 @@ defmodule Commonplace.MUD.OutputTest do
   # non-author-suppress split on the `:verb_diagnostic` player tell.
   defp fresh_identity(tag) do
     {pub, priv} = Signing.generate_keypair()
-    %SigningContext{identity_uuid: "#{tag}-#{:rand.uniform(999_999_999_999)}", private_key: priv, public_key: pub}
+
+    %SigningContext{
+      identity_uuid: "#{tag}-#{:rand.uniform(999_999_999_999)}",
+      private_key: priv,
+      public_key: pub
+    }
   end
 
   setup do
@@ -52,7 +57,15 @@ defmodule Commonplace.MUD.OutputTest do
         sweep_interval: 60_000
       )
 
-    on_exit(fn -> if Process.alive?(bursar_pid), do: (try do GenServer.stop(bursar_pid) catch (:exit, _ -> :ok) end) end)
+    on_exit(fn ->
+      if Process.alive?(bursar_pid),
+        do:
+          (try do
+             GenServer.stop(bursar_pid)
+           catch
+             (:exit, _ -> :ok)
+           end)
+    end)
 
     root_uuid = UUID.uuid4()
     update = Encoding.encode_update(Schema.new_schema())
@@ -170,7 +183,8 @@ defmodule Commonplace.MUD.OutputTest do
   # CX-ydmv: emote text is author-written THIRD-person; the actor's own
   # self-echo must render "<name> <text>" (NOT "You <text>", which would be the
   # grammatically-broken "You sets the jar down"), matching what the room sees.
-  test "emote self-echo shows the actor's NAME, not 'You' (third-person text stays grammatical)", ctx do
+  test "emote self-echo shows the actor's NAME, not 'You' (third-person text stays grammatical)",
+       ctx do
     alice = start_player("alice", ctx)
     bob = start_player("bob", ctx)
     drain("alice")
@@ -310,11 +324,15 @@ defmodule Commonplace.MUD.OutputTest do
 
     alice_lines = drain("alice")
     crash_count_alice = Enum.count(alice_lines, fn l -> l =~ "boom" end)
-    assert crash_count_alice == 1, "Actor saw #{crash_count_alice} crash messages, expected 1: #{inspect(alice_lines)}"
+
+    assert crash_count_alice == 1,
+           "Actor saw #{crash_count_alice} crash messages, expected 1: #{inspect(alice_lines)}"
 
     bob_lines = drain("bob")
     crash_count_bob = Enum.count(bob_lines, fn l -> l =~ "boom" end)
-    assert crash_count_bob == 1, "Bystander saw #{crash_count_bob} crash messages, expected 1: #{inspect(bob_lines)}"
+
+    assert crash_count_bob == 1,
+           "Bystander saw #{crash_count_bob} crash messages, expected 1: #{inspect(bob_lines)}"
 
     PlayerSession.stop(alice)
     PlayerSession.stop(bob)
@@ -430,7 +448,8 @@ defmodule Commonplace.MUD.OutputTest do
   # visible name. The instance key stays "<creation-name>-<uuid>.obj", so without
   # matching the live meta name a renamed object was addressable ONLY by a name
   # that appears nowhere — indistinguishable from debris.
-  test "a renamed object resolves by its NEW visible name, not just the stale creation key", ctx do
+  test "a renamed object resolves by its NEW visible name, not just the stale creation key",
+       ctx do
     alice = start_player("alice", ctx)
     drain("alice")
     send_input(alice, "east")
@@ -442,7 +461,7 @@ defmodule Commonplace.MUD.OutputTest do
     drain("alice")
 
     send_input(alice, "look")
-    assert (drain("alice") |> Enum.join("\n")) =~ "gizmo"
+    assert drain("alice") |> Enum.join("\n") =~ "gizmo"
 
     # The visible name now resolves (the bug: "You don't see gizmo here").
     send_input(alice, "take gizmo")
@@ -462,7 +481,9 @@ defmodule Commonplace.MUD.OutputTest do
     defp box_dir(ctx) do
       # CX-3hii — @create now keys objects "box-<short-uuid>.obj" (instance-
       # unique), so resolve by display name rather than an exact "box.obj".
-      {:ok, entry} = Commonplace.MUD.World.find_entry_by_name(clearing_uuid(ctx), "box", ctx.store)
+      {:ok, entry} =
+        Commonplace.MUD.World.find_entry_by_name(clearing_uuid(ctx), "box", ctx.store)
+
       entry.node_id
     end
 
@@ -589,7 +610,9 @@ defmodule Commonplace.MUD.OutputTest do
       send_input(alice, "put coin in Warded Vault")
       drain("alice")
 
-      {:ok, entry} = Commonplace.MUD.World.find_entry_by_name(clearing_uuid(ctx), "vault", ctx.store)
+      {:ok, entry} =
+        Commonplace.MUD.World.find_entry_by_name(clearing_uuid(ctx), "vault", ctx.store)
+
       dir = entry.node_id
 
       :ok =
@@ -650,7 +673,9 @@ defmodule Commonplace.MUD.OutputTest do
       send_input(alice, "@create object gizmo")
       drain("alice")
 
-      {:ok, entry} = Commonplace.MUD.World.find_entry_by_name(clearing_uuid(ctx), "gizmo", ctx.store)
+      {:ok, entry} =
+        Commonplace.MUD.World.find_entry_by_name(clearing_uuid(ctx), "gizmo", ctx.store)
+
       dir = entry.node_id
 
       # The verb's TAIL expression is a put_state with a >1024-byte value —
@@ -690,7 +715,9 @@ defmodule Commonplace.MUD.OutputTest do
       send_input(alice, "@create object gadget")
       drain("alice")
 
-      {:ok, entry} = Commonplace.MUD.World.find_entry_by_name(clearing_uuid(ctx), "gadget", ctx.store)
+      {:ok, entry} =
+        Commonplace.MUD.World.find_entry_by_name(clearing_uuid(ctx), "gadget", ctx.store)
+
       dir = entry.node_id
 
       # "first" is written, THEN a say, THEN "second" — so "first" is NOT the
@@ -710,7 +737,10 @@ defmodule Commonplace.MUD.OutputTest do
 
       {:ok, meta} = Commonplace.MUD.World.get_meta_map(dir, Schemas.object_filename(), ctx.store)
       state = meta["state"] || %{}
-      assert state["first"] == "A", "NON-last put_state was discarded — 'must be last' model would be REAL"
+
+      assert state["first"] == "A",
+             "NON-last put_state was discarded — 'must be last' model would be REAL"
+
       assert state["second"] == "B"
 
       PlayerSession.stop(alice)
@@ -746,7 +776,8 @@ defmodule Commonplace.MUD.OutputTest do
     # TAKER holding a matching item (per-player), airtight against the greedy
     # take-from path (the "lock is theater" fix). CX-hbbi — a sealed container
     # hides contents on plain `look`.
-    test "CX-uwam/CX-hbbi: lock_key gates take-from per-player; sealed container hides contents on look", ctx do
+    test "CX-uwam/CX-hbbi: lock_key gates take-from per-player; sealed container hides contents on look",
+         ctx do
       alice = start_player("alice", ctx)
       drain("alice")
       send_input(alice, "east")
@@ -760,7 +791,8 @@ defmodule Commonplace.MUD.OutputTest do
       drain("alice")
 
       # Seal the vault with lock_key = "brass key" via a verb on it.
-      {:ok, vault_entry} = Commonplace.MUD.World.find_entry_by_name(clearing_uuid(ctx), "vault", ctx.store)
+      {:ok, vault_entry} =
+        Commonplace.MUD.World.find_entry_by_name(clearing_uuid(ctx), "vault", ctx.store)
 
       :ok =
         VerbSource.save_safe_verb(
@@ -838,7 +870,8 @@ defmodule Commonplace.MUD.OutputTest do
       PlayerSession.stop(alice)
     end
 
-    test "CX-a3rq/CX-3x5a: a room verb calling an object-only effect surfaces a DIM :verb_diagnostic to the actor", ctx do
+    test "CX-a3rq/CX-3x5a: a room verb calling an object-only effect surfaces a DIM :verb_diagnostic to the actor",
+         ctx do
       # CX-3x5a output-hygiene: author-scoped player tell, so alice must be
       # the verb's author here too (see fresh_identity/1 note above).
       alice_ctx = fresh_identity("alice")
@@ -881,7 +914,8 @@ defmodule Commonplace.MUD.OutputTest do
   # read returning nil/false is normal control flow, NOT a drop, so it emits
   # NOTHING.
   describe "CX-3x5a: silent-drop author diagnostics" do
-    test "a verb that IGNORES a failing put_state (non-tail) then says → invoker sees the dim diagnostic", ctx do
+    test "a verb that IGNORES a failing put_state (non-tail) then says → invoker sees the dim diagnostic",
+         ctx do
       # CX-3x5a output-hygiene: author-scoped player tell, so alice must be
       # the verb's author here too (see fresh_identity/1 note above).
       alice_ctx = fresh_identity("alice")
@@ -893,7 +927,9 @@ defmodule Commonplace.MUD.OutputTest do
       send_input(alice, "@create object widget")
       drain("alice")
 
-      {:ok, entry} = Commonplace.MUD.World.find_entry_by_name(clearing_uuid(ctx), "widget", ctx.store)
+      {:ok, entry} =
+        Commonplace.MUD.World.find_entry_by_name(clearing_uuid(ctx), "widget", ctx.store)
+
       dir = entry.node_id
 
       # The put_state over-budget error is DROPPED (its return ignored); the
@@ -925,7 +961,8 @@ defmodule Commonplace.MUD.OutputTest do
       PlayerSession.stop(alice)
     end
 
-    test "N3: a verb whose get_state is nil / actor_carries? is false emits NO diagnostic (normal control flow)", ctx do
+    test "N3: a verb whose get_state is nil / actor_carries? is false emits NO diagnostic (normal control flow)",
+         ctx do
       alice = start_player("alice", ctx)
       drain("alice")
       send_input(alice, "east")
@@ -934,7 +971,9 @@ defmodule Commonplace.MUD.OutputTest do
       send_input(alice, "@create object doohickey")
       drain("alice")
 
-      {:ok, entry} = Commonplace.MUD.World.find_entry_by_name(clearing_uuid(ctx), "doohickey", ctx.store)
+      {:ok, entry} =
+        Commonplace.MUD.World.find_entry_by_name(clearing_uuid(ctx), "doohickey", ctx.store)
+
       dir = entry.node_id
 
       # get_state on a missing key returns nil; actor_carries? on a not-held
@@ -1007,7 +1046,8 @@ defmodule Commonplace.MUD.OutputTest do
       PlayerSession.stop(alice)
     end
 
-    test "unresolvable verb author (unsigned source doc) → no player tell, but the drop IS logged (fail-closed)", ctx do
+    test "unresolvable verb author (unsigned source doc) → no player tell, but the drop IS logged (fail-closed)",
+         ctx do
       alice_ctx = fresh_identity("alice")
       alice = start_player("alice", ctx, self(), signing_context: alice_ctx)
       drain("alice")
@@ -1045,7 +1085,6 @@ defmodule Commonplace.MUD.OutputTest do
 
       PlayerSession.stop(alice)
     end
-
   end
 
   describe "CX-avgu: @destroy builder cleanup" do
@@ -1057,12 +1096,16 @@ defmodule Commonplace.MUD.OutputTest do
 
       send_input(alice, "@create object liratest")
       drain("alice")
-      assert {:ok, _} = Commonplace.MUD.World.find_entry_by_name(clearing_uuid(ctx), "liratest", ctx.store)
+
+      assert {:ok, _} =
+               Commonplace.MUD.World.find_entry_by_name(clearing_uuid(ctx), "liratest", ctx.store)
 
       send_input(alice, "@destroy liratest")
       out = drain("alice") |> Enum.join("\n")
       assert out =~ "You destroy the liratest"
-      assert :error = Commonplace.MUD.World.find_entry_by_name(clearing_uuid(ctx), "liratest", ctx.store)
+
+      assert :error =
+               Commonplace.MUD.World.find_entry_by_name(clearing_uuid(ctx), "liratest", ctx.store)
 
       PlayerSession.stop(alice)
     end
@@ -1097,7 +1140,8 @@ defmodule Commonplace.MUD.OutputTest do
       refused = drain("alice") |> Enum.join("\n")
       assert refused =~ "isn't empty"
       # crate still there.
-      assert {:ok, _} = Commonplace.MUD.World.find_entry_by_name(clearing_uuid(ctx), "crate", ctx.store)
+      assert {:ok, _} =
+               Commonplace.MUD.World.find_entry_by_name(clearing_uuid(ctx), "crate", ctx.store)
 
       # empty it, then it destroys.
       send_input(alice, "get apple from crate")
@@ -1105,14 +1149,17 @@ defmodule Commonplace.MUD.OutputTest do
       send_input(alice, "@destroy crate")
       ok = drain("alice") |> Enum.join("\n")
       assert ok =~ "You destroy the crate"
-      assert :error = Commonplace.MUD.World.find_entry_by_name(clearing_uuid(ctx), "crate", ctx.store)
+
+      assert :error =
+               Commonplace.MUD.World.find_entry_by_name(clearing_uuid(ctx), "crate", ctx.store)
 
       PlayerSession.stop(alice)
     end
   end
 
   describe "CX-<notify>: private verb feedback" do
-    test "notify reaches the INVOKER as plain text, NOT the co-present player and NOT as speech", ctx do
+    test "notify reaches the INVOKER as plain text, NOT the co-present player and NOT as speech",
+         ctx do
       alice = start_player("alice", ctx)
       bob = start_player("bob", ctx)
       drain("alice")
@@ -1126,7 +1173,8 @@ defmodule Commonplace.MUD.OutputTest do
       send_input(alice, "@create object gong")
       drain("alice")
 
-      {:ok, entry} = Commonplace.MUD.World.find_entry_by_name(clearing_uuid(ctx), "gong", ctx.store)
+      {:ok, entry} =
+        Commonplace.MUD.World.find_entry_by_name(clearing_uuid(ctx), "gong", ctx.store)
 
       :ok =
         VerbSource.save_safe_verb(
@@ -1199,7 +1247,8 @@ defmodule Commonplace.MUD.OutputTest do
       PlayerSession.stop(carol)
     end
 
-    test "property 1: whispering a name not in the room returns :not_here (never a global oracle)", ctx do
+    test "property 1: whispering a name not in the room returns :not_here (never a global oracle)",
+         ctx do
       alice = start_player("alice", ctx)
       drain("alice")
       send_input(alice, "east")
@@ -1209,12 +1258,14 @@ defmodule Commonplace.MUD.OutputTest do
       facade_ctx = %{current_room_uuid: alice_state.current_room_uuid, player_name: "alice"}
       facade = Commonplace.MUD.World.Facade.new(facade_ctx, nil, [], nil, ctx.store)
 
-      assert {:error, :not_here} = Commonplace.MUD.World.Facade.whisper(facade, "nobody", "hello?")
+      assert {:error, :not_here} =
+               Commonplace.MUD.World.Facade.whisper(facade, "nobody", "hello?")
 
       PlayerSession.stop(alice)
     end
 
-    test "property 3: per-target rate cap allows 3 whispers to one target then rate-limits the 4th", ctx do
+    test "property 3: per-target rate cap allows 3 whispers to one target then rate-limits the 4th",
+         ctx do
       alice = start_player("alice", ctx)
       bob = start_player("bob", ctx)
       drain("alice")
@@ -1233,7 +1284,8 @@ defmodule Commonplace.MUD.OutputTest do
       assert :ok = Commonplace.MUD.World.Facade.whisper(facade, "bob", "msg-2")
       assert :ok = Commonplace.MUD.World.Facade.whisper(facade, "bob", "msg-3")
 
-      assert {:error, :rate_limited} = Commonplace.MUD.World.Facade.whisper(facade, "bob", "msg-4")
+      assert {:error, :rate_limited} =
+               Commonplace.MUD.World.Facade.whisper(facade, "bob", "msg-4")
 
       Process.sleep(60)
       bob_lines = drain("bob")
@@ -1246,7 +1298,8 @@ defmodule Commonplace.MUD.OutputTest do
   end
 
   describe "CX-oh5k: move_self session sync" do
-    test "CX-oh5k: move_self in a verb moves the session room, not just presence (no ghost)", ctx do
+    test "CX-oh5k: move_self in a verb moves the session room, not just presence (no ghost)",
+         ctx do
       alice = start_player("alice", ctx)
       drain("alice")
       send_input(alice, "east")

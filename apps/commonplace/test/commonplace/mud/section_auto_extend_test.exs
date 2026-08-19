@@ -67,7 +67,14 @@ defmodule Commonplace.MUD.SectionAutoExtendTest do
         v -> Application.put_env(:commonplace, :local_write_gate, v)
       end
 
-      if Process.alive?(secrets_pid), do: (try do GenServer.stop(secrets_pid) catch (:exit, _ -> :ok) end)
+      if Process.alive?(secrets_pid),
+        do:
+          (try do
+             GenServer.stop(secrets_pid)
+           catch
+             (:exit, _ -> :ok)
+           end)
+
       File.rm_rf!(data_dir)
       File.rm_rf!(store_dir)
       File.rm_rf!(secrets_dir)
@@ -161,7 +168,9 @@ defmodule Commonplace.MUD.SectionAutoExtendTest do
       signing_context: node_ctx
     )
 
-    assert {:ok, results} = Sections.auto_extend_for_new_room(new_room, context_room, store: store)
+    assert {:ok, results} =
+             Sections.auto_extend_for_new_room(new_room, context_room, store: store)
+
     assert [{:reissued, cap_id, new_cap}] = results
     assert cap_id == root_cap.id
     assert new_cap.claim.scope == {:docs, Enum.sort([context_room, new_room])}
@@ -223,7 +232,8 @@ defmodule Commonplace.MUD.SectionAutoExtendTest do
       signing_context: node_ctx
     )
 
-    assert {:ok, results} = Sections.auto_extend_for_new_room(new_room, context_room, store: store)
+    assert {:ok, results} =
+             Sections.auto_extend_for_new_room(new_room, context_room, store: store)
 
     assert {:reissued, root_cap_id, _new_cap} =
              Enum.find(results, &match?({:reissued, _, _}, &1))
@@ -245,12 +255,20 @@ defmodule Commonplace.MUD.SectionAutoExtendTest do
              )
 
     assert %Commonplace.Store.Commit{} =
-             land_owner_commit(store, context_room, other_cap, owner.ctx, "owner's edit via other root")
+             land_owner_commit(
+               store,
+               context_room,
+               other_cap,
+               owner.ctx,
+               "owner's edit via other root"
+             )
 
     new_room = UUID.uuid4()
     Commonplace.Dataflow.PubSub.subscribe_red(new_room)
 
-    assert {:ok, results} = Sections.auto_extend_for_new_room(new_room, context_room, store: store)
+    assert {:ok, results} =
+             Sections.auto_extend_for_new_room(new_room, context_room, store: store)
+
     assert [{:skipped, cap_id, :non_node_issuer}] = results
     assert cap_id == other_cap.id
 

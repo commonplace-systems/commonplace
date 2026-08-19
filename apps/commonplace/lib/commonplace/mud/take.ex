@@ -87,11 +87,29 @@ defmodule Commonplace.MUD.Take do
         {:error, :fixed}
 
       false ->
-        do_take_dispatch(item_uuid, name, room_uuid, inventory_uuid, taker_identity, store, bursar, opts)
+        do_take_dispatch(
+          item_uuid,
+          name,
+          room_uuid,
+          inventory_uuid,
+          taker_identity,
+          store,
+          bursar,
+          opts
+        )
     end
   end
 
-  defp do_take_dispatch(item_uuid, name, room_uuid, inventory_uuid, taker_identity, store, bursar, opts) do
+  defp do_take_dispatch(
+         item_uuid,
+         name,
+         room_uuid,
+         inventory_uuid,
+         taker_identity,
+         store,
+         bursar,
+         opts
+       ) do
     # Common case — permissive mode, or an invoker who already holds write
     # authority over BOTH dirs (the item's owner). The invoker can make both
     # writes themselves, so run the move INVOKER-SIGNED, unchanged from the
@@ -104,7 +122,16 @@ defmodule Commonplace.MUD.Take do
     if invoker_can_write_all?(opts, [room_uuid, inventory_uuid], store) do
       Move.move(item_uuid, name, room_uuid, inventory_uuid, invoker_move_opts(opts, store))
     else
-      elevated_take(item_uuid, name, room_uuid, inventory_uuid, taker_identity, store, bursar, opts)
+      elevated_take(
+        item_uuid,
+        name,
+        room_uuid,
+        inventory_uuid,
+        taker_identity,
+        store,
+        bursar,
+        opts
+      )
     end
   end
 
@@ -112,12 +139,30 @@ defmodule Commonplace.MUD.Take do
   # node PUSHES the item (elevated to node authority) and hands the taker the
   # possession token. Requires a signed taker identity (always present under
   # enforce) to bind the token holder; without one, fail closed.
-  defp elevated_take(_item_uuid, _name, _room_uuid, _inventory_uuid, taker_identity, _store, _bursar, _opts)
+  defp elevated_take(
+         _item_uuid,
+         _name,
+         _room_uuid,
+         _inventory_uuid,
+         taker_identity,
+         _store,
+         _bursar,
+         _opts
+       )
        when not is_binary(taker_identity) or taker_identity == "" do
     {:error, :bad_arg}
   end
 
-  defp elevated_take(item_uuid, name, room_uuid, inventory_uuid, taker_identity, store, bursar, opts) do
+  defp elevated_take(
+         item_uuid,
+         name,
+         room_uuid,
+         inventory_uuid,
+         taker_identity,
+         store,
+         bursar,
+         opts
+       ) do
     with {:ok, node_ctx} <- NodeIdentity.signing_context(),
          {:ok, node_identity} <- NodeIdentity.identity(),
          # CX-55o3 — judge the ITEM's node-ownership by the ACTUAL ownership
@@ -134,7 +179,18 @@ defmodule Commonplace.MUD.Take do
          # does not spuriously flip — dirs are not verb/@desc re-chained).
          true <- node_owned?(inventory_uuid, node_identity, store),
          true <- takeable_from_here?(room_uuid, inventory_uuid, opts, store) do
-      do_take(item_uuid, name, room_uuid, inventory_uuid, taker_identity, node_ctx, node_identity, store, bursar, opts)
+      do_take(
+        item_uuid,
+        name,
+        room_uuid,
+        inventory_uuid,
+        taker_identity,
+        node_ctx,
+        node_identity,
+        store,
+        bursar,
+        opts
+      )
     else
       _ -> {:error, :not_takeable_here}
     end
@@ -292,7 +348,8 @@ defmodule Commonplace.MUD.Take do
   @spec curated_public_room?(String.t() | nil, String.t() | nil, GenServer.server()) :: boolean()
   def curated_public_room?(room_uuid, root, store \\ CommitStoreClient)
 
-  def curated_public_room?(room_uuid, root, store) when is_binary(room_uuid) and is_binary(root) do
+  def curated_public_room?(room_uuid, root, store)
+      when is_binary(room_uuid) and is_binary(root) do
     shared_curated_takeable?(room_uuid, root, store)
   end
 
@@ -322,10 +379,14 @@ defmodule Commonplace.MUD.Take do
 
       true ->
         seen = MapSet.put(seen, uuid)
+
         children =
           case Schemas.load_dir_schema(uuid, store) do
             {:ok, schema} ->
-              schema |> Schema.list_entries() |> Enum.filter(&(&1.type == :dir)) |> Enum.map(& &1.node_id)
+              schema
+              |> Schema.list_entries()
+              |> Enum.filter(&(&1.type == :dir))
+              |> Enum.map(& &1.node_id)
 
             _ ->
               []
@@ -355,14 +416,35 @@ defmodule Commonplace.MUD.Take do
   defp invoker_move_opts(opts, store) do
     [store: store]
     |> Keyword.merge(
-      Keyword.take(opts, [:signing_context, :cert_cids, :signer_id, :bursar, :ttl, :retries, :retry_ms])
+      Keyword.take(opts, [
+        :signing_context,
+        :cert_cids,
+        :signer_id,
+        :bursar,
+        :ttl,
+        :retries,
+        :retry_ms
+      ])
     )
   end
 
-  defp do_take(item_uuid, name, room_uuid, inventory_uuid, taker_identity, node_ctx, node_identity, store, bursar, opts) do
+  defp do_take(
+         item_uuid,
+         name,
+         room_uuid,
+         inventory_uuid,
+         taker_identity,
+         node_ctx,
+         node_identity,
+         store,
+         bursar,
+         opts
+       ) do
     with :ok <- ensure_node_holds(bursar, item_uuid, node_identity),
          {:ok, _} <-
-           BursarClient.transfer(bursar, item_uuid, node_identity, taker_identity, authenticated_as: node_identity) do
+           BursarClient.transfer(bursar, item_uuid, node_identity, taker_identity,
+             authenticated_as: node_identity
+           ) do
       elevated_opts =
         [store: store, signing_context: node_ctx, cert_cids: []]
         |> Keyword.merge(Keyword.take(opts, [:bursar, :ttl, :retries, :retry_ms]))
@@ -375,7 +457,10 @@ defmodule Commonplace.MUD.Take do
           # The move failed AFTER the token was already transferred to the
           # taker — roll back so the world stays consistent (item still in
           # room, token back to node). Best-effort: ignore the result.
-          BursarClient.transfer(bursar, item_uuid, taker_identity, node_identity, authenticated_as: taker_identity)
+          BursarClient.transfer(bursar, item_uuid, taker_identity, node_identity,
+            authenticated_as: taker_identity
+          )
+
           {:error, reason}
       end
     else
@@ -389,7 +474,9 @@ defmodule Commonplace.MUD.Take do
   defp ensure_node_holds(bursar, item_uuid, node_identity) do
     case BursarClient.query(bursar, item_uuid) do
       :available ->
-        case BursarClient.acquire(bursar, item_uuid, node_identity, authenticated_as: node_identity) do
+        case BursarClient.acquire(bursar, item_uuid, node_identity,
+               authenticated_as: node_identity
+             ) do
           {:ok, _} -> :ok
           {:denied, _} -> {:error, :item_unavailable}
           {:error, _} = err -> err

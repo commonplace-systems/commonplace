@@ -261,7 +261,9 @@ defmodule Commonplace.Store.CommitStoreClientTest do
       :telemetry.attach(
         handler_id,
         [:commonplace, :commit, :cas_exhausted],
-        fn _event, measurements, _metadata, _config -> send(test_pid, {:cas_exhausted, measurements}) end,
+        fn _event, measurements, _metadata, _config ->
+          send(test_pid, {:cas_exhausted, measurements})
+        end,
         nil
       )
 

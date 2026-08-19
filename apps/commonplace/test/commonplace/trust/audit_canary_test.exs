@@ -202,14 +202,16 @@ defmodule Commonplace.Trust.AuditCanaryTest do
     start_supervised!({Task.Supervisor, name: sup}, id: sup)
 
     start_supervised!(
-      {AuditDispatcher,
-       name: broken,
-       store: ctx.store,
-       task_supervisor: sup,
-       flush_ms: 10,
-       enabled: true,
-       # CX-oc30, restored: unsigned audit writes.
-       signing_context_fn: fn -> {:ok, :unsigned} end},
+      {
+        AuditDispatcher,
+        # CX-oc30, restored: unsigned audit writes.
+        name: broken,
+        store: ctx.store,
+        task_supervisor: sup,
+        flush_ms: 10,
+        enabled: true,
+        signing_context_fn: fn -> {:ok, :unsigned} end
+      },
       id: broken
     )
 
@@ -280,11 +282,7 @@ defmodule Commonplace.Trust.AuditCanaryTest do
 
     start_supervised!(
       {AuditCanary,
-       name: name,
-       store: ctx.store,
-       dispatcher: ctx.dispatcher,
-       enabled: false,
-       start_delay_ms: 1},
+       name: name, store: ctx.store, dispatcher: ctx.dispatcher, enabled: false, start_delay_ms: 1},
       id: name
     )
 

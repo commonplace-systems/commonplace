@@ -58,21 +58,39 @@ defmodule Commonplace.MUD.BotPresenceCertTest do
         sweep_interval: 60_000
       )
 
-    on_exit(fn -> if Process.alive?(bursar_pid), do: (try do GenServer.stop(bursar_pid) catch (:exit, _ -> :ok) end) end)
+    on_exit(fn ->
+      if Process.alive?(bursar_pid),
+        do:
+          (try do
+             GenServer.stop(bursar_pid)
+           catch
+             (:exit, _ -> :ok)
+           end)
+    end)
 
     root_uuid = UUID.uuid4()
     update = Encoding.encode_update(Schema.new_schema())
     CommitStore.create_commit(store, root_uuid, update, nil)
     {:ok, _} = Bootstrap.seed(root_uuid, store)
 
-    secrets_dir = Path.join(System.tmp_dir!(), "cp_mud_bot_cert_secrets_#{:rand.uniform(1_000_000_000)}")
+    secrets_dir =
+      Path.join(System.tmp_dir!(), "cp_mud_bot_cert_secrets_#{:rand.uniform(1_000_000_000)}")
+
     File.mkdir_p!(secrets_dir)
     secrets_name = :"cp_mud_bot_cert_secrets_#{n}"
     {:ok, secrets_pid} = SecretStore.start_link(data_dir: secrets_dir, name: secrets_name)
 
     on_exit(fn ->
       Bot.stop("cert-bot")
-      if Process.alive?(secrets_pid), do: (try do GenServer.stop(secrets_pid) catch (:exit, _ -> :ok) end)
+
+      if Process.alive?(secrets_pid),
+        do:
+          (try do
+             GenServer.stop(secrets_pid)
+           catch
+             (:exit, _ -> :ok)
+           end)
+
       File.rm_rf!(secrets_dir)
     end)
 
@@ -81,7 +99,11 @@ defmodule Commonplace.MUD.BotPresenceCertTest do
 
   test "spawn_session issues a presence-starter cert and threads it into cert_cids", ctx do
     {:ok, _events} =
-      Bot.send_input("cert-bot", "look", store: ctx.store, root_uuid: ctx.root, secret_store: ctx.secrets)
+      Bot.send_input("cert-bot", "look",
+        store: ctx.store,
+        root_uuid: ctx.root,
+        secret_store: ctx.secrets
+      )
 
     assert {:ok, pid} = bot_pid("cert-bot")
     state = :sys.get_state(pid)
@@ -103,9 +125,14 @@ defmodule Commonplace.MUD.BotPresenceCertTest do
     assert issuer_uuid == node_identity
   end
 
-  test "re-spawning the same bot name re-issues the SAME cert cid (content-addressed idempotence)", ctx do
+  test "re-spawning the same bot name re-issues the SAME cert cid (content-addressed idempotence)",
+       ctx do
     {:ok, _} =
-      Bot.send_input("cert-bot", "look", store: ctx.store, root_uuid: ctx.root, secret_store: ctx.secrets)
+      Bot.send_input("cert-bot", "look",
+        store: ctx.store,
+        root_uuid: ctx.root,
+        secret_store: ctx.secrets
+      )
 
     assert {:ok, pid1} = bot_pid("cert-bot")
     [cid1] = :sys.get_state(pid1).cert_cids
@@ -113,7 +140,11 @@ defmodule Commonplace.MUD.BotPresenceCertTest do
     Bot.stop("cert-bot")
 
     {:ok, _} =
-      Bot.send_input("cert-bot", "look", store: ctx.store, root_uuid: ctx.root, secret_store: ctx.secrets)
+      Bot.send_input("cert-bot", "look",
+        store: ctx.store,
+        root_uuid: ctx.root,
+        secret_store: ctx.secrets
+      )
 
     assert {:ok, pid2} = bot_pid("cert-bot")
     assert pid2 != pid1
@@ -144,7 +175,11 @@ defmodule Commonplace.MUD.BotPresenceCertTest do
     end
 
     {:ok, bursar_pid} =
-      Commonplace.Green.Bursar.start_link(root_uuid: root_uuid, store: bare_store, sweep_interval: 60_000)
+      Commonplace.Green.Bursar.start_link(
+        root_uuid: root_uuid,
+        store: bare_store,
+        sweep_interval: 60_000
+      )
 
     {:ok, _events} = Bot.send_input("bare-bot", "look", store: bare_store, root_uuid: root_uuid)
 
@@ -152,8 +187,23 @@ defmodule Commonplace.MUD.BotPresenceCertTest do
     assert :sys.get_state(pid).cert_cids == []
 
     Bot.stop("bare-bot")
-    if Process.alive?(bursar_pid), do: (try do GenServer.stop(bursar_pid) catch (:exit, _ -> :ok) end)
-    if Process.alive?(bare_pid), do: (try do GenServer.stop(bare_pid) catch (:exit, _ -> :ok) end)
+
+    if Process.alive?(bursar_pid),
+      do:
+        (try do
+           GenServer.stop(bursar_pid)
+         catch
+           (:exit, _ -> :ok)
+         end)
+
+    if Process.alive?(bare_pid),
+      do:
+        (try do
+           GenServer.stop(bare_pid)
+         catch
+           (:exit, _ -> :ok)
+         end)
+
     File.rm_rf!(dir)
   end
 
@@ -182,7 +232,11 @@ defmodule Commonplace.MUD.BotPresenceCertTest do
       name = "respawn-race-bot"
 
       {:ok, _} =
-        Bot.send_input(name, "look", store: ctx.store, root_uuid: ctx.root, secret_store: ctx.secrets)
+        Bot.send_input(name, "look",
+          store: ctx.store,
+          root_uuid: ctx.root,
+          secret_store: ctx.secrets
+        )
 
       assert {:ok, pid} = bot_pid(name)
       Bot.stop(name)

@@ -173,7 +173,8 @@ defmodule Commonplace.Bd.Frontier do
   end
 
   # Cross-repo entry: unresolvable in this arc => unsatisfied.
-  defp entry_satisfied?(%{"repo" => repo}, _issues_by_id) when is_binary(repo) and repo != "", do: false
+  defp entry_satisfied?(%{"repo" => repo}, _issues_by_id) when is_binary(repo) and repo != "",
+    do: false
 
   defp entry_satisfied?(%{"ticket" => ticket_id}, issues_by_id) when is_binary(ticket_id) do
     case Map.fetch(issues_by_id, ticket_id) do

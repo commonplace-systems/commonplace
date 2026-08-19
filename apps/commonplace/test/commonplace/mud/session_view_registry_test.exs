@@ -40,7 +40,9 @@ defmodule Commonplace.MUD.SessionViewRegistryTest do
 
   describe "registry uuid -> SessionView.load/2 round trip" do
     setup do
-      dir = Path.join(System.tmp_dir!(), "cp_session_view_registry_#{:rand.uniform(1_000_000_000)}")
+      dir =
+        Path.join(System.tmp_dir!(), "cp_session_view_registry_#{:rand.uniform(1_000_000_000)}")
+
       File.mkdir_p!(dir)
       n = :rand.uniform(1_000_000_000)
       store = :"session_view_registry_store_#{n}"

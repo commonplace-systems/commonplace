@@ -21,7 +21,8 @@ defmodule Commonplace.TelemetryTest do
     update = Yelixer.Encoding.encode_update(doc)
     CommitStore.create_commit(store, uuid, update, nil)
 
-    assert_received {[:commonplace, :commit, :create], ^ref, %{system_time: _}, %{doc_uuid: ^uuid}}
+    assert_received {[:commonplace, :commit, :create], ^ref, %{system_time: _},
+                     %{doc_uuid: ^uuid}}
   end
 
   test "sync emits stop event with duration and change count", %{store: store} do
@@ -65,7 +66,7 @@ defmodule Commonplace.TelemetryTest do
 
     assert_received {[:commonplace, :sync, :stop], ^ref, %{duration: duration, changes: 0},
                      %{root_uuid: ^root_uuid, dir: ^sync_dir}}
-                     when is_integer(duration)
+                    when is_integer(duration)
 
     File.rm_rf!(sync_dir)
   end

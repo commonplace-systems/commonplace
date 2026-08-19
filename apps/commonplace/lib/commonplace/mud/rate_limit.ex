@@ -273,7 +273,10 @@ defmodule Commonplace.MUD.RateLimit do
       %{kind: kind, reason: reason}
     )
 
-    Logger.error("RateLimit.check failed open (allowing command): #{inspect(kind)} #{inspect(reason)}")
+    Logger.error(
+      "RateLimit.check failed open (allowing command): #{inspect(kind)} #{inspect(reason)}"
+    )
+
     :ok
   end
 

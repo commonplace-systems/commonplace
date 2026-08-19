@@ -59,6 +59,9 @@ defmodule Commonplace.Chat.LoomBridge.Transport do
   bridge halts the outbound scan for this tick and retries the SAME
   message next tick — never skips a message on a relay failure).
   """
-  @callback relay_to_external(transport_state :: term(), message :: %{author: String.t(), text: String.t()}) ::
+  @callback relay_to_external(
+              transport_state :: term(),
+              message :: %{author: String.t(), text: String.t()}
+            ) ::
               {:ok, term()} | {:error, term()}
 end

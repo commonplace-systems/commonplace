@@ -59,7 +59,9 @@ defmodule Commonplace.Trust.PagedAuthorizationWalkTest do
     :telemetry.attach(
       "#{inspect(event)}-#{inspect(ref)}",
       event,
-      fn ^event, measurements, metadata, _ -> send(test_pid, {:telemetry, event, measurements, metadata}) end,
+      fn ^event, measurements, metadata, _ ->
+        send(test_pid, {:telemetry, event, measurements, metadata})
+      end,
       nil
     )
 
@@ -68,7 +70,8 @@ defmodule Commonplace.Trust.PagedAuthorizationWalkTest do
 
   defp count_paged_events do
     receive do
-      {:telemetry, [:commonplace, :trust, :authorization_walk_paged], _, _} -> 1 + count_paged_events()
+      {:telemetry, [:commonplace, :trust, :authorization_walk_paged], _, _} ->
+        1 + count_paged_events()
     after
       0 -> 0
     end
@@ -97,7 +100,8 @@ defmodule Commonplace.Trust.PagedAuthorizationWalkTest do
          %{store: store, ctx: ctx, cfg: cfg} do
       uuid = UUID.uuid4()
 
-      commits = for i <- 1..6, do: put(store, uuid, "defmodule Gap#{i} do\nend", %{kind: :regular}, ctx)
+      commits =
+        for i <- 1..6, do: put(store, uuid, "defmodule Gap#{i} do\nend", %{kind: :regular}, ctx)
 
       # Delete a commit strictly between genesis and head so the walk's
       # `parent_id` chase runs into a hole regardless of page alignment.
@@ -140,8 +144,22 @@ defmodule Commonplace.Trust.PagedAuthorizationWalkTest do
 
       put(store, uuid, "defmodule Snap do\nend", %{kind: :regular}, ctx)
       snap = put(store, uuid, "defmodule Snap do\n  def a, do: 1\nend", %{kind: :snapshot}, ctx)
-      put(store, uuid, "defmodule Snap do\n  def a, do: 1\n  def b, do: 2\nend", %{kind: :regular}, ctx)
-      put(store, uuid, "defmodule Snap do\n  def a, do: 1\n  def b, do: 2\n  def c, do: 3\nend", %{kind: :regular}, ctx)
+
+      put(
+        store,
+        uuid,
+        "defmodule Snap do\n  def a, do: 1\n  def b, do: 2\nend",
+        %{kind: :regular},
+        ctx
+      )
+
+      put(
+        store,
+        uuid,
+        "defmodule Snap do\n  def a, do: 1\n  def b, do: 2\n  def c, do: 3\nend",
+        %{kind: :regular},
+        ctx
+      )
 
       # First (unpaged) walk backfills the snapshot's execute-clean cache.
       assert :ok = Trust.authorized_to_execute?(store, uuid, cfg)
@@ -182,7 +200,11 @@ defmodule Commonplace.Trust.PagedAuthorizationWalkTest do
       end
 
       assert :ok = DefineVerbGate.authorized_to_define?(store, uuid, [section], cfg, page_size: 3)
-      assert :ok = DefineVerbGate.authorized_to_define?(store, uuid, [section], cfg, page_size: 10_000)
+
+      assert :ok =
+               DefineVerbGate.authorized_to_define?(store, uuid, [section], cfg,
+                 page_size: 10_000
+               )
     end
 
     test "incomplete chain fails closed",
@@ -190,7 +212,9 @@ defmodule Commonplace.Trust.PagedAuthorizationWalkTest do
       uuid = UUID.uuid4()
       section = UUID.uuid4()
 
-      commits = for i <- 1..6, do: put(store, uuid, "defmodule VGap#{i} do\nend", %{kind: :regular}, ctx)
+      commits =
+        for i <- 1..6, do: put(store, uuid, "defmodule VGap#{i} do\nend", %{kind: :regular}, ctx)
+
       victim = Enum.at(commits, 2)
       db = CommitStore.db_handle(store)
       CubDB.delete(db, {:commit, victim.id})
@@ -227,7 +251,9 @@ defmodule Commonplace.Trust.PagedAuthorizationWalkTest do
   describe "CommitStore.commit_log_from/3" do
     test "continues the backward walk from an arbitrary commit id", %{store: store, ctx: ctx} do
       uuid = UUID.uuid4()
-      commits = for i <- 1..5, do: put(store, uuid, "defmodule From#{i} do\nend", %{kind: :regular}, ctx)
+
+      commits =
+        for i <- 1..5, do: put(store, uuid, "defmodule From#{i} do\nend", %{kind: :regular}, ctx)
 
       full = CommitStoreClient.commit_log(store, uuid, limit: 100)
       assert length(full) == 6

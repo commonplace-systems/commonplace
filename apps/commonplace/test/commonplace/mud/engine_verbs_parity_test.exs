@@ -74,9 +74,21 @@ defmodule Commonplace.MUD.EngineVerbsParityTest do
     bursar_root = UUID.uuid4()
 
     {:ok, bursar_pid} =
-      Commonplace.Green.Bursar.start_link(root_uuid: bursar_root, store: @store, sweep_interval: 60_000)
+      Commonplace.Green.Bursar.start_link(
+        root_uuid: bursar_root,
+        store: @store,
+        sweep_interval: 60_000
+      )
 
-    on_exit(fn -> if Process.alive?(bursar_pid), do: (try do GenServer.stop(bursar_pid) catch (:exit, _ -> :ok) end) end)
+    on_exit(fn ->
+      if Process.alive?(bursar_pid),
+        do:
+          (try do
+             GenServer.stop(bursar_pid)
+           catch
+             (:exit, _ -> :ok)
+           end)
+    end)
 
     on_exit(fn ->
       if is_nil(old_manifest),
@@ -186,7 +198,13 @@ defmodule Commonplace.MUD.EngineVerbsParityTest do
   # room's schema — the shape `Move.move/5` requires for a real move.
   defp build_go_ctx(name \\ "alice") do
     root_uuid = UUID.uuid4()
-    CommitStore.create_commit(CommitStore, root_uuid, Yelixer.Encoding.encode_update(Schema.new_schema()), nil)
+
+    CommitStore.create_commit(
+      CommitStore,
+      root_uuid,
+      Yelixer.Encoding.encode_update(Schema.new_schema()),
+      nil
+    )
 
     {:ok, dest_uuid} =
       Schemas.create_dir_with_meta(
@@ -198,7 +216,11 @@ defmodule Commonplace.MUD.EngineVerbsParityTest do
     {:ok, src_uuid} =
       Schemas.create_dir_with_meta(
         Schemas.room_filename(),
-        Schemas.encode_room(%Room{name: "Src", description: "A src room.", exits: %{"north" => dest_uuid}}),
+        Schemas.encode_room(%Room{
+          name: "Src",
+          description: "A src room.",
+          exits: %{"north" => dest_uuid}
+        }),
         @store
       )
 
@@ -207,7 +229,14 @@ defmodule Commonplace.MUD.EngineVerbsParityTest do
 
     {:ok, src_schema} = Schemas.load_dir_schema(src_uuid, @store)
     src_schema = Schema.add_file(src_schema, presence_filename, player_uuid)
-    CommitStore.create_chained_commit(CommitStore, src_uuid, Yelixer.Encoding.encode_update(src_schema), %{kind: :regular}, [])
+
+    CommitStore.create_chained_commit(
+      CommitStore,
+      src_uuid,
+      Yelixer.Encoding.encode_update(src_schema),
+      %{kind: :regular},
+      []
+    )
 
     %{
       player_uuid: player_uuid,
@@ -225,7 +254,13 @@ defmodule Commonplace.MUD.EngineVerbsParityTest do
   # player's presence seeded in it.
   defp build_home_ctx(name) do
     root_uuid = UUID.uuid4()
-    CommitStore.create_commit(CommitStore, root_uuid, Yelixer.Encoding.encode_update(Schema.new_schema()), nil)
+
+    CommitStore.create_commit(
+      CommitStore,
+      root_uuid,
+      Yelixer.Encoding.encode_update(Schema.new_schema()),
+      nil
+    )
 
     {:ok, home_uuid} =
       Schemas.create_dir_with_meta(
@@ -243,7 +278,13 @@ defmodule Commonplace.MUD.EngineVerbsParityTest do
 
     players_uuid = UUID.uuid4()
     players_schema = Schema.add_directory(Schema.new_schema(), name, home_uuid)
-    CommitStore.create_commit(CommitStore, players_uuid, Yelixer.Encoding.encode_update(players_schema), nil)
+
+    CommitStore.create_commit(
+      CommitStore,
+      players_uuid,
+      Yelixer.Encoding.encode_update(players_schema),
+      nil
+    )
 
     {:ok, root_schema} = Schemas.load_dir_schema(root_uuid, @store)
     root_schema = Schema.add_directory(root_schema, "players", players_uuid)
@@ -366,7 +407,9 @@ defmodule Commonplace.MUD.EngineVerbsParityTest do
     # with the floor comparison).
     ctx = build_go_ctx()
 
-    assert EngineModule.run_verb(:go, cmd("go", []), ctx, @store) == GoFloor.run(cmd("go", []), ctx)
+    assert EngineModule.run_verb(:go, cmd("go", []), ctx, @store) ==
+             GoFloor.run(cmd("go", []), ctx)
+
     assert {:error, "Go where?"} = EngineModule.run_verb(:go, cmd("go", []), ctx, @store)
 
     # go: a direction with no matching exit -> "You can't go <dir>." (no
@@ -374,7 +417,8 @@ defmodule Commonplace.MUD.EngineVerbsParityTest do
     assert EngineModule.run_verb(:go, cmd("go", ["south"]), ctx, @store) ==
              GoFloor.run(cmd("go", ["south"]), ctx)
 
-    assert {:error, "You can't go south."} = EngineModule.run_verb(:go, cmd("go", ["south"]), ctx, @store)
+    assert {:error, "You can't go south."} =
+             EngineModule.run_verb(:go, cmd("go", ["south"]), ctx, @store)
 
     # go: a valid move — a real presence relocation, so the doc path and the
     # floor path each need their OWN fresh src/dest pair (a move mutates
@@ -382,7 +426,9 @@ defmodule Commonplace.MUD.EngineVerbsParityTest do
     doc_go_ctx = build_go_ctx("go-doc-mover")
     floor_go_ctx = build_go_ctx("go-floor-mover")
 
-    assert {:moved, doc_dest} = EngineModule.run_verb(:go, cmd("go", ["north"]), doc_go_ctx, @store)
+    assert {:moved, doc_dest} =
+             EngineModule.run_verb(:go, cmd("go", ["north"]), doc_go_ctx, @store)
+
     assert doc_dest == doc_go_ctx.dest_uuid
 
     assert {:moved, floor_dest} = GoFloor.run(cmd("go", ["north"]), floor_go_ctx)
@@ -408,7 +454,9 @@ defmodule Commonplace.MUD.EngineVerbsParityTest do
     doc_home_ctx = build_home_ctx("home-doc-mover")
     floor_home_ctx = build_home_ctx("home-floor-mover")
 
-    assert {:moved, doc_home} = EngineModule.run_verb(:home, cmd("home", []), doc_home_ctx, @store)
+    assert {:moved, doc_home} =
+             EngineModule.run_verb(:home, cmd("home", []), doc_home_ctx, @store)
+
     assert doc_home == doc_home_ctx.home_uuid
 
     assert {:moved, floor_home} = HomeFloor.run(cmd("home", []), floor_home_ctx)

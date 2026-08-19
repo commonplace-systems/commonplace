@@ -24,7 +24,8 @@ defmodule Commonplace.CLI.Replay do
       System.halt(1)
     end
 
-    {opts, rest, _} = OptionParser.parse(args, strict: [list: :boolean, at: :string, limit: :integer])
+    {opts, rest, _} =
+      OptionParser.parse(args, strict: [list: :boolean, at: :string, limit: :integer])
 
     case rest do
       [path] ->
@@ -74,10 +75,11 @@ defmodule Commonplace.CLI.Replay do
     target_hex = String.downcase(target_hex)
 
     # Find the target commit by prefix match
-    target_idx = Enum.find_index(log, fn commit ->
-      hex = Base.encode16(commit.id, case: :lower)
-      String.starts_with?(hex, target_hex)
-    end)
+    target_idx =
+      Enum.find_index(log, fn commit ->
+        hex = Base.encode16(commit.id, case: :lower)
+        String.starts_with?(hex, target_hex)
+      end)
 
     unless target_idx do
       IO.puts(:stderr, "Commit not found: #{target_hex}")
@@ -114,12 +116,13 @@ defmodule Commonplace.CLI.Replay do
   defp reconstruct(commits) do
     doc = Yelixer.Doc.new()
 
-    doc = Enum.reduce(commits, doc, fn commit, acc ->
-      case Yelixer.Encoding.apply_update(acc, commit.update) do
-        {:ok, updated} -> updated
-        _ -> acc
-      end
-    end)
+    doc =
+      Enum.reduce(commits, doc, fn commit, acc ->
+        case Yelixer.Encoding.apply_update(acc, commit.update) do
+          {:ok, updated} -> updated
+          _ -> acc
+        end
+      end)
 
     ContentType.get_content(doc) || ""
   end

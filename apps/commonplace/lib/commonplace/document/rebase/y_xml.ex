@@ -127,7 +127,14 @@ defmodule Commonplace.Document.Rebase.YXml do
     end
   end
 
-  defp rebase_matched({:fragment, o_children}, {:fragment, n_children}, doc, parent, parent_kind, pos) do
+  defp rebase_matched(
+         {:fragment, o_children},
+         {:fragment, n_children},
+         doc,
+         parent,
+         parent_kind,
+         pos
+       ) do
     child_name = nth_child_name(doc, parent, parent_kind, pos)
     rebase_children(o_children, n_children, doc, child_name, :fragment)
   end

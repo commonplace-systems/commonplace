@@ -75,7 +75,10 @@ defmodule Commonplace.Projection.MixedPlaneHistoryTest do
     summary = output |> String.split("\n") |> Enum.find("", &String.contains?(&1, "SUMMARY"))
 
     assert summary =~ "commits_total=0"
-    refute summary =~ "100.00%", "a sweep over zero commits must not report full coverage: #{summary}"
+
+    refute summary =~ "100.00%",
+           "a sweep over zero commits must not report full coverage: #{summary}"
+
     assert summary =~ "coverage=0/0 (no commits"
   end
 

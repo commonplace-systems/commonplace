@@ -186,10 +186,13 @@ defmodule Commonplace.MUD.VerbSource do
 
     with {:ok, verbs_uuid} <- ensure_verbs_dir(target_dir_uuid, store, opts),
          {:ok, verbs_schema} <- Schemas.load_dir_schema(verbs_uuid, store),
-         {:ok, source_uuid} <- save_source(verbs_uuid, verbs_schema, file, source_text, nil, store, opts) do
+         {:ok, source_uuid} <-
+           save_source(verbs_uuid, verbs_schema, file, source_text, nil, store, opts) do
       case SourceDoc.compile(source_uuid, store, unique_module: source_uuid) do
         {:ok, module} ->
-          if function_exported?(module, :run, 1), do: :ok, else: {:error, {:no_run_export, module}}
+          if function_exported?(module, :run, 1),
+            do: :ok,
+            else: {:error, {:no_run_export, module}}
 
         {:error, _} = err ->
           err
@@ -244,7 +247,14 @@ defmodule Commonplace.MUD.VerbSource do
   """
   @spec run_safe_verb(String.t(), String.t(), [String.t()], Facade.t(), map(), GenServer.server()) ::
           {:ok, term()} | :not_found | {:error, term()}
-  def run_safe_verb(target_dir_uuid, verb_name, section_scope, %Facade{} = facade, args \\ %{}, store \\ CommitStoreClient) do
+  def run_safe_verb(
+        target_dir_uuid,
+        verb_name,
+        section_scope,
+        %Facade{} = facade,
+        args \\ %{},
+        store \\ CommitStoreClient
+      ) do
     case compile_safe_verb(target_dir_uuid, verb_name, section_scope, store) do
       {:ok, module} -> SafeVerb.run(module, facade, args)
       other -> other
@@ -269,9 +279,23 @@ defmodule Commonplace.MUD.VerbSource do
   `{:error, {:compile_error, msg}}`, `{:error, {:execution_denied, reason}}`
   (define-gate denial), or `{:error, {:no_run_export, module}}`.
   """
-  @spec save_safe_verb(String.t(), String.t(), String.t(), [String.t()], GenServer.server(), keyword()) ::
+  @spec save_safe_verb(
+          String.t(),
+          String.t(),
+          String.t(),
+          [String.t()],
+          GenServer.server(),
+          keyword()
+        ) ::
           :ok | {:error, term()}
-  def save_safe_verb(target_dir_uuid, verb_name, body_text, section_scope, store \\ CommitStoreClient, opts \\ [])
+  def save_safe_verb(
+        target_dir_uuid,
+        verb_name,
+        body_text,
+        section_scope,
+        store \\ CommitStoreClient,
+        opts \\ []
+      )
       when is_binary(body_text) and is_list(section_scope) do
     file = "#{verb_name}.safe.elx"
 
@@ -291,7 +315,9 @@ defmodule Commonplace.MUD.VerbSource do
            save_source(verbs_uuid, verbs_schema, file, wrapped, target_dir_uuid, store, opts) do
       case SafeVerb.compile(source_uuid, section_scope, store) do
         {:ok, module} ->
-          if function_exported?(module, :run, 2), do: :ok, else: {:error, {:no_run_export, module}}
+          if function_exported?(module, :run, 2),
+            do: :ok,
+            else: {:error, {:no_run_export, module}}
 
         {:error, _} = err ->
           err
@@ -320,11 +346,21 @@ defmodule Commonplace.MUD.VerbSource do
       if present == [] do
         :not_found
       else
-        new_schema = Enum.reduce(present, verbs_schema, fn f, acc -> Schema.remove_entry(acc, f) end)
-        update = Encoding.encode_update(new_schema)
-        {metadata, commit_opts} = SignedWrite.opts_for(verbs_uuid, Keyword.put(opts, :store, store))
+        new_schema =
+          Enum.reduce(present, verbs_schema, fn f, acc -> Schema.remove_entry(acc, f) end)
 
-        case CommitStoreClient.create_chained_commit(store, verbs_uuid, update, metadata, commit_opts) do
+        update = Encoding.encode_update(new_schema)
+
+        {metadata, commit_opts} =
+          SignedWrite.opts_for(verbs_uuid, Keyword.put(opts, :store, store))
+
+        case CommitStoreClient.create_chained_commit(
+               store,
+               verbs_uuid,
+               update,
+               metadata,
+               commit_opts
+             ) do
           {:error, _} = err -> err
           _commit -> :ok
         end
@@ -444,7 +480,9 @@ defmodule Commonplace.MUD.VerbSource do
     doc = ContentType.create(doc, :text, "verb")
     doc = ContentType.insert_text(doc, 0, text)
     update = Encoding.encode_update(doc)
-    {metadata, commit_opts} = SignedWrite.opts_for(uuid, source_doc_opts(verb_section, opts, store))
+
+    {metadata, commit_opts} =
+      SignedWrite.opts_for(uuid, source_doc_opts(verb_section, opts, store))
 
     case CommitStoreClient.create_commit(store, uuid, update, nil, metadata, commit_opts) do
       {:error, _} = err -> err
@@ -459,7 +497,9 @@ defmodule Commonplace.MUD.VerbSource do
     doc = if current != "", do: ContentType.delete_text(doc, 0, String.length(current)), else: doc
     doc = ContentType.insert_text(doc, 0, text)
     update = Encoding.encode_update(doc)
-    {metadata, commit_opts} = SignedWrite.opts_for(uuid, source_doc_opts(verb_section, opts, store))
+
+    {metadata, commit_opts} =
+      SignedWrite.opts_for(uuid, source_doc_opts(verb_section, opts, store))
 
     case CommitStoreClient.create_chained_commit(store, uuid, update, metadata, commit_opts) do
       {:error, _} = err -> err
@@ -483,10 +523,15 @@ defmodule Commonplace.MUD.VerbSource do
     update = Encoding.encode_update(schema)
     {metadata, commit_opts} = SignedWrite.opts_for(parent_uuid, Keyword.put(opts, :store, store))
 
-    case CommitStoreClient.create_chained_commit(store, parent_uuid, update, metadata, commit_opts) do
+    case CommitStoreClient.create_chained_commit(
+           store,
+           parent_uuid,
+           update,
+           metadata,
+           commit_opts
+         ) do
       {:error, _} = err -> err
       _commit -> :ok
     end
   end
-
 end

@@ -79,6 +79,7 @@ defmodule Commonplace.CLI.SnapshotTest do
 
       ids_after = CommitStore.all_commit_ids_for_doc(CommitStore, file_uuid)
       new_ids = MapSet.difference(ids_after, ids_before)
+
       assert MapSet.size(new_ids) == 1,
              "expected exactly one new commit, got #{MapSet.size(new_ids)}"
     end

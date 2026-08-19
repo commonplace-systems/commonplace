@@ -28,7 +28,10 @@ defmodule Commonplace.Process.SweepTest do
     )
   end
 
-  test "kills the OS process tree recorded in the status file", %{dir: dir, status_file: status_file} do
+  test "kills the OS process tree recorded in the status file", %{
+    dir: dir,
+    status_file: status_file
+  } do
     port = Port.open({:spawn_executable, "/bin/sleep"}, [:binary, {:args, ["3600"]}])
     {:os_pid, sleep_pid} = Port.info(port, :os_pid)
 

@@ -61,6 +61,7 @@ defmodule Commonplace.MaterializeTest do
       [task] = Materialize.materialize(entries, @task_rules)
 
       assert task["id"] == "t1"
+
       assert task["title"] == "v2",
              "latest revision's title replaces original's"
 
@@ -131,6 +132,7 @@ defmodule Commonplace.MaterializeTest do
       [task] = Materialize.materialize(entries, @task_rules)
 
       assert task["id"] == "t1"
+
       assert task["deleted?"] == true,
              "cancel→revises→t1 chain ultimately marks t1 deleted"
     end
@@ -160,6 +162,7 @@ defmodule Commonplace.MaterializeTest do
       ]
 
       ids = Materialize.materialize(entries, @task_rules) |> Enum.map(& &1["id"])
+
       assert ids == ["t1"],
              "orphan chain links must not surface as originals or affect existing originals"
     end
@@ -220,6 +223,7 @@ defmodule Commonplace.MaterializeTest do
 
       result = Materialize.materialize(entries, %{chains: []})
       ids = Enum.map(result, & &1["id"])
+
       assert ids == ["x", "y"],
              "with no chain rules, both entries surface as originals"
 

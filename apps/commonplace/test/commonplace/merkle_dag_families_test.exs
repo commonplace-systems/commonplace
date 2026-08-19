@@ -281,6 +281,7 @@ defmodule Commonplace.MerkleDagFamiliesTest do
       |> Enum.each(fn {c, i} ->
         r = reconstruct(store, c.id, 99)
         expected = Enum.map(1..i, &Integer.to_string(rem(&1, 10))) |> Enum.join()
+
         assert text(r) == expected,
                "Generation #{i}: expected #{inspect(expected)}, got #{inspect(text(r))}"
       end)
@@ -291,7 +292,9 @@ defmodule Commonplace.MerkleDagFamiliesTest do
 
       chain_length =
         Stream.unfold(last.id, fn
-          nil -> nil
+          nil ->
+            nil
+
           id ->
             {:ok, c} = CommitStore.get_commit(store, id)
             {c, c.parent_id}

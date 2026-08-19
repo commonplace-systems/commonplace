@@ -99,9 +99,7 @@ defmodule Commonplace.Bots.EntityTest do
 
     test "reads bot.json when present" do
       uuid =
-        mint_bot_dir(
-          extras: %{"bot.json" => ~s({"max_calls": 5})}
-        )
+        mint_bot_dir(extras: %{"bot.json" => ~s({"max_calls": 5})})
 
       assert {:ok, entity} = Entity.load(CommitStoreClient, uuid, "bob.bot")
       assert entity.bot_config == %{"max_calls" => 5}
@@ -115,10 +113,12 @@ defmodule Commonplace.Bots.EntityTest do
 
     test "rejects directories missing required children" do
       uuid = mint_bot_dir(skip: ["trigger.regex"])
+
       assert {:error, {:missing, "trigger.regex"}} =
                Entity.load(CommitStoreClient, uuid, "dora.bot")
 
       uuid = mint_bot_dir(skip: ["persona.md"])
+
       assert {:error, {:missing, "persona.md"}} =
                Entity.load(CommitStoreClient, uuid, "ed.bot")
     end
@@ -155,6 +155,7 @@ defmodule Commonplace.Bots.EntityTest do
           {"carol.usr", user_dir},
           {"readme.md", file_uuid}
         ])
+
       # Note: README.md was added as a directory entry above by the helper;
       # build via Schema directly to test the file vs dir filter.
       _ = room_uuid

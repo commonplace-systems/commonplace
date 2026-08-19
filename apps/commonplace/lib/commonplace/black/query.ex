@@ -243,7 +243,9 @@ defmodule Commonplace.Black.Query do
     doc = Enum.reduce(content, doc, fn {k, v}, acc -> ContentType.set_key(acc, k, v) end)
     update = Yelixer.Encoding.encode_update(doc)
 
-    case CommitStoreClient.create_commit(store, uuid, update, nil, %{}, signing_context: signing_context) do
+    case CommitStoreClient.create_commit(store, uuid, update, nil, %{},
+           signing_context: signing_context
+         ) do
       {:error, _} = err -> err
       _commit -> {:ok, uuid}
     end

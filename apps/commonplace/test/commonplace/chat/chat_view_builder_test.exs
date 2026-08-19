@@ -89,6 +89,7 @@ defmodule Commonplace.Chat.ChatViewBuilderTest do
       prov = find_child(msg, :provenance)
       assert prov.attrs["signer"] == "alice@9c8d7e6f"
       assert prov.attrs["ts"] == "2026-04-26T15:25:12Z"
+
       refute Map.has_key?(prov.attrs, "commit"),
              "commit attr deferred per refinement #5"
 
@@ -155,6 +156,7 @@ defmodule Commonplace.Chat.ChatViewBuilderTest do
 
       body = find_child(msg, :body)
       [text] = body.children |> Enum.filter(&match?(%ViewXml.Node{tag: :text}, &1))
+
       assert ViewXml.text_content(text) == "[deleted]",
              "deleted body must show [deleted], not original text"
     end
@@ -290,7 +292,11 @@ defmodule Commonplace.Chat.ChatViewBuilderTest do
 
   defp list_messages(view) do
     list = find_messages_list(view)
-    Enum.filter(list.children, &match?(%ViewXml.Node{tag: :entity, attrs: %{"kind" => "message"}}, &1))
+
+    Enum.filter(
+      list.children,
+      &match?(%ViewXml.Node{tag: :entity, attrs: %{"kind" => "message"}}, &1)
+    )
   end
 
   defp find_child(node, tag) do

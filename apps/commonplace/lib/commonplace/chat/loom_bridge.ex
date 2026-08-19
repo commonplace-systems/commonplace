@@ -278,7 +278,8 @@ defmodule Commonplace.Chat.LoomBridge do
             {:error, reason} ->
               PubSub.broadcast_red(
                 acc_state.messages_uuid,
-                {:loom_bridge, :relay_failed, %{room: acc_state.room, reason: reason, message_id: entry["id"]}}
+                {:loom_bridge, :relay_failed,
+                 %{room: acc_state.room, reason: reason, message_id: entry["id"]}}
               )
 
               {:halt, {count, acc_state}}

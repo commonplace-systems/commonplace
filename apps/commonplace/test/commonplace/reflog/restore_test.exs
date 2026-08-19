@@ -57,7 +57,12 @@ defmodule Commonplace.Reflog.RestoreTest do
   defp write_text_doc(store, uuid, content, sign_opts \\ []) do
     {:ok, doc} = Commonplace.Tree.DocBuilder.reconstruct_doc(store, uuid)
     old_content = ContentType.get_content(doc) || ""
-    doc = if old_content != "", do: ContentType.delete_text(doc, 0, String.length(old_content)), else: doc
+
+    doc =
+      if old_content != "",
+        do: ContentType.delete_text(doc, 0, String.length(old_content)),
+        else: doc
+
     doc = if content != "", do: ContentType.insert_text(doc, 0, content), else: doc
     update = Yelixer.Encoding.encode_update(doc)
     CommitStore.create_chained_commit(store, uuid, update, %{}, sign_opts)
@@ -219,15 +224,18 @@ defmodule Commonplace.Reflog.RestoreTest do
     assert tree2["added.txt"] == "brand new"
   end
 
-  test "CX-vt9l.2: materialize_branch/5 carries a witness-shaped, decidably-stale derivation record", %{
-    store: store
-  } do
+  test "CX-vt9l.2: materialize_branch/5 carries a witness-shaped, decidably-stale derivation record",
+       %{
+         store: store
+       } do
     ids = seed_tree(store)
     {:ok, cid1} = Snapshot.checkpoint(ids.root, store)
     {:ok, snapshot_uuid} = Restore.root_snapshot_uuid(store, ids.root, "server")
 
     {:ok, %{derivation_record: record}} =
-      Restore.materialize_branch(store, snapshot_uuid, cid1, ids.root, as: "restore-derivation-record")
+      Restore.materialize_branch(store, snapshot_uuid, cid1, ids.root,
+        as: "restore-derivation-record"
+      )
 
     assert Commonplace.DerivationRecord.witness?(record)
     assert record["sources_pin"] == %{snapshot_uuid => cid1}
@@ -248,9 +256,10 @@ defmodule Commonplace.Reflog.RestoreTest do
 
   # --- (b) ancestry (the point of stage 3) ------------------------------
 
-  test "ancestry: every restored doc's first commit chains to the checkpoint's recorded source commit", %{
-    store: store
-  } do
+  test "ancestry: every restored doc's first commit chains to the checkpoint's recorded source commit",
+       %{
+         store: store
+       } do
     ids = seed_tree(store)
     {:ok, cid1} = Snapshot.checkpoint(ids.root, store)
 
@@ -289,7 +298,10 @@ defmodule Commonplace.Reflog.RestoreTest do
     # the checkpoint's own content directly) rather than re-deriving the
     # module's internal value, so this isn't just tautological.
     {:ok, checkpoint_commit} = CommitStore.get_commit(store, cid1)
-    {:ok, checkpoint_doc} = Yelixer.Encoding.apply_update(Yelixer.Doc.new(), checkpoint_commit.update)
+
+    {:ok, checkpoint_doc} =
+      Yelixer.Encoding.apply_update(Yelixer.Doc.new(), checkpoint_commit.update)
+
     schema_cid_hex = ContentType.get_content(checkpoint_doc) |> Map.fetch!("__schema_cid")
     expected_root_parent = Base.decode16!(schema_cid_hex, case: :lower)
 
@@ -347,7 +359,9 @@ defmodule Commonplace.Reflog.RestoreTest do
 
       File.mkdir_p!(key_dir)
       Application.put_env(:commonplace, :data_dir, key_dir)
+
       Application.put_env(:commonplace, :trust, %{accept_unsigned: false, trusted_identities: %{}})
+
       Application.put_env(:commonplace, :local_write_gate, :enforce)
 
       {:ok, node_ctx} = NodeIdentity.signing_context()
@@ -355,7 +369,10 @@ defmodule Commonplace.Reflog.RestoreTest do
       on_exit(fn ->
         for {k, v} <- old do
           key = %{trust: :trust, gate: :local_write_gate, data_dir: :data_dir}[k]
-          if is_nil(v), do: Application.delete_env(:commonplace, key), else: Application.put_env(:commonplace, key, v)
+
+          if is_nil(v),
+            do: Application.delete_env(:commonplace, key),
+            else: Application.put_env(:commonplace, key, v)
         end
 
         File.rm_rf!(key_dir)
@@ -378,7 +395,9 @@ defmodule Commonplace.Reflog.RestoreTest do
       assert checkpoint_id == cid
 
       {:ok, %{root_entry: name, docs: docs}} =
-        Restore.materialize_branch(store, snapshot_uuid, checkpoint_id, ids.root, as: "restore-enforce")
+        Restore.materialize_branch(store, snapshot_uuid, checkpoint_id, ids.root,
+          as: "restore-enforce"
+        )
 
       assert docs > 0
 

@@ -152,7 +152,8 @@ defmodule Commonplace.Bd.FreezePinTest do
       # currently masks the reopen at the read layer, before the
       # invariant ever gets a chance to compare. `closed_matches_pin/3`
       # cannot fire on a document that never became a struct.
-      assert {:error, %Jason.DecodeError{}} = Invariants.closed_matches_pin(ctx.root, a.id, ctx.store)
+      assert {:error, %Jason.DecodeError{}} =
+               Invariants.closed_matches_pin(ctx.root, a.id, ctx.store)
 
       # That is exactly the situation minimal-diff (write_text_doc/4's
       # warning comment) will change: once concurrent writes merge into

@@ -97,6 +97,7 @@ if serving? && data_dir do
   # off" must be answerable as something you TYPE, not as a file to find.
   config :commonplace,
     deploy_gap_monitor_on_boot: System.get_env("COMMONPLACE_DEPLOY_GAP_MONITOR") != "0"
+
   # CX-3xwu (A): the continuous ghost-reaper runs on the Mode-B serve (it needs
   # the node identity + workspace root + the live SessionLimit/PresenceRegistry
   # trackers). Explicit-flag gated in application.ex; can be disabled by omitting

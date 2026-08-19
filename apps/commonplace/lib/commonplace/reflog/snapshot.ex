@@ -227,9 +227,7 @@ defmodule Commonplace.Reflog.Snapshot do
         sc
 
       {:error, reason} ->
-        Logger.debug(
-          "Reflog checkpoint: no node identity (#{inspect(reason)}), writing unsigned"
-        )
+        Logger.debug("Reflog checkpoint: no node identity (#{inspect(reason)}), writing unsigned")
 
         nil
     end
@@ -322,7 +320,9 @@ defmodule Commonplace.Reflog.Snapshot do
     entries =
       Schema.list_entries(data_schema)
       |> Enum.reject(&String.starts_with?(&1.name, "__"))
-      |> Enum.reject(fn entry -> Enum.any?(exclude_suffixes, &String.ends_with?(entry.name, &1)) end)
+      |> Enum.reject(fn entry ->
+        Enum.any?(exclude_suffixes, &String.ends_with?(entry.name, &1))
+      end)
 
     # CX-o8tx: keep parent_index current so future commit telemetry can
     # propagate dirtiness through this dir.
@@ -345,7 +345,8 @@ defmodule Commonplace.Reflog.Snapshot do
     # if a leaf moved, the recursive return value differs and our entries map
     # mismatches the cursor → we write a new reflog snapshot.
     {entry_cids, reflog_schema_after, child_dir_added?} =
-      Enum.reduce(entries, {%{}, reflog_schema, false}, fn entry, {acc_cids, schema, child_added} ->
+      Enum.reduce(entries, {%{}, reflog_schema, false}, fn entry,
+                                                           {acc_cids, schema, child_added} ->
         case entry.type do
           :doc ->
             case CommitStoreClient.latest_commit(store, entry.node_id) do
@@ -399,7 +400,14 @@ defmodule Commonplace.Reflog.Snapshot do
         # Cursor miss — build and write the reflog snapshot doc + schema.
         {meta, commit_opts} = signed_opts(signing_context)
         schema_update = Yelixer.Encoding.encode_update(reflog_schema_after)
-        CommitStoreClient.create_chained_commit(store, reflog_dir_uuid, schema_update, meta, commit_opts)
+
+        CommitStoreClient.create_chained_commit(
+          store,
+          reflog_dir_uuid,
+          schema_update,
+          meta,
+          commit_opts
+        )
 
         snapshot_uuid =
           case get_snapshot_doc_uuid(reflog_dir_uuid, store) do
@@ -412,7 +420,15 @@ defmodule Commonplace.Reflog.Snapshot do
               updated_schema = load_schema(reflog_dir_uuid, store)
               updated_schema = Schema.add_file(updated_schema, "__snapshot", uuid)
               update = Yelixer.Encoding.encode_update(updated_schema)
-              CommitStoreClient.create_chained_commit(store, reflog_dir_uuid, update, meta, commit_opts)
+
+              CommitStoreClient.create_chained_commit(
+                store,
+                reflog_dir_uuid,
+                update,
+                meta,
+                commit_opts
+              )
+
               uuid
           end
 
@@ -426,7 +442,9 @@ defmodule Commonplace.Reflog.Snapshot do
         # CHECKPOINT ROUND, forever.
         reflog_doc = build_reflog_doc(snapshot_uuid, schema_cid_hex, entry_cids)
         update = Yelixer.Encoding.encode_update(reflog_doc)
-        commit = CommitStoreClient.create_chained_commit(store, snapshot_uuid, update, meta, commit_opts)
+
+        commit =
+          CommitStoreClient.create_chained_commit(store, snapshot_uuid, update, meta, commit_opts)
 
         store_cursor(reflog_dir_uuid, %{
           data_dir_uuid: data_dir_uuid,
@@ -584,7 +602,15 @@ defmodule Commonplace.Reflog.Snapshot do
           reflog_schema = load_schema(reflog_dir_uuid, store)
           reflog_schema = Schema.add_directory(reflog_schema, owner, uuid)
           update = Yelixer.Encoding.encode_update(reflog_schema)
-          CommitStoreClient.create_chained_commit(store, reflog_dir_uuid, update, meta, commit_opts)
+
+          CommitStoreClient.create_chained_commit(
+            store,
+            reflog_dir_uuid,
+            update,
+            meta,
+            commit_opts
+          )
+
           uuid
       end
 

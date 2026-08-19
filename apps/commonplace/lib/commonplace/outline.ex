@@ -53,7 +53,13 @@ defmodule Commonplace.Outline do
         view_uuid = UUID.uuid4()
         view_doc = ContentType.create(Yelixer.Doc.new(), :text, "_view.xml")
         view_doc = ContentType.insert_text(view_doc, 0, view_xml_template(name))
-        CommitStoreClient.create_commit(store, view_uuid, Yelixer.Encoding.encode_update(view_doc), nil)
+
+        CommitStoreClient.create_commit(
+          store,
+          view_uuid,
+          Yelixer.Encoding.encode_update(view_doc),
+          nil
+        )
 
         room_doc = Schema.add_file(room_doc, @outline_doc, uuid)
         room_doc = Schema.add_file(room_doc, "_view.xml", view_uuid)
@@ -66,7 +72,8 @@ defmodule Commonplace.Outline do
   def view_xml(name, root, store \\ CommitStoreClient) do
     with {:ok, dir_entry} <- Schema.get_entry(load_schema(root, store), @outline_dir),
          {:ok, room_entry} <- Schema.get_entry(load_schema(dir_entry.node_id, store), name),
-         {:ok, view_entry} <- Schema.get_entry(load_schema(room_entry.node_id, store), "_view.xml"),
+         {:ok, view_entry} <-
+           Schema.get_entry(load_schema(room_entry.node_id, store), "_view.xml"),
          {:ok, doc} <- DocBuilder.reconstruct_doc(store, view_entry.node_id) do
       {:ok, ContentType.get_content(doc) || ""}
     else
@@ -112,7 +119,8 @@ defmodule Commonplace.Outline do
   def lookup(name, root_uuid, store \\ CommitStoreClient) do
     with {:ok, dir_entry} <- Schema.get_entry(load_schema(root_uuid, store), @outline_dir),
          {:ok, room_entry} <- Schema.get_entry(load_schema(dir_entry.node_id, store), name),
-         {:ok, doc_entry} <- Schema.get_entry(load_schema(room_entry.node_id, store), @outline_doc) do
+         {:ok, doc_entry} <-
+           Schema.get_entry(load_schema(room_entry.node_id, store), @outline_doc) do
       {:ok, doc_entry.node_id}
     else
       :error -> {:error, :not_found}
@@ -140,8 +148,9 @@ defmodule Commonplace.Outline do
             Order.between(List.last(siblings) |> maybe(& &1.order), nil)
 
           after_id ->
-            idx = Enum.find_index(siblings, &(&1.id == after_id)) ||
-                    raise ArgumentError, "after: #{after_id} is not a sibling"
+            idx =
+              Enum.find_index(siblings, &(&1.id == after_id)) ||
+                raise ArgumentError, "after: #{after_id} is not a sibling"
 
             left = Enum.at(siblings, idx)
             right = Enum.at(siblings, idx + 1)
@@ -174,14 +183,20 @@ defmodule Commonplace.Outline do
 
   @doc "Indent: parent becomes the preceding sibling (outliner.md §3)."
   def indent(store, outline_uuid, item_id, opts \\ []) do
-    with_item(store, outline_uuid, item_id, fn items, item ->
-      siblings = siblings_of(items, item.parent)
+    with_item(
+      store,
+      outline_uuid,
+      item_id,
+      fn items, item ->
+        siblings = siblings_of(items, item.parent)
 
-      case Enum.find_index(siblings, &(&1.id == item_id)) do
-        0 -> {:error, :no_preceding_sibling}
-        idx -> {:reparent, Enum.at(siblings, idx - 1).id}
-      end
-    end, opts)
+        case Enum.find_index(siblings, &(&1.id == item_id)) do
+          0 -> {:error, :no_preceding_sibling}
+          idx -> {:reparent, Enum.at(siblings, idx - 1).id}
+        end
+      end,
+      opts
+    )
   end
 
   @doc "Outdent: parent becomes the grandparent, ordered just after the old parent."
@@ -242,7 +257,8 @@ defmodule Commonplace.Outline do
           {doc, {:error, :at_edge}}
 
         {l, r} ->
-          {__MODULE__.Internal.set_item_attribute(doc, item_id, "order", Order.between(l, r)), :ok}
+          {__MODULE__.Internal.set_item_attribute(doc, item_id, "order", Order.between(l, r)),
+           :ok}
       end
     end)
   end
@@ -251,7 +267,8 @@ defmodule Commonplace.Outline do
   def set_collapsed(store, outline_uuid, item_id, collapsed, opts \\ [])
       when is_boolean(collapsed) do
     mutate(store, outline_uuid, opts, fn doc ->
-      {__MODULE__.Internal.set_item_attribute(doc, item_id, "collapsed", to_string(collapsed)), :ok}
+      {__MODULE__.Internal.set_item_attribute(doc, item_id, "collapsed", to_string(collapsed)),
+       :ok}
     end)
   end
 
@@ -314,7 +331,13 @@ defmodule Commonplace.Outline do
         # swallowing it — a denied commit means the mutation did NOT
         # persist, so callers (OutlineLive, MCP outline actions) must see
         # the error rather than a false `:ok`/`{:ok, id}`.
-        case CommitStoreClient.create_chained_commit(store, outline_uuid, update, %{}, commit_opts) do
+        case CommitStoreClient.create_chained_commit(
+               store,
+               outline_uuid,
+               update,
+               %{},
+               commit_opts
+             ) do
           {:error, _} = commit_err -> commit_err
           _commit -> ok
         end

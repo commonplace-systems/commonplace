@@ -59,9 +59,16 @@ defmodule Commonplace.Bd.CloseCommitImportTest do
 
   setup do
     dir_a = Path.join(System.tmp_dir!(), "cp_bd_close_import_a_#{:rand.uniform(1_000_000)}")
-    dir_create = Path.join(System.tmp_dir!(), "cp_bd_close_import_create_#{:rand.uniform(1_000_000)}")
-    dir_update = Path.join(System.tmp_dir!(), "cp_bd_close_import_update_#{:rand.uniform(1_000_000)}")
-    dir_close = Path.join(System.tmp_dir!(), "cp_bd_close_import_close_#{:rand.uniform(1_000_000)}")
+
+    dir_create =
+      Path.join(System.tmp_dir!(), "cp_bd_close_import_create_#{:rand.uniform(1_000_000)}")
+
+    dir_update =
+      Path.join(System.tmp_dir!(), "cp_bd_close_import_update_#{:rand.uniform(1_000_000)}")
+
+    dir_close =
+      Path.join(System.tmp_dir!(), "cp_bd_close_import_close_#{:rand.uniform(1_000_000)}")
+
     File.mkdir_p!(dir_a)
     File.mkdir_p!(dir_create)
     File.mkdir_p!(dir_update)

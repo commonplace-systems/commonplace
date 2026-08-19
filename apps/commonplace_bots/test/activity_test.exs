@@ -87,7 +87,9 @@ defmodule Commonplace.Bots.ActivityTest do
       Activity.append(uuid, %{"decision" => "skipped"}, CommitStoreClient)
 
     :ok =
-      Activity.append(uuid, %{"decision" => "fired", "ts" => "2026-01-01T00:00:00Z"},
+      Activity.append(
+        uuid,
+        %{"decision" => "fired", "ts" => "2026-01-01T00:00:00Z"},
         CommitStoreClient
       )
 

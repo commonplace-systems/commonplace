@@ -54,7 +54,8 @@ defmodule CommonplaceWebWeb.FederationController do
   def import(conn, %{"envelope" => encoded}) when is_binary(encoded) do
     peer = conn.assigns.federation_peer
 
-    with {:ok, %{commit: commit, certs: certs, revocations: revocations}} <- Envelope.decode(encoded),
+    with {:ok, %{commit: commit, certs: certs, revocations: revocations}} <-
+           Envelope.decode(encoded),
          :ok <- Envelope.verify_certs(certs),
          :ok <- Envelope.verify_revocations(revocations) do
       if FederationPeerBudget.over_budget?(peer) do

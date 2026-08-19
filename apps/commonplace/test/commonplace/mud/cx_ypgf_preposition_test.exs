@@ -43,7 +43,15 @@ defmodule Commonplace.MUD.CxYpgfPrepositionTest do
         sweep_interval: 60_000
       )
 
-    on_exit(fn -> if Process.alive?(bursar_pid), do: (try do GenServer.stop(bursar_pid) catch (:exit, _ -> :ok) end) end)
+    on_exit(fn ->
+      if Process.alive?(bursar_pid),
+        do:
+          (try do
+             GenServer.stop(bursar_pid)
+           catch
+             (:exit, _ -> :ok)
+           end)
+    end)
 
     root_uuid = UUID.uuid4()
     update = Encoding.encode_update(Schema.new_schema())

@@ -22,7 +22,9 @@ defmodule Commonplace.DerivationRecordTest do
   alias Commonplace.Document.ContentType
 
   setup do
-    dir = Path.join(System.tmp_dir!(), "cp_derivation_record_test_#{:rand.uniform(1_000_000_000)}")
+    dir =
+      Path.join(System.tmp_dir!(), "cp_derivation_record_test_#{:rand.uniform(1_000_000_000)}")
+
     File.mkdir_p!(dir)
     store_name = :"commit_store_derivation_record_#{:rand.uniform(1_000_000_000)}"
     start_supervised!({CommitStore, data_dir: dir, name: store_name})
@@ -58,9 +60,10 @@ defmodule Commonplace.DerivationRecordTest do
   end
 
   describe "round-trip (a)" do
-    test "regenerating the artifact from the record's sources_pin alone byte-matches the original", %{
-      store: store
-    } do
+    test "regenerating the artifact from the record's sources_pin alone byte-matches the original",
+         %{
+           store: store
+         } do
       {u1, c1} = create_text_doc(store, "hello")
       {u2, c2} = create_text_doc(store, "world")
 

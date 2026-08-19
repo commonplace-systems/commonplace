@@ -75,7 +75,10 @@ defmodule Commonplace.Projection.CorpusRegressionTest do
   alias Commonplace.Projection
   alias Commonplace.Store.CommitStore
 
-  @census Path.join(__DIR__, "../../fixtures/verified_projection/conflicted_pins_census_2026-08-06.md")
+  @census Path.join(
+            __DIR__,
+            "../../fixtures/verified_projection/conflicted_pins_census_2026-08-06.md"
+          )
 
   setup do
     corpus = System.get_env("CX_CORPUS")
@@ -133,13 +136,17 @@ defmodule Commonplace.Projection.CorpusRegressionTest do
     |> String.split("\n")
     |> Enum.filter(&String.starts_with?(&1, "| `"))
     |> Enum.map(fn line ->
-      line |> String.split("|", trim: true) |> Enum.map(&String.trim(&1) |> String.trim("`"))
+      line |> String.split("|", trim: true) |> Enum.map(&(String.trim(&1) |> String.trim("`")))
     end)
     |> Enum.filter(&(length(&1) >= arity))
   end
 
   defp sha(%Yelixer.Doc{} = doc),
-    do: doc |> Yelixer.Encoding.encode_update() |> then(&:crypto.hash(:sha256, &1)) |> Base.encode16(case: :lower)
+    do:
+      doc
+      |> Yelixer.Encoding.encode_update()
+      |> then(&:crypto.hash(:sha256, &1))
+      |> Base.encode16(case: :lower)
 
   test "Part 2: at head, all 80 recorded docs return the live path's bytes", %{store: store} do
     rows = census_rows("Part 2", 8)

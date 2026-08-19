@@ -125,7 +125,11 @@ defmodule Commonplace.Sync.RenameTest do
       assert length(renames) == 2
     end
 
-    test "rename does not affect unrelated created files", %{store: store, sync_dir: dir, root_uuid: root} do
+    test "rename does not affect unrelated created files", %{
+      store: store,
+      sync_dir: dir,
+      root_uuid: root
+    } do
       file_uuid = UUID.uuid4()
       doc = Yelixer.Doc.new()
       doc = ContentType.create(doc, :text, "old.txt")
@@ -192,7 +196,11 @@ defmodule Commonplace.Sync.RenameTest do
       GenServer.stop(registry)
     end
 
-    test "inode rename works even for empty files", %{store: store, sync_dir: dir, root_uuid: root} do
+    test "inode rename works even for empty files", %{
+      store: store,
+      sync_dir: dir,
+      root_uuid: root
+    } do
       alias Commonplace.Sync.InodeTracker
 
       {:ok, registry} = InodeTracker.Registry.start_link([])

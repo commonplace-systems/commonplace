@@ -232,7 +232,9 @@ defmodule Commonplace.Bd.WriteGuard do
   end
 
   defp frozen_error(field),
-    do: {:error, "field #{inspect(field)} is frozen: ticket is closed; the one exit is ticket_set_status's closed→open reopen decision"}
+    do:
+      {:error,
+       "field #{inspect(field)} is frozen: ticket is closed; the one exit is ticket_set_status's closed→open reopen decision"}
 
   defp valid_reopen_delta?(
          %Issue{extra: current_extra},

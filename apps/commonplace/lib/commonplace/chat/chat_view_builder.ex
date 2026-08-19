@@ -120,7 +120,8 @@ defmodule Commonplace.Chat.ChatViewBuilder do
     |> Enum.join("\n              ")
   end
 
-  defp field(name, value), do: ~s(<field name="#{escape_attr(name)}" value="#{escape_attr(value)}"/>)
+  defp field(name, value),
+    do: ~s(<field name="#{escape_attr(name)}" value="#{escape_attr(value)}"/>)
 
   defp maybe_field(_name, nil), do: ""
   defp maybe_field(_name, ""), do: ""

@@ -52,7 +52,12 @@ defmodule Commonplace.Reflog.CheckoutTest do
   defp write_text_doc(store, uuid, content, sign_opts \\ []) do
     {:ok, doc} = Commonplace.Tree.DocBuilder.reconstruct_doc(store, uuid)
     old_content = ContentType.get_content(doc) || ""
-    doc = if old_content != "", do: ContentType.delete_text(doc, 0, String.length(old_content)), else: doc
+
+    doc =
+      if old_content != "",
+        do: ContentType.delete_text(doc, 0, String.length(old_content)),
+        else: doc
+
     doc = if content != "", do: ContentType.insert_text(doc, 0, content), else: doc
     update = Yelixer.Encoding.encode_update(doc)
     CommitStore.create_chained_commit(store, uuid, update, %{}, sign_opts)
@@ -148,17 +153,20 @@ defmodule Commonplace.Reflog.CheckoutTest do
     assert File.read!(Path.join(dest2, "added.txt")) == "brand new"
   end
 
-  test "CX-vt9l.2: materialize_dir/4 carries a witness-shaped, decidably-stale derivation record", %{
-    store: store,
-    dest_root: dest_root
-  } do
+  test "CX-vt9l.2: materialize_dir/4 carries a witness-shaped, decidably-stale derivation record",
+       %{
+         store: store,
+         dest_root: dest_root
+       } do
     ids = seed_tree(store)
     {:ok, cid1} = Snapshot.checkpoint(ids.root, store)
     {:ok, snapshot_uuid} = Restore.root_snapshot_uuid(store, ids.root, "server")
 
     dest1 = Path.join(dest_root, "derivation-record")
     {:ok, resolved1} = Restore.resolve(store, snapshot_uuid, cid1)
-    {:ok, %{derivation_record: record, dest: ^dest1}} = Restore.materialize_dir(store, resolved1, dest1)
+
+    {:ok, %{derivation_record: record, dest: ^dest1}} =
+      Restore.materialize_dir(store, resolved1, dest1)
 
     assert Commonplace.DerivationRecord.witness?(record)
     assert record["output"] == dest1
@@ -299,7 +307,10 @@ defmodule Commonplace.Reflog.CheckoutTest do
 
     # A dest outside the registered checkout is unaffected by the same config.
     other_dest = Path.join(dest_root, "unrelated-dest")
-    {:ok, %{files: n}} = Restore.materialize_dir(store, resolved, other_dest, config_path: config_path)
+
+    {:ok, %{files: n}} =
+      Restore.materialize_dir(store, resolved, other_dest, config_path: config_path)
+
     assert n == 3
   end
 end

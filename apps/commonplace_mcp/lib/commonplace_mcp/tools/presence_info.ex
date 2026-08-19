@@ -41,7 +41,8 @@ defmodule Commonplace.MCP.Tools.PresenceInfo do
     {:ok, Response.text(summary(payload), payload)}
   end
 
-  defp summary(%{"presence_uuid" => nil}), do: "No presence info — server started without a presence_starter."
+  defp summary(%{"presence_uuid" => nil}),
+    do: "No presence info — server started without a presence_starter."
 
   defp summary(%{"mailbox_topic" => topic, "mailbox_uuid" => uuid}) do
     "Presence active. Mailbox topic: #{topic}. Mailbox UUID: #{uuid}."

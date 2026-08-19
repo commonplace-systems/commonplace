@@ -54,16 +54,18 @@ defmodule Commonplace.Store.NamespaceValidatorTest do
       {:ok, genesis} = CommitStore.ensure_genesis(store, uuid)
 
       # First commit binds clientID 1 into the namespace (bootstrap).
-      c1 = CommitStore.create_commit(store, uuid, update_from(1, "a"), genesis.id, %{
-        kind: :regular,
-        snapshot_parent: genesis.id
-      })
+      c1 =
+        CommitStore.create_commit(store, uuid, update_from(1, "a"), genesis.id, %{
+          kind: :regular,
+          snapshot_parent: genesis.id
+        })
 
       # Import a second commit from the same clientID — should accept.
-      c2 = Commit.new(uuid, update_from(1, "b"), c1.id, %{
-        kind: :regular,
-        snapshot_parent: genesis.id
-      })
+      c2 =
+        Commit.new(uuid, update_from(1, "b"), c1.id, %{
+          kind: :regular,
+          snapshot_parent: genesis.id
+        })
 
       assert :ok = CommitStore.import_commit(store, c2)
     end
@@ -72,10 +74,11 @@ defmodule Commonplace.Store.NamespaceValidatorTest do
       uuid = "bootstrap"
       {:ok, genesis} = CommitStore.ensure_genesis(store, uuid)
 
-      commit = Commit.new(uuid, update_from(7, "first"), genesis.id, %{
-        kind: :regular,
-        snapshot_parent: genesis.id
-      })
+      commit =
+        Commit.new(uuid, update_from(7, "first"), genesis.id, %{
+          kind: :regular,
+          snapshot_parent: genesis.id
+        })
 
       # Namespace walks to an empty set; validator must accept to let
       # clientID 7 bind into the namespace as the seed.
@@ -91,18 +94,20 @@ defmodule Commonplace.Store.NamespaceValidatorTest do
       {:ok, genesis} = CommitStore.ensure_genesis(store, uuid)
 
       # Seed the namespace with clientID 1.
-      c1 = CommitStore.create_commit(store, uuid, update_from(1, "a"), genesis.id, %{
-        kind: :regular,
-        snapshot_parent: genesis.id
-      })
+      c1 =
+        CommitStore.create_commit(store, uuid, update_from(1, "a"), genesis.id, %{
+          kind: :regular,
+          snapshot_parent: genesis.id
+        })
 
       # Client 42 authors "X" referencing client 999's item. Commit's
       # reference set is {999} ⊄ namespace {1} → must reject with
       # :unknown_reference.
-      bad = Commit.new(uuid, update_referencing(42, 999), c1.id, %{
-        kind: :regular,
-        snapshot_parent: genesis.id
-      })
+      bad =
+        Commit.new(uuid, update_referencing(42, 999), c1.id, %{
+          kind: :regular,
+          snapshot_parent: genesis.id
+        })
 
       assert {:error, {:namespace_rejected, {:unknown_reference, ids}}} =
                CommitStore.import_commit(store, bad)
@@ -114,15 +119,17 @@ defmodule Commonplace.Store.NamespaceValidatorTest do
       uuid = "mismatch-nopersist"
       {:ok, genesis} = CommitStore.ensure_genesis(store, uuid)
 
-      c1 = CommitStore.create_commit(store, uuid, update_from(1, "a"), genesis.id, %{
-        kind: :regular,
-        snapshot_parent: genesis.id
-      })
+      c1 =
+        CommitStore.create_commit(store, uuid, update_from(1, "a"), genesis.id, %{
+          kind: :regular,
+          snapshot_parent: genesis.id
+        })
 
-      bad = Commit.new(uuid, update_referencing(42, 999), c1.id, %{
-        kind: :regular,
-        snapshot_parent: genesis.id
-      })
+      bad =
+        Commit.new(uuid, update_referencing(42, 999), c1.id, %{
+          kind: :regular,
+          snapshot_parent: genesis.id
+        })
 
       assert {:error, _} = CommitStore.import_commit(store, bad)
       assert :none = CommitStore.get_commit(store, bad.id)
@@ -182,15 +189,17 @@ defmodule Commonplace.Store.NamespaceValidatorTest do
       uuid = "telemetry-doc"
       {:ok, genesis} = CommitStore.ensure_genesis(store, uuid)
 
-      c1 = CommitStore.create_commit(store, uuid, update_from(1, "a"), genesis.id, %{
-        kind: :regular,
-        snapshot_parent: genesis.id
-      })
+      c1 =
+        CommitStore.create_commit(store, uuid, update_from(1, "a"), genesis.id, %{
+          kind: :regular,
+          snapshot_parent: genesis.id
+        })
 
-      bad = Commit.new(uuid, update_referencing(42, 999), c1.id, %{
-        kind: :regular,
-        snapshot_parent: genesis.id
-      })
+      bad =
+        Commit.new(uuid, update_referencing(42, 999), c1.id, %{
+          kind: :regular,
+          snapshot_parent: genesis.id
+        })
 
       assert {:error, _} = CommitStore.import_commit(store, bad)
       assert_receive {:telemetry_fired, ^ref, _, meta}
@@ -214,10 +223,11 @@ defmodule Commonplace.Store.NamespaceValidatorTest do
       uuid = "telemetry-ok"
       {:ok, genesis} = CommitStore.ensure_genesis(store, uuid)
 
-      commit = Commit.new(uuid, update_from(1, "a"), genesis.id, %{
-        kind: :regular,
-        snapshot_parent: genesis.id
-      })
+      commit =
+        Commit.new(uuid, update_from(1, "a"), genesis.id, %{
+          kind: :regular,
+          snapshot_parent: genesis.id
+        })
 
       assert :ok = CommitStore.import_commit(store, commit)
       refute_receive {:false_positive, ^ref}, 100
@@ -236,24 +246,27 @@ defmodule Commonplace.Store.NamespaceValidatorTest do
       {:ok, genesis} = CommitStore.ensure_genesis(store, uuid)
 
       # clientID 1 seeds (bootstrap)
-      c1 = CommitStore.create_commit(store, uuid, update_from(1, "a"), genesis.id, %{
-        kind: :regular,
-        snapshot_parent: genesis.id
-      })
+      c1 =
+        CommitStore.create_commit(store, uuid, update_from(1, "a"), genesis.id, %{
+          kind: :regular,
+          snapshot_parent: genesis.id
+        })
 
       # clientID 2 joins via authorship-only insert — accepted.
-      c2 = Commit.new(uuid, update_from(2, "b"), c1.id, %{
-        kind: :regular,
-        snapshot_parent: genesis.id
-      })
+      c2 =
+        Commit.new(uuid, update_from(2, "b"), c1.id, %{
+          kind: :regular,
+          snapshot_parent: genesis.id
+        })
 
       assert :ok = CommitStore.import_commit(store, c2)
 
       # A commit from clientID 1 continuing the chain is still fine.
-      c2b = Commit.new(uuid, update_from(1, "b"), c1.id, %{
-        kind: :regular,
-        snapshot_parent: genesis.id
-      })
+      c2b =
+        Commit.new(uuid, update_from(1, "b"), c1.id, %{
+          kind: :regular,
+          snapshot_parent: genesis.id
+        })
 
       assert :ok = CommitStore.import_commit(store, c2b)
     end
@@ -264,10 +277,11 @@ defmodule Commonplace.Store.NamespaceValidatorTest do
       uuid = "primitive"
       {:ok, genesis} = CommitStore.ensure_genesis(store, uuid)
 
-      c1 = CommitStore.create_commit(store, uuid, update_from(3, "hi"), genesis.id, %{
-        kind: :regular,
-        snapshot_parent: genesis.id
-      })
+      c1 =
+        CommitStore.create_commit(store, uuid, update_from(3, "hi"), genesis.id, %{
+          kind: :regular,
+          snapshot_parent: genesis.id
+        })
 
       assert Namespace.clientID_in_namespace?(store, c1.id, 3)
       refute Namespace.clientID_in_namespace?(store, c1.id, 4)

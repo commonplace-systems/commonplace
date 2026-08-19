@@ -139,7 +139,7 @@ defmodule Commonplace.Code.Allowlist do
                     {:<>, 2},
                     {:in, 2},
                     {:.., 2},
-                    {:"..//", 3},
+                    {:..//, 3},
                     {:is_atom, 1},
                     {:is_binary, 1},
                     {:is_list, 1},
@@ -467,7 +467,9 @@ defmodule Commonplace.Code.Allowlist do
   defp scan({def_form, _, args}, _p)
        when def_form in [:defmodule, :defmacro, :defmacrop, :defimpl, :defprotocol, :defdelegate] and
               is_list(args),
-       do: ["#{def_form} is not allowed (a safe body is an entry-fn body, not a module/macro definition)"]
+       do: [
+         "#{def_form} is not allowed (a safe body is an entry-fn body, not a module/macro definition)"
+       ]
 
   # ---- blocks / assignment ----------------------------------------
 
@@ -508,7 +510,7 @@ defmodule Commonplace.Code.Allowlist do
 
   # `mod.fun(...)` / `mod.fun` / `mod.fun()` — remote call or field read.
   defp scan({{:., _, [mod, fun]}, meta2, args}, p) when is_atom(fun) and is_list(args) do
-    if args == [] and Keyword.get(meta2, :no_parens) && var_node?(mod) do
+    if (args == [] and Keyword.get(meta2, :no_parens)) && var_node?(mod) do
       scan(mod, p)
     else
       handle_call(mod, fun, args, 0, p)
@@ -648,14 +650,17 @@ defmodule Commonplace.Code.Allowlist do
   defp scan_arrow_clause({:->, _, [params, body]}, p) do
     {patterns, guard} = split_when(params)
 
-    bind_reason = if Enum.any?(patterns, &binds_reserved?(&1, p)), do: [@reserved_rebind_msg], else: []
+    bind_reason =
+      if Enum.any?(patterns, &binds_reserved?(&1, p)), do: [@reserved_rebind_msg], else: []
+
     guard_reasons = if guard, do: scan(guard, p), else: []
 
     bind_reason ++ guard_reasons ++ Enum.flat_map(patterns, &scan(&1, p)) ++ scan(body, p)
   end
 
   # `cond` clauses have no binding pattern — just a boolean guard expression.
-  defp scan_cond_clause({:->, _, [[guard_expr], body]}, p), do: scan(guard_expr, p) ++ scan(body, p)
+  defp scan_cond_clause({:->, _, [[guard_expr], body]}, p),
+    do: scan(guard_expr, p) ++ scan(body, p)
 
   defp scan_for(args, p) do
     {kw, clauses} = List.pop_at(args, -1)
@@ -678,8 +683,11 @@ defmodule Commonplace.Code.Allowlist do
 
     else_reasons =
       case Keyword.get(kw, :else) do
-        else_clauses when is_list(else_clauses) -> Enum.flat_map(else_clauses, &scan_arrow_clause(&1, p))
-        _ -> []
+        else_clauses when is_list(else_clauses) ->
+          Enum.flat_map(else_clauses, &scan_arrow_clause(&1, p))
+
+        _ ->
+          []
       end
 
     other_kw_reasons =
@@ -687,7 +695,8 @@ defmodule Commonplace.Code.Allowlist do
       |> Keyword.drop([:do, :else])
       |> Enum.flat_map(fn {_k, v} -> scan(v, p) end)
 
-    do_reasons ++ else_reasons ++ other_kw_reasons ++ Enum.flat_map(clauses, &scan_generator_or_filter(&1, p))
+    do_reasons ++
+      else_reasons ++ other_kw_reasons ++ Enum.flat_map(clauses, &scan_generator_or_filter(&1, p))
   end
 
   defp scan_generator_or_filter({:<-, _, [pattern, expr]}, p) do
@@ -764,7 +773,9 @@ defmodule Commonplace.Code.Allowlist do
         end
 
       other ->
-        arg_reasons ++ scan(other, profile) ++ ["dynamic dispatch on a non-literal module/receiver is not allowed"]
+        arg_reasons ++
+          scan(other, profile) ++
+          ["dynamic dispatch on a non-literal module/receiver is not allowed"]
     end
   end
 
@@ -843,7 +854,9 @@ defmodule Commonplace.Code.Allowlist do
        when is_atom(name) and not is_list(ctx),
        do: name in reserved
 
-  defp binds_reserved?({_, _, args}, p) when is_list(args), do: Enum.any?(args, &binds_reserved?(&1, p))
+  defp binds_reserved?({_, _, args}, p) when is_list(args),
+    do: Enum.any?(args, &binds_reserved?(&1, p))
+
   defp binds_reserved?(list, p) when is_list(list), do: Enum.any?(list, &binds_reserved?(&1, p))
   defp binds_reserved?({a, b}, p), do: binds_reserved?(a, p) or binds_reserved?(b, p)
   defp binds_reserved?(_other, _p), do: false

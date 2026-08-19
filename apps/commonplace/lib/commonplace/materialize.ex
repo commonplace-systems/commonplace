@@ -83,7 +83,8 @@ defmodule Commonplace.Materialize do
   @doc """
   Materialize entries against the given rules. See module docs.
   """
-  def materialize(entries, %{chains: chain_rules}) when is_list(entries) and is_list(chain_rules) do
+  def materialize(entries, %{chains: chain_rules})
+      when is_list(entries) and is_list(chain_rules) do
     chain_field_set = chain_rules |> Enum.map(& &1.field) |> MapSet.new()
     indexed = Enum.with_index(entries)
     by_id = Map.new(indexed, fn {entry, idx} -> {entry["id"], {entry, idx}} end)

@@ -84,7 +84,10 @@ defmodule Commonplace.Federation.EnvelopeTest do
 
   test "round-trip with no certs" do
     {commit, _} = fixture()
-    assert {:ok, %{commit: decoded, certs: []}} = commit |> Envelope.encode([]) |> Envelope.decode()
+
+    assert {:ok, %{commit: decoded, certs: []}} =
+             commit |> Envelope.encode([]) |> Envelope.decode()
+
     assert decoded == commit
   end
 
@@ -191,7 +194,11 @@ defmodule Commonplace.Federation.EnvelopeTest do
 
     {:ok, rev} =
       Capability.revoke(
-        %SigningContext{identity_uuid: "revoker", private_key: revoker_priv, public_key: revoker_pub},
+        %SigningContext{
+          identity_uuid: "revoker",
+          private_key: revoker_priv,
+          public_key: revoker_pub
+        },
         cert.id
       )
 
@@ -218,7 +225,11 @@ defmodule Commonplace.Federation.EnvelopeTest do
 
     {:ok, rev} =
       Capability.revoke(
-        %SigningContext{identity_uuid: "revoker", private_key: revoker_priv, public_key: revoker_pub},
+        %SigningContext{
+          identity_uuid: "revoker",
+          private_key: revoker_priv,
+          public_key: revoker_pub
+        },
         cert.id
       )
 
@@ -264,8 +275,14 @@ defmodule Commonplace.Federation.EnvelopeForCommitTest do
 
   defp ident(id) do
     {pub, priv} = Signing.generate_keypair()
-    %{ctx: %SigningContext{identity_uuid: id, private_key: priv, public_key: pub},
-      keyed: {id, pub}, priv: priv, pub: pub, signer: Signing.signer_id(id, pub)}
+
+    %{
+      ctx: %SigningContext{identity_uuid: id, private_key: priv, public_key: pub},
+      keyed: {id, pub},
+      priv: priv,
+      pub: pub,
+      signer: Signing.signer_id(id, pub)
+    }
   end
 
   test "inlines the full chain leaf→root for a delegated commit", %{store: store} do
@@ -282,11 +299,17 @@ defmodule Commonplace.Federation.EnvelopeForCommitTest do
     bob = ident("bob")
 
     {:ok, c_leaf} =
-      Capability.delegate(alice.ctx, bob.keyed, %{
-        verbs: [:write],
-        scope: {:docs, ["d1"]},
-        caveats: %{not_before: nil, not_after: nil}
-      }, c_root.id, parent: c_root)
+      Capability.delegate(
+        alice.ctx,
+        bob.keyed,
+        %{
+          verbs: [:write],
+          scope: {:docs, ["d1"]},
+          caveats: %{not_before: nil, not_after: nil}
+        },
+        c_root.id,
+        parent: c_root
+      )
 
     :ok = CommitStore.store_capability(store, c_root)
     :ok = CommitStore.store_capability(store, c_leaf)

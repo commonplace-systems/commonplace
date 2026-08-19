@@ -56,10 +56,15 @@ defmodule Commonplace.MUD.SafeVerb.AllowlistTest do
     test "(f2) Commonplace.MUD.World.Facade.<fun>(world, ...) passes when world is the literal first arg" do
       assert :ok == Allowlist.check(~s|Commonplace.MUD.World.Facade.set_attr(world, "k", "v")|)
       # CX-cj3t.9 — the move SPLIT: move_object + move_self are admitted...
-      assert :ok == Allowlist.check(~s|Commonplace.MUD.World.Facade.move_object(world, "dest-uuid")|)
-      assert :ok == Allowlist.check(~s|Commonplace.MUD.World.Facade.move_self(world, "dest-uuid")|)
+      assert :ok ==
+               Allowlist.check(~s|Commonplace.MUD.World.Facade.move_object(world, "dest-uuid")|)
+
+      assert :ok ==
+               Allowlist.check(~s|Commonplace.MUD.World.Facade.move_self(world, "dest-uuid")|)
+
       # ...and the retired ambiguous {:move,2} now FAILS CLOSED (unknown verb).
-      assert {:error, _} = Allowlist.check(~s|Commonplace.MUD.World.Facade.move(world, "dest-uuid")|)
+      assert {:error, _} =
+               Allowlist.check(~s|Commonplace.MUD.World.Facade.move(world, "dest-uuid")|)
     end
 
     # CX-aw4r — the attributed-action primitive is admitted (plan #5955).
@@ -78,7 +83,9 @@ defmodule Commonplace.MUD.SafeVerb.AllowlistTest do
     # CX-hqk5 — the stateful-verb primitives are admitted (plan #5968).
     test "(f6) Facade.get_state/2 + put_state/3 pass" do
       assert :ok == Allowlist.check(~s|Commonplace.MUD.World.Facade.get_state(world, "lit")|)
-      assert :ok == Allowlist.check(~s|Commonplace.MUD.World.Facade.put_state(world, "lit", true)|)
+
+      assert :ok ==
+               Allowlist.check(~s|Commonplace.MUD.World.Facade.put_state(world, "lit", true)|)
     end
 
     # CX-9plf — RNG primitives admitted; raw Enum.random/:rand still banned.
@@ -91,10 +98,15 @@ defmodule Commonplace.MUD.SafeVerb.AllowlistTest do
 
     # CX-5u5j — own-inventory quest/gift verbs admitted (plan #6171).
     test "(f8) Facade.consume_from_inventory/2 + give_from_inventory/3 pass" do
-      assert :ok == Allowlist.check(~s|Commonplace.MUD.World.Facade.consume_from_inventory(world, "apple")|)
+      assert :ok ==
+               Allowlist.check(
+                 ~s|Commonplace.MUD.World.Facade.consume_from_inventory(world, "apple")|
+               )
 
       assert :ok ==
-               Allowlist.check(~s|Commonplace.MUD.World.Facade.give_from_inventory(world, "coin", "bob")|)
+               Allowlist.check(
+                 ~s|Commonplace.MUD.World.Facade.give_from_inventory(world, "coin", "bob")|
+               )
     end
 
     # CX-a2gd — invoker identity accessors admitted (plan #6189/#6193).
@@ -105,7 +117,10 @@ defmodule Commonplace.MUD.SafeVerb.AllowlistTest do
 
     # CX-<notify> — invoker-private feedback primitive admitted.
     test "(f10) Facade.notify/2 passes" do
-      assert :ok == Allowlist.check(~s|Commonplace.MUD.World.Facade.notify(world, "STATUS: charged 3/5")|)
+      assert :ok ==
+               Allowlist.check(
+                 ~s|Commonplace.MUD.World.Facade.notify(world, "STATUS: charged 3/5")|
+               )
     end
 
     test "(f3) the qualified facade form is refused when the first arg isn't the literal world binding" do
@@ -293,10 +308,9 @@ defmodule Commonplace.MUD.SafeVerb.AllowlistTest do
     test "3+ element tuple of pure data passes" do
       assert :ok == Allowlist.check(~s|{:ok, "a", "b"}|)
       assert :ok == Allowlist.check("{1, 2, 3, 4}")
+
       assert :ok ==
-               Allowlist.check(
-                 ~s|x = 1\n{:reply, x, Commonplace.MUD.World.Facade.look(world)}|
-               )
+               Allowlist.check(~s|x = 1\n{:reply, x, Commonplace.MUD.World.Facade.look(world)}|)
     end
 
     test "a call embedded in a tuple is still rejected" do
@@ -313,8 +327,11 @@ defmodule Commonplace.MUD.SafeVerb.AllowlistTest do
   describe "resolved-atom module forms (interpolation regression)" do
     test "plain string interpolation passes" do
       assert :ok == Allowlist.check(~S|name = "x"; "hi #{name}"|)
+
       assert :ok ==
-               Allowlist.check(~S|Commonplace.MUD.World.Facade.say(world, "you see #{args.thing}")|)
+               Allowlist.check(
+                 ~S|Commonplace.MUD.World.Facade.say(world, "you see #{args.thing}")|
+               )
     end
 
     test "interpolation of a disallowed call is still rejected" do
@@ -402,7 +419,8 @@ defmodule Commonplace.MUD.SafeVerb.AllowlistTest do
     end
 
     test "a syntax error is reported as unsafe_verb/syntax_error" do
-      assert {:error, {:unsafe_verb, {:syntax_error, _}}} = Allowlist.check_wrapped("defmodule Foo do")
+      assert {:error, {:unsafe_verb, {:syntax_error, _}}} =
+               Allowlist.check_wrapped("defmodule Foo do")
     end
   end
 
@@ -434,7 +452,9 @@ defmodule Commonplace.MUD.SafeVerb.AllowlistTest do
     end
 
     test "the facade's signer helpers are NOT admitted (verb can't extract the material)" do
-      assert {:error, _} = Allowlist.check(~s|Commonplace.MUD.World.Facade.signer_material(world)|)
+      assert {:error, _} =
+               Allowlist.check(~s|Commonplace.MUD.World.Facade.signer_material(world)|)
+
       assert {:error, _} = Allowlist.check(~s|Commonplace.MUD.World.Facade.install_signer(%{})|)
     end
   end

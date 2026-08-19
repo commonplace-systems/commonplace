@@ -242,7 +242,11 @@ defmodule Commonplace.MCP do
     # and what the handler ended up looking like.
     case :logger.get_handler_config(:default) do
       {:ok, cfg} ->
-        IO.puts(:stderr, "commonplace_mcp: logger default handler config = #{inspect(cfg.config, limit: 5)}")
+        IO.puts(
+          :stderr,
+          "commonplace_mcp: logger default handler config = #{inspect(cfg.config, limit: 5)}"
+        )
+
       other ->
         IO.puts(:stderr, "commonplace_mcp: get_handler_config(:default) = #{inspect(other)}")
     end
@@ -365,8 +369,7 @@ defmodule Commonplace.MCP do
           :logger.add_handler(:default, :logger_std_h, %{
             config: %{type: :standard_error},
             formatter:
-              {:logger_formatter,
-               %{single_line: true, template: [:level, " ", :msg, "\n"]}}
+              {:logger_formatter, %{single_line: true, template: [:level, " ", :msg, "\n"]}}
           })
         catch
           _, _ -> :ok
@@ -477,8 +480,11 @@ defmodule Commonplace.MCP do
   #
   # nil on either side is "couldn't determine," never "matches" — an
   # unset remote data_dir is not evidence of agreement.
-  def compare_workspace(nil, _local), do: {:error, {:workspace_unverifiable, "remote data_dir is nil"}}
-  def compare_workspace(_remote, nil), do: {:error, {:workspace_unverifiable, "local data_dir is nil"}}
+  def compare_workspace(nil, _local),
+    do: {:error, {:workspace_unverifiable, "remote data_dir is nil"}}
+
+  def compare_workspace(_remote, nil),
+    do: {:error, {:workspace_unverifiable, "local data_dir is nil"}}
 
   def compare_workspace(remote, local) when is_binary(remote) and is_binary(local) do
     if Path.expand(remote) == Path.expand(local) do
@@ -489,7 +495,9 @@ defmodule Commonplace.MCP do
   end
 
   def compare_workspace(remote, _local),
-    do: {:error, {:workspace_unverifiable, "remote data_dir has unexpected shape: #{inspect(remote)}"}}
+    do:
+      {:error,
+       {:workspace_unverifiable, "remote data_dir has unexpected shape: #{inspect(remote)}"}}
 
   # CX-11p5: escripts don't run config/runtime.exs, so the escript's
   # :mud_full_citizenship app-env defaults to `false` regardless of the

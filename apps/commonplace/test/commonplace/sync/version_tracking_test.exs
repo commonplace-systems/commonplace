@@ -42,12 +42,16 @@ defmodule Commonplace.Sync.VersionTrackingTest do
          %{store: store, root: root, dir_a: dir_a} do
       write_count = :counters.new(1, [:atomics])
 
-      {:ok, pid} = SyncLoop.start_link(
-        dir: dir_a, root_uuid: root, store: store, interval: 50,
-        on_cycle: fn _count ->
-          :counters.add(write_count, 1, 1)
-        end
-      )
+      {:ok, pid} =
+        SyncLoop.start_link(
+          dir: dir_a,
+          root_uuid: root,
+          store: store,
+          interval: 50,
+          on_cycle: fn _count ->
+            :counters.add(write_count, 1, 1)
+          end
+        )
 
       File.write!(Path.join(dir_a, "stable.txt"), "content")
       Process.sleep(300)
@@ -66,16 +70,25 @@ defmodule Commonplace.Sync.VersionTrackingTest do
     test "remote CRDT update propagates without being overwritten by stale disk",
          %{store: store, root: root, dir_a: dir_a, dir_b: dir_b} do
       # Peer A creates file
-      {:ok, loop_a} = SyncLoop.start_link(
-        dir: dir_a, root_uuid: root, store: store, interval: 50
-      )
+      {:ok, loop_a} =
+        SyncLoop.start_link(
+          dir: dir_a,
+          root_uuid: root,
+          store: store,
+          interval: 50
+        )
+
       File.write!(Path.join(dir_a, "doc.txt"), "v1")
       Process.sleep(300)
 
       # Peer B joins
-      {:ok, loop_b} = SyncLoop.start_link(
-        dir: dir_b, root_uuid: root, store: store, interval: 50
-      )
+      {:ok, loop_b} =
+        SyncLoop.start_link(
+          dir: dir_b,
+          root_uuid: root,
+          store: store,
+          interval: 50
+        )
 
       await = fn path, expected ->
         wait_until(fn -> File.read(path) == {:ok, expected} end) ||
@@ -111,17 +124,26 @@ defmodule Commonplace.Sync.VersionTrackingTest do
 
     test "concurrent edits on both peers resolve via CRDT",
          %{store: store, root: root, dir_a: dir_a, dir_b: dir_b} do
-      {:ok, loop_a} = SyncLoop.start_link(
-        dir: dir_a, root_uuid: root, store: store, interval: 50
-      )
+      {:ok, loop_a} =
+        SyncLoop.start_link(
+          dir: dir_a,
+          root_uuid: root,
+          store: store,
+          interval: 50
+        )
 
       # Create initial file via peer A
       File.write!(Path.join(dir_a, "shared.txt"), "original")
       Process.sleep(300)
 
-      {:ok, loop_b} = SyncLoop.start_link(
-        dir: dir_b, root_uuid: root, store: store, interval: 50
-      )
+      {:ok, loop_b} =
+        SyncLoop.start_link(
+          dir: dir_b,
+          root_uuid: root,
+          store: store,
+          interval: 50
+        )
+
       Process.sleep(300)
 
       # Both peers should have the file
@@ -159,8 +181,12 @@ defmodule Commonplace.Sync.VersionTrackingTest do
     val = fun.()
 
     cond do
-      val -> val
-      System.monotonic_time(:millisecond) >= deadline -> val
+      val ->
+        val
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        val
+
       true ->
         Process.sleep(step_ms)
         do_wait(fun, deadline, step_ms)

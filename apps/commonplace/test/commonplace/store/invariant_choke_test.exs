@@ -169,6 +169,7 @@ defmodule Commonplace.Store.InvariantChokeTest do
 
     test "a local write rejected by the local-write gate", %{store: store} do
       Application.put_env(:commonplace, :trust, %{accept_unsigned: false, trusted_identities: %{}})
+
       Application.put_env(:commonplace, :local_write_gate, :enforce)
 
       uuid = UUID.uuid4()
@@ -181,6 +182,7 @@ defmodule Commonplace.Store.InvariantChokeTest do
 
     test "put_built_commit rejected by the local-write gate", %{store: store} do
       Application.put_env(:commonplace, :trust, %{accept_unsigned: false, trusted_identities: %{}})
+
       Application.put_env(:commonplace, :local_write_gate, :enforce)
 
       uuid = UUID.uuid4()

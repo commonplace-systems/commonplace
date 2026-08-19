@@ -15,7 +15,8 @@ defmodule Commonplace.VersionHandshakeTest do
       # These probe modules exist in this app, so they must have loaded
       # to real md5 binaries, not :unavailable.
       for mod <- VersionHandshake.probe_modules() do
-        assert is_binary(digest[mod]), "expected #{inspect(mod)} to have a real md5, got #{inspect(digest[mod])}"
+        assert is_binary(digest[mod]),
+               "expected #{inspect(mod)} to have a real md5, got #{inspect(digest[mod])}"
       end
     end
   end
@@ -31,7 +32,12 @@ defmodule Commonplace.VersionHandshakeTest do
     test "against Node.self() with apps() returns a consistent map" do
       digest = VersionHandshake.resident_digest(VersionHandshake.apps())
 
-      assert %{apps: apps, loaded: loaded, not_loaded_count: not_loaded_count, missing_apps: missing_apps} =
+      assert %{
+               apps: apps,
+               loaded: loaded,
+               not_loaded_count: not_loaded_count,
+               missing_apps: missing_apps
+             } =
                digest
 
       assert apps == VersionHandshake.apps()

@@ -45,7 +45,13 @@ defmodule Commonplace.Scheduler.AgentTest do
       )
 
     on_exit(fn ->
-      if Process.alive?(pid), do: (try do GenServer.stop(pid) catch (:exit, _ -> :ok) end)
+      if Process.alive?(pid),
+        do:
+          (try do
+             GenServer.stop(pid)
+           catch
+             (:exit, _ -> :ok)
+           end)
     end)
 
     {pid, agent_name}
@@ -187,6 +193,7 @@ defmodule Commonplace.Scheduler.AgentTest do
 
       # Poll briefly — commit happens after broadcast.
       {:ok, scheduler_uuid} = resolve_scheduler_doc_uuid(store, root)
+
       eventually(fn ->
         sdoc = Doc.load(scheduler_uuid, store)
         {:ok, entry} = Doc.get(sdoc, id)

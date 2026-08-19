@@ -49,7 +49,12 @@ defmodule Commonplace.Trust.DefineVerbGateTest do
 
     {owner_pub, owner_priv} = Signing.generate_keypair()
     owner_identity = "def0000-#{:rand.uniform(999_999_999_999)}"
-    owner_ctx = %SigningContext{identity_uuid: owner_identity, private_key: owner_priv, public_key: owner_pub}
+
+    owner_ctx = %SigningContext{
+      identity_uuid: owner_identity,
+      private_key: owner_priv,
+      public_key: owner_pub
+    }
 
     {stranger_pub, stranger_priv} = Signing.generate_keypair()
     stranger_identity = "def1111-#{:rand.uniform(999_999_999_999)}"
@@ -74,7 +79,10 @@ defmodule Commonplace.Trust.DefineVerbGateTest do
   end
 
   defp strict!(trusted) do
-    Application.put_env(:commonplace, :trust, %{accept_unsigned: false, trusted_identities: trusted})
+    Application.put_env(:commonplace, :trust, %{
+      accept_unsigned: false,
+      trusted_identities: trusted
+    })
   end
 
   defp verb_source(n) do
@@ -111,7 +119,10 @@ defmodule Commonplace.Trust.DefineVerbGateTest do
     cap
   end
 
-  test "permissive default: an unsigned verb doc compiles (status quo)", %{store: store, section_uuid: section} do
+  test "permissive default: an unsigned verb doc compiles (status quo)", %{
+    store: store,
+    section_uuid: section
+  } do
     uuid = mint(store, verb_source(1), [])
     assert {:ok, mod} = SourceDoc.compile(uuid, store, gate: {:verb, [section]})
     assert mod.run(nil, nil) == :verb_1
@@ -161,9 +172,15 @@ defmodule Commonplace.Trust.DefineVerbGateTest do
     strict!(%{owner_identity => Signing.encode_key(owner_pub)})
 
     cap =
-      issue_define_cap(store, owner_ctx, {stranger_ctx.identity_uuid, stranger_ctx.public_key}, [section], [
-        :write
-      ])
+      issue_define_cap(
+        store,
+        owner_ctx,
+        {stranger_ctx.identity_uuid, stranger_ctx.public_key},
+        [section],
+        [
+          :write
+        ]
+      )
 
     uuid = UUID.uuid4()
 
@@ -190,9 +207,15 @@ defmodule Commonplace.Trust.DefineVerbGateTest do
     strict!(%{owner_identity => Signing.encode_key(owner_pub)})
 
     cap =
-      issue_define_cap(store, owner_ctx, {stranger_ctx.identity_uuid, stranger_ctx.public_key}, [section], [
-        :define_verb
-      ])
+      issue_define_cap(
+        store,
+        owner_ctx,
+        {stranger_ctx.identity_uuid, stranger_ctx.public_key},
+        [section],
+        [
+          :define_verb
+        ]
+      )
 
     uuid = UUID.uuid4()
 
@@ -235,9 +258,15 @@ defmodule Commonplace.Trust.DefineVerbGateTest do
     strict!(%{owner_identity => Signing.encode_key(owner_pub)})
 
     cap =
-      issue_define_cap(store, owner_ctx, {stranger_ctx.identity_uuid, stranger_ctx.public_key}, [section], [
-        :define_verb
-      ])
+      issue_define_cap(
+        store,
+        owner_ctx,
+        {stranger_ctx.identity_uuid, stranger_ctx.public_key},
+        [section],
+        [
+          :define_verb
+        ]
+      )
 
     uuid = UUID.uuid4()
 
@@ -271,9 +300,15 @@ defmodule Commonplace.Trust.DefineVerbGateTest do
     strict!(%{owner_identity => Signing.encode_key(owner_pub)})
 
     cap =
-      issue_define_cap(store, owner_ctx, {owner_ctx.identity_uuid, owner_ctx.public_key}, [section], [
-        :define_verb
-      ])
+      issue_define_cap(
+        store,
+        owner_ctx,
+        {owner_ctx.identity_uuid, owner_ctx.public_key},
+        [section],
+        [
+          :define_verb
+        ]
+      )
 
     uuid = UUID.uuid4()
 

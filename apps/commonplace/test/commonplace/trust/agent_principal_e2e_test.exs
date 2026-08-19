@@ -46,7 +46,9 @@ defmodule Commonplace.Trust.AgentPrincipalE2ETest do
     )
 
     secrets = :"agent_e2e_secrets_#{:rand.uniform(1_000_000)}"
-    {:ok, secrets_pid} = SecretStore.start_link(data_dir: Path.join(dir, "secrets"), name: secrets)
+
+    {:ok, secrets_pid} =
+      SecretStore.start_link(data_dir: Path.join(dir, "secrets"), name: secrets)
 
     # Root schema so __identities__ has somewhere to live.
     root_uuid = UUID.uuid4()
@@ -70,7 +72,15 @@ defmodule Commonplace.Trust.AgentPrincipalE2ETest do
 
     on_exit(fn ->
       Application.delete_env(:commonplace, :trust)
-      if Process.alive?(secrets_pid), do: (try do GenServer.stop(secrets_pid) catch (:exit, _ -> :ok) end)
+
+      if Process.alive?(secrets_pid),
+        do:
+          (try do
+             GenServer.stop(secrets_pid)
+           catch
+             (:exit, _ -> :ok)
+           end)
+
       File.rm_rf!(dir)
     end)
 

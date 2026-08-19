@@ -49,7 +49,9 @@ defmodule Commonplace.MUD.SchemasTest do
 
     test "decoder fills missing keys with defaults" do
       json = ~s({"kind":"room","name":"x"})
-      {:ok, %Room{name: "x", description: "", exits: %{}, tick_interval_ms: nil}} = Schemas.decode_room(json)
+
+      {:ok, %Room{name: "x", description: "", exits: %{}, tick_interval_ms: nil}} =
+        Schemas.decode_room(json)
     end
   end
 
@@ -62,7 +64,9 @@ defmodule Commonplace.MUD.SchemasTest do
     end
 
     test "load_object", %{store: store} do
-      json = Schemas.encode_object(%Object{name: "cloak", description: "Warm.", aliases: ["cape"]})
+      json =
+        Schemas.encode_object(%Object{name: "cloak", description: "Warm.", aliases: ["cape"]})
+
       {:ok, dir_uuid} = Schemas.create_dir_with_meta(Schemas.object_filename(), json, store)
 
       {:ok, obj} = Schemas.load_object(dir_uuid, store)

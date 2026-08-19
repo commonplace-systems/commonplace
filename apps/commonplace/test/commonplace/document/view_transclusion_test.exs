@@ -84,9 +84,7 @@ defmodule Commonplace.Document.ViewTransclusionTest do
       _ = seed_text_doc(ctx.store, ctx.root, "note.txt", "should not appear")
 
       view =
-        parse!(
-          ~s(<view><include from="note.txt"><text>pre-inlined</text></include></view>)
-        )
+        parse!(~s(<view><include from="note.txt"><text>pre-inlined</text></include></view>))
 
       result = expand(view, ctx)
 

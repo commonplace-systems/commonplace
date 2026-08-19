@@ -117,8 +117,11 @@ defmodule CommonplaceWebWeb.ViewRenderer do
     # no kind keeps the legacy single-class shape.
     class =
       case kind do
-        nil -> "cp-entity border border-base-300 rounded-lg p-4 bg-base-100 space-y-2"
-        k -> ~s(cp-entity entity--#{escape(k)} border border-base-300 rounded-lg p-4 bg-base-100 space-y-2)
+        nil ->
+          "cp-entity border border-base-300 rounded-lg p-4 bg-base-100 space-y-2"
+
+        k ->
+          ~s(cp-entity entity--#{escape(k)} border border-base-300 rounded-lg p-4 bg-base-100 space-y-2)
       end
 
     name = n.attrs["name"]
@@ -132,7 +135,10 @@ defmodule CommonplaceWebWeb.ViewRenderer do
       ~s(<span class="badge badge-sm badge-primary">),
       escape(label),
       "</span>",
-      if(name, do: [~s(<span class="font-semibold text-base-content/80">), escape(name), "</span>"], else: ""),
+      if(name,
+        do: [~s(<span class="font-semibold text-base-content/80">), escape(name), "</span>"],
+        else: ""
+      ),
       "</header>",
       render_children(n, path, identity),
       "</section>"
@@ -163,7 +169,7 @@ defmodule CommonplaceWebWeb.ViewRenderer do
         lang = n.attrs["language"] || ""
 
         [
-          ~s(<pre class="cp-text-code bg-base-300 rounded p-3 text-sm overflow-x-auto"><code class=") ,
+          ~s(<pre class="cp-text-code bg-base-300 rounded p-3 text-sm overflow-x-auto"><code class="),
           escape("language-" <> lang),
           ~s(">),
           escape(text),
@@ -509,7 +515,9 @@ defmodule CommonplaceWebWeb.ViewRenderer do
 
         href = build_wiki_path(current_path, sanitize_page_name(page))
 
-        ~s(<a href=") <> escape(href) <> ~s(" class="text-primary hover:underline font-medium">) <>
+        ~s(<a href=") <>
+          escape(href) <>
+          ~s(" class="text-primary hover:underline font-medium">) <>
           escape(display) <> "</a>"
       end)
 

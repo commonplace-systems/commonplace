@@ -38,15 +38,32 @@ defmodule Commonplace.MUD.PresenceIdentityScopeTest do
     end
 
     {:ok, bursar} =
-      Commonplace.Green.Bursar.start_link(root_uuid: UUID.uuid4(), store: store, sweep_interval: 60_000)
+      Commonplace.Green.Bursar.start_link(
+        root_uuid: UUID.uuid4(),
+        store: store,
+        sweep_interval: 60_000
+      )
 
-    on_exit(fn -> if Process.alive?(bursar), do: (try do GenServer.stop(bursar) catch (:exit, _ -> :ok) end) end)
+    on_exit(fn ->
+      if Process.alive?(bursar),
+        do:
+          (try do
+             GenServer.stop(bursar)
+           catch
+             (:exit, _ -> :ok)
+           end)
+    end)
 
     # permissive gate: unsigned world-build writes land, so this isolates the
     # presence-reuse decision (identity comparison) from cert/enforce concerns.
     old = Application.get_env(:commonplace, :local_write_gate)
     Application.put_env(:commonplace, :local_write_gate, :off)
-    on_exit(fn -> if old, do: Application.put_env(:commonplace, :local_write_gate, old), else: Application.delete_env(:commonplace, :local_write_gate) end)
+
+    on_exit(fn ->
+      if old,
+        do: Application.put_env(:commonplace, :local_write_gate, old),
+        else: Application.delete_env(:commonplace, :local_write_gate)
+    end)
 
     root = UUID.uuid4()
     genesis(store, root, Schema.new_schema())
@@ -59,7 +76,8 @@ defmodule Commonplace.MUD.PresenceIdentityScopeTest do
     %{store: store, root: root, home: home, other: other}
   end
 
-  test "a fresh signed player is NOT hijacked by a stale same-name presence (spawns in home)", ctx do
+  test "a fresh signed player is NOT hijacked by a stale same-name presence (spawns in home)",
+       ctx do
     # Stale migration ghost: "alice.usr" with NO bound_identity, sitting in the
     # OTHER room (not alice's home).
     seed_presence(ctx.store, ctx.other, "alice.usr", nil)
@@ -127,12 +145,20 @@ defmodule Commonplace.MUD.PresenceIdentityScopeTest do
 
   # ---- helpers ----
 
-  defp genesis(store, uuid, doc), do: CommitStore.create_commit(store, uuid, Encoding.encode_update(doc), nil)
+  defp genesis(store, uuid, doc),
+    do: CommitStore.create_commit(store, uuid, Encoding.encode_update(doc), nil)
 
   defp room(store, name) do
     meta = UUID.uuid4()
     mdoc = Doc.new() |> ContentType.create(:text, "meta")
-    mdoc = ContentType.insert_text(mdoc, 0, Jason.encode!(%{"kind" => "room", "name" => name, "exits" => %{}}))
+
+    mdoc =
+      ContentType.insert_text(
+        mdoc,
+        0,
+        Jason.encode!(%{"kind" => "room", "name" => name, "exits" => %{}})
+      )
+
     CommitStore.create_commit(store, meta, Encoding.encode_update(mdoc), nil)
 
     dir = UUID.uuid4()
@@ -142,7 +168,13 @@ defmodule Commonplace.MUD.PresenceIdentityScopeTest do
 
   defp link(store, parent, name, child) do
     {:ok, schema} = Commonplace.MUD.Schemas.load_dir_schema(parent, store)
-    CommitStore.create_chained_commit(store, parent, Encoding.encode_update(Schema.add_directory(schema, name, child)), %{})
+
+    CommitStore.create_chained_commit(
+      store,
+      parent,
+      Encoding.encode_update(Schema.add_directory(schema, name, child)),
+      %{}
+    )
   end
 
   defp seed_presence(store, room_dir, filename, bound_identity) do
@@ -150,15 +182,33 @@ defmodule Commonplace.MUD.PresenceIdentityScopeTest do
     doc = Doc.new() |> ContentType.create(:map, filename)
     doc = ContentType.set_key(doc, "name", String.trim_trailing(filename, ".usr"))
     doc = ContentType.set_key(doc, "type", "usr")
-    doc = if bound_identity, do: ContentType.set_key(doc, "bound_identity", bound_identity), else: doc
+
+    doc =
+      if bound_identity, do: ContentType.set_key(doc, "bound_identity", bound_identity), else: doc
+
     CommitStore.create_commit(store, uuid, Encoding.encode_update(doc), nil)
 
     {:ok, schema} = Commonplace.MUD.Schemas.load_dir_schema(room_dir, store)
-    CommitStore.create_chained_commit(store, room_dir, Encoding.encode_update(Schema.add_file(schema, filename, uuid)), %{})
+
+    CommitStore.create_chained_commit(
+      store,
+      room_dir,
+      Encoding.encode_update(Schema.add_file(schema, filename, uuid)),
+      %{}
+    )
+
     uuid
   end
 
   defp pk, do: elem(kp(), 0)
   defp sk, do: elem(kp(), 1)
-  defp kp, do: Process.get(:vhnj_kp) || (kp = Signing.generate_keypair(); Process.put(:vhnj_kp, kp); kp)
+
+  defp kp,
+    do:
+      Process.get(:vhnj_kp) ||
+        (
+          kp = Signing.generate_keypair()
+          Process.put(:vhnj_kp, kp)
+          kp
+        )
 end

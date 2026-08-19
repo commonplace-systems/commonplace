@@ -148,8 +148,7 @@ defmodule Commonplace.Tree.Merge do
 
   defmodule MergeReport do
     @moduledoc "Result of a merge operation."
-    defstruct merged_docs: [], new_docs: [], deleted_docs: [], conflicts: [],
-              auto_renamed: []
+    defstruct merged_docs: [], new_docs: [], deleted_docs: [], conflicts: [], auto_renamed: []
   end
 
   @doc """
@@ -189,7 +188,12 @@ defmodule Commonplace.Tree.Merge do
             if not is_schema?(store, source_uuid) do
               # Use merge point as baseline for leaf merge
               merge_leaf_from_merge_point(
-                source_uuid, target_uuid, merge_point_id, store, report, opts
+                source_uuid,
+                target_uuid,
+                merge_point_id,
+                store,
+                report,
+                opts
               )
             else
               {:ok, report}
@@ -288,8 +292,15 @@ defmodule Commonplace.Tree.Merge do
         with {:ok, source_schema} <- reconstruct_snapshot(store, source_uuid),
              {:ok, target_schema} <- reconstruct_snapshot(store, target_uuid) do
           merge_directory_entries(
-            source_uuid, target_uuid, ancestor, ancestor_schema,
-            source_schema, target_schema, store, report, opts
+            source_uuid,
+            target_uuid,
+            ancestor,
+            ancestor_schema,
+            source_schema,
+            target_schema,
+            store,
+            report,
+            opts
           )
         else
           _ -> {:ok, report}
@@ -302,225 +313,234 @@ defmodule Commonplace.Tree.Merge do
   end
 
   defp merge_directory_entries(
-    source_uuid, target_uuid, ancestor, ancestor_schema,
-    source_schema, target_schema, store, report, opts
-  ) do
-        ancestor_entries = Schema.entries(ancestor_schema)
-        source_entries = Schema.entries(source_schema)
-        target_entries = Schema.entries(target_schema)
+         source_uuid,
+         target_uuid,
+         ancestor,
+         ancestor_schema,
+         source_schema,
+         target_schema,
+         store,
+         report,
+         opts
+       ) do
+    ancestor_entries = Schema.entries(ancestor_schema)
+    source_entries = Schema.entries(source_schema)
+    target_entries = Schema.entries(target_schema)
 
-        # Get merge-point entries if a prior merge has been recorded (for P1-2: detecting
-        # source deletions that occurred after a prior merge round)
-        merge_point_entries = get_merge_point_entries(store, target_uuid, source_uuid)
+    # Get merge-point entries if a prior merge has been recorded (for P1-2: detecting
+    # source deletions that occurred after a prior merge round)
+    merge_point_entries = get_merge_point_entries(store, target_uuid, source_uuid)
 
-        all_names =
-          MapSet.union(
-            MapSet.new(Map.keys(source_entries)),
-            MapSet.new(Map.keys(target_entries))
-          )
+    all_names =
+      MapSet.union(
+        MapSet.new(Map.keys(source_entries)),
+        MapSet.new(Map.keys(target_entries))
+      )
 
-        reduce_result =
-          Enum.reduce_while(all_names, {target_schema, report}, fn name, {schema, rep} ->
-            source_entry = Map.get(source_entries, name)
-            target_entry = Map.get(target_entries, name)
-            ancestor_entry = Map.get(ancestor_entries, name)
+    reduce_result =
+      Enum.reduce_while(all_names, {target_schema, report}, fn name, {schema, rep} ->
+        source_entry = Map.get(source_entries, name)
+        target_entry = Map.get(target_entries, name)
+        ancestor_entry = Map.get(ancestor_entries, name)
 
-            entry_result =
-              cond do
-              source_entry != nil and target_entry != nil ->
-                source_nid = source_entry["node_id"]
-                target_nid = target_entry["node_id"]
+        entry_result =
+          cond do
+            source_entry != nil and target_entry != nil ->
+              source_nid = source_entry["node_id"]
+              target_nid = target_entry["node_id"]
 
-                case CommitStore.find_common_ancestor(store, source_nid, target_nid) do
-                  {:ok, _} ->
-                    case merge_tree(source_nid, target_nid, store, rep, opts) do
-                      {:ok, rep} ->
-                        {schema, rep}
+              case CommitStore.find_common_ancestor(store, source_nid, target_nid) do
+                {:ok, _} ->
+                  case merge_tree(source_nid, target_nid, store, rep, opts) do
+                    {:ok, rep} ->
+                      {schema, rep}
 
-                      # 7.1b: ONLY a write-gate refusal aborts the walk (the
-                      # reviewer-ruled contract). Every other child-merge error
-                      # keeps the pre-7.1b behavior — skip the entry, continue
-                      # (a child that can't merge never blocked its siblings).
-                      {:error, {:write_refused, _, _}} = refusal ->
-                        refusal
+                    # 7.1b: ONLY a write-gate refusal aborts the walk (the
+                    # reviewer-ruled contract). Every other child-merge error
+                    # keeps the pre-7.1b behavior — skip the entry, continue
+                    # (a child that can't merge never blocked its siblings).
+                    {:error, {:write_refused, _, _}} = refusal ->
+                      refusal
 
-                      {:error, _} ->
-                        {schema, rep}
-                    end
+                    {:error, _} ->
+                      {schema, rep}
+                  end
 
-                  :none ->
-                    # No shared DAG ancestry between source and target node_ids.
-                    # Check if this is a node_id replacement: source deleted the old
-                    # entry and recreated it with a new node_id under the same name.
-                    # If the ancestor had this name with the same node_id as target,
-                    # source replaced it — treat as delete old + add new (CX-5gr).
-                    ancestor_nid = if ancestor_entry, do: ancestor_entry["node_id"]
+                :none ->
+                  # No shared DAG ancestry between source and target node_ids.
+                  # Check if this is a node_id replacement: source deleted the old
+                  # entry and recreated it with a new node_id under the same name.
+                  # If the ancestor had this name with the same node_id as target,
+                  # source replaced it — treat as delete old + add new (CX-5gr).
+                  ancestor_nid = if ancestor_entry, do: ancestor_entry["node_id"]
 
-                    if ancestor_nid != nil and ancestor_nid == target_nid do
-                      # Source replaced the entry. Check if target modified the old doc
-                      # since the ancestor — if so, it's a delete-vs-modify conflict.
-                      if modified_since_ancestor?(store, target_nid, ancestor_nid, ancestor) do
-                        conflict = {:delete_vs_modify, name, target_nid}
-                        {schema, %{rep | conflicts: [conflict | rep.conflicts]}}
-                      else
-                        # Safe replacement: remove old entry, fork new source doc into target
-                        source_type = source_entry["type"]
-                        new_uuid = fork_into_target(source_nid, source_type, store)
-
-                        schema = Schema.remove_entry(schema, name)
-
-                        schema =
-                          case source_type do
-                            "dir" -> Schema.add_directory(schema, name, new_uuid)
-                            _ -> Schema.add_file(schema, name, new_uuid)
-                          end
-
-                        rep = %{
-                          rep
-                          | deleted_docs: [target_nid | rep.deleted_docs],
-                            new_docs: [{source_nid, new_uuid} | rep.new_docs]
-                        }
-
-                        {schema, rep}
-                      end
+                  if ancestor_nid != nil and ancestor_nid == target_nid do
+                    # Source replaced the entry. Check if target modified the old doc
+                    # since the ancestor — if so, it's a delete-vs-modify conflict.
+                    if modified_since_ancestor?(store, target_nid, ancestor_nid, ancestor) do
+                      conflict = {:delete_vs_modify, name, target_nid}
+                      {schema, %{rep | conflicts: [conflict | rep.conflicts]}}
                     else
-                      # True collision: both branches independently added an entry with the
-                      # same name. Auto-rename the incoming (source) entry to avoid collision.
-                      type = source_entry["type"]
-                      renamed = unique_rename(name, schema)
-                      new_uuid = fork_into_target(source_nid, type, store)
+                      # Safe replacement: remove old entry, fork new source doc into target
+                      source_type = source_entry["type"]
+                      new_uuid = fork_into_target(source_nid, source_type, store)
+
+                      schema = Schema.remove_entry(schema, name)
 
                       schema =
-                        case type do
-                          "dir" -> Schema.add_directory(schema, renamed, new_uuid)
-                          _ -> Schema.add_file(schema, renamed, new_uuid)
+                        case source_type do
+                          "dir" -> Schema.add_directory(schema, name, new_uuid)
+                          _ -> Schema.add_file(schema, name, new_uuid)
                         end
-
-                      rename_entry = {:auto_renamed, name, renamed, source_nid, new_uuid}
 
                       rep = %{
                         rep
-                        | auto_renamed: [rename_entry | rep.auto_renamed],
+                        | deleted_docs: [target_nid | rep.deleted_docs],
                           new_docs: [{source_nid, new_uuid} | rep.new_docs]
                       }
 
                       {schema, rep}
                     end
-                end
+                  else
+                    # True collision: both branches independently added an entry with the
+                    # same name. Auto-rename the incoming (source) entry to avoid collision.
+                    type = source_entry["type"]
+                    renamed = unique_rename(name, schema)
+                    new_uuid = fork_into_target(source_nid, type, store)
 
-              source_entry != nil and target_entry == nil and ancestor_entry == nil ->
-                # Added on source, not present on target at common ancestor → add to target
-                source_nid = source_entry["node_id"]
-                type = source_entry["type"]
+                    schema =
+                      case type do
+                        "dir" -> Schema.add_directory(schema, renamed, new_uuid)
+                        _ -> Schema.add_file(schema, renamed, new_uuid)
+                      end
 
-                new_uuid = fork_into_target(source_nid, type, store)
+                    rename_entry = {:auto_renamed, name, renamed, source_nid, new_uuid}
 
-                schema =
-                  case type do
-                    "dir" -> Schema.add_directory(schema, name, new_uuid)
-                    _ -> Schema.add_file(schema, name, new_uuid)
+                    rep = %{
+                      rep
+                      | auto_renamed: [rename_entry | rep.auto_renamed],
+                        new_docs: [{source_nid, new_uuid} | rep.new_docs]
+                    }
+
+                    {schema, rep}
                   end
-
-                {schema, %{rep | new_docs: [{source_nid, new_uuid} | rep.new_docs]}}
-
-              source_entry == nil and target_entry != nil and ancestor_entry == nil ->
-                # Only in target, not in source, not in ancestor.
-                # Check merge-point schema: if it was present there, source deleted it after a prior merge.
-                mp_entry = if merge_point_entries, do: Map.get(merge_point_entries, name)
-
-                if mp_entry != nil do
-                  # Was in merge-point schema, now gone from source → source deleted after prior merge.
-                  # Verify lineage: target entry must share DAG ancestry with merge-point entry.
-                  # If target independently created a same-named doc, don't delete it.
-                  target_nid = target_entry["node_id"]
-                  mp_nid = mp_entry["node_id"]
-
-                  has_lineage =
-                    case CommitStore.find_common_ancestor(store, target_nid, mp_nid) do
-                      {:ok, _} -> true
-                      :none -> false
-                    end
-
-                  cond do
-                    not has_lineage ->
-                      # No shared history — target created this independently, keep it
-                      {schema, rep}
-                    modified_since_merge_point?(store, target_nid, mp_nid) ->
-                      conflict = {:delete_vs_modify, name, target_nid}
-                      {schema, %{rep | conflicts: [conflict | rep.conflicts]}}
-                    true ->
-                      schema = Schema.remove_entry(schema, name)
-                      {schema, %{rep | deleted_docs: [target_nid | rep.deleted_docs]}}
-                  end
-                else
-                  # Truly a target-only addition, keep
-                  {schema, rep}
-                end
-
-              source_entry == nil and target_entry != nil and ancestor_entry != nil ->
-                # Removed on source, still present on target
-                target_nid = target_entry["node_id"]
-                ancestor_nid = ancestor_entry["node_id"]
-
-                if not modified_since_ancestor?(store, target_nid, ancestor_nid, ancestor) do
-                  schema = Schema.remove_entry(schema, name)
-                  {schema, %{rep | deleted_docs: [target_nid | rep.deleted_docs]}}
-                else
-                  conflict = {:delete_vs_modify, name, target_nid}
-                  {schema, %{rep | conflicts: [conflict | rep.conflicts]}}
-                end
-
-              source_entry != nil and target_entry == nil and ancestor_entry != nil ->
-                # Was in ancestor, removed from target, still in source → target removed it, keep removed
-                {schema, rep}
-
-              true ->
-                {schema, rep}
               end
 
-            case entry_result do
-              {:error, _} = error -> {:halt, error}
-              ok -> {:cont, ok}
-            end
-          end)
+            source_entry != nil and target_entry == nil and ancestor_entry == nil ->
+              # Added on source, not present on target at common ancestor → add to target
+              source_nid = source_entry["node_id"]
+              type = source_entry["type"]
 
-        case reduce_result do
-          {:error, _} = error ->
-            error
+              new_uuid = fork_into_target(source_nid, type, store)
 
-          {updated_target_schema, report} ->
-            schema_update = Encoding.encode_update(updated_target_schema)
+              schema =
+                case type do
+                  "dir" -> Schema.add_directory(schema, name, new_uuid)
+                  _ -> Schema.add_file(schema, name, new_uuid)
+                end
 
-            commit_result =
-              with {:ok, target_latest} <- CommitStore.latest_commit(store, target_uuid),
-                   {:ok, source_latest} <- CommitStore.latest_commit(store, source_uuid) do
-                case CommitStore.create_commit(
-                       store,
-                       target_uuid,
-                       schema_update,
-                       target_latest.id,
-                       Keyword.get(opts, :metadata, %{}),
-                       opts
-                     ) do
-                  {:error, reason} ->
-                    {:error, {:write_refused, target_uuid, reason}}
+              {schema, %{rep | new_docs: [{source_nid, new_uuid} | rep.new_docs]}}
 
-                  _commit ->
-                    CommitStore.set_merge_point(store, target_uuid, source_uuid, source_latest.id)
-                    :ok
+            source_entry == nil and target_entry != nil and ancestor_entry == nil ->
+              # Only in target, not in source, not in ancestor.
+              # Check merge-point schema: if it was present there, source deleted it after a prior merge.
+              mp_entry = if merge_point_entries, do: Map.get(merge_point_entries, name)
+
+              if mp_entry != nil do
+                # Was in merge-point schema, now gone from source → source deleted after prior merge.
+                # Verify lineage: target entry must share DAG ancestry with merge-point entry.
+                # If target independently created a same-named doc, don't delete it.
+                target_nid = target_entry["node_id"]
+                mp_nid = mp_entry["node_id"]
+
+                has_lineage =
+                  case CommitStore.find_common_ancestor(store, target_nid, mp_nid) do
+                    {:ok, _} -> true
+                    :none -> false
+                  end
+
+                cond do
+                  not has_lineage ->
+                    # No shared history — target created this independently, keep it
+                    {schema, rep}
+
+                  modified_since_merge_point?(store, target_nid, mp_nid) ->
+                    conflict = {:delete_vs_modify, name, target_nid}
+                    {schema, %{rep | conflicts: [conflict | rep.conflicts]}}
+
+                  true ->
+                    schema = Schema.remove_entry(schema, name)
+                    {schema, %{rep | deleted_docs: [target_nid | rep.deleted_docs]}}
                 end
               else
-                _ -> :ok
+                # Truly a target-only addition, keep
+                {schema, rep}
               end
 
-            filter_result = maybe_filter_processes(store, target_uuid, opts)
+            source_entry == nil and target_entry != nil and ancestor_entry != nil ->
+              # Removed on source, still present on target
+              target_nid = target_entry["node_id"]
+              ancestor_nid = ancestor_entry["node_id"]
 
-            case {commit_result, filter_result} do
-              {{:error, _} = error, _} -> error
-              {:ok, {:error, _} = error} -> error
-              _ -> {:ok, report}
-            end
+              if not modified_since_ancestor?(store, target_nid, ancestor_nid, ancestor) do
+                schema = Schema.remove_entry(schema, name)
+                {schema, %{rep | deleted_docs: [target_nid | rep.deleted_docs]}}
+              else
+                conflict = {:delete_vs_modify, name, target_nid}
+                {schema, %{rep | conflicts: [conflict | rep.conflicts]}}
+              end
+
+            source_entry != nil and target_entry == nil and ancestor_entry != nil ->
+              # Was in ancestor, removed from target, still in source → target removed it, keep removed
+              {schema, rep}
+
+            true ->
+              {schema, rep}
+          end
+
+        case entry_result do
+          {:error, _} = error -> {:halt, error}
+          ok -> {:cont, ok}
         end
+      end)
+
+    case reduce_result do
+      {:error, _} = error ->
+        error
+
+      {updated_target_schema, report} ->
+        schema_update = Encoding.encode_update(updated_target_schema)
+
+        commit_result =
+          with {:ok, target_latest} <- CommitStore.latest_commit(store, target_uuid),
+               {:ok, source_latest} <- CommitStore.latest_commit(store, source_uuid) do
+            case CommitStore.create_commit(
+                   store,
+                   target_uuid,
+                   schema_update,
+                   target_latest.id,
+                   Keyword.get(opts, :metadata, %{}),
+                   opts
+                 ) do
+              {:error, reason} ->
+                {:error, {:write_refused, target_uuid, reason}}
+
+              _commit ->
+                CommitStore.set_merge_point(store, target_uuid, source_uuid, source_latest.id)
+                :ok
+            end
+          else
+            _ -> :ok
+          end
+
+        filter_result = maybe_filter_processes(store, target_uuid, opts)
+
+        case {commit_result, filter_result} do
+          {{:error, _} = error, _} -> error
+          {:ok, {:error, _} = error} -> error
+          _ -> {:ok, report}
+        end
+    end
   end
 
   defp fork_into_target(source_uuid, _type, store) do

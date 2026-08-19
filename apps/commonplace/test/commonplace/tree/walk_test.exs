@@ -92,7 +92,9 @@ defmodule Commonplace.Tree.WalkTest do
 
     test "returns error for missing path segment", %{store: store, root: root} do
       loader = &load_schema(store, &1)
-      assert {:error, {:not_found, "nonexistent"}} = Walk.resolve_path(root, "nonexistent", loader)
+
+      assert {:error, {:not_found, "nonexistent"}} =
+               Walk.resolve_path(root, "nonexistent", loader)
     end
 
     test "returns error for missing intermediate directory", %{store: store, root: root} do

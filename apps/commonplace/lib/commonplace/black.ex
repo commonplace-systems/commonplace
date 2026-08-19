@@ -442,9 +442,14 @@ defmodule Commonplace.Black do
 
     Enum.reduce(entries, state, fn entry, acc ->
       cond do
-        acc.stopped -> acc
-        entry.type == :dir -> expand(store, entry.node_id, path ++ [entry.name], segments, depth + 1, max_depth, acc)
-        true -> acc
+        acc.stopped ->
+          acc
+
+        entry.type == :dir ->
+          expand(store, entry.node_id, path ++ [entry.name], segments, depth + 1, max_depth, acc)
+
+        true ->
+          acc
       end
     end)
   end
@@ -597,7 +602,9 @@ defmodule Commonplace.Black do
   end
 
   defp maybe_put_pin(%{with_pin: false} = state, _uuid, _commit_id), do: state
-  defp maybe_put_pin(state, uuid, commit_id), do: %{state | pin: Map.put(state.pin, uuid, commit_id)}
+
+  defp maybe_put_pin(state, uuid, commit_id),
+    do: %{state | pin: Map.put(state.pin, uuid, commit_id)}
 
   # --- Private: fnmatch-style single-segment glob -> regex ---
   #

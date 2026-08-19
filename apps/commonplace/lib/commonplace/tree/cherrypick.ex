@@ -84,6 +84,7 @@ defmodule Commonplace.Tree.Cherrypick do
       case CommitStore.latest_commit(store, target_uuid) do
         {:ok, latest_commit} ->
           doc = Doc.new()
+
           case Encoding.apply_update(doc, latest_commit.update) do
             {:ok, d} -> d
             {:error, _} -> Doc.new()

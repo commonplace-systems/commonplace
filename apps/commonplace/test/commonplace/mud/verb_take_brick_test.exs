@@ -27,7 +27,18 @@ defmodule Commonplace.MUD.VerbTakeBrickTest do
 
   alias Commonplace.Crypto.{NodeIdentity, Signing, SigningContext}
   alias Commonplace.Green.{Bursar, BursarClient}
-  alias Commonplace.MUD.{Citizenship, Parser, Schemas, SignedWrite, Take, VerbSource, Verbs, World}
+
+  alias Commonplace.MUD.{
+    Citizenship,
+    Parser,
+    Schemas,
+    SignedWrite,
+    Take,
+    VerbSource,
+    Verbs,
+    World
+  }
+
   alias Commonplace.MUD.Schemas.{Object, Room}
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.{Fork, Schema}
@@ -64,7 +75,9 @@ defmodule Commonplace.MUD.VerbTakeBrickTest do
 
     on_exit(fn ->
       restore = fn key, v ->
-        if is_nil(v), do: Application.delete_env(:commonplace, key), else: Application.put_env(:commonplace, key, v)
+        if is_nil(v),
+          do: Application.delete_env(:commonplace, key),
+          else: Application.put_env(:commonplace, key, v)
       end
 
       restore.(:data_dir, old_data_dir)
@@ -78,8 +91,18 @@ defmodule Commonplace.MUD.VerbTakeBrickTest do
       pid -> GenServer.stop(pid)
     end
 
-    {:ok, bursar_pid} = Bursar.start_link(root_uuid: UUID.uuid4(), store: store, sweep_interval: 60_000)
-    on_exit(fn -> if Process.alive?(bursar_pid), do: (try do GenServer.stop(bursar_pid) catch (:exit, _ -> :ok) end) end)
+    {:ok, bursar_pid} =
+      Bursar.start_link(root_uuid: UUID.uuid4(), store: store, sweep_interval: 60_000)
+
+    on_exit(fn ->
+      if Process.alive?(bursar_pid),
+        do:
+          (try do
+             GenServer.stop(bursar_pid)
+           catch
+             (:exit, _ -> :ok)
+           end)
+    end)
 
     {:ok, node_ctx} = NodeIdentity.signing_context()
     {:ok, node_identity} = NodeIdentity.identity()
@@ -88,7 +111,13 @@ defmodule Commonplace.MUD.VerbTakeBrickTest do
     players = mk_dir!(store, node_ctx)
     add_dir_entry!(store, root, "players", players, node_ctx)
 
-    %{store: store, node_ctx: node_ctx, node_identity: node_identity, root: root, players: players}
+    %{
+      store: store,
+      node_ctx: node_ctx,
+      node_identity: node_identity,
+      root: root,
+      players: players
+    }
   end
 
   # ---- seed helpers (mirror take_test.exs) ----
@@ -100,13 +129,25 @@ defmodule Commonplace.MUD.VerbTakeBrickTest do
 
   defp mk_room!(store, sc, name) do
     {:ok, uuid} =
-      Schemas.create_dir_with_meta(Schemas.room_filename(), Schemas.encode_room(%Room{name: name, description: "x"}), store, signing_context: sc)
+      Schemas.create_dir_with_meta(
+        Schemas.room_filename(),
+        Schemas.encode_room(%Room{name: name, description: "x"}),
+        store,
+        signing_context: sc
+      )
+
     uuid
   end
 
   defp mk_object!(store, sc, name) do
     {:ok, uuid} =
-      Schemas.create_dir_with_meta(Schemas.object_filename(), Schemas.encode_object(%Object{name: name}), store, signing_context: sc)
+      Schemas.create_dir_with_meta(
+        Schemas.object_filename(),
+        Schemas.encode_object(%Object{name: name}),
+        store,
+        signing_context: sc
+      )
+
     uuid
   end
 
@@ -138,12 +179,15 @@ defmodule Commonplace.MUD.VerbTakeBrickTest do
   # ---- PIN 1: take still works after authoring a verb on the object ----
 
   test "PIN 1: @create → take → drop → @verb → take — a verb-bearing object stays takeable", %{
-    store: store, root: root
+    store: store,
+    root: root
   } do
     {pub, priv} = Signing.generate_keypair()
     pid = UUID.uuid4()
     citizen = %SigningContext{identity_uuid: pid, public_key: pub, private_key: priv}
-    {:ok, %{cert_cids: cids, home_room_uuid: home}} = Citizenship.ensure(pid, pub, "builder", root, store)
+
+    {:ok, %{cert_cids: cids, home_room_uuid: home}} =
+      Citizenship.ensure(pid, pub, "builder", root, store)
 
     {:ok, home_schema} = Schemas.load_dir_schema(home, store)
     {:ok, %Schema.Entry{node_id: inventory}} = Schema.get_entry(home_schema, "inventory")
@@ -172,7 +216,10 @@ defmodule Commonplace.MUD.VerbTakeBrickTest do
 
     assert :ok =
              VerbSource.save_safe_verb(gizmo.node_id, "poke", "\"poke\"", [gizmo.node_id], store,
-               signing_context: citizen, cert_cids: cids, signer_id: nil)
+               signing_context: citizen,
+               cert_cids: cids,
+               signer_id: nil
+             )
 
     # The bricked case: pre-fix this was {:error, "You can't take that."}
     assert {:reply, "You take gizmo."} = disp.("take gizmo")
@@ -181,9 +228,12 @@ defmodule Commonplace.MUD.VerbTakeBrickTest do
 
   # ---- PIN 2: anti-theft — a player-held item is NOT node-elevate-takeable ----
 
-  test "PIN 2 (ANTI-THEFT): a node-schema-signed item whose token is PLAYER-held cannot be node-elevate-taken", %{
-    store: store, node_ctx: node_ctx, root: root
-  } do
+  test "PIN 2 (ANTI-THEFT): a node-schema-signed item whose token is PLAYER-held cannot be node-elevate-taken",
+       %{
+         store: store,
+         node_ctx: node_ctx,
+         root: root
+       } do
     room = share!(store, root, mk_room!(store, node_ctx, "Gallery"), node_ctx)
     inventory = mk_dir!(store, node_ctx)
     # Node-created (node-signed schema), so ONLY the token distinguishes ownership.
@@ -192,7 +242,9 @@ defmodule Commonplace.MUD.VerbTakeBrickTest do
 
     # A player HOLDS the item's possession token (as if carrying it).
     {holder_id, _} = fresh()
-    {:ok, _} = BursarClient.acquire(Bursar, item, holder_id, authenticated_as: holder_id, ttl: nil)
+
+    {:ok, _} =
+      BursarClient.acquire(Bursar, item, holder_id, authenticated_as: holder_id, ttl: nil)
 
     {taker_id, _} = fresh()
 
@@ -200,7 +252,10 @@ defmodule Commonplace.MUD.VerbTakeBrickTest do
     # fallback (which would spuriously pass on the node-signed schema). This is
     # the anti-theft pin: possession beats the proxy.
     assert {:error, :not_takeable_here} =
-             Take.take(item, "widget.obj", room, inventory, taker_id, store: store, root_uuid: root)
+             Take.take(item, "widget.obj", room, inventory, taker_id,
+               store: store,
+               root_uuid: root
+             )
 
     assert "widget.obj" in entry_names(store, room)
     assert {:held, %{holder: ^holder_id}} = BursarClient.query(Bursar, item)
@@ -208,14 +263,20 @@ defmodule Commonplace.MUD.VerbTakeBrickTest do
 
   # ---- PIN 3: fork-transplant — a deep-copy fork carries NO token ----
 
-  test "PIN 3 (FORK-TRANSPLANT): a fork of a node-held item is NOT node-owned through EITHER the token OR the schema-signer fallback", %{
-    store: store, node_ctx: node_ctx, root: root
-  } do
+  test "PIN 3 (FORK-TRANSPLANT): a fork of a node-held item is NOT node-owned through EITHER the token OR the schema-signer fallback",
+       %{
+         store: store,
+         node_ctx: node_ctx,
+         root: root
+       } do
     room = share!(store, root, mk_room!(store, node_ctx, "Gallery"), node_ctx)
     inventory = mk_dir!(store, node_ctx)
     item = mk_object!(store, node_ctx, "relic")
     {:ok, node_identity} = NodeIdentity.identity()
-    {:ok, _} = BursarClient.acquire(Bursar, item, node_identity, authenticated_as: node_identity, ttl: nil)
+
+    {:ok, _} =
+      BursarClient.acquire(Bursar, item, node_identity, authenticated_as: node_identity, ttl: nil)
+
     assert {:held, %{holder: ^node_identity}} = BursarClient.query(Bursar, item)
 
     # Deep-copy fork → a brand-new uuid subtree (fork.ex remaps every uuid).
@@ -249,16 +310,21 @@ defmodule Commonplace.MUD.VerbTakeBrickTest do
     {taker_id, _} = fresh()
 
     assert {:error, :not_takeable_here} =
-             Take.take(fork_uuid, "relic.obj", room, inventory, taker_id, store: store, root_uuid: root)
+             Take.take(fork_uuid, "relic.obj", room, inventory, taker_id,
+               store: store,
+               root_uuid: root
+             )
 
     assert "relic.obj" in entry_names(store, room)
   end
 
   # ---- PIN 4: mint-site — a doc that merely appears gets NO node-held token ----
 
-  test "PIN 4 (MINT-SITE): a raw-written object doc (no deliberate mint) has NO node-held token", %{
-    store: store, node_ctx: node_ctx
-  } do
+  test "PIN 4 (MINT-SITE): a raw-written object doc (no deliberate mint) has NO node-held token",
+       %{
+         store: store,
+         node_ctx: node_ctx
+       } do
     # A raw create_dir_with_meta (mirrors a raw MCP write / import surfacing a
     # doc) — NOT the @create/curated ChildMutation mint path. No token is minted.
     raw = mk_object!(store, node_ctx, "driftwood")

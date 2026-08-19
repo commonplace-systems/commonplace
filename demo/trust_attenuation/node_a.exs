@@ -27,13 +27,23 @@ alias Commonplace.Sync.NodeSync
 
 {:ok, _} = Application.ensure_all_started(:phoenix_pubsub)
 {:ok, _} = Application.ensure_all_started(:telemetry)
-{:ok, _} = Supervisor.start_link([{Phoenix.PubSub, name: Commonplace.PubSub}], strategy: :one_for_one)
+
+{:ok, _} =
+  Supervisor.start_link([{Phoenix.PubSub, name: Commonplace.PubSub}], strategy: :one_for_one)
+
 {:ok, _} = CommitStore.start_link(data_dir: data_dir, name: CommitStore)
 
 # Wait for B's manifest.
 Enum.reduce_while(1..240, nil, fn _, _ ->
-  if File.exists?(Path.join(shared, "b_ready")), do: {:halt, :ok}, else: (Process.sleep(250); {:cont, nil})
+  if File.exists?(Path.join(shared, "b_ready")),
+    do: {:halt, :ok},
+    else:
+      (
+        Process.sleep(250)
+        {:cont, nil}
+      )
 end)
+
 manifest = Path.join(shared, "manifest.json") |> File.read!() |> Jason.decode!()
 b_node = String.to_atom(manifest["node"])
 
@@ -47,17 +57,40 @@ Application.put_env(:commonplace, :trust, %{
 # and any wrapper signal), not under the reaped $SHARED.
 log = System.get_env("SESSION_LOG", "/tmp/cp_att_session.log")
 File.write!(log, "")
-emit = fn s -> IO.puts(s); File.write!(log, s <> "\n", [:append]) end
+
+emit = fn s ->
+  IO.puts(s)
+  File.write!(log, s <> "\n", [:append])
+end
+
 hr = fn -> emit.(String.duplicate("-", 70)) end
 kv = fn k, v -> emit.("    #{k}: #{inspect(v)}") end
-verdict = fn ok, s -> emit.("  [#{if ok, do: "PASS", else: "FAIL"}] #{s}"); ok end
-decode = fn hex -> {:ok, b} = Base.decode16(hex, case: :mixed); b end
-keypair = fn m -> {:ok, pub} = Base.decode64(m["pub"]); {:ok, priv} = Base.decode64(m["priv"]); {pub, priv} end
+
+verdict = fn ok, s ->
+  emit.("  [#{if ok, do: "PASS", else: "FAIL"}] #{s}")
+  ok
+end
+
+decode = fn hex ->
+  {:ok, b} = Base.decode16(hex, case: :mixed)
+  b
+end
+
+keypair = fn m ->
+  {:ok, pub} = Base.decode64(m["pub"])
+  {:ok, priv} = Base.decode64(m["priv"])
+  {pub, priv}
+end
 
 # Capture trust rejections (the cert-path verdict surfaces here).
 parent = self()
-:telemetry.attach("att-reject", [:commonplace, :commit, :rejected, :trust],
-  fn _e, _m, meta, _c -> send(parent, {:reject, meta.doc_uuid, meta.reason}) end, nil)
+
+:telemetry.attach(
+  "att-reject",
+  [:commonplace, :commit, :rejected, :trust],
+  fn _e, _m, meta, _c -> send(parent, {:reject, meta.doc_uuid, meta.reason}) end,
+  nil
+)
 
 reason_for = fn doc ->
   receive do
@@ -81,6 +114,7 @@ Enum.each(manifest["all_cert_cids"], fn hex ->
   {:ok, cap} = GenServer.call({CommitStore, b_node}, {:get_capability, cid})
   :ok = CommitStore.store_capability(CommitStore, cap)
 end)
+
 emit.("[A] fetched #{length(manifest["all_cert_cids"])} certs from B and stored them locally.")
 
 hr.()
@@ -96,11 +130,13 @@ Process.sleep(200)
 commit_id = decode.(happy["commit"])
 accepted = match?({:ok, _}, CommitStore.get_commit(CommitStore, commit_id))
 verdict.(accepted, "bob's in-scope commit ACCEPTED + persisted on A")
+
 content =
   case Commonplace.Tree.DocBuilder.reconstruct_snapshot(CommitStore, happy["doc"]) do
     {:ok, d} -> Commonplace.Document.ContentType.get_content(d)
     other -> other
   end
+
 kv.("doc content on A", content)
 
 # The four attacks — hostile commits delivered to A's import gate.
@@ -117,13 +153,20 @@ attack_results =
     signer_id = Signing.signer_id(a["signer"], pub)
 
     commit =
-      Commit.new(a["doc"], "hostile payload", nil, %{kind: :regular, capability_proof: decode.(a["leaf"])})
+      Commit.new(a["doc"], "hostile payload", nil, %{
+        kind: :regular,
+        capability_proof: decode.(a["leaf"])
+      })
       |> Signing.sign_commit(priv, signer_id)
 
     ret = CommitStore.import_commit(CommitStore, commit)
     Process.sleep(50)
     reason = reason_for.(a["doc"])
-    rejected = match?({:error, {:trust_rejected, _}}, ret) and :none == CommitStore.get_commit(CommitStore, commit.id)
+
+    rejected =
+      match?({:error, {:trust_rejected, _}}, ret) and
+        :none == CommitStore.get_commit(CommitStore, commit.id)
+
     expected = String.to_atom(a["expect"])
 
     ok = rejected and reason == expected
@@ -138,6 +181,7 @@ hr.()
 checks = [accepted | attack_results]
 passed = Enum.count(checks, & &1)
 emit.("\n#{passed}/#{length(checks)} live attenuation checks passed")
+
 emit.("""
 
 Honest scope: this proves the strict node's import/sync gate enforces the

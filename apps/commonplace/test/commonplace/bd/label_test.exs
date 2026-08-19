@@ -29,7 +29,9 @@ defmodule Commonplace.Bd.LabelTest do
 
   test "create is idempotent — re-create updates the existing label", ctx do
     {:ok, _, _} = Label.create(ctx.root, "perf", %{color: "blue"}, ctx.store)
-    {:ok, _, _} = Label.create(ctx.root, "perf", %{color: "green", description: "speed"}, ctx.store)
+
+    {:ok, _, _} =
+      Label.create(ctx.root, "perf", %{color: "green", description: "speed"}, ctx.store)
 
     [l] = Label.list(ctx.root, ctx.store)
     assert l.color == "green"

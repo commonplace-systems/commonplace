@@ -57,7 +57,8 @@ defmodule Commonplace.Trust.ExecuteBaselineTest do
       # store with no revocations hashes with `revocation_set_hash == 0`.
       fp:
         :erlang.phash2(
-          {strict.trusted_identities, Commonplace.Store.CommitStoreClient.revocation_set_hash(name)}
+          {strict.trusted_identities,
+           Commonplace.Store.CommitStoreClient.revocation_set_hash(name)}
         )
     }
   end

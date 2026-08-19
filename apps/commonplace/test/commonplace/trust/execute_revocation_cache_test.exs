@@ -35,14 +35,31 @@ defmodule Commonplace.Trust.ExecuteRevocationCacheTest do
     on_exit(fn -> File.rm_rf!(dir) end)
 
     {root_pub, root_priv} = Signing.generate_keypair()
-    root_ctx = %SigningContext{identity_uuid: "root", private_key: root_priv, public_key: root_pub}
+
+    root_ctx = %SigningContext{
+      identity_uuid: "root",
+      private_key: root_priv,
+      public_key: root_pub
+    }
 
     {alice_pub, alice_priv} = Signing.generate_keypair()
-    alice_ctx = %SigningContext{identity_uuid: "alice", private_key: alice_priv, public_key: alice_pub}
+
+    alice_ctx = %SigningContext{
+      identity_uuid: "alice",
+      private_key: alice_priv,
+      public_key: alice_pub
+    }
 
     cfg = %{accept_unsigned: false, trusted_identities: %{"root" => Signing.encode_key(root_pub)}}
 
-    %{store: name, trust_side_store: tss, root_ctx: root_ctx, alice_pub: alice_pub, alice_ctx: alice_ctx, cfg: cfg}
+    %{
+      store: name,
+      trust_side_store: tss,
+      root_ctx: root_ctx,
+      alice_pub: alice_pub,
+      alice_ctx: alice_ctx,
+      cfg: cfg
+    }
   end
 
   # A synchronous call to BOTH mailboxes barriers the fire-and-forget
@@ -53,7 +70,8 @@ defmodule Commonplace.Trust.ExecuteRevocationCacheTest do
     :sys.get_state(trust_side_store)
   end
 
-  defp claim(verbs, docs), do: %{verbs: verbs, scope: {:docs, docs}, caveats: %{not_before: nil, not_after: nil}}
+  defp claim(verbs, docs),
+    do: %{verbs: verbs, scope: {:docs, docs}, caveats: %{not_before: nil, not_after: nil}}
 
   defp code_update(body) do
     Yelixer.Doc.new()
@@ -63,7 +81,11 @@ defmodule Commonplace.Trust.ExecuteRevocationCacheTest do
   end
 
   defp put_chained(store, uuid, body, proof_cid, ctx) do
-    CommitStore.create_chained_commit(store, uuid, code_update(body), %{kind: :regular, capability_proof: proof_cid},
+    CommitStore.create_chained_commit(
+      store,
+      uuid,
+      code_update(body),
+      %{kind: :regular, capability_proof: proof_cid},
       signing_context: ctx
     )
   end
@@ -79,10 +101,14 @@ defmodule Commonplace.Trust.ExecuteRevocationCacheTest do
        } do
     uuid = UUID.uuid4()
 
-    {:ok, leaf} = Capability.issue(root_ctx, {"alice", alice_pub}, claim([:write, :execute], [uuid]))
+    {:ok, leaf} =
+      Capability.issue(root_ctx, {"alice", alice_pub}, claim([:write, :execute], [uuid]))
+
     :ok = CommitStore.store_capability(store, leaf)
 
-    %Commonplace.Store.Commit{} = put_chained(store, uuid, "defmodule Ok do\nend", leaf.id, alice_ctx)
+    %Commonplace.Store.Commit{} =
+      put_chained(store, uuid, "defmodule Ok do\nend", leaf.id, alice_ctx)
+
     %Commonplace.Store.Commit{} =
       put_chained(store, uuid, "defmodule Ok do\n  def a, do: 1\nend", leaf.id, alice_ctx)
 

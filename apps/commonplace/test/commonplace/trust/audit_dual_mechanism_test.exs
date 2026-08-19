@@ -438,7 +438,11 @@ defmodule Commonplace.Trust.AuditDualMechanismTest do
 
     _ = AuditDispatcher.flush(dispatcher, 5_000)
 
-    record = AuditLog.log_uuid() |> RedLog.load(s) |> RedLog.read() |> Enum.find(&(&1["doc_uuid"] == uuid))
+    record =
+      AuditLog.log_uuid()
+      |> RedLog.load(s)
+      |> RedLog.read()
+      |> Enum.find(&(&1["doc_uuid"] == uuid))
 
     assert record, "precondition: the denial was recorded"
 

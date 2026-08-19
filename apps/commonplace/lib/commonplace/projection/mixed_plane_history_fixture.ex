@@ -107,6 +107,7 @@ defmodule Commonplace.Projection.MixedPlaneHistoryFixture do
           {{:commit, commit.id}, commit},
           {{:doc_commit, @source_doc_uuid, commit.id}, true}
         ])
+
         {commit, commit.id}
       end)
 

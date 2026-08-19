@@ -193,11 +193,14 @@ defmodule Commonplace.Bots.NoteDocConcurrentAppendTest do
     refute dropped in present
 
     missing = [dropped] -- present
-    assert missing == [dropped], "positive control: detector must report exactly the one dropped marker"
+
+    assert missing == [dropped],
+           "positive control: detector must report exactly the one dropped marker"
   end
 
   for {label, n} <- [{"2-way", 2}, {"4-way", 4}, {"8-way", 8}] do
-    test "CONCURRENT #{label}: N simultaneous append_entry calls against the same transcript", ctx do
+    test "CONCURRENT #{label}: N simultaneous append_entry calls against the same transcript",
+         ctx do
       {transcript_uuid, mud_ctx} = provision_camillo_transcript(ctx)
       n = unquote(n)
 
@@ -355,7 +358,8 @@ defmodule Commonplace.Bots.NoteDocConcurrentAppendTest do
   # distinguish "all entries lost but the doc still parses" from "the doc
   # no longer parses at all". This test captures the RAW pre-decode text
   # every round instead of trusting `read_entries`.
-  test "CX-o3ar CHECK: is severe-mode (present=0) a parse failure, or a clean lost update?", ctx do
+  test "CX-o3ar CHECK: is severe-mode (present=0) a parse failure, or a clean lost update?",
+       ctx do
     {:ok, node_ctx} = Commonplace.Crypto.NodeIdentity.signing_context()
     _ = node_ctx
 
@@ -376,7 +380,9 @@ defmodule Commonplace.Bots.NoteDocConcurrentAppendTest do
     samples =
       for attempt <- 1..attempts do
         dir_name = "corruption-check-#{attempt}"
-        {:ok, note_uuid} = NoteDoc.ensure_zoned_dir(home_room_uuid, dir_name, empty_entries, mud_ctx)
+
+        {:ok, note_uuid} =
+          NoteDoc.ensure_zoned_dir(home_room_uuid, dir_name, empty_entries, mud_ctx)
 
         expected = for i <- 1..n, do: "a#{attempt}-w#{i}-#{System.unique_integer([:positive])}"
 
@@ -439,6 +445,7 @@ defmodule Commonplace.Bots.NoteDocConcurrentAppendTest do
     )
 
     mild_sample = Enum.find(samples, &(&1.mode in [:mild_lost_update, :no_loss]))
+
     severe_sample =
       Enum.find(samples, &(&1.mode in [:unparseable, :doubled_key, :severe_but_valid_json]))
 

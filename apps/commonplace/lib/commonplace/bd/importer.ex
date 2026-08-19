@@ -90,13 +90,15 @@ defmodule Commonplace.Bd.Importer do
   def import_issues_jsonl(root_uuid, jsonl_text, store \\ CommitStoreClient, opts \\ [])
       when is_binary(jsonl_text) do
     case Workspace.ensure_bd_dir(root_uuid, store) do
-      bd_uuid when is_binary(bd_uuid) -> do_import_issues_jsonl(root_uuid, jsonl_text, store, opts)
-      {:error, reason} -> {:error, ensure_refusal(reason)}
+      bd_uuid when is_binary(bd_uuid) ->
+        do_import_issues_jsonl(root_uuid, jsonl_text, store, opts)
+
+      {:error, reason} ->
+        {:error, ensure_refusal(reason)}
     end
   end
 
   defp do_import_issues_jsonl(root_uuid, jsonl_text, store, opts) do
-
     {records, parse_errors} = parse_records(jsonl_text)
 
     context =
@@ -142,9 +144,14 @@ defmodule Commonplace.Bd.Importer do
     |> Enum.with_index()
     |> Enum.reduce({[], []}, fn {line, idx}, {records, errors} ->
       case Jason.decode(line) do
-        {:ok, m} when is_map(m) -> {[m | records], errors}
-        {:ok, _other} -> {records, [{idx, :malformed_line} | errors]}
-        {:error, %Jason.DecodeError{} = e} -> {records, [{idx, {:bad_json, Exception.message(e)}} | errors]}
+        {:ok, m} when is_map(m) ->
+          {[m | records], errors}
+
+        {:ok, _other} ->
+          {records, [{idx, :malformed_line} | errors]}
+
+        {:error, %Jason.DecodeError{} = e} ->
+          {records, [{idx, {:bad_json, Exception.message(e)}} | errors]}
       end
     end)
     |> then(fn {records, errors} -> {Enum.reverse(records), Enum.reverse(errors)} end)
@@ -185,7 +192,8 @@ defmodule Commonplace.Bd.Importer do
   """
   def import_comments_jsonl(root_uuid, issue_id, jsonl_text, store \\ CommitStoreClient)
 
-  def import_comments_jsonl(_root_uuid, _issue_id, jsonl_text, _store) when is_binary(jsonl_text) do
+  def import_comments_jsonl(_root_uuid, _issue_id, jsonl_text, _store)
+      when is_binary(jsonl_text) do
     Retired.ungated_write!(
       "Commonplace.Bd.Importer.import_comments_jsonl/4",
       """
@@ -325,9 +333,14 @@ defmodule Commonplace.Bd.Importer do
   # body must not blank an existing one.
   defp carry_description(attrs, raw) do
     cond do
-      Map.has_key?(raw, "description") -> Map.put(attrs, :description, Map.get(raw, "description") || "")
-      Map.has_key?(raw, "body") -> Map.put(attrs, :description, Map.get(raw, "body") || "")
-      true -> attrs
+      Map.has_key?(raw, "description") ->
+        Map.put(attrs, :description, Map.get(raw, "description") || "")
+
+      Map.has_key?(raw, "body") ->
+        Map.put(attrs, :description, Map.get(raw, "body") || "")
+
+      true ->
+        attrs
     end
   end
 
@@ -350,6 +363,7 @@ defmodule Commonplace.Bd.Importer do
   end
 
   defp normalize_priority(p) when p in [0, 1, 2, 3], do: "p#{p}"
+
   defp normalize_priority(p) when is_binary(p) do
     cond do
       p in Schemas.valid_priorities() -> p
@@ -357,6 +371,7 @@ defmodule Commonplace.Bd.Importer do
       true -> "p2"
     end
   end
+
   defp normalize_priority(_), do: "p2"
 
   defp normalize_status(s) when is_binary(s) do

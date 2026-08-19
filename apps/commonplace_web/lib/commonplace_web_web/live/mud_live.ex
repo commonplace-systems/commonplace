@@ -53,6 +53,7 @@ defmodule CommonplaceWebWeb.MudLive do
     SessionViewRegistry,
     WorldMeta
   }
+
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Trust.Read
   alias Commonplace.Tree.{DocBuilder, Walk}
@@ -436,7 +437,13 @@ defmodule CommonplaceWebWeb.MudLive do
             socket
 
           events ->
-            view = SessionView.append_command_turn(socket.assigns.view, "look", Enum.join(events, "\n"))
+            view =
+              SessionView.append_command_turn(
+                socket.assigns.view,
+                "look",
+                Enum.join(events, "\n")
+              )
+
             assign(socket, :view, view)
         end
       else
@@ -499,10 +506,10 @@ defmodule CommonplaceWebWeb.MudLive do
     <div class="flex h-screen bg-base-100 items-center justify-center">
       <%= if @authed do %>
         <div class="flex flex-col h-full w-full max-w-3xl p-4">
-          <h1 class="text-lg font-bold text-base-content/70 mb-2 font-mono"><%= @world_title %></h1>
+          <h1 class="text-lg font-bold text-base-content/70 mb-2 font-mono">{@world_title}</h1>
 
           <%= if @error do %>
-            <div class="alert alert-error text-sm mb-2"><%= @error %></div>
+            <div class="alert alert-error text-sm mb-2">{@error}</div>
           <% end %>
 
           <style>
@@ -525,12 +532,12 @@ defmodule CommonplaceWebWeb.MudLive do
             id="mud-room"
             class="mb-2 bg-black/60 text-green-300 font-mono text-sm p-3 rounded border border-green-900"
           >
-            <div class="room-name"><%= room.name %></div>
-            <div :if={room.desc != ""} class="room-desc"><%= room.desc %></div>
+            <div class="room-name">{room.name}</div>
+            <div :if={room.desc != ""} class="room-desc">{room.desc}</div>
             <div :if={room.exits != []} class="mt-1">
               <span class="room-label">Exits:</span>
               <span :for={{dir, to} <- room.exits} class="mr-2">
-                <%= dir %><%= if to not in ["", dir], do: " → #{to}" %>
+                {dir}{if to not in ["", dir], do: " → #{to}"}
               </span>
             </div>
             <%!-- CX-zyee: render item/occupant lists as a single
@@ -543,11 +550,11 @@ defmodule CommonplaceWebWeb.MudLive do
                   interpolated `~H` value, so auto-escaped (the XSS gate holds). --%>
             <div :if={room.contents != []}>
               <span class="room-label">Here:</span>
-              <span><%= Enum.join(room.contents, ", ") %></span>
+              <span>{Enum.join(room.contents, ", ")}</span>
             </div>
             <div :if={room.occupants != []}>
               <span class="room-label">Also here:</span>
-              <span><%= Enum.join(room.occupants, ", ") %></span>
+              <span>{Enum.join(room.occupants, ", ")}</span>
             </div>
           </div>
 
@@ -565,13 +572,13 @@ defmodule CommonplaceWebWeb.MudLive do
               <%= case turn do %>
                 <% {:command, cmd, out} -> %>
                   <div class="turn command">
-                    <div class="cmd"><%= cmd %></div>
-                    <div class="out"><%= out %></div>
+                    <div class="cmd">{cmd}</div>
+                    <div class="out">{out}</div>
                   </div>
                 <% {:ambient, lines} -> %>
                   <div class="turn ambient">
                     <%= for line <- lines do %>
-                      <div class="line"><%= line %></div>
+                      <div class="line">{line}</div>
                     <% end %>
                   </div>
               <% end %>
@@ -590,7 +597,9 @@ defmodule CommonplaceWebWeb.MudLive do
               class="input input-bordered flex-1 font-mono"
               phx-mounted={JS.focus()}
             />
-            <button type="submit" class="btn btn-primary" disabled={is_nil(@session_pid)}>Send</button>
+            <button type="submit" class="btn btn-primary" disabled={is_nil(@session_pid)}>
+              Send
+            </button>
           </form>
         </div>
       <% else %>

@@ -135,16 +135,12 @@ defmodule Commonplace.Bots.RateLimit do
 
   defp build_config(opts) do
     %{
-      per_room_window_ms:
-        Keyword.get(opts, :per_room_window_ms, @default_per_room_window_ms),
-      per_room_max_posts:
-        Keyword.get(opts, :per_room_max_posts, @default_per_room_max_posts),
-      per_bot_cooldown_ms:
-        Keyword.get(opts, :per_bot_cooldown_ms, @default_per_bot_cooldown_ms),
+      per_room_window_ms: Keyword.get(opts, :per_room_window_ms, @default_per_room_window_ms),
+      per_room_max_posts: Keyword.get(opts, :per_room_max_posts, @default_per_room_max_posts),
+      per_bot_cooldown_ms: Keyword.get(opts, :per_bot_cooldown_ms, @default_per_bot_cooldown_ms),
       per_room_concurrency:
         Keyword.get(opts, :per_room_concurrency, @default_per_room_concurrency),
-      global_concurrency:
-        Keyword.get(opts, :global_concurrency, @default_global_concurrency)
+      global_concurrency: Keyword.get(opts, :global_concurrency, @default_global_concurrency)
     }
   end
 
@@ -169,8 +165,7 @@ defmodule Commonplace.Bots.RateLimit do
       true ->
         state = %{
           state
-          | room_concurrency:
-              Map.update(state.room_concurrency, room, 1, &(&1 + 1)),
+          | room_concurrency: Map.update(state.room_concurrency, room, 1, &(&1 + 1)),
             global_concurrency: state.global_concurrency + 1
         }
 
@@ -302,7 +297,8 @@ defmodule Commonplace.Bots.RateLimit do
         kept = Enum.filter(list, fn ts -> ts >= cutoff end)
 
         new_room_posts =
-          if kept == [], do: Map.delete(state.room_posts, room),
+          if kept == [],
+            do: Map.delete(state.room_posts, room),
             else: Map.put(state.room_posts, room, kept)
 
         %{state | room_posts: new_room_posts}

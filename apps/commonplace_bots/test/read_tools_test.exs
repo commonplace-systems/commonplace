@@ -2,6 +2,7 @@ defmodule Commonplace.Bots.Worker.ReadToolsTest do
   use ExUnit.Case, async: false
 
   alias Commonplace.Bots.Entity
+
   alias Commonplace.Bots.Worker.Tools.{
     CheckTurnRemaining,
     ListFiles,
@@ -183,6 +184,7 @@ defmodule Commonplace.Bots.Worker.ReadToolsTest do
 
     test "errors on missing file" do
       entity = load_entity(mint_bot_dir())
+
       assert {:error, "read_file: no such file"} =
                ReadFile.call(state(entity, []), %{"name" => "ghost.md"})
     end

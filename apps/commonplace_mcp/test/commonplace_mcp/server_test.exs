@@ -52,9 +52,12 @@ defmodule Commonplace.MCP.ServerTest do
 
   describe "initialize" do
     test "responds with server info and capabilities", %{server: s} do
-      request = {:request, 1, "initialize",
-                 %{"protocolVersion" => "2025-06-18",
-                   "clientInfo" => %{"name" => "claude-code", "version" => "1.0"}}}
+      request =
+        {:request, 1, "initialize",
+         %{
+           "protocolVersion" => "2025-06-18",
+           "clientInfo" => %{"name" => "claude-code", "version" => "1.0"}
+         }}
 
       assert {:ok, result, s2} = Server.handle(s, request)
       assert result["protocolVersion"] == "2025-06-18"
@@ -66,9 +69,12 @@ defmodule Commonplace.MCP.ServerTest do
     end
 
     test "records client info in the server state", %{server: s} do
-      request = {:request, 1, "initialize",
-                 %{"protocolVersion" => "2025-06-18",
-                   "clientInfo" => %{"name" => "claude-code", "version" => "1.0"}}}
+      request =
+        {:request, 1, "initialize",
+         %{
+           "protocolVersion" => "2025-06-18",
+           "clientInfo" => %{"name" => "claude-code", "version" => "1.0"}
+         }}
 
       assert {:ok, _result, s2} = Server.handle(s, request)
       assert Server.client_name(s2) == "claude-code"
@@ -77,9 +83,12 @@ defmodule Commonplace.MCP.ServerTest do
     test "with a presence_starter, spawns a .bot presence and records its uuid" do
       s = Server.new(presence_starter: stub_presence_starter())
 
-      request = {:request, 1, "initialize",
-                 %{"protocolVersion" => "2025-06-18",
-                   "clientInfo" => %{"name" => "claude-code", "version" => "1.0"}}}
+      request =
+        {:request, 1, "initialize",
+         %{
+           "protocolVersion" => "2025-06-18",
+           "clientInfo" => %{"name" => "claude-code", "version" => "1.0"}
+         }}
 
       assert {:ok, result, s2} = Server.handle(s, request)
 
@@ -94,17 +103,19 @@ defmodule Commonplace.MCP.ServerTest do
     test "with a presence_starter but no clientInfo name, uses 'mcp-agent' as default" do
       s = Server.new(presence_starter: stub_presence_starter())
 
-      request = {:request, 1, "initialize",
-                 %{"protocolVersion" => "2025-06-18"}}
+      request = {:request, 1, "initialize", %{"protocolVersion" => "2025-06-18"}}
 
       assert {:ok, _result, _s2} = Server.handle(s, request)
       assert_received {:presence_started, "mcp-agent", :bot}
     end
 
     test "without a presence_starter, skips bootstrap (pure-mode default)", %{server: s} do
-      request = {:request, 1, "initialize",
-                 %{"protocolVersion" => "2025-06-18",
-                   "clientInfo" => %{"name" => "bare", "version" => "1"}}}
+      request =
+        {:request, 1, "initialize",
+         %{
+           "protocolVersion" => "2025-06-18",
+           "clientInfo" => %{"name" => "bare", "version" => "1"}
+         }}
 
       assert {:ok, result, s2} = Server.handle(s, request)
       refute Map.has_key?(result["serverInfo"], "presenceUuid")
@@ -118,9 +129,12 @@ defmodule Commonplace.MCP.ServerTest do
     test "when presence_starter returns mailbox fields, surfaces them in initialize response (CX-92u)" do
       s = Server.new(presence_starter: stub_presence_starter_with_mailbox())
 
-      request = {:request, 1, "initialize",
-                 %{"protocolVersion" => "2025-06-18",
-                   "clientInfo" => %{"name" => "claude-code", "version" => "1.0"}}}
+      request =
+        {:request, 1, "initialize",
+         %{
+           "protocolVersion" => "2025-06-18",
+           "clientInfo" => %{"name" => "claude-code", "version" => "1.0"}
+         }}
 
       assert {:ok, result, s2} = Server.handle(s, request)
 
@@ -133,9 +147,12 @@ defmodule Commonplace.MCP.ServerTest do
     test "when presence_starter omits mailbox fields, initialize response omits them too" do
       s = Server.new(presence_starter: stub_presence_starter())
 
-      request = {:request, 1, "initialize",
-                 %{"protocolVersion" => "2025-06-18",
-                   "clientInfo" => %{"name" => "claude-code", "version" => "1.0"}}}
+      request =
+        {:request, 1, "initialize",
+         %{
+           "protocolVersion" => "2025-06-18",
+           "clientInfo" => %{"name" => "claude-code", "version" => "1.0"}
+         }}
 
       assert {:ok, result, s2} = Server.handle(s, request)
 
@@ -154,9 +171,12 @@ defmodule Commonplace.MCP.ServerTest do
           presence_stopper: stub_presence_stopper()
         )
 
-      request = {:request, 1, "initialize",
-                 %{"protocolVersion" => "2025-06-18",
-                   "clientInfo" => %{"name" => "claude", "version" => "1"}}}
+      request =
+        {:request, 1, "initialize",
+         %{
+           "protocolVersion" => "2025-06-18",
+           "clientInfo" => %{"name" => "claude", "version" => "1"}
+         }}
 
       assert {:ok, _result, s2} = Server.handle(s, request)
       assert_received {:presence_started, "claude", :bot}
@@ -173,9 +193,12 @@ defmodule Commonplace.MCP.ServerTest do
           presence_stopper: stub_presence_stopper()
         )
 
-      request = {:request, 1, "initialize",
-                 %{"protocolVersion" => "2025-06-18",
-                   "clientInfo" => %{"name" => "claude", "version" => "1"}}}
+      request =
+        {:request, 1, "initialize",
+         %{
+           "protocolVersion" => "2025-06-18",
+           "clientInfo" => %{"name" => "claude", "version" => "1"}
+         }}
 
       assert {:ok, _result, s2} = Server.handle(s, request)
       Server.shutdown(s2)
@@ -239,8 +262,7 @@ defmodule Commonplace.MCP.ServerTest do
     test "returns method_not_found", %{server: s} do
       s = initialize(s)
 
-      request = {:request, 3, "tools/call",
-                 %{"name" => "not_a_real_tool", "arguments" => %{}}}
+      request = {:request, 3, "tools/call", %{"name" => "not_a_real_tool", "arguments" => %{}}}
 
       assert {:error, :method_not_found, "not_a_real_tool", _state} =
                Server.handle(s, request)
@@ -271,9 +293,12 @@ defmodule Commonplace.MCP.ServerTest do
   # --- helpers ---
 
   defp initialize(s) do
-    request = {:request, 1, "initialize",
-               %{"protocolVersion" => "2025-06-18",
-                 "clientInfo" => %{"name" => "test-client", "version" => "0.0.1"}}}
+    request =
+      {:request, 1, "initialize",
+       %{
+         "protocolVersion" => "2025-06-18",
+         "clientInfo" => %{"name" => "test-client", "version" => "0.0.1"}
+       }}
 
     {:ok, _result, s2} = Server.handle(s, request)
     s2

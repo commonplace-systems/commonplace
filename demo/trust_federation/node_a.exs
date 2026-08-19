@@ -24,14 +24,25 @@ alias Yelixer.{Doc, Encoding}
 
 {:ok, _} = Application.ensure_all_started(:phoenix_pubsub)
 {:ok, _} = Application.ensure_all_started(:telemetry)
-{:ok, _} = Supervisor.start_link([{Phoenix.PubSub, name: Commonplace.PubSub}], strategy: :one_for_one)
+
+{:ok, _} =
+  Supervisor.start_link([{Phoenix.PubSub, name: Commonplace.PubSub}], strategy: :one_for_one)
+
 {:ok, _} = CommitStore.start_link(data_dir: data_dir, name: CommitStore)
 
 # Wait for B's manifest.
 manifest_path = Path.join(shared, "manifest.json")
+
 Enum.reduce_while(1..120, nil, fn _, _ ->
-  if File.exists?(Path.join(shared, "b_ready")), do: {:halt, :ok}, else: (Process.sleep(250); {:cont, nil})
+  if File.exists?(Path.join(shared, "b_ready")),
+    do: {:halt, :ok},
+    else:
+      (
+        Process.sleep(250)
+        {:cont, nil}
+      )
 end)
+
 manifest = manifest_path |> File.read!() |> Jason.decode!()
 b_node = String.to_atom(manifest["node"])
 
@@ -46,10 +57,18 @@ Application.put_env(:commonplace, :trust, %{
 defmodule D do
   @log System.get_env("SESSION_LOG", "/tmp/cp_fed_session.log")
   def init, do: File.write!(@log, "")
-  defp emit(s), do: (IO.puts(s); File.write!(@log, s <> "\n", [:append]))
+
+  defp emit(s),
+    do:
+      (
+        IO.puts(s)
+        File.write!(@log, s <> "\n", [:append])
+      )
+
   def hr, do: emit(String.duplicate("-", 64))
   def say(s), do: emit(s)
   def kv(k, v), do: emit("    #{k}: #{inspect(v)}")
+
   def verdict(ok, s) do
     mark = if ok, do: "PASS", else: "FAIL"
     emit("  [#{mark}] #{s}")
@@ -59,8 +78,11 @@ defmodule D do
   # Render a compile/import result without dumping raw binary commit ids
   # (which turn the stream binary and break downstream grep).
   def fmt({:ok, mod}), do: "{:ok, #{inspect(mod)}}"
+
   def fmt({:error, {:execution_denied, {:untrusted_contributor, id, reason}}}),
-    do: "{:error, {:execution_denied, {:untrusted_contributor, #{short(id)}, #{inspect(reason)}}}}"
+    do:
+      "{:error, {:execution_denied, {:untrusted_contributor, #{short(id)}, #{inspect(reason)}}}}"
+
   def fmt({:error, other}), do: "{:error, #{inspect(other)}}"
   def fmt(other), do: inspect(other)
   defp short(id) when is_binary(id), do: Base.encode16(id) |> binary_part(0, 12) |> Kernel.<>("…")
@@ -69,6 +91,7 @@ end
 
 # Capture Gate A trust rejections as they actually fire.
 parent = self()
+
 :telemetry.attach(
   "a-trust-reject",
   [:commonplace, :commit, :rejected, :trust],
@@ -123,13 +146,26 @@ D.say("\n  Did each commit land in A's store?")
 [signed_r, unsigned_r, code_r] = results
 
 p1a =
-  D.verdict(match?({:ok, _}, elem(signed_r, 1)),
-    "signed-by-trusted DATA commit → ACCEPTED + persisted")
-D.kv("get_commit", elem(signed_r, 1) |> case do {:ok, _} -> :present; o -> o end)
+  D.verdict(
+    match?({:ok, _}, elem(signed_r, 1)),
+    "signed-by-trusted DATA commit → ACCEPTED + persisted"
+  )
+
+D.kv(
+  "get_commit",
+  elem(signed_r, 1)
+  |> case do
+    {:ok, _} -> :present
+    o -> o
+  end
+)
 
 p1b =
-  D.verdict(elem(unsigned_r, 1) == :none,
-    "unsigned DATA commit → REJECTED at Gate A, NOT persisted")
+  D.verdict(
+    elem(unsigned_r, 1) == :none,
+    "unsigned DATA commit → REJECTED at Gate A, NOT persisted"
+  )
+
 D.kv("get_commit", elem(unsigned_r, 1))
 
 # Prove the signed commit's content is actually readable on A (applied).
@@ -138,7 +174,10 @@ applied =
     {:ok, doc} -> ContentType.get_content(doc)
     other -> other
   end
-p1c = D.verdict(applied == "hello from a trusted writer", "accepted commit's content is live on A")
+
+p1c =
+  D.verdict(applied == "hello from a trusted writer", "accepted commit's content is live on A")
+
 D.kv("content", applied)
 
 D.hr()
@@ -148,11 +187,23 @@ D.hr()
 # First line of defense: the unsigned code commit was rejected at Gate A
 # on import, so it never even reached A's store.
 code_present = match?({:ok, _}, elem(code_r, 1))
-p2a = D.verdict(not code_present, "peer's unsigned code doc was REJECTED at import — never stored on A")
+
+p2a =
+  D.verdict(
+    not code_present,
+    "peer's unsigned code doc was REJECTED at import — never stored on A"
+  )
+
 D.kv("get_commit(code-evil)", elem(code_r, 1))
 
 compiled_attack = SourceDoc.compile("code-evil", CommitStore)
-p2b = D.verdict(match?({:error, _}, compiled_attack), "SourceDoc.compile(code-evil) fails — the RCE never runs")
+
+p2b =
+  D.verdict(
+    match?({:error, _}, compiled_attack),
+    "SourceDoc.compile(code-evil) fails — the RCE never runs"
+  )
+
 D.kv("compile result", D.fmt(compiled_attack))
 
 # Defense in depth: even if an unsigned code doc were already PRESENT on A
@@ -164,21 +215,30 @@ defmodule Commonplace.UserCode.LocalEvil do
   def compute(_raw, _ctx), do: System.cmd("echo", ["PWNED-LOCAL"])
 end
 """
+
 ldoc = Doc.new(client_id: 9)
 ldoc = ContentType.create(ldoc, :text, "_local.ex")
 ldoc = ContentType.insert_text(ldoc, 0, local_evil)
-CommitStore.create_chained_commit(CommitStore, "code-local-evil", Encoding.encode_update(ldoc), %{kind: :regular})
+
+CommitStore.create_chained_commit(CommitStore, "code-local-evil", Encoding.encode_update(ldoc), %{
+  kind: :regular
+})
 
 gateb = SourceDoc.compile("code-local-evil", CommitStore)
+
 p2c =
-  D.verdict(match?({:error, {:execution_denied, _}}, gateb),
-    "Gate B refuses an unsigned code doc even when present: {:execution_denied, …}")
+  D.verdict(
+    match?({:error, {:execution_denied, _}}, gateb),
+    "Gate B refuses an unsigned code doc even when present: {:execution_denied, …}"
+  )
+
 D.kv("compile result", D.fmt(gateb))
 
 D.hr()
 checks = [p1a, p1b, p1c, p2a, p2b, p2c]
 passed = Enum.count(checks, & &1)
 D.say("\n#{passed}/#{length(checks)} live federation checks passed")
+
 D.say("""
 
 Honest scope: this proves an untrusted commit/code arriving over the

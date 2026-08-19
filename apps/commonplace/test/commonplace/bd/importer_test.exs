@@ -158,8 +158,18 @@ defmodule Commonplace.Bd.ImporterTest do
     # Step 1: import a small JSONL fixture: one open issue, one closed.
     text =
       issue_jsonl([
-        %{"id" => "CX-imp1", "title" => "from import (open)", "status" => "open", "priority" => 2},
-        %{"id" => "CX-imp2", "title" => "from import (closed)", "status" => "closed", "priority" => 2}
+        %{
+          "id" => "CX-imp1",
+          "title" => "from import (open)",
+          "status" => "open",
+          "priority" => 2
+        },
+        %{
+          "id" => "CX-imp2",
+          "title" => "from import (closed)",
+          "status" => "closed",
+          "priority" => 2
+        }
       ])
 
     {:ok, %{imported: 2}} = Importer.import_issues_jsonl(ctx.root, text, ctx.store)

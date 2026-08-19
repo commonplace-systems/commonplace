@@ -77,7 +77,8 @@ defmodule Commonplace.Bd.Comment do
   matters under Mode-B enforce.
   """
   def add(root_uuid, issue_id, attrs, store \\ CommitStoreClient, opts \\ []) do
-    with {:ok, issue_dir} <- Workspace.issue_dir_uuid(root_uuid, issue_id, store) |> wrap_lookup(),
+    with {:ok, issue_dir} <-
+           Workspace.issue_dir_uuid(root_uuid, issue_id, store) |> wrap_lookup(),
          {:ok, comments_dir} <- comments_dir_uuid(issue_dir, store) do
       comment_id = Map.get(attrs, :id) || IdMint.mint_comment_id()
 
@@ -119,7 +120,8 @@ defmodule Commonplace.Bd.Comment do
   """
   def edit(root_uuid, issue_id, comment_id, body, store \\ CommitStoreClient, opts \\ [])
       when is_binary(body) do
-    with {:ok, issue_dir} <- Workspace.issue_dir_uuid(root_uuid, issue_id, store) |> wrap_lookup(),
+    with {:ok, issue_dir} <-
+           Workspace.issue_dir_uuid(root_uuid, issue_id, store) |> wrap_lookup(),
          {:ok, comments_dir} <- comments_dir_uuid(issue_dir, store),
          filename <- Schemas.comment_filename(comment_id),
          {:ok, comment} <- Schemas.load_comment(comments_dir, filename, store) do
@@ -141,7 +143,8 @@ defmodule Commonplace.Bd.Comment do
   Same checked-write contract as `edit/6`.
   """
   def soft_delete(root_uuid, issue_id, comment_id, store \\ CommitStoreClient, opts \\ []) do
-    with {:ok, issue_dir} <- Workspace.issue_dir_uuid(root_uuid, issue_id, store) |> wrap_lookup(),
+    with {:ok, issue_dir} <-
+           Workspace.issue_dir_uuid(root_uuid, issue_id, store) |> wrap_lookup(),
          {:ok, comments_dir} <- comments_dir_uuid(issue_dir, store),
          filename <- Schemas.comment_filename(comment_id),
          {:ok, comment} <- Schemas.load_comment(comments_dir, filename, store) do
@@ -156,7 +159,8 @@ defmodule Commonplace.Bd.Comment do
 
   @doc "Lists every comment on the issue, including soft-deleted ones."
   def list(root_uuid, issue_id, store \\ CommitStoreClient) do
-    with {:ok, issue_dir} <- Workspace.issue_dir_uuid(root_uuid, issue_id, store) |> wrap_lookup(),
+    with {:ok, issue_dir} <-
+           Workspace.issue_dir_uuid(root_uuid, issue_id, store) |> wrap_lookup(),
          {:ok, comments_dir} <- comments_dir_uuid(issue_dir, store),
          {:ok, schema} <- Schemas.load_dir_schema(comments_dir, store) do
       Schema.list_entries(schema)
@@ -187,8 +191,7 @@ defmodule Commonplace.Bd.Comment do
 
           {:error, reason} ->
             {:error,
-             {:comment_write_failed, :entry_attach,
-              %{reason: reason, orphan_doc_uuid: doc_uuid}}}
+             {:comment_write_failed, :entry_attach, %{reason: reason, orphan_doc_uuid: doc_uuid}}}
         end
 
       {:error, reason} ->
@@ -232,7 +235,12 @@ defmodule Commonplace.Bd.Comment do
     with {:ok, schema} <- Schemas.load_dir_schema(comments_dir, store),
          {:ok, entry} <- Schema.get_entry(schema, filename) do
       guarded(fn ->
-        Schemas.write_text_doc_checked(entry.node_id, Schemas.encode_comment(comment), store, opts)
+        Schemas.write_text_doc_checked(
+          entry.node_id,
+          Schemas.encode_comment(comment),
+          store,
+          opts
+        )
       end)
     else
       :error -> {:error, {:no_comment_entry, filename}}

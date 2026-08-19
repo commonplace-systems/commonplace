@@ -23,10 +23,11 @@ defmodule Commonplace.CLI.Merge do
         System.halt(1)
 
       [source | rest] ->
-        {target, _} = case rest do
-          [t | _] -> {t, rest}
-          [] -> {".", []}
-        end
+        {target, _} =
+          case rest do
+            [t | _] -> {t, rest}
+            [] -> {".", []}
+          end
 
         source_path = join_paths(relative_path, source)
         target_path = join_paths(relative_path, target)

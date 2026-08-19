@@ -124,14 +124,36 @@ defmodule Commonplace.Trust.DefineVerbGate do
 
       first_page = CommitStoreClient.commit_log(store, doc_uuid, limit: page_size)
 
-      walk_pages(store, doc_uuid, first_page, nil, section_scope, cfg, page_size, total_ceiling, 0, 1)
+      walk_pages(
+        store,
+        doc_uuid,
+        first_page,
+        nil,
+        section_scope,
+        cfg,
+        page_size,
+        total_ceiling,
+        0,
+        1
+      )
     end
   end
 
   # CX-klpi held half: paged walk, mirroring Trust.walk_pages/11's shape
   # (see its comment for the prev_last/empty-page reasoning) but with
   # this module's simpler :ok-accumulator (no execute-clean cache here).
-  defp walk_pages(store, doc_uuid, page, prev_last, section_scope, cfg, page_size, total_ceiling, examined, page_number) do
+  defp walk_pages(
+         store,
+         doc_uuid,
+         page,
+         prev_last,
+         section_scope,
+         cfg,
+         page_size,
+         total_ceiling,
+         examined,
+         page_number
+       ) do
     examined_after = examined + length(page)
 
     cond do
@@ -182,7 +204,10 @@ defmodule Commonplace.Trust.DefineVerbGate do
                   %{uuid: doc_uuid, commit_id: last_commit.parent_id}
                 )
 
-                next_page = CommitStoreClient.commit_log_from(store, last_commit.parent_id, limit: page_size)
+                next_page =
+                  CommitStoreClient.commit_log_from(store, last_commit.parent_id,
+                    limit: page_size
+                  )
 
                 walk_pages(
                   store,

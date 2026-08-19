@@ -53,7 +53,10 @@ defmodule Commonplace.ViewActionDispatchTest do
 
       # The audit broadcast still fires (existing dispatcher contract).
       assert_receive {:magenta, "view_actions",
-                      %Magenta{type: "view_action_invoked", payload: %{"action" => "post_message"}}},
+                      %Magenta{
+                        type: "view_action_invoked",
+                        payload: %{"action" => "post_message"}
+                      }},
                      500
     end
 

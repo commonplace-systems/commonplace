@@ -34,11 +34,12 @@ defmodule Commonplace.Process.SandboxTest do
       # Create a document in the CRDT
       create_doc(store, root, "input.txt", "hello sandbox")
 
-      {:ok, sandbox} = Sandbox.start_link(
-        root_uuid: root,
-        store: store,
-        sync_interval: 50
-      )
+      {:ok, sandbox} =
+        Sandbox.start_link(
+          root_uuid: root,
+          store: store,
+          sync_interval: 50
+        )
 
       Process.sleep(300)
 
@@ -51,11 +52,12 @@ defmodule Commonplace.Process.SandboxTest do
     end
 
     test "writes in sandbox flow back to CRDT", %{store: store, root: root} do
-      {:ok, sandbox} = Sandbox.start_link(
-        root_uuid: root,
-        store: store,
-        sync_interval: 50
-      )
+      {:ok, sandbox} =
+        Sandbox.start_link(
+          root_uuid: root,
+          store: store,
+          sync_interval: 50
+        )
 
       Process.sleep(200)
 
@@ -77,11 +79,12 @@ defmodule Commonplace.Process.SandboxTest do
     end
 
     test "cleanup removes sandbox dir on stop", %{store: store, root: root} do
-      {:ok, sandbox} = Sandbox.start_link(
-        root_uuid: root,
-        store: store,
-        sync_interval: 50
-      )
+      {:ok, sandbox} =
+        Sandbox.start_link(
+          root_uuid: root,
+          store: store,
+          sync_interval: 50
+        )
 
       sandbox_dir = Sandbox.dir(sandbox)
       assert File.dir?(sandbox_dir)
@@ -95,11 +98,12 @@ defmodule Commonplace.Process.SandboxTest do
 
   describe "running commands in sandbox" do
     test "runs a command and captures stdout", %{store: store, root: root} do
-      {:ok, sandbox} = Sandbox.start_link(
-        root_uuid: root,
-        store: store,
-        sync_interval: 50
-      )
+      {:ok, sandbox} =
+        Sandbox.start_link(
+          root_uuid: root,
+          store: store,
+          sync_interval: 50
+        )
 
       Process.sleep(200)
 
@@ -113,11 +117,12 @@ defmodule Commonplace.Process.SandboxTest do
     test "command runs in sandbox directory", %{store: store, root: root} do
       create_doc(store, root, "data.txt", "42")
 
-      {:ok, sandbox} = Sandbox.start_link(
-        root_uuid: root,
-        store: store,
-        sync_interval: 50
-      )
+      {:ok, sandbox} =
+        Sandbox.start_link(
+          root_uuid: root,
+          store: store,
+          sync_interval: 50
+        )
 
       Process.sleep(300)
 
@@ -129,11 +134,12 @@ defmodule Commonplace.Process.SandboxTest do
     end
 
     test "command output written to file flows back to CRDT", %{store: store, root: root} do
-      {:ok, sandbox} = Sandbox.start_link(
-        root_uuid: root,
-        store: store,
-        sync_interval: 50
-      )
+      {:ok, sandbox} =
+        Sandbox.start_link(
+          root_uuid: root,
+          store: store,
+          sync_interval: 50
+        )
 
       Process.sleep(200)
 
@@ -178,6 +184,7 @@ defmodule Commonplace.Process.SandboxTest do
         doc = Schema.new_schema()
         {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
         doc
+
       :none ->
         Schema.new_schema()
     end

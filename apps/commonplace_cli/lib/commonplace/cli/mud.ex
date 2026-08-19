@@ -17,10 +17,13 @@ defmodule Commonplace.CLI.Mud do
 
   def run(data_dir, _relative_path, args) do
     case args do
-      ["connect", name] -> connect(data_dir, name)
+      ["connect", name] ->
+        connect(data_dir, name)
+
       ["connect"] ->
         IO.puts(:stderr, "Usage: commonplace mud connect <name>")
         System.halt(1)
+
       _ ->
         IO.puts(:stderr, "Usage: commonplace mud connect <name>")
         System.halt(1)

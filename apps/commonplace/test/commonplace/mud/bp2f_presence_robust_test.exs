@@ -46,7 +46,10 @@ defmodule Commonplace.MUD.Bp2fPresenceRobustTest do
     on_exit(fn ->
       for {k, v} <- old do
         key = %{data_dir: :data_dir, trust: :trust, gate: :local_write_gate}[k]
-        if is_nil(v), do: Application.delete_env(:commonplace, key), else: Application.put_env(:commonplace, key, v)
+
+        if is_nil(v),
+          do: Application.delete_env(:commonplace, key),
+          else: Application.put_env(:commonplace, key, v)
       end
 
       File.rm_rf!(dir)
@@ -58,7 +61,12 @@ defmodule Commonplace.MUD.Bp2fPresenceRobustTest do
 
   defp curated_room(name, store, node_ctx) do
     json = Schemas.encode_room(%Schemas.Room{name: name, description: "a room"})
-    {:ok, room} = Schemas.create_dir_with_meta(Schemas.room_filename(), json, store, signing_context: node_ctx)
+
+    {:ok, room} =
+      Schemas.create_dir_with_meta(Schemas.room_filename(), json, store,
+        signing_context: node_ctx
+      )
+
     room
   end
 
@@ -84,11 +92,20 @@ defmodule Commonplace.MUD.Bp2fPresenceRobustTest do
     {ppub, ppriv} = Signing.generate_keypair()
     pid = UUID.uuid4()
     pctx = %SigningContext{identity_uuid: pid, public_key: ppub, private_key: ppriv}
-    Application.put_env(:commonplace, :trust, %{accept_unsigned: false, trusted_identities: %{pid => Signing.encode_key(ppub)}})
+
+    Application.put_env(:commonplace, :trust, %{
+      accept_unsigned: false,
+      trusted_identities: %{pid => Signing.encode_key(ppub)}
+    })
 
     {:ok, schema} = Schemas.load_dir_schema(room, store)
     update = Encoding.encode_update(Schema.add_file(schema, "ghost.usr", UUID.uuid4()))
-    r = CommitStoreClient.create_chained_commit(store, room, update, %{kind: :regular}, signing_context: pctx)
+
+    r =
+      CommitStoreClient.create_chained_commit(store, room, update, %{kind: :regular},
+        signing_context: pctx
+      )
+
     refute match?({:error, _}, r), "presence churn must land"
     :ok
   end
@@ -98,7 +115,10 @@ defmodule Commonplace.MUD.Bp2fPresenceRobustTest do
     sch |> Schema.list_entries() |> length()
   end
 
-  test "spawn in an OCCUPIED (churned) room ELEVATES on the room meta (the CX-bp2f fix)", %{store: store, node_ctx: node_ctx} do
+  test "spawn in an OCCUPIED (churned) room ELEVATES on the room meta (the CX-bp2f fix)", %{
+    store: store,
+    node_ctx: node_ctx
+  } do
     room = curated_room("Hall", store, node_ctx)
     before = entry_count(room, store)
     enter(room, store)
@@ -114,7 +134,8 @@ defmodule Commonplace.MUD.Bp2fPresenceRobustTest do
     assert entry_count(room, store) > before + 1
   end
 
-  test "spawn in a room with NO meta FAILS CLOSED (absent anchor → :none, never vacuous elevate)", %{store: store, node_ctx: node_ctx} do
+  test "spawn in a room with NO meta FAILS CLOSED (absent anchor → :none, never vacuous elevate)",
+       %{store: store, node_ctx: node_ctx} do
     # a bare node dir, no __room.json → room_meta_authority → nil → :none
     {:ok, bare} = Schemas.create_dir_with_meta(nil, nil, store, signing_context: node_ctx)
 
@@ -124,7 +145,10 @@ defmodule Commonplace.MUD.Bp2fPresenceRobustTest do
     assert {:error, _} = Facade.spawn(facade, "widget")
   end
 
-  test "move where the DEST room has no meta → :none (one-of-N missing, no all-but-one pass)", %{store: store, node_ctx: node_ctx} do
+  test "move where the DEST room has no meta → :none (one-of-N missing, no all-but-one pass)", %{
+    store: store,
+    node_ctx: node_ctx
+  } do
     src = curated_room("Source", store, node_ctx)
     {:ok, dest_bare} = Schemas.create_dir_with_meta(nil, nil, store, signing_context: node_ctx)
 

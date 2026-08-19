@@ -90,6 +90,7 @@ defmodule Commonplace.WorkspaceTest do
 
       stat = File.stat!(Path.join(dir, "node_id"))
       perms = Bitwise.band(stat.mode, 0o777)
+
       assert perms == 0o600,
              "expected node_id to be 0o600, got #{Integer.to_string(perms, 8)}"
     end

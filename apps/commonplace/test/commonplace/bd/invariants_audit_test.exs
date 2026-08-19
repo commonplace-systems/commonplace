@@ -39,7 +39,8 @@ defmodule Commonplace.Bd.InvariantsAuditTest do
       assert :ok == Invariants.parses(ctx.root, a.id, ctx.store)
     end
 
-    test "a ticket id that doesn't resolve at all -> {:error, :not_found}, not a violation", ctx do
+    test "a ticket id that doesn't resolve at all -> {:error, :not_found}, not a violation",
+         ctx do
       assert {:error, :not_found} == Invariants.parses(ctx.root, "CX-nonexistent", ctx.store)
     end
 
@@ -101,7 +102,12 @@ defmodule Commonplace.Bd.InvariantsAuditTest do
       # without touching C's own needs (mirrors
       # StrandedDetectorCoverageTest's Q2 construction exactly).
       {:ok, a2} =
-        Issue.update(ctx.root, a.id, %{needs: [%{"ticket" => b.id}, %{"ticket" => c.id}]}, ctx.store)
+        Issue.update(
+          ctx.root,
+          a.id,
+          %{needs: [%{"ticket" => b.id}, %{"ticket" => c.id}]},
+          ctx.store
+        )
 
       assert length(a2.needs) == 2
 
@@ -139,14 +145,20 @@ defmodule Commonplace.Bd.InvariantsAuditTest do
       # incorrectly treated this as a local edge, it would find a
       # bogus self-cycle. It must not.
       {:ok, _a} =
-        Issue.update(ctx.root, a.id, %{needs: [%{"ticket" => a.id, "repo" => "some-other-repo"}]}, ctx.store)
+        Issue.update(
+          ctx.root,
+          a.id,
+          %{needs: [%{"ticket" => a.id, "repo" => "some-other-repo"}]},
+          ctx.store
+        )
 
       assert :ok == Invariants.acyclic(ctx.root, ctx.store)
     end
   end
 
   describe "ref_typed/3" do
-    test "a resting-state needs shape violation is caught (unexpected key on a needs entry)", ctx do
+    test "a resting-state needs shape violation is caught (unexpected key on a needs entry)",
+         ctx do
       {:ok, a, _} = Issue.create(ctx.root, %{title: "A"}, ctx.store)
 
       # Land a malformed needs entry directly (bypassing WriteGuard —
@@ -159,7 +171,9 @@ defmodule Commonplace.Bd.InvariantsAuditTest do
       # Confirm WriteGuard itself would have refused this shape on a
       # real write, so the check below is re-judging the SAME rule,
       # not a different one.
-      assert {:error, reason} = WriteGuard.check(a, %{needs: bad_needs}, ctx.root, ctx.store, allow: [])
+      assert {:error, reason} =
+               WriteGuard.check(a, %{needs: bad_needs}, ctx.root, ctx.store, allow: [])
+
       assert reason =~ "unexpected keys"
 
       assert {:violation, details} = Invariants.ref_typed(ctx.root, a.id, ctx.store)
@@ -188,7 +202,12 @@ defmodule Commonplace.Bd.InvariantsAuditTest do
       {:ok, b, _} = Issue.create(ctx.root, %{title: "B"}, ctx.store)
 
       {:ok, a2} =
-        Issue.update(ctx.root, a.id, %{needs: [%{"ticket" => b.id}], done_witness: ["deadbeef"]}, ctx.store)
+        Issue.update(
+          ctx.root,
+          a.id,
+          %{needs: [%{"ticket" => b.id}], done_witness: ["deadbeef"]},
+          ctx.store
+        )
 
       assert a2.needs == [%{"ticket" => b.id}]
 
@@ -201,13 +220,16 @@ defmodule Commonplace.Bd.InvariantsAuditTest do
   end
 
   describe "check_all/2" do
-    test "runs every invariant over the whole corpus and reports a structured, per-hit result", ctx do
+    test "runs every invariant over the whole corpus and reports a structured, per-hit result",
+         ctx do
       {:ok, a, _} = Issue.create(ctx.root, %{title: "A"}, ctx.store)
       {:ok, b, _} = Issue.create(ctx.root, %{title: "B"}, ctx.store)
       {:ok, _c, _} = Issue.create(ctx.root, %{title: "C"}, ctx.store)
 
       # One deliberate violation: a bad needs shape on A.
-      {:ok, _} = Issue.update(ctx.root, a.id, %{needs: [%{"ticket" => "x", "bogus" => 1}]}, ctx.store)
+      {:ok, _} =
+        Issue.update(ctx.root, a.id, %{needs: [%{"ticket" => "x", "bogus" => 1}]}, ctx.store)
+
       # One deliberate cycle: B needs itself directly.
       {:ok, _} = Issue.update(ctx.root, b.id, %{needs: [%{"ticket" => b.id}]}, ctx.store)
 

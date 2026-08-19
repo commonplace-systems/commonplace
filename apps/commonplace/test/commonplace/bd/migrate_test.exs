@@ -43,15 +43,52 @@ defmodule Commonplace.Bd.MigrateTest do
   end
 
   describe "status filter" do
-    test "closed and wontfix are skipped; open/in_progress/blocked/review are imported verbatim", ctx do
+    test "closed and wontfix are skipped; open/in_progress/blocked/review are imported verbatim",
+         ctx do
       export =
         jsonl([
-          %{"id" => "CX-1", "title" => "open one", "status" => "open", "priority" => 2, "issue_type" => "task"},
-          %{"id" => "CX-2", "title" => "in progress one", "status" => "in_progress", "priority" => 1, "issue_type" => "bug"},
-          %{"id" => "CX-3", "title" => "blocked one", "status" => "blocked", "priority" => 2, "issue_type" => "task"},
-          %{"id" => "CX-4", "title" => "review one", "status" => "review", "priority" => 2, "issue_type" => "task"},
-          %{"id" => "CX-5", "title" => "closed one", "status" => "closed", "priority" => 2, "issue_type" => "task"},
-          %{"id" => "CX-6", "title" => "wontfix one", "status" => "wontfix", "priority" => 2, "issue_type" => "task"}
+          %{
+            "id" => "CX-1",
+            "title" => "open one",
+            "status" => "open",
+            "priority" => 2,
+            "issue_type" => "task"
+          },
+          %{
+            "id" => "CX-2",
+            "title" => "in progress one",
+            "status" => "in_progress",
+            "priority" => 1,
+            "issue_type" => "bug"
+          },
+          %{
+            "id" => "CX-3",
+            "title" => "blocked one",
+            "status" => "blocked",
+            "priority" => 2,
+            "issue_type" => "task"
+          },
+          %{
+            "id" => "CX-4",
+            "title" => "review one",
+            "status" => "review",
+            "priority" => 2,
+            "issue_type" => "task"
+          },
+          %{
+            "id" => "CX-5",
+            "title" => "closed one",
+            "status" => "closed",
+            "priority" => 2,
+            "issue_type" => "task"
+          },
+          %{
+            "id" => "CX-6",
+            "title" => "wontfix one",
+            "status" => "wontfix",
+            "priority" => 2,
+            "issue_type" => "task"
+          }
         ])
 
       {:ok, result} = Migrate.import_from_export(ctx.root, export, ctx.store)
@@ -95,7 +132,13 @@ defmodule Commonplace.Bd.MigrateTest do
     test "an imported in_progress issue has claimed_by nil", ctx do
       export =
         jsonl([
-          %{"id" => "CX-ip", "title" => "wip", "status" => "in_progress", "priority" => 1, "issue_type" => "task"}
+          %{
+            "id" => "CX-ip",
+            "title" => "wip",
+            "status" => "in_progress",
+            "priority" => 1,
+            "issue_type" => "task"
+          }
         ])
 
       {:ok, _result} = Migrate.import_from_export(ctx.root, export, ctx.store)
@@ -109,7 +152,13 @@ defmodule Commonplace.Bd.MigrateTest do
     test "a dep whose prereq is closed (not imported) is dropped and manifested", ctx do
       export =
         jsonl([
-          %{"id" => "CX-closed-prereq", "title" => "closed prereq", "status" => "closed", "priority" => 2, "issue_type" => "task"},
+          %{
+            "id" => "CX-closed-prereq",
+            "title" => "closed prereq",
+            "status" => "closed",
+            "priority" => 2,
+            "issue_type" => "task"
+          },
           %{
             "id" => "CX-dependent",
             "title" => "dependent",
@@ -117,7 +166,11 @@ defmodule Commonplace.Bd.MigrateTest do
             "priority" => 2,
             "issue_type" => "task",
             "dependencies" => [
-              %{"issue_id" => "CX-dependent", "depends_on_id" => "CX-closed-prereq", "type" => "blocks"}
+              %{
+                "issue_id" => "CX-dependent",
+                "depends_on_id" => "CX-closed-prereq",
+                "type" => "blocks"
+              }
             ]
           }
         ])
@@ -125,7 +178,9 @@ defmodule Commonplace.Bd.MigrateTest do
       {:ok, result} = Migrate.import_from_export(ctx.root, export, ctx.store)
 
       assert result.edges_added == 0
-      assert [%{from: "CX-closed-prereq", to: "CX-dependent", reason: :prereq_not_imported}] = result.manifest
+
+      assert [%{from: "CX-closed-prereq", to: "CX-dependent", reason: :prereq_not_imported}] =
+               result.manifest
 
       {:ok, issue} = Issue.show(ctx.root, "CX-dependent", ctx.store)
       refute Enum.any?(issue.needs, fn %{"ticket" => t} -> t == "CX-closed-prereq" end)
@@ -136,14 +191,22 @@ defmodule Commonplace.Bd.MigrateTest do
     test "a dep between two imported tickets adds needs via the guard", ctx do
       export =
         jsonl([
-          %{"id" => "CX-a", "title" => "A", "status" => "open", "priority" => 2, "issue_type" => "task"},
+          %{
+            "id" => "CX-a",
+            "title" => "A",
+            "status" => "open",
+            "priority" => 2,
+            "issue_type" => "task"
+          },
           %{
             "id" => "CX-b",
             "title" => "B",
             "status" => "open",
             "priority" => 2,
             "issue_type" => "task",
-            "dependencies" => [%{"issue_id" => "CX-b", "depends_on_id" => "CX-a", "type" => "blocks"}]
+            "dependencies" => [
+              %{"issue_id" => "CX-b", "depends_on_id" => "CX-a", "type" => "blocks"}
+            ]
           }
         ])
 
@@ -166,7 +229,9 @@ defmodule Commonplace.Bd.MigrateTest do
             "status" => "open",
             "priority" => 2,
             "issue_type" => "task",
-            "dependencies" => [%{"issue_id" => "CX-x", "depends_on_id" => "CX-y", "type" => "blocks"}]
+            "dependencies" => [
+              %{"issue_id" => "CX-x", "depends_on_id" => "CX-y", "type" => "blocks"}
+            ]
           },
           %{
             "id" => "CX-y",
@@ -174,7 +239,9 @@ defmodule Commonplace.Bd.MigrateTest do
             "status" => "open",
             "priority" => 2,
             "issue_type" => "task",
-            "dependencies" => [%{"issue_id" => "CX-y", "depends_on_id" => "CX-x", "type" => "blocks"}]
+            "dependencies" => [
+              %{"issue_id" => "CX-y", "depends_on_id" => "CX-x", "type" => "blocks"}
+            ]
           }
         ])
 
@@ -192,7 +259,13 @@ defmodule Commonplace.Bd.MigrateTest do
     test "a parent-child dependency edge is NOT converted into needs", ctx do
       export =
         jsonl([
-          %{"id" => "CX-epic", "title" => "epic", "status" => "open", "priority" => 2, "issue_type" => "epic"},
+          %{
+            "id" => "CX-epic",
+            "title" => "epic",
+            "status" => "open",
+            "priority" => 2,
+            "issue_type" => "epic"
+          },
           %{
             "id" => "CX-sub",
             "title" => "subtask",
@@ -217,9 +290,27 @@ defmodule Commonplace.Bd.MigrateTest do
     test "supersedes and related edges are also skipped, only blocks converts", ctx do
       export =
         jsonl([
-          %{"id" => "CX-old", "title" => "old", "status" => "open", "priority" => 2, "issue_type" => "task"},
-          %{"id" => "CX-friend", "title" => "friend", "status" => "open", "priority" => 2, "issue_type" => "task"},
-          %{"id" => "CX-blocker", "title" => "blocker", "status" => "open", "priority" => 2, "issue_type" => "task"},
+          %{
+            "id" => "CX-old",
+            "title" => "old",
+            "status" => "open",
+            "priority" => 2,
+            "issue_type" => "task"
+          },
+          %{
+            "id" => "CX-friend",
+            "title" => "friend",
+            "status" => "open",
+            "priority" => 2,
+            "issue_type" => "task"
+          },
+          %{
+            "id" => "CX-blocker",
+            "title" => "blocker",
+            "status" => "open",
+            "priority" => 2,
+            "issue_type" => "task"
+          },
           %{
             "id" => "CX-mixed",
             "title" => "mixed",
@@ -249,14 +340,22 @@ defmodule Commonplace.Bd.MigrateTest do
     test "agrees when query, walk, and supplied bd_cli ready ids all match", ctx do
       export =
         jsonl([
-          %{"id" => "CX-r1", "title" => "ready one", "status" => "open", "priority" => 2, "issue_type" => "task"},
+          %{
+            "id" => "CX-r1",
+            "title" => "ready one",
+            "status" => "open",
+            "priority" => 2,
+            "issue_type" => "task"
+          },
           %{
             "id" => "CX-blocked1",
             "title" => "blocked one",
             "status" => "open",
             "priority" => 2,
             "issue_type" => "task",
-            "dependencies" => [%{"issue_id" => "CX-blocked1", "depends_on_id" => "CX-r1", "type" => "blocks"}]
+            "dependencies" => [
+              %{"issue_id" => "CX-blocked1", "depends_on_id" => "CX-r1", "type" => "blocks"}
+            ]
           }
         ])
 
@@ -273,7 +372,13 @@ defmodule Commonplace.Bd.MigrateTest do
     test "disagreement is localized and non-vacuous when bd_cli set is wrong", ctx do
       export =
         jsonl([
-          %{"id" => "CX-r2", "title" => "ready two", "status" => "open", "priority" => 2, "issue_type" => "task"}
+          %{
+            "id" => "CX-r2",
+            "title" => "ready two",
+            "status" => "open",
+            "priority" => 2,
+            "issue_type" => "task"
+          }
         ])
 
       {:ok, _result} = Migrate.import_from_export(ctx.root, export, ctx.store)
@@ -334,10 +439,17 @@ defmodule Commonplace.Bd.MigrateTest do
       %{sc: sc}
     end
 
-    test "a signed import lands under enforce: skeleton + tickets + edges all pass the gate", ctx do
+    test "a signed import lands under enforce: skeleton + tickets + edges all pass the gate",
+         ctx do
       export =
         jsonl([
-          %{"id" => "CX-sr1", "title" => "ready one", "status" => "open", "priority" => 2, "issue_type" => "task"},
+          %{
+            "id" => "CX-sr1",
+            "title" => "ready one",
+            "status" => "open",
+            "priority" => 2,
+            "issue_type" => "task"
+          },
           %{
             "id" => "CX-sblocked1",
             "title" => "blocked one",
@@ -369,7 +481,13 @@ defmodule Commonplace.Bd.MigrateTest do
     test "an unsigned import does NOT land under enforce (denied, not decorative)", ctx do
       export =
         jsonl([
-          %{"id" => "CX-un1", "title" => "unsigned one", "status" => "open", "priority" => 2, "issue_type" => "task"}
+          %{
+            "id" => "CX-un1",
+            "title" => "unsigned one",
+            "status" => "open",
+            "priority" => 2,
+            "issue_type" => "task"
+          }
         ])
 
       # No signing_context -> default opts \\ [] -> unsigned. Every write

@@ -267,6 +267,7 @@ defmodule Commonplace.Chat.ActionsTest do
       assert original["id"] == m1
       assert tomb["id"] == tomb_id
       assert tomb["tombstone_of"] == m1
+
       refute Map.has_key?(tomb, "text"),
              "tombstone has no text — deletion is the act, not a content edit"
     end
@@ -369,7 +370,12 @@ defmodule Commonplace.Chat.ActionsTest do
 
     test "mixed post/edit/delete traffic still keeps the client-id set bounded",
          %{store: store, messages_uuid: uuid} do
-      opts = [room: "general", signer_id: "alice@aaaaaaaa", author_path: "alice.usr", store: store]
+      opts = [
+        room: "general",
+        signer_id: "alice@aaaaaaaa",
+        author_path: "alice.usr",
+        store: store
+      ]
 
       ids =
         Enum.map(1..10, fn n ->

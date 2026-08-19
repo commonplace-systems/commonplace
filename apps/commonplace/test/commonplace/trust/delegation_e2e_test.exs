@@ -37,9 +37,15 @@ defmodule Commonplace.Trust.DelegationE2ETest do
 
   defp ident(id) do
     {pub, priv} = Signing.generate_keypair()
-    %{id: id, pub: pub, priv: priv,
+
+    %{
+      id: id,
+      pub: pub,
+      priv: priv,
       ctx: %SigningContext{identity_uuid: id, private_key: priv, public_key: pub},
-      keyed: {id, pub}, signer: Signing.signer_id(id, pub)}
+      keyed: {id, pub},
+      signer: Signing.signer_id(id, pub)
+    }
   end
 
   defp strict(root_pub) do
@@ -59,15 +65,24 @@ defmodule Commonplace.Trust.DelegationE2ETest do
 
     # root delegates {write, delegate} over {d1, d2} to alice.
     {:ok, c1} =
-      Capability.delegate(root.ctx, alice.keyed,
-        %{verbs: [:write, :delegate], scope: {:docs, ["d1", "d2"]}, caveats: %{not_before: nil, not_after: nil}})
+      Capability.delegate(root.ctx, alice.keyed, %{
+        verbs: [:write, :delegate],
+        scope: {:docs, ["d1", "d2"]},
+        caveats: %{not_before: nil, not_after: nil}
+      })
+
     :ok = CommitStore.store_capability(store, c1)
 
     # alice narrows to {write} over {d1} and delegates to bob.
     {:ok, c2} =
-      Capability.delegate(alice.ctx, bob.keyed,
+      Capability.delegate(
+        alice.ctx,
+        bob.keyed,
         %{verbs: [:write], scope: {:docs, ["d1"]}, caveats: %{not_before: nil, not_after: nil}},
-        c1.id, parent: c1)
+        c1.id,
+        parent: c1
+      )
+
     :ok = CommitStore.store_capability(store, c2)
 
     # bob writes d1 (in scope) → accepted.
@@ -76,6 +91,7 @@ defmodule Commonplace.Trust.DelegationE2ETest do
 
     # bob tries d2 (alice already narrowed it away) → rejected.
     oos_commit = commit_with("d2", c2.id, bob)
+
     assert {:error, :capability_insufficient} =
              Trust.authorized?(oos_commit, :write, {:doc, "d2"}, cfg, store)
 
@@ -90,31 +106,49 @@ defmodule Commonplace.Trust.DelegationE2ETest do
     {bpub, _} = Signing.generate_keypair()
 
     {:ok, parent} =
-      Capability.delegate(root.ctx, alice.keyed,
-        %{verbs: [:write], scope: {:docs, ["d1"]}, caveats: %{not_before: nil, not_after: nil}})
+      Capability.delegate(root.ctx, alice.keyed, %{
+        verbs: [:write],
+        scope: {:docs, ["d1"]},
+        caveats: %{not_before: nil, not_after: nil}
+      })
 
     # alice can't grant bob :execute she doesn't hold.
     assert {:error, {:not_attenuation, _}} =
-             Capability.delegate(alice.ctx, {"bob", bpub},
-               %{verbs: [:write, :execute], scope: {:docs, ["d1"]}, caveats: %{not_before: nil, not_after: nil}},
-               parent.id, parent: parent)
+             Capability.delegate(
+               alice.ctx,
+               {"bob", bpub},
+               %{
+                 verbs: [:write, :execute],
+                 scope: {:docs, ["d1"]},
+                 caveats: %{not_before: nil, not_after: nil}
+               },
+               parent.id,
+               parent: parent
+             )
   end
 
-  test "peer-workspace trust: root grants peer-root a doc-set, peer writes within it", %{store: store} do
+  test "peer-workspace trust: root grants peer-root a doc-set, peer writes within it", %{
+    store: store
+  } do
     root = ident("root")
     peer = ident("peer-root")
     cfg = strict(root.pub)
 
     # jes-root delegates {write} over the federated doc-set to peer-X-root.
     {:ok, grant} =
-      Capability.delegate(root.ctx, peer.keyed,
-        %{verbs: [:write], scope: {:docs, ["fed-1", "fed-2"]}, caveats: %{not_before: nil, not_after: nil}})
+      Capability.delegate(root.ctx, peer.keyed, %{
+        verbs: [:write],
+        scope: {:docs, ["fed-1", "fed-2"]},
+        caveats: %{not_before: nil, not_after: nil}
+      })
+
     :ok = CommitStore.store_capability(store, grant)
 
     in_scope = commit_with("fed-1", grant.id, peer)
     assert :ok = Trust.authorized?(in_scope, :write, {:doc, "fed-1"}, cfg, store)
 
     out_scope = commit_with("other-doc", grant.id, peer)
+
     assert {:error, :capability_insufficient} =
              Trust.authorized?(out_scope, :write, {:doc, "other-doc"}, cfg, store)
   end

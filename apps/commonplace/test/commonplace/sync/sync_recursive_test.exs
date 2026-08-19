@@ -53,7 +53,11 @@ defmodule Commonplace.Sync.SyncRecursiveTest do
   end
 
   describe "sync_recursive" do
-    test "syncs a deeply nested directory tree in one call", %{store: store, sync_dir: dir, root: root} do
+    test "syncs a deeply nested directory tree in one call", %{
+      store: store,
+      sync_dir: dir,
+      root: root
+    } do
       # Create a 3-level deep tree on disk
       File.write!(Path.join(dir, "root.txt"), "at root")
       File.mkdir_p!(Path.join(dir, "level1"))
@@ -79,7 +83,11 @@ defmodule Commonplace.Sync.SyncRecursiveTest do
       assert read_content(leaf_uuid, store) == "at level 3"
     end
 
-    test "second sync after editing nested files detects changes", %{store: store, sync_dir: dir, root: root} do
+    test "second sync after editing nested files detects changes", %{
+      store: store,
+      sync_dir: dir,
+      root: root
+    } do
       File.mkdir_p!(Path.join(dir, "sub"))
       File.write!(Path.join(dir, "sub/file.txt"), "original")
 
@@ -97,7 +105,11 @@ defmodule Commonplace.Sync.SyncRecursiveTest do
       assert read_content(uuid, store) == "modified"
     end
 
-    test "adding new files in nested dirs on second sync", %{store: store, sync_dir: dir, root: root} do
+    test "adding new files in nested dirs on second sync", %{
+      store: store,
+      sync_dir: dir,
+      root: root
+    } do
       File.mkdir_p!(Path.join(dir, "sub"))
       File.write!(Path.join(dir, "sub/first.txt"), "first")
 
@@ -117,7 +129,11 @@ defmodule Commonplace.Sync.SyncRecursiveTest do
       assert read_content(uuid, store) == "second"
     end
 
-    test "deleting files in nested dirs on second sync", %{store: store, sync_dir: dir, root: root} do
+    test "deleting files in nested dirs on second sync", %{
+      store: store,
+      sync_dir: dir,
+      root: root
+    } do
       File.mkdir_p!(Path.join(dir, "sub"))
       File.write!(Path.join(dir, "sub/keep.txt"), "keep")
       File.write!(Path.join(dir, "sub/remove.txt"), "remove")
@@ -138,7 +154,11 @@ defmodule Commonplace.Sync.SyncRecursiveTest do
       assert names == ["keep.txt"]
     end
 
-    test "adding a new nested directory with files on second sync", %{store: store, sync_dir: dir, root: root} do
+    test "adding a new nested directory with files on second sync", %{
+      store: store,
+      sync_dir: dir,
+      root: root
+    } do
       File.write!(Path.join(dir, "existing.txt"), "here")
 
       Watcher.sync_recursive(root, dir, store)

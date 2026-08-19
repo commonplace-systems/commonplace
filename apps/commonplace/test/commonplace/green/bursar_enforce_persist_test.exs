@@ -44,7 +44,9 @@ defmodule Commonplace.Green.BursarEnforcePersistTest do
 
     on_exit(fn ->
       restore = fn key, v ->
-        if is_nil(v), do: Application.delete_env(:commonplace, key), else: Application.put_env(:commonplace, key, v)
+        if is_nil(v),
+          do: Application.delete_env(:commonplace, key),
+          else: Application.put_env(:commonplace, key, v)
       end
 
       restore.(:data_dir, old_data_dir)
@@ -64,9 +66,24 @@ defmodule Commonplace.Green.BursarEnforcePersistTest do
     end
 
     {:ok, bursar_pid} = Bursar.start_link(root_uuid: root, store: store, sweep_interval: 60_000)
-    on_exit(fn -> if Process.alive?(bursar_pid), do: (try do GenServer.stop(bursar_pid) catch (:exit, _ -> :ok) end) end)
 
-    %{store: store, node_ctx: node_ctx, node_identity: node_identity, root: root, bursar_pid: bursar_pid}
+    on_exit(fn ->
+      if Process.alive?(bursar_pid),
+        do:
+          (try do
+             GenServer.stop(bursar_pid)
+           catch
+             (:exit, _ -> :ok)
+           end)
+    end)
+
+    %{
+      store: store,
+      node_ctx: node_ctx,
+      node_identity: node_identity,
+      root: root,
+      bursar_pid: bursar_pid
+    }
   end
 
   defp signer_of(store, uuid) do
@@ -91,7 +108,10 @@ defmodule Commonplace.Green.BursarEnforcePersistTest do
     # A PERMANENT (ttl:nil) token — the durable ownership kind that triggers a
     # persist_state write to __bursar.json.
     assert {:ok, _} =
-             BursarClient.acquire(Bursar, item, node_identity, authenticated_as: node_identity, ttl: nil)
+             BursarClient.acquire(Bursar, item, node_identity,
+               authenticated_as: node_identity,
+               ttl: nil
+             )
 
     # The Bursar survived (would be down if the write had crashed it) and the
     # token is queryable.
@@ -110,21 +130,47 @@ defmodule Commonplace.Green.BursarEnforcePersistTest do
   end
 
   test "PIN 2: a DOWN Bursar surfaces a graceful refusal on take — never a case_clause crash",
-       %{store: store, node_ctx: node_ctx, node_identity: node_identity, root: root, bursar_pid: bursar_pid} do
+       %{
+         store: store,
+         node_ctx: node_ctx,
+         node_identity: node_identity,
+         root: root,
+         bursar_pid: bursar_pid
+       } do
     # A curated object in a shared room, node inventory.
     {:ok, room} =
-      Schemas.create_dir_with_meta(Schemas.room_filename(), Schemas.encode_room(%Room{name: "Hall", description: "x"}), store, signing_context: node_ctx)
+      Schemas.create_dir_with_meta(
+        Schemas.room_filename(),
+        Schemas.encode_room(%Room{name: "Hall", description: "x"}),
+        store,
+        signing_context: node_ctx
+      )
 
     {:ok, item} =
-      Schemas.create_dir_with_meta(Schemas.object_filename(), Schemas.encode_object(%Object{name: "gong"}), store, signing_context: node_ctx)
+      Schemas.create_dir_with_meta(
+        Schemas.object_filename(),
+        Schemas.encode_object(%Object{name: "gong"}),
+        store,
+        signing_context: node_ctx
+      )
 
     {:ok, inventory} = Schemas.create_dir_with_meta(nil, nil, store, signing_context: node_ctx)
 
     for {parent, name, child} <- [{root, "hall", room}, {room, "gong.obj", item}] do
       {:ok, schema} = Schemas.load_dir_schema(parent, store)
       schema = Schema.add_directory(schema, name, child)
-      {metadata, opts} = Commonplace.MUD.SignedWrite.opts_for(parent, store: store, signing_context: node_ctx)
-      _ = CommitStoreClient.create_chained_commit(store, parent, Yelixer.Encoding.encode_update(schema), metadata, opts)
+
+      {metadata, opts} =
+        Commonplace.MUD.SignedWrite.opts_for(parent, store: store, signing_context: node_ctx)
+
+      _ =
+        CommitStoreClient.create_chained_commit(
+          store,
+          parent,
+          Yelixer.Encoding.encode_update(schema),
+          metadata,
+          opts
+        )
     end
 
     _ = node_identity
@@ -144,6 +190,7 @@ defmodule Commonplace.Green.BursarEnforcePersistTest do
         k, v -> {:caught, k, v}
       end
 
-    assert match?({:error, _}, result), "a down Bursar must give a graceful error, got: #{inspect(result)}"
+    assert match?({:error, _}, result),
+           "a down Bursar must give a graceful error, got: #{inspect(result)}"
   end
 end

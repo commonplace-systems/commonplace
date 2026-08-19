@@ -79,7 +79,6 @@ defmodule Commonplace.Document.Rebase.YTextTest do
       # → "Hello beautiful there world"
       assert ContentType.get_content(result) == "Hello beautiful there world"
     end
-
   end
 
   describe "rebase/4 — randomized invariant" do
@@ -107,6 +106,7 @@ defmodule Commonplace.Document.Rebase.YTextTest do
 
   defp random_text(range) do
     len = Enum.random(range)
+
     Enum.map_join(1..max(len, 1), "", fn _ -> <<Enum.random(?a..?z)>> end)
     |> String.slice(0, len)
   end

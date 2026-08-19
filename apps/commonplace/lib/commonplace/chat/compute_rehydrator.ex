@@ -68,7 +68,9 @@ defmodule Commonplace.Chat.ComputeRehydrator do
       root ->
         try do
           {:ok, n} = rehydrate(root, opts)
-          if n > 0, do: Logger.info("ComputeRehydrator: resumed #{n} chat view-compute(s) on boot")
+
+          if n > 0,
+            do: Logger.info("ComputeRehydrator: resumed #{n} chat view-compute(s) on boot")
         rescue
           e -> Logger.warning("ComputeRehydrator: rehydration failed: #{inspect(e)}")
         catch

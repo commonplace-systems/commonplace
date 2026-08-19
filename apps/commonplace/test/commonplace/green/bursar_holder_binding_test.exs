@@ -50,7 +50,13 @@ defmodule Commonplace.Green.BursarHolderBindingTest do
       )
 
     on_exit(fn ->
-      if Process.alive?(pid), do: (try do GenServer.stop(pid) catch (:exit, _ -> :ok) end)
+      if Process.alive?(pid),
+        do:
+          (try do
+             GenServer.stop(pid)
+           catch
+             (:exit, _ -> :ok)
+           end)
     end)
 
     {pid, name}

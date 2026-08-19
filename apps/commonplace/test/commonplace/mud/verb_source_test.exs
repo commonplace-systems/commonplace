@@ -21,6 +21,7 @@ defmodule Commonplace.MUD.VerbSourceTest do
     File.mkdir_p!(dir)
     store = :"commit_store_#{:rand.uniform(1_000_000)}"
     start_supervised!({CommitStore, data_dir: dir, name: store})
+
     on_exit(fn ->
       File.rm_rf!(dir)
       SourceDoc.reset_cache()
@@ -41,7 +42,15 @@ defmodule Commonplace.MUD.VerbSourceTest do
         sweep_interval: 60_000
       )
 
-    on_exit(fn -> if Process.alive?(bursar_pid), do: (try do GenServer.stop(bursar_pid) catch (:exit, _ -> :ok) end) end)
+    on_exit(fn ->
+      if Process.alive?(bursar_pid),
+        do:
+          (try do
+             GenServer.stop(bursar_pid)
+           catch
+             (:exit, _ -> :ok)
+           end)
+    end)
 
     root_uuid = UUID.uuid4()
     update = Encoding.encode_update(Schema.new_schema())
@@ -106,7 +115,8 @@ defmodule Commonplace.MUD.VerbSourceTest do
     end
   end
 
-  test "save_verb writes a source doc, validates compile, and round-trips through find_source", ctx do
+  test "save_verb writes a source doc, validates compile, and round-trips through find_source",
+       ctx do
     fountain_dir =
       with {:ok, schema} <- Schemas.load_dir_schema(clearing_uuid(ctx), ctx.store),
            {:ok, entry} <- Schema.get_entry(schema, "fountain.obj") do
@@ -134,7 +144,9 @@ defmodule Commonplace.MUD.VerbSourceTest do
 
     bad = "defmodule Borked do def run(ctx) syntax_error end"
 
-    assert {:error, {:compile_error, _}} = VerbSource.save_verb(fountain_dir, "broke", bad, ctx.store)
+    assert {:error, {:compile_error, _}} =
+             VerbSource.save_verb(fountain_dir, "broke", bad, ctx.store)
+
     assert {:ok, _} = VerbSource.find_source(fountain_dir, "broke", ctx.store)
   end
 
@@ -182,7 +194,7 @@ defmodule Commonplace.MUD.VerbSourceTest do
     bob_out = drain("bob") |> Enum.join("\n")
     alice_out = drain("alice") |> Enum.join("\n")
 
-    assert (bob_out <> alice_out) =~ "bows gracefully"
+    assert bob_out <> alice_out =~ "bows gracefully"
 
     PlayerSession.stop(alice)
     PlayerSession.stop(bob)
@@ -261,7 +273,15 @@ defmodule Commonplace.MUD.VerbSourceTest do
         sweep_interval: 60_000
       )
 
-    on_exit(fn -> if Process.alive?(bursar_pid), do: (try do GenServer.stop(bursar_pid) catch (:exit, _ -> :ok) end) end)
+    on_exit(fn ->
+      if Process.alive?(bursar_pid),
+        do:
+          (try do
+             GenServer.stop(bursar_pid)
+           catch
+             (:exit, _ -> :ok)
+           end)
+    end)
 
     name = :"tick_bot_#{:rand.uniform(1_000_000)}"
 
@@ -319,8 +339,21 @@ defmodule Commonplace.MUD.VerbSourceTest do
         """
       end
 
-      assert :ok = VerbSource.save_verb(fountain_dir(ctx), "poke", same_name_src.("fountain poke fired"), ctx.store)
-      assert :ok = VerbSource.save_verb(cloak_dir(ctx), "poke", same_name_src.("cloak poke fired"), ctx.store)
+      assert :ok =
+               VerbSource.save_verb(
+                 fountain_dir(ctx),
+                 "poke",
+                 same_name_src.("fountain poke fired"),
+                 ctx.store
+               )
+
+      assert :ok =
+               VerbSource.save_verb(
+                 cloak_dir(ctx),
+                 "poke",
+                 same_name_src.("cloak poke fired"),
+                 ctx.store
+               )
 
       assert {:ok, fountain_mod} = VerbSource.compile_verb(fountain_dir(ctx), "poke", ctx.store)
       assert {:ok, cloak_mod} = VerbSource.compile_verb(cloak_dir(ctx), "poke", ctx.store)
@@ -365,16 +398,28 @@ defmodule Commonplace.MUD.VerbSourceTest do
         """
       end
 
-      assert :ok = VerbSource.save_verb(fountain_dir(ctx), "twist", hijack_src.(:fountain_twist), ctx.store)
-      assert :ok = VerbSource.save_verb(cloak_dir(ctx), "twist", hijack_src.(:cloak_twist), ctx.store)
+      assert :ok =
+               VerbSource.save_verb(
+                 fountain_dir(ctx),
+                 "twist",
+                 hijack_src.(:fountain_twist),
+                 ctx.store
+               )
 
-      assert {:ok, :fountain_twist} = VerbSource.run_verb(fountain_dir(ctx), "twist", %{}, ctx.store)
+      assert :ok =
+               VerbSource.save_verb(cloak_dir(ctx), "twist", hijack_src.(:cloak_twist), ctx.store)
+
+      assert {:ok, :fountain_twist} =
+               VerbSource.run_verb(fountain_dir(ctx), "twist", %{}, ctx.store)
+
       assert {:ok, :cloak_twist} = VerbSource.run_verb(cloak_dir(ctx), "twist", %{}, ctx.store)
 
       # Re-run in the opposite order too — cache hits must still resolve
       # to the correct, distinct module per object.
       assert {:ok, :cloak_twist} = VerbSource.run_verb(cloak_dir(ctx), "twist", %{}, ctx.store)
-      assert {:ok, :fountain_twist} = VerbSource.run_verb(fountain_dir(ctx), "twist", %{}, ctx.store)
+
+      assert {:ok, :fountain_twist} =
+               VerbSource.run_verb(fountain_dir(ctx), "twist", %{}, ctx.store)
     end
 
     test "a non-verb SourceDoc caller (compute/view/black doc) still compiles under its own self-named module (unaffected)",
@@ -386,7 +431,14 @@ defmodule Commonplace.MUD.VerbSourceTest do
       uuid = UUID.uuid4()
       doc = YDoc.new()
       doc = ContentType.create(doc, :text, "elixir")
-      doc = ContentType.insert_text(doc, 0, "defmodule Commonplace.UserCode.NotAVerb do\n  def value, do: :plain\nend\n")
+
+      doc =
+        ContentType.insert_text(
+          doc,
+          0,
+          "defmodule Commonplace.UserCode.NotAVerb do\n  def value, do: :plain\nend\n"
+        )
+
       update = Encoding.encode_update(doc)
       CommitStore.create_commit(ctx.store, uuid, update, nil)
 

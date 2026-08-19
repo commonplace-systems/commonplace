@@ -103,9 +103,10 @@ defmodule Commonplace.Bots.Activity do
   """
   @spec append(String.t(), map(), module() | atom()) :: :ok | {:error, term()}
   def append(activity_uuid, entry, store \\ CommitStoreClient) do
-    entry = Map.put_new_lazy(entry, "ts", fn ->
-      DateTime.utc_now() |> DateTime.to_iso8601()
-    end)
+    entry =
+      Map.put_new_lazy(entry, "ts", fn ->
+        DateTime.utc_now() |> DateTime.to_iso8601()
+      end)
 
     with {:ok, doc} <- DocBuilder.reconstruct_snapshot(store, activity_uuid),
          doc <- Array.push(doc, @content_type, [Jason.encode!(entry)]) do

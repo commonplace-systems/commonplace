@@ -353,7 +353,9 @@ defmodule Commonplace.Store.LateEditTranslatorTest do
 
         {:ok, a} = LateEditTranslator.translate_update(e, dm)
         {:ok, b} = LateEditTranslator.translate_update(e, dm)
-        assert a == b, "byte-determinism failed for client=#{client_id} s1=#{inspect(s1)} s2=#{inspect(s2)}"
+
+        assert a == b,
+               "byte-determinism failed for client=#{client_id} s1=#{inspect(s1)} s2=#{inspect(s2)}"
       end
     end
   end

@@ -32,6 +32,7 @@ defmodule Commonplace.MergeCommand.MergeLogTest do
       # different results — no accidental collision between a
       # presence identity's mailbox and a doc's merge log.
       id = "550e8400-e29b-41d4-a716-446655440000"
+
       refute MergeLog.log_uuid_for_doc(id) ==
                Commonplace.Presence.Mailbox.log_uuid_for_identity(id)
     end
@@ -40,7 +41,11 @@ defmodule Commonplace.MergeCommand.MergeLogTest do
       result = MergeLog.log_uuid_for_doc("target-uuid-alpha")
       assert is_binary(result)
       assert String.length(result) == 36
-      assert Regex.match?(~r/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/, result)
+
+      assert Regex.match?(
+               ~r/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+               result
+             )
     end
   end
 end

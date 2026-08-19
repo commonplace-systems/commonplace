@@ -25,7 +25,10 @@ alias Commonplace.Store.CommitStore
 {:ok, _} = Application.ensure_all_started(:phoenix_pubsub)
 {:ok, _} = Application.ensure_all_started(:telemetry)
 {:ok, _} = Application.ensure_all_started(:req)
-{:ok, _} = Supervisor.start_link([{Phoenix.PubSub, name: Commonplace.PubSub}], strategy: :one_for_one)
+
+{:ok, _} =
+  Supervisor.start_link([{Phoenix.PubSub, name: Commonplace.PubSub}], strategy: :one_for_one)
+
 {:ok, _} = CommitStore.start_link(data_dir: data_dir, name: CommitStore)
 
 log_path = System.get_env("SESSION_LOG", "/tmp/cp_fed_real_session.log")
@@ -41,7 +44,11 @@ end
 Enum.reduce_while(1..240, nil, fn _, _ ->
   if File.exists?(Path.join(shared, "b_ready")),
     do: {:halt, :ok},
-    else: (Process.sleep(250); {:cont, nil})
+    else:
+      (
+        Process.sleep(250)
+        {:cont, nil}
+      )
 end)
 
 manifest = Path.join(shared, "manifest.json") |> File.read!() |> Jason.decode!()
@@ -64,7 +71,11 @@ peer = %{
 
 say.("pulling 3 docs from #{peer.base_url} over plain HTTP (no cookie, no distribution)…")
 report = PullClient.pull_once([peer], store: CommitStore)
-say.("pull report: imported=#{report.imported} rejected=#{report.rejected} deferred=#{report.deferred} errors=#{length(report.errors)}")
+
+say.(
+  "pull report: imported=#{report.imported} rejected=#{report.rejected} deferred=#{report.deferred} errors=#{length(report.errors)}"
+)
+
 Enum.each(report.errors, fn e -> say.("  error: #{inspect(e, limit: 6)}") end)
 
 # --- verdicts ---
@@ -94,7 +105,9 @@ reject = fn doc, label ->
   end
 end
 
-ok2 = reject.(manifest["doc_out_of_scope"], "agent's OUT-of-scope commit (capability_insufficient)")
+ok2 =
+  reject.(manifest["doc_out_of_scope"], "agent's OUT-of-scope commit (capability_insufficient)")
+
 ok3 = reject.(manifest["doc_uncertified"], "mallory-bot's uncertified commit (untrusted_signer)")
 
 # --- wrong token: turned away at the transport door ---

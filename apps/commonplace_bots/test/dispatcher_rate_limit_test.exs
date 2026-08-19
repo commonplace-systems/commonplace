@@ -46,8 +46,7 @@ defmodule Commonplace.Bots.DispatcherRateLimitTest do
       Supervisor.start_child(
         bots_sup,
         Supervisor.child_spec(
-          {Commonplace.Bots.Dispatcher,
-           [worker_hook: hook, rate_limit_enabled: true]},
+          {Commonplace.Bots.Dispatcher, [worker_hook: hook, rate_limit_enabled: true]},
           id: Commonplace.Bots.Dispatcher
         )
       )

@@ -40,7 +40,10 @@ defmodule Commonplace.MUD.SafeVerb.Bounds do
   @spec run((-> term())) :: {:ok, term()} | {:error, term()}
   def run(fun) when is_function(fun, 0) do
     timeout_ms = Application.get_env(:commonplace, :safe_verb_timeout_ms, @default_timeout_ms)
-    max_heap_bytes = Application.get_env(:commonplace, :safe_verb_max_heap_bytes, @default_max_heap_bytes)
+
+    max_heap_bytes =
+      Application.get_env(:commonplace, :safe_verb_max_heap_bytes, @default_max_heap_bytes)
+
     max_heap_words = div(max_heap_bytes, :erlang.system_info(:wordsize))
 
     parent = self()

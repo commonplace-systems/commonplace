@@ -102,7 +102,11 @@ defmodule Commonplace.Bd.FrontierTest do
     {:ok, b, _} = Issue.create(ctx.root, %{title: "B", needs: [needs_ticket(c.id)]}, ctx.store)
 
     {:ok, d, _} =
-      Issue.create(ctx.root, %{title: "D", needs: [needs_ticket(a.id), needs_ticket(b.id)]}, ctx.store)
+      Issue.create(
+        ctx.root,
+        %{title: "D", needs: [needs_ticket(a.id), needs_ticket(b.id)]},
+        ctx.store
+      )
 
     ready0 = Frontier.ready_walk(ctx.root, ctx.store) |> Enum.map(& &1.id)
     assert ready0 == [c.id]

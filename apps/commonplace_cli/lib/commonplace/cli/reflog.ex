@@ -103,7 +103,11 @@ defmodule Commonplace.CLI.Reflog do
         do_restore(root, owner, commit_id_hex, opts)
 
       [] ->
-        IO.puts(:stderr, "Usage: commonplace reflog fork <checkpoint-commit-id> [--owner name] [--as name]")
+        IO.puts(
+          :stderr,
+          "Usage: commonplace reflog fork <checkpoint-commit-id> [--owner name] [--as name]"
+        )
+
         System.halt(1)
     end
   end
@@ -117,7 +121,9 @@ defmodule Commonplace.CLI.Reflog do
 
       case Restore.materialize_branch(store, snapshot_uuid, commit_id, root, restore_opts) do
         {:ok, %{root_entry: name, docs: count}} ->
-          IO.puts("Restored checkpoint #{commit_id_hex} as #{name} (#{count} doc(s)) — fork-anchored, mergeable back.")
+          IO.puts(
+            "Restored checkpoint #{commit_id_hex} as #{name} (#{count} doc(s)) — fork-anchored, mergeable back."
+          )
 
         {:error, reason} ->
           IO.puts(:stderr, "Restore failed: #{inspect(reason)}")
@@ -144,7 +150,11 @@ defmodule Commonplace.CLI.Reflog do
         do_checkout(data_dir, root, owner, commit_id_hex, dest_dir, force)
 
       _ ->
-        IO.puts(:stderr, "Usage: commonplace reflog checkout <checkpoint-commit-id> <dest-dir> [--owner name] [--force]")
+        IO.puts(
+          :stderr,
+          "Usage: commonplace reflog checkout <checkpoint-commit-id> <dest-dir> [--owner name] [--force]"
+        )
+
         System.halt(1)
     end
   end
@@ -171,7 +181,8 @@ defmodule Commonplace.CLI.Reflog do
           )
 
         {:error, {:dest_inside_checkout, checkout}} ->
-          IO.puts(:stderr,
+          IO.puts(
+            :stderr,
             "Refusing: #{dest_dir} is inside registered checkout #{inspect(checkout.sync_dir)} " <>
               "(uuid #{checkout.uuid}). A reflog checkout must never touch a live sync tree."
           )
@@ -213,7 +224,11 @@ defmodule Commonplace.CLI.Reflog do
         do_diff(root, owner, commit_id_hex, other_commit_id_hex)
 
       _ ->
-        IO.puts(:stderr, "Usage: commonplace reflog diff <checkpoint-commit-id> [<other-checkpoint-id>] [--owner name]")
+        IO.puts(
+          :stderr,
+          "Usage: commonplace reflog diff <checkpoint-commit-id> [<other-checkpoint-id>] [--owner name]"
+        )
+
         System.halt(1)
     end
   end

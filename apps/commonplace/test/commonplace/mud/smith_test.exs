@@ -20,7 +20,11 @@ defmodule Commonplace.MUD.SmithTest do
   alias Commonplace.Tree.Schema
   alias Yelixer.Encoding
 
-  @ore %{"name" => "iron ore", "aliases" => ["ore"], "description" => "A rough chunk of iron ore."}
+  @ore %{
+    "name" => "iron ore",
+    "aliases" => ["ore"],
+    "description" => "A rough chunk of iron ore."
+  }
   @ingot %{"name" => "iron ingot", "aliases" => ["ingot"], "description" => "A bar of iron."}
 
   setup do
@@ -54,7 +58,9 @@ defmodule Commonplace.MUD.SmithTest do
 
     on_exit(fn ->
       restore = fn key, v ->
-        if is_nil(v), do: Application.delete_env(:commonplace, key), else: Application.put_env(:commonplace, key, v)
+        if is_nil(v),
+          do: Application.delete_env(:commonplace, key),
+          else: Application.put_env(:commonplace, key, v)
       end
 
       restore.(:data_dir, old_data_dir)
@@ -68,8 +74,18 @@ defmodule Commonplace.MUD.SmithTest do
       pid -> GenServer.stop(pid)
     end
 
-    {:ok, bursar_pid} = Bursar.start_link(root_uuid: UUID.uuid4(), store: store, sweep_interval: 60_000)
-    on_exit(fn -> if Process.alive?(bursar_pid), do: (try do GenServer.stop(bursar_pid) catch (:exit, _ -> :ok) end) end)
+    {:ok, bursar_pid} =
+      Bursar.start_link(root_uuid: UUID.uuid4(), store: store, sweep_interval: 60_000)
+
+    on_exit(fn ->
+      if Process.alive?(bursar_pid),
+        do:
+          (try do
+             GenServer.stop(bursar_pid)
+           catch
+             (:exit, _ -> :ok)
+           end)
+    end)
 
     {:ok, node_ctx} = NodeIdentity.signing_context()
     {:ok, node_identity} = NodeIdentity.identity()
@@ -79,7 +95,13 @@ defmodule Commonplace.MUD.SmithTest do
     recipes_dir = mk_dir!(store, node_ctx)
     add_dir_entry!(store, root, "__recipes", recipes_dir, node_ctx)
 
-    %{store: store, node_ctx: node_ctx, node_identity: node_identity, root: root, recipes_dir: recipes_dir}
+    %{
+      store: store,
+      node_ctx: node_ctx,
+      node_identity: node_identity,
+      root: root,
+      recipes_dir: recipes_dir
+    }
   end
 
   # ---- helpers ----
@@ -109,7 +131,14 @@ defmodule Commonplace.MUD.SmithTest do
         signing_context: ctx.node_ctx
       )
 
-    :ok = add_dir_entry!(ctx.store, ctx.recipes_dir, "r-#{String.slice(recipe_uuid, 0, 8)}", recipe_uuid, ctx.node_ctx)
+    :ok =
+      add_dir_entry!(
+        ctx.store,
+        ctx.recipes_dir,
+        "r-#{String.slice(recipe_uuid, 0, 8)}",
+        recipe_uuid,
+        ctx.node_ctx
+      )
   end
 
   # Give `crafter` `count` held items of `template` in `inventory` via the
@@ -160,7 +189,10 @@ defmodule Commonplace.MUD.SmithTest do
     for ore <- ore_uuids, do: assert(:available = BursarClient.query(Bursar, ore))
 
     ingot_uuid =
-      elem(Enum.find(entries_with_names(ctx.store, inv), fn {_u, nm} -> nm == "iron ingot" end), 0)
+      elem(
+        Enum.find(entries_with_names(ctx.store, inv), fn {_u, nm} -> nm == "iron ingot" end),
+        0
+      )
 
     assert {:held, %{holder: ^crafter}} = BursarClient.query(Bursar, ingot_uuid)
   end
@@ -189,14 +221,23 @@ defmodule Commonplace.MUD.SmithTest do
              Mint.smith("mithril blade", inv, crafter, root_uuid: ctx.root, store: ctx.store)
   end
 
-  test "concurrent double-craft of the same 2 ore: exactly one wins (S4 — inventory-lock serializes)", ctx do
+  test "concurrent double-craft of the same 2 ore: exactly one wins (S4 — inventory-lock serializes)",
+       ctx do
     inv = mk_dir!(ctx.store, ctx.node_ctx)
     {crafter, _} = fresh_identity()
     stock!(ctx, inv, crafter, @ore, 2)
     seed_recipe!(ctx, "iron ingot", [%{"type" => "iron ore", "qty" => 2}], @ingot)
 
-    t1 = Task.async(fn -> Mint.smith("iron ingot", inv, crafter, root_uuid: ctx.root, store: ctx.store) end)
-    t2 = Task.async(fn -> Mint.smith("iron ingot", inv, crafter, root_uuid: ctx.root, store: ctx.store) end)
+    t1 =
+      Task.async(fn ->
+        Mint.smith("iron ingot", inv, crafter, root_uuid: ctx.root, store: ctx.store)
+      end)
+
+    t2 =
+      Task.async(fn ->
+        Mint.smith("iron ingot", inv, crafter, root_uuid: ctx.root, store: ctx.store)
+      end)
+
     results = [Task.await(t1), Task.await(t2)]
 
     assert Enum.count(results, &match?({:ok, _}, &1)) == 1
@@ -224,7 +265,9 @@ defmodule Commonplace.MUD.SmithTest do
     # The player-signed recipe-doc CREATE is itself denied by the write-gate
     # (untrusted signer under enforce) — the mint-authority doc never lands.
     assert {:error, {:trust_rejected, _}} =
-             Schemas.create_dir_with_meta(Schemas.recipe_filename(), forged, ctx.store, signing_context: player_ctx)
+             Schemas.create_dir_with_meta(Schemas.recipe_filename(), forged, ctx.store,
+               signing_context: player_ctx
+             )
 
     # So there is no forged recipe for smith to resolve.
     inv = mk_dir!(ctx.store, ctx.node_ctx)

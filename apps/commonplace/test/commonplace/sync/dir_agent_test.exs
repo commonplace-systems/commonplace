@@ -105,11 +105,12 @@ defmodule Commonplace.Sync.DirAgentTest do
       create_text_commit(store, file_a_uuid, "hello.txt", "hello content")
       create_text_commit(store, file_b_uuid, "world.txt", "world content")
 
-      {:ok, pid} = DirAgent.start_link(
-        schema_uuid: schema_uuid,
-        dir_path: dir,
-        store: store
-      )
+      {:ok, pid} =
+        DirAgent.start_link(
+          schema_uuid: schema_uuid,
+          dir_path: dir,
+          store: store
+        )
 
       # Sync to write CRDT content to disk
       DirAgent.sync_once(pid)
@@ -128,11 +129,12 @@ defmodule Commonplace.Sync.DirAgentTest do
       # Start with empty schema
       seed_empty_schema(store, schema_uuid)
 
-      {:ok, pid} = DirAgent.start_link(
-        schema_uuid: schema_uuid,
-        dir_path: dir,
-        store: store
-      )
+      {:ok, pid} =
+        DirAgent.start_link(
+          schema_uuid: schema_uuid,
+          dir_path: dir,
+          store: store
+        )
 
       # Create a file on disk
       File.write!(Path.join(dir, "new_file.txt"), "new content")
@@ -159,11 +161,12 @@ defmodule Commonplace.Sync.DirAgentTest do
       seed_schema(store, schema_uuid, [{"doomed.txt", :doc, file_uuid}])
       create_text_commit(store, file_uuid, "doomed.txt", "soon to be deleted")
 
-      {:ok, pid} = DirAgent.start_link(
-        schema_uuid: schema_uuid,
-        dir_path: dir,
-        store: store
-      )
+      {:ok, pid} =
+        DirAgent.start_link(
+          schema_uuid: schema_uuid,
+          dir_path: dir,
+          store: store
+        )
 
       # First sync to write the file to disk
       DirAgent.sync_once(pid)
@@ -192,11 +195,12 @@ defmodule Commonplace.Sync.DirAgentTest do
       seed_schema(store, schema_uuid, [{"subdir", :dir, sub_uuid}])
       seed_empty_schema(store, sub_uuid)
 
-      {:ok, pid} = DirAgent.start_link(
-        schema_uuid: schema_uuid,
-        dir_path: dir,
-        store: store
-      )
+      {:ok, pid} =
+        DirAgent.start_link(
+          schema_uuid: schema_uuid,
+          dir_path: dir,
+          store: store
+        )
 
       # The subdirectory should be created on disk
       assert File.dir?(Path.join(dir, "subdir"))
@@ -220,11 +224,12 @@ defmodule Commonplace.Sync.DirAgentTest do
       # Create the CRDT doc
       create_text_commit(store, file_uuid, "skipped.txt", "should not sync")
 
-      {:ok, pid} = DirAgent.start_link(
-        schema_uuid: schema_uuid,
-        dir_path: dir,
-        store: store
-      )
+      {:ok, pid} =
+        DirAgent.start_link(
+          schema_uuid: schema_uuid,
+          dir_path: dir,
+          store: store
+        )
 
       # Sync — the file should NOT be written to disk (no agent spawned)
       DirAgent.sync_once(pid)
@@ -245,11 +250,12 @@ defmodule Commonplace.Sync.DirAgentTest do
       File.mkdir_p!(Path.join(dir, ".commonplace"))
       File.write!(Path.join(dir, ".commonplace-ref"), "ref data")
 
-      {:ok, pid} = DirAgent.start_link(
-        schema_uuid: schema_uuid,
-        dir_path: dir,
-        store: store
-      )
+      {:ok, pid} =
+        DirAgent.start_link(
+          schema_uuid: schema_uuid,
+          dir_path: dir,
+          store: store
+        )
 
       DirAgent.sync_once(pid)
 

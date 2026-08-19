@@ -59,7 +59,9 @@ defmodule Commonplace.MUD.HolderMoveTest do
 
     on_exit(fn ->
       restore = fn key, v ->
-        if is_nil(v), do: Application.delete_env(:commonplace, key), else: Application.put_env(:commonplace, key, v)
+        if is_nil(v),
+          do: Application.delete_env(:commonplace, key),
+          else: Application.put_env(:commonplace, key, v)
       end
 
       restore.(:data_dir, old_data_dir)
@@ -73,8 +75,18 @@ defmodule Commonplace.MUD.HolderMoveTest do
       pid -> GenServer.stop(pid)
     end
 
-    {:ok, bursar_pid} = Bursar.start_link(root_uuid: UUID.uuid4(), store: store, sweep_interval: 60_000)
-    on_exit(fn -> if Process.alive?(bursar_pid), do: (try do GenServer.stop(bursar_pid) catch (:exit, _ -> :ok) end) end)
+    {:ok, bursar_pid} =
+      Bursar.start_link(root_uuid: UUID.uuid4(), store: store, sweep_interval: 60_000)
+
+    on_exit(fn ->
+      if Process.alive?(bursar_pid),
+        do:
+          (try do
+             GenServer.stop(bursar_pid)
+           catch
+             (:exit, _ -> :ok)
+           end)
+    end)
 
     {:ok, node_ctx} = NodeIdentity.signing_context()
     {:ok, node_identity} = NodeIdentity.identity()
@@ -110,9 +122,20 @@ defmodule Commonplace.MUD.HolderMoveTest do
     {:ok, schema} = Schemas.load_dir_schema(parent_uuid, store)
     schema = Schema.add_directory(schema, name, child_uuid)
     update = Encoding.encode_update(schema)
-    {metadata, commit_opts} = Commonplace.MUD.SignedWrite.opts_for(parent_uuid, store: store, signing_context: signing_ctx)
 
-    case CommitStoreClient.create_chained_commit(store, parent_uuid, update, metadata, commit_opts) do
+    {metadata, commit_opts} =
+      Commonplace.MUD.SignedWrite.opts_for(parent_uuid,
+        store: store,
+        signing_context: signing_ctx
+      )
+
+    case CommitStoreClient.create_chained_commit(
+           store,
+           parent_uuid,
+           update,
+           metadata,
+           commit_opts
+         ) do
       {:error, _} = err -> raise "seed write failed: #{inspect(err)}"
       _commit -> :ok
     end
@@ -122,9 +145,20 @@ defmodule Commonplace.MUD.HolderMoveTest do
     {:ok, schema} = Schemas.load_dir_schema(parent_uuid, store)
     schema = Schema.add_file(schema, name, child_uuid)
     update = Encoding.encode_update(schema)
-    {metadata, commit_opts} = Commonplace.MUD.SignedWrite.opts_for(parent_uuid, store: store, signing_context: signing_ctx)
 
-    case CommitStoreClient.create_chained_commit(store, parent_uuid, update, metadata, commit_opts) do
+    {metadata, commit_opts} =
+      Commonplace.MUD.SignedWrite.opts_for(parent_uuid,
+        store: store,
+        signing_context: signing_ctx
+      )
+
+    case CommitStoreClient.create_chained_commit(
+           store,
+           parent_uuid,
+           update,
+           metadata,
+           commit_opts
+         ) do
       {:error, _} = err -> raise "seed write failed: #{inspect(err)}"
       _commit -> :ok
     end
@@ -144,10 +178,11 @@ defmodule Commonplace.MUD.HolderMoveTest do
 
   # ---- 1. FAST PATH — invoker already authorized to write both dirs ----
 
-  test "push: an invoker with write authority over BOTH dirs runs the plain move, no token transfer at all", %{
-    store: store,
-    node_ctx: node_ctx
-  } do
+  test "push: an invoker with write authority over BOTH dirs runs the plain move, no token transfer at all",
+       %{
+         store: store,
+         node_ctx: node_ctx
+       } do
     from_dir = mk_dir!(store, node_ctx)
     to_dir = mk_dir!(store, node_ctx)
     item = mk_object!(store, node_ctx, "trusted.obj")
@@ -159,7 +194,13 @@ defmodule Commonplace.MUD.HolderMoveTest do
     # node_ctx is pinned trusted, so invoker_can_write_all? is true for
     # both dirs -> the fast Move.move/5 path, not elevated_push at all.
     assert :ok =
-             HolderMove.push(item, "trusted.obj", from_dir, to_dir, "irrelevant-from", "irrelevant-to",
+             HolderMove.push(
+               item,
+               "trusted.obj",
+               from_dir,
+               to_dir,
+               "irrelevant-from",
+               "irrelevant-to",
                store: store,
                signing_context: node_ctx,
                cert_cids: []
@@ -175,10 +216,11 @@ defmodule Commonplace.MUD.HolderMoveTest do
 
   # ---- 2. elevated_push :bad_arg guard ----
 
-  test "push: an elevated caller (no write authority) with a nil/empty holder is refused :bad_arg before any write", %{
-    store: store,
-    node_ctx: node_ctx
-  } do
+  test "push: an elevated caller (no write authority) with a nil/empty holder is refused :bad_arg before any write",
+       %{
+         store: store,
+         node_ctx: node_ctx
+       } do
     from_dir = mk_dir!(store, node_ctx)
     to_dir = mk_dir!(store, node_ctx)
     item = mk_object!(store, node_ctx, "widget.obj")
@@ -187,10 +229,17 @@ defmodule Commonplace.MUD.HolderMoveTest do
     # No signing_context/cert_cids -> invoker_can_write_all? is false ->
     # elevated_push, which guards on the holder args before touching
     # the Bursar or the tree at all.
-    assert {:error, :bad_arg} = HolderMove.push(item, "widget.obj", from_dir, to_dir, nil, "someone", store: store)
-    assert {:error, :bad_arg} = HolderMove.push(item, "widget.obj", from_dir, to_dir, "", "someone", store: store)
-    assert {:error, :bad_arg} = HolderMove.push(item, "widget.obj", from_dir, to_dir, "someone", nil, store: store)
-    assert {:error, :bad_arg} = HolderMove.push(item, "widget.obj", from_dir, to_dir, "someone", "", store: store)
+    assert {:error, :bad_arg} =
+             HolderMove.push(item, "widget.obj", from_dir, to_dir, nil, "someone", store: store)
+
+    assert {:error, :bad_arg} =
+             HolderMove.push(item, "widget.obj", from_dir, to_dir, "", "someone", store: store)
+
+    assert {:error, :bad_arg} =
+             HolderMove.push(item, "widget.obj", from_dir, to_dir, "someone", nil, store: store)
+
+    assert {:error, :bad_arg} =
+             HolderMove.push(item, "widget.obj", from_dir, to_dir, "someone", "", store: store)
 
     assert "widget.obj" in entry_names(store, from_dir)
     assert :available = BursarClient.query(Bursar, item)
@@ -209,9 +258,14 @@ defmodule Commonplace.MUD.HolderMoveTest do
     add_dir_entry!(store, from_dir, "coin.obj", item, node_ctx)
 
     {holder_id, _} = fresh_identity()
-    assert {:ok, _} = BursarClient.acquire(Bursar, item, holder_id, authenticated_as: holder_id, ttl: nil)
 
-    assert :ok = HolderMove.push(item, "coin.obj", from_dir, to_dir, holder_id, node_identity, store: store)
+    assert {:ok, _} =
+             BursarClient.acquire(Bursar, item, holder_id, authenticated_as: holder_id, ttl: nil)
+
+    assert :ok =
+             HolderMove.push(item, "coin.obj", from_dir, to_dir, holder_id, node_identity,
+               store: store
+             )
 
     refute "coin.obj" in entry_names(store, from_dir)
     assert "coin.obj" in entry_names(store, to_dir)
@@ -220,11 +274,12 @@ defmodule Commonplace.MUD.HolderMoveTest do
 
   # ---- 4. held-by-OTHER refuses :not_holder, called directly ----
 
-  test "push: a from_holder who does not actually hold the token is refused :not_holder — the authorization check IS the transfer", %{
-    store: store,
-    node_ctx: node_ctx,
-    node_identity: node_identity
-  } do
+  test "push: a from_holder who does not actually hold the token is refused :not_holder — the authorization check IS the transfer",
+       %{
+         store: store,
+         node_ctx: node_ctx,
+         node_identity: node_identity
+       } do
     from_dir = mk_dir!(store, node_ctx)
     to_dir = mk_dir!(store, node_ctx)
     item = mk_object!(store, node_ctx, "gem.obj")
@@ -232,10 +287,17 @@ defmodule Commonplace.MUD.HolderMoveTest do
 
     {actual_holder, _} = fresh_identity()
     {claimant, _} = fresh_identity()
-    assert {:ok, _} = BursarClient.acquire(Bursar, item, actual_holder, authenticated_as: actual_holder, ttl: nil)
+
+    assert {:ok, _} =
+             BursarClient.acquire(Bursar, item, actual_holder,
+               authenticated_as: actual_holder,
+               ttl: nil
+             )
 
     assert {:error, :not_holder} =
-             HolderMove.push(item, "gem.obj", from_dir, to_dir, claimant, node_identity, store: store)
+             HolderMove.push(item, "gem.obj", from_dir, to_dir, claimant, node_identity,
+               store: store
+             )
 
     # Nothing moved, and the real holder's token is untouched.
     assert "gem.obj" in entry_names(store, from_dir)
@@ -244,11 +306,12 @@ defmodule Commonplace.MUD.HolderMoveTest do
 
   # ---- 5. CX-cogd: NODE mover acquires an :available token (not the own-inventory re-anchor path) ----
 
-  test "push: the node, as mover, acquires an :available token on the node-owned source dir and completes the move", %{
-    store: store,
-    node_ctx: node_ctx,
-    node_identity: node_identity
-  } do
+  test "push: the node, as mover, acquires an :available token on the node-owned source dir and completes the move",
+       %{
+         store: store,
+         node_ctx: node_ctx,
+         node_identity: node_identity
+       } do
     from_dir = mk_dir!(store, node_ctx)
     to_dir = mk_dir!(store, node_ctx)
     item = mk_object!(store, node_ctx, "loose.obj")
@@ -261,18 +324,21 @@ defmodule Commonplace.MUD.HolderMoveTest do
     # from_holder == node_identity -> ensure_mover_holds's first disjunct
     # fires regardless of write authority over from_dir.
     assert :ok =
-             HolderMove.push(item, "loose.obj", from_dir, to_dir, node_identity, recipient_id, store: store)
+             HolderMove.push(item, "loose.obj", from_dir, to_dir, node_identity, recipient_id,
+               store: store
+             )
 
     refute "loose.obj" in entry_names(store, from_dir)
     assert "loose.obj" in entry_names(store, to_dir)
     assert {:held, %{holder: ^recipient_id}} = BursarClient.query(Bursar, item)
   end
 
-  test "push: an :available token is NOT acquired for a non-node mover with no write authority and no own-inventory opt", %{
-    store: store,
-    node_ctx: node_ctx,
-    node_identity: node_identity
-  } do
+  test "push: an :available token is NOT acquired for a non-node mover with no write authority and no own-inventory opt",
+       %{
+         store: store,
+         node_ctx: node_ctx,
+         node_identity: node_identity
+       } do
     from_dir = mk_dir!(store, node_ctx)
     to_dir = mk_dir!(store, node_ctx)
     item = mk_object!(store, node_ctx, "unclaimed.obj")
@@ -282,7 +348,9 @@ defmodule Commonplace.MUD.HolderMoveTest do
     {mover_id, _} = fresh_identity()
 
     assert {:error, :not_holder} =
-             HolderMove.push(item, "unclaimed.obj", from_dir, to_dir, mover_id, node_identity, store: store)
+             HolderMove.push(item, "unclaimed.obj", from_dir, to_dir, mover_id, node_identity,
+               store: store
+             )
 
     assert "unclaimed.obj" in entry_names(store, from_dir)
     assert :available = BursarClient.query(Bursar, item)
@@ -295,11 +363,12 @@ defmodule Commonplace.MUD.HolderMoveTest do
   # token starts :available, gets acquired by the node mover, and the move
   # then fails -> rollback must RELEASE (back to :available), not transfer.
 
-  test "push: move failure after a FRESH acquire releases the token back to :available (not transfer-back)", %{
-    store: store,
-    node_ctx: node_ctx,
-    node_identity: node_identity
-  } do
+  test "push: move failure after a FRESH acquire releases the token back to :available (not transfer-back)",
+       %{
+         store: store,
+         node_ctx: node_ctx,
+         node_identity: node_identity
+       } do
     from_dir = mk_dir!(store, node_ctx)
     to_dir = mk_dir!(store, node_ctx)
     item = mk_object!(store, node_ctx, "collider.obj")
@@ -314,7 +383,9 @@ defmodule Commonplace.MUD.HolderMoveTest do
     {recipient_id, _} = fresh_identity()
 
     assert {:error, :collision} =
-             HolderMove.push(item, "collider.obj", from_dir, to_dir, node_identity, recipient_id, store: store)
+             HolderMove.push(item, "collider.obj", from_dir, to_dir, node_identity, recipient_id,
+               store: store
+             )
 
     # The item never moved, and the freshly-acquired token was released
     # back to :available (never left dangling on either party).

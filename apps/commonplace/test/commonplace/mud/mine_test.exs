@@ -22,7 +22,11 @@ defmodule Commonplace.MUD.MineTest do
   alias Commonplace.Tree.Schema
   alias Yelixer.Encoding
 
-  @ore_template %{"name" => "iron ore", "aliases" => ["ore"], "description" => "A rough chunk of iron ore."}
+  @ore_template %{
+    "name" => "iron ore",
+    "aliases" => ["ore"],
+    "description" => "A rough chunk of iron ore."
+  }
 
   setup do
     Application.ensure_all_started(:phoenix_pubsub)
@@ -55,7 +59,9 @@ defmodule Commonplace.MUD.MineTest do
 
     on_exit(fn ->
       restore = fn key, v ->
-        if is_nil(v), do: Application.delete_env(:commonplace, key), else: Application.put_env(:commonplace, key, v)
+        if is_nil(v),
+          do: Application.delete_env(:commonplace, key),
+          else: Application.put_env(:commonplace, key, v)
       end
 
       restore.(:data_dir, old_data_dir)
@@ -69,8 +75,18 @@ defmodule Commonplace.MUD.MineTest do
       pid -> GenServer.stop(pid)
     end
 
-    {:ok, bursar_pid} = Bursar.start_link(root_uuid: UUID.uuid4(), store: store, sweep_interval: 60_000)
-    on_exit(fn -> if Process.alive?(bursar_pid), do: (try do GenServer.stop(bursar_pid) catch (:exit, _ -> :ok) end) end)
+    {:ok, bursar_pid} =
+      Bursar.start_link(root_uuid: UUID.uuid4(), store: store, sweep_interval: 60_000)
+
+    on_exit(fn ->
+      if Process.alive?(bursar_pid),
+        do:
+          (try do
+             GenServer.stop(bursar_pid)
+           catch
+             (:exit, _ -> :ok)
+           end)
+    end)
 
     {:ok, node_ctx} = NodeIdentity.signing_context()
     {:ok, node_identity} = NodeIdentity.identity()
@@ -114,7 +130,9 @@ defmodule Commonplace.MUD.MineTest do
     }
 
     {:ok, uuid} =
-      Schemas.create_dir_with_meta(Schemas.object_filename(), Schemas.encode_object(obj), store, signing_context: signing_ctx)
+      Schemas.create_dir_with_meta(Schemas.object_filename(), Schemas.encode_object(obj), store,
+        signing_context: signing_ctx
+      )
 
     uuid
   end
@@ -123,9 +141,17 @@ defmodule Commonplace.MUD.MineTest do
     {:ok, schema} = Schemas.load_dir_schema(parent_uuid, store)
     schema = Schema.add_directory(schema, name, child_uuid)
     update = Encoding.encode_update(schema)
-    {metadata, commit_opts} = SignedWrite.opts_for(parent_uuid, store: store, signing_context: signing_ctx)
 
-    case CommitStoreClient.create_chained_commit(store, parent_uuid, update, metadata, commit_opts) do
+    {metadata, commit_opts} =
+      SignedWrite.opts_for(parent_uuid, store: store, signing_context: signing_ctx)
+
+    case CommitStoreClient.create_chained_commit(
+           store,
+           parent_uuid,
+           update,
+           metadata,
+           commit_opts
+         ) do
       {:error, _} = err -> raise "seed write failed: #{inspect(err)}"
       _commit -> :ok
     end
@@ -154,28 +180,36 @@ defmodule Commonplace.MUD.MineTest do
     store: store,
     node_ctx: node_ctx
   } do
-    vein = mk_vein!(store, node_ctx, yield_type: %{"name" => "diamond seed?", "aliases" => [], "description" => "no"})
+    vein =
+      mk_vein!(store, node_ctx,
+        yield_type: %{"name" => "diamond seed?", "aliases" => [], "description" => "no"}
+      )
+
     inv = mk_inventory!(store, node_ctx)
     {miner_id, _} = fresh_identity()
 
-    assert {:ok, item_uuid, "diamond seed?"} = Mint.extract_from_vein(vein, inv, miner_id, store: store)
+    assert {:ok, item_uuid, "diamond seed?"} =
+             Mint.extract_from_vein(vein, inv, miner_id, store: store)
+
     assert {:ok, %Object{name: "diamond seed?"}} = Schemas.load_object(item_uuid, store)
     refute {:ok, %Object{name: "iron ore"}} == Schemas.load_object(item_uuid, store)
   end
 
   # ---- M2: the elevated write cannot spin the protected fields up ----
 
-  test "the elevated vein-write only ever changes yield_remaining (down) + last_regen_at (forward)", %{
-    store: store,
-    node_ctx: node_ctx
-  } do
+  test "the elevated vein-write only ever changes yield_remaining (down) + last_regen_at (forward)",
+       %{
+         store: store,
+         node_ctx: node_ctx
+       } do
     vein = mk_vein!(store, node_ctx, yield_max: 5, yield_remaining: 5, regen_per_ms: 0)
     inv = mk_inventory!(store, node_ctx)
     {miner_id, _} = fresh_identity()
 
     before = load_vein!(store, vein)
 
-    assert {:ok, _item_uuid, "iron ore"} = Mint.extract_from_vein(vein, inv, miner_id, store: store)
+    assert {:ok, _item_uuid, "iron ore"} =
+             Mint.extract_from_vein(vein, inv, miner_id, store: store)
 
     afterward = load_vein!(store, vein)
 
@@ -222,10 +256,11 @@ defmodule Commonplace.MUD.MineTest do
 
   # ---- M3: depletion refuses gracefully; regen caps at max ----
 
-  test "a depleted, non-regenerating vein refuses gracefully — no mint, no token, vein unchanged", %{
-    store: store,
-    node_ctx: node_ctx
-  } do
+  test "a depleted, non-regenerating vein refuses gracefully — no mint, no token, vein unchanged",
+       %{
+         store: store,
+         node_ctx: node_ctx
+       } do
     vein = mk_vein!(store, node_ctx, yield_remaining: 0, regen_per_ms: 0)
     inv = mk_inventory!(store, node_ctx)
     {miner_id, _} = fresh_identity()
@@ -238,13 +273,25 @@ defmodule Commonplace.MUD.MineTest do
     assert load_vein!(store, vein) == before
   end
 
-  test "regen clamps at yield_max even after a huge elapsed delta", %{store: store, node_ctx: node_ctx} do
+  test "regen clamps at yield_max even after a huge elapsed delta", %{
+    store: store,
+    node_ctx: node_ctx
+  } do
     long_ago = System.system_time(:millisecond) - 1_000_000_000
-    vein = mk_vein!(store, node_ctx, yield_max: 5, yield_remaining: 0, regen_per_ms: 1, last_regen_at: long_ago)
+
+    vein =
+      mk_vein!(store, node_ctx,
+        yield_max: 5,
+        yield_remaining: 0,
+        regen_per_ms: 1,
+        last_regen_at: long_ago
+      )
+
     inv = mk_inventory!(store, node_ctx)
     {miner_id, _} = fresh_identity()
 
-    assert {:ok, _item_uuid, "iron ore"} = Mint.extract_from_vein(vein, inv, miner_id, store: store)
+    assert {:ok, _item_uuid, "iron ore"} =
+             Mint.extract_from_vein(vein, inv, miner_id, store: store)
 
     afterward = load_vein!(store, vein)
     # Regen would compute to a huge number without the cap; clamped at
@@ -323,7 +370,10 @@ defmodule Commonplace.MUD.MineTest do
 
   # ---- end-to-end via Verbs.dispatch ----
 
-  test "Verbs.dispatch 'mine' extracts ore into inventory and narrates", %{store: store, node_ctx: node_ctx} do
+  test "Verbs.dispatch 'mine' extracts ore into inventory and narrates", %{
+    store: store,
+    node_ctx: node_ctx
+  } do
     room = mk_room!(store, node_ctx)
     vein = mk_vein!(store, node_ctx)
     add_dir_entry!(store, room, "iron-vein.obj", vein, node_ctx)

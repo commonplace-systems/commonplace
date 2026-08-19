@@ -41,12 +41,13 @@ defmodule Commonplace.Process.Sandbox do
     File.mkdir_p!(sandbox_dir)
 
     # Start a SyncLoop to materialize the subtree (unlinked for clean shutdown)
-    {:ok, sync_pid} = SyncLoop.start_link(
-      dir: sandbox_dir,
-      root_uuid: root_uuid,
-      store: store,
-      interval: sync_interval
-    )
+    {:ok, sync_pid} =
+      SyncLoop.start_link(
+        dir: sandbox_dir,
+        root_uuid: root_uuid,
+        store: store,
+        interval: sync_interval
+      )
 
     Process.unlink(sync_pid)
 

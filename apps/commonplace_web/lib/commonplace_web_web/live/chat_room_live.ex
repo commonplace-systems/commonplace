@@ -143,7 +143,9 @@ defmodule CommonplaceWebWeb.ChatRoomLive do
   @impl true
   def handle_event("view_action", payload, socket) do
     case WriteRateLimit.check_and_record(self()) do
-      :ok -> do_view_action(payload, socket)
+      :ok ->
+        do_view_action(payload, socket)
+
       {:error, :rate_limited, _retry_after_ms} ->
         {:noreply, put_flash(socket, :error, "Too many edits — slow down")}
     end

@@ -75,7 +75,9 @@ defmodule Commonplace.MUD.CitizenshipTest do
     update = Yelixer.Encoding.encode_update(Schema.new_schema())
 
     assert %Commonplace.Store.Commit{} =
-             CommitStore.create_commit(store, root_uuid, update, nil, %{}, signing_context: node_ctx)
+             CommitStore.create_commit(store, root_uuid, update, nil, %{},
+               signing_context: node_ctx
+             )
 
     {identity_uuid, pub} = fresh_identity()
 
@@ -122,10 +124,11 @@ defmodule Commonplace.MUD.CitizenshipTest do
     end
   end
 
-  test "the issued {:subtree,home} cert authorizes BUILDING a room under the home (A3/A4 end-to-end)", %{
-    store: store,
-    root: root
-  } do
+  test "the issued {:subtree,home} cert authorizes BUILDING a room under the home (A3/A4 end-to-end)",
+       %{
+         store: store,
+         root: root
+       } do
     # a real citizen with their real issued cert (the deployable path)
     {pub, priv} = Signing.generate_keypair()
     pid = UUID.uuid4()
@@ -160,12 +163,13 @@ defmodule Commonplace.MUD.CitizenshipTest do
     assert {:ok, _} = Schema.get_entry(sch, "study")
   end
 
-  test "provisions players/<name>/ as an OWNED home ROOM (__room.json + inventory), node-signed", %{
-    store: store,
-    root: root,
-    identity_uuid: identity_uuid,
-    pub: pub
-  } do
+  test "provisions players/<name>/ as an OWNED home ROOM (__room.json + inventory), node-signed",
+       %{
+         store: store,
+         root: root,
+         identity_uuid: identity_uuid,
+         pub: pub
+       } do
     assert {:ok, %{home_room_uuid: home_uuid, home_room_meta_uuid: home_meta}} =
              Citizenship.ensure(identity_uuid, pub, "arwen", root, store)
 
@@ -179,7 +183,9 @@ defmodule Commonplace.MUD.CitizenshipTest do
     {:ok, player_schema} = Commonplace.MUD.Schemas.load_dir_schema(home_uuid, store)
     # The home dir is a ROOM: it carries a __room.json meta, and that's
     # exactly the doc the ownership zone cert covers.
-    assert {:ok, room_entry} = Schema.get_entry(player_schema, Commonplace.MUD.Schemas.room_filename())
+    assert {:ok, room_entry} =
+             Schema.get_entry(player_schema, Commonplace.MUD.Schemas.room_filename())
+
     assert room_entry.node_id == home_meta
     assert {:ok, _inv_entry} = Schema.get_entry(player_schema, "inventory")
 
@@ -198,13 +204,15 @@ defmodule Commonplace.MUD.CitizenshipTest do
 
   test "idempotent: ensure/5 twice re-lands the same certs and does not duplicate the home",
        %{store: store, root: root, identity_uuid: identity_uuid, pub: pub} do
-    assert {:ok, %{cert_cids: cids1}} = Citizenship.ensure(identity_uuid, pub, "arwen", root, store)
+    assert {:ok, %{cert_cids: cids1}} =
+             Citizenship.ensure(identity_uuid, pub, "arwen", root, store)
 
     {:ok, root_schema1} = Commonplace.MUD.Schemas.load_dir_schema(root, store)
     {:ok, players_entry1} = Schema.get_entry(root_schema1, "players")
     {:ok, players_head_1} = CommitStore.latest_commit(store, players_entry1.node_id)
 
-    assert {:ok, %{cert_cids: cids2}} = Citizenship.ensure(identity_uuid, pub, "arwen", root, store)
+    assert {:ok, %{cert_cids: cids2}} =
+             Citizenship.ensure(identity_uuid, pub, "arwen", root, store)
 
     # Content-addressed certs re-land on the same cids (set-equal).
     assert Enum.sort(cids1) == Enum.sort(cids2)
@@ -223,16 +231,19 @@ defmodule Commonplace.MUD.CitizenshipTest do
     assert length(arwen_entries) == 1
   end
 
-  test "a second, different identity gets its OWN home + own certs without disturbing the first", %{
-    store: store,
-    root: root,
-    identity_uuid: identity_uuid,
-    pub: pub
-  } do
+  test "a second, different identity gets its OWN home + own certs without disturbing the first",
+       %{
+         store: store,
+         root: root,
+         identity_uuid: identity_uuid,
+         pub: pub
+       } do
     assert {:ok, _} = Citizenship.ensure(identity_uuid, pub, "arwen", root, store)
 
     {other_uuid, other_pub} = fresh_identity()
-    assert {:ok, %{cert_cids: other_cids}} = Citizenship.ensure(other_uuid, other_pub, "beorn", root, store)
+
+    assert {:ok, %{cert_cids: other_cids}} =
+             Citizenship.ensure(other_uuid, other_pub, "beorn", root, store)
 
     other_scopes =
       Enum.map(other_cids, fn cid ->

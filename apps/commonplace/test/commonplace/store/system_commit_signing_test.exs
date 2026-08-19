@@ -92,7 +92,10 @@ defmodule Commonplace.Store.SystemCommitSigningTest do
     {doc_l, _} = Doc.get_or_create_type(doc_l, "t", :text)
     {:ok, doc_l} = Encoding.apply_update(doc_l, c_update)
     doc_l = Text.insert(doc_l, "t", 0, "L")
-    CommitStore.create_chained_commit(store, uuid, Encoding.encode_update(doc_l), %{kind: :regular})
+
+    CommitStore.create_chained_commit(store, uuid, Encoding.encode_update(doc_l), %{
+      kind: :regular
+    })
 
     doc_r = Doc.new(client_id: 3)
     {doc_r, _} = Doc.get_or_create_type(doc_r, "t", :text)
@@ -160,8 +163,9 @@ defmodule Commonplace.Store.SystemCommitSigningTest do
     doc = Commonplace.Document.ContentType.create(doc, :text, "_s.ex")
     doc = Commonplace.Document.ContentType.insert_text(doc, 0, source)
 
-    CommitStore.create_chained_commit(store, uuid, Encoding.encode_update(doc),
-      %{kind: :regular}, signing_context: node_ctx)
+    CommitStore.create_chained_commit(store, uuid, Encoding.encode_update(doc), %{kind: :regular},
+      signing_context: node_ctx
+    )
 
     {:ok, _snap} = CommitStore.snapshot(store, uuid)
 

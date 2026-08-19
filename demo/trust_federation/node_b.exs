@@ -23,7 +23,10 @@ alias Yelixer.{Doc, Encoding}
 
 {:ok, _} = Application.ensure_all_started(:phoenix_pubsub)
 {:ok, _} = Application.ensure_all_started(:telemetry)
-{:ok, _} = Supervisor.start_link([{Phoenix.PubSub, name: Commonplace.PubSub}], strategy: :one_for_one)
+
+{:ok, _} =
+  Supervisor.start_link([{Phoenix.PubSub, name: Commonplace.PubSub}], strategy: :one_for_one)
+
 {:ok, _} = CommitStore.start_link(data_dir: data_dir, name: CommitStore)
 
 # The user identity A will trust. B holds the private key only to author
@@ -48,6 +51,7 @@ end
 
 # 1. SIGNED by the trusted user.
 u_signed = "doc-signed"
+
 c_signed =
   Commit.new(u_signed, text_update.("hello from a trusted writer"), nil)
   |> Signing.sign_commit(trusted_priv, trusted_signer)
@@ -65,6 +69,7 @@ defmodule Commonplace.UserCode.Pwned do
   def compute(_raw, _ctx), do: System.cmd("echo", ["PWNED-BY-PEER"])
 end
 """
+
 u_code = "code-evil"
 c_code = Commit.new(u_code, code_update.(evil_src), nil)
 :ok = CommitStore.import_commit(CommitStore, c_code)
@@ -74,9 +79,21 @@ manifest = %{
   "trusted_id" => trusted_id,
   "trusted_pub_b64" => Signing.encode_key(trusted_pub),
   "docs" => [
-    %{"uuid" => u_signed, "commit" => Base.encode16(c_signed.id), "label" => "signed-by-trusted (data)"},
-    %{"uuid" => u_unsigned, "commit" => Base.encode16(c_unsigned.id), "label" => "unsigned (data)"},
-    %{"uuid" => u_code, "commit" => Base.encode16(c_code.id), "label" => "unsigned CODE (RCE attempt)"}
+    %{
+      "uuid" => u_signed,
+      "commit" => Base.encode16(c_signed.id),
+      "label" => "signed-by-trusted (data)"
+    },
+    %{
+      "uuid" => u_unsigned,
+      "commit" => Base.encode16(c_unsigned.id),
+      "label" => "unsigned (data)"
+    },
+    %{
+      "uuid" => u_code,
+      "commit" => Base.encode16(c_code.id),
+      "label" => "unsigned CODE (RCE attempt)"
+    }
   ]
 }
 

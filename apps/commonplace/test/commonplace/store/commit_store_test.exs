@@ -182,6 +182,7 @@ defmodule Commonplace.Store.CommitStoreTest do
       commit = CommitStore.create_commit(store, "doc-fresh", <<1, 2, 3>>, nil)
 
       expected_genesis_id = Commit.genesis("doc-fresh").id
+
       assert commit.parent_id == expected_genesis_id,
              "a fresh-doc commit must descend from the deterministic genesis, not nil"
     end
@@ -194,7 +195,9 @@ defmodule Commonplace.Store.CommitStoreTest do
       assert g.metadata == %{kind: :genesis, doc_uuid: "doc-fresh"}
     end
 
-    test "genesis is stamped only once — second user commit parents to the first user commit", %{store: store} do
+    test "genesis is stamped only once — second user commit parents to the first user commit", %{
+      store: store
+    } do
       c1 = CommitStore.create_commit(store, "doc-fresh", <<1>>, nil)
       c2 = CommitStore.create_chained_commit(store, "doc-fresh", <<2>>)
 
@@ -217,7 +220,8 @@ defmodule Commonplace.Store.CommitStoreTest do
       assert :none = CommitStore.get_commit(store, chain_genesis_id)
     end
 
-    test "pre-umbrella doc with existing :latest retains legacy behavior (parent_id stays nil)", %{store: store} do
+    test "pre-umbrella doc with existing :latest retains legacy behavior (parent_id stays nil)",
+         %{store: store} do
       # Simulate a pre-umbrella doc by importing a commit that predates
       # the wiring. It has metadata=%{} and parent_id=nil (legacy hatch).
       legacy = Commit.new("doc-legacy", <<7>>, nil, %{})
@@ -283,6 +287,7 @@ defmodule Commonplace.Store.CommitStoreTest do
 
     test "injected validator is invoked on every import", %{store: store} do
       parent = self()
+
       validator = fn commit ->
         send(parent, {:validator_called, commit.id})
         :ok
@@ -320,7 +325,10 @@ defmodule Commonplace.Store.CommitStoreTest do
     # (CommitStore → TrustSideStore, which owns the row). Barrier BOTH
     # mailboxes (each is FIFO, so once both have drained anything queued
     # before this point, the write is durable) before reading back.
-    test "put/get round-trips, keyed by fingerprint AND commit id", %{store: store, trust_side_store: tss} do
+    test "put/get round-trips, keyed by fingerprint AND commit id", %{
+      store: store,
+      trust_side_store: tss
+    } do
       fp = 12_345
       cid = <<1, 2, 3>>
 
@@ -512,7 +520,10 @@ defmodule Commonplace.Store.CommitStoreTest do
       File.write!(Path.join(not_a_store_dir, "garbage.txt"), "not a cubdb file")
 
       target_name = :"cx_xrds_salvage_bogus_target_#{:rand.uniform(1_000_000)}"
-      target_dir = Path.join(System.tmp_dir!(), "cx_xrds_salvage_bogus_dst_#{:rand.uniform(1_000_000)}")
+
+      target_dir =
+        Path.join(System.tmp_dir!(), "cx_xrds_salvage_bogus_dst_#{:rand.uniform(1_000_000)}")
+
       File.mkdir_p!(target_dir)
       {:ok, target_pid} = CommitStore.start_link(data_dir: target_dir, name: target_name)
 

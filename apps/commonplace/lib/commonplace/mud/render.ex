@@ -31,9 +31,15 @@ defmodule Commonplace.MUD.Render do
         exit_dirs = exits |> Enum.map(fn {dir, _to} -> dir end)
 
         IO.iodata_to_binary([
-          "== ", name, " ==\n",
-          desc, "\n",
-          if(exit_dirs == [], do: "Exits: (none)\n", else: ["Exits: ", Enum.join(exit_dirs, ", "), "\n"]),
+          "== ",
+          name,
+          " ==\n",
+          desc,
+          "\n",
+          if(exit_dirs == [],
+            do: "Exits: (none)\n",
+            else: ["Exits: ", Enum.join(exit_dirs, ", "), "\n"]
+          ),
           if(objects == [], do: "", else: ["You see: ", Enum.join(objects, ", "), "\n"]),
           if(players == [], do: "", else: ["Players: ", Enum.join(players, ", "), "\n"])
         ])
@@ -117,7 +123,8 @@ defmodule Commonplace.MUD.Render do
   # puzzle, do not imply secrecy.
   @doc "Should `container_uuid`'s contents be hidden from `look`/`look in`?"
   def container_sealed?(container_uuid, store) do
-    container_locked?(container_uuid, store) or match?({:ok, _}, container_lock_key(container_uuid, store))
+    container_locked?(container_uuid, store) or
+      match?({:ok, _}, container_lock_key(container_uuid, store))
   end
 
   @doc "Format a container's contents as a name list, or an empty-container note."
@@ -141,7 +148,11 @@ defmodule Commonplace.MUD.Render do
   def do_look_in_container(argv, ctx) do
     container_phrase = Enum.join(argv, " ")
 
-    case Resolver.resolve_container(container_phrase, [ctx.inventory_uuid, ctx.current_room_uuid], ctx) do
+    case Resolver.resolve_container(
+           container_phrase,
+           [ctx.inventory_uuid, ctx.current_room_uuid],
+           ctx
+         ) do
       {:ok, container_entry, %Object{} = container_obj} ->
         # CX-hbbi — sealed (locked OR key-gated) hides contents on look.
         if container_sealed?(container_entry.node_id, ctx.store) do

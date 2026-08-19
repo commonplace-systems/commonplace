@@ -571,7 +571,6 @@ defmodule Commonplace.Store.SlaTombstoneTest do
         SlaTombstone.verify(second, active_trust, store: ctx.store)
     }
 
-
     Application.put_env(:commonplace, :trust, active_trust)
 
     # ARM_12_PRECONDITION asserts the state AT THE MOMENT OF THE READ IT GUARDS.
@@ -665,7 +664,6 @@ defmodule Commonplace.Store.SlaTombstoneTest do
     assert arm9.first_verifies_after_retirement == :ok
     assert arm9.second_verifies_after_retirement == :ok
 
-
     assert arm11_revocation ==
              {:error, {:revoked_eviction_anchor, anchor_context.identity_uuid}}
 
@@ -686,7 +684,6 @@ defmodule Commonplace.Store.SlaTombstoneTest do
     IO.puts("EVICTION_CEREMONY_ARM_12=#{inspect(arm12)}")
     IO.puts("EVICTION_CEREMONY_PAIR_2_3_DIFFER=#{inspect(arm2_3_differ)}")
     IO.puts("EVICTION_CEREMONY_PAIR_4_AUTHORIZATION_SAME=#{inspect(arm4_before == arm4_after)}")
-
 
     IO.puts(
       "EVICTION_CEREMONY_PAIR_11_RETIREMENT_REVOCATION_DIFFER=#{inspect(arm11_retirement != arm11_revocation)}"

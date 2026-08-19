@@ -24,7 +24,8 @@ defmodule Commonplace.CLI.BdRunTest do
     _output = capture_io(fn -> Commonplace.CLI.Init.run(workspace, ["--profile", "minimal"]) end)
     root = CLI.root_uuid(workspace)
 
-    {result, stderr} = capture_result(:stderr, fn -> Commonplace.CLI.Bd.run(workspace, "", ["list"]) end)
+    {result, stderr} =
+      capture_result(:stderr, fn -> Commonplace.CLI.Bd.run(workspace, "", ["list"]) end)
 
     refusal =
       "bd ensure refused before CLI bd command: " <>

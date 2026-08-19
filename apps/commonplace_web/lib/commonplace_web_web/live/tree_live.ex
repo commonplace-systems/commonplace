@@ -45,6 +45,7 @@ defmodule CommonplaceWebWeb.TreeLive do
     presence_pid =
       if connected?(socket) and root do
         session_id = socket.id |> String.slice(0, 6)
+
         {:ok, pid} =
           Presence.Server.start_link(
             name: "browser-#{session_id}",
@@ -175,7 +176,13 @@ defmodule CommonplaceWebWeb.TreeLive do
         with uuid when not is_nil(uuid) <- socket.assigns.selected_uuid,
              {:ok, update} <- Base.decode64(encoded) do
           commit =
-            CommitStoreClient.create_chained_commit(CommitStoreClient, uuid, update, %{}, commit_opts(socket))
+            CommitStoreClient.create_chained_commit(
+              CommitStoreClient,
+              uuid,
+              update,
+              %{},
+              commit_opts(socket)
+            )
 
           case commit do
             %{id: _} ->
@@ -227,7 +234,7 @@ defmodule CommonplaceWebWeb.TreeLive do
           <%= if @current_path == "" do %>
             /
           <% else %>
-            /<%= @current_path %>
+            /{@current_path}
           <% end %>
         </h2>
 
@@ -246,9 +253,9 @@ defmodule CommonplaceWebWeb.TreeLive do
                 class={"block w-full text-left px-2 py-1 rounded #{if entry.name == @selected_name, do: "bg-blue-100 font-bold", else: "hover:bg-gray-100"}"}
               >
                 <%= if entry.type == :dir do %>
-                  📁 <%= entry.name %>/
+                  📁 {entry.name}/
                 <% else %>
-                  📄 <%= entry.name %>
+                  📄 {entry.name}
                 <% end %>
               </button>
             </li>
@@ -259,11 +266,11 @@ defmodule CommonplaceWebWeb.TreeLive do
           <p class="text-gray-400 italic">Empty directory</p>
         <% end %>
       </div>
-
-      <!-- Main content area -->
+      
+    <!-- Main content area -->
       <div class="flex-1 p-6 overflow-y-auto">
         <%= if @selected_name do %>
-          <h1 class="text-2xl font-bold mb-4"><%= @selected_name %></h1>
+          <h1 class="text-2xl font-bold mb-4">{@selected_name}</h1>
           <div id="yjs-content" phx-hook="YjsHook" phx-update="ignore">
             <p class="text-gray-400">Loading document...</p>
           </div>

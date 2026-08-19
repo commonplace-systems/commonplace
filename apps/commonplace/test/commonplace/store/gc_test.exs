@@ -113,7 +113,9 @@ defmodule Commonplace.Store.GCTest do
     CommitStore.create_commit(store, root_uuid, Yelixer.Encoding.encode_update(root_doc), nil)
 
     dest = Path.join(dir, "orphans.jsonl")
-    assert {:ok, %{archived: 1, skipped: 0, path: ^dest}} = GC.archive_orphans(root_uuid, dest, store)
+
+    assert {:ok, %{archived: 1, skipped: 0, path: ^dest}} =
+             GC.archive_orphans(root_uuid, dest, store)
 
     lines = dest |> File.read!() |> String.split("\n", trim: true)
     assert length(lines) == 1

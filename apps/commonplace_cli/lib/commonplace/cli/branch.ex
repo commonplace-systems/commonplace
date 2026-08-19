@@ -80,7 +80,11 @@ defmodule Commonplace.CLI.Branch do
         System.halt(1)
 
       {:error, reason} ->
-        IO.puts(:stderr, "Branch #{if sync, do: "activate", else: "deactivate"} failed: #{inspect(reason)}")
+        IO.puts(
+          :stderr,
+          "Branch #{if sync, do: "activate", else: "deactivate"} failed: #{inspect(reason)}"
+        )
+
         System.halt(1)
     end
   end

@@ -269,7 +269,11 @@ defmodule Commonplace.Sync.CheckoutRegistry do
 
                   {:error, reason} ->
                     require Logger
-                    Logger.warning("CheckoutRegistry: failed to spawn agent for #{sync_dir} (#{uuid}): #{inspect(reason)}")
+
+                    Logger.warning(
+                      "CheckoutRegistry: failed to spawn agent for #{sync_dir} (#{uuid}): #{inspect(reason)}"
+                    )
+
                     nil
                 end
               end)
@@ -333,21 +337,14 @@ defmodule Commonplace.Sync.CheckoutRegistry do
   defp spawn_agent(:dir, sync_dir, uuid, store) do
     DynamicSupervisor.start_child(
       Commonplace.Checkout.Supervisor,
-      {DirAgent,
-       schema_uuid: uuid,
-       dir_path: sync_dir,
-       store: store}
+      {DirAgent, schema_uuid: uuid, dir_path: sync_dir, store: store}
     )
   end
 
   defp spawn_agent(:file, sync_dir, uuid, store) do
     DynamicSupervisor.start_child(
       Commonplace.Checkout.Supervisor,
-      {EntryAgent,
-       doc_uuid: uuid,
-       file_path: sync_dir,
-       store: store,
-       standalone: true}
+      {EntryAgent, doc_uuid: uuid, file_path: sync_dir, store: store, standalone: true}
     )
   end
 

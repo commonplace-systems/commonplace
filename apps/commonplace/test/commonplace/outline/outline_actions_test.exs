@@ -21,13 +21,25 @@ defmodule Commonplace.OutlineActionsTest do
     start_supervised!({CommitStore, data_dir: dir, name: store})
 
     root = UUID.uuid4()
-    CommitStore.create_commit(store, root, Yelixer.Encoding.encode_update(Schema.new_schema()), nil)
+
+    CommitStore.create_commit(
+      store,
+      root,
+      Yelixer.Encoding.encode_update(Schema.new_schema()),
+      nil
+    )
+
     {:ok, uuid} = Outline.create("agentboard", root, store)
     {:ok, a} = Outline.add_item(store, uuid, %{text: "First"})
     {:ok, b} = Outline.add_item(store, uuid, %{text: "Second", after: a})
 
     {agent_pub, agent_priv} = Signing.generate_keypair()
-    agent = %SigningContext{identity_uuid: "agent-ol", private_key: agent_priv, public_key: agent_pub}
+
+    agent = %SigningContext{
+      identity_uuid: "agent-ol",
+      private_key: agent_priv,
+      public_key: agent_pub
+    }
 
     on_exit(fn -> File.rm_rf!(dir) end)
     %{store: store, root: root, uuid: uuid, a: a, b: b, agent: agent, agent_pub: agent_pub}
@@ -40,7 +52,9 @@ defmodule Commonplace.OutlineActionsTest do
   test "_view.xml declares the outline actions for agent discovery", %{store: store, root: root} do
     # The room dir holds _view.xml next to _outline.
     {:ok, view_xml} = Outline.view_xml("agentboard", root, store)
-    for action <- ~w(add_item set_text indent_item outdent_item reorder_item toggle_collapse delete_item) do
+
+    for action <-
+          ~w(add_item set_text indent_item outdent_item reorder_item toggle_collapse delete_item) do
       assert view_xml =~ ~s(<action name="#{action}"), "missing declaration for #{action}"
     end
 

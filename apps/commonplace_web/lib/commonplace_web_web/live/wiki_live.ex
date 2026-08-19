@@ -216,7 +216,13 @@ defmodule CommonplaceWebWeb.WikiLive do
         with uuid when not is_nil(uuid) <- socket.assigns.page_uuid,
              {:ok, update} <- Base.decode64(encoded) do
           commit =
-            CommitStoreClient.create_chained_commit(CommitStoreClient, uuid, update, %{}, commit_opts(socket))
+            CommitStoreClient.create_chained_commit(
+              CommitStoreClient,
+              uuid,
+              update,
+              %{},
+              commit_opts(socket)
+            )
 
           case commit do
             %{id: _} ->
@@ -250,7 +256,9 @@ defmodule CommonplaceWebWeb.WikiLive do
     # Identity is a placeholder ("wiki-user@local") until real session
     # identity propagation lands alongside signed-commit wiring.
     case WriteRateLimit.check_and_record(self()) do
-      :ok -> do_view_action(params, socket)
+      :ok ->
+        do_view_action(params, socket)
+
       {:error, :rate_limited, _retry_after_ms} ->
         {:noreply, put_flash(socket, :error, "Too many edits — slow down")}
     end
@@ -287,8 +295,8 @@ defmodule CommonplaceWebWeb.WikiLive do
           <a href="/wiki" class="text-xl font-bold text-primary">Commonplace</a>
           <p class="text-xs text-base-content/60 mt-1">CRDT Wiki</p>
         </div>
-
-        <!-- Navigation -->
+        
+    <!-- Navigation -->
         <nav class="flex-1 overflow-y-auto p-3">
           <div class="mb-3">
             <button phx-click="show_create" class="btn btn-sm btn-primary w-full gap-1">
@@ -304,7 +312,7 @@ defmodule CommonplaceWebWeb.WikiLive do
               <.icon name="hero-arrow-left-micro" class="size-3" /> Back
             </a>
             <div class="text-xs text-base-content/40 px-2 mb-2 font-mono">
-              /<%= @current_path %>
+              /{@current_path}
             </div>
           <% end %>
 
@@ -317,7 +325,7 @@ defmodule CommonplaceWebWeb.WikiLive do
                     class="flex items-center gap-2 px-2 py-1.5 rounded text-sm hover:bg-base-300 transition-colors"
                   >
                     <.icon name="hero-folder-micro" class="size-4 text-warning" />
-                    <span><%= entry.name %>/</span>
+                    <span>{entry.name}/</span>
                   </a>
                 <% else %>
                   <a
@@ -326,7 +334,7 @@ defmodule CommonplaceWebWeb.WikiLive do
                       if(entry.name == @page_name, do: "bg-primary/10 text-primary font-medium", else: "hover:bg-base-300")}
                   >
                     <.icon name="hero-document-text-micro" class="size-4 text-base-content/40" />
-                    <span><%= display_name(entry.name) %></span>
+                    <span>{display_name(entry.name)}</span>
                   </a>
                 <% end %>
               </li>
@@ -337,30 +345,38 @@ defmodule CommonplaceWebWeb.WikiLive do
             <p class="text-sm text-base-content/40 italic px-2">No pages yet</p>
           <% end %>
         </nav>
-
-        <!-- Sidebar footer -->
+        
+    <!-- Sidebar footer -->
         <div class="p-3 border-t border-base-300">
-          <a href="/wiki/special/recent-changes" class="flex items-center gap-2 text-sm text-base-content/60 hover:text-primary px-2 py-1">
+          <a
+            href="/wiki/special/recent-changes"
+            class="flex items-center gap-2 text-sm text-base-content/60 hover:text-primary px-2 py-1"
+          >
             <.icon name="hero-clock-micro" class="size-4" /> Recent Changes
           </a>
           <div class="flex items-center gap-2 text-sm text-base-content/60 px-2 py-1 mt-1">
             <.icon name="hero-document-duplicate-micro" class="size-4" />
-            <span><%= length(@entries) %> pages</span>
+            <span>{length(@entries)} pages</span>
           </div>
         </div>
       </aside>
-
-      <!-- Main content -->
+      
+    <!-- Main content -->
       <main class="flex-1 flex flex-col overflow-hidden">
         <!-- Page header / toolbar -->
         <%= if @page_name do %>
           <header class="flex items-center justify-between px-6 py-3 border-b border-base-300 bg-base-100">
             <div>
-              <h1 class="text-2xl font-bold"><%= display_name(@page_name) %></h1>
-              <p class="text-xs text-base-content/50 font-mono">/<%= join_path(@current_path, @page_name) %></p>
+              <h1 class="text-2xl font-bold">{display_name(@page_name)}</h1>
+              <p class="text-xs text-base-content/50 font-mono">
+                /{join_path(@current_path, @page_name)}
+              </p>
             </div>
             <div class="flex items-center gap-2">
-              <button phx-click="toggle_history" class={"btn btn-sm btn-ghost gap-1 " <> if(@show_history, do: "btn-active", else: "")}>
+              <button
+                phx-click="toggle_history"
+                class={"btn btn-sm btn-ghost gap-1 " <> if(@show_history, do: "btn-active", else: "")}
+              >
                 <.icon name="hero-clock-micro" class="size-4" /> History
               </button>
               <%= if @mode == :view do %>
@@ -381,14 +397,14 @@ defmodule CommonplaceWebWeb.WikiLive do
                 <%= if @current_path == "" do %>
                   Welcome
                 <% else %>
-                  <%= Path.basename(@current_path) %>
+                  {Path.basename(@current_path)}
                 <% end %>
               </h1>
             </div>
           </header>
         <% end %>
-
-        <!-- Content area -->
+        
+    <!-- Content area -->
         <div class="flex-1 overflow-y-auto flex">
           <div class={"flex-1 " <> if(@show_history, do: "border-r border-base-300", else: "")}>
             <%= if @mode == :edit and @page_uuid do %>
@@ -413,15 +429,15 @@ defmodule CommonplaceWebWeb.WikiLive do
                         </article>
                       <% ViewDetect.is_view?(@page_content) -> %>
                         <article class="max-w-none">
-                          <%= ViewRenderer.render_view(
+                          {ViewRenderer.render_view(
                             @page_content,
                             @current_path,
                             render_guard_principal(assigns[:identity])
-                          ) %>
+                          )}
                         </article>
                       <% true -> %>
                         <article class="prose prose-lg max-w-none">
-                          <%= render_wiki_content(@page_content, @current_path) %>
+                          {render_wiki_content(@page_content, @current_path)}
                         </article>
                     <% end %>
                   <% else %>
@@ -438,8 +454,8 @@ defmodule CommonplaceWebWeb.WikiLive do
               </div>
             <% end %>
           </div>
-
-          <!-- History panel -->
+          
+    <!-- History panel -->
           <%= if @show_history do %>
             <aside class="w-72 overflow-y-auto bg-base-200/50 p-4">
               <h3 class="font-bold text-sm mb-3">Page History</h3>
@@ -450,10 +466,10 @@ defmodule CommonplaceWebWeb.WikiLive do
                   <%= for commit <- @history do %>
                     <li class="text-xs border-l-2 border-primary/30 pl-3 py-1">
                       <div class="font-mono text-base-content/60">
-                        <%= String.slice(Base.encode16(commit.id, case: :lower), 0, 8) %>
+                        {String.slice(Base.encode16(commit.id, case: :lower), 0, 8)}
                       </div>
                       <div class="text-base-content/40">
-                        <%= format_timestamp(commit.timestamp) %>
+                        {format_timestamp(commit.timestamp)}
                       </div>
                     </li>
                   <% end %>
@@ -463,8 +479,8 @@ defmodule CommonplaceWebWeb.WikiLive do
           <% end %>
         </div>
       </main>
-
-      <!-- Create page modal -->
+      
+    <!-- Create page modal -->
       <%= if @show_create do %>
         <div class="fixed inset-0 z-50 flex items-center justify-center">
           <div class="absolute inset-0 bg-black/50" phx-click="cancel_create"></div>
@@ -480,7 +496,9 @@ defmodule CommonplaceWebWeb.WikiLive do
                 phx-mounted={JS.focus()}
               />
               <div class="flex justify-end gap-2">
-                <button type="button" phx-click="cancel_create" class="btn btn-ghost btn-sm">Cancel</button>
+                <button type="button" phx-click="cancel_create" class="btn btn-ghost btn-sm">
+                  Cancel
+                </button>
                 <button type="submit" class="btn btn-primary btn-sm">Create</button>
               </div>
             </form>
@@ -488,7 +506,6 @@ defmodule CommonplaceWebWeb.WikiLive do
         </div>
       <% end %>
     </div>
-
     """
   end
 
@@ -513,7 +530,7 @@ defmodule CommonplaceWebWeb.WikiLive do
               <% else %>
                 <.icon name="hero-document-text-micro" class="size-5 text-primary" />
               <% end %>
-              <span class="font-medium"><%= display_name(entry.name) %></span>
+              <span class="font-medium">{display_name(entry.name)}</span>
             </a>
           <% end %>
         </div>
@@ -539,12 +556,12 @@ defmodule CommonplaceWebWeb.WikiLive do
               <div class="flex items-center gap-3">
                 <.icon name="hero-document-text-micro" class="size-5 text-primary" />
                 <div>
-                  <span class="font-medium"><%= display_name(change.name) %></span>
-                  <span class="text-xs text-base-content/40 ml-2 font-mono"><%= change.path %></span>
+                  <span class="font-medium">{display_name(change.name)}</span>
+                  <span class="text-xs text-base-content/40 ml-2 font-mono">{change.path}</span>
                 </div>
               </div>
               <span class="text-xs text-base-content/50">
-                <%= format_timestamp(change.commit.timestamp) %>
+                {format_timestamp(change.commit.timestamp)}
               </span>
             </a>
           <% end %>
@@ -561,10 +578,14 @@ defmodule CommonplaceWebWeb.WikiLive do
     |> String.split("\n")
     |> Enum.map(&render_line(&1, current_path))
     |> Enum.intersperse(raw("<br>"))
-    |> then(&raw(Enum.map_join(&1, "", fn
-      {:safe, s} -> IO.iodata_to_binary(s)
-      s when is_binary(s) -> s
-    end)))
+    |> then(
+      &raw(
+        Enum.map_join(&1, "", fn
+          {:safe, s} -> IO.iodata_to_binary(s)
+          s when is_binary(s) -> s
+        end)
+      )
+    )
   end
 
   defp render_wiki_content(_, _), do: raw("")
@@ -610,6 +631,7 @@ defmodule CommonplaceWebWeb.WikiLive do
       case sanitize_wiki_link(page) do
         {:ok, sanitized} ->
           href = wiki_path(join_path(current_path, sanitized))
+
           "<a href=\"#{escape(href)}\" class=\"text-primary hover:underline font-medium\">#{escape(display)}</a>"
 
         :error ->
@@ -624,7 +646,11 @@ defmodule CommonplaceWebWeb.WikiLive do
       # Italic
       text = Regex.replace(~r/\*(.+?)\*/, text, "<em>\\1</em>")
       # Code
-      Regex.replace(~r/`(.+?)`/, text, "<code class=\"bg-base-300 px-1 rounded text-sm\">\\1</code>")
+      Regex.replace(
+        ~r/`(.+?)`/,
+        text,
+        "<code class=\"bg-base-300 px-1 rounded text-sm\">\\1</code>"
+      )
     end)
   end
 
@@ -701,11 +727,18 @@ defmodule CommonplaceWebWeb.WikiLive do
           # neither ever fails, but a strict/enforce workspace must not
           # silently "create" a page whose commit(s) were actually
           # denied.
-          with %{id: _} <- CommitStoreClient.create_commit(CommitStoreClient, uuid, update, nil, %{}, opts),
+          with %{id: _} <-
+                 CommitStoreClient.create_commit(CommitStoreClient, uuid, update, nil, %{}, opts),
                schema = Schema.add_file(schema, filename, uuid),
                schema_update = Yelixer.Encoding.encode_update(schema),
                %{id: _} <-
-                 CommitStoreClient.create_chained_commit(CommitStoreClient, dir_uuid, schema_update, %{}, opts) do
+                 CommitStoreClient.create_chained_commit(
+                   CommitStoreClient,
+                   dir_uuid,
+                   schema_update,
+                   %{},
+                   opts
+                 ) do
             target =
               if socket.assigns.current_path == "" do
                 filename
@@ -870,7 +903,11 @@ defmodule CommonplaceWebWeb.WikiLive do
           entries: entries,
           show_history: false,
           history: [],
-          page_title: if(path == "", do: "Commonplace Wiki", else: "#{Path.basename(path)} — Commonplace Wiki")
+          page_title:
+            if(path == "",
+              do: "Commonplace Wiki",
+              else: "#{Path.basename(path)} — Commonplace Wiki"
+            )
         )
       end
     end

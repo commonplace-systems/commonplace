@@ -165,15 +165,21 @@ defmodule Commonplace.Store.Commit do
 
   defstruct [
     :id,
-    :doc_uuid,    # Historical: which UUID originally created this commit (debugging only)
+    # Historical: which UUID originally created this commit (debugging only)
+    :doc_uuid,
     :parent_id,
     :update,
     :timestamp,
-    :signature,   # Ed25519 signature of commit.id, or nil if unsigned
-    :signer_id,   # identifier of the signing key, or nil if unsigned
-    :post_state_hash,   # {encoding_version, hash} of the state the WRITER produced, or nil (legacy-compatible mint sites); binds into id when present (CX-6scm)
-    metadata: %{},      # free-form annotations (e.g. %{kind: :snapshot}); non-empty requires :kind and binds into id (CX-u7p r2, CX-bv3)
-    merge_parents: []   # additional parent commit ids for merge commits; binds into id when non-empty (CX-bv3)
+    # Ed25519 signature of commit.id, or nil if unsigned
+    :signature,
+    # identifier of the signing key, or nil if unsigned
+    :signer_id,
+    # {encoding_version, hash} of the state the WRITER produced, or nil (legacy-compatible mint sites); binds into id when present (CX-6scm)
+    :post_state_hash,
+    # free-form annotations (e.g. %{kind: :snapshot}); non-empty requires :kind and binds into id (CX-u7p r2, CX-bv3)
+    metadata: %{},
+    # additional parent commit ids for merge commits; binds into id when non-empty (CX-bv3)
+    merge_parents: []
   ]
 
   @typedoc """

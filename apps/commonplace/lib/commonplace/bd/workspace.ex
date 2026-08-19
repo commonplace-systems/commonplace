@@ -65,7 +65,14 @@ defmodule Commonplace.Bd.Workspace do
   defp ensure_bd_skeleton(bd_uuid, store, opts) do
     with {:ok, schema} <- Schemas.load_dir_schema(bd_uuid, store),
          {:ok, schema} <-
-           ensure_file(schema, bd_uuid, store, Schemas.meta_filename(), &default_meta_json/0, opts),
+           ensure_file(
+             schema,
+             bd_uuid,
+             store,
+             Schemas.meta_filename(),
+             &default_meta_json/0,
+             opts
+           ),
          {:ok, schema} <-
            ensure_file(schema, bd_uuid, store, Schemas.deps_filename(), fn -> "{}" end, opts),
          {:ok, schema} <- ensure_dir_entry(schema, bd_uuid, store, @issues_dir, opts),

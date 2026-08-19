@@ -42,7 +42,15 @@ defmodule Commonplace.MUD.TickBotTest do
         sweep_interval: 60_000
       )
 
-    on_exit(fn -> if Process.alive?(bursar_pid), do: (try do GenServer.stop(bursar_pid) catch (:exit, _ -> :ok) end) end)
+    on_exit(fn ->
+      if Process.alive?(bursar_pid),
+        do:
+          (try do
+             GenServer.stop(bursar_pid)
+           catch
+             (:exit, _ -> :ok)
+           end)
+    end)
 
     root_uuid = UUID.uuid4()
     update = Encoding.encode_update(Schema.new_schema())
@@ -192,7 +200,10 @@ defmodule Commonplace.MUD.TickBotTest do
 
       {:ok, _} =
         Commonplace.Green.Bursar.acquire(
-          ctx.bursar, "__singletons/tick_bot", "some-other-node")
+          ctx.bursar,
+          "__singletons/tick_bot",
+          "some-other-node"
+        )
 
       {_pid, name} = start_tickbot(ctx, holder: "me")
 
@@ -308,7 +319,10 @@ defmodule Commonplace.MUD.TickBotTest do
 
       {:ok, _} =
         Commonplace.Green.Bursar.acquire(
-          ctx.bursar, "__singletons/tick_bot", "dead-incarnation")
+          ctx.bursar,
+          "__singletons/tick_bot",
+          "dead-incarnation"
+        )
 
       {_pid, name} = start_tickbot(ctx, holder: "me", orphan_sweep: true)
 

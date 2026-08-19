@@ -10,7 +10,9 @@ defmodule CommonplaceWebWeb.ViewActionsTest do
   # struct with preset assigns so assign/put_flash work as expected.
 
   defp socket(assigns \\ %{}) do
-    %Socket{assigns: Map.merge(%{page_uuid: "uuid-1", show_history: false, __changed__: %{}}, assigns)}
+    %Socket{
+      assigns: Map.merge(%{page_uuid: "uuid-1", show_history: false, __changed__: %{}}, assigns)
+    }
   end
 
   describe "dispatch/3 audit broadcast" do

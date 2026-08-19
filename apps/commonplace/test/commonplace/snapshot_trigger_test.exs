@@ -179,6 +179,7 @@ defmodule Commonplace.SnapshotTriggerTest do
       uuid = "app-env"
       prior = Application.get_env(:commonplace, :snapshot_chain_threshold)
       Application.put_env(:commonplace, :snapshot_chain_threshold, 4)
+
       on_exit(fn ->
         case prior do
           nil -> Application.delete_env(:commonplace, :snapshot_chain_threshold)
@@ -196,6 +197,7 @@ defmodule Commonplace.SnapshotTriggerTest do
       # Explicitly delete the env so the hard-coded default kicks in.
       prior = Application.get_env(:commonplace, :snapshot_chain_threshold)
       Application.delete_env(:commonplace, :snapshot_chain_threshold)
+
       on_exit(fn ->
         case prior do
           nil -> :ok
@@ -405,9 +407,7 @@ defmodule Commonplace.SnapshotTriggerTest do
 
       # No soft_chain_length_threshold, no lull_window_ms → pure mandatory.
       assert {:ok, :below_threshold, {:chain_length, 3, 100}} =
-               SnapshotTrigger.maybe_snapshot(store, uuid,
-                 chain_length_threshold: 100
-               )
+               SnapshotTrigger.maybe_snapshot(store, uuid, chain_length_threshold: 100)
     end
 
     test "soft threshold set but no lull_window_ms: ignored (both required together)",

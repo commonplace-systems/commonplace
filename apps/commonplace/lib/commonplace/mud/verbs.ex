@@ -30,6 +30,7 @@ defmodule Commonplace.MUD.Verbs do
     VerbSource,
     World
   }
+
   alias Commonplace.MUD.Schemas.{Object, Player, Room}
   alias Commonplace.MUD.World.Facade
   alias Commonplace.Tree.Schema
@@ -120,8 +121,11 @@ defmodule Commonplace.MUD.Verbs do
   # never a stray object's same-named verb. `:not_found` → the standard baseline.
   defp find_override_host(verb_name, cmd, ctx) do
     case verb_target_candidates(cmd, ctx) do
-      [] -> room_host_verb(verb_name, ctx)
-      candidates -> first_host_with_verb(candidates, verb_name, ctx) || room_host_verb(verb_name, ctx)
+      [] ->
+        room_host_verb(verb_name, ctx)
+
+      candidates ->
+        first_host_with_verb(candidates, verb_name, ctx) || room_host_verb(verb_name, ctx)
     end
   end
 
@@ -313,7 +317,10 @@ defmodule Commonplace.MUD.Verbs do
     owner_grant = owner_grant_for(host_uuid, ctx.store)
     via_verb = {source_uuid, host_name}
 
-    facade = %{Facade.new(ctx, object_uuid, owner_grant, via_verb, ctx.store) | host_kind: host_kind}
+    facade = %{
+      Facade.new(ctx, object_uuid, owner_grant, via_verb, ctx.store)
+      | host_kind: host_kind
+    }
 
     # CX-9plf: `rest`/`rest_argv` = the argv with the leading target-noun
     # words dropped, so a parameterized verb ("play box a waltz") can read
@@ -614,8 +621,11 @@ defmodule Commonplace.MUD.Verbs do
   # remains the single source of truth; the compiled-in floor
   # (`Commonplace.MUD.Verbs.RecipesFloor`) calls back into it via the
   # `__recipes_floor__/2` escape hatch below.
-  defp dispatch_builtin("recipes", cmd, ctx), do: EngineModule.run_verb(:recipes, cmd, ctx, ctx.store)
-  defp dispatch_builtin("inventory", cmd, ctx), do: EngineModule.run_verb(:inventory, cmd, ctx, ctx.store)
+  defp dispatch_builtin("recipes", cmd, ctx),
+    do: EngineModule.run_verb(:recipes, cmd, ctx, ctx.store)
+
+  defp dispatch_builtin("inventory", cmd, ctx),
+    do: EngineModule.run_verb(:inventory, cmd, ctx, ctx.store)
 
   # CX-wkau (MUD-as-documents Inc-1, tranche 2): `who` joins the doc-hosted
   # cohort too — `do_who/1` is UNCHANGED and remains the single source of
@@ -675,8 +685,12 @@ defmodule Commonplace.MUD.Verbs do
   # CX-wkau (MUD-as-documents Inc-1, tranche 2): `use` now also routes
   # through `EngineModule`, same shape — `do_use/2` stays UNCHANGED, the
   # compiled-in floor (`UseFloor`) calls back via `__use_floor__/2` below.
-  defp dispatch_builtin("examine", cmd, ctx), do: EngineModule.run_verb(:examine, cmd, ctx, ctx.store)
-  defp dispatch_builtin("search", cmd, ctx), do: EngineModule.run_verb(:search, cmd, ctx, ctx.store)
+  defp dispatch_builtin("examine", cmd, ctx),
+    do: EngineModule.run_verb(:examine, cmd, ctx, ctx.store)
+
+  defp dispatch_builtin("search", cmd, ctx),
+    do: EngineModule.run_verb(:search, cmd, ctx, ctx.store)
+
   defp dispatch_builtin("read", cmd, ctx), do: EngineModule.run_verb(:read, cmd, ctx, ctx.store)
   defp dispatch_builtin("use", cmd, ctx), do: EngineModule.run_verb(:use, cmd, ctx, ctx.store)
   defp dispatch_builtin("sit", cmd, ctx), do: EngineModule.run_verb(:sit, cmd, ctx, ctx.store)
@@ -908,8 +922,11 @@ defmodule Commonplace.MUD.Verbs do
     case Resolver.greedy_match_entry([ctx.inventory_uuid, ctx.current_room_uuid], argv, ctx.store) do
       {:ok, entry, _phrase, _remainder} ->
         case Resolver.resolve_entry(entry, ctx) do
-          {:ok, :object, %Object{} = obj} -> {:reply, Render.read_object_text(entry.node_id, obj, ctx)}
-          _ -> {:reply, "There's nothing to read on #{phrase_label}."}
+          {:ok, :object, %Object{} = obj} ->
+            {:reply, Render.read_object_text(entry.node_id, obj, ctx)}
+
+          _ ->
+            {:reply, "There's nothing to read on #{phrase_label}."}
         end
 
       :not_found ->
@@ -994,15 +1011,25 @@ defmodule Commonplace.MUD.Verbs do
     container_phrase = Enum.join(container_words, " ")
 
     with {:ok, container_entry, %Object{} = container_obj} <-
-           Resolver.resolve_container(container_phrase, [ctx.current_room_uuid, ctx.inventory_uuid], ctx),
+           Resolver.resolve_container(
+             container_phrase,
+             [ctx.current_room_uuid, ctx.inventory_uuid],
+             ctx
+           ),
          :ok <- ensure_unlocked(container_entry.node_id, container_obj.name, ctx.store),
          :ok <- ensure_has_key(container_entry.node_id, container_obj.name, ctx),
          {:ok, entry, _phrase, _remainder} <-
            Resolver.greedy_match_entry([container_entry.node_id], item_words, ctx.store),
          {:ok, %Object{} = obj} <- Schemas.load_object(entry.node_id, ctx.store),
          :ok <-
-           World.take_item(entry.node_id, entry.name, container_entry.node_id,
-             ctx.inventory_uuid, taker_identity(ctx), take_opts(ctx)) do
+           World.take_item(
+             entry.node_id,
+             entry.name,
+             container_entry.node_id,
+             ctx.inventory_uuid,
+             taker_identity(ctx),
+             take_opts(ctx)
+           ) do
       World.broadcast_room(ctx.current_room_uuid, %{
         kind: :get_from,
         who: ctx.player_name,
@@ -1012,24 +1039,51 @@ defmodule Commonplace.MUD.Verbs do
 
       {:reply, "You get #{obj.name} from #{container_obj.name}."}
     else
-      {:error, {:not_a_container, name}} -> {:error, "You can't get things from the #{name}."}
-      {:error, {:locked, name}} -> {:error, "The #{name} is locked."}
-      {:error, {:need_key, name, key}} -> {:error, "The #{name} won't open — you need the #{key}."}
-      {:error, :not_found} -> {:error, "You don't see \"#{container_phrase}\" here."}
-      :not_found -> {:error, "You don't see \"#{item_phrase_label}\" in #{container_phrase}."}
-      {:error, :gone} -> {:error, "It slipped from your grasp."}
-      {:error, :collision} -> {:error, "You're already carrying one of those."}
-      {:error, {:trust_rejected, _}} -> {:error, "You don't have permission to take that."}
-      {:error, :taken} -> {:error, "Someone else grabbed it first."}
-      {:error, :item_unavailable} -> {:error, "Someone else grabbed it first."}
+      {:error, {:not_a_container, name}} ->
+        {:error, "You can't get things from the #{name}."}
+
+      {:error, {:locked, name}} ->
+        {:error, "The #{name} is locked."}
+
+      {:error, {:need_key, name, key}} ->
+        {:error, "The #{name} won't open — you need the #{key}."}
+
+      {:error, :not_found} ->
+        {:error, "You don't see \"#{container_phrase}\" here."}
+
+      :not_found ->
+        {:error, "You don't see \"#{item_phrase_label}\" in #{container_phrase}."}
+
+      {:error, :gone} ->
+        {:error, "It slipped from your grasp."}
+
+      {:error, :collision} ->
+        {:error, "You're already carrying one of those."}
+
+      {:error, {:trust_rejected, _}} ->
+        {:error, "You don't have permission to take that."}
+
+      {:error, :taken} ->
+        {:error, "Someone else grabbed it first."}
+
+      {:error, :item_unavailable} ->
+        {:error, "Someone else grabbed it first."}
+
       # CX-cogd — an HONEST deny that matches the put path's permission language,
       # not the vague "You can't take that": a container in a zone you can't
       # write refuses extraction (the citizen-home private-container case). The
       # {:trust_rejected, _} clause below already speaks the same language.
-      {:error, :not_takeable_here} -> {:error, "You don't have permission to take that."}
-      {:error, :bad_arg} -> {:error, "You can't take that."}
-      {:error, :fixed} -> {:error, "That's fixed in place."}
-      _ -> {:error, "You can't take that."}
+      {:error, :not_takeable_here} ->
+        {:error, "You don't have permission to take that."}
+
+      {:error, :bad_arg} ->
+        {:error, "You can't take that."}
+
+      {:error, :fixed} ->
+        {:error, "That's fixed in place."}
+
+      _ ->
+        {:error, "You can't take that."}
     end
   end
 
@@ -1040,12 +1094,20 @@ defmodule Commonplace.MUD.Verbs do
   defp do_take_plain(argv, ctx) do
     phrase_label = Enum.join(argv, " ")
 
-    with {:ok, entry, _phrase, _remainder} <- Resolver.greedy_match_entry([ctx.current_room_uuid], argv, ctx.store),
+    with {:ok, entry, _phrase, _remainder} <-
+           Resolver.greedy_match_entry([ctx.current_room_uuid], argv, ctx.store),
          true <- takable_entry?(entry) || {:error, "You can't take that."},
          {:ok, %Object{} = obj} <- Schemas.load_object(entry.node_id, ctx.store),
          :ok <- ensure_not_fixed(obj),
-         :ok <- World.take_item(entry.node_id, entry.name, ctx.current_room_uuid,
-                  ctx.inventory_uuid, taker_identity(ctx), take_opts(ctx)) do
+         :ok <-
+           World.take_item(
+             entry.node_id,
+             entry.name,
+             ctx.current_room_uuid,
+             ctx.inventory_uuid,
+             taker_identity(ctx),
+             take_opts(ctx)
+           ) do
       World.broadcast_room(ctx.current_room_uuid, %{
         kind: :take,
         who: ctx.player_name,
@@ -1082,10 +1144,16 @@ defmodule Commonplace.MUD.Verbs do
   defp do_mine(%Parser.Command{argv: argv}, ctx) do
     phrase_label = Enum.join(argv, " ")
 
-    with {:ok, entry, _phrase, _remainder} <- Resolver.greedy_match_entry([ctx.current_room_uuid], argv, ctx.store),
+    with {:ok, entry, _phrase, _remainder} <-
+           Resolver.greedy_match_entry([ctx.current_room_uuid], argv, ctx.store),
          {:ok, %Object{kind: "vein"} = vein} <- Schemas.load_object(entry.node_id, ctx.store),
          {:ok, _item_uuid, item_name} <-
-           Mint.extract_from_vein(entry.node_id, ctx.inventory_uuid, taker_identity(ctx), take_opts(ctx)) do
+           Mint.extract_from_vein(
+             entry.node_id,
+             ctx.inventory_uuid,
+             taker_identity(ctx),
+             take_opts(ctx)
+           ) do
       World.broadcast_room(ctx.current_room_uuid, %{
         kind: :mine,
         who: ctx.player_name,
@@ -1168,7 +1236,9 @@ defmodule Commonplace.MUD.Verbs do
     end
   end
 
-  defp ensure_not_fixed(%Object{fixed: true, name: name}), do: {:error, "#{name} is fixed in place."}
+  defp ensure_not_fixed(%Object{fixed: true, name: name}),
+    do: {:error, "#{name} is fixed in place."}
+
   defp ensure_not_fixed(_), do: :ok
 
   defp do_drop(%Parser.Command{argv: []}, _ctx), do: {:error, "Drop what?"}
@@ -1178,10 +1248,18 @@ defmodule Commonplace.MUD.Verbs do
   defp do_drop(%Parser.Command{argv: argv}, ctx) do
     phrase_label = Enum.join(argv, " ")
 
-    with {:ok, entry, _phrase, _remainder} <- Resolver.greedy_match_entry([ctx.inventory_uuid], argv, ctx.store),
+    with {:ok, entry, _phrase, _remainder} <-
+           Resolver.greedy_match_entry([ctx.inventory_uuid], argv, ctx.store),
          {:ok, %Object{} = obj} <- Schemas.load_object(entry.node_id, ctx.store),
          :ok <-
-           World.drop_item(entry.node_id, entry.name, ctx.inventory_uuid, ctx.current_room_uuid, taker_identity(ctx), possession_opts(ctx)) do
+           World.drop_item(
+             entry.node_id,
+             entry.name,
+             ctx.inventory_uuid,
+             ctx.current_room_uuid,
+             taker_identity(ctx),
+             possession_opts(ctx)
+           ) do
       World.broadcast_room(ctx.current_room_uuid, %{
         kind: :drop,
         who: ctx.player_name,
@@ -1242,7 +1320,8 @@ defmodule Commonplace.MUD.Verbs do
   defp give_item_to(item_phrase, target_phrase, ctx) do
     with {:ok, obj_entry} <- World.find_entry_by_name(ctx.inventory_uuid, item_phrase, ctx.store),
          {:ok, %Object{} = obj} <- Schemas.load_object(obj_entry.node_id, ctx.store),
-         {:ok, target_inv_uuid, target_player_name, target_presence_uuid} <- find_player_inventory(target_phrase, ctx),
+         {:ok, target_inv_uuid, target_player_name, target_presence_uuid} <-
+           find_player_inventory(target_phrase, ctx),
          recipient_identity <- resolve_recipient_identity(target_presence_uuid, ctx),
          :ok <-
            World.give_item(
@@ -1300,6 +1379,7 @@ defmodule Commonplace.MUD.Verbs do
     case presence_entries do
       [entry] ->
         bare = entry.name |> String.replace_suffix(".usr", "")
+
         case lookup_player_inventory(bare, ctx) do
           {:ok, inv_uuid} -> {:ok, inv_uuid, bare, entry.node_id}
           err -> err
@@ -1315,6 +1395,7 @@ defmodule Commonplace.MUD.Verbs do
 
   defp lookup_player_inventory(player_name, ctx) do
     path = "players/#{player_name}/inventory"
+
     World.resolve_path(path, ctx.root_uuid, ctx.store)
     |> case do
       {:ok, uuid} -> {:ok, uuid}
@@ -1362,7 +1443,11 @@ defmodule Commonplace.MUD.Verbs do
     with {:ok, source_dir, item_entry} <- locate_item_for_put(item_words, ctx),
          {:ok, %Object{} = obj} <- Schemas.load_object(item_entry.node_id, ctx.store),
          {:ok, container_entry, %Object{} = container_obj} <-
-           Resolver.resolve_container(container_phrase, [ctx.current_room_uuid, ctx.inventory_uuid], ctx),
+           Resolver.resolve_container(
+             container_phrase,
+             [ctx.current_room_uuid, ctx.inventory_uuid],
+             ctx
+           ),
          :ok <- ensure_unlocked(container_entry.node_id, container_obj.name, ctx.store),
          :ok <- ensure_has_key(container_entry.node_id, container_obj.name, ctx),
          move_opts <-
@@ -1407,16 +1492,35 @@ defmodule Commonplace.MUD.Verbs do
 
       {:reply, "You put #{obj.name} in #{container_obj.name}."}
     else
-      :not_found -> {:error, "You don't see \"#{item_phrase_label}\" here."}
-      {:error, {:not_a_container, name}} -> {:error, "You can't put things in the #{name}."}
-      {:error, {:locked, name}} -> {:error, "The #{name} is locked."}
-      {:error, {:need_key, name, key}} -> {:error, "The #{name} won't open — you need the #{key}."}
-      {:error, :not_found} -> {:error, "You don't see \"#{container_phrase}\" here."}
-      {:error, :container_cycle} -> {:error, "You can't put #{item_phrase_label} inside itself."}
-      {:error, :collision} -> {:error, "There's already one of those in there."}
-      {:error, :gone} -> {:error, "It slipped from your grasp."}
-      {:error, {:trust_rejected, _}} -> {:error, "You don't have permission to do that."}
-      _ -> {:error, "You can't put that there."}
+      :not_found ->
+        {:error, "You don't see \"#{item_phrase_label}\" here."}
+
+      {:error, {:not_a_container, name}} ->
+        {:error, "You can't put things in the #{name}."}
+
+      {:error, {:locked, name}} ->
+        {:error, "The #{name} is locked."}
+
+      {:error, {:need_key, name, key}} ->
+        {:error, "The #{name} won't open — you need the #{key}."}
+
+      {:error, :not_found} ->
+        {:error, "You don't see \"#{container_phrase}\" here."}
+
+      {:error, :container_cycle} ->
+        {:error, "You can't put #{item_phrase_label} inside itself."}
+
+      {:error, :collision} ->
+        {:error, "There's already one of those in there."}
+
+      {:error, :gone} ->
+        {:error, "It slipped from your grasp."}
+
+      {:error, {:trust_rejected, _}} ->
+        {:error, "You don't have permission to do that."}
+
+      _ ->
+        {:error, "You can't put that there."}
     end
   end
 
@@ -1544,7 +1648,13 @@ defmodule Commonplace.MUD.Verbs do
         false
 
       true ->
-        bfs_contains?(children, Enum.reduce(children, visited, &MapSet.put(&2, &1)), target_uuid, store, depth + 1)
+        bfs_contains?(
+          children,
+          Enum.reduce(children, visited, &MapSet.put(&2, &1)),
+          target_uuid,
+          store,
+          depth + 1
+        )
     end
   end
 
@@ -1680,7 +1790,12 @@ defmodule Commonplace.MUD.Verbs do
   defp dispatch_builder("@desc", cmd, ctx), do: do_desc(cmd, ctx)
   defp dispatch_builder("@name", cmd, ctx), do: do_rename(cmd, ctx)
   defp dispatch_builder("@alias", cmd, ctx), do: do_alias(cmd, ctx)
-  defp dispatch_builder("@listen", _cmd, ctx), do: {:reply, "Now listening to room #{ctx.current_room_uuid}. (Debug: red events will appear inline.)"}
+
+  defp dispatch_builder("@listen", _cmd, ctx),
+    do:
+      {:reply,
+       "Now listening to room #{ctx.current_room_uuid}. (Debug: red events will appear inline.)"}
+
   defp dispatch_builder("@verb", cmd, ctx), do: do_verb_edit(cmd, ctx)
   defp dispatch_builder("@unverb", cmd, ctx), do: do_unverb(cmd, ctx)
   defp dispatch_builder("@link", cmd, ctx), do: do_link(cmd, ctx)
@@ -1710,7 +1825,11 @@ defmodule Commonplace.MUD.Verbs do
         # casual `examine`) is where the object's freeform `meta["state"]` block
         # belongs. The typed `Object` struct drops `state` (CX-hqk5), so append
         # `notable_state/2` (raw meta) after the struct dump for builders/debug.
-        case Resolver.greedy_match_entry([ctx.inventory_uuid, ctx.current_room_uuid], cmd.argv, ctx.store) do
+        case Resolver.greedy_match_entry(
+               [ctx.inventory_uuid, ctx.current_room_uuid],
+               cmd.argv,
+               ctx.store
+             ) do
           {:ok, entry, _phrase, _remainder} ->
             case Resolver.resolve_entry(entry, ctx) do
               {:ok, :object, obj} ->
@@ -1905,7 +2024,8 @@ defmodule Commonplace.MUD.Verbs do
   defp do_dig_write_new_room(direction, opposite, name, ctx) do
     case Build.dig_room(ctx, direction, opposite, name) do
       {:ok, _new_room_uuid} ->
-        {:reply, "You carve out a new room (#{name}). #{String.capitalize(direction)} leads there."}
+        {:reply,
+         "You carve out a new room (#{name}). #{String.capitalize(direction)} leads there."}
 
       {:error, reason} ->
         {:error, commit_error_reply(reason)}
@@ -1964,7 +2084,13 @@ defmodule Commonplace.MUD.Verbs do
           {:ok, %{"exits" => exits} = _map} when is_map_key(exits, direction) ->
             new_exits = Map.delete(exits, direction)
 
-            case World.merge_meta(ctx.current_room_uuid, Schemas.room_filename(), %{"exits" => new_exits}, ctx.store, write_opts(ctx)) do
+            case World.merge_meta(
+                   ctx.current_room_uuid,
+                   Schemas.room_filename(),
+                   %{"exits" => new_exits},
+                   ctx.store,
+                   write_opts(ctx)
+                 ) do
               :ok -> {:reply, "Removed the exit #{direction}."}
               {:error, reason} -> {:error, commit_error_reply(reason)}
             end
@@ -2015,7 +2141,13 @@ defmodule Commonplace.MUD.Verbs do
           "owner" => owner
         }
 
-        case World.merge_meta(ctx.current_room_uuid, Schemas.room_filename(), updates, ctx.store, write_opts(ctx)) do
+        case World.merge_meta(
+               ctx.current_room_uuid,
+               Schemas.room_filename(),
+               updates,
+               ctx.store,
+               write_opts(ctx)
+             ) do
           :ok -> {:reply, visibility_reply(visibility)}
           {:error, {:trust_rejected, _}} -> {:error, "You don't own this place."}
           {:error, reason} -> {:error, commit_error_reply(reason)}
@@ -2039,7 +2171,8 @@ defmodule Commonplace.MUD.Verbs do
     # it with a `__room.json`); a bare non-citizen session only has a plain
     # player dir there. Require an actual room before teleporting so `home`
     # gives a clean message rather than `@teleport`'s "No such room".
-    with {:ok, home_uuid} <- World.resolve_path("players/#{ctx.player_name}", ctx.root_uuid, ctx.store),
+    with {:ok, home_uuid} <-
+           World.resolve_path("players/#{ctx.player_name}", ctx.root_uuid, ctx.store),
          {:ok, %Room{}} <- World.get_room(home_uuid, ctx.store) do
       do_teleport(%Parser.Command{argv: [home_uuid]}, ctx)
     else
@@ -2147,7 +2280,14 @@ defmodule Commonplace.MUD.Verbs do
     # @dig/@link it into their map.
     with {:ok, home} <- Build.resolve_home(ctx),
          {:ok, new_uuid} <-
-           ChildMutation.create_zoned_child(home, name, Schemas.room_filename(), json, ctx.store, write_opts(ctx)) do
+           ChildMutation.create_zoned_child(
+             home,
+             name,
+             Schemas.room_filename(),
+             json,
+             ctx.store,
+             write_opts(ctx)
+           ) do
       Build.auto_extend_section(new_uuid, nil, ctx.store)
 
       {:reply, "You create a new room (#{name}) in your home."}
@@ -2160,7 +2300,8 @@ defmodule Commonplace.MUD.Verbs do
     {:error, "Unknown kind: #{other} (try object, container, or room)"}
   end
 
-  defp create_object([], _container?, _ctx), do: {:error, "Create what? Try: @create object <name>"}
+  defp create_object([], _container?, _ctx),
+    do: {:error, "Create what? Try: @create object <name>"}
 
   # CX-Camillo-C2: the object-create WRITE-CORE now lives in
   # `Commonplace.MUD.Build` (one impl, two entry points — this verb AND the
@@ -2196,7 +2337,8 @@ defmodule Commonplace.MUD.Verbs do
   # (those correctly die with it); refuse-over-orphan is the fail-toward-no-
   # loss default (cascade `-r` stays an explicit opt-in for later). Room-
   # scoped v1 (inventory items are the gameplay consume path).
-  defp do_destroy(%Parser.Command{argv: []}, _ctx), do: {:error, "Destroy what? Try: @destroy <object>"}
+  defp do_destroy(%Parser.Command{argv: []}, _ctx),
+    do: {:error, "Destroy what? Try: @destroy <object>"}
 
   defp do_destroy(%Parser.Command{argv: name_parts}, ctx) do
     name = Enum.join(name_parts, " ")
@@ -2271,7 +2413,14 @@ defmodule Commonplace.MUD.Verbs do
 
     case find_object_entry(target, ctx) do
       {:ok, entry} ->
-        case World.set_meta(entry.node_id, Schemas.object_filename(), "container", true, ctx.store, write_opts(ctx)) do
+        case World.set_meta(
+               entry.node_id,
+               Schemas.object_filename(),
+               "container",
+               true,
+               ctx.store,
+               write_opts(ctx)
+             ) do
           :ok -> {:reply, "#{target} is now a container — you can put things in it."}
           {:error, reason} -> {:error, commit_error_reply(reason)}
         end
@@ -2300,7 +2449,8 @@ defmodule Commonplace.MUD.Verbs do
     end
   end
 
-  defp do_desc(%Parser.Command{argv: argv}, _ctx) when length(argv) < 2, do: {:error, "Try: @desc <target> <text>"}
+  defp do_desc(%Parser.Command{argv: argv}, _ctx) when length(argv) < 2,
+    do: {:error, "Try: @desc <target> <text>"}
 
   # CX-8iyv: target may itself be multi-word ("silver coin") with no
   # explicit separator from the text that follows it — greedy-match the
@@ -2316,7 +2466,8 @@ defmodule Commonplace.MUD.Verbs do
     end
   end
 
-  defp do_rename(%Parser.Command{argv: argv}, _ctx) when length(argv) < 2, do: {:error, "Try: @name <target> <new name>"}
+  defp do_rename(%Parser.Command{argv: argv}, _ctx) when length(argv) < 2,
+    do: {:error, "Try: @name <target> <new name>"}
 
   # CX-8iyv: same greedy target/rest split as `do_desc/2` — lets both
   # the target ("silver coin") and the new name be multi-word.
@@ -2351,14 +2502,25 @@ defmodule Commonplace.MUD.Verbs do
   end
 
   defp add_object_alias(target, new_alias, ctx) do
-    case Resolver.find_entry_in_dirs(target, [ctx.current_room_uuid, ctx.inventory_uuid], ctx.store) do
+    case Resolver.find_entry_in_dirs(
+           target,
+           [ctx.current_room_uuid, ctx.inventory_uuid],
+           ctx.store
+         ) do
       {:ok, entry} ->
         if String.ends_with?(entry.name, ".obj") do
           case Schemas.load_object(entry.node_id, ctx.store) do
             {:ok, %Object{aliases: aliases}} ->
               new_aliases = if new_alias in aliases, do: aliases, else: aliases ++ [new_alias]
 
-              case World.set_meta(entry.node_id, Schemas.object_filename(), "aliases", new_aliases, ctx.store, write_opts(ctx)) do
+              case World.set_meta(
+                     entry.node_id,
+                     Schemas.object_filename(),
+                     "aliases",
+                     new_aliases,
+                     ctx.store,
+                     write_opts(ctx)
+                   ) do
                 :ok -> {:reply, "#{target} can now also be called \"#{new_alias}\"."}
                 {:error, reason} -> {:error, commit_error_reply(reason)}
               end
@@ -2382,7 +2544,14 @@ defmodule Commonplace.MUD.Verbs do
   defp update_meta(target, key, value, ctx) do
     cond do
       target in ["here", "room"] ->
-        case World.set_meta(ctx.current_room_uuid, Schemas.room_filename(), key, value, ctx.store, write_opts(ctx)) do
+        case World.set_meta(
+               ctx.current_room_uuid,
+               Schemas.room_filename(),
+               key,
+               value,
+               ctx.store,
+               write_opts(ctx)
+             ) do
           :ok -> {:reply, "Updated room #{key}."}
           {:error, reason} -> {:error, commit_error_reply(reason)}
         end
@@ -2395,7 +2564,11 @@ defmodule Commonplace.MUD.Verbs do
         # above — the target label this function receives may itself have
         # resolved via inventory, so re-resolving room-only here would
         # silently re-lose it).
-        case Resolver.find_entry_in_dirs(target, [ctx.inventory_uuid, ctx.current_room_uuid], ctx.store) do
+        case Resolver.find_entry_in_dirs(
+               target,
+               [ctx.inventory_uuid, ctx.current_room_uuid],
+               ctx.store
+             ) do
           {:ok, entry} ->
             filename =
               cond do
@@ -2442,7 +2615,13 @@ defmodule Commonplace.MUD.Verbs do
     {metadata, commit_opts} =
       SignedWrite.opts_for(parent_uuid, Keyword.put(write_opts(ctx), :store, store))
 
-    case CommitStoreClient.create_chained_commit(store, parent_uuid, update, metadata, commit_opts) do
+    case CommitStoreClient.create_chained_commit(
+           store,
+           parent_uuid,
+           update,
+           metadata,
+           commit_opts
+         ) do
       {:error, _} = err -> err
       _commit -> :ok
     end
@@ -2453,7 +2632,9 @@ defmodule Commonplace.MUD.Verbs do
   # expected/common case under `local_write_gate: :enforce`; everything
   # else (namespace rejection, store errors, etc.) gets a generic
   # failure message — never silence, never false success.
-  defp commit_error_reply({:trust_rejected, _reason}), do: "You don't have permission to build here."
+  defp commit_error_reply({:trust_rejected, _reason}),
+    do: "You don't have permission to build here."
+
   # CX-4u03 A3: the ChildMutation link pre-check denies an unauthorized build
   # (a player building outside their home subtree, or with no build cert) with
   # :link_unauthorized — the same "you can't build here" class as a gate reject.
@@ -2519,7 +2700,8 @@ defmodule Commonplace.MUD.Verbs do
   # resolved at session bootstrap (nil for a non-durable session → the re-anchor
   # guard fails closed). NEVER a client-supplied value — see
   # `HolderMove.own_inventory_reanchor?`'s load-bearing note.
-  defp possession_opts(ctx), do: Keyword.put(write_opts(ctx), :invoker_inventory_uuid, Map.get(ctx, :inventory_uuid))
+  defp possession_opts(ctx),
+    do: Keyword.put(write_opts(ctx), :invoker_inventory_uuid, Map.get(ctx, :inventory_uuid))
 
   # ---- Scope resolution ----
   #

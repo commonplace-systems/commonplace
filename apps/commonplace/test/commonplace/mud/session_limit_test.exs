@@ -26,7 +26,14 @@ defmodule Commonplace.MUD.SessionLimitTest do
 
   test "admit under caps returns {:ok, ref}; attach binds; count reflects it" do
     assert {:ok, ref} = SessionLimit.admit("alice")
-    pid = spawn(fn -> receive do :stop -> :ok end end)
+
+    pid =
+      spawn(fn ->
+        receive do
+          :stop -> :ok
+        end
+      end)
+
     assert :ok = SessionLimit.attach(ref, pid)
 
     assert %{total: total, by_principal: %{"alice" => 1}} = SessionLimit.count()
@@ -62,7 +69,14 @@ defmodule Commonplace.MUD.SessionLimitTest do
 
   test "auto-release on session death frees the slot" do
     assert {:ok, ref} = SessionLimit.admit("dana")
-    pid = spawn(fn -> receive do :stop -> :ok end end)
+
+    pid =
+      spawn(fn ->
+        receive do
+          :stop -> :ok
+        end
+      end)
+
     assert :ok = SessionLimit.attach(ref, pid)
 
     before = SessionLimit.count().total

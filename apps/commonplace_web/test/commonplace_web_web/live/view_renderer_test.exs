@@ -57,7 +57,9 @@ defmodule CommonplaceWebWeb.ViewRendererTest do
 
     test "renders list as ul with list items" do
       html =
-        render(~s(<view><list><entity kind="x" name="a"/><entity kind="x" name="b"/></list></view>))
+        render(
+          ~s(<view><list><entity kind="x" name="a"/><entity kind="x" name="b"/></list></view>)
+        )
 
       assert html =~ "<ul"
       assert html =~ "<li"
@@ -80,9 +82,7 @@ defmodule CommonplaceWebWeb.ViewRendererTest do
 
     test "renders action with target attribute as phx-value-target" do
       html =
-        render(
-          ~s(<view><action name="edit" label="Edit" target="section-1"/></view>)
-        )
+        render(~s(<view><action name="edit" label="Edit" target="section-1"/></view>))
 
       assert html =~ ~s(phx-value-action="edit")
       assert html =~ ~s(phx-value-target="section-1")
@@ -102,9 +102,7 @@ defmodule CommonplaceWebWeb.ViewRendererTest do
 
     test "renders provenance as a byline" do
       html =
-        render(
-          ~s(<view><provenance signer="alice@abc" ts="2026-04-09" commit="c1"/></view>)
-        )
+        render(~s(<view><provenance signer="alice@abc" ts="2026-04-09" commit="c1"/></view>))
 
       assert html =~ "cp-provenance"
       assert html =~ "alice@abc"
@@ -201,6 +199,7 @@ defmodule CommonplaceWebWeb.ViewRendererTest do
   describe "render_view/2 — kind-aware entity CSS class (CX-lok1)" do
     test "<entity kind='message'> renders with entity--message class" do
       html = render(~s(<view><entity kind="message" id="m1"/></view>))
+
       assert html =~ ~s(class="cp-entity entity--message),
              "kind-aware class missing from <entity kind='message'>"
     end
@@ -215,6 +214,7 @@ defmodule CommonplaceWebWeb.ViewRendererTest do
     test "<entity> with no kind falls back to generic cp-entity" do
       html = render(~s(<view><entity name="x"/></view>))
       assert html =~ "cp-entity"
+
       refute html =~ "entity--",
              "entity-- modifier should not appear when kind is absent"
     end
@@ -229,6 +229,7 @@ defmodule CommonplaceWebWeb.ViewRendererTest do
              "args present must emit phx-submit, not phx-click"
 
       assert html =~ ~s(phx-value-action="post_message")
+
       assert html =~ ~s(<input type="text" name="text"),
              "arg name='text' must produce <input name='text'>"
 
@@ -252,6 +253,7 @@ defmodule CommonplaceWebWeb.ViewRendererTest do
 
       assert html =~ "<button"
       assert html =~ ~s(phx-click="view_action")
+
       refute html =~ ~s(phx-submit="view_action"),
              "no args means button, not form"
     end

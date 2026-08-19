@@ -49,7 +49,9 @@ defmodule Commonplace.Bd.WriteGuardImportBypassTest do
   alias Yelixer.Encoding
 
   setup do
-    dir = Path.join(System.tmp_dir!(), "cp_bd_write_guard_import_bypass_#{:rand.uniform(1_000_000)}")
+    dir =
+      Path.join(System.tmp_dir!(), "cp_bd_write_guard_import_bypass_#{:rand.uniform(1_000_000)}")
+
     File.mkdir_p!(dir)
     store = :"commit_store_import_bypass_#{:rand.uniform(1_000_000)}"
     start_supervised!({CommitStore, data_dir: dir, name: store})
@@ -246,7 +248,10 @@ defmodule Commonplace.Bd.WriteGuardImportBypassTest do
       # point is to see whether `MergeAdopter.maybe_adopt/2` will do
       # that instead, unchecked.
       violating_b = %{b | needs: cyclic_needs}
-      {merge_commit, _meta_uuid} = build_violating_merge_commit(ctx.store, ctx.root, b.id, violating_b)
+
+      {merge_commit, _meta_uuid} =
+        build_violating_merge_commit(ctx.store, ctx.root, b.id, violating_b)
+
       import_result = CommitStore.import_commit(ctx.store, merge_commit)
       assert import_result in [:ok, :already_exists]
 

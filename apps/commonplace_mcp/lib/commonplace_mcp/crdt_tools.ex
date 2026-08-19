@@ -154,7 +154,8 @@ defmodule Commonplace.MCP.CrdtTools do
 
         result =
           await_reply(topic, correlation_id, success_type, error_type, timeout_ms,
-            tool_name: name, target_path: target_path
+            tool_name: name,
+            target_path: target_path
           )
 
         {:ok, result}
@@ -173,10 +174,12 @@ defmodule Commonplace.MCP.CrdtTools do
     remaining = max(deadline - System.monotonic_time(:millisecond), 0)
 
     receive do
-      {:magenta, ^topic, %Magenta{type: ^success_type, payload: %{"correlation_id" => ^correlation_id} = payload}} ->
+      {:magenta, ^topic,
+       %Magenta{type: ^success_type, payload: %{"correlation_id" => ^correlation_id} = payload}} ->
         wrap_success(payload)
 
-      {:magenta, ^topic, %Magenta{type: ^error_type, payload: %{"correlation_id" => ^correlation_id} = payload}} ->
+      {:magenta, ^topic,
+       %Magenta{type: ^error_type, payload: %{"correlation_id" => ^correlation_id} = payload}} ->
         wrap_error(payload)
 
       {:magenta, ^topic, %Magenta{}} ->

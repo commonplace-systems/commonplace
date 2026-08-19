@@ -48,7 +48,9 @@ defmodule Commonplace.MUD.PlayerSessionIdentityTest do
        pending_imports_name: :"mi_pi_#{n}"}
     )
 
-    secrets_dir = Path.join(System.tmp_dir!(), "cp_mud_identity_secrets_#{:rand.uniform(1_000_000_000)}")
+    secrets_dir =
+      Path.join(System.tmp_dir!(), "cp_mud_identity_secrets_#{:rand.uniform(1_000_000_000)}")
+
     File.mkdir_p!(secrets_dir)
     secrets_name = :"mi_secrets_#{n}"
     {:ok, secrets_pid} = SecretStore.start_link(data_dir: secrets_dir, name: secrets_name)
@@ -63,7 +65,11 @@ defmodule Commonplace.MUD.PlayerSessionIdentityTest do
     end
 
     {:ok, bursar_pid} =
-      Commonplace.Green.Bursar.start_link(root_uuid: UUID.uuid4(), store: name, sweep_interval: 60_000)
+      Commonplace.Green.Bursar.start_link(
+        root_uuid: UUID.uuid4(),
+        store: name,
+        sweep_interval: 60_000
+      )
 
     old_trust = Application.get_env(:commonplace, :trust)
     old_knob = Application.get_env(:commonplace, :local_write_gate)
@@ -79,15 +85,33 @@ defmodule Commonplace.MUD.PlayerSessionIdentityTest do
         v -> Application.put_env(:commonplace, :local_write_gate, v)
       end
 
-      if Process.alive?(secrets_pid), do: (try do GenServer.stop(secrets_pid) catch (:exit, _ -> :ok) end)
-      if Process.alive?(bursar_pid), do: (try do GenServer.stop(bursar_pid) catch (:exit, _ -> :ok) end)
+      if Process.alive?(secrets_pid),
+        do:
+          (try do
+             GenServer.stop(secrets_pid)
+           catch
+             (:exit, _ -> :ok)
+           end)
+
+      if Process.alive?(bursar_pid),
+        do:
+          (try do
+             GenServer.stop(bursar_pid)
+           catch
+             (:exit, _ -> :ok)
+           end)
+
       File.rm_rf!(dir)
       File.rm_rf!(secrets_dir)
     end)
 
     {root_pub, root_priv} = Signing.generate_keypair()
 
-    root_ctx = %SigningContext{identity_uuid: "root", private_key: root_priv, public_key: root_pub}
+    root_ctx = %SigningContext{
+      identity_uuid: "root",
+      private_key: root_priv,
+      public_key: root_pub
+    }
 
     Application.put_env(:commonplace, :trust, %{
       accept_unsigned: false,
@@ -113,16 +137,38 @@ defmodule Commonplace.MUD.PlayerSessionIdentityTest do
     genesis(store: name, uuid: root_uuid, schema_doc: Schema.new_schema(), ctx: root_ctx)
 
     {:ok, x_uuid, x_pub} =
-      Identity.register_player("x", identity_root_uuid, name, signing_context: root_ctx, secret_store: secrets_name)
+      Identity.register_player("x", identity_root_uuid, name,
+        signing_context: root_ctx,
+        secret_store: secrets_name
+      )
 
     {:ok, y_uuid, y_pub} =
-      Identity.register_player("y", identity_root_uuid, name, signing_context: root_ctx, secret_store: secrets_name)
+      Identity.register_player("y", identity_root_uuid, name,
+        signing_context: root_ctx,
+        secret_store: secrets_name
+      )
 
     # --- players/x, players/y directories (root-signed) ---
     players_dir = new_dir(name, root_ctx)
-    x_dir = new_dir_with_meta(name, root_ctx, Commonplace.MUD.Schemas.player_filename(), player_json("x"))
+
+    x_dir =
+      new_dir_with_meta(
+        name,
+        root_ctx,
+        Commonplace.MUD.Schemas.player_filename(),
+        player_json("x")
+      )
+
     x_inv = new_dir(name, root_ctx)
-    y_dir = new_dir_with_meta(name, root_ctx, Commonplace.MUD.Schemas.player_filename(), player_json("y"))
+
+    y_dir =
+      new_dir_with_meta(
+        name,
+        root_ctx,
+        Commonplace.MUD.Schemas.player_filename(),
+        player_json("y")
+      )
+
     y_inv = new_dir(name, root_ctx)
 
     add_directory(name, root_ctx, x_dir, "inventory", x_inv)
@@ -156,7 +202,9 @@ defmodule Commonplace.MUD.PlayerSessionIdentityTest do
 
     # X holds a section cert over room1's dir AND meta doc.
     assert {:ok, cap} =
-             Sections.issue_section(root_ctx, {x_uuid, x_pub}, [room1_dir, room1_meta], store: name)
+             Sections.issue_section(root_ctx, {x_uuid, x_pub}, [room1_dir, room1_meta],
+               store: name
+             )
 
     %{
       store: name,
@@ -292,7 +340,13 @@ defmodule Commonplace.MUD.PlayerSessionIdentityTest do
   # real exit as a navigation failure. And a move onto a NON-exit must still
   # report the honest dead-end, so the player can tell the two apart.
   test "a denied move on a REAL exit reports permission, not a fake dead-end (and a non-exit still reads as a dead-end)",
-       %{store: store, root_uuid: root_uuid, secrets: secrets, y_uuid: y_uuid, room2_dir: room2_dir} do
+       %{
+         store: store,
+         root_uuid: root_uuid,
+         secrets: secrets,
+         y_uuid: y_uuid,
+         room2_dir: room2_dir
+       } do
     {:ok, y_pid} =
       PlayerSession.start_link(
         player_name: "y",
@@ -331,7 +385,10 @@ defmodule Commonplace.MUD.PlayerSessionIdentityTest do
 
   defp genesis(store: store, uuid: uuid, schema_doc: doc, ctx: ctx) do
     update = Yelixer.Encoding.encode_update(doc)
-    assert %Commonplace.Store.Commit{} = CommitStore.create_commit(store, uuid, update, nil, %{}, signing_context: ctx)
+
+    assert %Commonplace.Store.Commit{} =
+             CommitStore.create_commit(store, uuid, update, nil, %{}, signing_context: ctx)
+
     uuid
   end
 
@@ -352,7 +409,10 @@ defmodule Commonplace.MUD.PlayerSessionIdentityTest do
     doc = Yelixer.Doc.new() |> ContentType.create(:text, "meta")
     doc = ContentType.insert_text(doc, 0, text)
     update = Yelixer.Encoding.encode_update(doc)
-    assert %Commonplace.Store.Commit{} = CommitStore.create_commit(store, uuid, update, nil, %{}, signing_context: ctx)
+
+    assert %Commonplace.Store.Commit{} =
+             CommitStore.create_commit(store, uuid, update, nil, %{}, signing_context: ctx)
+
     uuid
   end
 
@@ -367,9 +427,15 @@ defmodule Commonplace.MUD.PlayerSessionIdentityTest do
     doc = ContentType.set_key(doc, "name", name)
     doc = ContentType.set_key(doc, "type", type_ext)
     doc = ContentType.set_key(doc, "status", "starting")
-    doc = if bound_identity, do: ContentType.set_key(doc, "bound_identity", bound_identity), else: doc
+
+    doc =
+      if bound_identity, do: ContentType.set_key(doc, "bound_identity", bound_identity), else: doc
+
     update = Yelixer.Encoding.encode_update(doc)
-    assert %Commonplace.Store.Commit{} = CommitStore.create_commit(store, uuid, update, nil, %{}, signing_context: ctx)
+
+    assert %Commonplace.Store.Commit{} =
+             CommitStore.create_commit(store, uuid, update, nil, %{}, signing_context: ctx)
+
     uuid
   end
 
@@ -379,7 +445,9 @@ defmodule Commonplace.MUD.PlayerSessionIdentityTest do
     update = Yelixer.Encoding.encode_update(schema)
 
     assert %Commonplace.Store.Commit{} =
-             CommitStoreClient.create_chained_commit(store, parent_uuid, update, %{}, signing_context: ctx)
+             CommitStoreClient.create_chained_commit(store, parent_uuid, update, %{},
+               signing_context: ctx
+             )
 
     :ok
   end
@@ -390,12 +458,15 @@ defmodule Commonplace.MUD.PlayerSessionIdentityTest do
     update = Yelixer.Encoding.encode_update(schema)
 
     assert %Commonplace.Store.Commit{} =
-             CommitStoreClient.create_chained_commit(store, parent_uuid, update, %{}, signing_context: ctx)
+             CommitStoreClient.create_chained_commit(store, parent_uuid, update, %{},
+               signing_context: ctx
+             )
 
     :ok
   end
 
-  defp player_json(name), do: Jason.encode!(%{"kind" => "player", "name" => name, "title" => name, "description" => ""})
+  defp player_json(name),
+    do: Jason.encode!(%{"kind" => "player", "name" => name, "title" => name, "description" => ""})
 
   defp room_json(name, exits),
     do: Jason.encode!(%{"kind" => "room", "name" => name, "description" => "", "exits" => exits})

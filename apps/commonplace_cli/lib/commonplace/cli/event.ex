@@ -16,9 +16,12 @@ defmodule Commonplace.CLI.Event do
         list_event_logs(data_dir)
 
       [uuid | rest] ->
-        {opts, _} = OptionParser.parse(rest,
-          strict: [last: :integer, json: :boolean],
-          aliases: [n: :last])
+        {opts, _} =
+          OptionParser.parse(rest,
+            strict: [last: :integer, json: :boolean],
+            aliases: [n: :last]
+          )
+
         read_event_log(uuid, opts)
     end
   end
@@ -32,9 +35,11 @@ defmodule Commonplace.CLI.Event do
           {:ok, %{"processes" => processes}} ->
             Enum.each(processes, fn {name, info} ->
               IO.puts("#{name}")
+
               if info["sandbox_dir"] do
                 IO.puts("  sandbox: #{info["sandbox_dir"]}")
               end
+
               if info["os_pid"] do
                 IO.puts("  pid: #{info["os_pid"]}")
               end
@@ -54,11 +59,12 @@ defmodule Commonplace.CLI.Event do
     log = load_red_log(uuid)
     events = RedLog.read(log)
 
-    events = if opts[:last] do
-      Enum.take(events, -opts[:last])
-    else
-      events
-    end
+    events =
+      if opts[:last] do
+        Enum.take(events, -opts[:last])
+      else
+        events
+      end
 
     if opts[:json] do
       IO.puts(Jason.encode!(events, pretty: true))
@@ -74,10 +80,12 @@ defmodule Commonplace.CLI.Event do
 
   defp format_event(%{"type" => type, "line" => line, "timestamp" => ts}) do
     # Compact timestamp: just time portion
-    time = case String.split(ts, "T") do
-      [_, time_part] -> String.replace(time_part, ~r/\.\d+Z$/, "")
-      _ -> ts
-    end
+    time =
+      case String.split(ts, "T") do
+        [_, time_part] -> String.replace(time_part, ~r/\.\d+Z$/, "")
+        _ -> ts
+      end
+
     prefix = if type == "stderr", do: "ERR", else: "   "
     IO.puts("[#{time}] #{prefix} #{line}")
   end

@@ -47,7 +47,9 @@ defmodule Commonplace.CLI.UuidTest do
 
     test "returns error for missing path", %{root: root, store: store} do
       loader = &load_schema(&1, store)
-      assert {:error, {:not_found, "missing.txt"}} = Walk.resolve_path(root, "missing.txt", loader)
+
+      assert {:error, {:not_found, "missing.txt"}} =
+               Walk.resolve_path(root, "missing.txt", loader)
     end
   end
 

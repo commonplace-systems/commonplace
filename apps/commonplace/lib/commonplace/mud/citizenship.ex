@@ -97,7 +97,8 @@ defmodule Commonplace.MUD.Citizenship do
   @spec ensure(String.t(), binary(), String.t(), String.t(), module()) ::
           {:ok, citizenship()} | {:error, term()}
   def ensure(identity_uuid, pub, name, root_uuid, store)
-      when is_binary(identity_uuid) and is_binary(pub) and is_binary(name) and is_binary(root_uuid) do
+      when is_binary(identity_uuid) and is_binary(pub) and is_binary(name) and
+             is_binary(root_uuid) do
     starter_cids = issue_presence_starter_cert(identity_uuid, pub, store)
 
     with {:ok, home} <- ensure_home(identity_uuid, name, root_uuid, store) do
@@ -117,7 +118,8 @@ defmodule Commonplace.MUD.Citizenship do
 
       {:ok,
        %{
-         cert_cids: Enum.uniq(Enum.reject(starter_cids ++ zone_cids ++ authoring_cids, &is_nil/1)),
+         cert_cids:
+           Enum.uniq(Enum.reject(starter_cids ++ zone_cids ++ authoring_cids, &is_nil/1)),
          home_room_uuid: home.home_room_uuid,
          home_room_meta_uuid: home.home_room_meta_uuid
        }}
@@ -295,7 +297,8 @@ defmodule Commonplace.MUD.Citizenship do
                ensure_home_room_meta(identity_uuid, home_uuid, name, start_room_uuid, write_opts),
              {:ok, inv_uuid} <- ensure_inventory(home_uuid, write_opts),
              :ok <- ensure_home_zone_stamp(home_uuid, write_opts) do
-          {:ok, %{home_room_uuid: home_uuid, home_room_meta_uuid: meta_uuid, inventory_uuid: inv_uuid}}
+          {:ok,
+           %{home_room_uuid: home_uuid, home_room_meta_uuid: meta_uuid, inventory_uuid: inv_uuid}}
         end
 
       :error ->
@@ -307,11 +310,18 @@ defmodule Commonplace.MUD.Citizenship do
         # AND everything they build under it. create_zone_root also links the home
         # under players/<name> (node-signed), so no separate add_dir_entry.
         with {:ok, home_uuid} <-
-               ChildMutation.create_zone_root(players_dir_uuid, name, Schemas.room_filename(), room_json, store),
+               ChildMutation.create_zone_root(
+                 players_dir_uuid,
+                 name,
+                 Schemas.room_filename(),
+                 room_json,
+                 store
+               ),
              {:ok, meta_uuid} <- room_meta_uuid(home_uuid, store),
              {:ok, inv_uuid} <- Schemas.create_dir_with_meta(nil, nil, store, write_opts),
              :ok <- add_dir_entry(home_uuid, @inventory_dir, inv_uuid, write_opts) do
-          {:ok, %{home_room_uuid: home_uuid, home_room_meta_uuid: meta_uuid, inventory_uuid: inv_uuid}}
+          {:ok,
+           %{home_room_uuid: home_uuid, home_room_meta_uuid: meta_uuid, inventory_uuid: inv_uuid}}
         end
     end
   end
@@ -327,7 +337,14 @@ defmodule Commonplace.MUD.Citizenship do
     if Commonplace.Trust.doc_zone(home_uuid, store) == home_uuid do
       :ok
     else
-      case World.set_meta(home_uuid, Schemas.room_filename(), "zone", home_uuid, store, write_opts) do
+      case World.set_meta(
+             home_uuid,
+             Schemas.room_filename(),
+             "zone",
+             home_uuid,
+             store,
+             write_opts
+           ) do
         :ok -> :ok
         {:error, _} = err -> err
       end
@@ -345,7 +362,8 @@ defmodule Commonplace.MUD.Citizenship do
       :error ->
         # Legacy home dir with no room meta — add one node-signed, then
         # read its uuid back.
-        with {:ok, meta_uuid} <- create_room_meta(identity_uuid, home_uuid, name, start_room_uuid, write_opts) do
+        with {:ok, meta_uuid} <-
+               create_room_meta(identity_uuid, home_uuid, name, start_room_uuid, write_opts) do
           {:ok, meta_uuid}
         end
     end
@@ -393,7 +411,9 @@ defmodule Commonplace.MUD.Citizenship do
   # return shape has no room for those fields at all).
   defp home_room_json(identity_uuid, name, start_room_uuid, store) do
     exits = if is_binary(start_room_uuid), do: %{"out" => start_room_uuid}, else: %{}
-    %{name: rendered_name, description: rendered_description} = HomeTemplate.render(name, is_binary(start_room_uuid), store)
+
+    %{name: rendered_name, description: rendered_description} =
+      HomeTemplate.render(name, is_binary(start_room_uuid), store)
 
     Schemas.encode_room(%Room{
       name: rendered_name,

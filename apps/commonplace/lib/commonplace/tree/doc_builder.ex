@@ -455,7 +455,8 @@ defmodule Commonplace.Tree.DocBuilder do
   defp scan_for(_store, nil, _target, _walked, _limit), do: nil
 
   defp scan_for(store, from_id, target, walked, limit) do
-    page = CommitStoreClient.commit_log_from(store, from_id, limit: min(@scan_page, limit - walked))
+    page =
+      CommitStoreClient.commit_log_from(store, from_id, limit: min(@scan_page, limit - walked))
 
     case Enum.find_index(page, &(&1.id == target)) do
       nil ->

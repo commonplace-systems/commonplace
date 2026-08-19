@@ -20,7 +20,14 @@ defmodule Commonplace.Crypto.AgentKeysTest do
     {:ok, pid} = SecretStore.start_link(data_dir: dir, name: name)
 
     on_exit(fn ->
-      if Process.alive?(pid), do: (try do GenServer.stop(pid) catch (:exit, _ -> :ok) end)
+      if Process.alive?(pid),
+        do:
+          (try do
+             GenServer.stop(pid)
+           catch
+             (:exit, _ -> :ok)
+           end)
+
       File.rm_rf!(dir)
     end)
 
@@ -47,7 +54,9 @@ defmodule Commonplace.Crypto.AgentKeysTest do
     assert {:ok, _priv} = Base.decode64(enc_priv)
   end
 
-  test "signing_context_for/2 returns a SigningContext matching the minted key", %{secrets: secrets} do
+  test "signing_context_for/2 returns a SigningContext matching the minted key", %{
+    secrets: secrets
+  } do
     uuid = UUID.uuid4()
     {:ok, pub} = AgentKeys.ensure(uuid, secrets)
 
@@ -98,7 +107,16 @@ defmodule Commonplace.Crypto.AgentKeysTest do
     # CubDB releases its exclusive file lock asynchronously after the
     # owning SecretStore stops — retry briefly until the reopen sticks.
     pid2 = restart_secret_store(dir, name2, 50)
-    on_exit(fn -> if Process.alive?(pid2), do: (try do GenServer.stop(pid2) catch (:exit, _ -> :ok) end) end)
+
+    on_exit(fn ->
+      if Process.alive?(pid2),
+        do:
+          (try do
+             GenServer.stop(pid2)
+           catch
+             (:exit, _ -> :ok)
+           end)
+    end)
 
     assert {:ok, %SigningContext{public_key: ^pub}} =
              AgentKeys.signing_context_for(uuid, name2)

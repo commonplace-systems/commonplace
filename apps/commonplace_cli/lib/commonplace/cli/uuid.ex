@@ -38,5 +38,4 @@ defmodule Commonplace.CLI.Uuid do
         end
     end
   end
-
 end

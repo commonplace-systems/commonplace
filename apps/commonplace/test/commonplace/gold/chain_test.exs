@@ -184,6 +184,7 @@ defmodule Commonplace.Gold.ChainTest do
       CommitStore.create_commit(CommitStore, uuid, "data", nil)
 
       result = Chain.attest(uuid, CommitStoreClient)
+
       assert match?({:ok, _att}, result) or match?({:error, _}, result),
              "should not crash with :no_process; got: #{inspect(result)}"
     end

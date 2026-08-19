@@ -52,10 +52,22 @@ defmodule Commonplace.Trust.VerifyChainRevocationTest do
     }
   end
 
-  defp claim(verbs, docs), do: %{verbs: verbs, scope: {:docs, docs}, caveats: %{not_before: nil, not_after: nil}}
+  defp claim(verbs, docs),
+    do: %{verbs: verbs, scope: {:docs, docs}, caveats: %{not_before: nil, not_after: nil}}
 
-  defp put_cap(store, cap), do: (:ok = CommitStore.store_capability(store, cap); cap)
-  defp put_rev(store, rev), do: (:ok = CommitStore.store_revocation(store, rev); rev)
+  defp put_cap(store, cap),
+    do:
+      (
+        :ok = CommitStore.store_capability(store, cap)
+        cap
+      )
+
+  defp put_rev(store, rev),
+    do:
+      (
+        :ok = CommitStore.store_revocation(store, rev)
+        rev
+      )
 
   # A 2-link chain: root --delegate--> alice --delegate--> bob (leaf).
   defp two_link_chain(store) do
@@ -66,7 +78,9 @@ defmodule Commonplace.Trust.VerifyChainRevocationTest do
     {:ok, parent} = Capability.issue(root.ctx, alice.keyed, claim([:write, :delegate], ["d1"]))
     put_cap(store, parent)
 
-    {:ok, leaf} = Capability.issue(alice.ctx, bob.keyed, claim([:write], ["d1"]), parent.id, parent: parent)
+    {:ok, leaf} =
+      Capability.issue(alice.ctx, bob.keyed, claim([:write], ["d1"]), parent.id, parent: parent)
+
     put_cap(store, leaf)
 
     %{root: root, alice: alice, bob: bob, parent: parent, leaf: leaf}
@@ -88,7 +102,9 @@ defmodule Commonplace.Trust.VerifyChainRevocationTest do
     assert {:error, :revoked} = VerifyChain.verify_chain(leaf.id, MapSet.new([root.pub]), store)
   end
 
-  test "authority matrix: the root issuer (ancestor delegator) can revoke the leaf", %{store: store} do
+  test "authority matrix: the root issuer (ancestor delegator) can revoke the leaf", %{
+    store: store
+  } do
     %{root: root, leaf: leaf} = two_link_chain(store)
 
     {:ok, rev} = Capability.revoke(root.ctx, leaf.id)
@@ -106,7 +122,9 @@ defmodule Commonplace.Trust.VerifyChainRevocationTest do
     assert {:error, :revoked} = VerifyChain.verify_chain(leaf.id, MapSet.new([root.pub]), store)
   end
 
-  test "authority matrix: a stranger's revocation is inert, with a telemetry counter", %{store: store} do
+  test "authority matrix: a stranger's revocation is inert, with a telemetry counter", %{
+    store: store
+  } do
     %{root: root, leaf: leaf} = two_link_chain(store)
     stranger = ident("stranger")
 
@@ -186,7 +204,8 @@ defmodule Commonplace.Trust.VerifyChainRevocationTest do
     # VerifyChain now has the full chain in hand and re-validates
     # authority at THIS verify — root is the cert's own issuer, an
     # authorized revoker. The early-arriving revocation must still deny.
-    assert {:error, :revoked} = VerifyChain.verify_chain(signed_cert.id, MapSet.new([root.pub]), store)
+    assert {:error, :revoked} =
+             VerifyChain.verify_chain(signed_cert.id, MapSet.new([root.pub]), store)
   end
 
   test "store-threading: revocation check on a NAMED (non-default) store", %{store: store} do

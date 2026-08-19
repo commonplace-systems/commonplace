@@ -26,7 +26,17 @@ defmodule Commonplace.CommandRouterTest do
   defp start_router(ctx, name \\ nil) do
     name = name || :"cmdrouter_#{:rand.uniform(1_000_000)}"
     {:ok, pid} = CommandRouter.start_link(store: ctx.store, name: name)
-    on_exit(fn -> if Process.alive?(pid), do: (try do GenServer.stop(pid) catch (:exit, _ -> :ok) end) end)
+
+    on_exit(fn ->
+      if Process.alive?(pid),
+        do:
+          (try do
+             GenServer.stop(pid)
+           catch
+             (:exit, _ -> :ok)
+           end)
+    end)
+
     {pid, name}
   end
 
@@ -55,12 +65,18 @@ defmodule Commonplace.CommandRouterTest do
 
       assert {:ok, new_uuid} = CommandRouter.fork(name, ctx.root)
 
-      assert_receive {:magenta, @command_topic, %Magenta{type: "command.initiated", payload: init}}, 500
+      assert_receive {:magenta, @command_topic,
+                      %Magenta{type: "command.initiated", payload: init}},
+                     500
+
       assert init["verb"] == "fork"
       assert init["args"]["source_uuid"] == ctx.root
       assert is_binary(init["command_id"])
 
-      assert_receive {:magenta, @command_topic, %Magenta{type: "command.completed", payload: done}}, 500
+      assert_receive {:magenta, @command_topic,
+                      %Magenta{type: "command.completed", payload: done}},
+                     500
+
       assert done["verb"] == "fork"
       assert done["command_id"] == init["command_id"]
       assert done["result"]["new_uuid"] == new_uuid
@@ -95,6 +111,7 @@ defmodule Commonplace.CommandRouterTest do
       assert {:ok, _new_uuid} = CommandRouter.fork(name, ctx.root)
 
       state = :sys.get_state(pid)
+
       refute MapSet.member?(state.in_flight_forks, ctx.root),
              "in_flight_forks should be empty after fork completion, got: #{inspect(state.in_flight_forks)}"
     end
@@ -136,7 +153,10 @@ defmodule Commonplace.CommandRouterTest do
       old_knob = Application.get_env(:commonplace, :local_write_gate)
 
       node_dir =
-        Path.join(System.tmp_dir!(), "cp_cmdrouter_fork_test_node_#{:rand.uniform(1_000_000_000)}")
+        Path.join(
+          System.tmp_dir!(),
+          "cp_cmdrouter_fork_test_node_#{:rand.uniform(1_000_000_000)}"
+        )
 
       File.mkdir_p!(node_dir)
       Application.put_env(:commonplace, :data_dir, node_dir)
@@ -225,12 +245,18 @@ defmodule Commonplace.CommandRouterTest do
 
       assert {:ok, _} = CommandRouter.merge(name, source, target)
 
-      assert_receive {:magenta, @command_topic, %Magenta{type: "command.initiated", payload: init}}, 500
+      assert_receive {:magenta, @command_topic,
+                      %Magenta{type: "command.initiated", payload: init}},
+                     500
+
       assert init["verb"] == "merge"
       assert init["args"]["source_uuid"] == source
       assert init["args"]["target_uuid"] == target
 
-      assert_receive {:magenta, @command_topic, %Magenta{type: "command.completed", payload: done}}, 500
+      assert_receive {:magenta, @command_topic,
+                      %Magenta{type: "command.completed", payload: done}},
+                     500
+
       assert done["verb"] == "merge"
     end
   end
@@ -261,12 +287,18 @@ defmodule Commonplace.CommandRouterTest do
 
       assert {:ok, _} = CommandRouter.write(name, uuid, "hello world")
 
-      assert_receive {:magenta, @command_topic, %Magenta{type: "command.initiated", payload: init}}, 500
+      assert_receive {:magenta, @command_topic,
+                      %Magenta{type: "command.initiated", payload: init}},
+                     500
+
       assert init["verb"] == "write"
       assert init["args"]["uuid"] == uuid
       assert init["args"]["new_bytes"] == byte_size("hello world")
 
-      assert_receive {:magenta, @command_topic, %Magenta{type: "command.completed", payload: done}}, 500
+      assert_receive {:magenta, @command_topic,
+                      %Magenta{type: "command.completed", payload: done}},
+                     500
+
       assert done["result"]["old_bytes"] == 5
       assert done["result"]["new_bytes"] == 11
     end
@@ -524,6 +556,7 @@ defmodule Commonplace.CommandRouterTest do
       assert {:ok, _} = CommandRouter.write(name, uuid, "seed plus A1 plus B1 plus A2")
 
       {:ok, final_doc} = Commonplace.Tree.DocBuilder.reconstruct_snapshot(ctx.store, uuid)
+
       assert Commonplace.Document.ContentType.get_content(final_doc) ==
                "seed plus A1 plus B1 plus A2"
 
@@ -621,7 +654,10 @@ defmodule Commonplace.CommandRouterTest do
 
       assert {:ok, _} = CommandRouter.branch_activate(name, ctx.root, "feature-x")
 
-      assert_receive {:magenta, @command_topic, %Magenta{type: "command.initiated", payload: init}}, 500
+      assert_receive {:magenta, @command_topic,
+                      %Magenta{type: "command.initiated", payload: init}},
+                     500
+
       assert init["verb"] == "branch_activate"
       assert init["args"]["parent_uuid"] == ctx.root
       assert init["args"]["name"] == "feature-x"
@@ -647,7 +683,10 @@ defmodule Commonplace.CommandRouterTest do
 
       assert {:ok, _} = CommandRouter.gc(name, ctx.root)
 
-      assert_receive {:magenta, @command_topic, %Magenta{type: "command.initiated", payload: init}}, 500
+      assert_receive {:magenta, @command_topic,
+                      %Magenta{type: "command.initiated", payload: init}},
+                     500
+
       assert init["verb"] == "gc"
       assert init["args"]["root_uuid"] == ctx.root
 

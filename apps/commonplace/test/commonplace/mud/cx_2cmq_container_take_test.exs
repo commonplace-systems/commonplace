@@ -42,7 +42,9 @@ defmodule Commonplace.MUD.Cx2cmqContainerTakeTest do
 
     on_exit(fn ->
       restore = fn key, v ->
-        if is_nil(v), do: Application.delete_env(:commonplace, key), else: Application.put_env(:commonplace, key, v)
+        if is_nil(v),
+          do: Application.delete_env(:commonplace, key),
+          else: Application.put_env(:commonplace, key, v)
       end
 
       restore.(:data_dir, old_data_dir)
@@ -56,8 +58,18 @@ defmodule Commonplace.MUD.Cx2cmqContainerTakeTest do
       pid -> GenServer.stop(pid)
     end
 
-    {:ok, bursar_pid} = Bursar.start_link(root_uuid: UUID.uuid4(), store: store, sweep_interval: 60_000)
-    on_exit(fn -> if Process.alive?(bursar_pid), do: (try do GenServer.stop(bursar_pid) catch (:exit, _ -> :ok) end) end)
+    {:ok, bursar_pid} =
+      Bursar.start_link(root_uuid: UUID.uuid4(), store: store, sweep_interval: 60_000)
+
+    on_exit(fn ->
+      if Process.alive?(bursar_pid),
+        do:
+          (try do
+             GenServer.stop(bursar_pid)
+           catch
+             (:exit, _ -> :ok)
+           end)
+    end)
 
     {:ok, node_ctx} = NodeIdentity.signing_context()
     {:ok, node_id} = NodeIdentity.identity()
@@ -69,11 +81,12 @@ defmodule Commonplace.MUD.Cx2cmqContainerTakeTest do
     %{store: store, node_ctx: node_ctx, node_id: node_id, root: root, players: players}
   end
 
-  test "CURATED container: a visitor can withdraw an item they deposited (symmetric, no roach-motel)", %{
-    store: store,
-    node_ctx: node_ctx,
-    root: root
-  } do
+  test "CURATED container: a visitor can withdraw an item they deposited (symmetric, no roach-motel)",
+       %{
+         store: store,
+         node_ctx: node_ctx,
+         root: root
+       } do
     # A curated room reachable from root (NOT under players/), with a
     # node-owned container in it.
     room = share!(store, root, mk_room!(store, node_ctx), node_ctx)
@@ -89,28 +102,38 @@ defmodule Commonplace.MUD.Cx2cmqContainerTakeTest do
     item = mk_object!(store, node_ctx, "key")
     add_dir_entry!(store, room, "key.obj", item, node_ctx)
 
-    assert :ok = Take.take(item, "key.obj", room, visitor_inv, visitor_id, store: store, root_uuid: root)
+    assert :ok =
+             Take.take(item, "key.obj", room, visitor_inv, visitor_id,
+               store: store,
+               root_uuid: root
+             )
 
     assert :ok =
              World.deposit_item(item, "key.obj", visitor_inv, shelf, visitor_id,
-               store: store, root_uuid: root)
+               store: store,
+               root_uuid: root
+             )
 
     assert "key.obj" in entry_names(store, shelf), "sanity: item deposited into the shelf"
 
     # THE WITHDRAWAL — currently the roach-motel denial.
-    result = Take.take(item, "key.obj", shelf, visitor_inv, visitor_id, store: store, root_uuid: root)
-    assert result == :ok, "visitor could not withdraw from a curated container: #{inspect(result)}"
+    result =
+      Take.take(item, "key.obj", shelf, visitor_inv, visitor_id, store: store, root_uuid: root)
+
+    assert result == :ok,
+           "visitor could not withdraw from a curated container: #{inspect(result)}"
 
     assert "key.obj" in entry_names(store, visitor_inv)
     refute "key.obj" in entry_names(store, shelf)
   end
 
-  test "PLAYER-HOME container: a visitor CANNOT withdraw (stays denied — correct, not over-elevated)", %{
-    store: store,
-    node_ctx: node_ctx,
-    root: root,
-    players: players
-  } do
+  test "PLAYER-HOME container: a visitor CANNOT withdraw (stays denied — correct, not over-elevated)",
+       %{
+         store: store,
+         node_ctx: node_ctx,
+         root: root,
+         players: players
+       } do
     # fable's home + a container fable owns, inside players/fable (pruned from
     # the curated-reachable set).
     fable_home = mk_room!(store, node_ctx, "Fable's Loft")
@@ -125,16 +148,20 @@ defmodule Commonplace.MUD.Cx2cmqContainerTakeTest do
     item = mk_object!(store, node_ctx, "gem")
     add_dir_entry!(store, shelf, "gem.obj", item, node_ctx)
 
-    result = Take.take(item, "gem.obj", shelf, visitor_inv, visitor_id, store: store, root_uuid: root)
-    refute result == :ok, "visitor should NOT extract from a citizen's home container: #{inspect(result)}"
+    result =
+      Take.take(item, "gem.obj", shelf, visitor_inv, visitor_id, store: store, root_uuid: root)
+
+    refute result == :ok,
+           "visitor should NOT extract from a citizen's home container: #{inspect(result)}"
   end
 
-  test "CITIZEN-HOME container: visitor deposit is now DENIED (symmetric-closed) — the roach-motel is dissolved", %{
-    store: store,
-    node_ctx: node_ctx,
-    root: root,
-    players: players
-  } do
+  test "CITIZEN-HOME container: visitor deposit is now DENIED (symmetric-closed) — the roach-motel is dissolved",
+       %{
+         store: store,
+         node_ctx: node_ctx,
+         root: root,
+         players: players
+       } do
     fable_home = mk_room!(store, node_ctx, "Fable's Loft")
     add_dir_entry!(store, players, "fable", fable_home, node_ctx)
     shelf = mk_container!(store, node_ctx, "shelf")
@@ -146,26 +173,39 @@ defmodule Commonplace.MUD.Cx2cmqContainerTakeTest do
     visitor_inv = mk_inventory!(store, node_ctx)
     item = mk_object!(store, node_ctx, "key")
     add_dir_entry!(store, room, "key.obj", item, node_ctx)
-    assert :ok = Take.take(item, "key.obj", room, visitor_inv, visitor_id, store: store, root_uuid: root)
+
+    assert :ok =
+             Take.take(item, "key.obj", room, visitor_inv, visitor_id,
+               store: store,
+               root_uuid: root
+             )
 
     # Deposit INTO fable's citizen-home container is REFUSED (over-elevation
     # closed) — so no item can be stranded. Symmetric with the withdraw denial
     # in the test above: a container a visitor can't take from, they can't put
     # into either. The item stays in the visitor's own inventory.
     deposit =
-      World.deposit_item(item, "key.obj", visitor_inv, shelf, visitor_id, store: store, root_uuid: root)
+      World.deposit_item(item, "key.obj", visitor_inv, shelf, visitor_id,
+        store: store,
+        root_uuid: root
+      )
 
-    refute deposit == :ok, "deposit into a citizen-home container should be refused, got #{inspect(deposit)}"
+    refute deposit == :ok,
+           "deposit into a citizen-home container should be refused, got #{inspect(deposit)}"
+
     refute "key.obj" in entry_names(store, shelf), "nothing should land in the citizen container"
-    assert "key.obj" in entry_names(store, visitor_inv), "the item stays with the visitor (not eaten)"
+
+    assert "key.obj" in entry_names(store, visitor_inv),
+           "the item stays with the visitor (not eaten)"
   end
 
-  test "CX-cogd (FIX): a citizen deposits/drops/gives an :available economy item from their OWN home — acquire-on-:available", %{
-    store: store,
-    node_ctx: node_ctx,
-    node_id: node_id,
-    root: root
-  } do
+  test "CX-cogd (FIX): a citizen deposits/drops/gives an :available economy item from their OWN home — acquire-on-:available",
+       %{
+         store: store,
+         node_ctx: node_ctx,
+         node_id: node_id,
+         root: root
+       } do
     # A curated container the citizen does NOT own (forces the elevated path).
     room = share!(store, root, mk_room!(store, node_ctx), node_ctx)
     shelf = mk_container!(store, node_ctx, "shelf")
@@ -173,6 +213,7 @@ defmodule Commonplace.MUD.Cx2cmqContainerTakeTest do
 
     # A real citizen: home + {:subtree,home}[:write] cert (the live provisioning).
     {owner_id, owner_ctx} = fresh_identity()
+
     {:ok, %{cert_cids: cids, home_room_uuid: home}} =
       Citizenship.ensure(owner_id, owner_ctx.public_key, "owner", root, store)
 
@@ -199,16 +240,28 @@ defmodule Commonplace.MUD.Cx2cmqContainerTakeTest do
     # GIVE to a recipient → succeeds, ends RECIPIENT-held.
     {recipient_id, _} = fresh_identity()
     recipient_inv = mk_dir!(store, node_ctx)
-    assert :ok = World.give_item(coin, "tarnished-coin.obj", home, recipient_inv, owner_id, recipient_id, owner_opts)
+
+    assert :ok =
+             World.give_item(
+               coin,
+               "tarnished-coin.obj",
+               home,
+               recipient_inv,
+               owner_id,
+               recipient_id,
+               owner_opts
+             )
+
     assert "tarnished-coin.obj" in entry_names(store, recipient_inv)
     assert {:held, %{holder: ^recipient_id}} = BursarClient.query(Bursar, coin)
   end
 
-  test "CX-cogd (ANTI-RAID): an item HELD BY ANOTHER player is still refused :not_holder — never acquired out from under its holder", %{
-    store: store,
-    node_ctx: node_ctx,
-    root: root
-  } do
+  test "CX-cogd (ANTI-RAID): an item HELD BY ANOTHER player is still refused :not_holder — never acquired out from under its holder",
+       %{
+         store: store,
+         node_ctx: node_ctx,
+         root: root
+       } do
     room = share!(store, root, mk_room!(store, node_ctx), node_ctx)
     shelf = mk_container!(store, node_ctx, "shelf")
     add_dir_entry!(store, room, "shelf.obj", shelf, node_ctx)
@@ -223,9 +276,17 @@ defmodule Commonplace.MUD.Cx2cmqContainerTakeTest do
     add_file_entry!(store, inv, "stolen gem.obj", item, node_ctx)
     {:ok, _} = BursarClient.acquire(Bursar, item, victim_id, authenticated_as: victim_id)
 
-    result = World.deposit_item(item, "stolen gem.obj", inv, shelf, raider_id, store: store, root_uuid: root)
-    assert result == {:error, :not_holder}, "a token held by another player must NOT be acquirable: #{inspect(result)}"
-    assert {:held, %{holder: ^victim_id}} = BursarClient.query(Bursar, item), "victim keeps the token"
+    result =
+      World.deposit_item(item, "stolen gem.obj", inv, shelf, raider_id,
+        store: store,
+        root_uuid: root
+      )
+
+    assert result == {:error, :not_holder},
+           "a token held by another player must NOT be acquirable: #{inspect(result)}"
+
+    assert {:held, %{holder: ^victim_id}} = BursarClient.query(Bursar, item),
+           "victim keeps the token"
   end
 
   # ---- helpers ----
@@ -233,9 +294,17 @@ defmodule Commonplace.MUD.Cx2cmqContainerTakeTest do
   defp add_file_entry!(store, parent_uuid, name, child_uuid, ctx) do
     {:ok, schema} = Schemas.load_dir_schema(parent_uuid, store)
     schema = Schema.add_file(schema, name, child_uuid)
-    {metadata, commit_opts} = Commonplace.MUD.SignedWrite.opts_for(parent_uuid, store: store, signing_context: ctx)
 
-    case Commonplace.Store.CommitStoreClient.create_chained_commit(store, parent_uuid, Encoding.encode_update(schema), metadata, commit_opts) do
+    {metadata, commit_opts} =
+      Commonplace.MUD.SignedWrite.opts_for(parent_uuid, store: store, signing_context: ctx)
+
+    case Commonplace.Store.CommitStoreClient.create_chained_commit(
+           store,
+           parent_uuid,
+           Encoding.encode_update(schema),
+           metadata,
+           commit_opts
+         ) do
       {:error, _} = err -> raise "seed write failed: #{inspect(err)}"
       _ -> :ok
     end
@@ -292,9 +361,17 @@ defmodule Commonplace.MUD.Cx2cmqContainerTakeTest do
   defp add_dir_entry!(store, parent_uuid, name, child_uuid, ctx) do
     {:ok, schema} = Schemas.load_dir_schema(parent_uuid, store)
     schema = Schema.add_directory(schema, name, child_uuid)
-    {metadata, commit_opts} = Commonplace.MUD.SignedWrite.opts_for(parent_uuid, store: store, signing_context: ctx)
 
-    case Commonplace.Store.CommitStoreClient.create_chained_commit(store, parent_uuid, Encoding.encode_update(schema), metadata, commit_opts) do
+    {metadata, commit_opts} =
+      Commonplace.MUD.SignedWrite.opts_for(parent_uuid, store: store, signing_context: ctx)
+
+    case Commonplace.Store.CommitStoreClient.create_chained_commit(
+           store,
+           parent_uuid,
+           Encoding.encode_update(schema),
+           metadata,
+           commit_opts
+         ) do
       {:error, _} = err -> raise "seed write failed: #{inspect(err)}"
       _ -> :ok
     end

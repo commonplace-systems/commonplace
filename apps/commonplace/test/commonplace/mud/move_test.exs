@@ -26,7 +26,15 @@ defmodule Commonplace.MUD.MoveTest do
         sweep_interval: 60_000
       )
 
-    on_exit(fn -> if Process.alive?(bpid), do: (try do GenServer.stop(bpid) catch (:exit, _ -> :ok) end) end)
+    on_exit(fn ->
+      if Process.alive?(bpid),
+        do:
+          (try do
+             GenServer.stop(bpid)
+           catch
+             (:exit, _ -> :ok)
+           end)
+    end)
 
     %{
       store: store_name,
@@ -136,8 +144,7 @@ defmodule Commonplace.MUD.MoveTest do
       dest = empty_dir(ctx.store)
 
       catch_exit(
-        Move.move(obj_dir, "cloak.obj", source, dest,
-          store: :no_such_store, bursar: ctx.bursar)
+        Move.move(obj_dir, "cloak.obj", source, dest, store: :no_such_store, bursar: ctx.bursar)
       )
 
       assert :available = Bursar.query(ctx.bursar, move_lock(source))
@@ -152,8 +159,13 @@ defmodule Commonplace.MUD.MoveTest do
       {:ok, _} = Bursar.acquire(ctx.bursar, move_lock(dest), "someone-else")
 
       assert {:error, :busy} =
-               Move.move(obj_dir, "sword.obj", source, dest,
-                 ctx.opts ++ [retries: 2, retry_ms: 10])
+               Move.move(
+                 obj_dir,
+                 "sword.obj",
+                 source,
+                 dest,
+                 ctx.opts ++ [retries: 2, retry_ms: 10]
+               )
 
       # The loser must not leave its partial acquisition behind.
       assert :available = Bursar.query(ctx.bursar, move_lock(source))
@@ -170,7 +182,9 @@ defmodule Commonplace.MUD.MoveTest do
 
       assert {:error, :bursar_unavailable} =
                Move.move(obj_dir, "sword.obj", source, dest,
-                 store: ctx.store, bursar: :no_such_bursar)
+                 store: ctx.store,
+                 bursar: :no_such_bursar
+               )
 
       {:ok, entry} = Schema.get_entry(load(source, ctx.store), "sword.obj")
       assert entry.node_id == obj_dir

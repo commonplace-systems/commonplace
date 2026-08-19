@@ -331,8 +331,12 @@ defmodule Commonplace.VersionHandshake do
       {:badrpc, _reason} ->
         {:error, :no_wide_digest}
 
-      %{loaded: remote_loaded, not_loaded_count: serve_not_loaded, missing_apps: missing_apps,
-        apps: apps} ->
+      %{
+        loaded: remote_loaded,
+        not_loaded_count: serve_not_loaded,
+        missing_apps: missing_apps,
+        apps: apps
+      } ->
         {skew, not_in_escript} =
           Enum.reduce(remote_loaded, {[], 0}, fn {mod, remote_md5}, {skew_acc, missing_acc} ->
             case local_md5_for(mod) do

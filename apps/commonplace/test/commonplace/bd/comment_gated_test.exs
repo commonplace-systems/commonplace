@@ -120,7 +120,13 @@ defmodule Commonplace.Bd.CommentGatedTest do
                Comment.add(ctx.root, ctx.issue_id, %{body: "first", author: "a"}, ctx.store, opts)
 
       assert {:ok, c2} =
-               Comment.add(ctx.root, ctx.issue_id, %{body: "second", author: "b"}, ctx.store, opts)
+               Comment.add(
+                 ctx.root,
+                 ctx.issue_id,
+                 %{body: "second", author: "b"},
+                 ctx.store,
+                 opts
+               )
 
       landed = Comment.list(ctx.root, ctx.issue_id, ctx.store)
 
@@ -261,10 +267,14 @@ defmodule Commonplace.Bd.CommentGatedTest do
       assert {:ok, _commit} = Commonplace.Store.CommitStore.latest_commit(ctx.store, orphan)
 
       # ...and nothing points at it.
-      {:ok, issue_dir} = Commonplace.Bd.Workspace.issue_dir_uuid(ctx.root, ctx.issue_id, ctx.store)
+      {:ok, issue_dir} =
+        Commonplace.Bd.Workspace.issue_dir_uuid(ctx.root, ctx.issue_id, ctx.store)
+
       {:ok, issue_schema} = Commonplace.Bd.Schemas.load_dir_schema(issue_dir, ctx.store)
       {:ok, comments_entry} = Schema.get_entry(issue_schema, "comments")
-      {:ok, comments_schema} = Commonplace.Bd.Schemas.load_dir_schema(comments_entry.node_id, ctx.store)
+
+      {:ok, comments_schema} =
+        Commonplace.Bd.Schemas.load_dir_schema(comments_entry.node_id, ctx.store)
 
       assert :error = Schema.get_entry(comments_schema, "c-orphan1.json")
       assert Comment.list(ctx.root, ctx.issue_id, ctx.store) == []

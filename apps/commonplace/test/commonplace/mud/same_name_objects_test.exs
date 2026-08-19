@@ -34,9 +34,21 @@ defmodule Commonplace.MUD.SameNameObjectsTest do
     end
 
     {:ok, bursar} =
-      Commonplace.Green.Bursar.start_link(root_uuid: UUID.uuid4(), store: store, sweep_interval: 60_000)
+      Commonplace.Green.Bursar.start_link(
+        root_uuid: UUID.uuid4(),
+        store: store,
+        sweep_interval: 60_000
+      )
 
-    on_exit(fn -> if Process.alive?(bursar), do: (try do GenServer.stop(bursar) catch (:exit, _ -> :ok) end) end)
+    on_exit(fn ->
+      if Process.alive?(bursar),
+        do:
+          (try do
+             GenServer.stop(bursar)
+           catch
+             (:exit, _ -> :ok)
+           end)
+    end)
 
     root = UUID.uuid4()
     CommitStore.create_commit(store, root, Encoding.encode_update(Schema.new_schema()), nil)

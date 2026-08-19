@@ -167,8 +167,7 @@ defmodule Commonplace.Dataflow.GraphRegistry do
     neighbors = Map.get(adj, node, [])
 
     {cycles, visited, rec_stack} =
-      Enum.reduce(neighbors, {cycles, visited, rec_stack}, fn neighbor,
-                                                              {cycles_acc, vis, rs} ->
+      Enum.reduce(neighbors, {cycles, visited, rec_stack}, fn neighbor, {cycles_acc, vis, rs} ->
         cond do
           MapSet.member?(rs, neighbor) ->
             # Found a cycle — extract the cycle path from where the neighbor first appears

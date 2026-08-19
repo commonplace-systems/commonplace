@@ -51,10 +51,21 @@ defmodule Commonplace.MUD.CXc6phAliasRankingTest do
     root_uuid = UUID.uuid4()
 
     {:ok, bursar_pid} =
-      Commonplace.Green.Bursar.start_link(root_uuid: root_uuid, store: store, sweep_interval: 60_000)
+      Commonplace.Green.Bursar.start_link(
+        root_uuid: root_uuid,
+        store: store,
+        sweep_interval: 60_000
+      )
 
     on_exit(fn ->
-      if Process.alive?(bursar_pid), do: (try do GenServer.stop(bursar_pid) catch (:exit, _ -> :ok) end)
+      if Process.alive?(bursar_pid),
+        do:
+          (try do
+             GenServer.stop(bursar_pid)
+           catch
+             (:exit, _ -> :ok)
+           end)
+
       File.rm_rf!(dir)
     end)
 
@@ -96,7 +107,13 @@ defmodule Commonplace.MUD.CXc6phAliasRankingTest do
     update = Encoding.encode_update(schema)
     {metadata, commit_opts} = SignedWrite.opts_for(parent_uuid, Keyword.put(opts, :store, store))
 
-    case CommitStoreClient.create_chained_commit(store, parent_uuid, update, metadata, commit_opts) do
+    case CommitStoreClient.create_chained_commit(
+           store,
+           parent_uuid,
+           update,
+           metadata,
+           commit_opts
+         ) do
       {:error, _} = err -> err
       _commit -> :ok
     end
@@ -116,11 +133,12 @@ defmodule Commonplace.MUD.CXc6phAliasRankingTest do
 
   # ---- CX-c6ph pins ----
 
-  test "pin A: `examine vault` resolves to the room's exact-named vault, not an aliased inventory item", %{
-    store: store,
-    room_uuid: room_uuid,
-    inventory_uuid: inventory_uuid
-  } do
+  test "pin A: `examine vault` resolves to the room's exact-named vault, not an aliased inventory item",
+       %{
+         store: store,
+         room_uuid: room_uuid,
+         inventory_uuid: inventory_uuid
+       } do
     vault_uuid = create_object(store, %Object{name: "vault", description: "a squat iron vault"})
     :ok = add_dir_entry(store, room_uuid, "vault.obj", vault_uuid)
 
@@ -140,11 +158,12 @@ defmodule Commonplace.MUD.CXc6phAliasRankingTest do
     refute text =~ "brass key"
   end
 
-  test "pin B: exact-name beats alias-partial even though inventory is searched first in dir order", %{
-    store: store,
-    room_uuid: room_uuid,
-    inventory_uuid: inventory_uuid
-  } do
+  test "pin B: exact-name beats alias-partial even though inventory is searched first in dir order",
+       %{
+         store: store,
+         room_uuid: room_uuid,
+         inventory_uuid: inventory_uuid
+       } do
     vault_uuid = create_object(store, %Object{name: "vault", description: "a squat iron vault"})
     :ok = add_dir_entry(store, room_uuid, "vault.obj", vault_uuid)
 

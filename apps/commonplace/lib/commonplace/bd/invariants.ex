@@ -286,8 +286,8 @@ defmodule Commonplace.Bd.Invariants do
 
     {cycles, _state} =
       Enum.reduce(ids, {[], %{visited: MapSet.new(), in_stack: MapSet.new(), stack: []}}, fn id,
-                                                                                              {cycles,
-                                                                                               state} ->
+                                                                                             {cycles,
+                                                                                              state} ->
         if MapSet.member?(state.visited, id) do
           {cycles, state}
         else

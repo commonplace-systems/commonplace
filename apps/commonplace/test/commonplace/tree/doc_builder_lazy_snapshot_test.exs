@@ -100,6 +100,7 @@ defmodule Commonplace.Tree.DocBuilderLazySnapshotTest do
       Process.sleep(150)
 
       log = CommitStore.commit_log(store, uuid)
+
       refute Enum.any?(log, fn c -> c.metadata[:kind] == :snapshot end),
              "below-threshold read should not have triggered a snapshot"
     end

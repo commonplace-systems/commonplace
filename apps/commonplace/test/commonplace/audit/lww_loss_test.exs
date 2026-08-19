@@ -69,9 +69,10 @@ defmodule Commonplace.Audit.LwwLossTest do
     # into `clients` directly must also drop client_pending[client] —
     # otherwise a later BlockStore.get/2 would see the stale,
     # un-stripped copy still sitting in pending ahead of this write.
-    store = %{store |
-      clients: Map.put(store.clients, client, stripped),
-      client_pending: Map.delete(store.client_pending, client)
+    store = %{
+      store
+      | clients: Map.put(store.clients, client, stripped),
+        client_pending: Map.delete(store.client_pending, client)
     }
 
     %{doc | store: BlockStore.invalidate_tuple_cache(store, client)}

@@ -49,7 +49,9 @@ defmodule Commonplace.MUD.CxSfj8PresenceCertReproTest do
 
     on_exit(fn ->
       restore = fn key, v ->
-        if is_nil(v), do: Application.delete_env(:commonplace, key), else: Application.put_env(:commonplace, key, v)
+        if is_nil(v),
+          do: Application.delete_env(:commonplace, key),
+          else: Application.put_env(:commonplace, key, v)
       end
 
       restore.(:trust, old_trust)
@@ -90,7 +92,9 @@ defmodule Commonplace.MUD.CxSfj8PresenceCertReproTest do
     # (BUG) No presence cert (a raw bot/MCP/web session) → under enforce the
     # signed-but-uncertified presence write is refused → nothing lands.
     _ = Presence.create("bot1", :usr, room, store, signing_context: ctx, cert_cids: [])
-    refute present?(store, room, fname), "uncertified presence write must be refused under enforce"
+
+    refute present?(store, room, fname),
+           "uncertified presence write must be refused under enforce"
 
     # (FIX MECHANISM) Provision the node-signed {:presence, id} cert — exactly
     # what §9 lifts to every session at bootstrap.
@@ -98,7 +102,9 @@ defmodule Commonplace.MUD.CxSfj8PresenceCertReproTest do
     assert cids != [], "node must provision a {:presence} cert"
 
     # Now the session signs its own presence ADD → lands under enforce.
-    assert {:ok, _} = Presence.create("bot1", :usr, room, store, signing_context: ctx, cert_cids: cids)
+    assert {:ok, _} =
+             Presence.create("bot1", :usr, room, store, signing_context: ctx, cert_cids: cids)
+
     assert present?(store, room, fname), "certified presence add must land"
 
     # ...and its own presence REMOVE on quit → retracts (no ghost).
@@ -139,7 +145,12 @@ defmodule Commonplace.MUD.CxSfj8PresenceCertReproTest do
     fname_b = Presence.filename("victim", :usr)
 
     # B appears (its own presence, bound_identity == B).
-    assert {:ok, _} = Presence.create("victim", :usr, room, store, signing_context: ctx_b, cert_cids: cids_b)
+    assert {:ok, _} =
+             Presence.create("victim", :usr, room, store,
+               signing_context: ctx_b,
+               cert_cids: cids_b
+             )
+
     assert present?(store, room, fname_b)
 
     # A (a DIFFERENT ephemeral identity + its own presence cert) tries to retract

@@ -125,7 +125,7 @@ defmodule CommonplaceWebWeb.PresenceCard do
             <p class="text-base-content/40 italic">no activity reported</p>
           <% end %>
         </section>
-
+        
     <!-- Identity panel -->
         <aside class="cp-presence-identity bg-base-200/40 rounded-lg p-3 space-y-2 text-sm">
           <h3 class="text-xs font-semibold uppercase tracking-wide text-base-content/50">
@@ -177,7 +177,7 @@ defmodule CommonplaceWebWeb.PresenceCard do
           <% end %>
         </aside>
       </div>
-
+      
     <!-- Recent commits placeholder -->
       <section class="cp-presence-commits border-t border-base-300 pt-3">
         <h3 class="text-xs font-semibold uppercase tracking-wide text-base-content/50 mb-2">

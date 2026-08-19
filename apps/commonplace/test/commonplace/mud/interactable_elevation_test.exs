@@ -46,7 +46,10 @@ defmodule Commonplace.MUD.InteractableElevationTest do
     on_exit(fn ->
       for {k, v} <- old do
         key = %{data_dir: :data_dir, trust: :trust, knob: :local_write_gate}[k]
-        if is_nil(v), do: Application.delete_env(:commonplace, key), else: Application.put_env(:commonplace, key, v)
+
+        if is_nil(v),
+          do: Application.delete_env(:commonplace, key),
+          else: Application.put_env(:commonplace, key, v)
       end
 
       File.rm_rf!(dir)
@@ -82,12 +85,14 @@ defmodule Commonplace.MUD.InteractableElevationTest do
     e.node_id
   end
 
-  defp state_value(obj_dir, store, key), do: state_value(obj_dir, store, Schemas.object_filename(), key)
+  defp state_value(obj_dir, store, key),
+    do: state_value(obj_dir, store, Schemas.object_filename(), key)
 
   defp state_value(dir, store, filename, key) do
     {:ok, sch} = Schemas.load_dir_schema(dir, store)
     {:ok, e} = Schema.get_entry(sch, filename)
     {:ok, doc} = DocBuilder.reconstruct_doc(store, e.node_id)
+
     case Jason.decode(ContentType.get_content(doc)) do
       {:ok, %{"state" => %{^key => v}}} -> v
       _ -> nil
@@ -119,11 +124,20 @@ defmodule Commonplace.MUD.InteractableElevationTest do
     node_identity: node_identity
   } do
     # a curated (NODE-OWNED) object with a put_state safe-verb, all node-signed
-    obj_json = Schemas.encode_object(%Schemas.Object{name: "orrery", description: "A brass orrery."})
-    {:ok, obj_dir} = Schemas.create_dir_with_meta(Schemas.object_filename(), obj_json, store, signing_context: node_ctx)
+    obj_json =
+      Schemas.encode_object(%Schemas.Object{name: "orrery", description: "A brass orrery."})
+
+    {:ok, obj_dir} =
+      Schemas.create_dir_with_meta(Schemas.object_filename(), obj_json, store,
+        signing_context: node_ctx
+      )
 
     body = "Commonplace.MUD.World.Facade.put_state(world, \"spun\", true)"
-    :ok = VerbSource.save_safe_verb(obj_dir, "spin", body, [obj_dir], store, signing_context: node_ctx)
+
+    :ok =
+      VerbSource.save_safe_verb(obj_dir, "spin", body, [obj_dir], store,
+        signing_context: node_ctx
+      )
 
     assert state_value(obj_dir, store, "spun") == nil
 
@@ -156,10 +170,20 @@ defmodule Commonplace.MUD.InteractableElevationTest do
       trusted_identities: %{pid => Signing.encode_key(ppub)}
     })
 
-    obj_json = Schemas.encode_object(%Schemas.Object{name: "totem", description: "A player's totem."})
-    {:ok, obj_dir} = Schemas.create_dir_with_meta(Schemas.object_filename(), obj_json, store, signing_context: player_ctx)
+    obj_json =
+      Schemas.encode_object(%Schemas.Object{name: "totem", description: "A player's totem."})
+
+    {:ok, obj_dir} =
+      Schemas.create_dir_with_meta(Schemas.object_filename(), obj_json, store,
+        signing_context: player_ctx
+      )
+
     body = "Commonplace.MUD.World.Facade.put_state(world, \"spun\", true)"
-    :ok = VerbSource.save_safe_verb(obj_dir, "spin", body, [obj_dir], store, signing_context: player_ctx)
+
+    :ok =
+      VerbSource.save_safe_verb(obj_dir, "spin", body, [obj_dir], store,
+        signing_context: player_ctx
+      )
 
     before = state_value(obj_dir, store, "spun")
 
@@ -181,9 +205,21 @@ defmodule Commonplace.MUD.InteractableElevationTest do
 
   test "EPHEMERAL visitor (no player_dir_uuid) can drive per-player state — actor_ref falls back to identity_uuid, no crash",
        %{store: store, node_ctx: node_ctx} do
-    obj_json = Schemas.encode_object(%Schemas.Object{name: "cloud-harp", description: "A per-player interactable."})
-    {:ok, obj_dir} = Schemas.create_dir_with_meta(Schemas.object_filename(), obj_json, store, signing_context: node_ctx)
-    :ok = VerbSource.save_safe_verb(obj_dir, "strum", @per_player_verb, [obj_dir], store, signing_context: node_ctx)
+    obj_json =
+      Schemas.encode_object(%Schemas.Object{
+        name: "cloud-harp",
+        description: "A per-player interactable."
+      })
+
+    {:ok, obj_dir} =
+      Schemas.create_dir_with_meta(Schemas.object_filename(), obj_json, store,
+        signing_context: node_ctx
+      )
+
+    :ok =
+      VerbSource.save_safe_verb(obj_dir, "strum", @per_player_verb, [obj_dir], store,
+        signing_context: node_ctx
+      )
 
     # An ephemeral visitor: SIGNED (has identity_uuid) but NO :player_dir_uuid,
     # exactly PlayerSession.bootstrap_presence_only. PRE-FIX: actor_ref = nil →
@@ -200,9 +236,21 @@ defmodule Commonplace.MUD.InteractableElevationTest do
 
   test "HOMED citizen keys per-player state by the DURABLE player_dir_uuid (unchanged), not identity_uuid",
        %{store: store, node_ctx: node_ctx} do
-    obj_json = Schemas.encode_object(%Schemas.Object{name: "cloud-harp", description: "A per-player interactable."})
-    {:ok, obj_dir} = Schemas.create_dir_with_meta(Schemas.object_filename(), obj_json, store, signing_context: node_ctx)
-    :ok = VerbSource.save_safe_verb(obj_dir, "strum", @per_player_verb, [obj_dir], store, signing_context: node_ctx)
+    obj_json =
+      Schemas.encode_object(%Schemas.Object{
+        name: "cloud-harp",
+        description: "A per-player interactable."
+      })
+
+    {:ok, obj_dir} =
+      Schemas.create_dir_with_meta(Schemas.object_filename(), obj_json, store,
+        signing_context: node_ctx
+      )
+
+    :ok =
+      VerbSource.save_safe_verb(obj_dir, "strum", @per_player_verb, [obj_dir], store,
+        signing_context: node_ctx
+      )
 
     pdir = UUID.uuid4()
     v = Map.put(visitor_ctx(), :player_dir_uuid, pdir)
@@ -219,12 +267,24 @@ defmodule Commonplace.MUD.InteractableElevationTest do
   test "ROOM-verb put_state ELEVATES on the __room.json child even when the room DIR is presence-churned (non-node-owned)",
        %{store: store, node_ctx: node_ctx, node_identity: node_identity} do
     # a curated (NODE-OWNED) room: dir + __room.json meta, node-signed.
-    room_json = Schemas.encode_room(%Schemas.Room{name: "The Convergence", description: "A round obsidian chamber."})
-    {:ok, room_dir} = Schemas.create_dir_with_meta(Schemas.room_filename(), room_json, store, signing_context: node_ctx)
+    room_json =
+      Schemas.encode_room(%Schemas.Room{
+        name: "The Convergence",
+        description: "A round obsidian chamber."
+      })
+
+    {:ok, room_dir} =
+      Schemas.create_dir_with_meta(Schemas.room_filename(), room_json, store,
+        signing_context: node_ctx
+      )
 
     # an "offer"-style ROOM verb that put_states (the Convergence pattern).
     body = "Commonplace.MUD.World.Facade.put_state(world, \"charge\", 1)"
-    :ok = VerbSource.save_safe_verb(room_dir, "offer", body, [room_dir], store, signing_context: node_ctx)
+
+    :ok =
+      VerbSource.save_safe_verb(room_dir, "offer", body, [room_dir], store,
+        signing_context: node_ctx
+      )
 
     # A pinned "presence" identity churns the room DIR schema (player enters):
     # the room dir's LATEST commit is now NON-node-signed → node_owned?(dir)
@@ -278,10 +338,20 @@ defmodule Commonplace.MUD.InteractableElevationTest do
       trusted_identities: %{pid => Signing.encode_key(ppub)}
     })
 
-    room_json = Schemas.encode_room(%Schemas.Room{name: "Someone's Home", description: "A private room."})
-    {:ok, room_dir} = Schemas.create_dir_with_meta(Schemas.room_filename(), room_json, store, signing_context: player_ctx)
+    room_json =
+      Schemas.encode_room(%Schemas.Room{name: "Someone's Home", description: "A private room."})
+
+    {:ok, room_dir} =
+      Schemas.create_dir_with_meta(Schemas.room_filename(), room_json, store,
+        signing_context: player_ctx
+      )
+
     body = "Commonplace.MUD.World.Facade.put_state(world, \"charge\", 1)"
-    :ok = VerbSource.save_safe_verb(room_dir, "offer", body, [room_dir], store, signing_context: player_ctx)
+
+    :ok =
+      VerbSource.save_safe_verb(room_dir, "offer", body, [room_dir], store,
+        signing_context: player_ctx
+      )
 
     before = state_value(room_dir, store, Schemas.room_filename(), "charge")
 

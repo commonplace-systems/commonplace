@@ -20,6 +20,7 @@ defmodule Commonplace.CLI.CertMint do
 
     base <> "/api/cert-mint"
   end
+
   @verb_omission "cert-mint refused: --verbs is required (closed by default; no verbs are implied)"
   @verbs %{
     "write" => :write,
@@ -45,7 +46,8 @@ defmodule Commonplace.CLI.CertMint do
   def request(_data_dir, relative_path, args, opts \\ []) do
     with {:ok, parsed} <- parse_argv(args),
          body <- request_body(parsed, relative_path),
-         {:ok, response} <- post(Keyword.get_lazy(opts, :endpoint, &default_endpoint/0), body, opts) do
+         {:ok, response} <-
+           post(Keyword.get_lazy(opts, :endpoint, &default_endpoint/0), body, opts) do
       decode_response(response)
     end
   end

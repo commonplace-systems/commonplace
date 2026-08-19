@@ -49,7 +49,8 @@ defmodule Commonplace.MUD.SignedWriteTest do
 
   describe "find_cert (via opts_for/2) — {:docs}-first, {:presence}-fallback" do
     test "returns the {:docs} cert when it covers the target", ctx do
-      docs_cap = mint_and_store(ctx, %{verbs: [:write], scope: {:docs, ["target-uuid"]}, caveats: %{}})
+      docs_cap =
+        mint_and_store(ctx, %{verbs: [:write], scope: {:docs, ["target-uuid"]}, caveats: %{}})
 
       {metadata, _commit_opts} =
         SignedWrite.opts_for("target-uuid",
@@ -62,7 +63,8 @@ defmodule Commonplace.MUD.SignedWriteTest do
     end
 
     test "falls back to a held {:presence} cert when no {:docs} cert matches", ctx do
-      presence_cap = mint_and_store(ctx, %{verbs: [:write], scope: {:presence, "bot-id"}, caveats: %{}})
+      presence_cap =
+        mint_and_store(ctx, %{verbs: [:write], scope: {:presence, "bot-id"}, caveats: %{}})
 
       {metadata, _commit_opts} =
         SignedWrite.opts_for("some-other-target-uuid",
@@ -75,8 +77,11 @@ defmodule Commonplace.MUD.SignedWriteTest do
     end
 
     test "{:docs} cert wins even when a {:presence} cert is also held (docs-first)", ctx do
-      docs_cap = mint_and_store(ctx, %{verbs: [:write], scope: {:docs, ["target-uuid"]}, caveats: %{}})
-      presence_cap = mint_and_store(ctx, %{verbs: [:write], scope: {:presence, "bot-id"}, caveats: %{}})
+      docs_cap =
+        mint_and_store(ctx, %{verbs: [:write], scope: {:docs, ["target-uuid"]}, caveats: %{}})
+
+      presence_cap =
+        mint_and_store(ctx, %{verbs: [:write], scope: {:presence, "bot-id"}, caveats: %{}})
 
       {metadata, _commit_opts} =
         SignedWrite.opts_for("target-uuid",
@@ -89,7 +94,8 @@ defmodule Commonplace.MUD.SignedWriteTest do
     end
 
     test "no {:docs} match and no {:presence} cert held → no capability_proof attached", ctx do
-      docs_cap = mint_and_store(ctx, %{verbs: [:write], scope: {:docs, ["unrelated-uuid"]}, caveats: %{}})
+      docs_cap =
+        mint_and_store(ctx, %{verbs: [:write], scope: {:docs, ["unrelated-uuid"]}, caveats: %{}})
 
       {metadata, _commit_opts} =
         SignedWrite.opts_for("target-uuid",

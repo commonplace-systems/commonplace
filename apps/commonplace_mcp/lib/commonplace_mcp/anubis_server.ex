@@ -146,7 +146,11 @@ defmodule Commonplace.MCP.AnubisServer do
           # was non-nil but falsy (impossible in practice — starter
           # values are functions). Defensive branch.
           require Logger
-          Logger.warning("AnubisServer.init/2 (#{inspect(client_name)}): starter short-circuited unexpectedly")
+
+          Logger.warning(
+            "AnubisServer.init/2 (#{inspect(client_name)}): starter short-circuited unexpectedly"
+          )
+
           frame
 
         other ->
@@ -275,12 +279,12 @@ defmodule Commonplace.MCP.AnubisServer do
 
           log_handler_crash("tools/call(#{name})", crash)
 
+          # CX-gq7a: the CX-0nkq overload hint is only warranted for an
+          # actual `GenServer.call` timeout — not for raised exceptions
+          # (`:error`), thrown values (`:throw`), or other exit reasons.
+          # Previously this was appended unconditionally to ANY
+          # tools/call failure.
           hint =
-            # CX-gq7a: the CX-0nkq overload hint is only warranted for an
-            # actual `GenServer.call` timeout — not for raised exceptions
-            # (`:error`), thrown values (`:throw`), or other exit reasons.
-            # Previously this was appended unconditionally to ANY
-            # tools/call failure.
             if timeout_crash?(crash) do
               " Likely a CommitStore overload (CX-0nkq). Retrying may help."
             else

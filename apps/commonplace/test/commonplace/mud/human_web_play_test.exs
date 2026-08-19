@@ -43,7 +43,9 @@ defmodule Commonplace.MUD.HumanWebPlayTest do
        pending_imports_name: :"humanweb_pi_#{n}"}
     )
 
-    secrets_dir = Path.join(System.tmp_dir!(), "cp_humanweb_secrets_#{:rand.uniform(1_000_000_000)}")
+    secrets_dir =
+      Path.join(System.tmp_dir!(), "cp_humanweb_secrets_#{:rand.uniform(1_000_000_000)}")
+
     File.mkdir_p!(secrets_dir)
     secrets = :"humanweb_secrets_#{n}"
     {:ok, secrets_pid} = SecretStore.start_link(data_dir: secrets_dir, name: secrets)
@@ -61,7 +63,15 @@ defmodule Commonplace.MUD.HumanWebPlayTest do
       restore(:data_dir, old_data_dir)
       restore(:trust, old_trust)
       restore(:local_write_gate, old_knob)
-      if Process.alive?(secrets_pid), do: (try do GenServer.stop(secrets_pid) catch (:exit, _ -> :ok) end)
+
+      if Process.alive?(secrets_pid),
+        do:
+          (try do
+             GenServer.stop(secrets_pid)
+           catch
+             (:exit, _ -> :ok)
+           end)
+
       File.rm_rf!(dir)
       File.rm_rf!(secrets_dir)
     end)
@@ -82,7 +92,15 @@ defmodule Commonplace.MUD.HumanWebPlayTest do
   defp restore(key, v), do: Application.put_env(:commonplace, key, v)
 
   defp genesis(store, uuid, ctx) do
-    CommitStore.create_commit(store, uuid, Yelixer.Encoding.encode_update(Schema.new_schema()), nil, %{}, signing_context: ctx)
+    CommitStore.create_commit(
+      store,
+      uuid,
+      Yelixer.Encoding.encode_update(Schema.new_schema()),
+      nil,
+      %{},
+      signing_context: ctx
+    )
+
     uuid
   end
 
@@ -114,7 +132,15 @@ defmodule Commonplace.MUD.HumanWebPlayTest do
         spawn_room_uuid: home
       )
 
-    %{pid: pid, id_uuid: id_uuid, pub: pub, signer_id: signer_id, sctx: sctx, cert_cids: cert_cids, home: home}
+    %{
+      pid: pid,
+      id_uuid: id_uuid,
+      pub: pub,
+      signer_id: signer_id,
+      sctx: sctx,
+      cert_cids: cert_cids,
+      home: home
+    }
   end
 
   defp home_meta_uuid(store, home) do
@@ -154,7 +180,8 @@ defmodule Commonplace.MUD.HumanWebPlayTest do
     PlayerSession.stop(p.pid)
   end
 
-  test "H3: a signed citizen is DENIED building in a room they do NOT own (signing != authority)", ctx do
+  test "H3: a signed citizen is DENIED building in a room they do NOT own (signing != authority)",
+       ctx do
     # CX-cl65 reframe: post-A3, `@dig` builds under the invoker's OWN home
     # (which they're authorized for — that's the M2 feature, proven by H1's
     # in-home `@name here` landing), and the exit-edge write lands on the
@@ -177,7 +204,9 @@ defmodule Commonplace.MUD.HumanWebPlayTest do
 
     {:ok, sctx} = AgentKeys.signing_context(id_uuid, ctx.secrets)
     signer_id = Signing.signer_id(id_uuid, pub)
-    {:ok, %{cert_cids: cert_cids}} = Citizenship.ensure(id_uuid, pub, "frodo", ctx.mud_root, ctx.store)
+
+    {:ok, %{cert_cids: cert_cids}} =
+      Citizenship.ensure(id_uuid, pub, "frodo", ctx.mud_root, ctx.store)
 
     {:ok, pid} =
       PlayerSession.start_link(
@@ -204,7 +233,9 @@ defmodule Commonplace.MUD.HumanWebPlayTest do
     assert out =~ "permission", "a write beyond the player's zone must be refused (H3)"
 
     {:ok, others_after} = CommitStore.latest_commit(ctx.store, others_meta)
-    assert others_after.id == others_before.id, "the un-owned room's meta must NOT move (beyond-zone write denied)"
+
+    assert others_after.id == others_before.id,
+           "the un-owned room's meta must NOT move (beyond-zone write denied)"
 
     PlayerSession.stop(pid)
   end
@@ -227,14 +258,17 @@ defmodule Commonplace.MUD.HumanWebPlayTest do
     :ok = PlayerSession.input_sync(p.pid, "look")
     look_turn = Enum.join(PlayerSession.drain_buffer(p.pid), "\n")
     assert look_turn =~ "sam's Home"
-    refute look_turn =~ "Welcome", "the Welcome banner must not bleed into a later command's output"
+
+    refute look_turn =~ "Welcome",
+           "the Welcome banner must not bleed into a later command's output"
 
     PlayerSession.stop(p.pid)
   end
 
   # ---- CX-jicn.2 : raw trust tuples never reach the pane ----
 
-  test "jicn.2: a raw {:trust, :local_write_denied, ...} red event renders to NOTHING — no tuple, no inspect", ctx do
+  test "jicn.2: a raw {:trust, :local_write_denied, ...} red event renders to NOTHING — no tuple, no inspect",
+       ctx do
     p = provision_and_start("pippin", ctx)
     _greet = PlayerSession.drain_buffer(p.pid)
 
@@ -243,7 +277,8 @@ defmodule Commonplace.MUD.HumanWebPlayTest do
     send(
       p.pid,
       {"red:#{p.home}",
-       {:trust, :local_write_denied, %{doc_uuid: p.home, signer_id: p.signer_id, reason: :capability_insufficient}}}
+       {:trust, :local_write_denied,
+        %{doc_uuid: p.home, signer_id: p.signer_id, reason: :capability_insufficient}}}
     )
 
     # And the unsigned-housekeeping flavor, too.
@@ -262,5 +297,4 @@ defmodule Commonplace.MUD.HumanWebPlayTest do
 
     PlayerSession.stop(p.pid)
   end
-
 end

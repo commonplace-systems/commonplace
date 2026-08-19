@@ -35,7 +35,13 @@ defmodule Commonplace.Store.CapabilityEnvelopeTest do
     )
 
     {root_pub, root_priv} = Signing.generate_keypair()
-    root_ctx = %SigningContext{identity_uuid: "root", private_key: root_priv, public_key: root_pub}
+
+    root_ctx = %SigningContext{
+      identity_uuid: "root",
+      private_key: root_priv,
+      public_key: root_pub
+    }
+
     {alice_pub, alice_priv} = Signing.generate_keypair()
     alice_signer = Signing.signer_id("alice", alice_pub)
 
@@ -45,8 +51,11 @@ defmodule Commonplace.Store.CapabilityEnvelopeTest do
     })
 
     {:ok, leaf} =
-      Capability.issue(root_ctx, {"alice", alice_pub},
-        %{verbs: [:write], scope: {:docs, ["doc-x"]}, caveats: %{not_before: nil, not_after: nil}})
+      Capability.issue(root_ctx, {"alice", alice_pub}, %{
+        verbs: [:write],
+        scope: {:docs, ["doc-x"]},
+        caveats: %{not_before: nil, not_after: nil}
+      })
 
     commit =
       Commit.new("doc-x", "payload", nil, %{kind: :regular, capability_proof: leaf.id})
@@ -56,7 +65,10 @@ defmodule Commonplace.Store.CapabilityEnvelopeTest do
     %{store: name, leaf: leaf, commit: commit}
   end
 
-  test "a commit whose cert is absent is DEFERRED, not hard-rejected", %{store: store, commit: commit} do
+  test "a commit whose cert is absent is DEFERRED, not hard-rejected", %{
+    store: store,
+    commit: commit
+  } do
     assert {:error, {:trust_rejected, :awaiting_capability}} =
              CommitStore.import_commit(store, commit, validator: fn _ -> :ok end)
 
@@ -68,6 +80,7 @@ defmodule Commonplace.Store.CapabilityEnvelopeTest do
        %{store: store, leaf: leaf, commit: commit} do
     assert {:error, {:trust_rejected, :awaiting_capability}} =
              CommitStore.import_commit(store, commit, validator: fn _ -> :ok end)
+
     assert :none = CommitStore.get_commit(store, commit.id)
 
     # The cert arrives — which retries the pending queue. The retry itself

@@ -32,15 +32,16 @@ defmodule Commonplace.Process.OrchestratorTest do
   describe "compiling and running elixir processes" do
     test "compiles and starts an elixir process from source doc", %{store: store, root: root} do
       # Create a source document with a simple GenServer
-      _source_uuid = create_source_doc(store, root, "greeter.exs", """
-      defmodule Commonplace.UserProcess.Greeter do
-        use GenServer
-        def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
-        def greet(pid), do: GenServer.call(pid, :greet)
-        def init(opts), do: {:ok, opts}
-        def handle_call(:greet, _from, state), do: {:reply, "hello from greeter", state}
-      end
-      """)
+      _source_uuid =
+        create_source_doc(store, root, "greeter.exs", """
+        defmodule Commonplace.UserProcess.Greeter do
+          use GenServer
+          def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
+          def greet(pid), do: GenServer.call(pid, :greet)
+          def init(opts), do: {:ok, opts}
+          def handle_call(:greet, _from, state), do: {:reply, "hello from greeter", state}
+        end
+        """)
 
       # Create __processes.json
       create_processes_doc(store, root, %{
@@ -151,7 +152,11 @@ defmodule Commonplace.Process.OrchestratorTest do
       """)
 
       create_processes_doc(store, root, %{
-        "context_check" => %{"mode" => "elixir", "source" => "context_check.exs", "owns" => "out.txt"}
+        "context_check" => %{
+          "mode" => "elixir",
+          "source" => "context_check.exs",
+          "owns" => "out.txt"
+        }
       })
 
       {:ok, orch} = Orchestrator.start_link(root_uuid: root, store: store, interval: 100)
@@ -304,6 +309,7 @@ defmodule Commonplace.Process.OrchestratorTest do
         doc = Schema.new_schema()
         {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
         doc
+
       :none ->
         Schema.new_schema()
     end

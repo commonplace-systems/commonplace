@@ -133,7 +133,12 @@ defmodule Commonplace.Bots.Worker.PresenceFlickerTest do
     tool_use = %{
       "stop_reason" => "tool_use",
       "content" => [
-        %{"type" => "tool_use", "id" => "t1", "name" => "post_message", "input" => %{"text" => "x"}}
+        %{
+          "type" => "tool_use",
+          "id" => "t1",
+          "name" => "post_message",
+          "input" => %{"text" => "x"}
+        }
       ],
       "usage" => %{"output_tokens" => 10}
     }

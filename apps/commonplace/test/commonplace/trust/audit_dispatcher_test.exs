@@ -60,7 +60,8 @@ defmodule Commonplace.Trust.AuditDispatcherTest do
     name
   end
 
-  defp record(i), do: %{"event" => "test.denial", "doc_uuid" => "doc-#{i}", "reason" => ":unsigned"}
+  defp record(i),
+    do: %{"event" => "test.denial", "doc_uuid" => "doc-#{i}", "reason" => ":unsigned"}
 
   test "accounted?/1 refuses a dispatcher-only half-answer", %{store: store, n: n} do
     dispatcher = start_dispatcher!(store, n, flush_ms: 60_000)
@@ -87,14 +88,17 @@ defmodule Commonplace.Trust.AuditDispatcherTest do
     status = AuditDispatcher.status(dispatcher)
 
     assert status.offered == offered
-    assert status.shed > 0, "an overflow that sheds nothing is not an overflow: #{inspect(status)}"
+
+    assert status.shed > 0,
+           "an overflow that sheds nothing is not an overflow: #{inspect(status)}"
 
     # The point of the criterion: events offered vs recorded vs shed SUM.
     assert AuditDispatcher.downstream_accounted?(status),
            "the audit stream lost events without accounting for them: #{inspect(status)}"
 
-    assert status.shed == offered - status.queued - status.recorded - status.failed -
-                            status.guarded - status.in_flight
+    assert status.shed ==
+             offered - status.queued - status.recorded - status.failed -
+               status.guarded - status.in_flight
   end
 
   # The control that makes the overflow test mean something: the SAME

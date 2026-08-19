@@ -20,8 +20,20 @@ defmodule Commonplace.Process.SandboxExecRunner do
   @stderr_prefix "__CP_STDERR__"
   @max_line_length 8192
 
-  defstruct [:sandbox_pid, :command, :args, :name, :port, :os_pid, :event_log, :event_log_uuid,
-             :store, :env, :signing_context, :capability_cid]
+  defstruct [
+    :sandbox_pid,
+    :command,
+    :args,
+    :name,
+    :port,
+    :os_pid,
+    :event_log,
+    :event_log_uuid,
+    :store,
+    :env,
+    :signing_context,
+    :capability_cid
+  ]
 
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts)
@@ -61,11 +73,12 @@ defmodule Commonplace.Process.SandboxExecRunner do
     log_uuid = Keyword.get(opts, :event_log_uuid, UUID.uuid4())
 
     # Create sandbox
-    {:ok, sandbox_pid} = Sandbox.start_link(
-      root_uuid: root_uuid,
-      store: store,
-      sync_interval: sync_interval
-    )
+    {:ok, sandbox_pid} =
+      Sandbox.start_link(
+        root_uuid: root_uuid,
+        store: store,
+        sync_interval: sync_interval
+      )
 
     Process.unlink(sandbox_pid)
 
@@ -98,9 +111,11 @@ defmodule Commonplace.Process.SandboxExecRunner do
 
   @impl true
   def handle_call(:sandbox_dir, _from, state) do
-    dir = if state.sandbox_pid && Process.alive?(state.sandbox_pid) do
-      Sandbox.dir(state.sandbox_pid)
-    end
+    dir =
+      if state.sandbox_pid && Process.alive?(state.sandbox_pid) do
+        Sandbox.dir(state.sandbox_pid)
+      end
+
     {:reply, dir, state}
   end
 
@@ -120,16 +135,26 @@ defmodule Commonplace.Process.SandboxExecRunner do
     # so we can distinguish them from stdout in the port output.
     # Uses bash explicitly since dash doesn't support the fd3 redirect pattern.
     user_cmd = build_shell_command(state.command, state.args)
-    wrapper = "{ #{user_cmd} 2>&1 1>&3 | while IFS= read -r line; do echo '#{@stderr_prefix}'\"$line\"; done; } 3>&1"
+
+    wrapper =
+      "{ #{user_cmd} 2>&1 1>&3 | while IFS= read -r line; do echo '#{@stderr_prefix}'\"$line\"; done; } 3>&1"
 
     # Convert env map to charlists for Port.open
-    env_list = Enum.map(state.env, fn {k, v} -> {String.to_charlist(k), String.to_charlist(v)} end)
+    env_list =
+      Enum.map(state.env, fn {k, v} -> {String.to_charlist(k), String.to_charlist(v)} end)
 
-    port = Port.open(
-      {:spawn_executable, "/bin/bash"},
-      [:binary, {:line, @max_line_length}, {:cd, sandbox_dir}, :exit_status,
-       {:env, env_list}, {:args, ["-c", wrapper]}]
-    )
+    port =
+      Port.open(
+        {:spawn_executable, "/bin/bash"},
+        [
+          :binary,
+          {:line, @max_line_length},
+          {:cd, sandbox_dir},
+          :exit_status,
+          {:env, env_list},
+          {:args, ["-c", wrapper]}
+        ]
+      )
 
     # Save OS PID persistently — needed for orphan cleanup after crashes
     saved_os_pid =
@@ -331,7 +356,7 @@ defmodule Commonplace.Process.SandboxExecRunner do
   end
 
   defp build_shell_command(command, args) do
-    ([command | args])
+    [command | args]
     |> Enum.map(&shell_escape/1)
     |> Enum.join(" ")
   end

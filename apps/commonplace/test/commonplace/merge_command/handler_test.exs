@@ -50,8 +50,7 @@ defmodule Commonplace.MergeCommand.HandlerTest do
     handler_name = :"mcmd_handler_#{:rand.uniform(1_000_000)}"
 
     start_supervised!(
-      {Commonplace.MergeCommand.Handler,
-       store: name, name: handler_name, root_uuid: root_uuid}
+      {Commonplace.MergeCommand.Handler, store: name, name: handler_name, root_uuid: root_uuid}
     )
 
     %{store: name, handler: handler_name, root: root_uuid}
@@ -333,8 +332,16 @@ defmodule Commonplace.MergeCommand.HandlerTest do
       File.mkdir_p!(dir_b)
       store_b = :"mcmd_b_store_#{:rand.uniform(1_000_000)}"
       {:ok, pid_b} = CommitStore.start_link(data_dir: dir_b, name: store_b)
+
       on_exit(fn ->
-        if Process.alive?(pid_b), do: (try do GenServer.stop(pid_b) catch (:exit, _ -> :ok) end)
+        if Process.alive?(pid_b),
+          do:
+            (try do
+               GenServer.stop(pid_b)
+             catch
+               (:exit, _ -> :ok)
+             end)
+
         File.rm_rf!(dir_b)
       end)
 
@@ -355,7 +362,13 @@ defmodule Commonplace.MergeCommand.HandlerTest do
         )
 
       on_exit(fn ->
-        if Process.alive?(handler_b_pid), do: (try do GenServer.stop(handler_b_pid) catch (:exit, _ -> :ok) end)
+        if Process.alive?(handler_b_pid),
+          do:
+            (try do
+               GenServer.stop(handler_b_pid)
+             catch
+               (:exit, _ -> :ok)
+             end)
       end)
 
       topic_b = "commands/determ_b_doc/merge"

@@ -37,9 +37,13 @@ defmodule Commonplace.Store.CapabilityStoreTest do
     {pub, priv} = Signing.generate_keypair()
     {apub, _} = Signing.generate_keypair()
     ctx = %SigningContext{identity_uuid: "root", private_key: priv, public_key: pub}
+
     {:ok, cap} =
-      Capability.issue(ctx, {"alice", apub},
-        %{verbs: [:write], scope: {:docs, ["d1"]}, caveats: %{not_before: nil, not_after: nil}})
+      Capability.issue(ctx, {"alice", apub}, %{
+        verbs: [:write],
+        scope: {:docs, ["d1"]},
+        caveats: %{not_before: nil, not_after: nil}
+      })
 
     %{store: name, cap: cap}
   end

@@ -95,6 +95,7 @@ defmodule Commonplace.Chat.MessagesTest do
       [m] = Messages.materialize(doc)
 
       assert m["id"] == "m1"
+
       assert m["text"] == "v2",
              "latest edit's text replaces the original's text"
 
@@ -162,6 +163,7 @@ defmodule Commonplace.Chat.MessagesTest do
       result = Messages.materialize(doc)
 
       ids = Enum.map(result, & &1["id"])
+
       assert ids == ["m1"],
              "orphan edits/tombstones referencing missing ids must not appear in the output"
     end
@@ -184,6 +186,7 @@ defmodule Commonplace.Chat.MessagesTest do
       [m] = Messages.materialize(doc)
 
       assert m["id"] == "m1"
+
       assert m["text"] == "v3",
              "depth-2 edit chain: edit-B (whose edit_of points at edit-A which points at m1) " <>
                "is the tip; its text wins"
@@ -200,6 +203,7 @@ defmodule Commonplace.Chat.MessagesTest do
         |> Messages.append(%{"id" => "tomb-2", "tombstone_of" => "tomb-1"})
 
       [m] = Messages.materialize(doc)
+
       assert m["deleted?"] == true,
              "tombstone-of-tombstone composes — m1 stays deleted"
     end
@@ -213,6 +217,7 @@ defmodule Commonplace.Chat.MessagesTest do
 
       [m] = Messages.materialize(doc)
       assert m["id"] == "m1"
+
       assert m["deleted?"] == true,
              "tombstone whose chain ultimately points at m1 (via the edit) deletes m1"
     end

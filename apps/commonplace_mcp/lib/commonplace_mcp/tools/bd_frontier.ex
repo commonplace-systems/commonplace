@@ -52,11 +52,14 @@ defmodule Commonplace.MCP.Tools.BdFrontier do
   end
 
   # A stranded component is a list of ticket ids (Frontier.stranded_components).
-  defp normalize_component(component) when is_list(component), do: Enum.map(component, &to_string/1)
+  defp normalize_component(component) when is_list(component),
+    do: Enum.map(component, &to_string/1)
+
   defp normalize_component(other), do: other
 
   defp summary(ready_count, blocked_count, stranded) do
-    header = "#{ready_count} ready, #{blocked_count} blocked, #{length(stranded)} stranded component(s)."
+    header =
+      "#{ready_count} ready, #{blocked_count} blocked, #{length(stranded)} stranded component(s)."
 
     case stranded do
       [] ->

@@ -90,7 +90,11 @@ defmodule Commonplace.ScaleBenchmarkTest do
     k = scale("SCALE_MAT", 1_000)
     entries = Enum.map(1..k, fn i -> %{"id" => "m#{i}", "text" => "entry #{i}"} end)
 
-    out = bench("materialize (#{k} entries)", fn -> Commonplace.Materialize.materialize(entries, %{chains: []}) end)
+    out =
+      bench("materialize (#{k} entries)", fn ->
+        Commonplace.Materialize.materialize(entries, %{chains: []})
+      end)
+
     assert length(out) == k
   end
 
@@ -108,7 +112,11 @@ defmodule Commonplace.ScaleBenchmarkTest do
 
     commit_doc(dir_uuid, dir_doc)
 
-    forked = bench("fork directory (#{n} docs)", fn -> Fork.fork_directory(dir_uuid, CommitStoreClient) end)
+    forked =
+      bench("fork directory (#{n} docs)", fn ->
+        Fork.fork_directory(dir_uuid, CommitStoreClient)
+      end)
+
     assert is_binary(forked)
   end
 
@@ -123,10 +131,18 @@ defmodule Commonplace.ScaleBenchmarkTest do
     Enum.each(1..(d - 1), fn i ->
       doc = ContentType.create(Yelixer.Doc.new(), :text, "f")
       doc = ContentType.insert_text(doc, 0, "v#{i}")
-      CommitStoreClient.create_chained_commit(CommitStore, uuid, Yelixer.Encoding.encode_update(doc))
+
+      CommitStoreClient.create_chained_commit(
+        CommitStore,
+        uuid,
+        Yelixer.Encoding.encode_update(doc)
+      )
     end)
 
-    {:ok, _doc} = bench("reconstruct deep chain (#{d} commits)", fn -> DocBuilder.reconstruct_doc(CommitStore, uuid) end)
+    {:ok, _doc} =
+      bench("reconstruct deep chain (#{d} commits)", fn ->
+        DocBuilder.reconstruct_doc(CommitStore, uuid)
+      end)
   end
 
   test "merge after divergence (D commits each side)" do
@@ -142,15 +158,29 @@ defmodule Commonplace.ScaleBenchmarkTest do
 
     diverge = fn uuid ->
       Enum.each(1..d, fn i ->
-        doc = ContentType.insert_text(ContentType.create(Yelixer.Doc.new(), :text, "f"), 0, "edit #{i}")
-        CommitStoreClient.create_chained_commit(CommitStore, uuid, Yelixer.Encoding.encode_update(doc))
+        doc =
+          ContentType.insert_text(
+            ContentType.create(Yelixer.Doc.new(), :text, "f"),
+            0,
+            "edit #{i}"
+          )
+
+        CommitStoreClient.create_chained_commit(
+          CommitStore,
+          uuid,
+          Yelixer.Encoding.encode_update(doc)
+        )
       end)
     end
 
     diverge.(src_dir)
     diverge.(target_dir)
 
-    result = bench("merge after divergence (#{d}/side)", fn -> Merge.merge(src_dir, target_dir, CommitStoreClient) end)
+    result =
+      bench("merge after divergence (#{d}/side)", fn ->
+        Merge.merge(src_dir, target_dir, CommitStoreClient)
+      end)
+
     assert match?({:ok, _}, result)
   end
 
@@ -186,8 +216,14 @@ defmodule Commonplace.ScaleBenchmarkTest do
     Process.sleep(200)
 
     bench("fan-out single recompute round (#{v} views)", fn ->
-      doc = ContentType.insert_text(ContentType.create(Yelixer.Doc.new(), :text, "f"), 0, "edited")
-      CommitStoreClient.create_chained_commit(CommitStore, source, Yelixer.Encoding.encode_update(doc))
+      doc =
+        ContentType.insert_text(ContentType.create(Yelixer.Doc.new(), :text, "f"), 0, "edited")
+
+      CommitStoreClient.create_chained_commit(
+        CommitStore,
+        source,
+        Yelixer.Encoding.encode_update(doc)
+      )
 
       deadline = System.monotonic_time(:millisecond) + 30_000
 
@@ -196,7 +232,16 @@ defmodule Commonplace.ScaleBenchmarkTest do
       end)
     end)
 
-    Enum.each(pids, fn {pid, _t} -> if Process.alive?(pid), do: (try do GenServer.stop(pid) catch (:exit, _ -> :ok) end) end)
+    Enum.each(pids, fn {pid, _t} ->
+      if Process.alive?(pid),
+        do:
+          (try do
+             GenServer.stop(pid)
+           catch
+             (:exit, _ -> :ok)
+           end)
+    end)
+
     send(test_pid, :done)
   end
 
@@ -208,9 +253,15 @@ defmodule Commonplace.ScaleBenchmarkTest do
       end
 
     cond do
-      content == expected -> :ok
-      System.monotonic_time(:millisecond) > deadline -> :ok
-      true -> (Process.sleep(10); wait_target(target, expected, deadline))
+      content == expected ->
+        :ok
+
+      System.monotonic_time(:millisecond) > deadline ->
+        :ok
+
+      true ->
+        Process.sleep(10)
+        wait_target(target, expected, deadline)
     end
   end
 end

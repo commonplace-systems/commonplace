@@ -35,12 +35,13 @@ defmodule Commonplace.Sync.SyncLoopTest do
 
   describe "outbound sync (disk → CRDT)" do
     test "detects new file and syncs to CRDT", %{store: store, root: root, sync_dir: dir} do
-      {:ok, pid} = SyncLoop.start_link(
-        dir: dir,
-        root_uuid: root,
-        store: store,
-        interval: 50
-      )
+      {:ok, pid} =
+        SyncLoop.start_link(
+          dir: dir,
+          root_uuid: root,
+          store: store,
+          interval: 50
+        )
 
       # Write a file
       File.write!(Path.join(dir, "hello.txt"), "world")
@@ -57,12 +58,13 @@ defmodule Commonplace.Sync.SyncLoopTest do
     end
 
     test "detects modified file and updates CRDT", %{store: store, root: root, sync_dir: dir} do
-      {:ok, pid} = SyncLoop.start_link(
-        dir: dir,
-        root_uuid: root,
-        store: store,
-        interval: 50
-      )
+      {:ok, pid} =
+        SyncLoop.start_link(
+          dir: dir,
+          root_uuid: root,
+          store: store,
+          interval: 50
+        )
 
       # Let v1 land first so v2 is observed as a MODIFICATION (the point of
       # this test), not coalesced into the initial add.
@@ -70,6 +72,7 @@ defmodule Commonplace.Sync.SyncLoopTest do
       assert "version 1" == wait_until(fn -> latest_content(store, root, "doc.txt") end)
 
       File.write!(Path.join(dir, "doc.txt"), "version 2")
+
       assert "version 2" ==
                wait_until(fn ->
                  case latest_content(store, root, "doc.txt") do
@@ -99,15 +102,17 @@ defmodule Commonplace.Sync.SyncLoopTest do
       CommitStore.create_commit(store, root_uuid(root), update, nil)
 
       # Start sync loop
-      {:ok, pid} = SyncLoop.start_link(
-        dir: dir,
-        root_uuid: root,
-        store: store,
-        interval: 50
-      )
+      {:ok, pid} =
+        SyncLoop.start_link(
+          dir: dir,
+          root_uuid: root,
+          store: store,
+          interval: 50
+        )
 
       # File should appear on disk once the inbound cycle exports it.
       path = Path.join(dir, "from_crdt.txt")
+
       assert "hello from crdt" ==
                wait_until(fn -> File.exists?(path) && File.read!(path) end)
 
@@ -117,12 +122,13 @@ defmodule Commonplace.Sync.SyncLoopTest do
 
   describe "bidirectional flow" do
     test "edit on disk flows to CRDT and back", %{store: store, root: root, sync_dir: dir} do
-      {:ok, pid} = SyncLoop.start_link(
-        dir: dir,
-        root_uuid: root,
-        store: store,
-        interval: 50
-      )
+      {:ok, pid} =
+        SyncLoop.start_link(
+          dir: dir,
+          root_uuid: root,
+          store: store,
+          interval: 50
+        )
 
       # Write a file on disk
       File.write!(Path.join(dir, "roundtrip.txt"), "original")
@@ -141,13 +147,14 @@ defmodule Commonplace.Sync.SyncLoopTest do
     test "no infinite sync loop", %{store: store, root: root, sync_dir: dir} do
       test_pid = self()
 
-      {:ok, pid} = SyncLoop.start_link(
-        dir: dir,
-        root_uuid: root,
-        store: store,
-        interval: 50,
-        on_cycle: fn count -> send(test_pid, {:cycle, count}) end
-      )
+      {:ok, pid} =
+        SyncLoop.start_link(
+          dir: dir,
+          root_uuid: root,
+          store: store,
+          interval: 50,
+          on_cycle: fn count -> send(test_pid, {:cycle, count}) end
+        )
 
       File.write!(Path.join(dir, "stable.txt"), "content")
 
@@ -191,8 +198,12 @@ defmodule Commonplace.Sync.SyncLoopTest do
     val = fun.()
 
     cond do
-      val -> val
-      System.monotonic_time(:millisecond) >= deadline -> val
+      val ->
+        val
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        val
+
       true ->
         Process.sleep(step_ms)
         do_wait(fun, deadline, step_ms)

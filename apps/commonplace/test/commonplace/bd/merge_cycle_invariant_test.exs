@@ -240,7 +240,8 @@ defmodule Commonplace.Bd.MergeCycleInvariantTest do
                  allow: [:status]
                )
 
-      assert reason == "field :status is frozen: ticket is closed; the one exit is ticket_set_status's closed→open reopen decision"
+      assert reason ==
+               "field :status is frozen: ticket is closed; the one exit is ticket_set_status's closed→open reopen decision"
 
       # Land line 2 on the fork — A is still open there, so this is an
       # ordinary, individually-legal transition.

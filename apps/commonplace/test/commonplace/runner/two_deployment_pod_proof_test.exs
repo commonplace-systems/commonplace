@@ -68,7 +68,12 @@ defmodule Commonplace.Runner.TwoDeploymentPodProofTest do
     # ── DEPLOYMENT A ────────────────────────────────────────────────────────
     # A's projection carries no prior yield. A mints its own key, produces a
     # yield only it could produce, and signs it.
-    a_repo = projection_repo!(ctx, "a", %{"role" => "producer", "prior_yield" => "", "principal" => ctx.principal_uuid})
+    a_repo =
+      projection_repo!(ctx, "a", %{
+        "role" => "producer",
+        "prior_yield" => "",
+        "principal" => ctx.principal_uuid
+      })
 
     a = launch_deployment!(launcher, ctx, a_repo)
     a_report = await_report!(a, "deployment-report")
@@ -93,7 +98,12 @@ defmodule Commonplace.Runner.TwoDeploymentPodProofTest do
 
     # ── DEPLOYMENT B ────────────────────────────────────────────────────────
     # ⭐ Built AFTER ingest, in a FRESH pod, with A's yield BY REFERENCE.
-    b_repo = projection_repo!(ctx, "b", %{"role" => "resolver", "prior_yield" => ingested_yield, "principal" => ctx.principal_uuid})
+    b_repo =
+      projection_repo!(ctx, "b", %{
+        "role" => "resolver",
+        "prior_yield" => ingested_yield,
+        "principal" => ctx.principal_uuid
+      })
 
     b = launch_deployment!(launcher, ctx, b_repo)
     b_report = await_report!(b, "deployment-report")
@@ -130,7 +140,13 @@ defmodule Commonplace.Runner.TwoDeploymentPodProofTest do
     # Same shape, same code, same custody: a resolver whose projection NEVER
     # SAW A's yield. If this SUCCEEDED, "B succeeded" above would not
     # distinguish reading from re-deriving.
-    c_repo = projection_repo!(ctx, "c", %{"role" => "resolver", "prior_yield" => "", "principal" => ctx.principal_uuid})
+    c_repo =
+      projection_repo!(ctx, "c", %{
+        "role" => "resolver",
+        "prior_yield" => "",
+        "principal" => ctx.principal_uuid
+      })
+
     c = launch_deployment!(launcher, ctx, c_repo)
     c_report = await_report!(c, "deployment-report")
 

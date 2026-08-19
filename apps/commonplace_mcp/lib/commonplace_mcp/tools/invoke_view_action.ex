@@ -80,7 +80,8 @@ defmodule Commonplace.MCP.Tools.InvokeViewAction do
           },
           "target" => %{
             "type" => "string",
-            "description" => "Optional entity id the action operates on (when the action has a target attribute)."
+            "description" =>
+              "Optional entity id the action operates on (when the action has a target attribute)."
           },
           "args" => %{
             "type" => "object",
@@ -242,7 +243,8 @@ defmodule Commonplace.MCP.Tools.InvokeViewAction do
           _ -> Enum.join(names, ", ")
         end
 
-      {:error, "action '#{action_name}' not declared in this view. Available actions: #{available}"}
+      {:error,
+       "action '#{action_name}' not declared in this view. Available actions: #{available}"}
     end
   end
 
@@ -258,7 +260,9 @@ defmodule Commonplace.MCP.Tools.InvokeViewAction do
 
   defp collect_action_names(_), do: []
 
-  defp format_mutation_summary("fork", %{short_uuid: short}), do: "Forked view to new UUID #{short}"
+  defp format_mutation_summary("fork", %{short_uuid: short}),
+    do: "Forked view to new UUID #{short}"
+
   defp format_mutation_summary(action, _), do: "Tree-mutating action '#{action}' completed"
 
   # Atom keys from the dispatcher result map → string keys for JSON

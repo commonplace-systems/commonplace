@@ -113,7 +113,10 @@ defmodule CommonplaceWebWeb.PresenceCardTest do
           },
           name: "doer",
           honorific: :bot,
-          identity: %{"first_seen" => "2026-04-01T00:00:00Z", "last_seen" => "2026-04-16T11:00:00Z"},
+          identity: %{
+            "first_seen" => "2026-04-01T00:00:00Z",
+            "last_seen" => "2026-04-16T11:00:00Z"
+          },
           now: now
         })
 

@@ -39,6 +39,7 @@ defmodule Commonplace.Store.SnapshotOpTest do
 
   defp seed_doc_with_commits(store, uuid, client_id, contents) do
     {:ok, _genesis} = CommitStore.ensure_genesis(store, uuid)
+
     Enum.each(contents, fn c ->
       CommitStore.create_chained_commit(store, uuid, update_from(client_id, c), %{kind: :regular})
     end)
@@ -94,7 +95,8 @@ defmodule Commonplace.Store.SnapshotOpTest do
   end
 
   describe "deterministic-anyone (load-bearing)" do
-    test "two independent CommitStore instances snapshotting the same doc produce identical commit ids", %{store: store_a, dir: _dir_a} do
+    test "two independent CommitStore instances snapshotting the same doc produce identical commit ids",
+         %{store: store_a, dir: _dir_a} do
       uuid = "det-same"
 
       seed_doc_with_commits(store_a, uuid, 42, ["same content"])
@@ -106,8 +108,16 @@ defmodule Commonplace.Store.SnapshotOpTest do
       File.mkdir_p!(dir_b)
       name_b = :"det_store_#{:erlang.unique_integer([:positive])}"
       {:ok, pid_b} = CommitStore.start_link(data_dir: dir_b, name: name_b)
+
       on_exit(fn ->
-        if Process.alive?(pid_b), do: (try do GenServer.stop(pid_b) catch (:exit, _ -> :ok) end)
+        if Process.alive?(pid_b),
+          do:
+            (try do
+               GenServer.stop(pid_b)
+             catch
+               (:exit, _ -> :ok)
+             end)
+
         File.rm_rf!(dir_b)
       end)
 
@@ -127,7 +137,9 @@ defmodule Commonplace.Store.SnapshotOpTest do
   end
 
   describe "hash conformance (out-of-band formula)" do
-    test "snapshot.id = sha256((parent_id || <<>>) ∥ update ∥ canonical_metadata(metadata))", %{store: store} do
+    test "snapshot.id = sha256((parent_id || <<>>) ∥ update ∥ canonical_metadata(metadata))", %{
+      store: store
+    } do
       uuid = "hash-conform"
       seed_doc_with_commits(store, uuid, 1, ["hi"])
 
@@ -167,7 +179,9 @@ defmodule Commonplace.Store.SnapshotOpTest do
   end
 
   describe "namespace bootstrap post-snapshot (CX-a04 integration)" do
-    test "first regular commit after a snapshot auto-stamps snapshot_parent = snapshot.id", %{store: store} do
+    test "first regular commit after a snapshot auto-stamps snapshot_parent = snapshot.id", %{
+      store: store
+    } do
       uuid = "bootstrap"
       seed_doc_with_commits(store, uuid, 1, ["seed"])
 
@@ -175,12 +189,15 @@ defmodule Commonplace.Store.SnapshotOpTest do
 
       # New regular commit on top of the snapshot should have
       # snapshot_parent = snapshot.id (per current_namespace).
-      reg = CommitStore.create_chained_commit(store, uuid, update_from(1, "after"), %{kind: :regular})
+      reg =
+        CommitStore.create_chained_commit(store, uuid, update_from(1, "after"), %{kind: :regular})
 
       assert reg.metadata[:snapshot_parent] == snapshot.id
     end
 
-    test "Namespace.current_namespace/1 on the snapshot returns the snapshot's own id", %{store: store} do
+    test "Namespace.current_namespace/1 on the snapshot returns the snapshot's own id", %{
+      store: store
+    } do
       uuid = "bootstrap-helper"
       seed_doc_with_commits(store, uuid, 1, ["seed"])
 
@@ -201,6 +218,7 @@ defmodule Commonplace.Store.SnapshotOpTest do
       # Decode the snapshot update and check that every item id in it
       # appears as a key somewhere inside the derivation_map's values.
       {:ok, doc} = Yelixer.Encoding.apply_update(Yelixer.Doc.new(), snapshot.update)
+
       new_ids =
         doc.store
         |> BlockStore.all_items()
@@ -218,7 +236,8 @@ defmodule Commonplace.Store.SnapshotOpTest do
                inspect(MapSet.to_list(MapSet.difference(new_ids, covered)))
     end
 
-    test "derivation_map is keyed by source_snapshot_hash (single entry for single-parent snapshot)", %{store: store} do
+    test "derivation_map is keyed by source_snapshot_hash (single entry for single-parent snapshot)",
+         %{store: store} do
       uuid = "dm-shape"
       {:ok, genesis} = CommitStore.ensure_genesis(store, uuid)
       CommitStore.create_chained_commit(store, uuid, update_from(1, "x"), %{kind: :regular})
@@ -288,7 +307,8 @@ defmodule Commonplace.Store.SnapshotOpTest do
   end
 
   describe "snapshot integrates with rejection telemetry (validator guard still holds)" do
-    test "importing a snapshot with mismatched snapshot_parent list structure still validates as :snapshot (accepts)", %{store: store} do
+    test "importing a snapshot with mismatched snapshot_parent list structure still validates as :snapshot (accepts)",
+         %{store: store} do
       # Snapshots bypass the regular-commit clientID check. This test
       # confirms the validator's :snapshot clause still accepts even a
       # locally-stamped snapshot imported elsewhere.
@@ -302,8 +322,16 @@ defmodule Commonplace.Store.SnapshotOpTest do
       File.mkdir_p!(dir2)
       name2 = :"recv_store_#{:erlang.unique_integer([:positive])}"
       {:ok, pid2} = CommitStore.start_link(data_dir: dir2, name: name2)
+
       on_exit(fn ->
-        if Process.alive?(pid2), do: (try do GenServer.stop(pid2) catch (:exit, _ -> :ok) end)
+        if Process.alive?(pid2),
+          do:
+            (try do
+               GenServer.stop(pid2)
+             catch
+               (:exit, _ -> :ok)
+             end)
+
         File.rm_rf!(dir2)
       end)
 

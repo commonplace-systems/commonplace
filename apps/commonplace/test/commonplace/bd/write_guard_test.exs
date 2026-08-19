@@ -432,7 +432,8 @@ defmodule Commonplace.Bd.WriteGuardTest do
       ]
 
       for changes <- smuggled_changes do
-        assert {:error, "field :status is frozen: ticket is closed; the one exit is ticket_set_status's closed→open reopen decision"} =
+        assert {:error,
+                "field :status is frozen: ticket is closed; the one exit is ticket_set_status's closed→open reopen decision"} =
                  WriteGuard.check(closed, changes, ctx.root, ctx.store,
                    allow: [:status],
                    reopen: true
@@ -460,7 +461,8 @@ defmodule Commonplace.Bd.WriteGuardTest do
           extra: Map.put(closed.extra, "status_decisions", [decision])
         }
 
-        assert {:error, "field :status is frozen: ticket is closed; the one exit is ticket_set_status's closed→open reopen decision"} =
+        assert {:error,
+                "field :status is frozen: ticket is closed; the one exit is ticket_set_status's closed→open reopen decision"} =
                  WriteGuard.check(closed, changes, ctx.root, ctx.store,
                    allow: [:status],
                    reopen: true

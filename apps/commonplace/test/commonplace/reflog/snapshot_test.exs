@@ -29,7 +29,10 @@ defmodule Commonplace.Reflog.SnapshotTest do
 
       # __reflog should have "server" entry
       {:ok, reflog_commit} = CommitStore.latest_commit(store, reflog_entry.node_id)
-      {:ok, reflog_schema} = Yelixer.Encoding.apply_update(Schema.new_schema(), reflog_commit.update)
+
+      {:ok, reflog_schema} =
+        Yelixer.Encoding.apply_update(Schema.new_schema(), reflog_commit.update)
+
       {:ok, server_entry} = Schema.get_entry(reflog_schema, "server")
       assert server_entry.type == :dir
       assert server_entry.node_id == owner_uuid

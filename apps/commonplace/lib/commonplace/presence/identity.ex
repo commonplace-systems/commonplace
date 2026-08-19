@@ -155,7 +155,14 @@ defmodule Commonplace.Presence.Identity do
         id_doc = load_schema(id_dir_uuid, store)
         id_doc = Schema.add_file(id_doc, fname, uuid)
         update = Yelixer.Encoding.encode_update(id_doc)
-        CommitStoreClient.create_chained_commit(store, id_dir_uuid, update, %{}, commit_opts(opts))
+
+        CommitStoreClient.create_chained_commit(
+          store,
+          id_dir_uuid,
+          update,
+          %{},
+          commit_opts(opts)
+        )
 
         {:ok, uuid}
     end

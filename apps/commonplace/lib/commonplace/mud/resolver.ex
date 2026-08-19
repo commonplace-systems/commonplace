@@ -90,7 +90,9 @@ defmodule Commonplace.MUD.Resolver do
         {:ok, kw, Enum.join(rest, " ")}
 
       _ ->
-        case greedy_match_entry([ctx.inventory_uuid, ctx.current_room_uuid], argv, ctx.store, min_remainder: 1) do
+        case greedy_match_entry([ctx.inventory_uuid, ctx.current_room_uuid], argv, ctx.store,
+               min_remainder: 1
+             ) do
           {:ok, _entry, phrase, remainder} -> {:ok, phrase, Enum.join(remainder, " ")}
           :not_found -> :not_found
         end

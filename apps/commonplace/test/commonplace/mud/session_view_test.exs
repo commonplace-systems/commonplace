@@ -100,7 +100,10 @@ defmodule Commonplace.MUD.SessionViewTest do
 
     small_view = SessionView.new("sess-isolation-baseline", store)
     baseline_sv = Yelixer.BlockStore.state_vector(small_view.doc.store)
-    small_view = SessionView.append_command_turn(small_view, "spin orrery", "You spin the orrery.")
+
+    small_view =
+      SessionView.append_command_turn(small_view, "spin orrery", "You spin the orrery.")
+
     baseline_delta = Encoding.encode_diff(small_view.doc, baseline_sv)
 
     assert byte_size(delta) <= byte_size(baseline_delta) * 2,
@@ -201,7 +204,10 @@ defmodule Commonplace.MUD.SessionViewTest do
     # Baseline: append with an EMPTY room.
     empty_room = SessionView.new("sess-append-emptyroom", store)
     base_sv = Yelixer.BlockStore.state_vector(empty_room.doc.store)
-    empty_room = SessionView.append_command_turn(empty_room, "spin orrery", "You spin the orrery.")
+
+    empty_room =
+      SessionView.append_command_turn(empty_room, "spin orrery", "You spin the orrery.")
+
     baseline_delta = byte_size(Encoding.encode_diff(empty_room.doc, base_sv))
 
     # Live room, then append — the append delta must not carry room ops.
@@ -272,7 +278,9 @@ defmodule Commonplace.MUD.SessionViewTest do
     assert items == ["an anvil", "a glowing ingot"]
 
     # <occupants> holds two <who> text elements.
-    {:element, "occupants", occ_name} = Enum.find(children, &match?({:element, "occupants", _}, &1))
+    {:element, "occupants", occ_name} =
+      Enum.find(children, &match?({:element, "occupants", _}, &1))
+
     whos = XMLElement.children(view.doc, occ_name) |> Enum.map(&text_of(view.doc, &1))
     assert whos == ["Grunk", "Ember"]
 
@@ -322,7 +330,9 @@ defmodule Commonplace.MUD.SessionViewTest do
     {view, buffer} = SessionView.buffer_flush(view, buffer)
 
     after_count = length(CommitStore.commit_log(store, view.uuid, limit: 10_000))
-    assert after_count == before_count + 1, "M ambient events must coalesce into exactly ONE commit"
+
+    assert after_count == before_count + 1,
+           "M ambient events must coalesce into exactly ONE commit"
 
     # The flushed turn carries all 4 <line> children in order.
     {:element, "turn", turn_name} =

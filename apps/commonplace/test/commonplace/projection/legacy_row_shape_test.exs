@@ -60,7 +60,9 @@ defmodule Commonplace.Projection.LegacyRowShapeTest do
     update = Encoding.encode_update(doc)
 
     modern = Commit.new("d", update, nil, %{kind: :regular})
-    legacy = legacy_term(id: modern.id, doc_uuid: "d", update: update, metadata: %{kind: :regular})
+
+    legacy =
+      legacy_term(id: modern.id, doc_uuid: "d", update: update, metadata: %{kind: :regular})
 
     # The address must be IDENTICAL to the modern struct's — a legacy row
     # with no hash and a modern row with `nil` are the same commit, which

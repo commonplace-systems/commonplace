@@ -95,7 +95,8 @@ defmodule Commonplace.MUD.Mint do
   before the token is acquired, the link is rolled back (unlinked) so no
   ownerless item is left reachable.
   """
-  @spec mint_item(map(), String.t(), String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
+  @spec mint_item(map(), String.t(), String.t(), keyword()) ::
+          {:ok, String.t()} | {:error, term()}
   def mint_item(template, dest_inventory_uuid, owner_identity, opts \\ [])
       when is_binary(dest_inventory_uuid) do
     store = Keyword.get(opts, :store, CommitStoreClient)
@@ -121,9 +122,19 @@ defmodule Commonplace.MUD.Mint do
 
       entry_name_val = instance_entry_name(object.name, uuid)
 
-      with {:ok, ^uuid} <- create_dir_with_uuid(uuid, Schemas.object_filename(), Schemas.encode_object(object), node_opts),
+      with {:ok, ^uuid} <-
+             create_dir_with_uuid(
+               uuid,
+               Schemas.object_filename(),
+               Schemas.encode_object(object),
+               node_opts
+             ),
            :ok <- link_into_parent(dest_inventory_uuid, entry_name_val, uuid, node_opts),
-           {:ok, _} <- Bursar.acquire(bursar, uuid, owner_identity, authenticated_as: owner_identity, ttl: nil) do
+           {:ok, _} <-
+             Bursar.acquire(bursar, uuid, owner_identity,
+               authenticated_as: owner_identity,
+               ttl: nil
+             ) do
         {:ok, uuid}
       else
         {:denied, _} ->
@@ -166,8 +177,15 @@ defmodule Commonplace.MUD.Mint do
     case entry_name(inventory_uuid, item_uuid, store) do
       {:ok, name} ->
         case NodeIdentity.signing_context() do
-          {:ok, node_ctx} -> unlink_from_parent(inventory_uuid, name, store: store, signing_context: node_ctx, cert_cids: [])
-          {:error, _} = err -> err
+          {:ok, node_ctx} ->
+            unlink_from_parent(inventory_uuid, name,
+              store: store,
+              signing_context: node_ctx,
+              cert_cids: []
+            )
+
+          {:error, _} = err ->
+            err
         end
 
       :error ->
@@ -256,7 +274,8 @@ defmodule Commonplace.MUD.Mint do
   end
 
   defp do_smith_saga(recipe, crafter_inv, crafter_identity, store, bursar) do
-    with {:ok, input_uuids} <- validate_inputs(recipe, crafter_inv, crafter_identity, store, bursar) do
+    with {:ok, input_uuids} <-
+           validate_inputs(recipe, crafter_inv, crafter_identity, store, bursar) do
       # MINT OUTPUT FIRST — a failure here leaves the inputs UNTOUCHED (S2).
       case mint_item(recipe.output, crafter_inv, crafter_identity, store: store, bursar: bursar) do
         {:ok, output_uuid} ->
@@ -468,7 +487,17 @@ defmodule Commonplace.MUD.Mint do
         if current < 1 do
           {:error, :depleted}
         else
-          run_extraction(vein_uuid, vein, current, now, dest_inventory_uuid, miner_identity, store, bursar, opts)
+          run_extraction(
+            vein_uuid,
+            vein,
+            current,
+            now,
+            dest_inventory_uuid,
+            miner_identity,
+            store,
+            bursar,
+            opts
+          )
         end
 
       {:ok, %Object{}} ->
@@ -493,7 +522,17 @@ defmodule Commonplace.MUD.Mint do
   # meta via `%Object{vein | ...}`: every field except yield_remaining/
   # last_regen_at is copied verbatim from the doc `do_extract` just
   # loaded. No parameter here can smuggle a different protected value in.
-  defp run_extraction(vein_uuid, vein, current, now, dest_inventory_uuid, miner_identity, store, bursar, opts) do
+  defp run_extraction(
+         vein_uuid,
+         vein,
+         current,
+         now,
+         dest_inventory_uuid,
+         miner_identity,
+         store,
+         bursar,
+         opts
+       ) do
     mint_opts = Keyword.merge(opts, store: store, bursar: bursar)
 
     case mint_item(vein.yield_type, dest_inventory_uuid, miner_identity, mint_opts) do
@@ -507,7 +546,12 @@ defmodule Commonplace.MUD.Mint do
           {:error, reason} ->
             # Vein write failed AFTER the mint landed — roll back the mint
             # so the world stays consistent (no ownerless/ungranted item).
-            consume_item(item_uuid, miner_identity, inventory_uuid: dest_inventory_uuid, store: store, bursar: bursar)
+            consume_item(item_uuid, miner_identity,
+              inventory_uuid: dest_inventory_uuid,
+              store: store,
+              bursar: bursar
+            )
+
             {:error, reason}
         end
 
@@ -561,9 +605,17 @@ defmodule Commonplace.MUD.Mint do
       {:ok, schema} ->
         schema = Schema.add_directory(schema, entry_name_val, child_uuid)
         update = Encoding.encode_update(schema)
-        {metadata, commit_opts} = SignedWrite.opts_for(parent_uuid, Keyword.put(opts, :store, store))
 
-        case CommitStoreClient.create_chained_commit(store, parent_uuid, update, metadata, commit_opts) do
+        {metadata, commit_opts} =
+          SignedWrite.opts_for(parent_uuid, Keyword.put(opts, :store, store))
+
+        case CommitStoreClient.create_chained_commit(
+               store,
+               parent_uuid,
+               update,
+               metadata,
+               commit_opts
+             ) do
           {:error, _} = err -> err
           _commit -> :ok
         end
@@ -580,7 +632,10 @@ defmodule Commonplace.MUD.Mint do
       {:ok, schema} ->
         schema = Schema.remove_entry(schema, entry_name_val)
         update = Encoding.encode_update(schema)
-        {metadata, commit_opts} = SignedWrite.opts_for(parent_uuid, Keyword.put(opts, :store, store))
+
+        {metadata, commit_opts} =
+          SignedWrite.opts_for(parent_uuid, Keyword.put(opts, :store, store))
+
         CommitStoreClient.create_chained_commit(store, parent_uuid, update, metadata, commit_opts)
         :ok
 

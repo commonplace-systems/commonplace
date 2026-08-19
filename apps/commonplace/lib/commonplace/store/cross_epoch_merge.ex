@@ -417,5 +417,4 @@ defmodule Commonplace.Store.CrossEpochMerge do
       }
     )
   end
-
 end

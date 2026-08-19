@@ -74,8 +74,11 @@ defmodule Commonplace.FileRmRfGuardTest do
 
     entries =
       case File.ls(dir) do
-        {:ok, entries} -> entries
-        {:error, reason} -> flunk("could not list the captured directory #{dir}: #{inspect(reason)}")
+        {:ok, entries} ->
+          entries
+
+        {:error, reason} ->
+          flunk("could not list the captured directory #{dir}: #{inspect(reason)}")
       end
 
     # Control-for-the-control: if the store has no file here, this test would

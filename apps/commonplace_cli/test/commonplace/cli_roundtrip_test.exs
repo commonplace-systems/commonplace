@@ -66,8 +66,10 @@ defmodule Commonplace.CLI.RoundtripTest do
     # Compare
     assert File.read!(Path.join(out, "readme.txt")) == "# Hello\n\nThis is a test.\n"
     assert File.read!(Path.join(out, "empty.txt")) == ""
+
     assert File.read!(Path.join(out, "docs/guide.txt")) ==
              "Step 1: do the thing\nStep 2: done\n"
+
     assert File.read!(Path.join(out, "docs/examples/hello.txt")) == "hello world\n"
     assert File.dir?(Path.join(out, "empty_dir"))
     assert File.ls!(Path.join(out, "empty_dir")) == []

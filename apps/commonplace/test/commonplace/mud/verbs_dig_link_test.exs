@@ -52,7 +52,15 @@ defmodule Commonplace.MUD.VerbsDigLinkTest do
         sweep_interval: 60_000
       )
 
-    on_exit(fn -> if Process.alive?(bursar_pid), do: (try do GenServer.stop(bursar_pid) catch (:exit, _ -> :ok) end) end)
+    on_exit(fn ->
+      if Process.alive?(bursar_pid),
+        do:
+          (try do
+             GenServer.stop(bursar_pid)
+           catch
+             (:exit, _ -> :ok)
+           end)
+    end)
 
     root_uuid = UUID.uuid4()
     update = Encoding.encode_update(Schema.new_schema())
@@ -154,7 +162,8 @@ defmodule Commonplace.MUD.VerbsDigLinkTest do
     assert move_out =~ "The Tower"
   end
 
-  test "@teleport (and its @go alias) moves the player to a room by uuid, recovering from a dead end", ctx do
+  test "@teleport (and its @go alias) moves the player to a room by uuid, recovering from a dead end",
+       ctx do
     alice = start_player("alice", ctx)
 
     # Carve a small dead-end branch: start -up-> Tower -north-> Attic.
@@ -212,7 +221,8 @@ defmodule Commonplace.MUD.VerbsDigLinkTest do
     assert go_out =~ "The Start Room"
   end
 
-  test "CX-82wi: 'where' and '@dump here' surface the room's own uuid, and it's a usable @teleport address", ctx do
+  test "CX-82wi: 'where' and '@dump here' surface the room's own uuid, and it's a usable @teleport address",
+       ctx do
     alice = start_player("alice", ctx)
 
     # `where` reports the current room's name AND its own uuid — the address a
@@ -220,6 +230,7 @@ defmodule Commonplace.MUD.VerbsDigLinkTest do
     send_input(alice, "where")
     where_out = drain("alice") |> Enum.join("\n")
     assert where_out =~ "You are in The Start Room."
+
     self_uuid =
       case Regex.run(~r/uuid: ([0-9a-fA-F-]{36})/, where_out) do
         [_, u] -> u

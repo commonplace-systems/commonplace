@@ -51,7 +51,10 @@ defmodule Commonplace.Invariants.DispatcherTest do
   end
 
   defp advance(dispatcher, uuid \\ "doc-1") do
-    GenServer.cast(dispatcher, {:advance, %{doc_uuid: uuid, commit_id: <<1>>, source: :write_commit}})
+    GenServer.cast(
+      dispatcher,
+      {:advance, %{doc_uuid: uuid, commit_id: <<1>>, source: :write_commit}}
+    )
   end
 
   describe "coalescing" do

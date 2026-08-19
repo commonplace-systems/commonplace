@@ -46,6 +46,7 @@ defmodule Commonplace.Sync.AgentTest do
           doc = Schema.new_schema()
           {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
           doc
+
         :none ->
           Schema.new_schema()
       end
@@ -63,11 +64,12 @@ defmodule Commonplace.Sync.AgentTest do
     test "new file on disk is synced to CRDT", %{store: store, sync_dir: dir, root: root} do
       File.write!(Path.join(dir, "new.txt"), "new content")
 
-      {:ok, pid} = Agent.start_link(
-        root_uuid: root,
-        sync_dir: dir,
-        store: store
-      )
+      {:ok, pid} =
+        Agent.start_link(
+          root_uuid: root,
+          sync_dir: dir,
+          store: store
+        )
 
       Agent.sync_once(pid)
 
@@ -80,11 +82,12 @@ defmodule Commonplace.Sync.AgentTest do
       # Setup: create file and sync it
       File.write!(Path.join(dir, "file.txt"), "original")
 
-      {:ok, pid} = Agent.start_link(
-        root_uuid: root,
-        sync_dir: dir,
-        store: store
-      )
+      {:ok, pid} =
+        Agent.start_link(
+          root_uuid: root,
+          sync_dir: dir,
+          store: store
+        )
 
       Agent.sync_once(pid)
 
@@ -102,11 +105,12 @@ defmodule Commonplace.Sync.AgentTest do
     test "deleted file on disk is removed from schema", %{store: store, sync_dir: dir, root: root} do
       File.write!(Path.join(dir, "temp.txt"), "temporary")
 
-      {:ok, pid} = Agent.start_link(
-        root_uuid: root,
-        sync_dir: dir,
-        store: store
-      )
+      {:ok, pid} =
+        Agent.start_link(
+          root_uuid: root,
+          sync_dir: dir,
+          store: store
+        )
 
       Agent.sync_once(pid)
 
@@ -136,11 +140,12 @@ defmodule Commonplace.Sync.AgentTest do
       update = Yelixer.Encoding.encode_update(root_doc)
       CommitStore.create_commit(store, root, update, nil)
 
-      {:ok, pid} = Agent.start_link(
-        root_uuid: root,
-        sync_dir: dir,
-        store: store
-      )
+      {:ok, pid} =
+        Agent.start_link(
+          root_uuid: root,
+          sync_dir: dir,
+          store: store
+        )
 
       # Export phase of sync should write to disk
       Agent.sync_once(pid)
@@ -150,15 +155,20 @@ defmodule Commonplace.Sync.AgentTest do
   end
 
   describe "bidirectional" do
-    test "edits on disk and CRDT both appear after sync", %{store: store, sync_dir: dir, root: root} do
+    test "edits on disk and CRDT both appear after sync", %{
+      store: store,
+      sync_dir: dir,
+      root: root
+    } do
       # Start with two files
       File.write!(Path.join(dir, "disk_file.txt"), "from disk")
 
-      {:ok, pid} = Agent.start_link(
-        root_uuid: root,
-        sync_dir: dir,
-        store: store
-      )
+      {:ok, pid} =
+        Agent.start_link(
+          root_uuid: root,
+          sync_dir: dir,
+          store: store
+        )
 
       Agent.sync_once(pid)
 
@@ -199,11 +209,12 @@ defmodule Commonplace.Sync.AgentTest do
     test "sync is idempotent", %{store: store, sync_dir: dir, root: root} do
       File.write!(Path.join(dir, "stable.txt"), "stable")
 
-      {:ok, pid} = Agent.start_link(
-        root_uuid: root,
-        sync_dir: dir,
-        store: store
-      )
+      {:ok, pid} =
+        Agent.start_link(
+          root_uuid: root,
+          sync_dir: dir,
+          store: store
+        )
 
       Agent.sync_once(pid)
       Agent.sync_once(pid)
@@ -354,7 +365,9 @@ defmodule Commonplace.Sync.AgentTest do
       assert File.read!(Path.join(dir, "f.txt")) == "v2"
 
       shadows_after_cycle2 = InodeTracker.Registry.list_shadows(inode_registry)
-      assert [shadow] = shadows_after_cycle2, "expected exactly one shadowed (v1) entry after the second write"
+
+      assert [shadow] = shadows_after_cycle2,
+             "expected exactly one shadowed (v1) entry after the second write"
 
       # The v1 entry's commit_id uniquely identifies it. We check for
       # eviction of THIS commit_id below rather than the (dev, inode) map
@@ -488,7 +501,8 @@ defmodule Commonplace.Sync.AgentTest do
       assert read_content(f, store) == "stale v1 content from a lingering fd",
              "stale write to the previous generation was lost instead of recovered"
 
-      refute File.exists?(shadow.shadow_path), "reconciled v1 shadow file should have been cleaned up"
+      refute File.exists?(shadow.shadow_path),
+             "reconciled v1 shadow file should have been cleaned up"
 
       registry_entries = :sys.get_state(inode_registry) |> Map.values()
 

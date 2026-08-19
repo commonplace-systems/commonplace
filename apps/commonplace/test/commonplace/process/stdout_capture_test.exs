@@ -34,15 +34,16 @@ defmodule Commonplace.Process.StdoutCaptureTest do
     test "captures stdout lines as red events", %{store: store, root: root} do
       log_uuid = UUID.uuid4()
 
-      {:ok, pid} = SandboxExecRunner.start_link(
-        root_uuid: root,
-        store: store,
-        command: "/bin/sh",
-        args: ["-c", "echo line_one; echo line_two; echo line_three"],
-        name: "stdout_test",
-        event_log_uuid: log_uuid,
-        sync_interval: 50
-      )
+      {:ok, pid} =
+        SandboxExecRunner.start_link(
+          root_uuid: root,
+          store: store,
+          command: "/bin/sh",
+          args: ["-c", "echo line_one; echo line_two; echo line_three"],
+          name: "stdout_test",
+          event_log_uuid: log_uuid,
+          sync_interval: 50
+        )
 
       # Wait for command to finish and events to be committed
       Process.sleep(1500)
@@ -51,7 +52,7 @@ defmodule Commonplace.Process.StdoutCaptureTest do
       events = RedLog.read(log)
 
       stdout_events = Enum.filter(events, &(&1["type"] == "stdout"))
-      lines = Enum.map(stdout_events, &(&1["line"]))
+      lines = Enum.map(stdout_events, & &1["line"])
 
       assert "line_one" in lines
       assert "line_two" in lines
@@ -69,15 +70,16 @@ defmodule Commonplace.Process.StdoutCaptureTest do
     test "captures stderr lines as red events with type stderr", %{store: store, root: root} do
       log_uuid = UUID.uuid4()
 
-      {:ok, pid} = SandboxExecRunner.start_link(
-        root_uuid: root,
-        store: store,
-        command: "/bin/sh",
-        args: ["-c", "echo err_one >&2; echo err_two >&2"],
-        name: "stderr_test",
-        event_log_uuid: log_uuid,
-        sync_interval: 50
-      )
+      {:ok, pid} =
+        SandboxExecRunner.start_link(
+          root_uuid: root,
+          store: store,
+          command: "/bin/sh",
+          args: ["-c", "echo err_one >&2; echo err_two >&2"],
+          name: "stderr_test",
+          event_log_uuid: log_uuid,
+          sync_interval: 50
+        )
 
       # Wait for command to finish and events to be committed
       Process.sleep(1500)
@@ -86,7 +88,7 @@ defmodule Commonplace.Process.StdoutCaptureTest do
       events = RedLog.read(log)
 
       stderr_events = Enum.filter(events, &(&1["type"] == "stderr"))
-      lines = Enum.map(stderr_events, &(&1["line"]))
+      lines = Enum.map(stderr_events, & &1["line"])
 
       assert "err_one" in lines
       assert "err_two" in lines
@@ -97,15 +99,16 @@ defmodule Commonplace.Process.StdoutCaptureTest do
     test "captures mixed stdout and stderr in order", %{store: store, root: root} do
       log_uuid = UUID.uuid4()
 
-      {:ok, pid} = SandboxExecRunner.start_link(
-        root_uuid: root,
-        store: store,
-        command: "/bin/sh",
-        args: ["-c", "echo out_first; echo err_first >&2; echo out_second"],
-        name: "mixed_test",
-        event_log_uuid: log_uuid,
-        sync_interval: 50
-      )
+      {:ok, pid} =
+        SandboxExecRunner.start_link(
+          root_uuid: root,
+          store: store,
+          command: "/bin/sh",
+          args: ["-c", "echo out_first; echo err_first >&2; echo out_second"],
+          name: "mixed_test",
+          event_log_uuid: log_uuid,
+          sync_interval: 50
+        )
 
       # Wait for command to finish
       Process.sleep(1500)
@@ -114,8 +117,8 @@ defmodule Commonplace.Process.StdoutCaptureTest do
       events = RedLog.read(log)
 
       # All output lines should appear as events
-      all_lines = Enum.map(events, &(&1["line"]))
-      all_types = Enum.map(events, &(&1["type"]))
+      all_lines = Enum.map(events, & &1["line"])
+      all_types = Enum.map(events, & &1["type"])
 
       assert "out_first" in all_lines
       assert "err_first" in all_lines
@@ -130,15 +133,16 @@ defmodule Commonplace.Process.StdoutCaptureTest do
     test "red events have correct JSON format", %{store: store, root: root} do
       log_uuid = UUID.uuid4()
 
-      {:ok, pid} = SandboxExecRunner.start_link(
-        root_uuid: root,
-        store: store,
-        command: "/bin/sh",
-        args: ["-c", "echo hello_world"],
-        name: "format_test",
-        event_log_uuid: log_uuid,
-        sync_interval: 50
-      )
+      {:ok, pid} =
+        SandboxExecRunner.start_link(
+          root_uuid: root,
+          store: store,
+          command: "/bin/sh",
+          args: ["-c", "echo hello_world"],
+          name: "format_test",
+          event_log_uuid: log_uuid,
+          sync_interval: 50
+        )
 
       Process.sleep(1500)
 
@@ -161,14 +165,15 @@ defmodule Commonplace.Process.StdoutCaptureTest do
     end
 
     test "generates event_log_uuid when not provided", %{store: store, root: root} do
-      {:ok, pid} = SandboxExecRunner.start_link(
-        root_uuid: root,
-        store: store,
-        command: "/bin/sh",
-        args: ["-c", "echo auto_uuid"],
-        name: "auto_uuid_test",
-        sync_interval: 50
-      )
+      {:ok, pid} =
+        SandboxExecRunner.start_link(
+          root_uuid: root,
+          store: store,
+          command: "/bin/sh",
+          args: ["-c", "echo auto_uuid"],
+          name: "auto_uuid_test",
+          sync_interval: 50
+        )
 
       # The runner should still work without crashing
       Process.sleep(1500)
@@ -181,7 +186,7 @@ defmodule Commonplace.Process.StdoutCaptureTest do
       events = RedLog.read(log)
 
       stdout_events = Enum.filter(events, &(&1["type"] == "stdout"))
-      lines = Enum.map(stdout_events, &(&1["line"]))
+      lines = Enum.map(stdout_events, & &1["line"])
       assert "auto_uuid" in lines
 
       GenServer.stop(pid)

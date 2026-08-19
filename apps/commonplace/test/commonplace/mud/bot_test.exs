@@ -37,7 +37,15 @@ defmodule Commonplace.MUD.BotTest do
         sweep_interval: 60_000
       )
 
-    on_exit(fn -> if Process.alive?(bursar_pid), do: (try do GenServer.stop(bursar_pid) catch (:exit, _ -> :ok) end) end)
+    on_exit(fn ->
+      if Process.alive?(bursar_pid),
+        do:
+          (try do
+             GenServer.stop(bursar_pid)
+           catch
+             (:exit, _ -> :ok)
+           end)
+    end)
 
     root_uuid = UUID.uuid4()
     update = Encoding.encode_update(Schema.new_schema())
@@ -47,7 +55,9 @@ defmodule Commonplace.MUD.BotTest do
     # CX-5plk: isolated SecretStore so per-bot signing-key custody
     # assertions don't share state with the app's global SecretStore
     # (or other tests running concurrently against it).
-    secrets_dir = Path.join(System.tmp_dir!(), "cp_mud_bot_secrets_#{:rand.uniform(1_000_000_000)}")
+    secrets_dir =
+      Path.join(System.tmp_dir!(), "cp_mud_bot_secrets_#{:rand.uniform(1_000_000_000)}")
+
     File.mkdir_p!(secrets_dir)
     secrets_name = :"cp_mud_bot_secrets_#{:rand.uniform(1_000_000_000)}"
     {:ok, secrets_pid} = SecretStore.start_link(data_dir: secrets_dir, name: secrets_name)
@@ -59,7 +69,15 @@ defmodule Commonplace.MUD.BotTest do
       Bot.stop("dup")
       Bot.stop("twin")
       Bot.stop("lonely")
-      if Process.alive?(secrets_pid), do: (try do GenServer.stop(secrets_pid) catch (:exit, _ -> :ok) end)
+
+      if Process.alive?(secrets_pid),
+        do:
+          (try do
+             GenServer.stop(secrets_pid)
+           catch
+             (:exit, _ -> :ok)
+           end)
+
       File.rm_rf!(secrets_dir)
     end)
 
@@ -99,7 +117,9 @@ defmodule Commonplace.MUD.BotTest do
   end
 
   test "bot session persists across calls; second send sees fewer events", ctx do
-    {:ok, _greet_events} = Bot.send_input("bartleby", "look", store: ctx.store, root_uuid: ctx.root)
+    {:ok, _greet_events} =
+      Bot.send_input("bartleby", "look", store: ctx.store, root_uuid: ctx.root)
+
     {:ok, second} = Bot.send_input("bartleby", "look", store: ctx.store, root_uuid: ctx.root)
     text = Enum.join(second, "\n")
     assert text =~ "Start Room"
@@ -124,7 +144,9 @@ defmodule Commonplace.MUD.BotTest do
        ctx do
     {:ok, _} = Bot.send_input("bartleby", "look", store: ctx.store, root_uuid: ctx.root)
 
-    assert {:ok, events} = Bot.send_input("bartleby", "quit", store: ctx.store, root_uuid: ctx.root)
+    assert {:ok, events} =
+             Bot.send_input("bartleby", "quit", store: ctx.store, root_uuid: ctx.root)
+
     text = Enum.join(events, "\n")
     assert text =~ "clean disconnect"
     refute text =~ "CommitStore"
@@ -167,7 +189,10 @@ defmodule Commonplace.MUD.BotTest do
     # Second command is over-rate → dropped. Its distinctive payload must
     # NOT be echoed back (would mean `say` ran = it reached the session).
     {:ok, events} =
-      Bot.send_input("bartleby", "say ZZZ_NEVER_REACHED_ZZZ", store: ctx.store, root_uuid: ctx.root)
+      Bot.send_input("bartleby", "say ZZZ_NEVER_REACHED_ZZZ",
+        store: ctx.store,
+        root_uuid: ctx.root
+      )
 
     text = Enum.join(events, "\n")
     assert text =~ "rate limited"
@@ -216,11 +241,16 @@ defmodule Commonplace.MUD.BotTest do
 
   test "bot can take an object and see it in inventory", ctx do
     {:ok, _} = Bot.send_input("bartleby", "look", store: ctx.store, root_uuid: ctx.root)
-    {:ok, take_events} = Bot.send_input("bartleby", "take cloak", store: ctx.store, root_uuid: ctx.root)
+
+    {:ok, take_events} =
+      Bot.send_input("bartleby", "take cloak", store: ctx.store, root_uuid: ctx.root)
+
     take_text = Enum.join(take_events, "\n")
     assert take_text =~ "You take cloak"
 
-    {:ok, inv_events} = Bot.send_input("bartleby", "inventory", store: ctx.store, root_uuid: ctx.root)
+    {:ok, inv_events} =
+      Bot.send_input("bartleby", "inventory", store: ctx.store, root_uuid: ctx.root)
+
     inv_text = Enum.join(inv_events, "\n")
     assert inv_text =~ "cloak"
   end
@@ -228,7 +258,11 @@ defmodule Commonplace.MUD.BotTest do
   describe "CX-5plk: per-bot signing identity" do
     test "a bot session's writes are signed with the bot's own resolved identity", ctx do
       {:ok, _} =
-        Bot.send_input("scribe", "look", store: ctx.store, root_uuid: ctx.root, secret_store: ctx.secrets)
+        Bot.send_input("scribe", "look",
+          store: ctx.store,
+          root_uuid: ctx.root,
+          secret_store: ctx.secrets
+        )
 
       assert {:ok, pid} = bot_pid("scribe")
       state = :sys.get_state(pid)
@@ -250,9 +284,14 @@ defmodule Commonplace.MUD.BotTest do
       assert dir_head.signer_id == state.signer_id
     end
 
-    test "same bot name resolves to the same identity/key across calls and a session restart", ctx do
+    test "same bot name resolves to the same identity/key across calls and a session restart",
+         ctx do
       {:ok, _} =
-        Bot.send_input("dup", "look", store: ctx.store, root_uuid: ctx.root, secret_store: ctx.secrets)
+        Bot.send_input("dup", "look",
+          store: ctx.store,
+          root_uuid: ctx.root,
+          secret_store: ctx.secrets
+        )
 
       assert {:ok, pid1} = bot_pid("dup")
       state1 = :sys.get_state(pid1)
@@ -261,7 +300,11 @@ defmodule Commonplace.MUD.BotTest do
       # Second send_input reuses the SAME live session (same pid), same
       # signer.
       {:ok, _} =
-        Bot.send_input("dup", "look", store: ctx.store, root_uuid: ctx.root, secret_store: ctx.secrets)
+        Bot.send_input("dup", "look",
+          store: ctx.store,
+          root_uuid: ctx.root,
+          secret_store: ctx.secrets
+        )
 
       assert bot_pid("dup") == {:ok, pid1}
       assert :sys.get_state(pid1).signer_id == state1.signer_id
@@ -276,7 +319,11 @@ defmodule Commonplace.MUD.BotTest do
       wait_until(fn -> bot_pid("dup") == :error end)
 
       {:ok, _} =
-        Bot.send_input("dup", "look", store: ctx.store, root_uuid: ctx.root, secret_store: ctx.secrets)
+        Bot.send_input("dup", "look",
+          store: ctx.store,
+          root_uuid: ctx.root,
+          secret_store: ctx.secrets
+        )
 
       assert {:ok, pid2} = bot_pid("dup")
       assert pid2 != pid1
@@ -288,7 +335,8 @@ defmodule Commonplace.MUD.BotTest do
       assert {:ok, ^pub_before} = AgentKeys.ensure(identity_uuid, ctx.secrets)
     end
 
-    test "permissive-node path is unaffected: a bot with no secret_store override still lands writes", ctx do
+    test "permissive-node path is unaffected: a bot with no secret_store override still lands writes",
+         ctx do
       # No `secret_store:` opt — resolves against the app's global
       # SecretStore, same as production. Permissive workspaces (no
       # trust config set, as in this test's environment) don't gate on
@@ -298,7 +346,9 @@ defmodule Commonplace.MUD.BotTest do
       text = Enum.join(events, "\n")
       assert text =~ "Start Room"
 
-      {:ok, take_events} = Bot.send_input("watcher", "take cloak", store: ctx.store, root_uuid: ctx.root)
+      {:ok, take_events} =
+        Bot.send_input("watcher", "take cloak", store: ctx.store, root_uuid: ctx.root)
+
       assert Enum.join(take_events, "\n") =~ "You take cloak"
     end
   end

@@ -166,8 +166,10 @@ defmodule Commonplace.Presence.IdentityTest do
       {:ok, observer} = Yelixer.Encoding.apply_update(observer, update_b)
 
       content = ContentType.get_content(observer)
+
       assert content["written_by_a"] == "alpha_value",
              "writer A's concurrent change was dropped — client_id collision regression"
+
       assert content["written_by_b"] == "beta_value",
              "writer B's concurrent change was dropped — client_id collision regression"
 
@@ -346,7 +348,14 @@ defmodule Commonplace.Presence.IdentityTest do
       {:ok, pid} = SecretStore.start_link(data_dir: dir, name: name)
 
       on_exit(fn ->
-        if Process.alive?(pid), do: (try do GenServer.stop(pid) catch (:exit, _ -> :ok) end)
+        if Process.alive?(pid),
+          do:
+            (try do
+               GenServer.stop(pid)
+             catch
+               (:exit, _ -> :ok)
+             end)
+
         File.rm_rf!(dir)
       end)
 
@@ -402,7 +411,14 @@ defmodule Commonplace.Presence.IdentityTest do
       {:ok, pid} = SecretStore.start_link(data_dir: dir, name: name)
 
       on_exit(fn ->
-        if Process.alive?(pid), do: (try do GenServer.stop(pid) catch (:exit, _ -> :ok) end)
+        if Process.alive?(pid),
+          do:
+            (try do
+               GenServer.stop(pid)
+             catch
+               (:exit, _ -> :ok)
+             end)
+
         File.rm_rf!(dir)
       end)
 

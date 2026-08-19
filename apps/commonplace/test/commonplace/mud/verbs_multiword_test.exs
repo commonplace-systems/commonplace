@@ -43,7 +43,15 @@ defmodule Commonplace.MUD.VerbsMultiwordTest do
         sweep_interval: 60_000
       )
 
-    on_exit(fn -> if Process.alive?(bursar_pid), do: (try do GenServer.stop(bursar_pid) catch (:exit, _ -> :ok) end) end)
+    on_exit(fn ->
+      if Process.alive?(bursar_pid),
+        do:
+          (try do
+             GenServer.stop(bursar_pid)
+           catch
+             (:exit, _ -> :ok)
+           end)
+    end)
 
     root_uuid = UUID.uuid4()
     update = Encoding.encode_update(Schema.new_schema())
@@ -105,7 +113,8 @@ defmodule Commonplace.MUD.VerbsMultiwordTest do
     assert room_out =~ "Silver Coin"
   end
 
-  test "@dig with a multi-word name carves a connected room with the FULL name (no orphan)", ctx do
+  test "@dig with a multi-word name carves a connected room with the FULL name (no orphan)",
+       ctx do
     alice = start_player("alice", ctx)
 
     send_input(alice, "@dig up The Silver Fountain Grove")
@@ -258,7 +267,8 @@ defmodule Commonplace.MUD.VerbsMultiwordTest do
   # this was a real @desc-specific gap, not a general design limit. Fix:
   # both helpers now search [inventory, room], mirroring
   # `resolve_target_object`'s precedence.
-  test "@desc resolves an object the player is CARRYING, not just one in the room (CX-df64)", ctx do
+  test "@desc resolves an object the player is CARRYING, not just one in the room (CX-df64)",
+       ctx do
     alice = start_player("alice", ctx)
 
     send_input(alice, "@create object glowbug")

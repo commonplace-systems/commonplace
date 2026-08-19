@@ -143,9 +143,7 @@ defmodule Commonplace.Store.CodeDocMergeGateTest do
         })
 
       assert {:error, {:code_doc_delta_merge, ^uuid}} =
-               CommitStore.import_commit(store, merge_snapshot_shaped,
-                 validator: fn _ -> :ok end
-               )
+               CommitStore.import_commit(store, merge_snapshot_shaped, validator: fn _ -> :ok end)
     end
 
     test "a normal single-lineage snapshot commit on a code doc imports :ok",

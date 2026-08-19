@@ -41,14 +41,27 @@ defmodule Commonplace.Trust.AuthorizedCapabilityTest do
 
     # root (locally-pinned anchor) delegates to alice.
     {root_pub, root_priv} = Signing.generate_keypair()
-    root_ctx = %SigningContext{identity_uuid: "root", private_key: root_priv, public_key: root_pub}
+
+    root_ctx = %SigningContext{
+      identity_uuid: "root",
+      private_key: root_priv,
+      public_key: root_pub
+    }
+
     {alice_pub, alice_priv} = Signing.generate_keypair()
     alice_signer = Signing.signer_id("alice", alice_pub)
 
     cfg = %{accept_unsigned: false, trusted_identities: %{"root" => Signing.encode_key(root_pub)}}
 
-    %{store: name, root_ctx: root_ctx, root_pub: root_pub,
-      alice_pub: alice_pub, alice_priv: alice_priv, alice_signer: alice_signer, cfg: cfg}
+    %{
+      store: name,
+      root_ctx: root_ctx,
+      root_pub: root_pub,
+      alice_pub: alice_pub,
+      alice_priv: alice_priv,
+      alice_signer: alice_signer,
+      cfg: cfg
+    }
   end
 
   defp claim(verbs, docs, caveats \\ %{not_before: nil, not_after: nil}),
@@ -63,6 +76,7 @@ defmodule Commonplace.Trust.AuthorizedCapabilityTest do
   test "accepts a commit by a delegated holder for an in-scope verb", c do
     {:ok, leaf} =
       Capability.issue(c.root_ctx, {"alice", c.alice_pub}, claim([:write], ["doc-x"]))
+
     :ok = CommitStore.store_capability(c.store, leaf)
 
     commit = signed_commit("doc-x", leaf.id, c.alice_priv, c.alice_signer)
@@ -72,9 +86,11 @@ defmodule Commonplace.Trust.AuthorizedCapabilityTest do
   test "rejects when the requested doc is outside the cap's scope", c do
     {:ok, leaf} =
       Capability.issue(c.root_ctx, {"alice", c.alice_pub}, claim([:write], ["doc-x"]))
+
     :ok = CommitStore.store_capability(c.store, leaf)
 
     commit = signed_commit("doc-y", leaf.id, c.alice_priv, c.alice_signer)
+
     assert {:error, :capability_insufficient} =
              Trust.authorized?(commit, :write, {:doc, "doc-y"}, c.cfg, c.store)
   end
@@ -82,9 +98,11 @@ defmodule Commonplace.Trust.AuthorizedCapabilityTest do
   test "rejects when the requested verb isn't granted", c do
     {:ok, leaf} =
       Capability.issue(c.root_ctx, {"alice", c.alice_pub}, claim([:write], ["doc-x"]))
+
     :ok = CommitStore.store_capability(c.store, leaf)
 
     commit = signed_commit("doc-x", leaf.id, c.alice_priv, c.alice_signer)
+
     assert {:error, :capability_insufficient} =
              Trust.authorized?(commit, :execute, {:doc, "doc-x"}, c.cfg, c.store)
   end
@@ -92,6 +110,7 @@ defmodule Commonplace.Trust.AuthorizedCapabilityTest do
   test "⭐ rejects capability theft — commit signed by someone OTHER than the leaf audience", c do
     {:ok, leaf} =
       Capability.issue(c.root_ctx, {"alice", c.alice_pub}, claim([:write], ["doc-x"]))
+
     :ok = CommitStore.store_capability(c.store, leaf)
 
     # Mallory attaches Alice's valid leaf CID to her OWN commit (signed by Mallory's key).
@@ -105,6 +124,7 @@ defmodule Commonplace.Trust.AuthorizedCapabilityTest do
 
   test "defers with :awaiting_capability when the cert isn't present yet", c do
     commit = signed_commit("doc-x", <<9::256>>, c.alice_priv, c.alice_signer)
+
     assert {:error, :awaiting_capability} =
              Trust.authorized?(commit, :write, {:doc, "doc-x"}, c.cfg, c.store)
   end
@@ -117,6 +137,7 @@ defmodule Commonplace.Trust.AuthorizedCapabilityTest do
     :ok = CommitStore.store_capability(c.store, leaf)
 
     commit = signed_commit("doc-x", leaf.id, c.alice_priv, c.alice_signer)
+
     assert {:error, :untrusted_root} =
              Trust.authorized?(commit, :write, {:doc, "doc-x"}, c.cfg, c.store)
   end
@@ -132,11 +153,14 @@ defmodule Commonplace.Trust.AuthorizedCapabilityTest do
 
     test "an unsigned commit in strict mode still rejects (unchanged)", c do
       commit = Commit.new("doc-z", "p", nil)
-      assert {:error, :unsigned} = Trust.authorized?(commit, :write, {:doc, "doc-z"}, c.cfg, c.store)
+
+      assert {:error, :unsigned} =
+               Trust.authorized?(commit, :write, {:doc, "doc-z"}, c.cfg, c.store)
     end
 
     test "an unknown signer with no cert rejects in strict mode (unchanged)", c do
       commit = signed_commit_no_proof("doc-z", c.alice_priv, c.alice_signer)
+
       assert {:error, {:untrusted_signer, "alice"}} =
                Trust.authorized?(commit, :write, {:doc, "doc-z"}, c.cfg, c.store)
     end

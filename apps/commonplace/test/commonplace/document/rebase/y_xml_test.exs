@@ -28,7 +28,10 @@ defmodule Commonplace.Document.Rebase.YXmlTest do
   defp insert_child_at(doc, parent_name, idx, {:element, tag, attrs, grandchildren}) do
     doc = fragment_or_element_insert(doc, parent_name, idx, {:element, tag})
     child_name = last_child_name(doc, parent_name)
-    doc = Enum.reduce(attrs, doc, fn {k, v}, d -> XMLElement.set_attribute(d, child_name, k, v) end)
+
+    doc =
+      Enum.reduce(attrs, doc, fn {k, v}, d -> XMLElement.set_attribute(d, child_name, k, v) end)
+
     {doc, _} = build_into(doc, child_name, grandchildren)
     doc
   end
@@ -213,6 +216,7 @@ defmodule Commonplace.Document.Rebase.YXmlTest do
       new_doc = build([{:element, "p", %{}, []}, {:element, "q", %{}, []}])
 
       {:ok, result} = RebaseYXml.rebase(pre, dirty, new_doc, "content")
+
       assert ContentType.get_content(result) == [
                {:element, "p", %{"class" => "x"}, []},
                {:element, "q", %{}, []}

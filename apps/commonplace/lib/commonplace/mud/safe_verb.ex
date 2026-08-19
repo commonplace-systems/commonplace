@@ -107,8 +107,10 @@ defmodule Commonplace.MUD.SafeVerb do
   verified wrapper shape with an allowlisted body, independent of how
   the doc got its name.
   """
-  @spec compile(String.t(), [String.t()], GenServer.server()) :: {:ok, module()} | {:error, term()}
-  def compile(source_uuid, section_scope, store \\ CommitStoreClient) when is_list(section_scope) do
+  @spec compile(String.t(), [String.t()], GenServer.server()) ::
+          {:ok, module()} | {:error, term()}
+  def compile(source_uuid, section_scope, store \\ CommitStoreClient)
+      when is_list(section_scope) do
     SourceDoc.compile(source_uuid, store,
       unique_module: source_uuid,
       gate: {:verb, section_scope},

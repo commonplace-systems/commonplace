@@ -256,7 +256,6 @@ defmodule Commonplace.Chat.TemplateBootstrap do
     uuid
   end
 
-
   defp mint_compute_doc(store) do
     uuid = UUID.uuid4()
 

@@ -129,7 +129,8 @@ defmodule Commonplace.GitBridge.CanonicalXml do
     pad(indent) <> escape_text(str)
   end
 
-  defp render_block(other, _indent), do: raise(ArgumentError, "unserializable XML node: #{inspect(other)}")
+  defp render_block(other, _indent),
+    do: raise(ArgumentError, "unserializable XML node: #{inspect(other)}")
 
   # --- Inline-mode rendering (once mixed content is entered, no node
   # below ever adds a newline or indent again) ---
@@ -148,7 +149,8 @@ defmodule Commonplace.GitBridge.CanonicalXml do
 
   defp render_inline({:fragment, children}), do: inline_children(children)
 
-  defp render_inline(other), do: raise(ArgumentError, "unserializable XML node: #{inspect(other)}")
+  defp render_inline(other),
+    do: raise(ArgumentError, "unserializable XML node: #{inspect(other)}")
 
   # --- Shared tag/attr rendering ---
 
@@ -166,7 +168,8 @@ defmodule Commonplace.GitBridge.CanonicalXml do
     |> Enum.join("")
   end
 
-  defp render_attrs(other), do: raise(ArgumentError, "unserializable XML attrs: #{inspect(other)}")
+  defp render_attrs(other),
+    do: raise(ArgumentError, "unserializable XML attrs: #{inspect(other)}")
 
   defp escape_text(str) do
     str

@@ -59,7 +59,9 @@ defmodule Commonplace.Trust.ReadTest do
 
     on_exit(fn ->
       restore = fn key, v ->
-        if is_nil(v), do: Application.delete_env(:commonplace, key), else: Application.put_env(:commonplace, key, v)
+        if is_nil(v),
+          do: Application.delete_env(:commonplace, key),
+          else: Application.put_env(:commonplace, key, v)
       end
 
       restore.(:data_dir, old_data)
@@ -77,7 +79,13 @@ defmodule Commonplace.Trust.ReadTest do
   defp fresh_identity(tag) do
     {pub, priv} = Signing.generate_keypair()
     id = "#{tag}0000-0000-0000-0000-#{:rand.uniform(999_999_999_999)}"
-    %{id: id, pub: pub, priv: priv, ctx: %SigningContext{identity_uuid: id, public_key: pub, private_key: priv}}
+
+    %{
+      id: id,
+      pub: pub,
+      priv: priv,
+      ctx: %SigningContext{identity_uuid: id, public_key: pub, private_key: priv}
+    }
   end
 
   # The view-doc's carried protected fields (via SessionView.read_meta) + the
@@ -89,8 +97,17 @@ defmodule Commonplace.Trust.ReadTest do
 
   # --- no-read-regression (CRITICAL) ---
 
-  test "no-read-regression: a public target reads for ANY principal (short-circuit)", %{b: b, store: store} do
-    assert :ok = Read.authorized?(b.id, UUID.uuid4(), visibility: :public, reader_pub: b.pub, store: store)
+  test "no-read-regression: a public target reads for ANY principal (short-circuit)", %{
+    b: b,
+    store: store
+  } do
+    assert :ok =
+             Read.authorized?(b.id, UUID.uuid4(),
+               visibility: :public,
+               reader_pub: b.pub,
+               store: store
+             )
+
     # visibility ABSENT (a legacy / non-opted doc) also defaults public.
     assert :ok = Read.authorized?(b.id, UUID.uuid4(), reader_pub: b.pub, store: store)
   end
@@ -130,21 +147,32 @@ defmodule Commonplace.Trust.ReadTest do
 
   # --- capability-theft (THE audience-binding nuance, Opus) ---
 
-  test "capability-theft: B presenting a cap whose audience is C is DENIED", %{a: a, b: b, c: c, store: store} = ctx do
+  test "capability-theft: B presenting a cap whose audience is C is DENIED",
+       %{a: a, b: b, c: c, store: store} = ctx do
     {:ok, cap_for_c} = Read.grant(a.ctx, ctx.view_uuid, {c.id, c.pub}, store: store)
 
     # C (the rightful audience) can use it.
-    assert :ok = Read.authorized?(c.id, ctx.view_uuid, read_opts(ctx, c) ++ [cert_cids: [cap_for_c.id]])
+    assert :ok =
+             Read.authorized?(
+               c.id,
+               ctx.view_uuid,
+               read_opts(ctx, c) ++ [cert_cids: [cap_for_c.id]]
+             )
 
     # B STEALS it — presents C's cap but authenticates with B's OWN key. The
     # audience binding (audience_pub == reader_pub) fails → denied.
     assert {:error, :read_denied} =
-             Read.authorized?(b.id, ctx.view_uuid, read_opts(ctx, b) ++ [cert_cids: [cap_for_c.id]])
+             Read.authorized?(
+               b.id,
+               ctx.view_uuid,
+               read_opts(ctx, b) ++ [cert_cids: [cap_for_c.id]]
+             )
   end
 
   # --- forge-public (W3) ---
 
-  test "forge-public (W3): a reader cannot flip the view-doc's visibility to public", %{b: b, store: store} = ctx do
+  test "forge-public (W3): a reader cannot flip the view-doc's visibility to public",
+       %{b: b, store: store} = ctx do
     doc =
       Commonplace.Tree.DocBuilder.reconstruct_doc(store, ctx.view_uuid)
       |> elem(1)
@@ -168,6 +196,7 @@ defmodule Commonplace.Trust.ReadTest do
   describe "gate/3 (local_read_gate stance)" do
     setup do
       old = Application.get_env(:commonplace, :local_read_gate)
+
       on_exit(fn ->
         if is_nil(old),
           do: Application.delete_env(:commonplace, :local_read_gate),

@@ -91,7 +91,16 @@ defmodule Commonplace.MUD.Bot do
 
   alias Commonplace.Crypto.NodeIdentity
   alias Commonplace.Green.{Bursar, BursarClient}
-  alias Commonplace.MUD.{BotRegistry, Bootstrap, Citizenship, PlayerSession, RateLimit, SessionLimit}
+
+  alias Commonplace.MUD.{
+    BotRegistry,
+    Bootstrap,
+    Citizenship,
+    PlayerSession,
+    RateLimit,
+    SessionLimit
+  }
+
   alias Commonplace.Presence.Identity
   alias Commonplace.Store.CommitStoreClient
 

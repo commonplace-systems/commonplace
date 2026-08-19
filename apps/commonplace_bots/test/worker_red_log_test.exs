@@ -104,7 +104,10 @@ defmodule Commonplace.Bots.Worker.RedLogTest do
 
   defp signing_fixture do
     root = mint_doc(Schema.new_schema())
-    secrets_dir = Path.join(System.tmp_dir!(), "cp_bots_redlog_keys_#{:rand.uniform(1_000_000_000)}")
+
+    secrets_dir =
+      Path.join(System.tmp_dir!(), "cp_bots_redlog_keys_#{:rand.uniform(1_000_000_000)}")
+
     File.mkdir_p!(secrets_dir)
     secrets = :"cp_bots_redlog_keys_#{:rand.uniform(1_000_000_000)}"
     _secrets_pid = start_supervised!({SecretStore, data_dir: secrets_dir, name: secrets})
@@ -197,7 +200,10 @@ defmodule Commonplace.Bots.Worker.RedLogTest do
     entity = load_entity(bot)
 
     {:ok, :end_turn} =
-      Worker.run("demo", entity, %{"message_id" => "m1", "author_path" => "human.usr", "text" => "hi"},
+      Worker.run(
+        "demo",
+        entity,
+        %{"message_id" => "m1", "author_path" => "human.usr", "text" => "hi"},
         client_fn: fn _ -> {:ok, end_turn()} end,
         presence_enabled: false
       )
@@ -259,8 +265,8 @@ defmodule Commonplace.Bots.Worker.RedLogTest do
 
     assert_receive :worker_gate_enabled
 
-    assert_receive {:red_log_telemetry,
-                    [:commonplace, :bots, :worker, :red_log_write_failed], _, metadata}
+    assert_receive {:red_log_telemetry, [:commonplace, :bots, :worker, :red_log_write_failed], _,
+                    metadata}
 
     assert metadata.reason =~ "trust_rejected"
     refute_receive {:red_log_telemetry, [:commonplace, :bots, :worker, :red_log_written], _, _}
@@ -273,12 +279,18 @@ defmodule Commonplace.Bots.Worker.RedLogTest do
     tool_use = %{
       "stop_reason" => "tool_use",
       "content" => [
-        %{"type" => "tool_use", "id" => "t1", "name" => "post_message", "input" => %{"text" => "x"}}
+        %{
+          "type" => "tool_use",
+          "id" => "t1",
+          "name" => "post_message",
+          "input" => %{"text" => "x"}
+        }
       ],
       "usage" => %{"output_tokens" => 10}
     }
 
     messages_uuid = UUID.uuid4()
+
     CommitStore.create_commit(
       Commonplace.Store.CommitStore,
       messages_uuid,
@@ -373,6 +385,7 @@ defmodule Commonplace.Bots.Worker.RedLogTest do
 
     for {name, dir_uuid} <- demo.bots do
       {:ok, entity} = Entity.load(CommitStoreClient, dir_uuid, "#{name}.bot")
+
       assert is_binary(entity.children["__red_log"]),
              "expected __red_log child on bot #{name}, got: #{inspect(entity.children)}"
     end

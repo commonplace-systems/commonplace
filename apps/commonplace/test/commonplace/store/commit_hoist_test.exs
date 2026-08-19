@@ -78,7 +78,9 @@ defmodule Commonplace.Store.CommitHoistTest do
 
       tasks =
         for i <- 1..n do
-          Task.async(fn -> CommitStoreClient.create_chained_commit(store, uuid, <<i::32>>, %{}) end)
+          Task.async(fn ->
+            CommitStoreClient.create_chained_commit(store, uuid, <<i::32>>, %{})
+          end)
         end
 
       # CX-5gkw: keep this 10 s await. Even if every one of 40 callers uses all
@@ -101,11 +103,18 @@ defmodule Commonplace.Store.CommitHoistTest do
              "expected #{n}-long linear chain, got #{length(chain)}"
 
       # Strict linearity: every commit's parent is unique (no shared parents).
-      parents = Enum.map(chain, fn id -> {:ok, c} = CommitStore.get_commit(store, id); c.parent_id end)
+      parents =
+        Enum.map(chain, fn id ->
+          {:ok, c} = CommitStore.get_commit(store, id)
+          c.parent_id
+        end)
+
       assert Enum.uniq(parents) == parents
     end
 
-    test "put_built_commit direct CAS: stale expected_parent_id rejects and writes nothing", %{store: store} do
+    test "put_built_commit direct CAS: stale expected_parent_id rejects and writes nothing", %{
+      store: store
+    } do
       c1 = CommitStoreClient.create_commit(store, "cas-direct", <<1>>, nil)
       {:ok, latest_before} = CommitStore.latest_commit(store, "cas-direct")
 
@@ -131,7 +140,9 @@ defmodule Commonplace.Store.CommitHoistTest do
       # snapshot_parent = snapshot.id.
       _root_h = CommitStore.create_commit(store, uuid_hoisted, <<1>>, nil, %{kind: :regular})
       snap_h = CommitStore.create_snapshot_commit(store, uuid_hoisted, <<9>>)
-      reg_h = CommitStoreClient.create_chained_commit(store, uuid_hoisted, <<2>>, %{kind: :regular})
+
+      reg_h =
+        CommitStoreClient.create_chained_commit(store, uuid_hoisted, <<2>>, %{kind: :regular})
 
       _root_l = CommitStore.create_commit(store, uuid_legacy, <<1>>, nil, %{kind: :regular})
       snap_l = CommitStore.create_snapshot_commit(store, uuid_legacy, <<9>>)
@@ -151,12 +162,16 @@ defmodule Commonplace.Store.CommitHoistTest do
       uuid_hoisted = "parity-genesis-hoisted"
       uuid_legacy = "parity-genesis-legacy"
 
-      hoisted = CommitStoreClient.create_commit(store, uuid_hoisted, <<1>>, nil, %{kind: :regular})
+      hoisted =
+        CommitStoreClient.create_commit(store, uuid_hoisted, <<1>>, nil, %{kind: :regular})
+
       legacy = CommitStore.create_commit(store, uuid_legacy, <<1>>, nil, %{kind: :regular})
 
       assert hoisted.metadata[:snapshot_parent] == Commit.genesis(uuid_hoisted).id
       assert legacy.metadata[:snapshot_parent] == Commit.genesis(uuid_legacy).id
-      assert Map.delete(hoisted.metadata, :snapshot_parent) == Map.delete(legacy.metadata, :snapshot_parent)
+
+      assert Map.delete(hoisted.metadata, :snapshot_parent) ==
+               Map.delete(legacy.metadata, :snapshot_parent)
     end
   end
 
@@ -185,7 +200,9 @@ defmodule Commonplace.Store.CommitHoistTest do
 
       tasks =
         for i <- 1..2 do
-          Task.async(fn -> CommitStoreClient.create_chained_commit(store, uuid, <<i::32>>, %{}) end)
+          Task.async(fn ->
+            CommitStoreClient.create_chained_commit(store, uuid, <<i::32>>, %{})
+          end)
         end
 
       [c1, c2] = Task.await_many(tasks, 5_000)
@@ -315,8 +332,9 @@ defmodule Commonplace.Store.CommitHoistTest do
 
       assert commit.doc_uuid == uuid
 
-      assert_receive {:telemetry, [:commonplace, :commit_store, :call], _meas, %{verb: :create_chained_commit}},
-                      2_000
+      assert_receive {:telemetry, [:commonplace, :commit_store, :call], _meas,
+                      %{verb: :create_chained_commit}},
+                     2_000
     end
   end
 
@@ -368,16 +386,22 @@ defmodule Commonplace.Store.CommitHoistTest do
       attach([:commonplace, :commit_store, :call])
       attach([:commonplace, :commit, :rejected, :id_mismatch])
 
-      assert {:error, {:id_mismatch, _computed, claimed}} = CommitStoreClient.import_commit(store, tampered)
+      assert {:error, {:id_mismatch, _computed, claimed}} =
+               CommitStoreClient.import_commit(store, tampered)
+
       assert claimed == good.id
 
       assert_receive {:telemetry, [:commonplace, :commit, :rejected, :id_mismatch], _meas, meta}
       assert meta.doc_uuid == "tamper-victim"
 
-      refute_receive {:telemetry, [:commonplace, :commit_store, :call], _, %{verb: :import_commit}}, 200
+      refute_receive {:telemetry, [:commonplace, :commit_store, :call], _,
+                      %{verb: :import_commit}},
+                     200
     end
 
-    test "local-mode import of a valid commit still reaches the server and succeeds", %{store: store} do
+    test "local-mode import of a valid commit still reaches the server and succeeds", %{
+      store: store
+    } do
       good = CommitStoreClient.create_commit(store, "tamper-safe", <<1>>, nil)
       other = Commit.new("tamper-safe-2", <<2>>, nil, %{})
 

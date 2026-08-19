@@ -36,5 +36,4 @@ defmodule Commonplace.CLI.Ls do
         System.halt(1)
     end
   end
-
 end

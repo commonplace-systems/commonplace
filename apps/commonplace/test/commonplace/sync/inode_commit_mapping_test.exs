@@ -42,7 +42,13 @@ defmodule Commonplace.Sync.InodeCommitMappingTest do
     test "registers and looks up inode→commit_id mapping" do
       {:ok, registry} = InodeTracker.Registry.start_link([])
 
-      InodeTracker.Registry.track(registry, {1, 12345}, "commit-abc", "doc-uuid-1", "/path/to/file")
+      InodeTracker.Registry.track(
+        registry,
+        {1, 12345},
+        "commit-abc",
+        "doc-uuid-1",
+        "/path/to/file"
+      )
 
       assert {:ok, mapping} = InodeTracker.Registry.lookup(registry, {1, 12345})
       assert mapping.commit_id == "commit-abc"
@@ -98,7 +104,14 @@ defmodule Commonplace.Sync.InodeCommitMappingTest do
       InodeTracker.Registry.track(registry, inode_key, "commit-old", "doc-1", path)
 
       # Atomic write with shadow
-      InodeTracker.atomic_write_with_shadow(path, "updated", shadow_dir, registry, "commit-new", "doc-1")
+      InodeTracker.atomic_write_with_shadow(
+        path,
+        "updated",
+        shadow_dir,
+        registry,
+        "commit-new",
+        "doc-1"
+      )
 
       # File should have new content
       assert File.read!(path) == "updated"
@@ -130,7 +143,14 @@ defmodule Commonplace.Sync.InodeCommitMappingTest do
       InodeTracker.Registry.track(registry, inode_key, "commit-v1", "doc-1", path)
 
       # Shadow + atomic write
-      InodeTracker.atomic_write_with_shadow(path, "v2", shadow_dir, registry, "commit-v2", "doc-1")
+      InodeTracker.atomic_write_with_shadow(
+        path,
+        "v2",
+        shadow_dir,
+        registry,
+        "commit-v2",
+        "doc-1"
+      )
 
       # Get shadow info
       [shadow] = InodeTracker.Registry.list_shadows(registry)
@@ -157,10 +177,14 @@ defmodule Commonplace.Sync.InodeCommitMappingTest do
     test "stale write to shadow gets merged into CRDT",
          %{store: store, root: root, sync_dir: dir, shadow_dir: shadow_dir} do
       # Start sync loop with shadow tracking
-      {:ok, loop} = SyncLoop.start_link(
-        dir: dir, root_uuid: root, store: store, interval: 50,
-        shadow_tracking: true
-      )
+      {:ok, loop} =
+        SyncLoop.start_link(
+          dir: dir,
+          root_uuid: root,
+          store: store,
+          interval: 50,
+          shadow_tracking: true
+        )
 
       # Create a file via disk
       File.write!(Path.join(dir, "target.txt"), "original")
@@ -185,6 +209,7 @@ defmodule Commonplace.Sync.InodeCommitMappingTest do
       # Now simulate a stale write: write to the shadow hardlink
       # (representing a process that held the old fd open)
       File.mkdir_p!(shadow_dir)
+
       shadows =
         File.ls!(shadow_dir)
         |> Enum.reject(&String.starts_with?(&1, "."))
@@ -211,6 +236,7 @@ defmodule Commonplace.Sync.InodeCommitMappingTest do
         doc = Schema.new_schema()
         {:ok, doc} = Yelixer.Encoding.apply_update(doc, commit.update)
         doc
+
       :none ->
         Schema.new_schema()
     end

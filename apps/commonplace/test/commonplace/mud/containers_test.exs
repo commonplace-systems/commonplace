@@ -42,7 +42,15 @@ defmodule Commonplace.MUD.ContainersTest do
         sweep_interval: 60_000
       )
 
-    on_exit(fn -> if Process.alive?(bursar_pid), do: (try do GenServer.stop(bursar_pid) catch (:exit, _ -> :ok) end) end)
+    on_exit(fn ->
+      if Process.alive?(bursar_pid),
+        do:
+          (try do
+             GenServer.stop(bursar_pid)
+           catch
+             (:exit, _ -> :ok)
+           end)
+    end)
 
     root_uuid = UUID.uuid4()
     update = Encoding.encode_update(Schema.new_schema())
@@ -217,7 +225,8 @@ defmodule Commonplace.MUD.ContainersTest do
   # that write landed, so `cycle_guard` sees the just-created nesting
   # and rejects it. Exactly one of the two must succeed; exactly one
   # must fail as a cycle.
-  test "cycle guard: concurrent put-A-in-B / put-B-in-A — exactly one succeeds, the other is a cycle rejection", ctx do
+  test "cycle guard: concurrent put-A-in-B / put-B-in-A — exactly one succeeds, the other is a cycle rejection",
+       ctx do
     alice = start_player("alice", ctx)
     bob = start_player("bob", ctx)
     drain("alice")

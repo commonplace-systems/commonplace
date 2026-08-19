@@ -263,7 +263,8 @@ defmodule Commonplace.Bots.Worker.FallbackTest do
       fallback_model: "claude-haiku-4-5-20251001"
     )
 
-    assert_receive {:fell_back, %{from: "claude-sonnet-4-6", to: "claude-haiku-4-5-20251001", code: 529}},
+    assert_receive {:fell_back,
+                    %{from: "claude-sonnet-4-6", to: "claude-haiku-4-5-20251001", code: 529}},
                    500
   end
 

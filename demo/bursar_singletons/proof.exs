@@ -59,11 +59,20 @@ File.write!(Path.join(dir_a, "root"), root_uuid)
 
 say.("A (#{node()}): booting :commonplace with :bursar_on_boot (scratch #{dir_a})")
 {:ok, _} = Application.ensure_all_started(:commonplace)
-CommitStore.create_commit(CommitStore, root_uuid, Yelixer.Encoding.encode_update(Schema.new_schema()), nil)
+
+CommitStore.create_commit(
+  CommitStore,
+  root_uuid,
+  Yelixer.Encoding.encode_update(Schema.new_schema()),
+  nil
+)
 
 assert!.(Process.whereis(Bursar) != nil, "Bursar not supervised on A")
 assert!.(Process.whereis(TickBot) != nil, "TickBot not supervised on A")
-say.("A: Bursar #{inspect(Process.whereis(Bursar))} + TickBot #{inspect(Process.whereis(TickBot))} supervised, locally named")
+
+say.(
+  "A: Bursar #{inspect(Process.whereis(Bursar))} + TickBot #{inspect(Process.whereis(TickBot))} supervised, locally named"
+)
 
 globals = :global.registered_names()
 assert!.(globals == [], ":global names registered: #{inspect(globals)}")
@@ -79,7 +88,14 @@ say.("A: tick lease held by #{inspect(holder_a)}")
 
 mkdir = fn ->
   uuid = UUID.uuid4()
-  CommitStore.create_commit(CommitStore, uuid, Yelixer.Encoding.encode_update(Schema.new_schema()), nil)
+
+  CommitStore.create_commit(
+    CommitStore,
+    uuid,
+    Yelixer.Encoding.encode_update(Schema.new_schema()),
+    nil
+  )
+
   uuid
 end
 
@@ -122,15 +138,24 @@ rpc.(Application, :put_env, [:commonplace, :tick_lease_ttl_ms, tick_ttl])
 rpc.(Application, :put_env, [:commonplace, :snapshot_sweeper_enabled, false])
 {:ok, _} = rpc.(Application, :ensure_all_started, [:commonplace])
 
-say.("B (#{node_b}): :commonplace booted; connected nodes on A: #{inspect(Node.list(:connected))}")
+say.(
+  "B (#{node_b}): :commonplace booted; connected nodes on A: #{inspect(Node.list(:connected))}"
+)
 
 assert!.(rpc.(Process, :whereis, [Bursar]) == nil, "temp node started its own Bursar")
 say.("B: no Bursar started (gate default-off) — the lock authority stays unique")
 
 globals_a = :global.registered_names()
 globals_b = rpc.(:global, :registered_names, [])
-assert!.(globals_a == [] and globals_b == [], "node join produced :global names: #{inspect({globals_a, globals_b})}")
-say.("A+B: :global.registered_names() == [] on BOTH after join — nothing raced, nothing killed, nothing orphaned")
+
+assert!.(
+  globals_a == [] and globals_b == [],
+  "node join produced :global names: #{inspect({globals_a, globals_b})}"
+)
+
+say.(
+  "A+B: :global.registered_names() == [] on BOTH after join — nothing raced, nothing killed, nothing orphaned"
+)
 
 # ---- B before attach: fail-closed ----
 
@@ -138,7 +163,12 @@ assert!.(rpc.(TickBot, :tick_now, []) == :not_leader, "unattached temp node tick
 say.("B: TickBot :not_leader (no bursar route — fail-closed idle)")
 
 deny = rpc.(Move, :move, [thing, "relic.obj", room2, room1])
-assert!.(deny == {:error, :bursar_unavailable}, "unattached move was not denied: #{inspect(deny)}")
+
+assert!.(
+  deny == {:error, :bursar_unavailable},
+  "unattached move was not denied: #{inspect(deny)}"
+)
+
 say.("B: Move.move → {:error, :bursar_unavailable} — never moves unlocked")
 
 # ---- B attaches like a CLI and works through the seam ----
@@ -146,7 +176,11 @@ say.("B: Move.move → {:error, :bursar_unavailable} — never moves unlocked")
 :ok = rpc.(Commonplace.Store.CommitStoreClient, :set_remote_node, [node()])
 say.("B: attached (set_remote_node #{node()}) — store AND bursar now route to A")
 
-assert!.(rpc.(Move, :move, [thing, "relic.obj", room2, room1]) == :ok, "B-side move through the seam failed")
+assert!.(
+  rpc.(Move, :move, [thing, "relic.obj", room2, room1]) == :ok,
+  "B-side move through the seam failed"
+)
+
 say.("B: Move.move room2→room1 :ok — green tokens acquired on A's Bursar over distribution")
 
 # ---- Failover: A's leader goes away; B takes over within TTL ----
@@ -155,8 +189,14 @@ say.("A: terminating the TickBot leader permanently (simulating the leader's dem
 :ok = Supervisor.terminate_child(Commonplace.Supervisor, TickBot)
 :ok = Supervisor.delete_child(Commonplace.Supervisor, TickBot)
 
-assert!.(rpc.(TickBot, :tick_now, []) == :not_leader, "B led while A's lease was still live (double-hold!)")
-say.("B: still :not_leader — the dead leader's lease is honored until TTL (no double-hold, only latency)")
+assert!.(
+  rpc.(TickBot, :tick_now, []) == :not_leader,
+  "B led while A's lease was still live (double-hold!)"
+)
+
+say.(
+  "B: still :not_leader — the dead leader's lease is honored until TTL (no double-hold, only latency)"
+)
 
 started = System.monotonic_time(:millisecond)
 
@@ -173,14 +213,22 @@ assert!.(result == :leader, "B never took over the tick lease")
 assert!.(elapsed <= tick_ttl + sweep + 2_000, "failover took #{elapsed}ms (> TTL+sweep+slack)")
 
 {:held, %{holder: holder_b}} = Bursar.query(Bursar, "__singletons/tick_bot")
-say.("B: TOOK OVER the tick lease in #{elapsed}ms (TTL #{tick_ttl} + sweep #{sweep}) — holder #{inspect(holder_b)}")
+
+say.(
+  "B: TOOK OVER the tick lease in #{elapsed}ms (TTL #{tick_ttl} + sweep #{sweep}) — holder #{inspect(holder_b)}"
+)
+
 assert!.(holder_b =~ "bursar_proof_b", "lease holder is not B: #{inspect(holder_b)}")
 
 :peer.stop(peer)
 
 say.("")
 say.("PROOF COMPLETE:")
-say.("  • zero :global registrations before/after a temp node joined — the split-brain surface is gone")
+
+say.(
+  "  • zero :global registrations before/after a temp node joined — the split-brain surface is gone"
+)
+
 say.("  • temp node booted the app with no Bursar, idled fail-closed, denied unlocked moves")
 say.("  • after CLI-style attach, its moves took green tokens on A through the BursarClient seam")
 say.("  • leader death → failover bounded by lease TTL + sweep (#{elapsed}ms), never two leaders")

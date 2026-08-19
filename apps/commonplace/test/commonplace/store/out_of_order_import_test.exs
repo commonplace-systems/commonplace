@@ -32,19 +32,19 @@ defmodule Commonplace.Store.OutOfOrderImportTest do
     n = :rand.uniform(1_000_000_000)
     name = :"ooo_store_#{n}"
 
-    start_supervised!(
-      {Commonplace.Store.Supervisor,
-       data_dir: dir,
-       name: :"ooo_sup_#{n}",
-       commit_store_name: name,
-       trust_side_store_name: :"ooo_tss_#{n}",
-       pending_imports_name: :"ooo_pi_#{n}",
-       # Fast test-only sweep so the "lost cast" backstop tests elsewhere
-       # in this suite don't have to wait the production 45s default; kept
-       # short here too so any missed cast in THIS file's tests still
-       # self-heals quickly instead of hanging on wait_until's timeout.
-       pending_imports_sweep_interval_ms: 200}
-    )
+    start_supervised!({
+      Commonplace.Store.Supervisor,
+      # Fast test-only sweep so the "lost cast" backstop tests elsewhere
+      # in this suite don't have to wait the production 45s default; kept
+      # short here too so any missed cast in THIS file's tests still
+      # self-heals quickly instead of hanging on wait_until's timeout.
+      data_dir: dir,
+      name: :"ooo_sup_#{n}",
+      commit_store_name: name,
+      trust_side_store_name: :"ooo_tss_#{n}",
+      pending_imports_name: :"ooo_pi_#{n}",
+      pending_imports_sweep_interval_ms: 200
+    })
 
     on_exit(fn -> File.rm_rf!(dir) end)
     %{store: name}
@@ -75,7 +75,9 @@ defmodule Commonplace.Store.OutOfOrderImportTest do
        %{store: store} do
     {:ok, dep} = Agent.start_link(fn -> false end)
     # B validates only after its dependency has "landed" (flag flipped).
-    validator = fn _c -> if Agent.get(dep, & &1), do: :ok, else: {:error, {:unknown_reference, "A"}} end
+    validator = fn _c ->
+      if Agent.get(dep, & &1), do: :ok, else: {:error, {:unknown_reference, "A"}}
+    end
 
     b = commit("doc-b", <<2>>)
     a = commit("doc-a", <<1>>)

@@ -40,6 +40,7 @@ defmodule Commonplace.CLI.Attest do
                commonplace attest verify <path> Verify attestation chain
                commonplace attest log <path>    Show attestation history
         """)
+
         System.halt(1)
     end
   end
@@ -49,7 +50,9 @@ defmodule Commonplace.CLI.Attest do
     loader = &CLI.load_schema/1
 
     case Walk.resolve_path(root, full_path, loader) do
-      {:ok, uuid} -> attest_doc(uuid)
+      {:ok, uuid} ->
+        attest_doc(uuid)
+
       {:error, _} ->
         IO.puts(:stderr, "Not found: #{path}")
         System.halt(1)
@@ -93,7 +96,9 @@ defmodule Commonplace.CLI.Attest do
     loader = &CLI.load_schema/1
 
     case Walk.resolve_path(root, full_path, loader) do
-      {:ok, uuid} -> verify_doc(uuid)
+      {:ok, uuid} ->
+        verify_doc(uuid)
+
       {:error, _} ->
         IO.puts(:stderr, "Not found: #{path}")
         System.halt(1)
@@ -132,7 +137,9 @@ defmodule Commonplace.CLI.Attest do
     loader = &CLI.load_schema/1
 
     case Walk.resolve_path(root, full_path, loader) do
-      {:ok, uuid} -> show_log(uuid)
+      {:ok, uuid} ->
+        show_log(uuid)
+
       {:error, _} ->
         IO.puts(:stderr, "Not found: #{path}")
         System.halt(1)
@@ -159,6 +166,7 @@ defmodule Commonplace.CLI.Attest do
 
   defp resolve_dir(root, path) do
     loader = &CLI.load_schema/1
+
     case Walk.resolve_path(root, path, loader) do
       {:ok, uuid} -> uuid
       {:error, _} -> root

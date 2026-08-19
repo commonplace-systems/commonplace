@@ -50,12 +50,22 @@ defmodule Commonplace.MUD.Cl65ExitWriteZoneTest do
 
     {:ok, node_ctx} = NodeIdentity.signing_context()
     root = UUID.uuid4()
-    CommitStore.create_commit(store, root, Yelixer.Encoding.encode_update(Schema.new_schema()), nil, %{}, signing_context: node_ctx)
+
+    CommitStore.create_commit(
+      store,
+      root,
+      Yelixer.Encoding.encode_update(Schema.new_schema()),
+      nil,
+      %{},
+      signing_context: node_ctx
+    )
 
     {pub, priv} = Signing.generate_keypair()
     pid = UUID.uuid4()
     citizen = %SigningContext{identity_uuid: pid, public_key: pub, private_key: priv}
-    {:ok, %{cert_cids: cids, home_room_uuid: home}} = Citizenship.ensure(pid, pub, "builder", root, store)
+
+    {:ok, %{cert_cids: cids, home_room_uuid: home}} =
+      Citizenship.ensure(pid, pub, "builder", root, store)
 
     %{store: store, root: root, home: home, citizen: citizen, cids: cids}
   end
@@ -69,7 +79,12 @@ defmodule Commonplace.MUD.Cl65ExitWriteZoneTest do
     assert Map.get(map, "zone") == home
   end
 
-  test "REPRO: %Room{} round-trip drops zone → carve DENIES the exit-write", %{store: store, home: home, citizen: citizen, cids: cids} do
+  test "REPRO: %Room{} round-trip drops zone → carve DENIES the exit-write", %{
+    store: store,
+    home: home,
+    citizen: citizen,
+    cids: cids
+  } do
     {:ok, sch} = Schemas.load_dir_schema(home, store)
     {:ok, entry} = Schema.get_entry(sch, Schemas.room_filename())
     {:ok, room} = World.get_room(home, store)
@@ -78,10 +93,18 @@ defmodule Commonplace.MUD.Cl65ExitWriteZoneTest do
     refute Map.has_key?(Jason.decode!(dropped), "zone")
 
     opts = [store: store, signing_context: citizen, cert_cids: cids, signer_id: nil]
-    assert {:error, {:trust_rejected, _}} = Schemas.write_meta_doc(entry.node_id, dropped, store, opts)
+
+    assert {:error, {:trust_rejected, _}} =
+             Schemas.write_meta_doc(entry.node_id, dropped, store, opts)
   end
 
-  test "END-TO-END: a citizen @digs a room in their OWN home under :enforce (the M2 headline)", %{store: store, root: root, home: home, citizen: citizen, cids: cids} do
+  test "END-TO-END: a citizen @digs a room in their OWN home under :enforce (the M2 headline)", %{
+    store: store,
+    root: root,
+    home: home,
+    citizen: citizen,
+    cids: cids
+  } do
     # The player stands IN their home (current_room = home) and runs the REAL
     # @dig verb through the real dispatcher, with their real issued cert — the
     # exact black-box path fable's gate exercised. This is the regression that
@@ -107,7 +130,12 @@ defmodule Commonplace.MUD.Cl65ExitWriteZoneTest do
     assert Map.get(after_map, "zone") == home
   end
 
-  test "FIX: surgical merge preserves zone → carve ALLOWS the exit-write", %{store: store, home: home, citizen: citizen, cids: cids} do
+  test "FIX: surgical merge preserves zone → carve ALLOWS the exit-write", %{
+    store: store,
+    home: home,
+    citizen: citizen,
+    cids: cids
+  } do
     {:ok, sch} = Schemas.load_dir_schema(home, store)
     {:ok, entry} = Schema.get_entry(sch, Schemas.room_filename())
     {:ok, map} = World.get_meta_map(home, Schemas.room_filename(), store)

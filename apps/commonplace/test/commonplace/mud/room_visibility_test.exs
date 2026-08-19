@@ -87,7 +87,9 @@ defmodule Commonplace.MUD.RoomVisibilityTest do
 
     on_exit(fn ->
       restore = fn key, v ->
-        if is_nil(v), do: Application.delete_env(:commonplace, key), else: Application.put_env(:commonplace, key, v)
+        if is_nil(v),
+          do: Application.delete_env(:commonplace, key),
+          else: Application.put_env(:commonplace, key, v)
       end
 
       restore.(:data_dir, old_data_dir)
@@ -111,7 +113,9 @@ defmodule Commonplace.MUD.RoomVisibilityTest do
     end
 
     defp mint_room(store, room) do
-      {:ok, dir_uuid} = Schemas.create_dir_with_meta(Schemas.room_filename(), Schemas.encode_room(room), store)
+      {:ok, dir_uuid} =
+        Schemas.create_dir_with_meta(Schemas.room_filename(), Schemas.encode_room(room), store)
+
       dir_uuid
     end
 
@@ -121,8 +125,12 @@ defmodule Commonplace.MUD.RoomVisibilityTest do
       room_uuid = mint_room(store, room)
 
       assert {:ok, snap_nil} = World.room_snapshot(room_uuid, "self.usr", store)
-      assert {:ok, snap_explicit_nil} = World.room_snapshot(room_uuid, "self.usr", store, viewer: nil)
-      assert {:ok, snap_stranger} = World.room_snapshot(room_uuid, "self.usr", store, viewer: "anyone-at-all")
+
+      assert {:ok, snap_explicit_nil} =
+               World.room_snapshot(room_uuid, "self.usr", store, viewer: nil)
+
+      assert {:ok, snap_stranger} =
+               World.room_snapshot(room_uuid, "self.usr", store, viewer: "anyone-at-all")
 
       assert snap_nil == snap_explicit_nil
       assert snap_nil == snap_stranger
@@ -140,10 +148,15 @@ defmodule Commonplace.MUD.RoomVisibilityTest do
 
       room_uuid = mint_room(store, room)
 
-      assert {:ok, %{name: "Alice's Den"}} = World.room_snapshot(room_uuid, "self.usr", store, viewer: "alice-id")
+      assert {:ok, %{name: "Alice's Den"}} =
+               World.room_snapshot(room_uuid, "self.usr", store, viewer: "alice-id")
 
-      assert {:error, :read_denied} = World.room_snapshot(room_uuid, "self.usr", store, viewer: "bob-id")
-      assert {:error, :read_denied} = World.room_snapshot(room_uuid, "self.usr", store, viewer: nil)
+      assert {:error, :read_denied} =
+               World.room_snapshot(room_uuid, "self.usr", store, viewer: "bob-id")
+
+      assert {:error, :read_denied} =
+               World.room_snapshot(room_uuid, "self.usr", store, viewer: nil)
+
       assert {:error, :read_denied} = World.room_snapshot(room_uuid, "self.usr", store)
     end
   end
@@ -171,12 +184,16 @@ defmodule Commonplace.MUD.RoomVisibilityTest do
       old_knob = Application.get_env(:commonplace, :local_write_gate)
 
       Application.put_env(:commonplace, :data_dir, dir)
+
       Application.put_env(:commonplace, :trust, %{accept_unsigned: false, trusted_identities: %{}})
+
       Application.put_env(:commonplace, :local_write_gate, :enforce)
 
       on_exit(fn ->
         restore = fn key, v ->
-          if is_nil(v), do: Application.delete_env(:commonplace, key), else: Application.put_env(:commonplace, key, v)
+          if is_nil(v),
+            do: Application.delete_env(:commonplace, key),
+            else: Application.put_env(:commonplace, key, v)
         end
 
         restore.(:data_dir, old_data_dir)
@@ -190,7 +207,9 @@ defmodule Commonplace.MUD.RoomVisibilityTest do
       update = Encoding.encode_update(Schema.new_schema())
 
       assert %Commonplace.Store.Commit{} =
-               CommitStore.create_commit(store, root_uuid, update, nil, %{}, signing_context: node_ctx)
+               CommitStore.create_commit(store, root_uuid, update, nil, %{},
+                 signing_context: node_ctx
+               )
 
       {pub, _priv} = Signing.generate_keypair()
       identity_uuid = UUID.uuid4()
@@ -200,7 +219,8 @@ defmodule Commonplace.MUD.RoomVisibilityTest do
 
     test "a fresh home's room doc carries owner=<identity> + capability_gated",
          %{store: store, root: root, identity_uuid: identity_uuid, pub: pub} do
-      assert {:ok, %{home_room_uuid: home_uuid}} = Citizenship.ensure(identity_uuid, pub, "arwen", root, store)
+      assert {:ok, %{home_room_uuid: home_uuid}} =
+               Citizenship.ensure(identity_uuid, pub, "arwen", root, store)
 
       assert {:ok, %Room{owner: ^identity_uuid, visibility: :capability_gated}} =
                Schemas.load_room(home_uuid, store)
@@ -218,7 +238,9 @@ defmodule Commonplace.MUD.RoomVisibilityTest do
       on_exit(fn -> File.rm_rf!(dir) end)
 
       room = %Room{name: "Some Room", description: "A plain room."}
-      {:ok, room_uuid} = Schemas.create_dir_with_meta(Schemas.room_filename(), Schemas.encode_room(room), store)
+
+      {:ok, room_uuid} =
+        Schemas.create_dir_with_meta(Schemas.room_filename(), Schemas.encode_room(room), store)
 
       %{store: store, room_uuid: room_uuid}
     end
@@ -248,13 +270,16 @@ defmodule Commonplace.MUD.RoomVisibilityTest do
       assert {:reply, "This place is now private."} =
                Verbs.dispatch(%Parser.Command{verb: "@private"}, ctx)
 
-      assert {:ok, %Room{visibility: :capability_gated, owner: owner_id}} = Schemas.load_room(room_uuid, store)
+      assert {:ok, %Room{visibility: :capability_gated, owner: owner_id}} =
+               Schemas.load_room(room_uuid, store)
+
       assert owner_id == owner_ctx.identity_uuid
 
       assert {:reply, "This place is now public."} =
                Verbs.dispatch(%Parser.Command{verb: "@public"}, ctx)
 
-      assert {:ok, %Room{visibility: :public, owner: ^owner_id}} = Schemas.load_room(room_uuid, store)
+      assert {:ok, %Room{visibility: :public, owner: ^owner_id}} =
+               Schemas.load_room(room_uuid, store)
     end
   end
 
@@ -283,9 +308,21 @@ defmodule Commonplace.MUD.RoomVisibilityTest do
       root_uuid = UUID.uuid4()
 
       {:ok, bursar_pid} =
-        Commonplace.Green.Bursar.start_link(root_uuid: root_uuid, store: store, sweep_interval: 60_000)
+        Commonplace.Green.Bursar.start_link(
+          root_uuid: root_uuid,
+          store: store,
+          sweep_interval: 60_000
+        )
 
-      on_exit(fn -> if Process.alive?(bursar_pid), do: (try do GenServer.stop(bursar_pid) catch (:exit, _ -> :ok) end) end)
+      on_exit(fn ->
+        if Process.alive?(bursar_pid),
+          do:
+            (try do
+               GenServer.stop(bursar_pid)
+             catch
+               (:exit, _ -> :ok)
+             end)
+      end)
 
       update = Encoding.encode_update(Schema.new_schema())
       CommitStore.create_commit(store, root_uuid, update, nil)
@@ -300,6 +337,7 @@ defmodule Commonplace.MUD.RoomVisibilityTest do
       with_strict_trust(dir)
 
       owner_ctx = fresh_signing_context_look()
+
       {:ok, owner_room_uuid} =
         Schemas.create_dir_with_meta(
           Schemas.room_filename(),
@@ -327,7 +365,13 @@ defmodule Commonplace.MUD.RoomVisibilityTest do
       {:ok, session} =
         PlayerSession.start_link(
           Keyword.merge(
-            [player_name: name, root_uuid: ctx.root, store: ctx.store, output_fn: output_fn, owner_pid: parent],
+            [
+              player_name: name,
+              root_uuid: ctx.root,
+              store: ctx.store,
+              output_fn: output_fn,
+              owner_pid: parent
+            ],
             opts
           )
         )
@@ -349,7 +393,8 @@ defmodule Commonplace.MUD.RoomVisibilityTest do
       Process.sleep(50)
     end
 
-    test "a stranger is refused ENTRY to the gated room (CX-avzp) — denied at the door, no leak", ctx do
+    test "a stranger is refused ENTRY to the gated room (CX-avzp) — denied at the door, no leak",
+         ctx do
       stranger_ctx = fresh_signing_context_look()
 
       stranger =
@@ -370,7 +415,11 @@ defmodule Commonplace.MUD.RoomVisibilityTest do
     end
 
     test "the owner's own look on their gated room renders normally (self-read)", ctx do
-      owner = start_look_player("owner", ctx, signing_context: ctx.owner_ctx, spawn_room_uuid: ctx.private_room_uuid)
+      owner =
+        start_look_player("owner", ctx,
+          signing_context: ctx.owner_ctx,
+          spawn_room_uuid: ctx.private_room_uuid
+        )
 
       send_input_look(owner, "look")
       out = drain_look("owner") |> Enum.join("\n")
@@ -420,7 +469,9 @@ defmodule Commonplace.MUD.RoomVisibilityTest do
 
       on_exit(fn ->
         restore = fn key, v ->
-          if is_nil(v), do: Application.delete_env(:commonplace, key), else: Application.put_env(:commonplace, key, v)
+          if is_nil(v),
+            do: Application.delete_env(:commonplace, key),
+            else: Application.put_env(:commonplace, key, v)
         end
 
         restore.(:data_dir, old_data_dir)
@@ -433,7 +484,9 @@ defmodule Commonplace.MUD.RoomVisibilityTest do
       update = Encoding.encode_update(Schema.new_schema())
 
       assert %Commonplace.Store.Commit{} =
-               CommitStore.create_commit(store, root_uuid, update, nil, %{}, signing_context: a_ctx)
+               CommitStore.create_commit(store, root_uuid, update, nil, %{},
+                 signing_context: a_ctx
+               )
 
       # A's OWNED home, minted via Citizenship so A genuinely holds the
       # {:docs, [meta_uuid]} :write cap the trust gate checks.
@@ -444,7 +497,14 @@ defmodule Commonplace.MUD.RoomVisibilityTest do
       identity_b = UUID.uuid4()
       b_ctx = %SigningContext{identity_uuid: identity_b, public_key: pub_b, private_key: priv_b}
 
-      %{store: store, root: root_uuid, home_uuid: home_uuid, a_ctx: a_ctx, a_cids: a_cids, b_ctx: b_ctx}
+      %{
+        store: store,
+        root: root_uuid,
+        home_uuid: home_uuid,
+        a_ctx: a_ctx,
+        a_cids: a_cids,
+        b_ctx: b_ctx
+      }
     end
 
     test "a non-owner's @private on A's home is REFUSED (write denied -> verb error)", ctx do

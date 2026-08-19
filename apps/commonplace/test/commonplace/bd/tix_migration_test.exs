@@ -53,7 +53,11 @@ defmodule Commonplace.Bd.TixMigrationTest do
         EdgeMapping.normalize(%{"from" => "CX-a", "to" => "CX-b", "kind" => "blocks"})
 
       {:ok, from_export_row} =
-        EdgeMapping.normalize(%{"issue_id" => "CX-b", "depends_on_id" => "CX-a", "type" => "blocks"})
+        EdgeMapping.normalize(%{
+          "issue_id" => "CX-b",
+          "depends_on_id" => "CX-a",
+          "type" => "blocks"
+        })
 
       assert from_deps_stream == from_export_row
     end
@@ -155,6 +159,7 @@ defmodule Commonplace.Bd.TixMigrationTest do
 
     test "select_records/2 picks exactly the re-measured set, in input order" do
       records = [%{"id" => "CX-1"}, %{"id" => "CX-2"}, %{"id" => "CX-3"}]
+
       assert TixMigration.select_records(records, ["CX-3", "CX-1"]) ==
                [%{"id" => "CX-1"}, %{"id" => "CX-3"}]
     end
@@ -334,14 +339,30 @@ defmodule Commonplace.Bd.TixMigrationTest do
   describe "field_divergence/2 — per-hit shapes, compared through normalization" do
     test "bd's integer priority is judged against tix's stored form, not against itself" do
       bd = [%{"id" => "CX-x", "title" => "t", "status" => "open", "priority" => 2}]
-      tix = %{"CX-x" => %Commonplace.Bd.Schemas.Issue{id: "CX-x", title: "t", status: "open", priority: "p2"}}
+
+      tix = %{
+        "CX-x" => %Commonplace.Bd.Schemas.Issue{
+          id: "CX-x",
+          title: "t",
+          status: "open",
+          priority: "p2"
+        }
+      }
 
       assert TixMigration.field_divergence(bd, tix) == []
     end
 
     test "a real divergence is a shape, not a count" do
       bd = [%{"id" => "CX-x", "title" => "bd title", "status" => "open", "priority" => 0}]
-      tix = %{"CX-x" => %Commonplace.Bd.Schemas.Issue{id: "CX-x", title: "tix title", status: "closed", priority: "p2"}}
+
+      tix = %{
+        "CX-x" => %Commonplace.Bd.Schemas.Issue{
+          id: "CX-x",
+          title: "tix title",
+          status: "closed",
+          priority: "p2"
+        }
+      }
 
       hits = TixMigration.field_divergence(bd, tix)
 

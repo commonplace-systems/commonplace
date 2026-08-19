@@ -97,6 +97,7 @@ defmodule Commonplace.SnapshotSweeperTest do
       assert :ok = SnapshotSweeper.sweep(store, chain_length_threshold: 3)
 
       bloated_log = CommitStore.commit_log(store, bloated_uuid)
+
       assert Enum.any?(bloated_log, fn c -> c.metadata[:kind] == :snapshot end),
              "bloated doc should have been snapshotted"
 

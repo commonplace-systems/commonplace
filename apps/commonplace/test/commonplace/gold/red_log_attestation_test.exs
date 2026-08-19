@@ -27,8 +27,22 @@ defmodule Commonplace.Gold.RedLogAttestationTest do
     SecretStore.set("signing_identity", "test-redlog-identity")
 
     on_exit(fn ->
-      if is_pid(store) and Process.alive?(store), do: (try do GenServer.stop(store) catch (:exit, _ -> :ok) end)
-      if is_pid(secret_store) and Process.alive?(secret_store), do: (try do GenServer.stop(secret_store) catch (:exit, _ -> :ok) end)
+      if is_pid(store) and Process.alive?(store),
+        do:
+          (try do
+             GenServer.stop(store)
+           catch
+             (:exit, _ -> :ok)
+           end)
+
+      if is_pid(secret_store) and Process.alive?(secret_store),
+        do:
+          (try do
+             GenServer.stop(secret_store)
+           catch
+             (:exit, _ -> :ok)
+           end)
+
       SecretStore.delete("signing_key:default")
       SecretStore.delete("signing_pub:default")
       SecretStore.delete("signing_identity")

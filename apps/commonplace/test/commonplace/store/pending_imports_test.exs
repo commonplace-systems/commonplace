@@ -71,7 +71,10 @@ defmodule Commonplace.Store.PendingImportsTest do
       %{store: store} = start_trio()
 
       {:ok, dep_flag} = Agent.start_link(fn -> false end)
-      validator = fn _c -> if Agent.get(dep_flag, & &1), do: :ok, else: {:error, {:unknown_reference, "dep"}} end
+
+      validator = fn _c ->
+        if Agent.get(dep_flag, & &1), do: :ok, else: {:error, {:unknown_reference, "dep"}}
+      end
 
       dependent = commit("doc-dependent", <<2>>)
       dependency = commit("doc-dependency", <<1>>)
@@ -95,7 +98,13 @@ defmodule Commonplace.Store.PendingImportsTest do
       %{store: store} = start_trio()
 
       {root_pub, root_priv} = Signing.generate_keypair()
-      root_ctx = %SigningContext{identity_uuid: "root", private_key: root_priv, public_key: root_pub}
+
+      root_ctx = %SigningContext{
+        identity_uuid: "root",
+        private_key: root_priv,
+        public_key: root_pub
+      }
+
       {alice_pub, alice_priv} = Signing.generate_keypair()
       alice_signer = Signing.signer_id("alice", alice_pub)
 
@@ -133,7 +142,13 @@ defmodule Commonplace.Store.PendingImportsTest do
       %{store: store} = start_trio()
 
       {root_pub, root_priv} = Signing.generate_keypair()
-      root_ctx = %SigningContext{identity_uuid: "root", private_key: root_priv, public_key: root_pub}
+
+      root_ctx = %SigningContext{
+        identity_uuid: "root",
+        private_key: root_priv,
+        public_key: root_pub
+      }
+
       {alice_pub, alice_priv} = Signing.generate_keypair()
       alice_signer = Signing.signer_id("alice", alice_pub)
 
@@ -189,7 +204,10 @@ defmodule Commonplace.Store.PendingImportsTest do
         start_trio(pending_imports_sweep_interval_ms: 100)
 
       {:ok, dep_flag} = Agent.start_link(fn -> false end)
-      validator = fn _c -> if Agent.get(dep_flag, & &1), do: :ok, else: {:error, {:unknown_reference, "dep"}} end
+
+      validator = fn _c ->
+        if Agent.get(dep_flag, & &1), do: :ok, else: {:error, {:unknown_reference, "dep"}}
+      end
 
       held = commit("doc-sweep-held", <<9>>)
 

@@ -110,10 +110,11 @@ defmodule Commonplace.Store.NamespaceTest do
       uuid = "ns-present-nil"
       {:ok, genesis} = CommitStore.ensure_genesis(store, uuid)
 
-      commit = Commit.new(uuid, update_from(1, "a"), genesis.id, %{
-        kind: :regular,
-        snapshot_parent: nil
-      })
+      commit =
+        Commit.new(uuid, update_from(1, "a"), genesis.id, %{
+          kind: :regular,
+          snapshot_parent: nil
+        })
 
       assert {:error, :missing_snapshot_parent} = Namespace.validate_commit(store, commit)
     end
@@ -123,10 +124,11 @@ defmodule Commonplace.Store.NamespaceTest do
       uuid = "ns-present-binary-ok"
       {:ok, genesis} = CommitStore.ensure_genesis(store, uuid)
 
-      commit = Commit.new(uuid, update_from(1, "a"), genesis.id, %{
-        kind: :regular,
-        snapshot_parent: genesis.id
-      })
+      commit =
+        Commit.new(uuid, update_from(1, "a"), genesis.id, %{
+          kind: :regular,
+          snapshot_parent: genesis.id
+        })
 
       assert :ok = Namespace.validate_commit(store, commit)
     end
@@ -158,10 +160,11 @@ defmodule Commonplace.Store.NamespaceTest do
       base_sv = Yelixer.BlockStore.state_vector(doc_ref.store)
       referencing_update = Yelixer.Encoding.encode_diff(doc_auth, base_sv)
 
-      commit = Commit.new(uuid, referencing_update, c1.id, %{
-        kind: :regular,
-        snapshot_parent: genesis.id
-      })
+      commit =
+        Commit.new(uuid, referencing_update, c1.id, %{
+          kind: :regular,
+          snapshot_parent: genesis.id
+        })
 
       assert {:error, {:unknown_reference, ids}} = Namespace.validate_commit(store, commit)
       assert 999 in ids

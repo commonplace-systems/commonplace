@@ -162,7 +162,8 @@ defmodule Commonplace.Green.BursarRedLogEnforceTest do
     assert :sys.get_state(bursar).log == before_log
   end
 
-  test "a refused log-doc creation DEGRADES loudly: the Bursar still starts, and no dangling schema entry is written", ctx do
+  test "a refused log-doc creation DEGRADES loudly: the Bursar still starts, and no dangling schema entry is written",
+       ctx do
     Process.flag(:trap_exit, true)
     permissive!()
 

@@ -184,5 +184,4 @@ defmodule Commonplace.CLI.InspectCmd do
   end
 
   defp preview_content(_, content), do: inspect(content, limit: 5)
-
 end

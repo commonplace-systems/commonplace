@@ -273,6 +273,7 @@ defmodule Commonplace.MUD.TickBot do
     if state.last_renew == nil or now - state.last_renew >= div(state.lease_ttl_ms, 3) do
       _ =
         BursarClient.renew(state.bursar, @lease_path, nil, authenticated_as: state.holder)
+
       %{state | last_renew: now}
     else
       state
@@ -339,7 +340,12 @@ defmodule Commonplace.MUD.TickBot do
             :ok
 
           {:error, {:unsafe_verb, reason}} ->
-            World.broadcast_room(room_uuid, %{kind: :verb_error, verb: "tick", reason: inspect(reason)})
+            World.broadcast_room(room_uuid, %{
+              kind: :verb_error,
+              verb: "tick",
+              reason: inspect(reason)
+            })
+
             :ok
 
           _ ->
