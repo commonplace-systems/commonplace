@@ -65,6 +65,35 @@
 - ⚠️ **Name collisions:** if a word already means something else in this tree,
   say so and say the hits are noise.
 
+## The premise check — MANDATORY when the brief reasons about a past process
+
+⭐⭐ **BEFORE BRIEFING ON ANY CLAIM THAT WORK IS UNDONE, RUN THE PHRASE SEARCH
+FIRST:** extract a KEY PHRASE the work itself would contain (function name,
+error atom, distinctive prose that lands in commits) and run
+`git log --all -S "<phrase>"` BEFORE any ticket-id `--grep`. *The id finds the
+bureaucracy; the phrase finds the work — fixes land under sibling ids
+(measured three times on 2026-08-18; 2 of 4 reconciled rows were dead).*
+
+⛔⛔ **EVERY `-S`/`-G` SEARCH IN THIS REPO CARRIES, VERBATIM:**
+```
+-- . ':(exclude)dogfood-mud' ':(exclude)workspace' ':(exclude).beads'
+```
+**The reason travels with the rule:** pickaxe INFLATES blob contents to count
+matches, and this repo's ref history held a 7.77 GB store blob — a pathless
+`git log --all -S` allocated it (measured: malloc of 7,771,316,796 bytes) and
+the round was OOM-killed ~2 minutes in, THREE TIMES IN ONE NIGHT (2026-08-18),
+twice taking its whole cgroup. The stash ref reaching that blob was dropped
+2026-08-19, and the exclusions STAY ANYWAY: they cost nothing, they cover
+unaudited large paths under those three store/archive directories, and a brief
+depending on undoable repo state has a hidden precondition.
+
+⭐ **AND THE ZERO-TRAP UNDERNEATH:** plain `git log -- <path>` on the blob's own
+path reported ZERO commits — history simplification hides stash-type commits
+(`--full-history` showed 2). *A reproducer built on that zero passes vacuously.*
+⇒ **A zero that would be good news names the simplification that could be
+producing it, and proves its haystack with a positive control in the SAME
+search shape.**
+
 ## The escape hatch — bounded, and stated UP FRONT
 
 ⛔⛔ **PRE-DECLARE THE LEGITIMATE NEGATIVE OUTCOME, AND BOUND WHAT IT STOPS.**
