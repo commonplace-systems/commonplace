@@ -168,7 +168,18 @@ defmodule Commonplace.Runner.ProvisionerTest do
     assert "--unshare-all" in spec.argv
     assert "--clearenv" in spec.argv
     assert ["--proc", "/proc"] in Enum.chunk_every(spec.argv, 2, 1, :discard)
-    assert map_size(spec.environment) == 5
+    assert map_size(spec.environment) == 11
+
+    assert spec.environment["PATH"] |> String.split(":") |> hd() ==
+             Path.join([pod_home, "checkout", "tools", "proto-chit", "bin"])
+
+    assert spec.environment["PROTO_CHIT_DATA_DIR"] ==
+             Path.join([pod_home, "workspace", ".commonplace"])
+
+    assert spec.environment["PROTO_CHIT_STATE_DIR"] ==
+             Path.join([pod_home, "workspace", ".commonplace", "proto-chit"])
+
+    assert is_binary(spec.environment["PROTO_CHIT_EVENT_LOG_UUID"])
 
     assert Enum.map(spec.masks, & &1.name) == [
              :node_signing_key,
