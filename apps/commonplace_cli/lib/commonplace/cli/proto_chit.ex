@@ -9,6 +9,9 @@ defmodule Commonplace.CLI.ProtoChit do
     commonplace proto-chit annotate --repo DIR --event-log UUID
       --main-event-ref HEX --exit-status INTEGER [--real-git PATH] [--trace FILE]
       -- <git argv...>
+    commonplace proto-chit log --event-log UUID [--limit N] [--json]
+      Read-only chain walk, newest-first: event + pin + signer per entry.
+      "signature present" is a presence rendering, never a verification.
 
   `--sync-exclude` is repeatable. The names given are APPENDED to the emitter's
   own default exclusions (`.git`, `.commonplace`, ...) — an operator cannot drop
@@ -83,10 +86,86 @@ defmodule Commonplace.CLI.ProtoChit do
     end
   end
 
+  # A2 read surface: walk the punctuation chain newest-first and render
+  # event + pin + signer. Read-only: no signing context is acquired and no
+  # write path is touched. "signed" in the output is a PRESENCE rendering
+  # of the enclosing commit's signature, not a verification — chain
+  # verification belongs to the import gate and the harvest ingester.
+  def run(data_dir, _relative_path, ["log" | args]) do
+    with :ok <- Commonplace.CLI.ensure_started(data_dir),
+         {opts, [], []} <-
+           OptionParser.parse(args, strict: @switches ++ [limit: :integer, json: :boolean]),
+         {:ok, event_log_uuid} <- required(opts, :event_log),
+         {:ok, entries} <-
+           Commonplace.ProtoChit.chain(event_log_uuid, limit: Keyword.get(opts, :limit, 20)) do
+      render_chain(entries, Keyword.get(opts, :json, false))
+      0
+    else
+      {_opts, _args, invalid} -> fail({:invalid_options, invalid})
+      {:error, reason} -> fail(reason)
+      other -> fail(other)
+    end
+  end
+
   def run(_data_dir, _relative_path, _args) do
     IO.puts(:stderr, @moduledoc)
     1
   end
+
+  defp render_chain(entries, true) do
+    IO.puts(Jason.encode!(entries))
+  end
+
+  defp render_chain(entries, false) do
+    Enum.each(entries, fn entry ->
+      event = entry.event
+
+      IO.puts(
+        "#{short(entry.event_ref)}  #{event["verb"]}  by #{event["author-principal"]}  #{signed_label(entry.signer)}"
+      )
+
+      IO.puts("    message: #{event["message"]}")
+      IO.puts("    pin: #{render_pin(event["proto-pin"])}")
+      IO.puts("    predecessors: #{render_predecessor(event["predecessor-ref"])}")
+      IO.puts("    git-sha: #{event["git-sha"] || "null"}")
+
+      Enum.each(entry.annotations, fn annotation ->
+        a = annotation.event
+
+        IO.puts(
+          "    post-exec: exit #{a["exit-status"]}, sha #{a["resulting-git-sha"] || "null"}  #{signed_label(annotation.signer)}"
+        )
+      end)
+    end)
+  end
+
+  defp signed_label(%{signed: true}), do: "[signature present]"
+  defp signed_label(_), do: "[UNSIGNED]"
+
+  defp render_pin(nil), do: "none"
+
+  defp render_pin(%{"checkpoint" => %{"doc" => doc, "commit" => commit}} = pin) do
+    entries = map_size(pin["entries"] || %{})
+    exclusions = length(pin["exclusions"] || [])
+
+    base = "checkpoint #{short(doc)}@#{short(commit)} (#{entries} entries"
+    if exclusions > 0, do: base <> ", #{exclusions} exclusions)", else: base <> ")"
+  end
+
+  defp render_pin(_other), do: "unrecognized pin shape"
+
+  defp render_predecessor(%{"branch" => branch, "event-refs" => refs} = predecessor) do
+    unresolved = predecessor["unresolved"] || []
+    shorts = refs |> Enum.map(&short/1) |> Enum.join(", ")
+    base = "[#{shorts}] (branch #{branch})"
+    if unresolved == [], do: base, else: base <> " unresolved: #{Enum.join(unresolved, ", ")}"
+  end
+
+  defp render_predecessor(_other), do: "unrecognized predecessor shape"
+
+  defp short(hex) when is_binary(hex) and byte_size(hex) >= 12, do: binary_part(hex, 0, 12)
+  defp short(other) when is_binary(other), do: other
+  defp short(_), do: "?"
 
   defp root_uuid(data_dir) do
     case Commonplace.CLI.root_uuid(data_dir) do

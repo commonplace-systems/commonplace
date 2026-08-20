@@ -359,6 +359,145 @@ defmodule Commonplace.ProtoChit do
     end
   end
 
+  @doc """
+  Read the punctuation chain of an event log, newest-first (A2 read surface).
+
+  Returns `{:ok, entries}` where each entry is a main event with its
+  `event_ref` (the enclosing commit id, hex), the decoded event map, a
+  `signer` rendering, and any post-exec annotations folded under it via
+  their `main-event-ref`.
+
+  Two honesty properties, deliberate:
+
+  - **`signed: true` means the enclosing commit CARRIES a signature and a
+    `signer_id`; it is a presence rendering, not a verification.** Chain
+    verification against pinned keys is the import gate's job (Gate A) and
+    the harvest ingester's (A1's verifier); this reader must never be cited
+    as having verified anything.
+  - **The commit↔event pairing leans on RedLog's write discipline** (every
+    writer appends exactly one entry per commit — `emit` and `annotate`
+    both do). The pairing is refused, not guessed, when the shape breaks:
+    if the commit count and the event count disagree, the walk returns
+    `{:error, {:log_shape_mismatch, %{commits: n, events: m}}}` rather
+    than misattributing refs.
+
+  `:limit` bounds how many MAIN events are returned (default 20, explicit
+  always — the underlying `commit_log` walk is called with an explicit
+  `:limit` derived from the event count, never unbounded).
+  """
+  @spec chain(String.t(), keyword()) ::
+          {:ok, [map()]} | {:error, term()}
+  def chain(event_log_uuid, opts \\ []) when is_binary(event_log_uuid) do
+    store = Keyword.get(opts, :store, CommitStoreClient)
+    limit = Keyword.get(opts, :limit, 20)
+
+    events = event_log_uuid |> RedLog.load(store) |> RedLog.read()
+
+    case events do
+      [] ->
+        {:ok, []}
+
+      events ->
+        # Fetch one more commit than there are events: a genesis commit
+        # carrying zero events is the normal first link, and anything past
+        # events+1 is a shape the pairing must refuse, not truncate into a
+        # false alignment.
+        probe_limit = length(events) + 2
+
+        case CommitStoreClient.commit_log(store, event_log_uuid, limit: probe_limit) do
+          commits when is_list(commits) ->
+            pair_by_delta(commits, events, limit)
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+    end
+  end
+
+  # The pairing is derived per-commit, never by count arithmetic: each
+  # commit's update is a full-state snapshot, so the event count AT a commit
+  # minus the count at its parent says exactly how many events that commit
+  # appended. A delta of 1 pairs the commit with that event; a delta of 0 is
+  # the genesis link; any other delta is a write outside the one-event-per-
+  # commit discipline and the walk refuses rather than misattributes.
+  # (Count arithmetic alone false-passes exactly the dangerous case: a
+  # two-event single commit plus the genesis link aligns 2==2 and would
+  # attribute an event to the genesis commit.)
+  defp pair_by_delta(commits_newest_first, events, limit) do
+    oldest_first = Enum.reverse(commits_newest_first)
+
+    {pairs, _prev_count, bad} =
+      Enum.reduce(oldest_first, {[], 0, nil}, fn commit, {pairs, prev_count, bad} ->
+        count = event_count_at(commit)
+
+        cond do
+          bad != nil ->
+            {pairs, prev_count, bad}
+
+          count == prev_count ->
+            {pairs, count, nil}
+
+          count == prev_count + 1 ->
+            {[{commit, Enum.at(events, count - 1)} | pairs], count, nil}
+
+          true ->
+            {pairs, count, {:delta, hex(commit.id), count - prev_count}}
+        end
+      end)
+
+    cond do
+      bad != nil ->
+        {:error,
+         {:log_shape_mismatch,
+          %{commits: length(commits_newest_first), events: length(events), at: bad}}}
+
+      length(pairs) != length(events) ->
+        {:error,
+         {:log_shape_mismatch, %{commits: length(commits_newest_first), events: length(events)}}}
+
+      true ->
+        {:ok, build_chain(pairs, limit)}
+    end
+  end
+
+  defp event_count_at(commit) do
+    doc = Yelixer.Doc.new(client_id: :erlang.phash2(commit.id, 0xFFFF_FFFF))
+    {doc, _} = Yelixer.Doc.get_or_create_type(doc, "events", :array)
+
+    case Yelixer.Encoding.apply_update(doc, commit.update) do
+      {:ok, doc} -> length(Yelixer.Types.Array.to_list(doc, "events"))
+      _ -> 0
+    end
+  end
+
+  # pairs arrive newest-first. Fold post-exec annotations under their main
+  # events by main-event-ref, then apply the caller's main-event limit.
+  defp build_chain(pairs, limit) do
+    paired =
+      Enum.map(pairs, fn {commit, event} ->
+        %{
+          event_ref: hex(commit.id),
+          event: event,
+          signer: %{
+            signer_id: commit.signer_id,
+            signed: commit.signature != nil and commit.signer_id != nil
+          }
+        }
+      end)
+
+    {annotations, mains} =
+      Enum.split_with(paired, fn %{event: event} -> event["kind"] == "post-exec" end)
+
+    annotations_by_main =
+      Enum.group_by(annotations, fn %{event: event} -> event["main-event-ref"] end)
+
+    mains
+    |> Enum.map(fn main ->
+      Map.put(main, :annotations, Map.get(annotations_by_main, main.event_ref, []))
+    end)
+    |> Enum.take(limit)
+  end
+
   defp atomic_json_write(path, value) do
     :ok = File.mkdir_p(Path.dirname(path))
     tmp = path <> ".tmp.#{System.unique_integer([:positive])}"
