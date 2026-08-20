@@ -371,21 +371,34 @@ defmodule Commonplace.Runner.ProtoChitHarvestTest do
 
     {_, 0} = System.cmd("git", ["add", relative], cd: source_repo)
 
-    {_, 0} =
-      System.cmd(
-        "git",
-        [
-          "-c",
-          "user.email=a1c@example.invalid",
-          "-c",
-          "user.name=A1C Fixture",
-          "commit",
-          "--quiet",
-          "-m",
-          "A1C fixture WAL signer path"
-        ],
-        cd: source_repo
-      )
+    # The copy exists to guarantee the fixture repo carries the CURRENT WAL
+    # helper. Before this round landed, the worktree's helper differed from
+    # the fixture clone's and the commit was real; once the round is on main
+    # the bytes are identical and git correctly says "nothing to commit" —
+    # which is success for this helper's purpose, not a failure. Asserting
+    # {_, 0} unconditionally made the test landing-hostile: green in the
+    # round's worktree, red on the merged tree (measured 2026-08-20).
+    {staged, 0} = System.cmd("git", ["diff", "--cached", "--name-only"], cd: source_repo)
+
+    if String.trim(staged) != "" do
+      {_, 0} =
+        System.cmd(
+          "git",
+          [
+            "-c",
+            "user.email=a1c@example.invalid",
+            "-c",
+            "user.name=A1C Fixture",
+            "commit",
+            "--quiet",
+            "-m",
+            "A1C fixture WAL signer path"
+          ],
+          cd: source_repo
+        )
+    end
+
+    :ok
   end
 
   defp compiled_cli_wrapper!(repo) do
