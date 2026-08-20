@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Append an unsigned proto-chit intent to the local replay WAL."""
+"""Append a signed proto-chit intent, with an explicit unsigned last resort."""
 
 import datetime
 import fcntl
@@ -8,6 +8,47 @@ import json
 import os
 import subprocess
 import sys
+
+
+WAL_VERSION = 2
+UNSIGNED_AUTHENTICATION = {
+    "state": "unsigned",
+    "reason": "deployment-signer-unavailable",
+}
+
+
+def authenticate(record):
+    """Ask the deployment executable to sign; fail soft to explicit unsigned."""
+    signer = os.environ.get("PROTO_CHIT_COMMONPLACE")
+    data_dir = os.environ.get("PROTO_CHIT_DATA_DIR")
+
+    if not signer or not data_dir or not os.path.isfile(os.path.join(data_dir, "node_signing_key")):
+        record["authentication"] = UNSIGNED_AUTHENTICATION.copy()
+        return record
+
+    unsigned = dict(record)
+    unsigned.pop("authentication", None)
+
+    try:
+        result = subprocess.run(
+            [signer, "--data-dir", data_dir, "proto-chit", "sign-intent"],
+            input=json.dumps(unsigned, sort_keys=True, separators=(",", ":")),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        signed = json.loads(result.stdout) if result.returncode == 0 else None
+        if (
+            isinstance(signed, dict)
+            and signed.get("authentication", {}).get("state") == "signed"
+        ):
+            return signed
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        pass
+
+    record["authentication"] = UNSIGNED_AUTHENTICATION.copy()
+    return record
 
 
 def classify(argv):
@@ -79,6 +120,7 @@ def post_exec_facts(repo, real_git, argv, exit_status, disposition):
 
 
 def append_record(state_dir, record):
+    record = authenticate(record)
     os.makedirs(state_dir, mode=0o700, exist_ok=True)
     wal_path = os.path.join(state_dir, "events.wal.ndjson")
     with open(wal_path, "a", encoding="utf-8") as wal:
@@ -86,7 +128,8 @@ def append_record(state_dir, record):
         wal.write(json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n")
         wal.flush()
         os.fsync(wal.fileno())
-    print(f"proto-chit: unsigned intent WALed at {wal_path}", file=sys.stderr)
+    auth_state = record["authentication"]["state"]
+    print(f"proto-chit: {auth_state} intent WALed at {wal_path}", file=sys.stderr)
 
 
 def update_post_exec(repo, state_dir, invocation_id, exit_status, argv):
@@ -105,11 +148,20 @@ def update_post_exec(repo, state_dir, invocation_id, exit_status, argv):
                 except json.JSONDecodeError:
                     continue
                 if record.get("invocation-id") == invocation_id:
-                    record["post-exec"] = post_exec_facts(
+                    updated_record = dict(record)
+                    updated_record["post-exec"] = post_exec_facts(
                         repo, real_git, argv, exit_status, "skipped-main-emission-failed"
                     )
+                    updated_record = authenticate(updated_record)
+
+                    if (
+                        record.get("authentication", {}).get("state") == "signed"
+                        and updated_record.get("authentication", {}).get("state") != "signed"
+                    ):
+                        return 1
+
                     lines[index] = json.dumps(
-                        record, sort_keys=True, separators=(",", ":")
+                        updated_record, sort_keys=True, separators=(",", ":")
                     ) + "\n"
                     updated = True
                     break
@@ -132,7 +184,7 @@ def append_annotation(repo, state_dir, failure, main_event_ref, exit_status, arg
     real_git = os.environ.get("PROTO_CHIT_REAL_GIT", "/usr/bin/git")
     facts = post_exec_facts(repo, real_git, argv, exit_status, "annotation-emission-failed")
     record = {
-        "wal-version": 1,
+        "wal-version": WAL_VERSION,
         "status": "pending",
         "replay-grade": "append-at-replay",
         "failure": failure,
@@ -171,7 +223,7 @@ def main():
     sha = git_value(repo, real_git, ["rev-parse", "--verify", "HEAD"])
 
     record = {
-        "wal-version": 1,
+        "wal-version": WAL_VERSION,
         "status": "pending",
         "replay-grade": "pin-cut-at-replay",
         "failure": failure,
