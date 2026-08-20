@@ -74,6 +74,13 @@ defmodule Commonplace.Test.CodexFaithfulVendor do
       output_index: 0,
       item: %{id: item_id, type: "message", role: "assistant", status: "in_progress"}
     })
+    # NOTE (integration run 2026-08-20): codex logs a non-fatal
+    # "OutputTextDelta without active item" against this minimal sequence
+    # and COMPLETES anyway (ACK, exit 0). Adding content_part.added/done
+    # did not clear that internal state-machine line, so the minimal
+    # five-event sequence is kept — it provably drives codex to complete a
+    # turn, which is what the integration proves; the log line is a
+    # recorded fidelity finding, not a blocker.
     |> sse("response.output_text.delta", %{
       type: "response.output_text.delta",
       item_id: item_id,
