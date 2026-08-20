@@ -882,6 +882,28 @@ defmodule Commonplace.Store.CommitStore do
   end
 
   @doc """
+  The doc's accepted-head set from the durable index — the incrementally
+  maintained equivalent of `Commonplace.Store.AcceptedHeads.of/2`'s scan.
+
+  Returns `{:ok, MapSet.t(commit_id)}` (the non-dominated frontier,
+  including `:latest`) or `:none` when the doc has no commits. The index
+  is maintained forward through the head-update seam (`put_latest/5` for
+  advances, `put_bare_commit_with_index/2` for genesis and sibling
+  imports); legacy documents written before the seam existed are filled
+  by the increment-3 backfill and until then may report an incomplete set
+  here. A point-read, no DAG walk.
+  """
+  @spec accepted_heads_indexed(GenServer.server(), String.t()) :: {:ok, MapSet.t()} | :none
+  def accepted_heads_indexed(server \\ __MODULE__, doc_uuid) do
+    db = resolve_db(server)
+
+    case CubDB.get(db, {:latest, doc_uuid}) do
+      nil -> :none
+      _latest -> {:ok, CubDB.get(db, {:accepted_heads, doc_uuid}) || MapSet.new()}
+    end
+  end
+
+  @doc """
   Look up a single commit by id. Returns `{:ok, commit}` or `:none`.
   Does not walk the DAG and does not consult `:latest` — pure
   point-read on the `{:commit, id}` row.
@@ -3281,9 +3303,59 @@ defmodule Commonplace.Store.CommitStore do
   # exists, does NOT belong here in this shape — see
   # `Commonplace.Invariants.Dispatcher`'s moduledoc on R9.
   defp put_latest(state, doc_uuid, commit_id, source, extra_rows \\ []) do
-    CubDB.put_multi(state.db, extra_rows ++ [{{:latest, doc_uuid}, commit_id}])
+    head_row = accepted_heads_row_for_advance(state.db, doc_uuid, commit_id, extra_rows)
+    CubDB.put_multi(state.db, extra_rows ++ [head_row, {{:latest, doc_uuid}, commit_id}])
     dispatch_advance(state, doc_uuid, commit_id, source)
     :ok
+  end
+
+  # The accepted-head-set seam (advance side). Every `:latest` advance
+  # goes through `put_latest/5`, so computing the new head row here means
+  # all six advance sites maintain the frontier in the SAME put_multi that
+  # moves `:latest` — no head-set write outside this seam and the bare
+  # path below. The advancing commit dominates its parent and merge
+  # parents, so the new frontier drops them and gains the new id. The
+  # commit is in `extra_rows` for fresh writes and in the store for
+  # `set_latest` (which passes none); if neither has it, the frontier
+  # still gains the id and prunes nothing (the backfill reconciles).
+  defp accepted_heads_row_for_advance(db, doc_uuid, commit_id, extra_rows) do
+    dominated =
+      case find_commit_in_rows(extra_rows, commit_id) || CubDB.get(db, {:commit, commit_id}) do
+        nil -> MapSet.new()
+        commit -> dominated_heads(commit)
+      end
+
+    accepted_heads_row(db, doc_uuid, commit_id, dominated)
+  end
+
+  # The accepted-head-set seam (bare-write side). `ensure_genesis` and
+  # sibling `import_commit` persist commits without advancing `:latest`
+  # (see `put_bare_commit_with_index/2`); both carry the full commit, so
+  # the frontier delta is exact.
+  defp accepted_heads_row_bare(db, commit) do
+    accepted_heads_row(db, commit.doc_uuid, commit.id, dominated_heads(commit))
+  end
+
+  # (old_frontier − dominated) ∪ {new_id}. One row per doc holds the whole
+  # small frontier, so the update is a single put — atomic with the
+  # accompanying `:latest`/commit rows in the caller's put_multi.
+  defp accepted_heads_row(db, doc_uuid, new_id, dominated) do
+    old = CubDB.get(db, {:accepted_heads, doc_uuid}) || MapSet.new()
+    new = old |> MapSet.difference(dominated) |> MapSet.put(new_id)
+    {{:accepted_heads, doc_uuid}, new}
+  end
+
+  defp dominated_heads(commit) do
+    [commit.parent_id | commit.merge_parents || []]
+    |> Enum.reject(&is_nil/1)
+    |> MapSet.new()
+  end
+
+  defp find_commit_in_rows(extra_rows, commit_id) do
+    Enum.find_value(extra_rows, fn
+      {{:commit, ^commit_id}, commit} -> commit
+      _ -> nil
+    end)
   end
 
   # Every `{:commit, _}` row in this store is produced here with its index
@@ -3316,7 +3388,11 @@ defmodule Commonplace.Store.CommitStore do
 
     CubDB.put_multi(
       db,
-      attached_rows ++ [{@doc_commit_index_state_key, @doc_commit_index_ready}]
+      attached_rows ++
+        [
+          accepted_heads_row_bare(db, commit),
+          {@doc_commit_index_state_key, @doc_commit_index_ready}
+        ]
     )
   end
 
