@@ -115,9 +115,7 @@ defmodule Commonplace.SiblingMerger do
         {:ok, :no_siblings}
 
       {:ok, latest} ->
-        covered = dag_reachable_from(store, latest.id)
-        all_for_doc = CommitStore.all_commit_ids_for_doc(store, doc_uuid)
-        sibling_ids = MapSet.difference(all_for_doc, covered)
+        sibling_ids = sibling_ids_for(store, doc_uuid, latest)
 
         # CX-xxav: `Enum.sort/1`, not raw MapSet iteration order — see
         # the moduledoc's "Sibling ordering and merge failures".
@@ -148,6 +146,43 @@ defmodule Commonplace.SiblingMerger do
             end
         end
     end
+  end
+
+  # Increment 2/3 (Stage-B ruling): siblings are the non-`:latest` accepted
+  # heads (the frontier tips). Read them from the durable accepted-head
+  # index when it is maintained for this doc, avoiding the
+  # `all_commit_ids_for_doc` scan; fall back to the scan for legacy docs the
+  # index has not been backfilled for yet.
+  #
+  # TRUST the index only when its head set contains `:latest`: a maintained
+  # (post-seam) or backfilled (§3) row always does; a legacy doc has no row
+  # (an empty set), which does not, and falls back. Increment 4 removes this
+  # fallback once §3's backfill is `:ready` corpus-wide.
+  #
+  # Deliberate behaviour change (plan #13391, "consume heads"): the index
+  # yields TIPS, so a sibling CHAIN is merged at its tip — one merge folds
+  # the whole branch through `merge_parents` — where the scan yielded every
+  # non-reachable commit and could fold interior-first over several passes.
+  # For a single sibling, tip == whole branch, so behaviour is identical
+  # there; chains converge in fewer passes to the same final state.
+  defp sibling_ids_for(store, doc_uuid, latest) do
+    case CommitStore.accepted_heads_indexed(store, doc_uuid) do
+      {:ok, heads} ->
+        if MapSet.member?(heads, latest.id) do
+          MapSet.delete(heads, latest.id)
+        else
+          scan_sibling_ids(store, doc_uuid, latest)
+        end
+
+      :none ->
+        MapSet.new()
+    end
+  end
+
+  defp scan_sibling_ids(store, doc_uuid, latest) do
+    covered = dag_reachable_from(store, latest.id)
+    all_for_doc = CommitStore.all_commit_ids_for_doc(store, doc_uuid)
+    MapSet.difference(all_for_doc, covered)
   end
 
   # Walk the commit DAG from `root_id` following BOTH `parent_id` and

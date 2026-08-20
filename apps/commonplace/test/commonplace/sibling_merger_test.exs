@@ -120,6 +120,87 @@ defmodule Commonplace.SiblingMergerTest do
       assert MapSet.member?(chain_ids, l.id)
     end
 
+    # Increment 2: SiblingMerger consumes the accepted-head index (tips),
+    # so a sibling CHAIN R1 -> R2 is merged at its TIP (R2) in one pass,
+    # folding R1 through merge_parents — where the pre-index scan yielded
+    # {R1, R2} and could fold interior-first. Proves the index path
+    # handles chains: the head set is {L, R2} (R1 dominated), the merge
+    # folds both, and it settles at :no_siblings.
+    test "a sibling chain is folded at its tip in one merge (index path)",
+         %{store: store} do
+      uuid = "sib-chain"
+      {:ok, _genesis} = CommitStore.ensure_genesis(store, uuid)
+
+      doc_c = Doc.new(client_id: 1)
+      {doc_c, _} = Doc.get_or_create_type(doc_c, "t", :text)
+      doc_c = Text.insert(doc_c, "t", 0, "abc")
+
+      _ =
+        CommitStore.create_chained_commit(store, uuid, Encoding.encode_update(doc_c), %{
+          kind: :regular
+        })
+
+      {:ok, c} = CommitStore.snapshot(store, uuid)
+      {:ok, c_doc} = Encoding.apply_update(Doc.new(), c.update)
+      c_update = Encoding.encode_update(c_doc)
+
+      doc_l = Doc.new(client_id: 2)
+      {doc_l, _} = Doc.get_or_create_type(doc_l, "t", :text)
+      {:ok, doc_l} = Encoding.apply_update(doc_l, c_update)
+      doc_l = Text.insert(doc_l, "t", 0, "X")
+
+      l =
+        CommitStore.create_chained_commit(store, uuid, Encoding.encode_update(doc_l), %{
+          kind: :regular
+        })
+
+      # Sibling chain off C: R1, then R2 with parent R1 (both imported).
+      doc_r1 = Doc.new(client_id: 3)
+      {doc_r1, _} = Doc.get_or_create_type(doc_r1, "t", :text)
+      {:ok, doc_r1} = Encoding.apply_update(doc_r1, c_update)
+      doc_r1 = Text.insert(doc_r1, "t", 3, "Y")
+
+      r1 =
+        Commit.new(uuid, Encoding.encode_update(doc_r1), c.id, %{
+          kind: :regular,
+          snapshot_parent: c.id
+        })
+
+      :ok = CommitStore.import_commit(store, r1, validator: fn _ -> :ok end)
+
+      doc_r2 = Doc.new(client_id: 3)
+      {doc_r2, _} = Doc.get_or_create_type(doc_r2, "t", :text)
+      {:ok, doc_r2} = Encoding.apply_update(doc_r2, c_update)
+      doc_r2 = Text.insert(doc_r2, "t", 3, "YZ")
+
+      r2 =
+        Commit.new(uuid, Encoding.encode_update(doc_r2), r1.id, %{
+          kind: :regular,
+          snapshot_parent: c.id
+        })
+
+      :ok = CommitStore.import_commit(store, r2, validator: fn _ -> :ok end)
+
+      # The index path yields the frontier tips: {L, R2}, R1 dominated.
+      assert {:ok, heads} = CommitStore.accepted_heads_indexed(store, uuid)
+      assert heads == MapSet.new([l.id, r2.id])
+
+      # One merge folds the whole chain: the merge is on R2 (the tip), and
+      # R1 comes along through R2's history.
+      assert {:ok, :merged, merge_commit} = SiblingMerger.maybe_merge_siblings(store, uuid)
+      assert merge_commit.merge_parents == [r2.id]
+
+      # The seam collapses the frontier to the merge commit alone — proof
+      # that both R1 and R2 are now dominated (a chain folded in one merge).
+      # (commit_ids_for_doc is the LINEAR chain and would not show R1/R2,
+      # which are reachable only through the merge_parents edge.)
+      assert CommitStore.accepted_heads_indexed(store, uuid) ==
+               {:ok, MapSet.new([merge_commit.id])}
+
+      # Settled: nothing left divergent.
+      assert {:ok, :no_siblings} = SiblingMerger.maybe_merge_siblings(store, uuid)
+    end
+
     test "returns :no_siblings when :latest's chain already covers every commit",
          %{store: store} do
       uuid = "sib-none"
