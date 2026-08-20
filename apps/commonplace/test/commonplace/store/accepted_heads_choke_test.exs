@@ -20,7 +20,12 @@ defmodule Commonplace.Store.AcceptedHeadsChokeTest do
       offenders =
         Path.wildcard(Path.join(lib_root(), "**/*.ex"), match_dot: false)
         |> Enum.flat_map(&head_set_writes/1)
-        |> Enum.reject(fn %{function: function} -> function == "accepted_heads_row" end)
+        # accepted_heads_row = the incremental delta seam; accepted_heads_backfill_row
+        # = the §3 one-time full-set write. Both construct the head-set row; both
+        # are sanctioned. Nothing else may.
+        |> Enum.reject(fn %{function: function} ->
+          function in ["accepted_heads_row", "accepted_heads_backfill_row"]
+        end)
 
       assert offenders == [],
              """

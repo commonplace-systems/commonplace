@@ -13,6 +13,15 @@ defmodule Commonplace.Store.CommitStore do
   @doc_commit_index_ready {:ready, @doc_commit_index_version}
   @doc_commit_index_backfill_chunk 1_000
 
+  # BUILD-1 §3: the accepted-head index backfill's resume/verified state.
+  # `{:rebuilding, cursor}` (cursor = last-processed doc_uuid) survives a
+  # kill; only a complete pass sets `{:ready, v}`, so a "corpus-verified"
+  # read (§4's fallback removal) requires :ready — a half-run cannot present
+  # as complete. Mirrors the doc_commit_index state shape.
+  @accepted_head_index_version 1
+  @accepted_head_index_state_key {:accepted_head_index, :state}
+  @accepted_head_index_ready {:ready, @accepted_head_index_version}
+
   @moduledoc """
   The persistent storage layer for Commonplace's commit Merkle DAG —
   one singleton `GenServer` over a single CubDB instance at
@@ -904,6 +913,37 @@ defmodule Commonplace.Store.CommitStore do
       _latest -> {:ok, CubDB.get(db, {:accepted_heads, doc_uuid}) || MapSet.new()}
     end
   end
+
+  @doc """
+  BUILD-1 §3 backfill: write one chunk of derived full head-sets and
+  advance the resume state, ATOMICALLY (rows + state in one put_multi, so a
+  kill cannot leave rows written past the recorded cursor).
+
+  `rows` :: `[{doc_uuid, MapSet.t()}]` (each an already-derived, verified
+  frontier); `state` :: `{:rebuilding, cursor}` (cursor = last doc_uuid in
+  this chunk) or `:ready` for the final chunk. The write goes through the
+  choke-sanctioned `accepted_heads_backfill_row/2`.
+  """
+  @spec put_backfilled_accepted_heads(GenServer.server(), [{String.t(), MapSet.t()}], term()) ::
+          :ok
+  def put_backfilled_accepted_heads(server \\ __MODULE__, rows, state) do
+    GenServer.call(server, {:put_backfilled_accepted_heads, rows, state})
+  end
+
+  @doc """
+  The accepted-head-index backfill state: `{:ready, v}` once a complete
+  pass finished, `{:rebuilding, cursor}` mid-run, or `:absent` if never run.
+  §4 removes SiblingMerger's scan-fallback only when this reads `{:ready, v}`
+  — a half-run (incl. a kill) never presents as complete.
+  """
+  @spec accepted_head_backfill_state(GenServer.server()) :: term()
+  def accepted_head_backfill_state(server \\ __MODULE__) do
+    CubDB.get(resolve_db(server), @accepted_head_index_state_key) || :absent
+  end
+
+  @doc "The `{:ready, v}` value that marks the backfill complete for this version."
+  @spec accepted_head_index_ready() :: term()
+  def accepted_head_index_ready, do: @accepted_head_index_ready
 
   @doc """
   Look up a single commit by id. Returns `{:ok, commit}` or `:none`.
@@ -2449,6 +2489,18 @@ defmodule Commonplace.Store.CommitStore do
   end
 
   @impl true
+  def handle_call({:put_backfilled_accepted_heads, rows, backfill_state}, _from, state) do
+    index_rows =
+      Enum.map(rows, fn {doc_uuid, set} -> accepted_heads_backfill_row(doc_uuid, set) end)
+
+    # Rows + the resume cursor land in ONE put_multi: a kill cannot leave
+    # index rows written past the recorded cursor, so resume is exact and a
+    # half-run never reads as :ready.
+    CubDB.put_multi(state.db, index_rows ++ [{@accepted_head_index_state_key, backfill_state}])
+    {:reply, :ok, state}
+  end
+
+  @impl true
   def handle_call({:ensure_genesis, doc_uuid}, _from, state) do
     genesis = Commit.genesis(doc_uuid)
     put_bare_commit_with_index(state.db, genesis)
@@ -3351,6 +3403,13 @@ defmodule Commonplace.Store.CommitStore do
     new = old |> MapSet.difference(dominated) |> MapSet.put(new_id)
     {{:accepted_heads, doc_uuid}, new}
   end
+
+  # BUILD-1 §3 backfill: the FULL-set write path (vs accepted_heads_row's
+  # incremental delta). The backfill derives a doc's whole frontier
+  # (`AcceptedHeads.of/2`) and writes it directly. Choke-sanctioned
+  # alongside `accepted_heads_row` — see `accepted_heads_choke_test`'s
+  # allowlist. Never used on the hot path; only by the one-time backfill.
+  defp accepted_heads_backfill_row(doc_uuid, set), do: {{:accepted_heads, doc_uuid}, set}
 
   defp dominated_heads(commit) do
     [commit.parent_id | commit.merge_parents || []]
