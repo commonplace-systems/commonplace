@@ -69,3 +69,22 @@ workspace/
 
 # state-render cron scratch (boss-clod hourly projection probes) — never track
 .commonplace-state/.state-render.*/
+
+# ⛔ CREDENTIAL-SHAPED FILENAMES — never trackable in this tree (boss-clod, 2026-08-20).
+# THIS REPO IS PUBLIC. On 2026-07-31 a bot token reached a public repo and GitHub
+# alerted on DAY ONE — detection was never the gap, attention was. The M-CUTOVER
+# work introduces host-side glue that READS an operator artifact containing real
+# OAuth tokens, so for the first time there is a reason for a token file to exist
+# near this tree. This removes the affordance BEFORE the arm exists rather than
+# relying on nobody ever writing one here for convenience.
+# ⚠️ Filename patterns only: this changes nothing already tracked (verified zero
+# token-shaped files among 1521 tracked paths at the time of writing), and it is
+# not a substitute for the loader's own key-names-only error discipline.
+auth.json
+tokens.json
+credentials.json
+.env
+.env.*
+*.pem
+*_token
+*_token.json
