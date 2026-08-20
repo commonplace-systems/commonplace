@@ -9,10 +9,19 @@ defmodule Commonplace.Invariants.Registry do
   closed-ticket-matches-pin"), declared as data rather than hardcoded
   into a runner.
 
-  ## Step 1 scope: bd only, alarm-only
+  ## Domain is a declared dimension; responses are alarm-only so far
 
-  Every invariant registered here has `domain: :bd` and
-  `responses: [:alarm]`. Step 1 wires no enforcement — the choke-bound
+  Every invariant DECLARES its `scope.domain` — domain is a SCHEMA
+  DIMENSION, not a contract boundary (plan #13391). The Dispatcher runs
+  `all/0` grouped by `scope.domain`, so a new domain is a new MEMBER, not
+  a new registry: binding this registry to one domain would be binding to
+  the enumeration, the rot R1 was written against. The bd invariants were
+  the first members (`domain: :bd`); `:commit` (Hazard 3 — the
+  accepted-head antichain, `Commonplace.Store.CommitInvariants`) is the
+  second, scoped to the docs that advanced this batch (see its entry).
+
+  Every entry today still declares `responses: [:alarm]`. Enforcement is
+  wired for none of them — the choke-bound
   engine (§4 build-shape item 2), block-promotion (§2 item 2), and
   deterministic repair (§2 item 3) are none of them built yet. A
   registry entry declaring `:block_promotion` or
@@ -24,19 +33,21 @@ defmodule Commonplace.Invariants.Registry do
 
   ## What's delegated vs what's new
 
-  All four `check`/`enumerate` funs delegate to the existing, already
+  The bd `check`/`enumerate` funs delegate to the existing, already
   battle-tested pure checks in `Commonplace.Bd.Invariants`
   (`parses/3`, `ref_typed/3`, `closed_matches_pin/3`, `acyclic/2`, and
-  the newly-public `ticket_ids/2`). This module does not reimplement
-  any check logic — it only gives the existing functions a declared
-  shape the generic `Engine` can run uniformly. See
-  `Commonplace.Bd.Invariants`'s moduledoc for the substance of each
+  the newly-public `ticket_ids/2`); the `:commit` entry delegates to
+  `Commonplace.Store.CommitInvariants.antichain/2`. This module
+  reimplements no check logic — it only gives the existing functions a
+  declared shape the generic `Engine` can run uniformly. See
+  `Commonplace.Bd.Invariants`'s moduledoc for the substance of each bd
   check (in particular the CX-o3ar corruption class and the
   provenance-not-position pin design).
   """
 
   alias Commonplace.Bd.Invariants, as: BdInvariants
   alias Commonplace.Invariants.Invariant
+  alias Commonplace.Store.CommitInvariants
 
   @doc """
   Every registered invariant, built through `Invariant.new!/1` (so a
@@ -145,6 +156,44 @@ defmodule Commonplace.Invariants.Registry do
         with any ready ticket (see §3 of the design doc and
         `Commonplace.Bd.Invariants.acyclic/2`'s moduledoc). Decidable
         from the arriving state alone: :immediate.
+        """
+      ),
+      Invariant.new!(
+        name: :commit_accepted_heads_antichain,
+        scope: %{domain: :commit, granularity: :per_subject},
+        enumerate: fn context ->
+          # SCOPE-TO-ADVANCED (plan #13391 / #13407): only the docs whose
+          # head advanced this batch, threaded in by the Dispatcher as
+          # :advanced_subjects. ⚠️ Sound ONLY WHILE this invariant is
+          # ALARM-ONLY (see the Dispatcher's context-threading comment): an
+          # alarm touches no integrated state, so per-replica-divergent
+          # advanced-sets cannot cause divergence. A future state-affecting
+          # response (deterministic repair) MUST revisit this scoping. The
+          # full-population :commit backstop (World B gap, plan #13407) is
+          # owed separately, at audit cadence — this per-advance entry does
+          # not cover non-advancing docs or the backfill boundary.
+          Map.get(context, :advanced_subjects, [])
+        end,
+        check: fn %{store: store}, subject ->
+          CommitInvariants.antichain(store, subject)
+        end,
+        responses: [:alarm],
+        deferral: :immediate,
+        owner: "commonplace",
+        doc: """
+        Hazard 3 (BUILD-1 increment 2b): a document's accepted-head set
+        (the durable frontier — `Commonplace.Store.AcceptedHeads` /
+        `accepted_heads_indexed/2`) must be an ANTICHAIN: no accepted head
+        a DAG-ancestor of another accepted head of the same document. The
+        head-update seam enforces this by construction (advancing prunes
+        the heads it dominates); this invariant is the BACKSTOP that alarms
+        if a future edit to the seam regresses the domination delta —
+        registered so the rule outlives the function it currently lives in.
+        ALARM-ONLY and never blocks: a local merge advancing `:latest` must
+        never be refused (refusing convergence, R4). Ancestry follows
+        `parent_id` AND `merge_parents` (a merge-folded head is dominated
+        only through the merge edge). Decidable from resting state:
+        :immediate.
         """
       )
     ]

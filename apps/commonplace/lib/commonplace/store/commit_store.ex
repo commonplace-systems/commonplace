@@ -895,8 +895,10 @@ defmodule Commonplace.Store.CommitStore do
   """
   @spec accepted_heads_indexed(GenServer.server(), String.t()) :: {:ok, MapSet.t()} | :none
   def accepted_heads_indexed(server \\ __MODULE__, doc_uuid) do
-    db = resolve_db(server)
+    do_accepted_heads_indexed(resolve_db(server), doc_uuid)
+  end
 
+  defp do_accepted_heads_indexed(db, doc_uuid) do
     case CubDB.get(db, {:latest, doc_uuid}) do
       nil -> :none
       _latest -> {:ok, CubDB.get(db, {:accepted_heads, doc_uuid}) || MapSet.new()}
@@ -2439,6 +2441,11 @@ defmodule Commonplace.Store.CommitStore do
   @impl true
   def handle_call({:commit_ids_for_doc, doc_uuid}, _from, state) do
     {:reply, collect_commit_ids(state.db, doc_uuid), state}
+  end
+
+  @impl true
+  def handle_call({:accepted_heads_indexed, doc_uuid}, _from, state) do
+    {:reply, do_accepted_heads_indexed(state.db, doc_uuid), state}
   end
 
   @impl true

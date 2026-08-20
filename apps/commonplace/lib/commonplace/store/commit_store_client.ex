@@ -803,6 +803,22 @@ defmodule Commonplace.Store.CommitStoreClient do
   end
 
   @doc """
+  The doc's durable accepted-head set — the incrementally maintained
+  frontier (see `CommitStore.accepted_heads_indexed/2`). `{:ok, MapSet}`
+  or `:none`. Used by the commit-domain resting-state invariant
+  (`Commonplace.Store.CommitInvariants`).
+  """
+  def accepted_heads_indexed(server \\ CommitStore, doc_uuid) do
+    case remote_node() do
+      {:ok, node} ->
+        GenServer.call({CommitStore, node}, {:accepted_heads_indexed, doc_uuid})
+
+      :local ->
+        CommitStore.accepted_heads_indexed(normalize_server(server), doc_uuid)
+    end
+  end
+
+  @doc """
   Every commit id persisted for the doc, including imported commits not on
   the adopted `:latest` chain (see `CommitStore.all_commit_ids_for_doc/2`).
   The pull-federation differ denominates from this set (CX-5983): "what I
