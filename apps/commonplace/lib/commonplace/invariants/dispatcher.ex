@@ -246,7 +246,20 @@ defmodule Commonplace.Invariants.Dispatcher do
   # nothing about it serializes behind this mailbox either.
   defp run_validation(engine, context_fn, subjects) do
     case safe_context(context_fn) do
-      {:ok, context} ->
+      {:ok, base_context} ->
+        # Scope-to-advanced (plan #13391 / #13407): a commit-domain invariant
+        # enumerates only the docs whose head just advanced — the moment a
+        # seam regression would surface — instead of sweeping all documents
+        # (`all_doc_uuids`, the O(corpus) scan the accepted-head index exists
+        # to kill). ⚠️ Sound ONLY WHILE such invariants are ALARM-ONLY: an
+        # alarm touches no integrated state, so per-replica-divergent
+        # advanced-sets cannot cause divergence. If a commit invariant ever
+        # gains a state-affecting response (deterministic repair), this
+        # scoping MUST be revisited — which subjects are checked would then
+        # affect integrated state and divergent advanced-sets would break the
+        # determinism law. bd invariants ignore this key and enumerate their
+        # full population unchanged.
+        context = Map.put(base_context, :advanced_subjects, subjects)
         started = System.monotonic_time(:millisecond)
         mode = Mode.mode()
 

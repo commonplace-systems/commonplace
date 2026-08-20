@@ -14,13 +14,39 @@ defmodule Commonplace.Invariants.DispatcherTest do
 
   defmodule FakeEngine do
     @moduledoc false
+    # The dispatcher runs the engine once PER DOMAIN in Registry.all()
+    # (today :bd and :commit). Return the injected `result` for exactly one
+    # domain (`:result_domain`, default :bd) so a fixture's violations are
+    # not double-counted across domains; other domains return empty.
     def run(context, opts) do
       send(context.reply_to, {:engine_ran, opts})
 
       case context do
-        %{result: result} -> result
-        _ -> %{results: %{}}
+        %{result: result} ->
+          if opts[:domain] == Map.get(context, :result_domain, :bd),
+            do: result,
+            else: %{results: %{}}
+
+        _ ->
+          %{results: %{}}
       end
+    end
+  end
+
+  # A batch runs the engine once per domain, so drain all `:engine_ran`
+  # messages for the batch we just observed before asserting the next one —
+  # domain-count-agnostic, so adding a domain does not leave a straggler
+  # that trips a later refute.
+  defp assert_batch_ran(timeout \\ 1000) do
+    assert_receive {:engine_ran, _}, timeout
+    drain_engine_ran()
+  end
+
+  defp drain_engine_ran do
+    receive do
+      {:engine_ran, _} -> drain_engine_ran()
+    after
+      60 -> :ok
     end
   end
 
@@ -66,7 +92,7 @@ defmodule Commonplace.Invariants.DispatcherTest do
 
       for i <- 1..50, do: advance(d, "doc-#{i}")
 
-      assert_receive {:engine_ran, [domain: :bd]}, 1000
+      assert_batch_ran()
       refute_receive {:engine_ran, _}, 300
 
       assert %{runs: 1, pending_count: 0} = Dispatcher.status(d)
@@ -85,10 +111,10 @@ defmodule Commonplace.Invariants.DispatcherTest do
 
       advance(d)
       assert_receive :context_built, 1000
-      assert_receive {:engine_ran, _}, 1000
+      assert_batch_ran()
 
       advance(d)
-      assert_receive {:engine_ran, _}, 1000
+      assert_batch_ran()
 
       assert %{runs: 2} = Dispatcher.status(d)
     end
@@ -106,11 +132,11 @@ defmodule Commonplace.Invariants.DispatcherTest do
         )
 
       advance(d)
-      assert_receive {:engine_ran, _}, 1000
+      assert_batch_ran()
 
       advance(d)
       refute_receive {:engine_ran, _}, 200
-      assert_receive {:engine_ran, _}, 1000
+      assert_batch_ran()
 
       assert %{runs: 2} = Dispatcher.status(d)
     end
