@@ -19,8 +19,9 @@ defmodule Commonplace.CLI.ProtoChit do
   `--declare-empty-sync-excludes` explicitly selects defaults-only scope.
   """
 
-  alias Commonplace.Crypto.{NodeIdentity, SigningContext}
+  alias Commonplace.Crypto.SigningContext
   alias Commonplace.ProtoChit.IntentRecord
+  alias Commonplace.Runner.PodIdentity
   alias Commonplace.Store.SecretStore
 
   @switches [
@@ -42,7 +43,7 @@ defmodule Commonplace.CLI.ProtoChit do
 
   def run(data_dir, _relative_path, ["sign-intent"]) do
     with {:ok, record} <- IO.read(:stdio, :eof) |> Jason.decode(),
-         {:ok, signing_context} <- NodeIdentity.signing_context(data_dir),
+         {:ok, signing_context} <- PodIdentity.signing_context(data_dir),
          {:ok, signed_record} <- IntentRecord.sign(record, signing_context) do
       IO.puts(Jason.encode!(signed_record))
       0

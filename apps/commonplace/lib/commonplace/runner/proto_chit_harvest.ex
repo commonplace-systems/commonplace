@@ -2,27 +2,52 @@ defmodule Commonplace.Runner.ProtoChitHarvest do
   @moduledoc """
   Verifies and ingests a provisioned pod's proto-chit WAL before pod reaping.
 
-  Verification uses only the pod public-key artifact. A record never supplies
-  its verifier key. Refused records are written, with stable line names and
-  reasons, to a runner-owned quarantine outside the reapable pod home.
+  Verification uses the public key in a runner-written deployment binding at
+  the pod-home root, outside the pod's three writable binds. A pod below the
+  private `/tmp` mount can create a shadow pathname there, but cannot change the
+  host inode harvest reads. The writable data directory contains only an
+  equality-checked copy. A WAL record never supplies its verifier key. Refused
+  records are written, with stable line names and reasons, to a runner-owned
+  quarantine outside the reapable pod home.
   """
 
-  alias Commonplace.Crypto.NodeIdentity
   alias Commonplace.ProtoChit
   alias Commonplace.ProtoChit.IntentRecord
+  alias Commonplace.Runner.PodIdentity
   alias Commonplace.Store.CommitStoreClient
 
   @deployment_file "proto-chit-deployment.json"
+  @binding_file "proto-chit-deployment-binding.json"
   @receipt_file "harvest-receipt.json"
 
   @spec harvest(Path.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def harvest(pod_home, opts) when is_binary(pod_home) and is_list(opts) do
     data_dir = Path.join([pod_home, "workspace", ".commonplace"])
 
-    case read_deployment(data_dir) do
-      {:ok, deployment} -> harvest_deployment(data_dir, deployment, opts)
-      {:error, :enoent} -> {:ok, %{ingested: [], quarantined: [], legacy_without_record: true}}
-      {:error, reason} -> {:error, {:deployment_record_unreadable, reason}}
+    case {read_deployment(data_dir), read_binding(pod_home)} do
+      {{:ok, deployment}, {:ok, deployment}} ->
+        harvest_deployment(data_dir, deployment, opts)
+
+      {{:ok, %{"binding-version" => "pod-home-read-only-v1"}}, {:error, :enoent}} ->
+        {:error, :deployment_binding_absent}
+
+      {{:ok, deployment}, {:error, :enoent}} ->
+        harvest_deployment(data_dir, deployment, opts)
+
+      {{:ok, _deployment}, {:ok, _binding}} ->
+        {:error, :deployment_binding_mismatch}
+
+      {{:error, :enoent}, {:error, :enoent}} ->
+        {:ok, %{ingested: [], quarantined: [], legacy_without_record: true}}
+
+      {{:error, reason}, {:ok, _binding}} ->
+        {:error, {:deployment_record_unreadable, reason}}
+
+      {{:error, reason}, _binding} ->
+        {:error, {:deployment_record_unreadable, reason}}
+
+      {_deployment, {:error, reason}} ->
+        {:error, {:deployment_binding_unreadable, reason}}
     end
   end
 
@@ -36,8 +61,8 @@ defmodule Commonplace.Runner.ProtoChitHarvest do
     with {:ok, event_log_uuid} <- required_binary(deployment, "event-log-uuid"),
          {:ok, wal_path} <- required_binary(deployment, "wal-path"),
          {:ok, signer_id} <- required_binary(deployment, "signer-id"),
-         {:ok, public_key} <- independent_public_key(data_dir),
-         {:ok, signing_context} <- NodeIdentity.signing_context(data_dir),
+         {:ok, public_key} <- bound_public_key(deployment),
+         {:ok, signing_context} <- PodIdentity.signing_context(data_dir),
          :ok <- signer_matches(signing_context, signer_id, public_key),
          {:ok, records} <- read_records(wal_path) do
       receipt_path = Path.join(data_dir, @receipt_file)
@@ -260,12 +285,13 @@ defmodule Commonplace.Runner.ProtoChitHarvest do
     end
   end
 
-  defp independent_public_key(data_dir) do
-    case NodeIdentity.public_keys(data_dir) do
-      {:ok, [public_key]} -> {:ok, public_key}
-      {:ok, keys} -> {:error, {:expected_one_deployment_public_key, length(keys)}}
-      :absent -> {:error, :deployment_public_key_absent}
-      {:error, _reason} = error -> error
+  defp bound_public_key(deployment) do
+    with {:ok, encoded} <- required_binary(deployment, "signer-public-key"),
+         {:ok, public_key} <- Base.decode64(encoded),
+         true <- byte_size(public_key) == 32 do
+      {:ok, public_key}
+    else
+      _other -> {:error, :invalid_deployment_public_key}
     end
   end
 
@@ -277,6 +303,9 @@ defmodule Commonplace.Runner.ProtoChitHarvest do
 
   defp read_deployment(data_dir),
     do: data_dir |> Path.join(@deployment_file) |> read_json()
+
+  defp read_binding(pod_home),
+    do: pod_home |> Path.join(@binding_file) |> read_json()
 
   defp read_json(path) do
     with {:ok, contents} <- File.read(path),

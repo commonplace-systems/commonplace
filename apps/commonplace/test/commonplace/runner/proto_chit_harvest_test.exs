@@ -1,10 +1,12 @@
 defmodule Commonplace.Runner.ProtoChitHarvestTest do
   use ExUnit.Case, async: false
 
-  alias Commonplace.Crypto.{NodeIdentity, Signing}
+  import ExUnit.CaptureIO
+
+  alias Commonplace.Crypto.Signing
   alias Commonplace.ProtoChit
   alias Commonplace.ProtoChit.IntentRecord
-  alias Commonplace.Runner.{Launcher, PodProfile, ProtoChitHarvest}
+  alias Commonplace.Runner.{Launcher, PodIdentity, PodProfile, ProtoChitHarvest}
 
   @moduletag timeout: 600_000
 
@@ -18,8 +20,8 @@ defmodule Commonplace.Runner.ProtoChitHarvestTest do
     assert function_exported?(Commonplace.Runner.ProtoChitHarvest, :quarantine_path, 2)
   end
 
-  test "real provisioned pod exposes the wired proto-chit arm" do
-    root = Path.join(System.tmp_dir!(), "a1b_pod_arm_#{UUID.uuid4()}")
+  test "A1C: pod commit signs WAL and harvest persists it under the bound pod signer" do
+    root = Path.join(System.tmp_dir!(), "a1c_pod_arm_#{UUID.uuid4()}")
     pods_root = Path.join(root, "pods")
     File.mkdir_p!(pods_root)
     launcher = start_supervised!({Launcher, pods_root: pods_root, dedicated_runner_service: true})
@@ -27,33 +29,43 @@ defmodule Commonplace.Runner.ProtoChitHarvestTest do
     repo = Path.expand("../../../../..", __DIR__)
     source_repo = Path.join(root, "source")
     {"", 0} = System.cmd("git", ["clone", "--quiet", "--no-hardlinks", repo, source_repo])
+    install_worktree_wal!(repo, source_repo)
     {sha, 0} = System.cmd("git", ["rev-parse", "HEAD"], cd: source_repo)
     {principal_pubkey, _private_key} = Signing.generate_keypair()
+    pod_manifest = manifest()
+    commonplace_cli = compiled_cli_wrapper!(repo)
 
     invocation = [
       "/bin/sh",
       "-c",
-      "git config user.email pod@example.invalid && " <>
-        "git config user.name 'A1B Pod' && " <>
-        "git commit --allow-empty -m 'A1B unseen arm' >\"$COMMONPLACE_DATA_DIR/a1b-emitter.txt\" 2>&1; " <>
-        "status=$?; printf '%s' \"$status\" >\"$COMMONPLACE_DATA_DIR/a1b-git-status.tmp\"; " <>
-        "mv \"$COMMONPLACE_DATA_DIR/a1b-git-status.tmp\" \"$COMMONPLACE_DATA_DIR/a1b-git-status\"; " <>
-        "while test ! -f \"$COMMONPLACE_DATA_DIR/a1b-stop\"; do sleep 0.05; done"
+      "if printf tamper >\"$COMMONPLACE_DATA_DIR/../../proto-chit-deployment-binding.json\" 2>/dev/null; " <>
+        "then binding=writable; else binding=read-only; fi; " <>
+        "printf '%s' \"$binding\" >\"$COMMONPLACE_DATA_DIR/a1c-binding-access\"; " <>
+        "git config user.email pod@example.invalid && " <>
+        "git config user.name 'A1C Pod' && " <>
+        "git commit --allow-empty -m 'A1C pod commit' >\"$COMMONPLACE_DATA_DIR/a1c-emitter.txt\" 2>&1; " <>
+        "status=$?; printf '%s' \"$status\" >\"$COMMONPLACE_DATA_DIR/a1c-git-status.tmp\"; " <>
+        "mv \"$COMMONPLACE_DATA_DIR/a1c-git-status.tmp\" \"$COMMONPLACE_DATA_DIR/a1c-git-status\"; " <>
+        "while test ! -f \"$COMMONPLACE_DATA_DIR/a1c-stop\"; do sleep 0.05; done"
     ]
 
     assert {:ok, handle} =
-             Launcher.launch(launcher, manifest(), profile(),
+             Launcher.launch(launcher, pod_manifest, profile(),
                repo: source_repo,
                sha: String.trim(sha),
                principal_pubkey: principal_pubkey,
-               proto_chit_commonplace:
-                 Path.expand("../../../../commonplace_cli/commonplace_cli", __DIR__),
+               proto_chit_commonplace: commonplace_cli,
                invocation: invocation
              )
 
     data_dir = Path.join([handle.pod_home, "workspace", ".commonplace"])
-    assert {:ok, "0"} = await_file(Path.join(data_dir, "a1b-git-status"))
-    assert {:ok, output} = await_file(Path.join(data_dir, "a1b-emitter.txt"))
+
+    assert {:ok, binding_path_effect} =
+             await_file(Path.join(data_dir, "a1c-binding-access"))
+
+    assert binding_path_effect in ["read-only", "writable"]
+    assert {:ok, "0"} = await_file(Path.join(data_dir, "a1c-git-status"))
+    assert {:ok, output} = await_file(Path.join(data_dir, "a1c-emitter.txt"))
 
     wal_path = Path.join([data_dir, "proto-chit", "events.wal.ndjson"])
     wal = if File.exists?(wal_path), do: File.read!(wal_path), else: ""
@@ -62,76 +74,118 @@ defmodule Commonplace.Runner.ProtoChitHarvestTest do
     deployment =
       data_dir |> Path.join("proto-chit-deployment.json") |> File.read!() |> Jason.decode!()
 
+    binding =
+      handle.pod_home
+      |> Path.join("proto-chit-deployment-binding.json")
+      |> File.read!()
+      |> Jason.decode!()
+
+    assert binding == deployment
+    refute binding == "tamper"
+    IO.puts("A1C_POD_BINDING_PATH_EFFECT=#{binding_path_effect}; host binding unchanged")
+
     {local_store_supervisor, local_store} = open_store!(data_dir)
     local_log = ProtoChit.chain(deployment["event-log-uuid"], store: local_store)
     Supervisor.stop(local_store_supervisor)
 
-    IO.puts("A1B_POD_EMITTER_OUTPUT_BEGIN\n#{output}A1B_POD_EMITTER_OUTPUT_END")
-    IO.puts("A1B_POD_WAL_RECORDS=#{length(records)}")
-    IO.puts("A1B_POD_WAL_FAILURES=#{inspect(Enum.map(records, & &1["failure"]))}")
-    IO.puts("A1B_POD_WAL_AUTH=#{inspect(Enum.map(records, & &1["authentication"]))}")
-    IO.puts("A1B_POD_LOCAL_EVENT_LOG=#{inspect(local_log)}")
+    IO.puts("A1C_POD_EMITTER_OUTPUT_BEGIN\n#{output}A1C_POD_EMITTER_OUTPUT_END")
+    IO.puts("A1C_POD_WAL_RECORDS=#{length(records)}")
+    IO.puts("A1C_POD_WAL_FAILURES=#{inspect(Enum.map(records, & &1["failure"]))}")
+    IO.puts("A1C_POD_WAL_AUTH=#{inspect(Enum.map(records, & &1["authentication"]))}")
+    IO.puts("A1C_POD_LOCAL_EVENT_LOG=#{inspect(local_log)}")
     assert local_log == {:ok, []}
 
-    File.write!(Path.join(data_dir, "a1b-stop"), "stop\n")
+    [record] = records
+    public_key = Base.decode64!(deployment["signer-public-key"])
+    assert :ok = IntentRecord.verify(record, public_key)
+    assert record["authentication"]["state"] == "signed"
+    assert record["authentication"]["principal"] == deployment["signer-id"]
+    assert record["event"]["author-principal"] == deployment["signer-id"]
+    assert deployment["durable-identity"] == pod_manifest.principal
+    refute deployment["signer-id"] == deployment["durable-identity"]
+
+    File.write!(Path.join(data_dir, "a1c-stop"), "stop\n")
     assert :ok = Launcher.reap(handle)
 
-    [record] = records
+    assert {:ok, [entry]} = ProtoChit.chain(deployment["event-log-uuid"])
+    assert entry.event["message"] == "A1C pod commit"
+    assert entry.event["author-principal"] == deployment["signer-id"]
+    assert String.starts_with?(entry.signer.signer_id, deployment["signer-id"] <> "@")
 
-    assert record["authentication"] == %{
-             "reason" => "deployment-signer-unavailable",
-             "state" => "unsigned"
-           }
+    log_output =
+      capture_io(fn ->
+        host_data_dir = Application.fetch_env!(:commonplace, :data_dir)
 
-    assert {:ok, []} = ProtoChit.chain(deployment["event-log-uuid"])
+        assert 0 ==
+                 Commonplace.CLI.ProtoChit.run(host_data_dir, "", [
+                   "log",
+                   "--event-log",
+                   deployment["event-log-uuid"]
+                 ])
+      end)
 
-    quarantine_path =
-      ProtoChitHarvest.quarantine_path(
-        Path.join(pods_root, ".proto-chit-quarantine"),
-        deployment["event-log-uuid"]
-      )
-
-    assert [quarantine] = quarantine_path |> File.read!() |> String.split("\n", trim: true)
-
-    assert %{"record-name" => "events.wal.ndjson:1", "reason" => ":unsigned"} =
-             Jason.decode!(quarantine)
-
-    IO.puts(
-      "A1B_POD_HARVEST_QUARANTINE=#{inspect(Map.take(Jason.decode!(quarantine), ["record-name", "reason"]))}"
-    )
+    IO.puts("A1C_PROTO_CHIT_LOG_BEGIN\n#{log_output}A1C_PROTO_CHIT_LOG_END")
+    assert log_output =~ "commit  by #{deployment["signer-id"]}  [signature present]"
+    assert log_output =~ "message: A1C pod commit"
 
     refute File.exists?(handle.pod_home)
     File.rm_rf!(root)
   end
 
-  test "one flipped-byte record is quarantined by name while genuine records ingest" do
-    root = Path.join(System.tmp_dir!(), "a1b_refusal_#{UUID.uuid4()}")
+  test "A1C: wrong key, no key, and broken signature are three named quarantine facts" do
+    root = Path.join(System.tmp_dir!(), "a1c_refusal_#{UUID.uuid4()}")
     pod_home = Path.join(root, "pod")
     data_dir = Path.join([pod_home, "workspace", ".commonplace"])
     state_dir = Path.join(data_dir, "proto-chit")
     quarantine_root = Path.join(root, "quarantine")
     File.mkdir_p!(state_dir)
 
-    assert {:ok, pod_signer} = NodeIdentity.signing_context(data_dir)
+    assert {:ok, pod_signer} = PodIdentity.mint(data_dir)
     event_log_uuid = UUID.uuid4()
-    write_deployment!(data_dir, state_dir, event_log_uuid, pod_signer.identity_uuid)
+    write_deployment!(pod_home, data_dir, state_dir, event_log_uuid, pod_signer)
 
     genuine = signed_record!(pod_signer, "genuine pod commit", String.duplicate("a", 40))
-    tampered = put_in(genuine, ["event", "message"], "fenuine pod commit")
-    wal_path = Path.join(state_dir, "events.wal.ndjson")
-    File.write!(wal_path, Jason.encode!(genuine) <> "\n" <> Jason.encode!(tampered) <> "\n")
+    assert {:ok, wrong_signer} = PodIdentity.mint(Path.join(root, "wrong-signer"))
 
+    deployment_path = Path.join(data_dir, "proto-chit-deployment.json")
+    original_deployment = File.read!(deployment_path)
+
+    tampered_deployment =
+      original_deployment
+      |> Jason.decode!()
+      |> Map.put("signer-public-key", Base.encode64(wrong_signer.public_key))
+
+    File.write!(deployment_path, Jason.encode!(tampered_deployment))
     store = start_store!(Path.join(root, "host-store"))
+
+    assert {:error, :deployment_binding_mismatch} =
+             ProtoChitHarvest.harvest(pod_home,
+               store: store,
+               quarantine_root: quarantine_root
+             )
+
+    File.write!(deployment_path, original_deployment)
+
+    wrong_key = signed_record!(wrong_signer, "wrong key", String.duplicate("b", 40))
+    no_key = IntentRecord.unsigned(Map.delete(genuine, "authentication"))
+    broken_signature = put_in(genuine, ["event", "message"], "broken signature")
+    wal_path = Path.join(state_dir, "events.wal.ndjson")
+
+    File.write!(
+      wal_path,
+      Enum.map_join([genuine, wrong_key, no_key, broken_signature], "\n", &Jason.encode!/1) <>
+        "\n"
+    )
+
+    quarantine_path = ProtoChitHarvest.quarantine_path(quarantine_root, event_log_uuid)
 
     assert {:ok,
             %{
               ingested: [%{name: "events.wal.ndjson:1"}],
               quarantined: [
-                %{
-                  name: "events.wal.ndjson:2",
-                  reason: :invalid_signature,
-                  path: quarantine_path
-                }
+                %{name: "events.wal.ndjson:2", reason: :public_key_mismatch},
+                %{name: "events.wal.ndjson:3", reason: :unsigned},
+                %{name: "events.wal.ndjson:4", reason: :invalid_signature}
               ]
             }} =
              ProtoChitHarvest.harvest(pod_home,
@@ -155,18 +209,28 @@ defmodule Commonplace.Runner.ProtoChitHarvestTest do
     assert event_ref == entry.event_ref
 
     assert quarantine_path == ProtoChitHarvest.quarantine_path(quarantine_root, event_log_uuid)
-    assert [quarantine] = quarantine_path |> File.read!() |> String.split("\n", trim: true)
 
-    assert %{"record-name" => "events.wal.ndjson:2", "reason" => ":invalid_signature"} =
-             Jason.decode!(quarantine)
+    quarantines =
+      quarantine_path
+      |> File.read!()
+      |> String.split("\n", trim: true)
+      |> Enum.map(&Jason.decode!/1)
 
-    IO.puts("A1B_QUARANTINE_PATH=#{quarantine_path}")
-    IO.puts("A1B_QUARANTINE_RECORD=#{quarantine}")
+    assert Enum.map(quarantines, &Map.take(&1, ["record-name", "reason"])) == [
+             %{"record-name" => "events.wal.ndjson:2", "reason" => ":public_key_mismatch"},
+             %{"record-name" => "events.wal.ndjson:3", "reason" => ":unsigned"},
+             %{"record-name" => "events.wal.ndjson:4", "reason" => ":invalid_signature"}
+           ]
+
+    IO.puts(
+      "A1C_QUARANTINE_FACTS=#{inspect(Enum.map(quarantines, &Map.take(&1, ["record-name", "reason"])))}"
+    )
+
     File.rm_rf!(root)
   end
 
-  test "reap preserves the pod home when harvest cannot verify its independent key" do
-    root = Path.join(System.tmp_dir!(), "a1b_reap_refusal_#{UUID.uuid4()}")
+  test "reap preserves the pod home when the bound ephemeral key is corrupt" do
+    root = Path.join(System.tmp_dir!(), "a1c_reap_refusal_#{UUID.uuid4()}")
     pods_root = Path.join(root, "pods")
     source_repo = Path.join(root, "source")
     File.mkdir_p!(pods_root)
@@ -184,21 +248,20 @@ defmodule Commonplace.Runner.ProtoChitHarvestTest do
                invocation: [
                  "/bin/sh",
                  "-c",
-                 "while ! test -f \"$COMMONPLACE_DATA_DIR/a1b-exit\"; do sleep 0.05; done"
+                 "while ! test -f \"$COMMONPLACE_DATA_DIR/a1c-exit\"; do sleep 0.05; done"
                ]
              )
 
-    public_artifact =
-      Path.join([handle.pod_home, "workspace", ".commonplace", "node_signing_public_keys.json"])
+    pod_key = Path.join([handle.pod_home, "workspace", ".commonplace", "pod_signing_key"])
 
-    original_public_artifact = File.read!(public_artifact)
-    File.write!(public_artifact, "not-json\n")
-    File.write!(Path.join(Path.dirname(public_artifact), "a1b-exit"), "exit\n")
+    original_pod_key = File.read!(pod_key)
+    File.write!(pod_key, "not-json\n")
+    File.write!(Path.join(Path.dirname(pod_key), "a1c-exit"), "exit\n")
 
     assert :ok = await_dead(handle)
     assert File.dir?(handle.pod_home)
 
-    File.write!(public_artifact, original_public_artifact)
+    File.write!(pod_key, original_pod_key)
     assert :ok = Launcher.reap(handle)
     refute File.exists?(handle.pod_home)
     File.rm_rf!(root)
@@ -283,17 +346,64 @@ defmodule Commonplace.Runner.ProtoChitHarvestTest do
     signed
   end
 
-  defp write_deployment!(data_dir, state_dir, event_log_uuid, signer_id) do
+  defp write_deployment!(pod_home, data_dir, state_dir, event_log_uuid, signer) do
+    deployment = %{
+      "binding-version" => "pod-home-read-only-v1",
+      "deployment-id" => "a1c-refusal",
+      "event-log-uuid" => event_log_uuid,
+      "signer-id" => signer.identity_uuid,
+      "signer-public-key" => Base.encode64(signer.public_key),
+      "state-dir" => state_dir,
+      "wal-path" => Path.join(state_dir, "events.wal.ndjson")
+    }
+
     File.write!(
-      Path.join(data_dir, "proto-chit-deployment.json"),
-      Jason.encode!(%{
-        "deployment-id" => "a1b-refusal",
-        "event-log-uuid" => event_log_uuid,
-        "signer-id" => signer_id,
-        "state-dir" => state_dir,
-        "wal-path" => Path.join(state_dir, "events.wal.ndjson")
-      })
+      Path.join(pod_home, "proto-chit-deployment-binding.json"),
+      Jason.encode!(deployment)
     )
+
+    File.write!(Path.join(data_dir, "proto-chit-deployment.json"), Jason.encode!(deployment))
+  end
+
+  defp install_worktree_wal!(repo, source_repo) do
+    relative = "tools/proto-chit/bin/proto-chit-wal"
+    File.cp!(Path.join(repo, relative), Path.join(source_repo, relative))
+
+    {_, 0} = System.cmd("git", ["add", relative], cd: source_repo)
+
+    {_, 0} =
+      System.cmd(
+        "git",
+        [
+          "-c",
+          "user.email=a1c@example.invalid",
+          "-c",
+          "user.name=A1C Fixture",
+          "commit",
+          "--quiet",
+          "-m",
+          "A1C fixture WAL signer path"
+        ],
+        cd: source_repo
+      )
+  end
+
+  defp compiled_cli_wrapper!(repo) do
+    wrapper = Path.join([repo, "_build", "test", "a1c-commonplace"])
+    erl_libs = Path.join([repo, "_build", "test", "lib"])
+    elixir = System.find_executable("elixir")
+
+    File.write!(
+      wrapper,
+      "#!/bin/sh\n" <>
+        "if test \"${3:-}\" = proto-chit && test \"${4:-}\" = sign-intent; then\n" <>
+        "  ERL_LIBS=#{erl_libs} exec #{elixir} -e 'data_dir = Enum.at(System.argv(), 1); System.halt(Commonplace.CLI.ProtoChit.run(data_dir, \"\", [\"sign-intent\"]))' -- \"$@\"\n" <>
+        "fi\n" <>
+        "exit 1\n"
+    )
+
+    File.chmod!(wrapper, 0o755)
+    wrapper
   end
 
   defp start_store!(data_dir) do
@@ -303,16 +413,16 @@ defmodule Commonplace.Runner.ProtoChitHarvestTest do
 
   defp open_store!(data_dir) do
     n = System.unique_integer([:positive])
-    store = :"a1b_harvest_store_#{n}"
+    store = :"a1c_harvest_store_#{n}"
 
     supervisor =
       start_supervised!(
         {Commonplace.Store.Supervisor,
          data_dir: data_dir,
-         name: :"a1b_harvest_supervisor_#{n}",
+         name: :"a1c_harvest_supervisor_#{n}",
          commit_store_name: store,
-         trust_side_store_name: :"a1b_harvest_trust_#{n}",
-         pending_imports_name: :"a1b_harvest_pending_#{n}"}
+         trust_side_store_name: :"a1c_harvest_trust_#{n}",
+         pending_imports_name: :"a1c_harvest_pending_#{n}"}
       )
 
     {supervisor, store}
@@ -320,10 +430,10 @@ defmodule Commonplace.Runner.ProtoChitHarvestTest do
 
   defp init_fixture_repo!(repo) do
     File.mkdir_p!(repo)
-    File.write!(Path.join(repo, "README"), "A1B reap fixture\n")
+    File.write!(Path.join(repo, "README"), "A1C reap fixture\n")
     {_, 0} = System.cmd("git", ["init", "--quiet"], cd: repo)
-    {_, 0} = System.cmd("git", ["config", "user.email", "a1b@example.invalid"], cd: repo)
-    {_, 0} = System.cmd("git", ["config", "user.name", "A1B Fixture"], cd: repo)
+    {_, 0} = System.cmd("git", ["config", "user.email", "a1c@example.invalid"], cd: repo)
+    {_, 0} = System.cmd("git", ["config", "user.name", "A1C Fixture"], cd: repo)
     {_, 0} = System.cmd("git", ["add", "README"], cd: repo)
     {_, 0} = System.cmd("git", ["commit", "--quiet", "-m", "fixture"], cd: repo)
   end
@@ -332,7 +442,7 @@ defmodule Commonplace.Runner.ProtoChitHarvestTest do
     principal = UUID.uuid4()
 
     %{
-      id: "a1b-unseen-arm",
+      id: "a1c-pod-signer",
       parent: "commonplace-factory",
       mission: "Measure the real pod proto-chit arm",
       principal: principal,

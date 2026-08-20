@@ -28,7 +28,7 @@ defmodule Commonplace.Runner.Provisioner do
   alias Commonplace.CertMint
   alias Commonplace.Cell.Manifest
   alias Commonplace.Crypto.NodeIdentity
-  alias Commonplace.Runner.PodProfile
+  alias Commonplace.Runner.{PodIdentity, PodProfile}
   alias Commonplace.Store.{Commit, CommitStoreClient}
   alias Commonplace.Store.Supervisor, as: StoreSupervisor
   alias Commonplace.Tree.{DocBuilder, Schema}
@@ -38,6 +38,7 @@ defmodule Commonplace.Runner.Provisioner do
 
   @declarations_file "runner-storage.json"
   @proto_chit_deployment_file "proto-chit-deployment.json"
+  @proto_chit_binding_file "proto-chit-deployment-binding.json"
   @trust_file "trust.json"
   @environment_contract %{
     "COMMONPLACE_DATA_DIR" => :data_dir,
@@ -302,9 +303,16 @@ defmodule Commonplace.Runner.Provisioner do
          :ok <- checkout(paths.repo, paths.sha, paths.checkout_dir),
          :ok <- write_birth_declarations(paths.data_dir, manifest),
          {:ok, born} <- birth_workspace(paths, manifest, principal_pubkey),
-         {:ok, signer_id} <- NodeIdentity.identity(paths.data_dir),
+         {:ok, pod_signer} <- PodIdentity.mint(paths.data_dir),
          :ok <-
-           write_proto_chit_deployment(paths.data_dir, manifest.id, event_log_uuid, signer_id),
+           write_proto_chit_deployment(
+             paths.pod_home,
+             paths.data_dir,
+             manifest.id,
+             event_log_uuid,
+             manifest.principal,
+             pod_signer
+           ),
          {:ok, declarations} <- read_declarations(paths.data_dir),
          :ok <- verify_declarations(declarations, manifest) do
       {:ok,
@@ -321,20 +329,37 @@ defmodule Commonplace.Runner.Provisioner do
     end
   end
 
-  defp write_proto_chit_deployment(data_dir, deployment_id, event_log_uuid, signer_id) do
+  defp write_proto_chit_deployment(
+         pod_home,
+         data_dir,
+         deployment_id,
+         event_log_uuid,
+         durable_identity,
+         pod_signer
+       ) do
     document = %{
+      "binding-version" => "pod-home-read-only-v1",
       "deployment-id" => deployment_id,
+      "durable-identity" => durable_identity,
       "event-log-uuid" => event_log_uuid,
-      "signer-id" => signer_id,
+      "signer-id" => pod_signer.identity_uuid,
+      "signer-public-key" => Base.encode64(pod_signer.public_key),
       "state-dir" => Path.join(data_dir, "proto-chit"),
       "wal-path" => Path.join([data_dir, "proto-chit", "events.wal.ndjson"])
     }
 
-    write_json(
-      Path.join(data_dir, @proto_chit_deployment_file),
-      document,
-      "proto-chit.event-log-uuid"
-    )
+    with :ok <-
+           write_json(
+             Path.join(pod_home, @proto_chit_binding_file),
+             document,
+             "proto-chit.signer-public-key"
+           ) do
+      write_json(
+        Path.join(data_dir, @proto_chit_deployment_file),
+        document,
+        "proto-chit.event-log-uuid"
+      )
+    end
   end
 
   defp birth_workspace(paths, manifest, principal_pubkey) do
