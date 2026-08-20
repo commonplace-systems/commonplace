@@ -226,7 +226,7 @@ defmodule Commonplace.Runner.LauncherTest do
     assert :ok = Launcher.reap(handle)
   end
 
-  test "executes by effect with its five-variable constructed environment", ctx do
+  test "executes by effect with its provisioner-constructed environment", ctx do
     launcher = start_launcher!(ctx.pods_root)
     handle = launch!(launcher, ctx)
     data_dir = data_dir(handle)
@@ -242,8 +242,10 @@ defmodule Commonplace.Runner.LauncherTest do
       |> Enum.map(&(&1 |> String.split("=", parts: 2) |> hd()))
       |> Enum.sort()
 
-    assert length(environment_names) == 6
-    assert environment_names == ~w(COMMONPLACE_DATA_DIR HOME LANG LC_ALL PATH PWD)
+    assert length(environment_names) == 12
+
+    assert environment_names ==
+             ~w(COMMONPLACE_DATA_DIR HOME LANG LC_ALL PATH PROTO_CHIT_COMMONPLACE PROTO_CHIT_DATA_DIR PROTO_CHIT_EVENT_LOG_UUID PROTO_CHIT_REAL_GIT PROTO_CHIT_STATE_DIR PROTO_CHIT_SYNC_EXCLUDES PWD)
 
     assert {:ok, process_count} = File.read(Path.join(data_dir, "process-count"))
     assert String.to_integer(String.trim(process_count)) in 1..4

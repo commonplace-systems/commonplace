@@ -236,7 +236,7 @@ def main():
             "author-principal": os.environ.get("PROTO_CHIT_PRINCIPAL"),
             "message": message(argv),
             "proto-pin": None,
-            "predecessor-ref": {"branch": branch, "event-refs": []},
+            "predecessor-ref": {"branch": branch, "event-refs": [], "unresolved": []},
             "git-sha": sha,
         },
         "post-exec": {"disposition": "pending"},

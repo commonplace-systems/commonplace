@@ -23,6 +23,17 @@ defmodule Commonplace.ProtoChit do
 
   @type event :: %{required(String.t()) => term()}
 
+  @doc "Persist one already-verified harvested intent under its original deployment signer."
+  @spec ingest_verified(String.t(), event(), SigningContext.t(), keyword()) ::
+          {:ok, %{event_ref: String.t()}} | {:error, term()}
+  def ingest_verified(event_log_uuid, event, %SigningContext{} = signing_context, opts \\ [])
+      when is_binary(event_log_uuid) and is_map(event) and is_list(opts) do
+    case persist_event(event_log_uuid, event, signing_context, opts) do
+      {:ok, event_ref} -> {:ok, %{event_ref: event_ref}}
+      {:error, _reason} = error -> error
+    end
+  end
+
   @doc "Cut a sync-flushed pin, append one signed event, and advance its branch ref."
   @spec emit(Path.t(), [String.t()], keyword()) ::
           {:ok, %{event: event(), event_ref: String.t()}} | {:error, term()}

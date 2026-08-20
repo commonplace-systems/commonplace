@@ -32,10 +32,12 @@ defmodule Commonplace.Runner.Launcher do
 
   require Logger
 
-  alias Commonplace.Runner.{PodHandle, PodProfile, Provisioner, RunRecipe}
+  alias Commonplace.Runner.{PodHandle, PodProfile, ProtoChitHarvest, Provisioner, RunRecipe}
+  alias Commonplace.Store.CommitStoreClient
 
   @lock_file ".runner.lock"
   @output_tail_bytes 4096
+  @quarantine_dir ".proto-chit-quarantine"
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) when is_list(opts),
@@ -66,8 +68,9 @@ defmodule Commonplace.Runner.Launcher do
          {:ok, pods_root} <- required_path(opts, :pods_root),
          :ok <- File.mkdir_p(pods_root),
          {:ok, lock} <- lock_root(pods_root),
-         :ok <- reap_stale_homes(pods_root) do
-      {:ok, %{pods_root: pods_root, lock: lock, pods: %{}}}
+         harvest = harvest_options(pods_root, opts),
+         :ok <- reap_stale_homes(pods_root, harvest) do
+      {:ok, %{pods_root: pods_root, lock: lock, pods: %{}, harvest: harvest}}
     else
       {:error, reason} -> {:stop, reason}
     end
@@ -144,8 +147,10 @@ defmodule Commonplace.Runner.Launcher do
       {%{port: port, os_pid: os_pid, pod_home: pod_home} = running, pods} ->
         case stop_namespace(port, os_pid) do
           :ok ->
-            :ok = remove_pod_home(pod_home)
-            {:reply, :ok, %{state | pods: pods}}
+            case harvest_and_remove(pod_home, state.harvest) do
+              :ok -> {:reply, :ok, %{state | pods: pods}}
+              {:error, _reason} = error -> {:reply, error, state}
+            end
 
           {:error, _reason} = error ->
             {:stop, error, error, put_in(state.pods[ref], running)}
@@ -181,8 +186,18 @@ defmodule Commonplace.Runner.Launcher do
 
       {%{pod_home: pod_home} = running, pods} ->
         _ = report_exit(pod_home, status, Map.get(running, :output, ""))
-        :ok = remove_pod_home(pod_home)
-        {:noreply, %{state | pods: pods}}
+
+        case harvest_and_remove(pod_home, state.harvest) do
+          :ok ->
+            {:noreply, %{state | pods: pods}}
+
+          {:error, reason} ->
+            Logger.error(
+              "runner pod harvest failed before automatic reap (pod_home=#{pod_home}): #{inspect(reason)}"
+            )
+
+            {:noreply, state}
+        end
     end
   end
 
@@ -200,7 +215,17 @@ defmodule Commonplace.Runner.Launcher do
       )
 
       _ = stop_namespace(port, os_pid)
-      _ = File.rm_rf(pod_home)
+
+      case harvest_and_remove(pod_home, state.harvest) do
+        :ok ->
+          :ok
+
+        {:error, reason} ->
+          Logger.error(
+            "runner pod harvest failed at launcher termination; pod preserved " <>
+              "(pod_home=#{pod_home}): #{inspect(reason)}"
+          )
+      end
     end)
 
     _ = Commonplace.Flock.unlock(state.lock)
@@ -410,12 +435,29 @@ defmodule Commonplace.Runner.Launcher do
     end
   end
 
-  defp reap_stale_homes(pods_root) do
+  defp reap_stale_homes(pods_root, harvest) do
     with {:ok, entries} <- File.ls(pods_root) do
       entries
-      |> Enum.reject(&(&1 == @lock_file))
-      |> Enum.each(fn entry -> File.rm_rf(Path.join(pods_root, entry)) end)
+      |> Enum.reject(&(&1 in [@lock_file, @quarantine_dir]))
+      |> Enum.reduce_while(:ok, fn entry, :ok ->
+        case harvest_and_remove(Path.join(pods_root, entry), harvest) do
+          :ok -> {:cont, :ok}
+          {:error, reason} -> {:halt, {:error, {:stale_pod_harvest_failed, entry, reason}}}
+        end
+      end)
+    end
+  end
 
+  defp harvest_options(pods_root, opts) do
+    [
+      store: Keyword.get(opts, :harvest_store, CommitStoreClient),
+      quarantine_root: Path.join(pods_root, @quarantine_dir)
+    ]
+  end
+
+  defp harvest_and_remove(pod_home, harvest) do
+    with {:ok, _summary} <- ProtoChitHarvest.harvest(pod_home, harvest),
+         :ok <- remove_pod_home(pod_home) do
       :ok
     end
   end

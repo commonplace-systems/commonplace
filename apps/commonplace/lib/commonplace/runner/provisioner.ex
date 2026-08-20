@@ -37,13 +37,20 @@ defmodule Commonplace.Runner.Provisioner do
   alias Yelixer.Encoding
 
   @declarations_file "runner-storage.json"
+  @proto_chit_deployment_file "proto-chit-deployment.json"
   @trust_file "trust.json"
   @environment_contract %{
     "COMMONPLACE_DATA_DIR" => :data_dir,
     "HOME" => :home_dir,
     "LANG" => {:literal, "C.UTF-8"},
     "LC_ALL" => {:literal, "C.UTF-8"},
-    "PATH" => {:literal, "/usr/local/bin:/usr/bin:/bin"}
+    "PATH" => :proto_chit_path,
+    "PROTO_CHIT_COMMONPLACE" => :proto_chit_commonplace,
+    "PROTO_CHIT_DATA_DIR" => :data_dir,
+    "PROTO_CHIT_EVENT_LOG_UUID" => :proto_chit_event_log_uuid,
+    "PROTO_CHIT_REAL_GIT" => {:literal, "/usr/bin/git"},
+    "PROTO_CHIT_STATE_DIR" => :proto_chit_state_dir,
+    "PROTO_CHIT_SYNC_EXCLUDES" => :proto_chit_sync_excludes
   }
 
   @type posture :: %{
@@ -90,7 +97,7 @@ defmodule Commonplace.Runner.Provisioner do
       environment_names()
       |> Map.new(fn name ->
         source = Map.get(@environment_contract, name)
-        {name, environment_value(source, data_dir, home_dir)}
+        {name, environment_value(source, checkout_dir, data_dir, home_dir, opts)}
       end)
 
     masks = [
@@ -185,9 +192,47 @@ defmodule Commonplace.Runner.Provisioner do
     }
   end
 
-  defp environment_value(:data_dir, data_dir, _home_dir), do: data_dir
-  defp environment_value(:home_dir, _data_dir, home_dir), do: home_dir
-  defp environment_value({:literal, value}, _data_dir, _home_dir), do: value
+  defp environment_value(:data_dir, _checkout_dir, data_dir, _home_dir, _opts), do: data_dir
+
+  defp environment_value(:home_dir, _checkout_dir, _data_dir, home_dir, _opts), do: home_dir
+
+  defp environment_value(:proto_chit_path, checkout_dir, _data_dir, _home_dir, opts) do
+    runtime_bin = Keyword.get(opts, :proto_chit_runtime_bin, default_runtime_bin())
+
+    [
+      Path.join(checkout_dir, "tools/proto-chit/bin"),
+      runtime_bin,
+      "/usr/local/bin",
+      "/usr/bin",
+      "/bin"
+    ]
+    |> Enum.uniq()
+    |> Enum.join(":")
+  end
+
+  defp environment_value(:proto_chit_commonplace, _checkout_dir, _data_dir, _home_dir, opts),
+    do: Keyword.get(opts, :proto_chit_commonplace, "/usr/local/bin/commonplace")
+
+  defp environment_value(:proto_chit_event_log_uuid, _checkout_dir, _data_dir, _home_dir, opts),
+    do: Keyword.get_lazy(opts, :proto_chit_event_log_uuid, &UUID.uuid4/0)
+
+  defp environment_value(:proto_chit_state_dir, _checkout_dir, data_dir, _home_dir, _opts),
+    do: Path.join(data_dir, "proto-chit")
+
+  defp environment_value(:proto_chit_sync_excludes, _checkout_dir, _data_dir, _home_dir, opts),
+    do: opts |> Keyword.get(:proto_chit_sync_excludes, []) |> Enum.join(",")
+
+  defp environment_value({:literal, value}, _checkout_dir, _data_dir, _home_dir, _opts),
+    do: value
+
+  defp default_runtime_bin do
+    "erl"
+    |> System.find_executable()
+    |> case do
+      nil -> "/usr/bin"
+      executable -> Path.dirname(executable)
+    end
+  end
 
   @doc "Assert the resolved posture required at the end of workspace birth."
   @spec assert_enforcing_posture(posture()) :: :ok | {:error, term()}
@@ -244,11 +289,22 @@ defmodule Commonplace.Runner.Provisioner do
   end
 
   defp do_build_pod(manifest, profile, paths, principal_pubkey, opts) do
+    event_log_uuid = UUID.uuid4()
+
+    proto_chit_opts =
+      Keyword.merge(opts,
+        proto_chit_event_log_uuid: event_log_uuid,
+        proto_chit_sync_excludes: manifest.sync_scope.excludes
+      )
+
     with :ok <- mkdir_p(paths.data_dir, "workspace"),
          :ok <- mkdir_p(paths.home_dir, "sandbox.home"),
          :ok <- checkout(paths.repo, paths.sha, paths.checkout_dir),
          :ok <- write_birth_declarations(paths.data_dir, manifest),
          {:ok, born} <- birth_workspace(paths, manifest, principal_pubkey),
+         {:ok, signer_id} <- NodeIdentity.identity(paths.data_dir),
+         :ok <-
+           write_proto_chit_deployment(paths.data_dir, manifest.id, event_log_uuid, signer_id),
          {:ok, declarations} <- read_declarations(paths.data_dir),
          :ok <- verify_declarations(declarations, manifest) do
       {:ok,
@@ -257,11 +313,28 @@ defmodule Commonplace.Runner.Provisioner do
          checkout_dir: paths.checkout_dir,
          data_dir: paths.data_dir,
          root_uuid: born.root_uuid,
+         event_log_uuid: event_log_uuid,
          sha: paths.sha,
-         sandbox_spec: sandbox_spec(profile, paths.pod_home, opts),
+         sandbox_spec: sandbox_spec(profile, paths.pod_home, proto_chit_opts),
          worker: :ready
        }}
     end
+  end
+
+  defp write_proto_chit_deployment(data_dir, deployment_id, event_log_uuid, signer_id) do
+    document = %{
+      "deployment-id" => deployment_id,
+      "event-log-uuid" => event_log_uuid,
+      "signer-id" => signer_id,
+      "state-dir" => Path.join(data_dir, "proto-chit"),
+      "wal-path" => Path.join([data_dir, "proto-chit", "events.wal.ndjson"])
+    }
+
+    write_json(
+      Path.join(data_dir, @proto_chit_deployment_file),
+      document,
+      "proto-chit.event-log-uuid"
+    )
   end
 
   defp birth_workspace(paths, manifest, principal_pubkey) do
