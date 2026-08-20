@@ -32,7 +32,15 @@ defmodule Commonplace.Runner.Launcher do
 
   require Logger
 
-  alias Commonplace.Runner.{PodHandle, PodProfile, ProtoChitHarvest, Provisioner, RunRecipe}
+  alias Commonplace.Runner.{
+    ObservationTap,
+    PodHandle,
+    PodProfile,
+    ProtoChitHarvest,
+    Provisioner,
+    RunRecipe
+  }
+
   alias Commonplace.Store.CommitStoreClient
 
   @lock_file ".runner.lock"
@@ -69,8 +77,18 @@ defmodule Commonplace.Runner.Launcher do
          :ok <- File.mkdir_p(pods_root),
          {:ok, lock} <- lock_root(pods_root),
          harvest = harvest_options(pods_root, opts),
-         :ok <- reap_stale_homes(pods_root, harvest) do
-      {:ok, %{pods_root: pods_root, lock: lock, pods: %{}, harvest: harvest}}
+         {:ok, observation} <- observation_options(opts),
+         :ok <- reap_stale_homes(pods_root, harvest, observation),
+         {:ok, observation_supervisor} <- observation_supervisor(observation) do
+      {:ok,
+       %{
+         pods_root: pods_root,
+         lock: lock,
+         pods: %{},
+         harvest: harvest,
+         observation: observation,
+         observation_supervisor: observation_supervisor
+       }}
     else
       {:error, reason} -> {:stop, reason}
     end
@@ -84,14 +102,32 @@ defmodule Commonplace.Runner.Launcher do
          {:ok, port, os_pid} <- open_pod(pod.sandbox_spec, invocation) do
       ref = make_ref()
 
+      observation =
+        register_observation(
+          state.observation_supervisor,
+          state.observation,
+          pod,
+          manifest,
+          opts
+        )
+
       handle = %PodHandle{
         launcher: self(),
         ref: ref,
         scope_pid: os_pid,
-        pod_home: pod.pod_home
+        pod_home: pod.pod_home,
+        observation_root_uuid: observation_root_uuid(observation),
+        observation_path: observation_path(observation)
       }
 
-      running = %{port: port, os_pid: os_pid, pod_home: pod.pod_home, output: ""}
+      running = %{
+        port: port,
+        os_pid: os_pid,
+        pod_home: pod.pod_home,
+        output: "",
+        observation: observation
+      }
+
       {:reply, {:ok, handle}, put_in(state.pods[ref], running)}
     else
       {:error, {:launch_failed, pod_home, reason}} ->
@@ -120,14 +156,32 @@ defmodule Commonplace.Runner.Launcher do
          {:ok, port, os_pid} <- open_pod(pod.sandbox_spec, invocation) do
       ref = make_ref()
 
+      observation =
+        register_observation(
+          state.observation_supervisor,
+          state.observation,
+          pod,
+          manifest,
+          opts
+        )
+
       handle = %PodHandle{
         launcher: self(),
         ref: ref,
         scope_pid: os_pid,
-        pod_home: pod.pod_home
+        pod_home: pod.pod_home,
+        observation_root_uuid: observation_root_uuid(observation),
+        observation_path: observation_path(observation)
       }
 
-      running = %{port: port, os_pid: os_pid, pod_home: pod.pod_home, output: ""}
+      running = %{
+        port: port,
+        os_pid: os_pid,
+        pod_home: pod.pod_home,
+        output: "",
+        observation: observation
+      }
+
       {:reply, {:ok, handle}, put_in(state.pods[ref], running)}
     else
       {:error, {:launch_failed, pod_home, reason}} ->
@@ -147,7 +201,7 @@ defmodule Commonplace.Runner.Launcher do
       {%{port: port, os_pid: os_pid, pod_home: pod_home} = running, pods} ->
         case stop_namespace(port, os_pid) do
           :ok ->
-            case harvest_and_remove(pod_home, state.harvest) do
+            case harvest_and_remove(pod_home, state.harvest, running.observation) do
               :ok -> {:reply, :ok, %{state | pods: pods}}
               {:error, _reason} = error -> {:reply, error, state}
             end
@@ -187,7 +241,7 @@ defmodule Commonplace.Runner.Launcher do
       {%{pod_home: pod_home} = running, pods} ->
         _ = report_exit(pod_home, status, Map.get(running, :output, ""))
 
-        case harvest_and_remove(pod_home, state.harvest) do
+        case harvest_and_remove(pod_home, state.harvest, running.observation) do
           :ok ->
             {:noreply, %{state | pods: pods}}
 
@@ -216,7 +270,7 @@ defmodule Commonplace.Runner.Launcher do
 
       _ = stop_namespace(port, os_pid)
 
-      case harvest_and_remove(pod_home, state.harvest) do
+      case harvest_and_remove(pod_home, state.harvest, running.observation) do
         :ok ->
           :ok
 
@@ -228,6 +282,7 @@ defmodule Commonplace.Runner.Launcher do
       end
     end)
 
+    if state.observation_supervisor, do: DynamicSupervisor.stop(state.observation_supervisor)
     _ = Commonplace.Flock.unlock(state.lock)
     :ok
   end
@@ -435,12 +490,14 @@ defmodule Commonplace.Runner.Launcher do
     end
   end
 
-  defp reap_stale_homes(pods_root, harvest) do
+  defp reap_stale_homes(pods_root, harvest, observation) do
     with {:ok, entries} <- File.ls(pods_root) do
       entries
       |> Enum.reject(&(&1 in [@lock_file, @quarantine_dir]))
       |> Enum.reduce_while(:ok, fn entry, :ok ->
-        case harvest_and_remove(Path.join(pods_root, entry), harvest) do
+        stale_observation = stale_observation(observation, entry)
+
+        case harvest_and_remove(Path.join(pods_root, entry), harvest, stale_observation) do
           :ok -> {:cont, :ok}
           {:error, reason} -> {:halt, {:error, {:stale_pod_harvest_failed, entry, reason}}}
         end
@@ -455,11 +512,152 @@ defmodule Commonplace.Runner.Launcher do
     ]
   end
 
-  defp harvest_and_remove(pod_home, harvest) do
-    with {:ok, _summary} <- ProtoChitHarvest.harvest(pod_home, harvest),
+  defp harvest_and_remove(pod_home, harvest, observation) do
+    with :ok <- unregister_observation(observation),
+         {:ok, _summary} <- ProtoChitHarvest.harvest(pod_home, harvest),
          :ok <- remove_pod_home(pod_home) do
       :ok
     end
+  end
+
+  defp observation_options(opts) do
+    case Keyword.get(opts, :observation) do
+      nil ->
+        {:ok, nil}
+
+      observation when is_list(observation) ->
+        required = [:store, :signing_context, :registry_root]
+
+        if Enum.all?(required, &Keyword.has_key?(observation, &1)) do
+          {:ok, observation}
+        else
+          {:error, {:invalid_launcher, :observation}}
+        end
+
+      _other ->
+        {:error, {:invalid_launcher, :observation}}
+    end
+  end
+
+  defp observation_supervisor(nil), do: {:ok, nil}
+
+  defp observation_supervisor(_observation) do
+    DynamicSupervisor.start_link(strategy: :one_for_one)
+  end
+
+  defp register_observation(nil, _config, _pod, _manifest, _launch_opts), do: nil
+
+  defp register_observation(supervisor, config, pod, manifest, launch_opts) do
+    deployment_id = manifest_value(manifest, :id)
+    retain? = Keyword.get(launch_opts, :retain_observation, Keyword.get(config, :retain, false))
+
+    tap_opts =
+      config
+      |> Keyword.take([:store, :signing_context, :registry_root, :interval_ms])
+      |> Keyword.merge(
+        checkout_dir: pod.checkout_dir,
+        deployment_id: deployment_id,
+        exclude_names: observation_excludes(manifest),
+        sha: pod.sha
+      )
+
+    case DynamicSupervisor.start_child(supervisor, {ObservationTap, tap_opts}) do
+      {:ok, pid} ->
+        %{
+          deployment_id: deployment_id,
+          pid: pid,
+          registry_root: Keyword.fetch!(config, :registry_root),
+          retain?: retain?,
+          root_uuid: ObservationTap.root_uuid(pid),
+          path: "/pods/#{deployment_id}/live"
+        }
+
+      {:error, reason} ->
+        Logger.warning(
+          "observation tap registration failed without affecting pod " <>
+            "(deployment_id=#{deployment_id}): #{inspect(reason)}"
+        )
+
+        nil
+    end
+  end
+
+  defp unregister_observation(nil), do: :ok
+
+  defp unregister_observation(%{
+         pid: pid,
+         retain?: retain?,
+         registry_root: registry_root,
+         deployment_id: deployment_id
+       }) do
+    result =
+      case ObservationTap.unregister(pid, retain: retain?) do
+        :ok ->
+          ObservationTap.reap_stale(registry_root, deployment_id, retain: retain?)
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+
+    case result do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "observation tap unregister failed without blocking pod reap: #{inspect(reason)}"
+        )
+
+        :ok
+    end
+  end
+
+  defp unregister_observation(%{stale: true, config: config, deployment_id: deployment_id}) do
+    case ObservationTap.reap_stale(Keyword.fetch!(config, :registry_root), deployment_id,
+           retain: Keyword.get(config, :retain, false)
+         ) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "stale observation reap failed without blocking pod reap " <>
+            "(deployment_id=#{deployment_id}): #{inspect(reason)}"
+        )
+
+        :ok
+    end
+  end
+
+  defp stale_observation(nil, _deployment_id), do: nil
+
+  defp stale_observation(config, deployment_id) do
+    %{stale: true, config: config, deployment_id: deployment_id}
+  end
+
+  defp observation_root_uuid(nil), do: nil
+  defp observation_root_uuid(observation), do: observation.root_uuid
+
+  defp observation_path(nil), do: nil
+  defp observation_path(observation), do: observation.path
+
+  defp manifest_value(manifest, field) do
+    case Map.fetch(manifest, field) do
+      {:ok, value} -> value
+      :error -> Map.fetch!(manifest, Atom.to_string(field))
+    end
+  end
+
+  defp observation_excludes(manifest) do
+    sync_scope = manifest_value(manifest, :sync_scope)
+
+    excludes =
+      case Map.fetch(sync_scope, :excludes) do
+        {:ok, values} -> values
+        :error -> Map.get(sync_scope, "excludes", [])
+      end
+
+    Enum.uniq([".git", ".commonplace" | excludes])
   end
 
   defp remove_pod_home(pod_home) do
