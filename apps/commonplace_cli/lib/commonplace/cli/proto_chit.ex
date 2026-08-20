@@ -16,7 +16,8 @@ defmodule Commonplace.CLI.ProtoChit do
   `--declare-empty-sync-excludes` explicitly selects defaults-only scope.
   """
 
-  alias Commonplace.Crypto.SigningContext
+  alias Commonplace.Crypto.{NodeIdentity, SigningContext}
+  alias Commonplace.ProtoChit.IntentRecord
   alias Commonplace.Store.SecretStore
 
   @switches [
@@ -35,6 +36,18 @@ defmodule Commonplace.CLI.ProtoChit do
   # are appended to this set, never substituted for it, so no invocation can
   # sync `.git` or `.commonplace` into the substrate by accident.
   @default_sync_excludes [".git", ".commonplace", "_build", "deps"]
+
+  def run(data_dir, _relative_path, ["sign-intent"]) do
+    with {:ok, record} <- IO.read(:stdio, :eof) |> Jason.decode(),
+         {:ok, signing_context} <- NodeIdentity.signing_context(data_dir),
+         {:ok, signed_record} <- IntentRecord.sign(record, signing_context) do
+      IO.puts(Jason.encode!(signed_record))
+      0
+    else
+      {:error, reason} -> fail({:sign_intent, reason})
+      other -> fail({:sign_intent, other})
+    end
+  end
 
   def run(data_dir, _relative_path, ["emit" | args]) do
     with :ok <- Commonplace.CLI.ensure_started(data_dir),

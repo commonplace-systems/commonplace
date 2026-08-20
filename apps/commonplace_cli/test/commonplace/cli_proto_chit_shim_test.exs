@@ -352,6 +352,13 @@ defmodule Commonplace.CLI.ProtoChitShimTest do
 
     assert record["status"] == "pending"
     assert record["replay-grade"] == "pin-cut-at-replay"
+    assert record["wal-version"] == 2
+
+    assert record["authentication"] == %{
+             "state" => "unsigned",
+             "reason" => "deployment-signer-unavailable"
+           }
+
     assert record["event"]["proto-pin"] == nil
     assert record["event"]["message"] == "wal-me"
     assert record["content-hashes"]["payload.txt"] == sha256("same bytes\n")
@@ -367,7 +374,7 @@ defmodule Commonplace.CLI.ProtoChitShimTest do
 
     assert status == 0
     assert [line] = Regex.run(~r/^proto-chit: .*$/m, stderr)
-    assert line =~ ~r/^proto-chit: 2 pending unsigned envelopes, oldest 2d$/
+    assert line =~ ~r/^proto-chit: 2 pending intent envelopes, oldest 2d$/
     assert {_sha, 0} = System.cmd(@real_git, ["rev-parse", "--is-inside-work-tree"], cd: repo)
   end
 
@@ -387,7 +394,7 @@ defmodule Commonplace.CLI.ProtoChitShimTest do
     {loud_stderr, loud_status} = shim_stderr(repo, state_dir, ["status"])
 
     assert loud_status == 0
-    assert loud_stderr =~ ~r/^proto-chit: 1 pending unsigned envelopes, oldest 2h$/m
+    assert loud_stderr =~ ~r/^proto-chit: 1 pending intent envelopes, oldest 2h$/m
   end
 
   test "a malformed WAL still reports the count with an unknown age", %{base: base} do
@@ -398,7 +405,7 @@ defmodule Commonplace.CLI.ProtoChitShimTest do
     {stderr, status} = shim_stderr(repo, state_dir, ["status"])
 
     assert status == 0
-    assert stderr =~ ~r/^proto-chit: 2 pending unsigned envelopes, oldest unknown$/m
+    assert stderr =~ ~r/^proto-chit: 2 pending intent envelopes, oldest unknown$/m
     assert {_sha, 0} = System.cmd(@real_git, ["rev-parse", "--is-inside-work-tree"], cd: repo)
   end
 

@@ -1,9 +1,10 @@
 defmodule Commonplace.Store.ProtoChitTest do
   use ExUnit.Case, async: false
 
-  alias Commonplace.Crypto.{Signing, SigningContext}
+  alias Commonplace.Crypto.{NodeIdentity, Signing, SigningContext}
   alias Commonplace.Dataflow.RedLog
   alias Commonplace.Document.ContentType
+  alias Commonplace.ProtoChit.IntentRecord
   alias Commonplace.Store.{CommitStoreClient, CommitStore}
   alias Commonplace.Tree.Schema
 
@@ -58,6 +59,52 @@ defmodule Commonplace.Store.ProtoChitTest do
       artifact_store: Commonplace.Store.ArtifactStore.new(store_dir),
       signing_context: signing_context
     }
+  end
+
+  test "deployment principal signs an intent record and the verifier refuses a byte flip",
+       context do
+    identity_data_dir = Path.join(context.state_dir, "deployment-identity")
+    assert {:ok, signing_context} = NodeIdentity.signing_context(identity_data_dir)
+
+    intent = %{
+      "wal-version" => 2,
+      "status" => "pending",
+      "git-argv" => ["commit", "-m", "signed intent"],
+      "event" => %{
+        "verb" => "commit",
+        "author-principal" => signing_context.identity_uuid,
+        "message" => "signed intent"
+      }
+    }
+
+    assert {:ok, signed} = IntentRecord.sign(intent, signing_context)
+
+    assert signed["authentication"] == %{
+             "state" => "signed",
+             "algorithm" => "Ed25519",
+             "principal" => signing_context.identity_uuid,
+             "key-fingerprint" => Signing.fingerprint(signing_context.public_key),
+             "signature" => signed["authentication"]["signature"]
+           }
+
+    assert :ok = IntentRecord.verify(signed, signing_context.public_key)
+
+    tampered = put_in(signed, ["event", "message"], "tigned intent")
+
+    assert {:error, :invalid_signature} =
+             IntentRecord.verify(tampered, signing_context.public_key)
+  end
+
+  test "unsigned last-resort records are self-declared and never verify as signed" do
+    record = IntentRecord.unsigned(%{"wal-version" => 2, "status" => "pending"})
+
+    assert record["authentication"] == %{
+             "state" => "unsigned",
+             "reason" => "deployment-signer-unavailable"
+           }
+
+    {public_key, _private_key} = Signing.generate_keypair()
+    assert {:error, :unsigned} = IntentRecord.verify(record, public_key)
   end
 
   test "refuses emission when sync scope was not declared", context do

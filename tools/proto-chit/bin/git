@@ -148,7 +148,7 @@ case "$command_name" in
     ;;
 esac
 
-# Pending unsigned envelopes are invisible by default: a checkout with broken
+# Pending intent envelopes are invisible by default: a checkout with broken
 # credentials keeps feeling healthy while landing nothing. So every invocation
 # -- read verbs included -- reports a non-empty WAL once, loudly, on stderr.
 # Nothing here may block or fail git: every step is guarded and falls through.
@@ -184,7 +184,7 @@ if [ -s "$wal_path" ]; then
       esac
     fi
 
-    echo "proto-chit: $pending pending unsigned envelopes, oldest $age" >&2
+    echo "proto-chit: $pending pending intent envelopes, oldest $age" >&2
   fi
 fi
 
