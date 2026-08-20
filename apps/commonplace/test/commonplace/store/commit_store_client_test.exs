@@ -78,7 +78,8 @@ defmodule Commonplace.Store.CommitStoreClientTest do
       c2 = CommitStoreClient.create_chained_commit(store, "doc-1", <<2>>)
       c3 = CommitStoreClient.create_chained_commit(store, "doc-1", <<3>>)
 
-      log = CommitStoreClient.commit_log(store, "doc-1")
+      # This assertion needs exactly the three writes plus deterministic genesis.
+      log = CommitStoreClient.commit_log(store, "doc-1", limit: 4)
       ids = Enum.map(log, & &1.id)
       # Post-CX-m3x: the log also includes the deterministic genesis at the root.
       genesis_id = Commonplace.Store.Commit.genesis("doc-1").id

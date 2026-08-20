@@ -57,6 +57,7 @@ defmodule Commonplace.Bd.Invariants do
   alias Commonplace.Bd.Schemas.Issue, as: IssueStruct
   alias Commonplace.Bd.Workspace
   alias Commonplace.Bd.WriteGuard
+  alias Commonplace.Store.CommitStore
   alias Commonplace.Store.CommitStoreClient
   alias Commonplace.Tree.Schema
 
@@ -89,6 +90,9 @@ defmodule Commonplace.Bd.Invariants do
       %{issue_id: ..., fields: %{field => %{pinned: ..., current: ...}}}}`.
       This is what fires on a reopen: `current.status` is no longer
       `"closed"` but the pin still says it was.
+    * commit history ends at a missing parent before reaching genesis ->
+      `{:error, {:terminal_pin_history_incomplete, commit_id}}`. A pin
+      beyond a bounded page must never be silently treated as absent.
     * a stamped close exists, but its stamp doesn't parse as JSON ->
       `{:violation, %{issue_id: ..., error: {:unparseable_pin, _}}}`
       — a pin that can't be read can't be trusted either, so this is
@@ -100,8 +104,9 @@ defmodule Commonplace.Bd.Invariants do
     with {:ok, issue} <- Issue.show(root_uuid, id, store),
          {:ok, node_id} <- issue_meta_node_id(root_uuid, id, store) do
       case latest_stamped_pin(store, node_id) do
-        nil -> :ok
-        pin_json -> compare_against_pin(issue, pin_json)
+        {:ok, nil} -> :ok
+        {:ok, pin_json} -> compare_against_pin(issue, pin_json)
+        {:error, reason} -> {:error, reason}
       end
     end
   end
@@ -117,14 +122,50 @@ defmodule Commonplace.Bd.Invariants do
   defp wrap_lookup({:ok, _} = ok), do: ok
   defp wrap_lookup(:error), do: {:error, :not_found}
 
-  # `commit_log/3` walks newest-first, so the first commit whose
-  # metadata carries the stamp IS the latest stamped close — see the
-  # moduledoc's "provenance, not position" note.
+  # `commit_log/3` walks newest-first, so the first commit whose metadata
+  # carries the stamp IS the latest stamped close. Each store request is
+  # deliberately bounded at CommitStore's shared maximum, but hitting that
+  # page bound continues through commit_log_from/3. A short page whose oldest
+  # commit still names a parent is an incomplete chain, not evidence that no
+  # pin exists, and is therefore returned loudly.
   defp latest_stamped_pin(store, node_id) do
-    store
-    |> CommitStoreClient.commit_log(node_id)
-    |> Enum.find_value(fn commit -> Map.get(commit.metadata, @bd_terminal_pin_key) end)
+    page_size = CommitStore.max_commit_log_limit()
+    page = CommitStoreClient.commit_log(store, node_id, limit: page_size)
+    find_stamped_pin(store, page, page_size)
   end
+
+  defp find_stamped_pin(store, page, page_size) do
+    case Enum.find_value(page, fn commit -> Map.get(commit.metadata, @bd_terminal_pin_key) end) do
+      nil -> continue_pin_walk(store, page, page_size)
+      pin_json -> {:ok, pin_json}
+    end
+  end
+
+  defp continue_pin_walk(_store, [], _page_size), do: {:ok, nil}
+
+  defp continue_pin_walk(store, page, page_size) do
+    oldest = List.last(page)
+
+    cond do
+      genesis_commit?(oldest) or is_nil(oldest.parent_id) ->
+        {:ok, nil}
+
+      length(page) < page_size ->
+        {:error, {:terminal_pin_history_incomplete, oldest.id}}
+
+      true ->
+        next_page =
+          CommitStoreClient.commit_log_from(store, oldest.parent_id, limit: page_size)
+
+        case next_page do
+          [] -> {:error, {:terminal_pin_history_incomplete, oldest.id}}
+          commits -> find_stamped_pin(store, commits, page_size)
+        end
+    end
+  end
+
+  defp genesis_commit?(%{metadata: %{kind: :genesis}}), do: true
+  defp genesis_commit?(_commit), do: false
 
   defp compare_against_pin(%IssueStruct{} = issue, pin_json) do
     case Jason.decode(pin_json) do

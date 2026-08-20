@@ -229,6 +229,32 @@ defmodule Commonplace.Bd.FreezePinTest do
     assert :ok == Invariants.closed_matches_pin(ctx.root, a.id, ctx.store)
   end
 
+  test "a terminal pin deeper than one bounded page is not read as absent", ctx do
+    previous_limit = Application.fetch_env(:commonplace, :max_commit_log_limit)
+    Application.put_env(:commonplace, :max_commit_log_limit, 2)
+
+    on_exit(fn ->
+      case previous_limit do
+        {:ok, limit} -> Application.put_env(:commonplace, :max_commit_log_limit, limit)
+        :error -> Application.delete_env(:commonplace, :max_commit_log_limit)
+      end
+    end)
+
+    {:ok, issue, _} = Issue.create(ctx.root, %{title: "A"}, ctx.store)
+    {:ok, _closed} = Issue.close(ctx.root, issue.id, [reason: "done"], ctx.store)
+    {:ok, _reopened} = Issue.update(ctx.root, issue.id, %{status: "in_progress"}, ctx.store)
+
+    Enum.each(1..4, fn revision ->
+      assert {:ok, _edited} =
+               Issue.update(ctx.root, issue.id, %{title: "revision #{revision}"}, ctx.store)
+    end)
+
+    assert {:violation, details} =
+             Invariants.closed_matches_pin(ctx.root, issue.id, ctx.store)
+
+    assert %{pinned: "closed", current: "in_progress"} = details.fields.status
+  end
+
   test "a closed ticket with NO stamped close in history (pre-existing data, closed before CX-gvbf shipped, or closed by a path that never called Issue.close/4) -> :ok",
        ctx do
     {:ok, a, _} = Issue.create(ctx.root, %{title: "A"}, ctx.store)
