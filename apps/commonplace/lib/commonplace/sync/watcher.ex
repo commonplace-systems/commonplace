@@ -229,13 +229,28 @@ defmodule Commonplace.Sync.Watcher do
     sub_uuid = UUID.uuid4()
     sub_doc = Schema.new_schema()
     update = Yelixer.Encoding.encode_update(sub_doc)
-    CommitStoreClient.create_commit(store, sub_uuid, update, nil, %{}, write_opts(opts))
+
+    CommitStoreClient.create_commit(
+      store,
+      sub_uuid,
+      update,
+      nil,
+      commit_metadata(opts),
+      write_opts(opts)
+    )
 
     # Add to parent schema
     root_doc = load_schema(root_uuid, store)
     root_doc = Schema.add_directory(root_doc, change.name, sub_uuid)
     update = Yelixer.Encoding.encode_update(root_doc)
-    CommitStoreClient.create_chained_commit(store, root_uuid, update, %{}, write_opts(opts))
+
+    CommitStoreClient.create_chained_commit(
+      store,
+      root_uuid,
+      update,
+      commit_metadata(opts),
+      write_opts(opts)
+    )
   end
 
   defp apply_create(%Change{is_dir: false} = change, root_uuid, store, opts) do
@@ -271,13 +286,28 @@ defmodule Commonplace.Sync.Watcher do
       end
 
     update = Yelixer.Encoding.encode_update(doc)
-    CommitStoreClient.create_commit(store, file_uuid, update, nil, %{}, write_opts(opts))
+
+    CommitStoreClient.create_commit(
+      store,
+      file_uuid,
+      update,
+      nil,
+      commit_metadata(opts),
+      write_opts(opts)
+    )
 
     # Add to parent schema
     root_doc = load_schema(root_uuid, store)
     root_doc = Schema.add_file(root_doc, change.name, file_uuid)
     update = Yelixer.Encoding.encode_update(root_doc)
-    CommitStoreClient.create_chained_commit(store, root_uuid, update, %{}, write_opts(opts))
+
+    CommitStoreClient.create_chained_commit(
+      store,
+      root_uuid,
+      update,
+      commit_metadata(opts),
+      write_opts(opts)
+    )
   end
 
   defp apply_modify(change, root_uuid, store, opts) do
@@ -330,7 +360,14 @@ defmodule Commonplace.Sync.Watcher do
     doc = Diff.apply_diff(doc, old_content, new_content)
 
     update = Yelixer.Encoding.encode_update(doc)
-    CommitStoreClient.create_chained_commit(store, entry.node_id, update, %{}, write_opts(opts))
+
+    CommitStoreClient.create_chained_commit(
+      store,
+      entry.node_id,
+      update,
+      commit_metadata(opts),
+      write_opts(opts)
+    )
   end
 
   defp do_apply_binary_create_file(change, classified_by, root_uuid, store, opts) do
@@ -343,12 +380,27 @@ defmodule Commonplace.Sync.Watcher do
         |> ContentType.put_binary_envelope(envelope)
 
       update = Yelixer.Encoding.encode_update(doc)
-      CommitStoreClient.create_commit(store, file_uuid, update, nil, %{}, write_opts(opts))
+
+      CommitStoreClient.create_commit(
+        store,
+        file_uuid,
+        update,
+        nil,
+        commit_metadata(opts),
+        write_opts(opts)
+      )
 
       root_doc = load_schema(root_uuid, store)
       root_doc = Schema.add_file(root_doc, change.name, file_uuid)
       update = Yelixer.Encoding.encode_update(root_doc)
-      CommitStoreClient.create_chained_commit(store, root_uuid, update, %{}, write_opts(opts))
+
+      CommitStoreClient.create_chained_commit(
+        store,
+        root_uuid,
+        update,
+        commit_metadata(opts),
+        write_opts(opts)
+      )
     else
       {:error, reason} -> classification_skip(change.path, reason)
     end
@@ -371,7 +423,14 @@ defmodule Commonplace.Sync.Watcher do
         |> ContentType.put_binary_envelope(envelope)
 
       update = Yelixer.Encoding.encode_update(doc)
-      CommitStoreClient.create_chained_commit(store, entry.node_id, update, %{}, write_opts(opts))
+
+      CommitStoreClient.create_chained_commit(
+        store,
+        entry.node_id,
+        update,
+        commit_metadata(opts),
+        write_opts(opts)
+      )
     else
       {:error, reason} -> classification_skip(change.path, reason)
     end
@@ -396,7 +455,14 @@ defmodule Commonplace.Sync.Watcher do
     root_doc = load_schema(root_uuid, store)
     root_doc = Schema.remove_entry(root_doc, change.name)
     update = Yelixer.Encoding.encode_update(root_doc)
-    CommitStoreClient.create_chained_commit(store, root_uuid, update, %{}, write_opts(opts))
+
+    CommitStoreClient.create_chained_commit(
+      store,
+      root_uuid,
+      update,
+      commit_metadata(opts),
+      write_opts(opts)
+    )
   end
 
   defp detect_renames(created, deleted, schema_entries, dir, store, inode_registry) do
@@ -534,8 +600,17 @@ defmodule Commonplace.Sync.Watcher do
     root_doc = Schema.remove_entry(root_doc, change.old_name)
     root_doc = Schema.add_file(root_doc, change.name, change.node_id)
     update = Yelixer.Encoding.encode_update(root_doc)
-    CommitStoreClient.create_chained_commit(store, root_uuid, update, %{}, write_opts(opts))
+
+    CommitStoreClient.create_chained_commit(
+      store,
+      root_uuid,
+      update,
+      commit_metadata(opts),
+      write_opts(opts)
+    )
   end
+
+  defp commit_metadata(opts), do: Keyword.get(opts, :commit_metadata, %{})
 
   defp write_opts(opts) do
     case Keyword.get(opts, :signing_context) do

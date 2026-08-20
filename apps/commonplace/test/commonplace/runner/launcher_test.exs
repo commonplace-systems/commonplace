@@ -1,8 +1,9 @@
 defmodule Commonplace.Runner.LauncherTest do
   use ExUnit.Case, async: false
 
-  alias Commonplace.Crypto.Signing
+  alias Commonplace.Crypto.{Signing, SigningContext}
   alias Commonplace.Runner.{Launcher, PodHandle, PodProfile}
+  alias Commonplace.Store.CommitStore
 
   @canary_name "CX_POD_ENV_CANARY"
   @canary_value "pod-must-not-inherit-this-value"
@@ -249,6 +250,90 @@ defmodule Commonplace.Runner.LauncherTest do
 
     assert {:ok, process_count} = File.read(Path.join(data_dir, "process-count"))
     assert String.to_integer(String.trim(process_count)) in 1..4
+    assert Launcher.alive?(handle)
+    assert :ok = Launcher.reap(handle)
+  end
+
+  test "observation tap unregisters on explicit reap", ctx do
+    {observation, registry_root} = observation_fixture!(ctx)
+
+    launcher =
+      start_supervised!(
+        {Launcher,
+         pods_root: ctx.pods_root, dedicated_runner_service: true, observation: observation},
+        id: :o1_explicit_reap_launcher
+      )
+
+    handle = launch!(launcher, ctx)
+    descriptor = Path.join([registry_root, "pods", manifest(ctx).id, "live", "observation.json"])
+
+    assert handle.observation_path == "/pods/#{manifest(ctx).id}/live"
+    assert is_binary(handle.observation_root_uuid)
+    assert File.regular?(descriptor)
+    assert {:ok, _effect} = await_file(Path.join(data_dir(handle), "worker-effect"))
+    assert :ok = Launcher.reap(handle)
+    refute File.exists?(descriptor)
+  end
+
+  test "observation tap unregisters when the pod exits normally", ctx do
+    {observation, registry_root} = observation_fixture!(ctx)
+
+    launcher =
+      start_supervised!(
+        {Launcher,
+         pods_root: ctx.pods_root,
+         dedicated_runner_service: true,
+         observation: Keyword.put(observation, :interval_ms, 10)},
+        id: :o1_normal_exit_launcher
+      )
+
+    assert {:ok, handle} =
+             Launcher.launch(launcher, manifest(ctx), profile(),
+               repo: ctx.source_repo,
+               sha: ctx.sha,
+               principal_pubkey: ctx.principal_pubkey,
+               invocation: [
+                 "/bin/sh",
+                 "-c",
+                 "printf 'live\\n' > observed.txt; " <>
+                   "while ! test -f \"$COMMONPLACE_DATA_DIR/release\"; do sleep 0.01; done"
+               ]
+             )
+
+    descriptor = Path.join([registry_root, "pods", manifest(ctx).id, "live", "observation.json"])
+    assert File.regular?(descriptor)
+    File.write!(Path.join(data_dir(handle), "release"), "go\n")
+
+    assert eventually(fn -> not File.exists?(descriptor) end)
+    assert eventually(fn -> not Launcher.alive?(handle) end)
+  end
+
+  test "observation registration failure is named but does not fail the pod", ctx do
+    {_observation, registry_root} = observation_fixture!(ctx)
+    {public_key, private_key} = Signing.generate_keypair()
+
+    broken_observation = [
+      store: :o1_missing_observation_store,
+      signing_context: %SigningContext{
+        identity_uuid: "fixture-runner",
+        public_key: public_key,
+        private_key: private_key
+      },
+      registry_root: registry_root
+    ]
+
+    launcher =
+      start_supervised!(
+        {Launcher,
+         pods_root: ctx.pods_root, dedicated_runner_service: true, observation: broken_observation},
+        id: :o1_failed_tap_launcher
+      )
+
+    handle = launch!(launcher, ctx)
+
+    assert handle.observation_root_uuid == nil
+    assert handle.observation_path == nil
+    assert {:ok, _effect} = await_file(Path.join(data_dir(handle), "worker-effect"))
     assert Launcher.alive?(handle)
     assert :ok = Launcher.reap(handle)
   end
@@ -579,6 +664,30 @@ defmodule Commonplace.Runner.LauncherTest do
 
   defp start_launcher!(pods_root) do
     start_supervised!({Launcher, pods_root: pods_root, dedicated_runner_service: true})
+  end
+
+  defp observation_fixture!(ctx) do
+    observation_root = Path.join(Path.dirname(ctx.pods_root), "observation")
+    store_dir = Path.join(observation_root, "store")
+    registry_root = Path.join(observation_root, "registry")
+    File.mkdir_p!(store_dir)
+    File.mkdir_p!(registry_root)
+    store = :"o1_launcher_store_#{System.unique_integer([:positive])}"
+
+    start_supervised!(
+      {CommitStore, data_dir: store_dir, name: store},
+      id: {CommitStore, store}
+    )
+
+    {public_key, private_key} = Signing.generate_keypair()
+
+    runner = %SigningContext{
+      identity_uuid: "fixture-runner",
+      public_key: public_key,
+      private_key: private_key
+    }
+
+    {[store: store, signing_context: runner, registry_root: registry_root], registry_root}
   end
 
   defp manifest(ctx) do

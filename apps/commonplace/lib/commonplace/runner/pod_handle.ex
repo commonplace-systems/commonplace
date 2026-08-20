@@ -9,12 +9,14 @@ defmodule Commonplace.Runner.PodHandle do
   """
 
   @enforce_keys [:launcher, :ref, :scope_pid, :pod_home]
-  defstruct [:launcher, :ref, :scope_pid, :pod_home]
+  defstruct [:launcher, :ref, :scope_pid, :pod_home, :observation_root_uuid, :observation_path]
 
   @type t :: %__MODULE__{
           launcher: GenServer.server(),
           ref: reference(),
           scope_pid: pos_integer(),
-          pod_home: Path.t()
+          pod_home: Path.t(),
+          observation_root_uuid: String.t() | nil,
+          observation_path: String.t() | nil
         }
 end
