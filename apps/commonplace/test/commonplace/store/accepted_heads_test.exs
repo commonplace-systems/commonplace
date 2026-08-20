@@ -14,6 +14,7 @@ defmodule Commonplace.Store.AcceptedHeadsTest do
   """
   use ExUnit.Case, async: false
 
+  alias Commonplace.SiblingMerger
   alias Commonplace.Store.{AcceptedHeads, Commit, CommitStore}
   alias Yelixer.{Doc, Encoding}
   alias Yelixer.Types.Text
@@ -120,6 +121,24 @@ defmodule Commonplace.Store.AcceptedHeadsTest do
       assert {:ok, heads} = AcceptedHeads.of(store, uuid)
       assert heads == MapSet.new([l.id, r2.id])
       refute MapSet.member?(heads, r1.id), "R1 is dominated by R2 and must not be a head"
+    end
+
+    # A merged-in sibling is reachable from :latest only through the merge
+    # commit's merge_parents edge. Reachability must follow that edge, or
+    # the sibling stays in off_latest and reports as a spurious head. This
+    # is the case that requires the DAG walk over the linear parent chain.
+    test "after a sibling merge the only head is the merge commit", %{store: store} do
+      uuid = "merge-collapse"
+      {c_snapshot, c_update} = seed_shared_ancestor(store, uuid)
+      _l = local_head(store, uuid, c_update, 2, "X")
+      _r = import_sibling(store, uuid, c_snapshot, c_update, c_snapshot.id, 3, 3, "Y")
+
+      assert {:ok, pre} = AcceptedHeads.of(store, uuid)
+      assert MapSet.size(pre) == 2
+
+      assert {:ok, :merged, merge_commit} = SiblingMerger.maybe_merge_siblings(store, uuid)
+
+      assert AcceptedHeads.of(store, uuid) == {:ok, MapSet.new([merge_commit.id])}
     end
   end
 end

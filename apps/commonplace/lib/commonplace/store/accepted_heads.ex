@@ -43,11 +43,11 @@ defmodule Commonplace.Store.AcceptedHeads do
         :none
 
       {:ok, latest} ->
-        # `commit_ids_for_doc/2` is the chain reachable from :latest;
-        # `all_commit_ids_for_doc/2` is the full per-doc set. Their
-        # difference is every commit off the :latest DAG — sibling
-        # branches, interior and tips alike.
-        reachable = CommitStore.commit_ids_for_doc(store, doc_uuid)
+        # `dag_reachable_from/2` walks BOTH parent_id and merge_parents
+        # from :latest (see below); `all_commit_ids_for_doc/2` is the full
+        # per-doc set. Their difference is every commit off the :latest
+        # DAG — sibling branches, interior and tips alike.
+        reachable = dag_reachable_from(store, latest.id)
         all_for_doc = CommitStore.all_commit_ids_for_doc(store, doc_uuid)
         off_latest = MapSet.difference(all_for_doc, reachable)
 
@@ -83,5 +83,35 @@ defmodule Commonplace.Store.AcceptedHeads do
       end)
 
     MapSet.difference(off_latest, dominated)
+  end
+
+  # Everything reachable from :latest following BOTH parent_id and
+  # merge_parents — mirrors `SiblingMerger.dag_reachable_from/2`. The
+  # merge_parents edge is essential: a sibling already folded into :latest
+  # by a merge commit is reachable only through that edge, so walking the
+  # linear parent chain alone (`commit_ids_for_doc`) would leave it in
+  # `off_latest` and report a merged-in sibling as a still-open head.
+  defp dag_reachable_from(store, root_id), do: walk_dag(store, [root_id], MapSet.new())
+
+  defp walk_dag(_store, [], acc), do: acc
+
+  defp walk_dag(store, [id | rest], acc) do
+    if MapSet.member?(acc, id) do
+      walk_dag(store, rest, acc)
+    else
+      acc = MapSet.put(acc, id)
+
+      case CommitStore.get_commit(store, id) do
+        {:ok, commit} ->
+          next =
+            [commit.parent_id | commit.merge_parents || []]
+            |> Enum.reject(&is_nil/1)
+
+          walk_dag(store, next ++ rest, acc)
+
+        :none ->
+          walk_dag(store, rest, acc)
+      end
+    end
   end
 end
