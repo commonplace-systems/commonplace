@@ -22,7 +22,7 @@ def authenticate(record):
     signer = os.environ.get("PROTO_CHIT_COMMONPLACE")
     data_dir = os.environ.get("PROTO_CHIT_DATA_DIR")
 
-    if not signer or not data_dir or not os.path.isfile(os.path.join(data_dir, "node_signing_key")):
+    if not signer or not data_dir:
         record["authentication"] = UNSIGNED_AUTHENTICATION.copy()
         return record
 

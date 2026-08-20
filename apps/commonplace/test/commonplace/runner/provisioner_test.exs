@@ -3,7 +3,7 @@ defmodule Commonplace.Runner.ProvisionerTest do
 
   alias Commonplace.Cell.Manifest
   alias Commonplace.Crypto.Signing
-  alias Commonplace.Runner.{PodProfile, Provisioner}
+  alias Commonplace.Runner.{PodIdentity, PodProfile, Provisioner}
   alias Commonplace.Store.{CommitStoreClient, Supervisor}
   alias Commonplace.Tree.{DocBuilder, Schema}
   alias Commonplace.Trust.Capability
@@ -62,6 +62,27 @@ defmodule Commonplace.Runner.ProvisionerTest do
     assert {:ok, declarations} = Provisioner.read_declarations(pod.data_dir)
     assert declarations.sync_scope == manifest.sync_scope
     assert declarations.sla == manifest.sla
+
+    deployment =
+      pod.data_dir
+      |> Path.join("proto-chit-deployment.json")
+      |> File.read!()
+      |> Jason.decode!()
+
+    binding =
+      pod.pod_home
+      |> Path.join("proto-chit-deployment-binding.json")
+      |> File.read!()
+      |> Jason.decode!()
+
+    assert {:ok, pod_signer} = PodIdentity.signing_context(pod.data_dir)
+    assert binding == deployment
+    assert deployment["binding-version"] == "pod-home-read-only-v1"
+    assert deployment["signer-id"] == pod_signer.identity_uuid
+    assert deployment["signer-public-key"] == Base.encode64(pod_signer.public_key)
+    assert deployment["durable-identity"] == manifest.principal
+    refute deployment["signer-id"] == deployment["durable-identity"]
+    assert File.stat!(PodIdentity.key_path(pod.data_dir)).mode |> Bitwise.band(0o777) == 0o600
 
     # The born world's posture must be durable on disk, not only asserted
     # in-process: an absent trust.json silently means permissive (CX-1ern).
