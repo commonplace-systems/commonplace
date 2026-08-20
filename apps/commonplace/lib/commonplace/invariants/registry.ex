@@ -112,12 +112,13 @@ defmodule Commonplace.Invariants.Registry do
         `:context_dependent` entry in this registry, and that
         classification is a DESIGN JUDGMENT, not a measurement: the
         comparand is read from ancestry, not from the arriving state
-        itself. If the relevant history is not present when this
-        check runs (e.g. a shallow or partial view of the commit
-        chain), `latest_stamped_pin/2` finds no stamp and the check
-        returns `:ok` — a FALSE GREEN, not a genuine absence of a
-        pin, because "no pin found" and "no pin exists" are
-        indistinguishable from inside the check. That is precisely
+        itself. The history walk pages through its bounded store reads
+        until it reaches genesis; if the relevant history is not
+        present (for example, a shallow or partial chain whose oldest
+        fetched commit still names a missing parent), the check returns
+        `{:error, {:terminal_pin_history_incomplete, _}}` instead of
+        turning an unread pin into a false green. That need for readable
+        ancestry is precisely
         the design's context-dependent class (§4 build-shape item 1:
         "context-dependent... needs the source present and readable")
         as opposed to the other three entries here, each of which is
