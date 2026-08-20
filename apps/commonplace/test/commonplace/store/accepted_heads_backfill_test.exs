@@ -142,5 +142,56 @@ defmodule Commonplace.Store.AcceptedHeadsBackfillTest do
     report = AcceptedHeadsBackfill.run(store)
     assert report.working_set_max > 0
     assert report.violations == []
+    assert report.terminal_state == CommitStore.accepted_head_index_ready()
+  end
+
+  # commonplace-coder #13593 #2 (the merge-hold): a doc whose frontier fails
+  # the antichain verify is RECORDED and NOT written — and the run must NOT
+  # reach :ready, or §4 would drop the fallback and that doc's siblings go
+  # silently invisible. The real verify only fires on of/2 regression /
+  # corruption, so the violation is injected to exercise the handling.
+  test "a doc failing the verify is recorded, not written, and blocks :ready", %{store: store} do
+    {_l, _r} = sibling_doc(store, "viol")
+    clear_index(store, "viol")
+
+    injected = fn _set, _store, doc ->
+      if doc == "viol", do: {:violation, %{doc_uuid: doc, reason: :injected}}, else: :ok
+    end
+
+    report = AcceptedHeadsBackfill.run(store, verify_fn: injected)
+
+    assert length(report.violations) == 1
+    assert index_row(store, "viol") == nil, "a violating doc must NOT be written"
+    assert report.terminal_state == {:completed_with_violations, 1}
+    refute report.terminal_state == CommitStore.accepted_head_index_ready()
+
+    # §4's precondition (state == :ready) is therefore NOT met — the
+    # scan-fallback must stay, so the doc's siblings remain reachable.
+    refute CommitStore.accepted_head_backfill_state(store) ==
+             CommitStore.accepted_head_index_ready()
+  end
+
+  # commonplace-coder #13593 #1 + the brief's named F5 fixture: 2.2% of docs
+  # carry :latest at a FOREIGN doc_uuid (fork-lineage class). The backfill
+  # must HANDLE them, not discover them mid-run. of/2 derives a single-head
+  # frontier for such a doc (its own doc-commit index is empty, so no
+  # siblings), which is a valid antichain — written, no violation, :ready.
+  test "F5: a doc with a FOREIGN-doc_uuid :latest is handled (fork-lineage class)", %{
+    store: store
+  } do
+    e = linear_doc(store, "E")
+    # Point a different doc's :latest at E's commit — the F5 shape.
+    CubDB.put(db(store), {:latest, "f5-doc"}, e.id)
+
+    report = AcceptedHeadsBackfill.run(store)
+
+    # Handled, not crashed: the F5 doc's frontier is derived and written as a
+    # valid antichain, so no violation and the pass reaches :ready.
+    assert index_row(store, "f5-doc") == MapSet.new([e.id])
+    assert report.violations == []
+    assert report.terminal_state == CommitStore.accepted_head_index_ready()
+
+    assert CommitStore.accepted_heads_indexed(store, "f5-doc") ==
+             AcceptedHeads.of(store, "f5-doc")
   end
 end

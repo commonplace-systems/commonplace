@@ -49,7 +49,8 @@ defmodule Commonplace.Store.AcceptedHeadsBackfill do
           skipped_no_commits: non_neg_integer(),
           working_set_max: non_neg_integer(),
           violations: [map()],
-          resumed_from: String.t() | nil
+          resumed_from: String.t() | nil,
+          terminal_state: term()
         }
 
   @doc """
@@ -60,6 +61,10 @@ defmodule Commonplace.Store.AcceptedHeadsBackfill do
   @spec run(GenServer.server(), keyword()) :: report()
   def run(store \\ CommitStore, opts \\ []) do
     chunk_size = Keyword.get(opts, :chunk, @default_chunk)
+    # The antichain verify. Default is the real check; a test may inject one
+    # to exercise the violation-handling branch deterministically (the real
+    # check only fires on of/2 regression or store corruption).
+    verify_fn = Keyword.get(opts, :verify_fn, &CommitInvariants.antichain_of/3)
     all_docs = store |> CommitStore.all_doc_uuids() |> MapSet.to_list() |> Enum.sort()
 
     resumed_from =
@@ -88,7 +93,7 @@ defmodule Commonplace.Store.AcceptedHeadsBackfill do
       remaining
       |> Enum.chunk_every(chunk_size)
       |> Enum.reduce(acc0, fn chunk, acc ->
-        {rows, acc} = derive_chunk(store, chunk, acc)
+        {rows, acc} = derive_chunk(store, chunk, verify_fn, acc)
 
         :ok =
           CommitStore.put_backfilled_accepted_heads(
@@ -101,18 +106,29 @@ defmodule Commonplace.Store.AcceptedHeadsBackfill do
       end)
       |> Map.update!(:violations, &Enum.reverse/1)
 
-    :ok =
-      CommitStore.put_backfilled_accepted_heads(
-        store,
-        [],
+    # ⛔ :ready ONLY when no doc failed the verify (commonplace-coder #13593):
+    # a violating doc is recorded but NOT written, so its index row is
+    # absent. If that terminal state were :ready, §4 would remove the
+    # :latest-guard fallback and the doc's siblings would go silently
+    # invisible. :ready must mean "complete AND every doc indexed", which
+    # §4 reads it as; violations therefore yield a distinct non-:ready
+    # terminal state that blocks §4 and flags the corruption.
+    terminal_state =
+      if report.violations == [] do
         CommitStore.accepted_head_index_ready()
-      )
+      else
+        {:completed_with_violations, length(report.violations)}
+      end
+
+    :ok = CommitStore.put_backfilled_accepted_heads(store, [], terminal_state)
+    report = Map.put(report, :terminal_state, terminal_state)
 
     Logger.info(
       "AcceptedHeadsBackfill complete: " <>
         "total=#{report.total_docs} seen=#{report.docs_seen} written=#{report.docs_written} " <>
         "skipped_no_commits=#{report.skipped_no_commits} working_set_max=#{report.working_set_max} " <>
-        "violations=#{length(report.violations)} resumed_from=#{inspect(report.resumed_from)}"
+        "violations=#{length(report.violations)} terminal_state=#{inspect(terminal_state)} " <>
+        "resumed_from=#{inspect(report.resumed_from)}"
     )
 
     report
@@ -122,7 +138,7 @@ defmodule Commonplace.Store.AcceptedHeadsBackfill do
   # write and the running metrics. A frontier that fails the antichain
   # check is a derivation bug or corrupt data: recorded, NOT written (never
   # persist a non-antichain).
-  defp derive_chunk(store, chunk, acc) do
+  defp derive_chunk(store, chunk, verify_fn, acc) do
     Enum.reduce(chunk, {[], acc}, fn doc, {rows, acc} ->
       case AcceptedHeads.of(store, doc) do
         :none ->
@@ -138,7 +154,7 @@ defmodule Commonplace.Store.AcceptedHeadsBackfill do
               working_set_max: max(acc.working_set_max, working)
           }
 
-          case CommitInvariants.antichain_of(set, store, doc) do
+          case verify_fn.(set, store, doc) do
             :ok ->
               {[{doc, set} | rows], %{acc | docs_written: acc.docs_written + 1}}
 
