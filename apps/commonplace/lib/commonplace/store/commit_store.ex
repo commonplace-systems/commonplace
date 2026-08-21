@@ -3318,31 +3318,37 @@ defmodule Commonplace.Store.CommitStore do
     }
 
     # UNBOUNDED select — no min_key/max_key, so no range bound can truncate the
-    # high end (plan #14155's common-mode concern). Route by key SHAPE; ignore
-    # every other keyspace. `{:commit, id}` is a 2-tuple (the struct); we take
-    # the KEY id and never look at the value's `.doc_uuid`. `{:doc_commit}` rows
-    # are GROUPED per doc so orphans can later be partitioned by their commit set
-    # (genesis-only vs beyond-genesis — plan #14171/#14173).
+    # high end (plan #14155's common-mode concern). Route by key SHAPE via
+    # `route_population_row/3`; ignore every other keyspace. This is a READ: the
+    # routing lives in named function clauses rather than an inline `fn` whose
+    # `{:latest}` clause would begin a line with `{{:latest,` and trip
+    # `InvariantChokeTest`'s head-pointer-WRITE source scan (the R1 choke pin).
     db
     |> CubDB.select()
-    |> Enum.reduce(acc0, fn
-      {{:commit, id}, _commit}, acc ->
-        %{acc | ids_from_structs: MapSet.put(acc.ids_from_structs, id)}
-
-      {{:doc_commit, doc_uuid, id}, _v}, acc ->
-        %{
-          acc
-          | doc_commit_ids:
-              Map.update(acc.doc_commit_ids, doc_uuid, MapSet.new([id]), &MapSet.put(&1, id))
-        }
-
-      {{:latest, doc_uuid}, _commit_id}, acc ->
-        %{acc | p_latest: MapSet.put(acc.p_latest, doc_uuid)}
-
-      {_other_key, _value}, acc ->
-        acc
-    end)
+    |> Enum.reduce(acc0, fn {key, value}, acc -> route_population_row(key, value, acc) end)
   end
+
+  # `{:commit, id}` is a 2-tuple (the struct); we take the KEY id and never look
+  # at the value's `.doc_uuid`. `{:doc_commit}` rows are GROUPED per doc so
+  # orphans can later be partitioned by their commit set (genesis-only vs
+  # beyond-genesis — plan #14171/#14173). All three are READS of the keyspace.
+  defp route_population_row({:commit, id}, _commit, acc) do
+    %{acc | ids_from_structs: MapSet.put(acc.ids_from_structs, id)}
+  end
+
+  defp route_population_row({:doc_commit, doc_uuid, id}, _v, acc) do
+    %{
+      acc
+      | doc_commit_ids:
+          Map.update(acc.doc_commit_ids, doc_uuid, MapSet.new([id]), &MapSet.put(&1, id))
+    }
+  end
+
+  defp route_population_row({:latest, doc_uuid}, _commit_id, acc) do
+    %{acc | p_latest: MapSet.put(acc.p_latest, doc_uuid)}
+  end
+
+  defp route_population_row(_other_key, _value, acc), do: acc
 
   defp do_bd_issue_doc_uuids(db) do
     CubDB.select(db,
