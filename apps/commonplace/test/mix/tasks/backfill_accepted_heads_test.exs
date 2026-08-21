@@ -43,4 +43,55 @@ defmodule Mix.Tasks.Commonplace.BackfillAcceptedHeadsTest do
     assert {:ok, _} = Task.verify_ceiling(@running, nil)
     assert {:error, {:no_ceiling, _}} = Task.verify_ceiling(@loaded_no_ceiling, nil)
   end
+
+  # Criterion (b), the non-vacuity gate (commonplace-coder #13593, boss
+  # #13630): "the work was done" must not share a report shape with "there
+  # was nothing to open". Three arms, red-first: a wrong --data-dir (no
+  # store dir), an empty/newly-created store (< min bytes), and a real
+  # corpus (>= min). The first two are exactly the vacuous-success that a
+  # first §3 run produced off a created-on-open empty store.
+  describe "check_non_vacuous/2 (the non-vacuity gate)" do
+    setup do
+      base = Path.join(System.tmp_dir!(), "cp-vac-#{System.unique_integer([:positive])}")
+      on_exit(fn -> File.rm_rf!(base) end)
+      {:ok, base: base}
+    end
+
+    test "a wrong --data-dir (no commits/ subdir) is refused, not created", %{base: base} do
+      # base exists but has no commits/ — mirrors passing .../commits so
+      # CommitStore would open .../commits/commits fresh.
+      File.mkdir_p!(base)
+      assert {:error, {:no_store, store_dir}} = Task.check_non_vacuous(base, 1_000_000)
+      assert store_dir == Path.join(base, "commits")
+      # ⛔ the gate must NOT have created the dir it refused.
+      refute File.dir?(store_dir)
+    end
+
+    test "an empty/newly-created store (< min bytes) is refused as vacuous", %{base: base} do
+      store_dir = Path.join(base, "commits")
+      File.mkdir_p!(store_dir)
+      # A fresh CubDB writes a few KB of header; simulate with a tiny file.
+      File.write!(Path.join(store_dir, "0.cub"), :binary.copy(<<0>>, 4_096))
+
+      assert {:error, {:vacuous, ^store_dir, 4_096, 1_000_000}} =
+               Task.check_non_vacuous(base, 1_000_000)
+    end
+
+    test "a real corpus (>= min bytes of .cub) passes with its byte count", %{base: base} do
+      store_dir = Path.join(base, "commits")
+      File.mkdir_p!(store_dir)
+      File.write!(Path.join(store_dir, "0.cub"), :binary.copy(<<0>>, 2_000_000))
+      assert {:ok, ^store_dir, 2_000_000} = Task.check_non_vacuous(base, 1_000_000)
+    end
+
+    test "the sum spans multiple .cub files (CubDB compaction leaves more than one)", %{
+      base: base
+    } do
+      store_dir = Path.join(base, "commits")
+      File.mkdir_p!(store_dir)
+      File.write!(Path.join(store_dir, "0.cub"), :binary.copy(<<0>>, 600_000))
+      File.write!(Path.join(store_dir, "1.cub"), :binary.copy(<<0>>, 600_000))
+      assert {:ok, ^store_dir, 1_200_000} = Task.check_non_vacuous(base, 1_000_000)
+    end
+  end
 end

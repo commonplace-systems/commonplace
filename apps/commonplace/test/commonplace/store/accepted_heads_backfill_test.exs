@@ -171,6 +171,29 @@ defmodule Commonplace.Store.AcceptedHeadsBackfillTest do
              CommitStore.accepted_head_index_ready()
   end
 
+  # boss #13630 (the vacuous-success defect): a run over a store with ZERO
+  # docs completes with no violations and would otherwise write {:ready, v}
+  # — a "success" off a corpus that never existed, which would license §4 to
+  # strip the fallback. total_docs == 0 must yield a DISTINCT terminal state
+  # that is not :ready, so "the work was done" cannot share a shape with
+  # "there was nothing to index". The mix task's non-vacuity gate refuses
+  # the empty store before this runs; this is the same guarantee at the
+  # library layer, where a programmatic caller has no gate above it.
+  test "an empty corpus (zero docs) terminates :vacuous, never :ready", %{store: store} do
+    assert CommitStore.all_doc_uuids(store) |> MapSet.size() == 0
+
+    report = AcceptedHeadsBackfill.run(store)
+
+    assert report.total_docs == 0
+    assert report.terminal_state == {:vacuous, :no_docs}
+    refute report.terminal_state == CommitStore.accepted_head_index_ready()
+
+    # §4's precondition (state == :ready) is therefore NOT met on an empty
+    # store — the scan-fallback stays.
+    refute CommitStore.accepted_head_backfill_state(store) ==
+             CommitStore.accepted_head_index_ready()
+  end
+
   # commonplace-coder #13593 #1 + the brief's named F5 fixture: 2.2% of docs
   # carry :latest at a FOREIGN doc_uuid (fork-lineage class). The backfill
   # must HANDLE them, not discover them mid-run. of/2 derives a single-head
