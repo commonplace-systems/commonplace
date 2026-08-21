@@ -48,47 +48,29 @@ defmodule Commonplace.Store.AcceptedHeadsChokeTest do
     Path.expand(Path.join(__DIR__, "../../../lib"))
   end
 
+  # Delegates to the shared AST scanner (Commonplace.Test.RowKeyWriteScanner) —
+  # the accepted-head-set row is the `{:accepted_heads, _}` twin of the
+  # `{:latest, _}` head pointer, and shared the same line-text fragility before
+  # this. Both-directions controls live in the scanner's own test.
   defp head_set_writes(path) do
-    path
-    |> File.read!()
-    |> String.split("\n")
-    |> Enum.with_index(1)
-    |> Enum.reduce({nil, []}, fn {line, lineno}, {current_function, hits} ->
-      current_function =
-        case Regex.run(~r/^\s{0,4}defp?\s+([a-z_][a-zA-Z0-9_?!]*)/, line) do
-          [_, fun] -> fun
-          nil -> current_function
-        end
-
-      if head_set_write?(line) do
-        {current_function,
-         [%{file: path, line: lineno, function: current_function, text: line} | hits]}
-      else
-        {current_function, hits}
-      end
-    end)
-    |> elem(1)
-    |> Enum.reverse()
+    Commonplace.Test.RowKeyWriteScanner.writes_in_file(path, :accepted_heads)
   end
 
-  defp head_set_write?(line) do
-    String.starts_with?(String.trim_leading(line), "{{:accepted_heads,") or
-      (String.contains?(line, "{:accepted_heads,") and String.contains?(line, "CubDB.put"))
-  end
-
-  # A control that cannot go red is not a control.
   describe "source scan: the scanner itself can fail" do
-    test "recognises the write shape and neither read shape" do
-      assert head_set_write?(~s|    {{:accepted_heads, doc_uuid}, new}|)
-      assert head_set_write?(~s|  CubDB.put(db, {:accepted_heads, u}, set)|)
+    test "a synthetic offender is reported with its function name" do
+      tmp = Path.join(System.tmp_dir!(), "cp_ahs_scan_#{:rand.uniform(1_000_000_000)}.ex")
 
-      refute head_set_write?(
-               "    old = CubDB.get(db, {:accepted_heads, doc_uuid}) || MapSet.new()"
-             )
+      File.write!(tmp, """
+      defmodule Fake do
+        defp sneaky_headset(db, uuid, set) do
+          CubDB.put(db, {:accepted_heads, uuid}, set)
+        end
+      end
+      """)
 
-      refute head_set_write?(
-               "      _latest -> {:ok, CubDB.get(db, {:accepted_heads, doc_uuid}) || MapSet.new()}"
-             )
+      on_exit(fn -> File.rm_rf!(tmp) end)
+
+      assert [%{function: "sneaky_headset", line: 3}] = head_set_writes(tmp)
     end
   end
 end
