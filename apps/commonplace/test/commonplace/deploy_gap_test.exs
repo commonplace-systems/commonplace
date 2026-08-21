@@ -75,4 +75,70 @@ defmodule Commonplace.DeployGapTest do
     assert output =~ newer_beam
     refute output =~ "    #{older_beam}\n"
   end
+
+  # ── candidate 2: serve identity via the socket it OWNS, not an argv substring ─
+  #
+  # The prior identity (`pgrep -f 'commonplace_dev'`) matched any process that
+  # merely NAMED the node on its command line — a `mix run --no-start` probe did,
+  # and the deploy-gap monitor fired on the probe. A listening socket is a handle
+  # the OS grants to exactly one process; a probe can never hold it. These tests
+  # drive the serve-identification branch (no `--since`), which had NO coverage
+  # before, using the test VM itself as the "serve": it opens the socket, so ss
+  # reports OUR os-pid as the holder.
+  describe "serve identity via the listening socket (candidate 2)" do
+    @tag :tmp_dir
+    test "identifies the process that OWNS the serve port", %{tmp_dir: tmp_dir} do
+      build_dir = Path.join(tmp_dir, "lib")
+      old_beam = Path.join([build_dir, "old", "ebin", "Old.beam"])
+      File.mkdir_p!(Path.dirname(old_beam))
+      File.write!(old_beam, "old")
+      File.touch!(old_beam, {{2020, 1, 1}, {0, 0, 0}})
+
+      {:ok, sock} = :gen_tcp.listen(0, [:binary, {:active, false}, {:reuseaddr, true}])
+      {:ok, port} = :inet.port(sock)
+      os_pid = System.pid()
+
+      try do
+        {output, status} =
+          System.cmd(@script, [],
+            env: [{"CP_SERVE_PORT", Integer.to_string(port)}, {"CP_BUILD_DIR", build_dir}],
+            stderr_to_stdout: true
+          )
+
+        assert status == 0, output
+
+        assert output =~ "serve pid #{os_pid},",
+               "gauge did not identify the process OWNING the :#{port} socket (expected pid #{os_pid}): #{output}"
+
+        assert output =~ "holds the :#{port} listening socket",
+               "gauge did not state the socket-ownership method: #{output}"
+      after
+        :gen_tcp.close(sock)
+      end
+    end
+
+    @tag :tmp_dir
+    test "REFUSES (never reports 0) when nothing listens on the port — the must-fail control",
+         %{tmp_dir: tmp_dir} do
+      build_dir = Path.join(tmp_dir, "lib")
+      File.mkdir_p!(build_dir)
+
+      # Reserve a port, then release it, so we query a port with NO listener.
+      {:ok, sock} = :gen_tcp.listen(0, [:binary, {:active, false}, {:reuseaddr, true}])
+      {:ok, port} = :inet.port(sock)
+      :gen_tcp.close(sock)
+
+      {output, status} =
+        System.cmd(@script, [],
+          env: [{"CP_SERVE_PORT", Integer.to_string(port)}, {"CP_BUILD_DIR", build_dir}],
+          stderr_to_stdout: true
+        )
+
+      assert status == 2,
+             "a port with no listener must REFUSE (exit 2), not report an empty gap — got #{status}: #{output}"
+
+      assert output =~ "no process is listening on :#{port}"
+      refute output =~ "WOULD-DEPLOY-ON-RESTART"
+    end
+  end
 end
