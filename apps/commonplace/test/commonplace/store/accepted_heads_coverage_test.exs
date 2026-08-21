@@ -210,6 +210,57 @@ defmodule Commonplace.Store.AcceptedHeadsCoverageTest do
     end
   end
 
+  # build_entry/3 is the entry-logic the LIVE §4-step-2 run shares with
+  # fetch_entries via injected readers — so the live run has no transcription
+  # of it to drift. These exercise it with PURE FN STUBS (no store, no app),
+  # which is why the live probe can call this exact tested function over erpc
+  # readers. The must-find cases are here again as reader-level stubs.
+  describe "build_entry/3 (the shared, seam-injected entry logic)" do
+    test "resolvable readers → {doc, latest_id, heads}" do
+      rl = fn _ -> {:ok, %{id: "L"}} end
+      rh = fn _ -> {:ok, MapSet.new(["L", "sib"])} end
+
+      assert AcceptedHeadsCoverage.build_entry(rl, rh, "d") ==
+               {"d", "L", MapSet.new(["L", "sib"])}
+    end
+
+    test "#3a heads empty → entry verdicts as missing" do
+      entry =
+        AcceptedHeadsCoverage.build_entry(
+          fn _ -> {:ok, %{id: "L"}} end,
+          fn _ -> {:ok, MapSet.new()} end,
+          "d"
+        )
+
+      assert entry == {"d", "L", MapSet.new()}
+      assert AcceptedHeadsCoverage.verdict([entry]).missing == ["d"]
+    end
+
+    test "#3b heads present but lacking latest_id → missing" do
+      entry =
+        AcceptedHeadsCoverage.build_entry(
+          fn _ -> {:ok, %{id: "L"}} end,
+          fn _ -> {:ok, MapSet.new(["X"])} end,
+          "d"
+        )
+
+      assert entry == {"d", "L", MapSet.new(["X"])}
+      assert AcceptedHeadsCoverage.verdict([entry]).missing == ["d"]
+    end
+
+    test "an unresolvable doc (reader returns :none, a live race) → {doc, nil, ∅} → missing" do
+      entry =
+        AcceptedHeadsCoverage.build_entry(
+          fn _ -> :none end,
+          fn _ -> {:ok, MapSet.new(["X"])} end,
+          "d"
+        )
+
+      assert entry == {"d", nil, MapSet.new()}
+      assert AcceptedHeadsCoverage.verdict([entry]).missing == ["d"]
+    end
+  end
+
   # plan #13835 condition 3: the fetch is the one remaining probe-specific
   # surface. Prove fetch_entries |> verdict == check on a real store, so the
   # split is behavior-preserving AND the live run (fetch-then-verdict) is

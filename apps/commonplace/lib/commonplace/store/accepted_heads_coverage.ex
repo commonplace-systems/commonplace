@@ -131,10 +131,36 @@ defmodule Commonplace.Store.AcceptedHeadsCoverage do
   """
   @spec fetch_entries(GenServer.server()) :: [entry()]
   def fetch_entries(store) do
+    read_latest = fn doc -> CommitStore.latest_commit(store, doc) end
+    read_heads = fn doc -> CommitStore.accepted_heads_indexed(store, doc) end
+
     store
     |> CommitStore.all_doc_uuids()
     |> MapSet.to_list()
-    |> Enum.map(&entry_for(store, &1))
+    |> Enum.map(&build_entry(read_latest, read_heads, &1))
+  end
+
+  @doc """
+  Build ONE coverage entry from injected readers — `read_latest.(doc)` →
+  `{:ok, commit} | :none`, `read_heads.(doc)` → `{:ok, heads} | :none`. The
+  read seam is the ONLY thing that differs between the local `fetch_entries/1`
+  (readers over a `CommitStore`) and the §4-step-2 LIVE run (readers over
+  resident erpc calls to the serve). The ENTRY LOGIC — the `latest.id`
+  extraction, the conservative nil on an unresolvable doc — is this ONE tested
+  function in both, so the live run has no transcription of it to drift
+  (Option B, plan #13835): the probe injects erpc readers and calls THIS.
+  A doc that fails to resolve (a live-serve race) becomes `{doc, nil, ∅}`,
+  which `verdict/1` counts as missing (conservative — a false red, never a
+  false green).
+  """
+  @spec build_entry((String.t() -> term()), (String.t() -> term()), String.t()) :: entry()
+  def build_entry(read_latest, read_heads, doc) do
+    with {:ok, latest} <- read_latest.(doc),
+         {:ok, heads} <- read_heads.(doc) do
+      {doc, latest.id, heads}
+    else
+      _ -> {doc, nil, MapSet.new()}
+    end
   end
 
   @doc """
@@ -161,13 +187,4 @@ defmodule Commonplace.Store.AcceptedHeadsCoverage do
   end
 
   defp covered_entry?({_doc, latest_id, heads}), do: MapSet.member?(heads, latest_id)
-
-  defp entry_for(store, doc) do
-    with {:ok, latest} <- CommitStore.latest_commit(store, doc),
-         {:ok, heads} <- CommitStore.accepted_heads_indexed(store, doc) do
-      {doc, latest.id, heads}
-    else
-      _ -> {doc, nil, MapSet.new()}
-    end
-  end
 end
