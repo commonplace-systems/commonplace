@@ -48,4 +48,42 @@ defmodule Commonplace.CLIProtoChitLogTest do
     assert status == 1
     assert stderr =~ "missing_option"
   end
+
+  # The non-empty rendering lived in core's ProtoChitHarvestTest as a
+  # cross-app call — an UNDECLARED dep on this app (commonplace_cli is not
+  # and cannot be a dep of commonplace: cycle), so the core suite was
+  # deterministically red on every per-app run and green in CI only by
+  # umbrella-root code paths (plan #14425 finding 3 / #14426 rank 3).
+  # The rendering assertion belongs where the renderer lives: here.
+  test "log renders a signed entry: verb, author, [signature present], message", ctx do
+    log_uuid = UUID.uuid4()
+    {pub, priv} = Commonplace.Crypto.Signing.generate_keypair()
+
+    signing_ctx = %Commonplace.Crypto.SigningContext{
+      identity_uuid: "a1c-deploy-signer",
+      private_key: priv,
+      public_key: pub
+    }
+
+    event = %{
+      "verb" => "commit",
+      "author-principal" => "a1c-deploy-signer",
+      "message" => "rendered by the CLI",
+      "proto-pin" => nil,
+      "predecessor-ref" => nil,
+      "git-sha" => nil
+    }
+
+    assert {:ok, %{event_ref: _}} =
+             Commonplace.ProtoChit.ingest_verified(log_uuid, event, signing_ctx)
+
+    {status, output} =
+      with_io(fn ->
+        Commonplace.CLI.ProtoChit.run(ctx.data_dir, "", ["log", "--event-log", log_uuid])
+      end)
+
+    assert status == 0
+    assert output =~ "commit  by a1c-deploy-signer  [signature present]"
+    assert output =~ "message: rendered by the CLI"
+  end
 end

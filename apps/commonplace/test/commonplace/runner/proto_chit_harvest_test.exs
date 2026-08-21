@@ -1,8 +1,6 @@
 defmodule Commonplace.Runner.ProtoChitHarvestTest do
   use ExUnit.Case, async: false
 
-  import ExUnit.CaptureIO
-
   alias Commonplace.Crypto.Signing
   alias Commonplace.ProtoChit
   alias Commonplace.ProtoChit.IntentRecord
@@ -141,21 +139,14 @@ defmodule Commonplace.Runner.ProtoChitHarvestTest do
     assert entry.event["author-principal"] == deployment["signer-id"]
     assert String.starts_with?(entry.signer.signer_id, deployment["signer-id"] <> "@")
 
-    log_output =
-      capture_io(fn ->
-        host_data_dir = Application.fetch_env!(:commonplace, :data_dir)
-
-        assert 0 ==
-                 Commonplace.CLI.ProtoChit.run(host_data_dir, "", [
-                   "log",
-                   "--event-log",
-                   deployment["event-log-uuid"]
-                 ])
-      end)
-
-    IO.puts("A1C_PROTO_CHIT_LOG_BEGIN\n#{log_output}A1C_PROTO_CHIT_LOG_END")
-    assert log_output =~ "commit  by #{deployment["signer-id"]}  [signature present]"
-    assert log_output =~ "message: A1C pod commit"
+    # The substrate facts are asserted above via ProtoChit.chain/1. The
+    # CLI's RENDERING of them ("commit by … [signature present]") is
+    # asserted where the renderer lives: commonplace_cli's
+    # cli_proto_chit_log_test.exs. A Commonplace.CLI.ProtoChit call here
+    # was an UNDECLARED cross-app dep (cli depends on core, not the
+    # reverse — a cycle) that made this suite deterministically red on
+    # every per-app run and green in CI only by umbrella-root code paths
+    # (plan #14425 finding 3).
 
     refute File.exists?(handle.pod_home)
     File.rm_rf!(root)
