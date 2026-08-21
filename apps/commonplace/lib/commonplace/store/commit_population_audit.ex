@@ -169,6 +169,13 @@ defmodule Commonplace.Store.CommitPopulationAudit do
   # A doc is genesis-only iff its ENTIRE {:doc_commit} set is exactly the one
   # genesis id — recomputed from the doc uuid (a pure function; timestamp is not
   # hashed), NOT inferred from a metadata tag. Reconstruction, not shape-equality.
+  #
+  # ⭐ FAILS SAFE (plan #14176): if a stored genesis id ever DIVERGED from the
+  # reconstruction, the doc would fail this predicate and drop to orphaned_other
+  # — a benign doc flagged as a real orphan (false RED, costs attention), NEVER a
+  # real orphan classified benign (false green, hides the condition). The
+  # predicate errs toward false-red > false-clear by construction; do not "relax"
+  # it to a metadata-tag check, which would invert that direction.
   defp genesis_only?(doc, doc_commit_ids) do
     MapSet.equal?(
       Map.get(doc_commit_ids, doc, MapSet.new()),
