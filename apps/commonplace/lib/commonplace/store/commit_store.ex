@@ -915,6 +915,27 @@ defmodule Commonplace.Store.CommitStore do
   end
 
   @doc """
+  An INDEPENDENT raw count of `{:latest, _}` keys — a DIFFERENT code path
+  from `all_doc_uuids/1`, which maps each key to a uuid and dedups through a
+  `MapSet`. BUILD-1 §4's coverage-check cross-check (plan #13772 #4): if this
+  disagrees with the size of `all_doc_uuids/1`, then `all_doc_uuids`
+  under-enumerated its own keyset, and a coverage "0 missing" computed over
+  `all_doc_uuids` cannot be trusted (a scan bug hits the backfill and the
+  check identically, so only an independent count catches it). Shares only
+  the range bounds with `do_all_doc_uuids/1`, not its collection logic.
+  """
+  @spec latest_key_count(GenServer.server()) :: non_neg_integer()
+  def latest_key_count(server \\ __MODULE__) do
+    do_latest_key_count(resolve_db(server))
+  end
+
+  defp do_latest_key_count(db) do
+    db
+    |> CubDB.select(min_key: {:latest, ""}, max_key: {:latest, @max_key_binary})
+    |> Enum.count()
+  end
+
+  @doc """
   BUILD-1 §3 backfill: write one chunk of derived full head-sets and
   advance the resume state, ATOMICALLY (rows + state in one put_multi, so a
   kill cannot leave rows written past the recorded cursor).
@@ -2486,6 +2507,11 @@ defmodule Commonplace.Store.CommitStore do
   @impl true
   def handle_call({:accepted_heads_indexed, doc_uuid}, _from, state) do
     {:reply, do_accepted_heads_indexed(state.db, doc_uuid), state}
+  end
+
+  @impl true
+  def handle_call(:latest_key_count, _from, state) do
+    {:reply, do_latest_key_count(state.db), state}
   end
 
   @impl true
