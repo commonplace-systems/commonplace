@@ -66,11 +66,37 @@ defmodule Commonplace.Store.AcceptedHeadsCoverage do
   Read-only: `all_doc_uuids`, `latest_commit` and `accepted_heads_indexed`
   are all point-reads/keyspace-scans, no DAG walk. Safe to run against a live
   serve (via erpc to already-loaded `CommitStore`).
+
+  ## Fetch / verdict split (Option B — plan #13835, the structural version)
+
+  The go/no-go is a PURE function `verdict/1` over `[{doc, latest_id, heads}]`
+  — the TESTED code, incl. the #3a/#3b must-find cases as pure-data unit
+  tests. `check/1` = `fetch_entries/1` (the only part that touches the store)
+  then `verdict/1`. The live coverage run (§4 step 2) assembles the SAME
+  entries via resident erpc readers and calls THIS `verdict/1` on the runner's
+  node — so the decision code is the tested function, not a hand-transcription
+  that could diverge (there is no transcription to validate; nothing to keep
+  in sync). The residual untested surface is only the mechanical FETCH, whose
+  slip shows up as a wrong denominator that `examined > 0` and the
+  fetch+verdict-vs-`check/1` fixture check both bear on. And because
+  `verdict/1`'s INPUT is a plain data structure, the live run can LOG the
+  entries + the verdict together, so the gate's decision is a durable artifact
+  re-verdictable later without re-reading the moving live store (boss #13836:
+  the transient-observable → capture law, the same one the vanishing
+  MemoryMax taught tonight).
+
+  ⚠️ On a LIVE serve the fetch's two per-doc reads (`latest_commit` then
+  `accepted_heads_indexed`) can STRADDLE a seam head-advance and report a
+  covered doc as missing — a false RED (never a false green; it cannot
+  wrongly authorise §4). Step 2 mitigates it (single-read variant, or
+  re-read `missing` and report both passes so skew is a visible number); the
+  quiescent uses here (tests, a stopped-serve store) do not hit it.
   """
 
   alias Commonplace.Store.CommitStore
   require Logger
 
+  @type entry :: {doc :: String.t(), latest_id :: String.t() | nil, heads :: MapSet.t()}
   @type report :: %{
           examined: non_neg_integer(),
           covered: non_neg_integer(),
@@ -80,23 +106,12 @@ defmodule Commonplace.Store.AcceptedHeadsCoverage do
         }
 
   @doc """
-  Run the coverage check. `green` is true iff the corpus is non-empty AND
-  every examined doc satisfies the predicate — i.e. §4 may proceed.
+  Run the coverage check against a store: `fetch_entries/1` then `verdict/1`.
+  Behavior-preserving over the pre-split `check/1`.
   """
   @spec check(GenServer.server()) :: report()
   def check(store \\ CommitStore) do
-    docs = store |> CommitStore.all_doc_uuids() |> MapSet.to_list()
-    examined = length(docs)
-    missing = docs |> Enum.reject(&covered?(store, &1)) |> Enum.sort()
-    vacuous = examined == 0
-
-    report = %{
-      examined: examined,
-      covered: examined - length(missing),
-      missing: missing,
-      vacuous: vacuous,
-      green: not vacuous and missing == []
-    }
+    report = store |> fetch_entries() |> verdict()
 
     Logger.info(
       "AcceptedHeadsCoverage: examined=#{report.examined} covered=#{report.covered} " <>
@@ -106,19 +121,53 @@ defmodule Commonplace.Store.AcceptedHeadsCoverage do
     report
   end
 
-  # A doc is COVERED iff SiblingMerger's `:171` guard would be TRUE for it:
-  # its accepted-head index resolves to a set that CONTAINS the commit
-  # `:latest` currently points at. Membership, not presence — a stale row
-  # lacking `latest.id` is NOT covered (it would take the removed fallback).
-  # `all_doc_uuids` only yields docs with `:latest`, so `latest_commit` and
-  # `accepted_heads_indexed` both succeed; the `else` is defensive and
-  # conservative (unresolvable ⇒ not covered ⇒ reported).
-  defp covered?(store, doc) do
+  @doc """
+  Assemble the coverage entries from the store — the ONLY store-touching part.
+  One `{doc, latest_id, heads}` per doc in `all_doc_uuids`. A doc that fails
+  to resolve (a live-serve race between enumerate and read) becomes
+  `{doc, nil, ∅}`, which `verdict/1` counts as missing (conservative — a
+  false red, never a false green). The live §4-step-2 run mirrors this
+  assembly over resident erpc readers; see the moduledoc's skew note.
+  """
+  @spec fetch_entries(GenServer.server()) :: [entry()]
+  def fetch_entries(store) do
+    store
+    |> CommitStore.all_doc_uuids()
+    |> MapSet.to_list()
+    |> Enum.map(&entry_for(store, &1))
+  end
+
+  @doc """
+  The PURE go/no-go over coverage entries — no store access, so it is the
+  same tested code whether run over fixtures, a stopped-serve store, or the
+  live run's fetched-and-captured entries. A doc is COVERED iff its head set
+  CONTAINS the commit `:latest` points at (SiblingMerger's `:171` guard):
+  membership, not presence — a stale row lacking `latest_id` is NOT covered.
+  `green` requires `examined > 0` (non-vacuity) AND `missing == []`.
+  """
+  @spec verdict([entry()]) :: report()
+  def verdict(entries) do
+    examined = length(entries)
+    missing = entries |> Enum.reject(&covered_entry?/1) |> Enum.map(&elem(&1, 0)) |> Enum.sort()
+    vacuous = examined == 0
+
+    %{
+      examined: examined,
+      covered: examined - length(missing),
+      missing: missing,
+      vacuous: vacuous,
+      green: not vacuous and missing == []
+    }
+  end
+
+  defp covered_entry?({_doc, latest_id, heads}), do: MapSet.member?(heads, latest_id)
+
+  defp entry_for(store, doc) do
     with {:ok, latest} <- CommitStore.latest_commit(store, doc),
          {:ok, heads} <- CommitStore.accepted_heads_indexed(store, doc) do
-      MapSet.member?(heads, latest.id)
+      {doc, latest.id, heads}
     else
-      _ -> false
+      _ -> {doc, nil, MapSet.new()}
     end
   end
 end

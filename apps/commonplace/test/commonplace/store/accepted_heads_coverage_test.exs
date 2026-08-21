@@ -158,4 +158,67 @@ defmodule Commonplace.Store.AcceptedHeadsCoverageTest do
     assert report.vacuous
     refute report.green
   end
+
+  # Option B (plan #13835): the go/no-go is a PURE function over
+  # [{doc, latest_id, heads}]. The must-find cases become PURE-DATA tests —
+  # stronger than store fixtures (coder #13833): #3a/#3b can't accidentally
+  # pass via store state, the discrimination lives in the tested function,
+  # and the live §4-step-2 run calls THIS verdict/1 (no transcription).
+  describe "verdict/1 (the pure go/no-go)" do
+    test "all entries covered → green, non-vacuous" do
+      entries = [
+        {"a", "La", MapSet.new(["La"])},
+        {"b", "Lb", MapSet.new(["Lb", "sib"])}
+      ]
+
+      report = AcceptedHeadsCoverage.verdict(entries)
+      assert report.examined == 2
+      assert report.covered == 2
+      assert report.missing == []
+      refute report.vacuous
+      assert report.green
+    end
+
+    test "#3a cleared row (heads empty) → missing, not green" do
+      entries = [{"a", "La", MapSet.new(["La"])}, {"wiped", "Lw", MapSet.new()}]
+      report = AcceptedHeadsCoverage.verdict(entries)
+      assert report.missing == ["wiped"]
+      refute report.green
+    end
+
+    test "#3b present-but-stale (heads non-empty, lacks latest_id) → missing (presence ≠ validity)" do
+      # heads is PRESENT and non-empty — a presence check passes — but does
+      # NOT contain latest_id, so the membership predicate rejects it.
+      entries = [{"stale", "L", MapSet.new(["not-L", "also-not-L"])}]
+      report = AcceptedHeadsCoverage.verdict(entries)
+      assert report.missing == ["stale"]
+      refute report.green
+    end
+
+    test "empty entry list → vacuous, NOT green" do
+      report = AcceptedHeadsCoverage.verdict([])
+      assert report.examined == 0
+      assert report.vacuous
+      refute report.green
+    end
+
+    test "a nil latest_id (a live-serve fetch race) → missing, conservative" do
+      entries = [{"raced", nil, MapSet.new(["x"])}]
+      report = AcceptedHeadsCoverage.verdict(entries)
+      assert report.missing == ["raced"]
+      refute report.green
+    end
+  end
+
+  # plan #13835 condition 3: the fetch is the one remaining probe-specific
+  # surface. Prove fetch_entries |> verdict == check on a real store, so the
+  # split is behavior-preserving AND the live run (fetch-then-verdict) is
+  # validated against the same reference the module tests exercise.
+  test "fetch_entries |> verdict == check (the split is consistent)", %{store: store} do
+    _ = linear_doc(store, "x")
+    {_l, _r} = sibling_doc(store, "y")
+
+    assert store |> AcceptedHeadsCoverage.fetch_entries() |> AcceptedHeadsCoverage.verdict() ==
+             AcceptedHeadsCoverage.check(store)
+  end
 end
