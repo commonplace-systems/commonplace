@@ -1,6 +1,14 @@
 defmodule Mix.Tasks.Commonplace.MixedPlaneScan do
   use Mix.Task
 
+  # ⛔ WITHOUT THIS, `mix <this task>` EXECUTES WHATEVER BEAMS _build ALREADY
+  # HOLDS — it never recompiles. Demonstrated live 2026-08-21 (boss #14448):
+  # pass 3 of the (a) migration ran a 41-minute-stale DocCommitBackfill.beam
+  # and re-died on the bug the working tree had already fixed. Touch-probe
+  # confirmed: source touched, task run, beam mtime unchanged. Every task in
+  # this directory carries this line; a test pins the family.
+  @requirements ["compile"]
+
   @shortdoc "Scan every persisted document commit for mixed-plane history"
 
   @moduledoc """
