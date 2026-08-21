@@ -835,6 +835,22 @@ defmodule Commonplace.Store.CommitStoreClient do
   end
 
   @doc """
+  Authoritative point membership: does `doc_uuid` own `commit_id`?
+  (See `CommitStore.doc_has_commit?/3` — decided by the `{:doc_commit}`
+  index key, never a commit struct's `.doc_uuid` trace.) The O(1) scope
+  check `CommitReader.at/3` uses.
+  """
+  def doc_has_commit?(server \\ CommitStore, doc_uuid, commit_id) do
+    case remote_node() do
+      {:ok, node} ->
+        GenServer.call({CommitStore, node}, {:doc_has_commit, doc_uuid, commit_id})
+
+      :local ->
+        CommitStore.doc_has_commit?(normalize_server(server), doc_uuid, commit_id)
+    end
+  end
+
+  @doc """
   Import a peer's commit (CX-bv3 / CX-ch5). In LOCAL mode, CX-3erd
   hoists the pure id-verification gate (CX-gwz — re-hash the commit
   and compare to its claimed `id`) to THIS edge, so a tampered commit

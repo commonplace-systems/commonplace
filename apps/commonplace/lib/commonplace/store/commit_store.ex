@@ -891,6 +891,28 @@ defmodule Commonplace.Store.CommitStore do
   end
 
   @doc """
+  Authoritative membership: does `doc_uuid` own `commit_id`? An O(1)
+  point-read on the `{:doc_commit, doc_uuid, commit_id}` index row — the
+  same authoritative doc→commit map `all_commit_ids_for_doc/2` reduces,
+  read for one id instead of a range.
+
+  ⭐ Ownership is decided by the index KEY, never by a commit struct's
+  `.doc_uuid` field (a debug trace of the first writer, excluded from the
+  content address and stale after forks / shared across convergent-genesis
+  or imported ids — `commit.ex`). A commit can be indexed under a doc whose
+  uuid its struct does not name; this answers by possession, which is what
+  `CommitReader.at/3`'s cell scoping rests on.
+
+  Fails loud when the index is not ready — no silent `false`, which a caller
+  cannot distinguish from a genuine absence (same discipline as
+  `do_all_commit_ids_for_doc/2`'s refusal to full-scan a half-built index).
+  """
+  @spec doc_has_commit?(GenServer.server(), String.t(), binary()) :: boolean()
+  def doc_has_commit?(server \\ __MODULE__, doc_uuid, commit_id) do
+    do_doc_has_commit?(resolve_db(server), doc_uuid, commit_id)
+  end
+
+  @doc """
   The doc's accepted-head set from the durable index — the incrementally
   maintained equivalent of `Commonplace.Store.AcceptedHeads.of/2`'s scan.
 
@@ -2261,6 +2283,11 @@ defmodule Commonplace.Store.CommitStore do
   end
 
   @impl true
+  def handle_call({:doc_has_commit, doc_uuid, commit_id}, _from, state) do
+    {:reply, do_doc_has_commit?(state.db, doc_uuid, commit_id), state}
+  end
+
+  @impl true
   def handle_call({:create_chained_commit, doc_uuid, update, metadata}, from, state) do
     handle_call(
       {:create_chained_commit, doc_uuid, update, metadata, []},
@@ -3406,6 +3433,23 @@ defmodule Commonplace.Store.CommitStore do
         Logger.error(
           "CommitStore: doc commit index unavailable for doc_uuid=#{inspect(doc_uuid)}; " <>
             "state=#{inspect(state)}; refusing silent full-scan fallback"
+        )
+
+        raise "doc commit index unavailable for doc_uuid=#{inspect(doc_uuid)}: #{inspect(state)}"
+    end
+  end
+
+  defp do_doc_has_commit?(db, doc_uuid, commit_id) do
+    case CubDB.get(db, @doc_commit_index_state_key) do
+      @doc_commit_index_ready ->
+        CubDB.get(db, {:doc_commit, doc_uuid, commit_id}) == true
+
+      state ->
+        require Logger
+
+        Logger.error(
+          "CommitStore: doc commit index unavailable for doc_uuid=#{inspect(doc_uuid)}; " <>
+            "state=#{inspect(state)}; refusing silent membership=false"
         )
 
         raise "doc commit index unavailable for doc_uuid=#{inspect(doc_uuid)}: #{inspect(state)}"
