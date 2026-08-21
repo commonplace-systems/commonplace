@@ -4,16 +4,39 @@ defmodule Commonplace.Store.CommitLogLimitCallersTest do
 
   This is an alias-resolved AST scan, not a text search: private namesakes are
   ignored, while calls through aliases and fully-qualified module names are
-  attributed to the two commit-log APIs.
+  attributed to the commit-history APIs — `commit_log`/`commit_log_from` on
+  `CommitStore`/`CommitStoreClient`, and `CommitReader.history` (BUILD-2a's
+  cell-scoped re-export of `commit_log`, policed for its own callers so the
+  wrapper is not an unbounded-walk escape the callee-name scan misses).
   """
   use ExUnit.Case, async: true
 
   @root Path.expand("../../../../..", __DIR__)
 
-  @targets MapSet.new([
-             [:Commonplace, :Store, :CommitStore],
-             [:Commonplace, :Store, :CommitStoreClient]
-           ])
+  # The commit read/write seam. Used for the CALLER exemption: a call FROM
+  # inside the seam to another seam module's history API is internal plumbing,
+  # not a leaf caller, so it is not policed (CommitStoreClient delegating to
+  # CommitStore; CommitReader forwarding to commit_log). CommitReader joined
+  # the seam in BUILD-2a.
+  @seam_modules MapSet.new([
+                  [:Commonplace, :Store, :CommitStore],
+                  [:Commonplace, :Store, :CommitStoreClient],
+                  [:Commonplace, :Store, :CommitReader]
+                ])
+
+  # The policed CALLEES: which (module, function) pairs are commit-history
+  # walks whose bound must be visible at the call site. Keyed precisely per
+  # module — CommitReader.history is BUILD-2a's cell-scoped re-export of
+  # commit_log, so an unbounded history call escapes the bound exactly as an
+  # unbounded commit_log call would. Without this, the re-export is an
+  # UNPOLICED surface: the callee-name scan sees `commit_log` at the forward
+  # (commit_reader.ex, exempt as intra-seam) but never `history` at the real
+  # caller. Following the wrapper is the point (plan #14243(a)).
+  @commit_log_apis MapSet.new([
+                     [:Commonplace, :Store, :CommitStore],
+                     [:Commonplace, :Store, :CommitStoreClient]
+                   ])
+  @commit_reader [:Commonplace, :Store, :CommitReader]
 
   # Freeze-list rule: this ONE allowlist may only shrink, or gain an entry with
   # a call-site-specific reason; an unexplained entry is a lint bypass, not
@@ -53,8 +76,6 @@ defmodule Commonplace.Store.CommitLogLimitCallersTest do
       "fixture seeds one commit before checking snapshot absence",
     {"apps/commonplace/test/commonplace/snapshot_sweeper_test.exs", 142} =>
       "polling fixture seeds five commits before checking for a snapshot",
-    {"apps/commonplace/lib/commonplace/store/commit_reader.ex", 60} =>
-      "CommitReader.history is the cell-scoped seam's thin re-export of commit_log; it forwards the caller's opts verbatim, so any :limit lives at the CommitReader.history call site, not here — policing history's OWN callers is the #2 source-scan-hardening item (add CommitReader to @targets)",
     {"apps/commonplace/test/commonplace/store/commit_store_branch_test.exs", 31} =>
       "fixture asserts an exactly three-commit cross-document chain",
     {"apps/commonplace/test/commonplace/store/commit_store_telemetry_test.exs", 154} =>
@@ -128,6 +149,28 @@ defmodule Commonplace.Store.CommitLogLimitCallersTest do
              unbounded_calls_in(source, "synthetic_alias_fixture.ex")
   end
 
+  test "CommitReader.history is policed like commit_log: unbounded caught, bounded and other reads not" do
+    # The must-fail arm SEEN to fire (plan #14243(a)): adding history to the
+    # policed set is not known to work until an unbounded history call is
+    # observed to be caught AND a bounded one observed to pass. Both here, in
+    # one fixture, adjacent — with heads/at/inventory proving the policing is
+    # scoped to the history walk, not every CommitReader function.
+    source = """
+    defmodule Reader.Caller do
+      alias Commonplace.Store.CommitReader
+
+      def unbounded(cell), do: CommitReader.history(cell)
+      def bounded(cell), do: CommitReader.history(cell, limit: 10)
+      def a_head(cell), do: CommitReader.heads(cell)
+      def a_point(cell, id), do: CommitReader.at(cell, id)
+      def an_inventory(cell), do: CommitReader.inventory(cell)
+    end
+    """
+
+    assert [%{callee: "Commonplace.Store.CommitReader.history"}] =
+             unbounded_calls_in(source, "reader_caller_fixture.ex")
+  end
+
   defp source_files do
     ["apps/*/lib/**/*.ex", "apps/*/test/**/*.exs"]
     |> Enum.flat_map(&Path.wildcard(Path.join(@root, &1)))
@@ -177,12 +220,12 @@ defmodule Commonplace.Store.CommitLogLimitCallersTest do
          state,
          path
        )
-       when function in [:commit_log, :commit_log_from] and is_list(arguments) do
+       when function in [:commit_log, :commit_log_from, :history] and is_list(arguments) do
     module = resolve_module(module_ast, state.aliases)
 
     call =
-      if MapSet.member?(@targets, module) and
-           not MapSet.member?(@targets, state.module) and
+      if policed_callee?(module, function) and
+           not MapSet.member?(@seam_modules, state.module) and
            not explicit_limit?(arguments) do
         relative_path = Path.relative_to(path, @root)
 
@@ -214,6 +257,12 @@ defmodule Commonplace.Store.CommitLogLimitCallersTest do
   end
 
   defp scan(_other, state, _path), do: {[], state}
+
+  defp policed_callee?(module, function) when function in [:commit_log, :commit_log_from],
+    do: MapSet.member?(@commit_log_apis, module)
+
+  defp policed_callee?(module, :history), do: module == @commit_reader
+  defp policed_callee?(_module, _function), do: false
 
   defp explicit_limit?(arguments) do
     case List.last(arguments) do
