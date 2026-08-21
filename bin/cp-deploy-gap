@@ -90,7 +90,24 @@ fi
 
 [[ -d "$BUILD_DIR" ]] || { echo "cp-deploy-gap: no $BUILD_DIR" >&2; exit 2; }
 
-mapfile -t newer_beams < <(find "$BUILD_DIR" -name '*.beam' -newermt "$SINCE" 2>/dev/null | sort)
+# Capture find's status; do NOT 2>/dev/null it. A failed scan (unreadable dir,
+# a $SINCE that -newermt cannot parse, a transient FS error) must not read as an
+# EMPTY gap: with 2>/dev/null the list came back empty, total=0, and the gauge
+# reported "no gap" with exit 0 — a broken measurement byte-identical to a clean
+# all-clear. Under the DeployGapMonitor ledger that spurious 0 is a false CLEARED
+# transition that closes the open row (a false clear is worse than a false open).
+# Same reasoning as the no-serve REFUSAL above ("a count against no subject is
+# not zero, it is undefined"), applied to a failing SCAN, not just a missing
+# serve. (commonplace-coder #14102.)
+find_out="$(find "$BUILD_DIR" -name '*.beam' -newermt "$SINCE" 2>&1)"
+find_status=$?
+if [[ $find_status -ne 0 ]]; then
+  echo "cp-deploy-gap: REFUSING — beam scan failed (find exit $find_status)." >&2
+  echo "  A count from a failed scan is not zero, it is undefined." >&2
+  echo "  find: $find_out" >&2
+  exit 2
+fi
+mapfile -t newer_beams < <(printf '%s' "$find_out" | sed '/^[[:space:]]*$/d' | sort)
 total="${#newer_beams[@]}"
 
 echo "WOULD-DEPLOY-ON-RESTART: $total beam(s) newer than that start"
