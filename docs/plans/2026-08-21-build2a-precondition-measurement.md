@@ -94,6 +94,40 @@ differed**, a site would be reaching CubDB by a THIRD path (a handle passed
 around, stashed in a module attr, or a different acquisition). They agree ⇒ no
 third raw path in product code.
 
+## Reproduce-before-prioritizing verdict on the .doc_uuid finding (plan #14196 part 3)
+
+**Verdict: LATENT, not a live user-facing hotfix. The 2a migration cleans it up;
+it does not need to LEAD 2a.** Established by code-trace (not yet an empirical
+run — flagged as such; the empirical construction is 2a's own migration-verify
+step):
+
+1. **Fork is structurally SAFE.** `Commit.new(doc_uuid, …)` stamps the struct's
+   `.doc_uuid` to the PASSED uuid (and it is excluded from the content address).
+   `Fork` mints the forked doc's commits via `create_commit(new_uuid, …)`
+   (`fork.ex:365/475/…`), so they carry the FORK's uuid — `commit_ids_by_doc`
+   groups them correctly. A fork reproduce would show CORRECT grouping; fork is
+   NOT the trigger. (This is why "construct a forked doc" alone would have
+   returned a false all-clear — the trigger is elsewhere.)
+2. **The trigger is a cross-doc commit-id COLLISION.** `put_built_commit` writes
+   `{:commit, id}` and `{:doc_commit, commit.doc_uuid, id}` together, so the index
+   doc and the struct's `.doc_uuid` agree AT WRITE TIME. They diverge only when an
+   id is SHARED across two docs — a content-address collision (same
+   update+parent+metadata), which cross-doc needs shared ancestry (an imported
+   commit, i.e. federation/catch-up) since distinct uuids yield distinct genesis
+   chains. Rare, and multi-node-only.
+3. **The consumer is an operator diagnostic, not a user view.** `commit_ids_by_doc`
+   is called only by `MixedPlaneHistory` (`:452`), whose only consumer is the
+   `mix commonplace.mixed_plane_scan` task — operator-run, not real-time
+   user-facing history.
+
+⇒ No user sees wrong history in real time from this; it can mis-group only in an
+operator scan, only under cross-doc id collision (federation). So it does NOT lead
+2a as a hotfix. Migrating the site to the `{:doc_commit}` index (authoritative
+ownership) corrects the basis as a clean correctness-improving step within 2a — and
+2a's migration-verify SHOULD include the empirical collision construction (two docs
+sharing an imported commit id; assert the pre-migration grouping mis-attributes and
+the post-migration one does not) as its red→green.
+
 ## What this sizes (converts 2a designed → ready)
 
 The brief's §3–§5 become a **small, bounded round**: build `CommitReader`
