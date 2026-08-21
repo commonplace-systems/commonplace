@@ -54,10 +54,26 @@ A dedicated git worktree + its own build, owned by the deploy ceremony:
   future boot. **P1.** A stop/start brackets nothing: restart re-boots the
   same pinned beams. Lazy loads (hazard 3) now pull pinned-vintage modules —
   the runtime-mix hazard collapses to same-vintage.
+  - The pin path is a **CONSTANT in the launcher, never an env var** (boss
+    #14484, ruled): the launcher's `env -i` allowlist exists to eliminate
+    launch-environment facts, and "which tree the serve boots from" is
+    precisely the class of fact it must not reintroduce (the LETTA lesson,
+    third recurrence). The launcher never needs the SHA — the pin is a
+    property of the worktree, written by `cp-deploy-pin`; the launcher's
+    whole job is "boot from THIS directory, whatever it points at."
+  - ⛔ **The launcher REFUSES to boot — loudly, no serve — if the pin
+    worktree is missing, is not a git worktree, or has no `_build`. It
+    NEVER falls back to the shared tree.** A silent fallback is tonight's
+    accident in reverse, scheduled for the day someone deletes the worktree
+    — i.e. when nobody is watching. Fail loud, refuse to serve.
 - **Deploy** (`bin/cp-deploy-pin <sha>`): fetch → verify the sha exists on
-  origin/main → `git -C <pin> checkout <sha>` → `mix compile` in the pin →
-  write `.pin` → print the receipt. Advancing the pin IS the deploy ceremony
-  step; nothing else writes to the worktree. **P2.**
+  origin/main → **disk-floor gate** (refuse below a free-space threshold —
+  tonight's 17G blow-up was found by a backup dying mid-write because no
+  ceremony carried a headroom check; the check lives with the act, not in
+  the operator's attention — boss #14484) → `git -C <pin> checkout <sha>` →
+  `mix compile` in the pin → write `.pin` → print the receipt. Advancing
+  the pin IS the deploy ceremony step; nothing else writes to the worktree.
+  **P2.**
 - **Observe** (`bin/cp-pin-status`): prints, side by side, with no shared
   inputs: the `.pin` sha · the pin worktree's actual `git rev-parse HEAD`
   (they must agree — a disagreement is a tampered/half-advanced pin) · the
@@ -109,15 +125,22 @@ A dedicated git worktree + its own build, owned by the deploy ceremony:
    against the deployed sha, launch boots it, `cp-verify-deploy` zero-skew
    against the PIN's beams.
 
-## Open items for the joint half (boss's lane)
+## The joint half — RESOLVED (boss #14484, all three)
 
-- Where `cp-serve-launch.sh` learns the pin path (constant vs env — his
-  env-capture discipline decides).
-- Whether the pin worktree lives on this disk (2.4G store + ~1-2G pin build;
-  16G free says yes, but the capacity fact is his to sign).
-- Migration of the CURRENT serve (1437472, booted from the shared tree at
-  5f9440fb-era beams) onto the first pin — a normal deploy ceremony, no
-  special case.
+- **(a) Pin path**: constant in the launcher (folded into Boot above), with
+  the refuse-never-fallback clause.
+- **(b) Disk**: signed off — 16G free, current `_build` measured 197M (my
+  1-2G estimate was conservative). Disk-floor gate folded into
+  `cp-deploy-pin` above.
+- **(c) First-pin migration** of serve 1437472: a NORMAL deploy ceremony,
+  no special case — "a one-time special migration is how the ceremony's
+  guarantees get skipped exactly once."
+
+## Acceptance addendum (from the (a) resolution)
+
+5. **Refusal arm**: pin worktree absent / not-a-worktree / no `_build` →
+   the launcher refuses loudly and starts NOTHING; specifically it must be
+   demonstrated that no fallback boot from the shared tree occurs.
 
 ## Scope fence
 
