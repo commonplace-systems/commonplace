@@ -65,6 +65,17 @@ defmodule Mix.Tasks.Commonplace.BackfillAcceptedHeads do
   and REFUSES on mismatch (same red-first shape as `--expected-bytes`: a knob
   claimed but not taken is a run without the protection it names).
 
+  ## Write-ceremony amendment (plan #14457, standing — measured 2026-08-21)
+
+  Any §3-pattern WRITE ceremony against a CubDB store: (1) budget disk for
+  append-only amplification BEFORE the run (~37 KB/row transient at
+  2k-row chunks, measured on the doc-commit backfill's pass 4 — compute
+  from row-estimate × coefficient); (2) END with an explicit
+  compact-and-wait (`CubDB.compact/1` + `compacting?/1` poll,
+  entry-count-identical control) — `auto_compact` is async and dies with
+  the task VM; a deferred compaction is handed to the operator, never
+  silent.
+
   Options:
     * `--data-dir PATH` (required) — the store's PARENT dir (init appends /commits)
     * `--unit NAME` (required) — this task's own systemd unit, to verify ①

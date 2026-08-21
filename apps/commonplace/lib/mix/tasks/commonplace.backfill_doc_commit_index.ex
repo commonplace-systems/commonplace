@@ -39,6 +39,23 @@ defmodule Mix.Tasks.Commonplace.BackfillDocCommitIndex do
   dangling_post == backfilled` AND `dangling_post ∩ backfilled == ∅` —
   never a count-delta, which can mask an exchange. Write it with `--out`.
 
+  ## Write-ceremony amendment (plan #14457, standing — measured 2026-08-21)
+
+  Two lines every §3-pattern WRITE ceremony against a CubDB store carries,
+  learned when pass 4 grew the live store 2.3G→17G and left the hermes
+  host at 1.3G free:
+
+    * **Budget disk for append-only amplification BEFORE the run** —
+      measured coefficient ~37 KB/row of transient garbage at 2k-row
+      chunks (each put_multi appends its btree path rewrites); compute
+      the budget from row-estimate × coefficient, don't guess. Larger
+      chunks amplify proportionally less.
+    * **END with an explicit compact-and-wait** (`CubDB.compact/1` +
+      `compacting?/1` poll, ENTRY-COUNT-identical control) — NEVER rely
+      on `auto_compact`: compaction is async and dies with the task VM.
+      If compaction is deferred, hand the fragmentation fact to the
+      operator out loud; never leave it silent.
+
   Options:
     * `--data-dir PATH` (required) — the store's PARENT dir (init appends /commits)
     * `--unit NAME` (required) — this task's own systemd unit, to verify ①
