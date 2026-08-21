@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+#
+# cp-deploy-pin — advance the serve's pinned boot worktree to a certified sha.
+#
+# THE ONE WRITER (P2 of docs/plans/2026-08-21-pinned-boot-design.md): the pin
+# worktree at $PIN_DIR is what the serve boots from; NOTHING else may write
+# to it, and advancing it IS the deploy-ceremony step. The shared working
+# tree at $REPO can churn freely — merges, compiles, checkouts — with zero
+# effect on any boot, which is the property that makes deploys DECISIONS
+# (2026-08-21: two serve restarts silently deployed an advanced shared tree;
+# this tool + the pinned launcher make that class structurally impossible).
+#
+# Usage: bin/cp-deploy-pin <sha> [--pin-dir DIR]
+#
+#   <sha>          a commit that EXISTS ON origin/main (verified after a
+#                  fresh fetch; a certified-but-unpushed local sha is refused
+#                  — the pin only ever holds published history)
+#   --pin-dir DIR  EXPLICIT override for the acceptance demonstrations
+#                  (throwaway dirs). Deliberately a visible argv flag, never
+#                  an env var: "which tree the serve boots from" must not be
+#                  an ambient-environment fact (boss #14484, the env -i
+#                  doctrine). Production ceremonies omit it.
+#
+# Gates, in order, all refuse loudly:
+#   1. disk floor — the check lives with the act, not in the operator's
+#      attention (the 2026-08-21 17G amplification was found by a backup
+#      dying mid-write because no ceremony carried a headroom check)
+#   2. sha resolves AND is an ancestor of origin/main (post-fetch)
+#   3. pin dir, if present, must actually be a git worktree
+#
+# On success: worktree at <sha>, deps fetched, compiled, `.pin` receipt
+# written (sha + utc + operator), and cp-pin-status printed as the receipt.
+# ⚠️ First-ever run needs network for `mix deps.get` (the yelixer git dep).
+
+set -euo pipefail
+
+REPO=/home/jes/commonplace
+PIN_DIR=/home/jes/commonplace-serve-pin
+MIN_FREE_KB=$((4 * 1024 * 1024)) # 4G floor
+
+sha_arg="${1:?usage: cp-deploy-pin <sha> [--pin-dir DIR]}"
+shift
+if [ "${1:-}" = "--pin-dir" ]; then
+  PIN_DIR="${2:?--pin-dir needs a value}"
+fi
+
+# ── gate 1: disk floor ──────────────────────────────────────────────────
+parent="$(dirname "$PIN_DIR")"
+free_kb="$(df --output=avail -k "$parent" | tail -1 | tr -d ' ')"
+if [ "$free_kb" -lt "$MIN_FREE_KB" ]; then
+  echo "REFUSED (disk floor): ${free_kb}KB free on $parent < ${MIN_FREE_KB}KB" >&2
+  exit 3
+fi
+
+# ── gate 2: the sha is published history ────────────────────────────────
+git -C "$REPO" fetch -q origin
+full="$(git -C "$REPO" rev-parse --verify --quiet "${sha_arg}^{commit}")" || {
+  echo "REFUSED: '$sha_arg' does not resolve to a commit" >&2
+  exit 4
+}
+if ! git -C "$REPO" merge-base --is-ancestor "$full" origin/main; then
+  echo "REFUSED: $full is not on origin/main — the pin only holds published history" >&2
+  exit 4
+fi
+
+# ── gate 3: pin dir shape ───────────────────────────────────────────────
+if [ -e "$PIN_DIR" ]; then
+  top="$(git -C "$PIN_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+  if [ "$top" != "$PIN_DIR" ]; then
+    # A bare subdir INSIDE some repo passes --is-inside-work-tree; only a
+    # dir that is itself a worktree toplevel may be advanced.
+    echo "REFUSED: $PIN_DIR exists but is not a git worktree toplevel — will not overwrite" >&2
+    exit 5
+  fi
+  git -C "$PIN_DIR" checkout --quiet --detach "$full"
+else
+  git -C "$REPO" worktree add --quiet --detach "$PIN_DIR" "$full"
+fi
+
+# ── build inside the pin ────────────────────────────────────────────────
+(cd "$PIN_DIR" && mix deps.get >&2 && mix compile >&2)
+
+# ── the receipt: sha, time, operator — then the gauge reads it back ─────
+printf '%s %s %s\n' "$full" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${USER:-unknown}" \
+  >"$PIN_DIR/.pin"
+echo "PIN ADVANCED: $full"
+exec "$(dirname "$0")/cp-pin-status" --pin-dir "$PIN_DIR"

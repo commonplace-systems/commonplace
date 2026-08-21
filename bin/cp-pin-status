@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+#
+# cp-pin-status — the fate-independent deploy gauge (P3 of
+# docs/plans/2026-08-21-pinned-boot-design.md).
+#
+# Reads FOUR inputs that share nothing, so it can DISAGREE with a deploy —
+# unlike cp-deploy-gap on the shared tree, whose 0 was true-and-blind for
+# accidental deploys (the accident closes the gap it would report):
+#
+#   1. the .pin receipt's sha        (what the last ceremony CLAIMED)
+#   2. the pin worktree's HEAD       (what the worktree actually IS)
+#   3. _build presence in the pin    (whether it can boot at all)
+#   4. origin/main after a fetch     (where published history has moved)
+#
+# 1≠2 is a HALF-ADVANCED OR TAMPERED pin: refuse (exit 3) — the launcher
+# must not boot it and a ceremony must not trust it. The lag against
+# origin/main is a REAL number that accumulates until a ceremony clears it.
+#
+# The fifth leg — what the RUNNING serve holds — stays with the existing
+# instrument: run bin/cp-verify-deploy against the PIN's _build; this tool
+# prints the command rather than half-reimplementing the erpc machinery.
+#
+# Usage: bin/cp-pin-status [--pin-dir DIR]   (flag for demonstrations only)
+#
+# Exit: 0 clean · 2 pin missing/invalid/unbootable · 3 half-advanced/tampered
+
+set -euo pipefail
+
+REPO=/home/jes/commonplace
+PIN_DIR=/home/jes/commonplace-serve-pin
+if [ "${1:-}" = "--pin-dir" ]; then
+  PIN_DIR="${2:?--pin-dir needs a value}"
+fi
+
+if [ ! -e "$PIN_DIR" ]; then
+  echo "PIN MISSING: $PIN_DIR does not exist — no valid boot source; the launcher must REFUSE" >&2
+  exit 2
+fi
+top="$(git -C "$PIN_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+if [ "$top" != "$PIN_DIR" ]; then
+  # A bare subdir INSIDE some repo passes --is-inside-work-tree; only a dir
+  # that is itself a worktree TOPLEVEL is a valid pin.
+  echo "PIN INVALID: $PIN_DIR is not a git worktree toplevel (got '$top') — the launcher must REFUSE" >&2
+  exit 2
+fi
+
+head_sha="$(git -C "$PIN_DIR" rev-parse HEAD)"
+
+pin_line="$(cat "$PIN_DIR/.pin" 2>/dev/null || true)"
+pin_sha="$(printf '%s' "$pin_line" | awk '{print $1}')"
+if [ -z "$pin_sha" ]; then
+  echo "PIN UNRECEIPTED: $PIN_DIR/.pin missing or empty — no ceremony wrote this worktree; REFUSE" >&2
+  exit 3
+fi
+if [ "$pin_sha" != "$head_sha" ]; then
+  echo "PIN HALF-ADVANCED/TAMPERED: .pin says $pin_sha but worktree HEAD is $head_sha — REFUSE" >&2
+  exit 3
+fi
+
+if [ ! -d "$PIN_DIR/_build" ]; then
+  echo "PIN UNBOOTABLE: $PIN_DIR has no _build — ceremony died before compile; REFUSE" >&2
+  exit 2
+fi
+
+git -C "$REPO" fetch -q origin 2>/dev/null ||
+  echo "warn: fetch failed — the origin/main leg below may be stale" >&2
+main_sha="$(git -C "$REPO" rev-parse origin/main)"
+lag="$(git -C "$REPO" rev-list --count "${head_sha}..${main_sha}")"
+
+subject="$(git -C "$REPO" log -1 --format=%s "$head_sha" 2>/dev/null | cut -c1-60 || true)"
+echo "pin:         $head_sha  ($subject)"
+echo "receipt:     $pin_line"
+echo "origin/main: $main_sha"
+echo "lag:         $lag commit(s) — accumulates until a ceremony clears it"
+echo "resident:    run bin/cp-verify-deploy against $PIN_DIR/_build for the running serve's leg"
