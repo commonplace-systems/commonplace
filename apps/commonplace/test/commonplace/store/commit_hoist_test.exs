@@ -284,15 +284,25 @@ defmodule Commonplace.Store.CommitHoistTest do
 
       attach([:commonplace, :commit, :ambient_signed])
 
+      uuid = "sign-unsigned"
+
       commit =
-        CommitStoreClient.create_commit(store, "sign-unsigned", <<1>>, nil, %{kind: :regular},
+        CommitStoreClient.create_commit(store, uuid, <<1>>, nil, %{kind: :regular},
           signing_context: :unsigned
         )
 
       assert commit.signature == nil
       assert commit.signer_id == nil
 
-      refute_receive {:telemetry, [:commonplace, :commit, :ambient_signed], _, _}, 100
+      # Scope the refute to THIS test's doc: the telemetry event is
+      # node-global, and under a concurrent full-suite run another test's
+      # ambient-signed commit otherwise lands in this mailbox and trips
+      # the refute (observed on CI 32491781016, a foreign random-uuid doc —
+      # the SAME class 6de68b15 fixed in ambient_signing_telemetry_test;
+      # this was the missed sibling instance).
+      refute_receive {:telemetry, [:commonplace, :commit, :ambient_signed], _,
+                      %{doc_uuid: ^uuid}},
+                     100
     end
   end
 
