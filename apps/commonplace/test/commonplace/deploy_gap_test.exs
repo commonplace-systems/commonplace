@@ -140,5 +140,44 @@ defmodule Commonplace.DeployGapTest do
       assert output =~ "no process is listening on :#{port}"
       refute output =~ "WOULD-DEPLOY-ON-RESTART"
     end
+
+    @tag :tmp_dir
+    test "matches the port EXACTLY — a prefix port must not resolve to the full-port owner",
+         %{tmp_dir: tmp_dir} do
+      # This guard is UNEXERCISED by the live host (v4-only, no confusable ports
+      # exist to trip over — boss #14130), so this test is the ONLY thing holding
+      # it: the class that quietly rots.
+      #
+      # A naive `grep :Q` over ss output would match a listener on port P whenever
+      # `:Q` is a substring of `:P`. In `0.0.0.0:P` the only such `:digits`
+      # substrings are `:`+ a PREFIX of P's digits (there is one colon, before the
+      # port). So query Q = P with its last digit dropped (a prefix of P): a
+      # substring match would resolve Q to the process OWNING P; the exact
+      # last-colon-field match must not.
+      build_dir = Path.join(tmp_dir, "lib")
+      File.mkdir_p!(build_dir)
+
+      {:ok, sock} = :gen_tcp.listen(0, [:binary, {:active, false}, {:reuseaddr, true}])
+      {:ok, p} = :inet.port(sock)
+      q = div(p, 10)
+      os_pid = System.pid()
+
+      try do
+        {output, _status} =
+          System.cmd(@script, [],
+            env: [{"CP_SERVE_PORT", Integer.to_string(q)}, {"CP_BUILD_DIR", build_dir}],
+            stderr_to_stdout: true
+          )
+
+        # Robust against a coincidental real listener on Q: on the substring
+        # REGRESSION the gauge would report THIS VM's pid (it owns :P); a genuine
+        # listener on :Q would report some OTHER pid. Only the regression names
+        # os_pid, so this refute discriminates without depending on :Q being free.
+        refute output =~ "serve pid #{os_pid}",
+               "querying :#{q} (a prefix of :#{p}) resolved to the process owning :#{p} — the port match is a substring, not an exact field: #{output}"
+      after
+        :gen_tcp.close(sock)
+      end
+    end
   end
 end
