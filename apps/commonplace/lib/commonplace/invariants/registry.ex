@@ -47,7 +47,7 @@ defmodule Commonplace.Invariants.Registry do
 
   alias Commonplace.Bd.Invariants, as: BdInvariants
   alias Commonplace.Invariants.Invariant
-  alias Commonplace.Store.CommitInvariants
+  alias Commonplace.Store.{ChitAncestry, CommitInvariants, CommitStoreClient}
 
   @doc """
   Every registered invariant, built through `Invariant.new!/1` (so a
@@ -194,6 +194,44 @@ defmodule Commonplace.Invariants.Registry do
         `parent_id` AND `merge_parents` (a merge-folded head is dominated
         only through the merge edge). Decidable from resting state:
         :immediate.
+        """
+      ),
+      Invariant.new!(
+        name: :chit_ancestry,
+        scope: %{domain: :chit, granularity: :per_subject},
+        enumerate: fn %{store: store} ->
+          CommitStoreClient.all_chit_cids(store)
+        end,
+        check: fn %{store: store}, cid ->
+          case CommitStoreClient.get_chit(store, cid) do
+            {:ok, chit} ->
+              case ChitAncestry.check(store, chit) do
+                :ok -> :ok
+                {:error, {:ancestry_violation, failures}} -> {:violation, %{failures: failures}}
+              end
+
+            :none ->
+              {:error, {:chit_missing, cid}}
+          end
+        end,
+        responses: [:alarm],
+        deferral: :immediate,
+        owner: "commonplace",
+        doc: """
+        A chit's `parents` are narrative claims: for every doc pinned by
+        both child and parent, the child's pinned commit must
+        descend-or-equal the parent's (`Commonplace.Store.ChitAncestry`).
+        HONESTY, plainly: today's entire chit population is
+        locally-minted chits that ALREADY passed this exact check at the
+        mint gate (`ChitMint.commit/5` refuses a false claim before
+        storing), so this entry is RE-verification, not first
+        enforcement. It becomes load-bearing only when chits arrive by
+        sync/replication — and no such path exists yet. ⛔ And the
+        `:alarm` response channel currently has ZERO readers (the
+        invariant framework-gap): this entry is a NAMED CUSTOMER of that
+        gap, NOT a working backstop — a violation found here today is
+        recorded by the engine and heard by nobody. Decidable from
+        resting state: :immediate.
         """
       )
     ]

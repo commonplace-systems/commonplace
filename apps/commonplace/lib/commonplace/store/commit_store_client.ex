@@ -618,6 +618,15 @@ defmodule Commonplace.Store.CommitStoreClient do
     end
   end
 
+  # Read-only enumeration of the `{:chit, _}` keyspace (mirrors
+  # all_doc_uuids) — the resting-state invariant's subject list.
+  def all_chit_cids(server \\ CommitStore) do
+    case remote_node() do
+      {:ok, node} -> GenServer.call({CommitStore, node}, :all_chit_cids)
+      :local -> CommitStore.all_chit_cids(normalize_server(server))
+    end
+  end
+
   # execute_clean watermark cache (CX-tdkq.27) — node-local; in a clustered
   # setup it lives with the db on the serving node, so route like commit_log.
   def get_execute_clean(server \\ CommitStore, fp, commit_id) do

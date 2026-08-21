@@ -130,7 +130,7 @@ defmodule Commonplace.Invariants.RegistryEngineTest do
   # ------------------------------------------------------------------
 
   describe "Registry" do
-    test "all/0 returns exactly the five expected names" do
+    test "all/0 returns exactly the six expected names" do
       names = Registry.all() |> Enum.map(& &1.name) |> Enum.sort()
 
       assert names == [
@@ -138,8 +138,14 @@ defmodule Commonplace.Invariants.RegistryEngineTest do
                :bd_closed_matches_pin,
                :bd_parses,
                :bd_ref_typed,
+               :chit_ancestry,
                :commit_accepted_heads_antichain
              ]
+    end
+
+    test "for_domain(:chit) returns the chit ancestry invariant" do
+      names = Registry.for_domain(:chit) |> Enum.map(& &1.name)
+      assert names == [:chit_ancestry]
     end
 
     test "for_domain(:commit) returns the accepted-head antichain invariant" do
@@ -172,6 +178,7 @@ defmodule Commonplace.Invariants.RegistryEngineTest do
       assert by_name.bd_parses == :immediate
       assert by_name.bd_ref_typed == :immediate
       assert by_name.bd_acyclic == :immediate
+      assert by_name.chit_ancestry == :immediate
     end
 
     test "fetch!/1 returns the right entry" do
