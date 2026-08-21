@@ -144,9 +144,14 @@ defmodule Commonplace.DeployGapTest do
     @tag :tmp_dir
     test "matches the port EXACTLY — a prefix port must not resolve to the full-port owner",
          %{tmp_dir: tmp_dir} do
-      # This guard is UNEXERCISED by the live host (v4-only, no confusable ports
-      # exist to trip over — boss #14130), so this test is the ONLY thing holding
-      # it: the class that quietly rots.
+      # ⛔ DO NOT WEAKEN OR SKIP THIS TEST WITHOUT REPLACING ITS COVERAGE.
+      # The port-boundary guard has NO live traffic and never will on this host
+      # (v4-only, no confusable ports exist to trip over — boss #14130). This
+      # test IS the guard's only exercise: if it is deleted or skipped, the guard
+      # silently stops being protected and NOTHING about the running system
+      # changes to signal it — the class that quietly rots. Same reason §4 marks
+      # its expected-unreachable branch: the reader deciding its fate is looking
+      # at this test, not at the conversation that justified it.
       #
       # A naive `grep :Q` over ss output would match a listener on port P whenever
       # `:Q` is a substring of `:P`. In `0.0.0.0:P` the only such `:digits`
