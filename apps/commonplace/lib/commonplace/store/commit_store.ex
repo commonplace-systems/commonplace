@@ -3784,6 +3784,16 @@ defmodule Commonplace.Store.CommitStore do
       end)
 
     if pending != [], do: CubDB.put_multi(db, pending)
+
+    # Rebuild-completeness (plan #14426): the struct pass above derives
+    # rows from `.doc_uuid` — a first-writer trace, wrong for fork
+    # lineage — so a rebuild that stopped here would ERASE the
+    # chain-derived membership the (a) backfill wrote and silently
+    # manufacture the doctrine violation back. The index's definition
+    # includes chain membership from `:latest`; a rebuild must reproduce
+    # ALL of it. Runs before the ready flip: ready means complete.
+    {:ok, _chain_report} = Commonplace.Store.DocCommitBackfill.run_on_db(db)
+
     CubDB.put(db, @doc_commit_index_state_key, @doc_commit_index_ready)
 
     if commit_count > 0 or prior_state != nil do

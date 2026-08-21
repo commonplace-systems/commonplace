@@ -43,10 +43,25 @@ defmodule Commonplace.Store.DocCommitBackfill do
   The BUILD-1 §3 precedent verbatim: not run in the live serve. The
   launch opens the STOPPED serve's data_dir as sole flock holder under a
   verified systemd ceiling — see `mix commonplace.backfill_doc_commit_index`.
+
+  ## Two entry points, one logic
+
+  `run/2` is the GenServer-mediated path (the host-gated task). `run_on_db/2`
+  is the same selection/walk/report over a raw CubDB handle, for the ONE
+  caller that legitimately works below the GenServer: the boot rebuild
+  (`rebuild_doc_commit_index`), which re-derives the whole index from
+  struct fields and must ALSO reproduce chain-derived membership — else
+  any future rebuild silently erases what the backfill wrote and
+  manufactures the doctrine violation back (plan #14426: the repair path
+  was the vulnerability).
   """
 
   alias Commonplace.Store.CommitStore
   require Logger
+
+  # The same range bound the store's own scans use (CX-mg8s: a shorter
+  # bound silently drops high keys).
+  @max_key_binary :binary.copy(<<255>>, 64)
 
   # Same paging shape as ChitAncestry's descent walk: small pages so a
   # short chain never pays for the whole budget's worth of rows.
@@ -96,13 +111,83 @@ defmodule Commonplace.Store.DocCommitBackfill do
     ready = CommitStore.doc_commit_index_ready()
 
     case CommitStore.doc_commit_index_state(store) do
-      ^ready -> do_run(store, budget)
+      ^ready -> do_run(server_access(store), budget)
       other -> {:error, {:doc_commit_index_not_ready, other}}
     end
   end
 
-  defp do_run(store, budget) do
-    all_docs = store |> CommitStore.all_doc_uuids() |> MapSet.to_list() |> Enum.sort()
+  @doc """
+  The rebuild's entry point: same selection, walk, all-or-nothing writes
+  and report as `run/2`, over a raw CubDB handle. NO readiness check —
+  the boot rebuild is the exclusive owner of the not-ready window and
+  calls this after its struct-field pass, before flipping the state key.
+  Nobody else may call this: every other writer goes through the
+  GenServer verb, which refuses a non-ready index.
+  """
+  @spec run_on_db(GenServer.server() | pid(), keyword()) :: {:ok, report()}
+  def run_on_db(db, opts \\ []) do
+    budget = Keyword.get(opts, :walk_budget, CommitStore.max_commit_log_limit())
+    do_run(db_access(db), budget)
+  end
+
+  # The store-access seam: run/2 reads and writes through the CommitStore
+  # API (the write via the ready-gated choke verb); run_on_db/2 reads and
+  # writes the raw db with the SAME semantics ({:ok, nil} for a head
+  # pointer at a missing commit row, the CX-mg8s-safe range bound).
+  defp server_access(store) do
+    %{
+      all_docs: fn -> store |> CommitStore.all_doc_uuids() |> MapSet.to_list() |> Enum.sort() end,
+      latest: fn doc -> CommitStore.latest_commit(store, doc) end,
+      member?: fn doc, id -> CommitStore.doc_has_commit?(store, doc, id) end,
+      page: fn from_id, limit -> CommitStore.commit_log_from(store, from_id, limit: limit) end,
+      put_rows: fn doc, ids ->
+        CommitStore.put_backfilled_doc_commit_index_rows(store, doc, ids)
+      end
+    }
+  end
+
+  defp db_access(db) do
+    %{
+      all_docs: fn ->
+        CubDB.select(db, min_key: {:latest, ""}, max_key: {:latest, @max_key_binary})
+        |> Enum.map(fn {{:latest, uuid}, _commit_id} -> uuid end)
+        |> Enum.sort()
+      end,
+      latest: fn doc ->
+        case CubDB.get(db, {:latest, doc}) do
+          nil -> :none
+          commit_id -> {:ok, CubDB.get(db, {:commit, commit_id})}
+        end
+      end,
+      member?: fn doc, id -> CubDB.get(db, {:doc_commit, doc, id}) == true end,
+      # A plain parent_id chase by point reads — the walk only needs ids,
+      # the last element's parent_id, and emptiness-on-missing-row, which
+      # this shares with commit_log_from.
+      page: fn from_id, limit ->
+        Stream.unfold({from_id, limit}, fn
+          {nil, _left} ->
+            nil
+
+          {_id, 0} ->
+            nil
+
+          {id, left} ->
+            case CubDB.get(db, {:commit, id}) do
+              nil -> nil
+              commit -> {commit, {commit.parent_id, left - 1}}
+            end
+        end)
+        |> Enum.to_list()
+      end,
+      put_rows: fn doc, ids ->
+        CubDB.put_multi(db, Enum.map(ids, fn id -> {{:doc_commit, doc, id}, true} end))
+        :ok
+      end
+    }
+  end
+
+  defp do_run(access, budget) do
+    all_docs = access.all_docs.()
 
     # Both predicates computed in one pass over the SAME heads, so the
     # cross-check cannot diverge by reading the store twice. Selection
@@ -111,7 +196,7 @@ defmodule Commonplace.Store.DocCommitBackfill do
     # `{:commit}` row at all — named at selection time, never walked.
     {selected, struct_f2, head_missing} =
       Enum.reduce(all_docs, {[], [], []}, fn doc, {sel, f2, missing} ->
-        case CommitStore.latest_commit(store, doc) do
+        case access.latest.(doc) do
           :none ->
             {sel, f2, missing}
 
@@ -122,7 +207,7 @@ defmodule Commonplace.Store.DocCommitBackfill do
             f2 = if head.doc_uuid != doc, do: [doc | f2], else: f2
 
             sel =
-              if CommitStore.doc_has_commit?(store, doc, head.id),
+              if access.member?.(doc, head.id),
                 do: sel,
                 else: [{doc, head} | sel]
 
@@ -144,7 +229,7 @@ defmodule Commonplace.Store.DocCommitBackfill do
 
     acc =
       Enum.reduce(selected, acc0, fn {doc, head}, acc ->
-        case backfill_doc(store, doc, head.id, budget) do
+        case backfill_doc(access, doc, head.id, budget) do
           {:backfilled, %{rows_written: written, rows_already_present: present}} ->
             %{
               acc
@@ -180,7 +265,7 @@ defmodule Commonplace.Store.DocCommitBackfill do
       walk_budget: budget
     }
 
-    Logger.info(
+    summary =
       "DocCommitBackfill complete: total=#{report.total_docs} " <>
         "selected=#{length(report.selected)} struct_f2=#{length(report.struct_f2)} " <>
         "backfilled=#{length(report.backfilled)} capped=#{length(report.capped)} " <>
@@ -188,7 +273,16 @@ defmodule Commonplace.Store.DocCommitBackfill do
         "rows_written=#{report.rows_written} " <>
         "rows_already_present=#{report.rows_already_present} " <>
         "walk_budget=#{report.walk_budget}"
-    )
+
+    # This also runs on every index rebuild (any store boot with a
+    # non-ready state) — the nothing-selected case stays quiet; anything
+    # capped or head-missing is a WARNING, not an info line (a doc left
+    # dangling by a bounded walk must not scroll past as routine).
+    cond do
+      report.capped != [] or report.head_commit_missing != [] -> Logger.warning(summary)
+      report.selected != [] -> Logger.info(summary)
+      true -> Logger.debug(summary)
+    end
 
     {:ok, report}
   end
@@ -198,13 +292,12 @@ defmodule Commonplace.Store.DocCommitBackfill do
   # commit_log_from itself) — fork-lineage chains cross `.doc_uuid`
   # boundaries and every commit reached belongs to this doc's history by
   # the walk itself, which is the definition being made true.
-  defp backfill_doc(store, doc, head_id, budget) do
-    case walk_chain(store, head_id, [], 0, budget) do
+  defp backfill_doc(access, doc, head_id, budget) do
+    case walk_chain(access, head_id, [], 0, budget) do
       {:complete, ids} ->
-        {present, missing} =
-          Enum.split_with(ids, &CommitStore.doc_has_commit?(store, doc, &1))
+        {present, missing} = Enum.split_with(ids, &access.member?.(doc, &1))
 
-        :ok = CommitStore.put_backfilled_doc_commit_index_rows(store, doc, missing)
+        :ok = access.put_rows.(doc, missing)
 
         {:backfilled, %{rows_written: length(missing), rows_already_present: length(present)}}
 
@@ -216,11 +309,11 @@ defmodule Commonplace.Store.DocCommitBackfill do
     end
   end
 
-  defp walk_chain(_store, _from_id, _ids, walked, budget) when walked >= budget,
+  defp walk_chain(_access, _from_id, _ids, walked, budget) when walked >= budget,
     do: {:capped, walked}
 
-  defp walk_chain(store, from_id, ids, walked, budget) do
-    page = CommitStore.commit_log_from(store, from_id, limit: min(@walk_page, budget - walked))
+  defp walk_chain(access, from_id, ids, walked, budget) do
+    page = access.page.(from_id, min(@walk_page, budget - walked))
 
     case {page, ids} do
       {[], []} ->
@@ -241,7 +334,7 @@ defmodule Commonplace.Store.DocCommitBackfill do
             {:complete, Enum.reverse(ids)}
 
           %{parent_id: parent_id} ->
-            walk_chain(store, parent_id, ids, walked + length(page), budget)
+            walk_chain(access, parent_id, ids, walked + length(page), budget)
         end
     end
   end

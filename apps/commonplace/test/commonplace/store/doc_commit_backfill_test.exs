@@ -41,7 +41,7 @@ defmodule Commonplace.Store.DocCommitBackfillTest do
     name = :"dc_bf_store_#{:rand.uniform(1_000_000_000)}"
     start_supervised!({CommitStore, data_dir: store_dir, name: name})
     on_exit(fn -> File.rm_rf!(store_dir) end)
-    %{store: name}
+    %{store: name, store_dir: store_dir}
   end
 
   defp db(store), do: CommitStore.db_handle(store)
@@ -257,6 +257,51 @@ defmodule Commonplace.Store.DocCommitBackfillTest do
     assert {:ok, report} = DocCommitBackfill.run(store)
     assert report.head_commit_missing == ["u-ghost"]
     assert report.backfilled == []
+  end
+
+  # ── rebuild-completeness (plan #14426: the repair path was the vulnerability) ──
+
+  test "an index REBUILD reproduces chain-derived membership instead of erasing it",
+       %{store: store, store_dir: store_dir} do
+    {c1, c2} = ancestor_chain(store, "u-anc")
+    fork_by_pointer_copy(store, "u-fork", c2.id)
+
+    assert {:ok, %{backfilled: ["u-fork"]}} = DocCommitBackfill.run(store)
+    assert CommitStore.doc_has_commit?(store, "u-fork", c2.id)
+
+    # Force a full rebuild: clear the readiness state, close the store,
+    # reopen the same dir — ensure_doc_commit_index sees a non-ready state,
+    # DELETES every {:doc_commit} row and re-derives. Without the
+    # chain-membership pass, the fork's backfilled rows are erased here
+    # and the doctrine violation is silently manufactured back.
+    CubDB.delete(db(store), {:doc_commit_index, :state})
+    stop_supervised!(CommitStore)
+
+    name2 = :"dc_bf_reopen_#{:rand.uniform(1_000_000_000)}"
+
+    start_supervised!(
+      Supervisor.child_spec({CommitStore, data_dir: store_dir, name: name2}, id: :reopened_store)
+    )
+
+    assert CommitStore.doc_commit_index_state(name2) == CommitStore.doc_commit_index_ready()
+    # Struct-derived rows rebuilt (the ancestor's own membership) …
+    assert CommitStore.doc_has_commit?(name2, "u-anc", c1.id)
+    assert CommitStore.doc_has_commit?(name2, "u-anc", c2.id)
+    # … AND the chain-derived rows reproduced, not erased.
+    assert CommitStore.doc_has_commit?(name2, "u-fork", c1.id)
+    assert CommitStore.doc_has_commit?(name2, "u-fork", c2.id)
+  end
+
+  test "run_on_db: same cap honesty as run/2 — named outcome, zero rows",
+       %{store: store} do
+    {c1, c2} = ancestor_chain(store, "u-anc")
+    fork_by_pointer_copy(store, "u-fork", c2.id)
+
+    assert {:ok, report} = DocCommitBackfill.run_on_db(db(store), walk_budget: 1)
+    assert [%{doc: "u-fork", walked: 1, budget: 1}] = report.capped
+    assert report.backfilled == []
+    refute CommitStore.doc_has_commit?(store, "u-fork", c2.id)
+    refute CommitStore.doc_has_commit?(store, "u-fork", c1.id)
   end
 
   # ── the cross-check and the rows themselves ──────────────────────────────
