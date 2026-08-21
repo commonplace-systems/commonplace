@@ -420,11 +420,20 @@ defmodule Commonplace.Projection do
 
   defp fetch_commit(store, doc_uuid, commit_id) do
     case CommitStoreClient.get_commit(store, commit_id) do
-      {:ok, %Commit{doc_uuid: other}} when is_binary(other) and other != doc_uuid ->
+      {:ok, %Commit{doc_uuid: other} = commit} when is_binary(other) and other != doc_uuid ->
         # Defensive cross-check inherited from Reflog.Restore's
         # single_commit_doc/3: the pin a caller hands us should belong to
-        # the doc uuid the caller believes it does.
-        {:error, {:commit_doc_mismatch, commit_id, expected: doc_uuid, got: other}}
+        # the doc uuid the caller believes it does. The struct field is a
+        # first-writer trace — stale on fork lineage (F2, 1.9% of live
+        # docs) — so a mismatch consults the authoritative {:doc_commit}
+        # FACT: a member proceeds, a genuinely-foreign pin is still
+        # refused (the backfill brief's part (ii); the defense survives,
+        # keyed correctly).
+        if CommitStoreClient.doc_has_commit?(store, doc_uuid, commit_id) do
+          {:ok, commit}
+        else
+          {:error, {:commit_doc_mismatch, commit_id, expected: doc_uuid, got: other}}
+        end
 
       {:ok, %Commit{} = commit} ->
         {:ok, commit}

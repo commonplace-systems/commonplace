@@ -968,6 +968,30 @@ defmodule Commonplace.Store.CommitStore do
   def accepted_head_index_ready, do: @accepted_head_index_ready
 
   @doc """
+  Fork-lineage `{:doc_commit}` backfill (the "(a) round",
+  `docs/plans/2026-08-21-doc-commit-backfill-brief.md`): write the missing
+  membership rows for ONE doc, atomically (one `put_multi`).
+
+  Every row is `{:doc_commit, doc_uuid, commit_id} => true` for the given
+  `doc_uuid` — the caller derives `commit_ids` from a chain walk; this verb
+  only writes membership facts. The index is many-to-many by design, so
+  dual membership (ancestor doc AND forked doc) is coherent, not a new
+  state.
+
+  Refuses unless the index state reads ready (`{:error,
+  {:doc_commit_index_not_ready, state}}`): backfilling into a half-built
+  index would be repaired-then-erased by the in-flight rebuild. The state
+  key itself is NEVER written here — readiness is the boot rebuild's to
+  flip, exclusively.
+  """
+  @spec put_backfilled_doc_commit_index_rows(GenServer.server(), String.t(), [binary()]) ::
+          :ok | {:error, {:doc_commit_index_not_ready, term()}}
+  def put_backfilled_doc_commit_index_rows(server \\ __MODULE__, doc_uuid, commit_ids)
+      when is_binary(doc_uuid) and is_list(commit_ids) do
+    GenServer.call(server, {:put_backfilled_doc_commit_index_rows, doc_uuid, commit_ids})
+  end
+
+  @doc """
   Look up a single commit by id. Returns `{:ok, commit}` or `:none`.
   Does not walk the DAG and does not consult `:latest` — pure
   point-read on the `{:commit, id}` row.
@@ -2673,6 +2697,22 @@ defmodule Commonplace.Store.CommitStore do
     # half-run never reads as :ready.
     CubDB.put_multi(state.db, index_rows ++ [{@accepted_head_index_state_key, backfill_state}])
     {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_call({:put_backfilled_doc_commit_index_rows, doc_uuid, commit_ids}, _from, state) do
+    # Readiness is a precondition, not a side effect: rows land only
+    # against a ready index, and the state key is never touched here
+    # (readiness-gate hygiene, backfill brief acceptance 6).
+    case CubDB.get(state.db, @doc_commit_index_state_key) do
+      @doc_commit_index_ready ->
+        rows = Enum.map(commit_ids, fn id -> {{:doc_commit, doc_uuid, id}, true} end)
+        CubDB.put_multi(state.db, rows)
+        {:reply, :ok, state}
+
+      other ->
+        {:reply, {:error, {:doc_commit_index_not_ready, other}}, state}
+    end
   end
 
   @impl true
