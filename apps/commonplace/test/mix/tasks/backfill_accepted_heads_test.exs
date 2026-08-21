@@ -44,6 +44,35 @@ defmodule Mix.Tasks.Commonplace.BackfillAcceptedHeadsTest do
     assert {:error, {:no_ceiling, _}} = Task.verify_ceiling(@loaded_no_ceiling, nil)
   end
 
+  # ① is a QUAD (boss #13622): the kill-order knob OOMScoreAdjust, verified
+  # BY EFFECT (/proc/self/oom_score_adj, kernel-applied) not by systemctl's
+  # echo. verify_oom_adj/2 red-first arms — not-asserted (nil expected),
+  # exact match, mismatch, unreadable-but-asserted, unparseable.
+  describe "verify_oom_adj/2 (the ① kill-order knob)" do
+    test "no expectation → not asserted (logged only), even if unreadable" do
+      assert Task.verify_oom_adj("900", nil) == :ok
+      assert Task.verify_oom_adj(nil, nil) == :ok
+    end
+
+    test "the effective value matching the expected passes" do
+      assert Task.verify_oom_adj("900", 900) == :ok
+      # /proc emits a trailing newline; trimmed before parse.
+      assert Task.verify_oom_adj("900\n", 900) == :ok
+    end
+
+    test "a mismatch (flag did not take: inherited 200) fails — not a false green" do
+      assert Task.verify_oom_adj("200", 900) == {:error, {:oom_adj_mismatch, 200, 900}}
+    end
+
+    test "asserted but unreadable fails: cannot confirm the knob by effect" do
+      assert Task.verify_oom_adj(nil, 900) == {:error, :oom_adj_unreadable}
+    end
+
+    test "asserted but unparseable fails" do
+      assert {:error, {:oom_adj_unparseable, "garbage"}} = Task.verify_oom_adj("garbage", 900)
+    end
+  end
+
   # Criterion (b), the non-vacuity gate (commonplace-coder #13593, boss
   # #13630): "the work was done" must not share a report shape with "there
   # was nothing to open". Three arms, red-first: a wrong --data-dir (no

@@ -15,7 +15,8 @@ defmodule Mix.Tasks.Commonplace.BackfillAcceptedHeads do
         -p MemoryMax=6G -p OOMScoreAdjust=900 \\
         mix commonplace.backfill_accepted_heads \\
           --data-dir /home/jes/commonplace/workspace/.commonplace \\
-          --unit cp-ah-backfill --expected-bytes 6442450944
+          --unit cp-ah-backfill --expected-bytes 6442450944 \\
+          --expected-oom-adj 900
 
   ⚠️ `--data-dir` is the PARENT of the store, NOT the store itself:
   `CommitStore.init/1` does `Path.join(data_dir, "commits")`, so pass
@@ -42,10 +43,26 @@ defmodule Mix.Tasks.Commonplace.BackfillAcceptedHeads do
   assert the exact value the launcher set via `--expected-bytes`). On
   another host, confirm the value from the probe pair (see the brief).
 
+  ## ① is a QUAD, not a triple — the kill-order knob, verified BY EFFECT (boss #13622)
+
+  The ceiling bounds MEMORY; `OOMScoreAdjust` decides WHO DIES FIRST when the
+  host is pressured. A bare `systemd-run --user` unit inherits
+  `DefaultOOMScoreAdjust=200` — tied with hermes's live BEAM, back inside the
+  kill-order inversion. `-p OOMScoreAdjust=900` makes THIS backfill
+  first-to-die (correct: chunked+resumable → death costs a restart, not the
+  data). The task reads its OWN `/proc/self/oom_score_adj` — the
+  kernel-APPLIED value, not systemctl's echo of what was REQUESTED (requested
+  ≠ effective) — logs it (completing the quad in a record that outlives the
+  transient unit), and when `--expected-oom-adj` is given, asserts it exactly
+  and REFUSES on mismatch (same red-first shape as `--expected-bytes`: a knob
+  claimed but not taken is a run without the protection it names).
+
   Options:
-    * `--data-dir PATH` (required) — the stopped serve's commits data_dir
+    * `--data-dir PATH` (required) — the store's PARENT dir (init appends /commits)
     * `--unit NAME` (required) — this task's own systemd unit, to verify ①
     * `--expected-bytes N` — assert `MemoryMax == N` exactly (e.g. 6442450944)
+    * `--expected-oom-adj N` — assert effective `oom_score_adj == N` exactly (e.g. 900)
+    * `--min-store-bytes N` — override the non-vacuity floor (default 1_000_000)
     * `--chunk N` — docs per chunk (default: the module's 1000)
   """
 
@@ -69,6 +86,7 @@ defmodule Mix.Tasks.Commonplace.BackfillAcceptedHeads do
           data_dir: :string,
           unit: :string,
           expected_bytes: :integer,
+          expected_oom_adj: :integer,
           chunk: :integer,
           min_store_bytes: :integer
         ]
@@ -96,6 +114,31 @@ defmodule Mix.Tasks.Commonplace.BackfillAcceptedHeads do
         Mix.raise(
           "§3 ① ceiling verification FAILED: #{inspect(reason)} — refusing to run " <>
             "without an enforced MemoryMax (a run without a ceiling is not a run)"
+        )
+    end
+
+    # ① completes the QUAD (boss #13622): the ceiling triple bounds memory,
+    # but the KILL-ORDER knob is OOMScoreAdjust. A bare systemd-run unit
+    # inherits DefaultOOMScoreAdjust=200 (tied with hermes's live BEAM);
+    # `-p OOMScoreAdjust=900` makes THIS backfill first-to-die. We verify it
+    # BY EFFECT — reading our own `/proc/self/oom_score_adj`, the kernel's
+    # applied value — NOT systemctl's echo of what was requested (requested ≠
+    # effective). Logged always (the quad outlives the transient unit); when
+    # --expected-oom-adj is given, asserted exactly, else the run refuses —
+    # the same red-first shape as --expected-bytes (a knob claimed but not
+    # taken is a run without the protection it names).
+    oom_adj = read_oom_score_adj()
+    Logger.info("§3 ① oom_score_adj (by effect, /proc/self): #{inspect(oom_adj)}")
+
+    case verify_oom_adj(oom_adj, opts[:expected_oom_adj]) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Mix.raise(
+          "§3 ① oom_score_adj verification FAILED: #{inspect(reason)} — refusing to run " <>
+            "without the enforced kill-order knob (OOMScoreAdjust=900 makes the backfill " <>
+            "first-to-die; adj 200 ties it with hermes's live BEAM)"
         )
     end
 
@@ -198,6 +241,37 @@ defmodule Mix.Tasks.Commonplace.BackfillAcceptedHeads do
         else
           {:ok, store_dir, cub_bytes}
         end
+    end
+  end
+
+  @doc """
+  Verify the effective `oom_score_adj` (read from `/proc/self/oom_score_adj`,
+  a trimmed string) against `expected`. `:ok` when `expected` is `nil` (not
+  asserted — logged only) or when the read value parses to exactly
+  `expected`. `{:error, _}` when an assertion is requested but the value is
+  unreadable, unparseable, or mismatched. Public for testing: the arms
+  (not-asserted, match, mismatch, unreadable) are the by-effect knob's
+  red-first demonstration. Verifies the KILL-ORDER knob the ceiling triple
+  cannot — requested (systemctl echo) ≠ effective (kernel-applied).
+  """
+  @spec verify_oom_adj(String.t() | nil, integer() | nil) :: :ok | {:error, term()}
+  def verify_oom_adj(_read_value, nil), do: :ok
+  def verify_oom_adj(nil, _expected), do: {:error, :oom_adj_unreadable}
+
+  def verify_oom_adj(read_value, expected) when is_integer(expected) do
+    case Integer.parse(String.trim(read_value)) do
+      {^expected, _} -> :ok
+      {other, _} -> {:error, {:oom_adj_mismatch, other, expected}}
+      :error -> {:error, {:oom_adj_unparseable, read_value}}
+    end
+  end
+
+  # Read our OWN effective oom_score_adj (the kernel-applied value, not the
+  # systemd request). nil if unreadable (e.g. off-Linux tests).
+  defp read_oom_score_adj do
+    case File.read("/proc/self/oom_score_adj") do
+      {:ok, content} -> String.trim(content)
+      {:error, _} -> nil
     end
   end
 
