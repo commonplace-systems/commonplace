@@ -86,6 +86,19 @@ defmodule Commonplace.DeployGapMonitorTest do
     assert output =~ ":enoent"
   end
 
+  test "a FAILED beam scan REFUSES rather than reporting an empty gap (no false clear)", %{
+    opts: opts
+  } do
+    # A $SINCE that `find -newermt` cannot parse makes the scan fail. Under the
+    # old `2>/dev/null` this returned total=0 — a false all-clear byte-identical
+    # to a clean empty gap; under the ledger monitor that would log a false
+    # CLEARED transition and close the open row. It must REFUSE (exit 2) instead
+    # (bin/cp-deploy-gap, commonplace-coder #14102).
+    bad_since = Keyword.put(opts, :args, ["--assert-empty", "--since", "not-a-timestamp"])
+    assert {:error, 2, output} = DeployGapMonitor.check(bad_since)
+    assert output =~ "beam scan failed"
+  end
+
   # ── candidate 3: the ledger — log on state change, NOT every tick ──────────
   describe "decide/3 (the ledger state machine)" do
     test "an empty gap is silent — no action, from :unset and while it persists" do

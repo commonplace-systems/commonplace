@@ -75,6 +75,15 @@ defmodule Commonplace.DeployGapMonitor do
   `:condition` (`:quiet | {:gap, _} | {:error, _, _}`), `:ticks` (how many
   checks it has stood), and `:age_ms` (wall time since it first appeared, nil
   while quiet). Answers "what is open right now" without scanning the log.
+
+  ⚠️ WHICH HALF IS LIVE (paravel #14097 / boss #14103): the log improvement (log
+  on transition + hourly age-carrying heartbeat instead of per-tick) is live and
+  needs no reader. This queryable row is AVAILABLE AND CURRENTLY UNREAD — a
+  ledger's advantage over an alarm is only cashed when something ENUMERATES open
+  rows on a cadence. Do NOT read the existence of this function as coverage. An
+  enumerator has been offered (boss's health loop, read-only erpc under the
+  non-perturbation discipline, surfacing an aging open row on its normal
+  reporting bar); wiring it is post-deploy coordination, not done here.
   """
   @spec current_condition(GenServer.server()) :: map()
   def current_condition(server \\ __MODULE__) do
