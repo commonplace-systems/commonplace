@@ -53,6 +53,8 @@ defmodule Commonplace.Store.CommitLogLimitCallersTest do
       "fixture seeds one commit before checking snapshot absence",
     {"apps/commonplace/test/commonplace/snapshot_sweeper_test.exs", 142} =>
       "polling fixture seeds five commits before checking for a snapshot",
+    {"apps/commonplace/lib/commonplace/store/commit_reader.ex", 60} =>
+      "CommitReader.history is the cell-scoped seam's thin re-export of commit_log; it forwards the caller's opts verbatim, so any :limit lives at the CommitReader.history call site, not here — policing history's OWN callers is the #2 source-scan-hardening item (add CommitReader to @targets)",
     {"apps/commonplace/test/commonplace/store/commit_store_branch_test.exs", 31} =>
       "fixture asserts an exactly three-commit cross-document chain",
     {"apps/commonplace/test/commonplace/store/commit_store_telemetry_test.exs", 154} =>
