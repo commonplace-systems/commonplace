@@ -67,6 +67,14 @@ defmodule Commonplace.Store.DocCommitBackfill do
   # short chain never pays for the whole budget's worth of rows.
   @walk_page 256
 
+  # Rows per write call. Pass-2 of the live run (2026-08-21) died on a
+  # single put_multi of a >10k-row chain: the giant transaction blew the
+  # write verb's call timeout, and a second independent bound surfaced
+  # only after the first (walk budget) was lifted. Small chunks keep
+  # every call fast; the HEAD row rides in the LAST chunk so the resume
+  # invariant survives a crash mid-doc (see backfill_doc/4).
+  @put_chunk 2_000
+
   @type doc_outcome ::
           {:backfilled,
            %{rows_written: non_neg_integer(), rows_already_present: non_neg_integer()}}
@@ -103,15 +111,13 @@ defmodule Commonplace.Store.DocCommitBackfill do
   """
   @spec run(GenServer.server(), keyword()) :: {:ok, report()} | {:error, term()}
   def run(store \\ CommitStore, opts \\ []) do
-    budget = Keyword.get(opts, :walk_budget, CommitStore.max_commit_log_limit())
-
     # Exact-match the canonical ready value; ANY other state — nil,
     # {:rebuilding, ...}, an unexpected shape — refuses. Fail-closed: a
     # state this code cannot classify is not a state it may write into.
     ready = CommitStore.doc_commit_index_ready()
 
     case CommitStore.doc_commit_index_state(store) do
-      ^ready -> do_run(server_access(store), budget)
+      ^ready -> do_run(server_access(store), limits(opts))
       other -> {:error, {:doc_commit_index_not_ready, other}}
     end
   end
@@ -126,8 +132,32 @@ defmodule Commonplace.Store.DocCommitBackfill do
   """
   @spec run_on_db(GenServer.server() | pid(), keyword()) :: {:ok, report()}
   def run_on_db(db, opts \\ []) do
-    budget = Keyword.get(opts, :walk_budget, CommitStore.max_commit_log_limit())
-    do_run(db_access(db), budget)
+    do_run(db_access(db), limits(opts))
+  end
+
+  defp limits(opts) do
+    %{
+      budget: Keyword.get(opts, :walk_budget, CommitStore.max_commit_log_limit()),
+      put_chunk: Keyword.get(opts, :put_chunk, @put_chunk)
+    }
+  end
+
+  @doc """
+  The pure write plan for one doc's missing rows: `missing_head_first`
+  (the walk's order — head commit first) becomes genesis-first chunks of
+  at most `chunk_size`, so the HEAD row — the row selection keys on — is
+  in the LAST chunk written. A crash between chunks therefore leaves the
+  head row absent, the doc still selected, and the next run repairs it
+  (`rows_already_present` absorbs the chunks that landed): the per-doc
+  resume invariant is "head row present ⟹ chain rows complete", and this
+  ordering is what maintains it now that a doc's rows can span calls.
+  """
+  @spec write_chunks([binary()], pos_integer()) :: [[binary()]]
+  def write_chunks(missing_head_first, chunk_size)
+      when is_list(missing_head_first) and is_integer(chunk_size) and chunk_size > 0 do
+    missing_head_first
+    |> Enum.reverse()
+    |> Enum.chunk_every(chunk_size)
   end
 
   # The store-access seam: run/2 reads and writes through the CommitStore
@@ -186,7 +216,8 @@ defmodule Commonplace.Store.DocCommitBackfill do
     }
   end
 
-  defp do_run(access, budget) do
+  defp do_run(access, limits) do
+    budget = limits.budget
     all_docs = access.all_docs.()
 
     # Both predicates computed in one pass over the SAME heads, so the
@@ -229,7 +260,7 @@ defmodule Commonplace.Store.DocCommitBackfill do
 
     acc =
       Enum.reduce(selected, acc0, fn {doc, head}, acc ->
-        case backfill_doc(access, doc, head.id, budget) do
+        case backfill_doc(access, doc, head.id, limits) do
           {:backfilled, %{rows_written: written, rows_already_present: present}} ->
             %{
               acc
@@ -292,17 +323,21 @@ defmodule Commonplace.Store.DocCommitBackfill do
   # commit_log_from itself) — fork-lineage chains cross `.doc_uuid`
   # boundaries and every commit reached belongs to this doc's history by
   # the walk itself, which is the definition being made true.
-  defp backfill_doc(access, doc, head_id, budget) do
-    case walk_chain(access, head_id, [], 0, budget) do
+  defp backfill_doc(access, doc, head_id, limits) do
+    case walk_chain(access, head_id, [], 0, limits.budget) do
       {:complete, ids} ->
         {present, missing} = Enum.split_with(ids, &access.member?.(doc, &1))
 
-        :ok = access.put_rows.(doc, missing)
+        # Genesis-first chunks, head row LAST — see write_chunks/2 for
+        # why the ordering is the resume invariant.
+        missing
+        |> write_chunks(limits.put_chunk)
+        |> Enum.each(fn chunk -> :ok = access.put_rows.(doc, chunk) end)
 
         {:backfilled, %{rows_written: length(missing), rows_already_present: length(present)}}
 
       {:capped, walked} ->
-        {:capped, %{walked: walked, budget: budget}}
+        {:capped, %{walked: walked, budget: limits.budget}}
 
       :head_commit_missing ->
         {:head_commit_missing, head_id}

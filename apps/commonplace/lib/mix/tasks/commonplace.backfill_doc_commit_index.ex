@@ -38,6 +38,7 @@ defmodule Mix.Tasks.Commonplace.BackfillDocCommitIndex do
     * `--expected-oom-adj N` — assert effective `oom_score_adj == N` exactly
     * `--min-store-bytes N` — override the non-vacuity floor (default 1_000_000)
     * `--walk-budget N` — max commits walked per doc (default `max_commit_log_limit`)
+    * `--put-chunk N` — rows per write call (default 2000; head row always in the LAST chunk)
     * `--out PATH` — write the full report (including the id sets) to a file
   """
 
@@ -58,6 +59,7 @@ defmodule Mix.Tasks.Commonplace.BackfillDocCommitIndex do
           expected_oom_adj: :integer,
           min_store_bytes: :integer,
           walk_budget: :integer,
+          put_chunk: :integer,
           out: :string
         ]
       )
@@ -124,7 +126,11 @@ defmodule Mix.Tasks.Commonplace.BackfillDocCommitIndex do
     name = :doc_commit_backfill_store
     {:ok, _pid} = CommitStore.start_link(data_dir: data_dir, name: name)
 
-    run_opts = if opts[:walk_budget], do: [walk_budget: opts[:walk_budget]], else: []
+    run_opts =
+      Enum.reject(
+        [walk_budget: opts[:walk_budget], put_chunk: opts[:put_chunk]],
+        fn {_k, v} -> is_nil(v) end
+      )
 
     case DocCommitBackfill.run(name, run_opts) do
       {:ok, report} ->

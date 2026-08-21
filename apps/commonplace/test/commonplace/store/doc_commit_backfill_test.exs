@@ -304,6 +304,61 @@ defmodule Commonplace.Store.DocCommitBackfillTest do
     refute CommitStore.doc_has_commit?(store, "u-fork", c1.id)
   end
 
+  # ── chunked writes (pass-2 failure 2026-08-21: one giant put_multi blew ──
+  # ── the call timeout; the fix must not break the per-doc resume story) ──
+
+  test "write_chunks: genesis-first, head row in the LAST chunk, nothing lost" do
+    ids_head_first = ["head", "c3", "c2", "c1", "genesis"]
+
+    chunks = DocCommitBackfill.write_chunks(ids_head_first, 2)
+
+    assert chunks == [["genesis", "c1"], ["c2", "c3"], ["head"]]
+    assert List.last(List.last(chunks)) == "head"
+    assert Enum.concat(chunks) == Enum.reverse(ids_head_first)
+    assert Enum.all?(chunks, &(length(&1) <= 2))
+    assert DocCommitBackfill.write_chunks([], 2) == []
+  end
+
+  test "a chain longer than put_chunk lands completely across calls", %{store: store} do
+    # Chain of 3+ (hoist may add more); put_chunk: 1 forces one call per row.
+    c1 = CommitStore.create_commit(store, "u-anc", text_update("f.txt", "one"), nil)
+    {:ok, d1} = DocBuilder.reconstruct_doc(store, "u-anc", mint: false)
+    d2 = ContentType.insert_text(d1, 3, " two")
+    _c2 = CommitStore.create_chained_commit(store, "u-anc", Yelixer.Encoding.encode_update(d2))
+    {:ok, d2r} = DocBuilder.reconstruct_doc(store, "u-anc", mint: false)
+    d3 = ContentType.insert_text(d2r, 7, " three")
+    c3 = CommitStore.create_chained_commit(store, "u-anc", Yelixer.Encoding.encode_update(d3))
+    fork_by_pointer_copy(store, "u-fork", c3.id)
+
+    assert {:ok, report} = DocCommitBackfill.run(store, put_chunk: 1)
+    assert report.backfilled == ["u-fork"]
+    assert report.rows_written == MapSet.size(CommitStore.all_commit_ids_for_doc(store, "u-fork"))
+    assert report.rows_written >= 3
+    assert CommitStore.doc_has_commit?(store, "u-fork", c1.id)
+    assert CommitStore.doc_has_commit?(store, "u-fork", c3.id)
+  end
+
+  test "a headless partial write (crash between chunks) resumes cleanly", %{store: store} do
+    {c1, c2} = ancestor_chain(store, "u-anc")
+    fork_by_pointer_copy(store, "u-fork", c2.id)
+
+    # Simulate a run that died after the genesis-side chunk landed but
+    # BEFORE the head chunk: only non-head rows present.
+    :ok = CommitStore.put_backfilled_doc_commit_index_rows(store, "u-fork", [c1.id])
+    refute CommitStore.doc_has_commit?(store, "u-fork", c2.id)
+
+    # Head row absent ⇒ still selected; the landed chunk is absorbed as
+    # already-present, the rest written, and the doc completes.
+    assert {:ok, report} = DocCommitBackfill.run(store)
+    assert report.selected == ["u-fork"]
+    assert report.backfilled == ["u-fork"]
+    assert report.rows_already_present >= 1
+    assert CommitStore.doc_has_commit?(store, "u-fork", c2.id)
+
+    assert {:ok, r2} = DocCommitBackfill.run(store)
+    assert r2.selected == []
+  end
+
   # ── the cross-check and the rows themselves ──────────────────────────────
 
   test "selection coincides with the struct-F2 predicate on this corpus — and rows are exact",
