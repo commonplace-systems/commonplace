@@ -1200,6 +1200,60 @@ defmodule Commonplace.Store.CommitStore do
     do_all_doc_uuids_bounded(resolve_db(server), limit)
   end
 
+  @doc """
+  World-B audit (plan #13407): the four full-population sets, read in a SINGLE
+  UNBOUNDED pass over the whole keyspace, routing each key by its shape:
+
+    * `p_doccommit`      — doc_uuids from `{:doc_commit, doc_uuid, id}` keys (the
+                           authoritative doc→commit map, `{:latest}`-independent)
+    * `p_latest`         — doc_uuids from `{:latest, doc_uuid}` (= `all_doc_uuids`)
+    * `ids_from_structs` — commit ids from `{:commit, id}` KEYS — ground-truth
+                           commit objects, by id only. It deliberately does NOT
+                           read the struct value's `.doc_uuid`, a debug trace of
+                           the first writer (excluded from the id hash, stale
+                           after forks — `commit.ex:52`), which is NOT ownership.
+    * `ids_from_doc_index` — commit ids from `{:doc_commit, _, id}` keys.
+
+  ⛔ WHY ONE UNBOUNDED PASS, NOT PER-KEYSPACE `min_key/max_key` SCANS (plan
+  #14155). Two bounded scans that shared the CX-mg8s `<<255>>` range-bound idiom
+  would drop the SAME high ids from BOTH `{:commit}` and `{:doc_commit}`; Axis B's
+  diff (`ids_from_structs` vs `ids_from_doc_index`) would then come back empty and
+  FALSELY certify the reference, while Axis A runs on a truncated population and
+  misses orphans among the dropped ids — both axes defeated silently, green. That
+  is a shared-IMPLEMENTATION common-mode failure the pure `verdict/1` controls
+  cannot see (it lives in the fetch). An UNBOUNDED `CubDB.select` has no range
+  bound to get wrong, so the common mode cannot exist. `commit_population_audit_test`
+  pins this with an enumerator-level positive control: a key ABOVE the historical
+  suspect bound (`<<255, …>>`) MUST appear in the scan.
+
+  O(store) — the unbounded scan deserializes every value; the run is host-gated
+  (§3 ceremony + `MemorySwapMax=0`) for exactly this cost. Same idiom as the
+  recovery `walk_and_salvage` (unbounded select + shape filter).
+  """
+  @spec population_scan(GenServer.server()) :: %{
+          p_doccommit: MapSet.t(),
+          p_latest: MapSet.t(),
+          ids_from_structs: MapSet.t(),
+          ids_from_doc_index: MapSet.t()
+        }
+  def population_scan(server \\ __MODULE__) do
+    do_population_scan(resolve_db(server))
+  end
+
+  @doc """
+  The `{:doc_commit}` index readiness state (`@doc_commit_index_ready` when
+  built). World-B checks this before trusting the `{:doc_commit}` populations:
+  a not-ready index scanned fully is partial/interrupted, and its doc_uuids are
+  NOT authoritative — the audit reports index-unavailable rather than emitting
+  a fabricated full-population diff over a half-built index.
+  """
+  def doc_commit_index_state(server \\ __MODULE__) do
+    CubDB.get(resolve_db(server), @doc_commit_index_state_key)
+  end
+
+  @doc "The value `doc_commit_index_state/1` returns when the index is fully built."
+  def doc_commit_index_ready, do: @doc_commit_index_ready
+
   @doc "Return the append-only set of bd issue-document UUIDs recorded as CREATED."
   def bd_issue_doc_uuids(server \\ __MODULE__) do
     do_bd_issue_doc_uuids(resolve_db(server))
@@ -3251,6 +3305,39 @@ defmodule Commonplace.Store.CommitStore do
     else
       {:ok, MapSet.new(uuids)}
     end
+  end
+
+  defp do_population_scan(db) do
+    acc0 = %{
+      p_doccommit: MapSet.new(),
+      p_latest: MapSet.new(),
+      ids_from_structs: MapSet.new(),
+      ids_from_doc_index: MapSet.new()
+    }
+
+    # UNBOUNDED select — no min_key/max_key, so no range bound can truncate the
+    # high end (plan #14155's common-mode concern). Route by key SHAPE; ignore
+    # every other keyspace. `{:commit, id}` is a 2-tuple (the struct); we take
+    # the KEY id and never look at the value's `.doc_uuid`.
+    db
+    |> CubDB.select()
+    |> Enum.reduce(acc0, fn
+      {{:commit, id}, _commit}, acc ->
+        %{acc | ids_from_structs: MapSet.put(acc.ids_from_structs, id)}
+
+      {{:doc_commit, doc_uuid, id}, _v}, acc ->
+        %{
+          acc
+          | p_doccommit: MapSet.put(acc.p_doccommit, doc_uuid),
+            ids_from_doc_index: MapSet.put(acc.ids_from_doc_index, id)
+        }
+
+      {{:latest, doc_uuid}, _commit_id}, acc ->
+        %{acc | p_latest: MapSet.put(acc.p_latest, doc_uuid)}
+
+      {_other_key, _value}, acc ->
+        acc
+    end)
   end
 
   defp do_bd_issue_doc_uuids(db) do
