@@ -43,7 +43,24 @@
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 
-BUILD_DIR="${CP_BUILD_DIR:-_build/dev/lib}"
+# Pin-aware (2026-08-21 pinned-boot migration): the serve boots from the
+# pin worktree, so ITS _build is the one whose beams-newer-than-boot means
+# anything. Reading the shared tree post-migration is the cp-resolve-beam
+# class: a gauge pointed at where the serve USED to live. Explicit
+# CP_BUILD_DIR still wins (tests); otherwise a VALID pin (cp-pin-status
+# --quick) selects the pin tree; else the legacy relative path.
+PIN_DIR=/home/jes/commonplace-serve-pin
+if [ -n "${CP_BUILD_DIR:-}" ]; then
+  BUILD_DIR="$CP_BUILD_DIR"
+  TREE_NOTE="CP_BUILD_DIR override"
+elif "$(dirname "$0")/cp-pin-status" --quick >/dev/null 2>&1; then
+  BUILD_DIR="$PIN_DIR/_build/dev/lib"
+  TREE_NOTE="pin worktree $PIN_DIR"
+else
+  BUILD_DIR="_build/dev/lib"
+  TREE_NOTE="shared tree (no valid pin)"
+fi
+echo "reading beams from: $TREE_NOTE"
 SINCE=""
 ASSERT_EMPTY=0
 
