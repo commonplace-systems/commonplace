@@ -1075,6 +1075,39 @@ defmodule Commonplace.Store.CommitStore do
     end
   end
 
+  @doc """
+  Persist an immutable chit (`Commonplace.Store.Chit`). Content-addressed
+  by its cid; idempotent — same cid means same content by construction,
+  so re-storing overwrites with an equal value.
+
+  The handler recomputes the cid BEFORE writing (`Chit.verify_cid/1`,
+  the same id-gate-first posture as `import_commit`): a chit whose
+  claimed cid does not match its own content is refused with
+  `{:error, {:cid_mismatch, computed, claimed}}`, never silently stored.
+
+  ⛔ Deliberately NOT routed through the doc-commit write verbs
+  (`write_snapshot_cas` / `write_prebuilt_commit_cas` /
+  `put_built_commit` / `put_latest`): a chit is a side-object VALUE, not
+  a doc-head advance — storing one must never move a `{:latest}` pointer
+  or fire commit PubSub. The write touches ONLY the `{:chit, cid}` row.
+  """
+  def store_chit(server \\ __MODULE__, %Commonplace.Store.Chit{} = chit) do
+    GenServer.call(server, {:store_chit, chit})
+  end
+
+  @doc """
+  Fetch a chit by cid. Returns `{:ok, chit}` or `:none`. Pure point-read
+  on the `{:chit, cid}` row in the caller process (mirrors
+  `get_capability/2` / `get_commit/2`) — returns the stored term
+  uncoerced.
+  """
+  def get_chit(server \\ __MODULE__, cid) do
+    case CubDB.get(resolve_db(server), {:chit, cid}) do
+      nil -> :none
+      chit -> {:ok, chit}
+    end
+  end
+
   # --- execute_clean watermark cache (CX-tdkq.27) ---
   #
   # A node-LOCAL, NON-SYNCED derived verdict: "is the chain ending at this
@@ -2480,6 +2513,45 @@ defmodule Commonplace.Store.CommitStore do
         {:error, {:sla_tombstone_conflict, _commit_id, _existing_id}} = error -> error
         {:error, reason} -> {:error, {:invalid_sla_tombstone, reason}}
         other -> other
+      end
+
+    {:reply, reply, state}
+  end
+
+  @impl true
+  def handle_call({:store_chit, %Commonplace.Store.Chit{} = chit}, _from, state) do
+    # Gate first, write second (import_commit's posture): nothing about a
+    # chit's fields is trustworthy until its claimed cid matches the hash
+    # of its own content. Storing a mismatching chit under its forged key
+    # would hand every future reader a value whose self-check can never
+    # pass — refuse loudly instead of writing.
+    reply =
+      case Commonplace.Store.Chit.verify_cid(chit) do
+        :ok ->
+          # Idempotent by value: same cid = same content by construction,
+          # so an overwrite of an existing row is a no-op. The write
+          # touches ONLY the {:chit, cid} row — no {:latest} pointer, no
+          # PubSub (see store_chit/2's doc for why that is load-bearing).
+          :ok = CubDB.put(state.db, {:chit, chit.cid}, chit)
+          {:ok, chit.cid}
+
+        {:error, _reason} = error ->
+          error
+      end
+
+    {:reply, reply, state}
+  end
+
+  # Remote-compat shim (mirrors {:get_capability, cid}): local callers
+  # take the pure point-read in get_chit/2; CommitStoreClient's remote
+  # mode addresses this GenServer's registered name over BEAM
+  # distribution and needs a handle_call shape to land on.
+  @impl true
+  def handle_call({:get_chit, cid}, _from, state) do
+    reply =
+      case CubDB.get(state.db, {:chit, cid}) do
+        nil -> :none
+        chit -> {:ok, chit}
       end
 
     {:reply, reply, state}

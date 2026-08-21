@@ -599,6 +599,25 @@ defmodule Commonplace.Store.CommitStoreClient do
     end
   end
 
+  # Chit rows (`Commonplace.Store.Chit`) — same local/remote split as the
+  # capability pair above: the mutating verb routes through CommitStore's
+  # GenServer (which gates on `Chit.verify_cid/1` before writing), the
+  # read is a pure point-read in the caller process locally and a
+  # GenServer.call over BEAM distribution remotely.
+  def store_chit(server \\ CommitStore, %Commonplace.Store.Chit{} = chit) do
+    case remote_node() do
+      {:ok, node} -> GenServer.call({CommitStore, node}, {:store_chit, chit})
+      :local -> CommitStore.store_chit(normalize_server(server), chit)
+    end
+  end
+
+  def get_chit(server \\ CommitStore, cid) do
+    case remote_node() do
+      {:ok, node} -> GenServer.call({CommitStore, node}, {:get_chit, cid})
+      :local -> CommitStore.get_chit(normalize_server(server), cid)
+    end
+  end
+
   # execute_clean watermark cache (CX-tdkq.27) — node-local; in a clustered
   # setup it lives with the db on the serving node, so route like commit_log.
   def get_execute_clean(server \\ CommitStore, fp, commit_id) do
