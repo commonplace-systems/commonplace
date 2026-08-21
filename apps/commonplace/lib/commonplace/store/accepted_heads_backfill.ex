@@ -113,11 +113,20 @@ defmodule Commonplace.Store.AcceptedHeadsBackfill do
     # invisible. :ready must mean "complete AND every doc indexed", which
     # §4 reads it as; violations therefore yield a distinct non-:ready
     # terminal state that blocks §4 and flags the corruption.
+    #
+    # ⛔ AND a zero-doc corpus is NOT :ready (boss #13630): a run over an
+    # empty store completes with no violations and would otherwise write
+    # {:ready, v} — a vacuous success that would license §4 to strip the
+    # fallback off a store that was never indexed because it held nothing.
+    # {:ready} must not share a shape with "there were no docs to index".
+    # The mix task's non-vacuity gate refuses the empty store BEFORE this
+    # runs; this arm is the same guarantee at the library layer, where a
+    # programmatic caller has no gate above it.
     terminal_state =
-      if report.violations == [] do
-        CommitStore.accepted_head_index_ready()
-      else
-        {:completed_with_violations, length(report.violations)}
+      cond do
+        report.total_docs == 0 -> {:vacuous, :no_docs}
+        report.violations == [] -> CommitStore.accepted_head_index_ready()
+        true -> {:completed_with_violations, length(report.violations)}
       end
 
     :ok = CommitStore.put_backfilled_accepted_heads(store, [], terminal_state)
