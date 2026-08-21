@@ -1,6 +1,14 @@
 defmodule Mix.Tasks.Commonplace.BackfillDocCommitIndex do
   use Mix.Task
 
+  # ⛔ WITHOUT THIS, `mix <this task>` EXECUTES WHATEVER BEAMS _build ALREADY
+  # HOLDS — it never recompiles. Demonstrated live 2026-08-21 (boss #14448):
+  # pass 3 of the (a) migration ran a 41-minute-stale DocCommitBackfill.beam
+  # and re-died on the bug the working tree had already fixed. Touch-probe
+  # confirmed: source touched, task run, beam mtime unchanged. Every task in
+  # this directory carries this line; a test pins the family.
+  @requirements ["compile"]
+
   @shortdoc "The (a) round: backfill fork-lineage {:doc_commit} rows (run model (b), STOPPED serve)"
 
   @moduledoc """
@@ -73,6 +81,17 @@ defmodule Mix.Tasks.Commonplace.BackfillDocCommitIndex do
         Mix.raise("--unit is required: a run without a verified enforced ceiling is refused (①)")
 
     {:ok, _} = Application.ensure_all_started(:telemetry)
+
+    # Code identity, logged by the RUN itself: pass 3 of the live migration
+    # executed a 41-minute-stale beam and re-died on an already-fixed bug
+    # (boss #14448). @requirements ["compile"] prevents the recurrence; this
+    # line makes the precondition ARTIFACT-CHECKABLE — the operator compares
+    # the logged md5 against the merged tree's compiled beam instead of
+    # trusting mtimes (cp-verify-deploy's resident-digest pattern, run-side).
+    backfill_md5 =
+      Commonplace.Store.DocCommitBackfill.module_info(:md5) |> Base.encode16(case: :lower)
+
+    Logger.info("(a) code identity: DocCommitBackfill md5=#{backfill_md5}")
 
     # ① ceiling triple + kill-order knob, via the §3 task's public helpers.
     triple_output = systemctl_triple(unit)
