@@ -86,9 +86,11 @@ EOF
 # (cp-deploy-gap:67); a node on this probe's argv makes it a FALSE serve and
 # the deploy-gap monitor fires on it — the single largest error category on
 # the live serve, the noise real audit signals hide in. Mirrors
-# STATE_RENDER_HOST, already env. (Candidate 2 is the bound-safe root: the
-# monitor should identify the serve by its :5199 socket, not a cmdline
-# substring — an argv-as-identity fix, not this caller-side symptom fix.)
+# STATE_RENDER_HOST, already env. (This is the caller-side symptom fix; the
+# bound-safe root landed as candidate 2: cp-deploy-gap now identifies the serve
+# by the :5199 socket it OWNS, not a cmdline substring, so no future caller can
+# reintroduce the false match. Both fixes stand — this one keeps the probe's
+# cmdline clean regardless.)
 [output_path] = System.argv() |> Enum.reject(&(&1 == "--"))
 
 serve_node_string =

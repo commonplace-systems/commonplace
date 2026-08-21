@@ -38,6 +38,7 @@
 #   bin/cp-deploy-gap --since <time>  # against an explicit reference time
 #   bin/cp-deploy-gap --assert-empty [--since <time>]
 #   CP_BUILD_DIR=... bin/cp-deploy-gap --since <time>   # for testing the gauge
+#   CP_SERVE_PORT=... bin/cp-deploy-gap                 # serve's listen port (default 5199)
 
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
@@ -54,38 +55,84 @@ fi
 if [[ "${1:-}" == "--since" ]]; then
   SINCE="${2:?--since needs a timestamp}"
 else
-  # Process-derived, never assumed: find the serve by its OWN start time.
+  # Process-derived, never assumed: find the serve by a HANDLE IT OWNS — the
+  # process holding the serve's LISTENING SOCKET (:5199 by default) — and take
+  # THAT process's start as the deploy reference.
+  #
+  # ⭐ WHY A SOCKET, NOT A CMDLINE (candidate 2, 2026-08-21). The prior version
+  # matched `pgrep -f 'commonplace_dev'` over beam.smp cmdlines. A command line
+  # is not an identity: any process that merely NAMES the node on its argv — a
+  # `mix run --no-start` probe passing the target node as an argument — matched
+  # the pattern, and the deploy-gap monitor fired on the probe, the single
+  # largest error category the serve ever logged and the noise real audit
+  # signals hide in. That happened: `bin/state-render` passed the node on argv
+  # (fixed caller-side @8d534e62). THIS is the bound-safe root: a listening
+  # socket is a handle the OS grants to exactly one process, and a `--no-start`
+  # probe can never hold it — the fix cannot be defeated by a new caller. Third
+  # argv-as-identity instance on this host (see also the 2026-08-10 phx.server
+  # kill of hermes' BEAM, and `--unit` scoping); "a command line is not an
+  # identity." The old comm==beam.smp filter is not restored: gating on a comm
+  # STRING would reintroduce the weaker cousin of the very match we remove, and
+  # single-opener socket ownership already implies the one serve (comm is
+  # REPORTED below for a human cross-check, not gated on).
+  #
   # ⚠️ If we cannot identify it, REFUSE — a gauge that reports 0 because it
   #    could not find the subject is the exact false green this repo keeps
   #    producing.
-  # ⚠️ MUST filter on comm == beam.smp. `elixir -S mix phx.server` runs a
-  # wrapper process whose cmdline also contains commonplace_dev, and it exists
-  # only for the first seconds after launch. Measured 2026-08-09: this tool
-  # reported pid 2135710 (the wrapper, already gone) while the serve was
-  # 2135767 — a transient sampled and printed as fact, by the tool built to be
-  # authoritative about deploy state.
-  pid="$(pgrep -f 'commonplace_dev' | while read -r p; do
-           [ "$(cat "/proc/$p/comm" 2>/dev/null)" = beam.smp ] || continue
-           if tr '\0' '\n' < "/proc/$p/cmdline" 2>/dev/null | grep -q 'commonplace_dev'; then
-             echo "$p"; break
-           fi
-         done)"
+  # ⚠️ Do NOT 2>/dev/null the ss call. "ss failed / not permitted to see pids"
+  #    and "nothing listens" must not collapse into one empty result: the first
+  #    is an undefined measurement, the second a real absence. Both REFUSE, but
+  #    for stated and different reasons. Same discipline as the beam scan below.
+  port="${CP_SERVE_PORT:-5199}"
+  ss_out="$(ss -ltnp 2>&1)"
+  ss_status=$?
+  if [[ $ss_status -ne 0 ]]; then
+    echo "cp-deploy-gap: REFUSING — could not list listening sockets (ss exit $ss_status)." >&2
+    echo "  Serve identity is undefined without it; a count against no subject is not zero." >&2
+    echo "  ss: $ss_out" >&2
+    exit 2
+  fi
 
-  if [[ -z "$pid" ]]; then
-    echo "cp-deploy-gap: REFUSING — no running commonplace serve found." >&2
-    echo "  A count against no subject is not zero, it is undefined." >&2
+  # One pid per line for the row(s) whose Local Address:Port ends in :$port.
+  # Match the port as the LAST colon-separated field of the local address so
+  # :5199 never matches :51990 or a peer/foreign port; dedup because a serve
+  # bound on both IPv4 and IPv6 shows the SAME pid on two rows.
+  mapfile -t pids < <(printf '%s\n' "$ss_out" | awk -v port="$port" '
+    $1 == "LISTEN" {
+      n = split($4, a, ":")
+      if (a[n] == port && match($0, /pid=[0-9]+/)) print substr($0, RSTART + 4, RLENGTH - 4)
+    }' | sort -u)
+
+  if [[ "${#pids[@]}" -eq 0 ]]; then
+    echo "cp-deploy-gap: REFUSING — no process is listening on :$port." >&2
+    echo "  The serve is identified by the socket it owns; without it there is no" >&2
+    echo "  subject, and a count against no subject is not zero, it is undefined." >&2
+    echo "  (If ss showed the socket but omitted the pid column, re-run with" >&2
+    echo "   permission to read it — a hidden pid is not an absent serve.)" >&2
     echo "  Use --since <timestamp> if you meant a reference time." >&2
     exit 2
   fi
 
+  if [[ "${#pids[@]}" -gt 1 ]]; then
+    echo "cp-deploy-gap: REFUSING — ${#pids[@]} distinct processes listen on :$port (${pids[*]})." >&2
+    echo "  Ambiguous serve identity — refusing rather than picking one arbitrarily." >&2
+    exit 2
+  fi
+
+  pid="${pids[0]}"
+  comm="$(cat "/proc/$pid/comm" 2>/dev/null || echo '?')"
+
   SINCE="$(ps -o lstart= -p "$pid" | sed 's/^ *//')"
+  if [[ -z "$SINCE" ]]; then
+    echo "cp-deploy-gap: REFUSING — pid $pid holds :$port but has no start time (gone between ss and ps?)." >&2
+    exit 2
+  fi
   # State the METHOD in the output. A tool's number arrives without its
   # provenance: when a person tells you something you ask how they know, and
-  # when a gauge prints a pid the question does not occur to anyone. This one
-  # printed a transient wrapper pid once and it was relayed onward untouched.
+  # when a gauge prints a pid the question does not occur to anyone. Name the
+  # handle (the socket), the pid, and its comm so a human can cross-check.
   echo "serve pid $pid, started $SINCE"
-  echo "  (identified by: comm==beam.smp AND cmdline contains commonplace_dev;"
-  echo "   cross-check with: ss -ltnp | grep :5199)"
+  echo "  (identified by: holds the :$port listening socket — ss -ltnp; comm=$comm)"
 fi
 
 [[ -d "$BUILD_DIR" ]] || { echo "cp-deploy-gap: no $BUILD_DIR" >&2; exit 2; }

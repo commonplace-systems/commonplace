@@ -75,4 +75,114 @@ defmodule Commonplace.DeployGapTest do
     assert output =~ newer_beam
     refute output =~ "    #{older_beam}\n"
   end
+
+  # ── candidate 2: serve identity via the socket it OWNS, not an argv substring ─
+  #
+  # The prior identity (`pgrep -f 'commonplace_dev'`) matched any process that
+  # merely NAMED the node on its command line — a `mix run --no-start` probe did,
+  # and the deploy-gap monitor fired on the probe. A listening socket is a handle
+  # the OS grants to exactly one process; a probe can never hold it. These tests
+  # drive the serve-identification branch (no `--since`), which had NO coverage
+  # before, using the test VM itself as the "serve": it opens the socket, so ss
+  # reports OUR os-pid as the holder.
+  describe "serve identity via the listening socket (candidate 2)" do
+    @tag :tmp_dir
+    test "identifies the process that OWNS the serve port", %{tmp_dir: tmp_dir} do
+      build_dir = Path.join(tmp_dir, "lib")
+      old_beam = Path.join([build_dir, "old", "ebin", "Old.beam"])
+      File.mkdir_p!(Path.dirname(old_beam))
+      File.write!(old_beam, "old")
+      File.touch!(old_beam, {{2020, 1, 1}, {0, 0, 0}})
+
+      {:ok, sock} = :gen_tcp.listen(0, [:binary, {:active, false}, {:reuseaddr, true}])
+      {:ok, port} = :inet.port(sock)
+      os_pid = System.pid()
+
+      try do
+        {output, status} =
+          System.cmd(@script, [],
+            env: [{"CP_SERVE_PORT", Integer.to_string(port)}, {"CP_BUILD_DIR", build_dir}],
+            stderr_to_stdout: true
+          )
+
+        assert status == 0, output
+
+        assert output =~ "serve pid #{os_pid},",
+               "gauge did not identify the process OWNING the :#{port} socket (expected pid #{os_pid}): #{output}"
+
+        assert output =~ "holds the :#{port} listening socket",
+               "gauge did not state the socket-ownership method: #{output}"
+      after
+        :gen_tcp.close(sock)
+      end
+    end
+
+    @tag :tmp_dir
+    test "REFUSES (never reports 0) when nothing listens on the port — the must-fail control",
+         %{tmp_dir: tmp_dir} do
+      build_dir = Path.join(tmp_dir, "lib")
+      File.mkdir_p!(build_dir)
+
+      # Reserve a port, then release it, so we query a port with NO listener.
+      {:ok, sock} = :gen_tcp.listen(0, [:binary, {:active, false}, {:reuseaddr, true}])
+      {:ok, port} = :inet.port(sock)
+      :gen_tcp.close(sock)
+
+      {output, status} =
+        System.cmd(@script, [],
+          env: [{"CP_SERVE_PORT", Integer.to_string(port)}, {"CP_BUILD_DIR", build_dir}],
+          stderr_to_stdout: true
+        )
+
+      assert status == 2,
+             "a port with no listener must REFUSE (exit 2), not report an empty gap — got #{status}: #{output}"
+
+      assert output =~ "no process is listening on :#{port}"
+      refute output =~ "WOULD-DEPLOY-ON-RESTART"
+    end
+
+    @tag :tmp_dir
+    test "matches the port EXACTLY — a prefix port must not resolve to the full-port owner",
+         %{tmp_dir: tmp_dir} do
+      # ⛔ DO NOT WEAKEN OR SKIP THIS TEST WITHOUT REPLACING ITS COVERAGE.
+      # The port-boundary guard has NO live traffic and never will on this host
+      # (v4-only, no confusable ports exist to trip over — boss #14130). This
+      # test IS the guard's only exercise: if it is deleted or skipped, the guard
+      # silently stops being protected and NOTHING about the running system
+      # changes to signal it — the class that quietly rots. Same reason §4 marks
+      # its expected-unreachable branch: the reader deciding its fate is looking
+      # at this test, not at the conversation that justified it.
+      #
+      # A naive `grep :Q` over ss output would match a listener on port P whenever
+      # `:Q` is a substring of `:P`. In `0.0.0.0:P` the only such `:digits`
+      # substrings are `:`+ a PREFIX of P's digits (there is one colon, before the
+      # port). So query Q = P with its last digit dropped (a prefix of P): a
+      # substring match would resolve Q to the process OWNING P; the exact
+      # last-colon-field match must not.
+      build_dir = Path.join(tmp_dir, "lib")
+      File.mkdir_p!(build_dir)
+
+      {:ok, sock} = :gen_tcp.listen(0, [:binary, {:active, false}, {:reuseaddr, true}])
+      {:ok, p} = :inet.port(sock)
+      q = div(p, 10)
+      os_pid = System.pid()
+
+      try do
+        {output, _status} =
+          System.cmd(@script, [],
+            env: [{"CP_SERVE_PORT", Integer.to_string(q)}, {"CP_BUILD_DIR", build_dir}],
+            stderr_to_stdout: true
+          )
+
+        # Robust against a coincidental real listener on Q: on the substring
+        # REGRESSION the gauge would report THIS VM's pid (it owns :P); a genuine
+        # listener on :Q would report some OTHER pid. Only the regression names
+        # os_pid, so this refute discriminates without depending on :Q being free.
+        refute output =~ "serve pid #{os_pid}",
+               "querying :#{q} (a prefix of :#{p}) resolved to the process owning :#{p} — the port match is a substring, not an exact field: #{output}"
+      after
+        :gen_tcp.close(sock)
+      end
+    end
+  end
 end
