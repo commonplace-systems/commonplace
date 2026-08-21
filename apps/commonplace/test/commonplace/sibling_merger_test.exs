@@ -86,6 +86,44 @@ defmodule Commonplace.SiblingMergerTest do
     {c_snapshot, l_commit, r_commit}
   end
 
+  # Reach the db the same way `resolve_db/1` does — no test-only production
+  # surface (mirrors the backfill/coverage suites).
+  defp clear_accepted_heads(store, uuid) do
+    CubDB.delete(:persistent_term.get({CommitStore, :db, store}), {:accepted_heads, uuid})
+  end
+
+  # §4 LIVE CONTRACT (plan #13967 honest-no-decoration; sibling_merger.ex
+  # expected-unreachable branch). Post-backfill the guard-false else-branch is
+  # not taken on the hot path (the coverage gate proved `latest.id ∈ heads` for
+  # every live doc) — but if a doc's row goes missing/stale, the scan fallback
+  # MUST still recover the correct siblings. This is the "do NOT delete it"
+  # contract: deleting the branch turns this recovery into a silent
+  # stop-converging. Named as a live contract, not legacy coverage.
+  describe "maybe_merge_siblings/3 — the un-indexed fallback (DO NOT delete)" do
+    test "recovers the sibling via scan when the accepted-head row is MISSING",
+         %{store: store} do
+      uuid = "sib-fallback"
+      {_c, l, r} = seed_sibling_scenario(store, uuid)
+
+      # Force the guard-false branch: wipe the maintained row so the index no
+      # longer contains latest.id (a should-never-happen post-backfill state).
+      clear_accepted_heads(store, uuid)
+
+      assert {:ok, heads} = CommitStore.accepted_heads_indexed(store, uuid)
+
+      refute MapSet.member?(heads, l.id),
+             "precondition: the wiped row must NOT contain latest.id (guard-false)"
+
+      # The scan fallback still finds R and merges it — identical outcome to
+      # the index path. If the branch were deleted this would be :no_siblings.
+      assert {:ok, :merged, merge_commit} = SiblingMerger.maybe_merge_siblings(store, uuid)
+      assert merge_commit.merge_parents == [r.id]
+
+      {:ok, new_latest} = CommitStore.latest_commit(store, uuid)
+      assert new_latest.id == merge_commit.id
+    end
+  end
+
   describe "maybe_merge_siblings/3 — happy path" do
     test "merges a single imported sibling into :latest via :translate",
          %{store: store} do

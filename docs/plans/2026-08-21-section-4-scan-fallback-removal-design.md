@@ -1,10 +1,17 @@
-# BUILD-1 §4 design — remove SiblingMerger's scan-fallback
+# BUILD-1 §4 design — take SiblingMerger's scan off the hot path
 
-**Author:** cell-1 · **Status:** APPROVED by commonplace-plan (#13772 + #13773); step 1 (coverage
-check + sole-caller choke) BUILT — see the ratified ruling at the end. plan owns the ORDER; cell-1
-owns the REVIEW/build.
-**Grounded on origin/main @653a5646, file:line, cross-checked from two independent sources**
-(an Explore pass + commonplace-coder #13740), with the load-bearing leg (leg 5) verified firsthand.
+**Author:** cell-1 · **Status:** COMPLETE as honest-no-decoration (plan #13772/#13773/#13835/
+#13938/#13967/#13983). Step 1 (coverage gate + sole-caller choke) @`5716f7d7`; Option B split +
+build_entry seam @`e6bb51d5`/`b50facb3`; coverage-canary task @`273eccac`; coverage gate RAN GREEN
+(6106/6106) 2026-08-21 03:02Z; step 3 honest-no-decoration = PR #13. The integrity ALARM (Option B)
+is OWED behind two prerequisites (see the OUTCOME section). plan owns the ORDER; cell-1 owns the
+REVIEW/build.
+**Grounded on origin/main, file:line, cross-checked from two independent sources** (an Explore pass
++ commonplace-coder #13740), with the load-bearing leg (leg 5) verified firsthand.
+
+⚠️ NOTE: the "removes the scan-fallback" framing below is the ORIGINAL plan; the RULING reversed the
+delete — §4 KEEPS the scan as a loud-and-correct backstop (marked expected-unreachable). Read the
+OUTCOME section at the end for what actually shipped; the body preserves the reasoning that got there.
 
 ## What §4 is, and why it earns a gate
 
@@ -253,19 +260,170 @@ before removal.
   bypasses its guarded caller; non-vacuous (the guarded calls ARE present); scanner positive control
   (a synthetic bypass is reported by function name).
 
-## Step 2 (OWED — the ruled shape, plan #13812)
+## Step 2 (DONE — coverage gate GREEN, 2026-08-21 03:02:47Z)
 
-(i) Validate the mirror source against `AcceptedHeadsCoverage`'s own fixtures — IDENTICAL output to
-the tested module, INCLUDING red on #3a/#3b (validates the transcription). → (ii) Run the validated
-mirror read-only against the live store via erpc over already-resident `CommitStore` readers
-(`all_doc_uuids`/`latest_commit`/`accepted_heads_indexed`), with the non-perturbation proof
-(`:code.is_loaded` per callee + before/after `:code.all_loaded`). → (iii) Require: 0 missing +
-must-find-controls-would-have-fired + `examined > 0` + the denominator count. Report before removal.
-boss executes the live run and will not run an unvalidated mirror.
+Resolved to **Option B** (no transcription): the durable `commonplace.coverage_canary` mix task
+runs the tested `verdict/1` + `build_entry/3` over erpc-injected resident readers. boss executed the
+live `--all` run against the serve (`--serve-pid 664985`, re-derived from `ss -ltnp`).
 
-## Step 3 (OWED — the removal)
+**VERDICT (plan's gate, satisfied):**
 
-Replace the else-branch at `sibling_merger.ex` with alarm+preserved-scan (Option 2, ruled by R4 —
-never crash the converge path), marked expected-unreachable-BY-DESIGN, the alarm's live CONSUMER
-named + a test asserting arrival-at-consumer, the test named as guarding a LIVE CONTRACT, + the
-sole-caller choke already landed in step 1. NOT a silent delete.
+    examined=6106  covered=6106  missing=0  vacuous=false  green=TRUE
+    skew: pass1=0 pass2=0 SKEW=0
+    non-perturbation: serve :code.all_loaded 701 → 701  UNCHANGED
+    telemetry: 0 handlers on [:commonplace,:commit,:latest_read]
+    serve RSS: 235,956 → 237,280 kB (Δ +1,324 kB, transient — settled below pre-run after)
+    wall 48,703.6 ms · transfer 11,586,238 B · largest single commit 1,484,397 B
+
+- The **post-backfill 6106th doc** (created after `:ready`) is COVERED — forward-maintenance is a
+  DEMONSTRATED positive, not an argument about the seam.
+- Capture (entries + verdict): 2,250,672 bytes,
+  **sha256 `52091b80939c0a6a5e32af85ae4ea3cf89ba466804a50199eae435ace2f815db`**. PRESERVED (boss,
+  hash-verified byte-identical) at `/home/jes/boss-clod/logs/s4-gate/section4-coverage-20260821T0302Z.capture`
+  — moved out of `/tmp` before an explicit `/tmp` cleanup 4 min later would have destroyed it (the
+  durability flag was load-bearing). NOT committed to git: it is live-store doc-ids/commit-hashes and
+  boss-clod is a PUBLIC repo — the verdict + hash here are the durable in-git record; the hash makes
+  any preserved copy verifiable.
+- **Sizing keeper (measured, boss):** the 500-doc canary understated WALL by 3.2× and the MAX single
+  commit by 59× (canary max 25,164 B vs full 1,484,397 B). v4-uuid randomness buys unbiasedness
+  in EXPECTATION, not tail coverage — a small sample of a heavy-tailed distribution understates the
+  MEAN too, not just the tail. ⛔ Do not size a job on this corpus from a canary without an
+  extreme-value treatment or a full pass. The 3.2× wall gap is measurement-without-mechanism, filed.
+
+⇒ plan GO for step 3 (#13938): gate satisfied against every false-green mode hunted (non-vacuous,
+skew-0, non-perturbing, tested-verdict-no-transcription, controls red-first in the 15/0 suite,
+re-verdictable capture).
+
+## Step 3 (NEXT — the removal; plan GO given, destination ruling pending)
+
+Replace the else-branch at `sibling_merger.ex:174` with alarm+preserved-scan (Option 2, ruled by R4
+— never crash the converge path), marked expected-unreachable-BY-DESIGN, the test named as guarding
+a LIVE CONTRACT, + the sole-caller choke already landed in step 1. NOT a silent delete.
+
+### The alarm-consumer finding (coder #13764's pre-§4 requirement — RESOLVED, and it IS the flagged case)
+
+An Explore pass mapped every alarm/telemetry/audit surface (2026-08-21). **There is NO durable,
+routinely-read alarm sink that a SiblingMerger inline branch can write to without new wiring:**
+
+- **Invariants `:alarm`** (`Dispatcher.alarm/4`, dispatcher.ex:307-326) tri-emits Logger + telemetry
+  + `broadcast_red`, but it only fires during debounced resting-state Dispatcher runs — NOT callable
+  inline from the merge — and its `[:commonplace,:invariants,:violation]` telemetry has **zero
+  attached handlers** in production.
+- **`broadcast_red`** is ephemeral Phoenix.PubSub; a background merge has no guaranteed subscriber
+  to that doc's red topic.
+- **Audit RedLog** (`AuditLog`→`AuditDispatcher`→`RedLog.commit`) is the ONLY surface with a live
+  programmatic consumer — the `AuditCanary` deadman reads the substrate records on a schedule — and
+  it is durable. BUT it is a DENIAL surface (`audit_log.ex:125-140`); a stale-head-index is not a
+  denial, and wiring it in needs a new event + a `build_payload` clause + `DenySites.audited/0` +
+  `DenySiteScanTest` + canary coverage. A design decision, not a drop-in.
+- **Logger**: prod level `:info` (config/prod.exs:24), NO file backend — console/journal, durable
+  only as the launcher captures it. But the codebase already TREATS the serve log as a watched
+  operator surface: `DeployGapMonitor.report/1` (deploy_gap_monitor.ex:106-114) reports via
+  `Logger.error` into "the serve log operators already watch" (application.ex:694), and
+  `audit_log.ex:215` names the local Logger "the fallback sink of last resort."
+
+⛔ **EMISSION ≠ ARRIVAL (coder #13951 + paravel #13954).** A `capture_log`/telemetry-emit test proves
+the branch FIRES — which was never in doubt — not that anything RECEIVES it. coder's #13764 asked to
+go beyond emission, and none of the loud-now candidates has a testable arrival:
+
+- **Option A — `Logger.error`-led tri-emit** (copy `AuditCanary.alarm/3`, audit_canary.ex:341-357):
+  loud by CONVENTION; consumer = OPERATOR ATTENTION on the serve log. `application.ex:694`
+  ("the serve log operators already watch") is a code COMMENT — a claim about a HABIT, not an
+  observed property — and prod Logger is `:info` with NO file backend, so it depends on the launcher
+  (journald?) capturing stdout. UNREACHED-SAFE: works until the night nobody reads it, and fails
+  silent exactly then. Arrival is NOT testable. paravel's three checkable questions before A is
+  trusted: ① where do the lines physically land (journald / supervisor / /dev/null)? ② retained, and
+  for how long? ③ has anyone EVER acted on a `DeployGapMonitor` `Logger.error` (how-it-was-noticed is
+  evidence of whether it is noticed)?
+- **Option B — audit RedLog**: the ONLY destination with a PROGRAMMATIC reader (`AuditCanary`
+  deadman, on a schedule) ⇒ arrival IS testable (assert the canary sees it), BOUND-SAFE. Cost:
+  denial-surface wiring (new event + `build_payload` + `DenySites.audited/0` + `DenySiteScanTest` +
+  canary coverage) + a real semantic stretch (a stale head index is not a denial).
+- **Option C — ride the invariant alarm channel**: emit the SAME `[:commonplace,:invariants,:violation]`
+  telemetry Hazard 3's alarm uses (+ `Logger.error` for loud-now), inline on the guard-false branch,
+  so §4 is CONSISTENT with the framework rather than a one-off. Its missing consumer is then the
+  framework-gap ticket's scope (below), which gives ALL alarm-only invariants a real reader at once —
+  not bespoke denial-surface machinery for §4's single branch.
+
+⭐ **The framework-gap finding (coder #13951, ticket-worthy independent of §4):** the Invariants
+`:alarm` path (`Dispatcher.alarm/4`) emits `[:commonplace,:invariants,:violation]` telemetry that has
+**ZERO attached handlers in production** — so EVERY alarm-only invariant, INCLUDING Hazard 3
+(`:commit_accepted_heads_antichain`, registered this arc), currently alarms into nothing. "No
+durable, programmatically-read sink exists for non-denial alarms" is a framework gap, not a §4
+detail. File it separately (owed to plan to mint).
+
+### MEASURED on the live serve (coder #13966) — paravel's three questions answered
+
+- ① The serve's stdout/stderr is a pipe read by `tee -a /home/jes/boss-clod/logs/commonplace-serve.log`
+  — a real durable append-only file (69 MB, 867K lines), NOT /dev/null/journald. So A's lines DO
+  land somewhere retained (paravel's worst case does not apply).
+- ② Retained (append-only, no matching logrotate).
+- ③ ⛔ INVERTED: `DeployGapMonitor`'s `Logger.error` — the cited "operators watch this" exemplar —
+  has fired **8,650 times = 90% of every error line the serve has ever written**. The precedent is
+  measured-AMBIENT (a signal emitted 8,650× is the background, not something acted on). ⇒ Option A
+  would place §4's guard-false alarm as line ~867,340 of a 69 MB file whose measured signal:noise is
+  90% one repeating alarm, with NO programmatic reader.
+
+### THE DECISIVE PROPERTY (hermes #13958 + paravel #13962): §4 fails OPEN
+
+The failure that matters is NOT "the alarm fires and nobody looks" — it is **"the alarm PATH is dead
+and everything looks fine."** Under A, `no alarms seen` == `invariant holds` == `Logger call removed
+/ sink changed / stdout redirected / watcher left` — ONE observable, multiple causes, the exact
+never-fired-vs-broken shape this whole arc has been about (the transient unit's `not-found`, the
+pruned table's "no row", the grep-0 against an unreadable store). Under B, the `AuditCanary` deadman
+reads on a SCHEDULE, so **silence is itself checked** — a dead path is DISTINGUISHABLE from a quiet
+one. B gives an alarm PLUS the ability to know it is still alive; A gives an alarm whose liveness is
+untestable. Loudness is a property of the SINK, not the severity.
+
+⇒ **cell-1 recommendation (revised on the measurements): Option C + fix the framework gap.** §4
+rides the invariant `:alarm` telemetry channel (consistent with Hazard 3, not bespoke), and the
+framework-gap ticket gives that channel a durable, DEADMAN-MONITORED consumer — the silence-detecting
+property B has, delivered ONCE for Hazard 3 + §4 + every alarm-only invariant, rather than
+denial-surface machinery bolted onto §4's single non-denial branch. This is the "eliminate the class"
+move: the real defect is "alarm-only invariants have no reader," and fixing that is proportionate and
+general where bespoke-B is neither.
+⛔ **Sequencing question for plan:** does §4's removal WAIT for the framework consumer to land (so the
+alarm is silence-monitored at removal time), or land with the loud-but-not-yet-read alarm +
+preserved-scan (removal is SAFE either way — the scan still returns the correct answer — only the
+loudness is deferred until the framework consumer exists)? Plan's ruling. If plan prefers A or B over
+C, A must record its consumer as "operator attention, arrival UNTESTED, sink measured 90%-saturated."
+
+## Step 3 OUTCOME — what shipped (2026-08-21, PR #13)
+
+plan ruled the destination **Option B** (deadman-read integrity alarm), A off the table. Then a
+decisive substrate fact landed: **B routes through `AuditDispatcher`→`RedLog.commit`, which is
+MEASURED FAILING 339× on the live serve** ("denials enforced but not recorded"; 339 of 9620 error
+lines). A fail-open gate's should-never-happen alarm wired into a currently-dropping sink would
+inherit the drop — the exact silent-loss B was chosen to prevent. ⇒ **B is BLOCKED on the
+persist-reliability fix, not "disproportionate".** Shipped the escape hatch — **honest-no-decoration**:
+
+- The `sibling_ids_for` guard-false branch keeps `scan_sibling_ids` (correctness), now marked
+  EXPECTED-UNREACHABLE BY DESIGN with the primary protections named (the two source-scan chokes),
+  and the false "Increment 4 removes this fallback" comment fixed (§4 KEEPS it as a backstop).
+- Live-contract test ("DO NOT delete"): guard-false → the scan fallback still recovers the sibling.
+
+⭐ **§4 as shipped preserves CORRECTNESS and defers DETECTION** (coder #13982). A guard-false doc
+still takes the scan and still merges correctly — the answer is right, arrived at by the slow path,
+and nobody is told. The owed alarm buys OBSERVABILITY, not correctness; rank it as observability
+debt, NOT a live hazard, and do not "fix" it in a hurry with a decoration. This distinction only
+holds because the ruling KEPT the scan (paravel #13978) — under the original delete-the-branch design
+silence and breakage were the same state.
+
+⚠️ **What the deferral costs** (paravel #13978): a seam regression becomes INVISIBLE and manifests as
+PERFORMANCE, not errors — if head-rows systematically stop being maintained, every affected doc
+quietly falls back to the O(all-commits) scan: correct results, degrading silently, symptom "merges
+got slow" with nothing naming the cause. Real, tolerable, but "the scan catches it" is true and
+incomplete.
+
+### Owed follow-ups (both tracked, both plan's to mint)
+
+1. **Audit persist reliability** (coder's trust ticket): `AuditDispatcher` failed to persist 339×
+   on the live serve — denials ENFORCED but not RECORDED (the CX-m0qw audit-blindness family). This
+   is B's precondition and a trust-surface issue in its own right.
+2. **No durable, programmatically-read sink for non-denial alarms** (the framework-gap ticket):
+   the invariant `:alarm` channel (`[:commonplace,:invariants,:violation]`) has **ZERO attached
+   handlers**. ⛔ This means **Hazard 3** (`:commit_accepted_heads_antichain`, registered THIS arc in
+   2b @`b5d6910d`) **has been alarming into nothing since it landed** — its "resting-state backstop"
+   safety claim is weaker than it reads. Frame the ticket as "every alarm-only invariant has no
+   consumer," not "§4 needs a sink." Once a durable deadman-read reader exists (and #1 is fixed),
+   §4's integrity alarm (Option B) is a handler-attach + the emit, landing loud+correct+monitored.
