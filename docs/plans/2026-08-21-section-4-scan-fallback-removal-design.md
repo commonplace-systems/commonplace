@@ -253,19 +253,73 @@ before removal.
   bypasses its guarded caller; non-vacuous (the guarded calls ARE present); scanner positive control
   (a synthetic bypass is reported by function name).
 
-## Step 2 (OWED — the ruled shape, plan #13812)
+## Step 2 (DONE — coverage gate GREEN, 2026-08-21 03:02:47Z)
 
-(i) Validate the mirror source against `AcceptedHeadsCoverage`'s own fixtures — IDENTICAL output to
-the tested module, INCLUDING red on #3a/#3b (validates the transcription). → (ii) Run the validated
-mirror read-only against the live store via erpc over already-resident `CommitStore` readers
-(`all_doc_uuids`/`latest_commit`/`accepted_heads_indexed`), with the non-perturbation proof
-(`:code.is_loaded` per callee + before/after `:code.all_loaded`). → (iii) Require: 0 missing +
-must-find-controls-would-have-fired + `examined > 0` + the denominator count. Report before removal.
-boss executes the live run and will not run an unvalidated mirror.
+Resolved to **Option B** (no transcription): the durable `commonplace.coverage_canary` mix task
+runs the tested `verdict/1` + `build_entry/3` over erpc-injected resident readers. boss executed the
+live `--all` run against the serve (`--serve-pid 664985`, re-derived from `ss -ltnp`).
 
-## Step 3 (OWED — the removal)
+**VERDICT (plan's gate, satisfied):**
 
-Replace the else-branch at `sibling_merger.ex` with alarm+preserved-scan (Option 2, ruled by R4 —
-never crash the converge path), marked expected-unreachable-BY-DESIGN, the alarm's live CONSUMER
-named + a test asserting arrival-at-consumer, the test named as guarding a LIVE CONTRACT, + the
-sole-caller choke already landed in step 1. NOT a silent delete.
+    examined=6106  covered=6106  missing=0  vacuous=false  green=TRUE
+    skew: pass1=0 pass2=0 SKEW=0
+    non-perturbation: serve :code.all_loaded 701 → 701  UNCHANGED
+    telemetry: 0 handlers on [:commonplace,:commit,:latest_read]
+    serve RSS: 235,956 → 237,280 kB (Δ +1,324 kB, transient — settled below pre-run after)
+    wall 48,703.6 ms · transfer 11,586,238 B · largest single commit 1,484,397 B
+
+- The **post-backfill 6106th doc** (created after `:ready`) is COVERED — forward-maintenance is a
+  DEMONSTRATED positive, not an argument about the seam.
+- Capture (entries + verdict): `/tmp/section4-coverage-664985.capture`, 2,250,672 bytes,
+  **sha256 `52091b80939c0a6a5e32af85ae4ea3cf89ba466804a50199eae435ace2f815db`**. ⚠️ It is in `/tmp`
+  (ephemeral) and is live-store doc-ids/commit-hashes — NOT committed here (repo-visibility of
+  operational data uncertain); the verdict + hash above are the durable in-git record, and the
+  capture file is to be preserved out of `/tmp` on the host for re-verdiction (boss's host path).
+- **Sizing keeper (measured, boss):** the 500-doc canary understated WALL by 3.2× and the MAX single
+  commit by 59× (canary max 25,164 B vs full 1,484,397 B). v4-uuid randomness buys unbiasedness
+  in EXPECTATION, not tail coverage — a small sample of a heavy-tailed distribution understates the
+  MEAN too, not just the tail. ⛔ Do not size a job on this corpus from a canary without an
+  extreme-value treatment or a full pass. The 3.2× wall gap is measurement-without-mechanism, filed.
+
+⇒ plan GO for step 3 (#13938): gate satisfied against every false-green mode hunted (non-vacuous,
+skew-0, non-perturbing, tested-verdict-no-transcription, controls red-first in the 15/0 suite,
+re-verdictable capture).
+
+## Step 3 (NEXT — the removal; plan GO given, destination ruling pending)
+
+Replace the else-branch at `sibling_merger.ex:174` with alarm+preserved-scan (Option 2, ruled by R4
+— never crash the converge path), marked expected-unreachable-BY-DESIGN, the test named as guarding
+a LIVE CONTRACT, + the sole-caller choke already landed in step 1. NOT a silent delete.
+
+### The alarm-consumer finding (coder #13764's pre-§4 requirement — RESOLVED, and it IS the flagged case)
+
+An Explore pass mapped every alarm/telemetry/audit surface (2026-08-21). **There is NO durable,
+routinely-read alarm sink that a SiblingMerger inline branch can write to without new wiring:**
+
+- **Invariants `:alarm`** (`Dispatcher.alarm/4`, dispatcher.ex:307-326) tri-emits Logger + telemetry
+  + `broadcast_red`, but it only fires during debounced resting-state Dispatcher runs — NOT callable
+  inline from the merge — and its `[:commonplace,:invariants,:violation]` telemetry has **zero
+  attached handlers** in production.
+- **`broadcast_red`** is ephemeral Phoenix.PubSub; a background merge has no guaranteed subscriber
+  to that doc's red topic.
+- **Audit RedLog** (`AuditLog`→`AuditDispatcher`→`RedLog.commit`) is the ONLY surface with a live
+  programmatic consumer — the `AuditCanary` deadman reads the substrate records on a schedule — and
+  it is durable. BUT it is a DENIAL surface (`audit_log.ex:125-140`); a stale-head-index is not a
+  denial, and wiring it in needs a new event + a `build_payload` clause + `DenySites.audited/0` +
+  `DenySiteScanTest` + canary coverage. A design decision, not a drop-in.
+- **Logger**: prod level `:info` (config/prod.exs:24), NO file backend — console/journal, durable
+  only as the launcher captures it. But the codebase already TREATS the serve log as a watched
+  operator surface: `DeployGapMonitor.report/1` (deploy_gap_monitor.ex:106-114) reports via
+  `Logger.error` into "the serve log operators already watch" (application.ex:694), and
+  `audit_log.ex:215` names the local Logger "the fallback sink of last resort."
+
+**Recommended (pending plan/coder ruling): `Logger.error`-led tri-emit**, copying the established
+fail-loud pattern from `AuditCanary.alarm/3` (audit_canary.ex:341-357): `Logger.error` (load-bearing
+— needs no subscription, and is the operator-watched sink `DeployGapMonitor` deliberately targets) +
+`:telemetry.execute` + `broadcast_red` alongside (ready for a future handler/subscriber, matching
+convention). Arrival test = `capture_log` asserts the alarm line emits on the guard-false branch.
+
+**The alternative for MORE rigor (plan #13938 said this fail-open gate deserves it): the audit
+RedLog** — the only destination with a deadman reader — at the cost of the denial-surface wiring
+above and the semantic stretch (a non-denial alarm in a denial surface). ⇒ **Destination is plan's
+ruling; step 3 does not build until it lands.**
