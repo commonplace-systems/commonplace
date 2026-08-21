@@ -71,13 +71,45 @@ id:
 
 ## The verdict (PURE, tested — fetch/verdict split, as `AcceptedHeadsCoverage`)
 
-`verdict/1` takes the populations/sets (as `MapSet`s) and returns the four diffs above.
-`green` ⟺ **all four diffs empty AND non-vacuous** (`|P_doccommit| > 0` AND
-`|ids_from_structs| > 0`). An empty scan — wrong `--data-dir`, unopened store — must be
-`vacuous: true, green: false` ("every doc is covered" and "there are no docs" share one
-observable; same discipline as the §3/§4 non-vacuity gate). The report carries every
-population/set size and every diff's members, so the verdict is re-computable from the
-captured artifact without re-reading the moving store.
+`verdict/1` takes `%{p_latest, ids_from_structs, doc_commit_ids, index_ready}` and
+derives `P_doccommit` (the map's keys) and `ids_from_doc_index` (the union of its
+values) — one source of truth, no redundant inputs to keep in sync. It returns the four
+diffs above, the genesis-only partition (below), the sizes, `vacuous`, and `green`.
+
+`green` ⟺ **`orphaned_other` empty AND `dangling_latest` empty AND both Axis-B diffs
+empty AND non-vacuous AND `index_ready`** (`|P_doccommit| > 0` AND `|ids_from_structs| >
+0`). An empty scan — wrong `--data-dir`, unopened store — is `vacuous: true, green:
+false`. The report carries every size and every diff's members, so the verdict is
+re-computable from the captured artifact without re-reading the moving store.
+
+## Genesis-only partition — RULED (plan #14171/#14173, paravel #14168, coder #14170)
+
+Gating `green` on `orphaned_from_latest` empty would make green **permanently
+unreachable**: `ensure_genesis` writes `{:commit}`+`{:doc_commit}` but NO `{:latest}`
+(`put_bare_commit_with_index`), and `{:latest}` is set only on the FIRST ADVANCE — the
+documented contract (`accepted_heads_coverage.ex:15`; confirmed in the write path). So
+genesis-only docs land in `orphaned_from_latest` by construction. A gate that can never
+go green is **the mirror of the withdrawn §4 decoration (a check that can never go red)**:
+both stop carrying information, and a single real orphan would hide among the expected
+genesis-only entries (8,332-hiding-605, in the instrument built to find things).
+
+So `orphaned_from_latest` is **partitioned, not filtered**:
+
+- **`orphaned_genesis_only`** — docs whose ENTIRE `{:doc_commit}` set is EXACTLY
+  `{Commit.genesis(doc).id}`. The predicate is a **RECONSTRUCTION** (recompute the
+  genesis id — a pure function of the doc uuid, timestamp not hashed — and require the
+  stored set to match), not shape-equality: a doc merely tagged `kind: :genesis` cannot
+  satisfy it. Informational; does NOT force red.
+- **`orphaned_other`** — the rest: docs owning commits BEYOND genesis with no head
+  (incl. interrupted docs that wrote content but never advanced `{:latest}`). This is
+  the under-enumeration World-B hunts. `green` gates on THIS.
+
+Both are reported completely (nothing silently filtered). ⚠️ SCOPE (coder #14170):
+`orphaned_genesis_only` is provably benign **for §4** (SiblingMerger short-circuits
+`latest == :none`), NOT benign in general — whether a reserved-but-never-written doc
+SHOULD exist is a tree/schema question this audit does not answer; the partition makes
+the number interpretable and leaves the disposition open. The first host-gated run
+therefore answers "how many genesis-only vs real orphans" in ONE pass — no re-run.
 
 ## Ledger precondition — audit every silent-nothing input BEFORE trusting a zero
 

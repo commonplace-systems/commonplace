@@ -143,7 +143,8 @@ defmodule Mix.Tasks.Commonplace.AuditCommitPopulation do
       true ->
         Logger.error(
           "World-B audit NOT GREEN — index_ready=#{report.index_ready} " <>
-            "orphaned_from_latest=#{length(report.orphaned_from_latest)} " <>
+            "orphaned_other=#{length(report.orphaned_other)} " <>
+            "(genesis_only=#{length(report.orphaned_genesis_only)}, informational, not gated) " <>
             "dangling_latest=#{length(report.dangling_latest)} " <>
             "commits_missing_from_doc_index=#{length(report.commits_missing_from_doc_index)} " <>
             "dangling_doc_index=#{length(report.dangling_doc_index)}. See #{out}."
@@ -217,6 +218,8 @@ defmodule Mix.Tasks.Commonplace.AuditCommitPopulation do
       vacuous: report.vacuous,
       green: report.green,
       orphaned_from_latest: report.orphaned_from_latest,
+      orphaned_genesis_only: report.orphaned_genesis_only,
+      orphaned_other: report.orphaned_other,
       dangling_latest: report.dangling_latest,
       commits_missing_from_doc_index: Enum.map(report.commits_missing_from_doc_index, &hex/1),
       dangling_doc_index: Enum.map(report.dangling_doc_index, &hex/1)

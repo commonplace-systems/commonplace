@@ -1201,18 +1201,22 @@ defmodule Commonplace.Store.CommitStore do
   end
 
   @doc """
-  World-B audit (plan #13407): the four full-population sets, read in a SINGLE
+  World-B audit (plan #13407): the full-population data, read in a SINGLE
   UNBOUNDED pass over the whole keyspace, routing each key by its shape:
 
-    * `p_doccommit`      — doc_uuids from `{:doc_commit, doc_uuid, id}` keys (the
-                           authoritative doc→commit map, `{:latest}`-independent)
     * `p_latest`         — doc_uuids from `{:latest, doc_uuid}` (= `all_doc_uuids`)
     * `ids_from_structs` — commit ids from `{:commit, id}` KEYS — ground-truth
                            commit objects, by id only. It deliberately does NOT
                            read the struct value's `.doc_uuid`, a debug trace of
                            the first writer (excluded from the id hash, stale
                            after forks — `commit.ex:52`), which is NOT ownership.
-    * `ids_from_doc_index` — commit ids from `{:doc_commit, _, id}` keys.
+    * `doc_commit_ids`   — `%{doc_uuid => MapSet(commit_ids)}` from
+                           `{:doc_commit, doc_uuid, id}` keys — the authoritative
+                           doc→commit map, `{:latest}`-independent, GROUPED so a
+                           later pass can partition orphans by their commit set
+                           (e.g. genesis-only vs has-content — plan #14166/#14170).
+                           `p_doccommit` (its keys) and `ids_from_doc_index` (the
+                           union of its values) are derived by the audit.
 
   ⛔ WHY ONE UNBOUNDED PASS, NOT PER-KEYSPACE `min_key/max_key` SCANS (plan
   #14155). Two bounded scans that shared the CX-mg8s `<<255>>` range-bound idiom
@@ -1231,10 +1235,9 @@ defmodule Commonplace.Store.CommitStore do
   recovery `walk_and_salvage` (unbounded select + shape filter).
   """
   @spec population_scan(GenServer.server()) :: %{
-          p_doccommit: MapSet.t(),
           p_latest: MapSet.t(),
           ids_from_structs: MapSet.t(),
-          ids_from_doc_index: MapSet.t()
+          doc_commit_ids: %{optional(String.t()) => MapSet.t()}
         }
   def population_scan(server \\ __MODULE__) do
     do_population_scan(resolve_db(server))
@@ -3309,16 +3312,17 @@ defmodule Commonplace.Store.CommitStore do
 
   defp do_population_scan(db) do
     acc0 = %{
-      p_doccommit: MapSet.new(),
       p_latest: MapSet.new(),
       ids_from_structs: MapSet.new(),
-      ids_from_doc_index: MapSet.new()
+      doc_commit_ids: %{}
     }
 
     # UNBOUNDED select — no min_key/max_key, so no range bound can truncate the
     # high end (plan #14155's common-mode concern). Route by key SHAPE; ignore
     # every other keyspace. `{:commit, id}` is a 2-tuple (the struct); we take
-    # the KEY id and never look at the value's `.doc_uuid`.
+    # the KEY id and never look at the value's `.doc_uuid`. `{:doc_commit}` rows
+    # are GROUPED per doc so orphans can later be partitioned by their commit set
+    # (genesis-only vs beyond-genesis — plan #14171/#14173).
     db
     |> CubDB.select()
     |> Enum.reduce(acc0, fn
@@ -3328,8 +3332,8 @@ defmodule Commonplace.Store.CommitStore do
       {{:doc_commit, doc_uuid, id}, _v}, acc ->
         %{
           acc
-          | p_doccommit: MapSet.put(acc.p_doccommit, doc_uuid),
-            ids_from_doc_index: MapSet.put(acc.ids_from_doc_index, id)
+          | doc_commit_ids:
+              Map.update(acc.doc_commit_ids, doc_uuid, MapSet.new([id]), &MapSet.put(&1, id))
         }
 
       {{:latest, doc_uuid}, _commit_id}, acc ->

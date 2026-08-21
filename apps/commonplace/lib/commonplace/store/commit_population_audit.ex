@@ -33,17 +33,40 @@ defmodule Commonplace.Store.CommitPopulationAudit do
     * `dangling_latest` = `P_latest \\ P_doccommit` — a head pointer for a doc with
       no commit-index rows (corruption).
 
-  ⚠️ INTERPRETATION NOTE — genesis-only docs (pending plan ruling). `ensure_genesis`
-  writes `{:commit}`+`{:doc_commit}` but NOT `{:latest}` (it calls
-  `put_bare_commit_with_index`, like `import_commit`); a doc that has only ever had
-  a genesis committed therefore appears in `orphaned_from_latest`. Whether that is a
-  real orphan (unreachable data) or a benign "reserved, not yet written" state is a
-  domain judgment this module does not make: it reports `orphaned_from_latest`
-  COMPLETELY (every doc with commits but no head). If the host-gated run shows the
-  set is dominated by genesis-only docs, the reader should bring the real number to
-  plan for a genesis-aware refinement (distinguish genesis-only from
-  has-content-but-no-head) rather than either silently filtering or treating all as
-  equally severe. Reporting complete-and-honest beats a built-in guess.
+  ⛔ GENESIS-ONLY PARTITION — `orphaned_from_latest` is SPLIT, not filtered (plan
+  #14171/#14173, paravel #14168, coder #14170). `ensure_genesis` writes
+  `{:commit}`+`{:doc_commit}` but NO `{:latest}` (`put_bare_commit_with_index`,
+  like `import_commit`); `{:latest}` is set only on the FIRST ADVANCE
+  (`create_chained_commit`), never at genesis — the documented contract
+  (`accepted_heads_coverage.ex:15`: a "doc with commits but no `{:latest,_}` (an
+  `ensure_genesis`-only … doc)" is the population SiblingMerger never processes,
+  and `all_doc_uuids` correctly misses). So genesis-only docs land in
+  `orphaned_from_latest` BY CONSTRUCTION, benignly.
+
+  A green gated on `orphaned_from_latest` empty could therefore NEVER go green — the
+  mirror of the withdrawn §4 decoration (a check that cannot go RED): both stop
+  carrying information because the output no longer varies with the subject, and a
+  single REAL orphan would hide among the expected genesis-only entries
+  (8,332-hiding-605, in the instrument built to find things). So:
+
+    * `orphaned_genesis_only` = docs in `orphaned_from_latest` whose ENTIRE
+      `{:doc_commit}` set is EXACTLY `{Commit.genesis(doc_uuid).id}`. The predicate
+      is a RECONSTRUCTION, not shape-equality: the genesis id is a pure function of
+      the doc uuid (timestamp is not hashed — `commit.ex`), so we recompute it and
+      require the stored set to match. A doc merely tagged `kind: :genesis` cannot
+      satisfy it; a real genesis-only doc cannot fail it.
+    * `orphaned_other` = the rest — docs that own commits BEYOND genesis yet have no
+      head. THIS is the under-enumeration World-B hunts (incl. interrupted docs that
+      wrote content but never advanced `{:latest}`).
+
+  `green` gates on `orphaned_other` (not `orphaned_from_latest`); `orphaned_genesis_only`
+  is an informational count that never forces red. Both are reported completely.
+
+  ⚠️ SCOPE (coder #14170): `orphaned_genesis_only` is provably benign FOR §4
+  (SiblingMerger short-circuits `latest == :none`), NOT benign in general — whether a
+  reserved-but-never-written doc SHOULD exist is a tree/schema question this audit
+  does not answer. The partition makes the number interpretable; the disposition of
+  those docs stays open.
 
   **Axis B — commit-id-level:** is `P_doccommit` (Axis A's reference, itself an
   index) trustworthy against the ground-truth commit OBJECTS?
@@ -79,14 +102,13 @@ defmodule Commonplace.Store.CommitPopulationAudit do
   `docs/plans/2026-08-21-world-b-commit-population-audit-design.md`.
   """
 
-  alias Commonplace.Store.CommitStore
+  alias Commonplace.Store.{Commit, CommitStore}
   require Logger
 
   @type populations :: %{
-          p_doccommit: MapSet.t(),
           p_latest: MapSet.t(),
           ids_from_structs: MapSet.t(),
-          ids_from_doc_index: MapSet.t(),
+          doc_commit_ids: %{optional(String.t()) => MapSet.t()},
           index_ready: boolean()
         }
 
@@ -96,6 +118,8 @@ defmodule Commonplace.Store.CommitPopulationAudit do
           ids_from_structs: non_neg_integer(),
           ids_from_doc_index: non_neg_integer(),
           orphaned_from_latest: [String.t()],
+          orphaned_genesis_only: [String.t()],
+          orphaned_other: [String.t()],
           dangling_latest: [String.t()],
           commits_missing_from_doc_index: [binary()],
           dangling_doc_index: [binary()],
@@ -117,6 +141,7 @@ defmodule Commonplace.Store.CommitPopulationAudit do
       "CommitPopulationAudit: p_doccommit=#{report.p_doccommit} p_latest=#{report.p_latest} " <>
         "ids_from_structs=#{report.ids_from_structs} ids_from_doc_index=#{report.ids_from_doc_index} " <>
         "orphaned_from_latest=#{length(report.orphaned_from_latest)} " <>
+        "(genesis_only=#{length(report.orphaned_genesis_only)} other=#{length(report.orphaned_other)}) " <>
         "dangling_latest=#{length(report.dangling_latest)} " <>
         "commits_missing_from_doc_index=#{length(report.commits_missing_from_doc_index)} " <>
         "dangling_doc_index=#{length(report.dangling_doc_index)} " <>
@@ -141,34 +166,67 @@ defmodule Commonplace.Store.CommitPopulationAudit do
     )
   end
 
+  # A doc is genesis-only iff its ENTIRE {:doc_commit} set is exactly the one
+  # genesis id — recomputed from the doc uuid (a pure function; timestamp is not
+  # hashed), NOT inferred from a metadata tag. Reconstruction, not shape-equality.
+  defp genesis_only?(doc, doc_commit_ids) do
+    MapSet.equal?(
+      Map.get(doc_commit_ids, doc, MapSet.new()),
+      MapSet.new([Commit.genesis(doc).id])
+    )
+  end
+
   @doc """
   The PURE go/no-go over the populations map — no store access, so it is the
   same tested code over fixtures, a stopped-serve store, or captured populations.
-  Returns the four diffs (sorted member lists), the population sizes, the index
-  readiness, `vacuous`, and `green`.
+  `p_doccommit` and `ids_from_doc_index` are DERIVED here from `doc_commit_ids`
+  (one source of truth). Returns the diffs (sorted member lists) incl. the
+  genesis-only / other partition of `orphaned_from_latest`, the population sizes,
+  the index readiness, `vacuous`, and `green`.
 
-  `green` ⟺ `index_ready` AND not `vacuous` AND all four diffs empty. `vacuous`
-  ⟺ `P_doccommit` empty OR `ids_from_structs` empty (an empty scan must not read
-  as full coverage). A not-ready index forces `green: false` regardless of the
-  diffs, which over a half-built index are not authoritative.
+  `green` ⟺ `index_ready` AND not `vacuous` AND `orphaned_other == []` AND
+  `dangling_latest == []` AND both Axis-B diffs empty. It gates on `orphaned_other`
+  (beyond-genesis), NOT `orphaned_from_latest`: genesis-only docs are benign by
+  contract and would make green permanently unreachable. `vacuous` ⟺ `P_doccommit`
+  empty OR `ids_from_structs` empty (an empty scan must not read as full coverage).
+  A not-ready index forces `green: false` regardless of the diffs, which over a
+  half-built index are not authoritative.
   """
   @spec verdict(populations()) :: report()
   def verdict(%{
-        p_doccommit: p_doccommit,
         p_latest: p_latest,
         ids_from_structs: ids_from_structs,
-        ids_from_doc_index: ids_from_doc_index,
+        doc_commit_ids: doc_commit_ids,
         index_ready: index_ready
       }) do
-    orphaned_from_latest = sorted_diff(p_doccommit, p_latest)
+    # p_doccommit and ids_from_doc_index are DERIVED from the grouped map, so the
+    # doc population and the doc-index id set cannot disagree with the per-doc sets
+    # the partition uses (one source of truth, no redundant inputs to keep in sync).
+    p_doccommit = doc_commit_ids |> Map.keys() |> MapSet.new()
+
+    ids_from_doc_index =
+      doc_commit_ids |> Map.values() |> Enum.reduce(MapSet.new(), &MapSet.union/2)
+
+    orphaned = MapSet.difference(p_doccommit, p_latest)
+
+    {genesis_only, other} =
+      orphaned
+      |> MapSet.to_list()
+      |> Enum.split_with(&genesis_only?(&1, doc_commit_ids))
+
+    orphaned_genesis_only = Enum.sort(genesis_only)
+    orphaned_other = Enum.sort(other)
+
     dangling_latest = sorted_diff(p_latest, p_doccommit)
     commits_missing_from_doc_index = sorted_diff(ids_from_structs, ids_from_doc_index)
     dangling_doc_index = sorted_diff(ids_from_doc_index, ids_from_structs)
 
     vacuous = MapSet.size(p_doccommit) == 0 or MapSet.size(ids_from_structs) == 0
 
+    # green gates on orphaned_OTHER (beyond-genesis), NOT orphaned_from_latest:
+    # genesis-only docs are benign-by-contract and would make green unreachable.
     all_clean =
-      orphaned_from_latest == [] and dangling_latest == [] and
+      orphaned_other == [] and dangling_latest == [] and
         commits_missing_from_doc_index == [] and dangling_doc_index == []
 
     %{
@@ -176,7 +234,9 @@ defmodule Commonplace.Store.CommitPopulationAudit do
       p_latest: MapSet.size(p_latest),
       ids_from_structs: MapSet.size(ids_from_structs),
       ids_from_doc_index: MapSet.size(ids_from_doc_index),
-      orphaned_from_latest: orphaned_from_latest,
+      orphaned_from_latest: Enum.sort(MapSet.to_list(orphaned)),
+      orphaned_genesis_only: orphaned_genesis_only,
+      orphaned_other: orphaned_other,
       dangling_latest: dangling_latest,
       commits_missing_from_doc_index: commits_missing_from_doc_index,
       dangling_doc_index: dangling_doc_index,
