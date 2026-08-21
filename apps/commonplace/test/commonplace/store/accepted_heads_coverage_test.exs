@@ -73,9 +73,7 @@ defmodule Commonplace.Store.AcceptedHeadsCoverageTest do
     {l, r}
   end
 
-  test "a fully seam-maintained store is GREEN (0 missing, denominator consistent)", %{
-    store: store
-  } do
+  test "a fully seam-maintained store is GREEN (non-empty, 0 missing)", %{store: store} do
     _ = linear_doc(store, "d1")
     _ = linear_doc(store, "d2")
     {_l, _r} = sibling_doc(store, "d3")
@@ -84,9 +82,8 @@ defmodule Commonplace.Store.AcceptedHeadsCoverageTest do
 
     assert report.missing == []
     assert report.examined == 3
-    assert report.latest_key_count == 3
-    assert report.denominator_consistent
     assert report.covered == 3
+    refute report.vacuous
     assert report.green
   end
 
@@ -104,9 +101,10 @@ defmodule Commonplace.Store.AcceptedHeadsCoverageTest do
     assert "wiped" in report.missing
     refute "kept" in report.missing
     refute report.green
-    # denominator is still consistent — the doc has :latest, it's the ROW
-    # that's gone; the check catches it on the predicate, not the count.
-    assert report.denominator_consistent
+    # the doc has :latest, it's the ROW that's gone; the check catches it on
+    # the predicate. The corpus is non-empty, so this is a real miss, not a
+    # vacuous non-green.
+    refute report.vacuous
   end
 
   # plan #13772 #3b + field discrimination: a row that is PRESENT but does
@@ -148,26 +146,16 @@ defmodule Commonplace.Store.AcceptedHeadsCoverageTest do
     assert "s" in AcceptedHeadsCoverage.check(store).missing
   end
 
-  test "an empty store is trivially green (nothing to cover)", %{store: store} do
+  # commonplace-coder #13795 defect (b): an EMPTY corpus must NOT be green —
+  # in the gate that authorizes an irreversible removal, "every doc satisfies
+  # the predicate" must not share an observable with "there are no docs". The
+  # same off-by-one --data-dir that produced one vacuous §3 run would point
+  # check/1 at an empty store and, without this, report green.
+  test "an empty store is VACUOUS and NOT green (the reason is visible)", %{store: store} do
     report = AcceptedHeadsCoverage.check(store)
     assert report.examined == 0
-    assert report.latest_key_count == 0
     assert report.missing == []
-    assert report.green
-  end
-
-  # plan #13772 #4: latest_key_count is an INDEPENDENT count of the
-  # {:latest,_} keyspace. On a healthy store it equals `examined`; the field
-  # exists so that an all_doc_uuids under-enumeration (a store-layer scan
-  # bug — not synthetically injectable here without introducing that bug)
-  # would surface as denominator_consistent == false rather than a clean
-  # false zero.
-  test "latest_key_count matches the examined denominator on a healthy store", %{store: store} do
-    _ = linear_doc(store, "a")
-    _ = linear_doc(store, "b")
-    assert CommitStore.latest_key_count(store) == 2
-    report = AcceptedHeadsCoverage.check(store)
-    assert report.examined == report.latest_key_count
-    assert report.denominator_consistent
+    assert report.vacuous
+    refute report.green
   end
 end

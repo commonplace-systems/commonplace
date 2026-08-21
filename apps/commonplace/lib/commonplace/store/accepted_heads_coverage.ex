@@ -39,14 +39,29 @@ defmodule Commonplace.Store.AcceptedHeadsCoverage do
   takes the fallback. `covered?/2` asserts membership, not presence — so the
   must-find control (a row present but missing `latest.id`) is caught.
 
-  ## Denominator cross-check (plan #13772 #4)
+  ## Non-vacuity (a green must mean coverage, not emptiness)
 
-  Both the backfill and this check enumerate via `all_doc_uuids`, so a bug
-  that under-enumerates `{:latest,_}` would hide docs from BOTH and "0
-  missing" would look clean. `CommitStore.latest_key_count/1` counts the
-  `{:latest,_}` keyspace by an INDEPENDENT path; `denominator_consistent`
-  is `examined == latest_key_count`. A false there means the denominator
-  itself is not trustworthy and the zero must not be believed.
+  `green` REQUIRES `examined > 0`. An empty corpus — the exact off-by-one
+  `--data-dir` that produced one vacuous §3 run — otherwise reports
+  `missing == []` and would authorise §4 on a store that was never examined
+  ("every doc satisfies the predicate" and "there are no docs" share one
+  observable). So `examined == 0` yields `vacuous: true, green: false` with
+  the reason visible (commonplace-coder #13795, the same shape as PR #7's
+  non-vacuity gate).
+
+  ## What this gate does NOT establish (routed, not faked)
+
+  Its denominator is `all_doc_uuids`, whose trustworthiness rests on the
+  `{:latest,_}` range bound (`commit_store.ex` CX-mg8s — correct for the
+  ASCII-string uuids in use today). This gate CANNOT detect `all_doc_uuids`
+  UNDER-enumerating its own keyset: any cheap same-keyspace count shares that
+  bound (a bug hits both identically), and CubDB keys are unique so a
+  count-vs-set cross-check can never go red. Genuine under-enumeration
+  detection needs an INDEPENDENT full-population enumeration (from the
+  `{:commit,_}` / `{:doc_commit,_}` keyspace) — which is exactly the owed
+  World-B `:commit` standing audit (plan #13407), not this host-cheap gate.
+  We do not ship a can't-go-red cross-check to imply a guarantee we don't
+  have.
 
   Read-only: `all_doc_uuids`, `latest_commit` and `accepted_heads_indexed`
   are all point-reads/keyspace-scans, no DAG walk. Safe to run against a live
@@ -58,39 +73,34 @@ defmodule Commonplace.Store.AcceptedHeadsCoverage do
 
   @type report :: %{
           examined: non_neg_integer(),
-          latest_key_count: non_neg_integer(),
-          denominator_consistent: boolean(),
           covered: non_neg_integer(),
           missing: [String.t()],
+          vacuous: boolean(),
           green: boolean()
         }
 
   @doc """
-  Run the coverage check. `green` is true iff every examined doc satisfies
-  the predicate AND the denominator cross-check holds — i.e. §4 may proceed.
+  Run the coverage check. `green` is true iff the corpus is non-empty AND
+  every examined doc satisfies the predicate — i.e. §4 may proceed.
   """
   @spec check(GenServer.server()) :: report()
   def check(store \\ CommitStore) do
     docs = store |> CommitStore.all_doc_uuids() |> MapSet.to_list()
-    latest_key_count = CommitStore.latest_key_count(store)
-
+    examined = length(docs)
     missing = docs |> Enum.reject(&covered?(store, &1)) |> Enum.sort()
-    denominator_consistent = length(docs) == latest_key_count
+    vacuous = examined == 0
 
     report = %{
-      examined: length(docs),
-      latest_key_count: latest_key_count,
-      denominator_consistent: denominator_consistent,
-      covered: length(docs) - length(missing),
+      examined: examined,
+      covered: examined - length(missing),
       missing: missing,
-      green: missing == [] and denominator_consistent
+      vacuous: vacuous,
+      green: not vacuous and missing == []
     }
 
     Logger.info(
-      "AcceptedHeadsCoverage: examined=#{report.examined} " <>
-        "latest_key_count=#{report.latest_key_count} " <>
-        "denominator_consistent=#{report.denominator_consistent} " <>
-        "covered=#{report.covered} missing=#{length(report.missing)} green=#{report.green}"
+      "AcceptedHeadsCoverage: examined=#{report.examined} covered=#{report.covered} " <>
+        "missing=#{length(report.missing)} vacuous=#{report.vacuous} green=#{report.green}"
     )
 
     report

@@ -195,8 +195,25 @@ sequencing. The four points, as ruled:
 3. **Must-find control affirmed as written** — both failure modes (cleared row AND `:latest`
    pointing at a commit absent from the head set), red-first, field-discrimination built in
    ("row present" cannot pass for "latest.id ∈ row").
-4. **Denominator cross-check adopted (cheap)** — an independent `{:latest,_}` keyspace count vs the
-   reported denominator, closing the "the denominator is itself trusted" gap.
+4. **Denominator cross-check — WITHDRAWN (plan #13810, coder #13795).** A `{:latest,_}` count
+   cannot independently check whether `all_doc_uuids` under-enumerated `{:latest,_}`: they read the
+   SAME keyspace, so the range bound is the shared suspect and any same-keyspace count inherits it;
+   and with unique CubDB keys the only class such a count could catch (dup-collapse, count > set)
+   cannot occur — so it can NEVER GO RED = decoration. Removed rather than shipped (a can't-go-red
+   check in a gate is worse than an absent one — it reports as coverage). Genuine under-enumeration
+   detection needs an INDEPENDENT instrument — a full-population enumeration from `{:commit,_}` /
+   `{:doc_commit,_}`, structurally independent of `{:latest,_}` — which is the owed World-B
+   `:commit` standing audit (plan #13407), the honest home for it, not this host-cheap gate.
+
+**Step-2 condition — RULED (plan #13812, adopting paravel #13808 + coder #13802 + boss 7x34):**
+the live coverage run is a hand-transcribed MIRROR of `check/1` over already-resident readers, so
+the code producing the GO/NO-GO is NOT the 24-tested module. Non-perturbation
+(`:code.is_loaded` + before/after `:code.all_loaded`) proves the probe does not DISTURB the serve;
+it says nothing about whether it COMPUTES THE RIGHT THING — two independent claims a clean run
+presents as one. ⇒ Before the live run, the EXACT mirror source must run against
+`AcceptedHeadsCoverage`'s own fixtures and produce IDENTICAL output to the tested module, INCLUDING
+going RED on #3a (cleared row) and #3b (present-but-stale). That validates the transcription — the
+one thing the module's tests structurally cannot. boss will not execute an unvalidated mirror.
 
 **The loud-replacement refinement is APPROVED and the option choice is RULED, not left open:**
 
@@ -224,16 +241,31 @@ before removal.
 ## Step-1 status (BUILT — cell-1, this branch)
 
 - `Commonplace.Store.AcceptedHeadsCoverage.check/1` — the predicate check over `all_doc_uuids`
-  (`latest.id ∈ accepted_heads_indexed(doc).heads`), `covered`/`missing`, the #4 denominator
-  cross-check (`denominator_consistent`), and a `green` verdict. Read-only (point-reads).
-- `CommitStore.latest_key_count/1` — the independent `{:latest,_}` keyspace count for #4.
-- `accepted_heads_coverage_test.exs` — green store; #3a cleared-row caught; #3b present-but-stale
-  caught (presence ≠ validity); the membership-dominates-presence discrimination; empty-store
-  trivially green; #4 count matches on a healthy store.
+  (`latest.id ∈ accepted_heads_indexed(doc).heads`), reporting `examined`/`covered`/`missing`/
+  `vacuous`/`green`. `green` requires `examined > 0` (non-vacuity, coder #13795 defect (b)) AND
+  `missing == []`. Read-only (point-reads). NO denominator cross-check (withdrawn — see ruling #4);
+  the moduledoc honestly scopes the denominator to `all_doc_uuids` and routes genuine
+  under-enumeration to the World-B `:commit` full-scan audit.
+- `accepted_heads_coverage_test.exs` — non-empty green store; #3a cleared-row caught; #3b
+  present-but-stale caught (presence ≠ validity); membership-dominates-presence discrimination;
+  empty store is VACUOUS and NOT green (the fix).
 - `sibling_merger_choke_test.exs` — condition #2: no call to `sibling_ids_for`/`scan_sibling_ids`
   bypasses its guarded caller; non-vacuous (the guarded calls ARE present); scanner positive control
   (a synthetic bypass is reported by function name).
 
-Still OWED before removal (step 2 + step 3): run `check/1` read-only against the live store (report
-the result first), then step 3 with the alarm-consumer named + its arrival test + the mark-at-branch
-comment + the named-live-contract test.
+## Step 2 (OWED — the ruled shape, plan #13812)
+
+(i) Validate the mirror source against `AcceptedHeadsCoverage`'s own fixtures — IDENTICAL output to
+the tested module, INCLUDING red on #3a/#3b (validates the transcription). → (ii) Run the validated
+mirror read-only against the live store via erpc over already-resident `CommitStore` readers
+(`all_doc_uuids`/`latest_commit`/`accepted_heads_indexed`), with the non-perturbation proof
+(`:code.is_loaded` per callee + before/after `:code.all_loaded`). → (iii) Require: 0 missing +
+must-find-controls-would-have-fired + `examined > 0` + the denominator count. Report before removal.
+boss executes the live run and will not run an unvalidated mirror.
+
+## Step 3 (OWED — the removal)
+
+Replace the else-branch at `sibling_merger.ex` with alarm+preserved-scan (Option 2, ruled by R4 —
+never crash the converge path), marked expected-unreachable-BY-DESIGN, the alarm's live CONSUMER
+named + a test asserting arrival-at-consumer, the test named as guarding a LIVE CONTRACT, + the
+sole-caller choke already landed in step 1. NOT a silent delete.
