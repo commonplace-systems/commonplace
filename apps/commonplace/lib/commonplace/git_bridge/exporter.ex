@@ -8,6 +8,50 @@ defmodule Commonplace.GitBridge.Exporter do
   writes back to the store (other than the presence doc GitBridge.Server
   maintains, which lives outside this module).
 
+  ## Verified export at a pin (chit epic step [6]-wiring)
+
+  Each doc's content and each directory schema is read through the
+  **verified-projection oracle** (`Commonplace.Projection.project_doc_at/3`,
+  the built [5] layer) rather than raw reconstruction, so every exported
+  byte carries a VERDICT — and a corrupted/tampered store can no longer be
+  silently reproduced as a clean-looking tree (the re-measure's Finding 4:
+  62% of byte-flips are absorbed at the reconstruction layer; `project_at`
+  catches them loud via content-address + signature).
+
+    * **`pin`** — an optional `%{uuid => commit_id}` map (the shape
+      `Black.select`'s `at_pin` uses). A uuid present in `pin` is read at
+      that commit; a uuid absent falls back to its current head. The
+      default `pin = %{}` reproduces the head-only export exactly — the
+      existing behavior is the "pin at current heads" case (acceptance #5).
+
+    * **Byte-identical tree (F5).** The verdict is ADDED metadata; the tree
+      bytes are unchanged. `project_doc_at` yields the DOC (and the verdict);
+      the doc is rendered through the SAME renderers as before, so an
+      untampered export is byte-for-byte identical to the pre-wiring path.
+      Content docs declare `head_path: :chain` (matching the old
+      `reconstruct_doc`); schemas declare `head_path: :direct` (matching the
+      old `reconstruct_snapshot`). We never write `project_at`'s
+      `canonical_bytes` (a yjs-update form) as tree content — that would
+      trade Finding 4 for a Finding 5 (SHA-stability) regression.
+
+    * **Tamper is UNMISSABLE, not merely trailer-flagged.** The verdict
+      classification splits absence-of-verification from positive-detection:
+      - CLEAN (`:witnessed` / `{:corroborated,_}` / `{:declared,_}`) and
+        honest-unverified — rendered normally, verdict carried in the
+        manifest (→ trailer). `:declared`/unsigned is honest "unverified,"
+        NOT loud (64% of the corpus is unsigned legacy; hard-failing it
+        would make the exporter useless — unverified ≠ wrong).
+      - TAMPER-DETECTED (`{:error, :signature_invalid}`,
+        `{:error, {:content_address_mismatch,_}}`,
+        `{:unknown, {:conflicted,_}}`, `{:unknown, {:mixed_plane,_}}`, or any
+        unexpected verdict — fail-closed) — a POSITIVE detection of
+        wrong/disagreeing bytes. The doc's clean-looking bytes are NOT
+        written; a loud in-tree TAMPER marker takes their place, the doc is
+        recorded as an offender, and `export/5` returns
+        `{:error, {:unverifiable_pin, offenders}}`. A git-repo-as-source
+        consumer never receives a clean tree containing tampered content,
+        because no clean tree is produced.
+
   ## Filters
 
   A schema entry is skipped — never exported, never present in the
@@ -51,9 +95,10 @@ defmodule Commonplace.GitBridge.Exporter do
   ## Manifest and pruning
 
   Returns a manifest of every exported doc keyed by its repo-relative
-  path: `%{rel_path => %{uuid:, type:, anchor:}}` where `anchor` is the
-  raw commit id binary from `CommitStoreClient.latest_commit/2` (hex
-  encoding is `Sidecar`'s job, not this module's).
+  path: `%{rel_path => %{uuid:, type:, anchor:, verdict:}}` where `anchor`
+  is the raw commit id binary the doc was read at (the pinned commit, or the
+  head when unpinned) and `verdict` is the projection verdict term (hex
+  encoding + trailer formatting is `Sidecar`'s job, not this module's).
 
   Also returns `schema_uuids`: every directory-schema doc uuid visited
   during the walk (including `mount_uuid` itself). `Commonplace.GitBridge.Archive`
@@ -73,9 +118,10 @@ defmodule Commonplace.GitBridge.Exporter do
 
   require Logger
 
-  alias Commonplace.Tree.{Schema, DocBuilder}
+  alias Commonplace.Tree.Schema
   alias Commonplace.Document.ContentType
   alias Commonplace.Store.CommitStoreClient
+  alias Commonplace.Projection
   alias Commonplace.Presence
   alias Commonplace.GitBridge.{CanonicalJson, CanonicalXml}
   alias Commonplace.MUD.Schemas
@@ -87,10 +133,15 @@ defmodule Commonplace.GitBridge.Exporter do
   @doc """
   Export the tree rooted at `mount_uuid` into `repo_dir`.
 
-  Returns `{:ok, %{manifest:, authors:, warnings:, schema_uuids:}}` or
-  `{:error, reason}`.
+  `pin` is an optional `%{uuid => commit_id}` map; a uuid absent from it is
+  read at its current head. The default (`%{}`) is the head-only export.
+
+  Returns `{:ok, %{manifest:, authors:, warnings:, schema_uuids:}}`, or
+  `{:error, {:unverifiable_pin, offenders}}` when one or more docs/schemas
+  fail verification (tamper detected — see the moduledoc), or
+  `{:error, reason}` on an unexpected error.
   """
-  @spec export(String.t(), String.t(), module() | atom(), map()) ::
+  @spec export(String.t(), String.t(), module() | atom(), map(), map()) ::
           {:ok,
            %{
              manifest: map(),
@@ -99,28 +150,61 @@ defmodule Commonplace.GitBridge.Exporter do
              schema_uuids: MapSet.t()
            }}
           | {:error, term()}
-  def export(mount_uuid, repo_dir, store, previous_manifest \\ %{}) do
+  def export(mount_uuid, repo_dir, store, previous_manifest \\ %{}, pin \\ %{}) do
     File.mkdir_p!(repo_dir)
 
-    schema_doc = load_schema(mount_uuid, store)
+    {schema_doc, mount_offenders} = read_schema_at(mount_uuid, pin, store, [])
 
-    {manifest, authors, warnings, schema_uuids} =
-      walk(schema_doc, repo_dir, "", store, %{}, MapSet.new(), [], MapSet.new([mount_uuid]))
+    {manifest, authors, warnings, schema_uuids, offenders} =
+      walk(
+        schema_doc,
+        repo_dir,
+        "",
+        store,
+        pin,
+        %{},
+        MapSet.new(),
+        [],
+        MapSet.new([mount_uuid]),
+        mount_offenders
+      )
 
-    prune(repo_dir, previous_manifest, manifest)
+    case offenders do
+      [] ->
+        prune(repo_dir, previous_manifest, manifest)
 
-    {:ok, %{manifest: manifest, authors: authors, warnings: warnings, schema_uuids: schema_uuids}}
+        {:ok,
+         %{manifest: manifest, authors: authors, warnings: warnings, schema_uuids: schema_uuids}}
+
+      _ ->
+        # Tamper detected on at least one doc/schema. Do NOT present a clean
+        # tree as a valid export: the loud markers are on disk, and the
+        # caller gets an unmissable error listing every offender.
+        {:error, {:unverifiable_pin, Enum.reverse(offenders)}}
+    end
   rescue
     error -> {:error, error}
   end
 
   # --- Tree walk ---
 
-  defp walk(schema_doc, dir_path, rel_prefix, store, manifest, authors, warnings, schema_uuids) do
+  defp walk(
+         schema_doc,
+         dir_path,
+         rel_prefix,
+         store,
+         pin,
+         manifest,
+         authors,
+         warnings,
+         schema_uuids,
+         offenders
+       ) do
     Schema.list_entries(schema_doc)
     |> Enum.filter(&eligible?/1)
-    |> Enum.reduce({manifest, authors, warnings, schema_uuids}, fn
-      entry, {manifest, authors, warnings, schema_uuids} ->
+    |> Enum.reduce(
+      {manifest, authors, warnings, schema_uuids, offenders},
+      fn entry, {manifest, authors, warnings, schema_uuids, offenders} ->
         rel_path = join_rel(rel_prefix, entry.name)
 
         case entry.type do
@@ -135,11 +219,11 @@ defmodule Commonplace.GitBridge.Exporter do
             # invariant. A dir with no room meta, or a public one, is
             # untouched. (prune/3 retroactively removes a newly-private
             # zone's previously-exported files via manifest-diff.)
-            sub_schema = load_schema(entry.node_id, store)
+            {sub_schema, offenders} = read_schema_at(entry.node_id, pin, store, offenders)
 
             if capability_gated_zone?(sub_schema, store) do
               Logger.info("GitBridge: skipping capability_gated zone #{rel_path}")
-              {manifest, authors, warnings, schema_uuids}
+              {manifest, authors, warnings, schema_uuids, offenders}
             else
               sub_dir = Path.join(dir_path, entry.name)
               File.mkdir_p!(sub_dir)
@@ -150,24 +234,37 @@ defmodule Commonplace.GitBridge.Exporter do
                 sub_dir,
                 rel_path,
                 store,
+                pin,
                 manifest,
                 authors,
                 warnings,
-                schema_uuids
+                schema_uuids,
+                offenders
               )
             end
 
           :doc ->
-            {manifest, authors, warnings} =
-              export_doc(entry, dir_path, rel_path, store, manifest, authors, warnings)
+            {manifest, authors, warnings, offenders} =
+              export_doc(
+                entry,
+                dir_path,
+                rel_path,
+                store,
+                pin,
+                manifest,
+                authors,
+                warnings,
+                offenders
+              )
 
-            {manifest, authors, warnings, schema_uuids}
+            {manifest, authors, warnings, schema_uuids, offenders}
 
           _ ->
             {manifest, authors, [warning("unknown entry type for #{entry.name}") | warnings],
-             schema_uuids}
+             schema_uuids, offenders}
         end
-    end)
+      end
+    )
   end
 
   # CX-ivqz: a dir is a gated zone iff its OWN schema carries a
@@ -202,35 +299,165 @@ defmodule Commonplace.GitBridge.Exporter do
            String.contains?(name, <<0>>))
   end
 
-  defp export_doc(entry, dir_path, rel_path, store, manifest, authors, warnings) do
-    case DocBuilder.reconstruct_doc(store, entry.node_id) do
+  defp export_doc(entry, dir_path, rel_path, store, pin, manifest, authors, warnings, offenders) do
+    case pin_commit(pin, entry.node_id, store) do
       :none ->
-        {manifest, authors, [warning("no commits for #{rel_path} (#{entry.node_id})") | warnings]}
+        {manifest, authors, [warning("no commits for #{rel_path} (#{entry.node_id})") | warnings],
+         offenders}
 
-      {:ok, doc} ->
-        type = ContentType.get_type(doc)
+      commit_id ->
+        # Content docs matched the old `reconstruct_doc` (chain replay), so
+        # declare head_path: :chain to keep head-export bytes identical.
+        case Projection.project_doc_at(entry.node_id, commit_id, store: store, head_path: :chain) do
+          {:ok, doc, verdict} ->
+            type = ContentType.get_type(doc)
 
-        case render(type, doc) do
-          {:ok, content, extra_warning} ->
-            path = Path.join(dir_path, entry.name)
-            Export.atomic_write(path, content)
+            case render(type, doc) do
+              {:ok, content, extra_warning} ->
+                path = Path.join(dir_path, entry.name)
+                Export.atomic_write(path, content)
 
-            {anchor, signer_id} = head_info(store, entry.node_id)
+                signer_id = commit_signer(store, commit_id)
 
-            manifest =
-              Map.put(manifest, rel_path, %{uuid: entry.node_id, type: type, anchor: anchor})
+                manifest =
+                  Map.put(manifest, rel_path, %{
+                    uuid: entry.node_id,
+                    type: type,
+                    anchor: commit_id,
+                    verdict: verdict
+                  })
 
-            authors = if is_nil(signer_id), do: authors, else: MapSet.put(authors, signer_id)
+                authors = if is_nil(signer_id), do: authors, else: MapSet.put(authors, signer_id)
 
-            warnings = if extra_warning, do: [extra_warning | warnings], else: warnings
+                warnings = if extra_warning, do: [extra_warning | warnings], else: warnings
 
-            {manifest, authors, warnings}
+                {manifest, authors, warnings, offenders}
 
-          :skip ->
-            {manifest, authors,
-             [warning("unrenderable content type #{inspect(type)} for #{rel_path}") | warnings]}
+              :skip ->
+                {manifest, authors,
+                 [
+                   warning("unrenderable content type #{inspect(type)} for #{rel_path}")
+                   | warnings
+                 ], offenders}
+            end
+
+          {:error, reason} = verdict ->
+            classify_leaf_failure(
+              reason,
+              verdict,
+              entry,
+              dir_path,
+              rel_path,
+              commit_id,
+              manifest,
+              authors,
+              warnings,
+              offenders
+            )
+
+          {:unknown, _reason} = verdict ->
+            # A positive detection of wrong/disagreeing bytes (conflicted,
+            # mixed_plane). Loud, never silent.
+            tamper_leaf(
+              entry,
+              dir_path,
+              rel_path,
+              commit_id,
+              verdict,
+              manifest,
+              authors,
+              warnings,
+              offenders
+            )
         end
     end
+  end
+
+  # `:commit_not_found` / `:commit_not_on_chain` are absence, not tamper —
+  # a warning like the old `:none`. Every other `{:error, _}` (signature or
+  # content-address failure, or an unexpected shape) is a positive tamper
+  # detection and is loud.
+  defp classify_leaf_failure(
+         reason,
+         _verdict,
+         entry,
+         _dir,
+         rel_path,
+         _cid,
+         manifest,
+         authors,
+         warnings,
+         offenders
+       )
+       when reason in [:commit_not_found, :commit_not_on_chain] or
+              (is_tuple(reason) and elem(reason, 0) in [:commit_not_found, :commit_not_on_chain]) do
+    {manifest, authors,
+     [
+       warning("no projectable commit for #{rel_path} (#{entry.node_id}): #{inspect(reason)}")
+       | warnings
+     ], offenders}
+  end
+
+  defp classify_leaf_failure(
+         _reason,
+         verdict,
+         entry,
+         dir_path,
+         rel_path,
+         commit_id,
+         manifest,
+         authors,
+         warnings,
+         offenders
+       ) do
+    tamper_leaf(
+      entry,
+      dir_path,
+      rel_path,
+      commit_id,
+      verdict,
+      manifest,
+      authors,
+      warnings,
+      offenders
+    )
+  end
+
+  # Write an unmissable in-tree marker in place of the tampered doc's bytes,
+  # record the offender, and let export/5 turn a non-empty offender list into
+  # {:error, {:unverifiable_pin, _}}. The marker means even a consumer that
+  # ignores the error never reads tampered bytes as clean.
+  defp tamper_leaf(
+         entry,
+         dir_path,
+         rel_path,
+         commit_id,
+         verdict,
+         manifest,
+         authors,
+         warnings,
+         offenders
+       ) do
+    path = Path.join(dir_path, entry.name)
+    Export.atomic_write(path, tamper_marker(entry.node_id, commit_id, verdict))
+
+    {manifest, authors,
+     [
+       warning("TAMPER: #{rel_path} (#{entry.node_id}) failed verification: #{inspect(verdict)}")
+       | warnings
+     ], [{rel_path, entry.node_id, verdict} | offenders]}
+  end
+
+  defp tamper_marker(uuid, commit_id, verdict) do
+    """
+    COMMONPLACE EXPORT: VERIFICATION FAILED — DO NOT TREAT AS SOURCE
+    doc:      #{uuid}
+    commit:   #{Base.encode16(commit_id, case: :lower)}
+    verdict:  #{inspect(verdict)}
+    This file's real content failed the verified-projection check (tamper or
+    irreconcilable disagreement). Its bytes are withheld deliberately so a
+    corrupted store cannot be reproduced as a clean-looking tree.
+    """
   end
 
   defp render(:text, doc), do: {:ok, ContentType.get_content(doc) || "", nil}
@@ -268,17 +495,53 @@ defmodule Commonplace.GitBridge.Exporter do
   defp xml_to_json({:text, str}), do: %{"text" => str}
   defp xml_to_json({:fragment, children}), do: %{"fragment" => xml_to_json(children)}
 
-  defp head_info(store, uuid) do
-    case CommitStoreClient.latest_commit(store, uuid) do
-      {:ok, commit} -> {commit.id, Map.get(commit, :signer_id)}
-      :none -> {nil, nil}
+  # The commit a uuid is read at: its pinned commit if `pin` names one, else
+  # its current head. `:none` when the doc has no commits at all.
+  defp pin_commit(pin, uuid, store) do
+    case Map.get(pin, uuid) do
+      nil ->
+        case CommitStoreClient.latest_commit(store, uuid) do
+          {:ok, commit} -> commit.id
+          :none -> :none
+        end
+
+      commit_id ->
+        commit_id
     end
   end
 
-  defp load_schema(uuid, store) do
-    case DocBuilder.reconstruct_snapshot(store, uuid) do
-      {:ok, doc} -> doc
-      :none -> Schema.new_schema()
+  defp commit_signer(store, commit_id) do
+    case CommitStoreClient.get_commit(store, commit_id) do
+      {:ok, commit} -> Map.get(commit, :signer_id)
+      _ -> nil
+    end
+  end
+
+  # Read a directory schema at its pin (or head), through the verified
+  # oracle. Schemas matched the old `reconstruct_snapshot` (latest-only), so
+  # declare head_path: :direct to keep the head structure identical. A
+  # tampered schema is an offender (loud) but returns an empty schema so the
+  # walk terminates cleanly under the eventual {:error, _} rather than
+  # crashing mid-tree.
+  defp read_schema_at(uuid, pin, store, offenders) do
+    case pin_commit(pin, uuid, store) do
+      :none ->
+        {Schema.new_schema(), offenders}
+
+      commit_id ->
+        case Projection.project_doc_at(uuid, commit_id, store: store, head_path: :direct) do
+          {:ok, doc, _verdict} ->
+            {doc, offenders}
+
+          {:error, reason}
+          when reason in [:commit_not_found, :commit_not_on_chain] or
+                 (is_tuple(reason) and
+                    elem(reason, 0) in [:commit_not_found, :commit_not_on_chain]) ->
+            {Schema.new_schema(), offenders}
+
+          other ->
+            {Schema.new_schema(), [{:schema, uuid, other} | offenders]}
+        end
     end
   end
 
