@@ -80,7 +80,21 @@ else
 {host, {127,0,0,1}, ["$SERVE_HOST"]}.
 EOF
   cat >"$PROBE_SCRIPT" <<'ELIXIR'
-[output_path, serve_node_string] = System.argv() |> Enum.reject(&(&1 == "--"))
+# The target node comes via the ENV (STATE_RENDER_NODE), NOT argv — so this
+# probe's cmdline never contains "commonplace_dev". bin/cp-deploy-gap
+# identifies the serve by `pgrep -f 'commonplace_dev'` over beam.smp cmdlines
+# (cp-deploy-gap:67); a node on this probe's argv makes it a FALSE serve and
+# the deploy-gap monitor fires on it — the single largest error category on
+# the live serve, the noise real audit signals hide in. Mirrors
+# STATE_RENDER_HOST, already env. (Candidate 2 is the bound-safe root: the
+# monitor should identify the serve by its :5199 socket, not a cmdline
+# substring — an argv-as-identity fix, not this caller-side symptom fix.)
+[output_path] = System.argv() |> Enum.reject(&(&1 == "--"))
+
+serve_node_string =
+  System.get_env("STATE_RENDER_NODE") ||
+    (IO.puts(:stderr, "state-render: STATE_RENDER_NODE env not set"); System.halt(2))
+
 serve_node = String.to_atom(serve_node_string)
 :application.set_env(:kernel, :prevent_overlapping_partitions, false)
 :application.set_env(:kernel, :inet_dist_use_interface, {127, 0, 0, 1})
@@ -116,7 +130,7 @@ bytes = Enum.map_join([header | rows], "\n", &Jason.encode!/1) <> "\n"
 File.write!(output_path, bytes)
 ELIXIR
   cd "$PROJECT_DIR"
-  if ! STATE_RENDER_HOST="$SERVE_HOST" ERL_INETRC="$INETRC" mix run --no-start "$PROBE_SCRIPT" -- "$RAW_INPUT" "$SERVE_NODE"; then
+  if ! STATE_RENDER_NODE="$SERVE_NODE" STATE_RENDER_HOST="$SERVE_HOST" ERL_INETRC="$INETRC" mix run --no-start "$PROBE_SCRIPT" -- "$RAW_INPUT"; then
     exit 2
   fi
 fi
