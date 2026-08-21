@@ -236,13 +236,16 @@ defmodule Commonplace.Store.InvariantChokeTest do
 
   # ── The structural pin ────────────────────────────────────────────────
   #
-  # R1 says the head-advance surface is one function. A prose count
-  # cannot notice a seventh site; this can. A line is treated as a WRITE
-  # of `{:latest, _}` when it either calls `CubDB.put`/`CubDB.put_multi`
-  # on that key or IS a `put_multi` row (a line whose first non-space
-  # characters are `{{:latest,`). Reads — `CubDB.get(db, {:latest, _})`,
-  # `min_key:`/`max_key:` range bounds, and the `fn {{:latest, uuid}, _}`
-  # destructure in `do_all_doc_uuids/1` — match neither shape.
+  # R1 says the head-advance surface is one function. A prose count cannot
+  # notice a seventh site; this can. A head-pointer WRITE is either a
+  # `{{:latest, _}, _}` row literal in EXPRESSION context (a put_multi head
+  # row) or a `CubDB.put(db, {:latest, _}, _)` call. Reads —
+  # `CubDB.get(db, {:latest, _})`, `min_key:`/`max_key:` range bounds, and the
+  # `fn {{:latest, uuid}, _}` destructure in `do_all_doc_uuids/1` — are the same
+  # atom in a read or PATTERN position and are not flagged. The classifier is
+  # AST-based (see `collect_latest_writes/4`), so it survives a source-shape
+  # change in both directions: the line-text version it replaced false-flagged a
+  # read whose `{{:latest,_},_}` pattern sat on its own line.
   describe "source scan: only put_latest writes the head pointer" do
     test "no head-pointer write outside CommitStore.put_latest/5" do
       offenders =
@@ -273,51 +276,19 @@ defmodule Commonplace.Store.InvariantChokeTest do
     Path.expand(Path.join(__DIR__, "../../../lib"))
   end
 
+  # The head-pointer write scan delegates to the shared AST scanner
+  # (Commonplace.Test.RowKeyWriteScanner), whose both-directions controls live
+  # in its own test. Line-text matching here once false-flagged a read whose
+  # `{{:latest,_},_}` pattern sat on its own line (World-B); the AST classifier
+  # distinguishes pattern from expression context so that cannot recur.
   defp head_pointer_writes(path) do
-    path
-    |> File.read!()
-    |> String.split("\n")
-    |> Enum.with_index(1)
-    |> Enum.reduce({nil, []}, fn {line, lineno}, {current_function, hits} ->
-      current_function =
-        case Regex.run(~r/^\s{0,4}defp?\s+([a-z_][a-zA-Z0-9_?!]*)/, line) do
-          [_, fun] -> fun
-          nil -> current_function
-        end
-
-      if head_pointer_write?(line) do
-        {current_function,
-         [%{file: path, line: lineno, function: current_function, text: line} | hits]}
-      else
-        {current_function, hits}
-      end
-    end)
-    |> elem(1)
-    |> Enum.reverse()
+    Commonplace.Test.RowKeyWriteScanner.writes_in_file(path, :latest)
   end
 
-  defp head_pointer_write?(line) do
-    String.contains?(line, "{:latest,") and
-      (String.contains?(line, "CubDB.put") or
-         String.starts_with?(String.trim_leading(line), "{{:latest,"))
-  end
-
-  # A control that cannot go red is not a control. This exercises the
-  # scanner's own detection on synthetic lines rather than trusting that
-  # the real corpus's emptiness means the scanner works.
+  # A control that cannot go red is not a control: prove THIS wiring (the
+  # `:latest` key, the function-name attribution) catches a synthetic offender.
   describe "source scan: the scanner itself can fail" do
-    test "recognises both write shapes and neither read shape" do
-      assert head_pointer_write?(~s|    CubDB.put(state.db, {:latest, doc_uuid}, commit_id)|)
-      assert head_pointer_write?(~s|            {{:latest, doc_uuid}, commit.id}|)
-      assert head_pointer_write?(~s|  CubDB.put_multi(db, [{{:latest, u}, id}])|)
-
-      refute head_pointer_write?(~s|    case CubDB.get(state.db, {:latest, doc_uuid}) do|)
-      refute head_pointer_write?(~s|      min_key: {:latest, ""},|)
-      refute head_pointer_write?("    |> Enum.map(fn {{:latest, uuid}, _commit_id} -> uuid end)")
-      refute head_pointer_write?(~s|    CubDB.put(state.db, {:latest_merge_head, t}, id)|)
-    end
-
-    test "a synthetic offender is reported with its function name" do
+    test "a synthetic offender is reported with its function name and line" do
       tmp = Path.join(System.tmp_dir!(), "cp_choke_scan_#{:rand.uniform(1_000_000_000)}.ex")
 
       File.write!(tmp, """
