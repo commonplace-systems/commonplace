@@ -20,6 +20,34 @@ defmodule Commonplace.Runner.ProtoChitHarvestTest do
     assert function_exported?(Commonplace.Runner.ProtoChitHarvest, :quarantine_path, 2)
   end
 
+  test "await_file waits for a NON-EMPTY file — the create-before-write window is not a valid read" do
+    # Deterministic reproduction of the load-dependent A1C flake's mechanism.
+    # The pod wrote a1c-binding-access non-atomically (`printf > file`), and the
+    # old await_file returned on mere EXISTENCE — so under load it read the
+    # empty create-before-write window as "", and the binding assertion failed
+    # with left="". Here the file EXISTS but is empty, exactly that window.
+    #
+    # ⛔ MUST-FAIL ARM (seen to fire, not believed to): against the pre-fix
+    # await_file this FIRST assertion fails — it returned {:ok, ""} immediately.
+    # The fix waits past empty, so a file that never gains content times out.
+    dir = Path.join(System.tmp_dir!(), "await_file_race_#{UUID.uuid4()}")
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf!(dir) end)
+    path = Path.join(dir, "handoff")
+
+    File.write!(path, "")
+
+    assert {:error, :timeout} =
+             await_file(path, System.monotonic_time(:millisecond) + 100)
+
+    # And once content lands, it is read in full — the fix does not break the
+    # normal wait-then-read path.
+    File.write!(path, "writable")
+
+    assert {:ok, "writable"} =
+             await_file(path, System.monotonic_time(:millisecond) + 2_000)
+  end
+
   test "A1C: pod commit signs WAL and harvest persists it under the bound pod signer" do
     root = Path.join(System.tmp_dir!(), "a1c_pod_arm_#{UUID.uuid4()}")
     pods_root = Path.join(root, "pods")
@@ -40,7 +68,8 @@ defmodule Commonplace.Runner.ProtoChitHarvestTest do
       "-c",
       "if printf tamper >\"$COMMONPLACE_DATA_DIR/../../proto-chit-deployment-binding.json\" 2>/dev/null; " <>
         "then binding=writable; else binding=read-only; fi; " <>
-        "printf '%s' \"$binding\" >\"$COMMONPLACE_DATA_DIR/a1c-binding-access\"; " <>
+        "printf '%s' \"$binding\" >\"$COMMONPLACE_DATA_DIR/a1c-binding-access.tmp\"; " <>
+        "mv \"$COMMONPLACE_DATA_DIR/a1c-binding-access.tmp\" \"$COMMONPLACE_DATA_DIR/a1c-binding-access\"; " <>
         "git config user.email pod@example.invalid && " <>
         "git config user.name 'A1C Pod' && " <>
         "git commit --allow-empty -m 'A1C pod commit' >\"$COMMONPLACE_DATA_DIR/a1c-emitter.txt\" 2>&1; " <>
@@ -290,21 +319,36 @@ defmodule Commonplace.Runner.ProtoChitHarvestTest do
 
   defp await_file(path, deadline) do
     case File.read(path) do
+      # A file that EXISTS but is still EMPTY is the create-before-write window
+      # of a non-atomic writer (`printf > file` truncates-creates, then writes).
+      # Returning {:ok, ""} here was the flake: under load await_file polled
+      # inside that window, the caller asserted on "", and the binding check
+      # failed with left="". None of these handoff files is ever legitimately
+      # empty, so wait for content exactly as we wait for existence. (The write
+      # side is also made atomic where it matters — see the a1c-binding-access
+      # temp+mv in the pod invocation — so this is defence in depth.)
+      {:ok, ""} ->
+        wait_or_timeout(path, deadline)
+
       {:ok, contents} ->
         {:ok, contents}
 
       {:error, :enoent} ->
-        if System.monotonic_time(:millisecond) < deadline do
-          receive do
-          after
-            10 -> await_file(path, deadline)
-          end
-        else
-          {:error, :timeout}
-        end
+        wait_or_timeout(path, deadline)
 
       error ->
         error
+    end
+  end
+
+  defp wait_or_timeout(path, deadline) do
+    if System.monotonic_time(:millisecond) < deadline do
+      receive do
+      after
+        10 -> await_file(path, deadline)
+      end
+    else
+      {:error, :timeout}
     end
   end
 
