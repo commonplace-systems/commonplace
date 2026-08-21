@@ -151,13 +151,12 @@ defmodule Commonplace.SiblingMerger do
   # Increment 2/3 (Stage-B ruling): siblings are the non-`:latest` accepted
   # heads (the frontier tips). Read them from the durable accepted-head
   # index when it is maintained for this doc, avoiding the
-  # `all_commit_ids_for_doc` scan; fall back to the scan for legacy docs the
-  # index has not been backfilled for yet.
+  # `all_commit_ids_for_doc` scan.
   #
   # TRUST the index only when its head set contains `:latest`: a maintained
-  # (post-seam) or backfilled (§3) row always does; a legacy doc has no row
-  # (an empty set), which does not, and falls back. Increment 4 removes this
-  # fallback once §3's backfill is `:ready` corpus-wide.
+  # (post-seam) or backfilled (§3) row always does; a doc whose row is
+  # missing/stale (an empty set, or a set lacking `latest.id`) does not, and
+  # takes the scan fallback below.
   #
   # Deliberate behaviour change (plan #13391, "consume heads"): the index
   # yields TIPS, so a sibling CHAIN is merged at its tip — one merge folds
@@ -171,6 +170,35 @@ defmodule Commonplace.SiblingMerger do
         if MapSet.member?(heads, latest.id) do
           MapSet.delete(heads, latest.id)
         else
+          # ⛔ EXPECTED-UNREACHABLE BY DESIGN — do NOT delete this branch.
+          # §4 (BUILD-1): after §3's backfill reached `{:ready,v}` corpus-wide
+          # and the coverage gate verified `latest.id ∈ heads` for all 6106
+          # docs (2026-08-21, `commonplace.coverage_canary`), the head-set
+          # index CONTAINS `:latest` for every live doc, so this else-branch
+          # is not taken on the hot path. Its UNREACHABILITY IS THE INVARIANT'S
+          # CLAIM, not evidence it is dead: a doc whose row goes missing/stale
+          # post-backfill (a should-never-happen the chokes below guard) lands
+          # here, and the scan RECOVERS THE CORRECT SIBLINGS. Deleting it would
+          # turn that recovery into a silent stop-converging (`delete(∅, id)` =
+          # ∅ → no siblings).
+          #
+          # The PRIMARY protections that make this unreachable are the
+          # source-scan chokes, not this fallback: `sibling_merger_choke_test`
+          # (no caller bypasses `maybe_merge_siblings/3`'s :latest short-circuit)
+          # and `accepted_heads_choke_test` (the row is only written by the two
+          # sanctioned seam builders). This branch is defense-in-depth beneath
+          # them, kept loud-and-correct.
+          #
+          # ⚠️ INTEGRITY-ALARM DEFERRED (OWED): plan #13967 ruled this should
+          # emit a durable, deadman-READ integrity alarm (not a Logger line into
+          # a proven-unread sink). The only surface with a live reader is the
+          # audit RedLog — but its `AuditDispatcher` persist path is MEASURED
+          # FAILING 339× on the live serve (denials enforced-but-not-recorded),
+          # so an alarm wired there would inherit the drop. ⇒ the alarm is OWED
+          # behind (a) that persist-reliability fix and (b) giving the
+          # invariant `:alarm` channel a real reader (today it has ZERO handlers,
+          # so Hazard 3 alarms into nothing too). Until then this stays
+          # scan-only — HONEST no-decoration, no false backstop.
           scan_sibling_ids(store, doc_uuid, latest)
         end
 
