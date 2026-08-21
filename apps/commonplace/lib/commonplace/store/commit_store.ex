@@ -988,7 +988,12 @@ defmodule Commonplace.Store.CommitStore do
           :ok | {:error, {:doc_commit_index_not_ready, term()}}
   def put_backfilled_doc_commit_index_rows(server \\ __MODULE__, doc_uuid, commit_ids)
       when is_binary(doc_uuid) and is_list(commit_ids) do
-    GenServer.call(server, {:put_backfilled_doc_commit_index_rows, doc_uuid, commit_ids})
+    # Explicit finite timeout, generous for the chunked writes the caller
+    # sends (≤ @put_chunk rows/call): pass 2 of the live (a) run died on
+    # the DEFAULT 5s here when a >10k-row chain arrived as one call. A
+    # big margin over a small chunk, still finite so a wedged server
+    # fails loud instead of hanging a migration forever.
+    GenServer.call(server, {:put_backfilled_doc_commit_index_rows, doc_uuid, commit_ids}, 60_000)
   end
 
   @doc """
