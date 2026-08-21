@@ -1108,6 +1108,18 @@ defmodule Commonplace.Store.CommitStore do
     end
   end
 
+  @doc """
+  Enumerate every stored chit cid, in key order. Read-only bounded range
+  select over the `{:chit, cid}` keyspace — the enumeration seam the
+  `:chit_ancestry` resting-state invariant re-verifies the corpus
+  through (`Commonplace.Invariants.Registry`). Runs in the caller
+  process (mirrors `all_doc_uuids/1`).
+  """
+  @spec all_chit_cids(GenServer.server()) :: [binary()]
+  def all_chit_cids(server \\ __MODULE__) do
+    do_all_chit_cids(resolve_db(server))
+  end
+
   # --- execute_clean watermark cache (CX-tdkq.27) ---
   #
   # A node-LOCAL, NON-SYNCED derived verdict: "is the chain ending at this
@@ -2557,6 +2569,13 @@ defmodule Commonplace.Store.CommitStore do
     {:reply, reply, state}
   end
 
+  # Remote-compat shim (mirrors :all_doc_uuids): local callers take the
+  # pure range-read in all_chit_cids/1.
+  @impl true
+  def handle_call(:all_chit_cids, _from, state) do
+    {:reply, do_all_chit_cids(state.db), state}
+  end
+
   @impl true
   def handle_call({:latest_commit, doc_uuid}, _from, state) do
     {:reply, do_latest_commit(state.db, doc_uuid), state}
@@ -3391,6 +3410,18 @@ defmodule Commonplace.Store.CommitStore do
     )
     |> Enum.map(fn {{:latest, uuid}, _commit_id} -> uuid end)
     |> MapSet.new()
+  end
+
+  # Chit cids are raw 32-byte sha256 binaries, so the CX-mg8s bound rule
+  # applies: the upper bound must EXCEED every possible cid, and
+  # @max_key_binary (64 bytes of 0xFF) does — a 32-byte cid of all-0xFF
+  # is a PREFIX of it and therefore sorts lower.
+  defp do_all_chit_cids(db) do
+    CubDB.select(db,
+      min_key: {:chit, <<>>},
+      max_key: {:chit, @max_key_binary}
+    )
+    |> Enum.map(fn {{:chit, cid}, _chit} -> cid end)
   end
 
   defp do_all_doc_uuids_bounded(db, limit) do

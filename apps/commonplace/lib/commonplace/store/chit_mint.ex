@@ -44,7 +44,7 @@ defmodule Commonplace.Store.ChitMint do
 
   alias Commonplace.Crypto.{NodeIdentity, Signing, SigningContext}
   alias Commonplace.Reflog.{Restore, Snapshot}
-  alias Commonplace.Store.{Chit, ChitBranchRef, CommitStoreClient}
+  alias Commonplace.Store.{Chit, ChitAncestry, ChitBranchRef, CommitStoreClient}
 
   require Logger
 
@@ -105,10 +105,33 @@ defmodule Commonplace.Store.ChitMint do
         |> Chit.new(parents, author_for(signing_context), message, authored_at)
         |> maybe_sign(signing_context)
 
-      with {:ok, _cid} <- CommitStoreClient.store_chit(store, chit),
+      # THE MINT GATE (primary enforcement of the ancestry invariant,
+      # spec §3/[4]): verify the parent claims BEFORE the chit is stored
+      # or the branch advanced — a false claim is never recorded, not
+      # recorded-then-alarmed. This is mint-point construction: a mint
+      # is an explicit user action, not the converge path, so refusing
+      # one refuses recording a false narrative, not convergence (R4
+      # preserved). The chit corpus starts EMPTY behind this gate, so no
+      # backfill audit exists — every stored chit passed here. There is
+      # deliberately NO override option: a diverged world mints from a
+      # corrected parent instead (spec §9).
+      with :ok <- ancestry_gate(store, chit),
+           {:ok, _cid} <- CommitStoreClient.store_chit(store, chit),
            {:ok, _ref_commit_id} <- ChitBranchRef.advance(store, branch_doc_uuid, chit.cid, opts) do
         {:ok, chit}
       end
+    end
+  end
+
+  # A genesis mint (parents == []) claims no parent moment, so there is
+  # nothing to gate; ChitAncestry.check/2 short-circuits the same way,
+  # but matching here keeps the gate's no-claim fast path explicit.
+  defp ancestry_gate(_store, %Chit{parents: []}), do: :ok
+
+  defp ancestry_gate(store, %Chit{} = chit) do
+    case ChitAncestry.check(store, chit) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:ancestry_refused, reason}}
     end
   end
 
