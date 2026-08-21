@@ -63,12 +63,24 @@ defmodule Commonplace.Store.DocCommitIndexTest do
     assert output =~ "commit_store.ex:commit_rows/… — the private persistence choke"
     assert output =~ "mixed_plane_history_fixture.ex:seed!/… — the incident fixture"
 
-    # This production reader is intentionally part of the scanned tree. Its
-    # presence in the checker's read-only report proves a select/reduce match
-    # is distinguished from a persistence expression and does not trip the
-    # perimeter.
+    # ⭐ Assert the PROPERTY, not a named instance (coder #14217). The checker
+    # prints one "ignored read pattern" line PER read whose select/reduce matches
+    # the {:commit}/{:doc_commit} row shape but is classified as a read, not a
+    # write. So this asserts "AT LEAST ONE production read matches the row shape and
+    # is distinguished from a write" — which, with `status == 0` above (nothing
+    # misclassified as a write), is the read-vs-write distinction this test exists
+    # to prove.
+    #
+    # ⛔ It deliberately does NOT name WHICH file. A must-find pinned to a named
+    # read goes STALE the moment that read is legitimately removed or renamed, and
+    # then fires RED ON CORRECT STATE — the worse half of the gate rule (it trains
+    # the next person to edit the assertion). That is not hypothetical: this test
+    # once pinned `mixed_plane_history.ex`, BUILD-2a migrated that reader off its
+    # raw {:commit} scan, and the pin went red on a correct change. The property
+    # survives any single read's removal; it goes red only when EVERY such read is
+    # gone — at which point the classifier has nothing to classify and the control
+    # SHOULD fire.
     assert output =~ "ignored read pattern"
-    assert output =~ "mixed_plane_history.ex"
   end
 
   test "a stray commit-row write in a DIFFERENT UMBRELLA APP trips the perimeter" do
