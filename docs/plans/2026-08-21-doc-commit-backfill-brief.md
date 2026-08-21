@@ -73,9 +73,13 @@ moment the run executes.
 4. **Offline re-census**: the deploy-cert probe re-run on a post-backfill copy
    reads **116 → 0 hard-fails** (RENDER or honest-declared), all other classes
    unchanged.
-5. **World-B convergence**: post-run, the dangling_latest population shrinks by
-   exactly the processed count — the doctrine reads true from World-B's own
-   enumerators.
+5. **World-B convergence — by SET-DIFFERENCE, not count-delta** (plan's
+   sharpening at ratification, #14389: a count-delta can mask an EXCHANGE — one
+   processed doc still dangling + one unrelated doc newly dangling nets the same
+   cardinality). Post-run: `dangling_pre \ dangling_post == the processed id set`
+   AND `dangling_post ∩ processed == ∅`. Same data, one more comparison; the
+   convergence claim is membership-true, matching the rigor of its inputs (the
+   F2 116 were established by byte-exact membership, never by count).
 6. **Readiness-gate hygiene**: the backfill respects the `{:doc_commit_index,
    :state}` readiness protocol (writes only against a ready index; never flips
    the state key itself).
