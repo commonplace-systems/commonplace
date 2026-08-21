@@ -55,31 +55,27 @@ defmodule Commonplace.Projection.MixedPlaneHistory do
 
   @checkpoint_version 1
   @default_known_positives ["235d73b5-a44a-44de-91ad-a753c61f7407"]
-  @max_key_binary :binary.copy(<<255>>, 64)
 
   @doc false
   def commit_ids_by_doc(store, doc_uuids) do
-    doc_uuids = MapSet.new(doc_uuids)
-    initial = Map.new(doc_uuids, &{&1, MapSet.new()})
-
-    if MapSet.size(doc_uuids) == 0 do
-      initial
-    else
-      store
-      |> CommitStore.db_handle()
-      |> CubDB.select(min_key: {:commit, ""}, max_key: {:commit, @max_key_binary})
-      |> Enum.reduce(initial, fn
-        {{:commit, commit_id}, %{doc_uuid: doc_uuid}}, grouped ->
-          if MapSet.member?(doc_uuids, doc_uuid) do
-            Map.update!(grouped, doc_uuid, &MapSet.put(&1, commit_id))
-          else
-            grouped
-          end
-
-        _, grouped ->
-          grouped
-      end)
-    end
+    # BUILD-2a reader seam: read each doc's commit ids from the AUTHORITATIVE
+    # `{:doc_commit}` index (`CommitStore.all_commit_ids_for_doc/2`) instead of
+    # scanning every `{:commit}` struct and grouping by the struct's `.doc_uuid`.
+    #
+    # ⛔ The old scan grouped by `struct.doc_uuid`, which is a debug trace of the
+    # FIRST writer, EXCLUDED from the content-address hash and therefore NOT
+    # authoritative ownership (`commit.ex:52`): a commit id shared across docs
+    # (a content-address collision from shared ancestry / an imported commit)
+    # would be mis-attributed to a single doc, dropping it from the others. The
+    # `{:doc_commit, doc_uuid, id}` index is the authoritative doc→commit map
+    # (World-B, plan #13407). This also scopes each read per-doc (cell-scoped)
+    # and removes a raw `CommitStore.db_handle/1` CubDB bypass — the BUILD-2a
+    # move. `all_commit_ids_for_doc/2` raises if the index is not ready; the sole
+    # caller (`fetch_commit_groups/3`) already wraps this in `safely/1`, which
+    # turns that into a reported `commit_enumeration_failed`, not a crash.
+    Map.new(MapSet.new(doc_uuids), fn doc_uuid ->
+      {doc_uuid, CommitStore.all_commit_ids_for_doc(store, doc_uuid)}
+    end)
   end
 
   @type summary :: %{
