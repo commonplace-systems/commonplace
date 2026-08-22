@@ -28,9 +28,15 @@ set -euo pipefail
 
 REPO=/home/jes/commonplace
 PIN_DIR=/home/jes/commonplace-serve-pin
-if [ "${1:-}" = "--pin-dir" ]; then
-  PIN_DIR="${2:?--pin-dir needs a value}"
-fi
+QUICK=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --quick) QUICK=1; shift ;; # validity only, no fetch — for gauges that
+                               # just need "is there a valid pin here"
+    --pin-dir) PIN_DIR="${2:?--pin-dir needs a value}"; shift 2 ;;
+    *) echo "unknown arg: $1" >&2; exit 64 ;;
+  esac
+done
 
 if [ ! -e "$PIN_DIR" ]; then
   echo "PIN MISSING: $PIN_DIR does not exist — no valid boot source; the launcher must REFUSE" >&2
@@ -62,8 +68,12 @@ if [ ! -d "$PIN_DIR/_build" ]; then
   exit 2
 fi
 
-git -C "$REPO" fetch -q origin 2>/dev/null ||
-  echo "warn: fetch failed — the origin/main leg below may be stale" >&2
+if [ "$QUICK" = 1 ]; then
+  echo "(--quick: no fetch; origin/main leg is as of the last fetch)" >&2
+else
+  git -C "$REPO" fetch -q origin 2>/dev/null ||
+    echo "warn: fetch failed — the origin/main leg below may be stale" >&2
+fi
 main_sha="$(git -C "$REPO" rev-parse origin/main)"
 lag="$(git -C "$REPO" rev-list --count "${head_sha}..${main_sha}")"
 

@@ -427,5 +427,21 @@ IO.puts(
 System.halt(0)
 ELIXIR
 
-cd "$PROJECT_DIR"
+# Pin-aware (2026-08-21 pinned-boot migration): local md5s must come from
+# the tree the serve actually boots — the pin worktree when a valid one
+# exists. Comparing resident modules against the SHARED tree post-migration
+# reports skew that is about the wrong tree. CP_VERIFY_TREE overrides
+# explicitly (demonstrations); else a valid pin wins; else legacy.
+PIN_DIR=/home/jes/commonplace-serve-pin
+if [ -n "${CP_VERIFY_TREE:-}" ]; then
+  RUN_TREE="$CP_VERIFY_TREE"
+  echo "local-beam tree: CP_VERIFY_TREE override -> $RUN_TREE"
+elif "$SCRIPT_DIR/cp-pin-status" --quick >/dev/null 2>&1; then
+  RUN_TREE="$PIN_DIR"
+  echo "local-beam tree: pin worktree $PIN_DIR"
+else
+  RUN_TREE="$PROJECT_DIR"
+  echo "local-beam tree: shared tree (no valid pin)"
+fi
+cd "$RUN_TREE"
 CP_VERIFY_DEPLOY_HOST="$SERVE_HOST" CP_VERIFY_DEPLOY_APPS="$UMBRELLA_APPS" ERL_INETRC="$INETRC" mix run --no-start "$PROBE_SCRIPT" -- "$SERVE_NODE" "$@"
